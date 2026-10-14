@@ -1,0 +1,140 @@
+# Fork only: keeps tyler/main = upstream main + this fork's own commits.
+# Each night it rebases the fork's commits onto upstream, runs the checks, and
+# force-pushes only when both succeed. A conflict or a failed check pushes
+# nothing and opens (or updates) one "Nightly upstream sync failed" issue.
+name: Fork sync
+
+on:
+  schedule:
+    - cron: "0 13 * * *" # 00:00 AEDT (23:00 AEST)
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Fork branch to rebase onto upstream main
+        default: tyler/main
+
+concurrency:
+  group: fork-sync-${{ inputs.branch || 'tyler/main' }}
+  cancel-in-progress: false
+
+env:
+  BRANCH: ${{ inputs.branch || 'tyler/main' }}
+  UPSTREAM: https://github.com/hardbeat920/monocode.git
+
+jobs:
+  sync:
+    if: github.repository == 'tylers2222/monocode'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # The deploy key pushes the rebased branch. GITHUB_TOKEN cannot push
+      # upstream's own changes to .github/workflows.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+          ssh-key: ${{ secrets.FORK_SYNC_DEPLOY_KEY }}
+
+      - name: Rebase onto upstream main
+        id: rebase
+        run: |
+          set -euo pipefail
+          git config user.name "fork-sync"
+          git config user.email "fork-sync@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM"
+          git fetch --no-tags upstream main
+          old_head=$(git rev-parse HEAD)
+          echo "old_head=$old_head" >> "$GITHUB_OUTPUT"
+          behind=$(git rev-list --count HEAD..upstream/main)
+          {
+            echo "## Fork sync: \`$BRANCH\`"
+            echo "- Behind upstream: **$behind** commits"
+            echo "- Upstream already has: $(git cherry upstream/main HEAD | grep -c '^-' || true) of this fork's commits"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$behind" -eq 0 ]; then
+            echo "- Already up to date. Nothing to do." >> "$GITHUB_STEP_SUMMARY"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          old_base=$(git merge-base HEAD upstream/main)
+          if ! git rebase upstream/main; then
+            {
+              echo "- **Conflict.** Nothing was pushed. Files:"
+              git diff --name-only --diff-filter=U | sed 's/^/  - `/; s/$/`/'
+            } | tee -a "$GITHUB_STEP_SUMMARY" > conflict.md
+            git rebase --abort
+            exit 1
+          fi
+          {
+            echo "- Rebased. This fork's commits before and after:"
+            echo '```'
+            git range-diff --no-color "$old_base..$old_head" "upstream/main..HEAD"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install Linux system dependencies
+        if: steps.rebase.outputs.changed == 'true'
+        run: bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
+
+      - uses: actions/setup-node@v4
+        if: steps.rebase.outputs.changed == 'true'
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.rebase.outputs.changed == 'true'
+        with:
+          components: rustfmt, clippy
+
+      - name: npm run check
+        if: steps.rebase.outputs.changed == 'true'
+        run: |
+          npm ci
+          npm run check
+
+      - name: Push
+        if: steps.rebase.outputs.changed == 'true'
+        run: >-
+          git push
+          --force-with-lease="refs/heads/$BRANCH:${{ steps.rebase.outputs.old_head }}"
+          origin "HEAD:refs/heads/$BRANCH"
+
+      - name: Report failure in an issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly upstream sync failed: $BRANCH"
+          {
+            echo "The sync of \`$BRANCH\` onto upstream main failed. Nothing was pushed."
+            echo
+            [ -f conflict.md ] && cat conflict.md || echo "- A check failed after the rebase."
+            echo
+            echo "Run: $RUN_URL"
+          } > body.md
+          # REST, not `gh issue`: GraphQL createIssue rejects GITHUB_TOKEN here.
+          issues="repos/$GITHUB_REPOSITORY/issues"
+          number=$(gh api "$issues?state=open&per_page=100" --jq "map(select(.title == \"$title\" and (has(\"pull_request\") | not)))[0].number // empty")
+          if [ -n "$number" ]; then
+            gh api "$issues/$number/comments" -F body=@body.md --jq .html_url
+          else
+            gh api "$issues" -f title="$title" -F body=@body.md --jq .html_url
+          fi
+
+      - name: Close the failure issue
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Nightly upstream sync failed: $BRANCH"
+          issues="repos/$GITHUB_REPOSITORY/issues"
+          for number in $(gh api "$issues?state=open&per_page=100" --jq "map(select(.title == \"$title\" and (has(\"pull_request\") | not)))[].number"); do
+            gh api "$issues/$number/comments" -f body="Fixed: the sync succeeded in ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq .html_url
+            gh api -X PATCH "$issues/$number" -f state=closed --jq .state
+          done
