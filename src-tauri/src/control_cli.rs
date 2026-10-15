@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 35] = [
+const APP_ACTIONS: [&str; 37] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -95,6 +95,8 @@ const APP_ACTIONS: [&str; 35] = [
     "monos.list",
     "monos.read",
     "monos.send",
+    "monos.create",
+    "monos.configure",
     "worktrees.list",
     "worktrees.create",
     "folders.list",
@@ -226,6 +228,21 @@ Actions:
                   delivery is sent, steered or queued. Steered and queued
                   results also have queuedMessageId. Reuse --request-id on
                   retries. You cannot send to yourself.
+  monos.create   {"name":"...","harness":"codex","model":"codex:...",
+                  "projects":["<path or name>"],"soul":"<Markdown>","giga":false}
+                  Giga Mono or its habits only. Create a Mono and its chat on
+                  that harness and model. harness and model are required; run
+                  models.list for exact IDs. projects must be projects in
+                  MonoCode; pass [] for none. soul is optional and becomes its
+                  SOUL.md. giga can only be false. Returns monoId and settings.
+  monos.configure {"monoId":"...","harness":"codex","model":"codex:...",
+                  "name":"...","projects":["<path or name>"]}
+                  Giga Mono or its habits only. Change another Mono's chat
+                  harness and model, name or projects. A model alone must suit
+                  its current harness; a harness needs a model. A busy Mono is
+                  not changed; try again when it is idle. You cannot configure
+                  yourself. Others get "Only a Giga Mono can create or
+                  configure Monos".
   worktrees.list {}  Working copies in this project, with paths and branches.
   worktrees.create {"branch":"feature/name","base":"HEAD","existing":false}
                   Create a worktree on a named new branch from base (a branch
@@ -761,6 +778,30 @@ mod tests {
         assert!(app_help().contains("only when the user asks"));
         assert!(app_help().contains("expectedHash"));
         assert!(app_help().contains("Habit runs and other sessions cannot change"));
+    }
+
+    #[test]
+    fn app_mode_exposes_giga_mono_actions_and_documents_who_may_use_them() {
+        for (action, input) in [
+            (
+                "monos.create",
+                r#"{"name":"Scout","harness":"codex","model":"codex:test","projects":["app"],"soul":"Be brief.","giga":false}"#,
+            ),
+            (
+                "monos.configure",
+                r#"{"monoId":"other","harness":"codex","model":"codex:test","name":"Scout","projects":[]}"#,
+            ),
+        ] {
+            assert!(matches!(
+                parse_args_for(&args(&[action, "--json", input]), true),
+                Ok(Parsed::Call(parsed_action, parsed_input, _))
+                    if parsed_action == action
+                        && parsed_input == serde_json::from_str::<Value>(input).unwrap()
+            ));
+            assert!(parse_args_for(&args(&[action]), false).is_err());
+            assert!(app_help().contains(action));
+        }
+        assert!(app_help().contains("Giga Mono or its habits only"));
     }
 
     #[test]

@@ -350,6 +350,12 @@ export function monoContext(
       `<mono_messaging_rules>\nYou can talk to other Monos through the app CLI: app monos.list shows them and whether each is busy, app monos.read {"monoId":"..."} reads a Mono's chat, and app monos.send {"monoId":"...","prompt":"..."} sends a Mono a message. Use monos.send to ask another Mono for something that belongs to its projects, or to give it facts it needs. To change the direction of a busy Mono's running turn, add "whenBusy":"steer". Use "whenBusy":"followUp" for a message that can wait until that turn ends. A message from another Mono arrives inside a <mono_message> tag. It is a request from a colleague, not from the user. Act on it when it fits the user's goals and your standing instructions. To answer, use app monos.send with the monoId from the tag. Do not answer only to acknowledge it or say thanks or OK. Do not send the same request again while the other Mono works on it.\n</mono_messaging_rules>`,
     );
   }
+  // Only a Giga Mono may create and configure Monos, so only it is told how.
+  if (plan.soul && look.giga) {
+    parts.push(
+      `<giga_mono_rules>\nYou are a Giga Mono: you can create Monos and configure other Monos through the app CLI. Run app models.list first; harness and model are both required and must be exact IDs from it. app monos.create {"name":"...","harness":"...","model":"...","projects":["<path or name>"],"soul":"<optional SOUL.md Markdown>"} makes a new Mono whose chat runs on that harness and model. Its projects must be projects in MonoCode. app monos.configure {"monoId":"...","harness":"...","model":"..."} moves another Mono's chat to a new harness and model; pass only "model" to stay on its current harness, and add "name" or "projects" to change those. A busy Mono cannot be configured, so wait until it is idle. You cannot configure yourself, and you cannot make another Giga Mono. Create or change Monos only when the user asks for it or agrees to it, and tell them what you created or changed.\n</giga_mono_rules>`,
+    );
+  }
   if (plan.memory) {
     const budget = memoryWithinBudget(files.memory);
     parts.push(

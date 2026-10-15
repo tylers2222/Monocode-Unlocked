@@ -630,6 +630,11 @@ import {
   resetMonoSession,
 } from "../features/monos/model/monoWorkspace";
 import {
+  configureMono,
+  createMonoWithChat,
+  MONO_BUSY_CONFIGURE_ERROR,
+} from "../features/monos/model/gigaMono";
+import {
   warmNativeSkills,
   isNativeCommandPrompt,
 } from "../features/skills/model/skills";
@@ -8040,14 +8045,15 @@ function Workspace({
           const agentFiles = monoRecord
             ? await loadMonoFiles(monoRecord.id).catch(() => undefined)
             : undefined;
-          // Who it is counts as part of its soul: a rename or a change to its
-          // projects is handed over too, and so is a change to the fixed rules.
+          // Who it is counts as part of its soul: a rename, a change to its
+          // projects or to Giga is handed over too, and so is a change to the
+          // fixed rules.
           const handedFiles = agentFiles &&
             agentLook && {
               ...agentFiles,
               soulHash: `${agentFiles.soulHash}:${agentLook.name}:${agentLook.projects
                 .map((project) => project.path)
-                .join("|")}:${MONO_PROMPT_VERSION}`,
+                .join("|")}:${MONO_PROMPT_VERSION}${agentLook.giga ? ":giga" : ""}`,
             };
           const agentPlan = handedFiles
             ? planAgentContext(
@@ -11245,6 +11251,7 @@ function Workspace({
               return {
                 id: mono.id,
                 name,
+                ...(mono.giga ? { giga: true } : {}),
                 projects: mono.projects,
                 showStartedSessionsInSidebar: mono.showStartedSessionsInSidebar,
                 ...(mono.useSidebarFolders
@@ -11324,6 +11331,55 @@ function Workspace({
                   delivery: plan.delivery,
                   queuedMessageId: plan.message.id,
                 };
+              },
+              create: (settings) =>
+                createMonoWithChat(settings, {
+                  home: homeDir,
+                  add: (created) => {
+                    sessionsRef.current = [...sessionsRef.current, created];
+                    setSessions(sessionsRef.current);
+                  },
+                }),
+              configure: async (monoId, change) => {
+                if (!findMono(monoId)) throw new Error(UNKNOWN_MONO_ERROR);
+                // A Mono never opened gets its chat now, as opening it would.
+                const opened = await ensureMonoSession(monoId, {
+                  home: homeDir,
+                  load: (id) => ensureOpenSessionRef.current(id),
+                  create: newDefaultSession,
+                  add: (created) => {
+                    sessionsRef.current = [...sessionsRef.current, created];
+                    setSessions(sessionsRef.current);
+                  },
+                });
+                const mono = findMono(monoId);
+                if (!opened || !mono) throw new Error(UNKNOWN_MONO_ERROR);
+                // Output already received can end the turn it is busy with.
+                flushHarnessEvents();
+                const chat =
+                  sessionsRef.current.find(
+                    (session) => session.id === opened.id,
+                  ) ?? opened;
+                if (isPreparingHandoff(chat))
+                  throw new Error(MONO_BUSY_CONFIGURE_ERROR);
+                return configureMono(mono, chat, change, {
+                  switchModel: (current, { harness, model }) => {
+                    const plan = planComposerSwitch(current, harness);
+                    if (plan.kind === "empty")
+                      void forgetHarnessSession(plan.forget, current.id);
+                    return withPlanBuildTarget(current, {
+                      harness,
+                      model: model.id,
+                      modelSettings: current.modelSettings ?? {},
+                    });
+                  },
+                  replace: (next) =>
+                    updateSessionState(sessionsRef, setSessions, (sessions) =>
+                      sessions.map((session) =>
+                        session.id === next.id ? next : session,
+                      ),
+                    ),
+                });
               },
             },
             habits: { load: loadHabits, update: updateHabits },

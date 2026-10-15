@@ -253,3 +253,21 @@ it("puts what the app adds ahead of the user's message, marked as its own", () =
   );
   expect(turn.endsWith("</monocode_context>\n\nwhat is this")).toBe(true);
 });
+
+it("tells only a Giga Mono how to create and configure Monos", () => {
+  const look = { name: "Boss", mascot: "skull", color: "#fff", projects: [] };
+  const soul = { soul: true, memory: false };
+  expect(monoContext(look, files(), soul)).not.toContain("<giga_mono_rules>");
+  const giga = monoContext({ ...look, giga: true }, files(), soul);
+  expect(giga).toContain("<giga_mono_rules>");
+  expect(giga).toContain("app monos.create");
+  expect(giga).toContain("app monos.configure");
+  expect(giga).toContain("app models.list");
+  // Rules go out with the soul, not on every turn.
+  expect(
+    monoContext({ ...look, giga: true }, files(), {
+      soul: false,
+      memory: true,
+    }),
+  ).not.toContain("<giga_mono_rules>");
+});

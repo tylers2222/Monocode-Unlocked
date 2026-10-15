@@ -77,6 +77,14 @@ import {
   supersedeMemoryEntry,
   topicName,
 } from "../../monos/model/monoMemory";
+import {
+  GIGA_ONLY_ERROR,
+  MONO_SELF_CONFIGURE_ERROR,
+  resolveMonoProjects,
+  type MonoChange,
+  type MonoSettings,
+  type NewMono,
+} from "../../monos/model/gigaMono";
 
 export type AppSessionListing = {
   id: string;
@@ -170,6 +178,8 @@ export type AgentAppHost = {
     | {
         id: string;
         name?: string;
+        /** It may create and configure other Monos. */
+        giga?: boolean;
         projects: readonly string[];
         showStartedSessionsInSidebar?: boolean;
         /** Files the sessions it starts into a folder named after it. */
@@ -201,6 +211,10 @@ export type AgentAppHost = {
       requestId: string,
       options: { whenBusy?: WhenBusy },
     ): Promise<AppSendResult>;
+    /** Throws "Unknown Mono". The choice and projects are already checked. */
+    create?(settings: NewMono): Promise<MonoSettings>;
+    /** Throws "Unknown Mono", and when it is busy, without changing it. */
+    configure?(monoId: string, change: MonoChange): Promise<MonoSettings>;
   };
   agentFiles(monoId: string): Promise<MonoFiles>;
   readAgentFile(
@@ -275,6 +289,8 @@ const FIELDS = new Map<string, readonly string[]>([
   ["monos.list", []],
   ["monos.read", ["monoId", "before", "limit", "maxChars"]],
   ["monos.send", ["monoId", "prompt", "whenBusy"]],
+  ["monos.create", ["name", "harness", "model", "projects", "soul", "giga"]],
+  ["monos.configure", ["monoId", "harness", "model", "name", "projects"]],
   ["chat.card", [...CARD_FIELDS]],
 ]);
 
@@ -943,6 +959,73 @@ async function handleMonos(
   throw new Error(`Unknown app action: ${action}`);
 }
 
+/**
+ * monos.create and monos.configure: only a Giga Mono's chat or one of its
+ * habit runs may make Monos or change another Mono's model.
+ */
+async function handleGigaMonos(
+  source: Session,
+  action: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+): Promise<unknown> {
+  const mono = host.monoOf?.(source.id);
+  const monos = host.monos;
+  if (!mono?.giga || !monos?.create || !monos.configure)
+    throw new Error(GIGA_ONLY_ERROR);
+  if (action === "monos.create") {
+    const name = requiredString(input.name, "name", 80);
+    const choice = requireHarnessModel(input);
+    if (input.projects === undefined)
+      throw new Error("projects is required; pass [] for none");
+    const projects = resolveMonoProjects(input.projects);
+    if (input.giga !== undefined && input.giga !== false)
+      throw new Error("giga can only be false; only the user makes a Giga Mono");
+    if (
+      input.soul !== undefined &&
+      (typeof input.soul !== "string" ||
+        !input.soul.trim() ||
+        input.soul.length > 240_000)
+    )
+      throw new Error("soul must be a non-empty string under 240000 characters");
+    const created = await monos.create({ name, projects, choice });
+    if (typeof input.soul === "string") {
+      const files = await host.agentFiles(created.monoId);
+      await host.writeAgentFile(
+        created.monoId,
+        "SOUL.md",
+        input.soul,
+        files.soulHash,
+      );
+    }
+    return { ...created, created: true };
+  }
+  const monoId = requiredString(input.monoId, "monoId", 256);
+  if (monoId === mono.id) throw new Error(MONO_SELF_CONFIGURE_ERROR);
+  const name = optionalString(input.name, "name", 80);
+  const projects =
+    input.projects === undefined
+      ? undefined
+      : resolveMonoProjects(input.projects);
+  const changesModel = input.harness !== undefined || input.model !== undefined;
+  if (!changesModel && name === undefined && projects === undefined)
+    throw new Error("Pass harness and model, model, name or projects to change");
+  return monos.configure(monoId, {
+    ...(name !== undefined ? { name } : {}),
+    ...(projects ? { projects } : {}),
+    // A model alone has to suit the harness the Mono's chat is on now.
+    ...(changesModel
+      ? {
+          choice: (current) =>
+            requireHarnessModel({
+              harness: input.harness ?? current,
+              model: input.model,
+            }),
+        }
+      : {}),
+  });
+}
+
 function artifactKind(value: unknown): ArtifactKind {
   if (value === undefined) return "document";
   if (ARTIFACT_KINDS.includes(value as ArtifactKind))
@@ -1075,6 +1158,8 @@ export async function handleAgentApp(
     return handleMemory(source, action, input, host);
   if (action.startsWith("habits."))
     return handleHabits(source, action, input, host);
+  if (action === "monos.create" || action === "monos.configure")
+    return handleGigaMonos(source, action, input, host);
   if (action.startsWith("monos."))
     return handleMonos(source, requestId, action, input, host);
   if (action === "chat.card") {
