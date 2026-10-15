@@ -18,6 +18,7 @@ import { PixelMascot } from "../../projects/ui/PixelMascot";
 import {
   defaultMonoName,
   findMono,
+  saveMonoGiga,
   saveMonoMascot,
   saveMonoName,
   subscribeMonos,
@@ -153,6 +154,10 @@ function GeneralSection({
     subscribeMonos,
     () => findMono(monoId)?.useSidebarFolders === true,
   );
+  const giga = useSyncExternalStore(
+    subscribeMonos,
+    () => findMono(monoId)?.giga === true,
+  );
   return (
     <div
       ref={lock}
@@ -239,6 +244,16 @@ function GeneralSection({
               on ? { ...mono, useSidebarFolders: true } : mono,
             )
           }
+        />
+      </SettingGroup>
+
+      <GroupHeading title="Other Monos" />
+      <SettingGroup>
+        <SwitchRow
+          label="Giga Mono"
+          description="Can create and configure other Monos"
+          on={giga}
+          onChange={(on) => saveMonoGiga(monoId, on)}
         />
       </SettingGroup>
 

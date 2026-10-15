@@ -2,7 +2,11 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { createMono } from "../../features/monos/model/mono";
+import {
+  createMono,
+  monoLook,
+  saveMonoGiga,
+} from "../../features/monos/model/mono";
 import { loadMonosEnabled } from "../../features/settings/model/settings";
 import { MonoRailSection } from "./MonoRailSection";
 
@@ -84,4 +88,41 @@ it("counts a mono's unread replies, except the one open", () => {
 
   render({ activeId: mono.id, unseenCounts: new Map([[mono.id, 3]]) });
   expect(badge()).toBeNull();
+});
+
+it("puts Giga Monos in their own section above Monos, and leaves them out of Monos", () => {
+  const crab = createMono([], { name: "Crab" });
+  const boss = createMono([], { name: "Boss" });
+  const shroom = createMono([], { name: "Shroom" });
+  saveMonoGiga(boss.id, true);
+  render();
+  const names = (label: string) =>
+    [
+      ...container.querySelectorAll(
+        `[role="group"][aria-label="${label}"] [data-mono-status] > button:first-child`,
+      ),
+    ].map((button) => button.textContent);
+  const sections = [...container.querySelectorAll('[role="group"]')].map(
+    (group) => group.getAttribute("aria-label"),
+  );
+  expect(sections).toEqual(["Giga Monos", "Monos"]);
+  expect(names("Giga Monos")).toEqual([monoLook(boss).name]);
+  expect(names("Monos")).toEqual([monoLook(crab).name, monoLook(shroom).name]);
+  expect(
+    container.querySelectorAll(
+      '[aria-label="Giga Monos"] [aria-label="New mono"]',
+    ),
+  ).toHaveLength(0);
+  expect(
+    container.querySelectorAll('[aria-label="Monos"] [aria-label="New mono"]'),
+  ).toHaveLength(1);
+});
+
+it("shows no Giga Monos section while there are none", () => {
+  createMono();
+  render();
+  expect(container.querySelector('[aria-label="Giga Monos"]')).toBeNull();
+  expect(
+    container.querySelector('[role="group"][aria-label="Monos"]'),
+  ).not.toBeNull();
 });

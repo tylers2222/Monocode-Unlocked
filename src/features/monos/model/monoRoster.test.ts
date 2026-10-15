@@ -11,6 +11,7 @@ import {
   removeMono,
   removeMonoProject,
   reorderMonos,
+  saveMonoGiga,
 } from "./mono";
 import { monoBackgroundKey, monoChatBackground } from "./monoBackground";
 import { saveProjectChatBackgroundSettings } from "../../projects/model/projectChatBackground";
@@ -75,4 +76,29 @@ it("forgets its background along with the Mono", () => {
   expect(monoChatBackground(mono.id)?.path).toBe("/bg/mono.png");
   removeMono(mono.id);
   expect(monoChatBackground(mono.id)).toBeNull();
+});
+
+it("keeps the Giga setting through a roster round trip, and reads none as not Giga", () => {
+  const giga = createMono();
+  const plain = createMono();
+  saveMonoGiga(giga.id, true);
+  const stored = JSON.parse(localStorage.getItem("monocode:mono-roster")!);
+  expect(stored[0].giga).toBe(true);
+  expect("giga" in stored[1]).toBe(false);
+  expect(findMono(giga.id)?.giga).toBe(true);
+  expect(findMono(plain.id)?.giga).toBeUndefined();
+  expect(monoLook(findMono(giga.id)!).giga).toBe(true);
+
+  // Only true makes a Giga Mono; anything else in storage reads as not Giga.
+  localStorage.setItem(
+    "monocode:mono-roster",
+    JSON.stringify([
+      { ...stored[0], giga: "yes" },
+      { ...stored[1], giga: true },
+    ]),
+  );
+  expect(listMonos().map((mono) => mono.giga)).toEqual([undefined, true]);
+
+  saveMonoGiga(plain.id, false);
+  expect(findMono(plain.id)?.giga).toBeUndefined();
 });

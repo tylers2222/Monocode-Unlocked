@@ -45,6 +45,8 @@ export type Mono = {
   showStartedSessionsInSidebar?: boolean;
   /** Files the sessions it starts into a sidebar folder named after it. */
   useSidebarFolders?: boolean;
+  /** Can create and configure other Monos through the app CLI. */
+  giga?: true;
   /** Superseded by SOUL.md; only read once, to seed it. */
   instructions?: string;
   /**
@@ -171,6 +173,7 @@ function parseMono(value: unknown): Mono | undefined {
       ? { showStartedSessionsInSidebar: entry.showStartedSessionsInSidebar }
       : {}),
     ...(entry.useSidebarFolders === true ? { useSidebarFolders: true } : {}),
+    ...(entry.giga === true ? { giga: true } : {}),
     ...(instructions ? { instructions } : {}),
     ...(legacyProject ? { legacyProject } : {}),
   };
@@ -227,11 +230,18 @@ export function nextMonoLook(
   };
 }
 
-/** A new Mono with the next look, starting with the projects given, if any. */
-export function createMono(projects: readonly string[] = []): Mono {
+/**
+ * A new Mono with the next look, starting with the projects given, if any,
+ * and the name given.
+ */
+export function createMono(
+  projects: readonly string[] = [],
+  settings: { name?: string } = {},
+): Mono {
   const roster = listMonos();
   const mono: Mono = {
     id: newMonoId(),
+    ...(settings.name?.trim() ? { name: settings.name.trim() } : {}),
     ...nextMonoLook(roster),
     projects: uniqueProjects(projects),
   };
@@ -315,6 +325,12 @@ export function saveMonoMascot(monoId: string, mascot: string): void {
   updateMono(monoId, (mono) => ({ ...mono, mascot }));
 }
 
+export function saveMonoGiga(monoId: string, giga: boolean): void {
+  updateMono(monoId, ({ giga: _, ...mono }) =>
+    giga ? { ...mono, giga: true } : mono,
+  );
+}
+
 export function addMonoProject(monoId: string, path: string): void {
   updateMono(monoId, (mono) => ({
     ...mono,
@@ -373,6 +389,8 @@ export type MonoLook = {
   mascot: string;
   color: string;
   projects: MonoProject[];
+  /** It can create and configure other Monos. */
+  giga?: true;
 };
 
 /** How a Mono looks, and the projects it works on by their rail labels. */
@@ -386,6 +404,7 @@ export function monoLook(mono: Mono): MonoLook {
       path,
       name: resolveTabGroupLabel(projectKey(path), labels, projectName(path)),
     })),
+    ...(mono.giga ? { giga: true } : {}),
   };
 }
 
