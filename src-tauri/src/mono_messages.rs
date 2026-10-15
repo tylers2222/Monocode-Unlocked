@@ -12,6 +12,9 @@
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Serialize, Serializer};
 
+use crate::mono_roster::validate_mono_id;
+use crate::session_store::validate_id;
+
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS mono_messages (
@@ -59,7 +62,13 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            CHECK (turn_id IS NULL OR wanting_reply = 0 OR handle IS NOT NULL),
            CHECK (status <> 'unanswered' OR delivered_at IS NOT NULL),
            CHECK ((slot_window IS NULL) = (turn_id IS NULL)),
-           CHECK ((closed_at IS NOT NULL) = (status IN ('answered', 'unanswered', 'dropped')))
+           CHECK ((closed_at IS NOT NULL) = (status IN ('answered', 'unanswered', 'dropped'))),
+           CHECK (status = 'rejected' OR body_chars = length(body)),
+           CHECK (tool <> 'send_message' OR length(body) > 0),
+           CHECK (notified_at IS NULL OR status IN ('unanswered', 'dropped')),
+           CHECK (turn_id IS NULL OR delivery IN ('submit', 'steer')),
+           CHECK (status <> 'dropped' OR wanting_reply = 1 OR delivered_at IS NULL),
+           CHECK (tool <> 'reply' OR (steers IS NULL AND action_type IS NULL))
          );
          CREATE UNIQUE INDEX IF NOT EXISTS mono_messages_handle
            ON mono_messages (handled_by_session, turn_id, handle) WHERE handle IS NOT NULL;
@@ -153,23 +162,102 @@ text_enum!(RejectCode {
     AmbiguousReply = "ambiguous_reply",
 });
 
-/// `m_` and 12 base32 characters: `^m_[a-z2-7]{12}$`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(transparent)]
-pub struct MessageId(String);
+/// A text value the table stores as is, built only through `parse`.
+macro_rules! text_id {
+    ($(#[$meta:meta])* $name:ident, $valid:expr) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+        #[serde(transparent)]
+        pub struct $name(String);
+        impl $name {
+            pub fn parse(text: &str) -> Option<Self> {
+                let valid: fn(&str) -> bool = $valid;
+                valid(text).then(|| $name(text.to_string()))
+            }
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+    };
+}
 
-impl MessageId {
-    pub fn parse(text: &str) -> Option<Self> {
-        let tail = text.strip_prefix("m_")?;
-        (tail.len() == 12
-            && tail
+text_id!(
+    /// `m_` and 12 base32 characters: `^m_[a-z2-7]{12}$`.
+    MessageId,
+    |text| {
+        text.strip_prefix("m_").is_some_and(|tail| {
+            tail.len() == 12
+                && tail
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || (b'2'..=b'7').contains(&byte))
+        })
+    }
+);
+text_id!(MonoId, |text| validate_mono_id(text).is_ok());
+text_id!(SessionId, |text| validate_id(text, "session").is_ok());
+text_id!(
+    /// `^[A-Za-z0-9_-]{1,128}$`, the CLI's and `app-mcp`'s request ids.
+    RequestId,
+    |text| {
+        (1..=128).contains(&text.len())
+            && text
                 .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || (b'2'..=b'7').contains(&byte)))
-        .then(|| MessageId(text.to_string()))
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    }
+);
+text_id!(
+    /// sha256 of the canonical call, as 64 lowercase hex digits.
+    PayloadHash,
+    |text| {
+        text.len() == 64
+            && text
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+);
+
+/// One row per handle a reply answers: parts 0 to 9.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct Part(u8);
+
+impl Part {
+    pub const FIRST: Part = Part(0);
+
+    pub fn new(number: i64) -> Option<Self> {
+        u8::try_from(number)
+            .ok()
+            .filter(|number| *number <= 9)
+            .map(Part)
+    }
+}
+
+/// What a row keeps of a message: its first 8000 code points, and its real
+/// length, so a `too_large` row still says how long the message was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Body {
+    #[serde(rename = "body")]
+    text: String,
+    #[serde(rename = "bodyChars")]
+    chars: u32,
+}
+
+impl Body {
+    pub const MAX_CHARS: usize = 8000;
+
+    pub fn new(full: &str) -> Self {
+        Body {
+            text: full.chars().take(Self::MAX_CHARS).collect(),
+            chars: u32::try_from(full.chars().count()).unwrap_or(u32::MAX),
+        }
     }
 
-    pub fn as_str(&self) -> &str {
-        &self.0
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn chars(&self) -> u32 {
+        self.chars
     }
 }
 
@@ -206,17 +294,17 @@ impl<const B: bool> Serialize for Wanting<B> {
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Party {
     #[serde(rename_all = "camelCase")]
-    Mono { mono_id: String },
+    Mono { mono_id: MonoId },
     /// A project session; it only receives.
     #[serde(rename_all = "camelCase")]
-    Session { session_id: String },
+    Session { session_id: SessionId },
 }
 
 /// Where an accepted message went.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Routed {
-    pub handled_by_session: String,
+    pub handled_by_session: SessionId,
     pub delivery: Delivery,
 }
 
@@ -304,19 +392,19 @@ pub enum Status {
 #[serde(rename_all = "camelCase")]
 pub struct MonoMessage {
     pub id: MessageId,
-    pub request_id: String,
-    pub part: u8,
-    pub payload_hash: String,
+    pub request_id: RequestId,
+    pub part: Part,
+    pub payload_hash: PayloadHash,
     pub tool: Tool,
     /// `None` only after the Mono was deleted.
-    pub from_mono_id: Option<String>,
-    pub from_session_id: String,
+    pub from_mono_id: Option<MonoId>,
+    pub from_session_id: SessionId,
     /// `None` for `unknown_target` rows, or after the recipient Mono was deleted.
     pub to: Option<Party>,
     /// What the model asked for, as it gave it.
     pub addressed: String,
-    pub body: String,
-    pub body_chars: u32,
+    #[serde(flatten)]
+    pub body: Body,
     pub action_type: Option<ActionType>,
     pub reply_to: Option<MessageId>,
     pub steers: Option<MessageId>,
@@ -344,7 +432,7 @@ struct StatusColumns<'a> {
 
 impl<'a> StatusColumns<'a> {
     fn routed(mut self, routed: &'a Routed) -> Self {
-        self.handled_by_session = Some(&routed.handled_by_session);
+        self.handled_by_session = Some(routed.handled_by_session.as_str());
         self.delivery = Some(routed.delivery.as_str());
         self
     }
@@ -458,17 +546,17 @@ pub fn insert(conn: &Connection, message: &MonoMessage) -> rusqlite::Result<()> 
                    ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?28)",
         params![
             message.id.as_str(),
-            message.request_id,
-            message.part,
-            message.payload_hash,
+            message.request_id.as_str(),
+            message.part.0,
+            message.payload_hash.as_str(),
             message.tool.as_str(),
-            message.from_mono_id,
-            message.from_session_id,
+            message.from_mono_id.as_ref().map(MonoId::as_str),
+            message.from_session_id.as_str(),
             to_mono_id,
             to_session_id,
             message.addressed,
-            message.body,
-            message.body_chars,
+            message.body.text,
+            message.body.chars,
             columns.wanting_reply,
             message.action_type.map(ActionType::as_str),
             message.reply_to.as_ref().map(MessageId::as_str),
@@ -505,13 +593,13 @@ pub fn get(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<MonoMes
 /// Every part one call wrote, in part order.
 pub fn get_by_request(
     conn: &Connection,
-    from_session_id: &str,
-    request_id: &str,
+    from_session_id: &SessionId,
+    request_id: &RequestId,
 ) -> rusqlite::Result<Vec<MonoMessage>> {
     conn.prepare(&format!(
         "{SELECT} WHERE from_session_id = ?1 AND request_id = ?2 ORDER BY part"
     ))?
-    .query_map([from_session_id, request_id], parse_row)?
+    .query_map([from_session_id.as_str(), request_id.as_str()], parse_row)?
     .collect()
 }
 
@@ -527,9 +615,9 @@ fn required<T>(value: Option<T>, column: &str) -> rusqlite::Result<T> {
     value.ok_or_else(|| invalid(column))
 }
 
-fn message_id(row: &Row, column: &str) -> rusqlite::Result<Option<MessageId>> {
+fn parsed<T>(row: &Row, column: &str, parse: fn(&str) -> Option<T>) -> rusqlite::Result<Option<T>> {
     row.get::<_, Option<String>>(column)?
-        .map(|text| MessageId::parse(&text).ok_or_else(|| invalid(column)))
+        .map(|text| parse(&text).ok_or_else(|| invalid(column)))
         .transpose()
 }
 
@@ -538,7 +626,10 @@ fn parse_row(row: &Row) -> rusqlite::Result<MonoMessage> {
     let wanting_reply: bool = row.get("wanting_reply")?;
     let routed = || -> rusqlite::Result<Routed> {
         Ok(Routed {
-            handled_by_session: required(text("handled_by_session")?, "handled_by_session")?,
+            handled_by_session: required(
+                parsed(row, "handled_by_session", SessionId::parse)?,
+                "handled_by_session",
+            )?,
             delivery: required(
                 text("delivery")?.as_deref().and_then(Delivery::parse),
                 "delivery",
@@ -621,29 +712,41 @@ fn parse_row(row: &Row) -> rusqlite::Result<MonoMessage> {
         },
         _ => return Err(invalid("status")),
     };
-    let to = match (text("to_mono_id")?, text("to_session_id")?) {
+    let to = match (
+        parsed(row, "to_mono_id", MonoId::parse)?,
+        parsed(row, "to_session_id", SessionId::parse)?,
+    ) {
         (Some(mono_id), None) => Some(Party::Mono { mono_id }),
         (None, Some(session_id)) => Some(Party::Session { session_id }),
         (None, None) => None,
         (Some(_), Some(_)) => return Err(invalid("to_session_id")),
     };
     Ok(MonoMessage {
-        id: required(message_id(row, "id")?, "id")?,
-        request_id: row.get("request_id")?,
-        part: row.get("part")?,
-        payload_hash: row.get("payload_hash")?,
+        id: required(parsed(row, "id", MessageId::parse)?, "id")?,
+        request_id: required(parsed(row, "request_id", RequestId::parse)?, "request_id")?,
+        part: required(Part::new(row.get("part")?), "part")?,
+        payload_hash: required(
+            parsed(row, "payload_hash", PayloadHash::parse)?,
+            "payload_hash",
+        )?,
         tool: required(text("tool")?.as_deref().and_then(Tool::parse), "tool")?,
-        from_mono_id: text("from_mono_id")?,
-        from_session_id: row.get("from_session_id")?,
+        from_mono_id: parsed(row, "from_mono_id", MonoId::parse)?,
+        from_session_id: required(
+            parsed(row, "from_session_id", SessionId::parse)?,
+            "from_session_id",
+        )?,
         to,
         addressed: row.get("addressed")?,
-        body: row.get("body")?,
-        body_chars: row.get("body_chars")?,
+        // As stored: a `too_large` row keeps the real length of a longer text.
+        body: Body {
+            text: row.get("body")?,
+            chars: row.get("body_chars")?,
+        },
         action_type: text("action_type")?
             .map(|action| ActionType::parse(&action).ok_or_else(|| invalid("action_type")))
             .transpose()?,
-        reply_to: message_id(row, "reply_to")?,
-        steers: message_id(row, "steers")?,
+        reply_to: parsed(row, "reply_to", MessageId::parse)?,
+        steers: parsed(row, "steers", MessageId::parse)?,
         hop: row.get("hop")?,
         created_at: row.get("created_at")?,
         status,
@@ -674,9 +777,17 @@ mod tests {
         MessageId::parse(&format!("m_{}", letter.to_string().repeat(12))).unwrap()
     }
 
+    fn session(id: &str) -> SessionId {
+        SessionId::parse(id).unwrap()
+    }
+
+    fn mono(id: &str) -> MonoId {
+        MonoId::parse(id).unwrap()
+    }
+
     fn routed() -> Routed {
         Routed {
-            handled_by_session: "a-chat".into(),
+            handled_by_session: session("a-chat"),
             delivery: Delivery::Submit,
         }
     }
@@ -693,18 +804,17 @@ mod tests {
     fn message(letter: char, status: Status) -> MonoMessage {
         MonoMessage {
             id: id(letter),
-            request_id: format!("req-{letter}"),
-            part: 0,
-            payload_hash: "0".repeat(64),
+            request_id: RequestId::parse(&format!("req-{letter}")).unwrap(),
+            part: Part::FIRST,
+            payload_hash: PayloadHash::parse(&"0".repeat(64)).unwrap(),
             tool: Tool::SendMessage,
-            from_mono_id: Some("giga".into()),
-            from_session_id: "giga-chat".into(),
+            from_mono_id: Some(mono("giga")),
+            from_session_id: session("giga-chat"),
             to: Some(Party::Mono {
-                mono_id: "mono-a".into(),
+                mono_id: mono("mono-a"),
             }),
             addressed: "mono-a".into(),
-            body: "Ship the fix".into(),
-            body_chars: 12,
+            body: Body::new("Ship the fix"),
             action_type: Some(ActionType::Queue),
             reply_to: None,
             steers: None,
@@ -719,13 +829,16 @@ mod tests {
         let store = store();
         let conn = store.lock_conn().unwrap();
         let messages = [
-            message(
-                'a',
-                Status::Rejected {
-                    gate_result: RejectCode::TooLarge,
-                    wanting_reply: true,
-                },
-            ),
+            MonoMessage {
+                body: Body::new(&"x".repeat(8001)),
+                ..message(
+                    'a',
+                    Status::Rejected {
+                        gate_result: RejectCode::TooLarge,
+                        wanting_reply: true,
+                    },
+                )
+            },
             message(
                 'b',
                 Status::Open {
@@ -811,14 +924,15 @@ mod tests {
         );
         insert(&conn, &asked).unwrap();
         let part = |letter, part| MonoMessage {
-            part,
-            request_id: "reply-1".into(),
+            part: Part::new(part).unwrap(),
+            request_id: RequestId::parse("reply-1").unwrap(),
             tool: Tool::Reply,
-            from_mono_id: Some("mono-a".into()),
-            from_session_id: "a-chat".into(),
+            from_mono_id: Some(mono("mono-a")),
+            from_session_id: session("a-chat"),
             to: Some(Party::Session {
-                session_id: "giga-chat".into(),
+                session_id: session("giga-chat"),
             }),
+            action_type: None,
             reply_to: Some(asked.id.clone()),
             hop: 1,
             ..message(
@@ -826,7 +940,7 @@ mod tests {
                 Status::Delivered {
                     wanting_reply: Wanting,
                     routed: Routed {
-                        handled_by_session: "giga-chat".into(),
+                        handled_by_session: session("giga-chat"),
                         delivery: Delivery::Queue,
                     },
                     slot: None,
@@ -836,13 +950,38 @@ mod tests {
         let (second, first) = (part('c', 1), part('b', 0));
         insert(&conn, &second).unwrap();
         insert(&conn, &first).unwrap();
+        let reply = RequestId::parse("reply-1").unwrap();
         assert_eq!(
-            get_by_request(&conn, "a-chat", "reply-1").unwrap(),
+            get_by_request(&conn, &session("a-chat"), &reply).unwrap(),
             [first, second]
         );
-        assert!(get_by_request(&conn, "giga-chat", "reply-1")
+        assert!(get_by_request(&conn, &session("giga-chat"), &reply)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn a_body_keeps_8000_code_points_and_the_real_length() {
+        let long = Body::new(&"é".repeat(8001));
+        assert_eq!(long.text().chars().count(), Body::MAX_CHARS);
+        assert_eq!(long.chars(), 8001);
+        let short = Body::new("Ship the fix");
+        assert_eq!((short.text(), short.chars()), ("Ship the fix", 12));
+    }
+
+    #[test]
+    fn parts_and_stored_text_values_are_built_only_within_the_table_rules() {
+        assert_eq!(Part::new(9), Some(Part(9)));
+        assert_eq!(Part::new(10), None);
+        assert_eq!(Part::new(-1), None);
+        assert!(RequestId::parse(&"r".repeat(128)).is_some());
+        assert!(RequestId::parse(&"r".repeat(129)).is_none());
+        assert!(RequestId::parse("").is_none());
+        assert!(PayloadHash::parse(&"a".repeat(64)).is_some());
+        assert!(PayloadHash::parse(&"a".repeat(63)).is_none());
+        assert!(PayloadHash::parse(&"A".repeat(64)).is_none());
+        assert!(SessionId::parse("chat#0").is_none());
+        assert!(MonoId::parse("a_b").is_none());
     }
 
     #[test]
@@ -950,6 +1089,13 @@ mod tests {
         match status {
             "delivered" => wanting(row, 0),
             "open" => wanting(row, 1),
+            "answered" => with(
+                row,
+                &[
+                    ("wanting_reply", Sql::Integer(1)),
+                    ("closed_at", Sql::Integer(3)),
+                ],
+            ),
             "rejected" => with(
                 row,
                 &[
@@ -963,6 +1109,7 @@ mod tests {
                 row,
                 &[
                     ("wanting_reply", Sql::Integer(1)),
+                    ("delivery", text("submit")),
                     ("turn_id", text("turn-1")),
                     ("slot_window", text("main")),
                     ("handle", Sql::Integer(1)),
@@ -1073,7 +1220,11 @@ mod tests {
     fn check_refuses_an_open_row_in_a_turn_without_a_handle() {
         assert_check_refuses(
             "open",
-            &[("turn_id", text("turn-1")), ("slot_window", text("main"))],
+            &[
+                ("turn_id", text("turn-1")),
+                ("slot_window", text("main")),
+                ("delivery", text("submit")),
+            ],
             "turn_id IS NULL OR wanting_reply = 0 OR handle IS NOT NULL",
         );
     }
@@ -1109,7 +1260,7 @@ mod tests {
     fn check_refuses_a_turn_without_a_slot_window() {
         assert_check_refuses(
             "delivered",
-            &[("turn_id", text("turn-1"))],
+            &[("turn_id", text("turn-1")), ("delivery", text("submit"))],
             "(slot_window IS NULL) = (turn_id IS NULL)",
         );
     }
@@ -1129,6 +1280,123 @@ mod tests {
             "rejected",
             &[("closed_at", Sql::Integer(3))],
             "(closed_at IS NOT NULL) = (status IN ('answered', 'unanswered', 'dropped'))",
+        );
+    }
+
+    #[test]
+    fn check_refuses_a_delivered_row_that_wants_a_reply() {
+        assert_check_refuses(
+            "delivered",
+            &[("wanting_reply", Sql::Integer(1))],
+            "status <> 'delivered' OR wanting_reply = 0",
+        );
+    }
+
+    #[test]
+    fn check_refuses_a_rejected_row_with_a_handling_session() {
+        assert_check_refuses(
+            "rejected",
+            &[("handled_by_session", text("a-chat"))],
+            "status <> 'rejected' OR (handled_by_session IS NULL AND delivery IS NULL AND turn_id IS NULL)",
+        );
+    }
+
+    #[test]
+    fn check_refuses_an_accepted_reply_that_answers_nothing() {
+        assert_check_refuses(
+            "delivered",
+            &[("tool", text("reply"))],
+            "tool <> 'reply' OR status = 'rejected' OR reply_to IS NOT NULL",
+        );
+    }
+
+    #[test]
+    fn check_refuses_a_row_sent_to_a_mono_and_a_session() {
+        assert_check_refuses(
+            "delivered",
+            &[("to_session_id", text("project-session"))],
+            "to_mono_id IS NULL OR to_session_id IS NULL",
+        );
+    }
+
+    #[test]
+    fn check_refuses_an_answered_row_that_wanted_no_reply() {
+        assert_check_refuses(
+            "answered",
+            &[("wanting_reply", Sql::Integer(0))],
+            "status <> 'answered' OR wanting_reply = 1",
+        );
+    }
+
+    #[test]
+    fn check_refuses_delivered_at_without_a_turn() {
+        assert_check_refuses(
+            "delivered",
+            &[("delivered_at", Sql::Integer(2))],
+            "delivered_at IS NULL OR turn_id IS NOT NULL",
+        );
+    }
+
+    #[test]
+    fn check_refuses_an_accepted_row_whose_body_chars_disagree_with_its_body() {
+        assert_check_refuses(
+            "delivered",
+            &[("body_chars", Sql::Integer(20_000))],
+            "status = 'rejected' OR body_chars = length(body)",
+        );
+    }
+
+    #[test]
+    fn check_refuses_a_send_with_an_empty_body() {
+        assert_check_refuses(
+            "delivered",
+            &[("body", text("")), ("body_chars", Sql::Integer(0))],
+            "tool <> 'send_message' OR length(body) > 0",
+        );
+    }
+
+    #[test]
+    fn check_refuses_a_notice_on_an_open_row() {
+        assert_check_refuses(
+            "open",
+            &[("notified_at", Sql::Integer(4))],
+            "notified_at IS NULL OR status IN ('unanswered', 'dropped')",
+        );
+    }
+
+    #[test]
+    fn check_refuses_a_slot_whose_delivery_is_still_queue() {
+        assert_check_refuses(
+            "delivered",
+            &[("turn_id", text("turn-1")), ("slot_window", text("main"))],
+            "turn_id IS NULL OR delivery IN ('submit', 'steer')",
+        );
+    }
+
+    #[test]
+    fn check_refuses_dropping_a_no_reply_row_already_delivered() {
+        assert_check_refuses(
+            "dropped",
+            &[
+                ("turn_id", text("turn-1")),
+                ("slot_window", text("main")),
+                ("delivery", text("submit")),
+                ("delivered_at", Sql::Integer(2)),
+            ],
+            "status <> 'dropped' OR wanting_reply = 1 OR delivered_at IS NULL",
+        );
+    }
+
+    #[test]
+    fn check_refuses_a_reply_that_steers_or_queues() {
+        assert_check_refuses(
+            "delivered",
+            &[
+                ("tool", text("reply")),
+                ("reply_to", text("m_aaaaaaaaaaaa")),
+                ("steers", text("m_aaaaaaaaaaaa")),
+            ],
+            "tool <> 'reply' OR (steers IS NULL AND action_type IS NULL)",
         );
     }
 

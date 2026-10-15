@@ -498,13 +498,21 @@ pub fn control_turn_finished(host: State<'_, ControlHost>, session_id: String) {
 }
 
 #[tauri::command(async)]
-pub fn control_forget_session(app: AppHandle, host: State<'_, ControlHost>, session_id: String) {
-    if let Ok(mut inner) = host.inner.lock() {
-        inner.forget_session(&session_id);
+pub fn control_forget_session(
+    host: State<'_, ControlHost>,
+    harness: State<'_, crate::harness::HarnessHost>,
+    session_id: String,
+) {
+    forget_session(&host.inner, &harness, &session_id);
+}
+
+fn forget_session(inner: &Mutex<Inner>, harness: &crate::harness::HarnessHost, session: &str) {
+    if let Ok(mut inner) = inner.lock() {
+        inner.forget_session(session);
     }
     // A live provider keeps the old token in its environment, and a later turn
     // of an unarchived session would mint a token that process never receives.
-    let _ = crate::harness::harness_kill(app.state(), session_id);
+    harness.kill_session_tree(session);
 }
 
 pub fn window_closed(app: &AppHandle, label: &str) {
@@ -784,6 +792,31 @@ mod tests {
         // The next turn of an unarchived session must mint a new token.
         let fresh = app_grant(&mut inner, "mono-chat");
         assert_ne!(fresh, token);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forgetting_a_session_kills_its_provider_and_numbered_children() {
+        use crate::harness::tests::exits_soon;
+        let inner = Mutex::new(Inner::default());
+        let token = app_grant(&mut inner.lock().unwrap(), "mono-chat");
+        let harness = crate::harness::HarnessHost::new();
+        let mut provider = harness.insert_test_child("mono-chat");
+        let mut numbered = harness.insert_test_child("mono-chat#0");
+        let mut other = harness.insert_test_child("other-chat");
+        forget_session(&inner, &harness, "mono-chat");
+        assert_eq!(
+            app_response(&inner.lock().unwrap(), &token)["code"],
+            "unknown_token"
+        );
+        assert!(exits_soon(&mut provider), "the provider kept running");
+        assert!(
+            exits_soon(&mut numbered),
+            "the mono-chat#0 child kept running"
+        );
+        assert!(matches!(other.try_wait(), Ok(None)));
+        let _ = other.kill();
+        let _ = other.wait();
     }
     #[test]
     fn app_token_survives_normal_turns_but_only_works_when_opted_in() {

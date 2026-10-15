@@ -150,6 +150,7 @@ export type CallErrorCode =
   | "giga_only"
   | "self_update"
   | "mono_busy"
+  | "no_conversation"
   | "roster_unavailable";
 
 /** `open_handles` on ambiguous_reply, unknown_handle and no_open_handle; `candidates` on ambiguous_steer. */
