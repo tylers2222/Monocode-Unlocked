@@ -292,6 +292,7 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
         ...(noteCard ? { noteCard } : {}),
         ...(handoffCard ? { handoffCard } : {}),
         ...(completion ? { monoSessionCompletion: completion } : {}),
+        ...(message.waitForIdle === true ? { waitForIdle: true } : {}),
         ...(["default", "plan", "build", "orchestrate"].includes(
           message.intent ?? "",
         )

@@ -134,6 +134,16 @@ describe("canSteerQueuedHead", () => {
       ).toBe(false);
     },
   );
+
+  it("holds a head that waits for an idle turn, and the rows behind it", () => {
+    const session = chat({
+      busy: true,
+      turnReady: true,
+      queuedMessages: [{ ...queued("a"), waitForIdle: true }, queued("b")],
+    });
+    expect(canSteerQueuedHead(session)).toBe(false);
+    expect(canSteerQueuedHead(dequeueQueuedMessage(session, "a"))).toBe(true);
+  });
 });
 
 describe("dequeueQueuedMessage", () => {
@@ -173,5 +183,15 @@ describe("queuedMessageForSubmit", () => {
       queuedMessageForSubmit(chat({ queueStatus: "paused" }), "a", "steer")?.id,
     ).toBe("a");
     expect(queuedMessageForSubmit(chat(), "missing", "steer")).toBeUndefined();
+  });
+
+  it("never resolves a row that waits for an idle turn for Steer", () => {
+    const session = chat({
+      queuedMessages: [{ ...queued("a"), waitForIdle: true }, queued("b")],
+    });
+    expect(
+      queuedMessageForSubmit({ ...session, busy: true }, "a", "steer"),
+    ).toBeUndefined();
+    expect(queuedMessageForSubmit(session, "a", "dispatch")?.id).toBe("a");
   });
 });

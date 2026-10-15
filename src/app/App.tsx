@@ -41,6 +41,14 @@ import {
   steerRunningTurn,
 } from "./model/appSessionSend";
 import {
+  chatUpdatedAt,
+  enqueueAppMonoMessage,
+  MONO_REJECTED_ERROR,
+  NO_MONO_CONVERSATION_ERROR,
+  planAppMonoSend,
+  UNKNOWN_MONO_ERROR,
+} from "./model/appMonoSend";
+import {
   submitAfterProjectSync,
   type SubmissionAcceptance,
 } from "./model/submissionAcceptance";
@@ -11232,22 +11240,91 @@ function Workspace({
             monoOf: (id) => {
               const mono =
                 monoForSession(id) ?? findMono(habitRunMono(id) ?? "");
-              return (
-                mono && {
-                  id: mono.id,
-                  projects: mono.projects,
-                  showStartedSessionsInSidebar:
-                    mono.showStartedSessionsInSidebar,
-                  ...(mono.useSidebarFolders
-                    ? {
-                        folder: {
-                          name: monoLook(mono).name,
-                          color: mono.color,
-                        },
-                      }
-                    : {}),
+              if (!mono) return undefined;
+              const { name } = monoLook(mono);
+              return {
+                id: mono.id,
+                name,
+                projects: mono.projects,
+                showStartedSessionsInSidebar: mono.showStartedSessionsInSidebar,
+                ...(mono.useSidebarFolders
+                  ? { folder: { name, color: mono.color } }
+                  : {}),
+              };
+            },
+            monos: {
+              list: async () =>
+                listMonos().map((mono) => {
+                  const chat = sessionsRef.current.find(
+                    (session) => session.id === mono.sessionId,
+                  );
+                  const updatedAt = chat && chatUpdatedAt(chat.blocks);
+                  return {
+                    id: mono.id,
+                    name: monoLook(mono).name,
+                    projects: mono.projects,
+                    busy: !!chat?.busy,
+                    queued: chat?.queuedMessages?.length ?? 0,
+                    hasConversation: !!mono.sessionId,
+                    ...(updatedAt ? { updatedAt } : {}),
+                  };
+                }),
+              read: async (monoId, options) => {
+                const mono = findMono(monoId);
+                if (!mono) throw new Error(UNKNOWN_MONO_ERROR);
+                const chat =
+                  mono.sessionId &&
+                  (await ensureOpenSessionRef.current(mono.sessionId));
+                if (!chat) throw new Error(NO_MONO_CONVERSATION_ERROR);
+                return readMonoConversation(chat, options);
+              },
+              send: async (monoId, text, requestId, { whenBusy } = {}) => {
+                const mono = findMono(monoId);
+                if (!mono) throw new Error(UNKNOWN_MONO_ERROR);
+                const opened =
+                  mono.sessionId &&
+                  (await ensureOpenSessionRef.current(mono.sessionId));
+                // Output already received can end the turn the plan sees.
+                flushHarnessEvents();
+                const chat = opened
+                  ? (sessionsRef.current.find(
+                      (session) => session.id === opened.id,
+                    ) ?? opened)
+                  : undefined;
+                const plan = planAppMonoSend({
+                  session: chat,
+                  text,
+                  requestId,
+                  whenBusy,
+                  steerable: !!chat && canSteerHarness(chat.harness),
+                });
+                if (plan.kind === "error") throw new Error(plan.error);
+                if (plan.kind === "prior") return plan.result;
+                if (plan.kind === "submit") {
+                  const accepted = await submitSessionRef.current(
+                    plan.sessionId,
+                    text,
+                    [],
+                    { appRequestId: requestId },
+                  );
+                  if (!accepted) throw new Error(MONO_REJECTED_ERROR);
+                  return { alreadySubmitted: false, delivery: "sent" };
                 }
-              );
+                // The queue's auto-delivery steers it or starts its turn, and
+                // the queue change is saved like any other.
+                updateSessionState(sessionsRef, setSessions, (sessions) =>
+                  sessions.map((session) =>
+                    session.id === plan.sessionId
+                      ? enqueueAppMonoMessage(session, plan)
+                      : session,
+                  ),
+                );
+                return {
+                  alreadySubmitted: false,
+                  delivery: plan.delivery,
+                  queuedMessageId: plan.message.id,
+                };
+              },
             },
             habits: { load: loadHabits, update: updateHabits },
             agentFiles: (monoId) => loadMonoFiles(monoId),

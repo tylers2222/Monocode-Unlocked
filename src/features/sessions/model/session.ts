@@ -284,6 +284,8 @@ export type QueuedMessage = {
   intent?: TurnIntent;
   /** An app notification that must wait for an idle Mono, never steer its work. */
   monoSessionCompletion?: MonoSessionCompletion;
+  /** Waits for the running turn to end and starts a new turn; never steers. */
+  waitForIdle?: boolean;
   /** Stable CLI request that queued this follow-up, for safe retries. */
   appRequestId?: string;
   /** Delivery failed; the message remains available to retry or edit. */
