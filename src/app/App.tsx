@@ -507,10 +507,13 @@ import {
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
+  failQueuedMessage,
   pauseQueue,
   queuedHead,
   queuedMessageForSubmit,
+  resumeQueuedMessages,
   steerableQueuedMessage,
+  withoutPauseReason,
 } from "../features/sessions/model/messageQueue";
 import { deliverQueuedFollowUp } from "../features/sessions/model/queuedFollowUp";
 import {
@@ -7173,13 +7176,7 @@ function Workspace({
           deferred: () =>
             change((session) => ({ ...session, turnReadiness: "deferred" })),
           failed: (error) =>
-            change((session) => ({
-              ...session,
-              queueStatus: "paused",
-              queuedMessages: session.queuedMessages?.map((entry) =>
-                entry.id === message.id ? { ...entry, error } : entry,
-              ),
-            })),
+            change((session) => failQueuedMessage(session, message.id, error)),
         });
       }
 
@@ -9011,20 +9008,11 @@ function Workspace({
                 setSessions((prev) =>
                   prev.map((entry) =>
                     entry.id === session.id
-                      ? {
-                          ...entry,
-                          queueStatus: "paused",
-                          queuedMessages: entry.queuedMessages?.map(
-                            (message) =>
-                              message.id === head.id
-                                ? {
-                                    ...message,
-                                    error:
-                                      "Delivery is unavailable. Retry when the agent is ready.",
-                                  }
-                                : message,
-                          ),
-                        }
+                      ? failQueuedMessage(
+                          entry,
+                          head.id,
+                          "Delivery is unavailable. Retry when the agent is ready.",
+                        )
                       : entry,
                   ),
                 );
@@ -9036,21 +9024,11 @@ function Workspace({
             setSessions((prev) =>
               prev.map((entry) =>
                 entry.id === session.id
-                  ? {
-                      ...entry,
-                      queueStatus: "paused",
-                      queuedMessages: entry.queuedMessages?.map((message) =>
-                        message.id === head.id
-                          ? {
-                              ...message,
-                              error:
-                                error instanceof Error
-                                  ? error.message
-                                  : String(error),
-                            }
-                          : message,
-                      ),
-                    }
+                  ? failQueuedMessage(
+                      entry,
+                      head.id,
+                      error instanceof Error ? error.message : String(error),
+                    )
                   : entry,
               ),
             );
@@ -9172,11 +9150,7 @@ function Workspace({
                 : {
                     ...entry,
                     queueStatus: "active",
-                    queuePauseReason: undefined,
-                    queuedMessages: entry.queuedMessages?.map((message) => ({
-                      ...message,
-                      error: undefined,
-                    })),
+                    queuedMessages: resumeQueuedMessages(entry.queuedMessages),
                   }
               : entry,
           ),
@@ -9186,7 +9160,11 @@ function Workspace({
       setSessions((prev) =>
         prev.map((entry) =>
           entry.id === sessionId
-            ? { ...entry, queueStatus: "resuming", queuePauseReason: undefined }
+            ? {
+                ...entry,
+                queueStatus: "resuming",
+                queuedMessages: withoutPauseReason(entry.queuedMessages),
+              }
             : entry,
         ),
       );

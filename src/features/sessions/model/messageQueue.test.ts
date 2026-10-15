@@ -7,6 +7,7 @@ import {
   queuedHead,
   queuedMessageForSubmit,
   steerableQueuedMessage,
+  failQueuedMessage,
   pauseQueue,
   queuePauseNotice,
 } from "./messageQueue";
@@ -173,9 +174,8 @@ describe("steerableQueuedMessage", () => {
 
 describe("queue pause reason", () => {
   const restarted = chat({
-    queuedMessages: [queued("a")],
+    queuedMessages: [{ ...queued("a"), pausedBy: "quit" }],
     queueStatus: "paused",
-    queuePauseReason: "quit",
   });
 
   it("is shown for a queue that MonoCode paused when it quit", () => {
@@ -192,6 +192,12 @@ describe("queue pause reason", () => {
     const paused = pauseQueue({ ...restarted, busy: true });
     expect(paused.queueStatus).toBe("paused");
     expect(queuePauseNotice(paused)).toBeUndefined();
+  });
+
+  it("is not shown once a message fails to send", () => {
+    expect(
+      queuePauseNotice(failQueuedMessage(restarted, "a", "Offline")),
+    ).toBeUndefined();
   });
 });
 

@@ -6,7 +6,7 @@ import { displayAttachments } from "../../sessions/model/attachments";
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
-  queuePauseNotice,
+  QUIT_PAUSE_NOTICE,
   waitsForTurnEnd,
 } from "../../sessions/model/messageQueue";
 import type {
@@ -91,7 +91,6 @@ export function acknowledgeMonoMessage(
 export function monoMessageDeliveries(
   session: Session,
 ): ReadonlyMap<string, MessageDelivery> {
-  const pauseNotice = queuePauseNotice(session);
   return new Map(
     (session.queuedMessages ?? [])
       .filter((message) => !message.monoSessionCompletion)
@@ -102,7 +101,9 @@ export function monoMessageDeliveries(
           : session.queueStatus === "paused"
             ? {
                 status: "paused",
-                ...(pauseNotice ? { reason: pauseNotice } : {}),
+                ...(message.pausedBy === "quit"
+                  ? { reason: QUIT_PAUSE_NOTICE }
+                  : {}),
               }
             : session.busy && waitsForTurnEnd(message)
               ? { status: "waiting" }

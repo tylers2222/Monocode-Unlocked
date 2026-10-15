@@ -23,6 +23,7 @@ import { isReviewablePlan } from "../../../features/sessions/model/plan";
 import { resolveModel } from "../../../features/sessions/model/models";
 import type { HarnessEvent } from "./types";
 import { usageLimitFromError } from "../../../features/sessions/model/usageLimit";
+import { pauseQueue } from "../../../features/sessions/model/messageQueue";
 
 /**
  * After a steer was refused as not ready, output from the running turn proves
@@ -178,14 +179,14 @@ export function applyHarnessEvent(
       return upsertPlan(session, event);
     case "session.error":
       return appendBlock(
-        failStreaming({
-          ...session,
-          usageLimit: session.usageLimit ?? usageLimitFromError(event.message),
+        failStreaming(
           // Do not drain remaining messages into the same failed connection.
-          queueStatus: session.queuedMessages?.length
-            ? "paused"
-            : session.queueStatus,
-        }),
+          pauseQueue({
+            ...session,
+            usageLimit:
+              session.usageLimit ?? usageLimitFromError(event.message),
+          }),
+        ),
         {
           id: crypto.randomUUID(),
           role: "system",

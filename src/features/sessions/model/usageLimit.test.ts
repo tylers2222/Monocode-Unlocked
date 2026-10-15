@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { newSession, type Session } from "./session";
+import { queuePauseNotice } from "./messageQueue";
 import {
   formatUsageLimitReset,
   USAGE_LIMIT_RESUME_GRACE_MS,
@@ -84,6 +85,20 @@ it("only releases the outbox of an idle usage-limited session", () => {
   );
   const ordinary = { ...session, usageLimit: undefined };
   expect(resumeUsageLimitedSession(ordinary)).toBe(ordinary);
+});
+
+it("drops the quit reason when the user resumes after a usage limit", () => {
+  const resumed = resumeUsageLimitedSession(
+    limited({
+      queueStatus: "paused",
+      queuedMessages: [
+        { id: "head", text: "Check tests", attachments: [], pausedBy: "quit" },
+      ],
+    }),
+  );
+  expect(
+    queuePauseNotice({ ...resumed, queueStatus: "paused" }),
+  ).toBeUndefined();
 });
 
 describe("formatUsageLimitReset", () => {

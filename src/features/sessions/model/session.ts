@@ -290,6 +290,8 @@ export type QueuedMessage = {
   appRequestId?: string;
   /** Delivery failed; the message remains available to retry or edit. */
   error?: string;
+  /** MonoCode quit while this message waited; cleared when the queue resumes. */
+  pausedBy?: "quit";
 };
 
 export type MessageQueueStatus = "active" | "paused" | "resuming";
@@ -482,8 +484,6 @@ export type Session = {
   queuedMessages?: QueuedMessage[];
   /** Paused after user stops current turn; resuming waits for continued turn. */
   queueStatus?: MessageQueueStatus;
-  /** Set when a restart paused the queue; cleared on resume. In-memory only. */
-  queuePauseReason?: "quit";
   /** Prevent auto-dispatch while this queued row is being edited. In-memory only. */
   editingQueuedMessageId?: string;
   /** Pending delivery locks this row against edits and deletion. Not persisted. */

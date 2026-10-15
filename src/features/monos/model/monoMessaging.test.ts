@@ -213,6 +213,24 @@ describe("optimistic Mono messages", () => {
     ).toEqual({ status: "pending" });
   });
 
+  it("does not say a message typed after a restart was paused by the quit", () => {
+    const restarted = {
+      ...newSession("codex", "/tmp"),
+      queueStatus: "paused" as const,
+      queuedMessages: [
+        { ...message("before"), blockId: "before", pausedBy: "quit" as const },
+      ],
+    };
+    const typed = enqueueMonoMessage(restarted, message("after"));
+    expect(monoMessageDeliveries(typed).get("before")).toEqual({
+      status: "paused",
+      reason: "Paused when MonoCode quit",
+    });
+    expect(monoMessageDeliveries(typed).get("after")).toEqual({
+      status: "paused",
+    });
+  });
+
   it("retains attachments on the optimistic bubble and acknowledges older saved queues once", () => {
     const file = {
       id: "image",

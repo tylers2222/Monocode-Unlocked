@@ -24,7 +24,6 @@ export function dequeueQueuedMessage(
     ...session,
     queuedMessages: remains ? queuedMessages : undefined,
     queueStatus: remains ? session.queueStatus : undefined,
-    queuePauseReason: remains ? session.queuePauseReason : undefined,
     editingQueuedMessageId:
       session.editingQueuedMessageId === messageId
         ? undefined
@@ -91,17 +90,55 @@ export function steerableQueuedMessage(
     : undefined;
 }
 
-/** The user stopped the turn: hold what is left; it is no longer a restart pause. */
+/** Drop the quit reason: a later pause or a resume replaces it. */
+export function withoutPauseReason(
+  messages: QueuedMessage[] | undefined,
+): QueuedMessage[] | undefined {
+  return messages?.some((message) => message.pausedBy)
+    ? messages.map(({ pausedBy: _, ...message }) => message)
+    : messages;
+}
+
+export const QUIT_PAUSE_NOTICE = "Paused when MonoCode quit";
+
+/** Hold what is left of the queue. A new pause replaces the reason for an old one. */
 export function pauseQueue(session: Session): Session {
-  return session.queuedMessages?.length
-    ? { ...session, queueStatus: "paused", queuePauseReason: undefined }
-    : session;
+  if (!session.queuedMessages?.length) return session;
+  return {
+    ...session,
+    queueStatus: "paused",
+    queuedMessages: withoutPauseReason(session.queuedMessages),
+  };
+}
+
+/** A message could not be sent: keep it with its error and hold the rest. */
+export function failQueuedMessage(
+  session: Session,
+  messageId: string,
+  error: string,
+): Session {
+  return pauseQueue({
+    ...session,
+    queuedMessages: session.queuedMessages?.map((message) =>
+      message.id === messageId ? { ...message, error } : message,
+    ),
+  });
+}
+
+/** Resume the queue: every message is sent or retried again. */
+export function resumeQueuedMessages(
+  messages: QueuedMessage[] | undefined,
+): QueuedMessage[] | undefined {
+  return withoutPauseReason(messages)?.map((message) => ({
+    ...message,
+    error: undefined,
+  }));
 }
 
 /** Why a paused queue is not sending, when the user did not pause it. */
 export function queuePauseNotice(session: Session): string | undefined {
-  return session.queuePauseReason === "quit"
-    ? "Paused when MonoCode quit"
+  return session.queuedMessages?.some((message) => message.pausedBy === "quit")
+    ? QUIT_PAUSE_NOTICE
     : undefined;
 }
 

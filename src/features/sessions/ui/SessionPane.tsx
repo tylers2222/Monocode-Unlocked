@@ -393,7 +393,6 @@ const LocalSessionPane = memo(function LocalSessionPane({
     [
       session.queuedMessages,
       session.queueStatus,
-      session.queuePauseReason,
       session.busy,
     ],
   );
