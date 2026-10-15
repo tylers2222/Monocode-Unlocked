@@ -3,7 +3,7 @@ import { submitWithSettlement } from "../../../app/model/managedSubmission";
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
 import {
   canDispatchQueuedHead,
-  canSteerQueuedHead,
+  steerableQueuedMessage,
   dequeueQueuedMessage,
   queuedMessageForSubmit,
 } from "../../sessions/model/messageQueue";
@@ -62,7 +62,7 @@ describe("Mono session completion notifications", () => {
     let mono: Session = {
       ...newSession("codex", "/code/project"),
       busy: true,
-      turnReady: true,
+      turnReadiness: "ready",
       queuedMessages: [
         { id: "chat", text: "Also explain the design", attachments: [] },
       ],
@@ -91,7 +91,7 @@ describe("Mono session completion notifications", () => {
       "mono-completion-app-mono-request",
     ]);
     const next = dequeueQueuedMessage(mono, "chat");
-    expect(canSteerQueuedHead(next)).toBe(false);
+    expect(steerableQueuedMessage(next)).toBeUndefined();
     expect(
       queuedMessageForSubmit(next, "mono-completion-app-mono-request", "steer"),
     ).toBeUndefined();

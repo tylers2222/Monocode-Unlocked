@@ -23,6 +23,27 @@ import { isReviewablePlan } from "../../../features/sessions/model/plan";
 import { resolveModel } from "../../../features/sessions/model/models";
 import type { HarnessEvent } from "./types";
 import { usageLimitFromError } from "../../../features/sessions/model/usageLimit";
+import { pauseQueue } from "../../../features/sessions/model/messageQueue";
+
+/**
+ * After a steer was refused as not ready, output from the running turn proves
+ * it can take follow-ups again; the provider reports `turn.ready` only once.
+ * Output before the provider accepted the turn never arms steering: it can be
+ * left over from the previous turn.
+ */
+function rearmTurn(session: Session, event: HarnessEvent): Session {
+  switch (event.type) {
+    case "message.delta":
+    case "message.completed":
+    case "tool.started":
+    case "tool.updated":
+      return session.busy && session.turnReadiness === "deferred"
+        ? { ...session, turnReadiness: "ready" }
+        : session;
+    default:
+      return session;
+  }
+}
 
 /** Apply one delivery batch without copying the transcript for every token. */
 export function applyHarnessEvents(
@@ -44,7 +65,7 @@ export function applyHarnessEvents(
       index++;
     }
     next = patchStreaming(
-      next,
+      rearmTurn(next, event),
       event.type === "message.delta" ? "assistant" : "reasoning",
       texts,
       true,
@@ -57,6 +78,7 @@ export function applyHarnessEvent(
   session: Session,
   event: HarnessEvent,
 ): Session {
+  session = rearmTurn(session, event);
   switch (event.type) {
     case "message.delta":
       return patchStreaming(session, "assistant", event.text, true);
@@ -157,14 +179,14 @@ export function applyHarnessEvent(
       return upsertPlan(session, event);
     case "session.error":
       return appendBlock(
-        failStreaming({
-          ...session,
-          usageLimit: session.usageLimit ?? usageLimitFromError(event.message),
+        failStreaming(
           // Do not drain remaining messages into the same failed connection.
-          queueStatus: session.queuedMessages?.length
-            ? "paused"
-            : session.queueStatus,
-        }),
+          pauseQueue({
+            ...session,
+            usageLimit:
+              session.usageLimit ?? usageLimitFromError(event.message),
+          }),
+        ),
         {
           id: crypto.randomUUID(),
           role: "system",
@@ -191,7 +213,7 @@ export function applyHarnessEvent(
       return { ...session, blocks };
     }
     case "turn.ready":
-      return session.busy ? { ...session, turnReady: true } : session;
+      return session.busy ? { ...session, turnReadiness: "ready" } : session;
     case "session.configChanged":
       return {
         ...session,
@@ -490,7 +512,7 @@ export function appendUser(
 ): Session {
   session = settlePendingApprovals(session);
   return appendBlock(
-    { ...session, busy: true, turnReady: false },
+    { ...session, busy: true, turnReadiness: "starting" },
     {
       id: crypto.randomUUID(),
       role: "user",
@@ -534,7 +556,7 @@ export function stopStreaming(session: Session, endedAt = Date.now()): Session {
   return {
     ...settled,
     busy: false,
-    turnReady: false,
+    turnReadiness: undefined,
     pendingQuestion: undefined,
     blocks: stampTurnDuration(
       settled.blocks

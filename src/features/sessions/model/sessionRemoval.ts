@@ -15,6 +15,7 @@ import {
   type RuntimeMode,
   type Session,
 } from "./session";
+import { pauseQueue } from "./messageQueue";
 import {
   deleteSession,
   setSessionArchived,
@@ -131,9 +132,7 @@ async function removeSession(
     if (isPreparingHandoff(stopped)) {
       stopped = completeHandoff(stopped, buildDeterministicHandoff(stopped));
     }
-    if (stopped.queuedMessages?.length) {
-      stopped = { ...stopped, queueStatus: "paused" };
-    }
+    stopped = pauseQueue(stopped);
     // Cancellation invalidates normal turn completion. Keep a usable stopped
     // session even when the following storage operation fails.
     options.workspace.apply({ type: "stopped", session: stopped });

@@ -66,7 +66,7 @@ describe("optimistic Mono messages", () => {
     const first = appendUser(newSession("codex", "/tmp"), "First");
     const started = {
       ...first,
-      turnReady: true,
+      turnReadiness: "ready",
       blocks: [
         ...first.blocks,
         {
@@ -90,7 +90,7 @@ describe("optimistic Mono messages", () => {
     expect(session.blocks[1]).toBe(started.blocks[1]);
     expect(session.blocks[1].streaming).toBe(true);
     expect(session.busy).toBe(true);
-    expect(session.turnReady).toBe(true);
+    expect(session.turnReadiness).toBe("ready");
     expect(session.queuedMessages?.map((message) => message.blockId)).toEqual([
       "second",
       "third",
@@ -137,7 +137,7 @@ describe("optimistic Mono messages", () => {
     expect(accepted.blocks[1].startedAt).toBeTypeOf("number");
     expect(accepted.blocks[1].sentAt).toBe(session.blocks[1].sentAt);
     expect(accepted.busy).toBe(true);
-    expect(accepted.turnReady).toBe(false);
+    expect(accepted.turnReadiness).toBe("starting");
     expect(accepted.queuedMessages).toBeUndefined();
   });
 
@@ -187,6 +187,46 @@ describe("optimistic Mono messages", () => {
       error: "Offline",
     });
     expect(monoMessageDeliveries(session).get("next")).toEqual({
+      status: "paused",
+    });
+  });
+
+  it("tells the user a message that waits for the turn end will send after it", () => {
+    const session = {
+      ...newSession("codex", "/tmp"),
+      busy: true,
+      turnReadiness: "ready",
+      queueStatus: "active" as const,
+      queuedMessages: [
+        { ...message("waiting"), waitForIdle: true },
+        message("user"),
+      ],
+    };
+    expect(monoMessageDeliveries(session).get("waiting")).toEqual({
+      status: "waiting",
+    });
+    expect(monoMessageDeliveries(session).get("user")).toEqual({
+      status: "pending",
+    });
+    expect(
+      monoMessageDeliveries({ ...session, busy: false }).get("waiting"),
+    ).toEqual({ status: "pending" });
+  });
+
+  it("does not say a message typed after a restart was paused by the quit", () => {
+    const restarted = {
+      ...newSession("codex", "/tmp"),
+      queueStatus: "paused" as const,
+      queuedMessages: [
+        { ...message("before"), blockId: "before", pausedBy: "quit" as const },
+      ],
+    };
+    const typed = enqueueMonoMessage(restarted, message("after"));
+    expect(monoMessageDeliveries(typed).get("before")).toEqual({
+      status: "paused",
+      reason: "Paused when MonoCode quit",
+    });
+    expect(monoMessageDeliveries(typed).get("after")).toEqual({
       status: "paused",
     });
   });

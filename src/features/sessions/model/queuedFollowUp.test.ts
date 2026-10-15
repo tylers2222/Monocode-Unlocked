@@ -16,7 +16,7 @@ function delivery() {
   let session: Session = {
     ...newSession("codex", "/tmp"),
     busy: true,
-    turnReady: true,
+    turnReadiness: "ready",
     queueStatus: "active",
     queuedMessages: [
       { id: "first", text: "Use TypeScript", attachments: [] },
@@ -35,7 +35,7 @@ function delivery() {
       session = dequeueQueuedMessage(session, message.id);
     }),
     deferred: vi.fn(() => {
-      session = { ...session, turnReady: false };
+      session = { ...session, turnReadiness: "deferred" };
     }),
     failed: vi.fn((error: string) => {
       session = {
@@ -63,10 +63,10 @@ function delivery() {
 describe("pending Mono follow-up delivery", () => {
   it("waits for cold startup and never lets a later message overtake the head", async () => {
     const d = delivery();
-    d.patch({ turnReady: false });
+    d.patch({ turnReadiness: "starting" });
     expect(await deliverQueuedFollowUp(d.options)).toBe(false);
     expect(d.options.prepare).not.toHaveBeenCalled();
-    d.patch({ turnReady: true });
+    d.patch({ turnReadiness: "ready" });
     expect(
       await deliverQueuedFollowUp({
         ...d.options,
@@ -79,6 +79,39 @@ describe("pending Mono follow-up delivery", () => {
     expect(d.session().queuedMessages?.map((message) => message.id)).toEqual([
       "second",
     ]);
+  });
+
+  it("steers the user's message past a head that waits for the turn end", async () => {
+    const waiting = {
+      id: "waiting",
+      text: "Report back when done",
+      attachments: [],
+      waitForIdle: true,
+    };
+    const user = { id: "user", text: "Use TypeScript", attachments: [] };
+    let session: Session = {
+      ...newSession("codex", "/tmp"),
+      busy: true,
+      turnReadiness: "ready",
+      queueStatus: "active",
+      queuedMessages: [waiting, user],
+    };
+    const steer = vi.fn(async (_text: string) => {});
+    const delivered = await deliverQueuedFollowUp({
+      message: user,
+      current: () => session,
+      isCurrentTurn: () => true,
+      prepare: async () => user.text,
+      steer,
+      delivered: () => {
+        session = dequeueQueuedMessage(session, user.id);
+      },
+      deferred: vi.fn(),
+      failed: vi.fn(),
+    });
+    expect(delivered).toBe(true);
+    expect(steer).toHaveBeenCalledWith("Use TypeScript");
+    expect(session.queuedMessages).toEqual([waiting]);
   });
 
   it("keeps the message pending until the provider acknowledges delivery", async () => {
@@ -145,7 +178,7 @@ describe("pending Mono follow-up delivery", () => {
     d.options.steer.mockRejectedValueOnce(new TurnNotReadyError("Turn ended"));
     expect(await deliverQueuedFollowUp(d.options)).toBe(false);
     expect(d.session()).toMatchObject({
-      turnReady: false,
+      turnReadiness: "deferred",
       queueStatus: "active",
     });
     expect(d.session().queuedMessages?.[0]).toBe(d.options.message);

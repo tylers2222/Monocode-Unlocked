@@ -9,10 +9,12 @@ import {
   acknowledgeMonoMessage,
   enqueueMonoMessage,
 } from "../../../features/monos/model/monoMessaging";
+import { steerableQueuedMessage } from "../../../features/sessions/model/messageQueue";
 import { previewFromTool } from "../providers/claude/claudeProtocol";
 import {
   appendUser,
   applyHarnessEvent,
+  applyHarnessEvents,
   appendSteerUser,
   promoteLastAssistantToPlan,
   stopStreaming,
@@ -48,17 +50,63 @@ describe("follow-up readiness", () => {
   });
   it("becomes ready only after acceptance and resets when stopped or restarted", () => {
     let session = appendUser(newSession("codex", "/tmp"), "First");
-    expect(session.turnReady).toBe(false);
+    expect(session.turnReadiness).toBe("starting");
     session = applyHarnessEvent(session, { type: "turn.ready" });
-    expect(session.turnReady).toBe(true);
+    expect(session.turnReadiness).toBe("ready");
     session = stopStreaming(session);
-    expect(session.turnReady).toBe(false);
-    expect(applyHarnessEvent(session, { type: "turn.ready" }).turnReady).toBe(
-      false,
-    );
+    expect(session.turnReadiness).toBeUndefined();
+    expect(
+      applyHarnessEvent(session, { type: "turn.ready" }).turnReadiness,
+    ).toBeUndefined();
     session = appendUser(session, "Next");
-    expect(session.turnReady).toBe(false);
+    expect(session.turnReadiness).toBe("starting");
   });
+  it("never steers on output left over from the previous turn before the provider accepts the new one", () => {
+    const leftover = {
+      type: "tool.updated",
+      callId: "subagent",
+      status: "running",
+    } as const;
+    const starting = appendUser(
+      {
+        ...newSession("cursor", "/tmp"),
+        queueStatus: "active",
+        queuedMessages: [{ id: "b", text: "Also add tests", attachments: [] }],
+      },
+      "First",
+    );
+    expect(
+      steerableQueuedMessage(applyHarnessEvent(starting, leftover)),
+    ).toBeUndefined();
+    expect(
+      steerableQueuedMessage(applyHarnessEvents(starting, [leftover])),
+    ).toBeUndefined();
+    expect(
+      steerableQueuedMessage(
+        applyHarnessEvent(starting, { type: "turn.ready" }),
+      )?.id,
+    ).toBe("b");
+  });
+  it.each([
+    { type: "tool.started", callId: "call", title: "Read file" },
+    { type: "tool.updated", callId: "call", status: "running" },
+    { type: "message.delta", text: "Working" },
+    { type: "message.completed" },
+  ] as const)(
+    "takes follow-ups again on $type after a refused steer in the same turn",
+    (event) => {
+      const accepted = applyHarnessEvent(
+        appendUser(newSession("codex", "/tmp"), "First"),
+        { type: "turn.ready" },
+      );
+      const deferred = { ...accepted, turnReadiness: "deferred" as const };
+      expect(applyHarnessEvent(deferred, event).turnReadiness).toBe("ready");
+      expect(applyHarnessEvents(deferred, [event]).turnReadiness).toBe("ready");
+      expect(
+        applyHarnessEvent(stopStreaming(deferred), event).turnReadiness,
+      ).toBeUndefined();
+    },
+  );
 });
 
 describe("background work", () => {

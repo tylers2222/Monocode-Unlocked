@@ -6,6 +6,8 @@ import { displayAttachments } from "../../sessions/model/attachments";
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
+  QUIT_PAUSE_NOTICE,
+  waitsForTurnEnd,
 } from "../../sessions/model/messageQueue";
 import type {
   Attachment,
@@ -15,10 +17,12 @@ import type {
 } from "../../sessions/model/session";
 
 type UserCards = Parameters<typeof appendUser>[3];
-export type MessageDelivery = {
-  status: "pending" | "paused" | "failed";
-  error?: string;
-};
+export type MessageDelivery =
+  | { status: "pending" }
+  | { status: "waiting" }
+  /** `reason` says why, when the user did not pause it. */
+  | { status: "paused"; reason?: string }
+  | { status: "failed"; error: string };
 
 /** Show the message now; the outbox only controls its delivery. */
 export function enqueueMonoMessage(
@@ -90,16 +94,20 @@ export function monoMessageDeliveries(
   return new Map(
     (session.queuedMessages ?? [])
       .filter((message) => !message.monoSessionCompletion)
-      .map((message) => [
+      .map((message): [string, MessageDelivery] => [
         message.blockId ?? message.id,
-        {
-          status: message.error
-            ? "failed"
-            : session.queueStatus === "paused"
-              ? "paused"
-              : "pending",
-          ...(message.error ? { error: message.error } : {}),
-        },
+        message.error
+          ? { status: "failed", error: message.error }
+          : session.queueStatus === "paused"
+            ? {
+                status: "paused",
+                ...(message.pausedBy === "quit"
+                  ? { reason: QUIT_PAUSE_NOTICE }
+                  : {}),
+              }
+            : session.busy && waitsForTurnEnd(message)
+              ? { status: "waiting" }
+              : { status: "pending" },
       ]),
   );
 }

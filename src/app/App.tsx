@@ -506,9 +506,14 @@ import {
 
 import {
   canDispatchQueuedHead,
-  canSteerQueuedHead,
   dequeueQueuedMessage,
+  failQueuedMessage,
+  pauseQueue,
+  queuedHead,
   queuedMessageForSubmit,
+  resumeQueuedMessages,
+  steerableQueuedMessage,
+  withoutPauseReason,
 } from "../features/sessions/model/messageQueue";
 import { deliverQueuedFollowUp } from "../features/sessions/model/queuedFollowUp";
 import {
@@ -7112,7 +7117,7 @@ function Workspace({
         );
         if (
           !message ||
-          !canSteerQueuedHead(current) ||
+          steerableQueuedMessage(current) !== message ||
           !canSteerHarness(current.harness) ||
           operatorCommand.matched
         )
@@ -7169,15 +7174,9 @@ function Workspace({
             flushHarnessEvents();
           },
           deferred: () =>
-            change((session) => ({ ...session, turnReady: false })),
+            change((session) => ({ ...session, turnReadiness: "deferred" })),
           failed: (error) =>
-            change((session) => ({
-              ...session,
-              queueStatus: "paused",
-              queuedMessages: session.queuedMessages?.map((entry) =>
-                entry.id === message.id ? { ...entry, error } : entry,
-              ),
-            })),
+            change((session) => failQueuedMessage(session, message.id, error)),
         });
       }
 
@@ -8928,6 +8927,14 @@ function Workspace({
   useEffect(() => {
     const timers: number[] = [];
     const scheduled = new Set<string>();
+    // An idle session starts its head as a new turn. A busy Mono steers its
+    // first steerable message; messages that wait for the turn end keep their place.
+    const nextQueuedSend = (session: Session) =>
+      canDispatchQueuedHead(session)
+        ? queuedHead(session)
+        : monoForSession(session.id) && canSteerHarness(session.harness)
+          ? steerableQueuedMessage(session)
+          : undefined;
     for (const session of sessions) {
       const queued = session.queuedMessages ?? [];
       if (queued.length === 0) continue;
@@ -8942,21 +8949,8 @@ function Workspace({
         );
         continue;
       }
-      if (
-        !(
-          canDispatchQueuedHead(session) ||
-          (monoForSession(session.id) &&
-            canSteerQueuedHead(session) &&
-            canSteerHarness(session.harness) &&
-            !consumeOperatorCommand(queued[0].text).matched)
-        ) ||
-        queueDispatchingRef.current.has(session.id)
-      ) {
-        continue;
-      }
-
-      const next = queued[0];
-      if (!next) continue;
+      const next = nextQueuedSend(session);
+      if (!next || queueDispatchingRef.current.has(session.id)) continue;
       queueDispatchingRef.current.add(session.id);
       scheduled.add(session.id);
       timers.push(
@@ -8965,19 +8959,8 @@ function Workspace({
           const latest = sessionsRef.current.find(
             (entry) => entry.id === session.id,
           );
-          const head = latest?.queuedMessages?.[0];
-          if (
-            !latest ||
-            !head ||
-            head.id !== next.id ||
-            !(
-              canDispatchQueuedHead(latest) ||
-              (monoForSession(latest.id) &&
-                canSteerQueuedHead(latest) &&
-                canSteerHarness(latest.harness) &&
-                !consumeOperatorCommand(head.text).matched)
-            )
-          ) {
+          const head = latest ? nextQueuedSend(latest) : undefined;
+          if (!latest || !head || head.id !== next.id) {
             queueDispatchingRef.current.delete(session.id);
             return;
           }
@@ -9017,27 +9000,19 @@ function Workspace({
               if (
                 current &&
                 (steering
-                  ? canSteerQueuedHead(current)
-                  : canDispatchQueuedHead(current)) &&
-                current.queuedMessages?.[0] === head
+                  ? steerableQueuedMessage(current)
+                  : canDispatchQueuedHead(current)
+                    ? queuedHead(current)
+                    : undefined) === head
               ) {
                 setSessions((prev) =>
                   prev.map((entry) =>
                     entry.id === session.id
-                      ? {
-                          ...entry,
-                          queueStatus: "paused",
-                          queuedMessages: entry.queuedMessages?.map(
-                            (message) =>
-                              message.id === head.id
-                                ? {
-                                    ...message,
-                                    error:
-                                      "Delivery is unavailable. Retry when the agent is ready.",
-                                  }
-                                : message,
-                          ),
-                        }
+                      ? failQueuedMessage(
+                          entry,
+                          head.id,
+                          "Delivery is unavailable. Retry when the agent is ready.",
+                        )
                       : entry,
                   ),
                 );
@@ -9049,21 +9024,11 @@ function Workspace({
             setSessions((prev) =>
               prev.map((entry) =>
                 entry.id === session.id
-                  ? {
-                      ...entry,
-                      queueStatus: "paused",
-                      queuedMessages: entry.queuedMessages?.map((message) =>
-                        message.id === head.id
-                          ? {
-                              ...message,
-                              error:
-                                error instanceof Error
-                                  ? error.message
-                                  : String(error),
-                            }
-                          : message,
-                      ),
-                    }
+                  ? failQueuedMessage(
+                      entry,
+                      head.id,
+                      error instanceof Error ? error.message : String(error),
+                    )
                   : entry,
               ),
             );
@@ -9185,10 +9150,7 @@ function Workspace({
                 : {
                     ...entry,
                     queueStatus: "active",
-                    queuedMessages: entry.queuedMessages?.map((message) => ({
-                      ...message,
-                      error: undefined,
-                    })),
+                    queuedMessages: resumeQueuedMessages(entry.queuedMessages),
                   }
               : entry,
           ),
@@ -9198,7 +9160,11 @@ function Workspace({
       setSessions((prev) =>
         prev.map((entry) =>
           entry.id === sessionId
-            ? { ...entry, queueStatus: "resuming" }
+            ? {
+                ...entry,
+                queueStatus: "resuming",
+                queuedMessages: withoutPauseReason(entry.queuedMessages),
+              }
             : entry,
         ),
       );
@@ -10228,10 +10194,7 @@ function Workspace({
           const completed = isPreparingHandoff(stopped)
             ? completeHandoff(stopped, buildDeterministicHandoff(stopped))
             : stopped;
-          const ready = { ...completed, worktreePreparing: undefined };
-          return ready.queuedMessages?.length
-            ? { ...ready, queueStatus: "paused" }
-            : ready;
+          return pauseQueue({ ...completed, worktreePreparing: undefined });
         }),
       );
       if (session) {

@@ -1,4 +1,5 @@
 import { formatResetDuration } from "../../providers/model/rateLimits";
+import { resumeQueuedMessages } from "./messageQueue";
 import type { Session, UsageLimit } from "./session";
 
 /** A fallback for adapters that report exhausted accounts as plain errors. */
@@ -17,10 +18,7 @@ export function resumeUsageLimitedSession(session: Session): Session {
     ...session,
     usageLimit: undefined,
     queueStatus: session.queuedMessages?.length ? "active" : undefined,
-    queuedMessages: session.queuedMessages?.map((message) => ({
-      ...message,
-      error: undefined,
-    })),
+    queuedMessages: resumeQueuedMessages(session.queuedMessages),
   };
 }
 

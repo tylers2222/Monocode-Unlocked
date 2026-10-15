@@ -308,6 +308,7 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
         ...(typeof message.error === "string" && message.error
           ? { error: message.error }
           : {}),
+        ...(message.pausedBy === "quit" ? { pausedBy: "quit" as const } : {}),
       },
     ];
   });
@@ -608,7 +609,10 @@ export function findMonoTranscript(
   return invoke("mono_session_find", { sessionId, query });
 }
 
-export async function getSession(sessionId: string): Promise<Session | null> {
+export async function getSession(
+  sessionId: string,
+  options: { restart?: boolean } = {},
+): Promise<Session | null> {
   const record = await invoke<SessionRecord | null>(
     isMonoSession(sessionId) ? "mono_session_get" : "session_get",
     {
@@ -616,7 +620,7 @@ export async function getSession(sessionId: string): Promise<Session | null> {
     },
   );
   if (!record) return null;
-  const session = recordToSession(record);
+  const session = recordToSession(record, options);
   if (session.monoTranscript) monoSavedBlocks.set(sessionId, session.blocks);
   if (session.harness === "claude" && session.providerSessionId) {
     const toolIds = shellPlaceholderIds(session.blocks);
@@ -1429,14 +1433,28 @@ function normalizeSummary(summary: SessionSummary): SessionSummary {
   };
 }
 
-function recordToSession(record: SessionRecord): Session {
+/**
+ * `restart`: the workspace is being restored at app start, so a queue that was
+ * still sending was stopped by the quit. Other reads keep the saved reasons.
+ */
+function recordToSession(
+  record: SessionRecord,
+  options: { restart?: boolean } = {},
+): Session {
   const blocks = Array.isArray(record.blocks)
     ? record.blocks
         .map((block) => sanitizeBlock(block, { hydrate: true }))
         .filter((block): block is Block => block != null)
     : [];
   const linkedWorkItem = sanitizeLinkedWorkItem(record.linkedWorkItem);
-  const queuedMessages = sanitizeQueuedMessages(record.queuedMessages);
+  const saved = sanitizeQueuedMessages(record.queuedMessages);
+  const queuedMessages =
+    options.restart && record.queueStatus !== "paused"
+      ? saved.map((message): QueuedMessage => ({
+          ...message,
+          pausedBy: "quit",
+        }))
+      : saved;
   return {
     id: record.id,
     sidebarHidden: record.sidebarHidden === true || undefined,
@@ -1450,7 +1468,7 @@ function recordToSession(record: SessionRecord): Session {
     runtimeMode: asRuntimeMode(record.runtimeMode),
     title: record.title,
     blocks,
-    // A restart interrupted the active turn. Let the user resume pending work.
+    // The app is not sending these now. Let the user resume pending work.
     ...(queuedMessages.length
       ? { queuedMessages, queueStatus: "paused" as const }
       : {}),

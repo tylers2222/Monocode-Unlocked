@@ -25,6 +25,7 @@ import {
 } from "../../features/projects/model/projectTerminal";
 import { sessionWorkCwd, type Session } from "../../features/sessions/model/session";
 import { sessionChildHarnesses } from "../../features/sessions/model/handoff";
+import { queuePauseNotice } from "../../features/sessions/model/messageQueue";
 import {
   getSession,
   listInFlightSessions,
@@ -295,7 +296,7 @@ async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
   const loaded = new Map<string, Session>();
   await Promise.all(
     [...ids].map(async (id) => {
-      const record = await getSession(id).catch(() => null);
+      const record = await getSession(id, { restart: true }).catch(() => null);
       if (record) loaded.set(id, record);
     }),
   );
@@ -319,8 +320,12 @@ async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
       workspace.sessions
         // Idle transcripts already came from disk. Rewriting every open chat
         // here serialized/indexed the entire workspace before first paint.
+        // A queue the quit stopped is saved paused, so a later reload keeps
+        // its reason.
         .filter(
-          (session) => interrupted.has(session.id) && shouldPersistSession(session),
+          (session) =>
+            (interrupted.has(session.id) || !!queuePauseNotice(session)) &&
+            shouldPersistSession(session),
         )
         .map((session) => upsertSession(session).catch(() => null)),
     );

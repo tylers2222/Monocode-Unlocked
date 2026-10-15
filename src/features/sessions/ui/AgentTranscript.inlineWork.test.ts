@@ -1049,6 +1049,38 @@ it.each(["Follow up", "👍"])(
   },
 );
 
+it("says why a paused message was not sent, with Resume", () => {
+  const onRetryMessage = vi.fn();
+  const blocks: Block[] = [
+    { id: "original", role: "user", text: "Inspect", startedAt: 1000 },
+    { id: "pending", role: "user", text: "Follow up", sentAt: 1100 },
+  ];
+  render(blocks, {
+    agentMascot: { mascot: "cat", color: "#6ba" },
+    onRetryMessage,
+    messageDeliveries: new Map([
+      ["pending", { status: "paused", reason: "Paused when MonoCode quit" }],
+    ]),
+  });
+  const bubble = container.querySelector('[data-prompt-anchor="pending"]')!;
+  expect(bubble.querySelector('[role="status"]')?.textContent).toBe(
+    "Not sent · Paused when MonoCode quit",
+  );
+  const resume = [...bubble.querySelectorAll<HTMLButtonElement>("button")].find(
+    (button) => button.textContent === "Resume",
+  )!;
+  act(() => resume.click());
+  expect(onRetryMessage).toHaveBeenCalledWith("pending");
+  render(blocks, {
+    agentMascot: { mascot: "cat", color: "#6ba" },
+    messageDeliveries: new Map([["pending", { status: "paused" }]]),
+  });
+  expect(
+    container.querySelector('[data-prompt-anchor="pending"] [role="status"]')
+      ?.textContent,
+  ).toBe("Not sent");
+});
+
 it("does not repeat a thought's first paragraph above it once opened", () => {
   act(() =>
     root.render(

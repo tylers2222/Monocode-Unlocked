@@ -290,6 +290,8 @@ export type QueuedMessage = {
   appRequestId?: string;
   /** Delivery failed; the message remains available to retry or edit. */
   error?: string;
+  /** MonoCode quit while this message waited; cleared when the queue resumes. */
+  pausedBy?: "quit";
 };
 
 export type MessageQueueStatus = "active" | "paused" | "resuming";
@@ -468,8 +470,11 @@ export type Session = {
   monoTranscript?: { before: number | null; firstBlockId: string | null };
   /** True while a harness turn is in flight. */
   busy?: boolean;
-  /** The provider has accepted this turn and can take live follow-ups. */
-  turnReady?: boolean;
+  /**
+   * Whether the running turn can take live follow-ups. "starting" until the
+   * provider accepts it; "deferred" after it refused a follow-up as not ready.
+   */
+  turnReadiness?: "starting" | "ready" | "deferred";
   /**
    * What the live turn is waiting on after the agent yielded with work still
    * running in the background. In-memory only.

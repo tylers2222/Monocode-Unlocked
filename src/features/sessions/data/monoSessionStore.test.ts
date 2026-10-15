@@ -12,7 +12,8 @@ import {
   monoSessionCompletionResult,
   MonoSessionCompletionBatches,
 } from "../../monos/model/monoSessionCompletion";
-import { canSteerQueuedHead } from "../model/messageQueue";
+import { steerableQueuedMessage } from "../model/messageQueue";
+import { monoMessageDeliveries } from "../../monos/model/monoMessaging";
 import { recordArtifactCard } from "../../artifacts/artifacts";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -167,13 +168,13 @@ describe("Mono database pagination and writes", () => {
     const restored = (await getSession(session.id))!;
     expect(restored.queuedMessages?.[0]).toEqual(notification);
     expect(
-      canSteerQueuedHead({
+      steerableQueuedMessage({
         ...restored,
         busy: true,
-        turnReady: true,
+        turnReadiness: "ready",
         queueStatus: "active",
       }),
-    ).toBe(false);
+    ).toBeUndefined();
     restored.blocks = [
       ...restored.blocks,
       {
@@ -279,6 +280,64 @@ describe("Mono database pagination and writes", () => {
         }),
       }),
     );
+  });
+  it("says the queue paused when MonoCode quit only for the restart read of a queue that was still sending", async () => {
+    const pending = { id: "pending", text: "Use TypeScript", attachments: [] };
+    const stored = (queueStatus: "active" | "paused") => ({
+      ...record(),
+      queuedMessages: [pending],
+      queueStatus,
+    });
+    const sending = stored("active");
+    call.mockResolvedValueOnce(sending);
+    const background = (await getSession(sending.id))!;
+    expect(background.queueStatus).toBe("paused");
+    expect(monoMessageDeliveries(background).get("pending")).toEqual({
+      status: "paused",
+    });
+    call.mockResolvedValueOnce(sending);
+    const restarted = (await getSession(sending.id, { restart: true }))!;
+    expect(monoMessageDeliveries(restarted).get("pending")).toEqual({
+      status: "paused",
+      reason: "Paused when MonoCode quit",
+    });
+    const interrupted = stored("paused");
+    call.mockResolvedValueOnce(interrupted);
+    expect(
+      monoMessageDeliveries(
+        (await getSession(interrupted.id, { restart: true }))!,
+      ).get("pending"),
+    ).toEqual({ status: "paused" });
+  });
+  it("keeps the quit reason through a save and a later reload", async () => {
+    const session = await load();
+    const pending = {
+      id: "pending",
+      text: "Use TypeScript",
+      attachments: [],
+      pausedBy: "quit" as const,
+    };
+    session.queuedMessages = [pending];
+    session.queueStatus = "paused";
+    call.mockResolvedValueOnce(saved(session));
+    await upsertSession(session);
+    expect(call).toHaveBeenLastCalledWith(
+      "mono_session_upsert",
+      expect.objectContaining({
+        session: expect.objectContaining({ queuedMessages: [pending] }),
+      }),
+    );
+    call.mockResolvedValueOnce({
+      ...record(),
+      id: session.id,
+      queuedMessages: [pending],
+      queueStatus: "paused",
+    });
+    const reloaded = (await getSession(session.id))!;
+    expect(monoMessageDeliveries(reloaded).get("pending")).toEqual({
+      status: "paused",
+      reason: "Paused when MonoCode quit",
+    });
   });
   it("keeps habit identity and posting time through saves, reloads and older pages", async () => {
     const monoHabit = { id: "habit", name: "Morning check", at: 1_000 };
