@@ -631,7 +631,8 @@ fn parse_call(args: &[String], app_mode: bool) -> Result<Parsed, ParseError> {
         }
         let value = args.get(index + 1).ok_or_else(|| {
             ParseError::from(format!(
-                "Missing value for {flag}. Run control --help for the argument list."
+                "Missing value for {flag}. Run {} --help for the argument list.",
+                if app_mode { "app" } else { "control" }
             ))
         })?;
         match flag.as_str() {
@@ -648,7 +649,9 @@ fn parse_call(args: &[String], app_mode: bool) -> Result<Parsed, ParseError> {
                 } else if value == "-" {
                     read_capped(std::io::stdin())?
                 } else {
-                    read_capped(std::fs::File::open(value).map_err(|e| e.to_string())?)?
+                    read_capped(
+                        std::fs::File::open(value).map_err(|e| format!("--input {value}: {e}"))?,
+                    )?
                 };
                 let parsed: Value = serde_json::from_str(&raw)
                     .map_err(|e| format!("Invalid JSON: {e}. Pass one JSON object, e.g. --json '{{\"taskId\":\"...\"}}'."))?;
@@ -952,6 +955,13 @@ mod tests {
             assert_eq!(response["code"], "invalid_input", "{case:?}");
             assert_eq!(response["hint"], response["error"], "{case:?}");
         }
+        let hint = |case: &[&str]| match parse_args_for(&args(case), true) {
+            Err(refused) => refused.response()["hint"].as_str().unwrap().to_string(),
+            Ok(_) => panic!("{case:?} was accepted"),
+        };
+        assert!(hint(&["monos.get", "--json"]).contains("Run app --help"));
+        assert!(hint(&["monos.get", "--input", "/nonexistent/file.json"])
+            .starts_with("--input /nonexistent/file.json: "));
         // The control CLI keeps its uncoded errors.
         let Err(refused) = parse_args_for(&args(&["get", "--json", "{bad"]), false) else {
             panic!("bad JSON was accepted");

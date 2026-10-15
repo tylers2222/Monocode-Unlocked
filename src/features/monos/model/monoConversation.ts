@@ -20,11 +20,13 @@ export async function readMonoConversation(
   let before = session.monoTranscript?.before ?? null;
   let readOptions = options;
   if (options.before && !blocks.some((block) => block.id === options.before)) {
-    // The session was just loaded, so a failed lookup here means no such
-    // block: Rust answers an unknown block ID with "Query returned no rows".
+    // Rust answers an unknown block ID with exactly "Query returned no rows"
+    // (rusqlite QueryReturnedNoRows); any other failure is the store's and
+    // goes back unchanged, so the agent may retry it.
     const page = await getMonoTranscriptPage(session.id, {
       beforeBlockId: options.before,
-    }).catch(() => {
+    }).catch((error: unknown) => {
+      if (error !== "Query returned no rows") throw error;
       throw new AppActionError(
         "invalid_input",
         "before is not a turn ID in this session",

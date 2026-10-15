@@ -94,3 +94,10 @@ it("answers a before that is in no saved page with invalid_input", async () => {
     hint: "before is not a turn ID in this session",
   });
 });
+
+it("passes a store failure at the cursor lookup through without a code", async () => {
+  vi.mocked(getMonoTranscriptPage).mockRejectedValue("database is locked");
+  await expect(
+    readMonoConversation(session(), { before: "nope" }),
+  ).rejects.toBe("database is locked");
+});
