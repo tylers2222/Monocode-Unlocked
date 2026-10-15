@@ -118,7 +118,7 @@ export function parseCard(input: Record<string, unknown>): MonoCard {
   }
 }
 
-/* Cards a habit's hidden run makes go out with its report, or not at all. */
+/* Cards a habit's run makes go out with its report, or not at all. */
 const runCards = new Map<string, MonoCard[]>();
 
 export function holdRunCard(runId: string, card: MonoCard): void {

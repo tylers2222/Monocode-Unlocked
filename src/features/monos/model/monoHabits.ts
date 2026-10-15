@@ -4,8 +4,14 @@ import {
   nextAutomationRunAt,
   type AutomationScheduleKind,
 } from "../../automations/model/automations";
-import type { Block, MonoSpawnedSession } from "../../sessions/model/session";
-import type { MonoLook } from "./mono";
+import {
+  HARNESSES,
+  type Block,
+  type HarnessId,
+  type MonoSpawnedSession,
+  type Session,
+} from "../../sessions/model/session";
+import type { Mono, MonoLook } from "./mono";
 import {
   MonoFileConflict,
   monoContext,
@@ -15,10 +21,11 @@ import {
 } from "./monoFiles";
 
 /**
- * What a Mono does on its own, on a schedule. Each run happens in a hidden
- * session of its own, so the work never piles up in the Mono's conversation;
- * only what it decides to tell the user is posted to the chat, and a run with
- * nothing worth saying posts nothing at all.
+ * What a Mono does on its own, on a schedule. Each run happens in a session
+ * of its own, so the work never piles up in the Mono's conversation; only
+ * what it decides to tell the user is posted to the chat, and a run with
+ * nothing worth saying posts nothing at all. The run's session is kept and
+ * listed in the Mono's overview, so it can be followed, steered and audited.
  */
 export type HabitSchedule = {
   scheduleKind: AutomationScheduleKind;
@@ -43,7 +50,7 @@ export type Habit = {
   /** "posted" told the user something; "quiet" found nothing worth saying. */
   lastOutcome?: "posted" | "quiet" | "failed";
   lastError?: string;
-  /** Recent runs, newest first. The runs' sessions are not kept. */
+  /** Recent runs, newest first. Each one's session is kept in the store. */
   runs?: HabitRun[];
   /** Run once as soon as possible, paused or not, leaving the schedule alone. */
   runRequested?: boolean;
@@ -53,14 +60,28 @@ export type Habit = {
 
 export type HabitOutcome = "posted" | "quiet" | "failed";
 
+/** The session a run worked in, enough to find its provider transcript. */
+export type HabitRunSession = {
+  id: string;
+  harness: HarnessId;
+  model: string;
+  /** The harness's own id for the conversation, once it bound one. */
+  providerSessionId?: string;
+  cwd: string;
+};
+
 /** One run as the habit remembers it: when, how long, and what came of it. */
 export type HabitRun = {
+  /** When it started. */
   at: number;
+  endedAt?: number;
   durationMs: number;
   outcome: HabitOutcome;
   /** What it told the user, when it did. */
   report?: string;
   error?: string;
+  /** Absent on runs recorded before their sessions were kept. */
+  session?: HabitRunSession;
 };
 
 /** Runs kept per habit. */
@@ -155,15 +176,42 @@ function parseRuns(value: unknown[]): HabitRun[] {
       (outcome !== "posted" && outcome !== "quiet" && outcome !== "failed")
     )
       continue;
+    const session = parseRunSession(run.session);
     runs.push({
       at: run.at,
+      ...(isNumber(run.endedAt) ? { endedAt: run.endedAt } : {}),
       durationMs: isNumber(run.durationMs) ? run.durationMs : 0,
       outcome,
       ...(isString(run.report) ? { report: run.report } : {}),
       ...(isString(run.error) ? { error: run.error } : {}),
+      ...(session ? { session } : {}),
     });
   }
   return runs.slice(0, HABIT_RUNS_KEPT);
+}
+
+const isSessionId = (v: unknown): v is string =>
+  typeof v === "string" && /^[A-Za-z0-9_-]+$/.test(v);
+
+function parseRunSession(value: unknown): HabitRunSession | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const session = value as Record<string, unknown>;
+  const harness = session.harness;
+  if (
+    !isSessionId(session.id) ||
+    !HARNESSES.includes(harness as HarnessId) ||
+    !isString(session.cwd)
+  )
+    return undefined;
+  return {
+    id: session.id,
+    harness: harness as HarnessId,
+    model: isString(session.model) ? session.model : "",
+    ...(isSessionId(session.providerSessionId)
+      ? { providerSessionId: session.providerSessionId }
+      : {}),
+    cwd: session.cwd,
+  };
 }
 
 export function serializeHabits(habits: Habit[]): string {
@@ -267,6 +315,7 @@ export function afterRun(
     error?: string;
     report?: string;
     startedAt?: number;
+    session?: HabitRunSession;
   },
 ): Habit {
   const { runRequested, ...scheduled } = habit;
@@ -282,12 +331,14 @@ export function afterRun(
   const { lastError: _previous, ...rest } = next;
   const run: HabitRun = {
     at: outcome.startedAt ?? now,
+    endedAt: now,
     durationMs: Math.max(0, now - (outcome.startedAt ?? now)),
     outcome: outcome.kind,
     ...(outcome.report
       ? { report: outcome.report.slice(0, REPORT_KEPT_CHARS) }
       : {}),
     ...(outcome.error ? { error: outcome.error } : {}),
+    ...(outcome.session ? { session: outcome.session } : {}),
   };
   return {
     ...rest,
@@ -334,7 +385,7 @@ export function subscribeHabitsRunning(onChange: () => void): () => void {
   return () => window.removeEventListener(ACTIVE_CHANGED, onChange);
 }
 
-/** The first message of a habit's hidden run. */
+/** The first message of a habit's run. */
 export function habitRunPrompt(
   look: MonoLook,
   files: MonoFiles,
@@ -449,14 +500,67 @@ export async function updateHabits<T>(
 }
 
 /**
- * Habit runs in flight, to the Mono each belongs to. Their sessions are
- * ephemeral, so this is all there is.
+ * A run's session id. Prefixed like the sessions the Mono starts from its
+ * chat, so tools that look for `app-<chat id>-` find habit runs as well.
  */
+export function habitRunSessionId(monoSessionId: string): string {
+  return `app-${monoSessionId}-habit-${crypto.randomUUID()}`;
+}
+
+/**
+ * Where a run works: the Mono's first project, so that project's skills and
+ * AGENTS.md load. A Mono with no project runs in its chat's folder.
+ */
+export function habitRunCwd(
+  mono: Pick<Mono, "projects">,
+  chatCwd: string,
+): string {
+  return mono.projects[0] ?? chatCwd;
+}
+
+/**
+ * The Mono's habit runs as its overview lists them: recorded runs oldest
+ * first, then the ones still going.
+ */
+export function habitRunSessions(
+  monoId: string,
+  habits: readonly Habit[],
+  sessions: readonly Session[],
+): MonoSpawnedSession[] {
+  const listed = new Map<string, MonoSpawnedSession>();
+  const recorded = habits
+    .flatMap((habit) =>
+      (habit.runs ?? []).flatMap((run) =>
+        run.session ? [{ habit, at: run.at, session: run.session }] : [],
+      ),
+    )
+    .sort((a, b) => a.at - b.at);
+  for (const { habit, session } of recorded)
+    listed.set(session.id, {
+      sessionId: session.id,
+      cwd: session.cwd,
+      title: habit.name,
+      harness: session.harness,
+      model: session.model,
+    });
+  for (const session of sessions)
+    if (habitRunMono(session.id) === monoId && !listed.has(session.id))
+      listed.set(session.id, {
+        sessionId: session.id,
+        cwd: session.cwd,
+        title: session.title,
+        harness: session.harness,
+        model: session.model,
+      });
+  return [...listed.values()];
+}
+
+/** Habit runs in flight, to the Mono each belongs to. */
 const runs = new Map<string, string>();
 
 /**
- * Sessions a habit run started, to go on its report in the Mono's chat. The
- * run itself is thrown away, and without this they would be listed nowhere.
+ * Sessions a habit run started, to go on its report in the Mono's chat;
+ * without this they would be listed nowhere.
  */
 const launches = new Map<string, MonoSpawnedSession[]>();
 
@@ -493,7 +597,7 @@ export function habitRunLaunches(sessionId: string): MonoSpawnedSession[] {
 }
 
 /**
- * An approval a hidden run asked for, put to the user in the Mono's chat
+ * An approval a habit run asked for, put to the user in the Mono's chat
  * under an id of its own: the run's request ids would collide with the
  * Mono's. In memory only; a relay outlives neither its run nor the app.
  */

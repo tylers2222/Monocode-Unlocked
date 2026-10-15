@@ -2149,10 +2149,13 @@ function Workspace({
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
 
-  // Sessions that belong in the UI: a habit's hidden run is not one of them,
-  // and asks through its Mono's chat rather than on its own.
+  // Sessions that ask on their own: a running habit asks through its Mono's
+  // chat instead.
   const promptableSessions = useMemo(
-    () => sessions.filter((session) => !session.ephemeral),
+    () =>
+      sessions.filter(
+        (session) => !session.ephemeral && !isHabitRun(session.id),
+      ),
     [sessions],
   );
   useInputNotifications(promptableSessions, activeSessionId);
@@ -8244,7 +8247,7 @@ function Workspace({
               (s) => s.id === sessionId,
             );
             const visible = sessionId === activeSessionIdRef.current;
-            // A habit's hidden run speaks through its Mono's chat instead.
+            // A running habit speaks through its Mono's chat instead.
             if (finished && !isHabitRun(sessionId))
               void announceSessionFinished(finished, visible);
           }, 0);
@@ -8395,19 +8398,8 @@ function Workspace({
           rejectionMessage: "The habit's run could not start.",
         });
       }),
-    remove: async (id) => {
-      const open = await stopSessionForRemoval(id);
-      if (open)
-        await Promise.all(
-          sessionChildHarnesses(open).map((harness) =>
-            forgetHarnessSession(harness, id),
-          ),
-        );
-      await deleteSession(id, []);
-      sessionsRef.current = sessionsRef.current.filter(
-        (session) => session.id !== id,
-      );
-      setSessions(sessionsRef.current);
+    stop: async (id) => {
+      await stopSessionForRemoval(id);
     },
     post: (monoId, habit, text, name, artifacts, launches) =>
       appendToMono(
@@ -10273,7 +10265,7 @@ function Workspace({
     (sessionId: string, requestId: number, decision: ApprovalDecision) => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
       if (!session || session.worktreeRemoved) return;
-      // An approval a habit's hidden run asked for, put to the user in the
+      // An approval a habit's run asked for, put to the user in the
       // Mono's chat: answer the run, and settle the question in the chat.
       if (isMonoSession(sessionId)) {
         const asked = session.blocks.find(
@@ -10787,8 +10779,8 @@ function Workspace({
           : [];
         const sourceTurnId = sourceTurns[sourceTurns.length - 1]?.[0]?.id;
         const rememberSession = (entry: MonoSpawnedSession) => {
-          // A habit run is thrown away when it ends; its launches go on the
-          // report it posts to the Mono's chat instead.
+          // A habit run is not a turn of the Mono's chat; its launches go on
+          // the report it posts there.
           if (isHabitRun(source.id)) {
             noteHabitRunLaunch(source.id, entry);
             return;
@@ -10931,7 +10923,9 @@ function Workspace({
               const stored = await listSessionsByProject(cwd);
               const byId = new Map<string, AppSessionListing>();
               for (const session of stored) {
-                if (session.orchestrationLeadId) continue;
+                // A habit run belongs to its Mono until it ends.
+                if (session.orchestrationLeadId || isHabitRun(session.id))
+                  continue;
                 byId.set(session.id, {
                   id: session.id,
                   title: session.title,
@@ -11239,7 +11233,7 @@ function Workspace({
                 session.id === sessionId ? updated : session,
               );
               setSessions(sessionsRef.current);
-              if (!isHabitRun(sessionId)) await upsertSession(updated);
+              await upsertSession(updated);
             },
             isMono: (id) => isMonoSession(id),
             isHabitRun: (id) => isHabitRun(id),
@@ -11647,8 +11641,8 @@ function Workspace({
     () =>
       historyWithLiveSessions(
         history,
-        // A habit's hidden run is never one of the project's chats.
-        promptableSessions,
+        // A running habit is listed like the Mono's other sessions.
+        sessions,
         sidebarCwd,
         {
           ...(projectBranches?.current
@@ -11663,7 +11657,7 @@ function Workspace({
     [
       history,
       projectBranches,
-      promptableSessions,
+      sessions,
       sidebarCwd,
       orchestrationRuns,
     ],

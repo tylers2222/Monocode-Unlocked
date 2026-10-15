@@ -186,7 +186,7 @@ export type AgentAppHost = {
         folder?: { name: string; color: string };
       }
     | undefined;
-  /** A hidden run of one of a Mono's habits: it may remember, not schedule. */
+  /** A run of one of a Mono's habits: it may remember, not schedule. */
   isHabitRun?(sessionId: string): boolean;
   /** Puts a card in the Mono's chat, or holds it for a habit run's report. */
   postCard?(sourceSessionId: string, card: MonoCard): void;

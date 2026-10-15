@@ -65,7 +65,7 @@ export function useIdleSessionDetach({
     // Inbox and resident agents own panes independently of project tabs. Keep
     // their drafts and attachments mounted when the user switches views.
     for (const session of sessions) {
-      // A habit's hidden run is removed by its scheduler when it ends.
+      // A habit's run stays loaded while its scheduler watches it.
       if (
         session.inboxAsk ||
         isMonoSession(session.id) ||

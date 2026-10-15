@@ -3,6 +3,8 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MonoOverview, type MonoOverviewTab } from "./MonoOverview";
+import { clearHabitRun, markHabitRun } from "../model/monoHabits";
+import { newSession } from "../../sessions/model/session";
 
 vi.mock("../model/monoHabits", async (original) => ({
   ...(await original<object>()),
@@ -209,6 +211,28 @@ it("lists every session it started, newest first", async () => {
     "b",
     "a",
   ]);
+});
+
+it("lists a habit run while it runs", async () => {
+  const run = {
+    ...newSession("claude", "/p", "claude:x"),
+    id: "app-chat-habit-1",
+    title: "Broski · Morning check",
+    busy: true,
+  };
+  markHabitRun(run.id, "mono-1");
+  try {
+    await render("sessions", vi.fn(), { sessions: [run] });
+    const rows = [...container.querySelectorAll("[data-mono-session]")];
+    expect(rows.map((row) => row.getAttribute("data-mono-session"))).toEqual([
+      "app-chat-habit-1",
+      "b",
+      "a",
+    ]);
+    expect(tabs()[0].textContent).toBe("Sessions3");
+  } finally {
+    clearHabitRun(run.id);
+  }
 });
 
 it("shows documents in their own tab, and a new-habit button only on Habits", async () => {

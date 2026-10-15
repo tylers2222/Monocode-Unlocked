@@ -297,8 +297,9 @@ Actions:
                   Add only after the user agreed to it in this chat. kind is
                   hourly (with "minute"), daily, weekdays or weekly (with
                   "dayOfWeek", 0 = Sunday); time is local 24-hour HH:MM.
-                  Each run is a hidden session that posts to this chat only
-                  when it has something worth saying.
+                  Each run is its own session in your first project, listed
+                  in your overview. It posts to this chat only when it has
+                  something worth saying.
   habits.update  {"id":"...","name":"...","instructions":"...",
                   "schedule":{...},"enabled":false}  Change or pause one.
   habits.run     {"id":"..."}  Run one within a minute, to try it out.

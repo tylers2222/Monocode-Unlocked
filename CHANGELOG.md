@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Operator CLI `sessions.start` **requires `harness` and `model`**. Copy exact IDs from `models.list`. A missing or unknown harness or model returns an error that names `models.list`. Before, a missing model fell back to the calling session's model or to the last model picked in the composer, so a Mono could start sessions on a model nobody chose. The orchestration `delegate` action also requires `model` now, instead of taking the first model that `list` allows. Mono rules tell each Mono to always pass both.
 - A `monos.send` message now arrives as only `<mono_message from="NAME" monoId="ID">` around the prompt. The paragraph that each message repeated (it comes from another Mono, how to answer, do not answer only to say thanks) is gone; the Mono's `<mono_messaging_rules>`, loaded once per chat, now say all of it.
+- **Habit runs are kept sessions.** A run starts in the Mono's first project (so that project's skills and `AGENTS.md` load), or in the Mono chat's folder when it has no project. While it runs it is listed in the Mono overview's Sessions tab, where it can be opened, steered and stopped, and in the project sidebar when the Mono shows the sessions it starts. A run that times out is stopped, not deleted. Each run's id is `app-<Mono chat id>-habit-<uuid>`, and `habits.json` records its session (`id`, `harness`, `model`, `providerSessionId`, `cwd`) with its start, end and outcome, so the transcript can be found later.
 
 ## [0.13.0] - 2026-10-12
 

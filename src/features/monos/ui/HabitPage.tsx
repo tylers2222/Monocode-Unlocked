@@ -232,7 +232,7 @@ function RunRow({ run, cwd }: { run: HabitRun; cwd: string }) {
               className="agent-chat-bubble-md mono-run-report"
               text={run.report}
               streaming={false}
-              cwd={cwd}
+              cwd={run.session?.cwd ?? cwd}
             />
           ) : (
             <p className="whitespace-pre-wrap text-red-500/80">{run.error}</p>

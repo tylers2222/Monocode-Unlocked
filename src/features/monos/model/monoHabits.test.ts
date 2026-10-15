@@ -1,12 +1,15 @@
 // @vitest-environment happy-dom
 import { expect, it } from "vitest";
-import type { Block } from "../../sessions/model/session";
+import { newSession, type Block } from "../../sessions/model/session";
 import {
   HABIT_RUNS_KEPT,
   habitsToday,
   nextHabitAfterToday,
   habitStarting,
   setHabitRunning,
+  clearHabitRun,
+  habitRunSessions,
+  markHabitRun,
   afterRun,
   dropRelays,
   isRelayed,
@@ -50,6 +53,71 @@ it("round-trips habits.json and drops anything malformed", () => {
   expect(parseHabits('[{"id":"x"}, 3, null]')).toEqual([]);
   expect(parseHabits("not json")).toEqual([]);
   expect(parseHabits(null)).toEqual([]);
+});
+
+it("keeps a finished run's session record through habits.json", () => {
+  const session = {
+    id: "app-chat-habit-1",
+    harness: "claude" as const,
+    model: "claude:opus",
+    providerSessionId: "4c1e2f",
+    cwd: "/code/app",
+  };
+  const ran = afterRun(habit(), at(5, 9, 13), {
+    kind: "quiet",
+    startedAt: at(5, 9),
+    session,
+  });
+  const [stored] = parseHabits(serializeHabits([ran]));
+  expect(stored.runs).toEqual([
+    {
+      at: at(5, 9),
+      endedAt: at(5, 9, 13),
+      durationMs: 13 * 60_000,
+      outcome: "quiet",
+      session,
+    },
+  ]);
+  // A record that could not point at a transcript is dropped, not trusted.
+  const bad = JSON.parse(serializeHabits([ran]));
+  bad[0].runs[0].session.id = "../etc";
+  expect(parseHabits(JSON.stringify(bad))[0].runs![0].session).toBeUndefined();
+});
+
+it("lists recorded habit runs oldest first, then the ones still going", () => {
+  const record = (id: string, startedAt: number) =>
+    afterRun(habit(), startedAt + 1, {
+      kind: "quiet",
+      startedAt,
+      session: { id, harness: "codex", model: "codex:x", cwd: "/code/app" },
+    }).runs![0];
+  const live = {
+    ...newSession("codex", "/code/app"),
+    id: "live",
+    title: "Now",
+  };
+  const elsewhere = { ...newSession("codex", "/code/app"), id: "other-mono" };
+  markHabitRun(live.id, "mono-1");
+  markHabitRun(elsewhere.id, "mono-2");
+  try {
+    const listed = habitRunSessions(
+      "mono-1",
+      [habit({ runs: [record("late", at(5, 9)), record("early", at(4, 9))] })],
+      [live, elsewhere],
+    );
+    expect(listed.map((entry) => entry.sessionId)).toEqual([
+      "early",
+      "late",
+      "live",
+    ]);
+    expect(listed[0]).toMatchObject({
+      title: "Morning CI check",
+      cwd: "/code/app",
+    });
+  } finally {
+    clearHabitRun(live.id);
+    clearHabitRun(elsewhere.id);
+  }
 });
 
 it("validates schedules from the CLI", () => {

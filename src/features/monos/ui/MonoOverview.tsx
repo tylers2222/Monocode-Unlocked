@@ -15,7 +15,7 @@ import { artifactLabel, type ArtifactCard } from "../../artifacts/artifacts";
 import type { SessionSummary } from "../../sessions/data/sessionStore";
 import type { MonoSpawnedSession, Session } from "../../sessions/model/session";
 import type { MonoLook, MonoState } from "../model/mono";
-import { HABITS_MAX } from "../model/monoHabits";
+import { HABITS_MAX, habitRunSessions } from "../model/monoHabits";
 import { HabitPage } from "./HabitPage";
 import { NewHabitPage } from "./NewHabitPage";
 import { habitActions, HabitsList, useHabits } from "./MonoHabits";
@@ -71,11 +71,11 @@ type Route = { kind: "new-habit" } | { kind: "habit"; id: string };
 type Props = {
   open: boolean;
   monoId: string;
-  /** Its conversation's folder, which habits run in. */
+  /** Its conversation's folder. */
   cwd: string;
   agent: MonoLook;
   state: MonoState;
-  /** Every session it has started, oldest first. */
+  /** Every session it started from its chat, oldest first. */
   launches: readonly MonoSpawnedSession[];
   sessions: readonly Session[];
   history?: readonly SessionSummary[];
@@ -110,7 +110,7 @@ export function MonoOverview({
   cwd,
   agent,
   state,
-  launches,
+  launches: chatLaunches,
   sessions,
   history,
   documents,
@@ -131,6 +131,14 @@ export function MonoOverview({
 }: Props) {
   const lock = useLockOverscroll<HTMLDivElement>();
   const habits = useHabits(monoId, state.status);
+  // Its habit runs are sessions it started too, while they run and after.
+  const launches = [
+    ...chatLaunches,
+    ...habitRunSessions(monoId, habits ?? [], sessions).filter(
+      (run) =>
+        !chatLaunches.some((launch) => launch.sessionId === run.sessionId),
+    ),
+  ];
   const actions = habitActions(monoId);
   const [routes, setRoutes] = useState<Route[]>([]);
   const [query, setQuery] = useState("");

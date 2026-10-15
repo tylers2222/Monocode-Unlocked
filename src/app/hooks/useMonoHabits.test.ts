@@ -59,8 +59,13 @@ vi.mock("../../features/monos/model/monoFiles", async (original) => {
 const { useMonoHabits } = await import("./useMonoHabits");
 const { shouldPersistSession } =
   await import("../../features/sessions/data/sessionStore");
-const { checkHabitsNow, noteHabitRunLaunch, relayApproval } =
-  await import("../../features/monos/model/monoHabits");
+const {
+  checkHabitsNow,
+  isHabitRun,
+  loadHabits,
+  noteHabitRunLaunch,
+  relayApproval,
+} = await import("../../features/monos/model/monoHabits");
 const { loadMonoFiles } = await import("../../features/monos/model/monoFiles");
 
 let root: Root;
@@ -114,9 +119,10 @@ function setup(
 }
 
 function makeHost(reply: string, approve?: { wait: Promise<void> }) {
+  // The Mono's chat lives in the home folder, apart from its projects.
   const mono = {
     id: "mono",
-    cwd: "/code/app",
+    cwd: "/Users/me",
     harness: "claude",
     model: "claude:x",
     blocks: [],
@@ -128,6 +134,7 @@ function makeHost(reply: string, approve?: { wait: Promise<void> }) {
     add: vi.fn((session: Session) => sessions.push(session)),
     run: vi.fn(async (id: string, prompt: string) => {
       const run = sessions.find((session) => session.id === id)!;
+      run.providerSessionId = "claude-transcript-1";
       if (approve) {
         run.blocks = [
           { id: "u", role: "user", text: prompt },
@@ -158,7 +165,7 @@ function makeHost(reply: string, approve?: { wait: Promise<void> }) {
       ];
       return { status: "completed" as const, text: reply };
     }),
-    remove: vi.fn(async () => {}),
+    stop: vi.fn(async () => {}),
     post: vi.fn(),
     // Like the app: the request is relayed, so later polls skip it.
     askApproval: vi.fn(
@@ -221,7 +228,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-it("runs a due habit in a hidden session and posts what it found", async () => {
+it("runs a due habit in a kept session and posts what it found", async () => {
   const host = setup("CI is red on main since #712.");
   await vi.waitFor(() => expect(host.post).toHaveBeenCalled());
   const [monoId, habit, text, name] = host.post.mock.calls[0];
@@ -234,27 +241,64 @@ it("runs a due habit in a hidden session and posts what it found", async () => {
   const prompt = host.run.mock.calls[0][1] as string;
   expect(prompt.startsWith("/operator ")).toBe(true);
   expect(prompt).toContain("Habit: Morning CI check");
-  const runId = host.add.mock.calls[0][0].id;
+  const run = host.add.mock.calls[0][0];
   // Nobody watches a habit's run, so it never stops to ask before each step.
-  expect(host.add.mock.calls[0][0].runtimeMode).toBe("full-access");
-  // Never saved, so it can never show up with the project's chats.
-  expect(host.add.mock.calls[0][0].ephemeral).toBe(true);
-  expect(shouldPersistSession(host.add.mock.calls[0][0])).toBe(false);
-  expect(host.endApprovals).toHaveBeenCalledWith(runId);
+  expect(run.runtimeMode).toBe("full-access");
+  // Saved like any session the Mono starts, and out of the sidebar like them.
+  expect(run.ephemeral).toBeUndefined();
+  expect(run.sidebarHidden).toBe(true);
+  expect(
+    shouldPersistSession(host.sessions().find((s) => s.id === run.id)!),
+  ).toBe(true);
+  // Found by tools that list the sessions of the Mono's chat.
+  expect(run.id.startsWith("app-mono-habit-")).toBe(true);
+  expect(host.endApprovals).toHaveBeenCalledWith(run.id);
   await vi.waitFor(() => expect(stored[0].lastOutcome).toBe("posted"));
   expect(stored[0].runs?.[0]).toMatchObject({
     outcome: "posted",
     report: "CI is red on main since #712.",
   });
-  expect(host.remove).toHaveBeenCalledWith(runId);
+  // A finished run is kept, not stopped or deleted.
+  expect(host.stop).not.toHaveBeenCalled();
+  expect(host.sessions().some((s) => s.id === run.id)).toBe(true);
+  expect(isHabitRun(run.id)).toBe(false);
   expect(stored[0].nextRunAt).toBeGreaterThan(Date.now());
+});
+
+it("starts a habit run in the Mono's first project, not its chat's folder", async () => {
+  const host = setup("NOTHING_TO_REPORT");
+  await vi.waitFor(() => expect(host.add).toHaveBeenCalled());
+  expect(host.add.mock.calls[0][0].cwd).toBe("/code/app");
+});
+
+it("records a finished run's session so its transcript can be found", async () => {
+  const started = Date.now();
+  const host = setup("NOTHING_TO_REPORT");
+  await vi.waitFor(() => expect(stored[0].lastOutcome).toBe("quiet"));
+  const run = host.add.mock.calls[0][0];
+  // Read back through habits.json as the app and audit tools see it.
+  const [habit] = await loadHabits(MONO.id);
+  const record = habit.runs![0];
+  expect(record).toMatchObject({
+    outcome: "quiet",
+    session: {
+      id: run.id,
+      harness: "claude",
+      model: run.model,
+      providerSessionId: "claude-transcript-1",
+      cwd: "/code/app",
+    },
+  });
+  expect(record.at).toBeGreaterThanOrEqual(started);
+  expect(record.endedAt).toBeGreaterThanOrEqual(record.at);
+  expect(record.durationMs).toBe(record.endedAt! - record.at);
 });
 
 it("posts nothing when the run has nothing to say", async () => {
   const host = setup("NOTHING_TO_REPORT");
   await vi.waitFor(() => expect(stored[0].lastOutcome).toBe("quiet"));
   expect(host.post).not.toHaveBeenCalled();
-  expect(host.remove).toHaveBeenCalled();
+  expect(host.stop).not.toHaveBeenCalled();
 });
 
 it("puts the sessions a run started on its report", async () => {
@@ -312,7 +356,7 @@ it("lets a long-running habit finish and post after thirty minutes", async () =>
       await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
     });
     expect(host.run).toHaveBeenCalledTimes(1);
-    expect(host.remove).not.toHaveBeenCalled();
+    expect(host.stop).not.toHaveBeenCalled();
     expect(stored[0].lastOutcome).toBeUndefined();
 
     await act(async () => hold.resolve());
@@ -325,7 +369,7 @@ it("lets a long-running habit finish and post after thirty minutes", async () =>
       [],
     );
     expect(stored[0].lastOutcome).toBe("posted");
-    expect(host.remove).toHaveBeenCalledTimes(1);
+    expect(host.stop).not.toHaveBeenCalled();
   } finally {
     await act(async () => hold.resolve());
     vi.useRealTimers();
@@ -336,7 +380,8 @@ it("stops and records a habit that is still running after one hour", async () =>
   vi.useFakeTimers();
   const hold = deferred();
   const host = setup("PR review complete.");
-  host.run.mockImplementationOnce(async () => {
+  host.run.mockImplementationOnce(async (id) => {
+    host.sessions().find((s) => s.id === id)!.busy = true;
     await hold.promise;
     return { status: "completed", text: "PR review complete." };
   });
@@ -345,12 +390,14 @@ it("stops and records a habit that is still running after one hour", async () =>
       await vi.advanceTimersByTimeAsync(60 * 60 * 1000 - 2_000);
     });
     expect(host.run).toHaveBeenCalledTimes(1);
-    expect(host.remove).not.toHaveBeenCalled();
+    expect(host.stop).not.toHaveBeenCalled();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);
     });
-    expect(host.remove).toHaveBeenCalledTimes(1);
+    // Stopped, but kept so what it did can still be read.
+    expect(host.stop).toHaveBeenCalledTimes(1);
+    expect(host.sessions()).toHaveLength(2);
     expect(host.post).not.toHaveBeenCalled();
     expect(stored[0]).toMatchObject({
       lastOutcome: "failed",

@@ -24,7 +24,9 @@ import {
   HABIT_APPROVAL_WAIT_MS,
   HABIT_RUN_TIMEOUT_MS,
   habitReport,
+  habitRunCwd,
   habitRunLaunches,
+  habitRunSessionId,
   isRelayed,
   habitRunPrompt,
   loadHabits,
@@ -49,12 +51,12 @@ export type MonoHabitHost = {
   sessions(): Session[];
   /** Loads a session into the app if it is not open. */
   open(sessionId: string): Promise<Session | undefined>;
-  /** Adds a hidden session to the app's state. */
+  /** Adds the run's session to the app's state. */
   add(session: Session): void;
   /** Sends a turn and resolves once it settles. */
   run(sessionId: string, prompt: string): Promise<ControlOutcome>;
-  /** Stops a session if it is busy, then deletes it. */
-  remove(sessionId: string): Promise<void>;
+  /** Stops a session if it is still busy. It is kept, not deleted. */
+  stop(sessionId: string): Promise<void>;
   /** Adds a message to the Mono's chat and lets the user know. */
   post(
     monoSessionId: string,
@@ -141,10 +143,11 @@ async function watchRun(
 }
 
 /**
- * Runs each Mono's habits on schedule while the app is open: in a hidden
- * session of its own, posting to the Mono's chat only when the run has
- * something to say. One run at a time across all Monos keeps a wake from
- * sleep from starting several agents at once.
+ * Runs each Mono's habits on schedule while the app is open: in a session of
+ * its own in the Mono's first project, listed in the Mono's overview and kept
+ * afterwards, posting to the Mono's chat only when the run has something to
+ * say. One run at a time across all Monos keeps a wake from sleep from
+ * starting several agents at once.
  */
 export function useMonoHabits(host: MonoHabitHost, enabled = true) {
   const hostRef = useRef(host);
@@ -181,13 +184,17 @@ export function useMonoHabits(host: MonoHabitHost, enabled = true) {
         // each step. Anything the harness still asks goes to the user below.
         ...newSession(
           mono.harness,
-          mono.cwd,
+          habitRunCwd(record, mono.cwd),
           mono.model,
           "full-access",
           mono.modelSettings,
         ),
+        id: habitRunSessionId(mono.id),
         title: `${look.name} · ${habit.name}`,
-        ephemeral: true,
+        // Like the sessions the Mono starts, unless it shows those.
+        ...(record.showStartedSessionsInSidebar
+          ? {}
+          : { sidebarHidden: true }),
       };
       markHabitRun(run.id, monoId);
       setHabitRunning(habit.id, now);
@@ -206,15 +213,13 @@ export function useMonoHabits(host: MonoHabitHost, enabled = true) {
           error: error instanceof Error ? error.message : String(error),
         };
       }
-      const reply =
-        finalReply(host.sessions().find((s) => s.id === run.id)) ||
-        outcome.text;
-      const artifacts = artifactCards(
-        host.sessions().find((s) => s.id === run.id)?.blocks ?? [],
-      );
+      const ended = host.sessions().find((s) => s.id === run.id);
+      const reply = finalReply(ended) || outcome.text;
+      const artifacts = artifactCards(ended?.blocks ?? []);
       const launches = habitRunLaunches(run.id);
       host.endApprovals(run.id);
-      await host.remove(run.id).catch(() => undefined);
+      // A run that timed out is still going; stop it, but keep what it did.
+      if (ended?.busy) await host.stop(run.id).catch(() => undefined);
       clearHabitRun(run.id);
       setHabitRunning(habit.id);
 
@@ -245,10 +250,25 @@ export function useMonoHabits(host: MonoHabitHost, enabled = true) {
                       ? "posted"
                       : "quiet",
                 ...(outcome.status !== "completed"
-                  ? { error: outcome.error ?? "The run did not finish." }
+                  ? {
+                      error:
+                        outcome.error ??
+                        (outcome.status === "cancelled"
+                          ? "It was stopped."
+                          : "The run did not finish."),
+                    }
                   : {}),
                 ...(report ? { report } : {}),
                 startedAt: now,
+                session: {
+                  id: run.id,
+                  harness: run.harness,
+                  model: ended?.model ?? run.model,
+                  ...(ended?.providerSessionId
+                    ? { providerSessionId: ended.providerSessionId }
+                    : {}),
+                  cwd: run.cwd,
+                },
               })
             : entry,
         ),
