@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { gigaCwd } from "../../features/monos/model/gigaWorkspaceRuntime";
 import type { ControlOutcome } from "../../features/orchestration/model/orchestration";
 import {
   newSession,
@@ -184,7 +185,7 @@ export function useMonoHabits(host: MonoHabitHost, enabled = true) {
         // each step. Anything the harness still asks goes to the user below.
         ...newSession(
           mono.harness,
-          habitRunCwd(record, mono.cwd),
+          habitRunCwd(record, mono.cwd, gigaCwd(record)),
           mono.model,
           "full-access",
           mono.modelSettings,

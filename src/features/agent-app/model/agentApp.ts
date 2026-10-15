@@ -85,6 +85,7 @@ import {
   type MonoSettings,
   type NewMono,
 } from "../../monos/model/gigaMono";
+import type { WorkspaceStatus } from "../../monos/model/gigaWorkspace";
 
 export type AppSessionListing = {
   id: string;
@@ -217,6 +218,8 @@ export type AgentAppHost = {
     configure?(monoId: string, change: MonoChange): Promise<MonoSettings>;
   };
   agentFiles(monoId: string): Promise<MonoFiles>;
+  /** The shared Giga workspace, as the last ensure run left it. */
+  workspaceStatus?(monoId: string): Promise<WorkspaceStatus>;
   readAgentFile(
     monoId: string,
     path: AgentFilePath,
@@ -291,6 +294,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ["monos.send", ["monoId", "prompt", "whenBusy"]],
   ["monos.create", ["name", "harness", "model", "projects", "soul", "giga"]],
   ["monos.configure", ["monoId", "harness", "model", "name", "projects"]],
+  ["workspace.status", []],
   ["chat.card", [...CARD_FIELDS]],
 ]);
 
@@ -1162,6 +1166,12 @@ export async function handleAgentApp(
     return handleGigaMonos(source, action, input, host);
   if (action.startsWith("monos."))
     return handleMonos(source, requestId, action, input, host);
+  if (action === "workspace.status") {
+    const mono = host.monoOf?.(source.id);
+    if (!mono || !host.workspaceStatus)
+      throw new Error("Only a Mono or its habit runs can read the workspace");
+    return host.workspaceStatus(mono.id);
+  }
   if (action === "chat.card") {
     if (
       !host.postCard ||

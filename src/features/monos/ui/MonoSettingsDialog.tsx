@@ -6,6 +6,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
+import { turnOnGiga } from "../model/gigaWorkspaceRuntime";
 import { isImeComposition } from "../../../shared/lib/keyboard";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { Modal } from "../../../shared/ui/Modal";
@@ -253,7 +254,9 @@ function GeneralSection({
           label="Giga Mono"
           description="Can create and configure other Monos"
           on={giga}
-          onChange={(on) => saveMonoGiga(monoId, on)}
+          onChange={(on) =>
+            on ? void turnOnGiga(monoId) : saveMonoGiga(monoId, false)
+          }
         />
       </SettingGroup>
 

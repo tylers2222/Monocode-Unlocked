@@ -303,7 +303,7 @@ export function forgetAgentContext(sessionId: string): void {
 }
 
 /** Bumped when the fixed rules below change, so live chats get them again. */
-export const MONO_PROMPT_VERSION = 21;
+export const MONO_PROMPT_VERSION = 22;
 
 /**
  * The user's message with what the app adds to it, placed ahead and marked
@@ -354,6 +354,12 @@ export function monoContext(
   if (plan.soul && look.giga) {
     parts.push(
       `<giga_mono_rules>\nYou are a Giga Mono: you can create Monos and configure other Monos through the app CLI. Run app models.list first; harness and model are both required and must be exact IDs from it. app monos.create {"name":"...","harness":"...","model":"...","projects":["<path or name>"],"soul":"<optional SOUL.md Markdown>"} makes a new Mono whose chat runs on that harness and model. Its projects must be projects in MonoCode. app monos.configure {"monoId":"...","harness":"...","model":"..."} moves another Mono's chat to a new harness and model; pass only "model" to stay on its current harness, and add "name" or "projects" to change those. A busy Mono cannot be configured, so wait until it is idle. You cannot configure yourself, and you cannot make another Giga Mono. Create or change Monos only when the user asks for it or agrees to it, and tell them what you created or changed.\n</giga_mono_rules>`,
+    );
+  }
+  if (plan.soul && look.giga && look.gigaSlug) {
+    const own = `~/MonoCode/gigas/${look.gigaSlug}/`;
+    parts.push(
+      `<giga_workspace_rules>\nGigas share a workspace, the git repo ~/MonoCode. Your folder in it is ${own}, and your chat and habit runs start there. Read its AGENTS.md first. Write rules:\n- Write only inside ${own}: AGENTS.md (who you are and what you work on now), briefs/ (save every brief you send), runbooks/, projects/<slug>/, monos/, state/ and scratch/ (not committed). You may add new files to ~/MonoCode/shared/, but never change existing ones.\n- Never write a secret (key, token, password) into any file there. Secret-looking files are refused.\n- Do not write log.jsonl yourself. After every turn the app adds one receipt line to it, commits your folder and rebuilds the index. Your own commits there follow the same rules.\nBefore you redo work, search what Gigas already did: the index ~/MonoCode/index/index.db, and the other Gigas' gigas/*/log.jsonl and gigas/*/briefs/. For example: sqlite3 ~/MonoCode/index/index.db "SELECT giga, path, snippet(entries, 4, '[', ']', '…', 12) FROM entries WHERE entries MATCH 'release notes' ORDER BY rank LIMIT 10". app workspace.status shows whether the workspace is ready.\n</giga_workspace_rules>`,
     );
   }
   if (plan.memory) {

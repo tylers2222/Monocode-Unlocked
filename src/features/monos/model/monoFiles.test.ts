@@ -260,6 +260,18 @@ it("tells only a Giga Mono how to create and configure Monos", () => {
   expect(monoContext(look, files(), soul)).not.toContain("<giga_mono_rules>");
   const giga = monoContext({ ...look, giga: true }, files(), soul);
   expect(giga).toContain("<giga_mono_rules>");
+  // Defect: a Giga is not told where it may write, or how to search first.
+  expect(giga).not.toContain("<giga_workspace_rules>");
+  const placed = monoContext(
+    { ...look, giga: true, gigaSlug: "ops" },
+    files(),
+    soul,
+  );
+  expect(placed).toContain("Write only inside ~/MonoCode/gigas/ops/");
+  expect(placed).toContain("sqlite3 ~/MonoCode/index/index.db");
+  expect(
+    monoContext({ ...look, gigaSlug: "ops" }, files(), soul),
+  ).not.toContain("<giga_workspace_rules>");
   expect(giga).toContain("app monos.create");
   expect(giga).toContain("app monos.configure");
   expect(giga).toContain("app models.list");

@@ -13,6 +13,8 @@ import {
   monoForSession,
   saveMonoSessionId,
 } from "./mono";
+import { gigaFolder } from "./gigaWorkspace";
+import { gigaCwd } from "./gigaWorkspaceRuntime";
 import { forgetAgentContext } from "./monoFiles";
 import { forgetMonoRotation } from "./monoRotation";
 
@@ -21,7 +23,7 @@ const openingMonos = new Map<string, Promise<Session | undefined>>();
 /**
  * Load the Mono's conversation without opening or replacing a workspace tab.
  * A new one starts with Auto permissions in the home folder: no single
- * project is its own.
+ * project is its own. A Giga's starts in its folder of the Giga workspace.
  */
 export function ensureMonoSession(
   monoId: string,
@@ -53,8 +55,13 @@ async function loadMonoSession(
   }
   const home = await host.home();
   // Removed while the home folder was looked up.
-  if (!findMono(monoId)) return undefined;
-  const session: Session = { ...host.create(home), runtimeMode: "auto" };
+  const current = findMono(monoId);
+  if (!current) return undefined;
+  const cwd =
+    current.giga && current.gigaSlug
+      ? gigaFolder(home, current.gigaSlug)
+      : home;
+  const session: Session = { ...host.create(cwd), runtimeMode: "auto" };
   saveMonoSessionId(monoId, session.id);
   host.add(session);
   return session;
@@ -69,11 +76,12 @@ export async function resetMonoSession(
     replace(session: Session): void;
   },
 ): Promise<Session> {
-  const monoId = monoForSession(current.id)?.id;
+  const mono = monoForSession(current.id);
+  const monoId = mono?.id;
   const stopped = (await host.stop(current.id)) ?? current;
   const fresh = newSession(
     stopped.harness,
-    stopped.cwd,
+    (mono && gigaCwd(mono)) ?? stopped.cwd,
     stopped.model,
     stopped.runtimeMode,
     stopped.modelSettings,

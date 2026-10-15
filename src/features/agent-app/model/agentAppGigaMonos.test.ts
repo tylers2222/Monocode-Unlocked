@@ -99,6 +99,11 @@ function fixture(
     },
     agentFiles: vi.fn(async () => ({ soulHash: "seeded-hash" })),
     writeAgentFile,
+    workspaceStatus: vi.fn(async (monoId: string) => ({
+      root: "/home/MonoCode",
+      state: "ready",
+      gigaSlug: findMono(monoId)?.gigaSlug,
+    })),
   } as unknown as AgentAppHost;
   const run = (action: string, input: Record<string, unknown>) =>
     handleAgentApp(source, "req-1", action, input, host);
@@ -245,4 +250,24 @@ it("does not let a Giga Mono configure itself", async () => {
     run("monos.configure", { monoId: boss.id, model: "codex:test" }),
   ).rejects.toThrow("A Mono cannot configure itself");
   expect(monos.configure).not.toHaveBeenCalled();
+});
+
+// Defect: a project session reads the workspace, or a habit run is refused.
+it.each(["mono", "habit"] as const)(
+  "workspace.status answers a Giga's %s with its slug",
+  async (kind) => {
+    const { run } = fixture(kind);
+    await expect(run("workspace.status", {})).resolves.toEqual({
+      root: "/home/MonoCode",
+      state: "ready",
+      gigaSlug: "boss",
+    });
+  },
+);
+
+it("workspace.status refuses a project session", async () => {
+  const { run } = fixture("session");
+  await expect(run("workspace.status", {})).rejects.toThrow(
+    "Only a Mono or its habit runs can read the workspace",
+  );
 });

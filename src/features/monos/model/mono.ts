@@ -18,6 +18,7 @@ import {
   PROJECT_MASCOTS,
   projectMascot,
 } from "../../projects/model/projectMascots";
+import { gigaSlugFor } from "./gigaWorkspace";
 import { removeMonoBackground } from "./monoBackground";
 
 /** The project palette's colors, plus indigo for a Mono's ninth preset. */
@@ -47,6 +48,11 @@ export type Mono = {
   useSidebarFolders?: boolean;
   /** Can create and configure other Monos through the app CLI. */
   giga?: true;
+  /**
+   * Its folder in the shared Giga workspace, `~/MonoCode/gigas/<slug>/`.
+   * Set the first time Giga is turned on, and kept through renames.
+   */
+  gigaSlug?: string;
   /** Superseded by SOUL.md; only read once, to seed it. */
   instructions?: string;
   /**
@@ -174,6 +180,10 @@ function parseMono(value: unknown): Mono | undefined {
       : {}),
     ...(entry.useSidebarFolders === true ? { useSidebarFolders: true } : {}),
     ...(entry.giga === true ? { giga: true } : {}),
+    ...(typeof entry.gigaSlug === "string" &&
+    /^[a-z0-9][a-z0-9-]{0,47}$/.test(entry.gigaSlug)
+      ? { gigaSlug: entry.gigaSlug }
+      : {}),
     ...(instructions ? { instructions } : {}),
     ...(legacyProject ? { legacyProject } : {}),
   };
@@ -325,9 +335,32 @@ export function saveMonoMascot(monoId: string, mascot: string): void {
   updateMono(monoId, (mono) => ({ ...mono, mascot }));
 }
 
-export function saveMonoGiga(monoId: string, giga: boolean): void {
+/**
+ * Turning Giga on gives the Mono its workspace slug (once) and the shared
+ * workspace as its first project, and files the sessions it starts into its
+ * own sidebar folder. Turning it off keeps the slug and the projects.
+ */
+export function saveMonoGiga(
+  monoId: string,
+  giga: boolean,
+  workspaceRoot?: string,
+): void {
+  const taken = listMonos()
+    .filter((mono) => mono.id !== monoId)
+    .flatMap((mono) => (mono.gigaSlug ? [mono.gigaSlug] : []));
   updateMono(monoId, ({ giga: _, ...mono }) =>
-    giga ? { ...mono, giga: true } : mono,
+    giga
+      ? {
+          ...mono,
+          giga: true,
+          gigaSlug: mono.gigaSlug ?? gigaSlugFor(monoLook(mono).name, taken),
+          projects: workspaceRoot
+            ? [workspaceRoot, ...mono.projects]
+            : mono.projects,
+          showStartedSessionsInSidebar: true,
+          useSidebarFolders: true,
+        }
+      : mono,
   );
 }
 
@@ -391,6 +424,7 @@ export type MonoLook = {
   projects: MonoProject[];
   /** It can create and configure other Monos. */
   giga?: true;
+  gigaSlug?: string;
 };
 
 /** How a Mono looks, and the projects it works on by their rail labels. */
@@ -405,6 +439,7 @@ export function monoLook(mono: Mono): MonoLook {
       name: resolveTabGroupLabel(projectKey(path), labels, projectName(path)),
     })),
     ...(mono.giga ? { giga: true } : {}),
+    ...(mono.giga && mono.gigaSlug ? { gigaSlug: mono.gigaSlug } : {}),
   };
 }
 

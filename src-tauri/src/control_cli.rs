@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 37] = [
+const APP_ACTIONS: [&str; 38] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -97,6 +97,7 @@ const APP_ACTIONS: [&str; 37] = [
     "monos.send",
     "monos.create",
     "monos.configure",
+    "workspace.status",
     "worktrees.list",
     "worktrees.create",
     "folders.list",
@@ -243,6 +244,10 @@ Actions:
                   not changed; try again when it is idle. You cannot configure
                   yourself. Others get "Only a Giga Mono can create or
                   configure Monos".
+  workspace.status {}  Mono or its habits only. The shared Giga workspace
+                  ~/MonoCode: root, state ready or blocked (with reason),
+                  gigaSlug for a Giga, and lastEnsure {at, trigger, created,
+                  error}. A Giga writes only in ~/MonoCode/gigas/<gigaSlug>/.
   worktrees.list {}  Working copies in this project, with paths and branches.
   worktrees.create {"branch":"feature/name","base":"HEAD","existing":false}
                   Create a worktree on a named new branch from base (a branch
@@ -803,6 +808,16 @@ mod tests {
             assert!(app_help().contains(action));
         }
         assert!(app_help().contains("Giga Mono or its habits only"));
+    }
+
+    #[test]
+    fn app_mode_exposes_workspace_status_for_monos() {
+        assert!(matches!(
+            parse_args_for(&args(&["workspace.status", "--json", "{}"]), true),
+            Ok(Parsed::Call(action, _, _)) if action == "workspace.status"
+        ));
+        assert!(parse_args_for(&args(&["workspace.status"]), false).is_err());
+        assert!(app_help().contains("workspace.status {}  Mono or its habits only"));
     }
 
     #[test]

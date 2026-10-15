@@ -508,14 +508,16 @@ export function habitRunSessionId(monoSessionId: string): string {
 }
 
 /**
- * Where a run works: the Mono's first project, so that project's skills and
- * AGENTS.md load. A Mono with no project runs in its chat's folder.
+ * Where a run works: a Giga's own workspace folder, otherwise the Mono's
+ * first project, so that project's skills and AGENTS.md load. A Mono with no
+ * project runs in its chat's folder.
  */
 export function habitRunCwd(
   mono: Pick<Mono, "projects">,
   chatCwd: string,
+  gigaCwd?: string,
 ): string {
-  return mono.projects[0] ?? chatCwd;
+  return gigaCwd ?? mono.projects[0] ?? chatCwd;
 }
 
 /**

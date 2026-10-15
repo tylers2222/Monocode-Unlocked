@@ -635,6 +635,14 @@ import {
   MONO_BUSY_CONFIGURE_ERROR,
 } from "../features/monos/model/gigaMono";
 import {
+  ensureGigaWorkspace,
+  finishGigaTurn,
+  gigaWorkspaceStatus,
+  noteGigaTurnCall,
+  prepareGigaTurn,
+  setGigaWorkspacePoster,
+} from "../features/monos/model/gigaWorkspaceRuntime";
+import {
   warmNativeSkills,
   isNativeCommandPrompt,
 } from "../features/skills/model/skills";
@@ -7675,6 +7683,9 @@ function Workspace({
       let nativeProposalText = "";
       let completedProposal: OrchestrationProposal | undefined;
       void (async () => {
+        // A Giga's turn starts after its workspace is in place, or after a
+        // short wait: the workspace never holds the turn back.
+        await prepareGigaTurn(sessionId);
         let workCwd = initialWorkCwd;
         if (createDraftWorktree) {
           const tree = await createWorktree(
@@ -8056,7 +8067,9 @@ function Workspace({
               ...agentFiles,
               soulHash: `${agentFiles.soulHash}:${agentLook.name}:${agentLook.projects
                 .map((project) => project.path)
-                .join("|")}:${MONO_PROMPT_VERSION}${agentLook.giga ? ":giga" : ""}`,
+                .join(
+                  "|",
+                )}:${MONO_PROMPT_VERSION}${agentLook.giga ? `:giga:${agentLook.gigaSlug ?? ""}` : ""}`,
             };
           const agentPlan = handedFiles
             ? planAgentContext(
@@ -8301,6 +8314,7 @@ function Workspace({
               : controlOutcome;
           onSettled?.(outcome);
           turnWatchers.current.settle(sessionId, gen, outcome);
+          finishGigaTurn(sessionId, promptText, outcome.status);
         });
       return true;
     },
@@ -8382,6 +8396,11 @@ function Workspace({
     );
   };
   decideMonoBlockRef.current = decideMonoBlock;
+  setGigaWorkspacePoster((monoId, text) => {
+    const chatId = findMono(monoId)?.sessionId;
+    if (chatId)
+      appendToMono(chatId, { id: crypto.randomUUID(), role: "system", text });
+  });
 
   useMonoHabits({
     sessions: () => sessionsRef.current,
@@ -11381,7 +11400,18 @@ function Workspace({
             readAgentFile: (monoId, path) => readAgentFile(monoId, path),
             writeAgentFile: (monoId, path, text, hash) =>
               writeAgentFile(monoId, path, text, hash),
+            workspaceStatus: (monoId) => gigaWorkspaceStatus(monoId),
           },
+        );
+        void promise.then(
+          (result) =>
+            noteGigaTurnCall(
+              source.id,
+              payload.action,
+              `app-${source.id}-${payload.requestId}`,
+              result,
+            ),
+          () => undefined,
         );
         appReceipts.current.set(key, { signature, promise });
         void promise.catch(() => {
@@ -12137,6 +12167,7 @@ function Workspace({
     void invoke("set_traffic_lights_visible", { visible: true }).catch(
       () => {},
     );
+    void ensureGigaWorkspace("start");
   }, []);
 
   const onSessionNavigationOrder = useCallback((ids: readonly string[]) => {
