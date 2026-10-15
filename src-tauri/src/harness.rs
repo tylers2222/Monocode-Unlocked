@@ -265,6 +265,9 @@ impl HarnessHost {
         let prefix = format!("{session_id}#");
         let children: Vec<(String, Arc<LiveChild>)> = {
             let mut inner = self.lock_inner();
+            // Also when S has no child yet: a spawn of S between `begin_spawn`
+            // and `install_spawn` must not install after the kill.
+            *inner.epochs.entry(session_id.to_string()).or_insert(0) += 1;
             let keys: Vec<String> = inner
                 .children
                 .keys()
@@ -273,7 +276,9 @@ impl HarnessHost {
                 .collect();
             keys.into_iter()
                 .filter_map(|key| {
-                    *inner.epochs.entry(key.clone()).or_insert(0) += 1;
+                    if key != session_id {
+                        *inner.epochs.entry(key.clone()).or_insert(0) += 1;
+                    }
                     inner.children.remove(&key).map(|child| (key, child))
                 })
                 .collect()
@@ -3215,6 +3220,21 @@ pub(crate) mod tests {
             thread::sleep(Duration::from_millis(50));
         }
         false
+    }
+
+    #[test]
+    fn session_tree_kill_cancels_a_spawn_of_the_session_still_in_flight() {
+        let host = HarnessHost::new();
+        let (epoch, kill_all, _) = host.begin_spawn("s1");
+        host.kill_session_tree("s1");
+        let (live, child) = live_child();
+        assert!(
+            host.install_spawn("s1".to_string(), epoch, kill_all, live)
+                .is_some(),
+            "kill_session_tree let the in-flight spawn of s1 install: the child outlives the forget"
+        );
+        assert!(host.get("s1").is_none());
+        reap(child);
     }
 
     #[test]

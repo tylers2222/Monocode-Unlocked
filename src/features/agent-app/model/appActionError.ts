@@ -13,8 +13,8 @@ const HINTS = {
 /**
  * Every code an app action answers with. The one list in code: design 1.4's
  * `CallErrorCode` (PR 3) is this type. `unknown_token` and `turn_inactive`
- * come from `control.rs`, `no_token` from the CLI, `roster_unavailable` from
- * `resolveCaller`.
+ * come from `control.rs` and `roster_unavailable` from `resolveCaller`.
+ * Nothing sends `no_token` yet; PR 4a makes the CLI send it.
  */
 export type AppErrorCode =
   | keyof typeof HINTS

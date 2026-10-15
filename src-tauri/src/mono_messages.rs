@@ -68,7 +68,12 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            CHECK (notified_at IS NULL OR status IN ('unanswered', 'dropped')),
            CHECK (turn_id IS NULL OR delivery IN ('submit', 'steer')),
            CHECK (status <> 'dropped' OR wanting_reply = 1 OR delivered_at IS NULL),
-           CHECK (tool <> 'reply' OR (steers IS NULL AND action_type IS NULL))
+           CHECK (tool <> 'reply' OR (steers IS NULL AND action_type IS NULL)),
+           CHECK (part = 0 OR (tool = 'reply' AND status <> 'rejected')),
+           CHECK (status = 'rejected' OR (reply_to IS NULL) = (hop = 0)),
+           CHECK (id GLOB 'm_[a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7]'),
+           CHECK (payload_hash NOT GLOB '*[^0-9a-f]*'),
+           CHECK (request_id NOT GLOB '*[^A-Za-z0-9_-]*')
          );
          CREATE UNIQUE INDEX IF NOT EXISTS mono_messages_handle
            ON mono_messages (handled_by_session, turn_id, handle) WHERE handle IS NOT NULL;
@@ -394,6 +399,8 @@ pub struct MonoMessage {
     pub id: MessageId,
     pub request_id: RequestId,
     pub part: Part,
+    /// Dedupe is Rust's (design 3.4), so the web app never needs it.
+    #[serde(skip)]
     pub payload_hash: PayloadHash,
     pub tool: Tool,
     /// `None` only after the Mono was deleted.
@@ -982,6 +989,11 @@ mod tests {
         assert!(PayloadHash::parse(&"A".repeat(64)).is_none());
         assert!(SessionId::parse("chat#0").is_none());
         assert!(MonoId::parse("a_b").is_none());
+        assert!(RequestId::parse("a b").is_none());
+        assert!(RequestId::parse("req#1").is_none());
+        assert!(MessageId::parse("m_abcdefgh2345").is_some());
+        assert!(MessageId::parse("m_ABCDEFGHIJKL").is_none());
+        assert!(MessageId::parse("m_abcdefgh2341").is_none());
     }
 
     #[test]
@@ -996,6 +1008,7 @@ mod tests {
         );
         let json = serde_json::to_value(&open).unwrap();
         assert_eq!(json["status"], "open");
+        assert!(json.get("payloadHash").is_none(), "{json}");
         assert_eq!(json["wantingReply"], true);
         assert_eq!(json["handledBySession"], "a-chat");
         assert_eq!(json["delivery"], "submit");
@@ -1395,6 +1408,7 @@ mod tests {
                 ("tool", text("reply")),
                 ("reply_to", text("m_aaaaaaaaaaaa")),
                 ("steers", text("m_aaaaaaaaaaaa")),
+                ("hop", Sql::Integer(1)),
             ],
             "tool <> 'reply' OR (steers IS NULL AND action_type IS NULL)",
         );
@@ -1405,7 +1419,18 @@ mod tests {
         let store = store();
         let conn = store.lock_conn().unwrap();
         raw_insert(&conn, &row("delivered")).unwrap();
-        let again = with(row("delivered"), &[("id", text("m_bbbbbbbbbbbb"))]);
+        let reply = with(
+            row("delivered"),
+            &[
+                ("id", text("m_bbbbbbbbbbbb")),
+                ("request_id", text("reply-1")),
+                ("tool", text("reply")),
+                ("reply_to", text("m_aaaaaaaaaaaa")),
+                ("hop", Sql::Integer(1)),
+            ],
+        );
+        raw_insert(&conn, &reply).unwrap();
+        let again = with(reply, &[("id", text("m_cccccccccccc"))]);
         let error = raw_insert(&conn, &again).unwrap_err().to_string();
         assert!(
             error.contains(
@@ -1414,5 +1439,71 @@ mod tests {
             "{error}"
         );
         raw_insert(&conn, &with(again, &[("part", Sql::Integer(1))])).unwrap();
+    }
+
+    #[test]
+    fn check_refuses_a_second_part_of_a_send() {
+        assert_check_refuses(
+            "delivered",
+            &[("part", Sql::Integer(3))],
+            "part = 0 OR (tool = 'reply' AND status <> 'rejected')",
+        );
+    }
+
+    #[test]
+    fn check_refuses_a_second_part_of_a_rejected_reply() {
+        assert_check_refuses(
+            "rejected",
+            &[("tool", text("reply")), ("part", Sql::Integer(2))],
+            "part = 0 OR (tool = 'reply' AND status <> 'rejected')",
+        );
+    }
+
+    #[test]
+    fn check_refuses_an_accepted_reply_at_hop_0() {
+        assert_check_refuses(
+            "delivered",
+            &[
+                ("tool", text("reply")),
+                ("reply_to", text("m_aaaaaaaaaaaa")),
+            ],
+            "status = 'rejected' OR (reply_to IS NULL) = (hop = 0)",
+        );
+    }
+
+    #[test]
+    fn check_refuses_an_accepted_send_with_a_hop_but_no_thread() {
+        assert_check_refuses(
+            "delivered",
+            &[("hop", Sql::Integer(3))],
+            "status = 'rejected' OR (reply_to IS NULL) = (hop = 0)",
+        );
+    }
+
+    #[test]
+    fn check_refuses_a_message_id_outside_base32_lower_case() {
+        assert_check_refuses(
+            "delivered",
+            &[("id", text("m_ABCDEFGHIJKL"))],
+            "id GLOB 'm_[a-z2-7]",
+        );
+    }
+
+    #[test]
+    fn check_refuses_a_payload_hash_that_is_not_hex() {
+        assert_check_refuses(
+            "delivered",
+            &[("payload_hash", text(&"z".repeat(64)))],
+            "payload_hash NOT GLOB '*[^0-9a-f]*'",
+        );
+    }
+
+    #[test]
+    fn check_refuses_a_request_id_with_a_space() {
+        assert_check_refuses(
+            "delivered",
+            &[("request_id", text("req 2"))],
+            "request_id NOT GLOB '*[^A-Za-z0-9_-]*'",
+        );
     }
 }

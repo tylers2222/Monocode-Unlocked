@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 const APP_TURN_INACTIVE: &str = "MonoCode app access is inactive. Use /operator once in this thread to enable it, then call the CLI during an active agent turn. Retrying this request now will not enable access.";
-const UNKNOWN_TOKEN: &str = "This token is not valid in this MonoCode run. It ends when the app restarts, the window closes, or the session is deleted. Do not retry.";
+const UNKNOWN_TOKEN: &str = "This token is no longer valid. It ends when the app restarts, the window closes, its session is deleted or archived, or its orchestration run stops. Do not retry.";
 
 /// A token the app refuses. Both are final for that token, so neither is retryable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
