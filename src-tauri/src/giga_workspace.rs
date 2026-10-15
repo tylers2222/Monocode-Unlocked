@@ -403,6 +403,11 @@ fn ensure_tree(root: &Path, gigas: &[GigaFolder], report: &mut EnsureReport) -> 
             }
         }
     }
+    // The rules tell a Giga to query the index in its first turn.
+    if !root.join("index/index.db").exists() {
+        rebuild_index(root)?;
+        created.push("index/index.db".into());
+    }
     Ok(())
 }
 
@@ -1109,6 +1114,11 @@ mod tests {
         ] {
             assert!(root.join(rel).exists(), "missing {rel}");
         }
+        let entries: i64 = rusqlite::Connection::open(root.join("index/index.db"))
+            .unwrap()
+            .query_row("SELECT count(*) FROM entries", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(entries, 0, "a new workspace's index can be searched");
         let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
         assert!(agents.contains(MANAGED_START) && agents.contains(MANAGED_END));
         assert_eq!(
