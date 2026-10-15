@@ -1,3 +1,4 @@
+import type { AppErrorCode } from "../../agent-app/model/appActionError";
 import { isPersistableId } from "../../sessions/data/sessionStore";
 import { isMonoId } from "./mono";
 
@@ -136,22 +137,8 @@ export type RejectCode =
   | "handle_closed"
   | "ambiguous_reply";
 
-/** Failures that write no row. */
-export type CallErrorCode =
-  | "invalid_input"
-  | "request_id_reused"
-  | "unknown_token"
-  | "turn_inactive"
-  | "no_token"
-  | "not_a_mono"
-  | "unknown_action"
-  | "action_removed"
-  | "unknown_mono"
-  | "giga_only"
-  | "self_update"
-  | "mono_busy"
-  | "no_conversation"
-  | "roster_unavailable";
+/** Failures that write no row: every app action code, from the one list. */
+export type CallErrorCode = AppErrorCode;
 
 /** `open_handles` on ambiguous_reply, unknown_handle and no_open_handle; `candidates` on ambiguous_steer. */
 export type ToolError = {
