@@ -6,7 +6,7 @@ import {
   sessionConversationPage,
   type SessionReadOptions,
 } from "./sessionConversation";
-import { handleAgentApp, type AgentAppHost } from "./agentApp";
+import { handleAgentApp, repeatedAppCall, type AgentAppHost } from "./agentApp";
 import { appErrorResponse } from "./appActionError";
 
 /** The caller's Mono, a Giga with no projects and no chat loaded. */
@@ -225,6 +225,31 @@ it("reads another Mono's chat a page at a time", async () => {
   ).toMatchObject({
     turns: [{ turnId: "u1", user: { text: "Is CI green?" } }],
     nextBefore: null,
+  });
+});
+
+it("answers monos.read with a before that is not a turn ID with invalid_input", async () => {
+  const { run } = fixture();
+  expect(
+    await failure(run("monos.read", { monoId: "mono-2", before: "a1" })),
+  ).toMatchObject({
+    code: "invalid_input",
+    hint: "before is not a turn ID in this session",
+  });
+});
+
+it("answers a reused request ID with different input with request_id_reused", async () => {
+  const prior = { signature: "a", promise: Promise.resolve("first") };
+  expect(repeatedAppCall(undefined, "a")).toBeUndefined();
+  expect(await repeatedAppCall(prior, "a")).toBe("first");
+  expect(
+    await failure(Promise.resolve().then(() => repeatedAppCall(prior, "b"))),
+  ).toEqual({
+    ok: false,
+    code: "request_id_reused",
+    hint: "This request id was already used with different input. Use a new request id.",
+    error:
+      "This request id was already used with different input. Use a new request id.",
   });
 });
 

@@ -1,5 +1,6 @@
 import type { Block, Session } from "../../sessions/model/session";
 import { operatorUserPrompt } from "../../sessions/model/operatorCommand";
+import { AppActionError } from "./appActionError";
 
 type Exchange = { user: Block; assistants: Block[] };
 
@@ -24,10 +25,16 @@ export function sessionConversationPage(
 ) {
   const limit = options.limit ?? 3;
   if (!Number.isInteger(limit) || limit < 1 || limit > 3)
-    throw new Error("limit must be an integer from 1 to 3");
+    throw new AppActionError(
+      "invalid_input",
+      "limit must be an integer from 1 to 3",
+    );
   const maxChars = options.maxChars ?? 1200;
   if (!Number.isInteger(maxChars) || maxChars < 200 || maxChars > 6000)
-    throw new Error("maxChars must be an integer from 200 to 6000");
+    throw new AppActionError(
+      "invalid_input",
+      "maxChars must be an integer from 200 to 6000",
+    );
 
   const exchanges: Exchange[] = [];
   for (const block of session.blocks) {
@@ -50,7 +57,11 @@ export function sessionConversationPage(
   const end = options.before
     ? exchanges.findIndex((exchange) => exchange.user.id === options.before)
     : exchanges.length;
-  if (end < 0) throw new Error("before is not a turn ID in this session");
+  if (end < 0)
+    throw new AppActionError(
+      "invalid_input",
+      "before is not a turn ID in this session",
+    );
   const start = Math.max(0, end - limit);
   const selected = exchanges.slice(start, end);
   return {

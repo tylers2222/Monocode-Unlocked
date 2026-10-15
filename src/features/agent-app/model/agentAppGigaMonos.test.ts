@@ -41,13 +41,13 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 /**
- * Boss, the caller's Mono, and Shroom, another Mono on Codex. The caller is
- * Boss's own chat, one of its habit runs, or a plain project session; Boss is
- * Giga unless `giga` is false.
+ * Boss, the caller's Mono, and Shroom, another Mono on Codex; both have a
+ * chat. The caller is Boss's own chat, one of its habit runs, or a plain
+ * project session; Boss is Giga unless `giga` is false.
  */
 function fixture(
   kind: "mono" | "habit" | "session" = "mono",
-  { giga = true, shroomBusy = false } = {},
+  { giga = true, shroomBusy = false, preparingHandoff = false } = {},
 ) {
   const boss = createMono([], { name: "Boss" });
   if (giga) saveMonoGiga(boss.id, true);
@@ -57,8 +57,10 @@ function fixture(
     busy: shroomBusy,
   };
   saveMonoSessionId(shroom.id, shroomChat.id);
+  const bossChat = newSession("codex", "/home", "codex:test", "auto");
+  saveMonoSessionId(boss.id, bossChat.id);
   const source = newSession("codex", "/code/app", "codex:test");
-  const chats: Session[] = [shroomChat];
+  const chats: Session[] = [shroomChat, bossChat];
   const writeAgentFile = vi.fn(async () => "new-hash");
   const replace = vi.fn((next: Session) => {
     chats.splice(
@@ -90,18 +92,19 @@ function fixture(
           add: (chat) => chats.push(chat),
         }),
       ),
-      update: vi.fn(async (monoId, change) => {
-        const mono = findMono(monoId)!;
-        const chat = chats.find((entry) => entry.id === mono.sessionId)!;
-        return updateMonoSettings(mono, chat, change, {
+      update: vi.fn((monoId, change) =>
+        updateMonoSettings(monoId, change, {
+          openChat: async (id) =>
+            chats.find((chat) => chat.id === findMono(id)?.sessionId),
+          preparingHandoff: () => preparingHandoff,
           switchModel: (current, choice) => ({
             ...current,
             harness: choice.harness,
             model: choice.model.id,
           }),
           replace,
-        });
-      }),
+        }),
+      ),
     },
     agentFiles: vi.fn(async () => ({ soulHash: "seeded-hash" })),
     writeAgentFile,
@@ -208,6 +211,18 @@ it.each([
   expect(monos.create).not.toHaveBeenCalled();
 });
 
+// Defect: a name blank under the shared trim makes a Mono with its default
+// name, or one Rust refuses is created and then disappears.
+it("refuses a monos.create name the database would refuse", async () => {
+  const { run, monos } = fixture();
+  for (const name of ["\u0085", "x".repeat(257)])
+    await expect(
+      run("monos.create", { ...create, name }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+  expect(monos.create).not.toHaveBeenCalled();
+  expect(listMonos()).toHaveLength(2);
+});
+
 it("changes another Mono's model, keeping its harness when only a model is given", async () => {
   const { run, shroom, chats } = fixture();
   await expect(
@@ -253,12 +268,36 @@ it("leaves a busy Mono unchanged", async () => {
   expect(replace).not.toHaveBeenCalled();
 });
 
-it("does not let a Giga Mono update itself", async () => {
-  const { run, boss, monos } = fixture();
+it("leaves a Mono that is preparing a handoff unchanged", async () => {
+  const { run, shroom, chats, replace } = fixture("mono", {
+    preparingHandoff: true,
+  });
+  const before = JSON.stringify(listMonos());
   await expect(
-    run("monos.update", { monoId: boss.id, model: "codex:test" }),
+    run("monos.update", { monoId: shroom.id, model: "codex:last", name: "X" }),
+  ).rejects.toMatchObject({ code: "mono_busy" });
+  expect(JSON.stringify(listMonos())).toBe(before);
+  expect(chats[0].model).toBe("codex:test");
+  expect(replace).not.toHaveBeenCalled();
+});
+
+it("answers monos.update for an unknown Mono with unknown_mono", async () => {
+  const { run } = fixture();
+  const before = JSON.stringify(listMonos());
+  await expect(
+    run("monos.update", { monoId: "gone", name: "Renamed" }),
+  ).rejects.toMatchObject({ code: "unknown_mono" });
+  expect(JSON.stringify(listMonos())).toBe(before);
+});
+
+it("does not let a Giga Mono update itself", async () => {
+  const { run, boss, chats } = fixture();
+  const before = JSON.stringify(listMonos());
+  await expect(
+    run("monos.update", { monoId: boss.id, model: "codex:last", name: "Me" }),
   ).rejects.toMatchObject({ code: "self_update" });
-  expect(monos.update).not.toHaveBeenCalled();
+  expect(JSON.stringify(listMonos())).toBe(before);
+  expect(chats[1].model).toBe("codex:test");
 });
 
 // Defect: the rename reports success, the database refuses the name, and the

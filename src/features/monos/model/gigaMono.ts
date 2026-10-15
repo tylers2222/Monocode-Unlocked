@@ -10,6 +10,7 @@ import { reservedProjectNameError } from "../../projects/model/reservedProjectNa
 import { pathKey, projectName } from "../../../shared/lib/paths";
 import {
   createMono,
+  findMono,
   monoLook,
   saveMonoSessionId,
   updateMono,
@@ -116,27 +117,33 @@ export async function createMonoWithChat(
 }
 
 /**
- * Changes another Mono's name, projects, harness or model. A busy Mono is left
+ * Changes another Mono's name, projects, harness or model; undefined when
+ * there is no such Mono. A busy Mono, or one preparing a handoff, is left
  * exactly as it was, and so is one whose new model is refused.
  */
-export function updateMonoSettings(
-  mono: Mono,
-  chat: Session,
+export async function updateMonoSettings(
+  monoId: string,
   change: MonoChange,
   host: {
+    /** Its chat as the window has it now; opened, or created when it has none. */
+    openChat(monoId: string): Promise<Session | undefined>;
+    preparingHandoff(chat: Session): boolean;
     switchModel(chat: Session, choice: AgentModelChoice): Session;
     replace(chat: Session): void;
   },
-): MonoSettings {
-  if (chat.busy) throw monoError("mono_busy");
+): Promise<MonoSettings | undefined> {
+  if (!findMono(monoId)) return undefined;
+  const chat = await host.openChat(monoId);
+  if (!chat || !findMono(monoId)) return undefined;
+  if (chat.busy || host.preparingHandoff(chat)) throw monoError("mono_busy");
   const choice = change.choice?.(chat.harness);
   const next = choice ? host.switchModel(chat, choice) : chat;
-  const updated = updateMono(mono.id, (current) => ({
+  const updated = updateMono(monoId, (current) => ({
     ...current,
     ...(change.name !== undefined ? { name: change.name } : {}),
     ...(change.projects ? { projects: [...change.projects] } : {}),
   }));
-  if (!updated) throw monoError("unknown_mono");
+  if (!updated) return undefined;
   if (next !== chat) host.replace(next);
   return monoSettings(updated, next);
 }

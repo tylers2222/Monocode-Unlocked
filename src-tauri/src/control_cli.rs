@@ -227,6 +227,8 @@ Actions:
                   until it has a chat). Unknown IDs get code unknown_mono.
   monos.read     {"monoId":"...","before":"<turnId>","limit":3,"maxChars":1200}
                   Read another Mono's chat. Paging works as in sessions.read.
+                  Codes: unknown_mono, no_conversation (it has no chat yet),
+                  invalid_input (a before that is not a turn ID).
   monos.send     {"monoId":"...","prompt":"...","whenBusy":"steer"}
                   Send a message into another Mono's chat. It is marked as
                   from you. An idle Mono runs it as a new turn. A busy Mono
@@ -242,7 +244,9 @@ Actions:
                   that harness and model. harness and model are required; run
                   models.list for exact IDs. projects must be projects in
                   MonoCode; pass [] for none. soul is optional and becomes its
-                  SOUL.md. giga can only be false. Returns monoId and settings.
+                  SOUL.md. giga can only be false. name is 1 to 256
+                  characters. Returns monoId and settings. Codes: giga_only
+                  for other callers, invalid_input.
   monos.update   {"monoId":"...","harness":"codex","model":"codex:...",
                   "name":"...","projects":["<path or name>"]}
                   Giga Mono or its habits only. Change another Mono's chat
@@ -571,7 +575,18 @@ fn parse_args(args: &[String]) -> Result<Parsed, ParseError> {
     parse_args_for(args, false)
 }
 
+/// In app mode every refusal carries a code: `unknown_action` for the action,
+/// `invalid_input` for the input, flags and request ID.
 fn parse_args_for(args: &[String], app_mode: bool) -> Result<Parsed, ParseError> {
+    parse_call(args, app_mode).map_err(|mut error| {
+        if app_mode && error.code.is_none() {
+            error.code = Some("invalid_input");
+        }
+        error
+    })
+}
+
+fn parse_call(args: &[String], app_mode: bool) -> Result<Parsed, ParseError> {
     let is_help = |value: &str| matches!(value, "help" | "--help" | "-h");
     let Some(action) = args.first() else {
         return Ok(Parsed::Help);
@@ -920,6 +935,28 @@ mod tests {
         let response = refused.response();
         assert_eq!(response["code"], "unknown_action");
         assert_eq!(response["hint"], response["error"]);
+    }
+
+    #[test]
+    fn app_mode_input_refusals_carry_invalid_input() {
+        for case in [
+            &["monos.get", "--json", "{bad"][..],
+            &["monos.get", "--json", "[]"],
+            &["monos.get", "--request-id", "a b"],
+            &["monos.get", "--json"],
+        ] {
+            let Err(refused) = parse_args_for(&args(case), true) else {
+                panic!("{case:?} was accepted");
+            };
+            let response = refused.response();
+            assert_eq!(response["code"], "invalid_input", "{case:?}");
+            assert_eq!(response["hint"], response["error"], "{case:?}");
+        }
+        // The control CLI keeps its uncoded errors.
+        let Err(refused) = parse_args_for(&args(&["get", "--json", "{bad"]), false) else {
+            panic!("bad JSON was accepted");
+        };
+        assert!(refused.response().get("code").is_none());
     }
 
     #[test]

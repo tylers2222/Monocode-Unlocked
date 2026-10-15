@@ -10,8 +10,16 @@ const HINTS = {
     "That Mono is busy, so nothing was changed. Update it again after its turn ends",
 } as const;
 
+/**
+ * Every code an app action answers with. The one list in code: design 1.4's
+ * `CallErrorCode` (PR 3) derives from it rather than repeating it.
+ */
 export type AppErrorCode =
-  keyof typeof HINTS | "invalid_input" | "unknown_action" | "action_removed";
+  | keyof typeof HINTS
+  | "invalid_input"
+  | "request_id_reused"
+  | "unknown_action"
+  | "action_removed";
 
 /**
  * An app action the app refused for a reason the agent can act on. `hint`

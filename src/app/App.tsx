@@ -22,6 +22,7 @@ import { updateSessionState } from "./model/sessionState";
 import {
   handleAgentApp,
   canAccessAgentAppProject,
+  repeatedAppCall,
   type AppSessionListing,
   type AppSessionPlacement,
 } from "../features/agent-app/model/agentApp";
@@ -10764,12 +10765,11 @@ function Workspace({
           throw new Error("This session cannot use the MonoCode app CLI");
         const key = `${source.id}:${payload.requestId}`;
         const signature = JSON.stringify([payload.action, payload.input]);
-        const previous = appReceipts.current.get(key);
-        if (previous) {
-          if (previous.signature !== signature)
-            throw new Error("Request ID was already used with different input");
-          return previous.promise;
-        }
+        const previous = repeatedAppCall(
+          appReceipts.current.get(key),
+          signature,
+        );
+        if (previous) return previous;
         const sourceMono =
           monoForSession(source.id) ?? findMono(habitRunMono(source.id) ?? "");
         const canAccessProject = (cwd: string) =>
@@ -11347,28 +11347,30 @@ function Workspace({
                     setSessions(sessionsRef.current);
                   },
                 }),
-              update: async (monoId, change) => {
-                if (!findMono(monoId)) throw monoError("unknown_mono");
-                // A Mono never opened gets its chat now, as opening it would.
-                const opened = await ensureMonoSession(monoId, {
-                  home: homeDir,
-                  load: (id) => ensureOpenSessionRef.current(id),
-                  create: newDefaultSession,
-                  add: (created) => {
-                    sessionsRef.current = [...sessionsRef.current, created];
-                    setSessions(sessionsRef.current);
+              update: (monoId, change) =>
+                updateMonoSettings(monoId, change, {
+                  openChat: async (id) => {
+                    // A Mono never opened gets its chat now, as opening it would.
+                    const opened = await ensureMonoSession(id, {
+                      home: homeDir,
+                      load: (sessionId) =>
+                        ensureOpenSessionRef.current(sessionId),
+                      create: newDefaultSession,
+                      add: (created) => {
+                        sessionsRef.current = [...sessionsRef.current, created];
+                        setSessions(sessionsRef.current);
+                      },
+                    });
+                    if (!opened) return undefined;
+                    // Output already received can end the turn it is busy with.
+                    flushHarnessEvents();
+                    return (
+                      sessionsRef.current.find(
+                        (session) => session.id === opened.id,
+                      ) ?? opened
+                    );
                   },
-                });
-                const mono = findMono(monoId);
-                if (!opened || !mono) throw monoError("unknown_mono");
-                // Output already received can end the turn it is busy with.
-                flushHarnessEvents();
-                const chat =
-                  sessionsRef.current.find(
-                    (session) => session.id === opened.id,
-                  ) ?? opened;
-                if (isPreparingHandoff(chat)) throw monoError("mono_busy");
-                return updateMonoSettings(mono, chat, change, {
+                  preparingHandoff: isPreparingHandoff,
                   switchModel: (current, { harness, model }) => {
                     const plan = planComposerSwitch(current, harness);
                     if (plan.kind === "empty")
@@ -11385,8 +11387,7 @@ function Workspace({
                         session.id === next.id ? next : session,
                       ),
                     ),
-                });
-              },
+                }),
             },
             habits: { load: loadHabits, update: updateHabits },
             agentFiles: (monoId) => loadMonoFiles(monoId),

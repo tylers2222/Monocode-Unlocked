@@ -219,7 +219,7 @@ export type AgentAppHost = {
     ): Promise<T>;
   };
   monos?: {
-    /** Every Mono in rail order, with the chats already loaded. */
+    /** Every Mono in rail order, with its chat when the window has it loaded. */
     list(): Promise<AppMonoEntry[]>;
     /** One Mono with its chat loaded; undefined when there is no such Mono. */
     get(monoId: string): Promise<AppMonoEntry | undefined>;
@@ -238,10 +238,13 @@ export type AgentAppHost = {
     /** The choice and projects are already checked. */
     create?(settings: NewMono): Promise<MonoSettings>;
     /**
-     * Throws unknown_mono, and mono_busy without changing it. Writes the
-     * roster through `updateMono`.
+     * Undefined when there is no such Mono. Throws mono_busy without changing
+     * it. Writes the roster through `updateMono`.
      */
-    update?(monoId: string, change: MonoChange): Promise<MonoSettings>;
+    update?(
+      monoId: string,
+      change: MonoChange,
+    ): Promise<MonoSettings | undefined>;
   };
   agentFiles(monoId: string): Promise<MonoFiles>;
   /** The shared Giga workspace, as the last ensure run left it. */
@@ -951,6 +954,23 @@ export function monoMessageText(
   return `<mono_message from="${name}" monoId="${from.id}">\n${prompt}\n</mono_message>`;
 }
 
+/**
+ * A call already made with this request ID: the same result again, or
+ * request_id_reused when the input differs.
+ */
+export function repeatedAppCall<T>(
+  previous: { signature: string; promise: Promise<T> } | undefined,
+  signature: string,
+): Promise<T> | undefined {
+  if (!previous) return undefined;
+  if (previous.signature !== signature)
+    throw new AppActionError(
+      "request_id_reused",
+      "This request id was already used with different input. Use a new request id.",
+    );
+  return previous.promise;
+}
+
 /** Runs an input check, reporting what it refuses as invalid_input. */
 function checked<T>(parse: () => T): T {
   try {
@@ -1079,7 +1099,7 @@ async function handleGigaMonos(
     throw monoError("giga_only");
   if (action === "monos.create") {
     const settings = checked((): NewMono => {
-      const name = requiredString(input.name, "name", 80);
+      const name = monoName(input.name);
       const choice = requireHarnessModel(input);
       if (input.projects === undefined)
         throw new Error("projects is required; pass [] for none");
@@ -1142,7 +1162,9 @@ async function handleGigaMonos(
         : {}),
     };
   });
-  return monos.update(monoId, change);
+  const updated = await monos.update(monoId, change);
+  if (!updated) throw monoError("unknown_mono");
+  return updated;
 }
 
 function artifactKind(value: unknown): ArtifactKind {

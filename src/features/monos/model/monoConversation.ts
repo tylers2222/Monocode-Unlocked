@@ -1,3 +1,4 @@
+import { AppActionError } from "../../agent-app/model/appActionError";
 import {
   sessionConversationPage,
   type SessionReadOptions,
@@ -19,8 +20,15 @@ export async function readMonoConversation(
   let before = session.monoTranscript?.before ?? null;
   let readOptions = options;
   if (options.before && !blocks.some((block) => block.id === options.before)) {
+    // The session was just loaded, so a failed lookup here means no such
+    // block: Rust answers an unknown block ID with "Query returned no rows".
     const page = await getMonoTranscriptPage(session.id, {
       beforeBlockId: options.before,
+    }).catch(() => {
+      throw new AppActionError(
+        "invalid_input",
+        "before is not a turn ID in this session",
+      );
     });
     blocks = page.blocks;
     before = page.before;
