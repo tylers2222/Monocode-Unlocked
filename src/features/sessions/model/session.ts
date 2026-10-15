@@ -453,7 +453,7 @@ export type Session = {
   quickLaunchAccepted?: boolean;
   /** Internal worker: displayed in its lead's panel rather than a workspace tab. */
   orchestrationLeadId?: string;
-  /** Temporary Inbox conversation: shares the runtime, never saved as a session. */
+  /** Inbox conversation: shares the runtime, saved only as a hidden record. */
   inboxAsk?: InboxAskContext;
   id: string;
   harness: HarnessId;

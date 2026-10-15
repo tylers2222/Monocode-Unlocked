@@ -6,7 +6,7 @@ import {
   upsertSession,
   persistFingerprint,
 } from "./sessionStore";
-import type { Session } from "../model/session";
+import { newSession, type Session } from "../model/session";
 import {
   monoSessionCompletionMessage,
   monoSessionCompletionResult,
@@ -52,6 +52,21 @@ function saved(session: Session) {
 }
 
 describe("Mono database pagination and writes", () => {
+  it("saves a new Mono chat before its first turn", async () => {
+    const chat = {
+      ...newSession("codex", "/Users/me", "model"),
+      id: "mono-new",
+    };
+    call.mockResolvedValueOnce(saved(chat));
+    expect(await upsertSession(chat)).not.toBeNull();
+    expect(call).toHaveBeenCalledWith(
+      "mono_session_upsert",
+      expect.objectContaining({
+        session: expect.objectContaining({ id: "mono-new", blocks: [] }),
+        blocksChanged: true,
+      }),
+    );
+  });
   it("keeps document and visual references on the source turn after saving and reopening", async () => {
     let session = await load();
     const card = {

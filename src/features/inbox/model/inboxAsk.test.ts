@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { inboxAskKey, inboxAskPrompt } from "./inboxAsk";
 import type { InboxItem } from "./githubTasks";
 import { newSession } from "../../sessions/model/session";
-import { shouldPersistSession, upsertSession } from "../../sessions/data/sessionStore";
+import {
+  sanitizeSessionForPersist,
+  shouldPersistSession,
+} from "../../sessions/data/sessionStore";
 import {
   collectWorkspaceSnapshot,
   hydrateWorkspaceSnapshot,
@@ -72,7 +75,7 @@ describe("inbox sessions", () => {
     }
   });
 
-  it("never persists Ask, including real messages and a running provider thread", async () => {
+  it("saves Ask as a hidden record but never restores it as a chat", () => {
     const session = {
       ...newSession("codex", "/project"),
       inboxAsk: context,
@@ -80,8 +83,12 @@ describe("inbox sessions", () => {
       providerSessionId: "provider-thread",
       blocks: [{ id: "u1", role: "user" as const, text: "Explain the PR" }],
     };
-    expect(shouldPersistSession(session)).toBe(false);
-    expect(await upsertSession(session)).toBeNull();
+    // It can change files, so the store keeps it, out of the sidebar.
+    expect(shouldPersistSession(session)).toBe(true);
+    expect(sanitizeSessionForPersist(session)).toMatchObject({
+      sidebarHidden: true,
+      providerSessionId: "provider-thread",
+    });
     expect(inFlightRefs([session], [])).toEqual([]);
     expect(workspaceFromResumed([session])).toBeNull();
   });

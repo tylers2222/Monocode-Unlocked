@@ -128,16 +128,18 @@ type SessionUpsertPayload = {
   automationId?: string;
 };
 
-/** Only real chats belong in project history — blank tabs stay ephemeral. */
+/**
+ * Only real chats belong in project history — blank tabs stay ephemeral. A
+ * Mono's conversation is saved from the moment it exists. An Inbox Ask can
+ * change files, so it is saved too, out of the sidebar, as a record.
+ */
 export function shouldPersistSession(session: Session): boolean {
   return (
     !session.ephemeral &&
-    !session.inboxAsk &&
     !isRemoteProjectPath(session.cwd) &&
     session.cwd !== "~" &&
     (session.blocks.some((block) => block.role === "user") ||
-      (isMonoSession(session.id) &&
-        (session.blocks.length > 0 || !!session.monoTranscript)))
+      isMonoSession(session.id))
   );
 }
 
@@ -166,7 +168,9 @@ function persistableMeta(
     modelSettings: session.modelSettings,
     runtimeMode: session.runtimeMode,
     title: session.title,
-    ...(session.sidebarHidden === true ? { sidebarHidden: true } : {}),
+    ...(session.sidebarHidden === true || session.inboxAsk
+      ? { sidebarHidden: true }
+      : {}),
     ...(queuedMessages.length
       ? {
           queuedMessages,

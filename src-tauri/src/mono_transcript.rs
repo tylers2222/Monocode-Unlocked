@@ -498,6 +498,25 @@ mod tests {
     }
 
     #[test]
+    fn saves_a_new_mono_chat_before_its_first_turn() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let empty = sample("new-mono", 0);
+        upsert_with_mode(&conn, &empty, None, None, true, false).unwrap();
+        let stored = session_store::get_session_metadata(&conn, "new-mono")
+            .unwrap()
+            .expect("the chat is saved with no turns");
+        assert_eq!(
+            (stored.harness.as_str(), stored.cwd.as_str()),
+            ("codex", "/tmp")
+        );
+        // Its first turn then appends onto the saved, empty transcript.
+        let first = sample("new-mono", 1);
+        upsert_with_mode(&conn, &first, None, None, true, true).unwrap();
+        assert_eq!(page(&conn, "new-mono", None, None).unwrap().blocks.len(), 2);
+    }
+
+    #[test]
     fn migrates_only_the_requested_mono_and_pages_ten_complete_turns() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
