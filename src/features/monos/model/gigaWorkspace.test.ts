@@ -54,16 +54,24 @@ it("writes a receipt line with exactly the contract's fields", () => {
   );
 });
 
-// Defect: the receipt names calls that are not sends or starts, or names a
-// retried call twice.
-it("records each monos.send and sessions.start of a turn once", () => {
+// Defect: the receipt names calls that are not sends to a Mono or starts,
+// or names a retried call twice.
+it("records each message to a Mono and each sessions.start of a turn once", () => {
+  const isMono = (id: string) => id === "m2";
+  const record = (
+    calls: TurnCalls,
+    action: string,
+    requestId: string,
+    input: Record<string, unknown>,
+    result: unknown,
+  ) => recordTurnCall(calls, action, requestId, input, result, isMono);
+  const sent = { message_id: "m_aaaaaaaaaaaa", status: "delivered" };
   let calls: TurnCalls = { sent: [], started: [] };
-  calls = recordTurnCall(calls, "monos.send", "app-s-1", { monoId: "m2" });
-  calls = recordTurnCall(calls, "monos.send", "app-s-1", { monoId: "m2" });
-  calls = recordTurnCall(calls, "sessions.start", "app-s-2", {
-    id: "app-s-2",
-  });
-  calls = recordTurnCall(calls, "notes.write", "app-s-3", { id: "n" });
+  calls = record(calls, "messages.send", "app-s-1", { send_to: "m2" }, sent);
+  calls = record(calls, "messages.send", "app-s-1", { send_to: "m2" }, sent);
+  calls = record(calls, "messages.send", "app-s-4", { send_to: "p" }, sent);
+  calls = record(calls, "sessions.start", "app-s-2", {}, { id: "app-s-2" });
+  calls = record(calls, "notes.write", "app-s-3", {}, { id: "n" });
   expect(calls).toEqual({
     sent: [{ requestId: "app-s-1", toMonoId: "m2" }],
     started: [{ requestId: "app-s-2", sessionId: "app-s-2" }],

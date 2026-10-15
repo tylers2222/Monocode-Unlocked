@@ -140,14 +140,21 @@ it("says how to keep memory and update the soul only at the user's request", () 
   expect(full).toContain('"notifyOnComplete":true');
   expect(full).toContain('"whenBusy":"steer"');
   expect(full).toContain('"whenBusy":"followUp"');
-  expect(full).toContain("monos.send");
-  expect(full).toContain("<mono_message>");
   const rules = (tag: string) =>
     full.match(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`))?.[0] ?? "";
+  // A Mono learns every messaging tool it can call, and not the removed one.
   const messaging = rules("mono_messaging_rules");
-  expect(messaging).toMatch(/monos\.send with the monoId from the tag/);
-  expect(messaging).toContain("not from the user");
-  expect(messaging).toContain("thanks or OK");
+  for (const tool of [
+    "messages.get_monos",
+    "messages.send",
+    "messages.reply",
+    "get_monos",
+    "send_message",
+    "wanting_reply",
+    "<mono_message>",
+  ])
+    expect(messaging).toContain(tool);
+  expect(full).not.toContain("monos.send");
   const delegation = rules("session_delegation_rules");
   expect(delegation).toMatch(/pass harness and model to sessions\.start/);
   expect(delegation).toContain("models.list");

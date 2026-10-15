@@ -176,6 +176,15 @@ pub struct ControlHost {
     endpoint: String,
     inner: Arc<Mutex<Inner>>,
 }
+impl ControlHost {
+    /// Sessions with an authorized turn: the gate's `running` (design 6).
+    pub(crate) fn running_sessions(&self) -> std::collections::HashSet<String> {
+        self.inner
+            .lock()
+            .map(|inner| inner.active.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+}
 
 fn paths_overlap(a: &str, b: &str) -> bool {
     a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))

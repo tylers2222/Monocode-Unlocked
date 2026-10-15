@@ -6,14 +6,21 @@
 //! Session ids are plain text, not foreign keys: sender sessions can be
 //! unpersisted, and a Mono reset deletes its chat.
 
-// PR 4a's `submit` is the first caller outside the tests.
-#![cfg_attr(not(test), allow(dead_code))]
+use std::collections::HashSet;
+use std::fmt;
 
-use rusqlite::{params, Connection, OptionalExtension, Row};
-use serde::{Serialize, Serializer};
+use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
+use serde::{Deserialize, Serialize, Serializer};
+use serde_json::Value;
+use tauri::{State, WebviewWindow};
 
+use crate::control::ControlHost;
+use crate::mono_gate::{
+    self, Caller, CallerKind, Decision, Facts, Input, OpenHandle, Recipient, Refusal, Route,
+    Target, Waiting,
+};
 use crate::mono_roster::validate_mono_id;
-use crate::session_store::validate_id;
+use crate::session_store::{validate_id, SessionStore};
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -262,10 +269,6 @@ impl Body {
     pub fn text(&self) -> &str {
         &self.text
     }
-
-    pub fn chars(&self) -> u32 {
-        self.chars
-    }
 }
 
 /// A message's number in one receiving turn, `#1` to `#99`.
@@ -284,6 +287,12 @@ impl Handle {
 impl Serialize for Handle {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(&format_args!("#{}", self.0))
+    }
+}
+
+impl fmt::Display for Handle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "#{}", self.0)
     }
 }
 
@@ -762,6 +771,644 @@ fn parse_row(row: &Row) -> rusqlite::Result<MonoMessage> {
     })
 }
 
+/// One session of the web app's live list (design 6): the sessions loaded in
+/// the caller's window, and the addressed session when only `sessions` has it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LiveSession {
+    pub session_id: String,
+    pub steerable: bool,
+    /// A session in one of the caller's projects that is not a Mono chat,
+    /// habit run or orchestration session.
+    pub own_project: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CallerArg {
+    kind: String,
+    mono_id: String,
+    session_id: String,
+}
+
+impl CallerArg {
+    fn parse(self) -> Result<Caller, String> {
+        Ok(Caller {
+            kind: match self.kind.as_str() {
+                "mono_chat" => CallerKind::MonoChat,
+                "habit_run" => CallerKind::HabitRun,
+                _ => return Err("Invalid caller kind".into()),
+            },
+            mono_id: MonoId::parse(&self.mono_id).ok_or("Invalid caller Mono id")?,
+            session_id: SessionId::parse(&self.session_id).ok_or("Invalid caller session id")?,
+        })
+    }
+}
+
+/// A call that failed: a refusal (no row) or a rejection (`message_id` names
+/// its row). `open_handles` is present on the reply codes that list them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ToolError {
+    pub code: &'static str,
+    pub hint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<MessageId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_handles: Option<Vec<OpenHandle>>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub duplicate: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum Submitted {
+    /// The rows of an accepted call. Only a call that is not a duplicate is
+    /// routed (design 5.5 rule 1).
+    Accepted {
+        messages: Vec<MonoMessage>,
+        /// The messages this reply answered, with their handles.
+        answered: Vec<Answered>,
+        duplicate: bool,
+    },
+    Failed {
+        error: ToolError,
+    },
+}
+
+fn refused(code: Refusal, hint: String) -> Submitted {
+    Submitted::Failed {
+        error: ToolError {
+            code: code.as_str(),
+            hint,
+            message_id: None,
+            open_handles: None,
+            duplicate: false,
+        },
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Answered {
+    pub handle: Option<Handle>,
+    pub message_id: MessageId,
+}
+
+fn accept_outcome(
+    conn: &Connection,
+    messages: Vec<MonoMessage>,
+    duplicate: bool,
+) -> rusqlite::Result<Submitted> {
+    let mut answered = Vec::new();
+    for message_id in messages
+        .iter()
+        .filter_map(|message| message.reply_to.clone())
+    {
+        let handle = get(conn, &message_id)?.and_then(|message| match message.status {
+            Status::Open { slot, .. } | Status::Answered { slot, .. } => {
+                slot.map(|slot| slot.handle)
+            }
+            Status::Unanswered { slot, .. } => Some(slot.handle),
+            _ => None,
+        });
+        answered.push(Answered { handle, message_id });
+    }
+    Ok(Submitted::Accepted {
+        messages,
+        answered,
+        duplicate,
+    })
+}
+
+/// `m_` and 12 random base32 characters.
+fn new_message_id() -> MessageId {
+    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+    let bytes = *uuid::Uuid::new_v4().as_bytes();
+    // Bytes 9 to 15 and the low half of byte 0 are random in a v4 uuid.
+    let bits = bytes[9..]
+        .iter()
+        .fold(u64::from(bytes[0] & 0x0f), |bits, byte| {
+            bits << 8 | u64::from(*byte)
+        });
+    let tail: String = (0..12)
+        .map(|index| char::from(ALPHABET[((bits >> (5 * index)) & 31) as usize]))
+        .collect();
+    MessageId::parse(&format!("m_{tail}")).expect("base32 id")
+}
+
+/// The caller's `monos` row: `None` when it is gone, else its current chat.
+fn mono_chat(conn: &Connection, mono_id: &MonoId) -> rusqlite::Result<Option<Option<SessionId>>> {
+    let data: Option<String> = conn
+        .query_row(
+            "SELECT data_json FROM monos WHERE id = ?1",
+            [mono_id.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(data.map(|data| {
+        serde_json::from_str::<Value>(&data)
+            .ok()
+            .and_then(|data| data.get("sessionId")?.as_str().and_then(SessionId::parse))
+    }))
+}
+
+fn target(
+    conn: &Connection,
+    session: SessionId,
+    live: &[LiveSession],
+    running: &HashSet<String>,
+) -> rusqlite::Result<Target> {
+    let listed = live
+        .iter()
+        .find(|entry| entry.session_id == session.as_str());
+    // The live list is a snapshot from before an await, so a clear that ran
+    // since wins over it.
+    let ended = conn
+        .query_row(
+            "SELECT 1 FROM mono_session_ends WHERE session_id = ?1",
+            [session.as_str()],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    let known = listed.is_some()
+        || conn
+            .query_row(
+                "SELECT 1 FROM sessions WHERE id = ?1 AND worktree_removed = 0",
+                [session.as_str()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+    Ok(Target {
+        exists: known && !ended,
+        running: running.contains(session.as_str()),
+        steerable: listed.is_some_and(|entry| entry.steerable),
+        session,
+    })
+}
+
+fn recipient(
+    conn: &Connection,
+    send_to: &str,
+    live: &[LiveSession],
+    running: &HashSet<String>,
+) -> rusqlite::Result<Recipient> {
+    if let Some(mono_id) = MonoId::parse(send_to) {
+        if let Some(chat) = mono_chat(conn, &mono_id)? {
+            let chat = chat
+                .map(|session| target(conn, session, live, running))
+                .transpose()?;
+            return Ok(Recipient::Mono { mono_id, chat });
+        }
+    }
+    if let Some(session) = SessionId::parse(send_to) {
+        let own_project = live
+            .iter()
+            .any(|entry| entry.session_id == send_to && entry.own_project);
+        let target = target(conn, session, live, running)?;
+        if target.exists {
+            return Ok(Recipient::Session {
+                target,
+                own_project,
+            });
+        }
+    }
+    Ok(Recipient::Unknown)
+}
+
+/// The messages handed to `session` that still wait for its reply.
+fn waiting(
+    conn: &Connection,
+    session: &SessionId,
+    live: &[LiveSession],
+    running: &HashSet<String>,
+) -> rusqlite::Result<Vec<Waiting>> {
+    let messages = conn
+        .prepare(&format!(
+            "{SELECT} WHERE handled_by_session = ?1 AND status = 'open' AND turn_id IS NOT NULL
+             ORDER BY created_at, id"
+        ))?
+        .query_map([session.as_str()], parse_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    messages
+        .into_iter()
+        .filter_map(|message| match &message.status {
+            Status::Open {
+                slot: Some(slot), ..
+            } => Some((slot.handle, message)),
+            _ => None,
+        })
+        .map(|(handle, message)| {
+            let from = match &message.from_mono_id {
+                Some(mono_id) => conn
+                    .query_row(
+                        "SELECT name FROM monos WHERE id = ?1",
+                        [mono_id.as_str()],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .unwrap_or_default(),
+                None => String::new(),
+            };
+            let sender = target(conn, message.from_session_id.clone(), live, running)?;
+            Ok(Waiting {
+                message,
+                handle,
+                from,
+                sender,
+            })
+        })
+        .collect()
+}
+
+/// Design 6: load the facts, decide, write the rows, in one `BEGIN
+/// IMMEDIATE` transaction, so dedupe cannot race. `running` is read from
+/// `ControlHost` before this runs: the control lock is never held inside a
+/// store transaction (design 5.3).
+pub fn submit(
+    conn: &Connection,
+    caller: &Caller,
+    request_id: &RequestId,
+    input: Result<Input, String>,
+    live: &[LiveSession],
+    running: &HashSet<String>,
+    now: i64,
+) -> rusqlite::Result<Submitted> {
+    let input = match input {
+        Ok(input) => input,
+        Err(hint) => return Ok(refused(Refusal::InvalidInput, hint)),
+    };
+    let hash = input.payload_hash();
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let caller_row = mono_chat(&tx, &caller.mono_id)?;
+    let prior = get_by_request(&tx, &caller.session_id, request_id)?;
+    let decision = match &input {
+        Input::Send(send) => mono_gate::decide_send(
+            caller,
+            send,
+            &hash,
+            &Facts {
+                caller: caller_row,
+                prior,
+                about: recipient(&tx, &send.send_to, live, running)?,
+            },
+        ),
+        Input::Reply(reply) => mono_gate::decide_reply(
+            reply,
+            &hash,
+            &Facts {
+                caller: caller_row,
+                prior,
+                about: waiting(&tx, &caller.session_id, live, running)?,
+            },
+        ),
+    };
+    let submitted = record(&tx, caller, request_id, &input, hash, decision, now)?;
+    tx.commit()?;
+    Ok(submitted)
+}
+
+fn accepted(wanting_reply: bool, route: &Route) -> Status {
+    let routed = Routed {
+        handled_by_session: route.session.clone(),
+        delivery: route.via.delivery(),
+    };
+    if wanting_reply {
+        Status::Open {
+            wanting_reply: Wanting,
+            routed,
+            slot: None,
+        }
+    } else {
+        Status::Delivered {
+            wanting_reply: Wanting,
+            routed,
+            slot: None,
+        }
+    }
+}
+
+fn record(
+    tx: &Connection,
+    caller: &Caller,
+    request_id: &RequestId,
+    input: &Input,
+    hash: PayloadHash,
+    decision: Decision,
+    now: i64,
+) -> rusqlite::Result<Submitted> {
+    let (message, addressed, wanting_reply, action_type) = match input {
+        Input::Send(send) => (
+            &send.message,
+            send.send_to.as_str(),
+            send.wanting_reply,
+            Some(send.action_type),
+        ),
+        Input::Reply(reply) => (&reply.message, "", reply.wanting_reply, None),
+    };
+    let row = |part: Part, to: Option<Party>, reply_to: Option<MessageId>, hop: u32, status| {
+        MonoMessage {
+            id: new_message_id(),
+            request_id: request_id.clone(),
+            part,
+            payload_hash: hash.clone(),
+            tool: input.tool(),
+            from_mono_id: Some(caller.mono_id.clone()),
+            from_session_id: caller.session_id.clone(),
+            to,
+            addressed: addressed.into(),
+            body: Body::new(message),
+            action_type,
+            reply_to,
+            steers: None,
+            hop,
+            created_at: now,
+            status,
+        }
+    };
+    match decision {
+        Decision::Duplicate { prior } => Ok(match &prior[0].status {
+            Status::Rejected { gate_result, .. } => Submitted::Failed {
+                error: ToolError {
+                    code: gate_result.as_str(),
+                    hint: gate_result.hint().into(),
+                    message_id: Some(prior[0].id.clone()),
+                    open_handles: None,
+                    duplicate: true,
+                },
+            },
+            _ => accept_outcome(tx, prior, true)?,
+        }),
+        Decision::Refuse { code, hint } => Ok(refused(code, hint)),
+        Decision::Reject {
+            code,
+            hint,
+            to,
+            open_handles,
+        } => {
+            let message = row(
+                Part::FIRST,
+                to,
+                None,
+                0,
+                Status::Rejected {
+                    gate_result: code,
+                    wanting_reply,
+                },
+            );
+            insert(tx, &message)?;
+            let lists_handles = matches!(
+                code,
+                RejectCode::NoOpenHandle | RejectCode::AmbiguousReply | RejectCode::UnknownHandle
+            );
+            Ok(Submitted::Failed {
+                error: ToolError {
+                    code: code.as_str(),
+                    hint,
+                    message_id: Some(message.id),
+                    open_handles: lists_handles.then_some(open_handles),
+                    duplicate: false,
+                },
+            })
+        }
+        Decision::Accept {
+            to,
+            route,
+            hop,
+            reply_to,
+        } => {
+            let threads: Vec<Option<MessageId>> = if reply_to.is_empty() {
+                vec![None]
+            } else {
+                reply_to.into_iter().map(Some).collect()
+            };
+            let mut messages = Vec::with_capacity(threads.len());
+            for (part, thread) in (0..).zip(threads) {
+                let message = row(
+                    Part::new(part).expect("at most 10 parts"),
+                    Some(to.clone()),
+                    thread.clone(),
+                    hop,
+                    accepted(wanting_reply, &route),
+                );
+                insert(tx, &message)?;
+                if let Some(answered) = thread {
+                    tx.execute(
+                        "UPDATE mono_messages SET status = 'answered', closed_at = ?2, updated_at = ?2
+                          WHERE id = ?1 AND status = 'open'",
+                        params![answered.as_str(), now],
+                    )?;
+                }
+                messages.push(message);
+            }
+            accept_outcome(tx, messages, false)
+        }
+    }
+}
+
+/// Design 5.5 rule 3: before a hand-off removes a queue item or sends its
+/// text, row `id` takes a slot of turn `turn_id`, set by `window`. Same row,
+/// same turn: the slot it has. False when the row is no longer `open` or
+/// `delivered`, was already accepted, or holds another turn's slot; the
+/// caller then removes the item and delivers nothing (5.1).
+pub fn assign_slot(
+    conn: &Connection,
+    id: &MessageId,
+    turn_id: &str,
+    window: &str,
+    delivery: Delivery,
+    now: i64,
+) -> rusqlite::Result<bool> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let Some(message) = get(&tx, id)? else {
+        return Ok(false);
+    };
+    let (routed, slot, wanting_reply) = match &message.status {
+        Status::Open { routed, slot, .. } => (
+            routed,
+            slot.as_ref()
+                .map(|slot| (slot.turn_id.as_str(), slot.delivered_at)),
+            true,
+        ),
+        Status::Delivered { routed, slot, .. } => (
+            routed,
+            slot.as_ref()
+                .map(|slot| (slot.turn_id.as_str(), slot.delivered_at)),
+            false,
+        ),
+        _ => return Ok(false),
+    };
+    let assigned = match slot {
+        Some((held, delivered_at)) => held == turn_id && delivered_at.is_none(),
+        None => {
+            // The CHECKs give a row that wants a reply a handle with its slot.
+            let handle: Option<i64> = if wanting_reply {
+                Some(tx.query_row(
+                    "SELECT COALESCE(MAX(handle), 0) + 1 FROM mono_messages
+                      WHERE handled_by_session = ?1 AND turn_id = ?2",
+                    params![routed.handled_by_session.as_str(), turn_id],
+                    |row| row.get(0),
+                )?)
+            } else {
+                None
+            };
+            tx.execute(
+                "UPDATE mono_messages
+                    SET turn_id = ?2, slot_window = ?3, handle = ?4, delivery = ?5, updated_at = ?6
+                  WHERE id = ?1 AND turn_id IS NULL",
+                params![id.as_str(), turn_id, window, handle, delivery.as_str(), now],
+            )? == 1
+        }
+    };
+    tx.commit()?;
+    Ok(assigned)
+}
+
+/// Design 5.5 rule 4: a hand-off of turn `turn_id` failed, so the row goes
+/// back to waiting with no slot. A row the provider accepted keeps its slot.
+pub fn release(conn: &Connection, id: &MessageId, turn_id: &str, now: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE mono_messages SET turn_id = NULL, slot_window = NULL, handle = NULL, updated_at = ?3
+          WHERE id = ?1 AND turn_id = ?2 AND delivered_at IS NULL",
+        params![id.as_str(), turn_id, now],
+    )?;
+    Ok(())
+}
+
+/// The provider took the text the hand-off of turn `turn_id` gave it.
+pub fn mark_delivery(
+    conn: &Connection,
+    id: &MessageId,
+    turn_id: &str,
+    now: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE mono_messages SET delivered_at = ?3, updated_at = ?3
+          WHERE id = ?1 AND turn_id = ?2 AND delivered_at IS NULL",
+        params![id.as_str(), turn_id, now],
+    )?;
+    Ok(())
+}
+
+/// Design 5.5 rule 6: the rows `session` must still receive that neither a
+/// queue item nor a slot holds, oldest first.
+pub fn unqueued(conn: &Connection, session: &SessionId) -> rusqlite::Result<Vec<MonoMessage>> {
+    conn.prepare(&format!(
+        "{SELECT} WHERE handled_by_session = ?1 AND status IN ('open', 'delivered')
+           AND delivered_at IS NULL AND turn_id IS NULL
+         ORDER BY created_at, id"
+    ))?
+    .query_map([session.as_str()], parse_row)?
+    .collect()
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
+fn message_id(id: &str) -> Result<MessageId, String> {
+    MessageId::parse(id).ok_or_else(|| "Invalid message id".into())
+}
+
+fn turn(turn_id: &str) -> Result<&str, String> {
+    if (1..=128).contains(&turn_id.len()) {
+        Ok(turn_id)
+    } else {
+        Err("Invalid turn id".into())
+    }
+}
+
+#[tauri::command(async)]
+pub fn mono_message_submit(
+    store: State<'_, SessionStore>,
+    control: State<'_, ControlHost>,
+    caller: CallerArg,
+    tool: String,
+    request_id: String,
+    input: Value,
+    live: Vec<LiveSession>,
+) -> Result<Submitted, String> {
+    let caller = caller.parse()?;
+    let tool = Tool::parse(&tool).ok_or("Unknown messaging tool")?;
+    let Some(request_id) = RequestId::parse(&request_id) else {
+        return Ok(refused(
+            Refusal::InvalidInput,
+            "A request id has 1 to 128 letters, digits, - and _.".into(),
+        ));
+    };
+    let running = control.running_sessions();
+    let conn = store.lock_conn()?;
+    submit(
+        &conn,
+        &caller,
+        &request_id,
+        mono_gate::parse(tool, &input),
+        &live,
+        &running,
+        now_ms(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command(async)]
+pub fn mono_message_assign_slot(
+    window: WebviewWindow,
+    store: State<'_, SessionStore>,
+    id: String,
+    turn_id: String,
+    kind: String,
+) -> Result<bool, String> {
+    let delivery = match kind.as_str() {
+        "submit" => Delivery::Submit,
+        "steer" => Delivery::Steer,
+        _ => return Err("A hand-off is submit or steer".into()),
+    };
+    let conn = store.lock_conn()?;
+    assign_slot(
+        &conn,
+        &message_id(&id)?,
+        turn(&turn_id)?,
+        window.label(),
+        delivery,
+        now_ms(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command(async)]
+pub fn mono_message_release(
+    store: State<'_, SessionStore>,
+    id: String,
+    turn_id: String,
+) -> Result<(), String> {
+    let conn = store.lock_conn()?;
+    release(&conn, &message_id(&id)?, turn(&turn_id)?, now_ms()).map_err(|error| error.to_string())
+}
+
+#[tauri::command(async)]
+pub fn mono_message_mark_delivery(
+    store: State<'_, SessionStore>,
+    id: String,
+    turn_id: String,
+) -> Result<(), String> {
+    let conn = store.lock_conn()?;
+    mark_delivery(&conn, &message_id(&id)?, turn(&turn_id)?, now_ms())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command(async)]
+pub fn mono_messages_unqueued(
+    store: State<'_, SessionStore>,
+    session_id: String,
+) -> Result<Vec<MonoMessage>, String> {
+    let session = SessionId::parse(&session_id).ok_or("Invalid session id")?;
+    let conn = store.lock_conn()?;
+    unqueued(&conn, &session).map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -973,9 +1620,9 @@ mod tests {
     fn a_body_keeps_8000_code_points_and_the_real_length() {
         let long = Body::new(&"é".repeat(8001));
         assert_eq!(long.text().chars().count(), Body::MAX_CHARS);
-        assert_eq!(long.chars(), 8001);
+        assert_eq!(long.chars, 8001);
         let short = Body::new("Ship the fix");
-        assert_eq!((short.text(), short.chars()), ("Ship the fix", 12));
+        assert_eq!((short.text(), short.chars), ("Ship the fix", 12));
     }
 
     #[test]
@@ -1543,5 +2190,341 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    fn messaging_store() -> SessionStore {
+        let store = SessionStore::open_in_memory().unwrap();
+        store
+            .lock_conn()
+            .unwrap()
+            .execute_batch(
+                r#"INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
+                   VALUES ('giga', 'Boss', 'giga', '{"sessionId":"giga-chat"}', 0, 1, 1),
+                          ('mono-a', 'A', 'mono', '{"sessionId":"a-chat"}', 1, 1, 1);
+                   INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+                   VALUES ('giga-chat', '/', 'codex', 'm', 'default', 'G', 1, 1),
+                          ('a-chat', '/', 'codex', 'm', 'default', 'A', 1, 1),
+                          ('project', '/p', 'codex', 'm', 'default', 'P', 1, 1);"#,
+            )
+            .unwrap();
+        store
+    }
+
+    fn caller_in(mono_id: &str, session_id: &str) -> Caller {
+        Caller {
+            kind: CallerKind::MonoChat,
+            mono_id: mono(mono_id),
+            session_id: session(session_id),
+        }
+    }
+
+    fn call(
+        conn: &Connection,
+        caller: &Caller,
+        request_id: &str,
+        tool: Tool,
+        input: serde_json::Value,
+        live: &[LiveSession],
+    ) -> Submitted {
+        submit(
+            conn,
+            caller,
+            &RequestId::parse(request_id).unwrap(),
+            mono_gate::parse(tool, &input),
+            live,
+            &HashSet::new(),
+            100,
+        )
+        .unwrap()
+    }
+
+    fn rows(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM mono_messages", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn accepted_ids(submitted: &Submitted) -> Vec<MessageId> {
+        match submitted {
+            Submitted::Accepted { messages, .. } => {
+                messages.iter().map(|message| message.id.clone()).collect()
+            }
+            Submitted::Failed { error } => panic!("refused: {error:?}"),
+        }
+    }
+
+    fn failed(submitted: Submitted) -> ToolError {
+        match submitted {
+            Submitted::Failed { error } => error,
+            accepted => panic!("accepted: {accepted:?}"),
+        }
+    }
+
+    #[test]
+    fn the_same_request_twice_writes_one_row_and_answers_duplicate() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let giga = caller_in("giga", "giga-chat");
+        let input =
+            serde_json::json!({"message": "Ship it", "send_to": "mono-a", "wanting_reply": false});
+        let first = call(&conn, &giga, "r1", Tool::SendMessage, input.clone(), &[]);
+        let Submitted::Accepted {
+            messages,
+            duplicate: false,
+            ..
+        } = &first
+        else {
+            panic!("first call: {first:?}");
+        };
+        let again = call(&conn, &giga, "r1", Tool::SendMessage, input, &[]);
+        assert_eq!(
+            again,
+            Submitted::Accepted {
+                messages: messages.clone(),
+                answered: Vec::new(),
+                duplicate: true
+            }
+        );
+        assert_eq!(rows(&conn), 1);
+    }
+
+    #[test]
+    fn a_request_id_reused_with_other_input_is_refused_without_a_row() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let giga = caller_in("giga", "giga-chat");
+        let send = |message: &str| serde_json::json!({"message": message, "send_to": "mono-a", "wanting_reply": false});
+        accepted_ids(&call(
+            &conn,
+            &giga,
+            "r1",
+            Tool::SendMessage,
+            send("Ship it"),
+            &[],
+        ));
+        let error = failed(call(
+            &conn,
+            &giga,
+            "r1",
+            Tool::SendMessage,
+            send("Ship it now"),
+            &[],
+        ));
+        assert_eq!((error.code, error.message_id), ("request_id_reused", None));
+        assert_eq!(rows(&conn), 1);
+    }
+
+    #[test]
+    fn a_session_in_mono_session_ends_is_gone_even_when_the_live_list_has_it() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        conn.execute_batch(
+            "INSERT INTO mono_session_ends (session_id, ended_at) VALUES ('project', 1), ('a-chat', 1);",
+        )
+        .unwrap();
+        let live = [
+            LiveSession {
+                session_id: "project".into(),
+                steerable: true,
+                own_project: true,
+            },
+            LiveSession {
+                session_id: "a-chat".into(),
+                steerable: true,
+                own_project: false,
+            },
+        ];
+        let giga = caller_in("giga", "giga-chat");
+        let send =
+            |to: &str| serde_json::json!({"message": "Hi", "send_to": to, "wanting_reply": false});
+        let project = failed(call(
+            &conn,
+            &giga,
+            "r1",
+            Tool::SendMessage,
+            send("project"),
+            &live,
+        ));
+        assert_eq!(project.code, "unknown_target");
+        let chat = failed(call(
+            &conn,
+            &giga,
+            "r2",
+            Tool::SendMessage,
+            send("mono-a"),
+            &live,
+        ));
+        assert_eq!(chat.code, "target_no_conversation");
+        let stored = get(&conn, &chat.message_id.unwrap()).unwrap().unwrap();
+        assert!(matches!(
+            stored.status,
+            Status::Rejected {
+                gate_result: RejectCode::TargetNoConversation,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_rejected_call_made_again_returns_its_row_marked_duplicate() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let giga = caller_in("giga", "giga-chat");
+        let input = serde_json::json!({"message": "Hi", "send_to": "nope", "wanting_reply": false});
+        let first = failed(call(
+            &conn,
+            &giga,
+            "r1",
+            Tool::SendMessage,
+            input.clone(),
+            &[],
+        ));
+        let again = failed(call(&conn, &giga, "r1", Tool::SendMessage, input, &[]));
+        assert_eq!((first.code, first.duplicate), ("unknown_target", false));
+        assert_eq!(
+            (again.code, again.message_id, again.duplicate),
+            ("unknown_target", first.message_id, true)
+        );
+        assert_eq!(rows(&conn), 1);
+    }
+
+    #[test]
+    fn an_accepted_reply_answers_the_waiting_message_and_goes_to_its_sender() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let giga = caller_in("giga", "giga-chat");
+        let ask = accepted_ids(&call(
+            &conn,
+            &giga,
+            "ask",
+            Tool::SendMessage,
+            serde_json::json!({"message": "Is CI green?", "send_to": "mono-a", "wanting_reply": true}),
+            &[],
+        ))
+        .remove(0);
+        assert!(assign_slot(&conn, &ask, "turn-a", "main", Delivery::Submit, 101).unwrap());
+        let mono_a = caller_in("mono-a", "a-chat");
+        let answer = call(
+            &conn,
+            &mono_a,
+            "answer",
+            Tool::Reply,
+            serde_json::json!({"message": "Yes"}),
+            &[LiveSession {
+                session_id: "giga-chat".into(),
+                steerable: true,
+                own_project: false,
+            }],
+        );
+        let Submitted::Accepted {
+            messages,
+            answered,
+            duplicate: false,
+        } = answer
+        else {
+            panic!("reply: {answer:?}");
+        };
+        let [reply] = messages.as_slice() else {
+            panic!("{messages:?}");
+        };
+        assert_eq!(
+            (&reply.reply_to, reply.hop, &reply.to),
+            (
+                &Some(ask.clone()),
+                1,
+                &Some(Party::Mono {
+                    mono_id: mono("giga")
+                })
+            )
+        );
+        assert!(matches!(
+            &reply.status,
+            Status::Delivered { routed, .. } if routed.handled_by_session == session("giga-chat")
+        ));
+        assert!(matches!(
+            get(&conn, &ask).unwrap().unwrap().status,
+            Status::Answered { closed_at: 100, .. }
+        ));
+        assert_eq!(
+            answered,
+            vec![Answered {
+                handle: Handle::new(1),
+                message_id: ask
+            }]
+        );
+    }
+
+    fn sent_to_a(conn: &Connection, request_id: &str, wanting_reply: bool) -> MessageId {
+        accepted_ids(&call(
+            conn,
+            &caller_in("giga", "giga-chat"),
+            request_id,
+            Tool::SendMessage,
+            serde_json::json!({"message": "Hi", "send_to": "mono-a", "wanting_reply": wanting_reply}),
+            &[],
+        ))
+        .remove(0)
+    }
+
+    fn slot_turn(conn: &Connection, id: &MessageId) -> Option<String> {
+        conn.query_row(
+            "SELECT turn_id FROM mono_messages WHERE id = ?1",
+            [id.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn assign_slot_refuses_a_row_that_holds_another_turns_slot_and_keeps_that_slot() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let id = sent_to_a(&conn, "r1", true);
+        assert!(assign_slot(&conn, &id, "turn-1", "main", Delivery::Steer, 101).unwrap());
+        assert!(assign_slot(&conn, &id, "turn-1", "main", Delivery::Steer, 102).unwrap());
+        assert!(!assign_slot(&conn, &id, "turn-2", "main", Delivery::Submit, 103).unwrap());
+        assert_eq!(slot_turn(&conn, &id).as_deref(), Some("turn-1"));
+        release(&conn, &id, "turn-2", 104).unwrap();
+        assert_eq!(slot_turn(&conn, &id).as_deref(), Some("turn-1"));
+        release(&conn, &id, "turn-1", 105).unwrap();
+        assert_eq!(slot_turn(&conn, &id), None);
+        assert!(assign_slot(&conn, &id, "turn-2", "main", Delivery::Submit, 106).unwrap());
+    }
+
+    #[test]
+    fn a_row_the_provider_took_keeps_its_slot_and_is_never_handed_off_again() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let id = sent_to_a(&conn, "r1", false);
+        assert!(assign_slot(&conn, &id, "turn-1", "main", Delivery::Submit, 101).unwrap());
+        mark_delivery(&conn, &id, "turn-1", 102).unwrap();
+        release(&conn, &id, "turn-1", 103).unwrap();
+        assert_eq!(slot_turn(&conn, &id).as_deref(), Some("turn-1"));
+        assert!(!assign_slot(&conn, &id, "turn-1", "main", Delivery::Submit, 104).unwrap());
+        assert!(matches!(
+            get(&conn, &id).unwrap().unwrap().status,
+            Status::Delivered {
+                slot: Some(PlainSlot {
+                    delivered_at: Some(102),
+                    ..
+                }),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn unqueued_lists_the_rows_of_a_session_that_no_slot_holds() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let held = sent_to_a(&conn, "r1", true);
+        let waiting = sent_to_a(&conn, "r2", false);
+        assert!(assign_slot(&conn, &held, "turn-1", "main", Delivery::Submit, 101).unwrap());
+        let listed: Vec<MessageId> = unqueued(&conn, &session("a-chat"))
+            .unwrap()
+            .into_iter()
+            .map(|message| message.id)
+            .collect();
+        assert_eq!(listed, vec![waiting]);
+        assert!(unqueued(&conn, &session("giga-chat")).unwrap().is_empty());
     }
 }

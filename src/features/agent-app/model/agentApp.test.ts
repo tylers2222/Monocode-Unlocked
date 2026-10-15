@@ -13,7 +13,14 @@ import {
 import type { Note } from "../../notes";
 import type { Artifact } from "../../artifacts/artifacts";
 import type { Worktree } from "../../source-control/model/worktrees";
-import { handleAgentApp, notePreview, canAccessAgentAppProject, type AgentAppHost } from "./agentApp";
+import {
+  appCliSource,
+  handleAgentApp,
+  notePreview,
+  canAccessAgentAppProject,
+  type AgentAppHost,
+} from "./agentApp";
+import { appErrorResponse } from "./appActionError";
 
 vi.mock("../../../integrations/harness/core/availability", () => ({
   isHarnessAvailable: (id: string) => id === "codex",
@@ -1672,5 +1679,35 @@ describe("agent app commands", () => {
         host,
       ),
     ).rejects.toThrow("body is required");
+  });
+});
+
+// Defect: a session the CLI cannot serve gets an uncoded error that the
+// CLI marks as retryable, or a usable session is refused.
+describe("appCliSource", () => {
+  const plain = { ...newSession("codex", "/repo", "codex:test"), id: "s" };
+  const refusal = (run: () => unknown) => {
+    try {
+      run();
+    } catch (error) {
+      return appErrorResponse(error);
+    }
+    return undefined;
+  };
+
+  it.each([
+    ["a session this window does not have", undefined, false],
+    ["an Inbox Ask", { ...plain, inboxAsk: {} as NonNullable<typeof plain.inboxAsk> }, false],
+    ["an orchestration worker", { ...plain, orchestrationLeadId: "lead" }, false],
+    ["an orchestration lead", plain, true],
+  ])("refuses %s with app_cli_unavailable", (_, source, orchestrated) => {
+    expect(refusal(() => appCliSource(source, () => orchestrated))).toMatchObject({
+      ok: false,
+      code: "app_cli_unavailable",
+    });
+  });
+
+  it("serves any other session", () => {
+    expect(appCliSource(plain, () => false)).toBe(plain);
   });
 });

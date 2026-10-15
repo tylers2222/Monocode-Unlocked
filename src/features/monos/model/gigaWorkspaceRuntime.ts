@@ -167,11 +167,22 @@ export function noteGigaTurnCall(
   sessionId: string,
   action: string,
   requestId: string,
+  input: Record<string, unknown>,
   result: unknown,
 ): void {
   if (!gigaOfSession(sessionId)) return;
   const calls = turnCalls.get(sessionId) ?? { sent: [], started: [] };
-  turnCalls.set(sessionId, recordTurnCall(calls, action, requestId, result));
+  turnCalls.set(
+    sessionId,
+    recordTurnCall(
+      calls,
+      action,
+      requestId,
+      input,
+      result,
+      (id) => !!findMono(id),
+    ),
+  );
 }
 
 /**

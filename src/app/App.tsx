@@ -6,8 +6,24 @@ import {
 } from "../features/monos/model/monoUsageLimit";
 import {
   acknowledgeMonoMessage,
+  chatUpdatedAt,
   enqueueMonoMessage,
 } from "../features/monos/model/monoMessaging";
+import {
+  createTurnIds,
+  getMonos,
+  handOff,
+  reconcile,
+  replyMessage,
+  sendMessage,
+  type MonoMessagingHost,
+  type MonoQueueHost,
+} from "../features/monos/model/monoRoute";
+import { resolveCaller } from "../features/monos/model/monoCaller";
+import {
+  parseMonoId,
+  parseSessionId,
+} from "../features/monos/model/monoMessages";
 import {
   dismissQueuedMonoSessionCompletion,
   enqueueMonoSessionCompletion,
@@ -20,6 +36,7 @@ import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import { HarnessEventQueue } from "./model/harnessFlush";
 import { updateSessionState } from "./model/sessionState";
 import {
+  appCliSource,
   handleAgentApp,
   canAccessAgentAppProject,
   repeatedAppCall,
@@ -45,13 +62,6 @@ import {
   steerBlockReason,
   steerRunningTurn,
 } from "./model/appSessionSend";
-import {
-  chatUpdatedAt,
-  enqueueAppMonoMessage,
-  MONO_REJECTED_ERROR,
-  planAppMonoSend,
-  UNKNOWN_MONO_ERROR,
-} from "./model/appMonoSend";
 import {
   submitAfterProjectSync,
   type SubmissionAcceptance,
@@ -1635,6 +1645,30 @@ function Workspace({
   });
   const turnGen = useRef(new Map<string, number>());
   const turnWatchers = useRef(createTurnWatchers());
+  /** This window's side of Mono message delivery (design 5.5). */
+  const monoQueue = useMemo(
+    (): MonoQueueHost => ({
+      session: (id) => sessionsRef.current.find((session) => session.id === id),
+      update: (id, change) =>
+        updateSessionState(sessionsRef, setSessions, (sessions) =>
+          sessions.map((session) =>
+            session.id === id ? change(session) : session,
+          ),
+        ),
+      isMonoChat: isMonoSession,
+      sender: (monoId) => {
+        const mono = monoId ? findMono(monoId) : undefined;
+        return (
+          mono && {
+            name: monoLook(mono).name,
+            role: mono.giga ? "giga" : "mono",
+          }
+        );
+      },
+      turnId: createTurnIds((id) => turnGen.current.get(id) ?? 0),
+    }),
+    [],
+  );
   const editedResends = useRef(createEditedResendCoordinator()).current;
   const lastPersisted = useRef(new Map<string, string>());
   const lastBoundProvider = useRef(new Map<string, string>());
@@ -8977,11 +9011,8 @@ function Workspace({
               ),
             );
           try {
-            const accepted = await submitSession(
-              session.id,
-              head.text,
-              head.attachments,
-              {
+            const submit = () =>
+              submitSession(session.id, head.text, head.attachments, {
                 queuedMessageId: head.id,
                 followUpBehavior: steering ? "steer" : undefined,
                 noteCard: head.noteCard,
@@ -8993,8 +9024,16 @@ function Workspace({
                       appRequestId: head.id,
                     }
                   : {}),
-              },
-            );
+              });
+            const accepted = head.monoMessageId
+              ? await handOff(
+                  monoQueue,
+                  session.id,
+                  { id: head.monoMessageId, text: head.text },
+                  steering ? "steer" : "dispatch",
+                  submit,
+                )
+              : await submit();
             // A preflight rejection must not repeatedly retry or hide the message.
             if (!accepted && monoForSession(session.id)) {
               const current = sessionsRef.current.find(
@@ -9054,6 +9093,20 @@ function Workspace({
       for (const id of scheduled) queueDispatchingRef.current.delete(id);
     };
   }, [submitSession, sessions, queueDispatchVersion]);
+
+  // Design 5.5 rule 6: a session this window loads, at boot or later, gets
+  // its Mono messages that no queue item or slot holds.
+  const reconciledSessions = useRef(new Set<string>());
+  useEffect(() => {
+    const loaded = new Set(sessions.map((session) => session.id));
+    for (const id of reconciledSessions.current)
+      if (!loaded.has(id)) reconciledSessions.current.delete(id);
+    for (const id of loaded) {
+      if (reconciledSessions.current.has(id)) continue;
+      reconciledSessions.current.add(id);
+      void reconcile(monoQueue, id).catch(console.error);
+    }
+  }, [sessions, monoQueue]);
 
   const onDeleteQueuedMessage = useCallback(
     (sessionId: string, messageId: string) => {
@@ -9120,15 +9173,38 @@ function Workspace({
         flushHarnessEvents();
         return;
       }
-      onSubmit(sessionId, message.text, message.attachments, {
+      const options: SubmitOptions = {
         followUpBehavior: "steer",
         queuedMessageId: message.id,
         noteCard: message.noteCard,
         handoffCard: message.handoffCard,
         intent: message.intent,
-      });
+      };
+      if (message.monoMessageId) {
+        void handOff(
+          monoQueue,
+          sessionId,
+          { id: message.monoMessageId, text: message.text },
+          session.busy ? "steer" : "dispatch",
+          () =>
+            submitSession(
+              sessionId,
+              message.text,
+              message.attachments,
+              options,
+            ),
+        ).catch(console.error);
+        return;
+      }
+      onSubmit(sessionId, message.text, message.attachments, options);
     },
-    [onSubmit, enqueueHarnessEvent, flushHarnessEvents],
+    [
+      onSubmit,
+      submitSession,
+      monoQueue,
+      enqueueHarnessEvent,
+      flushHarnessEvents,
+    ],
   );
 
   const onResumeQueue = useCallback(
@@ -10753,22 +10829,18 @@ function Workspace({
         }
         if (payload.namespace !== "app")
           throw new Error("Unknown CLI namespace");
-        const source = sessionsRef.current.find(
-          (session) => session.id === payload.sessionId,
+        const source = appCliSource(
+          sessionsRef.current.find(
+            (session) => session.id === payload.sessionId,
+          ),
+          (id) => !!orchestrator.run(id),
         );
-        if (
-          !source ||
-          source.inboxAsk ||
-          source.orchestrationLeadId ||
-          orchestrator.run(source.id)
-        )
-          throw new Error("This session cannot use the MonoCode app CLI");
         const key = `${source.id}:${payload.requestId}`;
         const signature = JSON.stringify([payload.action, payload.input]);
-        const previous = repeatedAppCall(
-          appReceipts.current.get(key),
-          signature,
-        );
+        // messages.* deduplicate in mono_messages, across reloads too.
+        const receipted = !payload.action.startsWith("messages.");
+        const previous =
+          receipted && repeatedAppCall(appReceipts.current.get(key), signature);
         if (previous) return previous;
         const sourceMono =
           monoForSession(source.id) ?? findMono(habitRunMono(source.id) ?? "");
@@ -10843,6 +10915,83 @@ function Workspace({
               ),
             ),
           );
+        };
+        const messaging: MonoMessagingHost = {
+          ...monoQueue,
+          caller: async () => {
+            const sessionId = parseSessionId(source.id);
+            if (!sessionId)
+              return {
+                ok: false,
+                code: "not_a_mono",
+                hint: "Only a Mono's chat or its habit runs can use Mono messaging.",
+              };
+            return resolveCaller(
+              sessionId,
+              monoQueue.turnId(source.id, "current"),
+            );
+          },
+          sessions: () => sessionsRef.current,
+          stored: async (id) =>
+            parseSessionId(id) ? getSession(id).catch(() => null) : null,
+          open: async (id) => {
+            const opened = await ensureOpenSessionRef.current(id);
+            // Output already received can end the turn the route sees.
+            flushHarnessEvents();
+            return opened;
+          },
+          steerable: (session) =>
+            isLiveHarness(session.harness) && canSteerHarness(session.harness),
+          ownProject: (session) =>
+            !isMonoSession(session.id) &&
+            !isHabitRun(session.id) &&
+            !session.orchestrationLeadId &&
+            !orchestrator.run(session.id) &&
+            canAccessProject(session.cwd),
+          monos: () =>
+            listMonos().flatMap((mono) => {
+              const id = parseMonoId(mono.id);
+              return id
+                ? [
+                    {
+                      id,
+                      name: monoLook(mono).name,
+                      role: mono.giga ? ("giga" as const) : ("mono" as const),
+                    },
+                  ]
+                : [];
+            }),
+          steerProject: async (target, text, id) => {
+            const change = (update: (session: Session) => Session) =>
+              updateSessionState(sessionsRef, setSessions, (sessions) =>
+                sessions.map((session) =>
+                  session.id === target.id ? update(session) : session,
+                ),
+              );
+            await deliverAppSteer({
+              watchers: turnWatchers.current,
+              sessionId: target.id,
+              gen: turnGen.current.get(target.id) ?? 0,
+              record: () =>
+                change((session) => recordAppSteer(session, text, id)),
+              steer: async () => {
+                const cwd = sessionWorkCwd(target);
+                await steerHarnessTurn({
+                  harness: target.harness,
+                  sessionId: target.id,
+                  cwd,
+                  model: target.model,
+                  modelSettings: target.modelSettings,
+                  text: await preparePrompt(text, {
+                    harness: target.harness,
+                    sessionId: target.id,
+                    cwd,
+                  }),
+                });
+              },
+              forget: () => change((session) => forgetAppSteer(session, id)),
+            });
+          },
         };
         const promise = handleAgentApp(
           source,
@@ -11292,53 +11441,6 @@ function Workspace({
                 if (!chat) throw monoError("no_conversation");
                 return readMonoConversation(chat, options);
               },
-              send: async (monoId, text, requestId, { whenBusy } = {}) => {
-                const mono = findMono(monoId);
-                if (!mono) throw new Error(UNKNOWN_MONO_ERROR);
-                const opened =
-                  mono.sessionId &&
-                  (await ensureOpenSessionRef.current(mono.sessionId));
-                // Output already received can end the turn the plan sees.
-                flushHarnessEvents();
-                const chat = opened
-                  ? (sessionsRef.current.find(
-                      (session) => session.id === opened.id,
-                    ) ?? opened)
-                  : undefined;
-                const plan = planAppMonoSend({
-                  session: chat,
-                  text,
-                  requestId,
-                  whenBusy,
-                  steerable: !!chat && canSteerHarness(chat.harness),
-                });
-                if (plan.kind === "error") throw new Error(plan.error);
-                if (plan.kind === "prior") return plan.result;
-                if (plan.kind === "submit") {
-                  const accepted = await submitSessionRef.current(
-                    plan.sessionId,
-                    text,
-                    [],
-                    { appRequestId: requestId },
-                  );
-                  if (!accepted) throw new Error(MONO_REJECTED_ERROR);
-                  return { alreadySubmitted: false, delivery: "sent" };
-                }
-                // The queue's auto-delivery steers it or starts its turn, and
-                // the queue change is saved like any other.
-                updateSessionState(sessionsRef, setSessions, (sessions) =>
-                  sessions.map((session) =>
-                    session.id === plan.sessionId
-                      ? enqueueAppMonoMessage(session, plan)
-                      : session,
-                  ),
-                );
-                return {
-                  alreadySubmitted: false,
-                  delivery: plan.delivery,
-                  queuedMessageId: plan.message.id,
-                };
-              },
               create: (settings) =>
                 createMonoWithChat(settings, {
                   home: homeDir,
@@ -11389,6 +11491,13 @@ function Workspace({
                     ),
                 }),
             },
+            messages: {
+              getMonos: () => getMonos(messaging),
+              send: (requestId, input) =>
+                sendMessage(messaging, requestId, input),
+              reply: (requestId, input) =>
+                replyMessage(messaging, requestId, input),
+            },
             habits: { load: loadHabits, update: updateHabits },
             agentFiles: (monoId) => loadMonoFiles(monoId),
             readAgentFile: (monoId, path) => readAgentFile(monoId, path),
@@ -11403,10 +11512,12 @@ function Workspace({
               source.id,
               payload.action,
               `app-${source.id}-${payload.requestId}`,
+              payload.input,
               result,
             ),
           () => undefined,
         );
+        if (!receipted) return promise;
         appReceipts.current.set(key, { signature, promise });
         void promise.catch(() => {
           if (appReceipts.current.get(key)?.promise === promise)
