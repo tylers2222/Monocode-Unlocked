@@ -73,7 +73,9 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            CHECK (status = 'rejected' OR (reply_to IS NULL) = (hop = 0)),
            CHECK (id GLOB 'm_[a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7]'),
            CHECK (payload_hash NOT GLOB '*[^0-9a-f]*'),
-           CHECK (request_id NOT GLOB '*[^A-Za-z0-9_-]*')
+           CHECK (request_id NOT GLOB '*[^A-Za-z0-9_-]*'),
+           CHECK (length(body) = min(body_chars, 8000)),
+           CHECK ((gate_result = 'too_large') = (body_chars > 8000))
          );
          CREATE UNIQUE INDEX IF NOT EXISTS mono_messages_handle
            ON mono_messages (handled_by_session, turn_id, handle) WHERE handle IS NOT NULL;
@@ -1113,7 +1115,7 @@ mod tests {
                 row,
                 &[
                     ("wanting_reply", Sql::Integer(0)),
-                    ("gate_result", text("too_large")),
+                    ("gate_result", text("self_send")),
                     ("handled_by_session", Sql::Null),
                     ("delivery", Sql::Null),
                 ],
@@ -1493,7 +1495,7 @@ mod tests {
     fn check_refuses_a_payload_hash_that_is_not_hex() {
         assert_check_refuses(
             "delivered",
-            &[("payload_hash", text(&"z".repeat(64)))],
+            &[("payload_hash", text(&"A".repeat(64)))],
             "payload_hash NOT GLOB '*[^0-9a-f]*'",
         );
     }
@@ -1505,5 +1507,41 @@ mod tests {
             &[("request_id", text("req 2"))],
             "request_id NOT GLOB '*[^A-Za-z0-9_-]*'",
         );
+    }
+
+    #[test]
+    fn check_refuses_a_rejected_row_whose_body_chars_disagree_with_its_body() {
+        assert_check_refuses(
+            "rejected",
+            &[("body_chars", Sql::Integer(500))],
+            "length(body) = min(body_chars, 8000)",
+        );
+    }
+
+    #[test]
+    fn check_refuses_too_large_for_a_body_within_the_limit() {
+        assert_check_refuses(
+            "rejected",
+            &[("gate_result", text("too_large"))],
+            "(gate_result = 'too_large') = (body_chars > 8000)",
+        );
+    }
+
+    #[test]
+    fn a_too_large_row_keeps_8000_characters_and_the_real_length() {
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        raw_insert(
+            &conn,
+            &with(
+                row("rejected"),
+                &[
+                    ("gate_result", text("too_large")),
+                    ("body", text(&"é".repeat(8000))),
+                    ("body_chars", Sql::Integer(9000)),
+                ],
+            ),
+        )
+        .unwrap();
     }
 }
