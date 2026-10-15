@@ -19,13 +19,17 @@ import {
   type ExternalEditor,
 } from "../../platform/tauri/fs";
 import { IS_MAC, IS_WIN } from "../../platform/tauri/platform";
-import { projectKey, projectName } from "../../shared/lib/paths";
+import { knownHomeDir, projectKey, projectName } from "../../shared/lib/paths";
 import {
   loadPinnedProjects,
   sameProjectPath,
   subscribeProjectPathsChanged,
   toggleProjectPin,
 } from "../../features/projects/model/recents";
+import {
+  isGigaWorkspaceProject,
+  reservedProjectLabelError,
+} from "../../features/projects/model/reservedProjectName";
 import {
   loadTabGroupColors,
   loadTabGroupCustomColors,
@@ -391,18 +395,20 @@ export function useProjectMenu({
   const renderProjectMenu = () => {
     if (!projectMenu) return null;
     const key = projectMenu.projectKey;
+    const home = knownHomeDir();
     const colors = loadTabGroupColors();
     const customColors = loadTabGroupCustomColors();
+    const shownLabel = resolveTabGroupLabel(
+      key,
+      groupLabels,
+      basename(projectMenu.path),
+    );
     return (
       <TabGroupMenu
         x={projectMenu.x}
         y={projectMenu.y}
         groupId={key}
-        label={resolveTabGroupLabel(
-          key,
-          groupLabels,
-          basename(projectMenu.path),
-        )}
+        label={shownLabel}
         colorIndex={resolveTabGroupColorIndex(key, colors, customColors)}
         customColor={resolveTabGroupCustomColor(key, customColors)}
         currentColor={resolveTabGroupColor(
@@ -415,7 +421,18 @@ export function useProjectMenu({
         logoProject={projectMenu.path}
         mascotName={resolveTabGroupMascot(key, loadTabGroupMascots())}
         mascotProject={projectName(projectMenu.path)}
-        onRename={saveTabGroupLabel}
+        onRename={(project, label) => {
+          // A project that already shows "MonoCode" may keep it; only a
+          // new name is checked.
+          const refused =
+            label !== shownLabel &&
+            reservedProjectLabelError(projectMenu.path, label, home);
+          if (refused) {
+            setMenuError(refused);
+            return false;
+          }
+          saveTabGroupLabel(project, label);
+        }}
         onColorChange={saveTabGroupColor}
         onCustomColorChange={saveTabGroupCustomColor}
         onMascotChange={saveTabGroupMascot}
@@ -440,7 +457,9 @@ export function useProjectMenu({
           loadPinnedProjects().some((pinned) =>
             sameProjectPath(pinned, projectMenu.path),
           ),
-          Boolean(onRemoveProject),
+          // The Giga workspace stays on the rail: no Archive or Delete.
+          Boolean(onRemoveProject) &&
+            !isGigaWorkspaceProject(projectMenu.path, home),
           Boolean(onOpenNotificationSettings),
           Boolean(readyNotificationProject),
           externalEditors,

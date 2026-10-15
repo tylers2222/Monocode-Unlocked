@@ -62,7 +62,8 @@ type Props = {
   mascotName: string | null;
   /** Key the fallback mascot is hashed from — same one the icon uses. */
   mascotProject: string;
-  onRename: (groupId: string, label: string) => void;
+  /** Return false to keep the menu open after a refused name. */
+  onRename: (groupId: string, label: string) => void | boolean;
   onColorChange: (groupId: string, colorIndex: number | null) => void;
   onCustomColorChange: (groupId: string, color: string) => void;
   onMascotChange: (groupId: string, name: string | null) => void;
@@ -181,15 +182,12 @@ export function TabGroupMenu({
 
   const shownMascot = projectMascot(mascotProject, mascotName).name;
 
-  const commitName = () => {
-    onRename(groupId, name.trim());
-  };
+  const commitName = () => onRename(groupId, name.trim());
 
   const onMenuKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Enter" && e.target === input.current) {
       e.preventDefault();
-      commitName();
-      onClose();
+      if (commitName() !== false) onClose();
     }
   };
 

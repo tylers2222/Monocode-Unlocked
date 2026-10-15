@@ -134,3 +134,45 @@ it("ignores a project that finishes opening after cancellation", async () => {
   await act(async () => finish({ id: "late", cwd: "/home/me", name: "me" }));
   expect(opened).toEqual([]);
 });
+
+it("refuses a folder named MonoCode on the machine and adds no project", async () => {
+  await render();
+  const path = document.body.querySelector<HTMLInputElement>(
+    'input[aria-label="Folder path on the machine"]',
+  )!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+      path,
+      "/home/me/MonoCode",
+    );
+    path.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => button("Open").click());
+  expect(document.body.querySelector('[role="alert"]')?.textContent).toBe(
+    "MonoCode is reserved for the Giga workspace. Rename the folder or choose another.",
+  );
+  expect(opened).toEqual([]);
+  expect(localStorage.length).toBe(0);
+  expect(
+    vi.mocked(invoke).mock.calls.some(
+      ([, input]) =>
+        (input as { method?: string } | undefined)?.method === "projects.open",
+    ),
+  ).toBe(false);
+});
+
+it("refuses a typed path the machine resolves to a folder named MonoCode", async () => {
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, input) =>
+    (input as { method?: string } | undefined)?.method === "projects.open"
+      ? { id: "host-project", cwd: "/home/me/MonoCode", name: "MonoCode" }
+      : original(command, input),
+  );
+  await render();
+  await act(async () => button("Open").click());
+  expect(document.body.querySelector('[role="alert"]')?.textContent).toBe(
+    "MonoCode is reserved for the Giga workspace. Rename the folder or choose another.",
+  );
+  expect(opened).toEqual([]);
+  expect(localStorage.length).toBe(0);
+});

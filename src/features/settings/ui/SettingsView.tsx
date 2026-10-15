@@ -189,11 +189,13 @@ import {
   subscribeModels,
 } from "../../sessions/model/models";
 import {
+  knownHomeDir,
   pathKey,
   prettyCwd,
   projectKey,
   projectName,
 } from "../../../shared/lib/paths";
+import { isGigaWorkspaceProject } from "../../projects/model/reservedProjectName";
 import { revealPath } from "../../../platform/tauri/fs";
 import { IS_LINUX, IS_MAC, IS_WIN } from "../../../platform/tauri/platform";
 import {
@@ -3938,7 +3940,8 @@ function ArchivePage({
                   Restore
                 </SecondaryButton>
               ) : null}
-              {onDeleteProject ? (
+              {onDeleteProject &&
+              !isGigaWorkspaceProject(project.path, knownHomeDir()) ? (
                 <SecondaryButton danger onClick={() => setDeleting(project)}>
                   Delete
                 </SecondaryButton>

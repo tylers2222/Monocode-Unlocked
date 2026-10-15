@@ -5,6 +5,7 @@ import {
   type HarnessId,
   type Session,
 } from "../../sessions/model/session";
+import { reservedProjectNameError } from "../../projects/model/reservedProjectName";
 import { pathKey, projectName } from "../../../shared/lib/paths";
 import {
   createMono,
@@ -60,9 +61,13 @@ function monoSettings(
 
 /**
  * A Mono's projects, each named by path or by name, as the projects on the
- * rail: the same ones its settings offer.
+ * rail: the same ones its settings offer. A folder named MonoCode other than
+ * the workspace at `<home>/MonoCode` is refused.
  */
-export function resolveMonoProjects(value: unknown): string[] {
+export function resolveMonoProjects(
+  value: unknown,
+  home: string | undefined,
+): string[] {
   if (
     !Array.isArray(value) ||
     value.length > PROJECTS_MAX ||
@@ -79,6 +84,8 @@ export function resolveMonoProjects(value: unknown): string[] {
     const byPath = rail.find((path) => pathKey(path) === pathKey(named));
     const byName = rail.filter((path) => projectName(path) === named.trim());
     const match = byPath ?? (byName.length === 1 ? byName[0] : undefined);
+    const reserved = reservedProjectNameError(match ?? named, home);
+    if (reserved) throw new Error(reserved);
     if (!match)
       throw new Error(
         `Not a project in MonoCode: ${named}. Projects: ${

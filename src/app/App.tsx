@@ -409,6 +409,7 @@ import {
 import {
   displayPath,
   isEqualOrInside,
+  knownHomeDir,
   pathKey,
   projectName,
   rebasePath,
@@ -438,6 +439,11 @@ import {
   sameProjectPath,
   subscribeProjectPathsChanged,
 } from "../features/projects/model/recents";
+import {
+  noticeReservedProjects,
+  openPickedFolders,
+  reservedProjectNameError,
+} from "../features/projects/model/reservedProjectName";
 import {
   applyDetachPaneToTab,
   applyPlaceTabOnPane,
@@ -2565,7 +2571,11 @@ function Workspace({
     if (lastProjectPath()) return;
     void invoke<string>("default_cwd")
       .then((cwd) => {
-        if (!looksLikeProject(cwd)) return;
+        if (
+          !looksLikeProject(cwd) ||
+          reservedProjectNameError(cwd, knownHomeDir())
+        )
+          return;
         setProjectCwd(cwd);
         setRecents((prev) => (prev.length > 0 ? prev : rememberProject(cwd)));
         setSessions((prev) =>
@@ -2573,6 +2583,10 @@ function Workspace({
         );
       })
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    noticeReservedProjects((text) => void message(text, { title: "MonoCode" }));
   }, []);
 
   useEffect(() => {
@@ -6238,7 +6252,9 @@ function Workspace({
   const pickProject = useCallback(async () => {
     // Several folders can be taken at once; each opens as its own project, and
     // the last one selected ends up focused.
-    openProjects(await pickFolders());
+    await openPickedFolders(pickFolders, openProjects, (error) => {
+      void message(error, { title: "MonoCode", kind: "error" });
+    });
   }, [openProjects]);
 
   const onPlaceSessionInFolder = useCallback(

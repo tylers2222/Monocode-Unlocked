@@ -1,5 +1,7 @@
 import type { ProjectLocationSync } from "../../features/projects/model/projectLocation";
 import { ProjectNotFoundError } from "../../features/projects/model/projectLocationError";
+import { reservedProjectNameError } from "../../features/projects/model/reservedProjectName";
+import { knownHomeDir } from "../../shared/lib/paths";
 
 /** Resolves when the user turn is accepted, not when the agent finishes. */
 export type SubmissionAcceptance = boolean | Promise<boolean>;
@@ -17,6 +19,8 @@ export async function submitAfterProjectSync(options: {
       throw new ProjectNotFoundError(options.cwd);
     }
     if (location.moved) {
+      const reserved = reservedProjectNameError(location.path, knownHomeDir());
+      if (reserved) throw new Error(reserved);
       await options.applyLocationChange(options.cwd, location.path);
     }
     return await options.submit();

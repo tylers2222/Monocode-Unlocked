@@ -8,7 +8,12 @@ import {
   remoteRequest,
   useRemoteMachines,
 } from "../model/connections";
-import { rememberRemoteProject } from "../model/remoteProjects";
+import {
+  rememberRemoteProject,
+  remoteProjectKey,
+} from "../model/remoteProjects";
+import { reservedProjectNameError } from "../../projects/model/reservedProjectName";
+import { knownHomeDir } from "../../../shared/lib/paths";
 import type { HostDirectory, HostProject } from "../model/protocol";
 
 /** Adds a project whose folder is on a connected machine. Sessions in it run
@@ -88,15 +93,25 @@ export function AddRemoteProjectDialog({
   const open = async () => {
     if (!machine || !path.trim() || opening) return;
     const version = ++requestVersion.current;
+    const reserved = (cwd: string) =>
+      reservedProjectNameError(
+        remoteProjectKey(machine.environmentId, cwd),
+        knownHomeDir(),
+      );
     setOpening(true);
     setLoading(false);
     setError("");
     try {
+      const typed = reserved(path.trim());
+      if (typed) throw new Error(typed);
       const project = await remoteRequest<HostProject>(
         machine.id,
         "projects.open",
         { cwd: path.trim() },
       );
+      // The machine may resolve the typed path to a folder named MonoCode.
+      const resolved = reserved(project.cwd);
+      if (resolved) throw new Error(resolved);
       if (alive.current && version === requestVersion.current)
         onOpen(rememberRemoteProject(machine.environmentId, project).key);
     } catch (reason) {

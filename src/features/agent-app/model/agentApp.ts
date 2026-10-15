@@ -37,7 +37,7 @@ import {
 } from "../../artifacts/artifacts";
 import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
 import type { Worktree, Worktrees } from "../../source-control/model/worktrees";
-import { pathKey, projectName } from "../../../shared/lib/paths";
+import { knownHomeDir, pathKey, projectName } from "../../../shared/lib/paths";
 import type { SplitDir } from "../../workspace/model/layout";
 import { consumeOperatorCommand } from "../../sessions/model/operatorCommand";
 import {
@@ -982,7 +982,7 @@ async function handleGigaMonos(
     const choice = requireHarnessModel(input);
     if (input.projects === undefined)
       throw new Error("projects is required; pass [] for none");
-    const projects = resolveMonoProjects(input.projects);
+    const projects = resolveMonoProjects(input.projects, knownHomeDir());
     if (input.giga !== undefined && input.giga !== false)
       throw new Error("giga can only be false; only the user makes a Giga Mono");
     if (
@@ -1010,7 +1010,7 @@ async function handleGigaMonos(
   const projects =
     input.projects === undefined
       ? undefined
-      : resolveMonoProjects(input.projects);
+      : resolveMonoProjects(input.projects, knownHomeDir());
   const changesModel = input.harness !== undefined || input.model !== undefined;
   if (!changesModel && name === undefined && projects === undefined)
     throw new Error("Pass harness and model, model, name or projects to change");

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { newSession, type Session } from "../../sessions/model/session";
 import { setHarnessModels } from "../../sessions/model/models";
 import { rememberProject } from "../../projects/model/recents";
+import { setHomeDir } from "../../../shared/lib/paths";
 import {
   createMono,
   findMono,
@@ -270,4 +271,38 @@ it("workspace.status refuses a project session", async () => {
   await expect(run("workspace.status", {})).rejects.toThrow(
     "Only a Mono or its habit runs can read the workspace",
   );
+});
+
+it("refuses a folder named MonoCode other than the workspace as a Mono's project", async () => {
+  setHomeDir("/home/u");
+  rememberProject("/tmp/x/MonoCode");
+  rememberProject("/home/u/MonoCode");
+  const recents = localStorage.getItem("monocode.recentProjects");
+  const { run, monos, shroom } = fixture();
+  const reserved =
+    "MonoCode is reserved for the Giga workspace. Rename the folder or choose another.";
+  try {
+    await expect(
+      run("monos.create", { ...create, projects: ["/tmp/x/MonoCode"] }),
+    ).rejects.toThrow(reserved);
+    await expect(
+      run("monos.configure", {
+        monoId: shroom.id,
+        projects: ["/tmp/x/MonoCode"],
+      }),
+    ).rejects.toThrow(reserved);
+    expect(monos.create).not.toHaveBeenCalled();
+    expect(monos.configure).not.toHaveBeenCalled();
+    expect(listMonos()).toHaveLength(2);
+    expect(findMono(shroom.id)!.projects).toEqual(["/code/app"]);
+    expect(localStorage.getItem("monocode.recentProjects")).toBe(recents);
+
+    await run("monos.configure", {
+      monoId: shroom.id,
+      projects: ["/home/u/MonoCode"],
+    });
+    expect(findMono(shroom.id)!.projects).toEqual(["/home/u/MonoCode"]);
+  } finally {
+    setHomeDir(undefined);
+  }
 });
