@@ -15,6 +15,7 @@ import {
   createOwnerDeliveries,
   createTurnIds,
   dispatchOpener,
+  listenForMonoRoutes,
   ensureQueued,
   getMonos,
   handOff,
@@ -145,7 +146,61 @@ const rust = vi.hoisted(() => {
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: rust.invoke }));
 
+/**
+ * Tauri's event routing as `tauri/src/event/listener.rs` does it: a listener
+ * on a window gets only events sent to that window's label, and a global
+ * `listen` (target `Any`) gets every event, whatever its target.
+ */
+const bus = vi.hoisted(() => {
+  type Listener = {
+    target: string;
+    event: string;
+    handler: (event: { payload: unknown }) => void;
+  };
+  const listeners: Listener[] = [];
+  const add = (target: string, event: string, handler: Listener["handler"]) => {
+    const listener = { target, event, handler };
+    listeners.push(listener);
+    return Promise.resolve(() => {
+      listeners.splice(listeners.indexOf(listener), 1);
+    });
+  };
+  return {
+    current: "main",
+    listeners,
+    add,
+    emitTo(label: string, event: string, payload: unknown) {
+      for (const listener of [...listeners])
+        if (
+          listener.event === event &&
+          (listener.target === "Any" || listener.target === label)
+        )
+          listener.handler({ payload });
+      return Promise.resolve();
+    },
+  };
+});
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: (event: string, handler: (event: { payload: unknown }) => void) =>
+    bus.add("Any", event, handler),
+  emitTo: bus.emitTo,
+  emit: () => Promise.resolve(),
+}));
+
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => {
+    const label = bus.current;
+    return {
+      label,
+      listen: (event: string, handler: (event: { payload: unknown }) => void) =>
+        bus.add(label, event, handler),
+    };
+  },
+}));
+
 beforeEach(() => {
+  bus.listeners.length = 0;
   rust.state.rows = [];
   rust.state.route = { sessionId: "a-chat", via: "queue" };
   rust.state.ownerWindow = undefined;
@@ -668,4 +723,64 @@ it("keeps an owner's answer that comes before the caller waits for it", async ()
   deliveries.settle({ messageId: id, delivery: "submit" });
   expect(await deliveries.wait(id)).toBe("submit");
   expect(await deliveries.wait(id)).toBeUndefined();
+});
+
+// Review PR 4a r3 M1. Defect: a route that Rust sends to the owner window
+// also runs in the caller window, which loads its own copy of the session,
+// and the caller takes an answer from a window that is not the owner.
+it("runs a route only in the owner window, and the caller takes only the owner's answer", async () => {
+  rust.state.ownerWindow = "owner";
+  const callerDeliveries = createOwnerDeliveries(200);
+  const ownerDeliveries = createOwnerDeliveries(200);
+  const caller = world([], [chat("a-chat")], {
+    ownerDeliveries: callerDeliveries,
+  });
+  const owner = world([chat("a-chat")]);
+  bus.current = "caller";
+  listenForMonoRoutes(() => caller.host, callerDeliveries);
+  bus.current = "owner";
+  listenForMonoRoutes(() => owner.host, ownerDeliveries);
+  const sending = caller.send(ask());
+  await vi.waitFor(() => expect(rust.state.rows).toHaveLength(1));
+  // mono_message_submit's emit_to(owner).
+  await bus.emitTo("owner", "mono-message-route", {
+    messages: rust.state.rows,
+    route: { sessionId: "a-chat", via: "queue" },
+    callerWindow: "caller",
+  });
+  expect(await sending).toMatchObject({ delivery: "submit" });
+  expect(ids(owner.get("a-chat"))).toEqual(["m_aaaaaaaaaaaa"]);
+  expect(caller.open).not.toHaveBeenCalled();
+  expect(caller.host.session("a-chat")).toBeUndefined();
+  expect(
+    await ownerDeliveries.wait("m_aaaaaaaaaaaa" as MessageId),
+  ).toBeUndefined();
+});
+
+// Review PR 4a r3 m15. Defect: when the owner window never answers, the call
+// reports some other delivery than the route the gate chose.
+it("reports the gate's route when the owner window never answers", async () => {
+  rust.state.ownerWindow = "owner";
+  rust.state.route = { sessionId: "a-chat", via: "steer" };
+  const { send } = world([], [], {
+    ownerDeliveries: createOwnerDeliveries(20),
+  });
+  expect(await send(ask(false, "steer"))).toMatchObject({ delivery: "steer" });
+});
+
+// Review PR 4a r3 m17. Defect: an answer that no one waits for, such as one
+// that comes after its wait timed out, is kept for the life of the window.
+it("drops an answer no one waits for after one timeout", async () => {
+  vi.useFakeTimers();
+  try {
+    const deliveries = createOwnerDeliveries(50);
+    const id = "m_aaaaaaaaaaaa" as MessageId;
+    deliveries.settle({ messageId: id, delivery: "submit" });
+    vi.advanceTimersByTime(51);
+    const waited = deliveries.wait(id);
+    vi.advanceTimersByTime(51);
+    expect(await waited).toBeUndefined();
+  } finally {
+    vi.useRealTimers();
+  }
 });

@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { emitTo } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   AppActionError,
   type ToolErrorDetails,
@@ -258,7 +260,9 @@ export type MonoRoutedEvent = { messageId: MessageId; delivery: Delivery };
 
 /**
  * Deliveries that owner windows report, by message id. An answer can come
- * before the caller waits for it, so early answers are kept until taken.
+ * before the caller waits for it, so an answer no one waits for is kept for
+ * one timeout, then dropped: a late answer to a wait that already timed out
+ * is never kept for the life of the window.
  */
 export function createOwnerDeliveries(timeoutMs: number) {
   const answers = new Map<MessageId, Delivery>();
@@ -266,8 +270,11 @@ export function createOwnerDeliveries(timeoutMs: number) {
   return {
     settle({ messageId, delivery }: MonoRoutedEvent) {
       const waiter = waiting.get(messageId);
-      if (waiter) waiter(delivery);
-      else answers.set(messageId, delivery);
+      if (waiter) return waiter(delivery);
+      answers.set(messageId, delivery);
+      setTimeout(() => {
+        if (answers.get(messageId) === delivery) answers.delete(messageId);
+      }, timeoutMs);
     },
     wait(messageId: MessageId): Promise<Delivery | undefined> {
       const early = answers.get(messageId);
@@ -285,6 +292,42 @@ export function createOwnerDeliveries(timeoutMs: number) {
         });
       });
     },
+  };
+}
+
+/**
+ * This window's side of design 6 across windows: it runs a route Rust sent
+ * to it as the owner, answers the caller with the delivery, and takes the
+ * answers to its own calls. Both listen on this window only. A global
+ * `listen` is registered as `Any`, which Tauri matches for every event
+ * whatever the emitter's target (as `main.tsx` notes for `quit_confirm`), so
+ * every window would run the route and load its own copy of the session.
+ */
+export function listenForMonoRoutes(
+  host: () => MonoRouteHost,
+  deliveries: Pick<ReturnType<typeof createOwnerDeliveries>, "settle">,
+): () => void {
+  const here = getCurrentWebviewWindow();
+  const routes = here.listen<MonoRouteEvent>(
+    "mono-message-route",
+    ({ payload }) => {
+      void routeMessages(host(), payload.messages, payload.route)
+        .then((delivery) =>
+          emitTo(payload.callerWindow, "mono-message-routed", {
+            messageId: payload.messages[0].id,
+            delivery,
+          } satisfies MonoRoutedEvent),
+        )
+        .catch(console.error);
+    },
+  );
+  const answers = here.listen<MonoRoutedEvent>(
+    "mono-message-routed",
+    ({ payload }) => deliveries.settle(payload),
+  );
+  return () => {
+    void routes.then((unlisten) => unlisten());
+    void answers.then((unlisten) => unlisten());
   };
 }
 

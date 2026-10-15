@@ -15,14 +15,12 @@ import {
   getMonos,
   dispatchOpener,
   handOff,
+  listenForMonoRoutes,
   reconcile,
-  routeMessages,
   replyMessage,
   sendMessage,
   type MonoMessagingHost,
   type MonoQueueHost,
-  type MonoRoutedEvent,
-  type MonoRouteEvent,
   type MonoRouteHost,
 } from "../features/monos/model/monoRoute";
 import { resolveCaller } from "../features/monos/model/monoCaller";
@@ -112,7 +110,8 @@ import {
   type OrchestrationWorkerDetail,
 } from "../features/orchestration/ui/OrchestrationActions";
 import { flushSync } from "react-dom";
-import { emitTo, listen } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import {
@@ -8889,33 +8888,10 @@ function Workspace({
 
   const ownerDeliveries = useMemo(() => createOwnerDeliveries(10_000), []);
   // Design 6: Rust sends a route here when this window owns its session.
-  useEffect(() => {
-    const listening = listen<MonoRouteEvent>(
-      "mono-message-route",
-      ({ payload }) => {
-        void routeMessages(
-          monoRouteHost.current,
-          payload.messages,
-          payload.route,
-        )
-          .then((delivery) =>
-            emitTo(payload.callerWindow, "mono-message-routed", {
-              messageId: payload.messages[0].id,
-              delivery,
-            } satisfies MonoRoutedEvent),
-          )
-          .catch(console.error);
-      },
-    );
-    const answered = listen<MonoRoutedEvent>(
-      "mono-message-routed",
-      ({ payload }) => ownerDeliveries.settle(payload),
-    );
-    return () => {
-      void listening.then((unlisten) => unlisten());
-      void answered.then((unlisten) => unlisten());
-    };
-  }, [ownerDeliveries]);
+  useEffect(
+    () => listenForMonoRoutes(() => monoRouteHost.current, ownerDeliveries),
+    [ownerDeliveries],
+  );
 
   const appReceipts = useRef(
     new Map<string, { signature: string; promise: Promise<unknown> }>(),
@@ -10938,7 +10914,10 @@ function Workspace({
   removeSessionRef.current = onRemoveHistorySession;
 
   useEffect(() => {
-    const listening = listen<{
+    // Scoped to this window: Rust sends each call to the window of its grant,
+    // and a global `listen` (target `Any`) would run it in every window, as
+    // `main.tsx` notes for `quit_confirm`.
+    const listening = getCurrentWebviewWindow().listen<{
       id: string;
       namespace: string;
       sessionId: string;

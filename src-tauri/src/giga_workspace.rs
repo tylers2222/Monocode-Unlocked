@@ -72,7 +72,7 @@ const MANAGED_BODY: &str = r#"(The app keeps this block up to date. Text outside
 - The pre-commit hook lets a Giga commit only its own `gigas/<slug>/` and new files in `shared/`, and refuses secret-looking files. The app sets `MONOCODE_GIGA_SLUG` for each Giga, so your own commits follow the same rules.
 
 ## Messages between Monos
-- `app monos.send` is removed. Message another Mono with `app messages.send` (`message`, `send_to`, `wanting_reply`) and answer a message that wants a reply with `app messages.reply`. Where `shared/CONVENTIONS.md` still names `monos.send`, this line wins.
+- `app monos.send` is removed. Message another Mono with `app messages.send` (`message`, `send_to`, `wanting_reply`; `action_type:"steer"` replaces `whenBusy`) and answer a message that wants a reply with `app messages.reply`. Where `shared/CONVENTIONS.md` still names `monos.send`, this line wins.
 
 ## Search before you redo work
 `index/index.db` has one SQLite FTS5 table, `entries(source, giga, path, at, text)`. `source` is `log` or `brief`.
@@ -1962,7 +1962,9 @@ mod tests {
         let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
         let block = &agents[agents.find(MANAGED_START).unwrap()..];
         assert!(
-            block.contains("`app monos.send` is removed") && block.contains("`app messages.send`"),
+            block.contains("`app monos.send` is removed")
+                && block.contains("`app messages.send`")
+                && block.contains("`action_type:\"steer\"` replaces `whenBusy`"),
             "{block}"
         );
     }

@@ -290,7 +290,7 @@ impl RejectCode {
             RejectCode::NoOpenHandle => "No message in this turn is waiting for your reply. Use send_message.",
             RejectCode::UnknownHandle => "No such handle in this turn.",
             RejectCode::HandleClosed => "That handle is already closed.",
-            RejectCode::AmbiguousReply => "Several messages wait for your reply, and reply answers only when one does. Answer each with send_message to its sender.",
+            RejectCode::AmbiguousReply => "Several messages wait for your reply, and reply answers only when one does. Answer each with messages.send (MCP send_message) to its sender.",
         }
     }
 }
@@ -451,7 +451,7 @@ pub fn decide_reply(
             return Decision::Reject {
                 code: RejectCode::AmbiguousReply,
                 hint: format!(
-                    "Several messages wait for your reply: {}. reply answers only when one does. Answer each with send_message to its sender.",
+                    "Several messages wait for your reply: {}. reply answers only when one does. Answer each with messages.send (MCP send_message) to its sender.",
                     listed.join(", ")
                 ),
                 to: None,
