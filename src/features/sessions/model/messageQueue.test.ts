@@ -7,6 +7,8 @@ import {
   queuedHead,
   queuedMessageForSubmit,
   steerableQueuedMessage,
+  pauseQueue,
+  queuePauseNotice,
 } from "./messageQueue";
 import { newSession, type QueuedMessage, type Session } from "./session";
 
@@ -92,7 +94,7 @@ describe("steerableQueuedMessage", () => {
       steerableQueuedMessage(
         chat({
           busy: true,
-          turnReady: true,
+          turnReadiness: "ready",
           pendingQuestion: { requestId: 1, questions: [], autoResolveAt: 1000 },
         }),
       )?.id,
@@ -101,9 +103,11 @@ describe("steerableQueuedMessage", () => {
   it("holds during startup and allows delivery once the busy turn is ready", () => {
     expect(steerableQueuedMessage(chat({ busy: true }))).toBeUndefined();
     expect(
-      steerableQueuedMessage(chat({ busy: true, turnReady: true }))?.id,
+      steerableQueuedMessage(chat({ busy: true, turnReadiness: "ready" }))?.id,
     ).toBe("a");
-    expect(steerableQueuedMessage(chat({ turnReady: true }))).toBeUndefined();
+    expect(
+      steerableQueuedMessage(chat({ turnReadiness: "ready" })),
+    ).toBeUndefined();
   });
 
   it.each([
@@ -116,7 +120,9 @@ describe("steerableQueuedMessage", () => {
     { pendingQuestion: { requestId: 1, questions: [] } },
   ])("holds an unavailable session: %j", (patch) => {
     expect(
-      steerableQueuedMessage(chat({ busy: true, turnReady: true, ...patch })),
+      steerableQueuedMessage(
+        chat({ busy: true, turnReadiness: "ready", ...patch }),
+      ),
     ).toBeUndefined();
   });
 
@@ -137,7 +143,7 @@ describe("steerableQueuedMessage", () => {
     (patch) => {
       const session = chat({
         busy: true,
-        turnReady: true,
+        turnReadiness: "ready",
         queuedMessages: [{ ...queued("a"), ...patch }, queued("b")],
       });
       expect(steerableQueuedMessage(session)?.id).toBe("b");
@@ -151,7 +157,7 @@ describe("steerableQueuedMessage", () => {
   it("keeps the order among messages that can steer", () => {
     const session = chat({
       busy: true,
-      turnReady: true,
+      turnReadiness: "ready",
       queuedMessages: [
         { ...queued("a"), waitForIdle: true },
         queued("b"),
@@ -162,6 +168,30 @@ describe("steerableQueuedMessage", () => {
     expect(steerableQueuedMessage(dequeueQueuedMessage(session, "b"))?.id).toBe(
       "c",
     );
+  });
+});
+
+describe("queue pause reason", () => {
+  const restarted = chat({
+    queuedMessages: [queued("a")],
+    queueStatus: "paused",
+    queuePauseReason: "quit",
+  });
+
+  it("is shown for a queue that MonoCode paused when it quit", () => {
+    expect(queuePauseNotice(restarted)).toBe("Paused when MonoCode quit");
+  });
+
+  it("goes away with the last message of that queue", () => {
+    expect(queuePauseNotice(dequeueQueuedMessage(restarted, "a"))).toBe(
+      undefined,
+    );
+  });
+
+  it("is not shown when the user stops the turn", () => {
+    const paused = pauseQueue({ ...restarted, busy: true });
+    expect(paused.queueStatus).toBe("paused");
+    expect(queuePauseNotice(paused)).toBeUndefined();
   });
 });
 

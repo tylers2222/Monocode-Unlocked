@@ -66,7 +66,7 @@ describe("optimistic Mono messages", () => {
     const first = appendUser(newSession("codex", "/tmp"), "First");
     const started = {
       ...first,
-      turnReady: true,
+      turnReadiness: "ready",
       blocks: [
         ...first.blocks,
         {
@@ -90,7 +90,7 @@ describe("optimistic Mono messages", () => {
     expect(session.blocks[1]).toBe(started.blocks[1]);
     expect(session.blocks[1].streaming).toBe(true);
     expect(session.busy).toBe(true);
-    expect(session.turnReady).toBe(true);
+    expect(session.turnReadiness).toBe("ready");
     expect(session.queuedMessages?.map((message) => message.blockId)).toEqual([
       "second",
       "third",
@@ -137,7 +137,7 @@ describe("optimistic Mono messages", () => {
     expect(accepted.blocks[1].startedAt).toBeTypeOf("number");
     expect(accepted.blocks[1].sentAt).toBe(session.blocks[1].sentAt);
     expect(accepted.busy).toBe(true);
-    expect(accepted.turnReady).toBe(false);
+    expect(accepted.turnReadiness).toBe("starting");
     expect(accepted.queuedMessages).toBeUndefined();
   });
 
@@ -195,7 +195,7 @@ describe("optimistic Mono messages", () => {
     const session = {
       ...newSession("codex", "/tmp"),
       busy: true,
-      turnReady: true,
+      turnReadiness: "ready",
       queueStatus: "active" as const,
       queuedMessages: [
         { ...message("waiting"), waitForIdle: true },

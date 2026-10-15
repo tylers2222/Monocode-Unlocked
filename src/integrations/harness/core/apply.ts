@@ -25,8 +25,10 @@ import type { HarnessEvent } from "./types";
 import { usageLimitFromError } from "../../../features/sessions/model/usageLimit";
 
 /**
- * Output from the running turn proves it can take follow-ups again, after a
- * steer was refused as not ready. The provider reports `turn.ready` only once.
+ * After a steer was refused as not ready, output from the running turn proves
+ * it can take follow-ups again; the provider reports `turn.ready` only once.
+ * Output before the provider accepted the turn never arms steering: it can be
+ * left over from the previous turn.
  */
 function rearmTurn(session: Session, event: HarnessEvent): Session {
   switch (event.type) {
@@ -34,8 +36,8 @@ function rearmTurn(session: Session, event: HarnessEvent): Session {
     case "message.completed":
     case "tool.started":
     case "tool.updated":
-      return session.busy && !session.turnReady
-        ? { ...session, turnReady: true }
+      return session.busy && session.turnReadiness === "deferred"
+        ? { ...session, turnReadiness: "ready" }
         : session;
     default:
       return session;
@@ -210,7 +212,7 @@ export function applyHarnessEvent(
       return { ...session, blocks };
     }
     case "turn.ready":
-      return session.busy ? { ...session, turnReady: true } : session;
+      return session.busy ? { ...session, turnReadiness: "ready" } : session;
     case "session.configChanged":
       return {
         ...session,
@@ -509,7 +511,7 @@ export function appendUser(
 ): Session {
   session = settlePendingApprovals(session);
   return appendBlock(
-    { ...session, busy: true, turnReady: false },
+    { ...session, busy: true, turnReadiness: "starting" },
     {
       id: crypto.randomUUID(),
       role: "user",
@@ -553,7 +555,7 @@ export function stopStreaming(session: Session, endedAt = Date.now()): Session {
   return {
     ...settled,
     busy: false,
-    turnReady: false,
+    turnReadiness: undefined,
     pendingQuestion: undefined,
     blocks: stampTurnDuration(
       settled.blocks

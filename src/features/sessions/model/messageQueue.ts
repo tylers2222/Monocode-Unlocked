@@ -19,10 +19,12 @@ export function dequeueQueuedMessage(
   const queuedMessages = (session.queuedMessages ?? []).filter(
     (message) => message.id !== messageId,
   );
+  const remains = queuedMessages.length > 0;
   return {
     ...session,
-    queuedMessages: queuedMessages.length > 0 ? queuedMessages : undefined,
-    queueStatus: queuedMessages.length > 0 ? session.queueStatus : undefined,
+    queuedMessages: remains ? queuedMessages : undefined,
+    queueStatus: remains ? session.queueStatus : undefined,
+    queuePauseReason: remains ? session.queuePauseReason : undefined,
     editingQueuedMessageId:
       session.editingQueuedMessageId === messageId
         ? undefined
@@ -69,7 +71,7 @@ export function steerableQueuedMessage(
 ): QueuedMessage | undefined {
   if (
     !session.busy ||
-    !session.turnReady ||
+    session.turnReadiness !== "ready" ||
     session.worktreePreparing ||
     session.worktreeRemoved ||
     session.pendingSwitch ||
@@ -89,9 +91,15 @@ export function steerableQueuedMessage(
     : undefined;
 }
 
+/** The user stopped the turn: hold what is left; it is no longer a restart pause. */
+export function pauseQueue(session: Session): Session {
+  return session.queuedMessages?.length
+    ? { ...session, queueStatus: "paused", queuePauseReason: undefined }
+    : session;
+}
+
 /** Why a paused queue is not sending, when the user did not pause it. */
 export function queuePauseNotice(session: Session): string | undefined {
-  if (session.queueStatus !== "paused") return undefined;
   return session.queuePauseReason === "quit"
     ? "Paused when MonoCode quit"
     : undefined;

@@ -116,7 +116,7 @@ describe("Mono completion batches", () => {
     let mono: Session = {
       ...newSession("codex", "/code/project"),
       busy: true,
-      turnReady: true,
+      turnReadiness: "ready",
       queuedMessages: [
         { id: "chat", text: "Another question", attachments: [] },
       ],

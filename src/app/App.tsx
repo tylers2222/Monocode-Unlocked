@@ -507,6 +507,7 @@ import {
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
+  pauseQueue,
   queuedHead,
   queuedMessageForSubmit,
   steerableQueuedMessage,
@@ -7170,7 +7171,7 @@ function Workspace({
             flushHarnessEvents();
           },
           deferred: () =>
-            change((session) => ({ ...session, turnReady: false })),
+            change((session) => ({ ...session, turnReadiness: "deferred" })),
           failed: (error) =>
             change((session) => ({
               ...session,
@@ -10215,10 +10216,7 @@ function Workspace({
           const completed = isPreparingHandoff(stopped)
             ? completeHandoff(stopped, buildDeterministicHandoff(stopped))
             : stopped;
-          const ready = { ...completed, worktreePreparing: undefined };
-          return ready.queuedMessages?.length
-            ? { ...ready, queueStatus: "paused" }
-            : ready;
+          return pauseQueue({ ...completed, worktreePreparing: undefined });
         }),
       );
       if (session) {

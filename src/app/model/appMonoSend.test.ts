@@ -35,7 +35,7 @@ function idle(): Session {
 
 /** The provider has accepted the running turn, so it can take a steer. */
 function busy(): Session {
-  return { ...appendUser(idle(), "Fix the parser"), turnReady: true };
+  return { ...appendUser(idle(), "Fix the parser"), turnReadiness: "ready" };
 }
 
 function plan(
@@ -98,7 +98,7 @@ describe("planAppMonoSend", () => {
     ]);
     expect(steerableQueuedMessage(next)?.id).toBe(message.id);
     expect(
-      steerableQueuedMessage({ ...next, turnReady: false }),
+      steerableQueuedMessage({ ...next, turnReadiness: "deferred" }),
     ).toBeUndefined();
   });
 

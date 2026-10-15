@@ -16,7 +16,7 @@ function delivery() {
   let session: Session = {
     ...newSession("codex", "/tmp"),
     busy: true,
-    turnReady: true,
+    turnReadiness: "ready",
     queueStatus: "active",
     queuedMessages: [
       { id: "first", text: "Use TypeScript", attachments: [] },
@@ -35,7 +35,7 @@ function delivery() {
       session = dequeueQueuedMessage(session, message.id);
     }),
     deferred: vi.fn(() => {
-      session = { ...session, turnReady: false };
+      session = { ...session, turnReadiness: "deferred" };
     }),
     failed: vi.fn((error: string) => {
       session = {
@@ -63,10 +63,10 @@ function delivery() {
 describe("pending Mono follow-up delivery", () => {
   it("waits for cold startup and never lets a later message overtake the head", async () => {
     const d = delivery();
-    d.patch({ turnReady: false });
+    d.patch({ turnReadiness: "starting" });
     expect(await deliverQueuedFollowUp(d.options)).toBe(false);
     expect(d.options.prepare).not.toHaveBeenCalled();
-    d.patch({ turnReady: true });
+    d.patch({ turnReadiness: "ready" });
     expect(
       await deliverQueuedFollowUp({
         ...d.options,
@@ -92,7 +92,7 @@ describe("pending Mono follow-up delivery", () => {
     let session: Session = {
       ...newSession("codex", "/tmp"),
       busy: true,
-      turnReady: true,
+      turnReadiness: "ready",
       queueStatus: "active",
       queuedMessages: [waiting, user],
     };
@@ -178,7 +178,7 @@ describe("pending Mono follow-up delivery", () => {
     d.options.steer.mockRejectedValueOnce(new TurnNotReadyError("Turn ended"));
     expect(await deliverQueuedFollowUp(d.options)).toBe(false);
     expect(d.session()).toMatchObject({
-      turnReady: false,
+      turnReadiness: "deferred",
       queueStatus: "active",
     });
     expect(d.session().queuedMessages?.[0]).toBe(d.options.message);

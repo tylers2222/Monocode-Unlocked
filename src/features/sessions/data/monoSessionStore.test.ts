@@ -171,7 +171,7 @@ describe("Mono database pagination and writes", () => {
       steerableQueuedMessage({
         ...restored,
         busy: true,
-        turnReady: true,
+        turnReadiness: "ready",
         queueStatus: "active",
       }),
     ).toBeUndefined();
@@ -258,10 +258,6 @@ describe("Mono database pagination and writes", () => {
     });
     const restored = (await getSession(session.id))!;
     expect(restored.queueStatus).toBe("paused");
-    expect(monoMessageDeliveries(restored).get("optimistic-first")).toEqual({
-      status: "paused",
-      reason: "Paused when MonoCode quit",
-    });
     expect(restored.busy).toBe(false);
     expect(restored.queuedMessages?.map((message) => message.id)).toEqual([
       "waiting-first",
@@ -284,6 +280,32 @@ describe("Mono database pagination and writes", () => {
         }),
       }),
     );
+  });
+  it("says the queue paused when MonoCode quit only on the first load of a queue that was still sending", async () => {
+    const pending = { id: "pending", text: "Use TypeScript", attachments: [] };
+    const stored = (queueStatus: "active" | "paused") => ({
+      ...record(),
+      queuedMessages: [pending],
+      queueStatus,
+    });
+    const sending = stored("active");
+    call.mockResolvedValueOnce(sending);
+    const restarted = (await getSession(sending.id))!;
+    expect(monoMessageDeliveries(restarted).get("pending")).toEqual({
+      status: "paused",
+      reason: "Paused when MonoCode quit",
+    });
+    call.mockResolvedValueOnce(sending);
+    const reloaded = (await getSession(sending.id))!;
+    expect(reloaded.queueStatus).toBe("paused");
+    expect(monoMessageDeliveries(reloaded).get("pending")).toEqual({
+      status: "paused",
+    });
+    const interrupted = stored("paused");
+    call.mockResolvedValueOnce(interrupted);
+    expect(
+      monoMessageDeliveries((await getSession(interrupted.id))!).get("pending"),
+    ).toEqual({ status: "paused" });
   });
   it("keeps habit identity and posting time through saves, reloads and older pages", async () => {
     const monoHabit = { id: "habit", name: "Morning check", at: 1_000 };

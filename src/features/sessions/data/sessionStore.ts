@@ -1429,7 +1429,12 @@ function normalizeSummary(summary: SessionSummary): SessionSummary {
   };
 }
 
+/** Sessions loaded since the app started; a later reload is not a restart. */
+const loadedThisRun = new Set<string>();
+
 function recordToSession(record: SessionRecord): Session {
+  const firstLoad = !loadedThisRun.has(record.id);
+  loadedThisRun.add(record.id);
   const blocks = Array.isArray(record.blocks)
     ? record.blocks
         .map((block) => sanitizeBlock(block, { hydrate: true }))
@@ -1451,11 +1456,14 @@ function recordToSession(record: SessionRecord): Session {
     title: record.title,
     blocks,
     // A restart interrupted the active turn. Let the user resume pending work.
+    // Only a queue that was still sending when the app quit gets that reason.
     ...(queuedMessages.length
       ? {
           queuedMessages,
           queueStatus: "paused" as const,
-          queuePauseReason: "quit" as const,
+          ...(firstLoad && record.queueStatus !== "paused"
+            ? { queuePauseReason: "quit" as const }
+            : {}),
         }
       : {}),
     ...(record.monoTranscript ? { monoTranscript: record.monoTranscript } : {}),

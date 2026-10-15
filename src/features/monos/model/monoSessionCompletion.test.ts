@@ -62,7 +62,7 @@ describe("Mono session completion notifications", () => {
     let mono: Session = {
       ...newSession("codex", "/code/project"),
       busy: true,
-      turnReady: true,
+      turnReadiness: "ready",
       queuedMessages: [
         { id: "chat", text: "Also explain the design", attachments: [] },
       ],

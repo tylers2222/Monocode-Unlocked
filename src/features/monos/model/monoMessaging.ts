@@ -17,12 +17,12 @@ import type {
 } from "../../sessions/model/session";
 
 type UserCards = Parameters<typeof appendUser>[3];
-export type MessageDelivery = {
-  status: "pending" | "waiting" | "paused" | "failed";
-  error?: string;
-  /** Why a paused message is not sending. */
-  reason?: string;
-};
+export type MessageDelivery =
+  | { status: "pending" }
+  | { status: "waiting" }
+  /** `reason` says why, when the user did not pause it. */
+  | { status: "paused"; reason?: string }
+  | { status: "failed"; error: string };
 
 /** Show the message now; the outbox only controls its delivery. */
 export function enqueueMonoMessage(
