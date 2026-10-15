@@ -23,6 +23,7 @@ pub const CHANGED_EVENT: &str = "monos_changed";
 pub const UNKNOWN_MONO: &str = "unknown_mono";
 const ID_MAX: usize = 64;
 const NAME_MAX: usize = 256;
+const MASCOT_MAX: usize = 64;
 const DATA_MAX: usize = 256 * 1024;
 const BATCH_MAX: usize = 1000;
 
@@ -54,26 +55,23 @@ impl MonoRole {
     }
 }
 
-/// A new Mono as a window sends it.
+/// A new Mono as a window sends it. No name: `monos.name` comes only from
+/// `data`, see [`display_name`].
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MonoCreate {
     pub id: String,
-    pub name: String,
     pub role: MonoRole,
     pub data: Map<String, Value>,
     pub sort_order: u32,
 }
 
 /// What changed on one Mono. `patch` is a JSON merge patch (RFC 7396) of its
-/// data. `name` is the display name the window derived; a custom name in the
-/// patched data wins over it.
+/// data.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MonoUpdate {
     pub id: String,
-    #[serde(default)]
-    pub name: Option<String>,
     #[serde(default)]
     pub role: Option<MonoRole>,
     #[serde(default)]
@@ -94,7 +92,6 @@ pub struct ValidCreate {
 /// An update that passed [`validate_update`].
 pub struct ValidUpdate {
     id: String,
-    name: Option<String>,
     role: Option<MonoRole>,
     patch: Option<Map<String, Value>>,
     sort_order: Option<i64>,
@@ -133,14 +130,6 @@ pub fn validate_mono_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_name(name: &str) -> Result<String, String> {
-    let name = name.trim();
-    if name.is_empty() || name.chars().count() > NAME_MAX {
-        return Err("Mono name must be 1 to 256 characters".into());
-    }
-    Ok(name.to_string())
-}
-
 fn validate_data_keys(data: &Map<String, Value>) -> Result<(), String> {
     if data.contains_key("id") || data.contains_key("giga") {
         return Err("Mono data must not repeat its id or role".into());
@@ -156,22 +145,49 @@ fn data_json(data: &Map<String, Value>) -> Result<String, String> {
     Ok(json)
 }
 
-/// The custom name in the data when there is one, else the fallback (the
-/// mascot's default name, which only the web app knows how to make).
-fn display_name(data: &Map<String, Value>, fallback: &str) -> String {
-    match data.get("name").and_then(Value::as_str).map(str::trim) {
-        Some(name) if !name.is_empty() && name.chars().count() <= NAME_MAX => name.to_string(),
-        _ => fallback.to_string(),
+/// The name a Mono goes by until the user names it: "MonoCrab", "MonoShroom".
+/// The same rule as `defaultMonoName` in `mono.ts`; both are checked against
+/// `monoDefaultNames.json`.
+fn default_mono_name(mascot: &str) -> String {
+    let short = match mascot {
+        "mushroom" => "Shroom".to_string(),
+        _ => {
+            let mut chars = mascot.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().chain(chars).collect())
+                .unwrap_or_default()
+        }
+    };
+    format!("Mono{short}")
+}
+
+/// `monos.name`, from the data alone: the custom name when there is one, else
+/// the mascot's default name. A window never sends it, so a window with a
+/// stale copy cannot leave it on an old mascot.
+fn display_name(data: &Map<String, Value>) -> Result<String, String> {
+    if let Some(name) = data.get("name").and_then(Value::as_str).map(str::trim) {
+        if !name.is_empty() {
+            if name.chars().count() > NAME_MAX {
+                return Err("Mono name must be 1 to 256 characters".into());
+            }
+            return Ok(name.to_string());
+        }
+    }
+    match data.get("mascot").and_then(Value::as_str) {
+        Some(mascot) if !mascot.is_empty() && mascot.chars().count() <= MASCOT_MAX => {
+            Ok(default_mono_name(mascot))
+        }
+        _ => Err("Mono data needs a mascot of 1 to 64 characters".into()),
     }
 }
 
 pub fn validate_create(mono: MonoCreate) -> Result<ValidCreate, String> {
     validate_mono_id(&mono.id)?;
-    let fallback = validate_name(&mono.name)?;
     validate_data_keys(&mono.data)?;
     data_json(&mono.data)?;
     Ok(ValidCreate {
-        name: display_name(&mono.data, &fallback),
+        name: display_name(&mono.data)?,
         id: mono.id,
         role: mono.role,
         data: mono.data,
@@ -181,13 +197,11 @@ pub fn validate_create(mono: MonoCreate) -> Result<ValidCreate, String> {
 
 pub fn validate_update(update: MonoUpdate) -> Result<ValidUpdate, String> {
     validate_mono_id(&update.id)?;
-    let name = update.name.as_deref().map(validate_name).transpose()?;
     if let Some(patch) = &update.patch {
         validate_data_keys(patch)?;
     }
     Ok(ValidUpdate {
         id: update.id,
-        name,
         role: update.role,
         patch: update.patch,
         sort_order: update.sort_order.map(i64::from),
@@ -216,8 +230,12 @@ fn valid_legacy(monos: Vec<MonoCreate>) -> (Vec<ValidCreate>, Vec<String>) {
     let mut seen = HashSet::new();
     let mut valid = Vec::new();
     let mut refused = Vec::new();
-    for mono in monos.into_iter().take(BATCH_MAX) {
+    for (index, mono) in monos.into_iter().enumerate() {
         let id = mono.id.clone();
+        if index >= BATCH_MAX {
+            refused.push(format!("{id}: past the first {BATCH_MAX} Monos"));
+            continue;
+        }
         match validate_create(mono) {
             Ok(mono) if seen.insert(mono.id.clone()) => valid.push(mono),
             Ok(_) => refused.push(format!("{id}: appears twice")),
@@ -329,15 +347,15 @@ pub fn update_many(conn: &Connection, updates: &[ValidUpdate]) -> Result<(), Str
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let now = now_millis();
     for update in updates {
-        let row: Option<(String, String)> = tx
+        let stored: Option<String> = tx
             .query_row(
-                "SELECT name, data_json FROM monos WHERE id = ?1",
+                "SELECT data_json FROM monos WHERE id = ?1",
                 params![update.id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        let Some((name, stored)) = row else {
+        let Some(stored) = stored else {
             return Err(format!("{UNKNOWN_MONO}: {}", update.id));
         };
         let mut data: Value = serde_json::from_str(&stored).map_err(|e| e.to_string())?;
@@ -347,7 +365,7 @@ pub fn update_many(conn: &Connection, updates: &[ValidUpdate]) -> Result<(), Str
         let Value::Object(data) = data else {
             return Err("Stored Mono data is not an object".into());
         };
-        let name = display_name(&data, update.name.as_deref().unwrap_or(&name));
+        let name = display_name(&data)?;
         tx.execute(
             "UPDATE monos SET
                name = ?2,
@@ -483,10 +501,15 @@ pub fn monos_import_legacy(
     monos: Vec<MonoCreate>,
 ) -> Result<Roster, String> {
     let (monos, refused) = valid_legacy(monos);
-    if !refused.is_empty() {
-        eprintln!("monocode: stored Monos left out of the import: {refused:?}");
-    }
-    write(&app, &store, |conn| import_legacy(conn, &monos))
+    write(&app, &store, |conn| {
+        let imported = import_legacy(conn, &monos)?;
+        // Every start sends the stored roster again; say what was left out
+        // only on the start that imported.
+        if imported && !refused.is_empty() {
+            eprintln!("monocode: stored Monos left out of the import: {refused:?}");
+        }
+        Ok(imported)
+    })
 }
 
 #[cfg(test)]
@@ -497,7 +520,6 @@ mod tests {
     fn create_input(id: &str, order: u32, data: Value) -> MonoCreate {
         serde_json::from_value(json!({
             "id": id,
-            "name": format!("Mono {id}"),
             "role": if id.starts_with('g') { "giga" } else { "mono" },
             "data": data,
             "sortOrder": order,
@@ -555,8 +577,8 @@ mod tests {
         assert_eq!(
             summary,
             [
-                ("g1", "Mono g1", MonoRole::Giga, 0),
-                ("m2", "Mono m2", MonoRole::Mono, 1),
+                ("g1", "MonoSkull", MonoRole::Giga, 0),
+                ("m2", "MonoCrab", MonoRole::Mono, 1),
                 ("m3", "Boo", MonoRole::Mono, 2),
             ]
         );
@@ -600,8 +622,11 @@ mod tests {
 
     #[test]
     fn one_stored_mono_that_fails_the_boundary_does_not_keep_the_others_out() {
-        let mut long = create_input("m2", 1, json!({"mascot": "crab"}));
-        long.name = "x".repeat(NAME_MAX + 1);
+        let long = create_input(
+            "m2",
+            1,
+            json!({"mascot": "crab", "name": "x".repeat(NAME_MAX + 1)}),
+        );
         let (valid, refused) = valid_legacy(vec![
             create_input("g1", 0, json!({"mascot": "skull"})),
             long,
@@ -614,6 +639,19 @@ mod tests {
         assert_eq!(ids(&conn), ["g1", "m4"]);
         assert_eq!(list(&conn).unwrap()[0].data, json!({"mascot": "skull"}));
         assert_eq!(refused.len(), 3);
+    }
+
+    #[test]
+    fn stored_monos_past_the_limit_are_reported_as_left_out() {
+        let monos = (0..=BATCH_MAX)
+            .map(|index| create_input(&format!("m{index}"), 0, json!({"mascot": "crab"})))
+            .collect();
+        let (valid, refused) = valid_legacy(monos);
+        assert_eq!(valid.len(), BATCH_MAX);
+        assert_eq!(
+            refused,
+            [format!("m{BATCH_MAX}: past the first {BATCH_MAX} Monos")]
+        );
     }
 
     #[test]
@@ -654,9 +692,7 @@ mod tests {
         // a chat, removes its color and moves it first.
         update_many(
             &conn,
-            &[update(
-                json!({"id": "m2", "name": "Pinch", "patch": {"name": "Pinch"}}),
-            )],
+            &[update(json!({"id": "m2", "patch": {"name": "Pinch"}}))],
         )
         .unwrap();
         update_many(
@@ -680,32 +716,53 @@ mod tests {
     }
 
     #[test]
-    fn a_custom_name_wins_over_a_stale_window_s_default_name() {
+    fn the_name_comes_from_the_data_even_when_two_windows_race() {
         let conn = conn();
         create(
             &conn,
-            &mono("m3", 0, json!({"mascot": "ghost", "name": "Boo"})),
+            &mono("m2", 0, json!({"mascot": "crab", "name": "Pinch"})),
         )
         .unwrap();
-        // A window that never saw the rename changes the mascot and sends the
-        // default name it derived.
+        // Window A changes the mascot. Window B, which has not seen that,
+        // clears the custom name.
         update_many(
             &conn,
-            &[update(
-                json!({"id": "m3", "name": "MonoCrab", "patch": {"mascot": "crab"}}),
-            )],
+            &[update(json!({"id": "m2", "patch": {"mascot": "ghost"}}))],
         )
         .unwrap();
-        assert_eq!(list(&conn).unwrap()[0].name, "Boo");
-        // Without a custom name, the window's default name is the name.
+        assert_eq!(list(&conn).unwrap()[0].name, "Pinch");
         update_many(
             &conn,
-            &[update(
-                json!({"id": "m3", "name": "MonoCrab", "patch": {"name": null}}),
-            )],
+            &[update(json!({"id": "m2", "patch": {"name": null}}))],
         )
         .unwrap();
-        assert_eq!(list(&conn).unwrap()[0].name, "MonoCrab");
+        assert_eq!(list(&conn).unwrap()[0].name, "MonoGhost");
+        // Without a custom name, a mascot change moves the name with it.
+        update_many(
+            &conn,
+            &[update(json!({"id": "m2", "patch": {"mascot": "mushroom"}}))],
+        )
+        .unwrap();
+        assert_eq!(list(&conn).unwrap()[0].name, "MonoShroom");
+        // A Mono left with neither a name nor a mascot is refused.
+        assert!(update_many(
+            &conn,
+            &[update(json!({"id": "m2", "patch": {"mascot": null}}))]
+        )
+        .is_err());
+        assert_eq!(list(&conn).unwrap()[0].name, "MonoShroom");
+    }
+
+    #[test]
+    fn default_names_match_the_shared_table() {
+        let table: Map<String, Value> = serde_json::from_str(include_str!(
+            "../../src/features/monos/model/monoDefaultNames.json"
+        ))
+        .unwrap();
+        assert!(!table.is_empty());
+        for (mascot, name) in table {
+            assert_eq!(Value::String(default_mono_name(&mascot)), name, "{mascot}");
+        }
     }
 
     #[test]
@@ -727,7 +784,7 @@ mod tests {
     #[test]
     fn the_boundary_refuses_malformed_monos() {
         let write = |value: Value| serde_json::from_value::<MonoCreate>(value);
-        let base = json!({"id": "m1", "name": "Crab", "role": "mono", "data": {}, "sortOrder": 0});
+        let base = json!({"id": "m1", "role": "mono", "data": {"mascot": "crab"}, "sortOrder": 0});
         let with = |key: &str, value: Value| {
             let mut next = base.clone();
             next[key] = value;
@@ -738,17 +795,23 @@ mod tests {
         assert!(write(with("role", json!("admin"))).is_err());
         assert!(write(with("data", json!([]))).is_err());
         assert!(write(with("sortOrder", json!(-1))).is_err());
+        // The name comes from the data; a window cannot send one.
+        assert!(write(with("name", json!("Crab"))).is_err());
         assert!(write(with("extra", json!(1))).is_err());
         for bad in [
             with("id", json!("../x")),
             with("id", json!("")),
             with("id", json!("mono_1")),
             with("id", json!("a".repeat(ID_MAX + 1))),
-            with("name", json!("   ")),
-            with("name", json!("x".repeat(257))),
-            with("data", json!({"giga": true})),
-            with("data", json!({"id": "m2"})),
-            with("data", json!({"instructions": "x".repeat(DATA_MAX)})),
+            with("data", json!({})),
+            with("data", json!({"mascot": ""})),
+            with("data", json!({"mascot": "crab", "name": "x".repeat(257)})),
+            with("data", json!({"mascot": "crab", "giga": true})),
+            with("data", json!({"mascot": "crab", "id": "m2"})),
+            with(
+                "data",
+                json!({"mascot": "crab", "instructions": "x".repeat(DATA_MAX)}),
+            ),
         ] {
             assert!(
                 validate_create(write(bad.clone()).unwrap()).is_err(),
@@ -758,11 +821,11 @@ mod tests {
 
         let change = |value: Value| serde_json::from_value::<MonoUpdate>(value);
         assert!(change(json!({"id": "m1", "data": {}})).is_err());
+        assert!(change(json!({"id": "m1", "name": "Crab"})).is_err());
         for bad in [
             json!({"id": "mono_1"}),
             json!({"id": "m1", "patch": {"giga": true}}),
             json!({"id": "m1", "patch": {"id": "m2"}}),
-            json!({"id": "m1", "name": ""}),
         ] {
             assert!(
                 validate_update(change(bad.clone()).unwrap()).is_err(),

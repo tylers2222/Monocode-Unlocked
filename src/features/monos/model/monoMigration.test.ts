@@ -1,12 +1,14 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi, type Mock } from "vitest";
 import type { Mono } from "./mono";
+import DEFAULT_NAMES from "./monoDefaultNames.json";
 
 /**
  * Stands in for `monocode.db` behind the Tauri commands, across restarts. The
  * rules mirror `mono_roster.rs`, whose own tests pin them: import once into an
  * empty table, create never replaces, update never inserts and merges its
- * patch, a custom name wins over the window's name, a batch is all or nothing.
+ * patch, `name` comes only from the data, unknown fields are refused, a batch
+ * is all or nothing. Arguments go through JSON, as over IPC.
  */
 type Row = {
   id: string;
@@ -17,7 +19,6 @@ type Row = {
 };
 type Update = {
   id: string;
-  name?: string;
   role?: string;
   patch?: Record<string, unknown>;
   sortOrder?: number;
@@ -53,14 +54,28 @@ function write(change: () => void) {
   return after;
 }
 
-function customName(row: Row) {
-  return typeof row.data.name === "string" ? row.data.name.trim() : "";
+/** `display_name` in `mono_roster.rs`, with the shared default-name table. */
+function nameOf(data: Record<string, unknown>) {
+  const custom = typeof data.name === "string" ? data.name.trim() : "";
+  const fallback = (DEFAULT_NAMES as Record<string, string>)[
+    String(data.mascot)
+  ];
+  if (!custom && !fallback) throw new Error("Mono data needs a mascot");
+  return custom || fallback;
 }
+
+/** `deny_unknown_fields` on `MonoCreate` and `MonoUpdate`. */
+function onlyKeys(value: object, allowed: string[]) {
+  for (const key of Object.keys(value))
+    if (!allowed.includes(key)) throw new Error(`unknown field \`${key}\``);
+}
+const CREATE_KEYS = ["id", "role", "data", "sortOrder"];
+const UPDATE_KEYS = ["id", "role", "patch", "sortOrder"];
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, raw: Record<string, unknown> = {}) => {
     if (db.broken) throw new Error("database is locked");
-    const args = structuredClone(raw) as {
+    const args = JSON.parse(JSON.stringify(raw)) as {
       monos?: Row[];
       mono?: Row;
       updates?: Update[];
@@ -73,20 +88,19 @@ vi.mock("@tauri-apps/api/core", () => ({
         return listed;
       }
       case "monos_import_legacy":
+        args.monos!.forEach((row) => onlyKeys(row, CREATE_KEYS));
         return write(() => {
           if (!db.imported && db.rows.size === 0)
             for (const row of args.monos!)
-              db.rows.set(row.id, {
-                ...row,
-                name: customName(row) || row.name,
-              });
+              db.rows.set(row.id, { ...row, name: nameOf(row.data) });
           db.imported = true;
         });
       case "monos_create": {
         const row = args.mono!;
+        onlyKeys(row, CREATE_KEYS);
         if (db.rows.has(row.id)) throw new Error("UNIQUE constraint failed");
         return write(() =>
-          db.rows.set(row.id, { ...row, name: customName(row) || row.name }),
+          db.rows.set(row.id, { ...row, name: nameOf(row.data) }),
         );
       }
       case "monos_update": {
@@ -97,12 +111,13 @@ vi.mock("@tauri-apps/api/core", () => ({
         await db.updateGate;
         const next = structuredClone(db.rows);
         for (const update of args.updates!) {
+          onlyKeys(update, UPDATE_KEYS);
           const row = next.get(update.id);
           if (!row) throw new Error(`unknown_mono: ${update.id}`);
           for (const [key, value] of Object.entries(update.patch ?? {}))
             if (value === null) delete row.data[key];
             else row.data[key] = value;
-          row.name = customName(row) || update.name || row.name;
+          row.name = nameOf(row.data);
           if (update.role) row.role = update.role;
           if (update.sortOrder !== undefined) row.sortOrder = update.sortOrder;
         }
@@ -326,10 +341,14 @@ it("shows another window's change, and never lets a late older roster undo a new
   unsubscribe();
 });
 
-/** A gate that stays shut until `open()`. */
+/**
+ * A gate that stays shut until `open()`. Not `Promise.withResolvers`: CI runs
+ * Node 20, which does not have it.
+ */
 function gate() {
-  const shut = Promise.withResolvers<void>();
-  return { wait: shut.promise, open: () => shut.resolve() };
+  let open = () => {};
+  const wait = new Promise<void>((resolve) => (open = resolve));
+  return { wait, open: () => open() };
 }
 
 it("keeps another window's rename when this window changes the same Mono from a stale copy", async () => {
@@ -468,4 +487,44 @@ it("drops a change the database refused and shows the saved roster again", async
   expect(here.findMono("mono-3")?.name).toBeUndefined();
   expect(here.listMonos()).toEqual(STORED);
   error.mockRestore();
+});
+
+it("does not overwrite another window's change to a field this window did not change", async () => {
+  storeRoster();
+  const here = await start();
+
+  otherWindow(() => (db.rows.get("giga-1")!.data.color = "#123"), {
+    silent: true,
+  });
+  here.saveMonoSessionId("giga-1", "chat-z");
+  await here.monoWritesSettled();
+
+  expect(db.rows.get("giga-1")!.data).toMatchObject({
+    color: "#123",
+    sessionId: "chat-z",
+  });
+});
+
+it("keeps a cleared name cleared after a restart", async () => {
+  storeRoster();
+  let mono = await start();
+  mono.saveMonoName("giga-1", "");
+  await mono.monoWritesSettled();
+
+  mono = await start();
+  expect(mono.findMono("giga-1")?.name).toBeUndefined();
+  expect(db.rows.get("giga-1")!.name).toBe("MonoSkull");
+});
+
+it("moves the stored name to the new mascot's default when a Mono has no name of its own", async () => {
+  storeRoster();
+  const here = await start();
+  here.saveMonoMascot("mono-2", "ghost");
+  await here.monoWritesSettled();
+
+  expect(db.rows.get("mono-2")).toMatchObject({
+    name: "MonoGhost",
+    data: { mascot: "ghost" },
+  });
+  expect(here.findMono("mono-2")?.mascot).toBe("ghost");
 });

@@ -208,10 +208,12 @@ function parseMono(value: unknown): Mono | undefined {
 /** A Mono's record without the parts `monocode.db` keeps in columns. */
 type MonoData = Omit<Mono, "id" | "giga">;
 
-/** A new Mono as `monocode.db` stores it; `data` is the rest of its record. */
+/**
+ * A new Mono as `monocode.db` stores it; `data` is the rest of its record.
+ * No name: the database derives `monos.name` from `data` alone.
+ */
 type MonoCreate = {
   id: string;
-  name: string;
   role: "giga" | "mono";
   data: MonoData;
   sortOrder: number;
@@ -223,7 +225,6 @@ type MonoCreate = {
  */
 type MonoUpdate = {
   id: string;
-  name?: string;
   role?: "giga" | "mono";
   patch?: Record<string, unknown>;
   sortOrder?: number;
@@ -236,13 +237,7 @@ function monoDisplayName(mono: Pick<Mono, "name" | "mascot">): string {
 
 function monoCreate(mono: Mono, sortOrder: number): MonoCreate {
   const { id, giga, ...data } = mono;
-  return {
-    id,
-    name: monoDisplayName(mono),
-    role: giga ? "giga" : "mono",
-    data,
-    sortOrder,
-  };
+  return { id, role: giga ? "giga" : "mono", data, sortOrder };
 }
 
 function dataPatch(
@@ -267,11 +262,9 @@ function monoUpdate(
   const { id: _, giga: wasGiga, ...was } = before;
   const { id, giga, ...data } = after;
   const patch = dataPatch(was, data);
-  const name = monoDisplayName(after);
   const update: MonoUpdate = {
     id,
     ...(patch ? { patch } : {}),
-    ...(name !== monoDisplayName(before) ? { name } : {}),
     ...(!wasGiga !== !giga ? { role: giga ? "giga" : "mono" } : {}),
     ...(sortOrder !== beforeOrder ? { sortOrder } : {}),
   };
@@ -372,7 +365,9 @@ async function settle(): Promise<void> {
 /**
  * Sends the database what changed between two rosters, as operations: a
  * create never replaces, an update never inserts and carries only what
- * changed, a delete deletes.
+ * changed, a delete deletes. The updates go in one batch, so a reorder lands
+ * whole or not at all: when one Mono in it is gone the database refuses the
+ * batch, and the reload after the failure shows the database's order.
  */
 function persist(before: readonly Mono[], after: readonly Mono[]): void {
   const was = new Map(before.map((mono, index) => [mono.id, { mono, index }]));

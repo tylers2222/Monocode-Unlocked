@@ -4,6 +4,7 @@ import {
   __monosTestReset,
   addMonoProject,
   createMono,
+  defaultMonoName,
   findMono,
   listMonos,
   monoLook,
@@ -16,6 +17,8 @@ import {
 } from "./mono";
 import { monoBackgroundKey, monoChatBackground } from "./monoBackground";
 import { saveProjectChatBackgroundSettings } from "../../projects/model/projectChatBackground";
+import { PROJECT_MASCOTS } from "../../projects/model/projectMascots";
+import DEFAULT_NAMES from "./monoDefaultNames.json";
 
 beforeEach(() => {
   __monosTestReset();
@@ -90,4 +93,14 @@ it("turns Giga on for one Mono only, and off again", () => {
 
   saveMonoGiga(giga.id, false);
   expect(findMono(giga.id)?.giga).toBeUndefined();
+});
+
+it("names every mascot the way the database does", () => {
+  // `monoDefaultNames.json` is also checked by `mono_roster.rs`, which derives
+  // `monos.name` from it; a new mascot must be added there too.
+  expect(
+    Object.fromEntries(
+      PROJECT_MASCOTS.map(({ name }) => [name, defaultMonoName(name)]),
+    ),
+  ).toEqual(DEFAULT_NAMES);
 });
