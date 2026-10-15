@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { projectKey, projectName } from "../../../shared/lib/paths";
 import {
   loadTabGroupColors,
@@ -62,6 +64,7 @@ export type Mono = {
   legacyProject?: string;
 };
 
+/** Where the roster lived before `monocode.db`; read, never written. */
 const ROSTER_KEY = "monocode:mono-roster";
 const MONOS_CHANGED = "monocode:monos-changed";
 export const HANDED_KEY = "monocode:mono-handed";
@@ -93,10 +96,7 @@ function record(value: unknown): Record<string, unknown> {
 
 let migrated = false;
 
-/**
- * Turns each project's Mono into one of its own that works on that project,
- * keeping its conversation, name and look. One never claimed is dropped.
- */
+/** Moves storage keys from before Monos had their name. */
 export function migrateLegacyMonoStorage(): void {
   if (migrated) return;
   migrated = true;
@@ -107,17 +107,34 @@ export function migrateLegacyMonoStorage(): void {
       if (localStorage.getItem(key) == null) localStorage.setItem(key, value);
       localStorage.removeItem?.(legacy);
     }
-    if (localStorage.getItem(ROSTER_KEY) != null) return;
+  } catch {
+    // Storage unavailable: there is nothing to move either.
+  }
+}
+
+/**
+ * The roster as WebKit storage last held it, or undefined when it holds none.
+ * From before that, each project's Mono becomes one of its own that works on
+ * that project, keeping its conversation, name and look; one never claimed is
+ * dropped. Reads only.
+ */
+function legacyRoster(): Mono[] | undefined {
+  try {
+    const saved = readJson(ROSTER_KEY);
+    if (Array.isArray(saved))
+      return saved.flatMap((entry) => parseMono(entry) ?? []);
     const agents = record(readJson(LEGACY_AGENTS_KEY));
     const profiles = record(readJson(LEGACY_PROFILES_KEY));
+    const projects = new Set([
+      ...Object.keys(agents),
+      ...Object.keys(profiles),
+    ]);
+    if (!projects.size) return undefined;
     const mascots = loadTabGroupMascots();
     const colors = loadTabGroupColors();
     const customColors = loadTabGroupCustomColors();
     const roster: Mono[] = [];
-    for (const project of new Set([
-      ...Object.keys(agents),
-      ...Object.keys(profiles),
-    ])) {
+    for (const project of projects) {
       const sessionId = agents[project];
       const profile = record(profiles[project]);
       if (typeof sessionId !== "string" && profile.claim !== "claimed")
@@ -140,11 +157,9 @@ export function migrateLegacyMonoStorage(): void {
         legacyProject: project,
       });
     }
-    localStorage.setItem(ROSTER_KEY, JSON.stringify(roster));
-    localStorage.removeItem?.(LEGACY_AGENTS_KEY);
-    localStorage.removeItem?.(LEGACY_PROFILES_KEY);
+    return roster;
   } catch {
-    // Storage unavailable: there is nothing to move either.
+    return undefined;
   }
 }
 
@@ -189,21 +204,203 @@ function parseMono(value: unknown): Mono | undefined {
   };
 }
 
-/** Every Mono, in the order the rail shows them. */
-export function listMonos(): Mono[] {
-  migrateLegacyMonoStorage();
-  const parsed = readJson(ROSTER_KEY);
-  if (!Array.isArray(parsed)) return [];
-  return parsed.flatMap((entry) => parseMono(entry) ?? []);
+/** One Mono as `monocode.db` stores it; `data` is the rest of its record. */
+type MonoWrite = {
+  id: string;
+  name: string;
+  role: "giga" | "mono";
+  data: Omit<Mono, "id" | "giga">;
+  sortOrder: number;
+};
+
+function monoWrite({ id, giga, ...data }: Mono, sortOrder: number): MonoWrite {
+  return {
+    id,
+    name: data.name?.trim() || defaultMonoName(data.mascot),
+    role: giga ? "giga" : "mono",
+    data,
+    sortOrder,
+  };
 }
 
-function saveRoster(roster: readonly Mono[]): void {
-  try {
-    localStorage.setItem(ROSTER_KEY, JSON.stringify(roster));
-  } catch {
+/** The whole roster as the database left it after one write. */
+type RosterSnapshot = { revision: number; monos: Mono[] };
+
+/** A malformed answer from the database is an error, never an empty roster. */
+function parseSnapshot(value: unknown): RosterSnapshot {
+  const snapshot = record(value);
+  if (typeof snapshot.revision !== "number" || !Array.isArray(snapshot.monos))
+    throw new Error("Malformed Mono roster from monocode.db");
+  return {
+    revision: snapshot.revision,
+    monos: snapshot.monos.flatMap((value) => {
+      const row = record(value);
+      return (
+        parseMono({
+          ...record(row.data),
+          id: row.id,
+          ...(row.role === "giga" ? { giga: true } : {}),
+        }) ?? []
+      );
+    }),
+  };
+}
+
+const copyMono = (mono: Mono): Mono => ({
+  ...mono,
+  projects: [...mono.projects],
+});
+
+/**
+ * What every reader sees. `main.tsx` loads it from `monocode.db` before the
+ * first render. Until then, or when that load failed, it lives only here.
+ */
+let roster: Mono[] = [];
+let rosterVersion = 0;
+/** Writes go to the database only once the roster came from it. */
+let persisted = false;
+/** The database revision `roster` shows, once no write of ours is in flight. */
+let revision = -1;
+let writing = 0;
+/** The newest snapshot seen while our own writes were in flight. */
+let newest: RosterSnapshot | undefined;
+/** A write failed, so the database decides what the roster is. */
+let resync = false;
+let writes = Promise.resolve();
+
+function showRoster(monos: readonly Mono[]): void {
+  roster = monos.map(copyMono);
+  rosterVersion += 1;
+  window.dispatchEvent(new CustomEvent(MONOS_CHANGED));
+}
+
+/**
+ * The highest revision wins, whatever order snapshots arrive in. While our own
+ * writes are in flight the roster keeps showing them, and the newest snapshot
+ * waits until they are done.
+ */
+function adopt(snapshot: RosterSnapshot): void {
+  if (snapshot.revision <= revision) return;
+  if (writing > 0) {
+    if (!newest || snapshot.revision > newest.revision) newest = snapshot;
     return;
   }
-  window.dispatchEvent(new CustomEvent(MONOS_CHANGED));
+  revision = snapshot.revision;
+  showRoster(snapshot.monos);
+}
+
+async function settle(): Promise<void> {
+  if (resync) {
+    resync = false;
+    try {
+      const listed = parseSnapshot(await invoke("monos_list"));
+      revision = -1;
+      adopt(listed);
+    } catch (error) {
+      console.error("monocode: could not reload Monos", error);
+    }
+  }
+  const snapshot = newest;
+  newest = undefined;
+  if (snapshot) adopt(snapshot);
+}
+
+/** Sends the database what changed between two rosters, in order. */
+function persist(before: readonly Mono[], after: readonly Mono[]): void {
+  const saved = new Map(
+    before.map((mono, index) => [
+      mono.id,
+      JSON.stringify(monoWrite(mono, index)),
+    ]),
+  );
+  const upserts = after
+    .map(monoWrite)
+    .filter((write) => saved.get(write.id) !== JSON.stringify(write));
+  const kept = new Set(after.map((mono) => mono.id));
+  const deletes = before.flatMap((mono) =>
+    kept.has(mono.id) ? [] : [mono.id],
+  );
+  if (!upserts.length && !deletes.length) return;
+  writing += 1;
+  writes = writes.then(async () => {
+    try {
+      for (const id of deletes)
+        adopt(parseSnapshot(await invoke("monos_delete", { id })));
+      if (upserts.length === 1)
+        adopt(
+          parseSnapshot(await invoke("monos_upsert", { mono: upserts[0] })),
+        );
+      else if (upserts.length)
+        adopt(
+          parseSnapshot(await invoke("monos_upsert_many", { monos: upserts })),
+        );
+    } catch (error) {
+      console.error("monocode: could not save Monos", error);
+      resync = true;
+    } finally {
+      writing -= 1;
+    }
+    if (writing === 0) await settle();
+  });
+}
+
+function saveRoster(next: readonly Mono[]): void {
+  const before = roster;
+  showRoster(next);
+  if (persisted) persist(before, next);
+}
+
+/**
+ * Loads the roster from `monocode.db`, once, before the first render. The
+ * first time, it imports the roster WebKit storage held. When the database
+ * cannot be read, that stored roster shows instead, and changes last until the
+ * app quits: the old key is never written again.
+ */
+export async function loadMonoRoster(): Promise<void> {
+  migrateLegacyMonoStorage();
+  const legacy = legacyRoster();
+  try {
+    await listen("monos_changed", (event) => {
+      try {
+        adopt(parseSnapshot(event.payload));
+      } catch (error) {
+        console.error("monocode: ignored a malformed Mono roster", error);
+      }
+    });
+    const loaded = parseSnapshot(
+      legacy
+        ? await invoke("monos_import_legacy", { monos: legacy.map(monoWrite) })
+        : await invoke("monos_list"),
+    );
+    persisted = true;
+    adopt(loaded);
+  } catch (error) {
+    console.error(
+      "monocode: could not load Monos from monocode.db; showing the saved list",
+      error,
+    );
+    showRoster(legacy ?? []);
+  }
+}
+
+/** Resolves once every roster write sent so far has been answered. */
+export function monoWritesSettled(): Promise<void> {
+  return writes;
+}
+
+export function __monosTestReset(): void {
+  roster = [];
+  persisted = false;
+  revision = -1;
+  writing = 0;
+  newest = undefined;
+  resync = false;
+  writes = Promise.resolve();
+}
+
+/** Every Mono, in the order the rail shows them. */
+export function listMonos(): Mono[] {
+  return roster.map(copyMono);
 }
 
 export function findMono(id: string): Mono | undefined {
@@ -395,13 +592,10 @@ export function subscribeMonos(onChange: () => void): () => void {
  * Project labels are part of it, since a Mono's look names its projects.
  */
 export function monosSnapshot(): string {
-  migrateLegacyMonoStorage();
   try {
-    return `${localStorage.getItem(ROSTER_KEY) ?? ""}|${JSON.stringify(
-      loadTabGroupLabels(),
-    )}`;
+    return `${rosterVersion}|${JSON.stringify(loadTabGroupLabels())}`;
   } catch {
-    return "";
+    return `${rosterVersion}`;
   }
 }
 

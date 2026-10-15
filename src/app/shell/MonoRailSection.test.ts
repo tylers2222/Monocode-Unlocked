@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
+  __monosTestReset,
   createMono,
   monoLook,
   saveMonoGiga,
@@ -13,6 +14,7 @@ import { MonoRailSection } from "./MonoRailSection";
 let root: Root;
 let container: HTMLElement;
 beforeEach(() => {
+  __monosTestReset();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const stored = new Map<string, string>();
   vi.stubGlobal("localStorage", {

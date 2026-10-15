@@ -3,7 +3,13 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { newSession } from "../../sessions/model/session";
 import { leafIds, newTab, splitPane } from "../../workspace/model/layout";
 import { planWorkspaceTabClose } from "../../workspace/model/workspaceTabGroups";
-import { createMono, findMono, saveMonoName, saveMonoSessionId } from "./mono";
+import {
+  __monosTestReset,
+  createMono,
+  findMono,
+  saveMonoName,
+  saveMonoSessionId,
+} from "./mono";
 import { planAgentContext, recordAgentContext } from "./monoFiles";
 import { loadMonoRotation, saveMonoRotation } from "./monoRotation";
 import {
@@ -13,6 +19,7 @@ import {
 } from "./monoWorkspace";
 
 beforeEach(() => {
+  __monosTestReset();
   const stored = new Map<string, string>();
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => stored.get(key) ?? null,
