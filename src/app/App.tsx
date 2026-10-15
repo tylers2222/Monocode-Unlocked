@@ -12,12 +12,16 @@ import {
 import {
   createTurnIds,
   getMonos,
+  dispatchOpener,
   handOff,
   reconcile,
+  routeMessages,
   replyMessage,
   sendMessage,
   type MonoMessagingHost,
   type MonoQueueHost,
+  type MonoRouteEvent,
+  type MonoRouteHost,
 } from "../features/monos/model/monoRoute";
 import { resolveCaller } from "../features/monos/model/monoCaller";
 import {
@@ -912,6 +916,11 @@ type SubmitOptions = ComposerTurnOptions & {
   appRequestId?: string;
   monoSessionCompletion?: Block["monoSessionCompletion"];
   onSettled?: (outcome: ControlOutcome) => void;
+  /**
+   * Called once: whether the provider took this submit's text (design 5.4).
+   * A new turn reports when the provider accepts it or the turn ends first.
+   */
+  providerTook?: (accepted: boolean) => void;
   /** Generate a fresh title even when this is not the session's first turn. */
   refreshTitle?: boolean;
   /** Internal guard for the retry after resolving a renamed project. */
@@ -1649,12 +1658,18 @@ function Workspace({
   const monoQueue = useMemo(
     (): MonoQueueHost => ({
       session: (id) => sessionsRef.current.find((session) => session.id === id),
-      update: (id, change) =>
+      update: (id, change) => {
+        const current = sessionsRef.current.find(
+          (session) => session.id === id,
+        );
+        // An unchanged session must not re-run the queue pump.
+        if (!current || change(current) === current) return;
         updateSessionState(sessionsRef, setSessions, (sessions) =>
           sessions.map((session) =>
             session.id === id ? change(session) : session,
           ),
-        ),
+        );
+      },
       isMonoChat: isMonoSession,
       sender: (monoId) => {
         const mono = monoId ? findMono(monoId) : undefined;
@@ -6910,12 +6925,19 @@ function Workspace({
       const remote = sessionsRef.current.find(
         (session) => session.id === sessionId,
       );
-      if (remote && remoteProjectFor(remote.cwd))
-        return !!remoteSessionActions(sessionId)?.submit(
-          text,
-          attachments,
-          options,
+      if (remote && remoteProjectFor(remote.cwd)) {
+        const sent = Boolean(
+          remoteSessionActions(sessionId)?.submit(text, attachments, options),
         );
+        if (sent) options?.providerTook?.(true);
+        return sent;
+      }
+      let providerTook = options?.providerTook;
+      const tookTurn = (accepted: boolean) => {
+        const settle = providerTook;
+        providerTook = undefined;
+        settle?.(accepted);
+      };
       if (editedResends.isActive(sessionId)) return false;
       // Output already received belongs before the submitted user message.
       // Flush before reading the session too, since pending errors can settle it.
@@ -7214,6 +7236,9 @@ function Workspace({
             change((session) => ({ ...session, turnReadiness: "deferred" })),
           failed: (error) =>
             change((session) => failQueuedMessage(session, message.id, error)),
+        }).then((delivered) => {
+          tookTurn(delivered);
+          return delivered;
         });
       }
 
@@ -7291,7 +7316,7 @@ function Workspace({
         }
         const visible = displayAttachments(attachments);
         const cards = userTurnCards(noteCard);
-        return steerRunningTurn({
+        const steered = steerRunningTurn({
           watchers: turnWatchers.current,
           sessionId,
           gen: turnGen.current.get(sessionId) ?? 0,
@@ -7348,6 +7373,8 @@ function Workspace({
             flushHarnessEvents();
           },
         });
+        tookTurn(steered);
+        return steered;
       }
 
       if (
@@ -7492,6 +7519,9 @@ function Workspace({
           : {}),
       };
       const live = isLiveHarness(current.harness);
+      // A Mono message goes back to its queue rather than into a turn that
+      // no provider can take (design 5.5 rule 4).
+      if (!live && queuedItem?.monoMessageId) return false;
       const queuedHandoff =
         live && !pendingSwitch ? pendingHandoff(current) : null;
 
@@ -8065,9 +8095,12 @@ function Workspace({
               appAccess: operatorAccess,
               text,
               attachments: turnAttachments,
-              ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
+              onAccepted: () => {
+                tookTurn(true);
+                acceptEditedResend();
+              },
               onEvent: routeTurnEvent,
-            });
+            }).then(() => tookTurn(true));
           let sendText = orchestrator.prompt(
             sessionId,
             inboxAskPrompt(
@@ -8359,6 +8392,8 @@ function Workspace({
           }
         })
         .finally(() => {
+          // A turn that ended before the provider took it delivered nothing.
+          tookTurn(false);
           editedResend?.reject();
           if (editedResend) editedResends.finish(sessionId);
           const outcome: ControlOutcome =
@@ -8807,6 +8842,65 @@ function Workspace({
   saveDraftRef.current = onSaveDraft;
   const ensureOpenSessionRef = useRef(ensureOpenSession);
   ensureOpenSessionRef.current = ensureOpenSession;
+  /** This window's side of a Mono message route (design 5.5, 6). */
+  const routeHost: MonoRouteHost = {
+    ...monoQueue,
+    open: async (id) => {
+      const opened = await ensureOpenSessionRef.current(id);
+      // Output already received can end the turn the route sees.
+      flushHarnessEvents();
+      return opened;
+    },
+    steerProject: async (target, text, id) => {
+      const change = (update: (session: Session) => Session) =>
+        updateSessionState(sessionsRef, setSessions, (sessions) =>
+          sessions.map((session) =>
+            session.id === target.id ? update(session) : session,
+          ),
+        );
+      await deliverAppSteer({
+        watchers: turnWatchers.current,
+        sessionId: target.id,
+        gen: turnGen.current.get(target.id) ?? 0,
+        record: () => change((session) => recordAppSteer(session, text, id)),
+        steer: async () => {
+          const cwd = sessionWorkCwd(target);
+          await steerHarnessTurn({
+            harness: target.harness,
+            sessionId: target.id,
+            cwd,
+            model: target.model,
+            modelSettings: target.modelSettings,
+            text: await preparePrompt(text, {
+              harness: target.harness,
+              sessionId: target.id,
+              cwd,
+            }),
+          });
+        },
+        forget: () => change((session) => forgetAppSteer(session, id)),
+      });
+    },
+  };
+  const monoRouteHost = useRef(routeHost);
+  monoRouteHost.current = routeHost;
+
+  // Design 6: Rust sends a route here when this window owns its session.
+  useEffect(() => {
+    const listening = listen<MonoRouteEvent>(
+      "mono-message-route",
+      ({ payload }) => {
+        void routeMessages(
+          monoRouteHost.current,
+          payload.messages,
+          payload.route,
+        ).catch(console.error);
+      },
+    );
+    return () => {
+      void listening.then((unlisten) => unlisten());
+    };
+  }, []);
 
   const appReceipts = useRef(
     new Map<string, { signature: string; promise: Promise<unknown> }>(),
@@ -9011,8 +9105,9 @@ function Workspace({
               ),
             );
           try {
-            const submit = () =>
+            const submit = (providerTook?: (accepted: boolean) => void) =>
               submitSession(session.id, head.text, head.attachments, {
+                providerTook,
                 queuedMessageId: head.id,
                 followUpBehavior: steering ? "steer" : undefined,
                 noteCard: head.noteCard,
@@ -9025,14 +9120,25 @@ function Workspace({
                     }
                   : {}),
               });
-            const accepted = head.monoMessageId
-              ? await handOff(
-                  monoQueue,
-                  session.id,
-                  { id: head.monoMessageId, text: head.text },
-                  steering ? "steer" : "dispatch",
-                  submit,
-                )
+            const monoMessage = head.monoMessageId && {
+              id: head.monoMessageId,
+              text: head.text,
+            };
+            const accepted = monoMessage
+              ? steering
+                ? await handOff(
+                    monoQueue,
+                    session.id,
+                    monoMessage,
+                    "steer",
+                    submit,
+                  )
+                : await dispatchOpener(
+                    monoQueue,
+                    session.id,
+                    monoMessage,
+                    submit,
+                  )
               : await submit();
             // A preflight rejection must not repeatedly retry or hide the message.
             if (!accepted && monoForSession(session.id)) {
@@ -9097,8 +9203,17 @@ function Workspace({
   // Design 5.5 rule 6: a session this window loads, at boot or later, gets
   // its Mono messages that no queue item or slot holds.
   const reconciledSessions = useRef(new Set<string>());
+  const reportedSessions = useRef("");
   useEffect(() => {
     const loaded = new Set(sessions.map((session) => session.id));
+    // Rust routes a Mono message to the window that has its session (design 6).
+    const report = [...loaded].sort().join("\n");
+    if (report !== reportedSessions.current) {
+      reportedSessions.current = report;
+      void invoke("control_loaded_sessions", { sessions: [...loaded] }).catch(
+        console.error,
+      );
+    }
     for (const id of reconciledSessions.current)
       if (!loaded.has(id)) reconciledSessions.current.delete(id);
     for (const id of loaded) {
@@ -9181,18 +9296,16 @@ function Workspace({
         intent: message.intent,
       };
       if (message.monoMessageId) {
-        void handOff(
-          monoQueue,
-          sessionId,
-          { id: message.monoMessageId, text: message.text },
-          session.busy ? "steer" : "dispatch",
-          () =>
-            submitSession(
-              sessionId,
-              message.text,
-              message.attachments,
-              options,
-            ),
+        const monoMessage = { id: message.monoMessageId, text: message.text };
+        const submit = (providerTook?: (accepted: boolean) => void) =>
+          submitSession(sessionId, message.text, message.attachments, {
+            ...options,
+            providerTook,
+          });
+        void (
+          session.busy
+            ? handOff(monoQueue, sessionId, monoMessage, "steer", submit)
+            : dispatchOpener(monoQueue, sessionId, monoMessage, submit)
         ).catch(console.error);
         return;
       }
@@ -10917,7 +11030,7 @@ function Workspace({
           );
         };
         const messaging: MonoMessagingHost = {
-          ...monoQueue,
+          ...monoRouteHost.current,
           caller: async () => {
             const sessionId = parseSessionId(source.id);
             if (!sessionId)
@@ -10934,14 +11047,12 @@ function Workspace({
           sessions: () => sessionsRef.current,
           stored: async (id) =>
             parseSessionId(id) ? getSession(id).catch(() => null) : null,
-          open: async (id) => {
-            const opened = await ensureOpenSessionRef.current(id);
-            // Output already received can end the turn the route sees.
-            flushHarnessEvents();
-            return opened;
-          },
           steerable: (session) =>
             isLiveHarness(session.harness) && canSteerHarness(session.harness),
+          steerableHarnesses: () =>
+            HARNESSES.filter(
+              (harness) => isLiveHarness(harness) && canSteerHarness(harness),
+            ),
           ownProject: (session) =>
             !isMonoSession(session.id) &&
             !isHabitRun(session.id) &&
@@ -10961,37 +11072,6 @@ function Workspace({
                   ]
                 : [];
             }),
-          steerProject: async (target, text, id) => {
-            const change = (update: (session: Session) => Session) =>
-              updateSessionState(sessionsRef, setSessions, (sessions) =>
-                sessions.map((session) =>
-                  session.id === target.id ? update(session) : session,
-                ),
-              );
-            await deliverAppSteer({
-              watchers: turnWatchers.current,
-              sessionId: target.id,
-              gen: turnGen.current.get(target.id) ?? 0,
-              record: () =>
-                change((session) => recordAppSteer(session, text, id)),
-              steer: async () => {
-                const cwd = sessionWorkCwd(target);
-                await steerHarnessTurn({
-                  harness: target.harness,
-                  sessionId: target.id,
-                  cwd,
-                  model: target.model,
-                  modelSettings: target.modelSettings,
-                  text: await preparePrompt(text, {
-                    harness: target.harness,
-                    sessionId: target.id,
-                    cwd,
-                  }),
-                });
-              },
-              forget: () => change((session) => forgetAppSteer(session, id)),
-            });
-          },
         };
         const promise = handleAgentApp(
           source,

@@ -80,10 +80,19 @@ sqlite3 ~/MonoCode/index/index.db "SELECT giga, path, snippet(entries, 4, '[', '
 
 const GITIGNORE: &str = "index/\ngigas/*/state/\ngigas/*/scratch/\n.DS_Store\n";
 
+/// Lines MonoCode once wrote into `shared/CONVENTIONS.md`, with what replaces
+/// each. The file is the user's, so only an exact old line is rewritten.
+const RETIRED_CONVENTIONS: [(&str, &str); 1] = [(
+    r#"- Messages to other Monos: `app monos.send`. Use `whenBusy:"steer"` to redirect, `"followUp"` to wait."#,
+    MESSAGES_CONVENTION,
+)];
+
+const MESSAGES_CONVENTION: &str = r#"- Messages to other Monos: `app messages.send` with `message`, `send_to` and `wanting_reply` (true only when you need an answer). `action_type:"steer"` redirects a running turn; the default `"queue"` waits for it to end. Answer a message that wants a reply with `app messages.reply`."#;
+
 const CONVENTIONS: &str = r#"# Conventions for Gigas
 
 - Every spin-up names its harness and model (exact IDs from `app models.list`).
-- Messages to other Monos: `app monos.send`. Use `whenBusy:"steer"` to redirect, `"followUp"` to wait.
+- Messages to other Monos: `app messages.send` with `message`, `send_to` and `wanting_reply` (true only when you need an answer). `action_type:"steer"` redirects a running turn; the default `"queue"` waits for it to end. Answer a message that wants a reply with `app messages.reply`.
 - Briefs: `# Target`, `# Change`, `# Acceptance`, written plainly. Save each one in your `briefs/`.
 - To add a convention, add a new file in `shared/`. Do not edit a file another Giga wrote.
 "#;
@@ -384,6 +393,7 @@ fn ensure_tree(root: &Path, gigas: &[GigaFolder], report: &mut EnsureReport) -> 
         write_new(root, "shared/.keep", "", created)?;
     }
     write_new(root, "shared/CONVENTIONS.md", CONVENTIONS, created)?;
+    retire_conventions(&root.join("shared/CONVENTIONS.md"))?;
     ensure_dir(root, "index", created)?;
     ensure_dir(root, "gigas", created)?;
     for giga in gigas {
@@ -430,6 +440,28 @@ fn ensure_dir(root: &Path, rel: &str, created: &mut Vec<String>) -> Result<bool,
         created.push(format!("{rel}/"));
     }
     Ok(true)
+}
+
+/// Replaces each retired line MonoCode wrote, when the file still has it
+/// exactly as written. Every other line stays as the user left it.
+fn retire_conventions(path: &Path) -> Result<(), String> {
+    let Ok(existing) = fs::read_to_string(path) else {
+        return Ok(());
+    };
+    let next = existing
+        .split_inclusive('\n')
+        .map(|line| {
+            let text = line.trim_end_matches(['\r', '\n']);
+            match RETIRED_CONVENTIONS.iter().find(|(old, _)| *old == text) {
+                Some((_, new)) => format!("{new}{}", &line[text.len()..]),
+                None => line.to_string(),
+            }
+        })
+        .collect::<String>();
+    if next != existing {
+        write_atomic(path, next.as_bytes())?;
+    }
+    Ok(())
 }
 
 /// Writes `rel` only when nothing is there.
@@ -1938,5 +1970,26 @@ mod tests {
         assert!(release[0].starts_with("brief|beta|gigas/beta/briefs/old/release.md|"));
         rebuild_index(&root).unwrap();
         assert_eq!(rows(), (tracing, release));
+    }
+    // Defect: a Giga keeps learning the removed `monos.send` from the
+    // conventions file that an earlier app version wrote.
+    #[test]
+    fn ensure_replaces_the_retired_messaging_convention_and_keeps_the_rest() {
+        let home = TempHome::new("conventions");
+        let fresh = ensure(&home.0, &[giga("alpha")]);
+        assert_eq!(fresh.error, None);
+        let path = home.root().join("shared/CONVENTIONS.md");
+        assert!(!fs::read_to_string(&path).unwrap().contains("monos.send"));
+        let (old, new) = RETIRED_CONVENTIONS[0];
+        fs::write(
+            &path,
+            format!("# Conventions\n\n{old}\n- Teach with one line first.\n"),
+        )
+        .unwrap();
+        ensure(&home.0, &[giga("alpha")]);
+        let expected = format!("# Conventions\n\n{new}\n- Teach with one line first.\n");
+        assert_eq!(fs::read_to_string(&path).unwrap(), expected);
+        ensure(&home.0, &[giga("alpha")]);
+        assert_eq!(fs::read_to_string(&path).unwrap(), expected);
     }
 }

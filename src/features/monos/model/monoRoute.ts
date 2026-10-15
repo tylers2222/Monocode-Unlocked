@@ -19,6 +19,7 @@ import {
   type RejectCode,
   type ReplyInput,
   type SendInput,
+  type SessionId,
   type ToolError,
   type TurnId,
 } from "./monoMessages";
@@ -166,23 +167,85 @@ export function createTurnIds(
   };
 }
 
-export type MonoMessagingHost = MonoQueueHost & {
+/**
+ * Design 5.4 for an opener: `submit` starts a turn and reports, through the
+ * callback it is given, whether the provider took that turn. A submit that
+ * answers true has only started it; the turn can still fail before the
+ * provider has the text (no provider connected, an authorize error).
+ */
+export function acceptedTurn(
+  submit: (
+    providerTook: (accepted: boolean) => void,
+  ) => boolean | Promise<boolean>,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    Promise.resolve(submit(resolve)).then(
+      (started) => {
+        if (!started) resolve(false);
+      },
+      () => resolve(false),
+    );
+  });
+}
+
+/**
+ * The pump's opener hand-off. It answers as soon as `submit` started the
+ * turn or refused it, so the queue moves on; the hand-off keeps waiting for
+ * the provider in the background and marks or releases the row then.
+ */
+export function dispatchOpener(
+  host: MonoQueueHost,
+  sessionId: string,
+  message: { id: MessageId; text: string },
+  submit: (
+    providerTook: (accepted: boolean) => void,
+  ) => boolean | Promise<boolean>,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    handOff(host, sessionId, message, "dispatch", () =>
+      acceptedTurn((providerTook) => {
+        const started = submit(providerTook);
+        Promise.resolve(started).then(resolve, () => resolve(false));
+        return started;
+      }),
+    ).then(
+      (accepted) => {
+        if (!accepted) resolve(false);
+      },
+      () => resolve(false),
+    );
+  });
+}
+
+/** What the window that owns a session needs to run a route there. */
+export type MonoRouteHost = MonoQueueHost & {
+  /** Loads a session into this window; loading runs `reconcile` for it. */
+  open(id: string): Promise<Session | null>;
+  /** Steers a running project session; throws when the turn ended. */
+  steerProject(session: Session, text: string, id: MessageId): Promise<void>;
+};
+
+export type MonoMessagingHost = MonoRouteHost & {
   /** `resolveCaller` for the calling session. */
   caller(): Promise<{ ok: true; caller: Caller } | ToolError>;
   /** The sessions loaded in this window. */
   sessions(): readonly Session[];
   /** A session only the database has, or null. */
   stored(id: string): Promise<Session | null>;
-  /** Loads a session into this window; loading runs `reconcile` for it. */
-  open(id: string): Promise<Session | null>;
   steerable(session: Session): boolean;
+  /** Harness ids that can steer a running turn (design 6: harness only). */
+  steerableHarnesses(): string[];
   /** One of the caller's project sessions (design 6.1). */
   ownProject(session: Session): boolean;
   /** Every Mono, in rail order. */
   monos(): { id: MonoId; name: string; role: MonoRole }[];
-  /** Steers a running project session; throws when the turn ended. */
-  steerProject(session: Session, text: string, id: MessageId): Promise<void>;
 };
+
+/** The route of a new accept: the gate's choice, which the rows do not hold. */
+export type Routing = { sessionId: SessionId; via: "queue" | "steer" };
+
+/** `mono-message-route`: a route this window runs because it owns the session. */
+export type MonoRouteEvent = { messages: Routed[]; route: Routing };
 
 type Submitted =
   | {
@@ -190,6 +253,9 @@ type Submitted =
       messages: Routed[];
       answered: { handle: Handle | null; message_id: MessageId }[];
       duplicate: boolean;
+      route?: Routing;
+      /** Another window owns the session and runs the route (design 6). */
+      ownerWindow?: string;
     }
   | {
       outcome: "failed";
@@ -219,11 +285,15 @@ async function submit(
     tool,
     requestId,
     input,
-    live: [...loaded, ...(addressed ? [addressed] : [])].map((session) => ({
-      sessionId: session.id,
-      steerable: host.steerable(session),
-      ownProject: host.ownProject(session),
-    })),
+    // A session whose worktree is gone cannot receive (design 6).
+    live: [...loaded, ...(addressed ? [addressed] : [])]
+      .filter((session) => !session.worktreeRemoved)
+      .map((session) => ({
+        sessionId: session.id,
+        steerable: host.steerable(session),
+        ownProject: host.ownProject(session),
+      })),
+    steerableHarnesses: host.steerableHarnesses(),
   });
   if (submitted.outcome === "failed") {
     const { code, hint, ...details } = submitted.error;
@@ -233,16 +303,16 @@ async function submit(
 }
 
 /**
- * Executes the route of a new accept (design 5.5 rule 1). A project session
- * that runs is steered now; everything else enters the session's queue,
- * whose pump hands it off. Returns the delivery the call reports.
+ * Executes the route of a new accept (design 5.5 rule 1) in the window that
+ * owns its session. A project session that runs is steered now; everything
+ * else enters the session's queue, whose pump hands it off. Returns the
+ * delivery the call reports.
  */
-async function route(
-  host: MonoMessagingHost,
+export async function routeMessages(
+  host: MonoRouteHost,
   messages: Routed[],
+  { sessionId, via }: Routing,
 ): Promise<Delivery> {
-  const sessionId = messages[0].handledBySession;
-  const via = messages[0].delivery === "steer" ? "steer" : "queue";
   // A session no window can load gets its rows when one loads it.
   const loaded = host.session(sessionId) ?? (await host.open(sessionId));
   if (!loaded) return "queue";
@@ -274,6 +344,22 @@ async function route(
   return via === "steer" ? "steer" : idle ? "submit" : "queue";
 }
 
+/**
+ * Routes a new accept here, unless another window owns its session; that
+ * window got the route as `mono-message-route`. A duplicate is not routed
+ * and reports `stored`.
+ */
+async function routed(
+  host: MonoMessagingHost,
+  submitted: Awaited<ReturnType<typeof submit>>,
+  stored: Delivery,
+): Promise<Delivery> {
+  const { route, ownerWindow, messages } = submitted;
+  if (submitted.duplicate || !route) return stored;
+  if (ownerWindow) return route.via;
+  return routeMessages(host, messages, route);
+}
+
 /** `messages.get_monos` (design 3.1). */
 export async function getMonos(host: MonoMessagingHost) {
   const resolved = await host.caller();
@@ -299,9 +385,7 @@ export async function sendMessage(
   return {
     message_id: message.id,
     status: message.status,
-    delivery: submitted.duplicate
-      ? message.delivery
-      : await route(host, submitted.messages),
+    delivery: await routed(host, submitted, message.delivery),
     hop: message.hop,
     ...(submitted.duplicate ? { duplicate: true as const } : {}),
   };
@@ -314,7 +398,7 @@ export async function replyMessage(
   input: ReplyInput,
 ) {
   const submitted = await submit(host, "reply", requestId, input);
-  if (!submitted.duplicate) await route(host, submitted.messages);
+  await routed(host, submitted, "queue");
   return {
     message_ids: submitted.messages.map((message) => message.id),
     answered: submitted.answered,

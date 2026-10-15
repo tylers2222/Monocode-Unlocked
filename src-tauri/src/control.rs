@@ -1,6 +1,6 @@
 //! Authenticated loopback transport. App windows own execution; callers never
 //! receive arbitrary Tauri command access or direct database write access.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
@@ -84,6 +84,8 @@ struct Inner {
     workers: HashMap<String, String>,
     scratch: HashMap<String, PathBuf>,
     active: HashMap<String, ActiveTurn>,
+    /// The sessions each window has loaded, as the window last reported.
+    loaded: HashMap<String, HashSet<String>>,
 }
 impl Inner {
     // Provider processes can stay alive between turns, so install the token
@@ -153,7 +155,29 @@ impl Inner {
         self.scratch.remove(session);
         self.active.remove(session);
     }
+    /// Design 6: the window that runs a Mono message's route. A running
+    /// session belongs to the window of its turn; otherwise to a window that
+    /// has it loaded, the caller's first; otherwise to the caller, which loads it.
+    fn route_owner(&self, session: &str, caller: &str) -> String {
+        if let Some(turn) = self.active.get(session) {
+            return turn.window.clone();
+        }
+        let has = |label: &str| {
+            self.loaded
+                .get(label)
+                .is_some_and(|ids| ids.contains(session))
+        };
+        if has(caller) {
+            return caller.to_string();
+        }
+        let mut holders: Vec<&String> = self.loaded.keys().filter(|label| has(label)).collect();
+        holders.sort();
+        holders
+            .first()
+            .map_or_else(|| caller.to_string(), |label| (*label).clone())
+    }
     fn close_window(&mut self, label: &str) -> Vec<String> {
+        self.loaded.remove(label);
         let ids = self.window_sessions(label);
         self.grants.retain(|id, _| !ids.contains(id));
         self.app_grants.retain(|id, _| !ids.contains(id));
@@ -177,8 +201,16 @@ pub struct ControlHost {
     inner: Arc<Mutex<Inner>>,
 }
 impl ControlHost {
+    /// See [`Inner::route_owner`]. Read after the store transaction commits.
+    pub(crate) fn route_owner(&self, session: &str, caller: &str) -> String {
+        self.inner
+            .lock()
+            .map(|inner| inner.route_owner(session, caller))
+            .unwrap_or_else(|_| caller.to_string())
+    }
+
     /// Sessions with an authorized turn: the gate's `running` (design 6).
-    pub(crate) fn running_sessions(&self) -> std::collections::HashSet<String> {
+    pub(crate) fn running_sessions(&self) -> HashSet<String> {
         self.inner
             .lock()
             .map(|inner| inner.active.keys().cloned().collect())
@@ -499,6 +531,20 @@ pub fn control_authorize_turn(
     Ok(())
 }
 
+/// A window reports the sessions it has loaded, for [`Inner::route_owner`].
+#[tauri::command]
+pub fn control_loaded_sessions(
+    window: WebviewWindow,
+    host: State<'_, ControlHost>,
+    sessions: Vec<String>,
+) {
+    if let Ok(mut inner) = host.inner.lock() {
+        inner
+            .loaded
+            .insert(window.label().to_string(), sessions.into_iter().collect());
+    }
+}
+
 #[tauri::command]
 pub fn control_turn_finished(host: State<'_, ControlHost>, session_id: String) {
     if let Ok(mut inner) = host.inner.lock() {
@@ -699,6 +745,34 @@ pub fn control_scopes(cwd: String, files: Vec<String>) -> Result<Vec<String>, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Defect: a window that has not loaded a session routes a Mono message
+    // into a second copy of it while another window holds or runs it.
+    #[test]
+    fn a_mono_message_route_runs_in_the_window_that_runs_or_holds_its_session() {
+        let mut inner = Inner::default();
+        assert_eq!(inner.route_owner("s", "caller"), "caller");
+        inner
+            .loaded
+            .insert("other".into(), ["s".to_string()].into_iter().collect());
+        assert_eq!(inner.route_owner("s", "caller"), "other");
+        inner
+            .loaded
+            .insert("caller".into(), ["s".to_string()].into_iter().collect());
+        assert_eq!(inner.route_owner("s", "caller"), "caller");
+        inner.active.insert(
+            "s".into(),
+            ActiveTurn {
+                window: "runner".into(),
+                cwd: "/repo".into(),
+                app_allowed: true,
+            },
+        );
+        assert_eq!(inner.route_owner("s", "caller"), "runner");
+        inner.active.remove("s");
+        inner.close_window("caller");
+        assert_eq!(inner.route_owner("s", "caller"), "other");
+    }
     #[test]
     fn app_tokens_are_bound_to_active_turns_and_cannot_control_orchestration() {
         let mut inner = Inner::default();

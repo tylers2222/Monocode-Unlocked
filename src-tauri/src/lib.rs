@@ -327,6 +327,7 @@ pub fn run() {
             control::control_attach_worker,
             control::control_authorize_turn,
             control::control_turn_finished,
+            control::control_loaded_sessions,
             control::control_forget_session,
             control::app_cli_path,
             default_cwd,

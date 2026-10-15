@@ -12,7 +12,7 @@ use std::fmt;
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
-use tauri::{State, WebviewWindow};
+use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 use crate::control::ControlHost;
 use crate::mono_gate::{
@@ -791,6 +791,17 @@ pub struct CallerArg {
     session_id: String,
 }
 
+/// What the web app and `ControlHost` know about sessions, read before the
+/// store transaction opens (design 5.3 lock order).
+pub struct Live<'a> {
+    pub sessions: &'a [LiveSession],
+    /// Sessions with an authorized turn (`ControlHost.active`).
+    pub running: &'a HashSet<String>,
+    /// Harness ids whose running turn can be steered (design 6: steerable
+    /// depends only on the harness), for sessions not in `sessions`.
+    pub steerable_harnesses: &'a [String],
+}
+
 impl CallerArg {
     fn parse(self) -> Result<Caller, String> {
         Ok(Caller {
@@ -824,11 +835,19 @@ pub struct ToolError {
 pub enum Submitted {
     /// The rows of an accepted call. Only a call that is not a duplicate is
     /// routed (design 5.5 rule 1).
+    #[serde(rename_all = "camelCase")]
     Accepted {
         messages: Vec<MonoMessage>,
         /// The messages this reply answered, with their handles.
         answered: Vec<Answered>,
         duplicate: bool,
+        /// The route of a new accept; a duplicate has none.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        route: Option<Routing>,
+        /// Set when another window owns the route's session and runs it
+        /// (design 6); the caller window then routes nothing.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        owner_window: Option<String>,
     },
     Failed {
         error: ToolError,
@@ -847,6 +866,15 @@ fn refused(code: Refusal, hint: String) -> Submitted {
     }
 }
 
+/// Where a new accept goes: the gate's route, which `delivery` does not hold
+/// until a hand-off writes it (design 1.2 review r2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Routing {
+    pub session_id: SessionId,
+    pub via: Delivery,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Answered {
     pub handle: Option<Handle>,
@@ -856,7 +884,7 @@ pub struct Answered {
 fn accept_outcome(
     conn: &Connection,
     messages: Vec<MonoMessage>,
-    duplicate: bool,
+    route: Option<Routing>,
 ) -> rusqlite::Result<Submitted> {
     let mut answered = Vec::new();
     for message_id in messages
@@ -875,7 +903,9 @@ fn accept_outcome(
     Ok(Submitted::Accepted {
         messages,
         answered,
-        duplicate,
+        duplicate: route.is_none(),
+        route,
+        owner_window: None,
     })
 }
 
@@ -911,13 +941,9 @@ fn mono_chat(conn: &Connection, mono_id: &MonoId) -> rusqlite::Result<Option<Opt
     }))
 }
 
-fn target(
-    conn: &Connection,
-    session: SessionId,
-    live: &[LiveSession],
-    running: &HashSet<String>,
-) -> rusqlite::Result<Target> {
+fn target(conn: &Connection, session: SessionId, live: &Live) -> rusqlite::Result<Target> {
     let listed = live
+        .sessions
         .iter()
         .find(|entry| entry.session_id == session.as_str());
     // The live list is a snapshot from before an await, so a clear that ran
@@ -930,42 +956,41 @@ fn target(
         )
         .optional()?
         .is_some();
-    let known = listed.is_some()
-        || conn
-            .query_row(
-                "SELECT 1 FROM sessions WHERE id = ?1 AND worktree_removed = 0",
-                [session.as_str()],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT harness FROM sessions WHERE id = ?1 AND worktree_removed = 0",
+            [session.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let steerable = match (listed, &stored) {
+        (Some(entry), _) => entry.steerable,
+        (None, Some(harness)) => live.steerable_harnesses.contains(harness),
+        (None, None) => false,
+    };
     Ok(Target {
-        exists: known && !ended,
-        running: running.contains(session.as_str()),
-        steerable: listed.is_some_and(|entry| entry.steerable),
+        exists: (listed.is_some() || stored.is_some()) && !ended,
+        running: live.running.contains(session.as_str()),
+        steerable,
         session,
     })
 }
 
-fn recipient(
-    conn: &Connection,
-    send_to: &str,
-    live: &[LiveSession],
-    running: &HashSet<String>,
-) -> rusqlite::Result<Recipient> {
+fn recipient(conn: &Connection, send_to: &str, live: &Live) -> rusqlite::Result<Recipient> {
     if let Some(mono_id) = MonoId::parse(send_to) {
         if let Some(chat) = mono_chat(conn, &mono_id)? {
             let chat = chat
-                .map(|session| target(conn, session, live, running))
+                .map(|session| target(conn, session, live))
                 .transpose()?;
             return Ok(Recipient::Mono { mono_id, chat });
         }
     }
     if let Some(session) = SessionId::parse(send_to) {
         let own_project = live
+            .sessions
             .iter()
             .any(|entry| entry.session_id == send_to && entry.own_project);
-        let target = target(conn, session, live, running)?;
+        let target = target(conn, session, live)?;
         if target.exists {
             return Ok(Recipient::Session {
                 target,
@@ -976,16 +1001,13 @@ fn recipient(
     Ok(Recipient::Unknown)
 }
 
-/// The messages handed to `session` that still wait for its reply.
-fn waiting(
-    conn: &Connection,
-    session: &SessionId,
-    live: &[LiveSession],
-    running: &HashSet<String>,
-) -> rusqlite::Result<Vec<Waiting>> {
+/// The messages delivered to `session` that still wait for its reply: the
+/// provider took them (`delivered_at`), in any turn until PR 5.
+fn waiting(conn: &Connection, session: &SessionId, live: &Live) -> rusqlite::Result<Vec<Waiting>> {
     let messages = conn
         .prepare(&format!(
-            "{SELECT} WHERE handled_by_session = ?1 AND status = 'open' AND turn_id IS NOT NULL
+            "{SELECT} WHERE handled_by_session = ?1 AND status = 'open'
+               AND turn_id IS NOT NULL AND delivered_at IS NOT NULL
              ORDER BY created_at, id"
         ))?
         .query_map([session.as_str()], parse_row)?
@@ -1010,7 +1032,7 @@ fn waiting(
                     .unwrap_or_default(),
                 None => String::new(),
             };
-            let sender = target(conn, message.from_session_id.clone(), live, running)?;
+            let sender = target(conn, message.from_session_id.clone(), live)?;
             Ok(Waiting {
                 message,
                 handle,
@@ -1022,16 +1044,15 @@ fn waiting(
 }
 
 /// Design 6: load the facts, decide, write the rows, in one `BEGIN
-/// IMMEDIATE` transaction, so dedupe cannot race. `running` is read from
-/// `ControlHost` before this runs: the control lock is never held inside a
-/// store transaction (design 5.3).
+/// IMMEDIATE` transaction, so dedupe cannot race. `live.running` is read
+/// from `ControlHost` before this runs: the control lock is never held inside
+/// a store transaction (design 5.3).
 pub fn submit(
     conn: &Connection,
     caller: &Caller,
     request_id: &RequestId,
     input: Result<Input, String>,
-    live: &[LiveSession],
-    running: &HashSet<String>,
+    live: &Live,
     now: i64,
 ) -> rusqlite::Result<Submitted> {
     let input = match input {
@@ -1050,7 +1071,7 @@ pub fn submit(
             &Facts {
                 caller: caller_row,
                 prior,
-                about: recipient(&tx, &send.send_to, live, running)?,
+                about: recipient(&tx, &send.send_to, live)?,
             },
         ),
         Input::Reply(reply) => mono_gate::decide_reply(
@@ -1059,7 +1080,7 @@ pub fn submit(
             &Facts {
                 caller: caller_row,
                 prior,
-                about: waiting(&tx, &caller.session_id, live, running)?,
+                about: waiting(&tx, &caller.session_id, live)?,
             },
         ),
     };
@@ -1068,10 +1089,12 @@ pub fn submit(
     Ok(submitted)
 }
 
+/// An accepted row's `delivery` is `queue` until a hand-off writes `submit`
+/// or `steer` (design 1.2 review r2); the route goes back in [`Routing`].
 fn accepted(wanting_reply: bool, route: &Route) -> Status {
     let routed = Routed {
         handled_by_session: route.session.clone(),
-        delivery: route.via.delivery(),
+        delivery: Delivery::Queue,
     };
     if wanting_reply {
         Status::Open {
@@ -1137,7 +1160,7 @@ fn record(
                     duplicate: true,
                 },
             },
-            _ => accept_outcome(tx, prior, true)?,
+            _ => accept_outcome(tx, prior, None)?,
         }),
         Decision::Refuse { code, hint } => Ok(refused(code, hint)),
         Decision::Reject {
@@ -1201,7 +1224,14 @@ fn record(
                 }
                 messages.push(message);
             }
-            accept_outcome(tx, messages, false)
+            accept_outcome(
+                tx,
+                messages,
+                Some(Routing {
+                    session_id: route.session,
+                    via: route.via.delivery(),
+                }),
+            )
         }
     }
 }
@@ -1321,8 +1351,18 @@ fn turn(turn_id: &str) -> Result<&str, String> {
     }
 }
 
+/// The route of a new accept, sent to the window that owns its session.
+#[derive(Clone, Serialize)]
+struct RouteEvent<'a> {
+    messages: &'a [MonoMessage],
+    route: &'a Routing,
+}
+
+#[allow(clippy::too_many_arguments)]
 #[tauri::command(async)]
 pub fn mono_message_submit(
+    app: AppHandle,
+    window: WebviewWindow,
     store: State<'_, SessionStore>,
     control: State<'_, ControlHost>,
     caller: CallerArg,
@@ -1330,6 +1370,7 @@ pub fn mono_message_submit(
     request_id: String,
     input: Value,
     live: Vec<LiveSession>,
+    steerable_harnesses: Vec<String>,
 ) -> Result<Submitted, String> {
     let caller = caller.parse()?;
     let tool = Tool::parse(&tool).ok_or("Unknown messaging tool")?;
@@ -1340,17 +1381,45 @@ pub fn mono_message_submit(
         ));
     };
     let running = control.running_sessions();
-    let conn = store.lock_conn()?;
-    submit(
-        &conn,
-        &caller,
-        &request_id,
-        mono_gate::parse(tool, &input),
-        &live,
-        &running,
-        now_ms(),
-    )
-    .map_err(|error| error.to_string())
+    let mut submitted = {
+        let conn = store.lock_conn()?;
+        submit(
+            &conn,
+            &caller,
+            &request_id,
+            mono_gate::parse(tool, &input),
+            &Live {
+                sessions: &live,
+                running: &running,
+                steerable_harnesses: &steerable_harnesses,
+            },
+            now_ms(),
+        )
+        .map_err(|error| error.to_string())?
+    };
+    // Design 6: the window that owns the session runs the route, so no other
+    // window loads a second copy of it to deliver.
+    if let Submitted::Accepted {
+        messages,
+        route: Some(route),
+        owner_window,
+        ..
+    } = &mut submitted
+    {
+        let owner = control.route_owner(route.session_id.as_str(), window.label());
+        if owner != window.label()
+            && app
+                .emit_to(
+                    owner.as_str(),
+                    "mono-message-route",
+                    RouteEvent { messages, route },
+                )
+                .is_ok()
+        {
+            *owner_window = Some(owner);
+        }
+    }
+    Ok(submitted)
 }
 
 #[tauri::command(async)]
@@ -2226,16 +2295,42 @@ mod tests {
         input: serde_json::Value,
         live: &[LiveSession],
     ) -> Submitted {
+        call_with(conn, caller, request_id, tool, input, live, &[])
+    }
+
+    /// A call while the sessions in `running` run a turn. Every test session
+    /// runs on codex, which can steer.
+    fn call_with(
+        conn: &Connection,
+        caller: &Caller,
+        request_id: &str,
+        tool: Tool,
+        input: serde_json::Value,
+        live: &[LiveSession],
+        running: &[&str],
+    ) -> Submitted {
+        let running: HashSet<String> = running.iter().map(|id| id.to_string()).collect();
         submit(
             conn,
             caller,
             &RequestId::parse(request_id).unwrap(),
             mono_gate::parse(tool, &input),
-            live,
-            &HashSet::new(),
+            &Live {
+                sessions: live,
+                running: &running,
+                steerable_harnesses: &["codex".to_string()],
+            },
             100,
         )
         .unwrap()
+    }
+
+    fn listed(id: &str, steerable: bool, own_project: bool) -> LiveSession {
+        LiveSession {
+            session_id: id.into(),
+            steerable,
+            own_project,
+        }
     }
 
     fn rows(conn: &Connection) -> i64 {
@@ -2281,7 +2376,9 @@ mod tests {
             Submitted::Accepted {
                 messages: messages.clone(),
                 answered: Vec::new(),
-                duplicate: true
+                duplicate: true,
+                route: None,
+                owner_window: None,
             }
         );
         assert_eq!(rows(&conn), 1);
@@ -2402,6 +2499,7 @@ mod tests {
         ))
         .remove(0);
         assert!(assign_slot(&conn, &ask, "turn-a", "main", Delivery::Submit, 101).unwrap());
+        mark_delivery(&conn, &ask, "turn-a", 102).unwrap();
         let mono_a = caller_in("mono-a", "a-chat");
         let answer = call(
             &conn,
@@ -2419,6 +2517,7 @@ mod tests {
             messages,
             answered,
             duplicate: false,
+            ..
         } = answer
         else {
             panic!("reply: {answer:?}");
@@ -2526,5 +2625,182 @@ mod tests {
             .collect();
         assert_eq!(listed, vec![waiting]);
         assert!(unqueued(&conn, &session("giga-chat")).unwrap().is_empty());
+    }
+
+    fn ask_delivered(conn: &Connection, request_id: &str, turn_id: &str) -> MessageId {
+        let id = sent_to_a(conn, request_id, true);
+        assert!(assign_slot(conn, &id, turn_id, "main", Delivery::Submit, 101).unwrap());
+        mark_delivery(conn, &id, turn_id, 102).unwrap();
+        id
+    }
+
+    fn stored_delivery(conn: &Connection, id: &MessageId) -> Option<String> {
+        conn.query_row(
+            "SELECT delivery FROM mono_messages WHERE id = ?1",
+            [id.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn hi(to: &str, wanting_reply: bool, action_type: &str) -> serde_json::Value {
+        serde_json::json!({"message": "Hi", "send_to": to, "wanting_reply": wanting_reply, "action_type": action_type})
+    }
+
+    fn yes() -> serde_json::Value {
+        serde_json::json!({"message": "Yes"})
+    }
+
+    fn route_of(submitted: &Submitted) -> Option<Routing> {
+        match submitted {
+            Submitted::Accepted { route, .. } => route.clone(),
+            Submitted::Failed { error } => panic!("refused: {error:?}"),
+        }
+    }
+
+    // Review PR 4a M5. Defect: a reply answers a message whose hand-off holds
+    // a slot but whose text the provider never took.
+    #[test]
+    fn rv_submit_reply_open_set_needs_delivered_at() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let ask = sent_to_a(&conn, "ask", true);
+        // A hand-off holds the slot; the provider has not taken the text.
+        assert!(assign_slot(&conn, &ask, "turn-1", "main", Delivery::Steer, 101).unwrap());
+        let error = failed(call(
+            &conn,
+            &caller_in("mono-a", "a-chat"),
+            "answer",
+            Tool::Reply,
+            yes(),
+            &[],
+        ));
+        assert_eq!(error.code, "no_open_handle");
+    }
+
+    // Review PR 4a M7. Defect: a Mono messages or steers a session that is
+    // loaded in its window but is not in one of its projects.
+    #[test]
+    fn a_send_to_a_listed_session_outside_the_callers_projects_is_direction_forbidden() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let error = failed(call(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "r1",
+            Tool::SendMessage,
+            hi("project", false, "steer"),
+            &[listed("project", true, false)],
+        ));
+        assert_eq!(error.code, "direction_forbidden");
+    }
+
+    // Review PR 4a M7. Defect: a reply from one Mono answers the question
+    // that another Mono was asked.
+    #[test]
+    fn a_reply_cannot_answer_a_message_another_mono_was_asked() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let ask = ask_delivered(&conn, "ask", "turn-1");
+        let error = failed(call(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "answer",
+            Tool::Reply,
+            yes(),
+            &[],
+        ));
+        assert_eq!(
+            (error.code, error.open_handles),
+            ("no_open_handle", Some(Vec::new()))
+        );
+        assert!(matches!(
+            get(&conn, &ask).unwrap().unwrap().status,
+            Status::Open { .. }
+        ));
+    }
+
+    // Review PR 4a m1. Defect: a running chat that the caller's window has
+    // not loaded counts as unable to steer, so a steer to it is refused and a
+    // reply to its sender waits for the turn end.
+    #[test]
+    fn a_session_this_window_has_not_loaded_steers_by_its_harness() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let steer = call_with(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "r1",
+            Tool::SendMessage,
+            hi("mono-a", false, "steer"),
+            &[],
+            &["a-chat"],
+        );
+        assert_eq!(
+            route_of(&steer).map(|route| route.via),
+            Some(Delivery::Steer)
+        );
+        ask_delivered(&conn, "ask", "turn-1");
+        let reply = call_with(
+            &conn,
+            &caller_in("mono-a", "a-chat"),
+            "answer",
+            Tool::Reply,
+            yes(),
+            &[],
+            &["giga-chat"],
+        );
+        assert_eq!(
+            route_of(&reply).map(|route| route.via),
+            Some(Delivery::Steer)
+        );
+        conn.execute("UPDATE sessions SET harness = 'fx' WHERE id = 'a-chat'", [])
+            .unwrap();
+        let refused = failed(call_with(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "r2",
+            Tool::SendMessage,
+            hi("mono-a", false, "steer"),
+            &[],
+            &["a-chat"],
+        ));
+        assert_eq!(refused.code, "cannot_steer");
+    }
+
+    // Review PR 4a decision 167. Defect: a row claims a steer before any
+    // hand-off steered it, or the caller loses the route it must run.
+    #[test]
+    fn an_accepted_row_waits_as_queue_and_the_call_reports_its_route() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let outcome = call_with(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "r1",
+            Tool::SendMessage,
+            hi("mono-a", false, "steer"),
+            &[],
+            &["a-chat"],
+        );
+        let id = accepted_ids(&outcome).remove(0);
+        assert_eq!(stored_delivery(&conn, &id).as_deref(), Some("queue"));
+        assert_eq!(
+            route_of(&outcome),
+            Some(Routing {
+                session_id: session("a-chat"),
+                via: Delivery::Steer
+            })
+        );
+        let again = call_with(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "r1",
+            Tool::SendMessage,
+            hi("mono-a", false, "steer"),
+            &[],
+            &["a-chat"],
+        );
+        assert_eq!(route_of(&again), None);
     }
 }

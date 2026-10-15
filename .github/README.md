@@ -16,7 +16,7 @@ This repo is upstream [`hardbeat920/monocode`](https://github.com/hardbeat920/mo
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | **Steer a busy session** | `sessions.send` with `"whenBusy":"steer"` puts a prompt into the session's running turn, the same as Steer in the app.                                           | Proposed in [#979](https://github.com/hardbeat920/monocode/pull/979) |
 | **Queue a follow-up**    | `sessions.send` with `"whenBusy":"followUp"` adds the prompt to the session's visible queue. You can edit or remove it there, and it is sent when the turn ends. | Proposed in [#979](https://github.com/hardbeat920/monocode/pull/979) |
-| **Mono to Mono**         | `monos.list`, `monos.read` and `monos.send` let a Mono find other Monos, read their chats and send them messages. `whenBusy` works here too.                     | Not proposed                                                         |
+| **Mono to Mono**         | `messages.get_monos`, `messages.send` and `messages.reply` let a Mono find other Monos, message them and answer them; `monos.read` reads their chats.             | Not proposed                                                         |
 | **Readable dev builds**  | `npm run tauri dev` runs Tailwind's CSS optimize pass, so selected tabs, chips and glass panes are not white on white. Release builds do not change.             | Proposed in [#980](https://github.com/hardbeat920/monocode/pull/980) |
 
 ### Steer and follow-up
@@ -38,11 +38,13 @@ monocode app sessions.send --json '{"sessionId":"<id>","prompt":"Then add tests"
 ### Mono to Mono
 
 ```sh
-monocode app monos.list --json '{}'
-monocode app monos.send --json '{"monoId":"<id>","prompt":"Can you check CI on vibtra?","whenBusy":"followUp"}'
+monocode app messages.get_monos --json '{}'
+monocode app messages.send --json '{"message":"Can you check CI on vibtra?","send_to":"<mono_id>","wanting_reply":true}'
+monocode app messages.reply --json '{"message":"CI is green."}'
 ```
 
-- The message arrives in the other Mono's chat, marked as coming from the sender.
+- The message arrives in the other Mono's chat as a `<mono_message>` tag that names the sender and says whether it wants a reply.
+- `wanting_reply` is required. `action_type: "steer"` reaches the running turn; the default, `"queue"`, waits for it to end.
 - A Mono cannot send to itself.
 
 ## How it stays current
