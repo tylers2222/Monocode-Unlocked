@@ -14,6 +14,7 @@ mod devin_config;
 mod devin_usage;
 mod external_editor;
 mod fs;
+mod giga_workspace;
 mod gitlab;
 mod harness;
 mod harness_updates;
@@ -326,6 +327,9 @@ pub fn run() {
             control::app_cli_path,
             default_cwd,
             home_dir,
+            giga_workspace::giga_workspace_ensure,
+            giga_workspace::giga_workspace_turn_end,
+            giga_workspace::giga_workspace_bind,
             notifications::notification_permission,
             notifications::request_notification_permission,
             notifications::show_notification,
