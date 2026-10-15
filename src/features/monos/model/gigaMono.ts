@@ -1,4 +1,5 @@
 import type { AgentModelChoice } from "../../agent-app/model/agentModelChoice";
+import { monoError } from "../../agent-app/model/appActionError";
 import { loadRecents, projectRailItems } from "../../projects/model/recents";
 import {
   newSession,
@@ -9,20 +10,16 @@ import { reservedProjectNameError } from "../../projects/model/reservedProjectNa
 import { pathKey, projectName } from "../../../shared/lib/paths";
 import {
   createMono,
+  findMono,
   monoLook,
   saveMonoSessionId,
   updateMono,
   type Mono,
 } from "./mono";
 
-export const GIGA_ONLY_ERROR = "Only a Giga Mono can create or configure Monos";
-export const MONO_SELF_CONFIGURE_ERROR = "A Mono cannot configure itself";
-export const MONO_BUSY_CONFIGURE_ERROR =
-  "That Mono is busy, so nothing was changed. Configure it again after its turn ends";
-const MONO_REMOVED_ERROR = "That Mono was removed";
 const PROJECTS_MAX = 50;
 
-/** A Mono as monos.create and monos.configure report it. */
+/** A Mono as monos.create and monos.update report it. */
 export type MonoSettings = {
   monoId: string;
   name: string;
@@ -120,27 +117,33 @@ export async function createMonoWithChat(
 }
 
 /**
- * Changes another Mono's name, projects, harness or model. A busy Mono is left
+ * Changes another Mono's name, projects, harness or model; undefined when
+ * there is no such Mono. A busy Mono, or one preparing a handoff, is left
  * exactly as it was, and so is one whose new model is refused.
  */
-export function configureMono(
-  mono: Mono,
-  chat: Session,
+export async function updateMonoSettings(
+  monoId: string,
   change: MonoChange,
   host: {
+    /** Its chat as the window has it now; opened, or created when it has none. */
+    openChat(monoId: string): Promise<Session | undefined>;
+    preparingHandoff(chat: Session): boolean;
     switchModel(chat: Session, choice: AgentModelChoice): Session;
     replace(chat: Session): void;
   },
-): MonoSettings {
-  if (chat.busy) throw new Error(MONO_BUSY_CONFIGURE_ERROR);
+): Promise<MonoSettings | undefined> {
+  if (!findMono(monoId)) return undefined;
+  const chat = await host.openChat(monoId);
+  if (!chat || !findMono(monoId)) return undefined;
+  if (chat.busy || host.preparingHandoff(chat)) throw monoError("mono_busy");
   const choice = change.choice?.(chat.harness);
   const next = choice ? host.switchModel(chat, choice) : chat;
-  const updated = updateMono(mono.id, (current) => ({
+  const updated = updateMono(monoId, (current) => ({
     ...current,
     ...(change.name !== undefined ? { name: change.name } : {}),
     ...(change.projects ? { projects: [...change.projects] } : {}),
   }));
-  if (!updated) throw new Error(MONO_REMOVED_ERROR);
+  if (!updated) return undefined;
   if (next !== chat) host.replace(next);
   return monoSettings(updated, next);
 }

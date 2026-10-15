@@ -254,7 +254,7 @@ it("puts what the app adds ahead of the user's message, marked as its own", () =
   expect(turn.endsWith("</monocode_context>\n\nwhat is this")).toBe(true);
 });
 
-it("tells only a Giga Mono how to create and configure Monos", () => {
+it("tells only a Giga Mono how to create and update Monos", () => {
   const look = { name: "Boss", mascot: "skull", color: "#fff", projects: [] };
   const soul = { soul: true, memory: false };
   expect(monoContext(look, files(), soul)).not.toContain("<giga_mono_rules>");
@@ -272,9 +272,15 @@ it("tells only a Giga Mono how to create and configure Monos", () => {
   expect(
     monoContext({ ...look, gigaSlug: "ops" }, files(), soul),
   ).not.toContain("<giga_workspace_rules>");
-  expect(giga).toContain("app monos.create");
-  expect(giga).toContain("app monos.configure");
-  expect(giga).toContain("app models.list");
+  // Defect: a Giga is told an action the CLI no longer has.
+  for (const action of [
+    "monos.create",
+    "monos.get",
+    "monos.update",
+    "models.list",
+  ])
+    expect(giga).toContain(`app ${action}`);
+  expect(giga).not.toContain("monos.configure");
   // Rules go out with the soul, not on every turn.
   expect(
     monoContext({ ...look, giga: true }, files(), {
