@@ -162,11 +162,18 @@ fn default_mono_name(mascot: &str) -> String {
     format!("Mono{short}")
 }
 
+/// A custom name without its outer whitespace. The set is Unicode White_Space
+/// plus U+FEFF, the same set `customMonoName` in `mono.ts` trims (JS `\s` plus
+/// U+0085); both are checked against `monoCustomNames.json`.
+fn custom_name(name: &str) -> &str {
+    name.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+}
+
 /// `monos.name`, from the data alone: the custom name when there is one, else
 /// the mascot's default name. A window never sends it, so a window with a
 /// stale copy cannot leave it on an old mascot.
 fn display_name(data: &Map<String, Value>) -> Result<String, String> {
-    if let Some(name) = data.get("name").and_then(Value::as_str).map(str::trim) {
+    if let Some(name) = data.get("name").and_then(Value::as_str).map(custom_name) {
         if !name.is_empty() {
             if name.chars().count() > NAME_MAX {
                 return Err("Mono name must be 1 to 256 characters".into());
@@ -763,6 +770,31 @@ mod tests {
         for (mascot, name) in table {
             assert_eq!(Value::String(default_mono_name(&mascot)), name, "{mascot}");
         }
+    }
+
+    #[test]
+    fn custom_names_follow_the_shared_trim_rule_and_limit() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../src/features/monos/model/monoCustomNames.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["maxChars"], NAME_MAX);
+        let cases = fixture["cases"].as_array().unwrap();
+        assert!(!cases.is_empty());
+        for case in cases {
+            let data = json!({"mascot": "crab", "name": case[0]});
+            let expected = case[1].as_str().unwrap_or("MonoCrab");
+            assert_eq!(
+                display_name(data.as_object().unwrap()).unwrap(),
+                expected,
+                "{:?}",
+                case[0]
+            );
+        }
+        // The limit counts code points, as `[...name].length` does in TS.
+        let named = |n: usize| json!({"mascot": "crab", "name": "😀".repeat(n)});
+        assert!(display_name(named(NAME_MAX).as_object().unwrap()).is_ok());
+        assert!(display_name(named(NAME_MAX + 1).as_object().unwrap()).is_err());
     }
 
     #[test]

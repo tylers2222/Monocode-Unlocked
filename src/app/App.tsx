@@ -25,6 +25,10 @@ import {
   type AppSessionListing,
   type AppSessionPlacement,
 } from "../features/agent-app/model/agentApp";
+import {
+  appErrorResponse,
+  monoError,
+} from "../features/agent-app/model/appActionError";
 import { submitWithSettlement } from "./model/managedSubmission";
 import {
   createTurnWatchers,
@@ -44,7 +48,6 @@ import {
   chatUpdatedAt,
   enqueueAppMonoMessage,
   MONO_REJECTED_ERROR,
-  NO_MONO_CONVERSATION_ERROR,
   planAppMonoSend,
   UNKNOWN_MONO_ERROR,
 } from "./model/appMonoSend";
@@ -642,9 +645,8 @@ import {
   resetMonoSession,
 } from "../features/monos/model/monoWorkspace";
 import {
-  configureMono,
   createMonoWithChat,
-  MONO_BUSY_CONFIGURE_ERROR,
+  updateMonoSettings,
 } from "../features/monos/model/gigaMono";
 import {
   ensureGigaWorkspace,
@@ -11258,24 +11260,36 @@ function Workspace({
                   const chat = sessionsRef.current.find(
                     (session) => session.id === mono.sessionId,
                   );
-                  const updatedAt = chat && chatUpdatedAt(chat.blocks);
                   return {
-                    id: mono.id,
-                    name: monoLook(mono).name,
-                    projects: mono.projects,
-                    busy: !!chat?.busy,
-                    queued: chat?.queuedMessages?.length ?? 0,
-                    hasConversation: !!mono.sessionId,
-                    ...(updatedAt ? { updatedAt } : {}),
+                    mono,
+                    chat,
+                    updatedAt: chat && chatUpdatedAt(chat.blocks),
                   };
                 }),
+              get: async (monoId) => {
+                const mono = findMono(monoId);
+                if (!mono) return undefined;
+                const opened =
+                  mono.sessionId &&
+                  (await ensureOpenSessionRef.current(mono.sessionId));
+                const chat = opened
+                  ? (sessionsRef.current.find(
+                      (session) => session.id === opened.id,
+                    ) ?? opened)
+                  : undefined;
+                return {
+                  mono,
+                  chat,
+                  updatedAt: chat && chatUpdatedAt(chat.blocks),
+                };
+              },
               read: async (monoId, options) => {
                 const mono = findMono(monoId);
-                if (!mono) throw new Error(UNKNOWN_MONO_ERROR);
+                if (!mono) throw monoError("unknown_mono");
                 const chat =
                   mono.sessionId &&
                   (await ensureOpenSessionRef.current(mono.sessionId));
-                if (!chat) throw new Error(NO_MONO_CONVERSATION_ERROR);
+                if (!chat) throw monoError("no_conversation");
                 return readMonoConversation(chat, options);
               },
               send: async (monoId, text, requestId, { whenBusy } = {}) => {
@@ -11333,8 +11347,8 @@ function Workspace({
                     setSessions(sessionsRef.current);
                   },
                 }),
-              configure: async (monoId, change) => {
-                if (!findMono(monoId)) throw new Error(UNKNOWN_MONO_ERROR);
+              update: async (monoId, change) => {
+                if (!findMono(monoId)) throw monoError("unknown_mono");
                 // A Mono never opened gets its chat now, as opening it would.
                 const opened = await ensureMonoSession(monoId, {
                   home: homeDir,
@@ -11346,16 +11360,15 @@ function Workspace({
                   },
                 });
                 const mono = findMono(monoId);
-                if (!opened || !mono) throw new Error(UNKNOWN_MONO_ERROR);
+                if (!opened || !mono) throw monoError("unknown_mono");
                 // Output already received can end the turn it is busy with.
                 flushHarnessEvents();
                 const chat =
                   sessionsRef.current.find(
                     (session) => session.id === opened.id,
                   ) ?? opened;
-                if (isPreparingHandoff(chat))
-                  throw new Error(MONO_BUSY_CONFIGURE_ERROR);
-                return configureMono(mono, chat, change, {
+                if (isPreparingHandoff(chat)) throw monoError("mono_busy");
+                return updateMonoSettings(mono, chat, change, {
                   switchModel: (current, { harness, model }) => {
                     const plan = planComposerSwitch(current, harness);
                     if (plan.kind === "empty")
@@ -11414,10 +11427,7 @@ function Workspace({
           (error: unknown) =>
             invoke("control_reply", {
               id: payload.id,
-              response: {
-                ok: false,
-                error: error instanceof Error ? error.message : String(error),
-              },
+              response: appErrorResponse(error),
             }),
         )
         .catch(console.error);

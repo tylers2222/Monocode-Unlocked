@@ -1,33 +1,43 @@
 // @vitest-environment happy-dom
 import { expect, it, vi } from "vitest";
 import { newSession, type Block } from "../../sessions/model/session";
+import type { Mono } from "../../monos/model/mono";
 import {
   sessionConversationPage,
   type SessionReadOptions,
 } from "./sessionConversation";
 import { handleAgentApp, type AgentAppHost } from "./agentApp";
+import { appErrorResponse } from "./appActionError";
 
-const captain = {
+/** The caller's Mono, a Giga with no projects and no chat loaded. */
+const captain: Mono = {
   id: "mono-1",
   name: "Captain Jack",
+  mascot: "skull",
+  color: "#fff",
   projects: [],
-  busy: false,
-  queued: 0,
-  hasConversation: true,
+  sessionId: "captain-chat",
+  giga: true,
 };
-const shroom = {
+const shroom: Mono = {
   id: "mono-2",
-  name: "Shroom",
+  mascot: "mushroom",
+  color: "#9c9",
   projects: ["/code/app"],
-  busy: true,
-  queued: 1,
-  hasConversation: true,
-  updatedAt: 1_760_000_000_000,
+  sessionId: "shroom-chat",
+};
+/** Never opened, so it has no chat. */
+const scout: Mono = {
+  id: "mono-3",
+  name: "Scout",
+  mascot: "crab",
+  color: "#ccc",
+  projects: [],
 };
 
 /**
- * Captain Jack, who has no projects, and Shroom. The caller is Captain Jack's
- * own chat, one of its habit runs, or a plain project session.
+ * Captain Jack, Shroom (busy, one message queued) and Scout. The caller is
+ * Captain Jack's own chat, one of its habit runs, or a plain project session.
  */
 function fixture(kind: "mono" | "habit" | "session" = "mono") {
   const source = newSession("codex", "/Users/me", "codex:test");
@@ -40,12 +50,22 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
     { id: "a2", role: "assistant", text: "Shipped v2.1." },
   ];
   const shroomChat = {
-    ...newSession("codex", "/code/app"),
+    ...newSession("claude", "/code/app", "claude:opus"),
     id: "shroom-chat",
+    busy: true,
+    queuedMessages: [{ id: "q1", text: "Next", attachments: [] }],
     blocks,
   };
+  const entries = [
+    { mono: captain },
+    { mono: shroom, chat: shroomChat, updatedAt: 1_760_000_000_000 },
+    { mono: scout },
+  ];
   const monos: NonNullable<AgentAppHost["monos"]> = {
-    list: vi.fn(async () => [captain, shroom]),
+    list: vi.fn(async () => entries),
+    get: vi.fn(async (monoId: string) =>
+      entries.find((entry) => entry.mono.id === monoId),
+    ),
     read: vi.fn(async (monoId: string, options: SessionReadOptions) => {
       if (monoId !== shroom.id)
         throw new Error("Unknown Mono; run monos.list for IDs");
@@ -55,7 +75,7 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
       alreadySubmitted: false,
       delivery: "sent" as const,
     })),
-  };
+  } as NonNullable<AgentAppHost["monos"]>;
   const host = {
     isMono: (id: string) => kind === "mono" && id === source.id,
     isHabitRun: (id: string) => kind === "habit" && id === source.id,
@@ -73,26 +93,116 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
   return { run, send: vi.mocked(monos.send) };
 }
 
+/** What the CLI prints for a call that fails. */
+async function failure(call: Promise<unknown>) {
+  return appErrorResponse(
+    await call.then(
+      () => undefined,
+      (error) => error,
+    ),
+  );
+}
+
 it.each([
   ["monos.list", {}],
+  ["monos.get", { monoId: "mono-2" }],
   ["monos.read", { monoId: "mono-2" }],
   ["monos.send", { monoId: "mono-2", prompt: "Review PR 12" }],
 ])("refuses %s from a session that is not a Mono's", async (action, input) => {
   const { run, send } = fixture("session");
-  await expect(run(action, input)).rejects.toThrow(
-    "Only a Mono can use monos.* actions",
-  );
+  expect(await failure(run(action, input))).toEqual({
+    ok: false,
+    code: "not_a_mono",
+    hint: "Only a Mono can use monos.* actions",
+    error: "Only a Mono can use monos.* actions",
+  });
   expect(send).not.toHaveBeenCalled();
 });
 
-it("lists every Mono to a Mono with no projects and marks only itself", async () => {
+const captainListing = {
+  id: "mono-1",
+  name: "Captain Jack",
+  role: "giga",
+  projects: [],
+  busy: false,
+  queued: 0,
+  hasConversation: true,
+  self: true,
+};
+const shroomListing = {
+  id: "mono-2",
+  name: "MonoShroom",
+  role: "mono",
+  projects: ["/code/app"],
+  busy: true,
+  queued: 1,
+  hasConversation: true,
+  updatedAt: 1_760_000_000_000,
+  self: false,
+};
+
+it("lists every Mono with its role to a Mono with no projects and marks only itself", async () => {
   const { run } = fixture();
   expect(await run("monos.list")).toEqual({
     monos: [
-      { ...captain, self: true },
-      { ...shroom, self: false },
+      captainListing,
+      shroomListing,
+      {
+        id: "mono-3",
+        name: "Scout",
+        role: "mono",
+        projects: [],
+        busy: false,
+        queued: 0,
+        hasConversation: false,
+        self: false,
+      },
     ],
   });
+});
+
+it("gets one Mono as monos.list shows it, with the harness and model its chat runs on", async () => {
+  const { run } = fixture("habit");
+  expect(await run("monos.get", { monoId: "mono-2" })).toEqual({
+    ...shroomListing,
+    harness: "claude",
+    model: "claude:opus",
+  });
+  // Defect: a Mono with no chat loaded reports another Mono's model.
+  expect(await run("monos.get", { monoId: "mono-3" })).toMatchObject({
+    id: "mono-3",
+    hasConversation: false,
+    harness: null,
+    model: null,
+  });
+});
+
+it("answers monos.get for an unknown Mono with unknown_mono", async () => {
+  const { run } = fixture();
+  expect(await failure(run("monos.get", { monoId: "mono-9" }))).toEqual({
+    ok: false,
+    code: "unknown_mono",
+    hint: "Unknown Mono; run monos.list for IDs",
+    error: "Unknown Mono; run monos.list for IDs",
+  });
+  expect(await failure(run("monos.get", {}))).toMatchObject({
+    code: "invalid_input",
+  });
+});
+
+it("names monos.update in place of monos.configure, and never offers monos.delete", async () => {
+  const { run } = fixture();
+  expect(
+    await failure(run("monos.configure", { monoId: "mono-2", name: "X" })),
+  ).toEqual({
+    ok: false,
+    code: "action_removed",
+    hint: "Use monos.update.",
+    error: "Use monos.update.",
+  });
+  expect(
+    await failure(run("monos.delete", { monoId: "mono-2" })),
+  ).toMatchObject({ code: "unknown_action" });
 });
 
 it("reads another Mono's chat a page at a time", async () => {

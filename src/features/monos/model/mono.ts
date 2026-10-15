@@ -230,9 +230,21 @@ type MonoUpdate = {
   sortOrder?: number;
 };
 
+/** The most code points a custom name may have, as `NAME_MAX` in `mono_roster.rs`. */
+export const MONO_NAME_MAX = 256;
+
+/**
+ * A Mono's own name without its outer whitespace, or undefined when it has
+ * none. The set is JS `\s` plus U+0085, the same set `custom_name` in
+ * `mono_roster.rs` trims; both are checked against `monoCustomNames.json`.
+ */
+export function customMonoName(name: string | undefined): string | undefined {
+  return name?.replace(/^[\s\u0085]+|[\s\u0085]+$/g, "") || undefined;
+}
+
 /** The name a Mono goes by: the user's, or its mascot's default. */
 function monoDisplayName(mono: Pick<Mono, "name" | "mascot">): string {
-  return mono.name?.trim() || defaultMonoName(mono.mascot);
+  return customMonoName(mono.name) ?? defaultMonoName(mono.mascot);
 }
 
 function monoCreate(mono: Mono, sortOrder: number): MonoCreate {
@@ -517,9 +529,10 @@ export function createMono(
   settings: { name?: string } = {},
 ): Mono {
   const roster = listMonos();
+  const name = customMonoName(settings.name);
   const mono: Mono = {
     id: newMonoId(),
-    ...(settings.name?.trim() ? { name: settings.name.trim() } : {}),
+    ...(name ? { name } : {}),
     ...nextMonoLook(roster),
     projects: uniqueProjects(projects),
   };
@@ -565,7 +578,7 @@ export function updateMono(
   const index = roster.findIndex((mono) => mono.id === id);
   if (index < 0) return undefined;
   const next = change(roster[index]);
-  if (!next.name?.trim()) delete next.name;
+  if (!customMonoName(next.name)) delete next.name;
   if (!next.instructions?.trim()) delete next.instructions;
   next.projects = uniqueProjects(next.projects);
   roster[index] = next;

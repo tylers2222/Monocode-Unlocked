@@ -12,7 +12,10 @@ import {
   saveMonoGiga,
   saveMonoSessionId,
 } from "../../monos/model/mono";
-import { configureMono, createMonoWithChat } from "../../monos/model/gigaMono";
+import {
+  createMonoWithChat,
+  updateMonoSettings,
+} from "../../monos/model/gigaMono";
 import { handleAgentApp, type AgentAppHost } from "./agentApp";
 
 vi.mock("../../../integrations/harness/core/availability", () => ({
@@ -87,10 +90,10 @@ function fixture(
           add: (chat) => chats.push(chat),
         }),
       ),
-      configure: vi.fn(async (monoId, change) => {
+      update: vi.fn(async (monoId, change) => {
         const mono = findMono(monoId)!;
         const chat = chats.find((entry) => entry.id === mono.sessionId)!;
-        return configureMono(mono, chat, change, {
+        return updateMonoSettings(mono, chat, change, {
           switchModel: (current, choice) => ({
             ...current,
             harness: choice.harness,
@@ -133,18 +136,18 @@ it.each([
   ["a regular Mono's habit run", "habit", false],
   ["a project session", "session", true],
 ] as const)(
-  "refuses monos.create and monos.configure from %s",
+  "refuses monos.create and monos.update from %s with giga_only",
   async (_, kind, giga) => {
     const { run, shroom, monos } = fixture(kind, { giga });
     const roster = JSON.stringify(listMonos());
-    await expect(run("monos.create", create)).rejects.toThrow(
-      "Only a Giga Mono can create or configure Monos",
-    );
+    await expect(run("monos.create", create)).rejects.toMatchObject({
+      code: "giga_only",
+    });
     await expect(
-      run("monos.configure", { monoId: shroom.id, name: "Renamed" }),
-    ).rejects.toThrow("Only a Giga Mono can create or configure Monos");
+      run("monos.update", { monoId: shroom.id, name: "Renamed" }),
+    ).rejects.toMatchObject({ code: "giga_only" });
     expect(monos.create).not.toHaveBeenCalled();
-    expect(monos.configure).not.toHaveBeenCalled();
+    expect(monos.update).not.toHaveBeenCalled();
     expect(JSON.stringify(listMonos())).toBe(roster);
   },
 );
@@ -208,15 +211,18 @@ it.each([
 it("changes another Mono's model, keeping its harness when only a model is given", async () => {
   const { run, shroom, chats } = fixture();
   await expect(
-    run("monos.configure", { monoId: shroom.id, model: "claude:opus" }),
-  ).rejects.toThrow("Unknown model for codex");
+    run("monos.update", { monoId: shroom.id, model: "claude:opus" }),
+  ).rejects.toMatchObject({
+    code: "invalid_input",
+    hint: expect.stringContaining("Unknown model for codex"),
+  });
   await expect(
-    run("monos.configure", { monoId: shroom.id, harness: "claude" }),
+    run("monos.update", { monoId: shroom.id, harness: "claude" }),
   ).rejects.toThrow("models.list");
   expect(chats[0]).toMatchObject({ harness: "codex", model: "codex:test" });
 
   expect(
-    await run("monos.configure", {
+    await run("monos.update", {
       monoId: shroom.id,
       harness: "claude",
       model: "claude:opus",
@@ -235,24 +241,43 @@ it("leaves a busy Mono unchanged", async () => {
   const { run, shroom, chats, replace } = fixture("mono", { shroomBusy: true });
   const before = JSON.stringify(listMonos());
   await expect(
-    run("monos.configure", {
+    run("monos.update", {
       monoId: shroom.id,
       model: "codex:last",
       name: "Renamed",
       projects: [],
     }),
-  ).rejects.toThrow("That Mono is busy");
+  ).rejects.toMatchObject({ code: "mono_busy" });
   expect(JSON.stringify(listMonos())).toBe(before);
   expect(chats[0].model).toBe("codex:test");
   expect(replace).not.toHaveBeenCalled();
 });
 
-it("does not let a Giga Mono configure itself", async () => {
+it("does not let a Giga Mono update itself", async () => {
   const { run, boss, monos } = fixture();
   await expect(
-    run("monos.configure", { monoId: boss.id, model: "codex:test" }),
-  ).rejects.toThrow("A Mono cannot configure itself");
-  expect(monos.configure).not.toHaveBeenCalled();
+    run("monos.update", { monoId: boss.id, model: "codex:test" }),
+  ).rejects.toMatchObject({ code: "self_update" });
+  expect(monos.update).not.toHaveBeenCalled();
+});
+
+// Defect: the rename reports success, the database refuses the name, and the
+// change disappears on the next reload.
+it("refuses a name the database would refuse, before changing anything", async () => {
+  const { run, shroom, monos } = fixture();
+  const before = JSON.stringify(listMonos());
+  for (const name of ["x".repeat(257), "😀".repeat(257), "\u0085", 7])
+    await expect(
+      run("monos.update", { monoId: shroom.id, name }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+  expect(monos.update).not.toHaveBeenCalled();
+  expect(JSON.stringify(listMonos())).toBe(before);
+  // The limit counts characters, not UTF-16 units, as Rust does.
+  const longest = "😀".repeat(256);
+  expect(
+    await run("monos.update", { monoId: shroom.id, name: ` ${longest}\u0085` }),
+  ).toMatchObject({ name: longest });
+  expect(findMono(shroom.id)!.name).toBe(longest);
 });
 
 // Defect: a project session reads the workspace, or a habit run is refused.
@@ -288,18 +313,18 @@ it("refuses a folder named MonoCode other than the workspace as a Mono's project
       run("monos.create", { ...create, projects: ["/tmp/x/MonoCode"] }),
     ).rejects.toThrow(reserved);
     await expect(
-      run("monos.configure", {
+      run("monos.update", {
         monoId: shroom.id,
         projects: ["/tmp/x/MonoCode"],
       }),
     ).rejects.toThrow(reserved);
     expect(monos.create).not.toHaveBeenCalled();
-    expect(monos.configure).not.toHaveBeenCalled();
+    expect(monos.update).not.toHaveBeenCalled();
     expect(listMonos()).toHaveLength(2);
     expect(findMono(shroom.id)!.projects).toEqual(["/code/app"]);
     expect(localStorage.getItem("monocode.recentProjects")).toBe(recents);
 
-    await run("monos.configure", {
+    await run("monos.update", {
       monoId: shroom.id,
       projects: ["/home/u/MonoCode"],
     });

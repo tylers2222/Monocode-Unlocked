@@ -12,6 +12,7 @@ import {
   monoWorksOn,
   removeMono,
   removeMonoProject,
+  MONO_NAME_MAX,
   reorderMonos,
   saveMonoGiga,
 } from "./mono";
@@ -19,6 +20,7 @@ import { monoBackgroundKey, monoChatBackground } from "./monoBackground";
 import { saveProjectChatBackgroundSettings } from "../../projects/model/projectChatBackground";
 import { PROJECT_MASCOTS } from "../../projects/model/projectMascots";
 import DEFAULT_NAMES from "./monoDefaultNames.json";
+import CUSTOM_NAMES from "./monoCustomNames.json";
 
 beforeEach(() => {
   __monosTestReset();
@@ -103,4 +105,17 @@ it("names every mascot the way the database does", () => {
       PROJECT_MASCOTS.map(({ name }) => [name, defaultMonoName(name)]),
     ),
   ).toEqual(DEFAULT_NAMES);
+});
+
+it("trims and limits a custom name the way the database does", () => {
+  // `monoCustomNames.json` is also checked by `mono_roster.rs`. A name the two
+  // trim differently shows one name in the app and another in `monos.name`.
+  expect(MONO_NAME_MAX).toBe(CUSTOM_NAMES.maxChars);
+  const shown = CUSTOM_NAMES.cases.map(([name]) => {
+    const mono = { ...createMono(), mascot: "crab", name: name! };
+    return monoLook(mono).name;
+  });
+  expect(shown).toEqual(
+    CUSTOM_NAMES.cases.map(([, expected]) => expected ?? "MonoCrab"),
+  );
 });

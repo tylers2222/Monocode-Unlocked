@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 38] = [
+const APP_ACTIONS: [&str; 39] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -93,10 +93,11 @@ const APP_ACTIONS: [&str; 38] = [
     "sessions.archive",
     "sessions.delete",
     "monos.list",
+    "monos.get",
     "monos.read",
     "monos.send",
     "monos.create",
-    "monos.configure",
+    "monos.update",
     "workspace.status",
     "worktrees.list",
     "worktrees.create",
@@ -122,6 +123,9 @@ const APP_ACTIONS: [&str; 38] = [
     "habits.remove",
     "chat.card",
 ];
+/// Renamed app actions. They still go to the app, which answers
+/// `action_removed` with the name to use instead; help does not list them.
+const REMOVED_APP_ACTIONS: [&str; 1] = ["monos.configure"];
 const APP_USAGE: &str = r#"MonoCode app access — use in a thread enabled by /operator.
 
 Usage: {exe} app ACTION [--json JSON | --input FILE|-] [--request-id ID]
@@ -216,8 +220,11 @@ Actions:
                   Mono chats, habit runs or orchestration workers. Sessions
                   must belong to the chosen project.
   monos.list     {}  Mono or habit only. The Monos in MonoCode, with id,
-                  name, projects, busy, queued, hasConversation, updatedAt
-                  and self (true for you).
+                  name, role (giga or mono), projects, busy, queued,
+                  hasConversation, updatedAt and self (true for you).
+  monos.get      {"monoId":"..."}  Mono or habit only. One Mono as monos.list
+                  shows it, plus the harness and model its chat runs on (null
+                  until it has a chat). Unknown IDs get code unknown_mono.
   monos.read     {"monoId":"...","before":"<turnId>","limit":3,"maxChars":1200}
                   Read another Mono's chat. Paging works as in sessions.read.
   monos.send     {"monoId":"...","prompt":"...","whenBusy":"steer"}
@@ -236,14 +243,14 @@ Actions:
                   models.list for exact IDs. projects must be projects in
                   MonoCode; pass [] for none. soul is optional and becomes its
                   SOUL.md. giga can only be false. Returns monoId and settings.
-  monos.configure {"monoId":"...","harness":"codex","model":"codex:...",
+  monos.update   {"monoId":"...","harness":"codex","model":"codex:...",
                   "name":"...","projects":["<path or name>"]}
                   Giga Mono or its habits only. Change another Mono's chat
                   harness and model, name or projects. A model alone must suit
-                  its current harness; a harness needs a model. A busy Mono is
-                  not changed; try again when it is idle. You cannot configure
-                  yourself. Others get "Only a Giga Mono can create or
-                  configure Monos".
+                  its current harness; a harness needs a model. name is 1 to
+                  256 characters. Codes: giga_only for other callers,
+                  self_update for yourself, unknown_mono, mono_busy (nothing
+                  changed; try again when it is idle), invalid_input.
   workspace.status {}  Mono or its habits only. The shared Giga workspace
                   ~/MonoCode: root, state ready or blocked (with reason),
                   gigaSlug for a Giga, and lastEnsure {at, trigger, created,
@@ -319,7 +326,9 @@ Actions:
                   the user must start it before it is scheduled.
 
 The output is one JSON line: {"ok":true,"result":...} or {"ok":false,"error":"..."}.
-Use --input - to pass JSON on stdin. Never print MonoCode credentials.
+A failure with "code" and "hint" is definite: read the hint, fix the call once,
+and send it as a new call. Use --input - to pass JSON on stdin.
+Never print MonoCode credentials.
 Keep the same --request-id when retrying a call after an uncertain result.
 "#;
 
@@ -376,7 +385,7 @@ fn run_mode(args: Vec<String>, app_mode: bool) -> i32 {
     let parsed = match parse_args_for(&args, app_mode) {
         Ok(parsed) => parsed,
         Err(error) => {
-            println!("{}", json!({"ok": false, "error": error}));
+            println!("{}", error.response());
             return 1;
         }
     };
@@ -414,7 +423,9 @@ fn run_mode(args: Vec<String>, app_mode: bool) -> i32 {
 fn with_retry_hint(mut value: Value, request_id: &str) -> Value {
     // A denied app call never reached the executor. Repeating the same ID
     // cannot grant access, and suggesting it sends agents in loops.
-    if value.get("retryable").and_then(Value::as_bool) == Some(false) {
+    // A failure with a code is the app's definite answer to this input.
+    if value.get("retryable").and_then(Value::as_bool) == Some(false) || value.get("code").is_some()
+    {
         return value;
     }
     if let Some(object) = value.as_object_mut() {
@@ -515,12 +526,52 @@ fn read_capped(mut source: impl Read) -> Result<String, String> {
     Ok(raw)
 }
 
+/// Why the CLI refused a call before sending it. `code` is set when the app
+/// would have answered the same call with that code.
+struct ParseError {
+    code: Option<&'static str>,
+    message: String,
+}
+
+impl ParseError {
+    fn response(&self) -> Value {
+        match self.code {
+            Some(code) => {
+                json!({"ok": false, "code": code, "hint": self.message, "error": self.message})
+            }
+            None => json!({"ok": false, "error": self.message}),
+        }
+    }
+}
+
+impl From<String> for ParseError {
+    fn from(message: String) -> Self {
+        ParseError {
+            code: None,
+            message,
+        }
+    }
+}
+
+impl From<&str> for ParseError {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
 #[cfg(test)]
-fn parse_args(args: &[String]) -> Result<Parsed, String> {
+impl From<ParseError> for String {
+    fn from(error: ParseError) -> Self {
+        error.message
+    }
+}
+
+#[cfg(test)]
+fn parse_args(args: &[String]) -> Result<Parsed, ParseError> {
     parse_args_for(args, false)
 }
 
-fn parse_args_for(args: &[String], app_mode: bool) -> Result<Parsed, String> {
+fn parse_args_for(args: &[String], app_mode: bool) -> Result<Parsed, ParseError> {
     let is_help = |value: &str| matches!(value, "help" | "--help" | "-h");
     let Some(action) = args.first() else {
         return Ok(Parsed::Help);
@@ -530,7 +581,7 @@ fn parse_args_for(args: &[String], app_mode: bool) -> Result<Parsed, String> {
     }
     let action = action.clone();
     let allowed = if app_mode {
-        APP_ACTIONS.contains(&action.as_str())
+        APP_ACTIONS.contains(&action.as_str()) || REMOVED_APP_ACTIONS.contains(&action.as_str())
     } else {
         ACTIONS.contains(&action.as_str())
     };
@@ -540,10 +591,13 @@ fn parse_args_for(args: &[String], app_mode: bool) -> Result<Parsed, String> {
         } else {
             ACTIONS.join(", ")
         };
-        return Err(format!(
-            "Unknown action: {action}. Use one of: {names}. Run {} --help.",
-            if app_mode { "app" } else { "control" }
-        ));
+        return Err(ParseError {
+            code: app_mode.then_some("unknown_action"),
+            message: format!(
+                "Unknown action: {action}. Use one of: {names}. Run {} --help.",
+                if app_mode { "app" } else { "control" }
+            ),
+        });
     }
     let mut input = None;
     let mut request_id = uuid::Uuid::new_v4().to_string();
@@ -557,10 +611,13 @@ fn parse_args_for(args: &[String], app_mode: bool) -> Result<Parsed, String> {
         if !flag.starts_with("--") {
             return Err(format!(
                 "Unexpected argument: {flag}. Pass the JSON object as --json '<JSON>'."
-            ));
+            )
+            .into());
         }
         let value = args.get(index + 1).ok_or_else(|| {
-            format!("Missing value for {flag}. Run control --help for the argument list.")
+            ParseError::from(format!(
+                "Missing value for {flag}. Run control --help for the argument list."
+            ))
         })?;
         match flag.as_str() {
             "--request-id" => request_id = value.clone(),
@@ -588,7 +645,8 @@ fn parse_args_for(args: &[String], app_mode: bool) -> Result<Parsed, String> {
             _ => {
                 return Err(format!(
                     "Unknown option: {flag}. Supported: --json, --input, --request-id."
-                ))
+                )
+                .into())
             }
         }
         index += 2;
@@ -794,7 +852,7 @@ mod tests {
                 r#"{"name":"Scout","harness":"codex","model":"codex:test","projects":["app"],"soul":"Be brief.","giga":false}"#,
             ),
             (
-                "monos.configure",
+                "monos.update",
                 r#"{"monoId":"other","harness":"codex","model":"codex:test","name":"Scout","projects":[]}"#,
             ),
         ] {
@@ -824,6 +882,7 @@ mod tests {
     fn app_mode_exposes_mono_messaging_actions_and_documents_when_busy() {
         for (action, input) in [
             ("monos.list", r#"{}"#),
+            ("monos.get", r#"{"monoId":"other"}"#),
             (
                 "monos.read",
                 r#"{"monoId":"other","before":"turn-1","limit":3,"maxChars":1200}"#,
@@ -843,5 +902,33 @@ mod tests {
             assert!(app_help().contains(action));
         }
         assert!(app_help().contains(r#"{"monoId":"...","prompt":"...","whenBusy":"steer"}"#));
+    }
+    #[test]
+    fn monos_configure_is_renamed_to_monos_update_and_delete_is_never_an_action() {
+        let help = app_help();
+        assert!(help.contains("monos.update"));
+        assert!(help.contains("monos.get"));
+        assert!(!help.contains("monos.configure"));
+        // The app answers the old name with action_removed and its new name.
+        assert!(matches!(
+            parse_args_for(&args(&["monos.configure", "--json", r#"{"monoId":"x"}"#]), true),
+            Ok(Parsed::Call(action, _, _)) if action == "monos.configure"
+        ));
+        let Err(refused) = parse_args_for(&args(&["monos.delete"]), true) else {
+            panic!("monos.delete was accepted");
+        };
+        let response = refused.response();
+        assert_eq!(response["code"], "unknown_action");
+        assert_eq!(response["hint"], response["error"]);
+    }
+
+    #[test]
+    fn a_coded_failure_does_not_suggest_retrying_the_same_call() {
+        let coded = with_retry_hint(
+            json!({"ok":false,"code":"giga_only","hint":"Only a Giga","error":"Only a Giga"}),
+            "id-1",
+        );
+        assert!(coded.get("retryWith").is_none());
+        assert!(coded.get("requestId").is_none());
     }
 }
