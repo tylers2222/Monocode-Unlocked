@@ -479,6 +479,8 @@ export type Session = {
   queuedMessages?: QueuedMessage[];
   /** Paused after user stops current turn; resuming waits for continued turn. */
   queueStatus?: MessageQueueStatus;
+  /** Set when a restart paused the queue; cleared on resume. In-memory only. */
+  queuePauseReason?: "quit";
   /** Prevent auto-dispatch while this queued row is being edited. In-memory only. */
   editingQueuedMessageId?: string;
   /** Pending delivery locks this row against edits and deletion. Not persisted. */

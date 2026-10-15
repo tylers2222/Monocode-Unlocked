@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { appendPreparingHandoff } from "./handoff";
 import {
   canDispatchQueuedHead,
-  canSteerQueuedHead,
   dequeueQueuedMessage,
   isEditingQueuedHead,
   queuedHead,
   queuedMessageForSubmit,
+  steerableQueuedMessage,
 } from "./messageQueue";
 import { newSession, type QueuedMessage, type Session } from "./session";
 
@@ -86,24 +86,24 @@ describe("canDispatchQueuedHead", () => {
   });
 });
 
-describe("canSteerQueuedHead", () => {
+describe("steerableQueuedMessage", () => {
   it("still takes follow-ups while an optional asynchronous question is open", () => {
     expect(
-      canSteerQueuedHead(
+      steerableQueuedMessage(
         chat({
           busy: true,
           turnReady: true,
           pendingQuestion: { requestId: 1, questions: [], autoResolveAt: 1000 },
         }),
-      ),
-    ).toBe(true);
+      )?.id,
+    ).toBe("a");
   });
   it("holds during startup and allows delivery once the busy turn is ready", () => {
-    expect(canSteerQueuedHead(chat({ busy: true }))).toBe(false);
-    expect(canSteerQueuedHead(chat({ busy: true, turnReady: true }))).toBe(
-      true,
-    );
-    expect(canSteerQueuedHead(chat({ turnReady: true }))).toBe(false);
+    expect(steerableQueuedMessage(chat({ busy: true }))).toBeUndefined();
+    expect(
+      steerableQueuedMessage(chat({ busy: true, turnReady: true }))?.id,
+    ).toBe("a");
+    expect(steerableQueuedMessage(chat({ turnReady: true }))).toBeUndefined();
   });
 
   it.each([
@@ -116,33 +116,52 @@ describe("canSteerQueuedHead", () => {
     { pendingQuestion: { requestId: 1, questions: [] } },
   ])("holds an unavailable session: %j", (patch) => {
     expect(
-      canSteerQueuedHead(chat({ busy: true, turnReady: true, ...patch })),
-    ).toBe(false);
+      steerableQueuedMessage(chat({ busy: true, turnReady: true, ...patch })),
+    ).toBeUndefined();
   });
 
-  it.each(["plan", "orchestrate"] as const)(
-    "waits for an idle turn for %s",
-    (intent) => {
-      expect(
-        canSteerQueuedHead(
-          chat({
-            busy: true,
-            turnReady: true,
-            queuedMessages: [{ ...queued("a"), intent }],
-          }),
-        ),
-      ).toBe(false);
+  it.each<Partial<QueuedMessage>>([
+    { waitForIdle: true },
+    { intent: "plan" },
+    { intent: "orchestrate" },
+    { text: "/operator list sessions" },
+    {
+      monoSessionCompletion: {
+        sessionId: "worker",
+        title: "Worker",
+        status: "completed",
+      },
+    },
+  ])(
+    "steers the next message past a head that waits for the turn end: %j",
+    (patch) => {
+      const session = chat({
+        busy: true,
+        turnReady: true,
+        queuedMessages: [{ ...queued("a"), ...patch }, queued("b")],
+      });
+      expect(steerableQueuedMessage(session)?.id).toBe("b");
+      expect(session.queuedMessages?.map((message) => message.id)).toEqual([
+        "a",
+        "b",
+      ]);
     },
   );
 
-  it("holds a head that waits for an idle turn, and the rows behind it", () => {
+  it("keeps the order among messages that can steer", () => {
     const session = chat({
       busy: true,
       turnReady: true,
-      queuedMessages: [{ ...queued("a"), waitForIdle: true }, queued("b")],
+      queuedMessages: [
+        { ...queued("a"), waitForIdle: true },
+        queued("b"),
+        queued("c"),
+      ],
     });
-    expect(canSteerQueuedHead(session)).toBe(false);
-    expect(canSteerQueuedHead(dequeueQueuedMessage(session, "a"))).toBe(true);
+    expect(steerableQueuedMessage(session)?.id).toBe("b");
+    expect(steerableQueuedMessage(dequeueQueuedMessage(session, "b"))?.id).toBe(
+      "c",
+    );
   });
 });
 

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { submitWithSettlement } from "../../../app/model/managedSubmission";
 import {
   canDispatchQueuedHead,
-  canSteerQueuedHead,
+  steerableQueuedMessage,
 } from "../../sessions/model/messageQueue";
 import { newSession, type Session } from "../../sessions/model/session";
 import {
@@ -136,7 +136,7 @@ describe("Mono completion batches", () => {
       queuedMessages: mono.queuedMessages!.slice(1),
     };
     expect(canDispatchQueuedHead(notification)).toBe(false);
-    expect(canSteerQueuedHead(notification)).toBe(false);
+    expect(steerableQueuedMessage(notification)).toBeUndefined();
     expect(canDispatchQueuedHead({ ...notification, busy: false })).toBe(true);
   });
 

@@ -1,5 +1,5 @@
 import { TurnNotReadyError } from "../../../integrations/harness/core/types";
-import { canSteerQueuedHead, queuedHead } from "./messageQueue";
+import { steerableQueuedMessage } from "./messageQueue";
 import type { QueuedMessage, Session } from "./session";
 
 /** Keep the pending message until the provider accepts it. Preparation is part of delivery. */
@@ -18,8 +18,7 @@ export async function deliverQueuedFollowUp<T>(options: {
     return (
       options.isCurrentTurn() &&
       !!session &&
-      queuedHead(session) === options.message &&
-      canSteerQueuedHead(session)
+      steerableQueuedMessage(session) === options.message
     );
   };
   if (!canDeliver()) return false;

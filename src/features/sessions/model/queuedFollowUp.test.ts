@@ -81,6 +81,39 @@ describe("pending Mono follow-up delivery", () => {
     ]);
   });
 
+  it("steers the user's message past a head that waits for the turn end", async () => {
+    const waiting = {
+      id: "waiting",
+      text: "Report back when done",
+      attachments: [],
+      waitForIdle: true,
+    };
+    const user = { id: "user", text: "Use TypeScript", attachments: [] };
+    let session: Session = {
+      ...newSession("codex", "/tmp"),
+      busy: true,
+      turnReady: true,
+      queueStatus: "active",
+      queuedMessages: [waiting, user],
+    };
+    const steer = vi.fn(async (_text: string) => {});
+    const delivered = await deliverQueuedFollowUp({
+      message: user,
+      current: () => session,
+      isCurrentTurn: () => true,
+      prepare: async () => user.text,
+      steer,
+      delivered: () => {
+        session = dequeueQueuedMessage(session, user.id);
+      },
+      deferred: vi.fn(),
+      failed: vi.fn(),
+    });
+    expect(delivered).toBe(true);
+    expect(steer).toHaveBeenCalledWith("Use TypeScript");
+    expect(session.queuedMessages).toEqual([waiting]);
+  });
+
   it("keeps the message pending until the provider acknowledges delivery", async () => {
     const d = delivery();
     const accepted = deferred<void>();

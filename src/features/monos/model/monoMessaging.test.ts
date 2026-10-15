@@ -191,6 +191,28 @@ describe("optimistic Mono messages", () => {
     });
   });
 
+  it("tells the user a message that waits for the turn end will send after it", () => {
+    const session = {
+      ...newSession("codex", "/tmp"),
+      busy: true,
+      turnReady: true,
+      queueStatus: "active" as const,
+      queuedMessages: [
+        { ...message("waiting"), waitForIdle: true },
+        message("user"),
+      ],
+    };
+    expect(monoMessageDeliveries(session).get("waiting")).toEqual({
+      status: "waiting",
+    });
+    expect(monoMessageDeliveries(session).get("user")).toEqual({
+      status: "pending",
+    });
+    expect(
+      monoMessageDeliveries({ ...session, busy: false }).get("waiting"),
+    ).toEqual({ status: "pending" });
+  });
+
   it("retains attachments on the optimistic bubble and acknowledges older saved queues once", () => {
     const file = {
       id: "image",

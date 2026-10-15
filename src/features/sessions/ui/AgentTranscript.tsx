@@ -2535,10 +2535,16 @@ function UserMessageBlock({
   };
 
   const deliveryControl =
-    delivery && delivery.status !== "pending" ? (
+    delivery?.status === "waiting" ? (
+      <div className="flex max-w-full items-center gap-2 px-3 pt-1 font-sans text-xs text-content/50">
+        <span role="status">Sends when this turn ends</span>
+      </div>
+    ) : delivery && delivery.status !== "pending" ? (
       <div className="flex max-w-full items-center gap-2 px-3 pt-1 font-sans text-xs text-content/50">
         <span role={delivery.error ? "alert" : "status"}>
-          {delivery.error ? `Not sent · ${delivery.error}` : "Not sent"}
+          {delivery.error || delivery.reason
+            ? `Not sent · ${delivery.error ?? delivery.reason}`
+            : "Not sent"}
         </span>
         {onRetryMessage ? (
           <button

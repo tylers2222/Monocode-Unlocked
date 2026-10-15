@@ -1,4 +1,5 @@
 import { isPreparingHandoff } from "./handoff";
+import { consumeOperatorCommand } from "./operatorCommand";
 import type { QueuedMessage, Session } from "./session";
 
 export function queuedHead(session: Session): QueuedMessage | undefined {
@@ -48,29 +49,52 @@ export function canDispatchQueuedHead(session: Session): boolean {
   return true;
 }
 
-/** Monos deliver one waiting follow-up at a time after the provider is ready. */
-export function canSteerQueuedHead(session: Session): boolean {
-  const head = queuedHead(session);
+/** A message that can only start a new turn; it never steers a running one. */
+export function waitsForTurnEnd(message: QueuedMessage): boolean {
   return (
-    !!head &&
-    !head.monoSessionCompletion &&
-    !head.waitForIdle &&
-    !!session.busy &&
-    !!session.turnReady &&
-    !session.worktreePreparing &&
-    !session.worktreeRemoved &&
-    !session.pendingSwitch &&
-    !session.usageLimit &&
-    !(
-      session.pendingQuestion && session.pendingQuestion.autoResolveAt == null
-    ) &&
-    session.queueStatus !== "paused" &&
-    session.queueStatus !== "resuming" &&
-    !isEditingQueuedHead(session) &&
-    !isPreparingHandoff(session) &&
-    head.intent !== "plan" &&
-    head.intent !== "orchestrate"
+    !!message.waitForIdle ||
+    !!message.monoSessionCompletion ||
+    message.intent === "plan" ||
+    message.intent === "orchestrate" ||
+    consumeOperatorCommand(message.text).matched
   );
+}
+
+/**
+ * The message a busy, ready Mono steers next: the first one that can steer.
+ * Messages that wait for the turn to end keep their place but never block it.
+ */
+export function steerableQueuedMessage(
+  session: Session,
+): QueuedMessage | undefined {
+  if (
+    !session.busy ||
+    !session.turnReady ||
+    session.worktreePreparing ||
+    session.worktreeRemoved ||
+    session.pendingSwitch ||
+    session.usageLimit ||
+    (session.pendingQuestion &&
+      session.pendingQuestion.autoResolveAt == null) ||
+    session.queueStatus === "paused" ||
+    session.queueStatus === "resuming" ||
+    isPreparingHandoff(session)
+  )
+    return undefined;
+  const message = session.queuedMessages?.find(
+    (entry) => !waitsForTurnEnd(entry),
+  );
+  return message && session.editingQueuedMessageId !== message.id
+    ? message
+    : undefined;
+}
+
+/** Why a paused queue is not sending, when the user did not pause it. */
+export function queuePauseNotice(session: Session): string | undefined {
+  if (session.queueStatus !== "paused") return undefined;
+  return session.queuePauseReason === "quit"
+    ? "Paused when MonoCode quit"
+    : undefined;
 }
 
 /** Resolve a queued row for auto-dispatch (head, idle) or an explicit Steer. */

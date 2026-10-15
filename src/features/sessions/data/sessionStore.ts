@@ -1452,7 +1452,11 @@ function recordToSession(record: SessionRecord): Session {
     blocks,
     // A restart interrupted the active turn. Let the user resume pending work.
     ...(queuedMessages.length
-      ? { queuedMessages, queueStatus: "paused" as const }
+      ? {
+          queuedMessages,
+          queueStatus: "paused" as const,
+          queuePauseReason: "quit" as const,
+        }
       : {}),
     ...(record.monoTranscript ? { monoTranscript: record.monoTranscript } : {}),
     busy: false,

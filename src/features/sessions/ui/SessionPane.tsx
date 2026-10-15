@@ -82,6 +82,7 @@ import {
   visibleMonoCompletionMessages,
 } from "../../monos/model/monoMessaging";
 import { MessageQueue } from "./MessageQueue";
+import { queuePauseNotice } from "../model/messageQueue";
 import { useMonoTranscript } from "../../monos/hooks/useMonoTranscript";
 import { MONO_PAGE_TURNS } from "../data/sessionStore";
 import { useComposerDockMotion } from "./useComposerDockMotion";
@@ -389,7 +390,12 @@ const LocalSessionPane = memo(function LocalSessionPane({
   );
   const messageDeliveries = useMemo(
     () => monoMessageDeliveries(session),
-    [session.queuedMessages, session.queueStatus],
+    [
+      session.queuedMessages,
+      session.queueStatus,
+      session.queuePauseReason,
+      session.busy,
+    ],
   );
   const recallLastTurnRef = useRef<(() => void) | null>(null);
   const remote = remoteSession;
@@ -755,6 +761,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onPlaceInFolder={(target) => onPlaceSessionInFolder(session.id, target)}
       queuedMessages={session.queuedMessages}
       queueStatus={session.queueStatus}
+      queuePauseNotice={queuePauseNotice(session)}
       onDeleteQueuedMessage={(messageId) =>
         onDeleteQueuedMessage(session.id, messageId)
       }
@@ -1139,6 +1146,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                   <MessageQueue
                     messages={visibleMonoCompletionMessages(session)}
                     status={session.queueStatus}
+                    pauseNotice={queuePauseNotice(session)}
                     sendingId={session.sendingQueuedMessageId}
                     onDelete={(messageId) =>
                       onDeleteQueuedMessage(session.id, messageId)

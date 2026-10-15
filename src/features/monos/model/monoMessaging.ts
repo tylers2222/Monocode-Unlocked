@@ -6,6 +6,8 @@ import { displayAttachments } from "../../sessions/model/attachments";
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
+  queuePauseNotice,
+  waitsForTurnEnd,
 } from "../../sessions/model/messageQueue";
 import type {
   Attachment,
@@ -16,8 +18,10 @@ import type {
 
 type UserCards = Parameters<typeof appendUser>[3];
 export type MessageDelivery = {
-  status: "pending" | "paused" | "failed";
+  status: "pending" | "waiting" | "paused" | "failed";
   error?: string;
+  /** Why a paused message is not sending. */
+  reason?: string;
 };
 
 /** Show the message now; the outbox only controls its delivery. */
@@ -87,19 +91,22 @@ export function acknowledgeMonoMessage(
 export function monoMessageDeliveries(
   session: Session,
 ): ReadonlyMap<string, MessageDelivery> {
+  const pauseNotice = queuePauseNotice(session);
   return new Map(
     (session.queuedMessages ?? [])
       .filter((message) => !message.monoSessionCompletion)
-      .map((message) => [
+      .map((message): [string, MessageDelivery] => [
         message.blockId ?? message.id,
-        {
-          status: message.error
-            ? "failed"
-            : session.queueStatus === "paused"
-              ? "paused"
-              : "pending",
-          ...(message.error ? { error: message.error } : {}),
-        },
+        message.error
+          ? { status: "failed", error: message.error }
+          : session.queueStatus === "paused"
+            ? {
+                status: "paused",
+                ...(pauseNotice ? { reason: pauseNotice } : {}),
+              }
+            : session.busy && waitsForTurnEnd(message)
+              ? { status: "waiting" }
+              : { status: "pending" },
       ]),
   );
 }

@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { WhenBusy } from "../../features/agent-app/model/agentApp";
-import { acknowledgeMonoMessage } from "../../features/monos/model/monoMessaging";
+import {
+  acknowledgeMonoMessage,
+  enqueueMonoMessage,
+  monoMessageDeliveries,
+} from "../../features/monos/model/monoMessaging";
 import { sanitizeSessionForPersist } from "../../features/sessions/data/sessionStore";
 import {
   canDispatchQueuedHead,
-  canSteerQueuedHead,
+  steerableQueuedMessage,
 } from "../../features/sessions/model/messageQueue";
 import {
   newSession,
@@ -92,8 +96,10 @@ describe("planAppMonoSend", () => {
     expect(next.queuedMessages?.map((queued) => queued.id)).toEqual([
       message.id,
     ]);
-    expect(canSteerQueuedHead(next)).toBe(true);
-    expect(canSteerQueuedHead({ ...next, turnReady: false })).toBe(false);
+    expect(steerableQueuedMessage(next)?.id).toBe(message.id);
+    expect(
+      steerableQueuedMessage({ ...next, turnReady: false }),
+    ).toBeUndefined();
   });
 
   it("refuses a steer the busy Mono's provider cannot take, but not a follow-up", () => {
@@ -112,10 +118,28 @@ describe("planAppMonoSend", () => {
     const { message, delivery, next } = enqueue(busy(), "followUp");
     expect(delivery).toBe("queued");
     expect(message.waitForIdle).toBe(true);
-    expect(canSteerQueuedHead(next)).toBe(false);
+    expect(steerableQueuedMessage(next)).toBeUndefined();
     expect(canDispatchQueuedHead({ ...next, busy: false })).toBe(true);
     const saved = sanitizeSessionForPersist(next).queuedMessages?.[0];
     expect(saved).toMatchObject({ id: message.id, waitForIdle: true });
+  });
+
+  it("lets the user's own message steer past a follow-up that waits for the turn end", () => {
+    const { message: waiting, next } = enqueue(busy(), "followUp");
+    const user: QueuedMessage = {
+      id: "user",
+      text: "Use TypeScript",
+      attachments: [],
+    };
+    const both = enqueueMonoMessage(next, user);
+    expect(steerableQueuedMessage(both)?.id).toBe("user");
+    expect(both.queuedMessages?.map((queued) => queued.id)).toEqual([
+      waiting.id,
+      "user",
+    ]);
+    expect(monoMessageDeliveries(both).get(waiting.id)).toEqual({
+      status: "waiting",
+    });
   });
 
   it.each([

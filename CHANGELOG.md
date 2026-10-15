@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A Mono's chat is **saved when it is created**, not after its first message, so a restart no longer loses a new Mono's chat.
 - An **Inbox Ask** conversation is saved as a hidden session record, since it can change files. It stays out of the sidebar and is not restored after a restart.
 
+### Fixed
+
+- A message that waits for a Mono's turn to end, such as a `monos.send` with `whenBusy: "followUp"`, no longer holds back the messages you type after it. While the Mono works, your messages steer the running turn in the order you sent them, and the waiting message keeps its place and starts a new turn when the current one ends. Its bubble says "Sends when this turn ends". After a restart, messages that were not sent say "Paused when MonoCode quit" next to Resume. A follow-up that the provider refused for a moment no longer stops later follow-ups for the rest of the turn; the next tool call or reply lets them through again.
+
 ## [0.13.0] - 2026-10-12
 
 ### Added

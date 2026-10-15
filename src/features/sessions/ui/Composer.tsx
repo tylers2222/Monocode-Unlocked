@@ -241,6 +241,7 @@ type Props = {
   lastTurnRecall?: LastTurnRecall | null;
   queuedMessages?: QueuedMessage[];
   queueStatus?: MessageQueueStatus;
+  queuePauseNotice?: string;
   usageLimit?: UsageLimit;
   hotkeys?: boolean;
   onFocus: () => void;
@@ -365,6 +366,7 @@ export function Composer({
   lastTurnRecall = null,
   queuedMessages = [],
   queueStatus,
+  queuePauseNotice,
   usageLimit,
   onFocus,
   onCwdChange,
@@ -1737,6 +1739,7 @@ export function Composer({
       <MessageQueue
         messages={queuedMessages}
         status={queueStatus}
+        pauseNotice={queuePauseNotice}
         onDelete={onDeleteQueuedMessage}
         onEdit={onEditQueuedMessage}
         onEditingChange={onQueuedMessageEditingChange}

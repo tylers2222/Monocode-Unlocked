@@ -506,9 +506,10 @@ import {
 
 import {
   canDispatchQueuedHead,
-  canSteerQueuedHead,
   dequeueQueuedMessage,
+  queuedHead,
   queuedMessageForSubmit,
+  steerableQueuedMessage,
 } from "../features/sessions/model/messageQueue";
 import { deliverQueuedFollowUp } from "../features/sessions/model/queuedFollowUp";
 import {
@@ -7112,7 +7113,7 @@ function Workspace({
         );
         if (
           !message ||
-          !canSteerQueuedHead(current) ||
+          steerableQueuedMessage(current) !== message ||
           !canSteerHarness(current.harness) ||
           operatorCommand.matched
         )
@@ -8928,6 +8929,14 @@ function Workspace({
   useEffect(() => {
     const timers: number[] = [];
     const scheduled = new Set<string>();
+    // An idle session starts its head as a new turn. A busy Mono steers its
+    // first steerable message; messages that wait for the turn end keep their place.
+    const nextQueuedSend = (session: Session) =>
+      canDispatchQueuedHead(session)
+        ? queuedHead(session)
+        : monoForSession(session.id) && canSteerHarness(session.harness)
+          ? steerableQueuedMessage(session)
+          : undefined;
     for (const session of sessions) {
       const queued = session.queuedMessages ?? [];
       if (queued.length === 0) continue;
@@ -8942,21 +8951,8 @@ function Workspace({
         );
         continue;
       }
-      if (
-        !(
-          canDispatchQueuedHead(session) ||
-          (monoForSession(session.id) &&
-            canSteerQueuedHead(session) &&
-            canSteerHarness(session.harness) &&
-            !consumeOperatorCommand(queued[0].text).matched)
-        ) ||
-        queueDispatchingRef.current.has(session.id)
-      ) {
-        continue;
-      }
-
-      const next = queued[0];
-      if (!next) continue;
+      const next = nextQueuedSend(session);
+      if (!next || queueDispatchingRef.current.has(session.id)) continue;
       queueDispatchingRef.current.add(session.id);
       scheduled.add(session.id);
       timers.push(
@@ -8965,19 +8961,8 @@ function Workspace({
           const latest = sessionsRef.current.find(
             (entry) => entry.id === session.id,
           );
-          const head = latest?.queuedMessages?.[0];
-          if (
-            !latest ||
-            !head ||
-            head.id !== next.id ||
-            !(
-              canDispatchQueuedHead(latest) ||
-              (monoForSession(latest.id) &&
-                canSteerQueuedHead(latest) &&
-                canSteerHarness(latest.harness) &&
-                !consumeOperatorCommand(head.text).matched)
-            )
-          ) {
+          const head = latest ? nextQueuedSend(latest) : undefined;
+          if (!latest || !head || head.id !== next.id) {
             queueDispatchingRef.current.delete(session.id);
             return;
           }
@@ -9017,9 +9002,10 @@ function Workspace({
               if (
                 current &&
                 (steering
-                  ? canSteerQueuedHead(current)
-                  : canDispatchQueuedHead(current)) &&
-                current.queuedMessages?.[0] === head
+                  ? steerableQueuedMessage(current)
+                  : canDispatchQueuedHead(current)
+                    ? queuedHead(current)
+                    : undefined) === head
               ) {
                 setSessions((prev) =>
                   prev.map((entry) =>
@@ -9185,6 +9171,7 @@ function Workspace({
                 : {
                     ...entry,
                     queueStatus: "active",
+                    queuePauseReason: undefined,
                     queuedMessages: entry.queuedMessages?.map((message) => ({
                       ...message,
                       error: undefined,
@@ -9198,7 +9185,7 @@ function Workspace({
       setSessions((prev) =>
         prev.map((entry) =>
           entry.id === sessionId
-            ? { ...entry, queueStatus: "resuming" }
+            ? { ...entry, queueStatus: "resuming", queuePauseReason: undefined }
             : entry,
         ),
       );

@@ -24,6 +24,24 @@ import { resolveModel } from "../../../features/sessions/model/models";
 import type { HarnessEvent } from "./types";
 import { usageLimitFromError } from "../../../features/sessions/model/usageLimit";
 
+/**
+ * Output from the running turn proves it can take follow-ups again, after a
+ * steer was refused as not ready. The provider reports `turn.ready` only once.
+ */
+function rearmTurn(session: Session, event: HarnessEvent): Session {
+  switch (event.type) {
+    case "message.delta":
+    case "message.completed":
+    case "tool.started":
+    case "tool.updated":
+      return session.busy && !session.turnReady
+        ? { ...session, turnReady: true }
+        : session;
+    default:
+      return session;
+  }
+}
+
 /** Apply one delivery batch without copying the transcript for every token. */
 export function applyHarnessEvents(
   session: Session,
@@ -44,7 +62,7 @@ export function applyHarnessEvents(
       index++;
     }
     next = patchStreaming(
-      next,
+      rearmTurn(next, event),
       event.type === "message.delta" ? "assistant" : "reasoning",
       texts,
       true,
@@ -57,6 +75,7 @@ export function applyHarnessEvent(
   session: Session,
   event: HarnessEvent,
 ): Session {
+  session = rearmTurn(session, event);
   switch (event.type) {
     case "message.delta":
       return patchStreaming(session, "assistant", event.text, true);

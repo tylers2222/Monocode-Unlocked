@@ -13,6 +13,7 @@ import { previewFromTool } from "../providers/claude/claudeProtocol";
 import {
   appendUser,
   applyHarnessEvent,
+  applyHarnessEvents,
   appendSteerUser,
   promoteLastAssistantToPlan,
   stopStreaming,
@@ -59,6 +60,26 @@ describe("follow-up readiness", () => {
     session = appendUser(session, "Next");
     expect(session.turnReady).toBe(false);
   });
+  it.each([
+    { type: "tool.started", callId: "call", title: "Read file" },
+    { type: "tool.updated", callId: "call", status: "running" },
+    { type: "message.delta", text: "Working" },
+    { type: "message.completed" },
+  ] as const)(
+    "takes follow-ups again on $type after a refused steer in the same turn",
+    (event) => {
+      const accepted = applyHarnessEvent(
+        appendUser(newSession("codex", "/tmp"), "First"),
+        { type: "turn.ready" },
+      );
+      const deferred = { ...accepted, turnReady: false };
+      expect(applyHarnessEvent(deferred, event).turnReady).toBe(true);
+      expect(applyHarnessEvents(deferred, [event]).turnReady).toBe(true);
+      expect(applyHarnessEvent(stopStreaming(deferred), event).turnReady).toBe(
+        false,
+      );
+    },
+  );
 });
 
 describe("background work", () => {

@@ -15,6 +15,7 @@ import type { MessageQueueStatus, QueuedMessage } from "../model/session";
 export function MessageQueue({
   messages,
   status,
+  pauseNotice,
   onDelete,
   onEdit,
   onEditingChange,
@@ -25,6 +26,8 @@ export function MessageQueue({
 }: {
   messages: QueuedMessage[];
   status?: MessageQueueStatus;
+  /** Why the queue paused, when the user did not pause it. */
+  pauseNotice?: string;
   onDelete?: (messageId: string) => void;
   onEdit?: (messageId: string, text: string) => void;
   onEditingChange?: (messageId?: string) => void;
@@ -77,9 +80,10 @@ export function MessageQueue({
             <span className="min-w-0 flex-1 truncate">
               {failed
                 ? "A message couldn't be sent"
-                : variant === "messages"
-                  ? "Messages paused"
-                  : "Queue paused because you interrupted"}
+                : (pauseNotice ??
+                  (variant === "messages"
+                    ? "Messages paused"
+                    : "Queue paused because you interrupted"))}
             </span>
             <button
               type="button"

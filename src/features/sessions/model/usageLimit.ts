@@ -17,6 +17,7 @@ export function resumeUsageLimitedSession(session: Session): Session {
     ...session,
     usageLimit: undefined,
     queueStatus: session.queuedMessages?.length ? "active" : undefined,
+    queuePauseReason: undefined,
     queuedMessages: session.queuedMessages?.map((message) => ({
       ...message,
       error: undefined,
