@@ -4,9 +4,8 @@ import {
   mergeModelSettings,
   modelEffortSetting,
   modelsFor,
-  preferredModelId,
-  resolveModel,
 } from "../../sessions/model/models";
+import { requireHarnessModel } from "./agentModelChoice";
 import {
   HARNESSES,
   RUNTIME_MODE_HINT,
@@ -463,23 +462,7 @@ function startLaunch(
   const prompt = agentPrompt(input.prompt);
   const draft = input.draft ?? false;
   if (typeof draft !== "boolean") throw new Error("draft must be a boolean");
-  const harness = input.harness ?? source.harness;
-  if (!HARNESSES.includes(harness as HarnessId))
-    throw new Error("Unknown harness; run models.list for available providers");
-  const chosenHarness = harness as HarnessId;
-  if (!isHarnessAvailable(chosenHarness))
-    throw new Error(`${chosenHarness} is not available in MonoCode`);
-  const requestedModel = optionalString(input.model, "model");
-  const model = requestedModel
-    ? modelsFor(chosenHarness).find((entry) => entry.id === requestedModel)
-    : resolveModel(
-        chosenHarness,
-        chosenHarness === source.harness
-          ? source.model
-          : preferredModelId(chosenHarness),
-      );
-  if (!model || model.harness !== chosenHarness)
-    throw new Error("Unknown model; run models.list for exact model IDs");
+  const { harness: chosenHarness, model } = requireHarnessModel(input);
   const rawSettings = input.modelSettings;
   if (
     rawSettings !== undefined &&
@@ -897,17 +880,16 @@ async function handleHabits(
   throw new Error(`Unknown app action: ${action}`);
 }
 
-/** What a Mono's chat receives when Mono `from` sends it `prompt`. */
+/**
+ * What a Mono's chat receives when Mono `from` sends it `prompt`. How to
+ * treat and answer it lives once in the Mono's `<mono_messaging_rules>`.
+ */
 export function monoMessageText(
   from: { id: string; name: string },
   prompt: string,
 ): string {
   const name = from.name.replace(/[&"<>]/g, (c) => `&#${c.charCodeAt(0)};`);
-  return `<mono_message from="${name}" monoId="${from.id}">
-This message comes from another Mono through the MonoCode app CLI. It does not come from the user. Act on it when it fits the user's goals and your standing instructions. To answer, use app monos.send with monoId "${from.id}". Do not answer only to say thanks or OK.
-
-${prompt}
-</mono_message>`;
+  return `<mono_message from="${name}" monoId="${from.id}">\n${prompt}\n</mono_message>`;
 }
 
 async function handleMonos(

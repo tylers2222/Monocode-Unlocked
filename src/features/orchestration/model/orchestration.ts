@@ -1041,11 +1041,12 @@ export class Orchestrator {
                 allowed.harness === harness && allowed.model === model.id,
             ),
         );
-        const model =
-          input.model == null
-            ? permittedModels[0]?.id
-            : text(input.model, "model", 256);
-        if (!model || !permittedModels.some((item) => item.id === model))
+        if (input.model == null)
+          throw new Error(
+            `model is required; choose a model ID returned by list for ${harness}: ${listed(permittedModels.map((item) => item.id)) || "none available"}.`,
+          );
+        const model = text(input.model, "model", 256);
+        if (!permittedModels.some((item) => item.id === model))
           throw new Error(
             `Choose a model ID returned by list for ${harness}: ${listed(permittedModels.map((item) => item.id)) || "none available"}.`,
           );

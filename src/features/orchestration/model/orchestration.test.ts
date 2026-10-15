@@ -93,6 +93,7 @@ function setup() {
       title: "Task",
       prompt: "Implement the bounded change",
       harness: "codex",
+      model: "codex:test",
       files,
       ...extra,
     });
@@ -643,6 +644,7 @@ describe("local orchestration", () => {
       title: "A",
       prompt: "Implement",
       harness: "codex",
+      model: "codex:test",
       files: ["a"],
     };
     const first = await f.call("delegate", input, "same");
@@ -673,6 +675,7 @@ describe("local orchestration", () => {
       title: "A",
       prompt: "Implement",
       harness: "codex",
+      model: "codex:test",
       files: ["a"],
     };
     await f.call("delegate", input, "durable");
@@ -704,6 +707,7 @@ describe("local orchestration", () => {
       title: "A",
       prompt: "Implement",
       harness: "codex",
+      model: "codex:test",
       files: ["a"],
     };
     const pending = f.call("delegate", input, "pending");
@@ -1187,12 +1191,17 @@ describe("local orchestration", () => {
     await expect(f.delegate(["a"], { model: "codex:ghost" })).rejects.toThrow(
       "Choose a model ID returned by list for codex: codex:test.",
     );
+    await expect(f.delegate(["a"], { model: undefined })).rejects.toThrow(
+      "model is required; choose a model ID returned by list for codex: codex:test.",
+    );
+    expect(f.tasks()).toHaveLength(0);
     await expect(f.delegate([], {})).rejects.toThrow("at least one file");
     await expect(
       f.call("delegate", {
         title: "T",
         prompt: "P",
         harness: "codex",
+        model: "codex:test",
         files: ["a"],
         dependsOn: ["nope"],
       }),
@@ -1207,6 +1216,7 @@ describe("local orchestration", () => {
         title: "A",
         prompt: "Implement",
         harness: "codex",
+        model: "codex:test",
         files: ["a"],
       },
       "constructor",

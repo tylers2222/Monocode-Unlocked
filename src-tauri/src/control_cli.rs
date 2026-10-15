@@ -16,8 +16,8 @@ Actions, with the JSON object each one takes:
   delegate  {"title":"Short title","harness":"<id from list>",
              "model":"<id from list>","prompt":"Self-contained instructions",
              "files":["src/feature"],"dependsOn":["<taskId>"]}
-            Queue a worker and return its taskId. "model" is optional and
-            defaults to the first model list allows for that harness.
+            Queue a worker and return its taskId. "harness" and "model" are
+            required; use exact IDs that list returns for this run.
             "files" is the write scope: project-relative paths, where a
             directory covers its descendants and ["."] reserves the whole
             checkout. "dependsOn" holds taskIds that must be reviewed first.
@@ -163,8 +163,11 @@ Actions:
                   "workspaceMode":"current","worktreeCwd":"<path>","draft":false,
                   "placement":"right",
                   "besideSessionId":"<visible session ID>"}
-                  Create a tab with the prompt, or set placement to right or
-                  down to split a visible session pane. A split defaults to the
+                  "harness" and "model" are required: copy exact IDs from
+                  models.list. There is no default; a missing or unknown
+                  harness or model returns an error. Create a tab with the
+                  prompt, or set placement to right or down to split a
+                  visible session pane. A split defaults to the
                   calling session; besideSessionId chooses another visible
                   session in this project, including one just created. Set
                   draft:true to save the prompt unsent; no agent turn runs.
@@ -183,9 +186,10 @@ Actions:
                   for that session is dismissed; acknowledge the action in
                   the current reply. Other sessions' reports are kept.
                   Returns after creation/acceptance, not agent completion;
-                  use its ID with folders.move immediately. Optional model,
-                  effort, modelSettings, permission mode and workspace choice
-                  use composer values. Set worktreeCwd to a path from
+                  use its ID with folders.move immediately. Omit effort and
+                  modelSettings to keep this session's settings when you pick
+                  its own model, or the model's defaults otherwise.
+                  Set worktreeCwd to a path from
                   worktrees.list to choose a specific existing checkout, or
                   workspaceMode:"worktree" and optional worktreeBase to make
                   a new worktree with an automatic branch name. Omit

@@ -174,10 +174,11 @@ it("delivers the prompt marked as coming from the sending Mono", async () => {
     "app-caller-ask-1",
     { whenBusy: "followUp" },
   );
-  const text = send.mock.calls[0][1];
-  expect(text).toMatch(/^<mono_message from="Captain Jack" monoId="mono-1">\n/);
-  expect(text).toContain('use app monos.send with monoId "mono-1"');
-  expect(text).toMatch(/\n\nReview PR 12\n<\/mono_message>$/);
+  // The rules for answering live once in <mono_messaging_rules>, not in
+  // every message.
+  expect(send.mock.calls[0][1]).toBe(
+    '<mono_message from="Captain Jack" monoId="mono-1">\nReview PR 12\n</mono_message>',
+  );
 });
 
 it("lets a habit run message another Mono on behalf of its Mono", async () => {

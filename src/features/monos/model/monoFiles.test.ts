@@ -142,6 +142,15 @@ it("says how to keep memory and update the soul only at the user's request", () 
   expect(full).toContain('"whenBusy":"followUp"');
   expect(full).toContain("monos.send");
   expect(full).toContain("<mono_message>");
+  const rules = (tag: string) =>
+    full.match(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`))?.[0] ?? "";
+  const messaging = rules("mono_messaging_rules");
+  expect(messaging).toMatch(/monos\.send with the monoId from the tag/);
+  expect(messaging).toContain("not from the user");
+  expect(messaging).toContain("thanks or OK");
+  const delegation = rules("session_delegation_rules");
+  expect(delegation).toMatch(/pass harness and model to sessions\.start/);
+  expect(delegation).toContain("models.list");
   expect(full).toContain(
     "Submitted sessions notify you on completion by default",
   );

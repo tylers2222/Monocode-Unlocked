@@ -3,6 +3,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { newSession } from "../../sessions/model/session";
 import {
   resetHarnessModelOverlays,
+  saveLastModelChoice,
   setHarnessModels,
 } from "../../sessions/model/models";
 import {
@@ -48,6 +49,9 @@ const featureWorktree: Worktree = {
   unpushed: 0,
   sessionIds: [],
 };
+
+/** The harness and model every sessions.start call must name. */
+const CHOICE = { harness: "codex", model: "codex:test" } as const;
 
 const storedValues = new Map<string, string>();
 vi.stubGlobal("localStorage", {
@@ -136,6 +140,7 @@ describe("agent app commands", () => {
       });
       for (const draft of [false, true]) {
         await handleAgentApp(source, `launch-${draft}`, "sessions.start", {
+          ...CHOICE,
           prompt: "Review the project",
           draft,
           notifyOnComplete: false,
@@ -157,6 +162,7 @@ describe("agent app commands", () => {
       showStartedSessionsInSidebar: false,
     });
     await handleAgentApp(source, "habit-launch", "sessions.start", {
+      ...CHOICE,
       prompt: "Review the project",
       notifyOnComplete: false,
     }, host);
@@ -177,6 +183,7 @@ describe("agent app commands", () => {
     });
     for (const request of ["first", "second"])
       await handleAgentApp(source, request, "sessions.start", {
+        ...CHOICE,
         prompt: "Review the project",
         notifyOnComplete: false,
       }, host);
@@ -199,6 +206,7 @@ describe("agent app commands", () => {
       folder: { name: "Captain Jack", color: "#5b8def" },
     });
     await handleAgentApp(source, "hidden", "sessions.start", {
+      ...CHOICE,
       prompt: "Review the project",
       notifyOnComplete: false,
     }, host);
@@ -397,6 +405,7 @@ describe("agent app commands", () => {
         "monitored",
         "sessions.start",
         {
+          ...CHOICE,
           prompt: "Review the API",
           ...(notifyOnComplete === undefined ? {} : { notifyOnComplete }),
         },
@@ -417,7 +426,7 @@ describe("agent app commands", () => {
       source,
       "ordinary",
       "sessions.start",
-      { prompt: "Review", notifyOnComplete: false },
+      { ...CHOICE, prompt: "Review", notifyOnComplete: false },
       host,
     );
     expect(optedOut).not.toHaveProperty("notifyOnComplete");
@@ -434,7 +443,7 @@ describe("agent app commands", () => {
       source,
       "draft",
       "sessions.start",
-      { prompt: "Review the API", draft: true },
+      { ...CHOICE, prompt: "Review the API", draft: true },
       host,
     );
     expect(result).toMatchObject({ submitted: false, draft: true });
@@ -452,7 +461,7 @@ describe("agent app commands", () => {
       source,
       "ordinary",
       "sessions.start",
-      { prompt: "Review the API" },
+      { ...CHOICE, prompt: "Review the API" },
       host,
     );
     expect(result).not.toHaveProperty("notifyOnComplete");
@@ -499,7 +508,7 @@ describe("agent app commands", () => {
       source,
       "background",
       "sessions.start",
-      { prompt: "Review the API", ...options },
+      { ...CHOICE, prompt: "Review the API", ...options },
       host,
     );
     expect(vi.mocked(host.start).mock.calls[0][0]).toMatchObject({
@@ -516,6 +525,7 @@ describe("agent app commands", () => {
       "monitored-split",
       "sessions.start",
       {
+        ...CHOICE,
         prompt: "Review",
         placement: "right",
       },
@@ -538,7 +548,7 @@ describe("agent app commands", () => {
       const { source, host } = fixture();
       const input = {
         prompt: "Review",
-        ...(action === "sessions.send" ? { sessionId: "other" } : {}),
+        ...(action === "sessions.send" ? { sessionId: "other" } : CHOICE),
       };
       await expect(
         handleAgentApp(
@@ -579,6 +589,7 @@ describe("agent app commands", () => {
         "draft-notify",
         "sessions.start",
         {
+          ...CHOICE,
           prompt: "Review",
           draft: true,
           notifyOnComplete: true,
@@ -787,7 +798,7 @@ describe("agent app commands", () => {
             "blocked",
             action,
             action === "sessions.start"
-              ? { prompt }
+              ? { ...CHOICE, prompt }
               : { sessionId: "other", prompt },
             host,
           ),
@@ -816,7 +827,7 @@ describe("agent app commands", () => {
       "sessions.start",
       {
         prompt: "Inspect the API",
-        model: "codex:test",
+        ...CHOICE,
         effort: "high",
         runtimeMode: "auto-accept-edits",
         workspaceMode: "worktree",
@@ -839,6 +850,77 @@ describe("agent app commands", () => {
     expect(result).toMatchObject({ id: "app-lead-request-1", submitted: true });
   });
 
+  it.each([
+    ["no model", { harness: "codex" }],
+    ["no harness", { model: "codex:test" }],
+    ["neither", {}],
+  ])("refuses to start a session with %s", async (_, choice) => {
+    const { source, host } = fixture();
+    await expect(
+      handleAgentApp(
+        source,
+        "missing-choice",
+        "sessions.start",
+        { ...choice, prompt: "Review the API", notifyOnComplete: false },
+        host,
+      ),
+    ).rejects.toThrow(
+      "harness and model are required; run models.list for exact IDs",
+    );
+    expect(host.start).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ harness: "codex", model: "codex:ghost" }, "Unknown model for codex"],
+    [{ harness: "codex", model: "claude:opus-5" }, "Unknown model for codex"],
+    [{ harness: "nope", model: "codex:test" }, "Unknown harness"],
+    [{ harness: "claude", model: "claude:opus-5" }, "claude is not available"],
+  ])("refuses an unknown choice %j and points at models.list", async (choice, error) => {
+    const { source, host } = fixture();
+    const failure = handleAgentApp(
+      source,
+      "bad-choice",
+      "sessions.start",
+      { ...choice, prompt: "Review the API", notifyOnComplete: false },
+      host,
+    );
+    await expect(failure).rejects.toThrow(error);
+    await expect(failure).rejects.toThrow("run models.list");
+    expect(host.start).not.toHaveBeenCalled();
+  });
+
+  it("starts exactly the named harness and model, not the composer's last model", async () => {
+    setHarnessModels("codex", [
+      { id: "codex:test", harness: "codex", name: "Test model" },
+      { id: "codex:other", harness: "codex", name: "Other model" },
+    ]);
+    saveLastModelChoice("codex", "codex:other");
+    expect(localStorage.getItem("monocode.lastModel")).toContain("codex:other");
+    const { source, host } = fixture();
+    source.model = "codex:other";
+    await handleAgentApp(
+      source,
+      "exact",
+      "sessions.start",
+      { ...CHOICE, prompt: "Review the API", notifyOnComplete: false },
+      host,
+    );
+    expect(vi.mocked(host.start).mock.calls[0][0]).toMatchObject({
+      harness: "codex",
+      model: "codex:test",
+    });
+    await expect(
+      handleAgentApp(
+        source,
+        "fallback",
+        "sessions.start",
+        { harness: "codex", prompt: "Review the API", notifyOnComplete: false },
+        host,
+      ),
+    ).rejects.toThrow("run models.list");
+    expect(host.start).toHaveBeenCalledOnce();
+  });
+
   it("lists project worktrees and starts on a selected existing checkout", async () => {
     const { source, host } = fixture();
     source.worktreeCwd = "/tmp/project-worktrees/other";
@@ -859,6 +941,7 @@ describe("agent app commands", () => {
       "feature",
       "sessions.start",
       {
+        ...CHOICE,
         prompt: "Review feature",
         worktreeCwd: featureWorktree.path,
       },
@@ -873,6 +956,7 @@ describe("agent app commands", () => {
       "main",
       "sessions.start",
       {
+        ...CHOICE,
         prompt: "Review main",
         worktreeCwd: source.cwd,
       },
@@ -887,13 +971,19 @@ describe("agent app commands", () => {
   it("rejects unavailable or conflicting worktree choices before launching", async () => {
     const { source, host } = fixture();
     for (const input of [
-      { prompt: "A", worktreeCwd: "/tmp/other-repo" },
+      { ...CHOICE, prompt: "A", worktreeCwd: "/tmp/other-repo" },
       {
+        ...CHOICE,
         prompt: "A",
         workspaceMode: "worktree",
         worktreeCwd: featureWorktree.path,
       },
-      { prompt: "A", worktreeBase: "main", worktreeCwd: featureWorktree.path },
+      {
+        ...CHOICE,
+        prompt: "A",
+        worktreeBase: "main",
+        worktreeCwd: featureWorktree.path,
+      },
     ]) {
       await expect(
         handleAgentApp(source, "invalid", "sessions.start", input, host),
@@ -908,7 +998,7 @@ describe("agent app commands", () => {
         source,
         "missing",
         "sessions.start",
-        { prompt: "A", worktreeCwd: featureWorktree.path },
+        { ...CHOICE, prompt: "A", worktreeCwd: featureWorktree.path },
         host,
       ),
     ).rejects.toThrow("unavailable in this project");
@@ -924,6 +1014,7 @@ describe("agent app commands", () => {
     host.isMono = () => true;
     host.monoOf = () => ({ id: "mono", projects: [source.cwd, "/tmp/other"] });
     await handleAgentApp(source, "launch", "sessions.start", {
+      ...CHOICE,
       prompt: "Review the project",
       project,
       notifyOnComplete: false,
@@ -944,6 +1035,7 @@ describe("agent app commands", () => {
       defaultRoot: "/tmp/other-worktrees",
     });
     await handleAgentApp(source, "launch", "sessions.start", {
+      ...CHOICE,
       prompt: "Review the feature",
       project: "/tmp/other",
       worktreeCwd: chosen,
@@ -1014,7 +1106,7 @@ describe("agent app commands", () => {
       source,
       "right",
       "sessions.start",
-      { prompt: "Inspect the API", placement: "right", draft: true },
+      { ...CHOICE, prompt: "Inspect the API", placement: "right", draft: true },
       host,
     );
     expect(host.start).toHaveBeenLastCalledWith(
@@ -1027,6 +1119,7 @@ describe("agent app commands", () => {
       "down",
       "sessions.start",
       {
+        ...CHOICE,
         prompt: "Review the UI",
         placement: "down",
         besideSessionId: "app-lead-right",
@@ -1043,9 +1136,9 @@ describe("agent app commands", () => {
   it("rejects invalid pane placement before starting", async () => {
     const { source, host } = fixture();
     for (const input of [
-      { prompt: "A", placement: "left" },
-      { prompt: "A", besideSessionId: "other" },
-      { prompt: "A", placement: "down", besideSessionId: 42 },
+      { ...CHOICE, prompt: "A", placement: "left" },
+      { ...CHOICE, prompt: "A", besideSessionId: "other" },
+      { ...CHOICE, prompt: "A", placement: "down", besideSessionId: 42 },
     ]) {
       await expect(
         handleAgentApp(source, "invalid", "sessions.start", input, host),
@@ -1061,7 +1154,7 @@ describe("agent app commands", () => {
       source,
       "inherited-mode",
       "sessions.start",
-      { prompt: "Review this" },
+      { ...CHOICE, prompt: "Review this" },
       host,
     );
     expect(host.start).toHaveBeenLastCalledWith(
@@ -1072,7 +1165,7 @@ describe("agent app commands", () => {
       source,
       "explicit-mode",
       "sessions.start",
-      { prompt: "Review this", runtimeMode: "full-access" },
+      { ...CHOICE, prompt: "Review this", runtimeMode: "full-access" },
       host,
     );
     expect(host.start).toHaveBeenLastCalledWith(
@@ -1089,7 +1182,7 @@ describe("agent app commands", () => {
       "sessions.start",
       {
         prompt: "Test prompt",
-        model: "codex:test",
+        ...CHOICE,
         draft: true,
       },
       host,
@@ -1131,6 +1224,7 @@ describe("agent app commands", () => {
         "bad",
         "sessions.start",
         {
+          ...CHOICE,
           prompt: "Hello",
           effort: "ultra",
         },
@@ -1143,7 +1237,7 @@ describe("agent app commands", () => {
         source,
         "bad-draft",
         "sessions.start",
-        { prompt: "Hello", draft: "true" },
+        { ...CHOICE, prompt: "Hello", draft: "true" },
         host,
       ),
     ).rejects.toThrow("draft must be a boolean");

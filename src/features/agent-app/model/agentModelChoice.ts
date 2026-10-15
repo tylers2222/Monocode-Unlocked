@@ -12,7 +12,7 @@ export function requireHarnessModel(input: {
   harness?: unknown;
   model?: unknown;
 }): AgentModelChoice {
-  if (input.harness === undefined || input.model === undefined)
+  if (input.harness == null || input.model == null)
     throw new Error(
       "harness and model are required; run models.list for exact IDs",
     );
@@ -23,7 +23,9 @@ export function requireHarnessModel(input: {
     throw new Error("Unknown harness; run models.list for available providers");
   const harness = input.harness as HarnessId;
   if (!isHarnessAvailable(harness))
-    throw new Error(`${harness} is not available in MonoCode`);
+    throw new Error(
+      `${harness} is not available in MonoCode; run models.list for available providers`,
+    );
   const model =
     typeof input.model === "string"
       ? modelsFor(harness).find((entry) => entry.id === input.model)
