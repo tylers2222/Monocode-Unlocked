@@ -54,6 +54,7 @@ export function canSteerQueuedHead(session: Session): boolean {
   return (
     !!head &&
     !head.monoSessionCompletion &&
+    !head.waitForIdle &&
     !!session.busy &&
     !!session.turnReady &&
     !session.worktreePreparing &&
@@ -82,7 +83,10 @@ export function queuedMessageForSubmit(
     (entry) => entry.id === messageId,
   );
   if (!message) return undefined;
-  if (mode === "steer") return message.monoSessionCompletion ? undefined : message;
+  if (mode === "steer")
+    return message.monoSessionCompletion || message.waitForIdle
+      ? undefined
+      : message;
   if (queuedHead(session)?.id !== messageId) return undefined;
   if (!canDispatchQueuedHead(session)) return undefined;
   return message;

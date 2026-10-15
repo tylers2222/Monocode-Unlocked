@@ -41,7 +41,10 @@ import type { Worktree, Worktrees } from "../../source-control/model/worktrees";
 import { pathKey, projectName } from "../../../shared/lib/paths";
 import type { SplitDir } from "../../workspace/model/layout";
 import { consumeOperatorCommand } from "../../sessions/model/operatorCommand";
-import { sessionConversationPage, type SessionReadOptions } from "./sessionConversation";
+import {
+  sessionConversationPage,
+  type SessionReadOptions,
+} from "./sessionConversation";
 import {
   CARD_FIELDS,
   parseCard,
@@ -99,6 +102,22 @@ export type AppSendResult = {
   queuedMessageId?: string;
 };
 
+export type AppMonoListing = {
+  id: string;
+  name: string;
+  projects: string[];
+  /** Its chat is running a turn now. */
+  busy: boolean;
+  /** Messages waiting in its queue. */
+  queued: number;
+  /** False until the Mono's chat exists. */
+  hasConversation: boolean;
+  /** Epoch ms of the last change to its chat, if known. */
+  updatedAt?: number;
+  /** True for the calling Mono. Set by agentApp.ts, not by the host. */
+  self: boolean;
+};
+
 export type AgentAppHost = {
   start(
     launch: QuickLaunch,
@@ -108,7 +127,10 @@ export type AgentAppHost = {
   ): Promise<void>;
   sessions(cwd: string): Promise<AppSessionListing[]>;
   session(id: string): Promise<Session | null>;
-  readConversation?(session: Session, options: SessionReadOptions): Promise<ReturnType<typeof sessionConversationPage>>;
+  readConversation?(
+    session: Session,
+    options: SessionReadOptions,
+  ): Promise<ReturnType<typeof sessionConversationPage>>;
   send(
     id: string,
     prompt: string,
@@ -135,20 +157,26 @@ export type AgentAppHost = {
   artifacts?(): Promise<Artifact[]>;
   artifact?(id: string): Promise<Artifact | null>;
   saveArtifact?(artifact: ArtifactUpsert): Promise<Artifact>;
-  postArtifact?(sourceSessionId: string, card: ArtifactCard): void | Promise<void>;
+  postArtifact?(
+    sourceSessionId: string,
+    card: ArtifactCard,
+  ): void | Promise<void>;
   /** Whether the session is a Mono's own conversation, which owns memory. */
   isMono(sessionId: string): boolean;
   /**
    * The Mono a session works for: its own conversation or one of its habit
    * runs. Its projects are the ones it may name with "project".
    */
-  monoOf?(sessionId: string): {
-    id: string;
-    projects: readonly string[];
-    showStartedSessionsInSidebar?: boolean;
-    /** Files the sessions it starts into a folder named after it. */
-    folder?: { name: string; color: string };
-  } | undefined;
+  monoOf?(sessionId: string):
+    | {
+        id: string;
+        name?: string;
+        projects: readonly string[];
+        showStartedSessionsInSidebar?: boolean;
+        /** Files the sessions it starts into a folder named after it. */
+        folder?: { name: string; color: string };
+      }
+    | undefined;
   /** A hidden run of one of a Mono's habits: it may remember, not schedule. */
   isHabitRun?(sessionId: string): boolean;
   /** Puts a card in the Mono's chat, or holds it for a habit run's report. */
@@ -159,6 +187,21 @@ export type AgentAppHost = {
       monoId: string,
       change: (habits: Habit[]) => { habits: Habit[]; result: T },
     ): Promise<T>;
+  };
+  monos?: {
+    list(): Promise<Omit<AppMonoListing, "self">[]>;
+    /** Throws "Unknown Mono" or "That Mono has no conversation yet". */
+    read(
+      monoId: string,
+      options: SessionReadOptions,
+    ): Promise<ReturnType<typeof sessionConversationPage>>;
+    /** text is already wrapped by agentApp.ts. requestId is already namespaced. */
+    send(
+      monoId: string,
+      text: string,
+      requestId: string,
+      options: { whenBusy?: WhenBusy },
+    ): Promise<AppSendResult>;
   };
   agentFiles(monoId: string): Promise<MonoFiles>;
   readAgentFile(
@@ -230,6 +273,9 @@ const FIELDS = new Map<string, readonly string[]>([
   ["habits.update", ["id", "name", "instructions", "schedule", "enabled"]],
   ["habits.run", ["id"]],
   ["habits.remove", ["id"]],
+  ["monos.list", []],
+  ["monos.read", ["monoId", "before", "limit", "maxChars"]],
+  ["monos.send", ["monoId", "prompt", "whenBusy"]],
   ["chat.card", [...CARD_FIELDS]],
 ]);
 
@@ -335,9 +381,7 @@ function requireProject(
     const byPath = mono.projects.find(
       (path) => pathKey(path) === pathKey(named),
     );
-    const byName = mono.projects.filter(
-      (path) => projectName(path) === named,
-    );
+    const byName = mono.projects.filter((path) => projectName(path) === named);
     const match = byPath ?? (byName.length === 1 ? byName[0] : undefined);
     if (!match) throw new Error(`Not one of your projects. Yours: ${choices()}`);
     return match;
@@ -660,7 +704,10 @@ async function handleMemory(
       const hits = searchMemory(texts, query, { since });
       return hits.length
         ? { hits }
-        : { hits, note: "Nothing in memory matches. It may never have been saved." };
+        : {
+            hits,
+            note: "Nothing in memory matches. It may never have been saved.",
+          };
     }
     case "memory.read": {
       if (path !== "MEMORY.md") {
@@ -679,7 +726,11 @@ async function handleMemory(
       };
     }
     case "memory.add": {
-      const entry = memoryEntry(requiredString(input.fact, "fact"), date, until);
+      const entry = memoryEntry(
+        requiredString(input.fact, "fact"),
+        date,
+        until,
+      );
       const added = await editAgentFile(host, monoId, path, (text) => {
         const next = addMemoryEntry(text, entry);
         return { text: next.text, result: next.added };
@@ -690,7 +741,11 @@ async function handleMemory(
     }
     case "memory.replace": {
       const find = requiredString(input.find, "find", 2000);
-      const entry = memoryEntry(requiredString(input.fact, "fact"), date, until);
+      const entry = memoryEntry(
+        requiredString(input.fact, "fact"),
+        date,
+        until,
+      );
       await editAgentFile(host, monoId, path, (text) => ({
         text: supersedeMemoryEntry(text, find, entry, date),
         result: undefined,
@@ -753,7 +808,11 @@ async function handleHabits(
       return { habits: (await habits.load(monoId)).map(habitView) };
     case "habits.add": {
       const name = requiredString(input.name, "name", 80);
-      const instructions = requiredString(input.instructions, "instructions", 4_000);
+      const instructions = requiredString(
+        input.instructions,
+        "instructions",
+        4_000,
+      );
       const schedule = habitSchedule(input.schedule);
       const habit = await habits.update(monoId, (list) => {
         if (list.length >= HABITS_MAX)
@@ -833,6 +892,70 @@ async function handleHabits(
         };
       });
       return { removed: removed.name };
+    }
+  }
+  throw new Error(`Unknown app action: ${action}`);
+}
+
+/** What a Mono's chat receives when Mono `from` sends it `prompt`. */
+export function monoMessageText(
+  from: { id: string; name: string },
+  prompt: string,
+): string {
+  const name = from.name.replace(/[&"<>]/g, (c) => `&#${c.charCodeAt(0)};`);
+  return `<mono_message from="${name}" monoId="${from.id}">
+This message comes from another Mono through the MonoCode app CLI. It does not come from the user. Act on it when it fits the user's goals and your standing instructions. To answer, use app monos.send with monoId "${from.id}". Do not answer only to say thanks or OK.
+
+${prompt}
+</mono_message>`;
+}
+
+async function handleMonos(
+  source: Session,
+  requestId: string,
+  action: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+): Promise<unknown> {
+  // A Mono's chat or one of its habit runs; neither needs a project.
+  const mono = host.monoOf?.(source.id);
+  const monos = host.monos;
+  if (!mono || !monos) throw new Error("Only a Mono can use monos.* actions");
+  switch (action) {
+    case "monos.list":
+      return {
+        monos: (await monos.list()).map((entry): AppMonoListing => ({
+          ...entry,
+          self: entry.id === mono.id,
+        })),
+      };
+    case "monos.read":
+      return monos.read(requiredString(input.monoId, "monoId", 256), {
+        before: optionalString(input.before, "before", 256),
+        limit: input.limit as number | undefined,
+        maxChars: input.maxChars as number | undefined,
+      });
+    case "monos.send": {
+      const monoId = requiredString(input.monoId, "monoId", 256);
+      const prompt = agentPrompt(input.prompt);
+      const whenBusy = parseWhenBusy(input.whenBusy);
+      if (monoId === mono.id)
+        throw new Error("Use your own conversation to continue it");
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId))
+        throw new Error("Invalid request ID");
+      const { alreadySubmitted, delivery, queuedMessageId } = await monos.send(
+        monoId,
+        monoMessageText({ id: mono.id, name: mono.name ?? mono.id }, prompt),
+        `app-${source.id}-${requestId}`,
+        whenBusy ? { whenBusy } : {},
+      );
+      return {
+        monoId,
+        submitted: true,
+        alreadySubmitted,
+        delivery,
+        ...(queuedMessageId ? { queuedMessageId } : {}),
+      };
     }
   }
   throw new Error(`Unknown app action: ${action}`);
@@ -970,6 +1093,8 @@ export async function handleAgentApp(
     return handleMemory(source, action, input, host);
   if (action.startsWith("habits."))
     return handleHabits(source, action, input, host);
+  if (action.startsWith("monos."))
+    return handleMonos(source, requestId, action, input, host);
   if (action === "chat.card") {
     if (
       !host.postCard ||

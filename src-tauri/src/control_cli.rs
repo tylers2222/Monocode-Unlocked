@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 32] = [
+const APP_ACTIONS: [&str; 35] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -92,6 +92,9 @@ const APP_ACTIONS: [&str; 32] = [
     "sessions.stop",
     "sessions.archive",
     "sessions.delete",
+    "monos.list",
+    "monos.read",
+    "monos.send",
     "worktrees.list",
     "worktrees.create",
     "folders.list",
@@ -205,6 +208,20 @@ Actions:
                   stop, archive and delete cannot target the calling session,
                   Mono chats, habit runs or orchestration workers. Sessions
                   must belong to the chosen project.
+  monos.list     {}  Mono or habit only. The Monos in MonoCode, with id,
+                  name, projects, busy, queued, hasConversation, updatedAt
+                  and self (true for you).
+  monos.read     {"monoId":"...","before":"<turnId>","limit":3,"maxChars":1200}
+                  Read another Mono's chat. Paging works as in sessions.read.
+  monos.send     {"monoId":"...","prompt":"...","whenBusy":"steer"}
+                  Send a message into another Mono's chat. It is marked as
+                  from you. An idle Mono runs it as a new turn. A busy Mono
+                  rejects it unless whenBusy is set. whenBusy:"steer" adds
+                  it to the running turn at the next step. whenBusy:"followUp"
+                  waits in its queue until the turn ends. The result's
+                  delivery is sent, steered or queued. Steered and queued
+                  results also have queuedMessageId. Reuse --request-id on
+                  retries. You cannot send to yourself.
   worktrees.list {}  Working copies in this project, with paths and branches.
   worktrees.create {"branch":"feature/name","base":"HEAD","existing":false}
                   Create a worktree on a named new branch from base (a branch
@@ -740,5 +757,30 @@ mod tests {
         assert!(app_help().contains("only when the user asks"));
         assert!(app_help().contains("expectedHash"));
         assert!(app_help().contains("Habit runs and other sessions cannot change"));
+    }
+
+    #[test]
+    fn app_mode_exposes_mono_messaging_actions_and_documents_when_busy() {
+        for (action, input) in [
+            ("monos.list", r#"{}"#),
+            (
+                "monos.read",
+                r#"{"monoId":"other","before":"turn-1","limit":3,"maxChars":1200}"#,
+            ),
+            (
+                "monos.send",
+                r#"{"monoId":"other","prompt":"Check CI","whenBusy":"followUp"}"#,
+            ),
+        ] {
+            assert!(matches!(
+                parse_args_for(&args(&[action, "--json", input]), true),
+                Ok(Parsed::Call(parsed_action, parsed_input, _))
+                    if parsed_action == action
+                        && parsed_input == serde_json::from_str::<Value>(input).unwrap()
+            ));
+            assert!(parse_args_for(&args(&[action]), false).is_err());
+            assert!(app_help().contains(action));
+        }
+        assert!(app_help().contains(r#"{"monoId":"...","prompt":"...","whenBusy":"steer"}"#));
     }
 }
