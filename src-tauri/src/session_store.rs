@@ -946,14 +946,6 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             params![now_millis()],
         )?;
     }
-    if current < 20 {
-        // The Mono roster moves here from WebKit storage.
-        crate::mono_roster::ensure_tables(conn)?;
-        conn.execute(
-            "INSERT INTO schema_migrations (version, applied_at) VALUES (20, ?1)",
-            params![now_millis()],
-        )?;
-    }
     // Create even when a version row already exists (another build may have
     // used the same numbers, or a previous run recorded the version without
     // the table). Restore writes into these; missing tables look like a
@@ -1000,6 +992,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::automations::ensure_tables(conn)?;
     ensure_orchestration_history(conn)?;
     crate::mono_transcript::ensure_tables(conn)?;
+    // The Mono roster. No version row: another build may reuse the number.
     crate::mono_roster::ensure_tables(conn)?;
     Ok(())
 }
@@ -2330,7 +2323,7 @@ mod tests {
                        ON sessions (cwd, has_user_message, updated_at DESC, id, harness,
                                     model, runtime_mode, title, provider_session_id,
                                     created_at, branch, archived, pinned, linked_work_item_json);
-                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18, 19, 20);",
+                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18, 19);",
                 )
                 .unwrap();
                 migrate(&conn).unwrap();
@@ -2414,10 +2407,9 @@ mod tests {
         ))
     }
 
-    /// The `monos` columns as `name type notnull pk`, and how often v20 is recorded.
-    fn monos_schema(conn: &Connection) -> (Vec<String>, i64) {
-        let columns = conn
-            .prepare("SELECT name, type, \"notnull\", pk FROM pragma_table_info('monos')")
+    /// The `monos` columns as `name type notnull pk`.
+    fn monos_columns(conn: &Connection) -> Vec<String> {
+        conn.prepare("SELECT name, type, \"notnull\", pk FROM pragma_table_info('monos')")
             .unwrap()
             .query_map([], |row| {
                 Ok(format!(
@@ -2430,69 +2422,55 @@ mod tests {
             })
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        let recorded = conn
-            .query_row(
-                "SELECT COUNT(*) FROM schema_migrations WHERE version = 20",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        (columns, recorded)
+            .unwrap()
     }
 
     fn assert_monos_table(conn: &Connection) {
         assert_eq!(
-            monos_schema(conn),
-            (
-                vec![
-                    "id TEXT 0 1".to_string(),
-                    "name TEXT 1 0".into(),
-                    "role TEXT 1 0".into(),
-                    "data_json TEXT 1 0".into(),
-                    "sort_order INTEGER 1 0".into(),
-                    "created_at INTEGER 1 0".into(),
-                    "updated_at INTEGER 1 0".into(),
-                ],
-                1
+            monos_columns(conn),
+            [
+                "id TEXT 0 1",
+                "name TEXT 1 0",
+                "role TEXT 1 0",
+                "data_json TEXT 1 0",
+                "sort_order INTEGER 1 0",
+                "created_at INTEGER 1 0",
+                "updated_at INTEGER 1 0",
+            ]
+        );
+        let insert = |id: &str, role: &str| {
+            conn.execute(
+                "INSERT INTO monos VALUES (?1, 'X', ?2, '{}', 0, 0, 0)",
+                params![id, role],
             )
-        );
-        let bad_role = conn.execute(
-            "INSERT INTO monos VALUES ('x', 'X', 'admin', '{}', 0, 0, 0)",
-            [],
-        );
-        assert!(bad_role.is_err());
+        };
+        assert!(insert("x", "admin").is_err());
+        assert!(insert("mono_1", "mono").is_err());
+        assert!(insert(&"a".repeat(65), "mono").is_err());
+        assert!(insert("mono-1", "mono").is_ok());
     }
 
-    #[test]
-    fn monos_migration_applies_to_a_fresh_database() {
-        let path = temp_db("monos-fresh");
-        let store = SessionStore::open(path.clone()).unwrap();
-        assert_monos_table(&store.conn.lock().unwrap());
-        drop(store);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn monos_migration_applies_to_a_database_at_version_19_and_keeps_its_sessions() {
-        let path = temp_db("monos-v19");
+    /// Opens a database that an earlier build left at `version`, with sessions
+    /// and no Mono tables, and checks that opening it adds them.
+    fn assert_monos_added_to_database_at(version: i64) {
+        let path = temp_db(&format!("monos-v{version}"));
         {
-            // Bring a database to exactly what the previous release left.
             let store = SessionStore::open(path.clone()).unwrap();
             let conn = store.conn.lock().unwrap();
-            conn.execute_batch(
-                "DROP TABLE monos;
-                 DROP TABLE monos_legacy_import;
-                 DELETE FROM schema_migrations WHERE version = 20;",
+            conn.execute_batch("DROP TABLE monos; DROP TABLE monos_legacy_import;")
+                .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, 1)",
+                params![version],
             )
             .unwrap();
             upsert_session(&conn, &sample("kept", "/tmp/a", "Kept")).unwrap();
-            let version: i64 = conn
+            let recorded: i64 = conn
                 .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
                     row.get(0)
                 })
                 .unwrap();
-            assert_eq!(version, 19);
+            assert_eq!(recorded, version);
         }
         let store = SessionStore::open(path.clone()).unwrap();
         let conn = store.conn.lock().unwrap();
@@ -2501,6 +2479,25 @@ mod tests {
         drop(conn);
         drop(store);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn monos_table_is_created_on_a_fresh_database() {
+        let path = temp_db("monos-fresh");
+        let store = SessionStore::open(path.clone()).unwrap();
+        assert_monos_table(&store.conn.lock().unwrap());
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn monos_table_is_created_on_an_existing_version_19_database_and_keeps_its_sessions() {
+        assert_monos_added_to_database_at(19);
+    }
+
+    #[test]
+    fn monos_table_is_created_when_another_build_already_recorded_version_20() {
+        assert_monos_added_to_database_at(20);
     }
 
     #[test]
@@ -2616,7 +2613,7 @@ mod tests {
         conn.execute_batch(
             "DROP INDEX sessions_cwd_cover_idx;
              ALTER TABLE sessions DROP COLUMN sidebar_hidden;
-             DELETE FROM schema_migrations WHERE version IN (19, 20);",
+             DELETE FROM schema_migrations WHERE version = 19;",
         )
         .unwrap();
         migrate(&conn).unwrap();
