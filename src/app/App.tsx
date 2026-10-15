@@ -436,6 +436,7 @@ import {
   rememberProject,
   replaceProjectPath,
   sameProjectPath,
+  subscribeProjectPathsChanged,
 } from "../features/projects/model/recents";
 import {
   applyDetachPaneToTab,
@@ -12169,6 +12170,13 @@ function Workspace({
     );
     void ensureGigaWorkspace("start");
   }, []);
+
+  // A project added outside a React handler (the Giga workspace) reaches the
+  // rail through storage.
+  useEffect(
+    () => subscribeProjectPathsChanged(() => setRecents(loadRecents())),
+    [],
+  );
 
   const onSessionNavigationOrder = useCallback((ids: readonly string[]) => {
     sessionNavigationIdsRef.current = ids;

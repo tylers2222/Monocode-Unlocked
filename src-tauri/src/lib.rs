@@ -330,6 +330,8 @@ pub fn run() {
             giga_workspace::giga_workspace_ensure,
             giga_workspace::giga_workspace_turn_end,
             giga_workspace::giga_workspace_bind,
+            giga_workspace::giga_workspace_turn_start,
+            giga_workspace::giga_workspace_turn_files,
             notifications::notification_permission,
             notifications::request_notification_permission,
             notifications::show_notification,

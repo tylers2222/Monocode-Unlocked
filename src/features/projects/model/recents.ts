@@ -75,6 +75,20 @@ export function rememberProject(path: string): RecentProject[] {
   return next;
 }
 
+/**
+ * Puts a project on the rail the way opening it does, but only once: one
+ * already there keeps its place, and one the user archived stays archived.
+ */
+export function addProjectOnce(path: string): void {
+  const known = [
+    ...loadRecents().map((item) => item.path),
+    ...loadArchivedProjects().map((item) => item.path),
+  ];
+  if (known.some((item) => sameProjectPath(item, path))) return;
+  rememberProject(path);
+  notifyProjectPathsChanged();
+}
+
 function replacePath(paths: string[], from: string, to: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();

@@ -16,8 +16,10 @@ import {
   type LastEnsure,
   type TurnCalls,
   type TurnOutcome,
+  type TurnStart,
   type WorkspaceStatus,
 } from "./gigaWorkspace";
+import { addProjectOnce } from "../../projects/model/recents";
 import {
   findMono,
   listMonos,
@@ -35,6 +37,7 @@ let lastReport: EnsureReport | undefined;
 let lastEnsure: LastEnsure | undefined;
 const reported = new Set<string>();
 const turnCalls = new Map<string, TurnCalls>();
+const turnStarts = new Map<string, TurnStart>();
 let post: (monoId: string, text: string) => void = () => {};
 
 /** How a status line reaches a Giga's chat. The app sets it once. */
@@ -88,6 +91,9 @@ export async function ensureGigaWorkspace(
         : [],
     );
     report = await invoke<EnsureReport>("giga_workspace_ensure", { gigas });
+    // The workspace is every Giga's first project, so the rail shows it the
+    // way "Open folder…" would, unless the user archived it.
+    if (report.state === "ready" && gigas.length > 0) addProjectOnce(root);
   } catch (error) {
     report = {
       root: home ? gigaWorkspaceRoot(home) : "",
@@ -134,8 +140,18 @@ export async function prepareGigaTurn(
   const giga = gigaOfSession(sessionId);
   if (!giga) return;
   turnCalls.delete(sessionId);
+  turnStarts.delete(sessionId);
   const ready = Promise.all([
-    ensureGigaWorkspace(isHabitRun(sessionId) ? "habit" : "turn", [giga.id]),
+    ensureGigaWorkspace(isHabitRun(sessionId) ? "habit" : "turn", [giga.id])
+      .then(() =>
+        invoke<TurnStart | null>("giga_workspace_turn_start", {
+          slug: giga.gigaSlug,
+        }),
+      )
+      .then((start) => {
+        if (start) turnStarts.set(sessionId, start);
+      })
+      .catch(() => undefined),
     invoke("giga_workspace_bind", { sessionId, slug: giga.gigaSlug }).catch(
       () => undefined,
     ),
@@ -159,8 +175,9 @@ export function noteGigaTurnCall(
 }
 
 /**
- * After a Giga's turn has settled: its receipt, the commit of its folder and
- * the index rebuild, in the background.
+ * After a Giga's turn has settled: its receipt with the files the turn
+ * wrote, the commit of its folder when it changed more than the log, and the
+ * index rebuild, in the background.
  */
 export function finishGigaTurn(
   sessionId: string,
@@ -169,21 +186,36 @@ export function finishGigaTurn(
 ): void {
   const giga = gigaOfSession(sessionId);
   const calls = turnCalls.get(sessionId) ?? { sent: [], started: [] };
+  const before = turnStarts.get(sessionId) ?? null;
   turnCalls.delete(sessionId);
+  turnStarts.delete(sessionId);
   if (!giga) return;
-  const receipt = receiptLine({
-    at: Date.now(),
-    monoId: giga.id,
+  const at = Date.now();
+  void invoke<string[]>("giga_workspace_turn_files", {
     slug: giga.gigaSlug,
-    sessionId,
-    kind: isHabitRun(sessionId) ? "habit" : "chat",
-    asked,
-    outcome,
-    calls,
-  });
-  void invoke<{ commit?: string; error?: string }>("giga_workspace_turn_end", {
-    turn: { slug: giga.gigaSlug, receipt, outcome, sessionId },
+    before,
   })
+    .catch(() => [])
+    .then((files) =>
+      invoke<{ commit?: string; error?: string }>("giga_workspace_turn_end", {
+        turn: {
+          slug: giga.gigaSlug,
+          receipt: receiptLine({
+            at,
+            monoId: giga.id,
+            slug: giga.gigaSlug,
+            sessionId,
+            kind: isHabitRun(sessionId) ? "habit" : "chat",
+            asked,
+            outcome,
+            calls,
+            files,
+          }),
+          outcome,
+          sessionId,
+        },
+      }),
+    )
     .then((result) => result.error)
     .catch((error: unknown) =>
       error instanceof Error ? error.message : String(error),

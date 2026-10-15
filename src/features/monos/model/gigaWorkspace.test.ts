@@ -18,8 +18,9 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-// Defect: a receipt with a missing, extra, renamed or reordered field, or an
-// `asked` that is not cut at 200 characters or splits a character in two.
+// Defect: a receipt with a missing, extra, renamed or reordered field, an
+// `asked` that is not cut at 200 characters or splits a character in two, or
+// a `files` list that is not the turn's own.
 it("writes a receipt line with exactly the contract's fields", () => {
   const asked = `${"a".repeat(199)}😀tail`;
   const line = receiptLine({
@@ -34,6 +35,7 @@ it("writes a receipt line with exactly the contract's fields", () => {
       sent: [{ requestId: "app-s1-r1", toMonoId: "m2" }],
       started: [{ requestId: "app-s1-r2", sessionId: "app-s1-r2" }],
     },
+    files: ["gigas/monocode-general/briefs/plan.md"],
   });
   expect(line).not.toContain("\n");
   expect(line).toBe(
@@ -47,6 +49,7 @@ it("writes a receipt line with exactly the contract's fields", () => {
       outcome: "cancelled",
       sent: [{ requestId: "app-s1-r1", toMonoId: "m2" }],
       started: [{ requestId: "app-s1-r2", sessionId: "app-s1-r2" }],
+      files: ["gigas/monocode-general/briefs/plan.md"],
     }),
   );
 });

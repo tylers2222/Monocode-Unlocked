@@ -6,6 +6,8 @@
 //! the commands report problems in their result instead of returning `Err`.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -64,8 +66,9 @@ const MANAGED_BODY: &str = r#"(The app keeps this block up to date. Text outside
 ## What the app does
 - Before every Giga turn and habit run, the app creates any missing folder or file of this layout and of your `gigas/<slug>/`. It never overwrites a file, except the text in this block.
 - After every Giga turn and habit run, the app appends one receipt line to `gigas/<slug>/log.jsonl`:
-  `{"v":1,"at":<ms>,"giga":{"monoId":"…","slug":"…"},"sessionId":"…","kind":"chat|habit","asked":"<first 200 chars>","outcome":"completed|failed|cancelled","sent":[{"requestId":"app-…","toMonoId":"…"}],"started":[{"requestId":"app-…","sessionId":"…"}]}`
-- Then it commits `gigas/<slug>/` as `giga(<slug>): <outcome> turn <session>`, without secret-looking files, and rebuilds `index/index.db` from every `log.jsonl` and `briefs/` file.
+  `{"v":1,"at":<ms>,"giga":{"monoId":"…","slug":"…"},"sessionId":"…","kind":"chat|habit","asked":"<first 200 chars>","outcome":"completed|failed|cancelled","sent":[{"requestId":"app-…","toMonoId":"…"}],"started":[{"requestId":"app-…","sessionId":"…"}],"files":["gigas/<slug>/briefs/…"]}`
+  `files` lists the files in `gigas/<slug>/` that the turn added or changed, except `log.jsonl`, `state/` and `scratch/`.
+- When the turn changed a file other than `log.jsonl`, the app commits `gigas/<slug>/` as `giga(<slug>): <outcome> turn <session>`, without secret-looking files. A turn that only added its receipt makes no commit: its line waits in `log.jsonl` and goes into the next commit. After every turn the app rebuilds `index/index.db` from every `log.jsonl` and `briefs/` file, so waiting receipts can be searched too.
 - The pre-commit hook lets a Giga commit only its own `gigas/<slug>/` and new files in `shared/`, and refuses secret-looking files. The app sets `MONOCODE_GIGA_SLUG` for each Giga, so your own commits follow the same rules.
 
 ## Search before you redo work
@@ -711,8 +714,9 @@ pub struct TurnEndReport {
     pub error: Option<String>,
 }
 
-/// Appends the receipt, commits the Giga's folder and rebuilds the index,
-/// all under the workspace lock.
+/// Appends the receipt, commits the Giga's folder when the turn changed more
+/// than its log, and rebuilds the index, all under the workspace lock. A
+/// receipt alone waits in `log.jsonl` for the next commit.
 pub(crate) fn turn_end(home: &Path, turn: &TurnEnd) -> TurnEndReport {
     let root = workspace_root(home);
     let result = (|| {
@@ -776,6 +780,46 @@ fn append_receipt(log: &Path, line: &str) -> Result<(), String> {
         .map_err(|error| format!("Could not write {}: {error}", log.display()))
 }
 
+/// A file of the Giga's own work: anything in `gigas/<slug>/` except the
+/// receipt log and the git-ignored `state/` and `scratch/`.
+pub(crate) fn is_work_file(slug: &str, path: &str) -> bool {
+    let Some(rest) = path
+        .strip_prefix("gigas/")
+        .and_then(|rest| rest.strip_prefix(slug))
+        .and_then(|rest| rest.strip_prefix('/'))
+    else {
+        return false;
+    };
+    rest != "log.jsonl" && !rest.starts_with("state/") && !rest.starts_with("scratch/")
+}
+
+/// Content hash by path, relative to `~/MonoCode`, of every work file of a Giga.
+pub type Snapshot = BTreeMap<String, String>;
+
+pub(crate) fn work_snapshot(root: &Path, slug: &str) -> Snapshot {
+    let base = format!("gigas/{slug}");
+    let mut paths = Vec::new();
+    collect_files(&root.join(&base), &base, &mut paths);
+    paths
+        .into_iter()
+        .filter(|path| is_work_file(slug, path))
+        .filter_map(|path| {
+            let bytes = fs::read(root.join(&path)).ok()?;
+            Some((path, format!("{:x}", Sha256::digest(bytes))))
+        })
+        .collect()
+}
+
+/// The work files a turn added or changed, sorted: new in `after`, or with
+/// other content than in `before`.
+pub(crate) fn turn_files(before: &Snapshot, after: &Snapshot) -> Vec<String> {
+    after
+        .iter()
+        .filter(|(path, hash)| before.get(*path) != Some(hash))
+        .map(|(path, _)| path.clone())
+        .collect()
+}
+
 fn commit_giga(
     root: &Path,
     slug: &str,
@@ -792,7 +836,7 @@ fn commit_giga(
                 && !fs::read(root.join(path)).is_ok_and(|bytes| is_secret_content(&bytes))
         })
         .collect();
-    if paths.is_empty() {
+    if !paths.iter().any(|path| is_work_file(slug, path)) {
         return Ok(None);
     }
     let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
@@ -1017,6 +1061,40 @@ pub fn giga_workspace_turn_end(turn: TurnEnd) -> TurnEndReport {
             error: Some(error),
         },
     }
+}
+
+/// The work files a turn added or changed since `before`, its start. Without
+/// a snapshot (the app did not see the turn start), the work files that
+/// differ from `HEAD`.
+pub(crate) fn files_since(root: &Path, slug: &str, before: Option<&Snapshot>) -> Vec<String> {
+    let after = work_snapshot(root, slug);
+    match before {
+        Some(before) => turn_files(before, &after),
+        None => changed_paths(root, &[&format!("gigas/{slug}/")])
+            .unwrap_or_default()
+            .into_iter()
+            .map(|change| change.path)
+            .filter(|path| after.contains_key(path))
+            .collect(),
+    }
+}
+
+fn giga_root(slug: &str) -> Option<PathBuf> {
+    let home = home().ok()?;
+    let root = workspace_root(&home);
+    (is_valid_slug(slug) && matches!(check_root(&home, &root), RootCheck::Usable)).then_some(root)
+}
+
+#[tauri::command(async)]
+pub fn giga_workspace_turn_start(slug: String) -> Option<Snapshot> {
+    giga_root(&slug).map(|root| work_snapshot(&root, &slug))
+}
+
+#[tauri::command(async)]
+pub fn giga_workspace_turn_files(slug: String, before: Option<Snapshot>) -> Vec<String> {
+    giga_root(&slug)
+        .map(|root| files_since(&root, &slug, before.as_ref()))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1520,6 +1598,11 @@ mod tests {
                 let home = Arc::clone(&home);
                 std::thread::spawn(move || {
                     for round in 0..3 {
+                        fs::write(
+                            home.root().join(format!("gigas/{slug}/briefs/r{round}.md")),
+                            "plan",
+                        )
+                        .unwrap();
                         let report = turn_end(
                             &home.0,
                             &turn(slug, &format!(r#"{{"v":1,"round":{round}}}"#)),
@@ -1549,6 +1632,233 @@ mod tests {
                 3
             );
         }
+    }
+
+    /// A workspace whose Gigas have nothing left to commit.
+    fn settled(name: &str, slugs: &[&str]) -> TempHome {
+        let home = TempHome::new(name);
+        let gigas: Vec<_> = slugs.iter().map(|slug| giga(slug)).collect();
+        ensure(&home.0, &gigas);
+        for slug in slugs {
+            fs::write(
+                home.root().join(format!("gigas/{slug}/briefs/seed.md")),
+                "seed",
+            )
+            .unwrap();
+            let report = turn_end(&home.0, &turn(slug, &format!(r#"{{"seed":"{slug}"}}"#)));
+            assert!(report.commit.is_some(), "{report:?}");
+        }
+        home
+    }
+
+    /// One turn as the app runs it: a snapshot at the start, the agent's
+    /// writes, a receipt that names the turn's files, then the turn end.
+    fn giga_turn(
+        home: &TempHome,
+        slug: &str,
+        n: u32,
+        writes: &[(&str, &str)],
+    ) -> (TurnEndReport, Vec<String>, String) {
+        let root = home.root();
+        let before = work_snapshot(&root, slug);
+        for (rel, content) in writes {
+            let path = root.join(format!("gigas/{slug}/{rel}"));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        }
+        let files = files_since(&root, slug, Some(&before));
+        let line = serde_json::json!({ "v": 1, "n": n, "files": files }).to_string();
+        (turn_end(&home.0, &turn(slug, &line)), files, line)
+    }
+
+    fn head(root: &Path) -> String {
+        git(root, &["rev-parse", "HEAD"], &[])
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    fn head_files(root: &Path) -> Vec<String> {
+        git(root, &["show", "--name-only", "--format=", "HEAD"], &[])
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn committed(root: &Path, path: &str) -> String {
+        git(root, &["show", &format!("HEAD:{path}")], &[]).unwrap()
+    }
+
+    fn staged(root: &Path) -> String {
+        git(root, &["diff", "--cached", "--name-only"], &[]).unwrap()
+    }
+
+    // Defect: a turn that only appended its receipt still commits, or the
+    // receipt is not in log.jsonl.
+    #[test]
+    fn receipt_only_turn_makes_no_commit_and_keeps_the_line() {
+        let home = settled("wait", &["alpha"]);
+        let root = home.root();
+        let before = head(&root);
+        let (report, _, line) = giga_turn(
+            &home,
+            "alpha",
+            1,
+            &[("state/cache.json", "{}"), ("scratch/t.txt", "t")],
+        );
+        assert_eq!((report.commit, report.error), (None, None));
+        assert_eq!(head(&root), before);
+        let log = fs::read_to_string(root.join("gigas/alpha/log.jsonl")).unwrap();
+        assert!(log.ends_with(&format!("{line}\n")), "{log}");
+        assert_eq!(staged(&root), "");
+    }
+
+    // Defect: the waiting receipt misses the next commit, or that turn makes
+    // more than one commit.
+    #[test]
+    fn next_real_change_commits_the_brief_and_every_waiting_line_once() {
+        let home = settled("drain", &["alpha"]);
+        let root = home.root();
+        let before = head(&root);
+        let (_, _, first) = giga_turn(&home, "alpha", 1, &[]);
+        let (report, _, second) = giga_turn(&home, "alpha", 2, &[("briefs/plan.md", "plan")]);
+        assert_eq!(report.commit, Some(head(&root)));
+        assert_eq!(
+            git(
+                &root,
+                &["rev-list", "--count", &format!("{before}..HEAD")],
+                &[]
+            )
+            .unwrap()
+            .trim(),
+            "1"
+        );
+        assert_eq!(
+            head_files(&root),
+            ["gigas/alpha/briefs/plan.md", "gigas/alpha/log.jsonl"]
+        );
+        let log = committed(&root, "gigas/alpha/log.jsonl");
+        assert!(log.ends_with(&format!("{first}\n{second}\n")), "{log}");
+        assert_eq!(
+            git(&root, &["status", "--porcelain", "--", "gigas/alpha/"], &[]).unwrap(),
+            ""
+        );
+    }
+
+    // Defect: `files` names something that is not this turn's work (the log,
+    // state/, scratch/, files from before the turn) or misses a new file.
+    #[test]
+    fn receipt_files_list_the_turns_work_files() {
+        let home = settled("files", &["alpha"]);
+        let (_, first, _) = giga_turn(
+            &home,
+            "alpha",
+            1,
+            &[("state/cache.json", "{}"), ("scratch/t.txt", "t")],
+        );
+        assert_eq!(first, Vec::<String>::new());
+        let (_, second, _) = giga_turn(
+            &home,
+            "alpha",
+            2,
+            &[("runbooks/deep/run.md", "run"), ("briefs/plan.md", "plan")],
+        );
+        assert_eq!(
+            second,
+            [
+                "gigas/alpha/briefs/plan.md",
+                "gigas/alpha/runbooks/deep/run.md"
+            ]
+        );
+    }
+
+    // Defect: `files` compares with HEAD instead of the turn's start, so it
+    // names work an earlier turn left uncommitted.
+    #[test]
+    fn files_skip_work_left_uncommitted_by_an_earlier_turn() {
+        let home = settled("earlier", &["alpha"]);
+        let root = home.root();
+        let git_lock = root.join(".git/index.lock");
+        fs::write(&git_lock, "").unwrap();
+        let (report, first, _) = giga_turn(&home, "alpha", 1, &[("briefs/a.md", "a")]);
+        assert!(report.error.is_some(), "the commit failed on the git lock");
+        assert_eq!(first, ["gigas/alpha/briefs/a.md"]);
+        fs::remove_file(&git_lock).unwrap();
+        let (report, second, _) = giga_turn(&home, "alpha", 2, &[("briefs/b.md", "b")]);
+        assert_eq!(second, ["gigas/alpha/briefs/b.md"]);
+        assert!(report.commit.is_some());
+        assert_eq!(
+            head_files(&root),
+            [
+                "gigas/alpha/briefs/a.md",
+                "gigas/alpha/briefs/b.md",
+                "gigas/alpha/log.jsonl"
+            ]
+        );
+    }
+
+    const RESTART_HOME: &str = "MC_GIGA_RESTART_HOME";
+
+    #[test]
+    #[ignore = "waiting_lines_survive_a_restart runs it in a process of its own"]
+    fn restart_child_turn() {
+        let home = std::env::var(RESTART_HOME).unwrap();
+        let report = turn_end(Path::new(&home), &turn("alpha", r#"{"v":1,"n":1}"#));
+        assert_eq!((report.commit, report.error), (None, None));
+    }
+
+    // Defect: a waiting receipt lives only in the app's memory, so a restart
+    // between turns loses it.
+    #[test]
+    fn waiting_lines_survive_a_restart() {
+        let home = settled("restart", &["alpha"]);
+        let root = home.root();
+        let before = head(&root);
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "giga_workspace::tests::restart_child_turn",
+                "--ignored",
+                "--quiet",
+            ])
+            .env(RESTART_HOME, &home.0)
+            .status()
+            .unwrap();
+        assert!(status.success(), "first turn ran in its own process");
+        assert_eq!(head(&root), before);
+        let (report, _, second) = giga_turn(&home, "alpha", 2, &[("briefs/plan.md", "plan")]);
+        assert!(report.commit.is_some());
+        let log = committed(&root, "gigas/alpha/log.jsonl");
+        assert!(
+            log.ends_with(&format!("{{\"v\":1,\"n\":1}}\n{second}\n")),
+            "{log}"
+        );
+    }
+
+    // Defect: a turn of one Giga commits or stages another Giga's waiting
+    // receipts.
+    #[test]
+    fn receipt_only_turn_leaves_another_gigas_lines_alone() {
+        let home = settled("two", &["alpha", "beta"]);
+        let root = home.root();
+        let before = head(&root);
+        giga_turn(&home, "beta", 1, &[]);
+        let (report, _, _) = giga_turn(&home, "alpha", 2, &[]);
+        assert_eq!((report.commit, report.error), (None, None));
+        assert_eq!(head(&root), before);
+        assert_eq!(staged(&root), "");
+        let (report, _, _) = giga_turn(&home, "alpha", 3, &[("briefs/plan.md", "plan")]);
+        assert!(report.commit.is_some());
+        assert_eq!(
+            head_files(&root),
+            ["gigas/alpha/briefs/plan.md", "gigas/alpha/log.jsonl"]
+        );
+        assert_eq!(
+            git(&root, &["status", "--porcelain", "--", "gigas/"], &[]).unwrap(),
+            " M gigas/beta/log.jsonl\n"
+        );
+        assert_eq!(staged(&root), "");
     }
 
     // Defect: a lock left by a crashed process blocks every later commit, or

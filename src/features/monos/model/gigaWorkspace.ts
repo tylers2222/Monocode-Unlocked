@@ -108,7 +108,12 @@ export type Receipt = {
   asked: string;
   outcome: TurnOutcome;
   calls: TurnCalls;
+  /** Work files the turn added or changed, relative to `~/MonoCode`. */
+  files: readonly string[];
 };
+
+/** Content hash by path of a Giga's work files, taken as a turn starts. */
+export type TurnStart = Record<string, string>;
 
 /** One `log.jsonl` line, in the contract's field order. */
 export function receiptLine(receipt: Receipt): string {
@@ -123,6 +128,7 @@ export function receiptLine(receipt: Receipt): string {
     outcome: receipt.outcome,
     sent: receipt.calls.sent,
     started: receipt.calls.started,
+    files: receipt.files,
   });
 }
 
