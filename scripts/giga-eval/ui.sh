@@ -88,7 +88,8 @@ cmd_open_mono() {
   # An open Mono settings dialog is modal and hides the sidebar from AX.
   if ax find "Settings sections" >/dev/null 2>&1; then close_dialog; fi
   click "${1:?name}, *" AXButton
-  wait_for "Message *" AXTextArea
+  # The previous Mono's composer stays until the switch lands; wait for this Mono's own.
+  wait_for "Message $1" AXTextArea
 }
 
 cmd_open_settings() {
@@ -134,7 +135,7 @@ cmd_count() {
 cmd_send() {
   local name="${1:?name}" prompt="${2:?prompt}"
   cmd_open_mono "$name"
-  type_into "Message *" "$prompt" AXTextArea
+  type_into "Message $name" "$prompt" AXTextArea
   key $RETURN
   echo "sent to '$name': ${prompt:0:80}"
 }

@@ -377,7 +377,8 @@ case_4() {
 
   local log="$ROOT/gigas/$slug/log.jsonl"
   grep -F "$tag" "$log" 2>/dev/null | tail -1 >"$d/receipt.json"
-  check $c "receipt for the turn in gigas/$slug/log.jsonl" "$d/receipt.json" jq -e '.v == 1 and .kind == "chat" and .outcome == "completed"' "$d/receipt.json"
+  check $c "receipt for the turn in gigas/$slug/log.jsonl" "$d/receipt.json" \
+    bash -c 'jq -e ".v == 1 and .kind == \"chat\" and .outcome == \"completed\"" "$1" >/dev/null' _ "$d/receipt.json"
   local to sid; to="$(jget '.sent[0].toMonoId // empty' "$d/receipt.json")"; sid="$(jget '.sessionId // empty' "$d/receipt.json")"
   jq -r '.sent[]?.requestId' "$d/receipt.json" >"$d/receipt-request-ids.txt" 2>/dev/null
   check $c "receipt lists a monos.send request ID" "$d/receipt-request-ids.txt toMonoId=$to" bash -c 'grep -q "^app-" "$1" && [[ -n "$2" ]]' _ "$d/receipt-request-ids.txt" "$to"
@@ -438,7 +439,12 @@ case_5() {
   check $c "$s1 commit landed" "$d/workspace-log.txt" test "$(git -C "$ROOT" rev-list --count --author="giga+$s1@" HEAD)" = "$((c1 + 1))"
   check $c "$s2 commit landed" "$d/workspace-log.txt" test "$(git -C "$ROOT" rev-list --count --author="giga+$s2@" HEAD)" = "$((c2 + 1))"
   check $c "no .git/index.lock left" "$ROOT/.git/index.lock" test ! -e "$ROOT/.git/index.lock"
-  check $c "no .git/monocode-giga.lock left" "$ROOT/.git/monocode-giga.lock" test ! -e "$ROOT/.git/monocode-giga.lock"
+  # The app empties the lock file on release rather than deleting it; a lock left
+  # behind is one that still names an owner or is still open.
+  local lockf="$ROOT/.git/monocode-giga.lock"
+  { ls -l "$lockf" 2>&1; echo "content: [$(cat "$lockf" 2>/dev/null)]"; echo "open by: $(lsof -t "$lockf" 2>/dev/null | paste -sd, -)"; } >"$d/giga-lock.txt"
+  check $c "no .git/monocode-giga.lock held (absent or empty, open by no process)" "$d/giga-lock.txt" \
+    bash -c '[[ ! -s "$1" ]] && [[ -z "$(lsof -t "$1" 2>/dev/null)" ]]' _ "$lockf"
   git -C "$ROOT" fsck --no-dangling >"$d/fsck.txt" 2>&1
   check $c "git fsck clean" "$d/fsck.txt" test ! -s "$d/fsck.txt"
   check $c "working tree clean under both subtrees" "git status" \
