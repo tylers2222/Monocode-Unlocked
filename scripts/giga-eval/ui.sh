@@ -12,6 +12,8 @@
 #   ui.sh count <name> <prefix> [role]   elements in the Mono's chat whose text starts with <prefix>
 #   ui.sh send <name> <prompt>           type a prompt in the Mono's chat and submit it
 #   ui.sh hold <name> [seconds]          start a turn that sleeps, so cli.sh can call the app as that Mono
+#   ui.sh set-model <name> <provider tab> <model row> <picker label>
+#                                        pick the Mono chat's harness and model, e.g. omp "Default, omp" "omp Default"
 #   GIGA_EVAL_TARGET=instance|installed  (default instance)
 source "$(dirname "$0")/lib.sh"
 
@@ -142,6 +144,22 @@ cmd_hold() {
   cmd_send "$name" "Run exactly this shell command and nothing else: sleep $secs. When it finishes, reply with the single word held."
 }
 
+cmd_set_model() {
+  local name="${1:?name}" tab="${2:?provider tab}" row="${3:?model row}" want="${4:?picker label}"
+  cmd_open_mono "$name"
+  if ax find "$want" AXPopUpButton >/dev/null 2>&1; then echo "'$name' already on '$want'"; return 0; fi
+  # The picker's label is "<provider> <model>"; the composer's other pop-ups are known by name.
+  local label; label="$(ax dump 30 | awk -F' [|] ' '$1 ~ / AXPopUpButton$/ && $2 !~ /usage details$| options$|^Effort:|^Open project$/ {print $2; exit}')"
+  [[ -n "$label" ]] || die "no model picker in '$name''s composer"
+  click "$label" AXPopUpButton
+  wait_for "$tab" AXRadioButton
+  click "$tab" AXRadioButton
+  wait_for "$row" AXStaticText
+  click "$row" AXStaticText
+  ax find "$want" AXPopUpButton >/dev/null 2>&1 || die "'$name''s model picker does not read '$want' after picking"
+  echo "'$name': '$label' -> '$want'"
+}
+
 case "${1:-}" in
   shot) shift; cmd_shot "$@" ;;
   dump) shift; ax dump "${1:-25}" ;;
@@ -154,5 +172,6 @@ case "${1:-}" in
   count) shift; cmd_count "$@" ;;
   send) shift; cmd_send "$@" ;;
   hold) shift; cmd_hold "$@" ;;
+  set-model) shift; cmd_set_model "$@" ;;
   *) sed -n '2,15p' "$0"; exit 2 ;;
 esac

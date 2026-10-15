@@ -51,6 +51,36 @@ wait_path() {   # wait_path <path> <seconds> [test flag, default -e]
   return 1
 }
 receipt_count() { [[ -f "$ROOT/gigas/$1/log.jsonl" ]] && grep -c . "$ROOT/gigas/$1/log.jsonl" || echo 0; }
+# Every case's Mono runs on this exact harness and model.
+MODEL_TAB="omp" MODEL_ROW="Default, omp" MODEL_LABEL="omp Default" MODEL_HARNESS="omp" MODEL_ID="omp:default"
+
+# ---- the instance's own database, read-only ------------------------------------
+DB="$HOME_T/Library/Application Support/$EVAL_ID/monocode.db"
+[[ "$TARGET" == installed ]] && DB="$REAL_APP_DATA/monocode.db"
+dbq() { sqlite3 -readonly -separator $'\t' "$DB" "$@"; }
+sqlq() { printf "'%s'" "${1//\'/\'\'}"; }   # a SQL string literal
+# Every stored chat block: session id, block JSON. A Mono's chat is in mono_blocks,
+# any other session's in sessions.blocks_json.
+ALL_BLOCKS="select session_id, block_json from mono_blocks
+  union all select s.id, b.value from sessions s, json_each(s.blocks_json) b"
+# The Giga's chat session: the newest chat receipt in its log.jsonl.
+giga_session() {   # giga_session <log.jsonl>
+  jq -r 'select(.kind == "chat") | .sessionId // empty' "$1" 2>/dev/null | tail -1
+}
+# status_blocks <session|-> <out>: that chat's "Giga workspace:" blocks ("-" = every chat),
+# one "<id> TAB <text>" line each in <out>; prints the count.
+status_blocks() {
+  local where=""; [[ "$1" == - ]] || where="and session_id = $(sqlq "$1")"
+  dbq "select distinct json_extract(block_json, '\$.id'), replace(json_extract(block_json, '\$.text'), char(10), ' ') from ($ALL_BLOCKS)
+       where json_extract(block_json, '\$.text') like 'Giga workspace:%' $where" >"$2"
+  grep -c . "$2" || true
+}
+# assistant_replies <session> <word>: assistant blocks in that chat whose text holds <word>.
+assistant_replies() {
+  dbq "select count(distinct json_extract(block_json, '\$.id')) from ($ALL_BLOCKS)
+       where session_id = $(sqlq "$1") and json_extract(block_json, '\$.role') = 'assistant'
+       and lower(json_extract(block_json, '\$.text')) like $(sqlq "%$2%")"
+}
 
 # ---- app lifecycle per target ------------------------------------------------
 app_stop() {
@@ -116,12 +146,10 @@ tree_check() {
   check "$c" "$label: gigas/$slug/ skeleton${missing:+ (missing:$missing)}" "$ev" test -z "$missing"
 }
 
-# Count the Giga chat's "Giga workspace:" status blocks on screen.
-status_blocks() { ui count "$1" "Giga workspace:" AXStaticText 2>/dev/null || echo "?"; }
-
 ensure_mono() {   # ensure_mono <name> <giga 0|1>
   local name="$1" giga="$2"
   if ! ui open-mono "$name" >/dev/null 2>&1; then ui create-mono "$name" || die "cannot create Mono $name"; fi
+  ui set-model "$name" "$MODEL_TAB" "$MODEL_ROW" "$MODEL_LABEL" >/dev/null || die "cannot set $name to $MODEL_ID"
   if [[ "$giga" == 1 ]]; then ui giga-on "$name" >/dev/null || die "cannot turn Giga on for $name"; fi
 }
 ensure_monos() {
@@ -134,6 +162,12 @@ giga_slug() {   # gigaSlug from workspace.status as that Giga; falls back to the
   [[ -s "$out" ]] || status_as "$1" "$out" >/dev/null
   local s; s="$(jget '.result.gigaSlug // empty' "$out")"
   [[ -n "$s" ]] && echo "$s" || slugify "$1"
+}
+# model_check <case> <label> <session>: that chat's stored harness and model.
+model_check() {
+  local got; got="$(dbq "select harness || ' ' || model from sessions where id = $(sqlq "$3")")"
+  check "$1" "$2 runs on $MODEL_HARNESS $MODEL_ID (sessions row)" "$DB sessions.id=$3: ${got:-no row}" \
+    test "$got" = "$MODEL_HARNESS $MODEL_ID"
 }
 
 # ================================================================================
@@ -183,10 +217,9 @@ case_1() {
     test "$(jget .result.lastEnsure.trigger "$d/status-giga-on.json")" = giga-on
 
   local m n
-  for m in "$GIGA" "$PROBE"; do
-    n="$(status_blocks "$m")"
-    check $c "no 'Giga workspace:' status in $m's chat" "count=$n" test "$n" = 0
-  done
+  sleep 3   # the app saves a chat after its turn
+  n="$(status_blocks - "$d/status-blocks.txt")"
+  check $c "no 'Giga workspace:' status in any chat (instance database)" "$d/status-blocks.txt (count=$n)" test "$n" = 0
   ui shot "$d/after-triggers.png" >/dev/null
 
   [[ "$had_root" == 1 ]] || return 0
@@ -252,22 +285,37 @@ case_3() {
   mkdir -p "$d"
   ensure_monos
   [[ -d "$ROOT/.git" ]] || status_as "$GIGA" "$d/status-setup.json"
+  local slug gs; slug="$(giga_slug "$GIGA")"
+  gs="$(giga_session "$ROOT/gigas/$slug/log.jsonl")"
+  if [[ -z "$gs" ]]; then status_as "$GIGA" "$d/status-setup-2.json"; gs="$(giga_session "$ROOT/gigas/$slug/log.jsonl")"; fi
+  [[ -n "$gs" ]] || { record $c "Giga chat session from its receipts" FAIL "no chat receipt in $ROOT/gigas/$slug/log.jsonl"; return; }
+  record $c "Giga chat session (newest chat receipt)" INFO "$gs"
+  # new_blocks <before> <after>: status blocks in <after> that <before> lacks.
+  new_blocks() { comm -13 <(sort "$1") <(sort "$2"); }
   local saved="$d/MonoCode.saved"
+  status_blocks "$gs" "$d/status-0.txt" >/dev/null
   mv "$ROOT" "$saved" || { record $c "move workspace aside" FAIL "$ROOT"; return; }
 
   # Phase A: ~/MonoCode is a plain file.
   head -c 4096 /dev/urandom >"$ROOT"; local sha_before; sha_before="$(file_sha "$ROOT")"
-  local blocks0 replies0; blocks0="$(status_blocks "$GIGA")"; replies0="$(ui count "$GIGA" held AXStaticText)"
+  local replies0; replies0="$(assistant_replies "$gs" held)"
   status_as "$GIGA" "$d/status-file.json"
   check $c "file: workspace.status state == blocked" "$d/status-file.json" test "$(jget .result.state "$d/status-file.json")" = blocked
   check $c "file: blocked status has a reason" "$(jget .result.reason "$d/status-file.json")" test -n "$(jget '.result.reason // empty' "$d/status-file.json")"
   check $c "file: ~/MonoCode bytes unchanged" "sha256 $sha_before" test "$(file_sha "$ROOT")" = "$sha_before" -a -f "$ROOT" -a ! -L "$ROOT"
-  local blocks1 replies1; blocks1="$(status_blocks "$GIGA")"; replies1="$(ui count "$GIGA" held AXStaticText)"
-  check $c "file: Giga turn still replied" "replies $replies0 -> $replies1" test "$replies1" -gt "$replies0"
+  sleep 3   # the app saves a chat after its turn
+  local replies1; replies1="$(assistant_replies "$gs" held)"
+  check $c "file: Giga turn still replied (assistant 'held' blocks in its chat, instance database)" "$DB session $gs: $replies0 -> $replies1" test "$replies1" -gt "$replies0"
+  status_blocks "$gs" "$d/status-file.txt" >/dev/null
+  new_blocks "$d/status-0.txt" "$d/status-file.txt" >"$d/status-file-new.txt"
+  check $c "file: at least one 'Giga workspace:' status (instance database)" "$d/status-file-new.txt ($(grep -c . "$d/status-file-new.txt") new)" \
+    test "$(grep -c . "$d/status-file-new.txt")" -ge 1
   status_as "$GIGA" "$d/status-file-2.json"   # same reason again: no second status
-  local blocks2; blocks2="$(status_blocks "$GIGA")"
-  check $c "file: one 'Giga workspace:' status, not repeated on the next turn" "blocks $blocks0 -> $blocks1 -> $blocks2" \
-    test "$blocks1" = "$((blocks0 + 1))" -a "$blocks2" = "$blocks1"
+  sleep 3
+  status_blocks "$gs" "$d/status-file-2.txt" >/dev/null
+  new_blocks "$d/status-file.txt" "$d/status-file-2.txt" >"$d/status-file-2-new.txt"
+  check $c "file: no second status for the same reason on the next turn" "$d/status-file-2-new.txt ($(grep -c . "$d/status-file-2-new.txt") new)" \
+    test ! -s "$d/status-file-2-new.txt"
   ui shot "$d/file-chat.png" >/dev/null
   rm -f "$ROOT"
 
@@ -286,8 +334,14 @@ case_3() {
   check $c "symlink: blocked status has a reason" "$(jget .result.reason "$d/status-symlink.json")" test -n "$(jget '.result.reason // empty' "$d/status-symlink.json")"
   check $c "symlink: /tmp not written (workspace names under /tmp unchanged)" "$d/tmp-before.txt vs $d/tmp-after.txt" diff -q "$d/tmp-before.txt" "$d/tmp-after.txt"
   check $c "symlink: ~/MonoCode is still the same symlink" "$(readlink "$ROOT")" test "$(readlink "$ROOT")" = /tmp
-  local blocks3; blocks3="$(status_blocks "$GIGA")"
-  check $c "symlink: one new 'Giga workspace:' status for the new reason" "blocks $blocks2 -> $blocks3" test "$blocks3" = "$((blocks2 + 1))"
+  sleep 3
+  status_blocks "$gs" "$d/status-symlink.txt" >/dev/null
+  new_blocks "$d/status-file-2.txt" "$d/status-symlink.txt" >"$d/status-symlink-new.txt"
+  check $c "symlink: at least one 'Giga workspace:' status (instance database)" "$d/status-symlink-new.txt ($(grep -c . "$d/status-symlink-new.txt") new)" \
+    test "$(grep -c . "$d/status-symlink-new.txt")" -ge 1
+  new_blocks "$d/status-0.txt" "$d/status-symlink.txt" | cut -f2- | sort | uniq -d >"$d/status-repeated.txt"
+  check $c "at most one status per distinct reason over both phases" "$d/status-symlink.txt ($(grep -c . "$d/status-repeated.txt") repeated texts in $d/status-repeated.txt)" \
+    test ! -s "$d/status-repeated.txt"
   ui shot "$d/symlink-chat.png" >/dev/null
 
   rm -f "$ROOT"; mv "$saved" "$ROOT"
@@ -301,14 +355,16 @@ case_4() {
   [[ -d "$ROOT/.git" ]] || status_as "$GIGA" "$d/status-setup.json"
   local slug; slug="$(giga_slug "$GIGA")"
   [[ -d "$SCRATCH/.git" ]] || { record $c "scratch project" FAIL "$SCRATCH is not a git repo (instance.sh start creates it)"; return; }
+  bytes_under() { find "$@" -type f -print0 | xargs -0 stat -f%z | awk '{s += $1} END {print s + 0}'; }
   measure() {
-    printf 'du_k=%s files=%s git_k=%s receipts=%s commits=%s\n' \
-      "$(du -sk "$ROOT" | cut -f1)" "$(find "$ROOT" -path "$ROOT/.git" -prune -o -type f -print | wc -l | tr -d ' ')" \
+    printf 'bytes=%s files=%s du_k=%s git_bytes=%s git_files=%s git_du_k=%s receipts=%s commits=%s\n' \
+      "$(bytes_under "$ROOT" -path "$ROOT/.git" -prune -o)" "$(find "$ROOT" -path "$ROOT/.git" -prune -o -type f -print | wc -l | tr -d ' ')" \
+      "$(du -sk "$ROOT" | cut -f1)" "$(bytes_under "$ROOT/.git")" "$(find "$ROOT/.git" -type f | wc -l | tr -d ' ')" \
       "$(du -sk "$ROOT/.git" | cut -f1)" "$(receipt_count "$slug")" "$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null)"
   }
   measure >"$d/size-before.txt"
   local giga_turns_before; giga_turns_before="$(receipt_count "$slug")"
-  ui send "$GIGA" "Eval chain $tag. Use the app CLI. 1) Run app monos.list. If no Mono named Worker exists, create it with app monos.create: name Worker, the same harness and model you run on (exact IDs from app models.list), projects [\"$SCRATCH\"], giga false. 2) Send Worker this prompt with app monos.send: 'Start one project session with app sessions.start in project $SCRATCH, on your own harness and model, with this prompt: Append the line CHAIN $tag to chain.txt, then run git add chain.txt and git commit -m \"chain $tag\". Reply with the session ID it returned.' 3) Reply with the requestId that monos.send returned."
+  ui send "$GIGA" "Eval chain $tag. Use the app CLI. 1) Run app monos.list. If no Mono named Worker exists, create it with app monos.create: name Worker, harness $MODEL_HARNESS, model $MODEL_ID, projects [\"$SCRATCH\"], giga false. 2) Send Worker this prompt with app monos.send: 'Start one project session with app sessions.start in project $SCRATCH, harness $MODEL_HARNESS, model $MODEL_ID, with this prompt: Append the line CHAIN $tag to chain.txt, then run git add chain.txt and git commit -m \"chain $tag\". Reply with the session ID it returned.' 3) Reply with the requestId that monos.send returned."
   local i committed=0
   for i in $(seq 1 120); do
     git -C "$SCRATCH" log --format='%H %s' | grep -q "chain $tag" && { committed=1; break; }
@@ -322,18 +378,37 @@ case_4() {
   local log="$ROOT/gigas/$slug/log.jsonl"
   grep -F "$tag" "$log" 2>/dev/null | tail -1 >"$d/receipt.json"
   check $c "receipt for the turn in gigas/$slug/log.jsonl" "$d/receipt.json" jq -e '.v == 1 and .kind == "chat" and .outcome == "completed"' "$d/receipt.json"
-  local req to sid; req="$(jget '.sent[0].requestId // empty' "$d/receipt.json")"; to="$(jget '.sent[0].toMonoId // empty' "$d/receipt.json")"; sid="$(jget '.sessionId // empty' "$d/receipt.json")"
-  check $c "receipt lists the monos.send request ID" "requestId=$req toMonoId=$to" bash -c '[[ "$1" == app-* && -n "$2" ]]' _ "$req" "$to"
+  local to sid; to="$(jget '.sent[0].toMonoId // empty' "$d/receipt.json")"; sid="$(jget '.sessionId // empty' "$d/receipt.json")"
+  jq -r '.sent[]?.requestId' "$d/receipt.json" >"$d/receipt-request-ids.txt" 2>/dev/null
+  check $c "receipt lists a monos.send request ID" "$d/receipt-request-ids.txt toMonoId=$to" bash -c 'grep -q "^app-" "$1" && [[ -n "$2" ]]' _ "$d/receipt-request-ids.txt" "$to"
   git -C "$ROOT" log --format='%H%x09%an <%ae>%x09%s' -n 10 >"$d/workspace-log.txt"
   check $c "Giga commit with the contract's author and subject" "$d/workspace-log.txt" \
     grep -qF "$(printf 'MonoCode Giga %s <giga+%s@monocode.local>\tgiga(%s): completed turn %s' "$slug" "$slug" "$slug" "${sid:0:8}")" "$d/workspace-log.txt"
+  model_check $c "Giga chat" "$sid"
 
-  # Link: request ID -> Worker's turn -> its sessions.start ID, read from the Worker's own chat.
-  as_mono "$PROBE" monos.read "{\"monoId\":\"$to\",\"limit\":5}" "$d/worker-chat.json"
-  check $c "Worker's chat has the Giga's <mono_message> for this task" "$d/worker-chat.json" grep -qF "$tag" "$d/worker-chat.json"
-  check $c "Worker's chat names the monos.send request ID" "$req in $d/worker-chat.json" grep -qF "$req" "$d/worker-chat.json"
-  local wsid; wsid="$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "$d/worker-chat.json" | grep -v -e "$to" | tail -1)"
-  record $c "Worker's sessions.start ID (from its reply)" "$( [[ -n "$wsid" ]] && echo PASS || echo FAIL )" "${wsid:-none} in $d/worker-chat.json"
+  # Link, all from the instance database: receipt sent[].requestId -> the Worker's user
+  # block with that appRequestId -> the session it started in the scratch project.
+  local req ids_sql; ids_sql="$(sed "s/'/''/g; s/.*/'&'/" "$d/receipt-request-ids.txt" | paste -sd, -)"
+  dbq "select session_id, json_extract(block_json, '\$.appRequestId'), replace(json_extract(block_json, '\$.text'), char(10), ' ')
+       from ($ALL_BLOCKS) where json_extract(block_json, '\$.role') = 'user'
+       and json_extract(block_json, '\$.appRequestId') in (${ids_sql:-''})" >"$d/worker-user-block.tsv"
+  local wses; wses="$(cut -f1 "$d/worker-user-block.tsv" | head -1)"; req="$(cut -f2 "$d/worker-user-block.tsv" | head -1)"
+  check $c "Worker's user block carries the receipt's request ID as appRequestId" "$d/worker-user-block.tsv (requestId=${req:-none}, Worker chat session=${wses:-none})" \
+    bash -c '[[ -n "$1" && "$2" != "$3" ]] && grep -qF "$4" "$5"' _ "$wses" "$wses" "$sid" "$tag" "$d/worker-user-block.tsv"
+  model_check $c "Worker chat" "$wses"
+  dbq "select id, cwd, harness, model, created_at from sessions where (cwd like '%$SCRATCH_NAME%' or worktree_cwd like '%$SCRATCH_NAME%')
+       and blocks_json like $(sqlq "%CHAIN $tag%")" >"$d/started-session.tsv"
+  local wsid; wsid="$(cut -f1 "$d/started-session.tsv" | head -1)"
+  dbq "select count(*) from mono_blocks where session_id = $(sqlq "$wses") and block_json like $(sqlq "%$wsid%")" >"$d/worker-names-started.txt"
+  check $c "Worker's sessions.start session: a scratch-project session with the task, named in the Worker's chat" \
+    "$d/started-session.tsv (session=${wsid:-none}); Worker blocks naming it: $(cat "$d/worker-names-started.txt")" \
+    test -n "$wsid" -a "$(cat "$d/worker-names-started.txt")" -gt 0
+  model_check $c "Started project session" "$wsid"
+
+  # The index finds this turn by a word only its asked text has.
+  sqlite3 -readonly -separator $'\t' "$ROOT/index/index.db" "select source, giga, path, at, substr(text, 1, 120) from entries where entries match $(sqlq "\"$tag\"")" >"$d/index-match.tsv" 2>&1
+  check $c "index: FTS MATCH '$tag' (from asked) finds this turn under giga $slug" "$d/index-match.tsv" \
+    bash -c 'awk -F"\t" -v g="$2" "\$2 == g" "$1" | grep -q .' _ "$d/index-match.tsv" "$slug"
 
   measure >"$d/size-after.txt"
   local turns=$(( $(receipt_count "$slug") - giga_turns_before ))
@@ -397,12 +472,14 @@ case_6() {
   mkdir -p "$ROOT/gigas/$slug/notes"
   echo "token $tag" >"$ROOT/$tok"
   printf 'deploy key: ghp_%s\n' "$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 36)" >"$ROOT/$leak"
+  local gc0; gc0="$(git -C "$ROOT" rev-list --count --author="giga+$slug@" HEAD)"
   status_as "$GIGA" "$d/status.json"   # a Giga turn commits gigas/$slug/
   sleep 3
   git -C "$ROOT" log --all --name-only --format='commit %H %s' >"$d/log-names.txt"
   check $c "$tok never committed" "$d/log-names.txt" bash -c '! grep -qxF "$1" "$2"' _ "$tok" "$d/log-names.txt"
   check $c "$leak (ghp_ content) never committed" "$d/log-names.txt" bash -c '! grep -qxF "$1" "$2"' _ "$leak" "$d/log-names.txt"
-  check $c "the Giga turn still committed its subtree" "$d/log-names.txt" grep -qF "giga($slug):" "$d/log-names.txt"
+  local gc1; gc1="$(git -C "$ROOT" rev-list --count --author="giga+$slug@" HEAD)"
+  check $c "the Giga turn still committed its subtree (giga commits $gc0 -> $gc1)" "$d/log-names.txt" test "$gc1" -gt "$gc0"
   check $c "secret files left on disk, untracked" "$ROOT/$tok $ROOT/$leak" test -f "$ROOT/$tok" -a -f "$ROOT/$leak"
   git -C "$ROOT" add -f "$leak"
   (cd "$ROOT" && MONOCODE_GIGA_SLUG="$slug" git commit -m "leak $tag") >"$d/hook-secret.out" 2>&1; rc=$?
@@ -418,6 +495,7 @@ case_7() {
   "$EVAL_DIR/instance.sh" start --fresh-home
   record $c "after app start alone" INFO "$( [[ -e "$ROOT" ]] && echo "$ROOT exists" || echo "$ROOT absent")"
   ui create-mono "$GIGA" || { record $c "create Mono" FAIL "ui.sh create-mono"; return; }
+  ui set-model "$GIGA" "$MODEL_TAB" "$MODEL_ROW" "$MODEL_LABEL" || { record $c "Mono on $MODEL_ID" FAIL "ui.sh set-model"; return; }
   ui giga-on "$GIGA" || { record $c "Giga on by the UI" FAIL "ui.sh giga-on"; return; }
   ui shot "$d/giga-on.png" >/dev/null
   check $c "workspace appears after Giga on, with no setup step" "$ROOT" wait_path "$ROOT/.git" 30 -d
@@ -430,4 +508,8 @@ for c in "${CASES[@]}"; do
   log "case $c"
   "case_$c" 2>&1 | tee "$RUN_DIR/case$c.log"
 done
+if [[ "$TARGET" == instance ]]; then
+  "$EVAL_DIR/instance.sh" lsof-check >"$RUN_DIR/lsof-check.txt" 2>&1
+  record iso "lsof: no open file under the real app data or real ~/MonoCode" "$(grep -q '^PASS isolation' "$RUN_DIR/lsof-check.txt" && echo PASS || echo FAIL)" "$RUN_DIR/lsof-check.txt"
+fi
 "$EVAL_DIR/report.sh" "$RUN_ID"
