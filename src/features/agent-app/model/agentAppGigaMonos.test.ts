@@ -5,6 +5,7 @@ import { setHarnessModels } from "../../sessions/model/models";
 import { rememberProject } from "../../projects/model/recents";
 import { setHomeDir } from "../../../shared/lib/paths";
 import {
+  __monosTestReset,
   createMono,
   findMono,
   listMonos,
@@ -19,6 +20,7 @@ vi.mock("../../../integrations/harness/core/availability", () => ({
 }));
 
 beforeEach(() => {
+  __monosTestReset();
   const stored = new Map<string, string>();
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => stored.get(key) ?? null,

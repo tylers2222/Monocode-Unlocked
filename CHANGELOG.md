@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Habit runs are kept sessions.** A run starts in the Mono's first project (so that project's skills and `AGENTS.md` load), or in the Mono chat's folder when it has no project. While it runs it is listed in the Mono overview's Sessions tab, where it can be opened, steered and stopped, and in the project sidebar when the Mono shows the sessions it starts. A run that times out is stopped, not deleted. Each run's id is `app-<Mono chat id>-habit-<uuid>`, and `habits.json` records its session (`id`, `harness`, `model`, `providerSessionId`, `cwd`) with its start, end and outcome, so the transcript can be found later.
 - A Mono's chat is **saved when it is created**, not after its first message, so a restart no longer loses a new Mono's chat.
 - An **Inbox Ask** conversation is saved as a hidden session record, since it can change files. It stays out of the sidebar and is not restored after a restart.
+- **Monos are saved in `monocode.db`**, in a new `monos` table, instead of WebKit storage. On the first start, MonoCode copies every Mono, in its rail order, from the `monocode:mono-roster` storage key into the table. It does this once: if you later delete every Mono, they do not come back. The storage key is kept as it was and is never written again. If the database cannot be read at start, MonoCode shows the Monos from the storage key, and changes made then last until you quit. Every workspace window shows a change made in another window at once.
 
 ### Fixed
 

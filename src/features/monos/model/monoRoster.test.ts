@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
+  __monosTestReset,
   addMonoProject,
   createMono,
+  defaultMonoName,
   findMono,
   listMonos,
   monoLook,
@@ -15,8 +17,11 @@ import {
 } from "./mono";
 import { monoBackgroundKey, monoChatBackground } from "./monoBackground";
 import { saveProjectChatBackgroundSettings } from "../../projects/model/projectChatBackground";
+import { PROJECT_MASCOTS } from "../../projects/model/projectMascots";
+import DEFAULT_NAMES from "./monoDefaultNames.json";
 
 beforeEach(() => {
+  __monosTestReset();
   const stored = new Map<string, string>();
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => stored.get(key) ?? null,
@@ -78,27 +83,24 @@ it("forgets its background along with the Mono", () => {
   expect(monoChatBackground(mono.id)).toBeNull();
 });
 
-it("keeps the Giga setting through a roster round trip, and reads none as not Giga", () => {
+it("turns Giga on for one Mono only, and off again", () => {
   const giga = createMono();
   const plain = createMono();
   saveMonoGiga(giga.id, true);
-  const stored = JSON.parse(localStorage.getItem("monocode:mono-roster")!);
-  expect(stored[0].giga).toBe(true);
-  expect("giga" in stored[1]).toBe(false);
   expect(findMono(giga.id)?.giga).toBe(true);
   expect(findMono(plain.id)?.giga).toBeUndefined();
   expect(monoLook(findMono(giga.id)!).giga).toBe(true);
 
-  // Only true makes a Giga Mono; anything else in storage reads as not Giga.
-  localStorage.setItem(
-    "monocode:mono-roster",
-    JSON.stringify([
-      { ...stored[0], giga: "yes" },
-      { ...stored[1], giga: true },
-    ]),
-  );
-  expect(listMonos().map((mono) => mono.giga)).toEqual([undefined, true]);
+  saveMonoGiga(giga.id, false);
+  expect(findMono(giga.id)?.giga).toBeUndefined();
+});
 
-  saveMonoGiga(plain.id, false);
-  expect(findMono(plain.id)?.giga).toBeUndefined();
+it("names every mascot the way the database does", () => {
+  // `monoDefaultNames.json` is also checked by `mono_roster.rs`, which derives
+  // `monos.name` from it; a new mascot must be added there too.
+  expect(
+    Object.fromEntries(
+      PROJECT_MASCOTS.map(({ name }) => [name, defaultMonoName(name)]),
+    ),
+  ).toEqual(DEFAULT_NAMES);
 });

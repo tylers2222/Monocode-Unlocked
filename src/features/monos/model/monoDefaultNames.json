@@ -1,0 +1,12 @@
+{
+  "invader": "MonoInvader",
+  "ghost": "MonoGhost",
+  "robot": "MonoRobot",
+  "cat": "MonoCat",
+  "skull": "MonoSkull",
+  "crab": "MonoCrab",
+  "mushroom": "MonoShroom",
+  "rocket": "MonoRocket",
+  "dino": "MonoDino",
+  "frog": "MonoFrog"
+}

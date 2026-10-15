@@ -992,6 +992,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::automations::ensure_tables(conn)?;
     ensure_orchestration_history(conn)?;
     crate::mono_transcript::ensure_tables(conn)?;
+    // The Mono roster. No version row: another build may reuse the number.
+    crate::mono_roster::ensure_tables(conn)?;
     Ok(())
 }
 
@@ -2392,6 +2394,110 @@ mod tests {
         let sent = upsert_session(&conn, &session).unwrap();
         assert!(!sent.draft);
         assert!(!list_by_project(&conn, "/tmp/a").unwrap()[0].draft);
+    }
+
+    fn temp_db(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "monocode-{name}-{}-{}.db",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    /// The `monos` columns as `name type notnull pk`.
+    fn monos_columns(conn: &Connection) -> Vec<String> {
+        conn.prepare("SELECT name, type, \"notnull\", pk FROM pragma_table_info('monos')")
+            .unwrap()
+            .query_map([], |row| {
+                Ok(format!(
+                    "{} {} {} {}",
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    fn assert_monos_table(conn: &Connection) {
+        assert_eq!(
+            monos_columns(conn),
+            [
+                "id TEXT 0 1",
+                "name TEXT 1 0",
+                "role TEXT 1 0",
+                "data_json TEXT 1 0",
+                "sort_order INTEGER 1 0",
+                "created_at INTEGER 1 0",
+                "updated_at INTEGER 1 0",
+            ]
+        );
+        let insert = |id: &str, role: &str| {
+            conn.execute(
+                "INSERT INTO monos VALUES (?1, 'X', ?2, '{}', 0, 0, 0)",
+                params![id, role],
+            )
+        };
+        assert!(insert("x", "admin").is_err());
+        assert!(insert("mono_1", "mono").is_err());
+        assert!(insert(&"a".repeat(65), "mono").is_err());
+        assert!(insert("mono-1", "mono").is_ok());
+    }
+
+    /// Opens a database that an earlier build left at `version`, with sessions
+    /// and no Mono tables, and checks that opening it adds them.
+    fn assert_monos_added_to_database_at(version: i64) {
+        let path = temp_db(&format!("monos-v{version}"));
+        {
+            let store = SessionStore::open(path.clone()).unwrap();
+            let conn = store.conn.lock().unwrap();
+            conn.execute_batch("DROP TABLE monos; DROP TABLE monos_legacy_import;")
+                .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, 1)",
+                params![version],
+            )
+            .unwrap();
+            upsert_session(&conn, &sample("kept", "/tmp/a", "Kept")).unwrap();
+            let recorded: i64 = conn
+                .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(recorded, version);
+        }
+        let store = SessionStore::open(path.clone()).unwrap();
+        let conn = store.conn.lock().unwrap();
+        assert_monos_table(&conn);
+        assert!(get_session(&conn, "kept").unwrap().is_some());
+        drop(conn);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn monos_table_is_created_on_a_fresh_database() {
+        let path = temp_db("monos-fresh");
+        let store = SessionStore::open(path.clone()).unwrap();
+        assert_monos_table(&store.conn.lock().unwrap());
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn monos_table_is_created_on_an_existing_version_19_database_and_keeps_its_sessions() {
+        assert_monos_added_to_database_at(19);
+    }
+
+    #[test]
+    fn monos_table_is_created_when_another_build_already_recorded_version_20() {
+        assert_monos_added_to_database_at(20);
     }
 
     #[test]

@@ -32,6 +32,7 @@ mod menu;
 mod mono;
 #[cfg(target_os = "macos")]
 mod mono_chat;
+mod mono_roster;
 mod mono_transcript;
 mod notes;
 mod notifications;
@@ -528,6 +529,11 @@ pub fn run() {
             mono_transcript::mono_session_page,
             mono_transcript::mono_session_upsert,
             mono_transcript::mono_session_find,
+            mono_roster::monos_list,
+            mono_roster::monos_create,
+            mono_roster::monos_update,
+            mono_roster::monos_delete,
+            mono_roster::monos_import_legacy,
             session_store::session_delete,
             session_store::session_set_archived,
             session_store::session_set_pinned,

@@ -39,6 +39,12 @@ const homeDirPrimed = homeDir()
 const providerBinaryPathsPrimed = initializeProviderBinaryPaths().catch(
   () => undefined,
 );
+// Every reader of the Mono roster is synchronous, so load it before the first
+// render. Imported lazily, like App, to keep it off the bootstrap chunk. A
+// failed load falls back inside, to the roster WebKit storage held.
+const monosPrimed = import("./features/monos/model/mono")
+  .then((mono) => mono.loadMonoRoster())
+  .catch(() => undefined);
 
 function dismissBootSplash() {
   const splash = document.getElementById("boot-splash");
@@ -92,10 +98,12 @@ void listen("quit_aborted", () => {
 void Promise.all([
   homeDirPrimed,
   providerBinaryPathsPrimed,
+  monosPrimed,
   loadBootWorkspace(),
   appLoaded,
 ]).then(
   ([
+    ,
     ,
     ,
     { windowTransfer, resumed, history, historyCwd },
