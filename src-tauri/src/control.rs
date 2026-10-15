@@ -13,6 +13,52 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 const APP_TURN_INACTIVE: &str = "MonoCode app access is inactive. Use /operator once in this thread to enable it, then call the CLI during an active agent turn. Retrying this request now will not enable access.";
+const UNKNOWN_TOKEN: &str = "This token is no longer valid. It ends when the app restarts, the window closes, its session is deleted or archived, or its orchestration run stops. Do not retry.";
+
+/// A token the app refuses. Both are final for that token, so neither is retryable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refusal {
+    UnknownToken,
+    TurnInactive,
+}
+impl Refusal {
+    fn response(self) -> Value {
+        let (code, hint) = match self {
+            Refusal::UnknownToken => ("unknown_token", UNKNOWN_TOKEN),
+            Refusal::TurnInactive => ("turn_inactive", APP_TURN_INACTIVE),
+        };
+        json!({"ok": false, "code": code, "hint": hint, "error": hint, "retryable": false})
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Failure {
+    Refused(Refusal),
+    Other(String),
+}
+impl Failure {
+    fn response(self) -> Value {
+        match self {
+            Failure::Refused(refusal) => refusal.response(),
+            Failure::Other(error) => json!({"ok": false, "error": error}),
+        }
+    }
+}
+impl From<Refusal> for Failure {
+    fn from(refusal: Refusal) -> Self {
+        Failure::Refused(refusal)
+    }
+}
+impl From<String> for Failure {
+    fn from(error: String) -> Self {
+        Failure::Other(error)
+    }
+}
+impl From<&str> for Failure {
+    fn from(error: &str) -> Self {
+        Failure::Other(error.to_string())
+    }
+}
 
 #[derive(Clone)]
 struct Grant {
@@ -99,6 +145,14 @@ impl Inner {
         ids.dedup();
         ids
     }
+    /// A deleted or archived session keeps no token, turn or scratch folder.
+    fn forget_session(&mut self, session: &str) {
+        self.grants.remove(session);
+        self.app_grants.remove(session);
+        self.workers.remove(session);
+        self.scratch.remove(session);
+        self.active.remove(session);
+    }
     fn close_window(&mut self, label: &str) -> Vec<String> {
         let ids = self.window_sessions(label);
         self.grants.retain(|id, _| !ids.contains(id));
@@ -158,14 +212,14 @@ struct Event {
     input: Value,
 }
 
-fn request_grant(host: &Inner, namespace: &str, token: &str) -> Result<Grant, String> {
+fn request_grant(host: &Inner, namespace: &str, token: &str) -> Result<Grant, Failure> {
     let grant = match namespace {
         "control" => host.grants.values().find(|grant| grant.token == token),
         "app" => host.app_grants.values().find(|grant| grant.token == token),
         _ => return Err("Unknown control namespace".into()),
     }
     .cloned()
-    .ok_or("Connection revoked or unauthorized")?;
+    .ok_or(Refusal::UnknownToken)?;
     if namespace == "app"
         && (host.grants.contains_key(&grant.session)
             || host.workers.contains_key(&grant.session)
@@ -174,7 +228,7 @@ fn request_grant(host: &Inner, namespace: &str, token: &str) -> Result<Grant, St
                 .get(&grant.session)
                 .is_some_and(|turn| turn.window == grant.window && turn.app_allowed))
     {
-        return Err(APP_TURN_INACTIVE.into());
+        return Err(Refusal::TurnInactive.into());
     }
     Ok(grant)
 }
@@ -218,7 +272,7 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
 fn serve(mut stream: TcpStream, app: &AppHandle, inner: &Arc<Mutex<Inner>>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
-    let result = (|| -> Result<Value, String> {
+    let result = (|| -> Result<Value, Failure> {
         let mut raw = String::new();
         BufReader::new(&mut stream)
             .take(262_145)
@@ -271,13 +325,7 @@ fn serve(mut stream: TcpStream, app: &AppHandle, inner: &Arc<Mutex<Inner>>) {
         }
         result
     })();
-    let response = result.unwrap_or_else(|error| {
-        if error == APP_TURN_INACTIVE {
-            json!({"ok": false, "error": error, "retryable": false})
-        } else {
-            json!({"ok": false, "error": error})
-        }
-    });
+    let response = result.unwrap_or_else(Failure::response);
     let _ = writeln!(stream, "{response}");
 }
 
@@ -447,6 +495,24 @@ pub fn control_turn_finished(host: State<'_, ControlHost>, session_id: String) {
     if let Ok(mut inner) = host.inner.lock() {
         inner.active.remove(&session_id);
     }
+}
+
+#[tauri::command(async)]
+pub fn control_forget_session(
+    host: State<'_, ControlHost>,
+    harness: State<'_, crate::harness::HarnessHost>,
+    session_id: String,
+) {
+    forget_session(&host.inner, &harness, &session_id);
+}
+
+fn forget_session(inner: &Mutex<Inner>, harness: &crate::harness::HarnessHost, session: &str) {
+    if let Ok(mut inner) = inner.lock() {
+        inner.forget_session(session);
+    }
+    // A live provider keeps the old token in its environment, and a later turn
+    // of an unarchived session would mint a token that process never receives.
+    harness.kill_session_tree(session);
 }
 
 pub fn window_closed(app: &AppHandle, label: &str) {
@@ -636,10 +702,10 @@ mod tests {
                 token: "app-token".into(),
             },
         );
-        assert!(matches!(
-            request_grant(&inner, "app", "app-token"),
-            Err(error) if error == APP_TURN_INACTIVE
-        ));
+        assert_eq!(
+            request_grant(&inner, "app", "app-token").err(),
+            Some(Failure::Refused(Refusal::TurnInactive))
+        );
         inner.active.insert(
             "ordinary".into(),
             ActiveTurn {
@@ -654,6 +720,103 @@ mod tests {
         assert!(request_grant(&inner, "app", "app-token").is_err());
         inner.active.remove("ordinary");
         assert!(request_grant(&inner, "app", "app-token").is_err());
+    }
+
+    fn app_grant(inner: &mut Inner, session: &str) -> String {
+        assert!(inner.prepare_app_grant(session, "main", "/repo"));
+        inner.active.insert(
+            session.into(),
+            ActiveTurn {
+                window: "main".into(),
+                cwd: "/repo".into(),
+                app_allowed: true,
+            },
+        );
+        inner.app_grants[session].token.clone()
+    }
+
+    fn app_response(inner: &Inner, token: &str) -> Value {
+        match request_grant(inner, "app", token) {
+            Ok(grant) => json!({"ok": true, "session": grant.session}),
+            Err(failure) => failure.response(),
+        }
+    }
+
+    #[test]
+    fn an_unknown_token_is_refused_with_code_unknown_token() {
+        let mut inner = Inner::default();
+        app_grant(&mut inner, "mono-chat");
+        assert_eq!(
+            app_response(&inner, "not-a-token"),
+            json!({
+                "ok": false,
+                "code": "unknown_token",
+                "hint": UNKNOWN_TOKEN,
+                "error": UNKNOWN_TOKEN,
+                "retryable": false,
+            })
+        );
+    }
+
+    #[test]
+    fn a_token_after_its_turn_finished_is_refused_with_code_turn_inactive() {
+        let mut inner = Inner::default();
+        let token = app_grant(&mut inner, "mono-chat");
+        assert_eq!(app_response(&inner, &token)["session"], "mono-chat");
+        inner.active.remove("mono-chat");
+        assert_eq!(
+            app_response(&inner, &token),
+            json!({
+                "ok": false,
+                "code": "turn_inactive",
+                "hint": APP_TURN_INACTIVE,
+                "error": APP_TURN_INACTIVE,
+                "retryable": false,
+            })
+        );
+    }
+
+    #[test]
+    fn a_forgotten_session_token_is_unknown_and_other_sessions_keep_theirs() {
+        let mut inner = Inner::default();
+        let token = app_grant(&mut inner, "mono-chat");
+        let other = app_grant(&mut inner, "other-chat");
+        inner
+            .scratch
+            .insert("mono-chat".into(), PathBuf::from("/tmp/scratch"));
+        inner.forget_session("mono-chat");
+        assert_eq!(app_response(&inner, &token)["code"], "unknown_token");
+        assert!(!inner.active.contains_key("mono-chat"));
+        assert!(!inner.scratch.contains_key("mono-chat"));
+        assert_eq!(app_response(&inner, &other)["session"], "other-chat");
+        // The next turn of an unarchived session must mint a new token.
+        let fresh = app_grant(&mut inner, "mono-chat");
+        assert_ne!(fresh, token);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forgetting_a_session_kills_its_provider_and_numbered_children() {
+        use crate::harness::tests::exits_soon;
+        let inner = Mutex::new(Inner::default());
+        let token = app_grant(&mut inner.lock().unwrap(), "mono-chat");
+        let harness = crate::harness::HarnessHost::new();
+        let mut provider = harness.insert_test_child("mono-chat");
+        let mut numbered = harness.insert_test_child("mono-chat#0");
+        let mut other = harness.insert_test_child("other-chat");
+        forget_session(&inner, &harness, "mono-chat");
+        assert_eq!(
+            app_response(&inner.lock().unwrap(), &token)["code"],
+            "unknown_token"
+        );
+        assert!(exits_soon(&mut provider), "the provider kept running");
+        assert!(
+            exits_soon(&mut numbered),
+            "the mono-chat#0 child kept running"
+        );
+        assert!(matches!(other.try_wait(), Ok(None)));
+        let _ = other.kill();
+        let _ = other.wait();
     }
     #[test]
     fn app_token_survives_normal_turns_but_only_works_when_opted_in() {

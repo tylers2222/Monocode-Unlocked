@@ -259,6 +259,44 @@ impl HarnessHost {
         inner.children.remove(session_id)
     }
 
+    /// Kill the session's own child and every child keyed `S#n` (antigravity
+    /// spawns those). Session ids cannot contain `#`, so the prefix is exact.
+    pub(crate) fn kill_session_tree(&self, session_id: &str) {
+        let prefix = format!("{session_id}#");
+        let children: Vec<(String, Arc<LiveChild>)> = {
+            let mut inner = self.lock_inner();
+            // Also when S has no child yet: a spawn of S between `begin_spawn`
+            // and `install_spawn` must not install after the kill.
+            *inner.epochs.entry(session_id.to_string()).or_insert(0) += 1;
+            let keys: Vec<String> = inner
+                .children
+                .keys()
+                .filter(|key| *key == session_id || key.starts_with(&prefix))
+                .cloned()
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| {
+                    if key != session_id {
+                        *inner.epochs.entry(key.clone()).or_insert(0) += 1;
+                    }
+                    inner.children.remove(&key).map(|child| (key, child))
+                })
+                .collect()
+        };
+        self.stop_sse(session_id);
+        for (key, child) in children {
+            self.stop_sse(&key);
+            terminate(child.pid);
+        }
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn insert_test_child(&self, key: &str) -> std::process::Child {
+        let (live, child) = tests::live_child();
+        self.lock_inner().children.insert(key.to_string(), live);
+        child
+    }
+
     fn remove_if_pid(&self, session_id: &str, pid: u32) -> Option<Arc<LiveChild>> {
         let mut inner = self.lock_inner();
         if inner.children.get(session_id).map(|live| live.pid) != Some(pid) {
@@ -3118,7 +3156,7 @@ fn command_basename(command: &str) -> &str {
 
 #[cfg(unix)]
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::os::unix::process::CommandExt;
 
@@ -3148,7 +3186,7 @@ mod tests {
 
     /// A real child so `install_spawn` can be exercised directly, rather than
     /// through a helper that re-states its condition.
-    fn live_child() -> (Arc<LiveChild>, std::process::Child) {
+    pub(super) fn live_child() -> (Arc<LiveChild>, std::process::Child) {
         let mut child = Command::new("sleep")
             .arg("30")
             .stdin(Stdio::piped())
@@ -3172,6 +3210,50 @@ mod tests {
     fn reap(mut child: std::process::Child) {
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    pub(crate) fn exits_soon(child: &mut std::process::Child) -> bool {
+        for _ in 0..60 {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[test]
+    fn session_tree_kill_cancels_a_spawn_of_the_session_still_in_flight() {
+        let host = HarnessHost::new();
+        let (epoch, kill_all, _) = host.begin_spawn("s1");
+        host.kill_session_tree("s1");
+        let (live, child) = live_child();
+        assert!(
+            host.install_spawn("s1".to_string(), epoch, kill_all, live)
+                .is_some(),
+            "kill_session_tree let the in-flight spawn of s1 install: the child outlives the forget"
+        );
+        assert!(host.get("s1").is_none());
+        reap(child);
+    }
+
+    #[test]
+    fn session_tree_kill_stops_the_session_and_its_numbered_children_only() {
+        let host = HarnessHost::new();
+        let mut own = host.insert_test_child("s1");
+        let mut numbered = host.insert_test_child("s1#0");
+        let mut other = host.insert_test_child("s10");
+        let mut other_numbered = host.insert_test_child("s10#0");
+        host.kill_session_tree("s1");
+        assert!(exits_soon(&mut own), "the session's own child survived");
+        assert!(exits_soon(&mut numbered), "the s1#0 child survived");
+        let mut left: Vec<String> = host.lock_inner().children.keys().cloned().collect();
+        left.sort();
+        assert_eq!(left, ["s10", "s10#0"]);
+        assert!(matches!(other.try_wait(), Ok(None)));
+        assert!(matches!(other_numbered.try_wait(), Ok(None)));
+        reap(other);
+        reap(other_numbered);
     }
 
     #[test]

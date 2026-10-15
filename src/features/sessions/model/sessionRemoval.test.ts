@@ -275,6 +275,7 @@ it("archives the flushed transcript after cancellation, with streaming stopped",
   expect(args.session.blocks.at(-1).streaming).toBeFalsy();
   expect(mocks.invoke.mock.calls.map(([name]) => name)).toEqual([
     "session_upsert",
+    "control_forget_session",
     "session_set_archived",
   ]);
 });

@@ -12,14 +12,20 @@ const HINTS = {
 
 /**
  * Every code an app action answers with. The one list in code: design 1.4's
- * `CallErrorCode` (PR 3) derives from it rather than repeating it.
+ * `CallErrorCode` (PR 3) is this type. `unknown_token` and `turn_inactive`
+ * come from `control.rs` and `roster_unavailable` from `resolveCaller`.
+ * Nothing sends `no_token` yet; PR 4a makes the CLI send it.
  */
 export type AppErrorCode =
   | keyof typeof HINTS
   | "invalid_input"
   | "request_id_reused"
   | "unknown_action"
-  | "action_removed";
+  | "action_removed"
+  | "unknown_token"
+  | "turn_inactive"
+  | "no_token"
+  | "roster_unavailable";
 
 /**
  * An app action the app refused for a reason the agent can act on. `hint`

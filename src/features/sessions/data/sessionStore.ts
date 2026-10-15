@@ -770,9 +770,10 @@ export async function deleteSession(
       )
       .map(([, pending]) => pending);
     if (pendingWrites.length > 0) await Promise.all(pendingWrites);
-    await enqueueSessionWrite(sessionId, () =>
-      invoke<void>("session_delete", { sessionId, imagePaths }),
-    );
+    await enqueueSessionWrite(sessionId, async () => {
+      await invoke<void>("control_forget_session", { sessionId });
+      await invoke<void>("session_delete", { sessionId, imagePaths });
+    });
     monoSavedBlocks.delete(sessionId);
     const tombstone = setTimeout(
       () => deletedSessionIds.delete(sessionId),
@@ -799,9 +800,11 @@ export async function setSessionArchived(
   sessionId: string,
   archived: boolean,
 ): Promise<void> {
-  await enqueueSessionWrite(sessionId, () =>
-    invoke<void>("session_set_archived", { sessionId, archived }),
-  );
+  await enqueueSessionWrite(sessionId, async () => {
+    // An archived session's token must die with it; unarchive mints a new one.
+    if (archived) await invoke<void>("control_forget_session", { sessionId });
+    await invoke<void>("session_set_archived", { sessionId, archived });
+  });
 }
 
 export async function setSessionPinned(
