@@ -39,6 +39,7 @@ import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import { HarnessEventQueue } from "./model/harnessFlush";
 import { updateSessionState } from "./model/sessionState";
+import { listenForControlRequests } from "./model/controlRequests";
 import {
   appCliSource,
   handleAgentApp,
@@ -111,7 +112,6 @@ import {
 } from "../features/orchestration/ui/OrchestrationActions";
 import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import {
@@ -10914,17 +10914,7 @@ function Workspace({
   removeSessionRef.current = onRemoveHistorySession;
 
   useEffect(() => {
-    // Scoped to this window: Rust sends each call to the window of its grant,
-    // and a global `listen` (target `Any`) would run it in every window, as
-    // `main.tsx` notes for `quit_confirm`.
-    const listening = getCurrentWebviewWindow().listen<{
-      id: string;
-      namespace: string;
-      sessionId: string;
-      requestId: string;
-      action: string;
-      input: Record<string, unknown>;
-    }>("monocode-control-request", ({ payload }) => {
+    const listening = listenForControlRequests((payload) => {
       const handle = async () => {
         if (payload.namespace === "control") {
           return orchestrator.handle(

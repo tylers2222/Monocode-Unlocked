@@ -295,6 +295,8 @@ export function createOwnerDeliveries(timeoutMs: number) {
   };
 }
 
+export type OwnerDeliveries = ReturnType<typeof createOwnerDeliveries>;
+
 /**
  * This window's side of design 6 across windows: it runs a route Rust sent
  * to it as the owner, answers the caller with the delivery, and takes the
@@ -305,7 +307,7 @@ export function createOwnerDeliveries(timeoutMs: number) {
  */
 export function listenForMonoRoutes(
   host: () => MonoRouteHost,
-  deliveries: Pick<ReturnType<typeof createOwnerDeliveries>, "settle">,
+  deliveries: Pick<OwnerDeliveries, "settle">,
 ): () => void {
   const here = getCurrentWebviewWindow();
   const routes = here.listen<MonoRouteEvent>(

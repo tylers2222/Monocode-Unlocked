@@ -784,3 +784,37 @@ it("drops an answer no one waits for after one timeout", async () => {
     vi.useRealTimers();
   }
 });
+
+// Review PR 4a r4 m18. Defect: an owner's answer that comes before the caller
+// waits (an idle target the owner submits at once) expires at once, so the
+// call reports the gate's route.
+it("keeps an early answer until the caller waits, within one timeout", async () => {
+  vi.useFakeTimers();
+  try {
+    const deliveries = createOwnerDeliveries(50);
+    const id = "m_aaaaaaaaaaaa" as MessageId;
+    deliveries.settle({ messageId: id, delivery: "submit" });
+    vi.advanceTimersByTime(40);
+    const waited = deliveries.wait(id);
+    vi.advanceTimersByTime(51);
+    expect(await waited).toBe("submit");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// Review PR 4a r4 n11. Defect: the cleanup leaves the listeners in place, so
+// a remounted window runs each route twice.
+it("stops running routes once its listeners are cleaned up", async () => {
+  const owner = world([], [chat("a-chat")]);
+  bus.current = "owner";
+  const stop = listenForMonoRoutes(() => owner.host, createOwnerDeliveries(50));
+  stop();
+  await Promise.resolve();
+  await bus.emitTo("owner", "mono-message-route", {
+    messages: [],
+    route: { sessionId: "a-chat", via: "queue" },
+    callerWindow: "caller",
+  });
+  expect(owner.open).not.toHaveBeenCalled();
+});
