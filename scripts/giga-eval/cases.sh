@@ -148,7 +148,9 @@ tree_check() {
 
 ensure_mono() {   # ensure_mono <name> <giga 0|1>
   local name="$1" giga="$2"
-  if ! ui open-mono "$name" >/dev/null 2>&1; then ui create-mono "$name" || die "cannot create Mono $name"; fi
+  # Create only when no sidebar row exists: a failed open must not make a second Mono of that name.
+  if ui has-mono "$name"; then ui open-mono "$name" >/dev/null || die "cannot open Mono $name"
+  else ui create-mono "$name" || die "cannot create Mono $name"; fi
   ui set-model "$name" "$MODEL_TAB" "$MODEL_ROW" "$MODEL_LABEL" >/dev/null || die "cannot set $name to $MODEL_ID"
   if [[ "$giga" == 1 ]]; then ui giga-on "$name" >/dev/null || die "cannot turn Giga on for $name"; fi
 }

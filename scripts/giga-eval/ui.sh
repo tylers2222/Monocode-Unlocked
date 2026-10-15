@@ -20,6 +20,12 @@ source "$(dirname "$0")/lib.sh"
 TARGET="${GIGA_EVAL_TARGET:-instance}"
 command -v cliclick >/dev/null || brew install cliclick
 pid="$(target_pid "$TARGET")"; [[ -n "$pid" ]] || die "$TARGET is not running"
+# Every failure leaves a screenshot, so a failed step can be read after the run.
+die() {
+  local shot="$EVAL_OUT/ui-fail-$(date +%H%M%S)-$$.png"
+  screencapture -x -o -l "$(ax windowid 2>/dev/null)" "$shot" 2>/dev/null && log "screenshot $shot"
+  log "ERROR: $*"; exit 2
+}
 
 ax() { osascript -l JavaScript "$EVAL_DIR/ax.js" "$1" "$pid" "${@:2}"; }
 # Every click and keystroke lands on the frontmost app, so each one first
@@ -90,6 +96,12 @@ cmd_open_mono() {
   click "${1:?name}, *" AXButton
   # The previous Mono's composer stays until the switch lands; wait for this Mono's own.
   wait_for "Message $1" AXTextArea
+}
+
+# Exit 0 when the sidebar has a row for the Mono.
+cmd_has_mono() {
+  if ax find "Settings sections" >/dev/null 2>&1; then close_dialog; fi
+  ax find "${1:?name}, *" AXButton >/dev/null 2>&1
 }
 
 cmd_open_settings() {
@@ -166,6 +178,7 @@ case "${1:-}" in
   dump) shift; ax dump "${1:-25}" ;;
   create-mono) shift; cmd_create_mono "$@" ;;
   open-mono) shift; cmd_open_mono "$@" ;;
+  has-mono) shift; cmd_has_mono "$@" ;;
   open-settings) shift; cmd_open_settings "$@" ;;
   giga-on) shift; cmd_giga_on "$@" ;;
   giga-off) shift; cmd_giga_off "$@" ;;
