@@ -3379,6 +3379,17 @@ html.theme-light .popover-backdrop {
   background: var(--color-background-base);
 }
 
+/* Over native glass the page is transparent, so a popover's backdrop-filter
+   has no web content to blur: WebKit paints near-white patches through the
+   2% tint. Paint the surface the popover has over an opaque page instead. */
+html.has-native-glass:not(.theme-light) .popover-surface {
+  background: color-mix(
+    in srgb,
+    var(--color-content) 2%,
+    var(--color-background-base)
+  );
+}
+
 /* Animate content only; its sibling glass stays still. Finish at `none` and
    do not retain the animation's transform/opacity compositing state with a
    forwards fill. Hover repaints should happen in the ordinary resting state. */

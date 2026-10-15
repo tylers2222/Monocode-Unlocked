@@ -54,7 +54,7 @@ export function SkillPicker({
       className={
         compact
           ? "overflow-hidden"
-          : "overflow-hidden rounded-lg border border-content/10 bg-content/5 backdrop-blur-xl"
+          : "overflow-hidden rounded-lg border border-content/10 bg-content/5 backdrop-blur-xl popover-surface"
       }
     >
       {creating ? (

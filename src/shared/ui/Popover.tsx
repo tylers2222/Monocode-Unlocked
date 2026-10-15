@@ -366,7 +366,9 @@ function WebPopover({
       style={{ ...placed, zIndex: layer }}
       className={bare ? undefined : `${FRAME} ${rounded}`}
     >
-      {bare ? null : <GlassBackdrop />}
+      {bare ? null : (
+        <GlassBackdrop className="popover-backdrop popover-surface" />
+      )}
       <div
         {...rest}
         ref={(el) => {

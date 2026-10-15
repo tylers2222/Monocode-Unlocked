@@ -219,7 +219,7 @@ export function FilePicker({
         aria-label={paletteMode ? "Command Palette" : "Go to File"}
         data-file-picker
         onMouseDown={(e) => e.stopPropagation()}
-        className="absolute left-1/2 top-[12%] flex w-[min(560px,calc(100vw-24px))] -translate-x-1/2 flex-col overflow-hidden rounded-lg border border-content/10 bg-content/5 backdrop-blur-xl"
+        className="absolute left-1/2 top-[12%] flex w-[min(560px,calc(100vw-24px))] -translate-x-1/2 flex-col overflow-hidden rounded-lg border border-content/10 bg-content/5 backdrop-blur-xl popover-surface"
       >
         <div className="pb-1.5">
           <label className="flex items-center gap-2 border-b border-stroke px-2 py-2.5 text-content/50">

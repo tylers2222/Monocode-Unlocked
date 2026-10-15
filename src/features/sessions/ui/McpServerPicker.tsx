@@ -79,7 +79,7 @@ export function McpServerPicker({
           onDismiss("escape");
         }
       }}
-      className="overflow-hidden rounded-lg border border-content/10 bg-content/5 shadow-xl backdrop-blur-xl"
+      className="overflow-hidden rounded-lg border border-content/10 bg-content/5 shadow-xl backdrop-blur-xl popover-surface"
     >
       <div className="flex items-center gap-2 border-b border-content/10 px-3 py-2">
         <Search className="size-3.5 shrink-0 text-content/45" />
