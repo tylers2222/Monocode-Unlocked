@@ -62,6 +62,7 @@ describe("session persistence concurrency", () => {
     expect(commands).toEqual([
       "session_upsert",
       "session_upsert",
+      "control_forget_session",
       "session_delete",
     ]);
     await upsertSession(worker);
@@ -100,7 +101,14 @@ describe("session persistence concurrency", () => {
     });
     await Promise.all([writing, lateWrite, deleting]);
 
-    expect(commands).toEqual(["session_upsert", "session_delete"]);
+    expect(commands).toEqual([
+      "session_upsert",
+      "control_forget_session",
+      "session_delete",
+    ]);
+    expect(mocks.invoke).toHaveBeenCalledWith("control_forget_session", {
+      sessionId: "s1",
+    });
   });
 
   it("discards a draft-only record before reusing its open session id", async () => {
@@ -205,6 +213,7 @@ describe("session persistence concurrency", () => {
     expect(commands).toEqual([
       "session_upsert",
       "session_upsert",
+      "control_forget_session",
       "session_set_archived",
     ]);
     expect(mocks.invoke.mock.calls[1]?.[1]).toMatchObject({
@@ -212,5 +221,14 @@ describe("session persistence concurrency", () => {
         blocks: [{ text: "hello" }, { text: "final buffered output" }],
       },
     });
+  });
+
+  it("keeps a session's app access when it is unarchived", async () => {
+    mocks.invoke.mockResolvedValue(undefined);
+    const { setSessionArchived } = await loadStore();
+    await setSessionArchived("s1", false);
+    expect(mocks.invoke.mock.calls.map(([command]) => command)).toEqual([
+      "session_set_archived",
+    ]);
   });
 });

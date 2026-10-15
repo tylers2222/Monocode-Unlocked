@@ -169,11 +169,14 @@ function newMonoId(): string {
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/** The one Mono id rule, shared with `validate_mono_id` in `mono_roster.rs`. */
+export function isMonoId(id: string): boolean {
+  return /^[A-Za-z0-9-]{1,64}$/.test(id);
+}
+
 function parseMono(value: unknown): Mono | undefined {
   const entry = record(value);
-  // The one Mono id rule, shared with `validate_mono_id` in `mono_roster.rs`.
-  if (typeof entry.id !== "string" || !/^[A-Za-z0-9-]{1,64}$/.test(entry.id))
-    return undefined;
+  if (typeof entry.id !== "string" || !isMonoId(entry.id)) return undefined;
   const text = (key: string) =>
     typeof entry[key] === "string" ? (entry[key] as string) : undefined;
   const sessionId = text("sessionId");
@@ -464,6 +467,11 @@ export async function loadMonoRoster(): Promise<void> {
 /** Resolves once every roster write sent so far has been answered. */
 export function monoWritesSettled(): Promise<void> {
   return writes;
+}
+
+/** Whether the roster came from `monocode.db`, so Rust reads what this window shows. */
+export function monoRosterPersisted(): boolean {
+  return persisted;
 }
 
 /**

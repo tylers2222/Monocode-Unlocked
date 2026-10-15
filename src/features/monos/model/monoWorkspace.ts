@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { newSession, type Session } from "../../sessions/model/session";
 import {
   closeLeaf,
@@ -86,7 +87,9 @@ export async function resetMonoSession(
     stopped.runtimeMode,
     stopped.modelSettings,
   );
-  // A failed deletion must leave the original conversation selected.
+  // Revoke the old chat's app token first, so no call from it lands while it
+  // is deleted. A failed deletion must leave the original conversation selected.
+  await invoke("control_forget_session", { sessionId: current.id });
   await host.remove(stopped);
   forgetAgentContext(current.id);
   forgetMonoRotation(current.id);

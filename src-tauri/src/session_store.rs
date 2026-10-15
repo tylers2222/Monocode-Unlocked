@@ -994,6 +994,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::mono_transcript::ensure_tables(conn)?;
     // The Mono roster. No version row: another build may reuse the number.
     crate::mono_roster::ensure_tables(conn)?;
+    // Mono messages reference `monos`, so they come after it.
+    crate::mono_messages::ensure_tables(conn)?;
     Ok(())
 }
 
