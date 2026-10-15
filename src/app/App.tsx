@@ -10,6 +10,7 @@ import {
   enqueueMonoMessage,
 } from "../features/monos/model/monoMessaging";
 import {
+  createOwnerDeliveries,
   createTurnIds,
   getMonos,
   dispatchOpener,
@@ -20,6 +21,7 @@ import {
   sendMessage,
   type MonoMessagingHost,
   type MonoQueueHost,
+  type MonoRoutedEvent,
   type MonoRouteEvent,
   type MonoRouteHost,
 } from "../features/monos/model/monoRoute";
@@ -110,7 +112,7 @@ import {
   type OrchestrationWorkerDetail,
 } from "../features/orchestration/ui/OrchestrationActions";
 import { flushSync } from "react-dom";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import {
@@ -8885,6 +8887,7 @@ function Workspace({
   const monoRouteHost = useRef(routeHost);
   monoRouteHost.current = routeHost;
 
+  const ownerDeliveries = useMemo(() => createOwnerDeliveries(10_000), []);
   // Design 6: Rust sends a route here when this window owns its session.
   useEffect(() => {
     const listening = listen<MonoRouteEvent>(
@@ -8894,13 +8897,25 @@ function Workspace({
           monoRouteHost.current,
           payload.messages,
           payload.route,
-        ).catch(console.error);
+        )
+          .then((delivery) =>
+            emitTo(payload.callerWindow, "mono-message-routed", {
+              messageId: payload.messages[0].id,
+              delivery,
+            } satisfies MonoRoutedEvent),
+          )
+          .catch(console.error);
       },
+    );
+    const answered = listen<MonoRoutedEvent>(
+      "mono-message-routed",
+      ({ payload }) => ownerDeliveries.settle(payload),
     );
     return () => {
       void listening.then((unlisten) => unlisten());
+      void answered.then((unlisten) => unlisten());
     };
-  }, []);
+  }, [ownerDeliveries]);
 
   const appReceipts = useRef(
     new Map<string, { signature: string; promise: Promise<unknown> }>(),
@@ -11049,6 +11064,7 @@ function Workspace({
             parseSessionId(id) ? getSession(id).catch(() => null) : null,
           steerable: (session) =>
             isLiveHarness(session.harness) && canSteerHarness(session.harness),
+          ownerDelivery: (messageId) => ownerDeliveries.wait(messageId),
           steerableHarnesses: () =>
             HARNESSES.filter(
               (harness) => isLiveHarness(harness) && canSteerHarness(harness),

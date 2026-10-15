@@ -12,6 +12,7 @@ import {
 } from "../../agent-app/model/agentApp";
 import { TURN_FINISHED_ERROR } from "../../../app/model/appSessionSend";
 import {
+  createOwnerDeliveries,
   createTurnIds,
   dispatchOpener,
   ensureQueued,
@@ -162,7 +163,11 @@ const chat = (id: string, change: Partial<Session> = {}): Session => ({
 function world(
   loaded: Session[],
   unloaded: Session[] = [],
-  { caller = "giga", stored = [] as Session[] } = {},
+  {
+    caller = "giga",
+    stored = [] as Session[],
+    ownerDeliveries = createOwnerDeliveries(50),
+  } = {},
 ) {
   let sessions = loaded;
   const steerProject = vi.fn(async () => {});
@@ -198,6 +203,7 @@ function world(
     open,
     steerable: () => true,
     steerableHarnesses: () => ["claude"],
+    ownerDelivery: (messageId) => ownerDeliveries.wait(messageId),
     ownProject: () => true,
     monos: () => [
       { id: "giga" as MonoId, name: "Boss", role: "giga" },
@@ -609,4 +615,57 @@ it("never lists a session whose worktree was removed", async () => {
   await send({ ...ask(), send_to: "old-wt" });
   const live = rust.state.submitted[0].live as { sessionId: string }[];
   expect(live.map((entry) => entry.sessionId)).toEqual([]);
+});
+
+// Review PR 4a r2 m10. Defect: an opener whose submit refuses or throws
+// keeps its slot, so no later hand-off or reconcile can deliver the row.
+it.each([
+  ["refuses", () => false],
+  ["throws", () => Promise.reject(new Error("authorize failed"))],
+] as const)(
+  "releases an opener whose submit %s and keeps its one item",
+  async (_, submit) => {
+    const { send, get, host } = world([chat("a-chat")]);
+    await send(ask());
+    const item = get("a-chat").queuedMessages![0];
+    const started = await dispatchOpener(
+      host,
+      "a-chat",
+      { id: item.id as MessageId, text: item.text },
+      submit,
+    );
+    expect(started).toBe(false);
+    await vi.waitFor(() => expect(rust.state.rows[0].slot).toBeNull());
+    expect(ids(get("a-chat"))).toEqual([item.id]);
+  },
+);
+
+// Review PR 4a r2 m12. Defect: a call whose route another window ran
+// reports the gate's route, never the submit that window started.
+it("reports the delivery the owner window gives for the route it ran", async () => {
+  rust.state.ownerWindow = "workspace-2";
+  const ownerDeliveries = createOwnerDeliveries(1_000);
+  const caller = world([], [], { ownerDeliveries });
+  const sending = caller.send(ask());
+  const owner = world([chat("a-chat")]);
+  await vi.waitFor(() => expect(rust.state.rows).toHaveLength(1));
+  const delivery = await routeMessages(owner.host, rust.state.rows as never, {
+    sessionId: "a-chat" as SessionId,
+    via: "queue",
+  });
+  ownerDeliveries.settle({
+    messageId: "m_aaaaaaaaaaaa" as MessageId,
+    delivery,
+  });
+  expect(await sending).toMatchObject({ delivery: "submit" });
+});
+
+// Defect: the owner answers before the caller starts to wait, and the call
+// reports the gate's route instead.
+it("keeps an owner's answer that comes before the caller waits for it", async () => {
+  const deliveries = createOwnerDeliveries(50);
+  const id = "m_aaaaaaaaaaaa" as MessageId;
+  deliveries.settle({ messageId: id, delivery: "submit" });
+  expect(await deliveries.wait(id)).toBe("submit");
+  expect(await deliveries.wait(id)).toBeUndefined();
 });

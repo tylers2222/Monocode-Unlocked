@@ -1353,9 +1353,12 @@ fn turn(turn_id: &str) -> Result<&str, String> {
 
 /// The route of a new accept, sent to the window that owns its session.
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RouteEvent<'a> {
     messages: &'a [MonoMessage],
     route: &'a Routing,
+    /// The window that made the call; the owner tells it the delivery.
+    caller_window: &'a str,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1412,7 +1415,11 @@ pub fn mono_message_submit(
                 .emit_to(
                     owner.as_str(),
                     "mono-message-route",
-                    RouteEvent { messages, route },
+                    RouteEvent {
+                        messages,
+                        route,
+                        caller_window: window.label(),
+                    },
                 )
                 .is_ok()
         {
@@ -2595,6 +2602,18 @@ mod tests {
         let conn = store.lock_conn().unwrap();
         let id = sent_to_a(&conn, "r1", false);
         assert!(assign_slot(&conn, &id, "turn-1", "main", Delivery::Submit, 101).unwrap());
+        // Another turn's acceptance is not this hand-off's.
+        mark_delivery(&conn, &id, "turn-2", 102).unwrap();
+        assert!(matches!(
+            get(&conn, &id).unwrap().unwrap().status,
+            Status::Delivered {
+                slot: Some(PlainSlot {
+                    delivered_at: None,
+                    ..
+                }),
+                ..
+            }
+        ));
         mark_delivery(&conn, &id, "turn-1", 102).unwrap();
         release(&conn, &id, "turn-1", 103).unwrap();
         assert_eq!(slot_turn(&conn, &id).as_deref(), Some("turn-1"));
@@ -2617,6 +2636,12 @@ mod tests {
         let conn = store.lock_conn().unwrap();
         let held = sent_to_a(&conn, "r1", true);
         let waiting = sent_to_a(&conn, "r2", false);
+        let dropped = sent_to_a(&conn, "r3", false);
+        conn.execute(
+            "UPDATE mono_messages SET status = 'dropped', closed_at = 1 WHERE id = ?1",
+            [dropped.as_str()],
+        )
+        .unwrap();
         assert!(assign_slot(&conn, &held, "turn-1", "main", Delivery::Submit, 101).unwrap());
         let listed: Vec<MessageId> = unqueued(&conn, &session("a-chat"))
             .unwrap()
@@ -2802,5 +2827,21 @@ mod tests {
             &["a-chat"],
         );
         assert_eq!(route_of(&again), None);
+    }
+
+    // Review PR 4a m7 (M03). Defect: a hand-off takes the slot of a row that
+    // is already answered and delivers the question again.
+    #[test]
+    fn assign_slot_refuses_an_answered_row() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let id = sent_to_a(&conn, "r1", true);
+        conn.execute(
+            "UPDATE mono_messages SET status = 'answered', closed_at = 1 WHERE id = ?1",
+            [id.as_str()],
+        )
+        .unwrap();
+        assert!(!assign_slot(&conn, &id, "turn-1", "main", Delivery::Submit, 101).unwrap());
+        assert_eq!(slot_turn(&conn, &id), None);
     }
 }

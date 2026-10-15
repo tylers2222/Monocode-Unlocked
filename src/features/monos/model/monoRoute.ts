@@ -239,13 +239,54 @@ export type MonoMessagingHost = MonoRouteHost & {
   ownProject(session: Session): boolean;
   /** Every Mono, in rail order. */
   monos(): { id: MonoId; name: string; role: MonoRole }[];
+  /** The delivery the owner window reports for a route it ran, if it does. */
+  ownerDelivery(messageId: MessageId): Promise<Delivery | undefined>;
 };
 
 /** The route of a new accept: the gate's choice, which the rows do not hold. */
 export type Routing = { sessionId: SessionId; via: "queue" | "steer" };
 
 /** `mono-message-route`: a route this window runs because it owns the session. */
-export type MonoRouteEvent = { messages: Routed[]; route: Routing };
+export type MonoRouteEvent = {
+  messages: Routed[];
+  route: Routing;
+  callerWindow: string;
+};
+
+/** `mono-message-routed`: the owner's answer to the caller window. */
+export type MonoRoutedEvent = { messageId: MessageId; delivery: Delivery };
+
+/**
+ * Deliveries that owner windows report, by message id. An answer can come
+ * before the caller waits for it, so early answers are kept until taken.
+ */
+export function createOwnerDeliveries(timeoutMs: number) {
+  const answers = new Map<MessageId, Delivery>();
+  const waiting = new Map<MessageId, (delivery: Delivery) => void>();
+  return {
+    settle({ messageId, delivery }: MonoRoutedEvent) {
+      const waiter = waiting.get(messageId);
+      if (waiter) waiter(delivery);
+      else answers.set(messageId, delivery);
+    },
+    wait(messageId: MessageId): Promise<Delivery | undefined> {
+      const early = answers.get(messageId);
+      answers.delete(messageId);
+      if (early) return Promise.resolve(early);
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          waiting.delete(messageId);
+          resolve(undefined);
+        }, timeoutMs);
+        waiting.set(messageId, (delivery) => {
+          clearTimeout(timer);
+          waiting.delete(messageId);
+          resolve(delivery);
+        });
+      });
+    },
+  };
+}
 
 type Submitted =
   | {
@@ -356,7 +397,8 @@ async function routed(
 ): Promise<Delivery> {
   const { route, ownerWindow, messages } = submitted;
   if (submitted.duplicate || !route) return stored;
-  if (ownerWindow) return route.via;
+  if (ownerWindow)
+    return (await host.ownerDelivery(messages[0].id)) ?? route.via;
   return routeMessages(host, messages, route);
 }
 

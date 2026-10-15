@@ -290,7 +290,7 @@ impl RejectCode {
             RejectCode::NoOpenHandle => "No message in this turn is waiting for your reply. Use send_message.",
             RejectCode::UnknownHandle => "No such handle in this turn.",
             RejectCode::HandleClosed => "That handle is already closed.",
-            RejectCode::AmbiguousReply => "Several handles are open. Pass to.",
+            RejectCode::AmbiguousReply => "Several messages wait for your reply, and reply answers only when one does. Answer each with send_message to its sender.",
         }
     }
 }
@@ -450,7 +450,10 @@ pub fn decide_reply(
                 .collect();
             return Decision::Reject {
                 code: RejectCode::AmbiguousReply,
-                hint: format!("Several handles are open: {}. Pass to.", listed.join(", ")),
+                hint: format!(
+                    "Several messages wait for your reply: {}. reply answers only when one does. Answer each with send_message to its sender.",
+                    listed.join(", ")
+                ),
                 to: None,
                 open_handles,
             };
@@ -718,6 +721,14 @@ mod tests {
         };
         assert_eq!(at(8001), rejected(RejectCode::TooLarge, party_a()));
         assert!(matches!(at(8000), Decision::Accept { .. }));
+        // Outside the BMP: one code point, two UTF-16 units, four bytes.
+        let emoji = decide_send(
+            &caller(CallerKind::MonoChat),
+            &send(&"😀".repeat(8000), "mono-a", false, ActionType::Queue),
+            &hash(),
+            &facts(mono_a(Some(live("a-chat", false, true)))),
+        );
+        assert!(matches!(emoji, Decision::Accept { .. }), "{emoji:?}");
     }
 
     #[test]
@@ -1037,6 +1048,11 @@ mod tests {
         );
         assert!(
             hint.contains("#1 (from Boss: ") && hint.contains("#2 (from Boss: "),
+            "{hint}"
+        );
+        // 4a refuses `to`, so the hint gives a remedy that works now.
+        assert!(
+            !hint.contains("Pass to") && hint.contains("send_message"),
             "{hint}"
         );
     }

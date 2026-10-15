@@ -71,6 +71,9 @@ const MANAGED_BODY: &str = r#"(The app keeps this block up to date. Text outside
 - When the turn changed a file other than `log.jsonl`, the app commits `gigas/<slug>/` as `giga(<slug>): <outcome> turn <session>`, without secret-looking files. A turn that only added its receipt makes no commit: its line waits in `log.jsonl` and goes into the next commit. After every turn the app rebuilds `index/index.db` from every `log.jsonl` and `briefs/` file, so waiting receipts can be searched too.
 - The pre-commit hook lets a Giga commit only its own `gigas/<slug>/` and new files in `shared/`, and refuses secret-looking files. The app sets `MONOCODE_GIGA_SLUG` for each Giga, so your own commits follow the same rules.
 
+## Messages between Monos
+- `app monos.send` is removed. Message another Mono with `app messages.send` (`message`, `send_to`, `wanting_reply`) and answer a message that wants a reply with `app messages.reply`. Where `shared/CONVENTIONS.md` still names `monos.send`, this line wins.
+
 ## Search before you redo work
 `index/index.db` has one SQLite FTS5 table, `entries(source, giga, path, at, text)`. `source` is `log` or `brief`.
 ```sh
@@ -79,15 +82,6 @@ sqlite3 ~/MonoCode/index/index.db "SELECT giga, path, snippet(entries, 4, '[', '
 "#;
 
 const GITIGNORE: &str = "index/\ngigas/*/state/\ngigas/*/scratch/\n.DS_Store\n";
-
-/// Lines MonoCode once wrote into `shared/CONVENTIONS.md`, with what replaces
-/// each. The file is the user's, so only an exact old line is rewritten.
-const RETIRED_CONVENTIONS: [(&str, &str); 1] = [(
-    r#"- Messages to other Monos: `app monos.send`. Use `whenBusy:"steer"` to redirect, `"followUp"` to wait."#,
-    MESSAGES_CONVENTION,
-)];
-
-const MESSAGES_CONVENTION: &str = r#"- Messages to other Monos: `app messages.send` with `message`, `send_to` and `wanting_reply` (true only when you need an answer). `action_type:"steer"` redirects a running turn; the default `"queue"` waits for it to end. Answer a message that wants a reply with `app messages.reply`."#;
 
 const CONVENTIONS: &str = r#"# Conventions for Gigas
 
@@ -393,7 +387,6 @@ fn ensure_tree(root: &Path, gigas: &[GigaFolder], report: &mut EnsureReport) -> 
         write_new(root, "shared/.keep", "", created)?;
     }
     write_new(root, "shared/CONVENTIONS.md", CONVENTIONS, created)?;
-    retire_conventions(&root.join("shared/CONVENTIONS.md"))?;
     ensure_dir(root, "index", created)?;
     ensure_dir(root, "gigas", created)?;
     for giga in gigas {
@@ -440,28 +433,6 @@ fn ensure_dir(root: &Path, rel: &str, created: &mut Vec<String>) -> Result<bool,
         created.push(format!("{rel}/"));
     }
     Ok(true)
-}
-
-/// Replaces each retired line MonoCode wrote, when the file still has it
-/// exactly as written. Every other line stays as the user left it.
-fn retire_conventions(path: &Path) -> Result<(), String> {
-    let Ok(existing) = fs::read_to_string(path) else {
-        return Ok(());
-    };
-    let next = existing
-        .split_inclusive('\n')
-        .map(|line| {
-            let text = line.trim_end_matches(['\r', '\n']);
-            match RETIRED_CONVENTIONS.iter().find(|(old, _)| *old == text) {
-                Some((_, new)) => format!("{new}{}", &line[text.len()..]),
-                None => line.to_string(),
-            }
-        })
-        .collect::<String>();
-    if next != existing {
-        write_atomic(path, next.as_bytes())?;
-    }
-    Ok(())
 }
 
 /// Writes `rel` only when nothing is there.
@@ -1971,25 +1942,28 @@ mod tests {
         rebuild_index(&root).unwrap();
         assert_eq!(rows(), (tracing, release));
     }
-    // Defect: a Giga keeps learning the removed `monos.send` from the
-    // conventions file that an earlier app version wrote.
+    // Defect: the workspace keeps teaching the removed `monos.send`, or the
+    // fix leaves a change under `shared/` that no one may commit.
     #[test]
-    fn ensure_replaces_the_retired_messaging_convention_and_keeps_the_rest() {
+    fn a_workspace_with_the_old_messaging_convention_learns_messages_send_and_stays_clean() {
         let home = TempHome::new("conventions");
-        let fresh = ensure(&home.0, &[giga("alpha")]);
-        assert_eq!(fresh.error, None);
-        let path = home.root().join("shared/CONVENTIONS.md");
-        assert!(!fs::read_to_string(&path).unwrap().contains("monos.send"));
-        let (old, new) = RETIRED_CONVENTIONS[0];
-        fs::write(
-            &path,
-            format!("# Conventions\n\n{old}\n- Teach with one line first.\n"),
-        )
-        .unwrap();
-        ensure(&home.0, &[giga("alpha")]);
-        let expected = format!("# Conventions\n\n{new}\n- Teach with one line first.\n");
-        assert_eq!(fs::read_to_string(&path).unwrap(), expected);
-        ensure(&home.0, &[giga("alpha")]);
-        assert_eq!(fs::read_to_string(&path).unwrap(), expected);
+        let root = home.root();
+        fs::create_dir_all(root.join("shared")).unwrap();
+        let old = "# Conventions for Gigas\n\n- Messages to other Monos: `app monos.send`. Use `whenBusy:\"steer\"` to redirect, `\"followUp\"` to wait.\n";
+        fs::write(root.join("shared/CONVENTIONS.md"), old).unwrap();
+        for _ in 0..2 {
+            assert_eq!(ensure(&home.0, &[]).error, None);
+        }
+        assert_eq!(git(&root, &["status", "--porcelain"], &[]).unwrap(), "");
+        assert_eq!(
+            fs::read_to_string(root.join("shared/CONVENTIONS.md")).unwrap(),
+            old
+        );
+        let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
+        let block = &agents[agents.find(MANAGED_START).unwrap()..];
+        assert!(
+            block.contains("`app monos.send` is removed") && block.contains("`app messages.send`"),
+            "{block}"
+        );
     }
 }
