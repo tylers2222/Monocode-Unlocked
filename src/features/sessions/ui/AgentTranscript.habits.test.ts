@@ -383,6 +383,8 @@ it("shows a sent notice as an app line that opens the exact text the agent got",
   const line = container.querySelector<HTMLElement>("[data-mono-notice]")!;
   expect(line.querySelector(".user-message-bubble")).toBeNull();
   expect(line.querySelector("[data-chat-message]")).toBeNull();
+  // The transcript is font-mono; the app line reads as prose, as the frame does.
+  expect(line.className).toContain("font-sans");
   expect(line.textContent).toBe(
     "Notice from the app · sent to Captain Awesome" +
       "Unanswered · MonoGhost did not reply to “Nightly check: is CI green?”" +

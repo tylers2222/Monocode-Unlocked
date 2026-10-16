@@ -2408,7 +2408,7 @@ function SentNotice({
   return (
     <div
       data-mono-notice
-      className={`flex min-w-0 gap-2 pt-1.5 pb-5 ${embedded ? "" : "px-4"}`}
+      className={`flex min-w-0 gap-2 pt-1.5 pb-5 font-sans ${embedded ? "" : "px-4"}`}
     >
       <Bell className="mt-px size-3.5 shrink-0 text-amber-400" />
       <div className="min-w-0 flex-1">
