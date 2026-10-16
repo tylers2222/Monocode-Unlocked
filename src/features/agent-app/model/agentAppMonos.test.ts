@@ -313,3 +313,23 @@ it.each([
     expect(send).not.toHaveBeenCalled();
   },
 );
+
+// Design 16.12.1.4 (whole-turn). Defect: the app boundary refuses scope as
+// an unknown field, or drops it, so Rust sees a steer with no target.
+it("passes a whole-turn steer's scope to messages.send", async () => {
+  const { run, send } = fixture();
+  await run("messages.send", {
+    message: "Stop and commit",
+    send_to: "mono-2",
+    wanting_reply: false,
+    intent: "steer",
+    scope: "turn",
+  });
+  expect(send).toHaveBeenCalledWith(expect.anything(), {
+    message: "Stop and commit",
+    send_to: "mono-2",
+    wanting_reply: false,
+    intent: "steer",
+    scope: "turn",
+  });
+});

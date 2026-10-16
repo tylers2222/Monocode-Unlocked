@@ -67,15 +67,25 @@ it("accepts a reply's to as one handle or 1 to 9 different ones, always as a lis
     expect(() => reply(nearMiss)).toThrow("to must be");
 });
 
-// Design 16.1. Defect: the web app trusts a row that is new and names a
-// target, or an accepted continue, which the gate never lets through; or an
-// accepted row's result has no `Intent` type without a cast.
-it("reads an accepted row's intent only when it and replyTo agree", () => {
+// Design 16.1, 16.12. Defect: the web app trusts a row that is new and
+// names a target, an accepted continue, or a steer with no target or two,
+// which the gate never lets through; or an accepted row's result has no
+// `Intent` type without a cast.
+it("reads an accepted row's intent only when it, replyTo and scope agree", () => {
   const target = "m_abcdefgh2345";
-  const row = (status: string, intent: unknown, replyTo: unknown) =>
-    parseRowIntent({ status, intent, replyTo });
-  const accepted = (status: string, intent: unknown, replyTo: unknown) => {
-    const parsed = row(status, intent, replyTo);
+  const row = (
+    status: string,
+    intent: unknown,
+    replyTo: unknown,
+    scope: unknown = null,
+  ) => parseRowIntent({ status, intent, replyTo, scope });
+  const accepted = (
+    status: string,
+    intent: unknown,
+    replyTo: unknown,
+    scope: unknown = null,
+  ) => {
+    const parsed = row(status, intent, replyTo, scope);
     const read: Intent | undefined =
       parsed?.status === "accepted" ? parsed.intent : undefined;
     return read;
@@ -83,31 +93,43 @@ it("reads an accepted row's intent only when it and replyTo agree", () => {
   expect(accepted("delivered", "new", null)).toEqual({
     intent: "new",
     replyTo: null,
+    scope: null,
   });
   expect(accepted("open", "steer", target)).toEqual({
     intent: "steer",
     replyTo: target,
+    scope: null,
   });
   expect(accepted("answered", "reply", target)).toEqual({
     intent: "reply",
     replyTo: target,
+    scope: null,
   });
-  for (const [intent, replyTo] of [
-    ["new", target],
-    ["continue", target],
-    ["steer", null],
-    ["reply", null],
-    ["queue", null],
-    ["steer", "m_NOTANID0000"],
+  expect(accepted("delivered", "steer", null, "turn")).toEqual({
+    intent: "steer",
+    replyTo: null,
+    scope: "turn",
+  });
+  for (const [intent, replyTo, scope] of [
+    ["new", target, null],
+    ["continue", target, null],
+    ["steer", null, null],
+    ["reply", null, null],
+    ["queue", null, null],
+    ["steer", "m_NOTANID0000", null],
+    ["steer", target, "turn"],
+    ["new", null, "turn"],
+    ["reply", null, "turn"],
+    ["steer", null, "session"],
   ])
-    expect(row("delivered", intent, replyTo)).toBeUndefined();
+    expect(row("delivered", intent, replyTo, scope)).toBeUndefined();
   expect(row("rejected", "continue", null)).toEqual({
     status: "rejected",
-    asked: { intent: "continue", replyTo: null },
+    asked: { intent: "continue", replyTo: null, scope: null },
   });
-  expect(row("rejected", "steer", null)).toEqual({
+  expect(row("rejected", "steer", null, "turn")).toEqual({
     status: "rejected",
-    asked: { intent: "steer", replyTo: null },
+    asked: { intent: "steer", replyTo: null, scope: "turn" },
   });
 });
 
@@ -165,5 +187,32 @@ it("takes a send's intent as given and reply_to as one message id", () => {
   ])
     expect(() => send({ intent: "steer", reply_to: replyTo })).toThrow(
       "reply_to must be one message_id (m_…). A steer names a message you sent: use the message_id your send_message returned.",
+    );
+});
+
+// Design 16.12.1 (whole-turn). Defect: TS accepts a call Rust refuses, so
+// one target is dropped in silence, or a scope other than "turn" passes.
+it("takes scope turn alone and refuses it with reply_to or another value", () => {
+  const send = (extra: Record<string, unknown>) =>
+    parseSendInput({
+      message: "Stop",
+      send_to: "mono-2",
+      wanting_reply: false,
+      intent: "steer",
+      ...extra,
+    });
+  expect(send({ scope: "turn" })).toEqual({
+    message: "Stop",
+    send_to: "mono-2",
+    wanting_reply: false,
+    intent: "steer",
+    scope: "turn",
+  });
+  expect(() => send({ scope: "turn", reply_to: "m_abcdefgh2345" })).toThrow(
+    'Pass reply_to or scope "turn", not both. reply_to steers the work one message started; scope "turn" steers everything the recipient is doing now.',
+  );
+  for (const scope of ["session", true, null, ["turn"]])
+    expect(() => send({ scope })).toThrow(
+      'scope must be "turn": steer everything the recipient is doing now.',
     );
 });

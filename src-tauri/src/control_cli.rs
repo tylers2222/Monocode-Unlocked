@@ -244,18 +244,22 @@ Actions:
                   until the receiver's turn ends. intent "steer" changes work
                   a message of yours started: pass reply_to, the message_id
                   your send returned; it reaches the session running that
-                  work, and is refused when that work is not running. Answer
-                  a waiting message with messages.reply. continue is for
-                  users only. Returns message_id, status (open or delivered;
-                  dropped when a steer missed its turn), delivery (submit,
-                  queue, steer, or dropped) and hop.
+                  work, and is refused when that work is not running.
+                  intent "steer" with "scope":"turn" changes everything the
+                  recipient is doing now (a Giga to a Mono); it never
+                  reaches the recipient's sessions. Never pass both reply_to
+                  and scope. Answer a waiting message with messages.reply.
+                  continue is for users only. Returns message_id, status
+                  (open or delivered; dropped when a steer missed its turn),
+                  delivery (submit, queue, steer, or dropped) and hop.
                   Messages are limited to 8000 characters. Codes:
                   invalid_input, request_id_reused, too_large,
-                  intent_mismatch, intent_not_allowed, unknown_target,
-                  self_send, direction_forbidden, unknown_message,
+                  intent_mismatch, steer_needs_target, intent_not_allowed,
+                  unknown_target, self_send, direction_forbidden,
+                  steer_scope_not_allowed, unknown_message,
                   steer_target_mismatch, reply_unsupported_target,
-                  habit_cannot_wait, target_gone, target_no_conversation,
-                  cannot_steer.
+                  habit_cannot_wait, target_gone, nothing_running,
+                  target_no_conversation, cannot_steer.
   messages.reply {"message":"...","to":"#1","wanting_reply":false}
                   Answer a <mono_message> that waits for your reply (it says
                   wanting_reply="true" and has a handle such as
@@ -600,7 +604,8 @@ pub fn app_tools() -> Value {
                     "send_to": {"type": "string", "minLength": 1, "description": "A mono_id from get_monos, or the id of a session in one of your projects."},
                     "wanting_reply": {"type": "boolean", "description": "true only when you need an answer."},
                     "intent": {"type": "string", "enum": ["new", "steer", "reply", "continue"], "description": "new for new work; steer to change work that reply_to started. Answer a waiting message with the reply tool. continue is for users only."},
-                    "reply_to": {"type": "string", "minLength": 1, "description": "The message_id (m_…) of a message you sent. Required for steer, refused for new."}
+                    "reply_to": {"type": "string", "minLength": 1, "description": "The message_id (m_…) of a message you sent: steer the work it started. For steer pass reply_to or scope, not both. Refused for new."},
+                    "scope": {"type": "string", "enum": ["turn"], "description": "With intent steer and no reply_to: steer everything the recipient is doing now, in its own running turn only. Only a Giga may steer a Mono this way. Not with reply_to."}
                 },
                 "required": ["message", "send_to", "wanting_reply", "intent"],
                 "additionalProperties": false
@@ -1380,6 +1385,8 @@ mod tests {
         );
         assert_eq!(send["properties"]["reply_to"]["type"], "string");
         assert!(send["properties"].get("action_type").is_none(), "{send}");
+        // Whole-turn. Defect: MCP clients cannot send scope, or must send it.
+        assert_eq!(send["properties"]["scope"]["enum"], json!(["turn"]));
         assert_eq!(out[3]["id"], 4);
         assert_eq!(out[3]["error"]["code"], -32601);
         assert_eq!(out[4]["error"]["code"], -32600);

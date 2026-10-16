@@ -529,9 +529,15 @@ export function listenForMonoNotices(host: MonoQueueHost): () => void {
   return () => void listening.then((unlisten) => unlisten());
 }
 
+/**
+ * A row an accepted call wrote. A steer whose turn ended while the gate ran
+ * comes back dropped, with no route (design 16.12.3.3).
+ */
+type Sent = Routed | Extract<MonoMessage, { status: "dropped" }>;
+
 type Accepted = {
   outcome: "accepted";
-  messages: Routed[];
+  messages: Sent[];
   answered: { handle: Handle | null; message_id: MessageId }[];
   duplicate: boolean;
   /** Empty for a duplicate. */
@@ -686,7 +692,11 @@ function route(
       if (!group.ownerWindow)
         return routeMessages(
           host,
-          messages.filter((message) => group.messageIds.includes(message.id)),
+          messages.filter(
+            (message): message is Routed =>
+              message.status !== "dropped" &&
+              group.messageIds.includes(message.id),
+          ),
           group,
         );
       if (owners === "skip") return group.via;
@@ -733,17 +743,20 @@ export async function sendMessage(
 /**
  * Only the call that got the accept routes (design 5.5 rule 1). A duplicate
  * reports what that call reported in this window, else its stored row's
- * delivery (PR 4a review m3).
+ * delivery (PR 4a review m3). A steer that Rust dropped after the commit,
+ * because its turn ended while the gate ran, comes back dropped with no
+ * route (design 16.12.3.3).
  */
 async function sendDelivery(
   host: MonoMessagingHost,
   submitted: Accepted,
-  message: Routed,
+  message: Sent,
 ): Promise<RouteOutcome> {
+  const stored = message.status === "dropped" ? "dropped" : message.delivery;
   if (submitted.duplicate)
-    return (await host.reported.get(message.id)) ?? message.delivery;
+    return (await host.reported.get(message.id)) ?? stored;
   const delivery = route(host, submitted, "wait").then(
-    ([routed]) => routed ?? message.delivery,
+    ([routed]) => routed ?? stored,
   );
   host.reported.set(message.id, delivery);
   return delivery;

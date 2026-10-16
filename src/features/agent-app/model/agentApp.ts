@@ -331,7 +331,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ["messages.get_monos", []],
   [
     "messages.send",
-    ["message", "send_to", "wanting_reply", "intent", "reply_to"],
+    ["message", "send_to", "wanting_reply", "intent", "reply_to", "scope"],
   ],
   ["messages.reply", ["message", "wanting_reply", "to"]],
   ["workspace.status", []],

@@ -2,7 +2,8 @@
 //! the facts `mono_messages::submit` read in its transaction to a
 //! [`Decision`]. The first matching row of design 16.5 or 6.4 wins.
 //!
-//! PR I2 has rows S1-S7, I1, I2, S9, S10, S13-S17, S20 and R1-R8, R10, R11.
+//! PR I2 has rows S1-S7, I1, I2, S9, S10, S13-S17, S20, W1-W3 (whole-turn)
+//! and R1-R8, R10, R11.
 //! The direction matrix, rule (b), hop and rate limits come with PR 7.
 
 use serde::Serialize;
@@ -11,8 +12,9 @@ use sha2::{Digest, Sha256};
 
 use crate::mono_messages::{
     Delivery, Handle, Intent, IntentKind, MessageId, MonoId, MonoMessage, Party, PayloadHash,
-    RejectCode, SessionId, Status, Tool,
+    RejectCode, SessionId, Status, SteerTarget, Tool,
 };
+use crate::mono_roster::MonoRole;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallerKind {
@@ -31,16 +33,39 @@ pub struct Caller {
     pub turn_id: String,
 }
 
+/// What a send names (design 16.12, whole-turn). One value: "reply_to and
+/// scope both" has no form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendTarget {
+    /// `reply_to`: a message id only (PR I2 review r1). A handle names a
+    /// message the caller's session received, which S10 refuses.
+    Message(MessageId),
+    /// `scope: "turn"`.
+    Turn,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendInput {
     pub message: String,
     pub send_to: String,
     pub wanting_reply: bool,
-    /// As asked: rows I1 and I2 refuse the ones a send cannot carry.
+    /// As asked: rows I1, W1 and I2 refuse what a send cannot carry.
     pub intent: IntentKind,
-    /// A message id only (PR I2 review r1): a handle names a message the
-    /// caller's session received, which S10 refuses as a steer target.
-    pub reply_to: Option<MessageId>,
+    /// `None` is "neither": W1 writes a `steer_needs_target` row for a steer.
+    pub target: Option<SendTarget>,
+}
+
+impl SendInput {
+    pub fn reply_to(&self) -> Option<&MessageId> {
+        match &self.target {
+            Some(SendTarget::Message(id)) => Some(id),
+            _ => None,
+        }
+    }
+
+    pub fn whole_turn(&self) -> bool {
+        self.target == Some(SendTarget::Turn)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,13 +94,21 @@ impl Input {
     /// a retry that leaves out a default is the same call.
     pub fn payload_hash(&self) -> PayloadHash {
         let canonical = match self {
-            Input::Send(send) => json!(["send_message", {
-                "message": send.message,
-                "send_to": send.send_to,
-                "wanting_reply": send.wanting_reply,
-                "intent": send.intent.as_str(),
-                "reply_to": send.reply_to.as_ref().map(MessageId::as_str),
-            }]),
+            Input::Send(send) => {
+                let mut fields = json!({
+                    "message": send.message,
+                    "send_to": send.send_to,
+                    "wanting_reply": send.wanting_reply,
+                    "intent": send.intent.as_str(),
+                    "reply_to": send.reply_to().map(MessageId::as_str),
+                });
+                // Only a whole-turn call hashes `scope`, so every other call
+                // keeps the hash it had before `scope` existed.
+                if send.whole_turn() {
+                    fields["scope"] = json!("turn");
+                }
+                json!(["send_message", fields])
+            }
             Input::Reply(reply) => {
                 let mut fields = json!({
                     "message": reply.message,
@@ -99,7 +132,14 @@ pub fn parse(tool: Tool, raw: &Value) -> Result<Input, String> {
     let empty = Map::new();
     let fields = raw.as_object().unwrap_or(&empty);
     let allowed: &[&str] = match tool {
-        Tool::SendMessage => &["message", "send_to", "wanting_reply", "intent", "reply_to"],
+        Tool::SendMessage => &[
+            "message",
+            "send_to",
+            "wanting_reply",
+            "intent",
+            "reply_to",
+            "scope",
+        ],
         Tool::Reply => &["message", "wanting_reply", "to"],
     };
     let unknown: Vec<&str> = fields
@@ -152,21 +192,24 @@ pub fn parse(tool: Tool, raw: &Value) -> Result<Input, String> {
         Some(text) => IntentKind::parse(text).ok_or(INTENT_RULE)?,
         None => return Err(INTENT_RULE.into()),
     };
-    let reply_to = fields
-        .get("reply_to")
-        .map(|value| {
-            value
+    let target = match (fields.get("reply_to"), fields.get("scope")) {
+        (Some(_), Some(_)) => return Err(TARGET_RULE.into()),
+        (Some(reply_to), None) => Some(SendTarget::Message(
+            reply_to
                 .as_str()
                 .and_then(MessageId::parse)
-                .ok_or(REPLY_TO_RULE)
-        })
-        .transpose()?;
+                .ok_or(REPLY_TO_RULE)?,
+        )),
+        (None, Some(Value::String(scope))) if scope == "turn" => Some(SendTarget::Turn),
+        (None, Some(_)) => return Err(SCOPE_RULE.into()),
+        (None, None) => None,
+    };
     Ok(Input::Send(SendInput {
         message,
         send_to,
         wanting_reply,
         intent,
-        reply_to,
+        target,
     }))
 }
 
@@ -174,6 +217,8 @@ const INTENT_RULE: &str = r#"intent is required and is one of "new", "steer", "r
 /// Also the answer to a handle (PR I2 review r1): a steer names a message
 /// the caller sent, and only its id can.
 const REPLY_TO_RULE: &str = "reply_to must be one message_id (m_…). A steer names a message you sent: use the message_id your send_message returned.";
+const SCOPE_RULE: &str = r#"scope must be "turn": steer everything the recipient is doing now."#;
+const TARGET_RULE: &str = r#"Pass reply_to or scope "turn", not both. reply_to steers the work one message started; scope "turn" steers everything the recipient is doing now."#;
 
 const TO_RULE: &str =
     r##"to must be a handle such as "#1", or a list of 1 to 9 different handles"##;
@@ -222,6 +267,8 @@ pub enum Recipient {
     /// `chat` is its current chat, if it has one.
     Mono {
         mono_id: MonoId,
+        /// `monos.role` (design 16.12): W2 reads it.
+        role: MonoRole,
         chat: Option<Target>,
     },
     /// An existing session. `own_project` is false for Mono chats, habit runs
@@ -241,6 +288,22 @@ impl Recipient {
             }),
         }
     }
+}
+
+/// Design 16.12.2.2 (whole-turn): who may steer a recipient's whole turn.
+/// Before PR 7 only a Giga (its chat or a habit run) may, and only a Mono of
+/// role `mono`; a session recipient is refused.
+fn may_steer_turn(caller_role: MonoRole, recipient: &Recipient) -> bool {
+    matches!(
+        (caller_role, recipient),
+        (
+            MonoRole::Giga,
+            Recipient::Mono {
+                role: MonoRole::Mono,
+                ..
+            }
+        )
+    )
 }
 
 /// The work a steer's target started (design 16.6): the turn that handles
@@ -360,11 +423,17 @@ pub struct ReplyFacts {
     pub then: Vec<Handled>,
 }
 
+/// The caller's `monos` row (design 16.12): its current chat and its role.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallerMono {
+    pub chat: Option<SessionId>,
+    pub role: MonoRole,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Facts<About> {
-    /// The caller's `monos` row with its current chat; `None` when the row
-    /// is gone.
-    pub caller: Option<Option<SessionId>>,
+    /// The caller's `monos` row; `None` when the row is gone.
+    pub caller: Option<CallerMono>,
     /// Rows this caller session already wrote with this request id.
     pub prior: Vec<MonoMessage>,
     pub about: About,
@@ -489,6 +558,9 @@ impl RejectCode {
             RejectCode::UnknownHandle => "No such handle in this turn.",
             RejectCode::HandleClosed => "That handle is already closed.",
             RejectCode::AmbiguousReply => "Several handles are open. Pass to.",
+            RejectCode::SteerNeedsTarget => "name a message or use scope turn",
+            RejectCode::NothingRunning => "send it as a new message",
+            RejectCode::SteerScopeNotAllowed => "You cannot steer this recipient's whole turn. Only a Giga may steer a Mono's whole turn. Steer one message with reply_to, or send with intent \"new\".",
         }
     }
 
@@ -515,20 +587,23 @@ fn reject(code: RejectCode, to: Option<Party>) -> Decision {
 }
 
 /// The rows every tool shares: the caller's Mono, then S2/S3 (R2/R3).
-/// `again` builds the answer of a call that was rejected.
-fn prelude<A>(
-    facts: &Facts<A>,
+/// `again` builds the answer of a call that was rejected. `Ok` is the
+/// caller's `monos` row when no row here decides the call.
+fn prelude<'f, A>(
+    facts: &'f Facts<A>,
     hash: &PayloadHash,
     again: impl FnOnce(RejectCode) -> Rejection,
-) -> Option<Decision> {
-    if facts.caller.is_none() {
-        return Some(Decision::Refuse {
+) -> Result<&'f CallerMono, Decision> {
+    let Some(caller) = &facts.caller else {
+        return Err(Decision::Refuse {
             code: Refusal::NotAMono,
             hint: NOT_A_MONO.into(),
         });
-    }
-    let first = facts.prior.first()?;
-    Some(if &first.payload_hash == hash {
+    };
+    let Some(first) = facts.prior.first() else {
+        return Ok(caller);
+    };
+    Err(if &first.payload_hash == hash {
         Decision::Duplicate {
             prior: facts.prior.clone(),
             rejection: match first.status {
@@ -548,21 +623,34 @@ fn too_large(message: &str) -> bool {
     message.chars().count() > crate::mono_messages::Body::MAX_CHARS
 }
 
-/// The hint of a send rejection (design 16.5): the intent codes and S15 name
-/// what this call asked for.
+/// The hint of a send rejection (design 16.5, 16.12): the intent codes and
+/// S15 name what this call asked for.
 fn send_hint(code: RejectCode, input: &SendInput) -> String {
-    match (code, input.intent) {
-        (RejectCode::IntentMismatch, intent) if intent != IntentKind::New => format!(
+    match (code, input.intent, &input.target) {
+        (RejectCode::IntentMismatch, IntentKind::New, Some(SendTarget::Turn)) => {
+            r#"intent "new" takes no scope. Remove scope, or use intent "steer"."#.into()
+        }
+        (RejectCode::IntentMismatch, _, Some(SendTarget::Turn)) => {
+            r#"scope "turn" is for intent "steer" only."#.into()
+        }
+        (RejectCode::IntentMismatch, intent, None) => format!(
             r#"intent "{}" needs reply_to: one message_id (m_…)."#,
             intent.as_str()
         ),
-        (RejectCode::IntentNotAllowed, IntentKind::Reply) => r##"send_message cannot reply. Use reply (to: "#n") to answer a message that waits for you."##.into(),
-        (RejectCode::TargetGone, _) => r#"The work that reply_to started is not running now: it finished, it has not started, or its session is idle, cleared or deleted. Send it with intent "new"."#.into(),
+        (RejectCode::IntentNotAllowed, IntentKind::Reply, _) => r##"send_message cannot reply. Use reply (to: "#n") to answer a message that waits for you."##.into(),
+        (RejectCode::TargetGone, _, _) => r#"The work that reply_to started is not running now: it finished, it has not started, or its session is idle, cleared or deleted. Send it with intent "new"."#.into(),
         _ => code.hint().into(),
     }
 }
 
-/// Design 16.5, the rows of PR 4a and PR I2 in order.
+/// What an intent-checked send asks for.
+enum Asked {
+    New,
+    Steer,
+    WholeTurn,
+}
+
+/// Design 16.5 and 16.12.2.1, the rows of PR 4a and PR I2 in order.
 pub fn decide_send(
     caller: &Caller,
     input: &SendInput,
@@ -574,9 +662,10 @@ pub fn decide_send(
         hint: send_hint(code, input),
         open_handles: Vec::new(),
     };
-    if let Some(decision) = prelude(facts, hash, again) {
-        return decision;
-    }
+    let caller_row = match prelude(facts, hash, again) {
+        Ok(row) => row,
+        Err(decision) => return decision,
+    };
     let recipient = &facts.about.recipient;
     let to = recipient.party();
     let reject = |code: RejectCode, to: Option<Party>| Decision::Reject {
@@ -588,24 +677,28 @@ pub fn decide_send(
     if too_large(&input.message) {
         return reject(RejectCode::TooLarge, to);
     }
-    // I1, then I2: the call alone, whatever it names.
-    let steer = match (input.intent, &input.reply_to) {
-        (IntentKind::New, None) => false,
-        (IntentKind::Steer, Some(_)) => true,
-        (IntentKind::New, Some(_)) | (_, None) => return reject(RejectCode::IntentMismatch, to),
-        (IntentKind::Reply | IntentKind::Continue, Some(_)) => {
+    // I1, W1, then I2: the call alone, whatever it names.
+    let asked = match (input.intent, &input.target) {
+        (IntentKind::New, None) => Asked::New,
+        (IntentKind::Steer, Some(SendTarget::Message(_))) => Asked::Steer,
+        (IntentKind::Steer, Some(SendTarget::Turn)) => Asked::WholeTurn,
+        (IntentKind::New, Some(_))
+        | (IntentKind::Reply | IntentKind::Continue, None | Some(SendTarget::Turn)) => {
+            return reject(RejectCode::IntentMismatch, to)
+        }
+        (IntentKind::Steer, None) => return reject(RejectCode::SteerNeedsTarget, to),
+        (IntentKind::Reply | IntentKind::Continue, Some(SendTarget::Message(_))) => {
             return reject(RejectCode::IntentNotAllowed, to)
         }
     };
-    let own_chat = facts.caller.clone().flatten();
+    let own_chat = caller_row.chat.as_ref();
     match recipient {
         Recipient::Unknown => return reject(RejectCode::UnknownTarget, None),
         Recipient::Mono { mono_id, .. } if *mono_id == caller.mono_id => {
             return reject(RejectCode::SelfSend, to)
         }
         Recipient::Session { target, .. }
-            if target.session == caller.session_id
-                || Some(&target.session) == own_chat.as_ref() =>
+            if target.session == caller.session_id || Some(&target.session) == own_chat =>
         {
             return reject(RejectCode::SelfSend, to)
         }
@@ -614,7 +707,12 @@ pub fn decide_send(
         } => return reject(RejectCode::DirectionForbidden, to),
         Recipient::Session { .. } | Recipient::Mono { .. } => {}
     }
-    let steered = if steer {
+    // W2: the sender learns it may not send this before anything about the
+    // recipient's state.
+    if matches!(asked, Asked::WholeTurn) && !may_steer_turn(caller_row.role, recipient) {
+        return reject(RejectCode::SteerScopeNotAllowed, to);
+    }
+    let steered = if let Asked::Steer = asked {
         // S9, then S10.
         let Some(referenced) = &facts.about.reply_to else {
             return reject(RejectCode::UnknownMessage, to);
@@ -661,7 +759,36 @@ pub fn decide_send(
                     session: target.session.clone(),
                     via: Via::Steer,
                 },
-                intent: Intent::Steer(referenced.message.id.clone()),
+                intent: Intent::Steer(SteerTarget::Message(referenced.message.id.clone())),
+            }],
+        };
+    }
+    if let Asked::WholeTurn = asked {
+        // W3: the recipient's own session must run a turn. S17 then.
+        let running = match recipient {
+            Recipient::Mono {
+                chat: Some(chat), ..
+            } if chat.exists => chat.turn.as_ref().map(|turn| (chat, turn)),
+            _ => None,
+        };
+        let Some((chat, turn)) = running else {
+            return reject(RejectCode::NothingRunning, to);
+        };
+        if !chat.steerable {
+            return reject(RejectCode::CannotSteer, to);
+        }
+        // One row, one route: nothing here reads the recipient's sessions.
+        return Decision::Accept {
+            hop: 0,
+            rows: vec![Outgoing {
+                to: to_party(),
+                route: Route {
+                    session: chat.session.clone(),
+                    via: Via::Steer,
+                },
+                intent: Intent::Steer(SteerTarget::Turn {
+                    turn_id: turn.clone(),
+                }),
             }],
         };
     }
@@ -700,7 +827,7 @@ fn preview(text: &str) -> String {
 /// Design 6.4.
 pub fn decide_reply(input: &ReplyInput, hash: &PayloadHash, facts: &Facts<ReplyFacts>) -> Decision {
     let to = input.to.as_deref();
-    if let Some(decision) = prelude(facts, hash, |code| reply_again(code, to, &facts.about.then)) {
+    if let Err(decision) = prelude(facts, hash, |code| reply_again(code, to, &facts.about.then)) {
         return decision;
     }
     if too_large(&input.message) {
@@ -936,20 +1063,29 @@ mod tests {
             send_to: send_to.into(),
             wanting_reply,
             intent: IntentKind::New,
-            reply_to: None,
+            target: None,
         }
     }
 
     fn asking(intent: IntentKind, reply_to: Option<&str>) -> SendInput {
         SendInput {
             intent,
-            reply_to: reply_to.map(|named| MessageId::parse(named).unwrap()),
+            target: reply_to.map(|named| SendTarget::Message(MessageId::parse(named).unwrap())),
             ..new("Hi", "mono-a", false)
         }
     }
 
     fn steer(reply_to: &str) -> SendInput {
         asking(IntentKind::Steer, Some(reply_to))
+    }
+
+    /// A send of `intent` with `scope: "turn"` to `mono-a`.
+    fn whole(intent: IntentKind) -> SendInput {
+        SendInput {
+            intent,
+            target: Some(SendTarget::Turn),
+            ..new("Stop", "mono-a", false)
+        }
     }
 
     /// A session that runs `turn-1` while `running`.
@@ -965,13 +1101,22 @@ mod tests {
     fn mono_a(chat: Option<Target>) -> Recipient {
         Recipient::Mono {
             mono_id: mono("mono-a"),
+            role: MonoRole::Mono,
             chat,
         }
     }
 
+    /// The caller's `monos` row: the Giga with its chat `giga-chat`.
+    fn giga_row() -> Option<CallerMono> {
+        Some(CallerMono {
+            chat: Some(session("giga-chat")),
+            role: MonoRole::Giga,
+        })
+    }
+
     fn facts<A>(about: A) -> Facts<A> {
         Facts {
-            caller: Some(Some(session("giga-chat"))),
+            caller: giga_row(),
             prior: Vec::new(),
             about,
         }
@@ -1115,7 +1260,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             action,
-            "Unknown send_message fields: action_type. Allowed: message, send_to, wanting_reply, intent, reply_to."
+            "Unknown send_message fields: action_type. Allowed: message, send_to, wanting_reply, intent, reply_to, scope."
         );
         for intent in [json!(null), json!("queue"), json!("New"), json!(1)] {
             let error = parse_send(json!({
@@ -1155,10 +1300,7 @@ mod tests {
                 "message": "Hi", "send_to": "mono-a", "wanting_reply": false,
                 "intent": "steer", "reply_to": "m_aaaaaaaaaaaa",
             })),
-            Ok(Input::Send(SendInput {
-                reply_to: MessageId::parse("m_aaaaaaaaaaaa"),
-                ..asking(IntentKind::Steer, None)
-            }))
+            Ok(Input::Send(steer("m_aaaaaaaaaaaa")))
         );
     }
 
@@ -1351,16 +1493,28 @@ mod tests {
         let new_with_target = r#"intent "new" takes no reply_to. Remove reply_to, or use intent "steer" to change the work that message started."#;
         let needs =
             |intent: &str| format!(r#"intent "{intent}" needs reply_to: one message_id (m_…)."#);
+        let only_steer = r#"scope "turn" is for intent "steer" only."#;
         for (input, code, hint) in [
             (
                 asking(IntentKind::New, Some("m_aaaaaaaaaaaa")),
                 RejectCode::IntentMismatch,
                 new_with_target.to_string(),
             ),
+            // Whole-turn: new, reply and continue take no scope.
             (
-                asking(IntentKind::Steer, None),
+                whole(IntentKind::New),
                 RejectCode::IntentMismatch,
-                needs("steer"),
+                r#"intent "new" takes no scope. Remove scope, or use intent "steer"."#.to_string(),
+            ),
+            (
+                whole(IntentKind::Reply),
+                RejectCode::IntentMismatch,
+                only_steer.to_string(),
+            ),
+            (
+                whole(IntentKind::Continue),
+                RejectCode::IntentMismatch,
+                only_steer.to_string(),
             ),
             // I1 before I2: continue without reply_to gets the shape code.
             (
@@ -1392,40 +1546,310 @@ mod tests {
         }
     }
 
-    // PR I2. Defect: the intent rows run before S4 or after S5, so a model
-    // fixes the wrong thing first.
+    // PR I2, whole-turn. Defect: a row out of place gives the wrong code, so
+    // a model fixes the wrong thing first.
     #[test]
-    fn s4_runs_before_i1_and_i1_before_s5() {
-        let long = SendInput {
-            message: "x".repeat(8001),
-            ..asking(IntentKind::New, Some("m_aaaaaaaaaaaa"))
-        };
-        assert_eq!(
+    fn w1_runs_after_s4_and_i1_and_before_s5() {
+        let decide = |input: SendInput, recipient: Recipient| {
             decide_send(
                 &caller(CallerKind::MonoChat),
-                &long,
+                &input,
                 &hash(),
-                &sends(mono_a(Some(live("a-chat", true, true)))),
-            ),
+                &sends(recipient),
+            )
+        };
+        let a_running = || mono_a(Some(live("a-chat", true, true)));
+        let long = SendInput {
+            message: "x".repeat(8001),
+            ..asking(IntentKind::Steer, None)
+        };
+        assert_eq!(
+            decide(long, a_running()),
             rejected(RejectCode::TooLarge, party_a())
         );
+        assert!(matches!(
+            decide(whole(IntentKind::New), a_running()),
+            Decision::Reject {
+                code: RejectCode::IntentMismatch,
+                ..
+            }
+        ));
         let nowhere = SendInput {
             send_to: "nope".into(),
             ..asking(IntentKind::Steer, None)
         };
+        assert_eq!(
+            decide(nowhere, Recipient::Unknown),
+            rejected(RejectCode::SteerNeedsTarget, None)
+        );
+    }
+
+    // Whole-turn, S1. Defect: a call with two targets is accepted and one
+    // target is ignored in silence, or a scope other than "turn" is read
+    // as one.
+    #[test]
+    fn s1_reply_to_and_scope_together_or_a_wrong_scope_are_invalid_input() {
+        let parse_send = |extra: Value| {
+            let mut raw = json!({
+                "message": "Stop", "send_to": "mono-a", "wanting_reply": false, "intent": "steer",
+            });
+            raw.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            parse(Tool::SendMessage, &raw)
+        };
+        assert_eq!(
+            parse_send(json!({"reply_to": "m_aaaaaaaaaaaa", "scope": "turn"})),
+            Err(TARGET_RULE.to_string())
+        );
+        for scope in [json!("session"), json!(true), json!(null), json!(["turn"])] {
+            assert_eq!(
+                parse_send(json!({ "scope": scope })),
+                Err(SCOPE_RULE.to_string()),
+                "{scope}"
+            );
+        }
+        assert_eq!(
+            parse_send(json!({"scope": "turn"})),
+            Ok(Input::Send(whole(IntentKind::Steer)))
+        );
+    }
+
+    /// A whole-turn steer of `caller_role` to `recipient`.
+    fn steer_turn(
+        caller_kind: CallerKind,
+        caller_role: MonoRole,
+        recipient: Recipient,
+    ) -> Decision {
+        let mut facts = sends(recipient);
+        facts.caller = Some(CallerMono {
+            role: caller_role,
+            ..giga_row().unwrap()
+        });
+        decide_send(
+            &caller(caller_kind),
+            &whole(IntentKind::Steer),
+            &hash(),
+            &facts,
+        )
+    }
+
+    fn mono_with_role(id: &str, role: MonoRole, chat: Target) -> Recipient {
+        Recipient::Mono {
+            mono_id: mono(id),
+            role,
+            chat: Some(chat),
+        }
+    }
+
+    fn project(running: bool) -> Recipient {
+        Recipient::Session {
+            target: live("p", running, true),
+            own_project: true,
+        }
+    }
+
+    // Whole-turn, W1. Defect: the missing target falls back to a whole-turn
+    // steer, which the spec forbids.
+    #[test]
+    fn w1_a_steer_with_no_target_is_steer_needs_target_even_when_whole_turn_would_pass() {
+        let a_running = mono_a(Some(live("a-chat", true, true)));
         assert!(matches!(
+            steer_turn(CallerKind::MonoChat, MonoRole::Giga, a_running.clone()),
+            Decision::Accept { .. }
+        ));
+        assert_eq!(
             decide_send(
                 &caller(CallerKind::MonoChat),
-                &nowhere,
+                &asking(IntentKind::Steer, None),
                 &hash(),
-                &sends(Recipient::Unknown),
+                &sends(a_running),
             ),
+            send_rejected(
+                RejectCode::SteerNeedsTarget,
+                party_a(),
+                "name a message or use scope turn"
+            )
+        );
+    }
+
+    // Whole-turn, W2. Defect: a sender the spec refuses steers a whole turn.
+    #[test]
+    fn w2_only_a_giga_may_steer_a_monos_whole_turn_before_pr_7() {
+        let running = |id: &str| live(id, true, true);
+        let a = || mono_a(Some(running("a-chat")));
+        for kind in [CallerKind::MonoChat, CallerKind::HabitRun] {
+            assert!(
+                matches!(
+                    steer_turn(kind, MonoRole::Giga, a()),
+                    Decision::Accept { .. }
+                ),
+                "{kind:?}"
+            );
+        }
+        let hint = "You cannot steer this recipient's whole turn. Only a Giga may steer a Mono's whole turn. Steer one message with reply_to, or send with intent \"new\".";
+        for (case, role, recipient) in [
+            (
+                "Mono to Giga",
+                MonoRole::Mono,
+                mono_with_role("giga-2", MonoRole::Giga, running("g2-chat")),
+            ),
+            (
+                "Giga to Giga",
+                MonoRole::Giga,
+                mono_with_role("giga-2", MonoRole::Giga, running("g2-chat")),
+            ),
+            ("Mono to Mono", MonoRole::Mono, a()),
+            ("Giga to project session", MonoRole::Giga, project(true)),
+            ("Mono to project session", MonoRole::Mono, project(true)),
+        ] {
+            let to = recipient.party();
+            assert_eq!(
+                steer_turn(CallerKind::MonoChat, role, recipient),
+                send_rejected(RejectCode::SteerScopeNotAllowed, to, hint),
+                "{case}"
+            );
+        }
+    }
+
+    // Whole-turn. Defect: the scope code hides the real problem with the
+    // recipient.
+    #[test]
+    fn w2_runs_after_s5_s6_s7() {
+        let me = mono_with_role("giga", MonoRole::Giga, live("giga-chat", true, true));
+        let outside = Recipient::Session {
+            target: live("other", true, true),
+            own_project: false,
+        };
+        for (recipient, code) in [
+            (Recipient::Unknown, RejectCode::UnknownTarget),
+            (me, RejectCode::SelfSend),
+            (outside, RejectCode::DirectionForbidden),
+        ] {
+            assert!(
+                matches!(
+                    steer_turn(CallerKind::MonoChat, MonoRole::Giga, recipient),
+                    Decision::Reject { code: got, .. } if got == code
+                ),
+                "{code:?}"
+            );
+        }
+    }
+
+    // Whole-turn, W3. Defect: an idle recipient takes the steer as new work,
+    // or the answer is target_no_conversation.
+    #[test]
+    fn w3_an_idle_or_absent_recipient_is_nothing_running() {
+        let cleared = Target {
+            exists: false,
+            ..live("a-chat", true, true)
+        };
+        for (case, chat) in [
+            ("idle", Some(live("a-chat", false, true))),
+            ("no chat", None),
+            ("cleared", Some(cleared)),
+        ] {
+            assert_eq!(
+                steer_turn(CallerKind::MonoChat, MonoRole::Giga, mono_a(chat)),
+                send_rejected(
+                    RejectCode::NothingRunning,
+                    party_a(),
+                    "send it as a new message"
+                ),
+                "{case}"
+            );
+        }
+    }
+
+    // Whole-turn. Defect: the sender learns about the recipient's state
+    // before it learns that it may not send this at all.
+    #[test]
+    fn w2_runs_before_w3() {
+        let idle_giga = mono_with_role("giga-2", MonoRole::Giga, live("g2-chat", false, true));
+        assert!(matches!(
+            steer_turn(CallerKind::MonoChat, MonoRole::Mono, idle_giga),
             Decision::Reject {
-                code: RejectCode::IntentMismatch,
-                to: None,
+                code: RejectCode::SteerScopeNotAllowed,
                 ..
             }
         ));
+    }
+
+    // Whole-turn, S17. Defect: a whole-turn steer queues into a provider
+    // that can never take it.
+    #[test]
+    fn s17_a_whole_turn_steer_into_a_turn_that_cannot_steer_is_cannot_steer() {
+        assert!(matches!(
+            steer_turn(
+                CallerKind::MonoChat,
+                MonoRole::Giga,
+                mono_a(Some(live("a-chat", true, false)))
+            ),
+            Decision::Reject {
+                code: RejectCode::CannotSteer,
+                ..
+            }
+        ));
+    }
+
+    // Whole-turn, S20. Defect: the steer is routed to another session,
+    // waits for the turn end, or is pinned to no turn.
+    #[test]
+    fn s20_a_whole_turn_steer_goes_only_into_the_recipients_running_turn() {
+        let chat = Target {
+            turn: Some("turn-7".into()),
+            ..live("a-chat", true, true)
+        };
+        assert_eq!(
+            steer_turn(CallerKind::MonoChat, MonoRole::Giga, mono_a(Some(chat))),
+            Decision::Accept {
+                hop: 0,
+                rows: vec![Outgoing {
+                    to: party_a().unwrap(),
+                    route: Route {
+                        session: session("a-chat"),
+                        via: Via::Steer
+                    },
+                    intent: Intent::Steer(SteerTarget::Turn {
+                        turn_id: "turn-7".into()
+                    }),
+                }],
+            }
+        );
+    }
+
+    // Whole-turn. Defect: a retry with another target replays the first
+    // answer, or every round-1 send hashes anew.
+    #[test]
+    fn s3_adding_scope_to_a_retry_is_another_call() {
+        let bare = asking(IntentKind::Steer, None);
+        let mut again = sends(mono_a(Some(live("a-chat", true, true))));
+        again.prior = vec![MonoMessage {
+            payload_hash: Input::Send(bare.clone()).payload_hash(),
+            ..row('a', Some("giga"), 0, open(1))
+        }];
+        let with_scope = whole(IntentKind::Steer);
+        assert_eq!(
+            decide_send(
+                &caller(CallerKind::MonoChat),
+                &with_scope,
+                &Input::Send(with_scope.clone()).payload_hash(),
+                &again,
+            ),
+            Decision::Refuse {
+                code: Refusal::RequestIdReused,
+                hint: REQUEST_ID_REUSED.into()
+            }
+        );
+        // The PR I2 round-1 encoding: no scope key at all.
+        let round_1 = json!(["send_message", {
+            "message": "Hi", "send_to": "mono-a", "wanting_reply": false,
+            "intent": "steer", "reply_to": "m_aaaaaaaaaaaa",
+        }]);
+        assert_eq!(
+            Input::Send(steer("m_aaaaaaaaaaaa")).payload_hash().as_str(),
+            format!("{:x}", Sha256::digest(round_1.to_string().as_bytes()))
+        );
     }
 
     #[test]
@@ -1445,6 +1869,7 @@ mod tests {
     fn s6_sending_to_yourself_or_your_own_chat_is_self_send() {
         let me = Recipient::Mono {
             mono_id: mono("giga"),
+            role: MonoRole::Giga,
             chat: Some(live("giga-chat", true, true)),
         };
         let own_chat = Recipient::Session {
@@ -1532,7 +1957,9 @@ mod tests {
                 intent: if hop == 0 {
                     Intent::New
                 } else {
-                    Intent::Steer(MessageId::parse("m_zzzzzzzzzzzz").unwrap())
+                    Intent::Steer(SteerTarget::Message(
+                        MessageId::parse("m_zzzzzzzzzzzz").unwrap(),
+                    ))
                 },
                 routed: Routed {
                     handled_by_session: session("a-chat"),
@@ -1815,7 +2242,9 @@ mod tests {
                         session: session("a-old"),
                         via: Via::Steer
                     },
-                    intent: Intent::Steer(MessageId::parse("m_aaaaaaaaaaaa").unwrap()),
+                    intent: Intent::Steer(SteerTarget::Message(
+                        MessageId::parse("m_aaaaaaaaaaaa").unwrap()
+                    )),
                 }],
             }
         );
@@ -1869,7 +2298,9 @@ mod tests {
                         session: session("p"),
                         via: Via::Steer
                     },
-                    intent: Intent::Steer(MessageId::parse("m_pppppppppppp").unwrap()),
+                    intent: Intent::Steer(SteerTarget::Message(
+                        MessageId::parse("m_pppppppppppp").unwrap()
+                    )),
                 }],
             }
         );

@@ -86,6 +86,12 @@ const rust = vi.hoisted(() => {
     ownerWindow: undefined as string | undefined,
     /** The rejection the next `submit` answers. */
     failure: undefined as Record<string, unknown> | undefined,
+    /**
+     * The route session's turn ended while the gate ran, so `submit` drops
+     * the steer it accepted after the commit and gives it no route
+     * (design 16.12.3.3).
+     */
+    turnEnded: false,
     /** `assign_slot` runs once this settles. */
     assigning: undefined as Promise<void> | undefined,
     /** How many `mark_notified` calls fail before one succeeds. */
@@ -153,6 +159,16 @@ const rust = vi.hoisted(() => {
           notifiedAt: null,
         };
         state.rows.push(accepted);
+        if (state.turnEnded) {
+          accepted.status = "dropped";
+          return {
+            outcome: "accepted",
+            messages: [structuredClone(accepted)],
+            answered: [],
+            duplicate: false,
+            routes: [],
+          };
+        }
         return {
           outcome: "accepted",
           // IPC returns a copy, so later changes to the row do not show.
@@ -369,6 +385,7 @@ beforeEach(() => {
   rust.state.route = { sessionId: "a-chat", via: "queue" };
   rust.state.ownerWindow = undefined;
   rust.state.failure = undefined;
+  rust.state.turnEnded = false;
   rust.state.assigning = undefined;
   rust.state.failedMarks = 0;
   rust.state.chats = { giga: "giga-chat", "mono-a": "a-chat" };
@@ -1248,6 +1265,31 @@ it("drops a project-session steer at once when this window runs no turn of it", 
   expect(get("project").queuedMessages).toEqual([
     expect.objectContaining({ id: "m_bbbbbbbbbbbb", waitForIdle: true }),
   ]);
+});
+
+// Design 16.12.3.3 (whole-turn review r1 M1). Defect: a steer that Rust
+// dropped after the commit, because its turn ended while the gate ran, is
+// answered as queued, or gets an item; or the boundary loses its scope.
+it("answers dropped for a whole-turn steer whose turn ended while the gate ran", async () => {
+  rust.state.route = { sessionId: "a-chat", via: "steer" };
+  rust.state.turnEnded = true;
+  const { send, get } = world([
+    chat("a-chat", { busy: true, turnReadiness: "ready" }),
+  ]);
+  expect(
+    await send({
+      message: "Stop and commit",
+      send_to: "mono-a",
+      wanting_reply: false,
+      intent: "steer",
+      scope: "turn",
+    }),
+  ).toMatchObject({ status: "dropped", delivery: "dropped" });
+  expect(rust.state.submitted[0]).toMatchObject({
+    input: { intent: "steer", scope: "turn" },
+  });
+  expect(ids(get("a-chat"))).toEqual([]);
+  expect(rust.state.commands).not.toContain("mono_message_assign_slot");
 });
 
 // Design 16.6. Defect: reconcile puts a waiting steer row back as an item

@@ -155,6 +155,7 @@ it("says how to keep memory and update the soul only at the user's request", () 
     '"intent":"new"',
     '"intent":"steer"',
     '"reply_to"',
+    '"scope":"turn"',
     '"to"',
     "<mono_message>",
     "<mono_notice>",

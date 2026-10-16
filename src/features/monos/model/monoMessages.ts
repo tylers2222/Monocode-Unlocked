@@ -19,12 +19,21 @@ export type MonoRole = "giga" | "mono";
 export type Tool = "send_message" | "reply";
 export type Delivery = "submit" | "queue" | "steer";
 export type IntentKind = "new" | "reply" | "steer" | "continue";
-/** The intent of an accepted row (design 16.1). `continue` never passes the gate. */
+/**
+ * The intent of an accepted row (design 16.1, 16.12). `continue` never passes
+ * the gate. A steer names one message or the whole turn; neither and both
+ * have no form.
+ */
 export type Intent =
-  | { intent: "new"; replyTo: null }
-  | { intent: "reply" | "steer"; replyTo: MessageId };
+  | { intent: "new"; replyTo: null; scope: null }
+  | { intent: "reply" | "steer"; replyTo: MessageId; scope: null }
+  | { intent: "steer"; replyTo: null; scope: "turn" };
 /** What a rejected row asked for. `replyTo` only when it named a stored row. */
-export type AskedIntent = { intent: IntentKind; replyTo: MessageId | null };
+export type AskedIntent = {
+  intent: IntentKind;
+  replyTo: MessageId | null;
+  scope: "turn" | null;
+};
 
 // One parse function per brand, each undefined on bad input. Only boundary
 // code calls them; everything past the boundary trusts the brand.
@@ -64,24 +73,33 @@ export type RowIntent =
 
 /**
  * The intent columns of a row from Rust. Undefined when they disagree: an
- * accepted row is `new` without a target, or `reply`/`steer` with one.
+ * accepted row is `new` with no target, `reply` with `replyTo`, or `steer`
+ * with exactly one of `replyTo` and `scope`.
  */
 export function parseRowIntent(row: {
   status: unknown;
   intent: unknown;
   replyTo: unknown;
+  scope: unknown;
 }): RowIntent | undefined {
   const { intent } = row;
   const replyTo = row.replyTo === null ? null : parseMessageId(row.replyTo);
-  if (replyTo === undefined || !isIntentKind(intent)) return undefined;
+  const scope =
+    row.scope === null || row.scope === "turn" ? row.scope : undefined;
+  if (replyTo === undefined || scope === undefined || !isIntentKind(intent))
+    return undefined;
   if (row.status === "rejected")
-    return { status: "rejected", asked: { intent, replyTo } };
+    return { status: "rejected", asked: { intent, replyTo, scope } };
   if (intent === "new")
-    return replyTo === null
-      ? { status: "accepted", intent: { intent, replyTo } }
+    return replyTo === null && scope === null
+      ? { status: "accepted", intent: { intent, replyTo, scope } }
       : undefined;
-  if (intent === "continue" || replyTo === null) return undefined;
-  return { status: "accepted", intent: { intent, replyTo } };
+  if (intent === "continue") return undefined;
+  if (replyTo !== null && scope === null)
+    return { status: "accepted", intent: { intent, replyTo, scope } };
+  if (intent === "steer" && replyTo === null && scope === "turn")
+    return { status: "accepted", intent: { intent, replyTo, scope } };
+  return undefined;
 }
 
 /** A turn id as `control_authorize_turn` takes it: 1 to 128 characters. */
@@ -185,6 +203,9 @@ export type RejectCode =
   | "intent_not_allowed"
   | "target_gone"
   | "cannot_steer"
+  | "steer_needs_target"
+  | "steer_scope_not_allowed"
+  | "nothing_running"
   | "rate_limited"
   | "hop_limit"
   | "no_open_handle"
@@ -204,16 +225,22 @@ export type ToolError = {
   open_handles?: { handle: Handle; message_id: MessageId; from: string }[];
 };
 
-/** A `send_message` call as the model gave it (design 16.4). */
+/** What a send names (design 16.12). "Both" has no form. */
+type SendTarget =
+  /** A message id only (PR I2 review r1): a steer names a message the caller sent. */
+  | { reply_to: MessageId; scope?: never }
+  /** Everything the recipient is doing now, in its own running turn. */
+  | { scope: "turn"; reply_to?: never }
+  | { reply_to?: never; scope?: never };
+
+/** A `send_message` call as the model gave it (design 16.4, 16.12). */
 export type SendInput = {
   message: string;
   send_to: string;
   wanting_reply: boolean;
-  /** As asked: the gate refuses the intents a send cannot carry (I1, I2). */
+  /** As asked: the gate refuses the intents a send cannot carry (I1, W1, I2). */
   intent: IntentKind;
-  /** A message id only (PR I2 review r1): a steer names a message the caller sent. */
-  reply_to?: MessageId;
-};
+} & SendTarget;
 
 /** A `reply` call (design 3.3). `to` names the handles it answers. */
 export type ReplyInput = {
@@ -253,6 +280,17 @@ export function parseSendInput(raw: Record<string, unknown>): SendInput {
     wanting_reply: raw.wanting_reply,
     intent: raw.intent,
   };
+  if (raw.reply_to !== undefined && raw.scope !== undefined)
+    throw new Error(
+      'Pass reply_to or scope "turn", not both. reply_to steers the work one message started; scope "turn" steers everything the recipient is doing now.',
+    );
+  if (raw.scope !== undefined) {
+    if (raw.scope !== "turn")
+      throw new Error(
+        'scope must be "turn": steer everything the recipient is doing now.',
+      );
+    return { ...send, scope: "turn" };
+  }
   if (raw.reply_to === undefined) return send;
   const replyTo = parseMessageId(raw.reply_to);
   if (!replyTo)

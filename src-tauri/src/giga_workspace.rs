@@ -72,7 +72,7 @@ const MANAGED_BODY: &str = r#"(The app keeps this block up to date. Text outside
 - The pre-commit hook lets a Giga commit only its own `gigas/<slug>/` and new files in `shared/`, and refuses secret-looking files. The app sets `MONOCODE_GIGA_SLUG` for each Giga, so your own commits follow the same rules.
 
 ## Messages between Monos
-- `app monos.send` is removed. Message another Mono with `app messages.send` (`message`, `send_to`, `wanting_reply`, `intent`; `intent:"steer"` with `reply_to` replaces `whenBusy`, and `action_type` is gone) and answer a message that wants a reply with `app messages.reply`. Where `shared/CONVENTIONS.md` still names `monos.send` or `action_type`, this line wins.
+- `app monos.send` is removed. Message another Mono with `app messages.send` (`message`, `send_to`, `wanting_reply`, `intent`; `intent:"steer"` with `reply_to` replaces `whenBusy`, and `action_type` is gone) and answer a message that wants a reply with `app messages.reply`. `intent:"steer"` with `"scope":"turn"` instead of `reply_to` changes everything a Mono is doing now, in its own running turn only; never pass both. Where `shared/CONVENTIONS.md` still names `monos.send` or `action_type`, this line wins.
 
 ## Search before you redo work
 `index/index.db` has one SQLite FTS5 table, `entries(source, giga, path, at, text)`. `source` is `log` or `brief`.
@@ -86,7 +86,7 @@ const GITIGNORE: &str = "index/\ngigas/*/state/\ngigas/*/scratch/\n.DS_Store\n";
 const CONVENTIONS: &str = r#"# Conventions for Gigas
 
 - Every spin-up names its harness and model (exact IDs from `app models.list`).
-- Messages to other Monos: `app messages.send` with `message`, `send_to`, `wanting_reply` (true only when you need an answer) and `intent`. `intent:"new"` starts new work and waits for a busy recipient's turn to end; `intent:"steer"` with `reply_to` changes the running work that message started. Answer a message that wants a reply with `app messages.reply`.
+- Messages to other Monos: `app messages.send` with `message`, `send_to`, `wanting_reply` (true only when you need an answer) and `intent`. `intent:"new"` starts new work and waits for a busy recipient's turn to end; `intent:"steer"` with `reply_to` changes the running work that message started, and `intent:"steer"` with `"scope":"turn"` changes everything a Mono is doing now. Answer a message that wants a reply with `app messages.reply`.
 - Briefs: `# Target`, `# Change`, `# Acceptance`, written plainly. Save each one in your `briefs/`.
 - To add a convention, add a new file in `shared/`. Do not edit a file another Giga wrote.
 "#;
