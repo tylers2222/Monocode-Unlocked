@@ -1167,7 +1167,7 @@ mod tests {
             ("messages.get_monos", r#"{}"#),
             (
                 "messages.send",
-                r##"{"message":"Check CI","send_to":"other","wanting_reply":true,"intent":"steer","reply_to":"#1"}"##,
+                r#"{"message":"Check CI","send_to":"other","wanting_reply":true,"intent":"steer","reply_to":"m_aaaaaaaaaaaa"}"#,
             ),
             ("messages.reply", r#"{"message":"CI is green"}"#),
         ] {
