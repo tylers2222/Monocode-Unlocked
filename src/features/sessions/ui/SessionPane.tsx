@@ -79,7 +79,7 @@ import { QuestionForm } from "./QuestionForm";
 import {
   monoMessageDeliveries,
   monoPendingTranscriptBlocks,
-  visibleMonoCompletionMessages,
+  monoQueueRows,
 } from "../../monos/model/monoMessaging";
 import { MessageQueue } from "./MessageQueue";
 import { queuePauseNotice } from "../model/messageQueue";
@@ -1143,7 +1143,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
               {agent ? (
                 <>
                   <MessageQueue
-                    messages={visibleMonoCompletionMessages(session)}
+                    messages={monoQueueRows(session)}
                     status={session.queueStatus}
                     pauseNotice={queuePauseNotice(session)}
                     sendingId={session.sendingQueuedMessageId}

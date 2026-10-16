@@ -1,12 +1,16 @@
 import { expect, it } from "vitest";
 import {
   type Intent,
+  noticeRequestId,
   parseHandle,
   parseMessageId,
   parseMonoId,
+  parseMonoNotice,
   parseReplyInput,
   parseRowIntent,
   parseSessionId,
+  renderMonoNotice,
+  type MessageId,
 } from "./monoMessages";
 
 it("accepts a message id of m_ and 12 base32 characters, nothing near it", () => {
@@ -104,4 +108,26 @@ it("reads an accepted row's intent only when it and replyTo agree", () => {
     status: "rejected",
     asked: { intent: "steer", replyTo: null },
   });
+});
+
+// Design U10. Defects: the queue shows the escaped name ("Scout &#60;S&#62;"),
+// or styles a message whose text only quotes a notice as an app notice.
+it("reads a notice back only from the item the pump made", () => {
+  const id = "m_aaaaaaaaaaaa" as MessageId;
+  const text = renderMonoNotice(
+    { id, body: "Is CI green?", status: "dropped" },
+    'Scout <S> "2"',
+  );
+  expect(
+    parseMonoNotice({ appRequestId: noticeRequestId(id, "dropped"), text }),
+  ).toEqual({
+    messageId: id,
+    status: "dropped",
+    recipient: 'Scout <S> "2"',
+    line: "Is CI green?",
+  });
+  expect(parseMonoNotice({ text })).toBeUndefined();
+  expect(
+    parseMonoNotice({ appRequestId: noticeRequestId(id, "unanswered"), text }),
+  ).toBeUndefined();
 });

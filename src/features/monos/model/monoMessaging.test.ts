@@ -10,7 +10,14 @@ import {
   enqueueMonoMessage,
   monoMessageDeliveries,
   monoPendingTranscriptBlocks,
+  monoQueueRows,
 } from "./monoMessaging";
+import {
+  noticeRequestId,
+  renderMonoNotice,
+  type MessageId,
+} from "./monoMessages";
+import { monoSessionCompletionMessage } from "./monoSessionCompletion";
 
 function message(id: string): QueuedMessage {
   return { id, text: id, attachments: [] };
@@ -255,4 +262,46 @@ describe("optimistic Mono messages", () => {
     expect(accepted.blocks).toHaveLength(1);
     expect(accepted.blocks[0].text).toBe("legacy");
   });
+});
+
+// Design U10. Defects: a waiting notice is missing from the Mono chat's queue
+// rows, sits below a report that was queued before it, or also shows as a
+// bubble in the transcript.
+it("shows a waiting notice as the first queue row of a Mono chat and not as a bubble", () => {
+  const id = "m_aaaaaaaaaaaa" as MessageId;
+  const notice: QueuedMessage = {
+    id: noticeRequestId(id, "unanswered"),
+    appRequestId: noticeRequestId(id, "unanswered"),
+    text: renderMonoNotice(
+      { id, body: "Is CI green?", status: "unanswered" },
+      "A",
+    ),
+    attachments: [],
+    waitForIdle: true,
+  };
+  const typed = enqueueMonoMessage(
+    newSession("codex", "/tmp"),
+    message("typed"),
+  );
+  const report = {
+    ...monoSessionCompletionMessage({
+      sessionId: "worker",
+      requestId: "app-mono-monitor",
+      project: "/code/project",
+      prompt: "Review",
+      session: undefined,
+      outcome: { status: "completed", text: "Done" },
+    }),
+    error: "Offline",
+  };
+  const session = {
+    ...typed,
+    queuedMessages: [report, ...(typed.queuedMessages ?? []), notice],
+  };
+  expect(monoQueueRows(session)).toEqual([notice, report]);
+  expect(
+    monoPendingTranscriptBlocks(session, session.blocks).map(
+      (block) => block.id,
+    ),
+  ).toEqual(["typed"]);
 });

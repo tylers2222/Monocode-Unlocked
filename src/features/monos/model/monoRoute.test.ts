@@ -1260,7 +1260,8 @@ it("passes a reply's handles and its turn to Rust, one handle as a list", async 
 
 // Design 5.3. Defect: the pump queues a second notice when it runs again, also
 // after the notice was sent and a crash lost its mark, or it never marks the
-// row, so every later run tries again.
+// row, so every later run tries again. Design U10. Defect: a waiting notice
+// shows as a bubble in the transcript instead of its queue row.
 it("queues a sender notice once across runs and marks its row notified", async () => {
   rust.state.rows = [ended({})];
   rust.state.failedMarks = 1;
@@ -1280,6 +1281,7 @@ it("queues a sender notice once across runs and marks its row notified", async (
   expect(notices[0].text).toBe(
     '<mono_notice message_id="m_aaaaaaaaaaaa" status="unanswered" to="A">\nIs CI green?\n</mono_notice>',
   );
+  expect(get("giga-chat").blocks).toEqual([]);
   expect(rust.state.rows[0].notifiedAt).not.toBeNull();
   // A lost mark while the notice still waits in the queue.
   rust.state.rows[0].notifiedAt = null;
@@ -1292,6 +1294,12 @@ it("queues a sender notice once across runs and marks its row notified", async (
       cards: queuedAppDelivery(notices[0]),
     }),
   );
+  expect(get("giga-chat").blocks).toEqual([
+    expect.objectContaining({
+      id: "notice-m_aaaaaaaaaaaa-unanswered",
+      appRequestId: "notice-m_aaaaaaaaaaaa-unanswered",
+    }),
+  ]);
   rust.state.rows[0].notifiedAt = null;
   await reconcile(host, "giga-chat");
   expect(get("giga-chat").queuedMessages).toBeUndefined();
