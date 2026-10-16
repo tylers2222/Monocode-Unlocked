@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import {
+  type Intent,
   parseHandle,
   parseMessageId,
   parseMonoId,
@@ -62,20 +63,27 @@ it("accepts a reply's to as one handle or 1 to 9 different ones, always as a lis
 });
 
 // Design 16.1. Defect: the web app trusts a row that is new and names a
-// target, or an accepted continue, which the gate never lets through.
+// target, or an accepted continue, which the gate never lets through; or an
+// accepted row's result has no `Intent` type without a cast.
 it("reads an accepted row's intent only when it and replyTo agree", () => {
   const target = "m_abcdefgh2345";
   const row = (status: string, intent: unknown, replyTo: unknown) =>
     parseRowIntent({ status, intent, replyTo });
-  expect(row("delivered", "new", null)).toEqual({
+  const accepted = (status: string, intent: unknown, replyTo: unknown) => {
+    const parsed = row(status, intent, replyTo);
+    const read: Intent | undefined =
+      parsed?.status === "accepted" ? parsed.intent : undefined;
+    return read;
+  };
+  expect(accepted("delivered", "new", null)).toEqual({
     intent: "new",
     replyTo: null,
   });
-  expect(row("open", "steer", target)).toEqual({
+  expect(accepted("open", "steer", target)).toEqual({
     intent: "steer",
     replyTo: target,
   });
-  expect(row("answered", "reply", target)).toEqual({
+  expect(accepted("answered", "reply", target)).toEqual({
     intent: "reply",
     replyTo: target,
   });
@@ -89,11 +97,11 @@ it("reads an accepted row's intent only when it and replyTo agree", () => {
   ])
     expect(row("delivered", intent, replyTo)).toBeUndefined();
   expect(row("rejected", "continue", null)).toEqual({
-    intent: "continue",
-    replyTo: null,
+    status: "rejected",
+    asked: { intent: "continue", replyTo: null },
   });
   expect(row("rejected", "steer", null)).toEqual({
-    intent: "steer",
-    replyTo: null,
+    status: "rejected",
+    asked: { intent: "steer", replyTo: null },
   });
 });

@@ -58,6 +58,11 @@ function isIntentKind(raw: unknown): raw is IntentKind {
   );
 }
 
+/** A row's intent columns, parsed: an accepted row has an `Intent`. */
+export type RowIntent =
+  | { status: "accepted"; intent: Intent }
+  | { status: "rejected"; asked: AskedIntent };
+
 /**
  * The intent columns of a row from Rust. Undefined when they disagree: an
  * accepted row is `new` without a target, or `reply`/`steer` with one.
@@ -66,15 +71,18 @@ export function parseRowIntent(row: {
   status: unknown;
   intent: unknown;
   replyTo: unknown;
-}): Intent | AskedIntent | undefined {
+}): RowIntent | undefined {
   const { intent } = row;
   const replyTo = row.replyTo === null ? null : parseMessageId(row.replyTo);
   if (replyTo === undefined || !isIntentKind(intent)) return undefined;
-  if (row.status === "rejected") return { intent, replyTo };
+  if (row.status === "rejected")
+    return { status: "rejected", asked: { intent, replyTo } };
   if (intent === "new")
-    return replyTo === null ? { intent, replyTo } : undefined;
+    return replyTo === null
+      ? { status: "accepted", intent: { intent, replyTo } }
+      : undefined;
   if (intent === "continue" || replyTo === null) return undefined;
-  return { intent, replyTo };
+  return { status: "accepted", intent: { intent, replyTo } };
 }
 
 /** A turn id as `control_authorize_turn` takes it: 1 to 128 characters. */

@@ -2567,6 +2567,7 @@ pub(crate) mod tests {
     }
 
     /// One PR 3 row: an accepted one is delivered from G's chat into A's.
+    /// `columns` overrides any other column, for the PR 5 and PR 6 shapes.
     struct Pr3Row {
         id: char,
         tool: &'static str,
@@ -2575,33 +2576,42 @@ pub(crate) mod tests {
         reply_to: Option<char>,
         steers: Option<char>,
         hop: i64,
+        columns: Vec<(&'static str, Sql)>,
     }
 
     fn insert_pr3(conn: &Connection, row: Pr3Row) -> rusqlite::Result<usize> {
         let accepted = row.gate_result == "ok";
-        let target = |letter: Option<char>| letter.map(|letter| id(letter).as_str().to_owned());
-        conn.execute(
-            "INSERT INTO mono_messages (id, request_id, part, payload_hash, tool, from_mono_id,
-               from_session_id, to_mono_id, addressed, body, body_chars, wanting_reply,
-               action_type, reply_to, steers, hop, status, gate_result, handled_by_session,
-               delivery, created_at, updated_at)
-             VALUES (?1, ?2, 0, ?3, ?4, 'giga', 'giga-chat', 'mono-a', 'mono-a', 'hi', 2, 0,
-                     ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1)",
-            params![
-                id(row.id).as_str(),
-                format!("req-{}", row.id),
-                "0".repeat(64),
-                row.tool,
-                row.action_type,
-                target(row.reply_to),
-                target(row.steers),
-                row.hop,
-                if accepted { "delivered" } else { "rejected" },
-                row.gate_result,
-                accepted.then_some("a-chat"),
-                accepted.then_some("queue"),
-            ],
-        )
+        let target =
+            |letter: Option<char>| letter.map_or(Sql::Null, |letter| text(id(letter).as_str()));
+        let optional = |value: Option<&str>| value.map_or(Sql::Null, text);
+        let columns = vec![
+            ("id", text(id(row.id).as_str())),
+            ("request_id", text(&format!("req-{}", row.id))),
+            ("part", Sql::Integer(0)),
+            ("payload_hash", text(&"0".repeat(64))),
+            ("tool", text(row.tool)),
+            ("from_mono_id", text("giga")),
+            ("from_session_id", text("giga-chat")),
+            ("to_mono_id", text("mono-a")),
+            ("addressed", text("mono-a")),
+            ("body", text("hi")),
+            ("body_chars", Sql::Integer(2)),
+            ("wanting_reply", Sql::Integer(0)),
+            ("action_type", optional(row.action_type)),
+            ("reply_to", target(row.reply_to)),
+            ("steers", target(row.steers)),
+            ("hop", Sql::Integer(row.hop)),
+            (
+                "status",
+                text(if accepted { "delivered" } else { "rejected" }),
+            ),
+            ("gate_result", text(row.gate_result)),
+            ("handled_by_session", optional(accepted.then_some("a-chat"))),
+            ("delivery", optional(accepted.then_some("queue"))),
+            ("created_at", Sql::Integer(1)),
+            ("updated_at", Sql::Integer(1)),
+        ];
+        raw_insert(conn, &with(columns, &row.columns))
     }
 
     fn pr3_send(id: char) -> Pr3Row {
@@ -2613,7 +2623,35 @@ pub(crate) mod tests {
             reply_to: None,
             steers: None,
             hop: 0,
+            columns: Vec::new(),
         }
+    }
+
+    /// Every row, each column but the ones the rebuild maps, by column name.
+    fn copied_columns(conn: &Connection) -> Vec<Vec<(String, Sql)>> {
+        const MAPPED: [&str; 5] = ["action_type", "steers", "intent", "reply_to", "hop"];
+        let mut statement = conn
+            .prepare("SELECT * FROM mono_messages ORDER BY id")
+            .unwrap();
+        let names: Vec<String> = statement
+            .column_names()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        statement
+            .query_map([], |row| {
+                let mut columns = Vec::new();
+                for (index, name) in names.iter().enumerate() {
+                    if !MAPPED.contains(&name.as_str()) {
+                        columns.push((name.clone(), row.get::<_, Sql>(index)?));
+                    }
+                }
+                columns.sort_by(|a, b| a.0.cmp(&b.0));
+                Ok(columns)
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
     }
 
     fn intents(conn: &Connection) -> Vec<(String, String, Option<String>, i64)> {
@@ -2650,7 +2688,8 @@ pub(crate) mod tests {
             .unwrap()
     }
 
-    // Design 16.2 map. Defect: a wrong CASE line or a lost row.
+    // Design 16.2 map. Defects: a wrong CASE line, a lost row, or a column
+    // value lost or moved by the copy.
     #[test]
     fn the_rebuild_maps_every_old_row_shape() {
         let conn = pr3_database();
@@ -2669,6 +2708,14 @@ pub(crate) mod tests {
                 action_type: None,
                 reply_to: Some('a'),
                 hop: 1,
+                columns: vec![
+                    ("delivery", text("submit")),
+                    ("turn_id", text("turn-3")),
+                    ("slot_window", text("side")),
+                    ("delivered_at", Sql::Integer(5)),
+                    ("created_at", Sql::Integer(2)),
+                    ("updated_at", Sql::Integer(5)),
+                ],
                 ..pr3_send('d')
             },
             Pr3Row {
@@ -2691,10 +2738,70 @@ pub(crate) mod tests {
                 hop: 1,
                 ..pr3_send('h')
             },
+            // PR 5: an answered steer delivery in a turn, with slot and handle.
+            Pr3Row {
+                action_type: Some("steer"),
+                columns: vec![
+                    ("status", text("answered")),
+                    ("wanting_reply", Sql::Integer(1)),
+                    ("delivery", text("steer")),
+                    ("turn_id", text("turn-1")),
+                    ("slot_window", text("main")),
+                    ("handle", Sql::Integer(1)),
+                    ("delivered_at", Sql::Integer(4)),
+                    ("closed_at", Sql::Integer(6)),
+                    ("created_at", Sql::Integer(3)),
+                    ("updated_at", Sql::Integer(6)),
+                ],
+                ..pr3_send('i')
+            },
+            // PR 5: unanswered and noticed.
+            Pr3Row {
+                columns: vec![
+                    ("status", text("unanswered")),
+                    ("wanting_reply", Sql::Integer(1)),
+                    ("delivery", text("submit")),
+                    ("turn_id", text("turn-2")),
+                    ("slot_window", text("side")),
+                    ("handle", Sql::Integer(2)),
+                    ("delivered_at", Sql::Integer(5)),
+                    ("closed_at", Sql::Integer(7)),
+                    ("notified_at", Sql::Integer(8)),
+                    ("created_at", Sql::Integer(4)),
+                    ("updated_at", Sql::Integer(8)),
+                ],
+                ..pr3_send('j')
+            },
+            // PR 6: dropped before any route, sent to a session, from no Mono.
+            Pr3Row {
+                columns: vec![
+                    ("status", text("dropped")),
+                    ("wanting_reply", Sql::Integer(1)),
+                    ("from_mono_id", Sql::Null),
+                    ("to_mono_id", Sql::Null),
+                    ("to_session_id", text("b-chat")),
+                    ("addressed", text("b-chat")),
+                    ("handled_by_session", Sql::Null),
+                    ("delivery", Sql::Null),
+                    ("closed_at", Sql::Integer(9)),
+                    ("notified_at", Sql::Integer(10)),
+                    ("created_at", Sql::Integer(5)),
+                    ("updated_at", Sql::Integer(10)),
+                ],
+                ..pr3_send('k')
+            },
+            // A rejected `steers` row keeps its hop.
+            Pr3Row {
+                gate_result: "steer_target_mismatch",
+                steers: Some('a'),
+                ..pr3_send('l')
+            },
         ] {
             insert_pr3(&conn, row).unwrap();
         }
+        let copied = copied_columns(&conn);
         ensure_tables(&conn).unwrap();
+        assert_eq!(copied_columns(&conn), copied);
         let a = Some(id('a').as_str().to_owned());
         let row = |letter: char, intent: &str, reply_to: &Option<String>, hop| {
             (
@@ -2715,9 +2822,13 @@ pub(crate) mod tests {
                 row('f', "new", &None, 0),
                 row('g', "steer", &None, 0),
                 row('h', "steer", &a, 1),
+                row('i', "new", &None, 0),
+                row('j', "new", &None, 0),
+                row('k', "new", &None, 0),
+                row('l', "steer", &a, 0),
             ]
         );
-        for letter in "abcdefgh".chars() {
+        for letter in "abcdefghijkl".chars() {
             assert!(get(&conn, &id(letter)).unwrap().is_some(), "{letter}");
         }
     }
@@ -2898,6 +3009,45 @@ pub(crate) mod tests {
             })
             .unwrap();
         assert_eq!(ends, 1);
+    }
+
+    // Design 16.1: a row whose columns disagree fails the parse. The CHECKs
+    // keep such a row out today, so they are off here. Defect: `parse_row`
+    // reads an accepted row whose intent and `reply_to` disagree.
+    #[test]
+    fn parse_row_refuses_an_accepted_row_whose_intent_and_reply_to_disagree() {
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        raw_insert(&conn, &row("delivered")).unwrap();
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+            .unwrap();
+        let a = text(id('a').as_str());
+        for (letter, intent, reply_to) in [
+            ('b', "new", a.clone()),
+            ('c', "reply", Sql::Null),
+            ('d', "steer", Sql::Null),
+            ('e', "continue", a.clone()),
+        ] {
+            let message = id(letter);
+            raw_insert(
+                &conn,
+                &with(
+                    row("delivered"),
+                    &[
+                        ("id", text(message.as_str())),
+                        ("request_id", text(&format!("req-{letter}"))),
+                        ("intent", text(intent)),
+                        ("reply_to", reply_to),
+                    ],
+                ),
+            )
+            .unwrap();
+            let error = get(&conn, &message).unwrap_err().to_string();
+            assert!(
+                error.contains("invalid mono_messages.intent"),
+                "{intent}: {error}"
+            );
+        }
     }
 
     fn text(value: &str) -> Sql {
