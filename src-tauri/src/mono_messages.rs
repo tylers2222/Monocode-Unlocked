@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use rusqlite::types::Value as Sql;
 use rusqlite::{
     params, Connection, OptionalExtension, Row, ToSql, Transaction, TransactionBehavior,
 };
@@ -19,7 +20,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use crate::control::ControlHost;
 use crate::mono_gate::{
     self, Caller, CallerKind, CallerMono, Closure, Decision, Facts, HandleState, Handled, Input,
-    OpenHandle, Recipient, Referenced, Refusal, ReplyFacts, Route, SendFacts, Target,
+    MessageRef, OpenHandle, Recipient, Referenced, Refusal, ReplyFacts, Route, SendFacts, Target,
     TargetSession,
 };
 use crate::mono_roster::{validate_mono_id, MonoRole};
@@ -1414,14 +1415,7 @@ fn handled(
             continue;
         };
         let from = match &message.from_mono_id {
-            Some(mono_id) => conn
-                .query_row(
-                    "SELECT name FROM monos WHERE id = ?1",
-                    [mono_id.as_str()],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .unwrap_or_default(),
+            Some(mono_id) => mono_name(conn, mono_id)?,
             None => String::new(),
         };
         handled.push(Handled {
@@ -1602,6 +1596,170 @@ fn referenced(
         _ => None,
     };
     Ok(Referenced { message, session })
+}
+
+/// A Mono's name; empty when its row is gone.
+fn mono_name(conn: &Connection, mono_id: &MonoId) -> rusqlite::Result<String> {
+    Ok(conn
+        .query_row(
+            "SELECT name FROM monos WHERE id = ?1",
+            [mono_id.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or_default())
+}
+
+/// One end of a message as `get_message` shows it (design 16.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum Named {
+    Mono { mono_id: MonoId, mono_name: String },
+    Session { session_id: SessionId },
+}
+
+/// What `get_message` answers (design 16.4). `message_id` is always there:
+/// a handle copied from an older turn names this turn's message, and only
+/// the id tells the two apart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReadMessage {
+    pub message_id: MessageId,
+    pub from: Named,
+    pub to: Option<Named>,
+    pub intent: IntentKind,
+    pub reply_to: Option<MessageId>,
+    pub body: String,
+    pub wanting_reply: bool,
+    pub status: &'static str,
+    pub created_at: i64,
+    /// Only when the row holds a handle in the caller's current turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handle: Option<Handle>,
+}
+
+/// Design 16.4: the accepted row `named` points at, when the caller's Mono is
+/// a party to it. A handle names a row of the caller's session and turn, in
+/// any status. A row between two others reads as no row. Writes nothing.
+/// The session legs of the party rule come with PR 7's session callers.
+pub fn readable(
+    conn: &Connection,
+    caller: &Caller,
+    named: &MessageRef,
+) -> rusqlite::Result<Option<ReadMessage>> {
+    let (filter, key) = match named {
+        MessageRef::Id(id) => ("id = ?4", Sql::Text(id.as_str().to_string())),
+        MessageRef::Handle(handle) => (
+            "handled_by_session = ?2 AND turn_id = ?3 AND handle = ?4",
+            Sql::Integer(i64::from(handle.0)),
+        ),
+    };
+    let found = conn
+        .query_row(
+            &format!(
+                "{SELECT} WHERE {filter} AND status <> 'rejected'
+                   AND (from_mono_id = ?1 OR to_mono_id = ?1)"
+            ),
+            params![
+                caller.mono_id.as_str(),
+                caller.session_id.as_str(),
+                caller.turn_id,
+                key
+            ],
+            |row| {
+                let in_turn = row
+                    .get::<_, Option<String>>("handled_by_session")?
+                    .as_deref()
+                    == Some(caller.session_id.as_str())
+                    && row.get::<_, Option<String>>("turn_id")?.as_deref()
+                        == Some(caller.turn_id.as_str());
+                let handle = match row.get::<_, Option<i64>>("handle")? {
+                    Some(number) if in_turn => Some(required(Handle::new(number), "handle")?),
+                    _ => None,
+                };
+                Ok((parse_row(row)?, handle))
+            },
+        )
+        .optional()?;
+    let Some((message, handle)) = found else {
+        return Ok(None);
+    };
+    let named_mono = |mono_id: &MonoId| -> rusqlite::Result<Named> {
+        Ok(Named::Mono {
+            mono_id: mono_id.clone(),
+            mono_name: mono_name(conn, mono_id)?,
+        })
+    };
+    let from = match &message.from_mono_id {
+        Some(mono_id) => named_mono(mono_id)?,
+        None => Named::Session {
+            session_id: message.from_session_id.clone(),
+        },
+    };
+    let to = match &message.to {
+        Some(Party::Mono { mono_id }) => Some(named_mono(mono_id)?),
+        Some(Party::Session { session_id }) => Some(Named::Session {
+            session_id: session_id.clone(),
+        }),
+        None => None,
+    };
+    let IntentColumns {
+        intent, reply_to, ..
+    } = message.status.intent_columns();
+    let columns = StatusColumns::of(&message.status);
+    Ok(Some(ReadMessage {
+        intent,
+        reply_to: reply_to.cloned(),
+        status: columns.status,
+        wanting_reply: columns.wanting_reply,
+        body: message.body.text,
+        message_id: message.id,
+        from,
+        to,
+        created_at: message.created_at,
+        handle,
+    }))
+}
+
+/// What `mono_message_get` answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum Got {
+    Found { message: ReadMessage },
+    Failed { error: ToolError },
+}
+
+/// `get_message` (design 16.4): `invalid_input`, `unknown_handle` for a
+/// handle that names nothing in this turn, and one `unknown_message` for a
+/// missing, rejected or unreadable row, so it never tells whether one exists.
+pub fn get_message(
+    conn: &Connection,
+    caller: &Caller,
+    input: Result<MessageRef, String>,
+) -> rusqlite::Result<Got> {
+    let failed = |code: &'static str, hint: String| Got::Failed {
+        error: ToolError {
+            code,
+            hint,
+            message_id: None,
+            open_handles: None,
+            duplicate: false,
+        },
+    };
+    let named = match input {
+        Ok(named) => named,
+        Err(hint) => return Ok(failed(Refusal::InvalidInput.as_str(), hint)),
+    };
+    Ok(match (readable(conn, caller, &named)?, named) {
+        (Some(message), _) => Got::Found { message },
+        (None, MessageRef::Handle(handle)) => failed(
+            RejectCode::UnknownHandle.as_str(),
+            format!("No handle {handle} in this turn. Pass the message's message_id instead."),
+        ),
+        (None, MessageRef::Id(_)) => failed(
+            RejectCode::UnknownMessage.as_str(),
+            "No message you can read has that id.".into(),
+        ),
+    })
 }
 
 /// An accepted row's `delivery` is `queue` until a hand-off writes `submit`
@@ -2545,6 +2703,17 @@ pub fn mono_message_drop(
     };
     notices.emit(&app);
     Ok(answer)
+}
+
+#[tauri::command(async)]
+pub fn mono_message_get(
+    store: State<'_, SessionStore>,
+    caller: CallerArg,
+    input: Value,
+) -> Result<Got, String> {
+    let caller = caller.parse()?;
+    let conn = store.lock_conn()?;
+    get_message(&conn, &caller, mono_gate::parse_get(&input)).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -6323,6 +6492,236 @@ pub(crate) mod tests {
             stored_row(&conn, &plain),
             ("delivered".into(), None, None, None)
         );
+    }
+
+    fn read(conn: &Connection, caller: &Caller, handle: &str) -> Got {
+        get_message(
+            conn,
+            caller,
+            mono_gate::parse_get(&serde_json::json!({ "handle": handle })),
+        )
+        .unwrap()
+    }
+
+    fn found(got: Got) -> serde_json::Value {
+        match got {
+            Got::Found { message } => serde_json::to_value(message).unwrap(),
+            failed => panic!("{failed:?}"),
+        }
+    }
+
+    fn read_error(got: Got) -> ToolError {
+        match got {
+            Got::Failed { error } => error,
+            found => panic!("{found:?}"),
+        }
+    }
+
+    /// The Mono `mono-c` (chat `c-chat`), a party to nothing yet.
+    fn seed_c(conn: &Connection) {
+        conn.execute_batch(
+            r#"INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
+               VALUES ('mono-c', 'C', 'mono', '{"sessionId":"c-chat"}', 2, 1, 1);"#,
+        )
+        .unwrap();
+    }
+
+    /// Every column of every `mono_messages` row, in id order.
+    fn dump(conn: &Connection) -> Vec<Vec<Sql>> {
+        let mut statement = conn
+            .prepare("SELECT * FROM mono_messages ORDER BY id")
+            .unwrap();
+        let columns = statement.column_count();
+        statement
+            .query_map([], |row| {
+                (0..columns).map(|index| row.get::<_, Sql>(index)).collect()
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    // Design 16.4. Defect: the sender cannot read what it sent, the receiver
+    // cannot read a message by the handle its turn shows, the answer leaves
+    // out a field, or the read changes a row (PR I3 review r1 m2: a full
+    // dump, not the row count, so an UPDATE is caught too).
+    #[test]
+    fn get_message_reads_a_row_by_id_for_its_sender_and_by_handle_in_the_receivers_turn() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let asked = ask_delivered(&conn, "ask", "turn-1");
+        let before = dump(&conn);
+        assert_eq!(
+            found(read(&conn, &caller_in("giga", "giga-chat"), asked.as_str())),
+            serde_json::json!({
+                "message_id": asked.as_str(),
+                "from": {"mono_id": "giga", "mono_name": "Boss"},
+                "to": {"mono_id": "mono-a", "mono_name": "A"},
+                "intent": "new",
+                "reply_to": null,
+                "body": "Hi",
+                "wanting_reply": true,
+                "status": "open",
+                "created_at": 100,
+            })
+        );
+        // A habit run of the Giga is another session of the same Mono.
+        let habit = Caller {
+            kind: CallerKind::HabitRun,
+            session_id: session("giga-habit"),
+            ..caller_in("giga", "giga-chat")
+        };
+        assert_eq!(
+            found(read(&conn, &habit, asked.as_str()))["message_id"],
+            asked.as_str()
+        );
+        let by_handle = found(read(&conn, &caller_in("mono-a", "a-chat"), "#1"));
+        assert_eq!(by_handle["message_id"], asked.as_str());
+        assert_eq!(by_handle["handle"], "#1");
+        assert_eq!(by_handle["body"], "Hi");
+        assert_eq!(dump(&conn), before);
+    }
+
+    // Design 16.4. Defect: a Mono reads messages between two others, or the
+    // answer tells it that the row exists.
+    #[test]
+    fn get_message_answers_unknown_message_to_a_mono_that_is_not_a_party() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_c(&conn);
+        let asked = ask_delivered(&conn, "ask", "turn-1");
+        let outsider = caller_in("mono-c", "c-chat");
+        let hidden = read_error(read(&conn, &outsider, asked.as_str()));
+        assert_eq!(hidden.code, "unknown_message");
+        assert_eq!(hidden.hint, "No message you can read has that id.");
+        let missing = read_error(read(&conn, &outsider, "m_aaaaaaaaaaaa"));
+        assert_eq!(hidden, missing);
+    }
+
+    // Design 16.4, PR I3 review r1 m1. The party is the caller's Mono, never
+    // its session: session callers come with PR 7. Defect: a caller reads a
+    // message between two other Monos because it runs in the session that
+    // sent or handled it.
+    #[test]
+    fn get_message_keys_the_party_on_the_callers_mono_not_its_session() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_c(&conn);
+        let asked = ask_delivered(&conn, "ask", "turn-1");
+        for session_id in ["giga-chat", "a-chat"] {
+            let error = read_error(read(
+                &conn,
+                &caller_in("mono-c", session_id),
+                asked.as_str(),
+            ));
+            assert_eq!(error.code, "unknown_message", "{session_id}");
+        }
+    }
+
+    // Design 16.4: only accepted rows. Defect: a refused call reads as a
+    // message that was sent.
+    #[test]
+    fn get_message_answers_unknown_message_for_a_rejected_row_of_the_caller() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let giga = caller_in("giga", "giga-chat");
+        let error = failed(call(
+            &conn,
+            &giga,
+            "self",
+            Tool::SendMessage,
+            hi("giga", false),
+            &[],
+        ));
+        assert_eq!(error.code, "self_send");
+        let rejected = error.message_id.expect("a rejected row");
+        assert_eq!(
+            read_error(read(&conn, &giga, rejected.as_str())).code,
+            "unknown_message"
+        );
+    }
+
+    // Design 16.4. Defect: a handle that names nothing reads as a missing
+    // id, so the hint does not send the model to the message_id.
+    #[test]
+    fn get_message_answers_unknown_handle_for_a_handle_not_in_this_turn() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        ask_delivered(&conn, "ask", "turn-1");
+        let error = read_error(read(&conn, &caller_in("mono-a", "a-chat"), "#9"));
+        assert_eq!(error.code, "unknown_handle");
+        assert_eq!(
+            error.hint,
+            "No handle #9 in this turn. Pass the message's message_id instead."
+        );
+    }
+
+    // Design 16.4 (intents review r1). Handles restart at #1 in each turn.
+    // Defect: a "#1" read in turn 2 names the turn 1 message, or the answer
+    // shows a handle for a row that holds it only in an earlier turn, so
+    // nothing tells the model which message it got.
+    #[test]
+    fn get_message_reads_a_handle_in_the_callers_turn_only() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let first = ask_delivered(&conn, "first", "turn-1");
+        turn_ended(&conn, &session("a-chat"), "turn-1", 200).unwrap();
+        let second = ask_delivered(&conn, "second", "turn-2");
+        let a = caller_in_turn("mono-a", "a-chat", "turn-2");
+        let current = found(read(&conn, &a, "#1"));
+        assert_eq!(current["message_id"], second.as_str());
+        assert_eq!(current["handle"], "#1");
+        let earlier = found(read(&conn, &a, first.as_str()));
+        assert_eq!(earlier["status"], "unanswered");
+        assert!(earlier.get("handle").is_none(), "{earlier}");
+        // A turn that was given no handle: "#1" of the turns before it names
+        // nothing here.
+        let later = caller_in_turn("mono-a", "a-chat", "turn-3");
+        assert_eq!(read_error(read(&conn, &later, "#1")).code, "unknown_handle");
+    }
+
+    // Design 16.4. Defect: a message whose chat was deleted, or whose sender
+    // Mono was deleted, can no longer be read by the Mono it is about.
+    #[test]
+    fn get_message_reads_a_dropped_row_and_a_row_from_a_deleted_mono() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let queued = sent_to_a(&conn, "queued", true);
+        let asked = sent_to_a(&conn, "asked", false);
+        clear(&conn, "a-chat", 150);
+        let dropped = found(read(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            queued.as_str(),
+        ));
+        assert_eq!(dropped["status"], "dropped");
+        assert_eq!(dropped["body"], "Hi");
+        conn.execute("DELETE FROM monos WHERE id = 'giga'", [])
+            .unwrap();
+        let orphan = found(read(&conn, &caller_in("mono-a", "a-chat"), asked.as_str()));
+        assert_eq!(
+            orphan["from"],
+            serde_json::json!({"session_id": "giga-chat"})
+        );
+    }
+
+    // Design 16.4. Defect: a field other than handle, or a value that is not
+    // one reference, reaches the store instead of invalid_input.
+    #[test]
+    fn get_message_refuses_input_that_is_not_one_reference() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let giga = caller_in("giga", "giga-chat");
+        for input in [
+            serde_json::json!({"id": "m_aaaaaaaaaaaa"}),
+            serde_json::json!({"handle": "#1", "id": "m_aaaaaaaaaaaa"}),
+            serde_json::json!({"handle": ["#1"]}),
+            serde_json::json!({"handle": "#0"}),
+            serde_json::json!({}),
+        ] {
+            let got = get_message(&conn, &giga, mono_gate::parse_get(&input)).unwrap();
+            assert_eq!(read_error(got).code, "invalid_input", "{input}");
+        }
     }
 
     // PR I2 (intents review r1). Defect: a steer that waited across a

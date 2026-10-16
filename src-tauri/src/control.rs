@@ -28,10 +28,18 @@ pub(crate) const REQUEST_TIMED_OUT: &str =
 /// id; the app returns the first outcome instead of applying it twice.
 pub(crate) const TOOL_CALL_RETRIES: usize = 2;
 const OUTCOME_UNKNOWN: &str = "MonoCode did not confirm this call in time. The message may already be delivered. Do not send it again. Call get_monos to check that MonoCode responds, and if you asked for a reply, wait for it.";
+/// A read changes nothing, so repeating it is safe (PR I3 review r1 m3).
+const READ_OUTCOME_UNKNOWN: &str =
+    "MonoCode did not confirm this call in time. Reading changes nothing, so call get_message again.";
 
-/// What a tool caller gets when no attempt was confirmed (design 3.4 `outcome_unknown`).
-pub(crate) fn outcome_unknown() -> Value {
-    json!({"ok": false, "code": "outcome_unknown", "hint": OUTCOME_UNKNOWN, "error": OUTCOME_UNKNOWN})
+/// What a tool caller gets when no attempt of `action` was confirmed (design
+/// 3.4 `outcome_unknown`).
+pub(crate) fn outcome_unknown(action: &str) -> Value {
+    let hint = match action {
+        "messages.get" => READ_OUTCOME_UNKNOWN,
+        _ => OUTCOME_UNKNOWN,
+    };
+    json!({"ok": false, "code": "outcome_unknown", "hint": hint, "error": hint})
 }
 
 /// A token the app refuses. Both are final for that token, so neither is retryable.
@@ -1074,7 +1082,7 @@ fn host_call(
             outcome => return outcome,
         }
     }
-    Ok(outcome_unknown())
+    Ok(outcome_unknown(&call.action))
 }
 
 #[tauri::command]
@@ -1871,6 +1879,76 @@ mod tests {
         let (response, events) = host_events(&inner, "main", "mono-chat", "toolu:01/x", 0);
         assert_eq!(response["ok"], false);
         assert!(events.is_empty());
+        assert!(inner.lock().unwrap().pending.is_empty());
+    }
+
+    // PR I3. Defect: omp cannot call get_message, because the host tool
+    // allowlist does not list messages.get; or the allowlist lets any app
+    // action through as a host tool.
+    #[test]
+    fn a_host_tool_call_reaches_the_window_for_messages_get_and_not_for_other_actions() {
+        let inner = Mutex::new(Inner::default());
+        app_grant(&mut inner.lock().unwrap(), "mono-chat");
+        let call = |action: &str| {
+            let mut actions = Vec::new();
+            let response = host_call(
+                &inner,
+                "main",
+                "mono-chat",
+                action.into(),
+                json!({"handle": "#1"}),
+                "r1".into(),
+                |_, event| {
+                    let pending = inner.lock().unwrap().pending.remove(&event.id).unwrap();
+                    pending.reply.send(json!({"ok": true})).unwrap();
+                    actions.push(event.action);
+                    true
+                },
+                Duration::from_millis(50),
+            )
+            .unwrap_or_else(Failure::response);
+            (response, actions)
+        };
+        let (response, actions) = call("messages.get");
+        assert_eq!(response, json!({"ok": true}));
+        assert_eq!(actions, ["messages.get"]);
+        let (response, actions) = call("monos.list");
+        assert_eq!(response["ok"], false);
+        assert!(actions.is_empty());
+    }
+
+    // PR I3 review r1 m3. Defect: a timed-out get_message tells the model not
+    // to call it again, so it goes on without the text; or a timed-out send
+    // loses its "do not send it again" hint.
+    #[test]
+    fn a_timed_out_read_says_to_read_again_and_a_timed_out_send_does_not() {
+        let inner = Mutex::new(Inner::default());
+        app_grant(&mut inner.lock().unwrap(), "mono-chat");
+        let timed_out = |action: &str, input: Value| {
+            host_call(
+                &inner,
+                "main",
+                "mono-chat",
+                action.into(),
+                input,
+                action.replace('.', "-"),
+                |_, _| true,
+                Duration::from_millis(10),
+            )
+            .unwrap_or_else(Failure::response)
+        };
+        let read = timed_out("messages.get", json!({"handle": "#1"}));
+        assert_eq!(read["code"], "outcome_unknown");
+        assert_eq!(read["hint"], READ_OUTCOME_UNKNOWN);
+        assert!(read["hint"]
+            .as_str()
+            .unwrap()
+            .contains("call get_message again"));
+        let send = timed_out(
+            "messages.send",
+            json!({"message": "Hi", "send_to": "b", "wanting_reply": false, "intent": "new"}),
+        );
+        assert_eq!(send["hint"], OUTCOME_UNKNOWN);
         assert!(inner.lock().unwrap().pending.is_empty());
     }
     // Defect: an omp host call that times out is not repeated, is repeated

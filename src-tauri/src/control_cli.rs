@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 41] = [
+const APP_ACTIONS: [&str; 42] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -98,6 +98,7 @@ const APP_ACTIONS: [&str; 41] = [
     "messages.get_monos",
     "messages.send",
     "messages.reply",
+    "messages.get",
     "monos.create",
     "monos.update",
     "workspace.status",
@@ -271,6 +272,15 @@ Actions:
                   answer. Returns message_ids and answered. Codes:
                   no_open_handle, ambiguous_reply and unknown_handle (with
                   open_handles), handle_closed, target_gone, too_large.
+  messages.get   {"handle":"#1"}  Mono or habit only. The full text of a
+                  message you sent or received. handle is its message_id, or
+                  a handle such as "#1" from this turn. Call it only when the
+                  original is no longer in your context. Returns message with
+                  message_id, from, to, intent, reply_to, body, wanting_reply,
+                  status, created_at, and handle when the message holds one in
+                  this turn. Writes nothing. Codes: invalid_input,
+                  unknown_handle, unknown_message (no message you can read
+                  has that id).
   monos.create   {"name":"...","harness":"codex","model":"codex:...",
                   "projects":["<path or name>"],"soul":"<Markdown>","giga":false}
                   Giga Mono or its habits only. Create a Mono and its chat on
@@ -624,6 +634,19 @@ pub fn app_tools() -> Value {
                 "required": ["message"],
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "get_message",
+            "action": "messages.get",
+            "description": "Read the full text of a message you sent or received. Call it only when the original is no longer in your context. Returns message_id, from, to, intent, reply_to, body, wanting_reply, status and created_at, and handle when the message holds one in this turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "handle": {"type": "string", "minLength": 1, "description": "The message_id, or a handle such as \"#1\" from this turn."}
+                },
+                "required": ["handle"],
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -773,7 +796,7 @@ fn call_app(
             Err(failure) => return failure_response(failure, request_id),
         }
     }
-    crate::control::outcome_unknown()
+    crate::control::outcome_unknown(action)
 }
 
 fn read_capped(mut source: impl Read) -> Result<String, String> {
@@ -1170,6 +1193,7 @@ mod tests {
                 r#"{"message":"Check CI","send_to":"other","wanting_reply":true,"intent":"steer","reply_to":"m_aaaaaaaaaaaa"}"#,
             ),
             ("messages.reply", r#"{"message":"CI is green"}"#),
+            ("messages.get", r##"{"handle":"#1"}"##),
         ] {
             assert!(matches!(
                 parse_args_for(&args(&[action, "--json", input]), true),
@@ -1178,7 +1202,9 @@ mod tests {
                         && parsed_input == serde_json::from_str::<Value>(input).unwrap()
             ));
             assert!(parse_args_for(&args(&[action]), false).is_err());
-            assert!(app_help().contains(action));
+            // "messages.get" is a prefix of "messages.get_monos", so each
+            // entry is matched with the space that follows its name.
+            assert!(app_help().contains(&format!("  {action} ")), "{action}");
         }
         // The app answers monos.send with action_removed and the new name.
         assert!(matches!(
@@ -1346,7 +1372,7 @@ mod tests {
     // Defect: an MCP client cannot start (unsupported version, missing
     // capabilities) or sees tools that accept fields the gate refuses.
     #[test]
-    fn app_mcp_initializes_and_lists_the_three_strict_tools() {
+    fn app_mcp_initializes_and_lists_the_four_strict_tools() {
         let out = mcp(
             None,
             &[
@@ -1366,7 +1392,7 @@ mod tests {
         assert_eq!(out[1]["result"]["protocolVersion"], "2025-06-18");
         let tools = out[2]["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["get_monos", "send_message", "reply"]);
+        assert_eq!(names, ["get_monos", "send_message", "reply", "get_message"]);
         for tool in tools {
             assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{tool}");
             assert!(tool.get("action").is_none(), "{tool}");
@@ -1387,6 +1413,19 @@ mod tests {
         assert!(send["properties"].get("action_type").is_none(), "{send}");
         // Whole-turn. Defect: MCP clients cannot send scope, or must send it.
         assert_eq!(send["properties"]["scope"]["enum"], json!(["turn"]));
+        // PR I3. Defect: get_message is missing, takes another field, or lets
+        // a model leave out the reference.
+        let get = &tools[3]["inputSchema"];
+        assert_eq!(get["required"], json!(["handle"]));
+        assert_eq!(get["properties"]["handle"]["type"], "string");
+        assert_eq!(get["properties"].as_object().unwrap().len(), 1);
+        // PR I3 review r1 n1. Defect: a model that sees only the MCP schema
+        // does not know the answer can carry handle.
+        let described = tools[3]["description"].as_str().unwrap();
+        assert!(
+            described.contains("and handle when the message holds one in this turn"),
+            "{described}"
+        );
         assert_eq!(out[3]["id"], 4);
         assert_eq!(out[3]["error"]["code"], -32601);
         assert_eq!(out[4]["error"]["code"], -32600);
@@ -1466,6 +1505,27 @@ mod tests {
             requests[0]["requestId"], requests[1]["requestId"],
             "two tool calls shared a request id"
         );
+    }
+
+    // PR I3 review r1 m3. Defect: over MCP, a get_message whose every
+    // attempt timed out tells the model not to call it again.
+    #[test]
+    fn app_mcp_tells_a_timed_out_get_message_to_read_again() {
+        let timed_out = json!({"ok": false, "error": crate::control::REQUEST_TIMED_OUT});
+        let (endpoint, app) = fake_app(vec![timed_out; 3]);
+        let out = mcp(
+            Some(&endpoint),
+            &[rpc(
+                1,
+                "tools/call",
+                json!({"name": "get_message", "arguments": {"handle": "#1"}}),
+            )],
+        );
+        assert_eq!(app.join().unwrap().len(), 3);
+        let answer = &out[0]["result"]["structuredContent"];
+        assert_eq!(answer["code"], "outcome_unknown");
+        let hint = answer["hint"].as_str().unwrap();
+        assert!(hint.contains("call get_message again"), "{hint}");
     }
 
     // Defect: the app applies a call but answers too late; app-mcp sends it

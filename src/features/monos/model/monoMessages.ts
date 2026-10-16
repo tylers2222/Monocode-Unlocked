@@ -326,6 +326,39 @@ function parseTo(raw: unknown): Handle[] {
   return handles;
 }
 
+/** A `get_message` call (design 16.4): one message id or handle. */
+export type GetInput = { handle: MessageId | Handle };
+
+/** Throws the `invalid_input` hint. Rust parses the same input again. */
+export function parseGetInput(raw: Record<string, unknown>): GetInput {
+  const handle = parseHandle(raw.handle) ?? parseMessageId(raw.handle);
+  if (!handle)
+    throw new Error(
+      'handle must be one message_id or one handle such as "#1".',
+    );
+  return { handle };
+}
+
+/** One end of a message as `get_message` shows it. */
+export type NamedParty =
+  { mono_id: MonoId; mono_name: string } | { session_id: SessionId };
+
+/** What `get_message` answers (design 16.4). */
+export type ReadMessage = {
+  message_id: MessageId;
+  from: NamedParty;
+  to: NamedParty | null;
+  intent: IntentKind;
+  reply_to: MessageId | null;
+  body: string;
+  wanting_reply: boolean;
+  /** Only accepted rows are readable. */
+  status: Exclude<MonoMessage["status"], "rejected">;
+  created_at: number;
+  /** Only when the message holds a handle in the caller's current turn. */
+  handle?: Handle;
+};
+
 function attribute(value: string): string {
   return value.replace(/[&"<>]/g, (c) => `&#${c.charCodeAt(0)};`);
 }

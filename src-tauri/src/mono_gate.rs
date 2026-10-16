@@ -220,6 +220,47 @@ const REPLY_TO_RULE: &str = "reply_to must be one message_id (m_…). A steer na
 const SCOPE_RULE: &str = r#"scope must be "turn": steer everything the recipient is doing now."#;
 const TARGET_RULE: &str = r#"Pass reply_to or scope "turn", not both. reply_to steers the work one message started; scope "turn" steers everything the recipient is doing now."#;
 
+/// What `get_message` takes (design 16.4): a message id, or a handle of the
+/// caller's turn. A steer's `reply_to` takes only an id (PR I2 review r1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageRef {
+    Id(MessageId),
+    Handle(Handle),
+}
+
+impl MessageRef {
+    fn parse(text: &str) -> Option<Self> {
+        Handle::parse(text)
+            .map(MessageRef::Handle)
+            .or_else(|| MessageId::parse(text).map(MessageRef::Id))
+    }
+}
+
+const HANDLE_RULE: &str = r##"handle must be one message_id or one handle such as "#1"."##;
+
+/// `get_message` (design 16.4): the one field `handle`, a message id or a
+/// handle of the caller's turn, or the `invalid_input` hint.
+pub fn parse_get(raw: &Value) -> Result<MessageRef, String> {
+    let empty = Map::new();
+    let fields = raw.as_object().unwrap_or(&empty);
+    let unknown: Vec<&str> = fields
+        .keys()
+        .map(String::as_str)
+        .filter(|key| *key != "handle")
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "Unknown get_message fields: {}. Allowed: handle.",
+            unknown.join(", ")
+        ));
+    }
+    fields
+        .get("handle")
+        .and_then(Value::as_str)
+        .and_then(MessageRef::parse)
+        .ok_or_else(|| HANDLE_RULE.into())
+}
+
 const TO_RULE: &str =
     r##"to must be a handle such as "#1", or a list of 1 to 9 different handles"##;
 

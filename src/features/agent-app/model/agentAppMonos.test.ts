@@ -76,6 +76,7 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
     getMonos: vi.fn(async () => ({ monos: [] })),
     send: vi.fn(async () => ({ message_id: "m_aaaaaaaaaaaa" })),
     reply: vi.fn(async () => ({ message_ids: [] })),
+    get: vi.fn(async () => ({ message: {} })),
   };
   const host = {
     isMono: (id: string) => kind === "mono" && id === source.id,
@@ -92,7 +93,7 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
     input: Record<string, unknown> = {},
     requestId = "req-1",
   ) => handleAgentApp(source, requestId, action, input, host);
-  return { run, send: vi.mocked(messages.send) };
+  return { run, send: vi.mocked(messages.send), get: vi.mocked(messages.get) };
 }
 
 /** What the CLI prints for a call that fails. */
@@ -332,4 +333,33 @@ it("passes a whole-turn steer's scope to messages.send", async () => {
     intent: "steer",
     scope: "turn",
   });
+});
+
+// Design 16.4. Defect: a get_message call with another field, or with a
+// value that is not one reference, reaches the store instead of
+// invalid_input; or a valid one never reaches it.
+it.each([
+  [{ id: "m_aaaaaaaaaaaa" }, "Unknown messages.get fields: id"],
+  [{ handle: ["#1"] }, 'one handle such as "#1"'],
+  [{ handle: "1" }, 'one handle such as "#1"'],
+  [{}, 'one handle such as "#1"'],
+])(
+  "answers an invalid messages.get with invalid_input (%#)",
+  async (input, named) => {
+    const { run, get } = fixture();
+    const answer = await failure(run("messages.get", input));
+    expect(answer).toMatchObject({ ok: false, code: "invalid_input" });
+    expect("hint" in answer && answer.hint).toContain(named);
+    expect(get).not.toHaveBeenCalled();
+  },
+);
+
+it("passes messages.get with a handle or a message id to the store", async () => {
+  const { run, get } = fixture();
+  await run("messages.get", { handle: "#2" });
+  await run("messages.get", { handle: "m_aaaaaaaaaaaa" });
+  expect(get.mock.calls).toEqual([
+    [{ handle: "#2" }],
+    [{ handle: "m_aaaaaaaaaaaa" }],
+  ]);
 });

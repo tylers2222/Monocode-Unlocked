@@ -16,10 +16,12 @@ import {
   type CallErrorCode,
   type Caller,
   type Delivery,
+  type GetInput,
   type Handle,
   type MessageId,
   type MonoId,
   type MonoMessage,
+  type ReadMessage,
   type MonoRole,
   type NoticeStatus,
   type RejectCode,
@@ -717,6 +719,29 @@ export async function getMonos(host: MonoMessagingHost) {
       you: mono.id === resolved.caller.monoId,
     })),
   };
+}
+
+type Got =
+  | { outcome: "found"; message: ReadMessage }
+  | {
+      outcome: "failed";
+      error: {
+        code: "invalid_input" | "unknown_handle" | "unknown_message";
+        hint: string;
+      };
+    };
+
+/** `messages.get` (design 16.4): reads one message; writes nothing. */
+export async function getMessage(host: MonoMessagingHost, input: GetInput) {
+  const resolved = await host.caller();
+  if (!resolved.ok) throw new AppActionError(resolved.code, resolved.hint);
+  const got = await invoke<Got>("mono_message_get", {
+    caller: resolved.caller,
+    input,
+  });
+  if (got.outcome === "failed")
+    throw new AppActionError(got.error.code, got.error.hint);
+  return { message: got.message };
 }
 
 /** `messages.send` (design 3.2). */
