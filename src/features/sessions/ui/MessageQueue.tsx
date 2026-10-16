@@ -110,8 +110,8 @@ export function MessageQueue({
         ) : null}
         {notices.length > 0 ? (
           <>
-            <div className="py-1 text-[11px] text-content/50">
-              Notice from the app · opens your next turn
+            <div className="py-1 text-[11px] text-content/70">
+              Notice from the app · starts its own turn
             </div>
             <div className="divide-y divide-stroke">
               {notices.map(({ id, notice }) => (

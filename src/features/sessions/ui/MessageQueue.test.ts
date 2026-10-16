@@ -108,3 +108,25 @@ it("shows a sender notice in words with only a remove control", () => {
   act(() => root.unmount());
   container.remove();
 });
+
+// Design U10 names both status words. Defects: a dropped notice reads as
+// unanswered, or a cut quote shows no sign that it was cut.
+it("says a dropped notice never reached the recipient and marks a cut quote", () => {
+  const id = "m_aaaaaaaaaaaa" as MessageId;
+  const body =
+    "Nightly check: 0 UI changes without an approval. Does Change E still pass?";
+  const notice = {
+    id: noticeRequestId(id, "dropped"),
+    appRequestId: noticeRequestId(id, "dropped"),
+    text: renderMonoNotice({ id, body, status: "dropped" }, "Monocode General"),
+    attachments: [],
+    waitForIdle: true,
+  };
+  const container = document.createElement("div");
+  container.innerHTML = renderToStaticMarkup(
+    createElement(MessageQueue, { messages: [notice] }),
+  );
+  expect(container.textContent).toContain(
+    `Dropped · Monocode General never got “${Array.from(body).slice(0, 60).join("")}…”`,
+  );
+});
