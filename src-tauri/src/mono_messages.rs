@@ -18,20 +18,36 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use crate::control::ControlHost;
 use crate::mono_gate::{
-    self, Caller, CallerKind, Closure, Decision, Facts, HandleState, Handled, Input, OpenHandle,
-    Recipient, Refusal, ReplyFacts, Route, Target,
+    self, ActionType, Caller, CallerKind, Closure, Decision, Facts, HandleState, Handled, Input,
+    OpenHandle, Recipient, Refusal, ReplyFacts, Route, Target,
 };
 use crate::mono_roster::validate_mono_id;
 use crate::session_store::{validate_id, SessionStore};
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
+    rebuild_for_intents(conn)?;
+    conn.execute_batch(&table_sql("mono_messages"))?;
+    conn.execute_batch(INDEXES)?;
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS mono_messages (
+        "-- A session that was cleared or deleted. The gate trusts this over
+         -- the live session list from the web app.
+         CREATE TABLE IF NOT EXISTS mono_session_ends (
+           session_id TEXT PRIMARY KEY,
+           ended_at   INTEGER NOT NULL
+         );",
+    )
+}
+
+/// The table of design 16.2 under `name`. Its foreign keys always name
+/// `mono_messages`, so the rebuild's copy keeps them after the rename.
+fn table_sql(name: &str) -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS {name} (
            id                 TEXT PRIMARY KEY CHECK (length(id) = 14 AND substr(id, 1, 2) = 'm_'),
            request_id         TEXT NOT NULL CHECK (length(request_id) BETWEEN 1 AND 128),
            part               INTEGER NOT NULL DEFAULT 0 CHECK (part BETWEEN 0 AND 9),
            payload_hash       TEXT NOT NULL CHECK (length(payload_hash) = 64),
-           tool               TEXT NOT NULL CHECK (tool IN ('send_message', 'reply')),
+           tool               TEXT NOT NULL CHECK (tool IN ('send_message', 'reply', 'start_session', 'app_action')),
            from_mono_id       TEXT REFERENCES monos(id) ON DELETE SET NULL,
            from_session_id    TEXT NOT NULL,
            to_mono_id         TEXT REFERENCES monos(id) ON DELETE SET NULL,
@@ -40,9 +56,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            body               TEXT NOT NULL CHECK (length(body) <= 8000),
            body_chars         INTEGER NOT NULL CHECK (body_chars >= 0),
            wanting_reply      INTEGER NOT NULL CHECK (wanting_reply IN (0, 1)),
-           action_type        TEXT CHECK (action_type IN ('queue', 'steer')),
+           intent             TEXT NOT NULL CHECK (intent IN ('new', 'reply', 'steer', 'continue')),
            reply_to           TEXT REFERENCES mono_messages(id),
-           steers             TEXT REFERENCES mono_messages(id),
            hop                INTEGER NOT NULL CHECK (hop >= 0),
            status             TEXT NOT NULL CHECK (status IN
                                 ('open', 'answered', 'delivered', 'unanswered', 'dropped', 'rejected')),
@@ -63,7 +78,6 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            CHECK (status <> 'delivered' OR wanting_reply = 0),
            CHECK (handle IS NULL OR (turn_id IS NOT NULL AND wanting_reply = 1)),
            CHECK (status <> 'rejected' OR (handled_by_session IS NULL AND delivery IS NULL AND turn_id IS NULL)),
-           CHECK (tool <> 'reply' OR status = 'rejected' OR reply_to IS NOT NULL),
            CHECK (to_mono_id IS NULL OR to_session_id IS NULL),
            CHECK (status <> 'answered' OR wanting_reply = 1),
            CHECK (status IN ('rejected', 'dropped') OR (handled_by_session IS NOT NULL AND delivery IS NOT NULL)),
@@ -77,37 +91,104 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            CHECK (notified_at IS NULL OR status IN ('unanswered', 'dropped')),
            CHECK (turn_id IS NULL OR delivery IN ('submit', 'steer')),
            CHECK (status <> 'dropped' OR wanting_reply = 1 OR delivered_at IS NULL),
-           CHECK (tool <> 'reply' OR (steers IS NULL AND action_type IS NULL)),
            CHECK (part = 0 OR (tool = 'reply' AND status <> 'rejected')),
            CHECK (status = 'rejected' OR (reply_to IS NULL) = (hop = 0)),
+           CHECK (status = 'rejected' OR (intent = 'new') = (reply_to IS NULL)),
+           CHECK (status = 'rejected' OR intent <> 'continue'),
+           CHECK (tool <> 'reply' OR intent = 'reply'),
+           CHECK (tool <> 'send_message' OR status = 'rejected' OR intent IN ('new', 'steer')),
+           CHECK (tool <> 'app_action' OR status = 'rejected'),
+           CHECK (tool <> 'start_session' OR status = 'rejected' OR (intent = 'new' AND wanting_reply = 0 AND to_session_id IS NOT NULL)),
+           CHECK (tool IN ('send_message', 'reply') OR intent = 'new'),
+           CHECK (intent <> 'steer' OR status = 'rejected' OR delivery IN ('queue', 'steer')),
            CHECK (id GLOB 'm_[a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7]'),
            CHECK (payload_hash NOT GLOB '*[^0-9a-f]*'),
            CHECK (request_id NOT GLOB '*[^A-Za-z0-9_-]*'),
            CHECK (length(body) = min(body_chars, 8000)),
            CHECK ((gate_result = 'too_large') = (body_chars > 8000))
-         );
-         CREATE UNIQUE INDEX IF NOT EXISTS mono_messages_handle
-           ON mono_messages (handled_by_session, turn_id, handle) WHERE handle IS NOT NULL;
-         CREATE INDEX IF NOT EXISTS mono_messages_pair
-           ON mono_messages (from_mono_id, to_mono_id, to_session_id, created_at)
-           WHERE tool = 'send_message' AND status <> 'rejected';
-         CREATE INDEX IF NOT EXISTS mono_messages_session
-           ON mono_messages (handled_by_session, status) WHERE handled_by_session IS NOT NULL;
-         CREATE INDEX IF NOT EXISTS mono_messages_from_session
-           ON mono_messages (from_session_id, status) WHERE status IN ('open', 'unanswered');
-         CREATE INDEX IF NOT EXISTS mono_messages_waiting
-           ON mono_messages (to_mono_id, status) WHERE status IN ('open', 'unanswered');
-         CREATE INDEX IF NOT EXISTS mono_messages_notice
-           ON mono_messages (status) WHERE status IN ('unanswered', 'dropped') AND notified_at IS NULL;
-         CREATE INDEX IF NOT EXISTS mono_messages_reply_to
-           ON mono_messages (reply_to) WHERE reply_to IS NOT NULL;
-         -- A session that was cleared or deleted. The gate trusts this over
-         -- the live session list from the web app.
-         CREATE TABLE IF NOT EXISTS mono_session_ends (
-           session_id TEXT PRIMARY KEY,
-           ended_at   INTEGER NOT NULL
-         );",
+         );"
     )
+}
+
+const INDEXES: &str = "
+    CREATE UNIQUE INDEX IF NOT EXISTS mono_messages_handle
+      ON mono_messages (handled_by_session, turn_id, handle) WHERE handle IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS mono_messages_pair
+      ON mono_messages (from_mono_id, to_mono_id, to_session_id, created_at)
+      WHERE tool = 'send_message' AND status <> 'rejected';
+    CREATE INDEX IF NOT EXISTS mono_messages_session
+      ON mono_messages (handled_by_session, status) WHERE handled_by_session IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS mono_messages_from_session
+      ON mono_messages (from_session_id, status) WHERE status IN ('open', 'unanswered');
+    CREATE INDEX IF NOT EXISTS mono_messages_waiting
+      ON mono_messages (to_mono_id, status) WHERE status IN ('open', 'unanswered');
+    CREATE INDEX IF NOT EXISTS mono_messages_notice
+      ON mono_messages (status) WHERE status IN ('unanswered', 'dropped') AND notified_at IS NULL;
+    CREATE INDEX IF NOT EXISTS mono_messages_reply_to
+      ON mono_messages (reply_to) WHERE reply_to IS NOT NULL;";
+
+/// Design 16.2: the PR 3 table (`action_type`, `steers`) becomes the intents
+/// table. Keyed on the `steers` column, so it runs once. Foreign keys are off
+/// for the copy (decision 236): `DROP TABLE` under them fails once a row
+/// names another, and the pragma is a no-op inside a transaction. A failure
+/// rolls back to the old table, and the next open tries again.
+fn rebuild_for_intents(conn: &Connection) -> rusqlite::Result<()> {
+    let old: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('mono_messages') WHERE name = 'steers')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !old {
+        return Ok(());
+    }
+    conn.execute_batch("PRAGMA foreign_keys = OFF")?;
+    let rebuilt = copy_into_intents_table(conn);
+    let restored = conn.execute_batch("PRAGMA foreign_keys = ON");
+    rebuilt.and(restored)
+}
+
+fn copy_into_intents_table(conn: &Connection) -> rusqlite::Result<()> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    tx.execute_batch("DROP TABLE IF EXISTS mono_messages_new")?;
+    tx.execute_batch(&table_sql("mono_messages_new"))?;
+    tx.execute_batch(
+        "INSERT INTO mono_messages_new (id, request_id, part, payload_hash, tool, from_mono_id,
+           from_session_id, to_mono_id, to_session_id, addressed, body, body_chars, wanting_reply,
+           intent, reply_to, hop, status, gate_result, handled_by_session, delivery, turn_id,
+           slot_window, handle, delivered_at, closed_at, notified_at, created_at, updated_at)
+         SELECT m.id, m.request_id, m.part, m.payload_hash, m.tool, m.from_mono_id,
+           m.from_session_id, m.to_mono_id, m.to_session_id, m.addressed, m.body, m.body_chars,
+           m.wanting_reply,
+           CASE WHEN m.tool = 'reply' THEN 'reply'
+                WHEN m.status = 'rejected' AND m.action_type = 'steer' THEN 'steer'
+                WHEN COALESCE(m.steers, m.reply_to) IS NOT NULL THEN 'steer'
+                ELSE 'new' END,
+           CASE WHEN m.tool = 'reply' THEN m.reply_to ELSE COALESCE(m.steers, m.reply_to) END,
+           CASE WHEN m.tool = 'send_message' AND m.status <> 'rejected' AND m.reply_to IS NULL
+                     AND m.steers IS NOT NULL
+                THEN (SELECT t.hop + 1 FROM mono_messages t WHERE t.id = m.steers)
+                ELSE m.hop END,
+           m.status, m.gate_result, m.handled_by_session, m.delivery, m.turn_id, m.slot_window,
+           m.handle, m.delivered_at, m.closed_at, m.notified_at, m.created_at, m.updated_at
+         FROM mono_messages m;
+         DROP TABLE mono_messages;
+         ALTER TABLE mono_messages_new RENAME TO mono_messages;",
+    )?;
+    tx.execute_batch(INDEXES)?;
+    let dangling: i64 = tx.query_row(
+        "SELECT count(*) FROM pragma_foreign_key_check('mono_messages')",
+        [],
+        |row| row.get(0),
+    )?;
+    if dangling > 0 {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY),
+            Some(format!(
+                "mono_messages rebuild: {dangling} rows name a message that does not exist"
+            )),
+        ));
+    }
+    tx.commit()
 }
 
 /// A closed set of SQL text values, serialized as that text.
@@ -143,10 +224,62 @@ text_enum!(Tool {
     SendMessage = "send_message",
     Reply = "reply",
 });
-text_enum!(ActionType {
-    Queue = "queue",
-    Steer = "steer",
-});
+text_enum!(
+    /// The intent a call asked for. A rejected row keeps it as asked.
+    IntentKind {
+        New = "new",
+        Reply = "reply",
+        Steer = "steer",
+        Continue = "continue",
+    }
+);
+
+/// The intent of an accepted row (design 16.1). `continue` never passes the
+/// gate, so it has no variant; a target goes with `reply` and `steer` only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Intent {
+    New,
+    Reply(MessageId),
+    Steer(MessageId),
+}
+
+impl Intent {
+    pub fn kind(&self) -> IntentKind {
+        match self {
+            Intent::New => IntentKind::New,
+            Intent::Reply(_) => IntentKind::Reply,
+            Intent::Steer(_) => IntentKind::Steer,
+        }
+    }
+
+    pub fn reply_to(&self) -> Option<&MessageId> {
+        match self {
+            Intent::New => None,
+            Intent::Reply(id) | Intent::Steer(id) => Some(id),
+        }
+    }
+
+    /// The two columns of an accepted row; `None` when they disagree.
+    fn of_columns(kind: IntentKind, reply_to: Option<MessageId>) -> Option<Self> {
+        match (kind, reply_to) {
+            (IntentKind::New, None) => Some(Intent::New),
+            (IntentKind::Reply, Some(id)) => Some(Intent::Reply(id)),
+            (IntentKind::Steer, Some(id)) => Some(Intent::Steer(id)),
+            _ => None,
+        }
+    }
+}
+
+/// Flat as `intent` and `replyTo`, the shape a rejected row has too.
+impl Serialize for Intent {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("intent", &self.kind())?;
+        map.serialize_entry("replyTo", &self.reply_to())?;
+        map.end()
+    }
+}
 text_enum!(
     /// The route the app took: `queue` until hand-off, then `submit` (the text
     /// opened a turn) or `steer` (into a running turn).
@@ -375,14 +508,20 @@ pub struct DeliveredSlot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "lowercase")]
 pub enum Status {
+    /// `reply_to` only when the target resolved to a stored row: the column
+    /// is a foreign key.
     #[serde(rename_all = "camelCase")]
     Rejected {
         gate_result: RejectCode,
         wanting_reply: bool,
+        intent: IntentKind,
+        reply_to: Option<MessageId>,
     },
     #[serde(rename_all = "camelCase")]
     Open {
         wanting_reply: Wanting<true>,
+        #[serde(flatten)]
+        intent: Intent,
         #[serde(flatten)]
         routed: Routed,
         slot: Option<WaitingSlot>,
@@ -391,12 +530,16 @@ pub enum Status {
     Delivered {
         wanting_reply: Wanting<false>,
         #[serde(flatten)]
+        intent: Intent,
+        #[serde(flatten)]
         routed: Routed,
         slot: Option<PlainSlot>,
     },
     #[serde(rename_all = "camelCase")]
     Answered {
         wanting_reply: Wanting<true>,
+        #[serde(flatten)]
+        intent: Intent,
         #[serde(flatten)]
         routed: Routed,
         slot: Option<WaitingSlot>,
@@ -406,6 +549,8 @@ pub enum Status {
     Unanswered {
         wanting_reply: Wanting<true>,
         #[serde(flatten)]
+        intent: Intent,
+        #[serde(flatten)]
         routed: Routed,
         slot: DeliveredSlot,
         closed_at: i64,
@@ -414,9 +559,39 @@ pub enum Status {
     #[serde(rename_all = "camelCase")]
     Dropped {
         wanting_reply: bool,
+        #[serde(flatten)]
+        intent: Intent,
         closed_at: i64,
         notified_at: Option<i64>,
     },
+}
+
+impl Status {
+    /// The intent of an accepted row; `None` on a rejected one.
+    pub fn intent(&self) -> Option<&Intent> {
+        match self {
+            Status::Rejected { .. } => None,
+            Status::Open { intent, .. }
+            | Status::Delivered { intent, .. }
+            | Status::Answered { intent, .. }
+            | Status::Unanswered { intent, .. }
+            | Status::Dropped { intent, .. } => Some(intent),
+        }
+    }
+
+    /// The `intent` and `reply_to` columns.
+    fn intent_columns(&self) -> (IntentKind, Option<&MessageId>) {
+        match self {
+            Status::Rejected {
+                intent, reply_to, ..
+            } => (*intent, reply_to.as_ref()),
+            Status::Open { intent, .. }
+            | Status::Delivered { intent, .. }
+            | Status::Answered { intent, .. }
+            | Status::Unanswered { intent, .. }
+            | Status::Dropped { intent, .. } => (intent.kind(), intent.reply_to()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -438,9 +613,6 @@ pub struct MonoMessage {
     pub addressed: String,
     #[serde(flatten)]
     pub body: Body,
-    pub action_type: Option<ActionType>,
-    pub reply_to: Option<MessageId>,
-    pub steers: Option<MessageId>,
     pub hop: u32,
     pub created_at: i64,
     #[serde(flatten)]
@@ -488,6 +660,7 @@ impl<'a> StatusColumns<'a> {
             Status::Rejected {
                 gate_result,
                 wanting_reply,
+                ..
             } => StatusColumns {
                 status: "rejected",
                 gate_result: gate_result.as_str(),
@@ -552,6 +725,7 @@ impl<'a> StatusColumns<'a> {
                 wanting_reply,
                 closed_at,
                 notified_at,
+                ..
             } => StatusColumns {
                 closed_at: Some(*closed_at),
                 notified_at: *notified_at,
@@ -563,6 +737,7 @@ impl<'a> StatusColumns<'a> {
 
 pub fn insert(conn: &Connection, message: &MonoMessage) -> rusqlite::Result<()> {
     let columns = StatusColumns::of(&message.status);
+    let (intent, reply_to) = message.status.intent_columns();
     let (to_mono_id, to_session_id) = match &message.to {
         Some(Party::Mono { mono_id }) => (Some(mono_id.as_str()), None),
         Some(Party::Session { session_id }) => (None, Some(session_id.as_str())),
@@ -572,11 +747,11 @@ pub fn insert(conn: &Connection, message: &MonoMessage) -> rusqlite::Result<()> 
         "INSERT INTO mono_messages (
            id, request_id, part, payload_hash, tool, from_mono_id, from_session_id,
            to_mono_id, to_session_id, addressed, body, body_chars, wanting_reply,
-           action_type, reply_to, steers, hop, status, gate_result, handled_by_session,
+           intent, reply_to, hop, status, gate_result, handled_by_session,
            delivery, turn_id, slot_window, handle, delivered_at, closed_at, notified_at,
            created_at, updated_at
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                   ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?28)",
+                   ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?27)",
         params![
             message.id.as_str(),
             message.request_id.as_str(),
@@ -591,9 +766,8 @@ pub fn insert(conn: &Connection, message: &MonoMessage) -> rusqlite::Result<()> 
             message.body.text,
             message.body.chars,
             columns.wanting_reply,
-            message.action_type.map(ActionType::as_str),
-            message.reply_to.as_ref().map(MessageId::as_str),
-            message.steers.as_ref().map(MessageId::as_str),
+            intent.as_str(),
+            reply_to.map(MessageId::as_str),
             message.hop,
             columns.status,
             columns.gate_result,
@@ -613,7 +787,7 @@ pub fn insert(conn: &Connection, message: &MonoMessage) -> rusqlite::Result<()> 
 
 const SELECT: &str = "SELECT id, request_id, part, payload_hash, tool, from_mono_id,
        from_session_id, to_mono_id, to_session_id, addressed, body, body_chars,
-       wanting_reply, action_type, reply_to, steers, hop, status, gate_result,
+       wanting_reply, intent, reply_to, hop, status, gate_result,
        handled_by_session, delivery, turn_id, slot_window, handle, delivered_at,
        closed_at, notified_at, created_at
   FROM mono_messages";
@@ -693,6 +867,12 @@ fn parse_row(row: &Row) -> rusqlite::Result<MonoMessage> {
             })
             .transpose()
     };
+    let intent_kind = required(
+        text("intent")?.as_deref().and_then(IntentKind::parse),
+        "intent",
+    )?;
+    let reply_to = parsed(row, "reply_to", MessageId::parse)?;
+    let intent = || required(Intent::of_columns(intent_kind, reply_to.clone()), "intent");
     let status = match (required(text("status")?, "status")?.as_str(), wanting_reply) {
         ("rejected", _) => Status::Rejected {
             gate_result: required(
@@ -700,14 +880,18 @@ fn parse_row(row: &Row) -> rusqlite::Result<MonoMessage> {
                 "gate_result",
             )?,
             wanting_reply,
+            intent: intent_kind,
+            reply_to: reply_to.clone(),
         },
         ("open", true) => Status::Open {
             wanting_reply: Wanting,
+            intent: intent()?,
             routed: routed()?,
             slot: waiting_slot()?,
         },
         ("delivered", false) => Status::Delivered {
             wanting_reply: Wanting,
+            intent: intent()?,
             routed: routed()?,
             slot: turn_id
                 .clone()
@@ -722,12 +906,14 @@ fn parse_row(row: &Row) -> rusqlite::Result<MonoMessage> {
         },
         ("answered", true) => Status::Answered {
             wanting_reply: Wanting,
+            intent: intent()?,
             routed: routed()?,
             slot: waiting_slot()?,
             closed_at: closed_at()?,
         },
         ("unanswered", true) => Status::Unanswered {
             wanting_reply: Wanting,
+            intent: intent()?,
             routed: routed()?,
             slot: DeliveredSlot {
                 turn_id: required(turn_id.clone(), "turn_id")?,
@@ -740,6 +926,7 @@ fn parse_row(row: &Row) -> rusqlite::Result<MonoMessage> {
         },
         ("dropped", _) => Status::Dropped {
             wanting_reply,
+            intent: intent()?,
             closed_at: closed_at()?,
             notified_at,
         },
@@ -775,11 +962,6 @@ fn parse_row(row: &Row) -> rusqlite::Result<MonoMessage> {
             text: row.get("body")?,
             chars: row.get("body_chars")?,
         },
-        action_type: text("action_type")?
-            .map(|action| ActionType::parse(&action).ok_or_else(|| invalid("action_type")))
-            .transpose()?,
-        reply_to: parsed(row, "reply_to", MessageId::parse)?,
-        steers: parsed(row, "steers", MessageId::parse)?,
         hop: row.get("hop")?,
         created_at: row.get("created_at")?,
         status,
@@ -914,7 +1096,10 @@ fn accept_outcome(
     let mut answered = Vec::new();
     for message_id in messages
         .iter()
-        .filter_map(|message| message.reply_to.clone())
+        .filter_map(|message| match message.status.intent() {
+            Some(Intent::Reply(answered)) => Some(answered.clone()),
+            _ => None,
+        })
     {
         let handle = get(conn, &message_id)?.and_then(|message| match message.status {
             Status::Open { slot, .. } | Status::Answered { slot, .. } => {
@@ -1251,7 +1436,7 @@ pub fn submit(
 
 /// An accepted row's `delivery` is `queue` until a hand-off writes `submit`
 /// or `steer` (design 1.2 review r2); the route goes back in [`Routing`].
-fn accepted(wanting_reply: bool, route: &Route) -> Status {
+fn accepted(wanting_reply: bool, route: &Route, intent: Intent) -> Status {
     let routed = Routed {
         handled_by_session: route.session.clone(),
         delivery: Delivery::Queue,
@@ -1259,12 +1444,14 @@ fn accepted(wanting_reply: bool, route: &Route) -> Status {
     if wanting_reply {
         Status::Open {
             wanting_reply: Wanting,
+            intent,
             routed,
             slot: None,
         }
     } else {
         Status::Delivered {
             wanting_reply: Wanting,
+            intent,
             routed,
             slot: None,
         }
@@ -1280,34 +1467,34 @@ fn record(
     decision: Decision,
     now: i64,
 ) -> rusqlite::Result<Submitted> {
-    let (message, addressed, wanting_reply, action_type) = match input {
+    // A rejected row keeps the intent the call asked for, so a refused steer
+    // stays a steer (design 16.2).
+    let (message, addressed, wanting_reply, asked) = match input {
         Input::Send(send) => (
             &send.message,
             send.send_to.as_str(),
             send.wanting_reply,
-            Some(send.action_type),
+            match send.action_type {
+                ActionType::Queue => IntentKind::New,
+                ActionType::Steer => IntentKind::Steer,
+            },
         ),
-        Input::Reply(reply) => (&reply.message, "", reply.wanting_reply, None),
+        Input::Reply(reply) => (&reply.message, "", reply.wanting_reply, IntentKind::Reply),
     };
-    let row = |part: Part, to: Option<Party>, reply_to: Option<MessageId>, hop: u32, status| {
-        MonoMessage {
-            id: new_message_id(),
-            request_id: request_id.clone(),
-            part,
-            payload_hash: hash.clone(),
-            tool: input.tool(),
-            from_mono_id: Some(caller.mono_id.clone()),
-            from_session_id: caller.session_id.clone(),
-            to,
-            addressed: addressed.into(),
-            body: Body::new(message),
-            action_type,
-            reply_to,
-            steers: None,
-            hop,
-            created_at: now,
-            status,
-        }
+    let row = |part: Part, to: Option<Party>, hop: u32, status| MonoMessage {
+        id: new_message_id(),
+        request_id: request_id.clone(),
+        part,
+        payload_hash: hash.clone(),
+        tool: input.tool(),
+        from_mono_id: Some(caller.mono_id.clone()),
+        from_session_id: caller.session_id.clone(),
+        to,
+        addressed: addressed.into(),
+        body: Body::new(message),
+        hop,
+        created_at: now,
+        status,
     };
     match decision {
         Decision::Duplicate {
@@ -1339,11 +1526,12 @@ fn record(
             let message = row(
                 Part::FIRST,
                 to,
-                None,
                 0,
                 Status::Rejected {
                     gate_result: code,
                     wanting_reply,
+                    intent: asked,
+                    reply_to: None,
                 },
             );
             insert(tx, &message)?;
@@ -1361,21 +1549,20 @@ fn record(
             let mut messages = Vec::with_capacity(rows.len());
             let mut routes = Vec::with_capacity(rows.len());
             for (part, outgoing) in (0..).zip(rows) {
-                let message = row(
-                    Part::new(part).expect("at most 10 parts"),
-                    Some(outgoing.to),
-                    outgoing.reply_to.clone(),
-                    hop,
-                    accepted(wanting_reply, &outgoing.route),
-                );
-                insert(tx, &message)?;
-                if let Some(answered) = outgoing.reply_to {
+                if let Intent::Reply(answered) = &outgoing.intent {
                     tx.execute(
                         "UPDATE mono_messages SET status = 'answered', closed_at = ?2, updated_at = ?2
                           WHERE id = ?1 AND status = 'open'",
                         params![answered.as_str(), now],
                     )?;
                 }
+                let message = row(
+                    Part::new(part).expect("at most 10 parts"),
+                    Some(outgoing.to),
+                    hop,
+                    accepted(wanting_reply, &outgoing.route, outgoing.intent),
+                );
+                insert(tx, &message)?;
                 messages.push(message);
                 routes.push(outgoing.route);
             }
@@ -2058,9 +2245,6 @@ pub(crate) mod tests {
             }),
             addressed: "mono-a".into(),
             body: Body::new("Ship the fix"),
-            action_type: Some(ActionType::Queue),
-            reply_to: None,
-            steers: None,
             hop: 0,
             created_at: 10,
             status,
@@ -2077,6 +2261,8 @@ pub(crate) mod tests {
                 ..message(
                     'a',
                     Status::Rejected {
+                        intent: IntentKind::New,
+                        reply_to: None,
                         gate_result: RejectCode::TooLarge,
                         wanting_reply: true,
                     },
@@ -2085,6 +2271,7 @@ pub(crate) mod tests {
             message(
                 'b',
                 Status::Open {
+                    intent: Intent::New,
                     wanting_reply: Wanting,
                     routed: routed(),
                     slot: None,
@@ -2093,6 +2280,7 @@ pub(crate) mod tests {
             message(
                 'c',
                 Status::Open {
+                    intent: Intent::New,
                     wanting_reply: Wanting,
                     routed: routed(),
                     slot: Some(waiting(1, Some(20))),
@@ -2101,6 +2289,7 @@ pub(crate) mod tests {
             message(
                 'd',
                 Status::Delivered {
+                    intent: Intent::New,
                     wanting_reply: Wanting,
                     routed: routed(),
                     slot: Some(PlainSlot {
@@ -2113,6 +2302,7 @@ pub(crate) mod tests {
             message(
                 'e',
                 Status::Answered {
+                    intent: Intent::New,
                     wanting_reply: Wanting,
                     routed: routed(),
                     slot: Some(waiting(2, Some(20))),
@@ -2122,6 +2312,7 @@ pub(crate) mod tests {
             message(
                 'f',
                 Status::Unanswered {
+                    intent: Intent::New,
                     wanting_reply: Wanting,
                     routed: routed(),
                     slot: DeliveredSlot {
@@ -2137,6 +2328,7 @@ pub(crate) mod tests {
             message(
                 'g',
                 Status::Dropped {
+                    intent: Intent::New,
                     wanting_reply: false,
                     closed_at: 30,
                     notified_at: None,
@@ -2159,6 +2351,7 @@ pub(crate) mod tests {
         let asked = message(
             'a',
             Status::Answered {
+                intent: Intent::New,
                 wanting_reply: Wanting,
                 routed: routed(),
                 slot: Some(waiting(1, Some(20))),
@@ -2175,12 +2368,11 @@ pub(crate) mod tests {
             to: Some(Party::Session {
                 session_id: session("giga-chat"),
             }),
-            action_type: None,
-            reply_to: Some(asked.id.clone()),
             hop: 1,
             ..message(
                 letter,
                 Status::Delivered {
+                    intent: Intent::Reply(asked.id.clone()),
                     wanting_reply: Wanting,
                     routed: Routed {
                         handled_by_session: session("giga-chat"),
@@ -2237,6 +2429,7 @@ pub(crate) mod tests {
         let open = message(
             'a',
             Status::Open {
+                intent: Intent::New,
                 wanting_reply: Wanting,
                 routed: routed(),
                 slot: Some(waiting(1, None)),
@@ -2259,6 +2452,8 @@ pub(crate) mod tests {
         let rejected = message(
             'b',
             Status::Rejected {
+                intent: IntentKind::New,
+                reply_to: None,
                 gate_result: RejectCode::HandleClosed,
                 wanting_reply: false,
             },
@@ -2280,6 +2475,402 @@ pub(crate) mod tests {
         assert!(get(&conn, &MessageId::parse("m_aaaaaaaaaaaa").unwrap()).is_err());
     }
 
+    const PR3_TABLE: &str = "CREATE TABLE IF NOT EXISTS mono_messages (
+           id                 TEXT PRIMARY KEY CHECK (length(id) = 14 AND substr(id, 1, 2) = 'm_'),
+           request_id         TEXT NOT NULL CHECK (length(request_id) BETWEEN 1 AND 128),
+           part               INTEGER NOT NULL DEFAULT 0 CHECK (part BETWEEN 0 AND 9),
+           payload_hash       TEXT NOT NULL CHECK (length(payload_hash) = 64),
+           tool               TEXT NOT NULL CHECK (tool IN ('send_message', 'reply')),
+           from_mono_id       TEXT REFERENCES monos(id) ON DELETE SET NULL,
+           from_session_id    TEXT NOT NULL,
+           to_mono_id         TEXT REFERENCES monos(id) ON DELETE SET NULL,
+           to_session_id      TEXT,
+           addressed          TEXT NOT NULL,
+           body               TEXT NOT NULL CHECK (length(body) <= 8000),
+           body_chars         INTEGER NOT NULL CHECK (body_chars >= 0),
+           wanting_reply      INTEGER NOT NULL CHECK (wanting_reply IN (0, 1)),
+           action_type        TEXT CHECK (action_type IN ('queue', 'steer')),
+           reply_to           TEXT REFERENCES mono_messages(id),
+           steers             TEXT REFERENCES mono_messages(id),
+           hop                INTEGER NOT NULL CHECK (hop >= 0),
+           status             TEXT NOT NULL CHECK (status IN
+                                ('open', 'answered', 'delivered', 'unanswered', 'dropped', 'rejected')),
+           gate_result        TEXT NOT NULL,
+           handled_by_session TEXT,
+           delivery           TEXT CHECK (delivery IN ('submit', 'queue', 'steer')),
+           turn_id            TEXT,
+           slot_window        TEXT,
+           handle             INTEGER CHECK (handle BETWEEN 1 AND 99),
+           delivered_at       INTEGER,
+           closed_at          INTEGER,
+           notified_at        INTEGER,
+           created_at         INTEGER NOT NULL,
+           updated_at         INTEGER NOT NULL,
+           UNIQUE (from_session_id, request_id, part),
+           CHECK ((status = 'rejected') = (gate_result <> 'ok')),
+           CHECK (status NOT IN ('open', 'unanswered') OR wanting_reply = 1),
+           CHECK (status <> 'delivered' OR wanting_reply = 0),
+           CHECK (handle IS NULL OR (turn_id IS NOT NULL AND wanting_reply = 1)),
+           CHECK (status <> 'rejected' OR (handled_by_session IS NULL AND delivery IS NULL AND turn_id IS NULL)),
+           CHECK (tool <> 'reply' OR status = 'rejected' OR reply_to IS NOT NULL),
+           CHECK (to_mono_id IS NULL OR to_session_id IS NULL),
+           CHECK (status <> 'answered' OR wanting_reply = 1),
+           CHECK (status IN ('rejected', 'dropped') OR (handled_by_session IS NOT NULL AND delivery IS NOT NULL)),
+           CHECK (delivered_at IS NULL OR turn_id IS NOT NULL),
+           CHECK (turn_id IS NULL OR wanting_reply = 0 OR handle IS NOT NULL),
+           CHECK (status <> 'unanswered' OR delivered_at IS NOT NULL),
+           CHECK ((slot_window IS NULL) = (turn_id IS NULL)),
+           CHECK ((closed_at IS NOT NULL) = (status IN ('answered', 'unanswered', 'dropped'))),
+           CHECK (status = 'rejected' OR body_chars = length(body)),
+           CHECK (tool <> 'send_message' OR length(body) > 0),
+           CHECK (notified_at IS NULL OR status IN ('unanswered', 'dropped')),
+           CHECK (turn_id IS NULL OR delivery IN ('submit', 'steer')),
+           CHECK (status <> 'dropped' OR wanting_reply = 1 OR delivered_at IS NULL),
+           CHECK (tool <> 'reply' OR (steers IS NULL AND action_type IS NULL)),
+           CHECK (part = 0 OR (tool = 'reply' AND status <> 'rejected')),
+           CHECK (status = 'rejected' OR (reply_to IS NULL) = (hop = 0)),
+           CHECK (id GLOB 'm_[a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7][a-z2-7]'),
+           CHECK (payload_hash NOT GLOB '*[^0-9a-f]*'),
+           CHECK (request_id NOT GLOB '*[^A-Za-z0-9_-]*'),
+           CHECK (length(body) = min(body_chars, 8000)),
+           CHECK ((gate_result = 'too_large') = (body_chars > 8000))
+         );
+         CREATE UNIQUE INDEX IF NOT EXISTS mono_messages_handle
+           ON mono_messages (handled_by_session, turn_id, handle) WHERE handle IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS mono_messages_pair
+           ON mono_messages (from_mono_id, to_mono_id, to_session_id, created_at)
+           WHERE tool = 'send_message' AND status <> 'rejected';
+         CREATE INDEX IF NOT EXISTS mono_messages_session
+           ON mono_messages (handled_by_session, status) WHERE handled_by_session IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS mono_messages_from_session
+           ON mono_messages (from_session_id, status) WHERE status IN ('open', 'unanswered');
+         CREATE INDEX IF NOT EXISTS mono_messages_waiting
+           ON mono_messages (to_mono_id, status) WHERE status IN ('open', 'unanswered');
+         CREATE INDEX IF NOT EXISTS mono_messages_notice
+           ON mono_messages (status) WHERE status IN ('unanswered', 'dropped') AND notified_at IS NULL;
+         CREATE INDEX IF NOT EXISTS mono_messages_reply_to
+           ON mono_messages (reply_to) WHERE reply_to IS NOT NULL;";
+
+    /// A store as PR 3 (9f2d3e3) left it, with Monos `giga` and `mono-a`.
+    fn pr3_database() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::mono_roster::ensure_tables(&conn).unwrap();
+        conn.execute_batch(PR3_TABLE).unwrap();
+        conn.execute_batch(
+            "INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
+             VALUES ('giga', 'G', 'giga', '{}', 0, 1, 1),
+                    ('mono-a', 'A', 'mono', '{}', 1, 1, 1);",
+        )
+        .unwrap();
+        conn
+    }
+
+    /// One PR 3 row: an accepted one is delivered from G's chat into A's.
+    struct Pr3Row {
+        id: char,
+        tool: &'static str,
+        gate_result: &'static str,
+        action_type: Option<&'static str>,
+        reply_to: Option<char>,
+        steers: Option<char>,
+        hop: i64,
+    }
+
+    fn insert_pr3(conn: &Connection, row: Pr3Row) -> rusqlite::Result<usize> {
+        let accepted = row.gate_result == "ok";
+        let target = |letter: Option<char>| letter.map(|letter| id(letter).as_str().to_owned());
+        conn.execute(
+            "INSERT INTO mono_messages (id, request_id, part, payload_hash, tool, from_mono_id,
+               from_session_id, to_mono_id, addressed, body, body_chars, wanting_reply,
+               action_type, reply_to, steers, hop, status, gate_result, handled_by_session,
+               delivery, created_at, updated_at)
+             VALUES (?1, ?2, 0, ?3, ?4, 'giga', 'giga-chat', 'mono-a', 'mono-a', 'hi', 2, 0,
+                     ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1)",
+            params![
+                id(row.id).as_str(),
+                format!("req-{}", row.id),
+                "0".repeat(64),
+                row.tool,
+                row.action_type,
+                target(row.reply_to),
+                target(row.steers),
+                row.hop,
+                if accepted { "delivered" } else { "rejected" },
+                row.gate_result,
+                accepted.then_some("a-chat"),
+                accepted.then_some("queue"),
+            ],
+        )
+    }
+
+    fn pr3_send(id: char) -> Pr3Row {
+        Pr3Row {
+            id,
+            tool: "send_message",
+            gate_result: "ok",
+            action_type: Some("queue"),
+            reply_to: None,
+            steers: None,
+            hop: 0,
+        }
+    }
+
+    fn intents(conn: &Connection) -> Vec<(String, String, Option<String>, i64)> {
+        conn.prepare("SELECT id, intent, reply_to, hop FROM mono_messages ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn schema(conn: &Connection) -> Vec<Option<String>> {
+        conn.prepare("SELECT sql FROM sqlite_master ORDER BY type, name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn has_column(conn: &Connection, column: &str) -> bool {
+        conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM pragma_table_info('mono_messages') WHERE name = ?1)",
+            [column],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn foreign_keys(conn: &Connection) -> i64 {
+        conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    // Design 16.2 map. Defect: a wrong CASE line or a lost row.
+    #[test]
+    fn the_rebuild_maps_every_old_row_shape() {
+        let conn = pr3_database();
+        for row in [
+            pr3_send('a'),
+            Pr3Row {
+                action_type: Some("steer"),
+                ..pr3_send('b')
+            },
+            Pr3Row {
+                steers: Some('a'),
+                ..pr3_send('c')
+            },
+            Pr3Row {
+                tool: "reply",
+                action_type: None,
+                reply_to: Some('a'),
+                hop: 1,
+                ..pr3_send('d')
+            },
+            Pr3Row {
+                tool: "reply",
+                gate_result: "handle_closed",
+                action_type: None,
+                ..pr3_send('e')
+            },
+            Pr3Row {
+                gate_result: "self_send",
+                ..pr3_send('f')
+            },
+            Pr3Row {
+                gate_result: "cannot_steer",
+                action_type: Some("steer"),
+                ..pr3_send('g')
+            },
+            Pr3Row {
+                reply_to: Some('a'),
+                hop: 1,
+                ..pr3_send('h')
+            },
+        ] {
+            insert_pr3(&conn, row).unwrap();
+        }
+        ensure_tables(&conn).unwrap();
+        let a = Some(id('a').as_str().to_owned());
+        let row = |letter: char, intent: &str, reply_to: &Option<String>, hop| {
+            (
+                id(letter).as_str().to_owned(),
+                intent.to_owned(),
+                reply_to.clone(),
+                hop,
+            )
+        };
+        assert_eq!(
+            intents(&conn),
+            vec![
+                row('a', "new", &None, 0),
+                row('b', "new", &None, 0),
+                row('c', "steer", &a, 1),
+                row('d', "reply", &a, 1),
+                row('e', "reply", &None, 0),
+                row('f', "new", &None, 0),
+                row('g', "steer", &None, 0),
+                row('h', "steer", &a, 1),
+            ]
+        );
+        for letter in "abcdefgh".chars() {
+            assert!(get(&conn, &id(letter)).unwrap().is_some(), "{letter}");
+        }
+    }
+
+    // Decision 236. Defect: the rebuild runs with foreign keys on and fails
+    // once a row names another, leaves them off, or runs on every open.
+    #[test]
+    fn the_rebuild_keeps_foreign_keys_on_and_runs_once() {
+        let conn = pr3_database();
+        insert_pr3(&conn, pr3_send('a')).unwrap();
+        insert_pr3(
+            &conn,
+            Pr3Row {
+                steers: Some('a'),
+                ..pr3_send('b')
+            },
+        )
+        .unwrap();
+        ensure_tables(&conn).unwrap();
+        assert!(has_column(&conn, "intent") && !has_column(&conn, "steers"));
+        assert_eq!(foreign_keys(&conn), 1);
+        let dangling = raw_insert(
+            &conn,
+            &with(
+                row("delivered"),
+                &[
+                    ("id", text("m_cccccccccccc")),
+                    ("intent", text("steer")),
+                    ("reply_to", text("m_zzzzzzzzzzzz")),
+                    ("hop", Sql::Integer(1)),
+                ],
+            ),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            dangling.contains("FOREIGN KEY constraint failed"),
+            "{dangling}"
+        );
+        let before = schema(&conn);
+        ensure_tables(&conn).unwrap();
+        assert_eq!(schema(&conn), before);
+        assert_eq!(intents(&conn).len(), 2);
+    }
+
+    // Design 16.2 step 6. Defect: a half rebuild, or a store left with
+    // foreign keys off.
+    #[test]
+    fn a_failed_rebuild_leaves_the_old_table() {
+        let conn = pr3_database();
+        insert_pr3(&conn, pr3_send('a')).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        insert_pr3(
+            &conn,
+            Pr3Row {
+                reply_to: Some('z'),
+                hop: 1,
+                ..pr3_send('b')
+            },
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+        let error = ensure_tables(&conn).unwrap_err().to_string();
+        assert!(
+            error.contains("name a message that does not exist"),
+            "{error}"
+        );
+        assert!(has_column(&conn, "steers") && !has_column(&conn, "intent"));
+        let kept: i64 = conn
+            .query_row("SELECT count(*) FROM mono_messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(kept, 2);
+        assert_eq!(foreign_keys(&conn), 1);
+    }
+
+    // Design 16.2 step 3. Defect: a table left by an aborted manual run
+    // blocks every later open.
+    #[test]
+    fn a_leftover_rebuild_table_does_not_block_the_rebuild() {
+        let conn = pr3_database();
+        insert_pr3(&conn, pr3_send('a')).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE mono_messages_new (id TEXT); INSERT INTO mono_messages_new VALUES ('x');",
+        )
+        .unwrap();
+        ensure_tables(&conn).unwrap();
+        assert!(has_column(&conn, "intent"));
+        assert_eq!(intents(&conn).len(), 1);
+        let leftover: bool = conn
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'mono_messages_new')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!leftover);
+    }
+
+    // Design 16.1. Defect: the web app parses another shape than Rust writes.
+    #[test]
+    fn rows_serialize_intent_and_reply_to_flat() {
+        let target = id('z');
+        let steer = message(
+            'a',
+            Status::Delivered {
+                wanting_reply: Wanting,
+                intent: Intent::Steer(target.clone()),
+                routed: routed(),
+                slot: None,
+            },
+        );
+        let json = serde_json::to_value(&steer).unwrap();
+        assert_eq!(
+            (&json["intent"], &json["replyTo"]),
+            (
+                &serde_json::json!("steer"),
+                &serde_json::json!("m_zzzzzzzzzzzz")
+            )
+        );
+        let new = message(
+            'b',
+            Status::Open {
+                wanting_reply: Wanting,
+                intent: Intent::New,
+                routed: routed(),
+                slot: None,
+            },
+        );
+        let json = serde_json::to_value(&new).unwrap();
+        assert_eq!(
+            (&json["intent"], &json["replyTo"]),
+            (&serde_json::json!("new"), &serde_json::Value::Null)
+        );
+        assert!(json.as_object().unwrap().contains_key("replyTo"), "{json}");
+        let refused = message(
+            'c',
+            Status::Rejected {
+                gate_result: RejectCode::UnknownMessage,
+                wanting_reply: false,
+                intent: IntentKind::Continue,
+                reply_to: Some(target),
+            },
+        );
+        let json = serde_json::to_value(&refused).unwrap();
+        assert_eq!(
+            (&json["intent"], &json["replyTo"]),
+            (
+                &serde_json::json!("continue"),
+                &serde_json::json!("m_zzzzzzzzzzzz")
+            )
+        );
+    }
+
     #[test]
     fn ensure_tables_twice_is_a_no_op() {
         let store = store();
@@ -2287,6 +2878,7 @@ pub(crate) mod tests {
         let kept = message(
             'a',
             Status::Dropped {
+                intent: Intent::New,
                 wanting_reply: true,
                 closed_at: 30,
                 notified_at: None,
@@ -2322,6 +2914,7 @@ pub(crate) mod tests {
             ("tool", text("send_message")),
             ("from_mono_id", text("giga")),
             ("from_session_id", text("giga-chat")),
+            ("intent", text("new")),
             ("to_mono_id", text("mono-a")),
             ("addressed", text("mono-a")),
             ("body", text("hi")),
@@ -2551,15 +3144,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn check_refuses_an_accepted_reply_that_answers_nothing() {
-        assert_check_refuses(
-            "delivered",
-            &[("tool", text("reply"))],
-            "tool <> 'reply' OR status = 'rejected' OR reply_to IS NOT NULL",
-        );
-    }
-
-    #[test]
     fn check_refuses_a_row_sent_to_a_mono_and_a_session() {
         assert_check_refuses(
             "delivered",
@@ -2636,17 +3220,110 @@ pub(crate) mod tests {
         );
     }
 
+    // Design 16.2. Defect: a row says new and names a target, or steers
+    // nothing, so the tree of messages has a node the gate never accepted.
     #[test]
-    fn check_refuses_a_reply_that_steers_or_queues() {
+    fn check_refuses_a_new_row_with_a_target_and_a_steer_without_one() {
         assert_check_refuses(
             "delivered",
             &[
-                ("tool", text("reply")),
                 ("reply_to", text("m_aaaaaaaaaaaa")),
-                ("steers", text("m_aaaaaaaaaaaa")),
                 ("hop", Sql::Integer(1)),
             ],
-            "tool <> 'reply' OR (steers IS NULL AND action_type IS NULL)",
+            "status = 'rejected' OR (intent = 'new') = (reply_to IS NULL)",
+        );
+        assert_check_refuses(
+            "delivered",
+            &[("intent", text("steer"))],
+            "status = 'rejected' OR (intent = 'new') = (reply_to IS NULL)",
+        );
+    }
+
+    // Defect: an agent's continue is stored as accepted and leaves the
+    // question it names open with no error.
+    #[test]
+    fn check_refuses_an_accepted_continue() {
+        assert_check_refuses(
+            "delivered",
+            &[
+                ("intent", text("continue")),
+                ("reply_to", text("m_aaaaaaaaaaaa")),
+                ("hop", Sql::Integer(1)),
+            ],
+            "status = 'rejected' OR intent <> 'continue'",
+        );
+    }
+
+    #[test]
+    fn check_refuses_a_reply_tool_row_that_is_not_a_reply() {
+        assert_check_refuses(
+            "rejected",
+            &[("tool", text("reply"))],
+            "tool <> 'reply' OR intent = 'reply'",
+        );
+    }
+
+    // Defect: an answer bypasses the reply tool's open-handle rules.
+    #[test]
+    fn check_refuses_an_accepted_send_that_replies() {
+        assert_check_refuses(
+            "delivered",
+            &[
+                ("intent", text("reply")),
+                ("reply_to", text("m_aaaaaaaaaaaa")),
+                ("hop", Sql::Integer(1)),
+            ],
+            "tool <> 'send_message' OR status = 'rejected' OR intent IN ('new', 'steer')",
+        );
+    }
+
+    fn start_session() -> [(&'static str, Sql); 3] {
+        [
+            ("tool", text("start_session")),
+            ("to_mono_id", Sql::Null),
+            ("to_session_id", text("lead-1")),
+        ]
+    }
+
+    // Defect: a started session's first prompt waits for an answer or names
+    // a target, which no session start can do.
+    #[test]
+    fn check_refuses_a_start_session_row_that_waits_or_steers() {
+        assert_check_refuses(
+            "open",
+            &start_session(),
+            "tool <> 'start_session' OR status = 'rejected' OR (intent = 'new' AND wanting_reply = 0 AND to_session_id IS NOT NULL)",
+        );
+        assert_check_refuses(
+            "rejected",
+            &with(start_session().to_vec(), &[("intent", text("steer"))]),
+            "tool IN ('send_message', 'reply') OR intent = 'new'",
+        );
+    }
+
+    // Defect: an app action refusal is stored as accepted.
+    #[test]
+    fn check_refuses_an_accepted_app_action() {
+        assert_check_refuses(
+            "delivered",
+            &[("tool", text("app_action"))],
+            "tool <> 'app_action' OR status = 'rejected'",
+        );
+    }
+
+    // Defect: a steer opens a turn of new work instead of joining the
+    // running one (design 16.6).
+    #[test]
+    fn check_refuses_a_steer_that_opened_a_turn() {
+        assert_check_refuses(
+            "delivered",
+            &[
+                ("intent", text("steer")),
+                ("reply_to", text("m_aaaaaaaaaaaa")),
+                ("hop", Sql::Integer(1)),
+                ("delivery", text("submit")),
+            ],
+            "intent <> 'steer' OR status = 'rejected' OR delivery IN ('queue', 'steer')",
         );
     }
 
@@ -2661,6 +3338,7 @@ pub(crate) mod tests {
                 ("id", text("m_bbbbbbbbbbbb")),
                 ("request_id", text("reply-1")),
                 ("tool", text("reply")),
+                ("intent", text("reply")),
                 ("reply_to", text("m_aaaaaaaaaaaa")),
                 ("hop", Sql::Integer(1)),
             ],
@@ -2690,7 +3368,11 @@ pub(crate) mod tests {
     fn check_refuses_a_second_part_of_a_rejected_reply() {
         assert_check_refuses(
             "rejected",
-            &[("tool", text("reply")), ("part", Sql::Integer(2))],
+            &[
+                ("tool", text("reply")),
+                ("intent", text("reply")),
+                ("part", Sql::Integer(2)),
+            ],
             "part = 0 OR (tool = 'reply' AND status <> 'rejected')",
         );
     }
@@ -2701,6 +3383,7 @@ pub(crate) mod tests {
             "delivered",
             &[
                 ("tool", text("reply")),
+                ("intent", text("reply")),
                 ("reply_to", text("m_aaaaaaaaaaaa")),
             ],
             "status = 'rejected' OR (reply_to IS NULL) = (hop = 0)",
@@ -3056,9 +3739,9 @@ pub(crate) mod tests {
             panic!("{messages:?}");
         };
         assert_eq!(
-            (&reply.reply_to, reply.hop, &reply.to),
+            (reply.status.intent(), reply.hop, &reply.to),
             (
-                &Some(ask.clone()),
+                Some(&Intent::Reply(ask.clone())),
                 1,
                 &Some(Party::Mono {
                     mono_id: mono("giga")
@@ -3676,6 +4359,7 @@ pub(crate) mod tests {
             ..message(
                 'h',
                 Status::Open {
+                    intent: Intent::New,
                     wanting_reply: Wanting,
                     routed: Routed {
                         handled_by_session: session("a-chat"),
@@ -3881,14 +4565,24 @@ pub(crate) mod tests {
         };
         let sent: Vec<_> = messages
             .iter()
-            .map(|message| (message.reply_to.clone(), message.to.clone(), message.hop))
+            .map(|message| {
+                (
+                    message.status.intent().cloned(),
+                    message.to.clone(),
+                    message.hop,
+                )
+            })
             .collect();
         let mono_party = |id: &str| Some(Party::Mono { mono_id: mono(id) });
         assert_eq!(
             sent,
             vec![
-                (Some(from_giga.clone()), mono_party("giga"), 1),
-                (Some(from_b.clone()), mono_party("mono-b"), 1),
+                (
+                    Some(Intent::Reply(from_giga.clone())),
+                    mono_party("giga"),
+                    1
+                ),
+                (Some(Intent::Reply(from_b.clone())), mono_party("mono-b"), 1),
             ]
         );
         let group = |id: &str, via, message: &MonoMessage| RouteGroup {
@@ -4214,6 +4908,66 @@ pub(crate) mod tests {
             &["project"],
         ));
         assert_eq!(error.code, "cannot_steer");
+    }
+
+    // Design 16.2 (intents review r1). Defect: a refused steer is stored as a
+    // refused new message, or an accepted send is stored with a target-less
+    // steer that no row may hold.
+    #[test]
+    fn a_refused_steer_keeps_its_intent_and_an_accepted_send_is_new() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let asked = |request, action, running: &[&str]| {
+            call_with(
+                &conn,
+                &caller_in("giga", "giga-chat"),
+                request,
+                Tool::SendMessage,
+                hi("project", false, action),
+                &[listed("project", false, true)],
+                running,
+            )
+        };
+        let stored = |submitted| {
+            let id = failed(submitted).message_id.expect("a rejected row");
+            get(&conn, &id).unwrap().expect("the row").status
+        };
+        assert!(matches!(
+            stored(asked("r1", "steer", &["project"])),
+            Status::Rejected {
+                gate_result: RejectCode::CannotSteer,
+                intent: IntentKind::Steer,
+                reply_to: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            stored(call_with(
+                &conn,
+                &caller_in("giga", "giga-chat"),
+                "r2",
+                Tool::SendMessage,
+                hi("nope", false, "queue"),
+                &[],
+                &[],
+            )),
+            Status::Rejected {
+                gate_result: RejectCode::UnknownTarget,
+                intent: IntentKind::New,
+                ..
+            }
+        ));
+        let Submitted::Accepted { messages, .. } = asked("r3", "steer", &[]) else {
+            panic!("an idle session takes the send");
+        };
+        assert_eq!(
+            get(&conn, &messages[0].id)
+                .unwrap()
+                .unwrap()
+                .status
+                .intent(),
+            Some(&Intent::New)
+        );
     }
 
     // PR 4a review m7 (M14). Defect: a session whose worktree was removed

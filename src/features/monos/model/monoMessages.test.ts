@@ -4,6 +4,7 @@ import {
   parseMessageId,
   parseMonoId,
   parseReplyInput,
+  parseRowIntent,
   parseSessionId,
 } from "./monoMessages";
 
@@ -58,4 +59,41 @@ it("accepts a reply's to as one handle or 1 to 9 different ones, always as a lis
     1,
   ])
     expect(() => reply(nearMiss)).toThrow("to must be");
+});
+
+// Design 16.1. Defect: the web app trusts a row that is new and names a
+// target, or an accepted continue, which the gate never lets through.
+it("reads an accepted row's intent only when it and replyTo agree", () => {
+  const target = "m_abcdefgh2345";
+  const row = (status: string, intent: unknown, replyTo: unknown) =>
+    parseRowIntent({ status, intent, replyTo });
+  expect(row("delivered", "new", null)).toEqual({
+    intent: "new",
+    replyTo: null,
+  });
+  expect(row("open", "steer", target)).toEqual({
+    intent: "steer",
+    replyTo: target,
+  });
+  expect(row("answered", "reply", target)).toEqual({
+    intent: "reply",
+    replyTo: target,
+  });
+  for (const [intent, replyTo] of [
+    ["new", target],
+    ["continue", target],
+    ["steer", null],
+    ["reply", null],
+    ["queue", null],
+    ["steer", "m_NOTANID0000"],
+  ])
+    expect(row("delivered", intent, replyTo)).toBeUndefined();
+  expect(row("rejected", "continue", null)).toEqual({
+    intent: "continue",
+    replyTo: null,
+  });
+  expect(row("rejected", "steer", null)).toEqual({
+    intent: "steer",
+    replyTo: null,
+  });
 });
