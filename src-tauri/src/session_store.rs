@@ -43,6 +43,8 @@ impl SessionStore {
             .map_err(|e| e.to_string())?;
         migrate(&conn).map_err(|e| e.to_string())?;
         crate::worktrees::reconcile_removals(&conn)?;
+        crate::mono_messages::startup(&conn, crate::mono_messages::now_ms())
+            .map_err(|e| e.to_string())?;
         let read_conn = Connection::open(&path).map_err(|e| e.to_string())?;
         read_conn
             .execute_batch("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;")

@@ -142,7 +142,8 @@ it("says how to keep memory and update the soul only at the user's request", () 
   expect(full).toContain('"whenBusy":"followUp"');
   const rules = (tag: string) =>
     full.match(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`))?.[0] ?? "";
-  // A Mono learns every messaging tool it can call, and not the removed one.
+  // A Mono learns every messaging tool and field it can use, the notice it
+  // can get, and not the removed tool.
   const messaging = rules("mono_messaging_rules");
   for (const tool of [
     "messages.get_monos",
@@ -151,7 +152,9 @@ it("says how to keep memory and update the soul only at the user's request", () 
     "get_monos",
     "send_message",
     "wanting_reply",
+    '"to"',
     "<mono_message>",
+    "<mono_notice>",
   ])
     expect(messaging).toContain(tool);
   expect(full).not.toContain("monos.send");

@@ -32,6 +32,7 @@ import type {
   ApprovalDecision,
   HarnessEvent,
   SendTurnInput,
+  TurnResult,
   SteerTurnInput,
 } from "../../core/types";
 import {
@@ -117,7 +118,9 @@ const CLIENT_CAPABILITIES = {
   _meta: { parameterizedModelPicker: true },
 };
 
-export async function sendCursorTurn(input: SendTurnInput): Promise<void> {
+export async function sendCursorTurn(
+  input: SendTurnInput,
+): Promise<TurnResult> {
   let live: Live;
   try {
     live = await ensureLive(input);
@@ -125,7 +128,8 @@ export async function sendCursorTurn(input: SendTurnInput): Promise<void> {
     cancelledThreads.delete(input.sessionId);
     throw error;
   }
-  if (cancelledThreads.delete(input.sessionId)) return;
+  if (cancelledThreads.delete(input.sessionId)) return "cancelled";
+  let sent = false;
 
   live.onEvent = input.onEvent;
   live.runtimeMode = input.runtimeMode;
@@ -139,6 +143,7 @@ export async function sendCursorTurn(input: SendTurnInput): Promise<void> {
       try {
         await applyModelSelection(live, input);
         if (live.cancelled) return;
+        sent = true;
         await prompt(live, input);
       } catch (error) {
         if (live.cancelled) return;
@@ -146,6 +151,7 @@ export async function sendCursorTurn(input: SendTurnInput): Promise<void> {
       }
     });
   await live.turns;
+  return sent ? "sent" : "cancelled";
 }
 
 export async function steerCursorTurn(input: SteerTurnInput): Promise<void> {

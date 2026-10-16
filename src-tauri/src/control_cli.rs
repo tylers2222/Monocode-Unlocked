@@ -128,7 +128,7 @@ const APP_ACTIONS: [&str; 41] = [
 /// Renamed app actions. They still go to the app, which answers
 /// `action_removed` with the name to use instead; help does not list them.
 const REMOVED_APP_ACTIONS: [&str; 2] = ["monos.configure", "monos.send"];
-const APP_USAGE: &str = r#"MonoCode app access — use in a thread enabled by /operator.
+const APP_USAGE: &str = r##"MonoCode app access — use in a thread enabled by /operator.
 
 Usage: {exe} app ACTION [--json JSON | --input FILE|-] [--request-id ID]
 
@@ -248,11 +248,16 @@ Actions:
                   too_large, unknown_target, self_send, direction_forbidden,
                   reply_unsupported_target, habit_cannot_wait,
                   target_no_conversation, cannot_steer.
-  messages.reply {"message":"...","wanting_reply":false}
-                  Answer the <mono_message> that waits for your reply (it
-                  says wanting_reply="true"). Returns message_ids and
-                  answered. Codes: no_open_handle, ambiguous_reply (with
-                  open_handles), target_gone, too_large.
+  messages.reply {"message":"...","to":"#1","wanting_reply":false}
+                  Answer a <mono_message> that waits for your reply (it says
+                  wanting_reply="true" and has a handle such as
+                  handle="#1"). Handles count from #1 in each turn and close
+                  when the turn ends. Without to, reply answers the one open
+                  handle. to is one handle, or a list of up to 9 different
+                  handles such as ["#1","#2"]; each sender gets its own
+                  answer. Returns message_ids and answered. Codes:
+                  no_open_handle, ambiguous_reply and unknown_handle (with
+                  open_handles), handle_closed, target_gone, too_large.
   monos.create   {"name":"...","harness":"codex","model":"codex:...",
                   "projects":["<path or name>"],"soul":"<Markdown>","giga":false}
                   Giga Mono or its habits only. Create a Mono and its chat on
@@ -349,7 +354,7 @@ A failure with "code" and "hint" is definite: read the hint, fix the call once,
 and send it as a new call. Use --input - to pass JSON on stdin.
 Never print MonoCode credentials.
 Keep the same --request-id when retrying a call after an uncertain result.
-"#;
+"##;
 
 /// Quote for the shell the lead agent actually runs commands in, and only when
 /// the path needs it. The path is absolute, so a leading slash means a POSIX

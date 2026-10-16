@@ -36,6 +36,7 @@ import type {
   HarnessEvent,
   HarnessSessionInput,
   SendTurnInput,
+  TurnResult,
   SteerTurnInput,
 } from "../../core/types";
 import { questionPromptTitle, type UserQuestionReply } from "../../../../features/sessions/model/userQuestion";
@@ -82,7 +83,7 @@ const cancelledThreads = new Set<string>();
  * Live Grok Build adapter. Spawns `grok agent stdio` and talks ACP.
  * Grok accepts ACP image blocks despite advertising image: false.
  */
-export async function sendGrokTurn(input: SendTurnInput): Promise<void> {
+export async function sendGrokTurn(input: SendTurnInput): Promise<TurnResult> {
   let live: Live;
   try {
     live = await ensureLive(input);
@@ -90,7 +91,8 @@ export async function sendGrokTurn(input: SendTurnInput): Promise<void> {
     cancelledThreads.delete(input.sessionId);
     throw error;
   }
-  if (cancelledThreads.delete(input.sessionId)) return;
+  if (cancelledThreads.delete(input.sessionId)) return "cancelled";
+  let sent = false;
 
   live.onEvent = input.onEvent;
   live.runtimeMode = input.runtimeMode;
@@ -102,6 +104,7 @@ export async function sendGrokTurn(input: SendTurnInput): Promise<void> {
       try {
         await applyModelSelection(live, input);
         if (live.cancelled) return;
+        sent = true;
         await prompt(live, input);
       } catch (error) {
         if (live.cancelled) return;
@@ -116,6 +119,7 @@ export async function sendGrokTurn(input: SendTurnInput): Promise<void> {
     }
     throw error;
   }
+  return sent ? "sent" : "cancelled";
 }
 
 export async function compactGrokContext(

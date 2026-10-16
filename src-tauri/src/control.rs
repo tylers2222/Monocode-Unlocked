@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
+use crate::harness::HarnessHost;
+use crate::mono_messages::{self, Notices, SessionId};
+use crate::session_store::SessionStore;
+
 const APP_TURN_INACTIVE: &str = "MonoCode app access is inactive. Use /operator once in this thread to enable it, then call the CLI during an active agent turn. Retrying this request now will not enable access.";
 const UNKNOWN_TOKEN: &str = "This token is no longer valid. It ends when the app restarts, the window closes, its session is deleted or archived, or its orchestration run stops. Do not retry.";
 /// The answer to a call the window did not answer in time. The call may still
@@ -89,6 +93,9 @@ struct ActiveTurn {
     window: String,
     cwd: String,
     app_allowed: bool,
+    /// The web app's id for this turn (design 5.2). Mono messages handed to
+    /// it carry it, and its end closes their handles.
+    turn_id: String,
 }
 #[derive(Default)]
 struct Inner {
@@ -169,35 +176,97 @@ impl Inner {
         self.scratch.remove(session);
         self.active.remove(session);
     }
-    /// Design 6: the window that runs a Mono message's route. A running
-    /// session belongs to the window of its turn; otherwise to a window that
-    /// has it loaded, the caller's first; otherwise to the caller, which loads it.
+    /// Design 6 (PR 5 review): the one window that runs a Mono message's
+    /// routes and reconcile. A running session belongs to the window of its
+    /// turn; otherwise to the first window by label that has it loaded;
+    /// otherwise to the caller, which loads it. The answer is the same
+    /// whichever window asks, so two windows never both own a session.
     fn route_owner(&self, session: &str, caller: &str) -> String {
         if let Some(turn) = self.active.get(session) {
             return turn.window.clone();
         }
-        let has = |label: &str| {
-            self.loaded
-                .get(label)
-                .is_some_and(|ids| ids.contains(session))
-        };
-        if has(caller) {
-            return caller.to_string();
-        }
-        let mut holders: Vec<&String> = self.loaded.keys().filter(|label| has(label)).collect();
-        holders.sort();
-        holders
-            .first()
-            .map_or_else(|| caller.to_string(), |label| (*label).clone())
+        self.loaded
+            .iter()
+            .filter(|(_, ids)| ids.contains(session))
+            .map(|(label, _)| label)
+            .min()
+            .map_or_else(|| caller.to_string(), Clone::clone)
     }
-    fn close_window(&mut self, label: &str) -> Vec<String> {
+    /// Authorizes turn `turn_id` of `session` in `window`. Returns the turn
+    /// it replaces when that is another turn, which no one finished: its
+    /// window reloaded (design 5.3).
+    fn authorize_turn(
+        &mut self,
+        session: &str,
+        window: &str,
+        cwd: String,
+        app_access: bool,
+        turn_id: &str,
+    ) -> Result<Option<ActiveTurn>, String> {
+        if let Some(lead) = self
+            .grants
+            .values()
+            .find(|grant| paths_overlap(&grant.cwd, &cwd))
+        {
+            if lead.window != window
+                || (lead.session != session && self.workers.get(session) != Some(&lead.session))
+            {
+                return Err("This checkout is controlled by an orchestrator. Stop that run before starting independent work.".into());
+            }
+        }
+        let eligible = self.prepare_app_grant(session, window, &cwd);
+        let replaced = self.active.insert(
+            session.to_string(),
+            ActiveTurn {
+                window: window.to_string(),
+                cwd,
+                app_allowed: app_access && eligible,
+                turn_id: turn_id.to_string(),
+            },
+        );
+        Ok(replaced.filter(|turn| turn.turn_id != turn_id))
+    }
+    /// Ends turn `turn_id` of `session` only if it is the turn that runs: a
+    /// later turn of the session may have replaced it.
+    fn finish_turn(&mut self, session: &str, turn_id: &str) -> Option<ActiveTurn> {
+        if self
+            .active
+            .get(session)
+            .is_some_and(|turn| turn.turn_id == turn_id)
+        {
+            self.active.remove(session)
+        } else {
+            None
+        }
+    }
+    /// Design 2 (review r3): window `label` reloaded, so the turns it ran are
+    /// over, and it has loaded nothing until it reports again (PR 4a review
+    /// m11).
+    fn boot_window(&mut self, label: &str) -> Vec<(String, ActiveTurn)> {
+        self.loaded.remove(label);
+        let mut ids: Vec<String> = self
+            .active
+            .iter()
+            .filter(|(_, turn)| turn.window == label)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids.into_iter()
+            .filter_map(|id| self.active.remove(&id).map(|turn| (id, turn)))
+            .collect()
+    }
+    /// Returns the turns it drops.
+    fn close_window(&mut self, label: &str) -> Vec<(String, ActiveTurn)> {
         self.loaded.remove(label);
         let ids = self.window_sessions(label);
         self.grants.retain(|id, _| !ids.contains(id));
         self.app_grants.retain(|id, _| !ids.contains(id));
         self.workers.retain(|id, _| !ids.contains(id));
         self.scratch.retain(|id, _| !ids.contains(id));
-        self.active.retain(|id, _| !ids.contains(id));
+        let ended = ids
+            .iter()
+            .filter_map(|id| self.active.remove(id).map(|turn| (id.clone(), turn)))
+            .collect();
         self.pending.retain(|_, pending| {
             if pending.window != label {
                 return true;
@@ -207,7 +276,7 @@ impl Inner {
                 .send(json!({"ok":false,"error":"MonoCode window closed"}));
             false
         });
-        ids
+        ended
     }
 }
 pub struct ControlHost {
@@ -262,6 +331,9 @@ struct Event {
     id: String,
     namespace: String,
     session_id: String,
+    /// The turn that authorized the call, so the web app binds the call to
+    /// it (design 2 step 4).
+    turn_id: Option<String>,
     request_id: String,
     action: String,
     input: Value,
@@ -332,7 +404,7 @@ fn dispatch(
 ) -> Result<Value, Failure> {
     let id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = mpsc::channel();
-    let grant = {
+    let (grant, turn_id) = {
         let mut host = inner.lock().map_err(|_| "Control service unavailable")?;
         let grant = grant(&host)?;
         if host.pending.len() >= 24 {
@@ -345,12 +417,19 @@ fn dispatch(
                 reply: tx,
             },
         );
-        grant
+        // Read under the grant's lock (design 2 step 4), so the web app binds
+        // the call to the turn that authorized it.
+        let turn_id = host
+            .active
+            .get(&grant.session)
+            .map(|turn| turn.turn_id.clone());
+        (grant, turn_id)
     };
     let event = Event {
         id: id.clone(),
         namespace: call.namespace,
         session_id: grant.session,
+        turn_id,
         request_id: call.request_id,
         action: call.action,
         input: call.input,
@@ -562,44 +641,52 @@ fn configure_worker_scratch(cmd: &mut Command, path: &Path) {
     cmd.env("TMPDIR", path).env("TMP", path).env("TEMP", path);
 }
 
-#[tauri::command]
+// Async: a replaced turn runs a store transaction, never on the main thread.
+#[tauri::command(async)]
 pub fn control_authorize_turn(
+    app: AppHandle,
     window: WebviewWindow,
     host: State<'_, ControlHost>,
     session_id: String,
     cwd: String,
     app_access: bool,
+    turn_id: String,
 ) -> Result<(), String> {
+    let turn_id = mono_messages::parse_turn_id(&turn_id)?;
     let workdir = crate::fs::expand_home(&cwd);
     let cwd = std::fs::canonicalize(&workdir)
         .map_err(|e| format!("Working directory {}: {e}", workdir.display()))?;
     let cwd = comparison_path(&cwd);
-    let mut inner = host
-        .inner
-        .lock()
-        .map_err(|_| "Control service unavailable")?;
-    if let Some(lead) = inner
-        .grants
-        .values()
-        .find(|grant| paths_overlap(&grant.cwd, &cwd))
-    {
-        if lead.window != window.label()
-            || (lead.session != session_id && inner.workers.get(&session_id) != Some(&lead.session))
-        {
-            return Err("This checkout is controlled by an orchestrator. Stop that run before starting independent work.".into());
-        }
-    }
-    let eligible = inner.prepare_app_grant(&session_id, window.label(), &cwd);
-    let app_allowed = app_access && eligible;
-    inner.active.insert(
-        session_id,
-        ActiveTurn {
-            window: window.label().to_string(),
-            cwd,
-            app_allowed,
-        },
-    );
+    authorize_turn(
+        &host.inner,
+        &app.state::<SessionStore>(),
+        &session_id,
+        window.label(),
+        cwd,
+        app_access,
+        turn_id,
+    )?
+    .emit(&app);
     Ok(())
+}
+
+fn authorize_turn(
+    inner: &Mutex<Inner>,
+    store: &SessionStore,
+    session: &str,
+    window: &str,
+    cwd: String,
+    app_access: bool,
+    turn_id: &str,
+) -> Result<Notices, String> {
+    let replaced = inner
+        .lock()
+        .map_err(|_| "Control service unavailable")?
+        .authorize_turn(session, window, cwd, app_access, turn_id)?;
+    Ok(end_turns(
+        store,
+        replaced.map(|turn| (session.to_string(), turn)),
+    ))
 }
 
 /// A window reports the sessions it has loaded, for [`Inner::route_owner`].
@@ -616,11 +703,145 @@ pub fn control_loaded_sessions(
     }
 }
 
-#[tauri::command]
-pub fn control_turn_finished(host: State<'_, ControlHost>, session_id: String) {
-    if let Ok(mut inner) = host.inner.lock() {
-        inner.active.remove(&session_id);
+/// The registry's `finally` for turn `turn_id` of the session.
+#[tauri::command(async)]
+pub fn control_turn_finished(
+    app: AppHandle,
+    host: State<'_, ControlHost>,
+    session_id: String,
+    turn_id: String,
+) {
+    finish_turn(
+        &host.inner,
+        &app.state::<SessionStore>(),
+        &session_id,
+        &turn_id,
+    )
+    .emit(&app);
+}
+
+fn finish_turn(
+    inner: &Mutex<Inner>,
+    store: &SessionStore,
+    session: &str,
+    turn_id: &str,
+) -> Notices {
+    let ended = inner
+        .lock()
+        .ok()
+        .and_then(|mut inner| inner.finish_turn(session, turn_id));
+    end_turns(store, ended.map(|turn| (session.to_string(), turn)))
+}
+
+/// Design 5.3 (review r2): the Stop and kill paths. The process is gone, so
+/// its turn is over whatever its id; the window may not know that id after a
+/// reload.
+#[tauri::command(async)]
+pub fn control_kill_session(app: AppHandle, host: State<'_, ControlHost>, session_id: String) {
+    kill_session(
+        &host.inner,
+        &app.state::<SessionStore>(),
+        &session_id,
+        &app.state::<HarnessHost>(),
+    )
+    .emit(&app);
+}
+
+fn kill_session(
+    inner: &Mutex<Inner>,
+    store: &SessionStore,
+    session: &str,
+    harness: &HarnessHost,
+) -> Notices {
+    let ended = inner
+        .lock()
+        .ok()
+        .and_then(|mut inner| inner.active.remove(session));
+    // A session's `S#n` children (antigravity) carry its token too.
+    harness.kill_session_tree(session);
+    end_turns(store, ended.map(|turn| (session.to_string(), turn)))
+}
+
+/// Design 2 (review r4): a window that boots runs no turn yet, so every turn
+/// that `active` gives it is left from before a reload. Awaited before the
+/// window loads any session.
+#[tauri::command(async)]
+pub fn control_window_booted(app: AppHandle, window: WebviewWindow, host: State<'_, ControlHost>) {
+    boot_window(
+        &host.inner,
+        &app.state::<SessionStore>(),
+        window.label(),
+        &app.state::<HarnessHost>(),
+    )
+    .emit(&app);
+}
+
+fn boot_window(
+    inner: &Mutex<Inner>,
+    store: &SessionStore,
+    label: &str,
+    harness: &HarnessHost,
+) -> Notices {
+    let ended = match inner.lock() {
+        Ok(mut inner) => inner.boot_window(label),
+        Err(_) => Vec::new(),
+    };
+    for (session, _) in &ended {
+        harness.kill_session_tree(session);
     }
+    let mut notices = end_turns(store, ended);
+    notices.merge(release_window_slots(store, label));
+    notices
+}
+
+/// Whether this window runs the routes and reconcile of the session (design
+/// 6, PR 4a review m19).
+#[tauri::command]
+pub fn control_owns_session(
+    window: WebviewWindow,
+    host: State<'_, ControlHost>,
+    session_id: String,
+) -> bool {
+    host.route_owner(&session_id, window.label()) == window.label()
+}
+
+/// Design 5.3: the turn-end rules for turns that `active` no longer holds.
+/// The control lock is never held here (5.3 lock order).
+fn end_turns(
+    store: &SessionStore,
+    turns: impl IntoIterator<Item = (String, ActiveTurn)>,
+) -> Notices {
+    let mut notices = Notices::default();
+    for (session, turn) in turns {
+        let Some(session) = SessionId::parse(&session) else {
+            continue;
+        };
+        let ended = store.lock_conn().and_then(|conn| {
+            mono_messages::turn_ended(&conn, &session, &turn.turn_id, mono_messages::now_ms())
+                .map_err(|error| error.to_string())
+        });
+        match ended {
+            Ok(ended) => notices.merge(ended),
+            Err(error) => eprintln!(
+                "Turn {} of {} ended, but its Mono messages kept their state: {error}",
+                turn.turn_id,
+                session.as_str()
+            ),
+        }
+    }
+    notices
+}
+
+/// Design 2 (review r5): the slots window `label` set that no provider took.
+fn release_window_slots(store: &SessionStore, label: &str) -> Notices {
+    let released = store.lock_conn().and_then(|conn| {
+        mono_messages::release_window_slots(&conn, label, mono_messages::now_ms())
+            .map_err(|error| error.to_string())
+    });
+    released.unwrap_or_else(|error| {
+        eprintln!("Window {label} closed, but its Mono message slots stay: {error}");
+        Notices::default()
+    })
 }
 
 #[tauri::command(async)]
@@ -644,23 +865,38 @@ fn forget_session(inner: &Mutex<Inner>, harness: &crate::harness::HarnessHost, s
 pub fn window_closed(app: &AppHandle, label: &str) {
     close_window(
         &app.state::<ControlHost>().inner,
-        &app.state::<crate::harness::HarnessHost>(),
+        &app.state::<SessionStore>(),
         label,
-    );
+        &app.state::<HarnessHost>(),
+    )
+    .emit(app);
 }
 
-fn close_window(inner: &Mutex<Inner>, harness: &crate::harness::HarnessHost, label: &str) {
+/// Design 2 (review r5): kills the window's processes, drops its turns and
+/// grants, then ends those turns and frees the slots it set.
+fn close_window(
+    inner: &Mutex<Inner>,
+    store: &SessionStore,
+    label: &str,
+    harness: &HarnessHost,
+) -> Notices {
     let ids = {
-        let Ok(inner) = inner.lock() else { return };
+        let Ok(inner) = inner.lock() else {
+            return Notices::default();
+        };
         inner.window_sessions(label)
     };
     // A session's `S#n` children (antigravity) carry its token too.
     for id in &ids {
         harness.kill_session_tree(id);
     }
-    if let Ok(mut inner) = inner.lock() {
-        inner.close_window(label);
+    let ended = match inner.lock() {
+        Ok(mut inner) => inner.close_window(label),
+        Err(_) => Vec::new(),
     };
+    let mut notices = end_turns(store, ended);
+    notices.merge(release_window_slots(store, label));
+    notices
 }
 
 pub fn configure_child(app: &AppHandle, session_id: &str, cmd: &mut Command) {
@@ -920,6 +1156,229 @@ pub fn control_scopes(cwd: String, files: Vec<String>) -> Result<Vec<String>, St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mono_messages::tests::{hand_off, handed_off, messaging_store, sent};
+    use crate::mono_messages::{get, MessageId, Status};
+
+    fn run(inner: &Mutex<Inner>, session: &str, window: &str, turn_id: &str) {
+        inner.lock().unwrap().active.insert(
+            session.into(),
+            ActiveTurn {
+                window: window.into(),
+                cwd: format!("/{session}"),
+                app_allowed: false,
+                turn_id: turn_id.into(),
+            },
+        );
+    }
+
+    fn status(store: &SessionStore, id: &MessageId) -> Status {
+        get(&store.lock_conn().unwrap(), id)
+            .unwrap()
+            .unwrap()
+            .status
+    }
+
+    /// The payload of the `mono-message-notices` event.
+    fn payload(notices: &Notices) -> Value {
+        serde_json::to_value(notices).unwrap()
+    }
+
+    // Design 5.3 review r1. Defect: the `finally` of a turn that already
+    // ended runs after the session's next turn started and ends that turn:
+    // its token stops working and its questions become unanswered while its
+    // agent still works on them.
+    #[test]
+    fn finishing_an_old_turn_leaves_the_turn_that_replaced_it() {
+        let store = messaging_store();
+        let inner = Mutex::new(Inner::default());
+        run(&inner, "a-chat", "main", "turn-2");
+        let ask = handed_off(
+            &store.lock_conn().unwrap(),
+            "ask",
+            true,
+            "turn-2",
+            "main",
+            true,
+        );
+        assert_eq!(
+            finish_turn(&inner, &store, "a-chat", "turn-1"),
+            Notices::default()
+        );
+        assert_eq!(inner.lock().unwrap().active["a-chat"].turn_id, "turn-2");
+        assert!(matches!(status(&store, &ask), Status::Open { .. }));
+        let notices = finish_turn(&inner, &store, "a-chat", "turn-2");
+        assert!(inner.lock().unwrap().active.is_empty());
+        assert!(matches!(status(&store, &ask), Status::Unanswered { .. }));
+        assert_eq!(
+            payload(&notices),
+            json!({"sessions": ["a-chat", "giga-chat"]})
+        );
+    }
+
+    // Design 5.3. Defect: a turn that a reloaded window never finished stays
+    // in `active`; when the next turn of its session replaces it, its
+    // questions stay open, so their senders wait for good.
+    #[test]
+    fn authorizing_a_new_turn_ends_the_turn_it_replaces() {
+        let store = messaging_store();
+        let inner = Mutex::new(Inner::default());
+        let ask = handed_off(
+            &store.lock_conn().unwrap(),
+            "ask",
+            true,
+            "turn-1",
+            "main",
+            true,
+        );
+        let authorize = |turn_id| {
+            authorize_turn(
+                &inner,
+                &store,
+                "a-chat",
+                "main",
+                "/a".into(),
+                false,
+                turn_id,
+            )
+            .unwrap()
+        };
+        assert_eq!(authorize("turn-1"), Notices::default());
+        assert_eq!(authorize("turn-1"), Notices::default());
+        assert!(matches!(status(&store, &ask), Status::Open { .. }));
+        let notices = authorize("turn-2");
+        assert_eq!(inner.lock().unwrap().active["a-chat"].turn_id, "turn-2");
+        assert!(matches!(status(&store, &ask), Status::Unanswered { .. }));
+        assert_eq!(
+            payload(&notices),
+            json!({"sessions": ["a-chat", "giga-chat"]})
+        );
+    }
+
+    // Design 5.3 review r2. Defect: Stop after a reload cannot name the turn
+    // it stops, so the killed turn's questions stay open and the hand-offs
+    // it held stay held.
+    #[test]
+    fn killing_a_session_ends_its_turn_without_naming_it() {
+        let store = messaging_store();
+        let inner = Mutex::new(Inner::default());
+        run(&inner, "a-chat", "main", "turn-1");
+        let (ask, opener) = {
+            let conn = store.lock_conn().unwrap();
+            (
+                handed_off(&conn, "ask", true, "turn-1", "main", true),
+                handed_off(&conn, "opener", false, "turn-1", "main", false),
+            )
+        };
+        let notices = kill_session(&inner, &store, "a-chat", &HarnessHost::new());
+        assert!(inner.lock().unwrap().active.is_empty());
+        assert!(matches!(status(&store, &ask), Status::Unanswered { .. }));
+        assert!(matches!(
+            status(&store, &opener),
+            Status::Delivered { slot: None, .. }
+        ));
+        assert_eq!(
+            payload(&notices),
+            json!({"sessions": ["a-chat", "giga-chat"]})
+        );
+    }
+
+    // Design 2 review r3-r5, PR 4a review m11. Defect: a reloaded window
+    // leaves its old turns in `active` with their questions open, keeps the
+    // slots of openers it never sent, or is still named the owner of a
+    // session it has not loaded again.
+    #[test]
+    fn a_booting_window_ends_its_old_turns_and_frees_the_slots_it_set() {
+        let store = messaging_store();
+        let inner = Mutex::new(Inner::default());
+        run(&inner, "a-chat", "reloaded", "turn-a");
+        run(&inner, "giga-chat", "reloaded", "turn-g");
+        run(&inner, "project", "other", "turn-p");
+        inner
+            .lock()
+            .unwrap()
+            .loaded
+            .insert("reloaded".into(), ["was-loaded".to_string()].into());
+        let (to_a, to_giga, waiting, other) = {
+            let conn = store.lock_conn().unwrap();
+            let to_giga = sent(&conn, ("mono-a", "a-chat"), "giga", "to-giga", true);
+            hand_off(&conn, &to_giga, "turn-g", "reloaded", true);
+            (
+                handed_off(&conn, "to-a", true, "turn-a", "reloaded", true),
+                to_giga,
+                handed_off(&conn, "waiting", false, "turn-x", "reloaded", false),
+                handed_off(&conn, "other", false, "turn-y", "other", false),
+            )
+        };
+        let notices = boot_window(&inner, &store, "reloaded", &HarnessHost::new());
+        let inner = inner.into_inner().unwrap();
+        assert_eq!(inner.active.keys().collect::<Vec<_>>(), ["project"]);
+        assert_eq!(inner.route_owner("was-loaded", "caller"), "caller");
+        for id in [&to_a, &to_giga] {
+            assert!(matches!(status(&store, id), Status::Unanswered { .. }));
+        }
+        assert!(matches!(
+            status(&store, &waiting),
+            Status::Delivered { slot: None, .. }
+        ));
+        assert!(matches!(
+            status(&store, &other),
+            Status::Delivered { slot: Some(_), .. }
+        ));
+        assert_eq!(
+            payload(&notices),
+            json!({"sessions": ["a-chat", "giga-chat"]})
+        );
+    }
+
+    // Design 2 review r5, 5.3. Defect: a window that closes during a hand-off
+    // strands the row: its slot outlives the window, so no reconcile ever
+    // queues the row again; or the turn it drops keeps its questions open.
+    #[test]
+    fn closing_a_window_ends_its_turns_frees_its_slots_and_names_each_session_once() {
+        let store = messaging_store();
+        let inner = Mutex::new(Inner::default());
+        run(&inner, "a-chat", "closing", "turn-1");
+        let (ask, opener, waiting, other) = {
+            let conn = store.lock_conn().unwrap();
+            (
+                handed_off(&conn, "ask", true, "turn-1", "closing", true),
+                handed_off(&conn, "opener", false, "turn-1", "closing", false),
+                handed_off(&conn, "waiting", false, "turn-x", "closing", false),
+                handed_off(&conn, "other", false, "turn-y", "open", false),
+            )
+        };
+        let notices = close_window(&inner, &store, "closing", &HarnessHost::new());
+        assert!(matches!(status(&store, &ask), Status::Unanswered { .. }));
+        for id in [&opener, &waiting] {
+            assert!(matches!(
+                status(&store, id),
+                Status::Delivered { slot: None, .. }
+            ));
+        }
+        assert!(matches!(
+            status(&store, &other),
+            Status::Delivered { slot: Some(_), .. }
+        ));
+        assert_eq!(
+            payload(&notices),
+            json!({"sessions": ["a-chat", "giga-chat"]})
+        );
+    }
+
+    // PR 4a review m7 (CT1). Defect: the gate reads no running session, so
+    // every steer is queued and S17 never refuses one.
+    #[test]
+    fn running_sessions_are_the_sessions_with_an_active_turn() {
+        let host = ControlHost {
+            endpoint: String::new(),
+            inner: Arc::new(Mutex::new(Inner::default())),
+        };
+        run(&host.inner, "a-chat", "main", "turn-1");
+        assert_eq!(
+            host.running_sessions(),
+            HashSet::from(["a-chat".to_string()])
+        );
+    }
 
     // Defect: a window that has not loaded a session routes a Mono message
     // into a second copy of it while another window holds or runs it.
@@ -931,22 +1390,38 @@ mod tests {
             .loaded
             .insert("other".into(), ["s".to_string()].into_iter().collect());
         assert_eq!(inner.route_owner("s", "caller"), "other");
-        inner
-            .loaded
-            .insert("caller".into(), ["s".to_string()].into_iter().collect());
-        assert_eq!(inner.route_owner("s", "caller"), "caller");
         inner.active.insert(
             "s".into(),
             ActiveTurn {
                 window: "runner".into(),
                 cwd: "/repo".into(),
                 app_allowed: true,
+                turn_id: "turn-1".into(),
             },
         );
         assert_eq!(inner.route_owner("s", "caller"), "runner");
         inner.active.remove("s");
-        inner.close_window("caller");
-        assert_eq!(inner.route_owner("s", "caller"), "other");
+        inner.close_window("other");
+        assert_eq!(inner.route_owner("s", "caller"), "caller");
+    }
+
+    // Defect (PR 5 review M1): each window that has an idle session loaded
+    // counts itself as its owner, so each one reconciles it and queues the
+    // same row or notice into its own copy.
+    #[test]
+    fn two_windows_with_a_session_loaded_agree_on_one_owner() {
+        let mut inner = Inner::default();
+        for label in ["second", "main"] {
+            inner.loaded.insert(
+                label.into(),
+                ["giga-chat".to_string()].into_iter().collect(),
+            );
+        }
+        let owners: Vec<&str> = ["main", "second", "third"]
+            .into_iter()
+            .filter(|window| inner.route_owner("giga-chat", window) == *window)
+            .collect();
+        assert_eq!(owners, ["main"]);
     }
     #[test]
     fn app_tokens_are_bound_to_active_turns_and_cannot_control_orchestration() {
@@ -970,6 +1445,7 @@ mod tests {
                 window: "main".into(),
                 cwd: "/repo".into(),
                 app_allowed: true,
+                turn_id: "turn-1".into(),
             },
         );
         assert!(request_grant(&inner, "app", "app-token").is_ok());
@@ -988,6 +1464,7 @@ mod tests {
                 window: "main".into(),
                 cwd: "/repo".into(),
                 app_allowed: true,
+                turn_id: "turn-1".into(),
             },
         );
         inner.app_grants[session].token.clone()
@@ -998,6 +1475,19 @@ mod tests {
             Ok(grant) => json!({"ok": true, "session": grant.session}),
             Err(failure) => failure.response(),
         }
+    }
+
+    // PR 5 review m6 (R-e). Defect: the control event carries no turn, or
+    // another turn than the one that authorized the call, so the web app
+    // binds the call to the wrong handles.
+    #[test]
+    fn a_call_is_bound_to_the_turn_that_authorized_it() {
+        let inner = Mutex::new(Inner::default());
+        app_grant(&mut inner.lock().unwrap(), "mono-chat");
+        let (_, events) = host_events(&inner, "main", "mono-chat", "r1", 0);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].session_id, "mono-chat");
+        assert_eq!(events[0].turn_id.as_deref(), Some("turn-1"));
     }
 
     #[test]
@@ -1089,12 +1579,35 @@ mod tests {
         let mut provider = harness.insert_test_child("mono-chat");
         let mut numbered = harness.insert_test_child("mono-chat#0");
         let mut other = harness.insert_test_child("other-chat");
-        close_window(&inner, &harness, "main");
+        close_window(&inner, &messaging_store(), "main", &harness);
         assert!(exits_soon(&mut provider), "the provider kept running");
         assert!(
             exits_soon(&mut numbered),
             "the mono-chat#0 child kept running"
         );
+        assert!(matches!(other.try_wait(), Ok(None)));
+        let _ = other.kill();
+        let _ = other.wait();
+    }
+
+    // PR 5 review n1, PR 3 review: Stop, kill and a reloaded window's boot
+    // kill by exact key, so an antigravity `S#n` child keeps running with
+    // the session's token.
+    #[cfg(unix)]
+    #[test]
+    fn killing_or_booting_kills_the_sessions_numbered_children() {
+        use crate::harness::tests::exits_soon;
+        let store = messaging_store();
+        let inner = Mutex::new(Inner::default());
+        let harness = HarnessHost::new();
+        let mut killed = harness.insert_test_child("a-chat#0");
+        let mut other = harness.insert_test_child("other-chat");
+        kill_session(&inner, &store, "a-chat", &harness);
+        assert!(exits_soon(&mut killed), "kill left a-chat#0 running");
+        run(&inner, "giga-chat", "reloaded", "turn-g");
+        let mut booted = harness.insert_test_child("giga-chat#1");
+        boot_window(&inner, &store, "reloaded", &harness);
+        assert!(exits_soon(&mut booted), "boot left giga-chat#1 running");
         assert!(matches!(other.try_wait(), Ok(None)));
         let _ = other.kill();
         let _ = other.wait();
@@ -1255,6 +1768,7 @@ mod tests {
                 window: "main".into(),
                 cwd: "/repo".into(),
                 app_allowed: false,
+                turn_id: "turn-1".into(),
             },
         );
         assert!(request_grant(&inner, "app", &token).is_err());
@@ -1355,6 +1869,7 @@ mod tests {
                     window: window.into(),
                     cwd: format!("/{id}"),
                     app_allowed: false,
+                    turn_id: "turn-1".into(),
                 },
             );
         }
@@ -1388,10 +1903,12 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            inner.close_window("closing"),
-            ["lead", "ordinary", "worker"]
-        );
+        let ended: Vec<String> = inner
+            .close_window("closing")
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ended, ["lead", "ordinary"]);
         assert_eq!(inner.active.len(), 1);
         assert_eq!(inner.active["other"].window, "open");
         assert_eq!(inner.grants.len(), 1);

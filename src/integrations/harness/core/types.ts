@@ -187,9 +187,17 @@ export type HarnessSessionInput = {
 export type SendTurnInput = HarnessSessionInput & {
   text: string;
   attachments?: Attachment[];
+  /** Minted by the caller for this turn; app calls in the turn are bound to it. */
+  turnId: string;
   /** Called once the provider has accepted the user turn. */
   onAccepted?: () => void;
 };
+
+/**
+ * How `sendTurn` ended: `sent` once the turn's text went to the provider,
+ * `cancelled` when a cancel stopped the turn before that (design 5.4).
+ */
+export type TurnResult = "sent" | "cancelled";
 
 export type CompactContextInput = HarnessSessionInput;
 

@@ -3,6 +3,7 @@ import {
   parseHandle,
   parseMessageId,
   parseMonoId,
+  parseReplyInput,
   parseSessionId,
 } from "./monoMessages";
 
@@ -37,4 +38,24 @@ it("accepts session ids by the session store's rule", () => {
   expect(parseSessionId("app-chat_1")).toBe("app-chat_1");
   for (const nearMiss of ["", "chat#1", "chat 1", "../chat", undefined])
     expect(parseSessionId(nearMiss)).toBeUndefined();
+});
+
+// Design 3.3. Defect: Rust gets a `to` it refuses or reads differently, such
+// as a repeated handle, more than nine, or none.
+it("accepts a reply's to as one handle or 1 to 9 different ones, always as a list", () => {
+  const reply = (to?: unknown) => parseReplyInput({ message: "Done", to });
+  expect(reply()).toEqual({ message: "Done", wanting_reply: false });
+  expect(reply("#2").to).toEqual(["#2"]);
+  const nine = Array.from({ length: 9 }, (_, index) => `#${index + 1}`);
+  expect(reply(nine).to).toEqual(nine);
+  for (const nearMiss of [
+    null,
+    [],
+    ["#1", "#1"],
+    [...nine, "#10"],
+    "#0",
+    ["#1", 2],
+    1,
+  ])
+    expect(() => reply(nearMiss)).toThrow("to must be");
 });

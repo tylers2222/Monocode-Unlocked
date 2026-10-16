@@ -29,6 +29,7 @@ import type {
   ApprovalDecision,
   HarnessEvent,
   SendTurnInput,
+  TurnResult,
   SteerTurnInput,
 } from "../../core/types";
 
@@ -132,7 +133,9 @@ const turnsByThread = new Map<string, Promise<void>>();
 let childSeq = 0;
 
 /** Live Antigravity adapter. Spawns `agy_acp_server.par`, not `agy acp`. */
-export async function sendAntigravityTurn(input: SendTurnInput): Promise<void> {
+export async function sendAntigravityTurn(
+  input: SendTurnInput,
+): Promise<TurnResult> {
   const epoch = cancelEpoch.get(input.sessionId) ?? 0;
   const cancelled = () => (cancelEpoch.get(input.sessionId) ?? 0) !== epoch;
   try {
@@ -140,11 +143,12 @@ export async function sendAntigravityTurn(input: SendTurnInput): Promise<void> {
     // a parked transport, so a queued send can never interrupt a running turn.
     await ensureLive(input, false);
   } catch (error) {
-    if (cancelled()) return;
+    if (cancelled()) return "cancelled";
     throw error;
   }
-  if (cancelled()) return;
+  if (cancelled()) return "cancelled";
 
+  let sent = false;
   const run = (turnsByThread.get(input.sessionId) ?? Promise.resolve())
     .catch(() => undefined)
     .then(async () => {
@@ -180,6 +184,7 @@ export async function sendAntigravityTurn(input: SendTurnInput): Promise<void> {
           input.intent === "plan",
         );
         if (live.cancelled || cancelled()) return;
+        sent = true;
         await prompt(live, input);
       } catch (error) {
         if (live.cancelled) return;
@@ -203,6 +208,7 @@ export async function sendAntigravityTurn(input: SendTurnInput): Promise<void> {
       turnsByThread.delete(input.sessionId);
     }
   }
+  return sent ? "sent" : "cancelled";
 }
 
 export async function steerAntigravityTurn(_input: SteerTurnInput): Promise<void> {

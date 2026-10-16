@@ -8,6 +8,8 @@ export type ControlRequest = {
   requestId: string;
   action: string;
   input: Record<string, unknown>;
+  /** The turn that authorized the call, when the session runs one (design 2 step 4). */
+  turnId: string | null;
 };
 
 /**

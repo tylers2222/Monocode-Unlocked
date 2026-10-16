@@ -33,6 +33,9 @@ export async function requestOutgoingHandoff(input: {
       providerAccountId: input.providerAccountId,
       runtimeMode: "supervised",
       text: buildOutgoingHandoffPrompt(input.userRequest),
+      // Not a window's current turn: a Mono steer for this session waits
+      // for the turn end instead of steering this hand-off brief.
+      turnId: crypto.randomUUID(),
       onEvent: (event) => {
         if (event.type === "message.delta") {
           brief = mergeStream(brief, event.text);

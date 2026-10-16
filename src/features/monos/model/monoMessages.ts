@@ -45,6 +45,18 @@ export function parseHandle(raw: unknown): Handle | undefined {
     : undefined;
 }
 
+/** A turn id as `control_authorize_turn` takes it: 1 to 128 characters. */
+export function parseTurnId(raw: unknown): TurnId | undefined {
+  return typeof raw === "string" && raw.length > 0 && raw.length <= 128
+    ? (raw as TurnId)
+    : undefined;
+}
+
+/** The id of a turn this window is about to start (design 5.2). */
+export function newTurnId(): TurnId {
+  return crypto.randomUUID() as TurnId;
+}
+
 export type Party =
   | { kind: "mono"; monoId: MonoId }
   /** A project session; it only receives. */
@@ -158,8 +170,12 @@ export type SendInput = {
   action_type: ActionType;
 };
 
-/** A `reply` call (design 3.3). `to` arrives with handles in PR 5. */
-export type ReplyInput = { message: string; wanting_reply: boolean };
+/** A `reply` call (design 3.3). `to` names the handles it answers. */
+export type ReplyInput = {
+  message: string;
+  wanting_reply: boolean;
+  to?: Handle[];
+};
 
 function message(raw: Record<string, unknown>): string {
   if (typeof raw.message !== "string" || !raw.message.trim())
@@ -196,34 +212,71 @@ export function parseSendInput(raw: Record<string, unknown>): SendInput {
   };
 }
 
-/** Throws the `invalid_input` hint (R1). */
+/** Throws the `invalid_input` hint (R1). Rust parses the same input again. */
 export function parseReplyInput(raw: Record<string, unknown>): ReplyInput {
   const text = message(raw);
   if (raw.wanting_reply !== undefined && typeof raw.wanting_reply !== "boolean")
     throw new Error("wanting_reply must be true or false");
-  return { message: text, wanting_reply: raw.wanting_reply ?? false };
+  const reply = { message: text, wanting_reply: raw.wanting_reply ?? false };
+  return raw.to === undefined ? reply : { ...reply, to: parseTo(raw.to) };
+}
+
+/** One handle, or a list of 1 to 9 different ones; one is sent as a list. */
+function parseTo(raw: unknown): Handle[] {
+  const handles = (
+    typeof raw === "string" ? [raw] : Array.isArray(raw) ? raw : []
+  ).map(parseHandle);
+  if (
+    handles.length === 0 ||
+    handles.length > 9 ||
+    new Set(handles).size < handles.length ||
+    !handles.every((handle) => handle !== undefined)
+  )
+    throw new Error(
+      'to must be a handle such as "#1", or a list of 1 to 9 different handles',
+    );
+  return handles;
+}
+
+function attribute(value: string): string {
+  return value.replace(/[&"<>]/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
 /**
- * What the receiving agent reads (design 5.2, without the handle until
- * PR 5). How to treat and answer it lives once in `<mono_messaging_rules>`.
+ * What the receiving agent reads (design 5.2). A message that wants a reply
+ * shows the handle of the turn it was handed to. How to treat and answer it
+ * lives once in `<mono_messaging_rules>`.
  */
 export function renderMonoMessage(
   message: Pick<MessageBase, "id" | "fromMonoId" | "body"> & {
     wantingReply: boolean;
   },
   sender: { name: string; role: MonoRole } | undefined,
+  handle?: Handle,
 ): string {
-  const name = (sender?.name ?? "a deleted Mono").replace(
-    /[&"<>]/g,
-    (c) => `&#${c.charCodeAt(0)};`,
-  );
   const attributes = [
     `message_id="${message.id}"`,
-    `from="${name}"`,
+    `from="${attribute(sender?.name ?? "a deleted Mono")}"`,
     ...(message.fromMonoId ? [`mono_id="${message.fromMonoId}"`] : []),
     ...(sender ? [`role="${sender.role}"`] : []),
     `wanting_reply="${message.wantingReply}"`,
+    ...(handle ? [`handle="${handle}"`] : []),
   ];
   return `<mono_message ${attributes.join(" ")}>\n${message.body}\n</mono_message>`;
+}
+
+/**
+ * What the sender's chat reads when its message ended without an answer
+ * (design 5.3): which message, to whom, and its first 60 characters.
+ */
+export function renderMonoNotice(
+  message: Pick<MessageBase, "id" | "body"> & {
+    status: "unanswered" | "dropped";
+  },
+  recipient: string,
+): string {
+  const line = Array.from(message.body.trim().split(/\s+/).join(" "))
+    .slice(0, 60)
+    .join("");
+  return `<mono_notice message_id="${message.id}" status="${message.status}" to="${attribute(recipient)}">\n${line}\n</mono_notice>`;
 }

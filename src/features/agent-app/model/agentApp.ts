@@ -330,7 +330,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ["monos.update", ["monoId", "harness", "model", "name", "projects"]],
   ["messages.get_monos", []],
   ["messages.send", ["message", "send_to", "wanting_reply", "action_type"]],
-  ["messages.reply", ["message", "wanting_reply"]],
+  ["messages.reply", ["message", "wanting_reply", "to"]],
   ["workspace.status", []],
   ["chat.card", [...CARD_FIELDS]],
 ]);
