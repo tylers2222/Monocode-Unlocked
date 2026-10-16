@@ -18,9 +18,8 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use crate::control::ControlHost;
 use crate::mono_gate::{
-    self, Caller, CallerKind, Closure, Decision, Facts, HandleState, Handled, Input, MessageRef,
-    OpenHandle, Recipient, Referenced, Refusal, ReplyFacts, Route, SendFacts, Target,
-    TargetSession,
+    self, Caller, CallerKind, Closure, Decision, Facts, HandleState, Handled, Input, OpenHandle,
+    Recipient, Referenced, Refusal, ReplyFacts, Route, SendFacts, Target, TargetSession,
 };
 use crate::mono_roster::validate_mono_id;
 use crate::session_store::{validate_id, SessionStore};
@@ -1405,7 +1404,7 @@ pub fn submit(
         Input::Send(send) => {
             let recipient = recipient(&tx, &send.send_to, live)?;
             let reply_to = match &send.reply_to {
-                Some(named) => resolve_ref(&tx, caller, named, live)?
+                Some(id) => resolve_ref(&tx, id)?
                     .map(|message| referenced(&tx, caller, &recipient, message, live))
                     .transpose()?,
                 None => None,
@@ -1460,23 +1459,10 @@ pub fn submit(
     Ok(submitted)
 }
 
-/// Design 16.6: the accepted row `named` points at. A handle names a
-/// message of the caller's turn; an id names any accepted row.
-fn resolve_ref(
-    conn: &Connection,
-    caller: &Caller,
-    named: &MessageRef,
-    live: &Live,
-) -> rusqlite::Result<Option<MonoMessage>> {
-    Ok(match named {
-        MessageRef::Id(id) => {
-            get(conn, id)?.filter(|message| !matches!(message.status, Status::Rejected { .. }))
-        }
-        MessageRef::Handle(handle) => handled_in_turn(conn, caller, live)?
-            .into_iter()
-            .find(|handled| handled.handle == *handle)
-            .map(|handled| handled.message),
-    })
+/// Design 16.6: the accepted row `id` names. A steer's `reply_to` is a
+/// message id only (PR I2 review r1).
+fn resolve_ref(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<MonoMessage>> {
+    Ok(get(conn, id)?.filter(|message| !matches!(message.status, Status::Rejected { .. })))
 }
 
 /// `message` with the session target_session gives for it, as live sees it.
@@ -1906,7 +1892,9 @@ fn end_turn_rows(
 
 /// Design 5.3: turn `turn_id` of `session` is over. Names `session` when a
 /// row changed, so its owner reconciles it, and the chat of each sender now
-/// owed a notice.
+/// owed a notice. Design 16.6 (PR I2 review r1): a steer accepted for this
+/// turn that no hand-off slotted yet, also one in a paused queue, names work
+/// that is over, so it is dropped too.
 pub fn turn_ended(
     conn: &Connection,
     session: &SessionId,
@@ -1914,15 +1902,30 @@ pub fn turn_ended(
     now: i64,
 ) -> rusqlite::Result<Notices> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    // Before end_turn_rows, which frees the slot of a target never taken.
+    let waiting = tx
+        .prepare(
+            "UPDATE mono_messages SET status = 'dropped', closed_at = ?1, updated_at = ?1
+              WHERE intent = 'steer' AND status IN ('open', 'delivered') AND turn_id IS NULL
+                AND reply_to IN (SELECT id FROM mono_messages
+                                  WHERE handled_by_session = ?2 AND turn_id = ?3)
+              RETURNING id",
+        )?
+        .query_map(params![now, session.as_str(), turn_id], |row| {
+            row.get::<_, String>(0)
+        })?
+        .map(|id| id.and_then(|id| required(MessageId::parse(&id), "id")))
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     let (unanswered, changed) = end_turn_rows(
         &tx,
         "handled_by_session = ?2 AND turn_id = ?3",
         params![now, session.as_str(), turn_id],
     )?;
     let mut notices = Notices::default();
-    if changed > 0 {
+    if changed + waiting.len() > 0 {
         notices.name(session.clone());
     }
+    notices.name_senders(&tx, &waiting)?;
     notices.name_senders(&tx, &unanswered)?;
     tx.commit()?;
     Ok(notices)
@@ -5698,7 +5701,7 @@ pub(crate) mod tests {
             &caller_in("giga", "giga-chat"),
             "after",
             Tool::SendMessage,
-            serde_json::json!({"message": "Hi", "send_to": "mono-a", "wanting_reply": true}),
+            serde_json::json!({"message": "Hi", "send_to": "mono-a", "wanting_reply": true, "intent": "new"}),
             &[listed("a-chat", true, true)],
         ));
     }
@@ -5784,11 +5787,11 @@ pub(crate) mod tests {
         (work, steer)
     }
 
-    // PR I2, S9 through resolve_ref. Defect: a steer names an unknown id, a
-    // rejected row, or a handle of another turn and still goes somewhere; or
-    // a handle of this turn is not resolved at all.
+    // PR I2, S9 through resolve_ref. Defect: a steer names an unknown id or a
+    // rejected row and still goes somewhere, or an accepted row that is not
+    // between the two loses its target.
     #[test]
-    fn a_steer_reply_to_resolves_to_an_accepted_row_or_a_handle_of_the_callers_turn() {
+    fn a_steer_reply_to_resolves_only_to_an_accepted_row() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         let rejected = failed(call(
@@ -5801,7 +5804,7 @@ pub(crate) mod tests {
         ))
         .message_id
         .unwrap();
-        // A asks the Giga; the Giga's turn 1 holds it as #1.
+        // A asks the Giga.
         let asked = sent(&conn, ("mono-a", "a-chat"), "giga", "asked", true);
         hand_off(&conn, &asked, "turn-1", "main", true);
         let steer_from = |caller: &Caller, request: &str, reply_to: &str| {
@@ -5819,21 +5822,16 @@ pub(crate) mod tests {
         for (request, reply_to) in [
             ("unknown", "m_zzzzzzzzzzzz"),
             ("refused", rejected.as_str()),
-            ("not-held", "#3"),
         ] {
             let error = steer_from(&giga, request, reply_to);
             assert_eq!(error.code, "unknown_message", "{reply_to}");
             let row = stored_row(&conn, &error.message_id.unwrap());
             assert_eq!(row.3, None, "{reply_to}");
         }
-        let later = caller_in_turn("giga", "giga-chat", "turn-2");
-        assert_eq!(
-            steer_from(&later, "other-turn", "#1").code,
-            "unknown_message"
-        );
-        // #1 resolves to the message A sent; a steer about it is not between
-        // the Giga and A in the Giga's direction, and the row keeps its target.
-        let error = steer_from(&giga, "held", "#1");
+        // The id resolves to the message A sent; a steer about it is not
+        // between the Giga and A in the Giga's direction, and the row keeps
+        // its target.
+        let error = steer_from(&giga, "held", asked.as_str());
         assert_eq!(error.code, "steer_target_mismatch");
         assert_eq!(
             stored_row(&conn, &error.message_id.unwrap()).3.as_deref(),
@@ -5984,6 +5982,41 @@ pub(crate) mod tests {
             .all(|message| message.id != steer));
     }
 
+    // PR I2 review r1 M1. Defect: a steer accepted for turn T that no
+    // hand-off slotted yet (it waits behind a question, or in a queue that
+    // Stop paused) survives the end of T, and its sender gets no notice; or
+    // the drop runs after the turn end freed the slot of a target that T
+    // never took, and misses the steer at it.
+    #[test]
+    fn the_turn_end_drops_a_steer_accepted_for_it_that_no_hand_off_slotted() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let (_, steer) = steered(&conn, "steer");
+        let untaken = handed_off(&conn, "untaken", false, "turn-1", "main", false);
+        let at_untaken = accepted_ids(&call_with(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "at-untaken",
+            Tool::SendMessage,
+            steering("mono-a", untaken.as_str()),
+            &[],
+            &["a-chat"],
+        ))
+        .remove(0);
+        let other = turn_ended(&conn, &session("a-chat"), "turn-0", 140).unwrap();
+        assert_eq!(stored_row(&conn, &steer).0, "delivered", "{other:?}");
+        let notices = turn_ended(&conn, &session("a-chat"), "turn-1", 150).unwrap();
+        assert_eq!(stored_row(&conn, &steer).0, "dropped", "{notices:?}");
+        assert_eq!(stored_row(&conn, &at_untaken).0, "dropped");
+        assert!(
+            notices.sessions.contains(&session("a-chat"))
+                && notices.sessions.contains(&session("giga-chat")),
+            "{notices:?}"
+        );
+        let (slot, _) = assign_slot(&conn, &steer, "turn-1", "main", Delivery::Steer, 151).unwrap();
+        assert!(slot.is_none());
+    }
+
     // PR I2 (intents review r1, r2 L2). Defect: a failed steer hand-off puts
     // the row back to wait, so the drain opens a turn with it.
     #[test]
@@ -6039,114 +6072,108 @@ pub(crate) mod tests {
         assert_eq!(stored_row(&conn, &held).2, None);
     }
 
-    // PR I2. Many steers at once for different targets. Defect: a steer
-    // lands in a session other than the one handling its reply_to (another
-    // Mono's chat, the recipient's current chat, or the busiest session), or
-    // a steer at queued work is let through.
+    // PR I2 (review r1 m1). Many steers for different targets, in one fixed
+    // shuffled order. The store mutex makes every submit serial, here as in
+    // the app, so the order is what varies, not timing. Defect: a steer lands
+    // in a session other than the one handling its reply_to (another Mono's
+    // chat, the recipient's current chat, or the busiest session), or a steer
+    // at queued work or at an older turn of a running session is let through.
     #[test]
-    fn a_swarm_of_steers_reaches_only_the_sessions_that_handle_their_targets() {
+    fn a_shuffled_run_of_steers_reaches_only_the_sessions_that_handle_their_targets() {
         let store = messaging_store();
-        let (targets, live) = {
-            let conn = store.lock_conn().unwrap();
-            conn.execute_batch(
-                r#"INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
-                   VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat"}', 2, 1, 1);
-                   INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
-                   VALUES ('b-chat', '/', 'codex', 'm', 'default', 'B', 1, 1);"#,
-            )
-            .unwrap();
-            let to = |to: &str, request: &str, session: &str, turn: &str| {
-                let id = sent(&conn, ("giga", "giga-chat"), to, request, false);
-                if !turn.is_empty() {
-                    hand_off(&conn, &id, turn, "main", true);
-                }
-                (to.to_string(), id, session.to_string())
-            };
-            let live = [listed("project", true, true)];
-            let project = accepted_ids(&call(
-                &conn,
-                &caller_in("giga", "giga-chat"),
-                "to-p",
-                Tool::SendMessage,
-                hi("project", false),
-                &live,
-            ))
-            .remove(0);
-            hand_off(&conn, &project, "turn-3", "main", true);
-            (
-                vec![
-                    to("mono-a", "to-a", "a-chat", "turn-1"),
-                    to("mono-b", "to-b", "b-chat", "turn-7"),
-                    ("project".to_string(), project, "project".to_string()),
-                    to("mono-a", "to-q", "a-chat", ""),
-                ],
-                live,
-            )
+        let conn = store.lock_conn().unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
+               VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat"}', 2, 1, 1);
+               INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+               VALUES ('b-chat', '/', 'codex', 'm', 'default', 'B', 1, 1),
+                      ('a-old', '/', 'codex', 'm', 'default', 'A old', 1, 1);"#,
+        )
+        .unwrap();
+        let to = |to: &str, request: &str, session: &str, turn: &str| {
+            let id = sent(&conn, ("giga", "giga-chat"), to, request, false);
+            if !turn.is_empty() {
+                hand_off(&conn, &id, turn, "main", true);
+            }
+            (to.to_string(), id, session.to_string())
         };
+        let live = [listed("project", true, true)];
+        let project = accepted_ids(&call(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "to-p",
+            Tool::SendMessage,
+            hi("project", false),
+            &live,
+        ))
+        .remove(0);
+        hand_off(&conn, &project, "turn-3", "main", true);
+        // A's earlier chat `a-old` still runs the work the Giga sent it.
+        let chat_of_a = |chat: &str| {
+            conn.execute(
+                "UPDATE monos SET data_json = json_object('sessionId', ?1) WHERE id = 'mono-a'",
+                [chat],
+            )
+            .unwrap()
+        };
+        chat_of_a("a-old");
+        let in_old_chat = to("mono-a", "to-old-chat", "a-old", "turn-5");
+        chat_of_a("a-chat");
+        let targets = [
+            to("mono-a", "to-a", "a-chat", "turn-1"),
+            to("mono-b", "to-b", "b-chat", "turn-7"),
+            ("project".to_string(), project, "project".to_string()),
+            to("mono-a", "to-q", "a-chat", ""),
+            in_old_chat,
+            to("mono-a", "to-older-turn", "a-chat", "turn-0"),
+        ];
         let running = [
             ("a-chat", "turn-1"),
             ("b-chat", "turn-7"),
             ("project", "turn-3"),
+            ("a-old", "turn-5"),
         ];
-        // 45 steers in one fixed shuffled order, five threads at once. Class
-        // i % 5: 0 to 2 name running work, 3 names queued work, 4 names B's
-        // work but is sent to A.
-        let order: Vec<usize> = (0..45).map(|i| (i * 17 + 5) % 45).collect();
-        let outcomes: Vec<(usize, Submitted)> = std::thread::scope(|scope| {
-            let handles: Vec<_> = order
-                .chunks(9)
-                .map(|chunk| {
-                    let (store, targets, live) = (&store, &targets, &live);
-                    scope.spawn(move || {
-                        chunk
-                            .iter()
-                            .map(|&i| {
-                                let (to, target) = match i % 5 {
-                                    4 => ("mono-a", &targets[1].1),
-                                    class => (targets[class].0.as_str(), &targets[class].1),
-                                };
-                                let input = serde_json::json!({
-                                    "message": format!("s{i}-{to}"),
-                                    "send_to": to,
-                                    "wanting_reply": false,
-                                    "intent": "steer",
-                                    "reply_to": target.as_str(),
-                                });
-                                let conn = store.lock_conn().unwrap();
-                                let outcome = call_in_turns(
-                                    &conn,
-                                    &caller_in("giga", "giga-chat"),
-                                    &format!("s{i}"),
-                                    Tool::SendMessage,
-                                    input,
-                                    live,
-                                    &running,
-                                );
-                                (i, outcome)
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .flat_map(|handle| handle.join().unwrap())
-                .collect()
-        });
-        assert_eq!(outcomes.len(), 45);
-        let conn = store.lock_conn().unwrap();
-        let mut per_session: HashMap<String, usize> = HashMap::new();
-        for (i, outcome) in outcomes {
-            let refused = match i % 5 {
-                3 => Some("target_gone"),
-                4 => Some("steer_target_mismatch"),
+        // Class i % 7: 0 to 2 name running work; 3 names queued work; 4 names
+        // work that A's earlier chat runs, not its current chat; 5 names a
+        // turn of A's chat older than the one it runs; 6 names B's work but
+        // is sent to A.
+        for i in (0..49).map(|i| (i * 17 + 5) % 49) {
+            let (to, target) = match i % 7 {
+                6 => ("mono-a", &targets[1].1),
+                class => (targets[class].0.as_str(), &targets[class].1),
+            };
+            let outcome = call_in_turns(
+                &conn,
+                &caller_in("giga", "giga-chat"),
+                &format!("s{i}"),
+                Tool::SendMessage,
+                serde_json::json!({
+                    "message": format!("s{i}-{to}"),
+                    "send_to": to,
+                    "wanting_reply": false,
+                    "intent": "steer",
+                    "reply_to": target.as_str(),
+                }),
+                &live,
+                &running,
+            );
+            let refused = match i % 7 {
+                3 | 5 => Some("target_gone"),
+                6 => Some("steer_target_mismatch"),
                 _ => None,
             };
             if let Some(code) = refused {
-                assert_eq!(failed(outcome).code, code, "s{i}");
+                let error = failed(outcome);
+                assert_eq!(error.code, code, "s{i}");
+                let (status, _, _, reply_to) = stored_row(&conn, &error.message_id.unwrap());
+                assert_eq!(
+                    (status.as_str(), reply_to.as_deref()),
+                    ("rejected", Some(target.as_str())),
+                    "s{i}"
+                );
                 continue;
             }
-            let (to, target, handler) = &targets[i % 5];
+            let handler = &targets[i % 7].2;
             assert_eq!(
                 route_of(&outcome),
                 Some(Routing {
@@ -6162,20 +6189,24 @@ pub(crate) mod tests {
                 message.status.intent(),
                 Some(&Intent::Steer(target.clone()))
             );
-            match &message.status {
-                Status::Delivered { routed, .. } => {
-                    assert_eq!(routed.handled_by_session, session(handler), "s{i}")
-                }
-                other => panic!("s{i}: {other:?}"),
-            }
-            *per_session.entry(handler.clone()).or_default() += 1;
         }
+        let per_session: HashMap<String, i64> = conn
+            .prepare(
+                "SELECT handled_by_session, count(*) FROM mono_messages
+                  WHERE intent = 'steer' AND status <> 'rejected' GROUP BY 1",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
         assert_eq!(
             per_session,
             HashMap::from([
-                ("a-chat".to_string(), 9),
-                ("b-chat".to_string(), 9),
-                ("project".to_string(), 9),
+                ("a-chat".to_string(), 7),
+                ("b-chat".to_string(), 7),
+                ("project".to_string(), 7),
+                ("a-old".to_string(), 7),
             ])
         );
     }

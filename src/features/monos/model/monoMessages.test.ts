@@ -133,9 +133,10 @@ it("reads a notice back only from the item the pump made", () => {
   ).toBeUndefined();
 });
 
-// Design 16.4. Defect: the app boundary guesses an intent, forwards a list
-// of targets, or keeps the removed action_type meaning.
-it("takes a send's intent as given and reply_to as one message id or handle", () => {
+// Design 16.4 (PR I2 review r1 M3). Defect: the app boundary guesses an
+// intent, forwards a list of targets, keeps the removed action_type meaning,
+// or takes a handle, which a steer can never name.
+it("takes a send's intent as given and reply_to as one message id", () => {
   const send = (extra: Record<string, unknown>) =>
     parseSendInput({
       message: "Hi",
@@ -149,17 +150,20 @@ it("takes a send's intent as given and reply_to as one message id or handle", ()
     wanting_reply: false,
     intent: "new",
   });
-  expect(send({ intent: "continue", reply_to: "#2" })).toMatchObject({
-    intent: "continue",
-    reply_to: "#2",
-  });
-  expect(send({ intent: "steer", reply_to: "m_abcdefgh2345" }).reply_to).toBe(
-    "m_abcdefgh2345",
-  );
+  expect(
+    send({ intent: "continue", reply_to: "m_abcdefgh2345" }),
+  ).toMatchObject({ intent: "continue", reply_to: "m_abcdefgh2345" });
   for (const intent of [undefined, "queue", "New", 1])
     expect(() => send({ intent })).toThrow("intent is required");
-  for (const replyTo of [["m_abcdefgh2345"], "#0", "m_ABCDEFGH2345", "", 3])
+  for (const replyTo of [
+    ["m_abcdefgh2345"],
+    "#1",
+    "#0",
+    "m_ABCDEFGH2345",
+    "",
+    3,
+  ])
     expect(() => send({ intent: "steer", reply_to: replyTo })).toThrow(
-      'reply_to must be one message_id or one handle such as "#1".',
+      "reply_to must be one message_id (m_…). A steer names a message you sent: use the message_id your send_message returned.",
     );
 });

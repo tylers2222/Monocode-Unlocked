@@ -5,8 +5,6 @@
 //! PR I2 has rows S1-S7, I1, I2, S9, S10, S13-S17, S20 and R1-R8, R10, R11.
 //! The direction matrix, rule (b), hop and rate limits come with PR 7.
 
-use std::fmt;
-
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -33,31 +31,6 @@ pub struct Caller {
     pub turn_id: String,
 }
 
-/// `reply_to` as the model gave it: a message id, or a handle of the
-/// caller's turn (design 16.4).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MessageRef {
-    Id(MessageId),
-    Handle(Handle),
-}
-
-impl MessageRef {
-    fn parse(text: &str) -> Option<Self> {
-        Handle::parse(text)
-            .map(MessageRef::Handle)
-            .or_else(|| MessageId::parse(text).map(MessageRef::Id))
-    }
-}
-
-impl fmt::Display for MessageRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MessageRef::Id(id) => f.write_str(id.as_str()),
-            MessageRef::Handle(handle) => handle.fmt(f),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendInput {
     pub message: String,
@@ -65,7 +38,9 @@ pub struct SendInput {
     pub wanting_reply: bool,
     /// As asked: rows I1 and I2 refuse the ones a send cannot carry.
     pub intent: IntentKind,
-    pub reply_to: Option<MessageRef>,
+    /// A message id only (PR I2 review r1): a handle names a message the
+    /// caller's session received, which S10 refuses as a steer target.
+    pub reply_to: Option<MessageId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,7 +74,7 @@ impl Input {
                 "send_to": send.send_to,
                 "wanting_reply": send.wanting_reply,
                 "intent": send.intent.as_str(),
-                "reply_to": send.reply_to.as_ref().map(ToString::to_string),
+                "reply_to": send.reply_to.as_ref().map(MessageId::as_str),
             }]),
             Input::Reply(reply) => {
                 let mut fields = json!({
@@ -182,7 +157,7 @@ pub fn parse(tool: Tool, raw: &Value) -> Result<Input, String> {
         .map(|value| {
             value
                 .as_str()
-                .and_then(MessageRef::parse)
+                .and_then(MessageId::parse)
                 .ok_or(REPLY_TO_RULE)
         })
         .transpose()?;
@@ -196,7 +171,9 @@ pub fn parse(tool: Tool, raw: &Value) -> Result<Input, String> {
 }
 
 const INTENT_RULE: &str = r#"intent is required and is one of "new", "steer", "reply" or "continue". Use "new" for new work, or "steer" with reply_to to change the work a message started."#;
-const REPLY_TO_RULE: &str = r##"reply_to must be one message_id or one handle such as "#1"."##;
+/// Also the answer to a handle (PR I2 review r1): a steer names a message
+/// the caller sent, and only its id can.
+const REPLY_TO_RULE: &str = "reply_to must be one message_id (m_…). A steer names a message you sent: use the message_id your send_message returned.";
 
 const TO_RULE: &str =
     r##"to must be a handle such as "#1", or a list of 1 to 9 different handles"##;
@@ -500,9 +477,9 @@ impl RejectCode {
             RejectCode::UpwardSteerForbidden => "You can steer a Giga only about a message it sent you in the last 24 h. Answer an open handle with reply, or send with intent \"new\"; it is queued.",
             RejectCode::ReplyUnsupportedTarget => "Project sessions cannot reply. Send with wanting_reply false; their completion report comes back to you.",
             RejectCode::HabitCannotWait => "A habit run ends before an answer can arrive. Send with wanting_reply false, or ask from your chat.",
-            RejectCode::UnknownMessage => "No message you can refer to has that id or handle. Use a message_id, or a handle such as \"#1\" from this turn.",
+            RejectCode::UnknownMessage => "No message you can refer to has that id. Use the message_id your send_message returned.",
             RejectCode::SteerTargetMismatch => "reply_to is not a message between you and send_to.",
-            RejectCode::IntentMismatch => "intent \"new\" takes no reply_to, and \"steer\" needs one.",
+            RejectCode::IntentMismatch => "intent \"new\" takes no reply_to. Remove reply_to, or use intent \"steer\" to change the work that message started.",
             RejectCode::IntentNotAllowed => "Agents cannot send continue. Use reply or steer.",
             RejectCode::TargetGone => "The session handling that message no longer exists (cleared or deleted).",
             RejectCode::CannotSteer => "That session's provider cannot steer a running turn. Send it with intent \"new\"; it waits for the turn to end.",
@@ -575,9 +552,8 @@ fn too_large(message: &str) -> bool {
 /// what this call asked for.
 fn send_hint(code: RejectCode, input: &SendInput) -> String {
     match (code, input.intent) {
-        (RejectCode::IntentMismatch, IntentKind::New) => r#"intent "new" takes no reply_to. Remove reply_to, or use intent "steer" to change the work that message started."#.into(),
-        (RejectCode::IntentMismatch, intent) => format!(
-            r##"intent "{}" needs reply_to: the message_id, or a handle such as "#1" from this turn."##,
+        (RejectCode::IntentMismatch, intent) if intent != IntentKind::New => format!(
+            r#"intent "{}" needs reply_to: one message_id (m_…)."#,
             intent.as_str()
         ),
         (RejectCode::IntentNotAllowed, IntentKind::Reply) => r##"send_message cannot reply. Use reply (to: "#n") to answer a message that waits for you."##.into(),
@@ -967,7 +943,7 @@ mod tests {
     fn asking(intent: IntentKind, reply_to: Option<&str>) -> SendInput {
         SendInput {
             intent,
-            reply_to: reply_to.map(|named| MessageRef::parse(named).unwrap()),
+            reply_to: reply_to.map(|named| MessageId::parse(named).unwrap()),
             ..new("Hi", "mono-a", false)
         }
     }
@@ -1155,6 +1131,7 @@ mod tests {
         for reply_to in [
             json!(["m_aaaaaaaaaaaa"]),
             json!("m_AAAAAAAAAAAA"),
+            json!("#1"),
             json!("#0"),
             json!(""),
             json!(7),
@@ -1166,24 +1143,23 @@ mod tests {
             .unwrap_err();
             assert_eq!(error, REPLY_TO_RULE, "{reply_to}");
         }
-        for (named, expected) in [
-            ("#3", MessageRef::Handle(Handle::new(3).unwrap())),
-            (
-                "m_aaaaaaaaaaaa",
-                MessageRef::Id(MessageId::parse("m_aaaaaaaaaaaa").unwrap()),
-            ),
-        ] {
-            assert_eq!(
-                parse_send(json!({
-                    "message": "Hi", "send_to": "mono-a", "wanting_reply": false,
-                    "intent": "steer", "reply_to": named,
-                })),
-                Ok(Input::Send(SendInput {
-                    reply_to: Some(expected),
-                    ..asking(IntentKind::Steer, None)
-                }))
-            );
-        }
+        // PR I2 review r1 M3: a handle is refused, and the hint says what to
+        // pass instead.
+        assert!(
+            REPLY_TO_RULE.contains("use the message_id your send_message returned")
+                && !REPLY_TO_RULE.contains("handle"),
+            "{REPLY_TO_RULE}"
+        );
+        assert_eq!(
+            parse_send(json!({
+                "message": "Hi", "send_to": "mono-a", "wanting_reply": false,
+                "intent": "steer", "reply_to": "m_aaaaaaaaaaaa",
+            })),
+            Ok(Input::Send(SendInput {
+                reply_to: MessageId::parse("m_aaaaaaaaaaaa"),
+                ..asking(IntentKind::Steer, None)
+            }))
+        );
     }
 
     #[test]
@@ -1301,7 +1277,6 @@ mod tests {
             (&again, new("Hi", "mono-b", false)),
             (&again, asking(IntentKind::Steer, None)),
             (&steered, steer("m_cccccccccccc")),
-            (&steered, steer("#1")),
             (&steered, asking(IntentKind::New, Some("m_bbbbbbbbbbbb"))),
         ] {
             assert_eq!(
@@ -1374,11 +1349,8 @@ mod tests {
             )
         };
         let new_with_target = r#"intent "new" takes no reply_to. Remove reply_to, or use intent "steer" to change the work that message started."#;
-        let needs = |intent: &str| {
-            format!(
-                r##"intent "{intent}" needs reply_to: the message_id, or a handle such as "#1" from this turn."##
-            )
-        };
+        let needs =
+            |intent: &str| format!(r#"intent "{intent}" needs reply_to: one message_id (m_…)."#);
         for (input, code, hint) in [
             (
                 asking(IntentKind::New, Some("m_aaaaaaaaaaaa")),
@@ -1402,12 +1374,12 @@ mod tests {
                 needs("reply"),
             ),
             (
-                asking(IntentKind::Continue, Some("#1")),
+                asking(IntentKind::Continue, Some("m_aaaaaaaaaaaa")),
                 RejectCode::IntentNotAllowed,
                 "Agents cannot send continue. Use reply or steer.".to_string(),
             ),
             (
-                asking(IntentKind::Reply, Some("#1")),
+                asking(IntentKind::Reply, Some("m_aaaaaaaaaaaa")),
                 RejectCode::IntentNotAllowed,
                 r##"send_message cannot reply. Use reply (to: "#n") to answer a message that waits for you."##.to_string(),
             ),
@@ -1576,7 +1548,8 @@ mod tests {
     }
 
     // PR I2, S9. Defect: a steer whose reply_to named nothing it may refer
-    // to goes somewhere anyway.
+    // to goes somewhere anyway, or (PR I2 review r1 M3) its hint teaches a
+    // handle, a form a steer can never use.
     #[test]
     fn s9_a_steer_whose_reply_to_resolved_to_no_accepted_row_is_unknown_message() {
         assert_eq!(
@@ -1587,6 +1560,11 @@ mod tests {
                 &sends(mono_a(Some(live("a-chat", true, true)))),
             ),
             rejected(RejectCode::UnknownMessage, party_a())
+        );
+        let hint = RejectCode::UnknownMessage.hint();
+        assert!(
+            hint.contains("message_id") && !hint.contains("handle") && !hint.contains('#'),
+            "{hint}"
         );
     }
 

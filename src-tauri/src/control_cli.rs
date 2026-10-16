@@ -242,12 +242,13 @@ Actions:
                   so do not poll. A project session cannot answer; send it
                   wanting_reply false. intent "new" starts new work and waits
                   until the receiver's turn ends. intent "steer" changes work
-                  a message of yours started: pass reply_to, its message_id
-                  or a handle such as "#1" from this turn; it reaches the
-                  session running that work, and is refused when that work is
-                  not running. Answer a waiting message with messages.reply.
-                  continue is for users only. Returns message_id, status (open
-                  or delivered), delivery (submit, queue or steer) and hop.
+                  a message of yours started: pass reply_to, the message_id
+                  your send returned; it reaches the session running that
+                  work, and is refused when that work is not running. Answer
+                  a waiting message with messages.reply. continue is for
+                  users only. Returns message_id, status (open or delivered;
+                  dropped when a steer missed its turn), delivery (submit,
+                  queue, steer, or dropped) and hop.
                   Messages are limited to 8000 characters. Codes:
                   invalid_input, request_id_reused, too_large,
                   intent_mismatch, intent_not_allowed, unknown_target,
@@ -599,7 +600,7 @@ pub fn app_tools() -> Value {
                     "send_to": {"type": "string", "minLength": 1, "description": "A mono_id from get_monos, or the id of a session in one of your projects."},
                     "wanting_reply": {"type": "boolean", "description": "true only when you need an answer."},
                     "intent": {"type": "string", "enum": ["new", "steer", "reply", "continue"], "description": "new for new work; steer to change work that reply_to started. Answer a waiting message with the reply tool. continue is for users only."},
-                    "reply_to": {"type": "string", "minLength": 1, "description": "A message_id, or a handle such as \"#1\" from this turn. Required for steer, refused for new."}
+                    "reply_to": {"type": "string", "minLength": 1, "description": "The message_id (m_…) of a message you sent. Required for steer, refused for new."}
                 },
                 "required": ["message", "send_to", "wanting_reply", "intent"],
                 "additionalProperties": false

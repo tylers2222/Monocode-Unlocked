@@ -155,7 +155,8 @@ const rust = vi.hoisted(() => {
         state.rows.push(accepted);
         return {
           outcome: "accepted",
-          messages: [accepted],
+          // IPC returns a copy, so later changes to the row do not show.
+          messages: [structuredClone(accepted)],
           answered: answering
             ? [{ handle: "#1", message_id: answering.id }]
             : [],
@@ -626,14 +627,18 @@ it("routes into a chat this window had not loaded with one item and one delivery
   expect(ids(get("a-chat"))).toEqual([]);
 });
 
-// Design 16.6. Defect: a steer that finds the turn over waits in the queue
-// and opens the next turn as new work, after the work it named ended.
-it("drops a project-session steer when the turn it named just finished", async () => {
+// Design 16.6 (PR I2 review r1 M2). Defect: a steer that finds the turn
+// over waits in the queue and opens the next turn as new work, or the call
+// answers `queue`, so the model waits for a steer that will never arrive.
+it("answers dropped for a project-session steer whose turn just finished", async () => {
   rust.state.route = { sessionId: "project", via: "steer" };
   const { send, get, steerProject } = world([chat("project", { busy: true })]);
   steerProject.mockRejectedValueOnce(new Error(TURN_FINISHED_ERROR));
-  expect(await send(ask(false, "steer"))).toMatchObject({ delivery: "queue" });
-  expect(rust.state.rows[0].status).toBe("dropped");
+  expect(await send(ask(false, "steer"))).toMatchObject({
+    status: "dropped",
+    delivery: "dropped",
+  });
+  expect(rust.state.commands).toContain("mono_message_release");
   expect(get("project").queuedMessages).toBeUndefined();
 });
 
@@ -1223,26 +1228,26 @@ it("reports a duplicate's delivery as its first call in this window did, else as
   });
 });
 
-// Design 16.6 (PR I2 row). Defect: a steer row waits for the turn end and
-// opens the next turn as new work, or new work steers a running turn.
-it("queues a steer row without waitForIdle and a new row with it, and an opener drops the steer", async () => {
+// Design 16.6 (PR I2 review r1 M2). Defect: a project steer with no turn in
+// this window becomes a queue item that nothing steers, so the call says
+// `steer` and an opener drops the steer later; or new work steers. The
+// session loads here, so its load queues the steer row first.
+it("drops a project-session steer at once when this window runs no turn of it", async () => {
   rust.state.route = { sessionId: "project", via: "steer" };
-  const { send, get, host, steerProject } = world([chat("project")]);
-  await send({ ...ask(false, "steer"), send_to: "project" }, "r1");
+  const { send, get, open, steerProject } = world([], [chat("project")]);
+  expect(
+    await send({ ...ask(false, "steer"), send_to: "project" }, "r1"),
+  ).toMatchObject({ status: "dropped", delivery: "dropped" });
+  expect(open).toHaveBeenCalledWith("project");
+  expect(rust.state.commands).toContain("mono_message_drop");
+  expect(rust.state.commands).not.toContain("mono_message_assign_slot");
+  expect(ids(get("project"))).toEqual([]);
   rust.state.route = { sessionId: "project", via: "queue" };
   await send({ ...ask(), send_to: "project" }, "r2");
   expect(steerProject).not.toHaveBeenCalled();
-  const [steer, fresh] = get("project").queuedMessages ?? [];
-  expect(steer).toMatchObject({ id: "m_aaaaaaaaaaaa" });
-  expect(steer.waitForIdle).toBeUndefined();
-  expect(fresh).toMatchObject({ id: "m_bbbbbbbbbbbb", waitForIdle: true });
-  const deliver = vi.fn(() => true);
-  expect(
-    await handOff(host, "project", steer.id as MessageId, "dispatch", deliver),
-  ).toBe(false);
-  expect(deliver).not.toHaveBeenCalled();
-  expect(rust.state.rows[0].status).toBe("dropped");
-  expect(ids(get("project"))).toEqual(["m_bbbbbbbbbbbb"]);
+  expect(get("project").queuedMessages).toEqual([
+    expect.objectContaining({ id: "m_bbbbbbbbbbbb", waitForIdle: true }),
+  ]);
 });
 
 // Design 16.6. Defect: reconcile puts a waiting steer row back as an item

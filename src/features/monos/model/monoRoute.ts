@@ -379,7 +379,7 @@ export type MonoMessagingHost = MonoRouteHost & {
   /** Every Mono, in rail order. */
   monos(): { id: MonoId; name: string; role: MonoRole }[];
   /** The delivery the owner window reports for a route it ran, if it does. */
-  ownerDelivery(messageId: MessageId): Promise<Delivery | undefined>;
+  ownerDelivery(messageId: MessageId): Promise<RouteOutcome | undefined>;
   /** What this window's calls reported, for their duplicates. */
   reported: ReportedDeliveries;
 };
@@ -397,8 +397,14 @@ export type MonoRouteEvent = {
   callerWindow: string;
 };
 
+/**
+ * What a route did: the delivery, or `dropped` when a steer could not join
+ * its turn and Rust dropped the row with a notice (PR I2 review r1 M2).
+ */
+export type RouteOutcome = Delivery | "dropped";
+
 /** `mono-message-routed`: the owner's answer to the caller window. */
-export type MonoRoutedEvent = { messageId: MessageId; delivery: Delivery };
+export type MonoRoutedEvent = { messageId: MessageId; delivery: RouteOutcome };
 
 /**
  * Deliveries that owner windows report, by message id. An answer can come
@@ -407,8 +413,8 @@ export type MonoRoutedEvent = { messageId: MessageId; delivery: Delivery };
  * is never kept for the life of the window.
  */
 export function createOwnerDeliveries(timeoutMs: number) {
-  const answers = new Map<MessageId, Delivery>();
-  const waiting = new Map<MessageId, (delivery: Delivery) => void>();
+  const answers = new Map<MessageId, RouteOutcome>();
+  const waiting = new Map<MessageId, (delivery: RouteOutcome) => void>();
   return {
     settle({ messageId, delivery }: MonoRoutedEvent) {
       const waiter = waiting.get(messageId);
@@ -418,7 +424,7 @@ export function createOwnerDeliveries(timeoutMs: number) {
         if (answers.get(messageId) === delivery) answers.delete(messageId);
       }, timeoutMs);
     },
-    wait(messageId: MessageId): Promise<Delivery | undefined> {
+    wait(messageId: MessageId): Promise<RouteOutcome | undefined> {
       const early = answers.get(messageId);
       answers.delete(messageId);
       if (early) return Promise.resolve(early);
@@ -441,9 +447,9 @@ export type OwnerDeliveries = ReturnType<typeof createOwnerDeliveries>;
 
 /** What this window's calls reported, by message id (PR 4a review m3). */
 export type ReportedDeliveries = {
-  set(messageId: MessageId, delivery: Promise<Delivery>): void;
+  set(messageId: MessageId, delivery: Promise<RouteOutcome>): void;
   /** Waits for a first call that still routes; undefined when it failed. */
-  get(messageId: MessageId): Promise<Delivery | undefined> | undefined;
+  get(messageId: MessageId): Promise<RouteOutcome | undefined> | undefined;
 };
 
 /**
@@ -451,7 +457,7 @@ export type ReportedDeliveries = {
  * the call reports the same. Keeps the newest `limit` entries.
  */
 export function createReportedDeliveries(limit: number): ReportedDeliveries {
-  const reported = new Map<MessageId, Promise<Delivery | undefined>>();
+  const reported = new Map<MessageId, Promise<RouteOutcome | undefined>>();
   return {
     set(messageId, delivery) {
       reported.set(
@@ -580,44 +586,25 @@ async function submit(
 
 /**
  * Executes the route of a new accept (design 5.5 rule 1) in the window that
- * owns its session. A project session that runs a turn in this window is
- * steered now; everything else enters the session's queue, whose pump hands
- * it off. Returns the delivery the call reports.
+ * owns its session. A steer to a project session goes into the turn this
+ * window runs, or is dropped; everything else enters the session's queue,
+ * whose pump hands it off. Returns what the call reports.
  */
 export async function routeMessages(
   host: MonoRouteHost,
   messages: Routed[],
   { sessionId, via }: Routing,
-): Promise<Delivery> {
+): Promise<RouteOutcome> {
+  const bubble = host.isMonoChat(sessionId);
+  if (via === "steer" && !bubble)
+    return steerProjectSession(host, messages, sessionId);
   // A session no window can load gets its rows when one loads it.
   const loaded = host.session(sessionId) ?? (await host.open(sessionId));
   if (!loaded) return "queue";
   // Rows the load queues are older than these, so they go first.
   await host.reconciled(sessionId);
   const target = host.session(sessionId) ?? loaded;
-  const bubble = host.isMonoChat(sessionId);
-  if (via === "steer" && !bubble && host.turnId(sessionId)) {
-    let steered = true;
-    for (const message of messages) {
-      const delivered = await handOff(
-        host,
-        sessionId,
-        message.id,
-        "steer",
-        async ({ text }) => {
-          await host.steerProject(target, text, message.id);
-          return true;
-        },
-      ).catch(() => false);
-      steered &&= delivered;
-    }
-    return steered ? "steer" : "queue";
-  }
-  const kind =
-    via === "steer" &&
-    (bubble || messages.every((message) => message.intent === "steer"))
-      ? "steer"
-      : "queue";
+  const kind = via === "steer" ? "steer" : "queue";
   const routed = new Set<string>(messages.map((message) => message.id));
   // The load may have queued these rows already; they still open the turn.
   const idle =
@@ -631,6 +618,58 @@ export async function routeMessages(
 }
 
 /**
+ * Design 16.6 (PR I2 review r1 M2): only a Mono chat's queue pump steers,
+ * so a steer to a project session goes into the turn this window runs for
+ * it now, or nowhere. A hand-off that fails drops the row in Rust; with no
+ * turn here the row is dropped now. Either way its sender gets a notice and
+ * the call answers `dropped`, never a delivery that will not happen.
+ */
+async function steerProjectSession(
+  host: MonoRouteHost,
+  messages: Routed[],
+  sessionId: string,
+): Promise<RouteOutcome> {
+  const loaded = host.session(sessionId) ?? (await host.open(sessionId));
+  // The load may queue these rows; they go with the steer or the drop.
+  if (loaded) await host.reconciled(sessionId);
+  const target = host.session(sessionId) ?? loaded;
+  let steered = true;
+  for (const message of messages) {
+    const delivered =
+      target && host.turnId(sessionId)
+        ? await handOff(
+            host,
+            sessionId,
+            message.id,
+            "steer",
+            async ({ text }) => {
+              await host.steerProject(target, text, message.id);
+              return true;
+            },
+          ).catch(() => false)
+        : await dropSteer(host, sessionId, message.id);
+    steered &&= delivered;
+  }
+  return steered ? "steer" : "dropped";
+}
+
+/**
+ * Drops a steer row that no turn here can take, and its item if the load
+ * queued one. Answers true only when a hand-off holds the row (`in_flight`),
+ * so that hand-off decides what happens to it.
+ */
+async function dropSteer(
+  host: MonoQueueHost,
+  sessionId: string,
+  id: MessageId,
+): Promise<boolean> {
+  const answer = await invoke<DropAnswer>("mono_message_drop", { id });
+  if (answer === "in_flight") return true;
+  host.update(sessionId, (session) => dequeueQueuedMessage(session, id));
+  return false;
+}
+
+/**
  * Runs each route of a new accept here, unless another window owns its
  * session and got it as `mono-message-route`. A multi-handle reply has one
  * route per sender session; the routes run at once. Returns each route's
@@ -641,7 +680,7 @@ function route(
   host: MonoMessagingHost,
   { messages, routes }: Accepted,
   owners: "wait" | "skip",
-): Promise<Delivery[]> {
+): Promise<RouteOutcome[]> {
   return Promise.all(
     routes.map(async (group) => {
       if (!group.ownerWindow)
@@ -678,10 +717,14 @@ export async function sendMessage(
 ) {
   const submitted = await submit(host, "send_message", requestId, input);
   const [message] = submitted.messages;
+  const delivery = await sendDelivery(host, submitted, message);
+  // A steer that could not join its turn is dropped; the answer says so
+  // (PR I2 review r1 M2).
+  const dropped = delivery === "dropped";
   return {
     message_id: message.id,
-    status: message.status,
-    delivery: await sendDelivery(host, submitted, message),
+    status: dropped ? "dropped" : message.status,
+    delivery,
     hop: message.hop,
     ...(submitted.duplicate ? { duplicate: true as const } : {}),
   };
@@ -696,7 +739,7 @@ async function sendDelivery(
   host: MonoMessagingHost,
   submitted: Accepted,
   message: Routed,
-): Promise<Delivery> {
+): Promise<RouteOutcome> {
   if (submitted.duplicate)
     return (await host.reported.get(message.id)) ?? message.delivery;
   const delivery = route(host, submitted, "wait").then(

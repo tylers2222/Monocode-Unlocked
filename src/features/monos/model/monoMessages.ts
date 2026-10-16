@@ -204,9 +204,6 @@ export type ToolError = {
   open_handles?: { handle: Handle; message_id: MessageId; from: string }[];
 };
 
-/** A message id, or a handle of the caller's turn (design 16.4). */
-export type MessageRef = MessageId | Handle;
-
 /** A `send_message` call as the model gave it (design 16.4). */
 export type SendInput = {
   message: string;
@@ -214,7 +211,8 @@ export type SendInput = {
   wanting_reply: boolean;
   /** As asked: the gate refuses the intents a send cannot carry (I1, I2). */
   intent: IntentKind;
-  reply_to?: MessageRef;
+  /** A message id only (PR I2 review r1): a steer names a message the caller sent. */
+  reply_to?: MessageId;
 };
 
 /** A `reply` call (design 3.3). `to` names the handles it answers. */
@@ -256,10 +254,10 @@ export function parseSendInput(raw: Record<string, unknown>): SendInput {
     intent: raw.intent,
   };
   if (raw.reply_to === undefined) return send;
-  const replyTo = parseHandle(raw.reply_to) ?? parseMessageId(raw.reply_to);
+  const replyTo = parseMessageId(raw.reply_to);
   if (!replyTo)
     throw new Error(
-      'reply_to must be one message_id or one handle such as "#1".',
+      "reply_to must be one message_id (m_…). A steer names a message you sent: use the message_id your send_message returned.",
     );
   return { ...send, reply_to: replyTo };
 }
