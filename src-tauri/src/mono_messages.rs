@@ -6,7 +6,7 @@
 //! Session ids are plain text, not foreign keys: sender sessions can be
 //! unpersisted, and a Mono reset deletes its chat.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fmt;
 
 use rusqlite::{
@@ -18,8 +18,9 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use crate::control::ControlHost;
 use crate::mono_gate::{
-    self, ActionType, Caller, CallerKind, Closure, Decision, Facts, HandleState, Handled, Input,
-    OpenHandle, Recipient, Refusal, ReplyFacts, Route, Target,
+    self, Caller, CallerKind, Closure, Decision, Facts, HandleState, Handled, Input, MessageRef,
+    OpenHandle, Recipient, Referenced, Refusal, ReplyFacts, Route, SendFacts, Target,
+    TargetSession,
 };
 use crate::mono_roster::validate_mono_id;
 use crate::session_store::{validate_id, SessionStore};
@@ -205,7 +206,7 @@ macro_rules! text_enum {
                     $($name::$variant => $text),+
                 }
             }
-            fn parse(text: &str) -> Option<Self> {
+            pub(crate) fn parse(text: &str) -> Option<Self> {
                 match text {
                     $($text => Some($name::$variant),)+
                     _ => None,
@@ -300,7 +301,8 @@ text_enum!(RejectCode {
     HabitCannotWait = "habit_cannot_wait",
     UnknownMessage = "unknown_message",
     SteerTargetMismatch = "steer_target_mismatch",
-    AmbiguousSteer = "ambiguous_steer",
+    IntentMismatch = "intent_mismatch",
+    IntentNotAllowed = "intent_not_allowed",
     TargetGone = "target_gone",
     CannotSteer = "cannot_steer",
     RateLimited = "rate_limited",
@@ -993,8 +995,9 @@ pub struct CallerArg {
 /// store transaction opens (design 5.3 lock order).
 pub struct Live<'a> {
     pub sessions: &'a [LiveSession],
-    /// Sessions with an authorized turn (`ControlHost.active`).
-    pub running: &'a HashSet<String>,
+    /// Each session with an authorized turn (`ControlHost.active`), with
+    /// that turn's id.
+    pub running: &'a HashMap<String, String>,
     /// Harness ids whose running turn can be steered (design 6: steerable
     /// depends only on the harness), for sessions not in `sessions`.
     pub steerable_harnesses: &'a [String],
@@ -1223,7 +1226,7 @@ fn target(conn: &Connection, session: SessionId, live: &Live) -> rusqlite::Resul
     };
     Ok(Target {
         exists: (listed.is_some() || stored.is_some()) && !ended,
-        running: live.running.contains(session.as_str()),
+        turn: live.running.get(session.as_str()).cloned(),
         steerable,
         session,
     })
@@ -1397,17 +1400,31 @@ pub fn submit(
     confirm_openers(&tx, &caller.session_id, &caller.turn_id, now)?;
     let caller_row = mono_chat(&tx, &caller.mono_id)?;
     let prior = get_by_request(&tx, &caller.session_id, request_id)?;
+    let mut referenced_id = None;
     let decision = match &input {
-        Input::Send(send) => mono_gate::decide_send(
-            caller,
-            send,
-            &hash,
-            &Facts {
-                caller: caller_row,
-                prior,
-                about: recipient(&tx, &send.send_to, live)?,
-            },
-        ),
+        Input::Send(send) => {
+            let recipient = recipient(&tx, &send.send_to, live)?;
+            let reply_to = match &send.reply_to {
+                Some(named) => resolve_ref(&tx, caller, named, live)?
+                    .map(|message| referenced(&tx, caller, &recipient, message, live))
+                    .transpose()?,
+                None => None,
+            };
+            referenced_id = reply_to.as_ref().map(|found| found.message.id.clone());
+            mono_gate::decide_send(
+                caller,
+                send,
+                &hash,
+                &Facts {
+                    caller: caller_row,
+                    prior,
+                    about: SendFacts {
+                        recipient,
+                        reply_to,
+                    },
+                },
+            )
+        }
         Input::Reply(reply) => {
             let then = match prior.first() {
                 Some(first) if matches!(first.status, Status::Rejected { .. }) => {
@@ -1429,9 +1446,55 @@ pub fn submit(
             )
         }
     };
-    let submitted = record(&tx, caller, request_id, &input, hash, decision, now)?;
+    let submitted = record(
+        &tx,
+        caller,
+        request_id,
+        &input,
+        hash,
+        decision,
+        referenced_id,
+        now,
+    )?;
     tx.commit()?;
     Ok(submitted)
+}
+
+/// Design 16.6: the accepted row `named` points at. A handle names a
+/// message of the caller's turn; an id names any accepted row.
+fn resolve_ref(
+    conn: &Connection,
+    caller: &Caller,
+    named: &MessageRef,
+    live: &Live,
+) -> rusqlite::Result<Option<MonoMessage>> {
+    Ok(match named {
+        MessageRef::Id(id) => {
+            get(conn, id)?.filter(|message| !matches!(message.status, Status::Rejected { .. }))
+        }
+        MessageRef::Handle(handle) => handled_in_turn(conn, caller, live)?
+            .into_iter()
+            .find(|handled| handled.handle == *handle)
+            .map(|handled| handled.message),
+    })
+}
+
+/// `message` with the session target_session gives for it, as live sees it.
+fn referenced(
+    conn: &Connection,
+    caller: &Caller,
+    recipient: &Recipient,
+    message: MonoMessage,
+    live: &Live,
+) -> rusqlite::Result<Referenced> {
+    let session = match mono_gate::target_session(caller, recipient, &message) {
+        TargetSession::Receiver {
+            session: Some(session),
+            ..
+        } => Some(target(conn, session, live)?),
+        _ => None,
+    };
+    Ok(Referenced { message, session })
 }
 
 /// An accepted row's `delivery` is `queue` until a hand-off writes `submit`
@@ -1458,6 +1521,9 @@ fn accepted(wanting_reply: bool, route: &Route, intent: Intent) -> Status {
     }
 }
 
+/// `reply_to` is the row the call's `reply_to` resolved to, which a
+/// rejected row keeps (the column is a foreign key, so only a stored row).
+#[allow(clippy::too_many_arguments)]
 fn record(
     tx: &Connection,
     caller: &Caller,
@@ -1465,6 +1531,7 @@ fn record(
     input: &Input,
     hash: PayloadHash,
     decision: Decision,
+    reply_to: Option<MessageId>,
     now: i64,
 ) -> rusqlite::Result<Submitted> {
     // A rejected row keeps the intent the call asked for, so a refused steer
@@ -1474,10 +1541,7 @@ fn record(
             &send.message,
             send.send_to.as_str(),
             send.wanting_reply,
-            match send.action_type {
-                ActionType::Queue => IntentKind::New,
-                ActionType::Steer => IntentKind::Steer,
-            },
+            send.intent,
         ),
         Input::Reply(reply) => (&reply.message, "", reply.wanting_reply, IntentKind::Reply),
     };
@@ -1531,7 +1595,7 @@ fn record(
                     gate_result: code,
                     wanting_reply,
                     intent: asked,
-                    reply_to: None,
+                    reply_to,
                 },
             );
             insert(tx, &message)?;
@@ -1577,7 +1641,9 @@ fn record(
 /// same turn: the slot it has. Returns the row with its slot, or `None` when
 /// the row is no longer `open` or `delivered`, was already accepted, or holds
 /// another turn's slot; the caller then removes the item and delivers nothing
-/// (5.1).
+/// (5.1). A steer row takes a slot only as a steer into the turn that runs
+/// the work it names; any other hand-off drops it, and its sender is owed a
+/// notice (design 16.6).
 pub fn assign_slot(
     conn: &Connection,
     id: &MessageId,
@@ -1585,10 +1651,10 @@ pub fn assign_slot(
     window: &str,
     delivery: Delivery,
     now: i64,
-) -> rusqlite::Result<Option<MonoMessage>> {
+) -> rusqlite::Result<(Option<MonoMessage>, Notices)> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let Some(message) = get(&tx, id)? else {
-        return Ok(None);
+        return Ok((None, Notices::default()));
     };
     let (routed, slot, wanting_reply) = match &message.status {
         Status::Open { routed, slot, .. } => (
@@ -1603,8 +1669,20 @@ pub fn assign_slot(
                 .map(|slot| (slot.turn_id.as_str(), slot.delivered_at)),
             false,
         ),
-        _ => return Ok(None),
+        _ => return Ok((None, Notices::default())),
     };
+    if let (None, Some(Intent::Steer(target))) = (slot, message.status.intent()) {
+        let target_turn: Option<String> = tx.query_row(
+            "SELECT turn_id FROM mono_messages WHERE id = ?1",
+            [target.as_str()],
+            |row| row.get(0),
+        )?;
+        if delivery != Delivery::Steer || target_turn.as_deref() != Some(turn_id) {
+            let notices = drop_steer(&tx, id, now)?;
+            tx.commit()?;
+            return Ok((None, notices));
+        }
+    }
     let assigned = match slot {
         Some((held, delivered_at)) => held == turn_id && delivered_at.is_none(),
         None => {
@@ -1629,18 +1707,55 @@ pub fn assign_slot(
     };
     let assigned = if assigned { get(&tx, id)? } else { None };
     tx.commit()?;
-    Ok(assigned)
+    Ok((assigned, Notices::default()))
+}
+
+/// Design 16.6: a steer row that missed the turn it was accepted for is
+/// dropped where it stands, so nothing hands it to another turn.
+fn drop_steer(tx: &Connection, id: &MessageId, now: i64) -> rusqlite::Result<Notices> {
+    tx.execute(
+        "UPDATE mono_messages SET status = 'dropped', closed_at = ?2, updated_at = ?2
+          WHERE id = ?1 AND intent = 'steer' AND status IN ('open', 'delivered')
+            AND delivered_at IS NULL",
+        params![id.as_str(), now],
+    )?;
+    let mut notices = Notices::default();
+    notices.name_senders(tx, std::slice::from_ref(id))?;
+    Ok(notices)
 }
 
 /// Design 5.5 rule 4: a hand-off of turn `turn_id` failed, so the row goes
 /// back to waiting with no slot. A row the provider accepted keeps its slot.
-pub fn release(conn: &Connection, id: &MessageId, turn_id: &str, now: i64) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE mono_messages SET turn_id = NULL, slot_window = NULL, handle = NULL, updated_at = ?3
-          WHERE id = ?1 AND turn_id = ?2 AND delivered_at IS NULL",
-        params![id.as_str(), turn_id, now],
-    )?;
-    Ok(())
+/// A steer row is dropped instead (design 16.6), and its sender is owed a
+/// notice.
+pub fn release(
+    conn: &Connection,
+    id: &MessageId,
+    turn_id: &str,
+    now: i64,
+) -> rusqlite::Result<Notices> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let steer: bool = tx
+        .query_row(
+            "SELECT intent = 'steer' FROM mono_messages
+              WHERE id = ?1 AND turn_id = ?2 AND delivered_at IS NULL",
+            params![id.as_str(), turn_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(false);
+    let notices = if steer {
+        drop_steer(&tx, id, now)?
+    } else {
+        tx.execute(
+            "UPDATE mono_messages SET turn_id = NULL, slot_window = NULL, handle = NULL, updated_at = ?3
+              WHERE id = ?1 AND turn_id = ?2 AND delivered_at IS NULL",
+            params![id.as_str(), turn_id, now],
+        )?;
+        Notices::default()
+    };
+    tx.commit()?;
+    Ok(notices)
 }
 
 /// The provider took the text the hand-off of turn `turn_id` gave it. A row
@@ -1675,7 +1790,8 @@ pub fn unqueued(conn: &Connection, session: &SessionId) -> rusqlite::Result<Vec<
 
 /// Design 5.4: the provider of turn `turn_id` of `session` runs it, so it
 /// took the text that opened it. A steer into the turn is not confirmed: it
-/// may still wait for the provider.
+/// may still wait for the provider. A row dropped since keeps its slot, so
+/// it is skipped (design 16.6, intents review r2 M3).
 pub fn confirm_openers(
     conn: &Connection,
     session: &SessionId,
@@ -1685,7 +1801,7 @@ pub fn confirm_openers(
     conn.execute(
         "UPDATE mono_messages SET delivered_at = ?3, updated_at = ?3
           WHERE handled_by_session = ?1 AND turn_id = ?2 AND delivery = 'submit'
-            AND delivered_at IS NULL",
+            AND delivered_at IS NULL AND status IN ('open', 'delivered')",
         params![session.as_str(), turn_id, now],
     )?;
     Ok(())
@@ -1749,33 +1865,43 @@ impl Notices {
     }
 }
 
-/// The two turn-end rules of design 5.3 on the rows `scope` selects (`?1` is
-/// `now`): a message the provider took that still waits for a reply becomes
-/// `unanswered`; one it never took loses its slot, so reconcile queues it
-/// again. Returns the ids of the `unanswered` rows and the rows changed.
+/// The turn-end rules of design 5.3 and 16.6 on the rows `scope` selects
+/// (`?1` is `now`): a message the provider took that still waits for a reply
+/// becomes `unanswered`; a steer it never took is dropped with its slot, since
+/// the work it named is over; any other row it never took loses its slot, so
+/// reconcile queues it again. Returns the ids of the rows whose sender is now
+/// owed a notice, and the rows changed.
 fn end_turn_rows(
     tx: &Connection,
     scope: &str,
     args: &[&dyn ToSql],
 ) -> rusqlite::Result<(Vec<MessageId>, usize)> {
-    let unanswered = tx
-        .prepare(&format!(
-            "UPDATE mono_messages SET status = 'unanswered', closed_at = ?1, updated_at = ?1
-              WHERE {scope} AND status = 'open' AND delivered_at IS NOT NULL
-              RETURNING id"
-        ))?
-        .query_map(args, |row| row.get::<_, String>(0))?
-        .map(|id| id.and_then(|id| required(MessageId::parse(&id), "id")))
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let ids = |sql: String| -> rusqlite::Result<Vec<MessageId>> {
+        tx.prepare(&sql)?
+            .query_map(args, |row| row.get::<_, String>(0))?
+            .map(|id| id.and_then(|id| required(MessageId::parse(&id), "id")))
+            .collect()
+    };
+    let mut closed = ids(format!(
+        "UPDATE mono_messages SET status = 'unanswered', closed_at = ?1, updated_at = ?1
+          WHERE {scope} AND status = 'open' AND delivered_at IS NOT NULL
+          RETURNING id"
+    ))?;
     let released = tx.execute(
         &format!(
             "UPDATE mono_messages SET turn_id = NULL, handle = NULL, slot_window = NULL, updated_at = ?1
-              WHERE {scope} AND delivered_at IS NULL"
+              WHERE {scope} AND delivered_at IS NULL AND intent <> 'steer'"
         ),
         args,
     )?;
-    let changed = unanswered.len() + released;
-    Ok((unanswered, changed))
+    closed.extend(ids(format!(
+        "UPDATE mono_messages SET status = 'dropped', closed_at = ?1, updated_at = ?1
+          WHERE {scope} AND intent = 'steer' AND status IN ('open', 'delivered')
+            AND delivered_at IS NULL
+          RETURNING id"
+    ))?);
+    let changed = closed.len() + released;
+    Ok((closed, changed))
 }
 
 /// Design 5.3: turn `turn_id` of `session` is over. Names `session` when a
@@ -1832,6 +1958,12 @@ pub fn release_window_slots(conn: &Connection, label: &str, now: i64) -> rusqlit
 pub fn startup(conn: &Connection, now: i64) -> rusqlite::Result<()> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     end_turn_rows(&tx, "turn_id IS NOT NULL", params![now])?;
+    // A steer still waiting for a hand-off names work no turn runs now.
+    tx.execute(
+        "UPDATE mono_messages SET status = 'dropped', closed_at = ?1, updated_at = ?1
+          WHERE intent = 'steer' AND status IN ('open', 'delivered') AND delivered_at IS NULL",
+        [now],
+    )?;
     tx.execute(
         "UPDATE mono_messages SET status = 'dropped', closed_at = ?1, updated_at = ?1
           WHERE (status = 'open' OR (status = 'delivered' AND delivered_at IS NULL))
@@ -2080,6 +2212,7 @@ pub fn mono_message_submit(
 
 #[tauri::command(async)]
 pub fn mono_message_assign_slot(
+    app: AppHandle,
     window: WebviewWindow,
     store: State<'_, SessionStore>,
     id: String,
@@ -2091,16 +2224,20 @@ pub fn mono_message_assign_slot(
         "steer" => Delivery::Steer,
         _ => return Err("A hand-off is submit or steer".into()),
     };
-    let conn = store.lock_conn()?;
-    assign_slot(
-        &conn,
-        &message_id(&id)?,
-        parse_turn_id(&turn_id)?,
-        window.label(),
-        delivery,
-        now_ms(),
-    )
-    .map_err(|error| error.to_string())
+    let (assigned, notices) = {
+        let conn = store.lock_conn()?;
+        assign_slot(
+            &conn,
+            &message_id(&id)?,
+            parse_turn_id(&turn_id)?,
+            window.label(),
+            delivery,
+            now_ms(),
+        )
+        .map_err(|error| error.to_string())?
+    };
+    notices.emit(&app);
+    Ok(assigned)
 }
 
 #[tauri::command(async)]
@@ -2117,13 +2254,18 @@ pub fn mono_message_confirm_openers(
 
 #[tauri::command(async)]
 pub fn mono_message_release(
+    app: AppHandle,
     store: State<'_, SessionStore>,
     id: String,
     turn_id: String,
 ) -> Result<(), String> {
-    let conn = store.lock_conn()?;
-    release(&conn, &message_id(&id)?, parse_turn_id(&turn_id)?, now_ms())
-        .map_err(|error| error.to_string())
+    let notices = {
+        let conn = store.lock_conn()?;
+        release(&conn, &message_id(&id)?, parse_turn_id(&turn_id)?, now_ms())
+            .map_err(|error| error.to_string())?
+    };
+    notices.emit(&app);
+    Ok(())
 }
 
 #[tauri::command(async)]
@@ -3658,8 +3800,8 @@ pub(crate) mod tests {
         call_with(conn, caller, request_id, tool, input, live, &[])
     }
 
-    /// A call while the sessions in `running` run a turn. Every test session
-    /// runs on codex, which can steer.
+    /// A call while the sessions in `running` run turn `turn-1`. Every test
+    /// session runs on codex, which can steer.
     fn call_with(
         conn: &Connection,
         caller: &Caller,
@@ -3669,7 +3811,24 @@ pub(crate) mod tests {
         live: &[LiveSession],
         running: &[&str],
     ) -> Submitted {
-        let running: HashSet<String> = running.iter().map(|id| id.to_string()).collect();
+        let running: Vec<(&str, &str)> = running.iter().map(|id| (*id, "turn-1")).collect();
+        call_in_turns(conn, caller, request_id, tool, input, live, &running)
+    }
+
+    /// A call while each `(session, turn)` of `running` runs that turn.
+    fn call_in_turns(
+        conn: &Connection,
+        caller: &Caller,
+        request_id: &str,
+        tool: Tool,
+        input: serde_json::Value,
+        live: &[LiveSession],
+        running: &[(&str, &str)],
+    ) -> Submitted {
+        let running: HashMap<String, String> = running
+            .iter()
+            .map(|(id, turn)| (id.to_string(), turn.to_string()))
+            .collect();
         submit(
             conn,
             caller,
@@ -3719,8 +3878,7 @@ pub(crate) mod tests {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         let giga = caller_in("giga", "giga-chat");
-        let input =
-            serde_json::json!({"message": "Ship it", "send_to": "mono-a", "wanting_reply": false});
+        let input = serde_json::json!({"message": "Ship it", "send_to": "mono-a", "wanting_reply": false, "intent": "new"});
         let first = call(&conn, &giga, "r1", Tool::SendMessage, input.clone(), &[]);
         let Submitted::Accepted {
             messages,
@@ -3748,7 +3906,7 @@ pub(crate) mod tests {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         let giga = caller_in("giga", "giga-chat");
-        let send = |message: &str| serde_json::json!({"message": message, "send_to": "mono-a", "wanting_reply": false});
+        let send = |message: &str| serde_json::json!({"message": message, "send_to": "mono-a", "wanting_reply": false, "intent": "new"});
         accepted_ids(&call(
             &conn,
             &giga,
@@ -3790,8 +3948,7 @@ pub(crate) mod tests {
             },
         ];
         let giga = caller_in("giga", "giga-chat");
-        let send =
-            |to: &str| serde_json::json!({"message": "Hi", "send_to": to, "wanting_reply": false});
+        let send = |to: &str| serde_json::json!({"message": "Hi", "send_to": to, "wanting_reply": false, "intent": "new"});
         let project = failed(call(
             &conn,
             &giga,
@@ -3825,7 +3982,7 @@ pub(crate) mod tests {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         let giga = caller_in("giga", "giga-chat");
-        let input = serde_json::json!({"message": "Hi", "send_to": "nope", "wanting_reply": false});
+        let input = serde_json::json!({"message": "Hi", "send_to": "nope", "wanting_reply": false, "intent": "new"});
         let first = failed(call(
             &conn,
             &giga,
@@ -3853,13 +4010,14 @@ pub(crate) mod tests {
             &giga,
             "ask",
             Tool::SendMessage,
-            serde_json::json!({"message": "Is CI green?", "send_to": "mono-a", "wanting_reply": true}),
+            serde_json::json!({"message": "Is CI green?", "send_to": "mono-a", "wanting_reply": true, "intent": "new"}),
             &[],
         ))
         .remove(0);
         assert!(
             assign_slot(&conn, &ask, "turn-1", "main", Delivery::Submit, 101)
                 .unwrap()
+                .0
                 .is_some()
         );
         mark_delivery(&conn, &ask, "turn-1", 102).unwrap();
@@ -3938,7 +4096,7 @@ pub(crate) mod tests {
             &caller_in(from.0, from.1),
             request_id,
             Tool::SendMessage,
-            serde_json::json!({"message": "Hi", "send_to": to, "wanting_reply": wanting_reply}),
+            serde_json::json!({"message": "Hi", "send_to": to, "wanting_reply": wanting_reply, "intent": "new"}),
             &[],
         ))
         .remove(0)
@@ -3961,16 +4119,19 @@ pub(crate) mod tests {
         assert!(
             assign_slot(&conn, &id, "turn-1", "main", Delivery::Steer, 101)
                 .unwrap()
+                .0
                 .is_some()
         );
         assert!(
             assign_slot(&conn, &id, "turn-1", "main", Delivery::Steer, 102)
                 .unwrap()
+                .0
                 .is_some()
         );
         assert!(
             assign_slot(&conn, &id, "turn-2", "main", Delivery::Submit, 103)
                 .unwrap()
+                .0
                 .is_none()
         );
         assert_eq!(slot_turn(&conn, &id).as_deref(), Some("turn-1"));
@@ -3981,6 +4142,7 @@ pub(crate) mod tests {
         assert!(
             assign_slot(&conn, &id, "turn-2", "main", Delivery::Submit, 106)
                 .unwrap()
+                .0
                 .is_some()
         );
     }
@@ -3993,6 +4155,7 @@ pub(crate) mod tests {
         assert!(
             assign_slot(&conn, &id, "turn-1", "main", Delivery::Submit, 101)
                 .unwrap()
+                .0
                 .is_some()
         );
         // Another turn's acceptance is not this hand-off's.
@@ -4013,6 +4176,7 @@ pub(crate) mod tests {
         assert!(
             assign_slot(&conn, &id, "turn-1", "main", Delivery::Submit, 104)
                 .unwrap()
+                .0
                 .is_none()
         );
         assert!(matches!(
@@ -4042,6 +4206,7 @@ pub(crate) mod tests {
         assert!(
             assign_slot(&conn, &held, "turn-1", "main", Delivery::Submit, 101)
                 .unwrap()
+                .0
                 .is_some()
         );
         let listed: Vec<MessageId> = unqueued(&conn, &session("a-chat"))
@@ -4083,6 +4248,7 @@ pub(crate) mod tests {
         assert!(
             assign_slot(conn, id, turn_id, window, Delivery::Submit, 101)
                 .unwrap()
+                .0
                 .is_some()
         );
         if taken {
@@ -4099,8 +4265,28 @@ pub(crate) mod tests {
         .unwrap()
     }
 
-    fn hi(to: &str, wanting_reply: bool, action_type: &str) -> serde_json::Value {
-        serde_json::json!({"message": "Hi", "send_to": to, "wanting_reply": wanting_reply, "action_type": action_type})
+    fn hi(to: &str, wanting_reply: bool) -> serde_json::Value {
+        serde_json::json!({"message": "Hi", "send_to": to, "wanting_reply": wanting_reply, "intent": "new"})
+    }
+
+    fn steering(to: &str, reply_to: &str) -> serde_json::Value {
+        serde_json::json!({"message": "Stop", "send_to": to, "wanting_reply": false, "intent": "steer", "reply_to": reply_to})
+    }
+
+    /// A message from the Giga to `project` that turn `turn-1` of `project`
+    /// opened with, so a steer can name its running work.
+    fn opened_project(conn: &Connection, request_id: &str) -> MessageId {
+        let id = accepted_ids(&call(
+            conn,
+            &caller_in("giga", "giga-chat"),
+            request_id,
+            Tool::SendMessage,
+            hi("project", false),
+            &[listed("project", true, true)],
+        ))
+        .remove(0);
+        hand_off(conn, &id, "turn-1", "main", true);
+        id
     }
 
     fn yes() -> serde_json::Value {
@@ -4130,6 +4316,7 @@ pub(crate) mod tests {
         assert!(
             assign_slot(&conn, &ask, "turn-1", "main", Delivery::Steer, 101)
                 .unwrap()
+                .0
                 .is_some()
         );
         let error = failed(call(
@@ -4154,7 +4341,7 @@ pub(crate) mod tests {
             &caller_in("giga", "giga-chat"),
             "r1",
             Tool::SendMessage,
-            hi("project", false, "steer"),
+            steering("project", "m_aaaaaaaaaaaa"),
             &[listed("project", true, false)],
         ));
         assert_eq!(error.code, "direction_forbidden");
@@ -4192,12 +4379,13 @@ pub(crate) mod tests {
     fn a_session_this_window_has_not_loaded_steers_by_its_harness() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
+        let work = handed_off(&conn, "work", false, "turn-1", "main", true);
         let steer = call_with(
             &conn,
             &caller_in("giga", "giga-chat"),
             "r1",
             Tool::SendMessage,
-            hi("mono-a", false, "steer"),
+            steering("mono-a", work.as_str()),
             &[],
             &["a-chat"],
         );
@@ -4226,7 +4414,7 @@ pub(crate) mod tests {
             &caller_in("giga", "giga-chat"),
             "r2",
             Tool::SendMessage,
-            hi("mono-a", false, "steer"),
+            steering("mono-a", work.as_str()),
             &[],
             &["a-chat"],
         ));
@@ -4239,12 +4427,13 @@ pub(crate) mod tests {
     fn an_accepted_row_waits_as_queue_and_the_call_reports_its_route() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
+        let work = handed_off(&conn, "work", false, "turn-1", "main", true);
         let outcome = call_with(
             &conn,
             &caller_in("giga", "giga-chat"),
             "r1",
             Tool::SendMessage,
-            hi("mono-a", false, "steer"),
+            steering("mono-a", work.as_str()),
             &[],
             &["a-chat"],
         );
@@ -4262,7 +4451,7 @@ pub(crate) mod tests {
             &caller_in("giga", "giga-chat"),
             "r1",
             Tool::SendMessage,
-            hi("mono-a", false, "steer"),
+            steering("mono-a", work.as_str()),
             &[],
             &["a-chat"],
         );
@@ -4284,6 +4473,7 @@ pub(crate) mod tests {
         assert!(
             assign_slot(&conn, &id, "turn-1", "main", Delivery::Submit, 101)
                 .unwrap()
+                .0
                 .is_none()
         );
         assert_eq!(slot_turn(&conn, &id), None);
@@ -4305,7 +4495,7 @@ pub(crate) mod tests {
             mono_gate::parse(tool, &input),
             &Live {
                 sessions: &[],
-                running: &HashSet::new(),
+                running: &HashMap::new(),
                 steerable_harnesses: &["codex".to_string()],
             },
             now,
@@ -4345,6 +4535,7 @@ pub(crate) mod tests {
         let handle = |id: &MessageId, turn_id: &str| {
             let row = assign_slot(&conn, id, turn_id, "main", Delivery::Submit, 101)
                 .unwrap()
+                .0
                 .expect("a slot");
             match row.status {
                 Status::Open {
@@ -4427,7 +4618,7 @@ pub(crate) mod tests {
                     &caller_in("giga", "giga-chat"),
                     request_id,
                     Tool::SendMessage,
-                    hi(id, false, "queue"),
+                    hi(id, false),
                     &[listed(id, true, true)],
                 ))
                 .remove(0)
@@ -4546,12 +4737,14 @@ pub(crate) mod tests {
         assert!(
             assign_slot(&conn, &opener, "turn-1", "main", Delivery::Submit, 101)
                 .unwrap()
+                .0
                 .is_some()
         );
         let steer = sent_to_a(&conn, "steer", true);
         assert!(
             assign_slot(&conn, &steer, "turn-1", "main", Delivery::Steer, 102)
                 .unwrap()
+                .0
                 .is_some()
         );
         // PR 5 review m6 (R-h): the opener of the next turn, which still
@@ -4685,13 +4878,14 @@ pub(crate) mod tests {
             &caller_in("mono-b", "b-chat"),
             "ask-b",
             Tool::SendMessage,
-            hi("mono-a", true, "queue"),
+            hi("mono-a", true),
             &[],
         ))
         .remove(0);
         assert!(
             assign_slot(&conn, &from_b, "turn-1", "main", Delivery::Steer, 103)
                 .unwrap()
+                .0
                 .is_some()
         );
         mark_delivery(&conn, &from_b, "turn-1", 104).unwrap();
@@ -4783,6 +4977,7 @@ pub(crate) mod tests {
         assert!(
             assign_slot(&conn, &unseen, "turn-2", "main", Delivery::Steer, 103)
                 .unwrap()
+                .0
                 .is_some()
         );
         let in_turn_2 = caller_in_turn("mono-a", "a-chat", "turn-2");
@@ -4934,7 +5129,7 @@ pub(crate) mod tests {
     fn s4_before_s13_a_too_large_question_to_a_project_session_is_too_large() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
-        let input = serde_json::json!({"message": "x".repeat(8001), "send_to": "project", "wanting_reply": true});
+        let input = serde_json::json!({"message": "x".repeat(8001), "send_to": "project", "wanting_reply": true, "intent": "new"});
         let row = rejected_row(
             &conn,
             call(
@@ -4973,7 +5168,7 @@ pub(crate) mod tests {
                 &run,
                 "r1",
                 Tool::SendMessage,
-                hi("project", true, "queue"),
+                hi("project", true),
                 &[listed("project", true, true)],
             ),
             RejectCode::ReplyUnsupportedTarget,
@@ -4994,7 +5189,7 @@ pub(crate) mod tests {
                 &caller_in("giga", "giga-chat"),
                 "r1",
                 Tool::SendMessage,
-                hi("giga-chat", false, "queue"),
+                hi("giga-chat", false),
                 &[listed("giga-chat", true, false)],
             ),
             RejectCode::SelfSend,
@@ -5048,12 +5243,13 @@ pub(crate) mod tests {
     fn a_steer_into_a_running_session_listed_as_unable_to_steer_is_cannot_steer() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
+        let work = opened_project(&conn, "work");
         let error = failed(call_with(
             &conn,
             &caller_in("giga", "giga-chat"),
             "r1",
             Tool::SendMessage,
-            hi("project", false, "steer"),
+            steering("project", work.as_str()),
             &[listed("project", false, true)],
             &["project"],
         ));
@@ -5064,59 +5260,62 @@ pub(crate) mod tests {
     // refused new message, or an accepted send is stored with a target-less
     // steer that no row may hold.
     #[test]
-    fn a_refused_steer_keeps_its_intent_and_an_accepted_send_is_new() {
+    fn a_refused_steer_keeps_its_intent_and_target_and_an_accepted_send_is_new() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
-        let asked = |request, action, running: &[&str]| {
+        let work = opened_project(&conn, "work");
+        let asked = |request, input, steerable| {
             call_with(
                 &conn,
                 &caller_in("giga", "giga-chat"),
                 request,
                 Tool::SendMessage,
-                hi("project", false, action),
-                &[listed("project", false, true)],
-                running,
+                input,
+                &[listed("project", steerable, true)],
+                &["project"],
             )
         };
         let stored = |submitted| {
             let id = failed(submitted).message_id.expect("a rejected row");
             get(&conn, &id).unwrap().expect("the row").status
         };
-        assert!(matches!(
-            stored(asked("r1", "steer", &["project"])),
+        assert_eq!(
+            stored(asked("r1", steering("project", work.as_str()), false)),
             Status::Rejected {
                 gate_result: RejectCode::CannotSteer,
+                wanting_reply: false,
                 intent: IntentKind::Steer,
-                reply_to: None,
-                ..
+                reply_to: Some(work.clone()),
             }
-        ));
+        );
         assert!(matches!(
             stored(call_with(
                 &conn,
                 &caller_in("giga", "giga-chat"),
                 "r2",
                 Tool::SendMessage,
-                hi("nope", false, "queue"),
+                hi("nope", false),
                 &[],
                 &[],
             )),
             Status::Rejected {
                 gate_result: RejectCode::UnknownTarget,
                 intent: IntentKind::New,
+                reply_to: None,
                 ..
             }
         ));
-        let Submitted::Accepted { messages, .. } = asked("r3", "steer", &[]) else {
-            panic!("an idle session takes the send");
+        let intent = |submitted: Submitted| {
+            let id = accepted_ids(&submitted).remove(0);
+            get(&conn, &id).unwrap().unwrap().status.intent().cloned()
         };
         assert_eq!(
-            get(&conn, &messages[0].id)
-                .unwrap()
-                .unwrap()
-                .status
-                .intent(),
-            Some(&Intent::New)
+            intent(asked("r3", hi("project", false), true)),
+            Some(Intent::New)
+        );
+        assert_eq!(
+            intent(asked("r4", steering("project", work.as_str()), true)),
+            Some(Intent::Steer(work))
         );
     }
 
@@ -5137,7 +5336,7 @@ pub(crate) mod tests {
             &caller_in("giga", "giga-chat"),
             "r1",
             Tool::SendMessage,
-            hi("project", false, "queue"),
+            hi("project", false),
             &[],
         ));
         assert_eq!(error.code, "unknown_target");
@@ -5162,7 +5361,7 @@ pub(crate) mod tests {
             &caller.parse().unwrap(),
             "r1",
             Tool::SendMessage,
-            hi("mono-a", true, "queue"),
+            hi("mono-a", true),
             &[],
         ));
         assert_eq!(error.code, "habit_cannot_wait");
@@ -5330,7 +5529,7 @@ pub(crate) mod tests {
             &run,
             "run",
             Tool::SendMessage,
-            serde_json::json!({"message": "Hi", "send_to": "giga", "wanting_reply": false}),
+            serde_json::json!({"message": "Hi", "send_to": "giga", "wanting_reply": false, "intent": "new"}),
             &[],
         ))
         .remove(0);
@@ -5390,6 +5589,7 @@ pub(crate) mod tests {
         assert!(
             assign_slot(&conn, &waiting, "turn-2", "main", Delivery::Submit, 201)
                 .unwrap()
+                .0
                 .is_none()
         );
         assert_eq!(drop(&waiting), (DropAnswer::Closed, Notices::default()));
@@ -5409,7 +5609,7 @@ pub(crate) mod tests {
                 &caller_in("giga", "giga-chat"),
                 request_id,
                 Tool::SendMessage,
-                hi("project", false, "queue"),
+                hi("project", false),
                 &[listed("project", true, true)],
             )
         };
@@ -5516,7 +5716,7 @@ pub(crate) mod tests {
             &caller_in("mono-a", "a-chat"),
             "late",
             Tool::SendMessage,
-            serde_json::json!({"message": "Q?", "send_to": "giga", "wanting_reply": true}),
+            serde_json::json!({"message": "Q?", "send_to": "giga", "wanting_reply": true, "intent": "new"}),
             &[],
         ));
         assert_eq!(refused.code, "unknown_token");
@@ -5545,5 +5745,438 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(delivered_at, None);
+    }
+
+    /// `status`, `turn_id`, `delivered_at` and `reply_to` as stored.
+    fn stored_row(
+        conn: &Connection,
+        id: &MessageId,
+    ) -> (String, Option<String>, Option<i64>, Option<String>) {
+        conn.query_row(
+            "SELECT status, turn_id, delivered_at, reply_to FROM mono_messages WHERE id = ?1",
+            [id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap()
+    }
+
+    /// Work the Giga sent `a-chat`, which turn `turn-1` took, and a steer of
+    /// the Giga at it, accepted while that turn runs and not handed off yet.
+    fn steered(conn: &Connection, request_id: &str) -> (MessageId, MessageId) {
+        let work = handed_off(
+            conn,
+            &format!("{request_id}-work"),
+            false,
+            "turn-1",
+            "main",
+            true,
+        );
+        let steer = accepted_ids(&call_with(
+            conn,
+            &caller_in("giga", "giga-chat"),
+            request_id,
+            Tool::SendMessage,
+            steering("mono-a", work.as_str()),
+            &[],
+            &["a-chat"],
+        ))
+        .remove(0);
+        (work, steer)
+    }
+
+    // PR I2, S9 through resolve_ref. Defect: a steer names an unknown id, a
+    // rejected row, or a handle of another turn and still goes somewhere; or
+    // a handle of this turn is not resolved at all.
+    #[test]
+    fn a_steer_reply_to_resolves_to_an_accepted_row_or_a_handle_of_the_callers_turn() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let rejected = failed(call(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "nowhere",
+            Tool::SendMessage,
+            hi("nope", false),
+            &[],
+        ))
+        .message_id
+        .unwrap();
+        // A asks the Giga; the Giga's turn 1 holds it as #1.
+        let asked = sent(&conn, ("mono-a", "a-chat"), "giga", "asked", true);
+        hand_off(&conn, &asked, "turn-1", "main", true);
+        let steer_from = |caller: &Caller, request: &str, reply_to: &str| {
+            failed(call_with(
+                &conn,
+                caller,
+                request,
+                Tool::SendMessage,
+                steering("mono-a", reply_to),
+                &[],
+                &["a-chat"],
+            ))
+        };
+        let giga = caller_in("giga", "giga-chat");
+        for (request, reply_to) in [
+            ("unknown", "m_zzzzzzzzzzzz"),
+            ("refused", rejected.as_str()),
+            ("not-held", "#3"),
+        ] {
+            let error = steer_from(&giga, request, reply_to);
+            assert_eq!(error.code, "unknown_message", "{reply_to}");
+            let row = stored_row(&conn, &error.message_id.unwrap());
+            assert_eq!(row.3, None, "{reply_to}");
+        }
+        let later = caller_in_turn("giga", "giga-chat", "turn-2");
+        assert_eq!(
+            steer_from(&later, "other-turn", "#1").code,
+            "unknown_message"
+        );
+        // #1 resolves to the message A sent; a steer about it is not between
+        // the Giga and A in the Giga's direction, and the row keeps its target.
+        let error = steer_from(&giga, "held", "#1");
+        assert_eq!(error.code, "steer_target_mismatch");
+        assert_eq!(
+            stored_row(&conn, &error.message_id.unwrap()).3.as_deref(),
+            Some(asked.as_str())
+        );
+    }
+
+    // PR I2, S20 and record. Defect: an accepted steer goes to the
+    // recipient's current turn rather than the session handling its target,
+    // is stored without its target, or its hop does not grow.
+    #[test]
+    fn an_accepted_steer_is_stored_with_its_target_one_hop_deeper_and_routed_to_its_session() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let (work, steer) = steered(&conn, "steer-1");
+        let message = get(&conn, &steer).unwrap().unwrap();
+        assert_eq!(message.hop, 1);
+        assert_eq!(message.status.intent(), Some(&Intent::Steer(work.clone())));
+        assert_eq!(stored_delivery(&conn, &steer).as_deref(), Some("queue"));
+        let (steer_slot, notices) =
+            assign_slot(&conn, &steer, "turn-1", "main", Delivery::Steer, 101).unwrap();
+        assert!(steer_slot.is_some() && notices == Notices::default());
+        mark_delivery(&conn, &steer, "turn-1", 102).unwrap();
+        let again = call_with(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "steer-2",
+            Tool::SendMessage,
+            steering("mono-a", steer.as_str()),
+            &[],
+            &["a-chat"],
+        );
+        assert_eq!(
+            route_of(&again),
+            Some(Routing {
+                session_id: session("a-chat"),
+                via: Delivery::Steer
+            })
+        );
+        let second = accepted_ids(&again).remove(0);
+        assert_eq!(get(&conn, &second).unwrap().unwrap().hop, 2);
+    }
+
+    // PR I2, S15 with the turn ids of Live.running. Defect: a steer joins a
+    // newer turn than the one that runs its target (unrelated work), or
+    // reaches the model before the queued message it changes.
+    #[test]
+    fn a_steer_whose_target_turn_is_not_the_running_one_is_target_gone() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let work = handed_off(&conn, "work", false, "turn-1", "main", true);
+        let queued = sent_to_a(&conn, "queued", false);
+        for (request, target, turn) in [
+            ("newer", &work, "turn-2"),
+            ("queued-target", &queued, "turn-1"),
+        ] {
+            let error = failed(call_in_turns(
+                &conn,
+                &caller_in("giga", "giga-chat"),
+                request,
+                Tool::SendMessage,
+                steering("mono-a", target.as_str()),
+                &[],
+                &[("a-chat", turn)],
+            ));
+            assert_eq!(error.code, "target_gone", "{request}");
+            let row = stored_row(&conn, &error.message_id.unwrap());
+            assert_eq!(
+                (row.0.as_str(), row.3.as_deref()),
+                ("rejected", Some(target.as_str()))
+            );
+        }
+        let ok = call_in_turns(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "same",
+            Tool::SendMessage,
+            steering("mono-a", work.as_str()),
+            &[],
+            &[("a-chat", "turn-1")],
+        );
+        assert_eq!(accepted_ids(&ok).len(), 1);
+    }
+
+    // PR I2 (intents review r1 H2, r2 L2). Defect: a steer whose turn ended
+    // opens the next turn as new work, or joins another turn, and its sender
+    // hears of the drop only at its next reconcile.
+    #[test]
+    fn a_steer_row_takes_a_slot_only_as_a_steer_into_its_targets_turn() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        for (request, turn, delivery) in [
+            ("other-turn", "turn-2", Delivery::Steer),
+            ("opener", "turn-1", Delivery::Submit),
+        ] {
+            let (_, steer) = steered(&conn, request);
+            let (slot, notices) = assign_slot(&conn, &steer, turn, "main", delivery, 101).unwrap();
+            assert_eq!(slot, None, "{request}");
+            assert_eq!(notices.sessions, vec![session("giga-chat")], "{request}");
+            assert_eq!(stored_row(&conn, &steer).0, "dropped", "{request}");
+            assert_eq!(stored_row(&conn, &steer).1, None, "{request}");
+            assert!(
+                pending_notices(&conn, &session("giga-chat"))
+                    .unwrap()
+                    .iter()
+                    .any(|message| message.id == steer),
+                "{request}"
+            );
+        }
+        let (_, steer) = steered(&conn, "right-turn");
+        let (slot, notices) =
+            assign_slot(&conn, &steer, "turn-1", "main", Delivery::Steer, 101).unwrap();
+        assert_eq!(notices, Notices::default());
+        assert_eq!(slot.map(|message| message.id), Some(steer.clone()));
+        assert_eq!(stored_delivery(&conn, &steer).as_deref(), Some("steer"));
+    }
+
+    // PR I2 (intents review r1 H2, r2 M3). Defect: the turn end gives an
+    // undelivered steer its slot back, so reconcile queues it for the next
+    // turn; or the late confirm of the dropped steer fails the CHECK
+    // `status <> 'dropped' OR wanting_reply = 1 OR delivered_at IS NULL`
+    // inside handOff's finally.
+    #[test]
+    fn the_turn_end_drops_an_undelivered_steer_and_a_late_confirm_leaves_it_dropped() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let (_, steer) = steered(&conn, "steer");
+        assign_slot(&conn, &steer, "turn-1", "main", Delivery::Steer, 101).unwrap();
+        let waiting = handed_off(&conn, "waiting", false, "turn-1", "main", false);
+        let notices = turn_ended(&conn, &session("a-chat"), "turn-1", 150).unwrap();
+        assert!(
+            notices.sessions.contains(&session("giga-chat")),
+            "{notices:?}"
+        );
+        let (status, turn, delivered_at, _) = stored_row(&conn, &steer);
+        assert_eq!(
+            (status.as_str(), turn.as_deref(), delivered_at),
+            ("dropped", Some("turn-1"), None)
+        );
+        assert_eq!(stored_row(&conn, &waiting).0, "delivered");
+        assert_eq!(stored_row(&conn, &waiting).1, None);
+        mark_delivery(&conn, &steer, "turn-1", 151).unwrap();
+        assert_eq!(stored_row(&conn, &steer).0, "dropped");
+        assert_eq!(stored_row(&conn, &steer).2, None);
+        assert!(unqueued(&conn, &session("a-chat"))
+            .unwrap()
+            .iter()
+            .all(|message| message.id != steer));
+    }
+
+    // PR I2 (intents review r1, r2 L2). Defect: a failed steer hand-off puts
+    // the row back to wait, so the drain opens a turn with it.
+    #[test]
+    fn a_failed_steer_hand_off_drops_the_row_and_names_its_senders_chat() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let (_, steer) = steered(&conn, "steer");
+        assign_slot(&conn, &steer, "turn-1", "main", Delivery::Steer, 101).unwrap();
+        let notices = release(&conn, &steer, "turn-1", 102).unwrap();
+        assert_eq!(notices.sessions, vec![session("giga-chat")]);
+        assert_eq!(stored_row(&conn, &steer).0, "dropped");
+        let plain = handed_off(&conn, "plain", false, "turn-1", "main", false);
+        assert_eq!(
+            release(&conn, &plain, "turn-1", 103).unwrap(),
+            Notices::default()
+        );
+        assert_eq!(
+            stored_row(&conn, &plain),
+            ("delivered".into(), None, None, None)
+        );
+    }
+
+    // PR I2 (intents review r1). Defect: a steer that waited across a
+    // restart opens a turn as new work after the work it named is gone.
+    #[test]
+    fn startup_drops_every_steer_that_still_waits() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let (_, queued) = steered(&conn, "queued");
+        let (_, held) = steered(&conn, "held");
+        assign_slot(&conn, &held, "turn-1", "main", Delivery::Steer, 101).unwrap();
+        let plain = sent_to_a(&conn, "plain", false);
+        startup(&conn, 200).unwrap();
+        assert_eq!(stored_row(&conn, &queued).0, "dropped");
+        assert_eq!(stored_row(&conn, &held).0, "dropped");
+        assert_eq!(stored_row(&conn, &plain).0, "delivered");
+    }
+
+    // PR I2 (intents review r2 M3, decision 411). Defect: a dropped row that
+    // keeps its opener slot fails the CHECK when the next call of that turn
+    // confirms openers, so every call of the turn fails.
+    #[test]
+    fn confirm_openers_leaves_a_dropped_row_alone() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let held = handed_off(&conn, "held", false, "turn-1", "main", false);
+        conn.execute(
+            "UPDATE mono_messages SET status = 'dropped', closed_at = 5 WHERE id = ?1",
+            [held.as_str()],
+        )
+        .unwrap();
+        confirm_openers(&conn, &session("a-chat"), "turn-1", 6).unwrap();
+        assert_eq!(stored_row(&conn, &held).2, None);
+    }
+
+    // PR I2. Many steers at once for different targets. Defect: a steer
+    // lands in a session other than the one handling its reply_to (another
+    // Mono's chat, the recipient's current chat, or the busiest session), or
+    // a steer at queued work is let through.
+    #[test]
+    fn a_swarm_of_steers_reaches_only_the_sessions_that_handle_their_targets() {
+        let store = messaging_store();
+        let (targets, live) = {
+            let conn = store.lock_conn().unwrap();
+            conn.execute_batch(
+                r#"INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
+                   VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat"}', 2, 1, 1);
+                   INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+                   VALUES ('b-chat', '/', 'codex', 'm', 'default', 'B', 1, 1);"#,
+            )
+            .unwrap();
+            let to = |to: &str, request: &str, session: &str, turn: &str| {
+                let id = sent(&conn, ("giga", "giga-chat"), to, request, false);
+                if !turn.is_empty() {
+                    hand_off(&conn, &id, turn, "main", true);
+                }
+                (to.to_string(), id, session.to_string())
+            };
+            let live = [listed("project", true, true)];
+            let project = accepted_ids(&call(
+                &conn,
+                &caller_in("giga", "giga-chat"),
+                "to-p",
+                Tool::SendMessage,
+                hi("project", false),
+                &live,
+            ))
+            .remove(0);
+            hand_off(&conn, &project, "turn-3", "main", true);
+            (
+                vec![
+                    to("mono-a", "to-a", "a-chat", "turn-1"),
+                    to("mono-b", "to-b", "b-chat", "turn-7"),
+                    ("project".to_string(), project, "project".to_string()),
+                    to("mono-a", "to-q", "a-chat", ""),
+                ],
+                live,
+            )
+        };
+        let running = [
+            ("a-chat", "turn-1"),
+            ("b-chat", "turn-7"),
+            ("project", "turn-3"),
+        ];
+        // 45 steers in one fixed shuffled order, five threads at once. Class
+        // i % 5: 0 to 2 name running work, 3 names queued work, 4 names B's
+        // work but is sent to A.
+        let order: Vec<usize> = (0..45).map(|i| (i * 17 + 5) % 45).collect();
+        let outcomes: Vec<(usize, Submitted)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = order
+                .chunks(9)
+                .map(|chunk| {
+                    let (store, targets, live) = (&store, &targets, &live);
+                    scope.spawn(move || {
+                        chunk
+                            .iter()
+                            .map(|&i| {
+                                let (to, target) = match i % 5 {
+                                    4 => ("mono-a", &targets[1].1),
+                                    class => (targets[class].0.as_str(), &targets[class].1),
+                                };
+                                let input = serde_json::json!({
+                                    "message": format!("s{i}-{to}"),
+                                    "send_to": to,
+                                    "wanting_reply": false,
+                                    "intent": "steer",
+                                    "reply_to": target.as_str(),
+                                });
+                                let conn = store.lock_conn().unwrap();
+                                let outcome = call_in_turns(
+                                    &conn,
+                                    &caller_in("giga", "giga-chat"),
+                                    &format!("s{i}"),
+                                    Tool::SendMessage,
+                                    input,
+                                    live,
+                                    &running,
+                                );
+                                (i, outcome)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().unwrap())
+                .collect()
+        });
+        assert_eq!(outcomes.len(), 45);
+        let conn = store.lock_conn().unwrap();
+        let mut per_session: HashMap<String, usize> = HashMap::new();
+        for (i, outcome) in outcomes {
+            let refused = match i % 5 {
+                3 => Some("target_gone"),
+                4 => Some("steer_target_mismatch"),
+                _ => None,
+            };
+            if let Some(code) = refused {
+                assert_eq!(failed(outcome).code, code, "s{i}");
+                continue;
+            }
+            let (to, target, handler) = &targets[i % 5];
+            assert_eq!(
+                route_of(&outcome),
+                Some(Routing {
+                    session_id: session(handler),
+                    via: Delivery::Steer
+                }),
+                "s{i}"
+            );
+            let id = accepted_ids(&outcome).remove(0);
+            let message = get(&conn, &id).unwrap().unwrap();
+            assert_eq!(message.body.text(), format!("s{i}-{to}"));
+            assert_eq!(
+                message.status.intent(),
+                Some(&Intent::Steer(target.clone()))
+            );
+            match &message.status {
+                Status::Delivered { routed, .. } => {
+                    assert_eq!(routed.handled_by_session, session(handler), "s{i}")
+                }
+                other => panic!("s{i}: {other:?}"),
+            }
+            *per_session.entry(handler.clone()).or_default() += 1;
+        }
+        assert_eq!(
+            per_session,
+            HashMap::from([
+                ("a-chat".to_string(), 9),
+                ("b-chat".to_string(), 9),
+                ("project".to_string(), 9),
+            ])
+        );
     }
 }

@@ -234,20 +234,27 @@ Actions:
   messages.get_monos {}  Mono or habit only. Every Mono in rail order as
                   {mono_id, mono_name, role, you}; you is true for yourself.
   messages.send  {"message":"...","send_to":"<mono_id or session id>",
-                  "wanting_reply":false,"action_type":"queue"}
+                  "wanting_reply":false,"intent":"new"}
                   Mono or habit only. Send a message to another Mono's chat
-                  or to a session in one of your projects. wanting_reply is
-                  required: true only when you need an answer. The answer
-                  arrives later as a new message, so do not poll. A project
-                  session cannot answer; send it wanting_reply false.
-                  action_type "queue" (the default) waits until the
-                  receiver's turn ends; "steer" reaches its running turn.
-                  Returns message_id, status (open or delivered), delivery
-                  (submit, queue or steer) and hop. Messages are limited to
-                  8000 characters. Codes: invalid_input, request_id_reused,
-                  too_large, unknown_target, self_send, direction_forbidden,
-                  reply_unsupported_target, habit_cannot_wait,
-                  target_no_conversation, cannot_steer.
+                  or to a session in one of your projects. wanting_reply and
+                  intent are required. wanting_reply is true only when you
+                  need an answer. The answer arrives later as a new message,
+                  so do not poll. A project session cannot answer; send it
+                  wanting_reply false. intent "new" starts new work and waits
+                  until the receiver's turn ends. intent "steer" changes work
+                  a message of yours started: pass reply_to, its message_id
+                  or a handle such as "#1" from this turn; it reaches the
+                  session running that work, and is refused when that work is
+                  not running. Answer a waiting message with messages.reply.
+                  continue is for users only. Returns message_id, status (open
+                  or delivered), delivery (submit, queue or steer) and hop.
+                  Messages are limited to 8000 characters. Codes:
+                  invalid_input, request_id_reused, too_large,
+                  intent_mismatch, intent_not_allowed, unknown_target,
+                  self_send, direction_forbidden, unknown_message,
+                  steer_target_mismatch, reply_unsupported_target,
+                  habit_cannot_wait, target_gone, target_no_conversation,
+                  cannot_steer.
   messages.reply {"message":"...","to":"#1","wanting_reply":false}
                   Answer a <mono_message> that waits for your reply (it says
                   wanting_reply="true" and has a handle such as
@@ -584,16 +591,17 @@ pub fn app_tools() -> Value {
         {
             "name": "send_message",
             "action": "messages.send",
-            "description": "Send a message to another Mono's chat (send_to is its mono_id) or to a session in one of your projects (its session id). MonoCode decides the sender and the route. Set wanting_reply true only when you need an answer; the answer arrives later as a new message, so do not poll. A project session cannot answer. action_type \"queue\" (default) waits until the receiver's turn ends; \"steer\" reaches its running turn. Messages are limited to 8000 characters. A refusal has code and hint; follow the hint.",
+            "description": "Send a message to another Mono's chat (send_to is its mono_id) or to a session in one of your projects (its session id). MonoCode decides the sender and the route. Set wanting_reply true only when you need an answer; the answer arrives later as a new message, so do not poll. A project session cannot answer. intent \"new\" starts new work and waits until the receiver's turn ends; intent \"steer\" with reply_to changes the work that message started, while it runs. Messages are limited to 8000 characters. A refusal has code and hint; follow the hint.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "message": {"type": "string", "minLength": 1, "description": "The text to send."},
                     "send_to": {"type": "string", "minLength": 1, "description": "A mono_id from get_monos, or the id of a session in one of your projects."},
                     "wanting_reply": {"type": "boolean", "description": "true only when you need an answer."},
-                    "action_type": {"type": "string", "enum": ["queue", "steer"], "description": "queue (default) or steer."}
+                    "intent": {"type": "string", "enum": ["new", "steer", "reply", "continue"], "description": "new for new work; steer to change work that reply_to started. Answer a waiting message with the reply tool. continue is for users only."},
+                    "reply_to": {"type": "string", "minLength": 1, "description": "A message_id, or a handle such as \"#1\" from this turn. Required for steer, refused for new."}
                 },
-                "required": ["message", "send_to", "wanting_reply"],
+                "required": ["message", "send_to", "wanting_reply", "intent"],
                 "additionalProperties": false
             }
         },
@@ -1153,7 +1161,7 @@ mod tests {
             ("messages.get_monos", r#"{}"#),
             (
                 "messages.send",
-                r#"{"message":"Check CI","send_to":"other","wanting_reply":true,"action_type":"steer"}"#,
+                r##"{"message":"Check CI","send_to":"other","wanting_reply":true,"intent":"steer","reply_to":"#1"}"##,
             ),
             ("messages.reply", r#"{"message":"CI is green"}"#),
         ] {
@@ -1325,7 +1333,7 @@ mod tests {
         rpc(
             id,
             "tools/call",
-            json!({"name": "send_message", "arguments": {"message": "Hi", "send_to": "mono-b", "wanting_reply": false}}),
+            json!({"name": "send_message", "arguments": {"message": "Hi", "send_to": "mono-b", "wanting_reply": false, "intent": "new"}}),
         )
     }
 
@@ -1357,10 +1365,20 @@ mod tests {
             assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{tool}");
             assert!(tool.get("action").is_none(), "{tool}");
         }
+        // PR I2. Defect: the schema still offers action_type, or a client
+        // refuses continue and reply itself, so the gate never writes the
+        // intent_not_allowed row an eval reads.
+        let send = &tools[1]["inputSchema"];
         assert_eq!(
-            tools[1]["inputSchema"]["required"],
-            json!(["message", "send_to", "wanting_reply"])
+            send["required"],
+            json!(["message", "send_to", "wanting_reply", "intent"])
         );
+        assert_eq!(
+            send["properties"]["intent"]["enum"],
+            json!(["new", "steer", "reply", "continue"])
+        );
+        assert_eq!(send["properties"]["reply_to"]["type"], "string");
+        assert!(send["properties"].get("action_type").is_none(), "{send}");
         assert_eq!(out[3]["id"], 4);
         assert_eq!(out[3]["error"]["code"], -32601);
         assert_eq!(out[4]["error"]["code"], -32600);
@@ -1383,7 +1401,7 @@ mod tests {
         assert_eq!(requests[0]["token"], TOKEN);
         assert_eq!(
             requests[0]["input"],
-            json!({"message": "Hi", "send_to": "mono-b", "wanting_reply": false})
+            json!({"message": "Hi", "send_to": "mono-b", "wanting_reply": false, "intent": "new"})
         );
         let result = &out[0]["result"];
         assert_eq!(result["structuredContent"], answer);

@@ -329,7 +329,10 @@ const FIELDS = new Map<string, readonly string[]>([
   ["monos.create", ["name", "harness", "model", "projects", "soul", "giga"]],
   ["monos.update", ["monoId", "harness", "model", "name", "projects"]],
   ["messages.get_monos", []],
-  ["messages.send", ["message", "send_to", "wanting_reply", "action_type"]],
+  [
+    "messages.send",
+    ["message", "send_to", "wanting_reply", "intent", "reply_to"],
+  ],
   ["messages.reply", ["message", "wanting_reply", "to"]],
   ["workspace.status", []],
   ["chat.card", [...CARD_FIELDS]],
@@ -340,6 +343,12 @@ const REMOVED_ACTIONS = new Map([
   ["monos.configure", "Use monos.update."],
   ["monos.send", "Use messages.send (MCP send_message)."],
 ]);
+
+/** Fields that were removed, with what to use instead. */
+const REMOVED_FIELDS: Record<string, string> = {
+  action_type:
+    'action_type is gone: use intent "new", or "steer" with reply_to.',
+};
 
 function fields(action: string, input: Record<string, unknown>) {
   const removed = REMOVED_ACTIONS.get(action);
@@ -354,7 +363,14 @@ function fields(action: string, input: Record<string, unknown>) {
   if (unknown.length)
     throw new AppActionError(
       "invalid_input",
-      `Unknown ${action} fields: ${unknown.join(", ")}`,
+      [
+        `Unknown ${action} fields: ${unknown.join(", ")}`,
+        ...unknown.flatMap((key) =>
+          Object.prototype.hasOwnProperty.call(REMOVED_FIELDS, key)
+            ? [REMOVED_FIELDS[key]]
+            : [],
+        ),
+      ].join(". "),
     );
 }
 

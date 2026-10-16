@@ -8,6 +8,7 @@ import {
   parseMonoNotice,
   parseReplyInput,
   parseRowIntent,
+  parseSendInput,
   parseSessionId,
   renderMonoNotice,
   type MessageId,
@@ -130,4 +131,35 @@ it("reads a notice back only from the item the pump made", () => {
   expect(
     parseMonoNotice({ appRequestId: noticeRequestId(id, "unanswered"), text }),
   ).toBeUndefined();
+});
+
+// Design 16.4. Defect: the app boundary guesses an intent, forwards a list
+// of targets, or keeps the removed action_type meaning.
+it("takes a send's intent as given and reply_to as one message id or handle", () => {
+  const send = (extra: Record<string, unknown>) =>
+    parseSendInput({
+      message: "Hi",
+      send_to: "mono-2",
+      wanting_reply: false,
+      ...extra,
+    });
+  expect(send({ intent: "new" })).toEqual({
+    message: "Hi",
+    send_to: "mono-2",
+    wanting_reply: false,
+    intent: "new",
+  });
+  expect(send({ intent: "continue", reply_to: "#2" })).toMatchObject({
+    intent: "continue",
+    reply_to: "#2",
+  });
+  expect(send({ intent: "steer", reply_to: "m_abcdefgh2345" }).reply_to).toBe(
+    "m_abcdefgh2345",
+  );
+  for (const intent of [undefined, "queue", "New", 1])
+    expect(() => send({ intent })).toThrow("intent is required");
+  for (const replyTo of [["m_abcdefgh2345"], "#0", "m_ABCDEFGH2345", "", 3])
+    expect(() => send({ intent: "steer", reply_to: replyTo })).toThrow(
+      'reply_to must be one message_id or one handle such as "#1".',
+    );
 });

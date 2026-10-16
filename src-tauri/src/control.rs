@@ -294,11 +294,18 @@ impl ControlHost {
             .unwrap_or_else(|_| caller.to_string())
     }
 
-    /// Sessions with an authorized turn: the gate's `running` (design 6).
-    pub(crate) fn running_sessions(&self) -> HashSet<String> {
+    /// Sessions with an authorized turn, each with that turn's id: the gate's
+    /// `running` (design 6, 16.6).
+    pub(crate) fn running_sessions(&self) -> HashMap<String, String> {
         self.inner
             .lock()
-            .map(|inner| inner.active.keys().cloned().collect())
+            .map(|inner| {
+                inner
+                    .active
+                    .iter()
+                    .map(|(session, turn)| (session.clone(), turn.turn_id.clone()))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }
@@ -1520,10 +1527,11 @@ mod tests {
         );
     }
 
-    // PR 4a review m7 (CT1). Defect: the gate reads no running session, so
-    // every steer is queued and S17 never refuses one.
+    // PR 4a review m7 (CT1), PR I2. Defect: the gate reads no running turn,
+    // so every steer is refused target_gone, or a steer joins a later turn of
+    // the session than the one that runs its target.
     #[test]
-    fn running_sessions_are_the_sessions_with_an_active_turn() {
+    fn running_sessions_are_the_sessions_with_an_active_turn_and_its_id() {
         let host = ControlHost {
             endpoint: String::new(),
             inner: Arc::new(Mutex::new(Inner::default())),
@@ -1531,7 +1539,7 @@ mod tests {
         run(&host.inner, "a-chat", "main", "turn-1");
         assert_eq!(
             host.running_sessions(),
-            HashSet::from(["a-chat".to_string()])
+            HashMap::from([("a-chat".to_string(), "turn-1".to_string())])
         );
     }
 

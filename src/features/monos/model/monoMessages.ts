@@ -17,7 +17,6 @@ export type TurnId = Brand<string, "TurnId">;
 
 export type MonoRole = "giga" | "mono";
 export type Tool = "send_message" | "reply";
-export type ActionType = "queue" | "steer";
 export type Delivery = "submit" | "queue" | "steer";
 export type IntentKind = "new" | "reply" | "steer" | "continue";
 /** The intent of an accepted row (design 16.1). `continue` never passes the gate. */
@@ -182,7 +181,8 @@ export type RejectCode =
   | "habit_cannot_wait"
   | "unknown_message"
   | "steer_target_mismatch"
-  | "ambiguous_steer"
+  | "intent_mismatch"
+  | "intent_not_allowed"
   | "target_gone"
   | "cannot_steer"
   | "rate_limited"
@@ -195,22 +195,26 @@ export type RejectCode =
 /** Failures that write no row: every app action code, from the one list. */
 export type CallErrorCode = AppErrorCode;
 
-/** `open_handles` on ambiguous_reply, unknown_handle and no_open_handle; `candidates` on ambiguous_steer. */
+/** `open_handles` on ambiguous_reply, unknown_handle and no_open_handle. */
 export type ToolError = {
   ok: false;
   code: RejectCode | CallErrorCode;
   hint: string;
   message_id?: MessageId;
   open_handles?: { handle: Handle; message_id: MessageId; from: string }[];
-  candidates?: { message_id: MessageId; preview: string }[];
 };
 
-/** A `send_message` call as the model gave it (design 3.2), defaults filled in. */
+/** A message id, or a handle of the caller's turn (design 16.4). */
+export type MessageRef = MessageId | Handle;
+
+/** A `send_message` call as the model gave it (design 16.4). */
 export type SendInput = {
   message: string;
   send_to: string;
   wanting_reply: boolean;
-  action_type: ActionType;
+  /** As asked: the gate refuses the intents a send cannot carry (I1, I2). */
+  intent: IntentKind;
+  reply_to?: MessageRef;
 };
 
 /** A `reply` call (design 3.3). `to` names the handles it answers. */
@@ -241,18 +245,23 @@ export function parseSendInput(raw: Record<string, unknown>): SendInput {
     throw new Error(
       "wanting_reply is required: true when you need an answer, false otherwise",
     );
-  if (
-    raw.action_type !== undefined &&
-    raw.action_type !== "steer" &&
-    raw.action_type !== "queue"
-  )
-    throw new Error('action_type must be "steer" or "queue"');
-  return {
+  if (!isIntentKind(raw.intent))
+    throw new Error(
+      'intent is required and is one of "new", "steer", "reply" or "continue". Use "new" for new work, or "steer" with reply_to to change the work a message started.',
+    );
+  const send = {
     message: text,
     send_to: raw.send_to,
     wanting_reply: raw.wanting_reply,
-    action_type: raw.action_type ?? "queue",
+    intent: raw.intent,
   };
+  if (raw.reply_to === undefined) return send;
+  const replyTo = parseHandle(raw.reply_to) ?? parseMessageId(raw.reply_to);
+  if (!replyTo)
+    throw new Error(
+      'reply_to must be one message_id or one handle such as "#1".',
+    );
+  return { ...send, reply_to: replyTo };
 }
 
 /** Throws the `invalid_input` hint (R1). Rust parses the same input again. */

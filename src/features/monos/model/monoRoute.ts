@@ -160,7 +160,9 @@ export async function reconcile(
       ensureQueued(
         session,
         queueItem(host, message),
-        "queue",
+        // A steer only joins the running turn it names (design 16.6), so its
+        // item never waits for the turn end.
+        message.intent === "steer" ? "steer" : "queue",
         host.isMonoChat(sessionId),
       ),
     );
@@ -223,9 +225,10 @@ export function opensTurn(session: Session, turnId: TurnId | undefined) {
  * Design 5.5 rules 3 and 4. A hand-off takes the row's slot before it sends
  * the text: `dispatch` opens a new turn, `steer` goes into the one this
  * window runs, and waits in the queue when there is none. A refused slot
- * means another hand-off has the row or it was already delivered, so the
- * item goes and nothing is sent. A failed hand-off gives the slot back and
- * queues the row again.
+ * means another hand-off has the row, it was already delivered, or it was a
+ * steer that missed its turn and Rust dropped it, so the item goes and
+ * nothing is sent. A failed hand-off gives the slot back and queues the row
+ * again; a steer row is dropped instead (design 16.6), so its item goes.
  */
 export async function handOff(
   host: MonoQueueHost,
@@ -260,12 +263,14 @@ export async function handOff(
     else {
       await invoke("mono_message_release", slot);
       host.update(sessionId, (session) =>
-        ensureQueued(
-          session,
-          queueItem(host, row),
-          "queue",
-          host.isMonoChat(sessionId),
-        ),
+        row.intent === "steer"
+          ? dequeueQueuedMessage(session, id)
+          : ensureQueued(
+              session,
+              queueItem(host, row),
+              "queue",
+              host.isMonoChat(sessionId),
+            ),
       );
     }
   }
@@ -608,7 +613,11 @@ export async function routeMessages(
     }
     return steered ? "steer" : "queue";
   }
-  const kind = via === "steer" && bubble ? "steer" : "queue";
+  const kind =
+    via === "steer" &&
+    (bubble || messages.every((message) => message.intent === "steer"))
+      ? "steer"
+      : "queue";
   const routed = new Set<string>(messages.map((message) => message.id));
   // The load may have queued these rows already; they still open the turn.
   const idle =

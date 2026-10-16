@@ -152,12 +152,16 @@ it("says how to keep memory and update the soul only at the user's request", () 
     "get_monos",
     "send_message",
     "wanting_reply",
+    '"intent":"new"',
+    '"intent":"steer"',
+    '"reply_to"',
     '"to"',
     "<mono_message>",
     "<mono_notice>",
   ])
     expect(messaging).toContain(tool);
   expect(full).not.toContain("monos.send");
+  expect(messaging).not.toContain('"action_type":');
   const delegation = rules("session_delegation_rules");
   expect(delegation).toMatch(/pass harness and model to sessions\.start/);
   expect(delegation).toContain("models.list");

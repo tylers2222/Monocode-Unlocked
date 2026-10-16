@@ -290,6 +290,19 @@ it.each([
     },
     "action_type",
   ],
+  // PR I2. Defect: the removed field is ignored and the call silently
+  // changes meaning; the hint must name its replacement.
+  [
+    {
+      message: "Hi",
+      send_to: "mono-2",
+      wanting_reply: false,
+      intent: "new",
+      action_type: "queue",
+    },
+    "use intent",
+  ],
+  [{ message: "Hi", send_to: "mono-2", wanting_reply: false }, "intent"],
 ])(
   "answers an invalid messages.send with invalid_input (%#)",
   async (input, named) => {
