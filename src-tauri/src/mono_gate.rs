@@ -1828,7 +1828,11 @@ mod tests {
             payload_hash: Input::Send(bare.clone()).payload_hash(),
             ..row('a', Some("giga"), 0, open(1))
         }];
-        let with_scope = whole(IntentKind::Steer);
+        // The same call but for scope, so only scope can tell them apart.
+        let with_scope = SendInput {
+            target: Some(SendTarget::Turn),
+            ..bare.clone()
+        };
         assert_eq!(
             decide_send(
                 &caller(CallerKind::MonoChat),
