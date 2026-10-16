@@ -28,6 +28,7 @@ import {
   opensTurn,
   listenForMonoRoutes,
   ensureQueued,
+  getMessage,
   getMonos,
   handOff,
   reconcile,
@@ -102,6 +103,7 @@ const rust = vi.hoisted(() => {
     loaded: {} as Record<string, string[]>,
     commands: [] as string[],
     submitted: [] as Record<string, unknown>[],
+    gets: [] as Record<string, unknown>[],
   };
   const row = (id: string) => state.rows.find((entry) => entry.id === id);
   const held = (entry: Row, turnId: string) =>
@@ -311,6 +313,23 @@ const rust = vi.hoisted(() => {
         entry.status = "dropped";
         return "dropped";
       }
+      case "mono_message_get": {
+        state.gets.push(args);
+        const { input } = args as { input: { handle: string } };
+        const entry = row(input.handle);
+        return entry
+          ? {
+              outcome: "found",
+              message: { message_id: entry.id, body: entry.body },
+            }
+          : {
+              outcome: "failed",
+              error: {
+                code: "unknown_message",
+                hint: "No message you can read has that id.",
+              },
+            };
+      }
     }
     throw new Error(`unexpected command ${command}`);
   };
@@ -392,6 +411,7 @@ beforeEach(() => {
   rust.state.loaded = {};
   rust.state.commands = [];
   rust.state.submitted = [];
+  rust.state.gets = [];
 });
 
 const chat = (id: string, change: Partial<Session> = {}): Session => ({
@@ -482,6 +502,7 @@ function world(
         sendMessage(host, requestId, input),
       reply: (requestId: string, input: never) =>
         replyMessage(host, requestId, input),
+      get: (input: never) => getMessage(host, input),
     },
   } as unknown as AgentAppHost;
   const source = chat(caller === "giga" ? "giga-chat" : "a-chat");
@@ -781,6 +802,32 @@ it("lists every Mono for messages.get_monos and marks the caller", async () => {
       { mono_id: "giga", mono_name: "Boss", role: "giga", you: true },
       { mono_id: "mono-a", mono_name: "A", role: "mono", you: false },
     ],
+  });
+});
+
+// Design 16.4. Defect: messages.get never reaches Rust with the caller's
+// turn, or a refusal comes back as a message instead of its code and hint.
+it("reads a message for messages.get with the caller and answers Rust's code on a refusal", async () => {
+  const { send, run } = world([chat("a-chat")]);
+  await send(ask());
+  const [sent] = rust.state.rows;
+  expect(await run("messages.get", { handle: sent.id })).toEqual({
+    message: { message_id: sent.id, body: sent.body },
+  });
+  expect(rust.state.gets[0]).toEqual({
+    caller: {
+      kind: "mono_chat",
+      monoId: "giga",
+      sessionId: "giga-chat",
+      turnId: "t",
+    },
+    input: { handle: sent.id },
+  });
+  await expect(
+    run("messages.get", { handle: "m_zzzzzzzzzzzz" }),
+  ).rejects.toMatchObject({
+    code: "unknown_message",
+    hint: "No message you can read has that id.",
   });
 });
 

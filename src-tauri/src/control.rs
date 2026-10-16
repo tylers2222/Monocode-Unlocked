@@ -1873,6 +1873,41 @@ mod tests {
         assert!(events.is_empty());
         assert!(inner.lock().unwrap().pending.is_empty());
     }
+
+    // PR I3. Defect: omp cannot call get_message, because the host tool
+    // allowlist does not list messages.get; or the allowlist lets any app
+    // action through as a host tool.
+    #[test]
+    fn a_host_tool_call_reaches_the_window_for_messages_get_and_not_for_other_actions() {
+        let inner = Mutex::new(Inner::default());
+        app_grant(&mut inner.lock().unwrap(), "mono-chat");
+        let call = |action: &str| {
+            let mut actions = Vec::new();
+            let response = host_call(
+                &inner,
+                "main",
+                "mono-chat",
+                action.into(),
+                json!({"handle": "#1"}),
+                "r1".into(),
+                |_, event| {
+                    let pending = inner.lock().unwrap().pending.remove(&event.id).unwrap();
+                    pending.reply.send(json!({"ok": true})).unwrap();
+                    actions.push(event.action);
+                    true
+                },
+                Duration::from_millis(50),
+            )
+            .unwrap_or_else(Failure::response);
+            (response, actions)
+        };
+        let (response, actions) = call("messages.get");
+        assert_eq!(response, json!({"ok": true}));
+        assert_eq!(actions, ["messages.get"]);
+        let (response, actions) = call("monos.list");
+        assert_eq!(response["ok"], false);
+        assert!(actions.is_empty());
+    }
     // Defect: an omp host call that times out is not repeated, is repeated
     // under a new request id (a second delivery), or hands the model the
     // CLI's "Retry with the same request ID", which a tool caller cannot do.

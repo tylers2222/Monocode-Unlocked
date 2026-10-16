@@ -149,6 +149,8 @@ it("says how to keep memory and update the soul only at the user's request", () 
     "messages.get_monos",
     "messages.send",
     "messages.reply",
+    'messages.get {"handle"',
+    "get_message",
     "get_monos",
     "send_message",
     "wanting_reply",

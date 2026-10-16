@@ -13,6 +13,7 @@ import {
   createLoadReconciles,
   createOwnerDeliveries,
   createReportedDeliveries,
+  getMessage,
   getMonos,
   dispatchOpener,
   handOff,
@@ -11591,6 +11592,7 @@ function Workspace({
                 sendMessage(messaging, requestId, input),
               reply: (requestId, input) =>
                 replyMessage(messaging, requestId, input),
+              get: (input) => getMessage(messaging, input),
             },
             habits: { load: loadHabits, update: updateHabits },
             agentFiles: (monoId) => loadMonoFiles(monoId),

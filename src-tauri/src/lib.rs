@@ -543,6 +543,7 @@ pub fn run() {
             mono_roster::monos_delete,
             mono_roster::monos_import_legacy,
             mono_messages::mono_message_submit,
+            mono_messages::mono_message_get,
             mono_messages::mono_message_assign_slot,
             mono_messages::mono_message_confirm_openers,
             mono_messages::mono_message_release,

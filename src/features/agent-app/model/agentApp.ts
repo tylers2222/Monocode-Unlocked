@@ -7,8 +7,10 @@ import {
 } from "../../sessions/model/models";
 import { requireHarnessModel } from "./agentModelChoice";
 import {
+  parseGetInput,
   parseReplyInput,
   parseSendInput,
+  type GetInput,
   type ReplyInput,
   type SendInput,
 } from "../../monos/model/monoMessages";
@@ -250,6 +252,7 @@ export type AgentAppHost = {
     getMonos(): Promise<unknown>;
     send(requestId: string, input: SendInput): Promise<unknown>;
     reply(requestId: string, input: ReplyInput): Promise<unknown>;
+    get(input: GetInput): Promise<unknown>;
   };
   agentFiles(monoId: string): Promise<MonoFiles>;
   /** The shared Giga workspace, as the last ensure run left it. */
@@ -334,6 +337,7 @@ const FIELDS = new Map<string, readonly string[]>([
     ["message", "send_to", "wanting_reply", "intent", "reply_to", "scope"],
   ],
   ["messages.reply", ["message", "wanting_reply", "to"]],
+  ["messages.get", ["handle"]],
   ["workspace.status", []],
   ["chat.card", [...CARD_FIELDS]],
 ]);
@@ -1326,6 +1330,8 @@ export async function handleAgentApp(
         requestId,
         checked(() => parseReplyInput(input)),
       );
+    if (action === "messages.get")
+      return messages.get(checked(() => parseGetInput(input)));
     return messages.getMonos();
   }
   if (action === "workspace.status") {
