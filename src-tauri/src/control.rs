@@ -169,12 +169,13 @@ impl Inner {
         ids
     }
     /// A deleted or archived session keeps no token, turn or scratch folder.
-    fn forget_session(&mut self, session: &str) {
+    /// Returns the turn it drops, which the caller must end (design 5.3).
+    fn forget_session(&mut self, session: &str) -> Option<ActiveTurn> {
         self.grants.remove(session);
         self.app_grants.remove(session);
         self.workers.remove(session);
         self.scratch.remove(session);
-        self.active.remove(session);
+        self.active.remove(session)
     }
     /// Design 6 (PR 5 review): the one window that runs a Mono message's
     /// routes and reconcile. A running session belongs to the window of its
@@ -846,20 +847,37 @@ fn release_window_slots(store: &SessionStore, label: &str) -> Notices {
 
 #[tauri::command(async)]
 pub fn control_forget_session(
+    app: AppHandle,
     host: State<'_, ControlHost>,
     harness: State<'_, crate::harness::HarnessHost>,
     session_id: String,
 ) {
-    forget_session(&host.inner, &harness, &session_id);
+    forget_session(
+        &host.inner,
+        &app.state::<SessionStore>(),
+        &harness,
+        &session_id,
+    )
+    .emit(&app);
 }
 
-fn forget_session(inner: &Mutex<Inner>, harness: &crate::harness::HarnessHost, session: &str) {
-    if let Ok(mut inner) = inner.lock() {
-        inner.forget_session(session);
-    }
+/// The turn the session ran ends with it (PR 5 review r2 m3): its questions
+/// become unanswered and the texts its provider never took are freed, as
+/// [`kill_session`] does.
+fn forget_session(
+    inner: &Mutex<Inner>,
+    store: &SessionStore,
+    harness: &crate::harness::HarnessHost,
+    session: &str,
+) -> Notices {
+    let ended = inner
+        .lock()
+        .ok()
+        .and_then(|mut inner| inner.forget_session(session));
     // A live provider keeps the old token in its environment, and a later turn
     // of an unarchived session would mint a token that process never receives.
     harness.kill_session_tree(session);
+    end_turns(store, ended.map(|turn| (session.to_string(), turn)))
 }
 
 pub fn window_closed(app: &AppHandle, label: &str) {
@@ -1282,6 +1300,35 @@ mod tests {
         );
     }
 
+    // PR 5 review r2 m3. Defect: deleting or archiving a session while it
+    // runs drops its turn without the turn-end rules, so its questions stay
+    // open and the text its provider never took keeps its slot until the app
+    // restarts.
+    #[test]
+    fn forgetting_a_running_session_ends_its_turn() {
+        let store = messaging_store();
+        let inner = Mutex::new(Inner::default());
+        run(&inner, "a-chat", "main", "turn-1");
+        let (ask, opener) = {
+            let conn = store.lock_conn().unwrap();
+            (
+                handed_off(&conn, "ask", true, "turn-1", "main", true),
+                handed_off(&conn, "opener", false, "turn-1", "main", false),
+            )
+        };
+        let notices = forget_session(&inner, &store, &HarnessHost::new(), "a-chat");
+        finish_turn(&inner, &store, "a-chat", "turn-1");
+        assert!(matches!(status(&store, &ask), Status::Unanswered { .. }));
+        assert!(matches!(
+            status(&store, &opener),
+            Status::Delivered { slot: None, .. }
+        ));
+        assert_eq!(
+            payload(&notices),
+            json!({"sessions": ["a-chat", "giga-chat"]})
+        );
+    }
+
     // Design 2 review r3-r5, PR 4a review m11. Defect: a reloaded window
     // leaves its old turns in `active` with their questions open, keeps the
     // slots of openers it never sent, or is still named the owner of a
@@ -1552,7 +1599,7 @@ mod tests {
         let mut provider = harness.insert_test_child("mono-chat");
         let mut numbered = harness.insert_test_child("mono-chat#0");
         let mut other = harness.insert_test_child("other-chat");
-        forget_session(&inner, &harness, "mono-chat");
+        forget_session(&inner, &messaging_store(), &harness, "mono-chat");
         assert_eq!(
             app_response(&inner.lock().unwrap(), &token)["code"],
             "unknown_token"

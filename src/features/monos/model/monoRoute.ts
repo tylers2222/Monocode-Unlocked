@@ -98,8 +98,7 @@ function queueItem(host: MonoQueueHost, message: Routed) {
 /**
  * Design 5.3: a sender notice enters the chat once, as a message that waits
  * for the turn end. Its request id in the queue or the transcript means it
- * was queued or sent before, so a pump that runs again, also after a crash
- * before `mark_notified`, adds nothing.
+ * was queued or sent before, so a pump that runs again adds nothing.
  */
 function ensureNotice(
   session: Session,
@@ -159,14 +158,18 @@ export async function reconcile(
     sessionId,
   });
   for (const message of notices) {
-    const notice = noticeItem(host, message);
-    host.update(sessionId, (session) => ensureNotice(session, notice));
     // A chat this window closed meanwhile gets its notices at its next load.
     if (!host.session(sessionId)) return;
-    await invoke("mono_message_mark_notified", {
+    // The claim comes first: the owner can change while this pump runs, and
+    // only the window whose claim marks the row queues its notice (PR 5
+    // review r2 m1).
+    const claimed = await invoke<boolean>("mono_message_mark_notified", {
       id: message.id,
       status: message.status,
     });
+    if (!claimed) continue;
+    const notice = noticeItem(host, message);
+    host.update(sessionId, (session) => ensureNotice(session, notice));
   }
 }
 

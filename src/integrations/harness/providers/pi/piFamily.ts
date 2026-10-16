@@ -250,6 +250,8 @@ export async function sendTurn(
       live.cancelled = false;
       live.muteUpdates = false;
       try {
+        await applyModel(flavor, live, input);
+        if (live.cancelled) return;
         sent = true;
         await runTurn(flavor, live, input);
       } catch (error) {
@@ -625,7 +627,6 @@ async function runTurn(
   live: Live,
   input: SendTurnInput,
 ): Promise<void> {
-  await applyModel(flavor, live, input);
   live.emittedAssistant = "";
   live.emittedReasoning = "";
   live.turnError = null;

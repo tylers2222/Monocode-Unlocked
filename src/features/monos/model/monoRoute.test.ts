@@ -1212,7 +1212,7 @@ it("queues a sender notice once across runs and marks its row notified", async (
   rust.state.rows = [ended({})];
   rust.state.failedMarks = 1;
   const { host, get } = world([chat("giga-chat", { busy: true })]);
-  // The first run queues the notice, and a crash stops it before the mark.
+  // The first claim fails, so that run queues nothing.
   await expect(reconcile(host, "giga-chat")).rejects.toThrow(
     "database is locked",
   );
@@ -1228,6 +1228,10 @@ it("queues a sender notice once across runs and marks its row notified", async (
     '<mono_notice message_id="m_aaaaaaaaaaaa" status="unanswered" to="A">\nIs CI green?\n</mono_notice>',
   );
   expect(rust.state.rows[0].notifiedAt).not.toBeNull();
+  // A lost mark while the notice still waits in the queue.
+  rust.state.rows[0].notifiedAt = null;
+  await reconcile(host, "giga-chat");
+  expect(get("giga-chat").queuedMessages).toHaveLength(1);
   // The notice opens the next turn, and a crash loses the mark again.
   host.update("giga-chat", (session) =>
     acknowledgeMonoMessage(session, notices[0], {
@@ -1258,6 +1262,35 @@ it("gives a pending notice one notice item across two windows that have the chat
     "notice-m_aaaaaaaaaaaa-unanswered",
   ]);
   expect(other.get("giga-chat").queuedMessages).toBeUndefined();
+});
+
+// PR 4a review m19. Defect: every window that has the session loaded
+// reconciles it, so each queues the same unqueued row into its own copy, and
+// a copy that is not busy starts a second turn of the session.
+it("queues an unqueued row only in the window that owns the session", async () => {
+  rust.state.rows = [ended({ status: "open", slot: null, delivery: "queue" })];
+  const second = world([chat("a-chat")], [], { label: "second" });
+  const main = world([chat("a-chat")], [], { label: "main" });
+  await reconcile(second.host, "a-chat");
+  await reconcile(main.host, "a-chat");
+  expect(ids(main.get("a-chat"))).toEqual(["m_aaaaaaaaaaaa"]);
+  expect(second.get("a-chat").queuedMessages).toBeUndefined();
+});
+
+// PR 5 review r2 m1. Defect: the owner of the chat changes while a window's
+// notice pump runs (a window whose label sorts first loads the chat), and
+// both windows queue the same notice into their own copy of the chat.
+it("queues a notice in one window when the chat's owner changes during the pump", async () => {
+  rust.state.rows = [ended({})];
+  const second = world([chat("giga-chat")], [], { label: "second" });
+  const first = reconcile(second.host, "giga-chat");
+  const main = world([chat("giga-chat")], [], { label: "main" });
+  const later = reconcile(main.host, "giga-chat");
+  await Promise.all([first, later]);
+  expect([
+    ...ids(second.get("giga-chat")),
+    ...ids(main.get("giga-chat")),
+  ]).toEqual(["notice-m_aaaaaaaaaaaa-unanswered"]);
 });
 
 // Review r4 of design 5.3. Defect: the notice goes to the session that sent
