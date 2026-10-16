@@ -342,7 +342,7 @@ describe("codex live turn sequence", () => {
       command: "/fake/monocode",
       args: ["app-mcp"],
       env_vars: ["MONOCODE_APP_ENDPOINT", "MONOCODE_APP_TOKEN"],
-      tool_timeout_sec: 120,
+      tool_timeout_sec: 180,
     };
     const doop = { url: "https://doop.design/mcp" };
     prepareCodexMonoContext.mockResolvedValueOnce({

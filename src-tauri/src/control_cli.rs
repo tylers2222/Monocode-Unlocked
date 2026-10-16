@@ -518,6 +518,9 @@ fn send(action: &str, input: &Value, request_id: &str, app_mode: bool) -> Result
     send_to(&endpoint, &token, action, input, request_id, app_mode)
 }
 
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const READ_TIMEOUT: Duration = Duration::from_secs(40);
 fn send_to(
     endpoint: &str,
     token: &str,
@@ -532,17 +535,17 @@ fn send_to(
     if !address.ip().is_loopback() {
         return Err(unsent("MonoCode control only connects to localhost"));
     }
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(3))
+    let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)
         .map_err(|error| {
             unsent(format!(
                 "Cannot connect to MonoCode at {address}: {error}. The app may have restarted, or this agent's sandbox may be blocking localhost."
             ))
         })?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(40)))
+        .set_read_timeout(Some(READ_TIMEOUT))
         .map_err(|e| unsent(e.to_string()))?;
     stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
+        .set_write_timeout(Some(WRITE_TIMEOUT))
         .map_err(|e| unsent(e.to_string()))?;
     writeln!(
         stream,
@@ -733,13 +736,20 @@ fn call_app(
         Ok(connection) => connection,
         Err(failure) => return failure_response(failure, request_id),
     };
+    // Once an attempt reached the app, the outcome stays unknown: a later
+    // attempt that cannot connect does not prove the first was not applied.
+    let mut reached = false;
     for _ in 0..=crate::control::TOOL_CALL_RETRIES {
         match send_to(&endpoint, &token, action, input, request_id, true) {
             Ok(value)
                 if value.get("error").and_then(Value::as_str)
-                    == Some(crate::control::REQUEST_TIMED_OUT) => {}
+                    == Some(crate::control::REQUEST_TIMED_OUT) =>
+            {
+                reached = true;
+            }
             Ok(value) => return value,
-            Err(failure) if failure.sent => {}
+            Err(failure) if failure.sent => reached = true,
+            Err(_) if reached => break,
             Err(failure) => return failure_response(failure, request_id),
         }
     }
@@ -1412,6 +1422,11 @@ mod tests {
         assert!(!answer
             .to_string()
             .contains("Retry with the same request ID"));
+        // The hint must never invite a resend: a resend gets a new id.
+        let hint = answer["hint"].as_str().unwrap();
+        assert!(hint.contains("may already be delivered"), "{hint}");
+        assert!(hint.contains("Do not send it again"), "{hint}");
+        assert!(!hint.to_lowercase().contains("send again"), "{hint}");
         let (endpoint, app) = fake_app(vec![json!({"ok": true}), json!({"ok": true})]);
         mcp(Some(&endpoint), &[send_call(3), send_call(4)]);
         let requests = app.join().unwrap();
@@ -1475,6 +1490,42 @@ mod tests {
                 "m_abcdefghijkl"
             );
         }
+    }
+
+    /// codex's `tool_timeout_sec` for `monocode`; `codexMcpServer` in
+    /// `core/monoTools.ts` sends the same number.
+    const CODEX_TOOL_TIMEOUT: Duration = Duration::from_secs(180);
+
+    // Defect: one tools/call can outlast codex's tool timeout (a silent app
+    // makes every attempt wait out connect, write and read), so codex gives
+    // up first, the model sees no outcome_unknown and sends the message again.
+    #[test]
+    fn app_mcp_worst_case_ends_well_before_codex_gives_up() {
+        let worst_case = (CONNECT_TIMEOUT + WRITE_TIMEOUT + READ_TIMEOUT)
+            * (crate::control::TOOL_CALL_RETRIES as u32 + 1);
+        assert!(
+            worst_case + Duration::from_secs(30) <= CODEX_TOOL_TIMEOUT,
+            "app-mcp may take {worst_case:?}; codex waits {CODEX_TOOL_TIMEOUT:?}"
+        );
+    }
+
+    // Defect: attempt 1 reached the app and its answer was lost, attempt 2
+    // cannot connect, and the model gets a plain connection error, which it
+    // answers with a second send.
+    #[test]
+    fn app_mcp_answers_outcome_unknown_when_a_retry_cannot_connect_after_a_sent_attempt() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let app = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            // No answer, and the app is gone before the retry.
+        });
+        let out = mcp(Some(&endpoint), &[send_call(1)]);
+        app.join().unwrap();
+        let answer = &out[0]["result"]["structuredContent"];
+        assert_eq!(answer["code"], "outcome_unknown", "{answer}");
     }
 
     // Defect: without MONOCODE_APP_TOKEN the server crashes or answers a

@@ -22,9 +22,9 @@ pub(crate) const REQUEST_TIMED_OUT: &str =
 /// tool path repeats a timed-out call itself, this many times, with the same
 /// id; the app returns the first outcome instead of applying it twice.
 pub(crate) const TOOL_CALL_RETRIES: usize = 2;
-const OUTCOME_UNKNOWN: &str = "MonoCode did not confirm this call in time, and it may already be applied. Do not send it again. Wait for the answer or for a new message; call get_monos to check that MonoCode responds. Send again only if nothing arrives.";
+const OUTCOME_UNKNOWN: &str = "MonoCode did not confirm this call in time. The message may already be delivered. Do not send it again. Call get_monos to check that MonoCode responds, and if you asked for a reply, wait for it.";
 
-/// What a tool caller gets when every attempt timed out (design 3.4 `outcome_unknown`).
+/// What a tool caller gets when no attempt was confirmed (design 3.4 `outcome_unknown`).
 pub(crate) fn outcome_unknown() -> Value {
     json!({"ok": false, "code": "outcome_unknown", "hint": OUTCOME_UNKNOWN, "error": OUTCOME_UNKNOWN})
 }
@@ -679,7 +679,9 @@ pub fn configure_child(app: &AppHandle, session_id: &str, cmd: &mut Command) {
 /// A child keyed `S#n` (antigravity) is session S's process and gets S's app
 /// token. Orchestration access (control token, worker scratch) stays with the
 /// exact key: the orchestration stop paths kill by exact key, so an `S#n`
-/// child they miss must not hold a lead's control token.
+/// child they miss must not hold a lead's control token. A lead also holds an
+/// app grant (`control_enable`), so its `S#n` gets that token; it is inert
+/// while the session leads and works again only after `control_disable`.
 fn configure_session_child(inner: &Inner, endpoint: &str, child_key: &str, cmd: &mut Command) {
     if let Some(grant) = inner.grants.get(child_key) {
         cmd.env("MONOCODE_CONTROL_ENDPOINT", endpoint)

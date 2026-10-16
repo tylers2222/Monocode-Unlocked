@@ -41,15 +41,16 @@ export function acpMcpServers(tools: MonoTools | undefined): unknown[] {
 /**
  * codex clears an MCP child's environment and copies back only `env_vars`,
  * so the server names the two variables it needs, never their values.
- * `tool_timeout_sec` outlasts app-mcp's own retries (3 × 35 s): codex must
- * not give up first, or the model would send the message again.
+ * `tool_timeout_sec` must exceed app-mcp's worst case, 3 attempts × (3 s
+ * connect + 5 s write + 40 s read) = 144 s (`APP_MCP_WORST_CASE` in
+ * control_cli.rs): codex must not give up first, or the model would resend.
  */
 export function codexMcpServer(tools: MonoTools): Record<string, unknown> {
   return {
     command: tools.exe,
     args: MCP_ARGS,
     env_vars: ["MONOCODE_APP_ENDPOINT", "MONOCODE_APP_TOKEN"],
-    tool_timeout_sec: 120,
+    tool_timeout_sec: 180,
   };
 }
 
