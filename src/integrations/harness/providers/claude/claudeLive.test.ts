@@ -303,6 +303,45 @@ describe("claude Mono messaging tools", () => {
   });
 });
 
+// PR 5 review M2. Defect: a Stop while Claude's process spawns ends the send
+// normally, so the registry confirms a Mono opener the provider never got.
+describe("claude turn result", () => {
+  it("reports a turn stopped while its process spawns as cancelled, and a run turn as sent", async () => {
+    const cancelled = sendClaudeTurn({
+      sessionId: "s1",
+      cwd: "/repo",
+      model: "claude:claude-sonnet-5",
+      modelSettings: {},
+      runtimeMode: "supervised",
+      text: "never sent",
+      turnId: "t-cancelled",
+      attachments: [],
+      onEvent: () => undefined,
+    });
+    await cancelClaudeTurn("s1");
+    await waitFor(
+      () =>
+        parse().some(
+          (m) =>
+            (m.request as Record<string, unknown> | undefined)?.subtype ===
+            "initialize",
+        ),
+      "initialize",
+    );
+    emit({ type: "system", subtype: "init", session_id: "sess_1" });
+    emit({
+      type: "control_response",
+      response: { subtype: "success", request_id: "monocode_1" },
+    });
+    expect(await cancelled).toBe("cancelled");
+    expect(parse().some((m) => m.type === "user")).toBe(false);
+
+    const { turn } = await startTurn("s1");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    expect(await turn).toBe("sent");
+  });
+});
+
 describe("claude streamed tool inputs", () => {
   it("replaces an empty Shell row with the complete assistant tool input", async () => {
     const { events, turn } = await startTurn("s1");

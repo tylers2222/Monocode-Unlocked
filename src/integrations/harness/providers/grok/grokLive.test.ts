@@ -24,6 +24,7 @@ vi.mock("../../core/child", () => ({
 
 const {
   bindGrokSession,
+  cancelGrokTurn,
   compactGrokContext,
   sendGrokTurn,
   respondGrokApproval,
@@ -278,6 +279,39 @@ describe("grok live turn sequence", () => {
     reply(request.id, {});
     await compact;
     await stopGrokSession("t4");
+  });
+
+  // PR 5 review m2. Defect: a Stop while Grok's process spawns ends the send
+  // as sent, so the registry confirms a Mono opener Grok never got.
+  it("grok turn result: a turn cancelled while its process spawns is cancelled, and a run turn is sent", async () => {
+    const base = {
+      sessionId: "t5",
+      cwd: "/repo",
+      model: "grok:grok-4.6",
+      runtimeMode: "supervised" as const,
+      attachments: [],
+      onEvent: () => undefined,
+    };
+    const cancelled = sendGrokTurn({
+      ...base,
+      text: "never sent",
+      turnId: "t-cancelled",
+    });
+    await cancelGrokTurn("t5");
+    await handshake();
+    expect(await cancelled).toBe("cancelled");
+    expect(parse().some((m) => m.method === "session/prompt")).toBe(false);
+
+    const turn = sendGrokTurn({ ...base, text: "hey", turnId: "t-sent" });
+    await waitFor(
+      () => parse().some((m) => m.method === "session/prompt"),
+      "prompt",
+    );
+    reply(parse().find((m) => m.method === "session/prompt")!.id, {
+      stopReason: "end_turn",
+    });
+    expect(await turn).toBe("sent");
+    await stopGrokSession("t5");
   });
 });
 

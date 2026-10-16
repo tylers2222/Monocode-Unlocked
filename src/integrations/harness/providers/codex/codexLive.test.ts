@@ -2389,6 +2389,41 @@ describe("codex live turn sequence", () => {
       false,
     );
   });
+
+  // PR 5 review m2. Defect: a Stop while Codex's app-server spawns ends the
+  // send as sent, so the registry confirms a Mono opener Codex never got.
+  it("codex turn result: a turn cancelled while its process spawns is cancelled, and a run turn is sent", async () => {
+    const cancelled = sendCodexTurn({
+      sessionId: "codex-live",
+      cwd: "/repo",
+      model: "codex:gpt-5.4",
+      modelSettings: {},
+      runtimeMode: "supervised",
+      text: "never sent",
+      turnId: "t-cancelled",
+      attachments: [],
+      onEvent: () => undefined,
+    });
+    await cancelCodexTurn("codex-live");
+    await waitFor(
+      () => parse().some((m) => m.method === "initialize"),
+      "initialize",
+    );
+    reply(parse().find((m) => m.method === "initialize")!.id as number, {});
+    await waitFor(
+      () => parse().some((m) => m.method === "thread/start"),
+      "thread/start",
+    );
+    reply(parse().find((m) => m.method === "thread/start")!.id as number, {
+      thread: { id: "thr_1" },
+    });
+    expect(await cancelled).toBe("cancelled");
+    expect(parse().some((m) => m.method === "turn/start")).toBe(false);
+
+    const { turn } = await startTurn("codex-live");
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    expect(await turn).toBe("sent");
+  });
 });
 
 describe("codex subagents", () => {

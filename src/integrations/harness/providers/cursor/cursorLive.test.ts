@@ -641,3 +641,39 @@ describe("cursor background subagents", () => {
     expect(agentEvents(events).at(-1)).toMatchObject({ status: "completed" });
   });
 });
+
+// PR 5 review m2. Defect: a Stop while Cursor's process spawns ends the send
+// as sent, so the registry confirms a Mono opener the provider never got.
+describe("cursor turn result", () => {
+  it("cursor turn result: a turn cancelled while its process spawns is cancelled, and a run turn is sent", async () => {
+    const cancelled = sendCursorTurn({
+      sessionId: "cursor-live",
+      cwd: "/repo",
+      model: "cursor:composer-2.5",
+      modelSettings: {},
+      runtimeMode: "supervised",
+      text: "never sent",
+      turnId: "t-cancelled",
+      attachments: [],
+      onEvent: () => undefined,
+    });
+    await cancelCursorTurn("cursor-live");
+    await waitFor(() => !!outboundRequest("initialize"), "initialize");
+    reply(outboundRequest("initialize")!.id as number, {});
+    await waitFor(() => !!outboundRequest("authenticate"), "authenticate");
+    reply(outboundRequest("authenticate")!.id as number, {});
+    await waitFor(() => !!outboundRequest("session/new"), "session/new");
+    reply(outboundRequest("session/new")!.id as number, {
+      sessionId: "cursor_1",
+      configOptions: [
+        { id: "model", category: "model", currentValue: "composer-2.5" },
+      ],
+    });
+    expect(await cancelled).toBe("cancelled");
+    expect(outboundRequest("session/prompt")).toBeUndefined();
+
+    const { promptId, turn } = await startTurn("cursor-live");
+    reply(promptId, { stopReason: "end_turn" });
+    expect(await turn).toBe("sent");
+  });
+});

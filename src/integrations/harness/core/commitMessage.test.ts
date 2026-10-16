@@ -53,7 +53,7 @@ beforeEach(() => {
       id,
       live: true,
       generateCommitMessage: generate,
-      sendTurn: async () => {},
+      sendTurn: async () => "sent" as const,
       steerTurn: async () => {},
       cancelTurn: async () => {},
       respondApproval: () => {},

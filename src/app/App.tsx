@@ -10,13 +10,15 @@ import {
   enqueueMonoMessage,
 } from "../features/monos/model/monoMessaging";
 import {
+  createLoadReconciles,
   createOwnerDeliveries,
-  createTurnIds,
+  createReportedDeliveries,
   getMonos,
   dispatchOpener,
   handOff,
+  listenForMonoNotices,
   listenForMonoRoutes,
-  reconcile,
+  opensTurn,
   replyMessage,
   sendMessage,
   type MonoMessagingHost,
@@ -25,8 +27,10 @@ import {
 } from "../features/monos/model/monoRoute";
 import { resolveCaller } from "../features/monos/model/monoCaller";
 import {
+  newTurnId,
   parseMonoId,
   parseSessionId,
+  type TurnId,
 } from "../features/monos/model/monoMessages";
 import {
   dismissQueuedMonoSessionCompletion,
@@ -922,11 +926,25 @@ type SubmitOptions = ComposerTurnOptions & {
    * A new turn reports when the provider accepts it or the turn ends first.
    */
   providerTook?: (accepted: boolean) => void;
+  /**
+   * The id of the turn this submit opens; set by the Mono hand-off that
+   * took the slot for it (design 5.2). A busy session opens none, so it
+   * refuses the submit.
+   */
+  turnId?: TurnId;
+  /** What the agent reads instead of `text`, which the transcript shows. */
+  agentText?: string;
   /** Generate a fresh title even when this is not the session's first turn. */
   refreshTitle?: boolean;
   /** Internal guard for the retry after resolving a renamed project. */
   projectLocationReady?: boolean;
 };
+
+/** What a Mono hand-off adds to the submit of its queue item. */
+type HandOffOptions = Pick<
+  SubmitOptions,
+  "providerTook" | "turnId" | "agentText"
+>;
 
 type Submit = (
   sessionId: string,
@@ -1655,6 +1673,8 @@ function Workspace({
   });
   const turnGen = useRef(new Map<string, number>());
   const turnWatchers = useRef(createTurnWatchers());
+  /** The turn each session runs in this window now (design 5.2). */
+  const currentTurnIds = useRef(new Map<string, TurnId>());
   /** This window's side of Mono message delivery (design 5.5). */
   const monoQueue = useMemo(
     (): MonoQueueHost => ({
@@ -1681,10 +1701,12 @@ function Workspace({
           }
         );
       },
-      turnId: createTurnIds((id) => turnGen.current.get(id) ?? 0),
+      turnId: (id) => currentTurnIds.current.get(id),
+      owns: (id) => invoke<boolean>("control_owns_session", { sessionId: id }),
     }),
     [],
   );
+  const monoLoads = useMemo(() => createLoadReconciles(monoQueue), [monoQueue]);
   const editedResends = useRef(createEditedResendCoordinator()).current;
   const lastPersisted = useRef(new Map<string, string>());
   const lastBoundProvider = useRef(new Map<string, string>());
@@ -7053,6 +7075,7 @@ function Workspace({
           )
         : undefined;
       if (options?.queuedMessageId && !queuedItem) return false;
+      if (!opensTurn(current, options?.turnId)) return false;
       const noteCard =
         options && "noteCard" in options ? options.noteCard : current.noteCard;
       const handoffCard =
@@ -7132,6 +7155,7 @@ function Workspace({
         isNativeCommandPrompt(submittedText, current.harness);
       const ciContext = options?.ciRepair?.prompt ?? options?.ciContext;
       const harnessText =
+        options?.agentText ??
         options?.ciRepair?.prompt ??
         (rawCommand ? submittedText : composeNoteMessage(noteCard, promptText));
 
@@ -7766,6 +7790,9 @@ function Workspace({
       let proposalText = "";
       let nativeProposalText = "";
       let completedProposal: OrchestrationProposal | undefined;
+      // Design 5.2: the turn's app calls and handles are bound to this id.
+      let turnId = options?.turnId ?? newTurnId();
+      currentTurnIds.current.set(sessionId, turnId);
       void (async () => {
         // A Giga's turn starts after its workspace is in place, or after a
         // short wait: the workspace never holds the turn back.
@@ -8095,13 +8122,14 @@ function Workspace({
                 orchestrator.run(sessionId)?.status === "active",
               appAccess: operatorAccess,
               text,
+              turnId,
               attachments: turnAttachments,
               onAccepted: () => {
                 tookTurn(true);
                 acceptEditedResend();
               },
               onEvent: routeTurnEvent,
-            }).then(() => tookTurn(true));
+            }).then((result) => tookTurn(result === "sent"));
           let sendText = orchestrator.prompt(
             sessionId,
             inboxAskPrompt(
@@ -8213,6 +8241,9 @@ function Workspace({
               async (repairPrompt) => {
                 proposalText = "";
                 nativeProposalText = "";
+                // Each send is a turn of its own, with its own id.
+                turnId = newTurnId();
+                currentTurnIds.current.set(sessionId, turnId);
                 await sendTurn(repairPrompt, []);
                 if (providerFailureSeen)
                   throw new Error(
@@ -8397,6 +8428,8 @@ function Workspace({
           tookTurn(false);
           editedResend?.reject();
           if (editedResend) editedResends.finish(sessionId);
+          if (currentTurnIds.current.get(sessionId) === turnId)
+            currentTurnIds.current.delete(sessionId);
           const outcome: ControlOutcome =
             turnGen.current.get(sessionId) !== gen
               ? { status: "cancelled", text: controlText }
@@ -8852,6 +8885,7 @@ function Workspace({
       flushHarnessEvents();
       return opened;
     },
+    reconciled: (id) => monoLoads.of(id),
     steerProject: async (target, text, id) => {
       const change = (update: (session: Session) => Session) =>
         updateSessionState(sessionsRef, setSessions, (sessions) =>
@@ -8887,6 +8921,7 @@ function Workspace({
   monoRouteHost.current = routeHost;
 
   const ownerDeliveries = useMemo(() => createOwnerDeliveries(10_000), []);
+  const reportedDeliveries = useMemo(() => createReportedDeliveries(256), []);
   // Design 6: Rust sends a route here when this window owns its session.
   useEffect(
     () => listenForMonoRoutes(() => monoRouteHost.current, ownerDeliveries),
@@ -9096,9 +9131,8 @@ function Workspace({
               ),
             );
           try {
-            const submit = (providerTook?: (accepted: boolean) => void) =>
+            const submit = (handed?: HandOffOptions) =>
               submitSession(session.id, head.text, head.attachments, {
-                providerTook,
                 queuedMessageId: head.id,
                 followUpBehavior: steering ? "steer" : undefined,
                 noteCard: head.noteCard,
@@ -9110,25 +9144,23 @@ function Workspace({
                       appRequestId: head.id,
                     }
                   : {}),
+                ...handed,
               });
-            const monoMessage = head.monoMessageId && {
-              id: head.monoMessageId,
-              text: head.text,
-            };
-            const accepted = monoMessage
+            const accepted = head.monoMessageId
               ? steering
                 ? await handOff(
                     monoQueue,
                     session.id,
-                    monoMessage,
+                    head.monoMessageId,
                     "steer",
-                    submit,
+                    ({ text }) => submit({ agentText: text }),
                   )
                 : await dispatchOpener(
                     monoQueue,
                     session.id,
-                    monoMessage,
-                    submit,
+                    head.monoMessageId,
+                    ({ text, turnId }, providerTook) =>
+                      submit({ agentText: text, turnId, providerTook }),
                   )
               : await submit();
             // A preflight rejection must not repeatedly retry or hide the message.
@@ -9192,8 +9224,7 @@ function Workspace({
   }, [submitSession, sessions, queueDispatchVersion]);
 
   // Design 5.5 rule 6: a session this window loads, at boot or later, gets
-  // its Mono messages that no queue item or slot holds.
-  const reconciledSessions = useRef(new Set<string>());
+  // its Mono messages that no queue item or slot holds, and its notices.
   const reportedSessions = useRef("");
   useEffect(() => {
     const loaded = new Set(sessions.map((session) => session.id));
@@ -9205,14 +9236,10 @@ function Workspace({
         console.error,
       );
     }
-    for (const id of reconciledSessions.current)
-      if (!loaded.has(id)) reconciledSessions.current.delete(id);
-    for (const id of loaded) {
-      if (reconciledSessions.current.has(id)) continue;
-      reconciledSessions.current.add(id);
-      void reconcile(monoQueue, id).catch(console.error);
-    }
-  }, [sessions, monoQueue]);
+    monoLoads.keep(loaded);
+    for (const id of loaded) void monoLoads.of(id);
+  }, [sessions, monoLoads]);
+  useEffect(() => listenForMonoNotices(monoQueue), [monoQueue]);
 
   const onDeleteQueuedMessage = useCallback(
     (sessionId: string, messageId: string) => {
@@ -9287,16 +9314,27 @@ function Workspace({
         intent: message.intent,
       };
       if (message.monoMessageId) {
-        const monoMessage = { id: message.monoMessageId, text: message.text };
-        const submit = (providerTook?: (accepted: boolean) => void) =>
+        const submit = (handed: HandOffOptions) =>
           submitSession(sessionId, message.text, message.attachments, {
             ...options,
-            providerTook,
+            ...handed,
           });
         void (
           session.busy
-            ? handOff(monoQueue, sessionId, monoMessage, "steer", submit)
-            : dispatchOpener(monoQueue, sessionId, monoMessage, submit)
+            ? handOff(
+                monoQueue,
+                sessionId,
+                message.monoMessageId,
+                "steer",
+                ({ text }) => submit({ agentText: text }),
+              )
+            : dispatchOpener(
+                monoQueue,
+                sessionId,
+                message.monoMessageId,
+                ({ text, turnId }, providerTook) =>
+                  submit({ agentText: text, turnId, providerTook }),
+              )
         ).catch(console.error);
         return;
       }
@@ -10695,8 +10733,7 @@ function Workspace({
               stopHarnessSession(harness, task.sessionId),
             ),
           );
-        await invoke("harness_kill", { sessionId: task.sessionId });
-        await invoke("control_turn_finished", { sessionId: task.sessionId });
+        await invoke("control_kill_session", { sessionId: task.sessionId });
         await flushSessionCheckpoint(task.sessionId);
         const listed = await listWorktrees(orchestrationCheckoutCwd(run));
         const workerTree = listed.worktrees.find((tree) =>
@@ -10769,10 +10806,7 @@ function Workspace({
               ),
             );
           }
-          await invoke("harness_kill", { sessionId: task.sessionId });
-          await invoke("control_turn_finished", {
-            sessionId: task.sessionId,
-          });
+          await invoke("control_kill_session", { sessionId: task.sessionId });
           await flushSessionWrites();
           checkOpenWorktreeFiles(path);
           const removed = await removeOrchestrationWorktree(
@@ -10897,8 +10931,7 @@ function Workspace({
         } finally {
           // Also reap processes left behind by a renderer reload, before the
           // corresponding session has been restored in this window.
-          await invoke("harness_kill", { sessionId: id });
-          await invoke("control_turn_finished", { sessionId: id });
+          await invoke("control_kill_session", { sessionId: id });
         }
       },
     });
@@ -11023,10 +11056,7 @@ function Workspace({
                 code: "not_a_mono",
                 hint: "Only a Mono's chat or its habit runs can use Mono messaging.",
               };
-            return resolveCaller(
-              sessionId,
-              monoQueue.turnId(source.id, "current"),
-            );
+            return resolveCaller(sessionId, payload.turnId);
           },
           sessions: () => sessionsRef.current,
           stored: async (id) =>
@@ -11034,6 +11064,7 @@ function Workspace({
           steerable: (session) =>
             isLiveHarness(session.harness) && canSteerHarness(session.harness),
           ownerDelivery: (messageId) => ownerDeliveries.wait(messageId),
+          reported: reportedDeliveries,
           steerableHarnesses: () =>
             HARNESSES.filter(
               (harness) => isLiveHarness(harness) && canSteerHarness(harness),

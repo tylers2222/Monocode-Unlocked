@@ -58,6 +58,7 @@ import type {
   RewindLastTurnInput,
   RewindLastTurnResult,
   SendTurnInput,
+  TurnResult,
   SteerTurnInput,
 } from "../../core/types";
 
@@ -160,7 +161,7 @@ export function setCodexBinaryResolver(
   resolveCodexBinaryImpl = fn;
 }
 
-export async function sendCodexTurn(input: SendTurnInput): Promise<void> {
+export async function sendCodexTurn(input: SendTurnInput): Promise<TurnResult> {
   let live: Live;
   try {
     live = await ensureLive(input);
@@ -168,7 +169,8 @@ export async function sendCodexTurn(input: SendTurnInput): Promise<void> {
     cancelledThreads.delete(input.sessionId);
     throw error;
   }
-  if (cancelledThreads.delete(input.sessionId)) return;
+  if (cancelledThreads.delete(input.sessionId)) return "cancelled";
+  let sent = false;
 
   live.onEvent = input.onEvent;
   live.turns = live.turns
@@ -179,6 +181,7 @@ export async function sendCodexTurn(input: SendTurnInput): Promise<void> {
       live.cancelled = false;
       live.muteUpdates = false;
       try {
+        sent = true;
         await runTurn(live, input);
       } catch (error) {
         if (live.cancelled) return;
@@ -186,6 +189,7 @@ export async function sendCodexTurn(input: SendTurnInput): Promise<void> {
       }
     });
   await live.turns;
+  return sent ? "sent" : "cancelled";
 }
 
 export async function compactCodexContext(

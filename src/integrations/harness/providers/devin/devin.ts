@@ -18,6 +18,7 @@ import type {
   HarnessEvent,
   HarnessSessionInput,
   SendTurnInput,
+  TurnResult,
   SteerTurnInput,
 } from "../../core/types";
 import {
@@ -119,14 +120,17 @@ const titleWaiters = new Map<string, Set<(title: string) => void>>();
 let approvalSeq = 0;
 
 /** Live Devin adapter. Spawns `devin acp` over standard ACP. */
-export async function sendDevinTurn(input: SendTurnInput): Promise<void> {
+export async function sendDevinTurn(input: SendTurnInput): Promise<TurnResult> {
+  let sent = false;
   await runTurn(input, async (live) => {
     await applyModelSelection(live, input);
     if (live.cancelled) return;
     await applyRuntimeMode(live, input.runtimeMode, live.planning);
     if (live.cancelled) return;
+    sent = true;
     await prompt(live, devinPromptBlocks(input.text, input.attachments));
   });
+  return sent ? "sent" : "cancelled";
 }
 
 /** Devin advertises `/compact`; run it as an ordinary command turn. */

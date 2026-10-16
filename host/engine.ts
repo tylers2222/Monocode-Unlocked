@@ -805,6 +805,7 @@ export class HostEngine {
               await provider.send({
                 ...input,
                 text: prompt,
+                turnId: active.runId,
                 attachments: attachments?.map((file) =>
                   isVisionImage(file.mimeType) &&
                   file.path &&

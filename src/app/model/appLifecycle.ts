@@ -220,6 +220,9 @@ export function loadBootWorkspace(): Promise<BootWorkspace> {
     bootPromise = (async () => {
       const hintedCwd = lastProjectPath();
       const historyHint = listProjectHistory(hintedCwd);
+      // Design 2: end the turns and hand-offs a reload of this window left
+      // behind, before any session it loads can start a turn.
+      await invoke("control_window_booted").catch(console.error);
       const windowTransfer = await loadWindowTransfer();
       if (windowTransfer) {
         const listed = await historyForCwd(

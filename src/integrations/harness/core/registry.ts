@@ -18,6 +18,7 @@ import type {
   RewindLastTurnInput,
   RewindLastTurnResult,
   SendTurnInput,
+  TurnResult,
   SteerTurnInput,
 } from "./types";
 
@@ -57,7 +58,7 @@ export type HarnessAdapter = {
   /** False when the harness cannot accept a follow-up while a turn is running. Default: same as live. */
   canSteer?: boolean;
   commands?: NativeCommandProvider;
-  sendTurn(input: SendTurnInput): Promise<void>;
+  sendTurn(input: SendTurnInput): Promise<TurnResult>;
   /** Trigger provider-owned compaction outside MonoCode's normal user-turn path. */
   compactContext?(input: CompactContextInput): Promise<void>;
   /** Rewind provider state so the last user turn can be replaced. */
@@ -270,7 +271,9 @@ export function listHarnesses(): HarnessAdapter[] {
   return [...adapters.values()];
 }
 
-export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
+export function sendHarnessTurn(
+  input: SendTurnInput & { harness: HarnessId },
+): Promise<TurnResult> {
   return queueSessionOperation(input.sessionId, async () => {
     const adapter = requireHarness(input.harness);
     if (!adapter.live) {
@@ -278,15 +281,17 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
     }
     cancelIdlePark(input.sessionId);
     const controlled = typeof isTauri === "function" && isTauri();
+    const turn = { sessionId: input.sessionId, turnId: input.turnId };
     if (controlled)
       await invoke("control_authorize_turn", {
-        sessionId: input.sessionId,
+        ...turn,
         cwd: input.cwd,
         appAccess: input.appAccess === true,
       });
     activeTurnSessions.add(input.sessionId);
+    let result: TurnResult = "cancelled";
     try {
-      await adapter.sendTurn({
+      result = await adapter.sendTurn({
         ...input,
         monoTools: await monoToolsFor(input.harness, input.sessionId),
         onAccepted: () => {
@@ -294,10 +299,20 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
           input.onAccepted?.();
         },
       });
+      return result;
     } finally {
       activeTurnSessions.delete(input.sessionId);
-      if (controlled)
-        await invoke("control_turn_finished", { sessionId: input.sessionId });
+      if (controlled) {
+        try {
+          // Design 5.4 (3) (PR 5 review): a send that resolved with its text
+          // sent had the opener, also on a provider that never reports
+          // turn.ready. A cancel before the text went out confirms nothing.
+          if (result === "sent")
+            await invoke("mono_message_confirm_openers", turn);
+        } finally {
+          await invoke("control_turn_finished", turn);
+        }
+      }
       scheduleIdlePark(input.harness, input.sessionId);
     }
   });

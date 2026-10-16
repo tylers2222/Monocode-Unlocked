@@ -17,6 +17,7 @@ import type {
   RewindLastTurnInput,
   RewindLastTurnResult,
   SendTurnInput,
+  TurnResult,
   SteerTurnInput,
 } from "../../core/types";
 
@@ -25,7 +26,7 @@ import type {
  * loaded (no `--no-extensions`). Todos/subagents packages in `~/.pi/agent`
  * keep working; TUI-only widgets do not appear in MonoCode.
  */
-export function sendPiTurn(input: SendTurnInput): Promise<void> {
+export function sendPiTurn(input: SendTurnInput): Promise<TurnResult> {
   return sendTurn(PI_FLAVOR, input);
 }
 

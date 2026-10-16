@@ -531,6 +531,26 @@ describe.each(providers)("$id offline ACP transport", (provider) => {
     expect(mock.sent.some((m) => m.method === "session/new")).toBe(true);
   });
 
+  // PR 5 review m2. Defect: a Stop while the child spawns ends the send as
+  // sent, so the registry confirms a Mono opener the provider never got.
+  it("antigravity turn result: a turn cancelled while its process spawns is cancelled, and a run turn is sent", async () => {
+    let releaseSpawn: () => void = () => undefined;
+    mock.spawn.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { releaseSpawn = resolve; }),
+    );
+    const cancelled = provider.send({ ...input, text: "never sent", turnId: "t-cancelled" });
+    await vi.waitFor(() => expect(mock.spawn).toHaveBeenCalledTimes(1));
+    await provider.cancel("thread");
+    releaseSpawn();
+    expect(await cancelled).toBe("cancelled");
+    expect(mock.sent.some((m) => m.method === "session/prompt")).toBe(false);
+
+    const turn = provider.send({ ...input, turnId: "t-sent" });
+    await waitPrompt();
+    finishPrompt();
+    expect(await turn).toBe("sent");
+  });
+
   it("unwinds a cancel or stop that lands while session setup is in flight", async () => {
     for (const end of ["cancel", "stop"] as const) {
       mock.silent.add("session/new");

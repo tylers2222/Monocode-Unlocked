@@ -7,6 +7,7 @@ import type { HarnessId } from "../../../features/sessions/model/session";
 import {
   HARNESS_IDLE_PARK_MS,
   bindHarnessSession,
+  cancelHarnessTurn,
   canCompactHarnessContext,
   canRunHarnessTextPrompt,
   runHarnessTextPrompt,
@@ -25,6 +26,50 @@ import {
 import type { SendTurnInput, SteerTurnInput } from "./types";
 import { registerBuiltinHarnesses } from "./register";
 
+/**
+ * Outside the app the registry calls no Tauri command. `inApp` runs it as in
+ * the app, where `answer` plays the Rust side of each command.
+ */
+const tauri = vi.hoisted(() => ({
+  inApp: false,
+  calls: [] as [string, Record<string, unknown> | undefined][],
+  answer: (_command: string, _args: Record<string, unknown>) => {},
+}));
+
+vi.mock(import("@tauri-apps/api/core"), async (importOriginal) => {
+  const original = await importOriginal();
+  return {
+    ...original,
+    isTauri: () => tauri.inApp,
+    invoke: (async (command: string, args?: Record<string, unknown>) => {
+      if (!tauri.inApp) return original.invoke(command, args);
+      tauri.calls.push([command, args]);
+      tauri.answer(command, args ?? {});
+    }) as typeof original.invoke,
+  };
+});
+
+/**
+ * The app's one opener of turn `turnId` in `sessionId`: a row whose text
+ * opened that turn, as `confirm_openers` and the turn end treat it in Rust.
+ */
+function opener(sessionId: string, turnId: string) {
+  const row = {
+    turnId: turnId as string | null,
+    deliveredAt: null as number | null,
+  };
+  tauri.inApp = true;
+  tauri.answer = (command, args) => {
+    if (args.sessionId !== sessionId || args.turnId !== row.turnId) return;
+    if (command === "mono_message_confirm_openers") row.deliveredAt ??= 1;
+    // The turn end takes the slot of a row the provider never took, and
+    // reconcile queues it again.
+    if (command === "control_turn_finished" && row.deliveredAt === null)
+      row.turnId = null;
+  };
+  return row;
+}
+
 function stub(
   id: "cursor" | "codex" | "claude" | "pi",
   extra: Partial<HarnessAdapter> = {},
@@ -32,7 +77,9 @@ function stub(
   return {
     id,
     live: true,
-    async sendTurn(_input: SendTurnInput) {},
+    async sendTurn(_input: SendTurnInput) {
+      return "sent" as const;
+    },
     async steerTurn(_input: SteerTurnInput) {},
     async cancelTurn() {},
     respondApproval() {},
@@ -48,6 +95,8 @@ describe("harness registry", () => {
     resetHarnessModelOverlays();
     resetHarnessIdlePark();
     vi.useRealTimers();
+    tauri.inApp = false;
+    tauri.calls = [];
   });
 
   it("tracks live adapters", () => {
@@ -75,6 +124,7 @@ describe("harness registry", () => {
           await new Promise<void>((resolve) => {
             finish = resolve;
           });
+          return "sent" as const;
         },
       }),
     );
@@ -87,6 +137,7 @@ describe("harness registry", () => {
       model: "codex:gpt-5.4",
       runtimeMode: "supervised",
       text: "Hello",
+      turnId: "readiness-1",
       onEvent,
       onAccepted,
     });
@@ -97,6 +148,94 @@ describe("harness registry", () => {
     expect(onAccepted).toHaveBeenCalledOnce();
     finish();
     await sending;
+  });
+
+  // Design 5.4 (3). Defect: an opener on a provider that never reports
+  // turn.ready is never confirmed, or only after the turn end took its slot,
+  // so the message goes back to the queue and is delivered again.
+  it("confirms the openers of a turn whose send resolved, before the turn ends", async () => {
+    const row = opener("s1", "t1");
+    registerHarness(stub("cursor"));
+    await sendHarnessTurn({
+      harness: "cursor",
+      sessionId: "s1",
+      cwd: "/tmp",
+      model: "cursor:composer-2.5",
+      runtimeMode: "supervised",
+      text: "hi",
+      turnId: "t1",
+      onEvent: () => undefined,
+    });
+    expect(row).toEqual({ turnId: "t1", deliveredAt: 1 });
+    expect(tauri.calls[0]).toEqual([
+      "control_authorize_turn",
+      { sessionId: "s1", turnId: "t1", cwd: "/tmp", appAccess: false },
+    ]);
+  });
+
+  // PR 5 review M2. Defect: a Stop while the provider's process spawns ends
+  // the send normally, through the adapter's cancel guard, and the registry
+  // confirms an opener that the provider never got.
+  it("leaves the opener of a turn cancelled while its provider spawns unconfirmed", async () => {
+    const row = opener("s1", "t1");
+    let spawned!: () => void;
+    const cancelled = new Set<string>();
+    registerHarness(
+      stub("cursor", {
+        // The guard of cursor.ts, claude.ts and the other live adapters.
+        async sendTurn(input) {
+          await new Promise<void>((resolve) => {
+            spawned = resolve;
+          });
+          if (cancelled.delete(input.sessionId)) return "cancelled";
+          return "sent";
+        },
+        async cancelTurn(sessionId) {
+          cancelled.add(sessionId);
+        },
+      }),
+    );
+    const sending = sendHarnessTurn({
+      harness: "cursor",
+      sessionId: "s1",
+      cwd: "/tmp",
+      model: "cursor:composer-2.5",
+      runtimeMode: "supervised",
+      text: "hi",
+      turnId: "t1",
+      onEvent: () => undefined,
+    });
+    await vi.waitFor(() => expect(spawned).toBeDefined());
+    await cancelHarnessTurn("cursor", "s1");
+    spawned();
+    expect(await sending).toBe("cancelled");
+    expect(row).toEqual({ turnId: null, deliveredAt: null });
+  });
+
+  // Design 5.4. Defect: a send that failed counts as the provider having the
+  // opener, so the message is never queued again.
+  it("leaves the openers of a send that failed unconfirmed", async () => {
+    const row = opener("s1", "t1");
+    registerHarness(
+      stub("cursor", {
+        async sendTurn() {
+          throw new Error("cursor exited");
+        },
+      }),
+    );
+    await expect(
+      sendHarnessTurn({
+        harness: "cursor",
+        sessionId: "s1",
+        cwd: "/tmp",
+        model: "cursor:composer-2.5",
+        runtimeMode: "supervised",
+        text: "hi",
+        turnId: "t1",
+        onEvent: () => undefined,
+      }),
+    ).rejects.toThrow("cursor exited");
+    expect(row).toEqual({ turnId: null, deliveredAt: null });
   });
 
   it("advertises isolated text prompt support by harness", () => {
@@ -340,6 +479,7 @@ describe("harness registry", () => {
       cwd: "/tmp",
       model: "cursor:composer-2.5",
       text: "hi",
+      turnId: "t1",
       runtimeMode: "supervised",
       onEvent: () => undefined,
     });
@@ -358,6 +498,7 @@ describe("harness registry", () => {
         cwd: "/tmp",
         model: "cursor:composer-2.5",
         text: "hi",
+        turnId: `turn-${sessionId}`,
         runtimeMode: "supervised",
         onEvent: () => undefined,
       });
@@ -385,10 +526,11 @@ describe("harness registry", () => {
         stub("cursor", {
           stopSession,
           async sendTurn(input) {
-            if (input.sessionId !== "running") return;
+            if (input.sessionId !== "running") return "sent" as const;
             await new Promise<void>((resolve) => {
               finishRunning = resolve;
             });
+            return "sent" as const;
           },
         }),
       );

@@ -33,6 +33,7 @@ import type {
   HarnessEvent,
   HarnessSessionInput,
   SendTurnInput,
+  TurnResult,
   SteerTurnInput,
 } from "../../core/types";
 
@@ -72,7 +73,9 @@ const resumeByThread = new Map<string, Resume>();
 const cancelledThreads = new Set<string>();
 
 /** Live Hermes Agent adapter. Spawns `hermes acp` over standard ACP. */
-export async function sendHermesTurn(input: SendTurnInput): Promise<void> {
+export async function sendHermesTurn(
+  input: SendTurnInput,
+): Promise<TurnResult> {
   let live: Live;
   try {
     live = await ensureLive(input);
@@ -80,7 +83,8 @@ export async function sendHermesTurn(input: SendTurnInput): Promise<void> {
     cancelledThreads.delete(input.sessionId);
     throw error;
   }
-  if (cancelledThreads.delete(input.sessionId)) return;
+  if (cancelledThreads.delete(input.sessionId)) return "cancelled";
+  let sent = false;
 
   live.onEvent = input.onEvent;
   live.runtimeMode = input.runtimeMode;
@@ -95,6 +99,7 @@ export async function sendHermesTurn(input: SendTurnInput): Promise<void> {
         if (live.cancelled) return;
         await applyRuntimeMode(live, input.runtimeMode, live.planning);
         if (live.cancelled) return;
+        sent = true;
         await prompt(live, input);
       } catch (error) {
         if (live.cancelled) return;
@@ -110,6 +115,7 @@ export async function sendHermesTurn(input: SendTurnInput): Promise<void> {
     }
     throw error;
   }
+  return sent ? "sent" : "cancelled";
 }
 
 /** Hermes redirects a concurrent text prompt, or queues it when redirect is unavailable. */

@@ -77,6 +77,16 @@ it("refuses a session that is neither a Mono chat nor a habit run", async () => 
   });
 });
 
+// Design 2 step 4. Defect: a call that no running turn authorized resolves a
+// caller anyway, so its reply is bound to some turn the window guesses.
+it("refuses a call that carries no turn with turn_inactive", async () => {
+  await loadMonoRoster();
+  expect(await resolveCaller(session("giga-chat"), null)).toMatchObject({
+    ok: false,
+    code: "turn_inactive",
+  });
+});
+
 it("refuses even a Mono's chat while the roster is not from the database", async () => {
   const mono = createMono();
   saveMonoSessionId(mono.id, "memory-chat");

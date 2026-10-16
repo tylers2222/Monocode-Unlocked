@@ -535,6 +535,33 @@ describe("Devin live ACP sequence", () => {
     expect(request("session/prompt")).toBeUndefined();
   });
 
+  // PR 5 review m2. Defect: a Stop while Devin's child starts ends the send as
+  // sent, so the registry confirms a Mono opener Devin never got.
+  it("devin turn result: a turn cancelled while its process starts is cancelled, and a run turn is sent", async () => {
+    const base = {
+      sessionId: "devin-thread",
+      cwd: "/repo",
+      model: "devin:glm-5-2",
+      runtimeMode: "auto" as const,
+      onEvent: () => undefined,
+    };
+    const cancelled = sendDevinTurn({
+      ...base,
+      text: "never sent",
+      turnId: "t-cancelled",
+    });
+    await waitFor(() => !!request("initialize"), "initialize");
+    await cancelDevinTurn("devin-thread");
+    await startSession();
+    expect(await cancelled).toBe("cancelled");
+    expect(request("session/prompt")).toBeUndefined();
+
+    const turn = sendDevinTurn({ ...base, text: "hello", turnId: "t-sent" });
+    await answer("session/set_mode", {});
+    await answer("session/prompt", { stopReason: "end_turn" });
+    expect(await turn).toBe("sent");
+  });
+
   it("resumes with session/load and reports Devin's own title", async () => {
     bindDevinSession("devin-thread", "devin-1", "/repo");
     const events: HarnessEvent[] = [];

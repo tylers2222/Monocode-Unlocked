@@ -17,6 +17,7 @@ import type {
   RewindLastTurnInput,
   RewindLastTurnResult,
   SendTurnInput,
+  TurnResult,
   SteerTurnInput,
 } from "../../core/types";
 
@@ -26,7 +27,7 @@ import type {
  * keep working; TUI-only widgets do not appear in MonoCode. omp is a fork of
  * Pi and speaks the same RPC protocol, so both run on the `piFamily` core.
  */
-export function sendOmpTurn(input: SendTurnInput): Promise<void> {
+export function sendOmpTurn(input: SendTurnInput): Promise<TurnResult> {
   return sendTurn(OMP_FLAVOR, input);
 }
 

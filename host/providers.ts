@@ -11,6 +11,7 @@ import * as antigravity from "../src/integrations/harness/providers/antigravity/
 import * as devin from "../src/integrations/harness/providers/devin/devin";
 import type {
   SendTurnInput,
+  TurnResult,
   CompactContextInput,
   ApprovalDecision,
 } from "../src/integrations/harness/core/types";
@@ -35,7 +36,7 @@ import {
 import { respondQuestion as respondPiQuestion } from "../src/integrations/harness/providers/pi/piFamily";
 
 export interface HostProvider {
-  send(input: SendTurnInput): Promise<void>;
+  send(input: SendTurnInput): Promise<TurnResult>;
   compact?(input: CompactContextInput): Promise<void>;
   cancel(id: string): Promise<void>;
   stop(id: string): Promise<void>;

@@ -27,6 +27,7 @@ import type {
   ApprovalDecision,
   HarnessEvent,
   SendTurnInput,
+  TurnResult,
   SteerTurnInput,
 } from "../../core/types";
 
@@ -96,7 +97,7 @@ const cancelledThreads = new Set<string>();
  * Live fx adapter. Spawns `fx acp` and talks Agent Client Protocol.
  * Image/audio prompt blocks are not supported; the composer hides attachments.
  */
-export async function sendFxTurn(input: SendTurnInput): Promise<void> {
+export async function sendFxTurn(input: SendTurnInput): Promise<TurnResult> {
   let live: Live;
   try {
     live = await ensureLive(input);
@@ -104,7 +105,8 @@ export async function sendFxTurn(input: SendTurnInput): Promise<void> {
     cancelledThreads.delete(input.sessionId);
     throw error;
   }
-  if (cancelledThreads.delete(input.sessionId)) return;
+  if (cancelledThreads.delete(input.sessionId)) return "cancelled";
+  let sent = false;
 
   live.onEvent = input.onEvent;
   live.runtimeMode = input.runtimeMode;
@@ -123,6 +125,7 @@ export async function sendFxTurn(input: SendTurnInput): Promise<void> {
           input.intent === "plan",
         );
         if (live.cancelled) return;
+        sent = true;
         await prompt(live, input);
       } catch (error) {
         if (live.cancelled) return;
@@ -140,6 +143,7 @@ export async function sendFxTurn(input: SendTurnInput): Promise<void> {
     }
     throw error;
   }
+  return sent ? "sent" : "cancelled";
 }
 
 export async function steerFxTurn(_input: SteerTurnInput): Promise<void> {

@@ -2,7 +2,7 @@
 //! the facts `mono_messages::submit` read in its transaction to a
 //! [`Decision`]. The first matching row of design 6.3 or 6.4 wins.
 //!
-//! PR 4a has rows S1-S7, S13, S14, S16, S17, S20 and R1-R6, R10, R11. Steers
+//! PR 5 has rows S1-S7, S13, S14, S16, S17, S20 and R1-R8, R10, R11. Steers
 //! by message id, the direction matrix, hop and rate limits come later.
 
 use serde::Serialize;
@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 
 use crate::mono_messages::{
     ActionType, Delivery, Handle, MessageId, MonoId, MonoMessage, Party, PayloadHash, RejectCode,
-    SessionId, Tool,
+    SessionId, Status, Tool,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +26,9 @@ pub struct Caller {
     pub kind: CallerKind,
     pub mono_id: MonoId,
     pub session_id: SessionId,
+    /// The turn that authorized the call (design 2 step 4). A reply answers
+    /// only the messages of this turn.
+    pub turn_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +42,8 @@ pub struct SendInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplyInput {
     pub message: String,
+    /// The handles it answers; without them, the one open handle.
+    pub to: Option<Vec<Handle>>,
     pub wanting_reply: bool,
 }
 
@@ -66,10 +71,18 @@ impl Input {
                 "wanting_reply": send.wanting_reply,
                 "action_type": send.action_type.as_str(),
             }]),
-            Input::Reply(reply) => json!(["reply", {
-                "message": reply.message,
-                "wanting_reply": reply.wanting_reply,
-            }]),
+            Input::Reply(reply) => {
+                let mut fields = json!({
+                    "message": reply.message,
+                    "wanting_reply": reply.wanting_reply,
+                });
+                // Only a call with `to` hashes it, so a call without keeps
+                // the hash it had before `to` existed.
+                if let Some(to) = &reply.to {
+                    fields["to"] = json!(to);
+                }
+                json!(["reply", fields])
+            }
         };
         let digest = format!("{:x}", Sha256::digest(canonical.to_string().as_bytes()));
         PayloadHash::parse(&digest).expect("sha256 is 64 lowercase hex digits")
@@ -82,7 +95,7 @@ pub fn parse(tool: Tool, raw: &Value) -> Result<Input, String> {
     let fields = raw.as_object().unwrap_or(&empty);
     let allowed: &[&str] = match tool {
         Tool::SendMessage => &["message", "send_to", "wanting_reply", "action_type"],
-        Tool::Reply => &["message", "wanting_reply"],
+        Tool::Reply => &["message", "wanting_reply", "to"],
     };
     let unknown: Vec<&str> = fields
         .keys()
@@ -111,8 +124,13 @@ pub fn parse(tool: Tool, raw: &Value) -> Result<Input, String> {
         }
     };
     if tool == Tool::Reply {
+        let to = fields
+            .get("to")
+            .map(|to| handles(to).ok_or_else(|| TO_RULE.to_string()))
+            .transpose()?;
         return Ok(Input::Reply(ReplyInput {
             message,
+            to,
             wanting_reply,
         }));
     }
@@ -136,6 +154,28 @@ pub fn parse(tool: Tool, raw: &Value) -> Result<Input, String> {
         wanting_reply,
         action_type,
     }))
+}
+
+const TO_RULE: &str =
+    r##"to must be a handle such as "#1", or a list of 1 to 9 different handles"##;
+
+/// `to` as design 3.3 allows it: one `"#n"`, or 1 to 9 different ones. A
+/// string becomes a one-item list.
+fn handles(to: &Value) -> Option<Vec<Handle>> {
+    let items = match to {
+        Value::String(_) => std::slice::from_ref(to),
+        Value::Array(items) if (1..=9).contains(&items.len()) => items.as_slice(),
+        _ => return None,
+    };
+    let mut handles: Vec<Handle> = Vec::with_capacity(items.len());
+    for item in items {
+        let handle = item.as_str().and_then(Handle::parse)?;
+        if handles.contains(&handle) {
+            return None;
+        }
+        handles.push(handle);
+    }
+    Some(handles)
 }
 
 /// A session as the gate sees it. It exists when the web app's live list or
@@ -178,16 +218,54 @@ impl Recipient {
     }
 }
 
-/// A message waiting for the caller's reply. In PR 4a: `open` and handed to
-/// the caller's session; PR 5 narrows this to the caller's turn.
+/// How a reply's handle stands in the caller's turn (design 5.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandleState {
+    /// The provider took the text and nothing closed it yet: the open set.
+    Open,
+    /// Handed off, but the provider has not taken the text, so the agent
+    /// never saw the handle.
+    Unseen,
+    Closed(Closure),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Closure {
+    Answered,
+    Unanswered,
+    Dropped,
+}
+
+impl Closure {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Closure::Answered => "answered",
+            Closure::Unanswered => "unanswered",
+            Closure::Dropped => "dropped",
+        }
+    }
+}
+
+/// A message with a handle in the caller's turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Waiting {
+pub struct Handled {
     pub message: MonoMessage,
     pub handle: Handle,
+    pub state: HandleState,
     /// The sender Mono's name, for hints.
     pub from: String,
     /// The session the reply goes to: the message's sender session.
     pub sender: Target,
+}
+
+/// What the reply rows (design 6.4) read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyFacts {
+    /// The caller's handles in its turn.
+    pub handled: Vec<Handled>,
+    /// For a duplicate of a rejected reply: the caller's handles as they
+    /// stood when the first call ran.
+    pub then: Vec<Handled>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,10 +323,23 @@ pub struct OpenHandle {
     pub from: String,
 }
 
+/// One row an accepted call writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outgoing {
+    pub to: Party,
+    pub route: Route,
+    /// The message this row answers; it becomes `answered`.
+    pub reply_to: Option<MessageId>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    /// The same call again: its stored outcome, and no new row.
-    Duplicate { prior: Vec<MonoMessage> },
+    /// The same call again: its stored outcome, and no new row. A call that
+    /// was rejected gets `rejection` again (design 3.4).
+    Duplicate {
+        prior: Vec<MonoMessage>,
+        rejection: Option<Rejection>,
+    },
     /// No row.
     Refuse { code: Refusal, hint: String },
     /// One `rejected` row.
@@ -258,14 +349,28 @@ pub enum Decision {
         to: Option<Party>,
         open_handles: Vec<OpenHandle>,
     },
-    /// One row per entry of `reply_to` (one row when it is empty); each
-    /// `reply_to` row becomes `answered`.
-    Accept {
-        to: Party,
-        route: Route,
-        hop: u32,
-        reply_to: Vec<MessageId>,
-    },
+    /// One row per entry, in part order, each to its own route. A reply to
+    /// several handles answers each sender in its own session.
+    Accept { hop: u32, rows: Vec<Outgoing> },
+}
+
+/// A rejected reply: its code, hint and the open handles it lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rejection {
+    pub code: RejectCode,
+    pub hint: String,
+    pub open_handles: Vec<OpenHandle>,
+}
+
+impl From<Rejection> for Decision {
+    fn from(rejection: Rejection) -> Self {
+        Decision::Reject {
+            code: rejection.code,
+            hint: rejection.hint,
+            to: None,
+            open_handles: rejection.open_handles,
+        }
+    }
 }
 
 impl RejectCode {
@@ -290,8 +395,16 @@ impl RejectCode {
             RejectCode::NoOpenHandle => "No message in this turn is waiting for your reply. Use send_message.",
             RejectCode::UnknownHandle => "No such handle in this turn.",
             RejectCode::HandleClosed => "That handle is already closed.",
-            RejectCode::AmbiguousReply => "Several messages wait for your reply, and reply answers only when one does. Answer each with messages.send (MCP send_message) to its sender.",
+            RejectCode::AmbiguousReply => "Several handles are open. Pass to.",
         }
+    }
+
+    /// The codes whose error lists the open handles (design 3.4).
+    pub fn lists_handles(self) -> bool {
+        matches!(
+            self,
+            RejectCode::NoOpenHandle | RejectCode::AmbiguousReply | RejectCode::UnknownHandle
+        )
     }
 }
 
@@ -309,7 +422,12 @@ fn reject(code: RejectCode, to: Option<Party>) -> Decision {
 }
 
 /// The rows every tool shares: the caller's Mono, then S2/S3 (R2/R3).
-fn prelude<A>(facts: &Facts<A>, hash: &PayloadHash) -> Option<Decision> {
+/// `again` builds the answer of a call that was rejected.
+fn prelude<A>(
+    facts: &Facts<A>,
+    hash: &PayloadHash,
+    again: impl FnOnce(RejectCode) -> Rejection,
+) -> Option<Decision> {
     if facts.caller.is_none() {
         return Some(Decision::Refuse {
             code: Refusal::NotAMono,
@@ -320,6 +438,10 @@ fn prelude<A>(facts: &Facts<A>, hash: &PayloadHash) -> Option<Decision> {
     Some(if &first.payload_hash == hash {
         Decision::Duplicate {
             prior: facts.prior.clone(),
+            rejection: match first.status {
+                Status::Rejected { gate_result, .. } => Some(again(gate_result)),
+                _ => None,
+            },
         }
     } else {
         Decision::Refuse {
@@ -340,7 +462,12 @@ pub fn decide_send(
     hash: &PayloadHash,
     facts: &Facts<Recipient>,
 ) -> Decision {
-    if let Some(decision) = prelude(facts, hash) {
+    let again = |code: RejectCode| Rejection {
+        code,
+        hint: code.hint().into(),
+        open_handles: Vec::new(),
+    };
+    if let Some(decision) = prelude(facts, hash, again) {
         return decision;
     }
     let recipient = &facts.about;
@@ -384,13 +511,15 @@ pub fn decide_send(
         return reject(RejectCode::CannotSteer, to);
     }
     Decision::Accept {
-        to: to.expect("a resolved recipient is a party"),
-        route: Route {
-            session: target.session.clone(),
-            via: if steer { Via::Steer } else { Via::Queue },
-        },
         hop: 0,
-        reply_to: Vec::new(),
+        rows: vec![Outgoing {
+            to: to.expect("a resolved recipient is a party"),
+            route: Route {
+                session: target.session.clone(),
+                via: if steer { Via::Steer } else { Via::Queue },
+            },
+            reply_to: None,
+        }],
     }
 }
 
@@ -404,83 +533,212 @@ fn preview(text: &str) -> String {
     short
 }
 
-/// Design 6.4, the PR 4a rows. Without `to` (PR 5), a reply answers the one
-/// waiting message.
-pub fn decide_reply(
-    input: &ReplyInput,
-    hash: &PayloadHash,
-    facts: &Facts<Vec<Waiting>>,
-) -> Decision {
-    if let Some(decision) = prelude(facts, hash) {
+/// Design 6.4.
+pub fn decide_reply(input: &ReplyInput, hash: &PayloadHash, facts: &Facts<ReplyFacts>) -> Decision {
+    let to = input.to.as_deref();
+    if let Some(decision) = prelude(facts, hash, |code| reply_again(code, to, &facts.about.then)) {
         return decision;
     }
     if too_large(&input.message) {
         return reject(RejectCode::TooLarge, None);
     }
-    let open_handles: Vec<OpenHandle> = facts
-        .about
+    let named = match answers(to, &facts.about.handled) {
+        Ok(named) => named,
+        Err(rejection) => return rejection.into(),
+    };
+    if let Some(rejection) = target_gone(&named) {
+        return rejection.into();
+    }
+    let mut rows = Vec::with_capacity(named.len());
+    for handled in &named {
+        let from = handled
+            .message
+            .from_mono_id
+            .clone()
+            .expect("target_gone refused a row with no sender Mono");
+        let sender = &handled.sender;
+        rows.push(Outgoing {
+            to: Party::Mono { mono_id: from },
+            route: Route {
+                session: sender.session.clone(),
+                via: if sender.running && sender.steerable {
+                    Via::Steer
+                } else {
+                    Via::Queue
+                },
+            },
+            reply_to: Some(handled.message.id.clone()),
+        });
+    }
+    Decision::Accept {
+        hop: named
+            .iter()
+            .map(|handled| handled.message.hop)
+            .max()
+            .unwrap_or(0)
+            + 1,
+        rows,
+    }
+}
+
+/// R5-R8: the messages a reply answers, or why it answers none. Each handle
+/// of `to` is checked in order.
+fn answers<'a>(
+    to: Option<&[Handle]>,
+    handled: &'a [Handled],
+) -> Result<Vec<&'a Handled>, Rejection> {
+    let open = open_set(handled);
+    let Some(to) = to else {
+        return match open.as_slice() {
+            [] => Err(listing(RejectCode::NoOpenHandle, None, &open)),
+            [one] => Ok(vec![*one]),
+            several => Err(ambiguous_reply(several)),
+        };
+    };
+    to.iter()
+        .map(|handle| {
+            let row = handled.iter().find(|row| row.handle == *handle);
+            match row.map(|row| (row, row.state)) {
+                Some((row, HandleState::Open)) => Ok(row),
+                Some((_, HandleState::Closed(closure))) => Err(handle_closed(*handle, closure)),
+                Some((_, HandleState::Unseen)) | None => Err(unknown_handle(*handle, &open)),
+            }
+        })
+        .collect()
+}
+
+fn open_set(handled: &[Handled]) -> Vec<&Handled> {
+    handled
         .iter()
-        .map(|waiting| OpenHandle {
-            handle: waiting.handle,
-            message_id: waiting.message.id.clone(),
-            from: waiting.from.clone(),
+        .filter(|row| row.state == HandleState::Open)
+        .collect()
+}
+
+/// A rejection that lists `open`, with `hint` or else the code's own.
+fn listing(code: RejectCode, hint: Option<String>, open: &[&Handled]) -> Rejection {
+    Rejection {
+        code,
+        hint: hint.unwrap_or_else(|| code.hint().into()),
+        open_handles: open
+            .iter()
+            .map(|row| OpenHandle {
+                handle: row.handle,
+                message_id: row.message.id.clone(),
+                from: row.from.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn ambiguous_reply(open: &[&Handled]) -> Rejection {
+    let listed: Vec<String> = open
+        .iter()
+        .map(|row| {
+            format!(
+                "{} (from {}: {})",
+                row.handle,
+                row.from,
+                preview(row.message.body.text())
+            )
         })
         .collect();
-    let waiting = match facts.about.as_slice() {
-        [] => {
-            return Decision::Reject {
-                code: RejectCode::NoOpenHandle,
-                hint: RejectCode::NoOpenHandle.hint().into(),
-                to: None,
-                open_handles,
-            }
-        }
-        [waiting] => waiting,
-        several => {
-            let listed: Vec<String> = several
-                .iter()
-                .map(|waiting| {
-                    format!(
-                        "{} (from {}: {})",
-                        waiting.handle,
-                        waiting.from,
-                        preview(waiting.message.body.text())
-                    )
-                })
-                .collect();
-            return Decision::Reject {
-                code: RejectCode::AmbiguousReply,
-                hint: format!(
-                    "Several messages wait for your reply: {}. reply answers only when one does. Answer each with messages.send (MCP send_message) to its sender.",
-                    listed.join(", ")
-                ),
-                to: None,
-                open_handles,
-            };
-        }
+    listing(
+        RejectCode::AmbiguousReply,
+        Some(format!(
+            "Several handles are open: {}. Pass to.",
+            listed.join(", ")
+        )),
+        open,
+    )
+}
+
+fn unknown_handle(handle: Handle, open: &[&Handled]) -> Rejection {
+    let names: Vec<String> = open.iter().map(|row| row.handle.to_string()).collect();
+    let names = if names.is_empty() {
+        "none".to_string()
+    } else {
+        names.join(", ")
     };
-    let message = &waiting.message;
-    // A deleted sender Mono has no chat to take the answer either.
-    let Some(from) = message
-        .from_mono_id
-        .clone()
-        .filter(|_| waiting.sender.exists)
-    else {
-        return reject(RejectCode::TargetGone, None);
+    listing(
+        RejectCode::UnknownHandle,
+        Some(format!(
+            "No handle {handle} in this turn. Open handles: {names}."
+        )),
+        open,
+    )
+}
+
+/// R10 (PR 5 review): the named handles whose sender is gone, by name, so
+/// the agent can leave them out of `to`. A deleted sender Mono has no chat
+/// to take the answer either.
+fn target_gone(named: &[&Handled]) -> Option<Rejection> {
+    let gone: Vec<String> = named
+        .iter()
+        .filter(|row| !row.sender.exists || row.message.from_mono_id.is_none())
+        .map(|row| row.handle.to_string())
+        .collect();
+    if gone.is_empty() {
+        return None;
+    }
+    let others = if gone.len() < named.len() {
+        " Answer the other handles with to."
+    } else {
+        ""
     };
-    let sender = &waiting.sender;
-    Decision::Accept {
-        to: Party::Mono { mono_id: from },
-        route: Route {
-            session: sender.session.clone(),
-            via: if sender.running && sender.steerable {
-                Via::Steer
-            } else {
-                Via::Queue
-            },
+    Some(listing(
+        RejectCode::TargetGone,
+        Some(format!(
+            "The sender of {} no longer exists (cleared or deleted).{others}",
+            gone.join(", ")
+        )),
+        &[],
+    ))
+}
+
+fn handle_closed(handle: Handle, closure: Closure) -> Rejection {
+    listing(
+        RejectCode::HandleClosed,
+        Some(format!("{handle} is already {}.", closure.as_str())),
+        &[],
+    )
+}
+
+/// Design 3.4 (PR 4a review m3): a duplicate of a rejected reply answers its
+/// rejection again. `then` holds the caller's handles as they stood when the
+/// first call ran, so the hint and the open handles are the ones it got.
+fn reply_again(code: RejectCode, to: Option<&[Handle]>, then: &[Handled]) -> Rejection {
+    let open = open_set(then);
+    // That call got past every handle before the first one that was not open.
+    let failed = to.and_then(|to| {
+        to.iter()
+            .copied()
+            .find(|handle| !open.iter().any(|row| row.handle == *handle))
+    });
+    let closure = |handle: Handle| {
+        then.iter().find_map(|row| match row.state {
+            HandleState::Closed(closure) if row.handle == handle => Some(closure),
+            _ => None,
+        })
+    };
+    match (code, failed) {
+        (RejectCode::AmbiguousReply, _) if !open.is_empty() => ambiguous_reply(&open),
+        (RejectCode::UnknownHandle, Some(handle)) => unknown_handle(handle, &open),
+        (RejectCode::HandleClosed, Some(handle)) => match closure(handle) {
+            Some(closure) => handle_closed(handle, closure),
+            None => listing(code, None, &[]),
         },
-        hop: message.hop + 1,
-        reply_to: vec![message.id.clone()],
+        (RejectCode::TargetGone, _) => {
+            let named: Vec<&Handled> = match to {
+                Some(to) => open
+                    .iter()
+                    .copied()
+                    .filter(|row| to.contains(&row.handle))
+                    .collect(),
+                None => open.clone(),
+            };
+            target_gone(&named).unwrap_or_else(|| listing(code, None, &[]))
+        }
+        _ => listing(code, None, &open),
     }
 }
 
@@ -502,6 +760,7 @@ mod tests {
             kind,
             mono_id: mono("giga"),
             session_id: session("giga-chat"),
+            turn_id: "turn-1".into(),
         }
     }
 
@@ -581,13 +840,21 @@ mod tests {
         }
     }
 
-    fn waiting(id: char, handle: i64, sender: Target) -> Waiting {
-        Waiting {
+    fn handled(id: char, handle: i64, sender: Target) -> Handled {
+        Handled {
             message: row(id, Some("giga"), 1, open(handle)),
             handle: Handle::new(handle).unwrap(),
+            state: HandleState::Open,
             from: "Boss".into(),
             sender,
         }
+    }
+
+    fn replies(handled: Vec<Handled>) -> Facts<ReplyFacts> {
+        facts(ReplyFacts {
+            handled,
+            then: Vec::new(),
+        })
     }
 
     fn rejected(code: RejectCode, to: Option<Party>) -> Decision {
@@ -608,6 +875,7 @@ mod tests {
     fn reply(message: &str) -> ReplyInput {
         ReplyInput {
             message: message.into(),
+            to: None,
             wanting_reply: false,
         }
     }
@@ -644,11 +912,39 @@ mod tests {
     }
 
     #[test]
-    fn r1_a_reply_with_to_before_handles_exist_is_invalid_input_and_defaults_to_no_reply() {
+    fn r1_to_is_one_handle_or_up_to_nine_different_handles() {
         let parse_reply = |raw: Value| parse(Tool::Reply, &raw);
-        assert!(parse_reply(json!({"message": "Done", "to": "#1"}))
-            .unwrap_err()
-            .contains("to"));
+        let to = |numbers: &[i64]| ReplyInput {
+            to: Some(numbers.iter().map(|n| Handle::new(*n).unwrap()).collect()),
+            ..reply("Done")
+        };
+        assert_eq!(
+            parse_reply(json!({"message": "Done", "to": "#1"})),
+            Ok(Input::Reply(to(&[1])))
+        );
+        assert_eq!(
+            parse_reply(json!({"message": "Done", "to": ["#2", "#10"]})),
+            Ok(Input::Reply(to(&[2, 10])))
+        );
+        let nine: Vec<String> = (91..=99).map(|n| format!("#{n}")).collect();
+        assert!(parse_reply(json!({"message": "Done", "to": nine})).is_ok());
+        let ten: Vec<String> = (1..=10).map(|n| format!("#{n}")).collect();
+        for bad in [
+            json!(null),
+            json!([]),
+            json!(1),
+            json!("1"),
+            json!("#0"),
+            json!("#01"),
+            json!("#100"),
+            json!(" #1"),
+            json!(["#1", "#1"]),
+            json!(["#1", 2]),
+            json!(ten),
+        ] {
+            let error = parse_reply(json!({"message": "Done", "to": bad})).unwrap_err();
+            assert!(error.starts_with("to must be"), "{bad}: {error}");
+        }
         assert!(parse_reply(json!({"wanting_reply": true})).is_err());
         assert_eq!(
             parse_reply(json!({"message": "Done"})),
@@ -686,7 +982,10 @@ mod tests {
                 &hash(),
                 &again,
             ),
-            Decision::Duplicate { prior }
+            Decision::Duplicate {
+                prior,
+                rejection: None
+            }
         );
     }
 
@@ -707,6 +1006,33 @@ mod tests {
                 hint: REQUEST_ID_REUSED.into()
             }
         );
+    }
+
+    // PR 4a review m7 (G31, G32). Defect: a request id reused for another
+    // recipient or action type is answered as a duplicate of the first
+    // message, so the second message is never sent.
+    #[test]
+    fn s3_a_request_id_reused_for_another_recipient_or_action_type_is_refused() {
+        let mut again = facts(mono_a(Some(live("a-chat", false, true))));
+        again.prior = vec![row('a', Some("giga"), 0, open(1))];
+        for other in [
+            send("Ship it", "mono-b", false, ActionType::Queue),
+            send("Ship it", "mono-a", false, ActionType::Steer),
+        ] {
+            assert_eq!(
+                decide_send(
+                    &caller(CallerKind::MonoChat),
+                    &other,
+                    &Input::Send(other.clone()).payload_hash(),
+                    &again,
+                ),
+                Decision::Refuse {
+                    code: Refusal::RequestIdReused,
+                    hint: REQUEST_ID_REUSED.into()
+                },
+                "{other:?}"
+            );
+        }
     }
 
     #[test]
@@ -904,6 +1230,32 @@ mod tests {
         ));
     }
 
+    // PR 4a review m7 (G20). Defect: a steer to an idle session whose
+    // provider cannot steer is refused, though nothing needs steering: it
+    // waits in the queue (design 6.3, route on accept).
+    #[test]
+    fn s17_a_steer_into_an_idle_session_that_cannot_steer_is_queued() {
+        assert_eq!(
+            decide_send(
+                &caller(CallerKind::MonoChat),
+                &send("Hi", "mono-a", false, ActionType::Steer),
+                &hash(),
+                &facts(mono_a(Some(live("a-chat", false, false)))),
+            ),
+            Decision::Accept {
+                hop: 0,
+                rows: vec![Outgoing {
+                    to: party_a().unwrap(),
+                    route: Route {
+                        session: session("a-chat"),
+                        via: Via::Queue
+                    },
+                    reply_to: None,
+                }],
+            }
+        );
+    }
+
     #[test]
     fn s20_an_accepted_send_steers_only_a_running_steerable_session() {
         let decide = |action, target: Target, recipient: fn(Target) -> Recipient| {
@@ -915,13 +1267,15 @@ mod tests {
             )
         };
         let accept = |via| Decision::Accept {
-            to: party_a().unwrap(),
-            route: Route {
-                session: session("a-chat"),
-                via,
-            },
             hop: 0,
-            reply_to: Vec::new(),
+            rows: vec![Outgoing {
+                to: party_a().unwrap(),
+                route: Route {
+                    session: session("a-chat"),
+                    via,
+                },
+                reply_to: None,
+            }],
         };
         let to_a: fn(Target) -> Recipient = |chat| mono_a(Some(chat));
         assert_eq!(
@@ -948,15 +1302,17 @@ mod tests {
         assert_eq!(
             project,
             Decision::Accept {
-                to: Party::Session {
-                    session_id: session("p")
-                },
-                route: Route {
-                    session: session("p"),
-                    via: Via::Steer
-                },
                 hop: 0,
-                reply_to: Vec::new(),
+                rows: vec![Outgoing {
+                    to: Party::Session {
+                        session_id: session("p")
+                    },
+                    route: Route {
+                        session: session("p"),
+                        via: Via::Steer
+                    },
+                    reply_to: None,
+                }],
             }
         );
     }
@@ -968,12 +1324,13 @@ mod tests {
             payload_hash: hash.clone(),
             ..row('b', Some("mono-a"), 1, open(1))
         }];
-        let mut again = facts(vec![waiting('a', 1, live("giga-chat", true, true))]);
+        let mut again = replies(vec![handled('a', 1, live("giga-chat", true, true))]);
         again.prior = prior.clone();
         assert_eq!(
             decide_reply(&reply("Done"), &hash, &again),
             Decision::Duplicate {
-                prior: prior.clone()
+                prior: prior.clone(),
+                rejection: None
             }
         );
         assert_eq!(
@@ -989,13 +1346,53 @@ mod tests {
         );
     }
 
+    // Design 3.4 (PR 5). Defect: `to` is left out of the payload hash, so a
+    // retry with the same request id that names other handles is answered
+    // as a duplicate of the first reply. `"#1"` and `["#1"]` are one call.
+    #[test]
+    fn r3_a_request_id_reused_with_other_handles_is_refused() {
+        let reply_to =
+            |to: Value| match parse(Tool::Reply, &json!({"message": "Done", "to": to})).unwrap() {
+                Input::Reply(reply) => reply,
+                input => panic!("{input:?}"),
+            };
+        let mut again = replies(vec![handled('a', 1, live("giga-chat", true, true))]);
+        again.prior = vec![MonoMessage {
+            payload_hash: Input::Reply(reply_to(json!("#1"))).payload_hash(),
+            ..row('b', Some("mono-a"), 1, open(1))
+        }];
+        let decide = |reply: ReplyInput| {
+            decide_reply(&reply, &Input::Reply(reply.clone()).payload_hash(), &again)
+        };
+        assert!(matches!(
+            decide(reply_to(json!(["#1"]))),
+            Decision::Duplicate { .. }
+        ));
+        for other in [
+            reply_to(json!("#2")),
+            reply_to(json!(["#1", "#2"])),
+            reply("Done"),
+        ] {
+            assert!(
+                matches!(
+                    decide(other.clone()),
+                    Decision::Refuse {
+                        code: Refusal::RequestIdReused,
+                        ..
+                    }
+                ),
+                "{other:?}"
+            );
+        }
+    }
+
     #[test]
     fn r4_a_reply_over_8000_characters_is_too_large() {
         assert_eq!(
             decide_reply(
                 &reply(&"x".repeat(8001)),
                 &hash(),
-                &facts(vec![waiting('a', 1, live("giga-chat", true, true))]),
+                &replies(vec![handled('a', 1, live("giga-chat", true, true))]),
             ),
             rejected(RejectCode::TooLarge, None)
         );
@@ -1004,7 +1401,7 @@ mod tests {
     #[test]
     fn r5_a_reply_with_nothing_waiting_is_no_open_handle_with_an_empty_list() {
         assert_eq!(
-            decide_reply(&reply("Done"), &hash(), &facts(Vec::new())),
+            decide_reply(&reply("Done"), &hash(), &replies(Vec::new())),
             rejected(RejectCode::NoOpenHandle, None)
         );
     }
@@ -1014,9 +1411,9 @@ mod tests {
         let decision = decide_reply(
             &reply("Done"),
             &hash(),
-            &facts(vec![
-                waiting('a', 1, live("giga-chat", true, true)),
-                waiting('b', 2, live("giga-chat", true, true)),
+            &replies(vec![
+                handled('a', 1, live("giga-chat", true, true)),
+                handled('b', 2, live("giga-chat", true, true)),
             ]),
         );
         let Decision::Reject {
@@ -1047,33 +1444,59 @@ mod tests {
             ]
         );
         assert!(
-            hint.contains("#1 (from Boss: ") && hint.contains("#2 (from Boss: "),
-            "{hint}"
-        );
-        // 4a refuses `to`, so the hint gives a remedy that works now.
-        assert!(
-            !hint.contains("Pass to") && hint.contains("send_message"),
+            hint.starts_with("Several handles are open: #1 (from Boss: Review PR 12")
+                && hint.contains(", #2 (from Boss: ")
+                && hint.ends_with("). Pass to."),
             "{hint}"
         );
     }
 
+    // R10 and PR 5 review m4. Defect: a reply to a gone sender is accepted,
+    // or the refusal does not say which handle to leave out of `to`.
     #[test]
     fn r10_a_reply_whose_sender_session_or_mono_is_gone_is_target_gone() {
         let gone = Target {
             exists: false,
             ..live("giga-chat", true, true)
         };
-        assert_eq!(
-            decide_reply(&reply("Done"), &hash(), &facts(vec![waiting('a', 1, gone)])),
-            rejected(RejectCode::TargetGone, None)
-        );
-        let deleted_mono = Waiting {
-            message: row('a', None, 1, open(1)),
-            ..waiting('a', 1, live("giga-chat", true, true))
+        let gone_hint = |hint: &str| Decision::Reject {
+            code: RejectCode::TargetGone,
+            hint: hint.into(),
+            to: None,
+            open_handles: Vec::new(),
         };
         assert_eq!(
-            decide_reply(&reply("Done"), &hash(), &facts(vec![deleted_mono])),
-            rejected(RejectCode::TargetGone, None)
+            decide_reply(
+                &reply("Done"),
+                &hash(),
+                &replies(vec![handled('a', 1, gone.clone())])
+            ),
+            gone_hint("The sender of #1 no longer exists (cleared or deleted).")
+        );
+        let deleted_mono = Handled {
+            message: row('a', None, 1, open(1)),
+            ..handled('a', 1, live("giga-chat", true, true))
+        };
+        assert_eq!(
+            decide_reply(&reply("Done"), &hash(), &replies(vec![deleted_mono])),
+            gone_hint("The sender of #1 no longer exists (cleared or deleted).")
+        );
+        let both = ReplyInput {
+            to: Some(vec![Handle::new(1).unwrap(), Handle::new(2).unwrap()]),
+            ..reply("Done")
+        };
+        assert_eq!(
+            decide_reply(
+                &both,
+                &hash(),
+                &replies(vec![
+                    handled('a', 1, live("giga-chat", true, true)),
+                    handled('b', 2, gone),
+                ])
+            ),
+            gone_hint(
+                "The sender of #2 no longer exists (cleared or deleted). Answer the other handles with to."
+            )
         );
     }
 
@@ -1083,19 +1506,21 @@ mod tests {
             decide_reply(
                 &reply("Done"),
                 &hash(),
-                &facts(vec![waiting('a', 1, sender)]),
+                &replies(vec![handled('a', 1, sender)]),
             )
         };
         let accept = |via| Decision::Accept {
-            to: Party::Mono {
-                mono_id: mono("giga"),
-            },
-            route: Route {
-                session: session("giga-chat"),
-                via,
-            },
             hop: 2,
-            reply_to: vec![MessageId::parse("m_aaaaaaaaaaaa").unwrap()],
+            rows: vec![Outgoing {
+                to: Party::Mono {
+                    mono_id: mono("giga"),
+                },
+                route: Route {
+                    session: session("giga-chat"),
+                    via,
+                },
+                reply_to: Some(MessageId::parse("m_aaaaaaaaaaaa").unwrap()),
+            }],
         };
         assert_eq!(decide(live("giga-chat", true, true)), accept(Via::Steer));
         assert_eq!(decide(live("giga-chat", false, true)), accept(Via::Queue));

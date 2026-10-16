@@ -70,6 +70,7 @@ import type {
   RewindLastTurnInput,
   RewindLastTurnResult,
   SendTurnInput,
+  TurnResult,
   SteerTurnInput,
 } from "../../core/types";
 import {
@@ -155,7 +156,9 @@ export function setOpenCodeBinaryResolver(
   resolveOpenCodeBinaryImpl = fn;
 }
 
-export async function sendOpenCodeTurn(input: SendTurnInput): Promise<void> {
+export async function sendOpenCodeTurn(
+  input: SendTurnInput,
+): Promise<TurnResult> {
   let live: Live;
   try {
     live = await ensureLive(input);
@@ -163,7 +166,8 @@ export async function sendOpenCodeTurn(input: SendTurnInput): Promise<void> {
     cancelledThreads.delete(input.sessionId);
     throw error;
   }
-  if (cancelledThreads.delete(input.sessionId)) return;
+  if (cancelledThreads.delete(input.sessionId)) return "cancelled";
+  let sent = false;
 
   live.onEvent = input.onEvent;
   live.runtimeMode = input.runtimeMode;
@@ -174,6 +178,7 @@ export async function sendOpenCodeTurn(input: SendTurnInput): Promise<void> {
       live.cancelled = false;
       live.muteUpdates = false;
       try {
+        sent = true;
         await runTurn(live, input);
       } catch (error) {
         if (live.cancelled) return;
@@ -181,6 +186,7 @@ export async function sendOpenCodeTurn(input: SendTurnInput): Promise<void> {
       }
     });
   await live.turns;
+  return sent ? "sent" : "cancelled";
 }
 
 export async function compactOpenCodeContext(

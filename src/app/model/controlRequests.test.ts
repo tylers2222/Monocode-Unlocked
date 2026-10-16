@@ -66,6 +66,7 @@ it("runs a CLI call only in the window Rust sent it to", async () => {
     requestId: "r1",
     action: "messages.get_monos",
     input: {},
+    turnId: "turn-1",
   };
   bus.emitTo("grant", "monocode-control-request", request);
   expect(ran).toEqual(["grant:c1"]);

@@ -86,6 +86,7 @@ import type {
   HarnessEvent,
   HarnessSessionInput,
   SendTurnInput,
+  TurnResult,
   SteerTurnInput,
 } from "../../core/types";
 
@@ -217,7 +218,9 @@ export function setClaudeBinaryResolver(
   resolveClaudeBinaryImpl = fn;
 }
 
-export async function sendClaudeTurn(input: SendTurnInput): Promise<void> {
+export async function sendClaudeTurn(
+  input: SendTurnInput,
+): Promise<TurnResult> {
   let live: Live;
   try {
     live = await ensureLive(input);
@@ -225,8 +228,9 @@ export async function sendClaudeTurn(input: SendTurnInput): Promise<void> {
     cancelledThreads.delete(input.sessionId);
     throw error;
   }
-  if (cancelledThreads.delete(input.sessionId)) return;
+  if (cancelledThreads.delete(input.sessionId)) return "cancelled";
 
+  let sent = false;
   live.onEvent = input.onEvent;
   live.runtimeMode = input.runtimeMode;
   live.turns = live.turns
@@ -234,6 +238,7 @@ export async function sendClaudeTurn(input: SendTurnInput): Promise<void> {
     .then(async () => {
       live.cancelled = false;
       live.muteUpdates = false;
+      sent = true;
       try {
         await runTurn(live, input);
       } catch (error) {
@@ -242,6 +247,7 @@ export async function sendClaudeTurn(input: SendTurnInput): Promise<void> {
       }
     });
   await live.turns;
+  return sent ? "sent" : "cancelled";
 }
 
 export async function compactClaudeContext(
@@ -574,7 +580,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   }
 }
 
-async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
+/** Also runs `/compact`, which is no app turn and so has no turn id. */
+async function runTurn(
+  live: Live,
+  input: Omit<SendTurnInput, "turnId">,
+): Promise<void> {
   const effort = input.modelSettings?.effort;
   const message = buildClaudeUserMessage({
     text: input.text,

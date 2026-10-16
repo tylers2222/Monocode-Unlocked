@@ -17,10 +17,13 @@ vi.mock("../../features/sessions/data/sessionStore", async (original) => ({
 }));
 vi.mock("../../integrations/harness/core/registry", () => ({}));
 vi.mock("../../integrations/harness/core/child", () => ({}));
+const core = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => core);
 
 beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
+  core.invoke.mockResolvedValue(null);
   store.listInFlightSessions.mockResolvedValue([]);
   store.upsertSession.mockResolvedValue(null);
 });
@@ -62,4 +65,29 @@ it("still persists the interruption marker for a recovered running turn", async 
   expect(store.upsertSession).toHaveBeenCalledTimes(1);
   expect(store.upsertSession).toHaveBeenCalledWith(restored?.sessions[0]);
   expect(restored?.sessions[0].blocks.at(-1)?.notice).toBe("interrupt");
+});
+
+// Design 2 (review r4). Defect: the window loads a session before Rust ended
+// the turns and hand-offs that its reload left, so a restored session can
+// start a turn first, and that scan then kills it.
+it("ends what a reload of the window left before it loads any session", async () => {
+  savedWorkspace();
+  const order: string[] = [];
+  let open!: () => void;
+  const ended = new Promise<void>((resolve) => (open = resolve));
+  core.invoke.mockImplementation(async (command: string) => {
+    if (command === "control_window_booted") await ended;
+    order.push(command);
+    return null;
+  });
+  store.getSession.mockImplementation(async () => {
+    order.push("session_get");
+    return null;
+  });
+  const { loadBootWorkspace } = await import("./appLifecycle");
+  const booting = loadBootWorkspace();
+  open();
+  await booting;
+  expect(order[0]).toBe("control_window_booted");
+  expect(order).toContain("session_get");
 });

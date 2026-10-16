@@ -10,6 +10,8 @@ const transport = vi.hoisted(() => ({
     ((sessionId: string, command: Record<string, unknown>) => void) | undefined,
   fast: undefined as
     ((sessionId: string, command: Record<string, unknown>) => void) | undefined,
+  model: undefined as
+    ((sessionId: string, command: Record<string, unknown>) => void) | undefined,
   writeChild: vi.fn(),
   spawnChild: vi.fn(),
   forkData: undefined as unknown,
@@ -79,6 +81,7 @@ beforeEach(() => {
   transport.spawnChild.mockReset();
   transport.spawnChild.mockResolvedValue(undefined);
   transport.fast = undefined;
+  transport.model = undefined;
   transport.forkData = undefined;
   transport.stateSessionId = undefined;
   transport.hostToolsUnknown = false;
@@ -92,6 +95,8 @@ beforeEach(() => {
         return transport.prompt?.(sessionId, command);
       if (command.type === "set_fast_mode" && transport.fast)
         return transport.fast(sessionId, command);
+      if (command.type === "set_model" && transport.model)
+        return transport.model(sessionId, command);
       if (command.type === "set_host_tools" && transport.hostToolsUnknown)
         return frame(sessionId, {
           type: "response",
@@ -718,6 +723,77 @@ describe("OMP command lifecycle over the real RPC multiplexer", () => {
     expect(events.some((event) => event.type === "interjection")).toBe(false);
     frame("pi-test", { type: "agent_end" });
     await turn;
+  });
+});
+
+// PR 5 review m2 and n1. Defect: a Stop before the prompt reached omp ends the
+// send as sent, so the registry confirms a Mono opener omp never got. Pi runs
+// on the same piFamily path.
+describe("Pi-family turn result", () => {
+  it("omp turn result: a turn cancelled while its process spawns is cancelled, and a run turn is sent", async () => {
+    let releaseSpawn: () => void = () => undefined;
+    transport.spawnChild.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { releaseSpawn = resolve; }),
+    );
+    const cancelled = sendOmpTurn({
+      ...input("omp-result", "never sent"),
+      turnId: "t-cancelled",
+    });
+    await vi.waitFor(() => expect(transport.spawnChild).toHaveBeenCalledOnce());
+    await cancelOmpTurn("omp-result");
+    releaseSpawn();
+    expect(await cancelled).toBe("cancelled");
+    expect(transport.requests.some((r) => r.command.type === "prompt")).toBe(
+      false,
+    );
+
+    transport.prompt = (id, command) => response(id, command);
+    const running = await started({
+      ...input("omp-result", "hello"),
+      turnId: "t-sent",
+    });
+    frame("omp-result", { type: "agent_end" });
+    expect(await running.turn).toBe("sent");
+  });
+
+  // n1. Defect: the turn counted as sent before its set_model, so a Stop that
+  // failed set_model reported a turn whose prompt omp never got as sent.
+  it("omp turn result: a turn cancelled while it sets its model is cancelled", async () => {
+    transport.prompt = (id, command) => response(id, command);
+    const base = { ...input("omp-model"), model: "omp:anthropic/claude-a" };
+    const first = await started({ ...base, text: "first", turnId: "t-first" });
+    const queued = sendOmpTurn({
+      ...base,
+      text: "never sent",
+      turnId: "t-cancelled",
+    });
+    // omp moves the session to another model during the first turn, so the
+    // queued turn sets its own model again before its prompt.
+    frame("omp-model", {
+      type: "config_update",
+      model: { provider: "anthropic", id: "claude-b" },
+    });
+    let setModel: Record<string, unknown> | undefined;
+    transport.model = (_sessionId, command) => {
+      setModel = command;
+    };
+    frame("omp-model", { type: "agent_end" });
+    expect(await first.turn).toBe("sent");
+    await vi.waitFor(() => expect(setModel).toBeDefined());
+    await cancelOmpTurn("omp-model");
+    frame("omp-model", {
+      type: "response",
+      id: setModel!.id,
+      command: "set_model",
+      success: false,
+      error: "Model switch aborted",
+    });
+    expect(await queued).toBe("cancelled");
+    expect(
+      transport.requests.filter(
+        (r) => r.sessionId === "omp-model" && r.command.type === "prompt",
+      ),
+    ).toHaveLength(1);
   });
 });
 

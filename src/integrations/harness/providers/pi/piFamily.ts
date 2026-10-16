@@ -72,6 +72,7 @@ import type {
   HarnessSessionInput,
   RewindLastTurnInput,
   SendTurnInput,
+  TurnResult,
   SteerTurnInput,
 } from "../../core/types";
 
@@ -230,7 +231,7 @@ export function setPiBinaryResolver(
 export async function sendTurn(
   flavor: PiFlavor,
   input: SendTurnInput,
-): Promise<void> {
+): Promise<TurnResult> {
   const { cancelledThreads } = stateFor(flavor);
   let live: Live;
   try {
@@ -239,7 +240,8 @@ export async function sendTurn(
     cancelledThreads.delete(input.sessionId);
     throw error;
   }
-  if (cancelledThreads.delete(input.sessionId)) return;
+  if (cancelledThreads.delete(input.sessionId)) return "cancelled";
+  let sent = false;
 
   live.onEvent = input.onEvent;
   live.turns = live.turns
@@ -248,6 +250,9 @@ export async function sendTurn(
       live.cancelled = false;
       live.muteUpdates = false;
       try {
+        await applyModel(flavor, live, input);
+        if (live.cancelled) return;
+        sent = true;
         await runTurn(flavor, live, input);
       } catch (error) {
         if (live.cancelled) return;
@@ -255,6 +260,7 @@ export async function sendTurn(
       }
     });
   await live.turns;
+  return sent ? "sent" : "cancelled";
 }
 
 export async function compactContext(
@@ -621,7 +627,6 @@ async function runTurn(
   live: Live,
   input: SendTurnInput,
 ): Promise<void> {
-  await applyModel(flavor, live, input);
   live.emittedAssistant = "";
   live.emittedReasoning = "";
   live.turnError = null;
