@@ -8,6 +8,7 @@ use std::process::Command;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
@@ -17,7 +18,7 @@ use crate::mono_messages::{self, Notices, SessionId};
 use crate::session_store::SessionStore;
 
 const APP_TURN_INACTIVE: &str = "MonoCode app access is inactive. Use /operator once in this thread to enable it, then call the CLI during an active agent turn. Retrying this request now will not enable access.";
-const UNKNOWN_TOKEN: &str = "This token is no longer valid. It ends when the app restarts, the window closes, its session is deleted or archived, or its orchestration run stops. Do not retry.";
+pub(crate) const UNKNOWN_TOKEN: &str = "This token is no longer valid. It ends when the app restarts, the window closes, its session is deleted or archived, or its orchestration run stops. Do not retry.";
 /// The answer to a call the window did not answer in time. The call may still
 /// run there; the CLI caller can repeat it with `--request-id`.
 pub(crate) const REQUEST_TIMED_OUT: &str =
@@ -845,20 +846,46 @@ fn release_window_slots(store: &SessionStore, label: &str) -> Notices {
     })
 }
 
-#[tauri::command(async)]
-pub fn control_forget_session(
-    app: AppHandle,
-    host: State<'_, ControlHost>,
-    harness: State<'_, crate::harness::HarnessHost>,
-    session_id: String,
-) {
-    forget_session(
-        &host.inner,
+/// Design 7: session `session` is reset, deleted or archived. Its token and
+/// turn go first, before the store transaction opens (5.3 lock order).
+/// `remove` then deletes or archives it and runs the clear in that one
+/// transaction, so a failure leaves the session live and receiving (PR 6
+/// review r1 M1). Emits the notices of both steps once, after the commit or
+/// the failure.
+pub(crate) fn end_session(
+    app: &AppHandle,
+    session: &str,
+    remove: impl FnOnce(&Connection) -> rusqlite::Result<Notices>,
+) -> Result<(), String> {
+    let (notices, removed) = end_session_with(
+        &app.state::<ControlHost>().inner,
         &app.state::<SessionStore>(),
-        &harness,
-        &session_id,
-    )
-    .emit(&app);
+        &app.state::<HarnessHost>(),
+        session,
+        remove,
+    );
+    notices.emit(app);
+    removed
+}
+
+fn end_session_with(
+    inner: &Mutex<Inner>,
+    store: &SessionStore,
+    harness: &HarnessHost,
+    session: &str,
+    remove: impl FnOnce(&Connection) -> rusqlite::Result<Notices>,
+) -> (Notices, Result<(), String>) {
+    let mut notices = forget_session(inner, store, harness, session);
+    let removed = store
+        .lock_conn()
+        .and_then(|conn| remove(&conn).map_err(|error| error.to_string()));
+    match removed {
+        Ok(cleared) => {
+            notices.merge(cleared);
+            (notices, Ok(()))
+        }
+        Err(error) => (notices, Err(error)),
+    }
 }
 
 /// The turn the session ran ends with it (PR 5 review r2 m3): its questions
@@ -1327,6 +1354,87 @@ mod tests {
             payload(&notices),
             json!({"sessions": ["a-chat", "giga-chat"]})
         );
+    }
+
+    // Design 7 (review r3 order), PR 6 review r1 m2. Defect: a reset, delete
+    // or archive only revokes the token, so a message still queued for the
+    // chat stays open with no chat to take it and its sender is never told;
+    // the clear runs before the turn ends, so a question the agent saw is
+    // dropped instead of closed as unanswered by the turn end; or the clear's
+    // notices are lost. Only the clear names `b-chat`.
+    #[test]
+    fn clearing_a_running_session_ends_its_turn_then_drops_what_it_had_to_take() {
+        let store = messaging_store();
+        let inner = Mutex::new(Inner::default());
+        run(&inner, "a-chat", "main", "turn-1");
+        let (ask, queued) = {
+            let conn = store.lock_conn().unwrap();
+            conn.execute_batch(
+                r#"INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
+                   VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat"}', 2, 1, 1);
+                   INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+                   VALUES ('b-chat', '/', 'codex', 'm', 'default', 'B', 1, 1);"#,
+            )
+            .unwrap();
+            (
+                handed_off(&conn, "ask", true, "turn-1", "main", true),
+                sent(&conn, ("mono-b", "b-chat"), "mono-a", "queued", true),
+            )
+        };
+        let (notices, cleared) =
+            end_session_with(&inner, &store, &HarnessHost::new(), "a-chat", |conn| {
+                crate::session_store::set_archived(conn, "a-chat", true)
+            });
+        assert_eq!(cleared, Ok(()));
+        assert!(inner.lock().unwrap().active.is_empty());
+        assert!(matches!(status(&store, &ask), Status::Unanswered { .. }));
+        assert!(matches!(status(&store, &queued), Status::Dropped { .. }));
+        assert_eq!(
+            payload(&notices),
+            json!({"sessions": ["a-chat", "giga-chat", "b-chat"]})
+        );
+    }
+
+    // PR 6 review r2 m2, decision 408. Defect: a failed delete or archive
+    // reports success, so the window drops a chat that is still in
+    // `sessions`, still receives and still holds its messages; or the failed
+    // step's clear notices go out for rows it rolled back.
+    #[test]
+    fn a_failed_remove_fails_the_end_and_leaves_the_session_receiving() {
+        let store = messaging_store();
+        let inner = Mutex::new(Inner::default());
+        run(&inner, "a-chat", "main", "turn-1");
+        let (ask, queued) = {
+            let conn = store.lock_conn().unwrap();
+            conn.execute_batch(
+                r#"INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
+                   VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat"}', 2, 1, 1);
+                   INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+                   VALUES ('b-chat', '/', 'codex', 'm', 'default', 'B', 1, 1);
+                   CREATE TEMP TRIGGER no_archive BEFORE UPDATE OF archived ON sessions
+                     BEGIN SELECT RAISE(ABORT, 'disk full'); END;"#,
+            )
+            .unwrap();
+            (
+                handed_off(&conn, "ask", true, "turn-1", "main", true),
+                sent(&conn, ("mono-b", "b-chat"), "mono-a", "queued", true),
+            )
+        };
+        let (notices, removed) =
+            end_session_with(&inner, &store, &HarnessHost::new(), "a-chat", |conn| {
+                crate::session_store::set_archived(conn, "a-chat", true)
+            });
+        assert!(removed.unwrap_err().contains("disk full"));
+        assert!(inner.lock().unwrap().active.is_empty());
+        assert!(matches!(status(&store, &ask), Status::Unanswered { .. }));
+        assert!(matches!(status(&store, &queued), Status::Open { .. }));
+        // Only the forget step's notices: none for `b-chat`, whose row stays.
+        assert_eq!(
+            payload(&notices),
+            json!({"sessions": ["a-chat", "giga-chat"]})
+        );
+        let conn = store.lock_conn().unwrap();
+        sent(&conn, ("giga", "giga-chat"), "mono-a", "after", false);
     }
 
     // Design 2 review r3-r5, PR 4a review m11. Defect: a reloaded window

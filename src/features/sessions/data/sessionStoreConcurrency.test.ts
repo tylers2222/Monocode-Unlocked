@@ -62,7 +62,6 @@ describe("session persistence concurrency", () => {
     expect(commands).toEqual([
       "session_upsert",
       "session_upsert",
-      "control_forget_session",
       "session_delete",
     ]);
     await upsertSession(worker);
@@ -101,13 +100,12 @@ describe("session persistence concurrency", () => {
     });
     await Promise.all([writing, lateWrite, deleting]);
 
-    expect(commands).toEqual([
-      "session_upsert",
-      "control_forget_session",
-      "session_delete",
-    ]);
-    expect(mocks.invoke).toHaveBeenCalledWith("control_forget_session", {
+    expect(commands).toEqual(["session_upsert", "session_delete"]);
+    // The delete ends the session's Mono messages in its transaction.
+    expect(mocks.invoke).toHaveBeenCalledWith("session_delete", {
       sessionId: "s1",
+      imagePaths: [],
+      end: true,
     });
   });
 
@@ -142,6 +140,12 @@ describe("session persistence concurrency", () => {
       "session_delete",
       "session_upsert",
     ]);
+    // A discarded draft keeps its id open, so it does not end the session.
+    expect(mocks.invoke).toHaveBeenCalledWith("session_delete", {
+      sessionId: "s1",
+      imagePaths: [],
+      end: false,
+    });
   });
 
   it("drains queued saves before detaching a removed worktree", async () => {
@@ -213,7 +217,6 @@ describe("session persistence concurrency", () => {
     expect(commands).toEqual([
       "session_upsert",
       "session_upsert",
-      "control_forget_session",
       "session_set_archived",
     ]);
     expect(mocks.invoke.mock.calls[1]?.[1]).toMatchObject({

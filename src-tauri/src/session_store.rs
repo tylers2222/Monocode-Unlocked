@@ -499,27 +499,51 @@ pub fn cancel_session_search(search_owner: String) {
     cancel_owned_session_search(&search_owner);
 }
 
+/// What deleting a session means for its Mono messages (design 7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Removal {
+    /// The session ends. Its token and turn go, and its Mono messages are
+    /// cleared in the delete transaction.
+    End,
+    /// A discarded draft. Its id stays open and may be saved later.
+    DiscardDraft,
+}
+
+/// `end` on the wire: `true` is [`Removal::End`], `false` is
+/// [`Removal::DiscardDraft`].
 #[tauri::command(async)]
 pub fn session_delete(
     app: AppHandle,
     store: State<'_, SessionStore>,
     session_id: String,
     mut image_paths: Vec<String>,
+    end: bool,
 ) -> Result<(), String> {
     validate_id(&session_id, "session")?;
-    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let persisted_paths = get_session(&conn, &session_id)
-        .ok()
-        .flatten()
-        .map(|record| generated_image_paths(&record.blocks))
-        .unwrap_or_default();
-    image_paths.extend(persisted_paths);
-    image_paths.extend(
-        crate::mono_transcript::generated_image_paths(&conn, &session_id)
-            .map_err(|e| e.to_string())?,
-    );
-    delete_session(&conn, &session_id).map_err(|e| e.to_string())?;
-    drop(conn);
+    let removal = if end {
+        Removal::End
+    } else {
+        Removal::DiscardDraft
+    };
+    let mut delete = |conn: &Connection| -> rusqlite::Result<crate::mono_messages::Notices> {
+        let persisted_paths = get_session(conn, &session_id)
+            .ok()
+            .flatten()
+            .map(|record| generated_image_paths(&record.blocks))
+            .unwrap_or_default();
+        image_paths.extend(persisted_paths);
+        image_paths.extend(crate::mono_transcript::generated_image_paths(
+            conn,
+            &session_id,
+        )?);
+        delete_session(conn, &session_id, removal)
+    };
+    match removal {
+        Removal::End => crate::control::end_session(&app, &session_id, delete)?,
+        Removal::DiscardDraft => {
+            delete(&*store.lock_conn()?).map_err(|e| e.to_string())?;
+        }
+    }
     if !image_paths.is_empty() {
         if let Err(error) = crate::fs::delete_generated_images_sync(&app, &image_paths) {
             eprintln!("Generated image cleanup will need a retry: {error}");
@@ -531,13 +555,20 @@ pub fn session_delete(
 
 #[tauri::command(async)]
 pub fn session_set_archived(
+    app: AppHandle,
     store: State<'_, SessionStore>,
     session_id: String,
     archived: bool,
 ) -> Result<(), String> {
     validate_id(&session_id, "session")?;
-    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    set_archived(&conn, &session_id, archived).map_err(|e| e.to_string())
+    let archive = |conn: &Connection| set_archived(conn, &session_id, archived);
+    if archived {
+        crate::control::end_session(&app, &session_id, archive)
+    } else {
+        archive(&*store.lock_conn()?)
+            .map(drop)
+            .map_err(|e| e.to_string())
+    }
 }
 
 #[tauri::command(async)]
@@ -1767,8 +1798,16 @@ fn optional_json(raw: Option<String>) -> Option<Value> {
     raw.and_then(|value| serde_json::from_str(&value).ok())
 }
 
-fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
+pub(crate) fn delete_session(
+    conn: &Connection,
+    session_id: &str,
+    removal: Removal,
+) -> rusqlite::Result<crate::mono_messages::Notices> {
     let tx = conn.unchecked_transaction()?;
+    let notices = match removal {
+        Removal::End => clear_ended(&tx, session_id)?,
+        Removal::DiscardDraft => Default::default(),
+    };
     let parent = worker_parent(&tx, session_id)?;
     // Ownership is also carried in transcripts for older clients. Release
     // that metadata along with the index so reopening a worker stays detached.
@@ -1875,15 +1914,41 @@ fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
         [session_id],
     )?;
     tx.execute("DELETE FROM sessions WHERE id = ?1", [session_id])?;
-    tx.commit()
+    tx.commit()?;
+    Ok(notices)
 }
 
-fn set_archived(conn: &Connection, session_id: &str, archived: bool) -> rusqlite::Result<()> {
-    conn.execute(
+/// Design 7: the session ends with the transaction that deletes or archives
+/// it, so a failure leaves it live and receiving (PR 6 review r1 M1).
+fn clear_ended(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+) -> rusqlite::Result<crate::mono_messages::Notices> {
+    match crate::mono_messages::SessionId::parse(session_id) {
+        Some(id) => crate::mono_messages::clear_session(tx, &id, crate::mono_messages::now_ms()),
+        None => Ok(Default::default()),
+    }
+}
+
+/// Archiving ends the session (design 7); unarchived, it receives again.
+pub(crate) fn set_archived(
+    conn: &Connection,
+    session_id: &str,
+    archived: bool,
+) -> rusqlite::Result<crate::mono_messages::Notices> {
+    let tx = conn.unchecked_transaction()?;
+    let notices = if archived {
+        clear_ended(&tx, session_id)?
+    } else {
+        crate::mono_messages::session_reopened(&tx, session_id)?;
+        Default::default()
+    };
+    tx.execute(
         "UPDATE sessions SET archived = ?1 WHERE id = ?2",
         params![if archived { 1 } else { 0 }, session_id],
     )?;
-    Ok(())
+    tx.commit()?;
+    Ok(notices)
 }
 
 fn set_pinned(conn: &Connection, session_id: &str, pinned: bool) -> rusqlite::Result<()> {
@@ -2804,7 +2869,7 @@ mod tests {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
         upsert_session(&conn, &sample("s1", "/tmp/a", "First")).unwrap();
-        delete_session(&conn, "s1").unwrap();
+        delete_session(&conn, "s1", Removal::DiscardDraft).unwrap();
         assert!(get_session(&conn, "s1").unwrap().is_none());
         assert!(list_by_project(&conn, "/tmp/a").unwrap().is_empty());
     }
@@ -2830,7 +2895,7 @@ mod tests {
         let other =
             json!({"status":"active","tasks":[{"id":"other-task","sessionId":"other-worker"}]});
         save_orchestration(&conn, "other-lead", &other).unwrap();
-        delete_session(&conn, "lead").unwrap();
+        delete_session(&conn, "lead", Removal::DiscardDraft).unwrap();
 
         for id in ["earlier", "current"] {
             let worker = get_session(&conn, id).unwrap().unwrap();
@@ -2885,7 +2950,7 @@ mod tests {
             ]}),
         )
         .unwrap();
-        delete_session(&conn, "worker").unwrap();
+        delete_session(&conn, "worker", Removal::DiscardDraft).unwrap();
         assert!(get_session(&conn, "worker").unwrap().is_none());
         assert!(worker_parent(&conn, "worker").unwrap().is_none());
         assert_eq!(
@@ -2927,7 +2992,7 @@ mod tests {
         .unwrap();
         conn.execute_batch("CREATE TRIGGER reject_delete BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'test failure'); END;").unwrap();
         for id in ["lead", "worker"] {
-            assert!(delete_session(&conn, id).is_err());
+            assert!(delete_session(&conn, id, Removal::DiscardDraft).is_err());
             assert!(get_session(&conn, id).unwrap().is_some());
             assert_eq!(
                 worker_parent(&conn, "worker").unwrap().as_deref(),

@@ -1,9 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const invoke = vi.hoisted(() => vi.fn(async () => undefined));
-vi.mock("@tauri-apps/api/core", () => ({ invoke }));
-
 import { newSession } from "../../sessions/model/session";
 import { leafIds, newTab, splitPane } from "../../workspace/model/layout";
 import { planWorkspaceTabClose } from "../../workspace/model/workspaceTabGroups";
@@ -24,7 +21,6 @@ import {
 
 beforeEach(() => {
   __monosTestReset();
-  invoke.mockClear();
   const stored = new Map<string, string>();
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => stored.get(key) ?? null,
@@ -165,9 +161,6 @@ it("deletes the Mono's chat before replacing it with an empty provider session",
   const remove = vi.fn(async () => {
     expect(stop).toHaveBeenCalledExactlyOnceWith(current.id);
     expect(sessionOf(monoId)).toBe(current.id);
-    expect(invoke).toHaveBeenCalledExactlyOnceWith("control_forget_session", {
-      sessionId: current.id,
-    });
   });
   const replace = vi.fn();
   const fresh = await resetMonoSession(current, { stop, remove, replace });

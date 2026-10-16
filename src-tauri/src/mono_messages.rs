@@ -1004,6 +1004,18 @@ fn mono_of_chat(conn: &Connection, chat: &SessionId) -> rusqlite::Result<Option<
         .and_then(|(id, _)| MonoId::parse(&id)))
 }
 
+/// Design 7: `session` was reset, deleted or archived.
+fn session_ended(conn: &Connection, session: &SessionId) -> rusqlite::Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM mono_session_ends WHERE session_id = ?1",
+            [session.as_str()],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
 fn target(conn: &Connection, session: SessionId, live: &Live) -> rusqlite::Result<Target> {
     let listed = live
         .sessions
@@ -1011,14 +1023,7 @@ fn target(conn: &Connection, session: SessionId, live: &Live) -> rusqlite::Resul
         .find(|entry| entry.session_id == session.as_str());
     // The live list is a snapshot from before an await, so a clear that ran
     // since wins over it.
-    let ended = conn
-        .query_row(
-            "SELECT 1 FROM mono_session_ends WHERE session_id = ?1",
-            [session.as_str()],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
+    let ended = session_ended(conn, &session)?;
     let stored: Option<String> = conn
         .query_row(
             "SELECT harness FROM sessions WHERE id = ?1 AND worktree_removed = 0",
@@ -1188,6 +1193,20 @@ pub fn submit(
     };
     let hash = input.payload_hash();
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    // Design 7 (PR 6 review r1 m1): the control host let this call through
+    // before the clear forgot its session, and it reaches here after the clear
+    // committed. A row written now would never be dropped.
+    if session_ended(&tx, &caller.session_id)? {
+        return Ok(Submitted::Failed {
+            error: ToolError {
+                code: "unknown_token",
+                hint: crate::control::UNKNOWN_TOKEN.to_string(),
+                message_id: None,
+                open_handles: None,
+                duplicate: false,
+            },
+        });
+    }
     // Design 5.4 (2): a call bound to the turn shows that its provider runs
     // it, so it took the text that opened it.
     confirm_openers(&tx, &caller.session_id, &caller.turn_id, now)?;
@@ -1437,7 +1456,9 @@ pub fn release(conn: &Connection, id: &MessageId, turn_id: &str, now: i64) -> ru
     Ok(())
 }
 
-/// The provider took the text the hand-off of turn `turn_id` gave it.
+/// The provider took the text the hand-off of turn `turn_id` gave it. A row
+/// a clear dropped since keeps its `turn_id` (decision 376), so the late
+/// confirm skips it (design 16.6, intents review r2 M3).
 pub fn mark_delivery(
     conn: &Connection,
     id: &MessageId,
@@ -1446,7 +1467,8 @@ pub fn mark_delivery(
 ) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE mono_messages SET delivered_at = ?3, updated_at = ?3
-          WHERE id = ?1 AND turn_id = ?2 AND delivered_at IS NULL",
+          WHERE id = ?1 AND turn_id = ?2 AND delivered_at IS NULL
+            AND status IN ('open', 'delivered')",
         params![id.as_str(), turn_id, now],
     )?;
     Ok(())
@@ -1670,6 +1692,103 @@ pub fn mark_notified(
     )? == 1)
 }
 
+/// Design 7: session `session` was reset, deleted or archived. The messages
+/// it had still to take are dropped and leave it, and their senders are owed
+/// a notice. The messages it sent that still wait for an answer are dropped
+/// too, so a late reply gets `handle_closed` instead of landing in a chat
+/// without that context (Q8); no one is told, since the sender is the one
+/// that ended. `mono_session_ends` keeps the end: the gate treats `session`
+/// as gone (design 6), its late calls are refused, and no row it sent owes a
+/// notice (5.3). Each update selects on the status it changes, so a second
+/// clear changes nothing. It runs inside the transaction that deletes or
+/// archives `session`, so a failure there leaves the session receiving (PR 6
+/// review r1 M1). Names the chats owed a notice.
+pub fn clear_session(
+    tx: &Transaction<'_>,
+    session: &SessionId,
+    now: i64,
+) -> rusqlite::Result<Notices> {
+    tx.execute(
+        "INSERT OR IGNORE INTO mono_session_ends (session_id, ended_at) VALUES (?1, ?2)",
+        params![session.as_str(), now],
+    )?;
+    tx.execute(
+        "UPDATE mono_messages SET status = 'dropped', closed_at = ?2, notified_at = ?2, updated_at = ?2
+          WHERE from_session_id = ?1 AND status IN ('open', 'unanswered')",
+        params![session.as_str(), now],
+    )?;
+    let dropped = tx
+        .prepare(
+            "UPDATE mono_messages
+                SET status = 'dropped', handled_by_session = NULL, closed_at = ?2, updated_at = ?2
+              WHERE handled_by_session = ?1
+                AND (status = 'open' OR (status = 'delivered' AND delivered_at IS NULL))
+              RETURNING id",
+        )?
+        .query_map(params![session.as_str(), now], |row| {
+            row.get::<_, String>(0)
+        })?
+        .map(|id| id.and_then(|id| required(MessageId::parse(&id), "id")))
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut notices = Notices::default();
+    notices.name_senders(tx, &dropped)?;
+    Ok(notices)
+}
+
+/// Design 7: an archived session was unarchived, so it can receive again.
+pub(crate) fn session_reopened(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM mono_session_ends WHERE session_id = ?1",
+        [session_id],
+    )?;
+    Ok(())
+}
+
+/// Design 5.5 rule 8: what the user's Remove of a queued Mono row did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DropAnswer {
+    /// The row is dropped: remove the item; its sender is owed a notice.
+    Dropped,
+    /// The row was already closed or delivered: remove the item.
+    Closed,
+    /// A hand-off holds the row: keep the item.
+    InFlight,
+}
+
+/// Design 5.5 rule 8 (review r6 order): the user removes the queue item of
+/// row `id`. Only a row that still waits for a hand-off is dropped. A row
+/// that no longer exists has nothing to deliver, so its item goes as for a
+/// closed row.
+pub fn drop_message(
+    conn: &Connection,
+    id: &MessageId,
+    now: i64,
+) -> rusqlite::Result<(DropAnswer, Notices)> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let slot = get(&tx, id)?.and_then(|message| match message.status {
+        Status::Open { slot, .. } => Some(slot.map(|slot| slot.delivered_at)),
+        Status::Delivered { slot, .. } => Some(slot.map(|slot| slot.delivered_at)),
+        _ => None,
+    });
+    let answer = match slot {
+        None | Some(Some(Some(_))) => DropAnswer::Closed,
+        Some(Some(None)) => DropAnswer::InFlight,
+        Some(None) => DropAnswer::Dropped,
+    };
+    let mut notices = Notices::default();
+    if answer == DropAnswer::Dropped {
+        tx.execute(
+            "UPDATE mono_messages SET status = 'dropped', closed_at = ?2, updated_at = ?2
+              WHERE id = ?1",
+            params![id.as_str(), now],
+        )?;
+        notices.name_senders(&tx, std::slice::from_ref(id))?;
+    }
+    tx.commit()?;
+    Ok((answer, notices))
+}
+
 pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1861,6 +1980,20 @@ pub fn mono_message_mark_notified(
         NoticeStatus::parse(&status).ok_or("A notice is for an unanswered or dropped message")?;
     let conn = store.lock_conn()?;
     mark_notified(&conn, &message_id(&id)?, status, now_ms()).map_err(|error| error.to_string())
+}
+
+#[tauri::command(async)]
+pub fn mono_message_drop(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    id: String,
+) -> Result<DropAnswer, String> {
+    let (answer, notices) = {
+        let conn = store.lock_conn()?;
+        drop_message(&conn, &message_id(&id)?, now_ms()).map_err(|error| error.to_string())?
+    };
+    notices.emit(&app);
+    Ok(answer)
 }
 
 #[cfg(test)]
@@ -4129,5 +4262,384 @@ pub(crate) mod tests {
             &[],
         ));
         assert_eq!(error.code, "habit_cannot_wait");
+    }
+
+    /// A row's id, status, receiver, close, notice and update time.
+    type RowState = (
+        String,
+        String,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        i64,
+    );
+
+    fn snapshot(conn: &Connection) -> Vec<RowState> {
+        conn.prepare(
+            "SELECT id, status, handled_by_session, closed_at, notified_at, updated_at
+               FROM mono_messages ORDER BY id",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    }
+
+    fn ended_at(conn: &Connection, session_id: &str) -> Option<i64> {
+        conn.query_row(
+            "SELECT ended_at FROM mono_session_ends WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap()
+    }
+
+    /// The clear as the delete or archive transaction runs it.
+    fn clear(conn: &Connection, session_id: &str, now: i64) -> Notices {
+        let tx = conn.unchecked_transaction().unwrap();
+        let notices = clear_session(&tx, &session(session_id), now).unwrap();
+        tx.commit().unwrap();
+        notices
+    }
+
+    // Design 7, 5.1. Defect: a reset, delete or archive leaves the messages
+    // that the chat still had to take open or queued with nothing to take
+    // them, keeps the chat as their receiver, drops an answered or already
+    // delivered message, or changes rows again on a second clear.
+    #[test]
+    fn a_clear_drops_what_the_session_still_had_to_take_once() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let waiting = sent_to_a(&conn, "waiting", true);
+        let untaken = handed_off(&conn, "untaken", false, "turn-2", "main", false);
+        let taken = handed_off(&conn, "taken", false, "turn-1", "main", true);
+        let answered = ask_delivered(&conn, "answered", "turn-1");
+        accepted_ids(&call(
+            &conn,
+            &caller_in("mono-a", "a-chat"),
+            "re",
+            Tool::Reply,
+            yes(),
+            &[],
+        ));
+        let notices = clear(&conn, "a-chat", 200);
+        assert_eq!(
+            serde_json::to_value(&notices).unwrap(),
+            serde_json::json!({"sessions": ["giga-chat"]})
+        );
+        let status = |id: &MessageId| get(&conn, id).unwrap().unwrap().status;
+        let receiver = |id: &MessageId| -> Option<String> {
+            conn.query_row(
+                "SELECT handled_by_session FROM mono_messages WHERE id = ?1",
+                [id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        for id in [&waiting, &untaken] {
+            assert!(matches!(
+                status(id),
+                Status::Dropped {
+                    closed_at: 200,
+                    notified_at: None,
+                    ..
+                }
+            ));
+            assert_eq!(receiver(id), None);
+        }
+        assert!(matches!(status(&taken), Status::Delivered { .. }));
+        assert!(matches!(status(&answered), Status::Answered { .. }));
+        assert_eq!(
+            sorted(ids(pending_notices(&conn, &session("giga-chat")).unwrap())),
+            sorted(vec![waiting.clone(), untaken.clone()])
+        );
+        let before = snapshot(&conn);
+        assert_eq!(clear(&conn, "a-chat", 300), Notices::default());
+        assert_eq!(snapshot(&conn), before);
+        assert_eq!(ended_at(&conn, "a-chat"), Some(200));
+    }
+
+    // Design 5.1, Q8. Defect: a question that the cleared chat sent stays
+    // open, so a late reply lands in a chat that no longer has its context,
+    // or its sender's next chat, or the chat itself once unarchived, is told
+    // about a message that the chat no longer waits for.
+    #[test]
+    fn a_clear_closes_the_questions_the_session_sent_without_a_notice() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let question = sent(&conn, ("mono-a", "a-chat"), "giga", "q1", true);
+        hand_off(&conn, &question, "turn-1", "main", true);
+        let notices = clear(&conn, "a-chat", 200);
+        assert_eq!(notices, Notices::default());
+        assert!(matches!(
+            get(&conn, &question).unwrap().unwrap().status,
+            Status::Dropped { .. }
+        ));
+        assert!(pending_notices(&conn, &session("a-chat"))
+            .unwrap()
+            .is_empty());
+        // Unarchived, the chat receives again, but owes no old notice.
+        crate::session_store::set_archived(&conn, "a-chat", false).unwrap();
+        assert!(pending_notices(&conn, &session("a-chat"))
+            .unwrap()
+            .is_empty());
+        let late = failed(call(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "late",
+            Tool::Reply,
+            serde_json::json!({"message": "Yes", "to": "#1"}),
+            &[],
+        ));
+        assert_eq!(late.code, "handle_closed");
+    }
+
+    // Design 5.3 (review r6). Defect: a message that a reset chat sent and
+    // the receiver's clear drops later still owes a notice, which opens a
+    // turn in the Mono's new chat about a message that chat never sent; or
+    // the rule also silences the notice of a message the Mono's habit run
+    // sent.
+    #[test]
+    fn after_a_clear_of_the_sender_only_its_habit_runs_rows_still_owe_a_notice() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let from_chat = sent(&conn, ("mono-a", "a-chat"), "giga", "chat", false);
+        let run = Caller {
+            kind: CallerKind::HabitRun,
+            mono_id: mono("mono-a"),
+            session_id: session("a-run"),
+            turn_id: "turn-1".into(),
+        };
+        let from_run = accepted_ids(&call(
+            &conn,
+            &run,
+            "run",
+            Tool::SendMessage,
+            serde_json::json!({"message": "Hi", "send_to": "giga", "wanting_reply": false}),
+            &[],
+        ))
+        .remove(0);
+        // The reset of A's chat: the clear, then A's new chat.
+        clear(&conn, "a-chat", 200);
+        conn.execute(
+            r#"UPDATE monos SET data_json = '{"sessionId":"a-new"}' WHERE id = 'mono-a'"#,
+            [],
+        )
+        .unwrap();
+        let notices = clear(&conn, "giga-chat", 300);
+        for id in [&from_chat, &from_run] {
+            assert!(matches!(
+                get(&conn, id).unwrap().unwrap().status,
+                Status::Dropped { .. }
+            ));
+        }
+        assert_eq!(
+            serde_json::to_value(&notices).unwrap(),
+            serde_json::json!({"sessions": ["a-new"]})
+        );
+        assert_eq!(
+            ids(pending_notices(&conn, &session("a-new")).unwrap()),
+            vec![from_run]
+        );
+    }
+
+    // Design 5.5 rule 8 (review r5, r6). Defect: Remove drops a row that a
+    // hand-off holds, so its sender is told `dropped` about a text the
+    // receiver got; drops one the provider already took; or a hand-off
+    // after the drop still delivers it.
+    #[test]
+    fn remove_drops_only_a_row_that_no_hand_off_holds() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let held = handed_off(&conn, "held", true, "turn-1", "main", false);
+        let seen = ask_delivered(&conn, "seen", "turn-1");
+        let waiting = sent_to_a(&conn, "waiting", true);
+        let drop = |id: &MessageId| drop_message(&conn, id, 200).unwrap();
+        let status = |id: &MessageId| get(&conn, id).unwrap().unwrap().status;
+
+        assert_eq!(drop(&held), (DropAnswer::InFlight, Notices::default()));
+        assert!(matches!(status(&held), Status::Open { slot: Some(_), .. }));
+        assert_eq!(drop(&seen), (DropAnswer::Closed, Notices::default()));
+        assert!(matches!(status(&seen), Status::Open { slot: Some(_), .. }));
+
+        let (answer, notices) = drop(&waiting);
+        assert_eq!(answer, DropAnswer::Dropped);
+        assert_eq!(
+            serde_json::to_value(&notices).unwrap(),
+            serde_json::json!({"sessions": ["giga-chat"]})
+        );
+        assert!(matches!(
+            status(&waiting),
+            Status::Dropped { closed_at: 200, .. }
+        ));
+        assert!(
+            assign_slot(&conn, &waiting, "turn-2", "main", Delivery::Submit, 201)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(drop(&waiting), (DropAnswer::Closed, Notices::default()));
+        assert_eq!(drop(&id('z')), (DropAnswer::Closed, Notices::default()));
+    }
+
+    // Design 7 (review r1). Defect: an archived session stays in
+    // `mono_session_ends` after it is unarchived, so every message to it is
+    // refused as if it were gone.
+    #[test]
+    fn an_unarchived_session_receives_again() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let to_project = |request_id: &str| {
+            call(
+                &conn,
+                &caller_in("giga", "giga-chat"),
+                request_id,
+                Tool::SendMessage,
+                hi("project", false, "queue"),
+                &[listed("project", true, true)],
+            )
+        };
+        crate::session_store::set_archived(&conn, "project", true).unwrap();
+        assert_eq!(failed(to_project("r1")).code, "unknown_target");
+        crate::session_store::set_archived(&conn, "project", false).unwrap();
+        accepted_ids(&to_project("r2"));
+    }
+
+    // PR 6 review r1 M1. Defect: the clear commits on its own and the delete
+    // or archive after it fails, so a chat that stays live is gone to the
+    // gate: every message to it is refused and its rows owe no notice.
+    #[test]
+    fn a_failed_delete_or_archive_leaves_the_session_receiving() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let queued = sent_to_a(&conn, "queued", true);
+        conn.execute_batch(
+            "CREATE TEMP TRIGGER no_archive BEFORE UPDATE OF archived ON sessions
+               BEGIN SELECT RAISE(ABORT, 'disk full'); END;
+             CREATE TEMP TRIGGER no_delete BEFORE DELETE ON sessions
+               BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+        )
+        .unwrap();
+        let still_live = |step: &str| {
+            assert_eq!(ended_at(&conn, "a-chat"), None, "{step}");
+            assert!(
+                matches!(
+                    get(&conn, &queued).unwrap().unwrap().status,
+                    Status::Open { .. }
+                ),
+                "{step}"
+            );
+        };
+        assert!(crate::session_store::set_archived(&conn, "a-chat", true).is_err());
+        still_live("archive");
+        assert!(crate::session_store::delete_session(
+            &conn,
+            "a-chat",
+            crate::session_store::Removal::End
+        )
+        .is_err());
+        still_live("delete");
+        sent(&conn, ("giga", "giga-chat"), "mono-a", "after", false);
+        conn.execute_batch("DROP TRIGGER no_archive; DROP TRIGGER no_delete;")
+            .unwrap();
+        let notices = crate::session_store::delete_session(
+            &conn,
+            "a-chat",
+            crate::session_store::Removal::End,
+        )
+        .unwrap();
+        assert!(ended_at(&conn, "a-chat").is_some());
+        assert!(matches!(
+            get(&conn, &queued).unwrap().unwrap().status,
+            Status::Dropped { .. }
+        ));
+        assert_eq!(
+            serde_json::to_value(&notices).unwrap(),
+            serde_json::json!({"sessions": ["giga-chat"]})
+        );
+    }
+
+    // PR 6 review r2 m1, decision 407. Defect: a discarded draft clears its
+    // session like a delete, so a Mono whose fresh chat only held a draft
+    // can no longer be reached and the question queued for it is dropped.
+    #[test]
+    fn a_discarded_draft_stays_receiving() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let queued = sent_to_a(&conn, "queued", true);
+        let notices = crate::session_store::delete_session(
+            &conn,
+            "a-chat",
+            crate::session_store::Removal::DiscardDraft,
+        )
+        .unwrap();
+        assert_eq!(notices, Notices::default());
+        assert_eq!(ended_at(&conn, "a-chat"), None);
+        assert!(matches!(
+            get(&conn, &queued).unwrap().unwrap().status,
+            Status::Open { .. }
+        ));
+        accepted_ids(&call(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "after",
+            Tool::SendMessage,
+            serde_json::json!({"message": "Hi", "send_to": "mono-a", "wanting_reply": true}),
+            &[listed("a-chat", true, true)],
+        ));
+    }
+
+    // PR 6 review r1 m1. Defect: a call that the control host let through
+    // before the clear forgot its session lands after the clear, and its row
+    // is never dropped, because nothing clears the session again.
+    #[test]
+    fn a_call_from_a_cleared_session_is_refused() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        clear(&conn, "a-chat", 200);
+        let refused = failed(call(
+            &conn,
+            &caller_in("mono-a", "a-chat"),
+            "late",
+            Tool::SendMessage,
+            serde_json::json!({"message": "Q?", "send_to": "giga", "wanting_reply": true}),
+            &[],
+        ));
+        assert_eq!(refused.code, "unknown_token");
+        assert!(snapshot(&conn).is_empty());
+    }
+
+    // PR 6 review r1 n1, design 16.6 (intents review r2) M3. Defect: the
+    // late confirm of a held row the clear dropped fails on the CHECK
+    // `status <> 'dropped' OR wanting_reply = 1 OR delivered_at IS NULL`.
+    #[test]
+    fn a_confirm_after_the_clear_leaves_the_dropped_row_alone() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let held = handed_off(&conn, "held", false, "turn-9", "main", false);
+        clear(&conn, "a-chat", 200);
+        mark_delivery(&conn, &held, "turn-9", 201).unwrap();
+        assert!(matches!(
+            get(&conn, &held).unwrap().unwrap().status,
+            Status::Dropped { closed_at: 200, .. }
+        ));
+        let delivered_at: Option<i64> = conn
+            .query_row(
+                "SELECT delivered_at FROM mono_messages WHERE id = ?1",
+                [held.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(delivered_at, None);
     }
 }
