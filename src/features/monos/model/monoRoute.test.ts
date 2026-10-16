@@ -67,6 +67,7 @@ const rust = vi.hoisted(() => {
     addressed: string;
     body: string;
     hop: number;
+    intent: "new" | "steer";
     status: "open" | "delivered" | "unanswered" | "dropped";
     wantingReply: boolean;
     handledBySession: string | null;
@@ -85,6 +86,12 @@ const rust = vi.hoisted(() => {
     ownerWindow: undefined as string | undefined,
     /** The rejection the next `submit` answers. */
     failure: undefined as Record<string, unknown> | undefined,
+    /**
+     * The route session's turn ended while the gate ran, so `submit` drops
+     * the steer it accepted after the commit and gives it no route
+     * (design 16.12.3.3).
+     */
+    turnEnded: false,
     /** `assign_slot` runs once this settles. */
     assigning: undefined as Promise<void> | undefined,
     /** How many `mark_notified` calls fail before one succeeds. */
@@ -107,7 +114,12 @@ const rust = vi.hoisted(() => {
         const { caller, requestId, input } = args as {
           caller: { monoId: string; sessionId: string };
           requestId: string;
-          input: { message: string; wanting_reply: boolean; send_to?: string };
+          input: {
+            message: string;
+            wanting_reply: boolean;
+            send_to?: string;
+            intent?: string;
+          };
         };
         if (state.failure) return { outcome: "failed", error: state.failure };
         const prior = state.rows.filter(
@@ -137,7 +149,8 @@ const rust = vi.hoisted(() => {
           to: input.send_to ? { kind: "mono", monoId: input.send_to } : null,
           addressed: input.send_to ?? "",
           body: input.message,
-          hop: 0,
+          hop: input.intent === "steer" ? 1 : 0,
+          intent: input.intent === "steer" ? "steer" : "new",
           status: input.wanting_reply ? "open" : "delivered",
           wantingReply: input.wanting_reply,
           handledBySession: state.route.sessionId,
@@ -146,9 +159,20 @@ const rust = vi.hoisted(() => {
           notifiedAt: null,
         };
         state.rows.push(accepted);
+        if (state.turnEnded) {
+          accepted.status = "dropped";
+          return {
+            outcome: "accepted",
+            messages: [structuredClone(accepted)],
+            answered: [],
+            duplicate: false,
+            routes: [],
+          };
+        }
         return {
           outcome: "accepted",
-          messages: [accepted],
+          // IPC returns a copy, so later changes to the row do not show.
+          messages: [structuredClone(accepted)],
           answered: answering
             ? [{ handle: "#1", message_id: answering.id }]
             : [],
@@ -168,6 +192,12 @@ const rust = vi.hoisted(() => {
         if (!entry || (entry.status !== "open" && entry.status !== "delivered"))
           return null;
         if (entry.slot) return held(entry, args.turnId) ? entry : null;
+        // A steer only joins a running turn (design 16.6); an opener
+        // hand-off drops it. The turn it names is Rust's to check.
+        if (entry.intent === "steer" && args.kind !== "steer") {
+          entry.status = "dropped";
+          return null;
+        }
         // Handles count up from #1 in each turn of the session.
         const taken = state.rows.flatMap((other) =>
           other.handledBySession === entry.handledBySession &&
@@ -188,7 +218,10 @@ const rust = vi.hoisted(() => {
       }
       case "mono_message_release": {
         const entry = row(args.id);
-        if (entry && held(entry, args.turnId)) entry.slot = null;
+        if (entry && held(entry, args.turnId)) {
+          if (entry.intent === "steer") entry.status = "dropped";
+          else entry.slot = null;
+        }
         return null;
       }
       case "mono_message_mark_delivery": {
@@ -352,6 +385,7 @@ beforeEach(() => {
   rust.state.route = { sessionId: "a-chat", via: "queue" };
   rust.state.ownerWindow = undefined;
   rust.state.failure = undefined;
+  rust.state.turnEnded = false;
   rust.state.assigning = undefined;
   rust.state.failedMarks = 0;
   rust.state.chats = { giga: "giga-chat", "mono-a": "a-chat" };
@@ -466,11 +500,12 @@ function world(
   };
 }
 
-const ask = (wanting_reply = false, action_type = "queue") => ({
+const ask = (wanting_reply = false, intent: "new" | "steer" = "new") => ({
   message: "Review PR 12",
   send_to: "mono-a",
   wanting_reply,
-  action_type,
+  intent,
+  ...(intent === "steer" ? { reply_to: "m_zzzzzzzzzzzz" } : {}),
 });
 
 /** A message from the Giga's chat to Mono A that ended as `change` says. */
@@ -483,6 +518,7 @@ const ended = (change: Partial<Row>): Row => ({
   addressed: "mono-a",
   body: "Is CI\ngreen?",
   hop: 0,
+  intent: "new",
   status: "unanswered",
   wantingReply: true,
   handledBySession: "a-chat",
@@ -562,8 +598,8 @@ it("steers two messages into a starting turn in the order they came, once it is 
   const { send, get, host } = world([
     chat("a-chat", { busy: true, turnReadiness: "starting" }),
   ]);
-  await send({ ...ask(), message: "First" }, "r1");
-  await send({ ...ask(), message: "Second" }, "r2");
+  await send({ ...ask(false, "steer"), message: "First" }, "r1");
+  await send({ ...ask(false, "steer"), message: "Second" }, "r2");
   expect(steerableQueuedMessage(get("a-chat"))).toBeUndefined();
   host.update("a-chat", (session) => ({ ...session, turnReadiness: "ready" }));
   const first = steerableQueuedMessage(get("a-chat"));
@@ -608,21 +644,36 @@ it("routes into a chat this window had not loaded with one item and one delivery
   expect(ids(get("a-chat"))).toEqual([]);
 });
 
-// Defect: a steer that finds the turn over loses the message, or keeps its
-// slot so nothing ever queues it again.
-it("queues a project-session steer again when the turn just finished", async () => {
+// Design 16.6 (PR I2 review r1 M2). Defect: a steer that finds the turn
+// over waits in the queue and opens the next turn as new work, or the call
+// answers `queue`, so the model waits for a steer that will never arrive.
+it("answers dropped for a project-session steer whose turn just finished", async () => {
   rust.state.route = { sessionId: "project", via: "steer" };
   const { send, get, steerProject } = world([chat("project", { busy: true })]);
   steerProject.mockRejectedValueOnce(new Error(TURN_FINISHED_ERROR));
-  expect(await send(ask(false, "steer"))).toMatchObject({ delivery: "queue" });
-  expect(rust.state.rows[0]).toMatchObject({
-    status: "delivered",
-    slot: null,
+  expect(await send(ask(false, "steer"))).toMatchObject({
+    status: "dropped",
+    delivery: "dropped",
   });
+  expect(rust.state.commands).toContain("mono_message_release");
+  expect(get("project").queuedMessages).toBeUndefined();
+});
+
+// Design 5.5 rule 4. Defect: a new message whose steer into a project
+// session failed is lost, or keeps its slot so nothing queues it again.
+it("queues a failed hand-off of new work again", async () => {
+  const { send, get, host } = world([chat("project")]);
+  rust.state.route = { sessionId: "project", via: "queue" };
+  await send({ ...ask(), send_to: "project" });
+  const id = "m_aaaaaaaaaaaa" as MessageId;
+  host.update("project", (session) => dequeueQueuedMessage(session, id));
+  expect(await handOff(host, "project", id, "dispatch", () => false)).toBe(
+    false,
+  );
+  expect(rust.state.rows[0]).toMatchObject({ status: "delivered", slot: null });
   expect(get("project").queuedMessages).toEqual([
-    expect.objectContaining({ id: "m_aaaaaaaaaaaa", waitForIdle: true }),
+    expect.objectContaining({ id, waitForIdle: true }),
   ]);
-  expect(get("project").queuedMessages?.[0].blockId).toBeUndefined();
 });
 
 // Defect: a project steer that the provider took is delivered again later.
@@ -1194,16 +1245,66 @@ it("reports a duplicate's delivery as its first call in this window did, else as
   });
 });
 
-// Defect: a project steer that finds no turn of the session in this window is
-// neither steered nor queued, so it waits for the next load.
-it("queues a project-session steer when this window runs no turn of it", async () => {
+// Design 16.6 (PR I2 review r1 M2). Defect: a project steer with no turn in
+// this window becomes a queue item that nothing steers, so the call says
+// `steer` and an opener drops the steer later; or new work steers. The
+// session loads here, so its load queues the steer row first.
+it("drops a project-session steer at once when this window runs no turn of it", async () => {
   rust.state.route = { sessionId: "project", via: "steer" };
-  const { send, get, steerProject } = world([chat("project")]);
-  expect(await send(ask(false, "steer"))).toMatchObject({ delivery: "submit" });
+  const { send, get, open, steerProject } = world([], [chat("project")]);
+  expect(
+    await send({ ...ask(false, "steer"), send_to: "project" }, "r1"),
+  ).toMatchObject({ status: "dropped", delivery: "dropped" });
+  expect(open).toHaveBeenCalledWith("project");
+  expect(rust.state.commands).toContain("mono_message_drop");
+  expect(rust.state.commands).not.toContain("mono_message_assign_slot");
+  expect(ids(get("project"))).toEqual([]);
+  rust.state.route = { sessionId: "project", via: "queue" };
+  await send({ ...ask(), send_to: "project" }, "r2");
   expect(steerProject).not.toHaveBeenCalled();
   expect(get("project").queuedMessages).toEqual([
-    expect.objectContaining({ id: "m_aaaaaaaaaaaa", waitForIdle: true }),
+    expect.objectContaining({ id: "m_bbbbbbbbbbbb", waitForIdle: true }),
   ]);
+});
+
+// Design 16.12.3.3 (whole-turn review r1 M1). Defect: a steer that Rust
+// dropped after the commit, because its turn ended while the gate ran, is
+// answered as queued, or gets an item; or the boundary loses its scope.
+it("answers dropped for a whole-turn steer whose turn ended while the gate ran", async () => {
+  rust.state.route = { sessionId: "a-chat", via: "steer" };
+  rust.state.turnEnded = true;
+  const { send, get } = world([
+    chat("a-chat", { busy: true, turnReadiness: "ready" }),
+  ]);
+  expect(
+    await send({
+      message: "Stop and commit",
+      send_to: "mono-a",
+      wanting_reply: false,
+      intent: "steer",
+      scope: "turn",
+    }),
+  ).toMatchObject({ status: "dropped", delivery: "dropped" });
+  expect(rust.state.submitted[0]).toMatchObject({
+    input: { intent: "steer", scope: "turn" },
+  });
+  expect(ids(get("a-chat"))).toEqual([]);
+  expect(rust.state.commands).not.toContain("mono_message_assign_slot");
+});
+
+// Design 16.6. Defect: reconcile puts a waiting steer row back as an item
+// that waits for the turn end, so the drain opens a turn with it.
+it("reconciles a steer row as an item that steers", async () => {
+  rust.state.route = { sessionId: "a-chat", via: "steer" };
+  const { send, get, host } = world([chat("a-chat", { busy: true })]);
+  await send(ask(false, "steer"));
+  host.update("a-chat", (session) =>
+    dequeueQueuedMessage(session, "m_aaaaaaaaaaaa"),
+  );
+  await reconcile(host, "a-chat");
+  const [item] = get("a-chat").queuedMessages ?? [];
+  expect(item.id).toBe("m_aaaaaaaaaaaa");
+  expect(item.waitForIdle).toBeUndefined();
 });
 
 // PR 4a review m7 (T21, T22). Defect: a rejected call reaches the CLI without

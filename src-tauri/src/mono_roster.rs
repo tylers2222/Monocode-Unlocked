@@ -46,7 +46,7 @@ impl MonoRole {
         }
     }
 
-    fn parse(value: &str) -> Option<Self> {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
             "giga" => Some(MonoRole::Giga),
             "mono" => Some(MonoRole::Mono),

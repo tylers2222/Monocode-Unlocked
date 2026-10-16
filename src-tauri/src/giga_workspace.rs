@@ -72,7 +72,7 @@ const MANAGED_BODY: &str = r#"(The app keeps this block up to date. Text outside
 - The pre-commit hook lets a Giga commit only its own `gigas/<slug>/` and new files in `shared/`, and refuses secret-looking files. The app sets `MONOCODE_GIGA_SLUG` for each Giga, so your own commits follow the same rules.
 
 ## Messages between Monos
-- `app monos.send` is removed. Message another Mono with `app messages.send` (`message`, `send_to`, `wanting_reply`; `action_type:"steer"` replaces `whenBusy`) and answer a message that wants a reply with `app messages.reply`. Where `shared/CONVENTIONS.md` still names `monos.send`, this line wins.
+- `app monos.send` is removed. Message another Mono with `app messages.send` (`message`, `send_to`, `wanting_reply`, `intent`; `intent:"steer"` with `reply_to` replaces `whenBusy`, and `action_type` is gone) and answer a message that wants a reply with `app messages.reply`. `intent:"steer"` with `"scope":"turn"` instead of `reply_to` (a Giga to a Mono only) changes everything a Mono is doing now, in its own running turn only; never pass both. Where `shared/CONVENTIONS.md` still names `monos.send` or `action_type`, this line wins.
 
 ## Search before you redo work
 `index/index.db` has one SQLite FTS5 table, `entries(source, giga, path, at, text)`. `source` is `log` or `brief`.
@@ -86,7 +86,7 @@ const GITIGNORE: &str = "index/\ngigas/*/state/\ngigas/*/scratch/\n.DS_Store\n";
 const CONVENTIONS: &str = r#"# Conventions for Gigas
 
 - Every spin-up names its harness and model (exact IDs from `app models.list`).
-- Messages to other Monos: `app messages.send` with `message`, `send_to` and `wanting_reply` (true only when you need an answer). `action_type:"steer"` redirects a running turn; the default `"queue"` waits for it to end. Answer a message that wants a reply with `app messages.reply`.
+- Messages to other Monos: `app messages.send` with `message`, `send_to`, `wanting_reply` (true only when you need an answer) and `intent`. `intent:"new"` starts new work and waits for a busy recipient's turn to end; `intent:"steer"` with `reply_to` changes the running work that message started, and `intent:"steer"` with `"scope":"turn"` (a Giga to a Mono only) changes everything a Mono is doing now. Answer a message that wants a reply with `app messages.reply`.
 - Briefs: `# Target`, `# Change`, `# Acceptance`, written plainly. Save each one in your `briefs/`.
 - To add a convention, add a new file in `shared/`. Do not edit a file another Giga wrote.
 "#;
@@ -1944,6 +1944,20 @@ mod tests {
     }
     // Defect: the workspace keeps teaching the removed `monos.send`, or the
     // fix leaves a change under `shared/` that no one may commit.
+    // PR I2 review r2 n1. Defect: a text every Mono reads teaches scope
+    // "turn" without saying only a Giga may use it, so a Mono tries it and
+    // gets steer_scope_not_allowed.
+    #[test]
+    fn the_workspace_texts_say_only_a_giga_may_steer_a_whole_turn() {
+        for text in [MANAGED_BODY, CONVENTIONS] {
+            let line = text
+                .lines()
+                .find(|line| line.contains(r#"`"scope":"turn"`"#))
+                .expect("the texts name scope turn");
+            assert!(line.contains("a Giga to a Mono only"), "{line}");
+        }
+    }
+
     #[test]
     fn a_workspace_with_the_old_messaging_convention_learns_messages_send_and_stays_clean() {
         let home = TempHome::new("conventions");
@@ -1964,7 +1978,7 @@ mod tests {
         assert!(
             block.contains("`app monos.send` is removed")
                 && block.contains("`app messages.send`")
-                && block.contains("`action_type:\"steer\"` replaces `whenBusy`"),
+                && block.contains("`intent:\"steer\"` with `reply_to` replaces `whenBusy`"),
             "{block}"
         );
     }

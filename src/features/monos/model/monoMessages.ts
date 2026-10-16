@@ -17,15 +17,23 @@ export type TurnId = Brand<string, "TurnId">;
 
 export type MonoRole = "giga" | "mono";
 export type Tool = "send_message" | "reply";
-export type ActionType = "queue" | "steer";
 export type Delivery = "submit" | "queue" | "steer";
 export type IntentKind = "new" | "reply" | "steer" | "continue";
-/** The intent of an accepted row (design 16.1). `continue` never passes the gate. */
+/**
+ * The intent of an accepted row (design 16.1, 16.12). `continue` never passes
+ * the gate. A steer names one message or the whole turn; neither and both
+ * have no form.
+ */
 export type Intent =
-  | { intent: "new"; replyTo: null }
-  | { intent: "reply" | "steer"; replyTo: MessageId };
+  | { intent: "new"; replyTo: null; scope: null }
+  | { intent: "reply" | "steer"; replyTo: MessageId; scope: null }
+  | { intent: "steer"; replyTo: null; scope: "turn" };
 /** What a rejected row asked for. `replyTo` only when it named a stored row. */
-export type AskedIntent = { intent: IntentKind; replyTo: MessageId | null };
+export type AskedIntent = {
+  intent: IntentKind;
+  replyTo: MessageId | null;
+  scope: "turn" | null;
+};
 
 // One parse function per brand, each undefined on bad input. Only boundary
 // code calls them; everything past the boundary trusts the brand.
@@ -65,24 +73,33 @@ export type RowIntent =
 
 /**
  * The intent columns of a row from Rust. Undefined when they disagree: an
- * accepted row is `new` without a target, or `reply`/`steer` with one.
+ * accepted row is `new` with no target, `reply` with `replyTo`, or `steer`
+ * with exactly one of `replyTo` and `scope`.
  */
 export function parseRowIntent(row: {
   status: unknown;
   intent: unknown;
   replyTo: unknown;
+  scope: unknown;
 }): RowIntent | undefined {
   const { intent } = row;
   const replyTo = row.replyTo === null ? null : parseMessageId(row.replyTo);
-  if (replyTo === undefined || !isIntentKind(intent)) return undefined;
+  const scope =
+    row.scope === null || row.scope === "turn" ? row.scope : undefined;
+  if (replyTo === undefined || scope === undefined || !isIntentKind(intent))
+    return undefined;
   if (row.status === "rejected")
-    return { status: "rejected", asked: { intent, replyTo } };
+    return { status: "rejected", asked: { intent, replyTo, scope } };
   if (intent === "new")
-    return replyTo === null
-      ? { status: "accepted", intent: { intent, replyTo } }
+    return replyTo === null && scope === null
+      ? { status: "accepted", intent: { intent, replyTo, scope } }
       : undefined;
-  if (intent === "continue" || replyTo === null) return undefined;
-  return { status: "accepted", intent: { intent, replyTo } };
+  if (intent === "continue") return undefined;
+  if (replyTo !== null && scope === null)
+    return { status: "accepted", intent: { intent, replyTo, scope } };
+  if (intent === "steer" && replyTo === null && scope === "turn")
+    return { status: "accepted", intent: { intent, replyTo, scope } };
+  return undefined;
 }
 
 /** A turn id as `control_authorize_turn` takes it: 1 to 128 characters. */
@@ -182,9 +199,13 @@ export type RejectCode =
   | "habit_cannot_wait"
   | "unknown_message"
   | "steer_target_mismatch"
-  | "ambiguous_steer"
+  | "intent_mismatch"
+  | "intent_not_allowed"
   | "target_gone"
   | "cannot_steer"
+  | "steer_needs_target"
+  | "steer_scope_not_allowed"
+  | "nothing_running"
   | "rate_limited"
   | "hop_limit"
   | "no_open_handle"
@@ -195,23 +216,31 @@ export type RejectCode =
 /** Failures that write no row: every app action code, from the one list. */
 export type CallErrorCode = AppErrorCode;
 
-/** `open_handles` on ambiguous_reply, unknown_handle and no_open_handle; `candidates` on ambiguous_steer. */
+/** `open_handles` on ambiguous_reply, unknown_handle and no_open_handle. */
 export type ToolError = {
   ok: false;
   code: RejectCode | CallErrorCode;
   hint: string;
   message_id?: MessageId;
   open_handles?: { handle: Handle; message_id: MessageId; from: string }[];
-  candidates?: { message_id: MessageId; preview: string }[];
 };
 
-/** A `send_message` call as the model gave it (design 3.2), defaults filled in. */
+/** What a send names (design 16.12). "Both" has no form. */
+type SendTarget =
+  /** A message id only (PR I2 review r1): a steer names a message the caller sent. */
+  | { reply_to: MessageId; scope?: never }
+  /** Everything the recipient is doing now, in its own running turn. */
+  | { scope: "turn"; reply_to?: never }
+  | { reply_to?: never; scope?: never };
+
+/** A `send_message` call as the model gave it (design 16.4, 16.12). */
 export type SendInput = {
   message: string;
   send_to: string;
   wanting_reply: boolean;
-  action_type: ActionType;
-};
+  /** As asked: the gate refuses the intents a send cannot carry (I1, W1, I2). */
+  intent: IntentKind;
+} & SendTarget;
 
 /** A `reply` call (design 3.3). `to` names the handles it answers. */
 export type ReplyInput = {
@@ -241,18 +270,34 @@ export function parseSendInput(raw: Record<string, unknown>): SendInput {
     throw new Error(
       "wanting_reply is required: true when you need an answer, false otherwise",
     );
-  if (
-    raw.action_type !== undefined &&
-    raw.action_type !== "steer" &&
-    raw.action_type !== "queue"
-  )
-    throw new Error('action_type must be "steer" or "queue"');
-  return {
+  if (!isIntentKind(raw.intent))
+    throw new Error(
+      'intent is required and is one of "new", "steer", "reply" or "continue". Use "new" for new work, or "steer" with reply_to to change the work a message started.',
+    );
+  const send = {
     message: text,
     send_to: raw.send_to,
     wanting_reply: raw.wanting_reply,
-    action_type: raw.action_type ?? "queue",
+    intent: raw.intent,
   };
+  if (raw.reply_to !== undefined && raw.scope !== undefined)
+    throw new Error(
+      'Pass reply_to or scope "turn", not both. reply_to steers the work one message started; scope "turn" steers everything the recipient is doing now.',
+    );
+  if (raw.scope !== undefined) {
+    if (raw.scope !== "turn")
+      throw new Error(
+        'scope must be "turn": steer everything the recipient is doing now.',
+      );
+    return { ...send, scope: "turn" };
+  }
+  if (raw.reply_to === undefined) return send;
+  const replyTo = parseMessageId(raw.reply_to);
+  if (!replyTo)
+    throw new Error(
+      "reply_to must be one message_id (m_…). A steer names a message you sent: use the message_id your send_message returned.",
+    );
+  return { ...send, reply_to: replyTo };
 }
 
 /** Throws the `invalid_input` hint (R1). Rust parses the same input again. */

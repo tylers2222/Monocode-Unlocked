@@ -39,12 +39,12 @@ monocode app sessions.send --json '{"sessionId":"<id>","prompt":"Then add tests"
 
 ```sh
 monocode app messages.get_monos --json '{}'
-monocode app messages.send --json '{"message":"Can you check CI on vibtra?","send_to":"<mono_id>","wanting_reply":true}'
+monocode app messages.send --json '{"message":"Can you check CI on vibtra?","send_to":"<mono_id>","wanting_reply":true,"intent":"new"}'
 monocode app messages.reply --json '{"message":"CI is green."}'
 ```
 
 - The message arrives in the other Mono's chat as a `<mono_message>` tag that names the sender and says whether it wants a reply.
-- `wanting_reply` is required. `action_type: "steer"` reaches the running turn; the default, `"queue"`, waits for it to end.
+- `wanting_reply` and `intent` are required. `intent: "new"` waits for a running turn to end. `intent: "steer"` with `reply_to` (the `message_id` of a message you sent) reaches the turn that runs that message's work, and is refused with `target_gone` when that work is not running. A Giga can pass `scope: "turn"` instead of `reply_to` to steer everything a Mono is doing now.
 - A Mono cannot send to itself.
 
 ## How it stays current
