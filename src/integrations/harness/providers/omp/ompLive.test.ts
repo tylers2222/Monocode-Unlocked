@@ -14,6 +14,7 @@ const transport = vi.hoisted(() => ({
   spawnChild: vi.fn(),
   forkData: undefined as unknown,
   stateSessionId: undefined as string | undefined,
+  hostToolsUnknown: false,
 }));
 
 vi.mock("../../core/child", () => ({
@@ -39,6 +40,7 @@ import { sendPiTurn, steerPiTurn, forgetPiSession } from "../pi/pi";
 import { ompCommandProvider, respondQuestion } from "../pi/piFamily";
 import { OMP_FLAVOR } from "../pi/piFlavor";
 import type { HarnessEvent, SendTurnInput } from "../../core/types";
+import type { MonoTools } from "../../core/monoTools";
 import { applyHarnessEvent } from "../../core/apply";
 import { newSession } from "../../../../features/sessions/model/session";
 import { ATTACHMENT_ONLY_PROMPT } from "../../../../features/sessions/model/attachments";
@@ -79,6 +81,7 @@ beforeEach(() => {
   transport.fast = undefined;
   transport.forkData = undefined;
   transport.stateSessionId = undefined;
+  transport.hostToolsUnknown = false;
   transport.writeChild.mockReset();
   transport.writeChild.mockImplementation(
     async (sessionId: string, line: string) => {
@@ -89,6 +92,14 @@ beforeEach(() => {
         return transport.prompt?.(sessionId, command);
       if (command.type === "set_fast_mode" && transport.fast)
         return transport.fast(sessionId, command);
+      if (command.type === "set_host_tools" && transport.hostToolsUnknown)
+        return frame(sessionId, {
+          type: "response",
+          id: command.id,
+          command: command.type,
+          success: false,
+          error: `Unknown command: ${command.type}`,
+        });
       response(
         sessionId,
         command,
@@ -833,5 +844,112 @@ describe("OMP workflow dialogs", () => {
       cancelled: true,
     });
     expect(events.some((e) => e.type === "question.resolved")).toBe(true);
+  });
+});
+
+describe("OMP Mono messaging host tools", () => {
+  const monoTools = (call: MonoTools["call"]): MonoTools => ({
+    exe: "/fake/monocode",
+    tools: [
+      {
+        name: "get_monos",
+        action: "messages.get_monos",
+        description: "List Monos",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      },
+    ],
+    call,
+  });
+  const sent = (sessionId: string, type: string) =>
+    transport.requests.filter(
+      (r) => r.sessionId === sessionId && r.command.type === type,
+    );
+  const done = (sessionId: string, request: Record<string, unknown>) =>
+    frame(sessionId, { type: "prompt_result", id: request.id, agentInvoked: false });
+
+  // Defect: omp never learns the tools, hides them (plan mode, discoverable),
+  // gets them again every turn, or a project session gets them.
+  it("registers essential host tools once for a Mono session and never for a project session", async () => {
+    const tools = monoTools(async () => ({ ok: true }));
+    const first = await started({ ...input("mono-chat"), monoTools: tools });
+    done("mono-chat", first.request);
+    await first.turn;
+    const second = sendOmpTurn({ ...input("mono-chat"), monoTools: tools });
+    await vi.waitFor(() => expect(sent("mono-chat", "prompt")).toHaveLength(2));
+    done("mono-chat", sent("mono-chat", "prompt")[1].command);
+    await second;
+    const registered = sent("mono-chat", "set_host_tools");
+    expect(registered).toHaveLength(1);
+    expect(registered[0].command.tools).toEqual([
+      expect.objectContaining({
+        name: "get_monos",
+        parameters: tools.tools[0].inputSchema,
+        loadMode: "essential",
+      }),
+    ]);
+    const project = await started(input("project"));
+    done("project", project.request);
+    await project.turn;
+    expect(sent("project", "set_host_tools")).toHaveLength(0);
+  });
+
+  // Defect: an omp without `set_host_tools` fails every Mono turn instead of
+  // running it with the app CLI only.
+  it("runs a Mono turn without host tools when omp does not know set_host_tools", async () => {
+    transport.hostToolsUnknown = true;
+    const call = vi.fn<MonoTools["call"]>(async () => ({ ok: true }));
+    const running = await started({ ...input("mono-chat"), monoTools: monoTools(call) });
+    frame("mono-chat", {
+      type: "host_tool_call",
+      id: "host_1",
+      toolCallId: "toolu_01",
+      toolName: "get_monos",
+      arguments: {},
+    });
+    await vi.waitFor(() =>
+      expect(sent("mono-chat", "host_tool_result")).toHaveLength(1),
+    );
+    expect(call).not.toHaveBeenCalled();
+    done("mono-chat", running.request);
+    await running.turn;
+    expect(running.settled()).toBe(true);
+  });
+
+  // Defect: a host tool call never reaches the app, reuses omp's frame id or
+  // tool call id as the request id, or omp waits forever for its result.
+  it("answers a host tool call through the app with a fresh valid request id", async () => {
+    const call = vi.fn<MonoTools["call"]>(async () => ({ ok: true, monos: [] }));
+    const running = await started({ ...input("mono-chat"), monoTools: monoTools(call) });
+    frame("mono-chat", {
+      type: "host_tool_call",
+      id: "host_1",
+      toolCallId: "toolu_01:abc/def",
+      toolName: "get_monos",
+      arguments: {},
+    });
+    frame("mono-chat", {
+      type: "host_tool_call",
+      id: "host_2",
+      toolCallId: "toolu_02",
+      toolName: "delete_monos",
+      arguments: {},
+    });
+    await vi.waitFor(() =>
+      expect(sent("mono-chat", "host_tool_result")).toHaveLength(2),
+    );
+    expect(call).toHaveBeenCalledTimes(1);
+    const [action, callInput, requestId] = call.mock.calls[0];
+    expect([action, callInput]).toEqual(["messages.get_monos", {}]);
+    expect(requestId).toMatch(/^[A-Za-z0-9_-]{1,128}$/);
+    expect(requestId).not.toBe("host_1");
+    const results = sent("mono-chat", "host_tool_result").map((r) => r.command);
+    expect(results.find((r) => r.id === "host_1")).toEqual({
+      type: "host_tool_result",
+      id: "host_1",
+      result: { content: [{ type: "text", text: '{"ok":true,"monos":[]}' }] },
+    });
+    expect(results.find((r) => r.id === "host_2")).toMatchObject({ isError: true });
+    done("mono-chat", running.request);
+    await running.turn;
   });
 });

@@ -14,6 +14,20 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 const APP_TURN_INACTIVE: &str = "MonoCode app access is inactive. Use /operator once in this thread to enable it, then call the CLI during an active agent turn. Retrying this request now will not enable access.";
 const UNKNOWN_TOKEN: &str = "This token is no longer valid. It ends when the app restarts, the window closes, its session is deleted or archived, or its orchestration run stops. Do not retry.";
+/// The answer to a call the window did not answer in time. The call may still
+/// run there; the CLI caller can repeat it with `--request-id`.
+pub(crate) const REQUEST_TIMED_OUT: &str =
+    "Control request timed out. Retry with the same request ID.";
+/// A tool caller (`app-mcp`, omp host tools) cannot pass a request id, so the
+/// tool path repeats a timed-out call itself, this many times, with the same
+/// id; the app returns the first outcome instead of applying it twice.
+pub(crate) const TOOL_CALL_RETRIES: usize = 2;
+const OUTCOME_UNKNOWN: &str = "MonoCode did not confirm this call in time. The message may already be delivered. Do not send it again. Call get_monos to check that MonoCode responds, and if you asked for a reply, wait for it.";
+
+/// What a tool caller gets when no attempt was confirmed (design 3.4 `outcome_unknown`).
+pub(crate) fn outcome_unknown() -> Value {
+    json!({"ok": false, "code": "outcome_unknown", "hint": OUTCOME_UNKNOWN, "error": OUTCOME_UNKNOWN})
+}
 
 /// A token the app refuses. Both are final for that token, so neither is retryable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,17 +275,95 @@ fn request_grant(host: &Inner, namespace: &str, token: &str) -> Result<Grant, Fa
     }
     .cloned()
     .ok_or(Refusal::UnknownToken)?;
-    if namespace == "app"
-        && (host.grants.contains_key(&grant.session)
-            || host.workers.contains_key(&grant.session)
-            || !host
-                .active
-                .get(&grant.session)
-                .is_some_and(|turn| turn.window == grant.window && turn.app_allowed))
+    if namespace == "app" {
+        check_app_turn(host, &grant)?;
+    }
+    Ok(grant)
+}
+
+/// Design 2 step 3: an app grant works only while its session runs an
+/// opted-in turn in the grant's window, and never for orchestration.
+fn check_app_turn(host: &Inner, grant: &Grant) -> Result<(), Failure> {
+    if host.grants.contains_key(&grant.session)
+        || host.workers.contains_key(&grant.session)
+        || !host
+            .active
+            .get(&grant.session)
+            .is_some_and(|turn| turn.window == grant.window && turn.app_allowed)
     {
         return Err(Refusal::TurnInactive.into());
     }
+    Ok(())
+}
+
+/// The grant an omp host tool call of `session` from `window` runs under.
+/// omp's process belongs to the window running its turn, so no token is
+/// involved: the window names the session and the turn check does the rest.
+fn host_grant(host: &Inner, window: &str, session: &str) -> Result<Grant, Failure> {
+    let grant = host
+        .app_grants
+        .get(session)
+        .filter(|grant| grant.window == window)
+        .cloned()
+        .ok_or(Refusal::TurnInactive)?;
+    check_app_turn(host, &grant)?;
     Ok(grant)
+}
+
+#[derive(Clone)]
+struct Call {
+    namespace: String,
+    request_id: String,
+    action: String,
+    input: Value,
+}
+
+/// How long the app waits for a window's `control_reply`.
+const REPLY_WAIT: Duration = Duration::from_secs(35);
+
+/// Design 2 step 4: hand one authorized call to its grant's window as a
+/// control event and wait for that window's `control_reply`.
+fn dispatch(
+    inner: &Mutex<Inner>,
+    grant: impl FnOnce(&Inner) -> Result<Grant, Failure>,
+    call: Call,
+    emit: &mut impl FnMut(&str, Event) -> bool,
+    wait: Duration,
+) -> Result<Value, Failure> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = mpsc::channel();
+    let grant = {
+        let mut host = inner.lock().map_err(|_| "Control service unavailable")?;
+        let grant = grant(&host)?;
+        if host.pending.len() >= 24 {
+            return Err("Too many pending control requests".into());
+        }
+        host.pending.insert(
+            id.clone(),
+            Pending {
+                window: grant.window.clone(),
+                reply: tx,
+            },
+        );
+        grant
+    };
+    let event = Event {
+        id: id.clone(),
+        namespace: call.namespace,
+        session_id: grant.session,
+        request_id: call.request_id,
+        action: call.action,
+        input: call.input,
+    };
+    let result = if emit(&grant.window, event) {
+        rx.recv_timeout(wait).map_err(|_| REQUEST_TIMED_OUT.into())
+    } else {
+        Err("MonoCode executor is unavailable".into())
+    };
+    if let Ok(mut host) = inner.lock() {
+        host.pending.remove(&id);
+    }
+    result
 }
 
 pub fn init(app: &AppHandle) -> Result<(), String> {
@@ -329,42 +421,21 @@ fn serve(mut stream: TcpStream, app: &AppHandle, inner: &Arc<Mutex<Inner>>) {
         {
             return Err("Invalid input or request ID".into());
         }
-        let id = uuid::Uuid::new_v4().to_string();
-        let (tx, rx) = mpsc::channel();
-        let grant = {
-            let mut host = inner.lock().map_err(|_| "Control service unavailable")?;
-            let grant = request_grant(&host, &request.namespace, &request.token)?;
-            if host.pending.len() >= 24 {
-                return Err("Too many pending control requests".into());
-            }
-            host.pending.insert(
-                id.clone(),
-                Pending {
-                    window: grant.window.clone(),
-                    reply: tx,
-                },
-            );
-            grant
-        };
-        let event = Event {
-            id: id.clone(),
-            namespace: request.namespace,
-            session_id: grant.session,
-            request_id: request.request_id,
-            action: request.action,
-            input: request.input,
-        };
-        let delivered = app.emit_to(grant.window.as_str(), "monocode-control-request", event);
-        let result = if delivered.is_err() {
-            Err("MonoCode executor is unavailable".into())
-        } else {
-            rx.recv_timeout(Duration::from_secs(35))
-                .map_err(|_| "Control request timed out. Retry with the same request ID.".into())
-        };
-        if let Ok(mut host) = inner.lock() {
-            host.pending.remove(&id);
-        }
-        result
+        dispatch(
+            inner,
+            |host| request_grant(host, &request.namespace, &request.token),
+            Call {
+                namespace: request.namespace.clone(),
+                request_id: request.request_id,
+                action: request.action,
+                input: request.input,
+            },
+            &mut |window, event| {
+                app.emit_to(window, "monocode-control-request", event)
+                    .is_ok()
+            },
+            REPLY_WAIT,
+        )
     })();
     let response = result.unwrap_or_else(Failure::response);
     let _ = writeln!(stream, "{response}");
@@ -571,15 +642,23 @@ fn forget_session(inner: &Mutex<Inner>, harness: &crate::harness::HarnessHost, s
 }
 
 pub fn window_closed(app: &AppHandle, label: &str) {
-    let host = app.state::<ControlHost>();
+    close_window(
+        &app.state::<ControlHost>().inner,
+        &app.state::<crate::harness::HarnessHost>(),
+        label,
+    );
+}
+
+fn close_window(inner: &Mutex<Inner>, harness: &crate::harness::HarnessHost, label: &str) {
     let ids = {
-        let Ok(inner) = host.inner.lock() else { return };
+        let Ok(inner) = inner.lock() else { return };
         inner.window_sessions(label)
     };
+    // A session's `S#n` children (antigravity) carry its token too.
     for id in &ids {
-        let _ = crate::harness::harness_kill(app.state(), id.clone());
+        harness.kill_session_tree(id);
     }
-    if let Ok(mut inner) = host.inner.lock() {
+    if let Ok(mut inner) = inner.lock() {
         inner.close_window(label);
     };
 }
@@ -593,18 +672,31 @@ pub fn configure_child(app: &AppHandle, session_id: &str, cmd: &mut Command) {
         return;
     };
     if let Ok(inner) = host.inner.lock() {
-        if let Some(grant) = inner.grants.get(session_id) {
-            cmd.env("MONOCODE_CONTROL_ENDPOINT", &host.endpoint)
-                .env("MONOCODE_CONTROL_TOKEN", &grant.token);
-        }
-        if let Some(grant) = inner.app_grants.get(session_id) {
-            cmd.env("MONOCODE_APP_ENDPOINT", &host.endpoint)
-                .env("MONOCODE_APP_TOKEN", &grant.token);
-        }
-        if let Some(scratch) = inner.scratch.get(session_id) {
-            configure_worker_scratch(cmd, scratch);
-        }
+        configure_session_child(&inner, &host.endpoint, session_id, cmd);
     };
+}
+
+/// A child keyed `S#n` (antigravity) is session S's process and gets S's app
+/// token. Orchestration access (control token, worker scratch) stays with the
+/// exact key: the orchestration stop paths kill by exact key, so an `S#n`
+/// child they miss must not hold a lead's control token. A lead also holds an
+/// app grant (`control_enable`), so its `S#n` gets that token; it is inert
+/// while the session leads and works again only after `control_disable`.
+fn configure_session_child(inner: &Inner, endpoint: &str, child_key: &str, cmd: &mut Command) {
+    if let Some(grant) = inner.grants.get(child_key) {
+        cmd.env("MONOCODE_CONTROL_ENDPOINT", endpoint)
+            .env("MONOCODE_CONTROL_TOKEN", &grant.token);
+    }
+    if let Some(grant) = inner
+        .app_grants
+        .get(crate::harness::child_session(child_key))
+    {
+        cmd.env("MONOCODE_APP_ENDPOINT", endpoint)
+            .env("MONOCODE_APP_TOKEN", &grant.token);
+    }
+    if let Some(scratch) = inner.scratch.get(child_key) {
+        configure_worker_scratch(cmd, scratch);
+    }
 }
 
 #[tauri::command]
@@ -612,6 +704,89 @@ pub fn app_cli_path() -> Result<String, String> {
     std::env::current_exe()
         .map(|path| path.to_string_lossy().into_owned())
         .map_err(|error| error.to_string())
+}
+
+/// The Mono messaging tool schemas, for omp's `set_host_tools` (design 4).
+#[tauri::command]
+pub fn app_tool_schemas() -> Value {
+    crate::control_cli::app_tools()
+}
+
+/// Design 4, omp: one Mono messaging host tool call of `session_id`, run as
+/// an `app-mcp` call would run, under the same turn check and control event.
+#[tauri::command(async)]
+pub fn control_host_call(
+    window: WebviewWindow,
+    host: State<'_, ControlHost>,
+    session_id: String,
+    action: String,
+    input: Value,
+    request_id: String,
+) -> Value {
+    host_call(
+        &host.inner,
+        window.label(),
+        &session_id,
+        action,
+        input,
+        request_id,
+        |label, event| {
+            window
+                .emit_to(label, "monocode-control-request", event)
+                .is_ok()
+        },
+        REPLY_WAIT,
+    )
+    .unwrap_or_else(Failure::response)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn host_call(
+    inner: &Mutex<Inner>,
+    window: &str,
+    session: &str,
+    action: String,
+    input: Value,
+    request_id: String,
+    mut emit: impl FnMut(&str, Event) -> bool,
+    wait: Duration,
+) -> Result<Value, Failure> {
+    let tools = crate::control_cli::app_tools();
+    let is_tool = tools
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|tool| tool["action"] == action.as_str());
+    if !is_tool {
+        return Err(format!("{action} is not a Mono messaging tool").into());
+    }
+    // Design 3.5: the request id must pass `RequestId::parse`.
+    let valid_id = (1..=128).contains(&request_id.len())
+        && request_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    if !input.is_object() || !valid_id {
+        return Err("Invalid input or request ID".into());
+    }
+    let call = Call {
+        namespace: "app".into(),
+        request_id,
+        action,
+        input,
+    };
+    for _ in 0..=TOOL_CALL_RETRIES {
+        match dispatch(
+            inner,
+            |host| host_grant(host, window, session),
+            call.clone(),
+            &mut emit,
+            wait,
+        ) {
+            Err(Failure::Other(error)) if error == REQUEST_TIMED_OUT => continue,
+            outcome => return outcome,
+        }
+    }
+    Ok(outcome_unknown())
 }
 
 #[tauri::command]
@@ -901,6 +1076,174 @@ mod tests {
         let _ = other.kill();
         let _ = other.wait();
     }
+
+    // Defect: closing a window kills a session's provider by exact key and
+    // leaves its antigravity child `S#0` running with the session's token.
+    #[cfg(unix)]
+    #[test]
+    fn closing_a_window_kills_its_sessions_numbered_children() {
+        use crate::harness::tests::exits_soon;
+        let inner = Mutex::new(Inner::default());
+        app_grant(&mut inner.lock().unwrap(), "mono-chat");
+        let harness = crate::harness::HarnessHost::new();
+        let mut provider = harness.insert_test_child("mono-chat");
+        let mut numbered = harness.insert_test_child("mono-chat#0");
+        let mut other = harness.insert_test_child("other-chat");
+        close_window(&inner, &harness, "main");
+        assert!(exits_soon(&mut provider), "the provider kept running");
+        assert!(
+            exits_soon(&mut numbered),
+            "the mono-chat#0 child kept running"
+        );
+        assert!(matches!(other.try_wait(), Ok(None)));
+        let _ = other.kill();
+        let _ = other.wait();
+    }
+
+    fn child_env(inner: &Inner, key: &str) -> HashMap<String, String> {
+        let mut cmd = Command::new("true");
+        configure_session_child(inner, "127.0.0.1:9", key, &mut cmd);
+        cmd.get_envs()
+            .filter_map(|(name, value)| {
+                Some((name.to_str()?.to_string(), value?.to_str()?.to_string()))
+            })
+            .collect()
+    }
+
+    // Defect: antigravity spawns its child as `S#n`, the grant lookup uses
+    // the whole key, and the child gets no token, so neither the CLI nor
+    // `app-mcp` works there.
+    #[test]
+    fn a_numbered_child_gets_its_sessions_app_token_and_no_other() {
+        let mut inner = Inner::default();
+        let token = app_grant(&mut inner, "mono-chat");
+        let env = child_env(&inner, "mono-chat#3");
+        assert_eq!(env.get("MONOCODE_APP_TOKEN"), Some(&token));
+        assert_eq!(
+            env.get("MONOCODE_APP_ENDPOINT").map(String::as_str),
+            Some("127.0.0.1:9")
+        );
+        assert!(child_env(&inner, "mono-chat-2#0").is_empty());
+    }
+
+    /// Run one host call; the window leaves the first `unanswered` attempts
+    /// without a reply, as a window that answers too late does.
+    fn host_events(
+        inner: &Mutex<Inner>,
+        window: &str,
+        session: &str,
+        request_id: &str,
+        unanswered: usize,
+    ) -> (Value, Vec<Event>) {
+        let mut events = Vec::new();
+        let response = host_call(
+            inner,
+            window,
+            session,
+            "messages.get_monos".into(),
+            json!({}),
+            request_id.into(),
+            |label, event| {
+                assert_eq!(label, "main");
+                if events.len() >= unanswered {
+                    let pending = inner.lock().unwrap().pending.remove(&event.id).unwrap();
+                    pending
+                        .reply
+                        .send(json!({"ok": true, "monos": []}))
+                        .unwrap();
+                }
+                events.push(event);
+                true
+            },
+            Duration::from_millis(50),
+        )
+        .unwrap_or_else(Failure::response);
+        (response, events)
+    }
+
+    // Defect: an omp host tool call runs for a session with no opted-in turn,
+    // or from a window that does not run that turn.
+    #[test]
+    fn a_host_tool_call_without_an_active_turn_is_turn_inactive_and_emits_nothing() {
+        let inner = Mutex::new(Inner::default());
+        let (response, events) = host_events(&inner, "main", "mono-chat", "r1", 0);
+        assert_eq!(response["code"], "turn_inactive");
+        assert!(events.is_empty());
+        app_grant(&mut inner.lock().unwrap(), "mono-chat");
+        let (response, events) = host_events(&inner, "other", "mono-chat", "r1", 0);
+        assert_eq!(response["code"], "turn_inactive");
+        assert!(events.is_empty());
+        inner.lock().unwrap().active.remove("mono-chat");
+        let (response, events) = host_events(&inner, "main", "mono-chat", "r1", 0);
+        assert_eq!(response["code"], "turn_inactive");
+        assert!(events.is_empty());
+    }
+
+    // Defect: a host tool call reaches the window without its session, or
+    // with a request id the `request_id` CHECK refuses (design 3.5).
+    #[test]
+    fn a_host_tool_call_in_an_active_turn_emits_one_event_for_its_session() {
+        let inner = Mutex::new(Inner::default());
+        app_grant(&mut inner.lock().unwrap(), "mono-chat");
+        let (response, events) = host_events(&inner, "main", "mono-chat", "host_7-a", 0);
+        assert_eq!(response, json!({"ok": true, "monos": []}));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].session_id, "mono-chat");
+        assert_eq!(events[0].namespace, "app");
+        assert_eq!(events[0].action, "messages.get_monos");
+        assert_eq!(events[0].request_id, "host_7-a");
+        let (response, events) = host_events(&inner, "main", "mono-chat", "toolu:01/x", 0);
+        assert_eq!(response["ok"], false);
+        assert!(events.is_empty());
+        assert!(inner.lock().unwrap().pending.is_empty());
+    }
+    // Defect: an omp host call that times out is not repeated, is repeated
+    // under a new request id (a second delivery), or hands the model the
+    // CLI's "Retry with the same request ID", which a tool caller cannot do.
+    #[test]
+    fn a_timed_out_host_call_is_repeated_with_its_request_id_then_reported_unknown() {
+        let inner = Mutex::new(Inner::default());
+        app_grant(&mut inner.lock().unwrap(), "mono-chat");
+        let (response, events) = host_events(&inner, "main", "mono-chat", "req-1", 1);
+        assert_eq!(response, json!({"ok": true, "monos": []}));
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| event.request_id == "req-1"));
+        let (response, events) = host_events(&inner, "main", "mono-chat", "req-2", usize::MAX);
+        assert_eq!(events.len(), 1 + TOOL_CALL_RETRIES);
+        assert!(events.iter().all(|event| event.request_id == "req-2"));
+        assert_eq!(response["code"], "outcome_unknown");
+        assert!(!response
+            .to_string()
+            .contains("Retry with the same request ID"));
+        assert!(inner.lock().unwrap().pending.is_empty());
+    }
+
+    // Defect: an antigravity child `S#n` of an orchestration lead gets the
+    // lead's control token, and the stop paths that kill by exact key miss it.
+    #[test]
+    fn a_numbered_child_gets_no_orchestration_access() {
+        let mut inner = Inner::default();
+        inner.grants.insert(
+            "lead".into(),
+            Grant {
+                window: "main".into(),
+                session: "lead".into(),
+                cwd: "/repo".into(),
+                token: "control-token".into(),
+            },
+        );
+        inner
+            .scratch
+            .insert("lead".into(), PathBuf::from("/tmp/scratch"));
+        assert_eq!(
+            child_env(&inner, "lead")
+                .get("MONOCODE_CONTROL_TOKEN")
+                .map(String::as_str),
+            Some("control-token")
+        );
+        assert!(child_env(&inner, "lead#0").is_empty());
+    }
+
     #[test]
     fn app_token_survives_normal_turns_but_only_works_when_opted_in() {
         let mut inner = Inner::default();

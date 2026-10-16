@@ -330,6 +330,8 @@ pub fn run() {
             control::control_loaded_sessions,
             control::control_forget_session,
             control::app_cli_path,
+            control::app_tool_schemas,
+            control::control_host_call,
             default_cwd,
             home_dir,
             giga_workspace::giga_workspace_ensure,

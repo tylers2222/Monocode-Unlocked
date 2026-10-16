@@ -20,13 +20,17 @@ const restoreMonoCodexAgentState = vi.hoisted(() =>
   vi.fn(async (..._args: unknown[]) => undefined),
 );
 const prepareCodexMonoContext = vi.hoisted(() =>
-  vi.fn(async (_input: unknown) => ({
-    config: {
-      sqlite_home: "/private/mono",
-      instructions: "Account instructions",
-    },
-    hasThread: true,
-  })),
+  vi.fn(
+    async (
+      _input: unknown,
+    ): Promise<{ config: Record<string, unknown>; hasThread: boolean }> => ({
+      config: {
+        sqlite_home: "/private/mono",
+        instructions: "Account instructions",
+      },
+      hasThread: true,
+    }),
+  ),
 );
 vi.mock("./codexStore", () => ({ prepareCodexMonoContext }));
 
@@ -60,6 +64,7 @@ const {
   stopCodexSession,
   __codexTestReset,
 } = await import("./codex");
+import type { MonoTools } from "../../core/monoTools";
 import type { HarnessEvent } from "../../core/types";
 import {
   newSession,
@@ -120,6 +125,7 @@ async function startTurn(
     controlsAgents?: boolean;
     ephemeral?: boolean;
     codexStore?: "mono";
+    monoTools?: MonoTools;
   } = {},
 ) {
   const events: HarnessEvent[] = [];
@@ -141,6 +147,7 @@ async function startTurn(
     controlsAgents: options.controlsAgents,
     ephemeral: options.ephemeral,
     codexStore: options.codexStore,
+    monoTools: options.monoTools,
     intent: options.intent,
     text: "summarize the changelog",
     attachments: [],
@@ -321,6 +328,51 @@ describe("codex live turn sequence", () => {
     expect(restoreMonoCodexAgentState).not.toHaveBeenCalled();
     notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
     await turn;
+  });
+
+  // Defect: a Mono's codex thread starts without `monocode`, or the override
+  // replaces the user's own MCP servers, or carries the token itself.
+  it("adds monocode to a Mono's MCP servers next to the user's, naming only the env vars", async () => {
+    const monoTools: MonoTools = {
+      exe: "/fake/monocode",
+      tools: [],
+      call: async () => ({ ok: true }),
+    };
+    const monocode = {
+      command: "/fake/monocode",
+      args: ["app-mcp"],
+      env_vars: ["MONOCODE_APP_ENDPOINT", "MONOCODE_APP_TOKEN"],
+      tool_timeout_sec: 180,
+    };
+    const doop = { url: "https://doop.design/mcp" };
+    prepareCodexMonoContext.mockResolvedValueOnce({
+      config: { sqlite_home: "/private/mono", mcp_servers: { doop } },
+      hasThread: false,
+    });
+    const mono = await startTurn("codex-live", { codexStore: "mono", monoTools });
+    expect(
+      parse().find((m) => m.method === "thread/start")?.params,
+    ).toMatchObject({ config: { mcp_servers: { doop, monocode } } });
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await mono.turn;
+    await stopCodexSession("codex-live");
+    __codexTestReset();
+    sent.length = 0;
+    const habit = await startTurn("codex-live", { monoTools });
+    const config = parse().find((m) => m.method === "thread/start")?.params
+      ?.config;
+    expect(config).toEqual({ mcp_servers: { monocode } });
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await habit.turn;
+    await stopCodexSession("codex-live");
+    __codexTestReset();
+    sent.length = 0;
+    const project = await startTurn("codex-live");
+    expect(
+      parse().find((m) => m.method === "thread/start")?.params,
+    ).not.toHaveProperty("config");
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await project.turn;
   });
 
   it("persists Monos privately and resumes the same native thread after parking", async () => {

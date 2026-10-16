@@ -45,6 +45,7 @@ const {
   stopClaudeSession,
   __claudeTestReset,
 } = await import("./claude");
+import type { MonoTools } from "../../core/monoTools";
 import type { HarnessEvent } from "../../core/types";
 import type { RuntimeMode, TurnIntent } from "../../../../features/sessions/model/session";
 
@@ -72,6 +73,7 @@ async function startTurn(
     runtimeMode?: RuntimeMode;
     intent?: TurnIntent;
     providerAccountId?: string;
+    monoTools?: MonoTools;
   } = {},
 ) {
   const events: HarnessEvent[] = [];
@@ -83,6 +85,7 @@ async function startTurn(
     runtimeMode: options.runtimeMode ?? "supervised",
     intent: options.intent,
     providerAccountId: options.providerAccountId,
+    monoTools: options.monoTools,
     text: "explore the codebase",
     attachments: [],
     onEvent: (event) => events.push(event),
@@ -267,6 +270,37 @@ beforeEach(() => {
 afterEach(async () => {
   await stopClaudeSession("s1");
   __claudeTestReset();
+});
+
+describe("claude Mono messaging tools", () => {
+  // Defect: a Mono chat's Claude starts without `app-mcp`, the config pins
+  // the token, or `--strict-mcp-config` drops the user's own MCP servers.
+  it("registers app-mcp for a Mono session only, without the token", async () => {
+    const monoTools: MonoTools = {
+      exe: "/Applications/MonoCode.app/Contents/MacOS/monocode",
+      tools: [],
+      call: async () => ({ ok: true }),
+    };
+    const mono = await startTurn("s1", { monoTools });
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await mono.turn;
+    const args = spawned[0];
+    expect(args).not.toContain("--strict-mcp-config");
+    const config = args[args.indexOf("--mcp-config") + 1];
+    expect(JSON.parse(config)).toEqual({
+      mcpServers: {
+        monocode: { type: "stdio", command: monoTools.exe, args: ["app-mcp"] },
+      },
+    });
+    expect(config).not.toMatch(/TOKEN|ENDPOINT/);
+    await stopClaudeSession("s1");
+    __claudeTestReset();
+    sent.length = 0;
+    const project = await startTurn("s1");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await project.turn;
+    expect(spawned[1]).not.toContain("--mcp-config");
+  });
 });
 
 describe("claude streamed tool inputs", () => {

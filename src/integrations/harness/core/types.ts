@@ -9,6 +9,7 @@ import type {
   TurnMetrics,
 } from "../../../features/sessions/model/session";
 import type { UserQuestion } from "../../../features/sessions/model/userQuestion";
+import type { MonoTools } from "./monoTools";
 
 export type HarnessEvent =
   | { type: "session.started" }
@@ -178,6 +179,8 @@ export type HarnessSessionInput = {
   controlsAgents?: boolean;
   /** Grants this normal turn access to MonoCode's scoped app CLI. */
   appAccess?: boolean;
+  /** Mono messaging tools this harness registers for the session (design 4). */
+  monoTools?: MonoTools;
   onEvent: (event: HarnessEvent) => void;
 };
 

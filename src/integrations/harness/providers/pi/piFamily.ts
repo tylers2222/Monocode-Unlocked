@@ -17,6 +17,12 @@ import {
   watchChild,
   writeChild,
 } from "../../core/child";
+import {
+  answerHostToolCall,
+  ompHostTools,
+  parseHostToolCall,
+  type MonoTools,
+} from "../../core/monoTools";
 import type { PiFlavor } from "./piFlavor";
 import { PiRpc } from "./piClient";
 import { piSubagentEvents } from "./piSubagents";
@@ -121,6 +127,8 @@ type Live = {
   /** Reason the turn failed, held until we know it is not being retried. */
   turnError: string | null;
   turnUsage: PiTurnUsage;
+  /** Mono messaging host tools registered with omp for this session. */
+  monoTools?: MonoTools;
 };
 
 type Resume = {
@@ -580,6 +588,19 @@ async function startLive(
       INIT_TIMEOUT_MS,
     );
     bindState(flavor, input.sessionId, live, stateFrame.data);
+    if (input.monoTools) {
+      // An omp without host tools still runs the Mono's turn; it keeps the CLI.
+      const registered = await rpc
+        .request({ type: "set_host_tools", tools: ompHostTools(input.monoTools) })
+        .then(
+          () => true,
+          (error: unknown) => {
+            console.warn(`[${flavor.id}] Mono tools unavailable; using the app CLI`, error);
+            return false;
+          },
+        );
+      if (registered) live.monoTools = input.monoTools;
+    }
     await applyModel(flavor, live, input);
     if (live.providerSessionId) {
       live.onEvent({
@@ -747,6 +768,13 @@ function handleFrame(
     for (const question of live.questions.values()) {
       if (question.id === rec.id) question.resolve({ kind: "skipped" });
     }
+    return;
+  }
+  const hostCall = parseHostToolCall(rec);
+  if (hostCall) {
+    void answerHostToolCall(live.monoTools, hostCall).then((frame) =>
+      writeChild(sessionId, JSON.stringify(frame)).catch(() => undefined),
+    );
     return;
   }
   const ui = parseExtensionUiRequest(rec);

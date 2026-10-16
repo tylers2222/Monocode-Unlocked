@@ -15,6 +15,7 @@ import {
   watchChild,
   writeChild,
 } from "../../core/child";
+import { claudeMcpConfig } from "../../core/monoTools";
 import {
   askUserQuestionAllowInput,
   asRecord,
@@ -1769,7 +1770,7 @@ function settingsKeyFor(input: HarnessSessionInput): string {
     context: input.modelSettings?.context,
     runtimeMode: input.runtimeMode,
     hooks: loadClaudeHooks(),
-  })}`;
+  })}:${input.monoTools ? claudeMcpConfig(input.monoTools) : ""}`;
 }
 
 function launchOptions(
@@ -1783,6 +1784,7 @@ function launchOptions(
   resume?: string;
   sessionId?: string;
   settings?: ClaudeCliSettings;
+  mcpConfig?: string;
 } {
   const native = nativeModelId(input.model);
   const effortRaw = input.modelSettings?.effort;
@@ -1810,6 +1812,7 @@ function launchOptions(
     resume,
     sessionId: resume ? undefined : sessionId,
     settings: Object.keys(settings).length > 0 ? settings : undefined,
+    mcpConfig: input.monoTools ? claudeMcpConfig(input.monoTools) : undefined,
   };
 }
 

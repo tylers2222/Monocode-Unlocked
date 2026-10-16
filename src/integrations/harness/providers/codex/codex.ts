@@ -22,6 +22,7 @@ import {
   addCodexTurnUsage,
   asRecord,
   buildThreadStartParams,
+  codexThreadConfig,
   buildTurnStartParams,
   buildTurnSteerParams,
   isRecoverableThreadResumeError,
@@ -563,7 +564,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           threadId: canResume ? resume?.threadId : undefined,
         })
       : undefined;
-  const storeConfig = store?.config;
+  const threadConfig = codexThreadConfig(store?.config, input.monoTools);
   const liveRef: { current: Live | null } = { current: null };
 
   const rpc = new JsonRpcClient(
@@ -702,14 +703,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           {
             threadId: resume.threadId,
             ...params,
-            ...(storeConfig
-              ? {
-                  config: {
-                    ...storeConfig,
-                    ...(params.config as Record<string, unknown> | undefined),
-                  },
-                }
-              : {}),
+            ...(threadConfig ? { config: threadConfig } : {}),
           },
         );
         threadId = opened.thread?.id ?? resume.threadId;
@@ -736,14 +730,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         "thread/start",
         {
           ...params,
-          ...(storeConfig
-            ? {
-                config: {
-                  ...storeConfig,
-                  ...(params.config as Record<string, unknown> | undefined),
-                },
-              }
-            : {}),
+          ...(threadConfig ? { config: threadConfig } : {}),
           ...(ephemeral ? { ephemeral: true } : {}),
         },
       );

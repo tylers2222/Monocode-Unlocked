@@ -515,23 +515,37 @@ fn connection(
 
 fn send(action: &str, input: &Value, request_id: &str, app_mode: bool) -> Result<Value, Failure> {
     let (endpoint, token) = connection(app_mode, |key| std::env::var(key).ok())?;
+    send_to(&endpoint, &token, action, input, request_id, app_mode)
+}
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const READ_TIMEOUT: Duration = Duration::from_secs(40);
+fn send_to(
+    endpoint: &str,
+    token: &str,
+    action: &str,
+    input: &Value,
+    request_id: &str,
+    app_mode: bool,
+) -> Result<Value, Failure> {
     let address: SocketAddr = endpoint
         .parse()
         .map_err(|_| unsent("Invalid MonoCode endpoint"))?;
     if !address.ip().is_loopback() {
         return Err(unsent("MonoCode control only connects to localhost"));
     }
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(3))
+    let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)
         .map_err(|error| {
             unsent(format!(
                 "Cannot connect to MonoCode at {address}: {error}. The app may have restarted, or this agent's sandbox may be blocking localhost."
             ))
         })?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(40)))
+        .set_read_timeout(Some(READ_TIMEOUT))
         .map_err(|e| unsent(e.to_string()))?;
     stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
+        .set_write_timeout(Some(WRITE_TIMEOUT))
         .map_err(|e| unsent(e.to_string()))?;
     writeln!(
         stream,
@@ -549,6 +563,197 @@ fn send(action: &str, input: &Value, request_id: &str, app_mode: bool) -> Result
         return Err(sent("MonoCode response is too large"));
     }
     serde_json::from_str(&line).map_err(|_| sent("MonoCode returned an invalid response"))
+}
+
+/// The Mono messaging tools, as MCP (`app-mcp`) and omp host tools both
+/// expose them (design 3 and 4). `action` is the app action each one calls.
+pub fn app_tools() -> Value {
+    json!([
+        {
+            "name": "get_monos",
+            "action": "messages.get_monos",
+            "description": "List every Mono in MonoCode in rail order as {mono_id, mono_name, role, you}. you is true for yourself. Use a mono_id as send_to.",
+            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
+        },
+        {
+            "name": "send_message",
+            "action": "messages.send",
+            "description": "Send a message to another Mono's chat (send_to is its mono_id) or to a session in one of your projects (its session id). MonoCode decides the sender and the route. Set wanting_reply true only when you need an answer; the answer arrives later as a new message, so do not poll. A project session cannot answer. action_type \"queue\" (default) waits until the receiver's turn ends; \"steer\" reaches its running turn. Messages are limited to 8000 characters. A refusal has code and hint; follow the hint.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "minLength": 1, "description": "The text to send."},
+                    "send_to": {"type": "string", "minLength": 1, "description": "A mono_id from get_monos, or the id of a session in one of your projects."},
+                    "wanting_reply": {"type": "boolean", "description": "true only when you need an answer."},
+                    "action_type": {"type": "string", "enum": ["queue", "steer"], "description": "queue (default) or steer."}
+                },
+                "required": ["message", "send_to", "wanting_reply"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "reply",
+            "action": "messages.reply",
+            "description": "Answer the <mono_message> that waits for your reply (it says wanting_reply=\"true\"). MonoCode knows which message you answer. wanting_reply defaults to false.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "minLength": 1, "description": "Your answer."},
+                    "wanting_reply": {"type": "boolean", "description": "true only when you need an answer back. Default false."}
+                },
+                "required": ["message"],
+                "additionalProperties": false
+            }
+        }
+    ])
+}
+
+const MCP_PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// `app-mcp`: the Mono messaging tools as a stdio MCP server. The token
+/// comes from this process's environment on every call and never leaves it.
+pub fn run_app_mcp() -> i32 {
+    serve_mcp(std::io::stdin().lock(), std::io::stdout().lock(), |key| {
+        std::env::var(key).ok()
+    });
+    0
+}
+
+fn serve_mcp(input: impl BufRead, mut output: impl Write, var: impl Fn(&str) -> Option<String>) {
+    for line in input.lines() {
+        let Ok(line) = line else { return };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Some(response) = mcp_response(&line, &var) else {
+            continue;
+        };
+        if writeln!(output, "{response}")
+            .and_then(|()| output.flush())
+            .is_err()
+        {
+            return;
+        }
+    }
+}
+
+/// The answer to one JSON-RPC line, or `None` for a notification.
+fn mcp_response(line: &str, var: &impl Fn(&str) -> Option<String>) -> Option<Value> {
+    let Ok(message) = serde_json::from_str::<Value>(line) else {
+        return Some(
+            json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Parse error"}}),
+        );
+    };
+    let invalid = |id: Value| json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32600, "message": "Invalid Request"}});
+    let Some(object) = message.as_object() else {
+        return Some(invalid(Value::Null));
+    };
+    // A notification (no id) gets no answer.
+    let id = object.get("id")?.clone();
+    let Some(method) = object.get("method").and_then(Value::as_str) else {
+        return Some(invalid(id));
+    };
+    let params = message.get("params").cloned().unwrap_or(Value::Null);
+    let result = match method {
+        "initialize" => Ok(mcp_initialize(&params)),
+        "ping" => Ok(json!({})),
+        "tools/list" => Ok(json!({"tools": mcp_tools()})),
+        "tools/call" => mcp_call(&params, var),
+        _ => Err((-32601, format!("Method not found: {method}"))),
+    };
+    Some(match result {
+        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        Err((code, message)) => {
+            json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+        }
+    })
+}
+
+fn mcp_initialize(params: &Value) -> Value {
+    let asked = params.get("protocolVersion").and_then(Value::as_str);
+    let version = asked
+        .filter(|version| MCP_PROTOCOL_VERSIONS.contains(version))
+        .unwrap_or(MCP_PROTOCOL_VERSIONS[0]);
+    json!({
+        "protocolVersion": version,
+        "capabilities": {"tools": {}},
+        "serverInfo": {"name": "monocode", "version": env!("CARGO_PKG_VERSION")}
+    })
+}
+
+fn mcp_tools() -> Vec<Value> {
+    let Value::Array(tools) = app_tools() else {
+        return Vec::new();
+    };
+    tools
+        .into_iter()
+        .map(|mut tool| {
+            if let Some(tool) = tool.as_object_mut() {
+                tool.remove("action");
+            }
+            tool
+        })
+        .collect()
+}
+
+fn mcp_call(params: &Value, var: &impl Fn(&str) -> Option<String>) -> Result<Value, (i64, String)> {
+    let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+    let tools = app_tools();
+    let action = tools
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|tool| tool["name"] == name)
+        .and_then(|tool| tool["action"].as_str())
+        .ok_or_else(|| (-32602, format!("Unknown tool: {name}")))?;
+    let input = match params.get("arguments") {
+        None | Some(Value::Null) => json!({}),
+        Some(input @ Value::Object(_)) => input.clone(),
+        Some(_) => return Err((-32602, "arguments must be an object".into())),
+    };
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let value = call_app(action, &input, &request_id, var);
+    let ok = value.get("ok").and_then(Value::as_bool) == Some(true);
+    Ok(json!({
+        "content": [{"type": "text", "text": value.to_string()}],
+        "structuredContent": value,
+        "isError": !ok
+    }))
+}
+
+/// One app call, under one request id this server owns. When the outcome is
+/// unknown (the app answered "timed out", or the answer was lost after the
+/// request was sent) the call is sent again with the same id, which returns
+/// the first outcome. If every attempt is unknown the model is told not to
+/// send it again: its own retry would get a new id and could deliver twice.
+fn call_app(
+    action: &str,
+    input: &Value,
+    request_id: &str,
+    var: &impl Fn(&str) -> Option<String>,
+) -> Value {
+    let (endpoint, token) = match connection(true, var) {
+        Ok(connection) => connection,
+        Err(failure) => return failure_response(failure, request_id),
+    };
+    // Once an attempt reached the app, the outcome stays unknown: a later
+    // attempt that cannot connect does not prove the first was not applied.
+    let mut reached = false;
+    for _ in 0..=crate::control::TOOL_CALL_RETRIES {
+        match send_to(&endpoint, &token, action, input, request_id, true) {
+            Ok(value)
+                if value.get("error").and_then(Value::as_str)
+                    == Some(crate::control::REQUEST_TIMED_OUT) =>
+            {
+                reached = true;
+            }
+            Ok(value) => return value,
+            Err(failure) if failure.sent => reached = true,
+            Err(_) if reached => break,
+            Err(failure) => return failure_response(failure, request_id),
+        }
+    }
+    crate::control::outcome_unknown()
 }
 
 fn read_capped(mut source: impl Read) -> Result<String, String> {
@@ -1052,5 +1257,284 @@ mod tests {
             panic!("control connected without a token");
         };
         assert!(failure_response(failure, "id-1").get("code").is_none());
+    }
+
+    const TOKEN: &str = "tok3n-never-printed";
+
+    /// A loopback app that answers each connection with the next reply and
+    /// returns the requests it read. It stops once no call comes for a second.
+    fn fake_app(replies: Vec<Value>) -> (String, std::thread::JoinHandle<Vec<Value>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let accept = move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(1);
+            while std::time::Instant::now() < deadline {
+                if let Ok((stream, _)) = listener.accept() {
+                    stream.set_nonblocking(false).unwrap();
+                    return Some(stream);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            None
+        };
+        let app = std::thread::spawn(move || {
+            replies
+                .into_iter()
+                .map_while(|reply| {
+                    let stream = accept()?;
+                    let mut line = String::new();
+                    BufReader::new(&stream).read_line(&mut line).unwrap();
+                    writeln!(&stream, "{reply}").unwrap();
+                    Some(serde_json::from_str(&line).unwrap())
+                })
+                .collect()
+        });
+        (endpoint, app)
+    }
+
+    /// Run `app-mcp` over these JSON-RPC lines; every output line must hide the token.
+    fn mcp(endpoint: Option<&str>, lines: &[Value]) -> Vec<Value> {
+        let input: String = lines.iter().map(|line| format!("{line}\n")).collect();
+        let endpoint = endpoint.map(String::from);
+        let mut output = Vec::new();
+        serve_mcp(input.as_bytes(), &mut output, |key| match key {
+            "MONOCODE_APP_ENDPOINT" => endpoint.clone(),
+            "MONOCODE_APP_TOKEN" => endpoint.as_ref().map(|_| TOKEN.to_string()),
+            _ => None,
+        });
+        let output = String::from_utf8(output).unwrap();
+        assert!(!output.contains(TOKEN), "the token reached the output");
+        output
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    fn rpc(id: u64, method: &str, params: Value) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+    }
+
+    fn send_call(id: u64) -> Value {
+        rpc(
+            id,
+            "tools/call",
+            json!({"name": "send_message", "arguments": {"message": "Hi", "send_to": "mono-b", "wanting_reply": false}}),
+        )
+    }
+
+    // Defect: an MCP client cannot start (unsupported version, missing
+    // capabilities) or sees tools that accept fields the gate refuses.
+    #[test]
+    fn app_mcp_initializes_and_lists_the_three_strict_tools() {
+        let out = mcp(
+            None,
+            &[
+                rpc(1, "initialize", json!({"protocolVersion": "2025-03-26"})),
+                json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+                rpc(2, "initialize", json!({"protocolVersion": "1999-01-01"})),
+                rpc(3, "tools/list", json!({})),
+                rpc(4, "resources/list", json!({})),
+                json!("not a request"),
+                json!({"jsonrpc": "2.0", "id": 5}),
+            ],
+        );
+        assert_eq!(out.len(), 6, "a notification was answered: {out:?}");
+        assert_eq!(out[0]["result"]["protocolVersion"], "2025-03-26");
+        assert_eq!(out[0]["result"]["capabilities"], json!({"tools": {}}));
+        assert_eq!(out[0]["result"]["serverInfo"]["name"], "monocode");
+        assert_eq!(out[1]["result"]["protocolVersion"], "2025-06-18");
+        let tools = out[2]["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["get_monos", "send_message", "reply"]);
+        for tool in tools {
+            assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{tool}");
+            assert!(tool.get("action").is_none(), "{tool}");
+        }
+        assert_eq!(
+            tools[1]["inputSchema"]["required"],
+            json!(["message", "send_to", "wanting_reply"])
+        );
+        assert_eq!(out[3]["id"], 4);
+        assert_eq!(out[3]["error"]["code"], -32601);
+        assert_eq!(out[4]["error"]["code"], -32600);
+        assert_eq!(out[4]["id"], Value::Null);
+        assert_eq!(out[5]["error"]["code"], -32600);
+        assert_eq!(out[5]["id"], 5);
+    }
+
+    // Defect: a tool call reaches the app as the wrong action or namespace,
+    // without its input, or comes back without the app's answer.
+    #[test]
+    fn app_mcp_sends_one_app_request_per_tool_call_and_returns_its_answer() {
+        let answer = json!({"ok": true, "message_id": "m_abcdefghijkl", "status": "delivered", "delivery": "submit", "hop": 0});
+        let (endpoint, app) = fake_app(vec![answer.clone()]);
+        let out = mcp(Some(&endpoint), &[send_call(1)]);
+        let requests = app.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["action"], "messages.send");
+        assert_eq!(requests[0]["namespace"], "app");
+        assert_eq!(requests[0]["token"], TOKEN);
+        assert_eq!(
+            requests[0]["input"],
+            json!({"message": "Hi", "send_to": "mono-b", "wanting_reply": false})
+        );
+        let result = &out[0]["result"];
+        assert_eq!(result["structuredContent"], answer);
+        assert_eq!(result["isError"], false);
+        assert_eq!(
+            serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap()).unwrap(),
+            answer
+        );
+        let refused =
+            json!({"ok": false, "code": "self_send", "hint": "You cannot message yourself."});
+        let (endpoint, app) = fake_app(vec![refused.clone()]);
+        let out = mcp(Some(&endpoint), &[send_call(2)]);
+        app.join().unwrap();
+        assert_eq!(out[0]["result"]["isError"], true);
+        assert_eq!(out[0]["result"]["structuredContent"], refused);
+    }
+
+    // Defect: a call the app answered "timed out" is dropped, or retried
+    // under a new request id and so applied twice.
+    #[test]
+    fn app_mcp_retries_a_timed_out_call_with_the_same_request_id() {
+        let timed_out = json!({"ok": false, "error": crate::control::REQUEST_TIMED_OUT});
+        let (endpoint, app) = fake_app(vec![timed_out.clone(), json!({"ok": true, "monos": []})]);
+        let out = mcp(
+            Some(&endpoint),
+            &[rpc(1, "tools/call", json!({"name": "get_monos"}))],
+        );
+        let requests = app.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["requestId"], requests[1]["requestId"]);
+        assert_eq!(out[0]["result"]["isError"], false);
+        let (endpoint, app) = fake_app(vec![timed_out.clone(); 4]);
+        let out = mcp(Some(&endpoint), &[send_call(2)]);
+        let requests = app.join().unwrap();
+        assert_eq!(requests.len(), 3, "more than two retries");
+        assert!(requests
+            .iter()
+            .all(|r| r["requestId"] == requests[0]["requestId"]));
+        assert_eq!(out[0]["result"]["isError"], true);
+        let answer = &out[0]["result"]["structuredContent"];
+        assert_eq!(answer["code"], "outcome_unknown");
+        assert!(!answer
+            .to_string()
+            .contains("Retry with the same request ID"));
+        // The hint must never invite a resend: a resend gets a new id.
+        let hint = answer["hint"].as_str().unwrap();
+        assert!(hint.contains("may already be delivered"), "{hint}");
+        assert!(hint.contains("Do not send it again"), "{hint}");
+        assert!(!hint.to_lowercase().contains("send again"), "{hint}");
+        let (endpoint, app) = fake_app(vec![json!({"ok": true}), json!({"ok": true})]);
+        mcp(Some(&endpoint), &[send_call(3), send_call(4)]);
+        let requests = app.join().unwrap();
+        assert_ne!(
+            requests[0]["requestId"], requests[1]["requestId"],
+            "two tool calls shared a request id"
+        );
+    }
+
+    // Defect: the app applies a call but answers too late; app-mcp sends it
+    // again under a new request id (so the app delivers it twice), or hands
+    // the model a timeout it would answer with a second send.
+    #[test]
+    fn app_mcp_does_not_deliver_a_late_call_twice() {
+        // The first answer is either the app's "timed out" or lost on the way.
+        for late in [
+            Some(json!({"ok": false, "error": crate::control::REQUEST_TIMED_OUT})),
+            None,
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = listener.local_addr().unwrap().to_string();
+            // The app applies the first request of an id, but its answer
+            // does not arrive; the same id again returns the stored outcome.
+            let first = late.clone();
+            let app = std::thread::spawn(move || {
+                let mut applied = std::collections::HashMap::<String, Value>::new();
+                listener.set_nonblocking(true).unwrap();
+                let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                while std::time::Instant::now() < deadline {
+                    let Ok((stream, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    stream.set_nonblocking(false).unwrap();
+                    let mut line = String::new();
+                    BufReader::new(&stream).read_line(&mut line).unwrap();
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    let id = request["requestId"].as_str().unwrap().to_string();
+                    let reply = match applied.get(&id) {
+                        Some(outcome) => {
+                            let mut outcome = outcome.clone();
+                            outcome["duplicate"] = json!(true);
+                            Some(outcome)
+                        }
+                        None => {
+                            applied.insert(id, json!({"ok": true, "message_id": "m_abcdefghijkl"}));
+                            first.clone()
+                        }
+                    };
+                    if let Some(reply) = reply {
+                        writeln!(&stream, "{reply}").unwrap();
+                    }
+                }
+                applied.len()
+            });
+            let out = mcp(Some(&endpoint), &[send_call(1)]);
+            assert_eq!(app.join().unwrap(), 1, "delivered twice after {late:?}");
+            assert_eq!(out[0]["result"]["isError"], false, "after {late:?}");
+            assert_eq!(
+                out[0]["result"]["structuredContent"]["message_id"],
+                "m_abcdefghijkl"
+            );
+        }
+    }
+
+    /// codex's `tool_timeout_sec` for `monocode`; `codexMcpServer` in
+    /// `core/monoTools.ts` sends the same number.
+    const CODEX_TOOL_TIMEOUT: Duration = Duration::from_secs(180);
+
+    // Defect: one tools/call can outlast codex's tool timeout (a silent app
+    // makes every attempt wait out connect, write and read), so codex gives
+    // up first, the model sees no outcome_unknown and sends the message again.
+    #[test]
+    fn app_mcp_worst_case_ends_well_before_codex_gives_up() {
+        let worst_case = (CONNECT_TIMEOUT + WRITE_TIMEOUT + READ_TIMEOUT)
+            * (crate::control::TOOL_CALL_RETRIES as u32 + 1);
+        assert!(
+            worst_case + Duration::from_secs(30) <= CODEX_TOOL_TIMEOUT,
+            "app-mcp may take {worst_case:?}; codex waits {CODEX_TOOL_TIMEOUT:?}"
+        );
+    }
+
+    // Defect: attempt 1 reached the app and its answer was lost, attempt 2
+    // cannot connect, and the model gets a plain connection error, which it
+    // answers with a second send.
+    #[test]
+    fn app_mcp_answers_outcome_unknown_when_a_retry_cannot_connect_after_a_sent_attempt() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let app = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            // No answer, and the app is gone before the retry.
+        });
+        let out = mcp(Some(&endpoint), &[send_call(1)]);
+        app.join().unwrap();
+        let answer = &out[0]["result"]["structuredContent"];
+        assert_eq!(answer["code"], "outcome_unknown", "{answer}");
+    }
+
+    // Defect: without MONOCODE_APP_TOKEN the server crashes or answers a
+    // protocol error the model cannot act on.
+    #[test]
+    fn app_mcp_without_a_token_answers_a_no_token_tool_error() {
+        let out = mcp(None, &[send_call(1)]);
+        assert_eq!(out[0]["result"]["isError"], true);
+        assert_eq!(out[0]["result"]["structuredContent"]["code"], "no_token");
+        assert_eq!(out[0]["result"]["structuredContent"]["hint"], NO_TOKEN);
     }
 }
