@@ -831,6 +831,25 @@ it("reads a message for messages.get with the caller and answers Rust's code on 
   });
 });
 
+// PR I3 review r1 m4. Defect: a project session, which resolveCaller
+// answers with not_a_mono, still reaches Rust and reads a message.
+it("answers not_a_mono to messages.get from a project session and reads nothing", async () => {
+  const { host } = world([]);
+  const session = {
+    ...host,
+    caller: async () =>
+      ({
+        ok: false,
+        code: "not_a_mono",
+        hint: "Only a Mono's chat or its habit runs can use Mono messaging.",
+      }) as const,
+  };
+  await expect(
+    getMessage(session, { handle: "m_aaaaaaaaaaaa" as MessageId }),
+  ).rejects.toMatchObject({ code: "not_a_mono" });
+  expect(rust.state.commands).not.toContain("mono_message_get");
+});
+
 // Review PR 4a M1. Defect: an opener counts as delivered once the turn
 // starts, so a turn that no provider takes loses the message for good.
 it("keeps an opener undelivered and queues it again when no provider takes the turn", async () => {

@@ -352,7 +352,8 @@ export type ReadMessage = {
   reply_to: MessageId | null;
   body: string;
   wanting_reply: boolean;
-  status: MonoMessage["status"];
+  /** Only accepted rows are readable. */
+  status: Exclude<MonoMessage["status"], "rejected">;
   created_at: number;
   /** Only when the message holds a handle in the caller's current turn. */
   handle?: Handle;

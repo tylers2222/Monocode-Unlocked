@@ -12,6 +12,7 @@ import {
   parseSessionId,
   renderMonoNotice,
   type MessageId,
+  type ReadMessage,
 } from "./monoMessages";
 
 it("accepts a message id of m_ and 12 base32 characters, nothing near it", () => {
@@ -65,6 +66,16 @@ it("accepts a reply's to as one handle or 1 to 9 different ones, always as a lis
     1,
   ])
     expect(() => reply(nearMiss)).toThrow("to must be");
+});
+
+// PR I3 review r1 n2. Defect: the get_message output type admits a rejected
+// row, which readable never returns, so a caller handles a case that cannot
+// occur. Checked by tsc (see /tmp/mc947/E/ei3-tsconfig.json).
+it("types a read message's status as an accepted status only", () => {
+  // @ts-expect-error a rejected row is never readable
+  const rejected: ReadMessage["status"] = "rejected";
+  const dropped: ReadMessage["status"] = "dropped";
+  expect([rejected, dropped]).toEqual(["rejected", "dropped"]);
 });
 
 // Design 16.1, 16.12. Defect: the web app trusts a row that is new and

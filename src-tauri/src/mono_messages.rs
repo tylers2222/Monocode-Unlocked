@@ -1637,9 +1637,10 @@ pub struct ReadMessage {
     pub handle: Option<Handle>,
 }
 
-/// Design 16.4: the accepted row `named` points at, when the caller is a
-/// party to it. A handle names a row of the caller's session and turn, in any
-/// status. A row between two others reads as no row. Writes nothing.
+/// Design 16.4: the accepted row `named` points at, when the caller's Mono is
+/// a party to it. A handle names a row of the caller's session and turn, in
+/// any status. A row between two others reads as no row. Writes nothing.
+/// The session legs of the party rule come with PR 7's session callers.
 pub fn readable(
     conn: &Connection,
     caller: &Caller,
@@ -1656,8 +1657,7 @@ pub fn readable(
         .query_row(
             &format!(
                 "{SELECT} WHERE {filter} AND status <> 'rejected'
-                   AND (from_mono_id = ?1 OR to_mono_id = ?1
-                        OR from_session_id = ?2 OR handled_by_session = ?2)"
+                   AND (from_mono_id = ?1 OR to_mono_id = ?1)"
             ),
             params![
                 caller.mono_id.as_str(),
@@ -6526,15 +6526,31 @@ pub(crate) mod tests {
         .unwrap();
     }
 
+    /// Every column of every `mono_messages` row, in id order.
+    fn dump(conn: &Connection) -> Vec<Vec<Sql>> {
+        let mut statement = conn
+            .prepare("SELECT * FROM mono_messages ORDER BY id")
+            .unwrap();
+        let columns = statement.column_count();
+        statement
+            .query_map([], |row| {
+                (0..columns).map(|index| row.get::<_, Sql>(index)).collect()
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
     // Design 16.4. Defect: the sender cannot read what it sent, the receiver
     // cannot read a message by the handle its turn shows, the answer leaves
-    // out a field, or the read writes a row.
+    // out a field, or the read changes a row (PR I3 review r1 m2: a full
+    // dump, not the row count, so an UPDATE is caught too).
     #[test]
     fn get_message_reads_a_row_by_id_for_its_sender_and_by_handle_in_the_receivers_turn() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         let asked = ask_delivered(&conn, "ask", "turn-1");
-        let before = rows(&conn);
+        let before = dump(&conn);
         assert_eq!(
             found(read(&conn, &caller_in("giga", "giga-chat"), asked.as_str())),
             serde_json::json!({
@@ -6563,7 +6579,7 @@ pub(crate) mod tests {
         assert_eq!(by_handle["message_id"], asked.as_str());
         assert_eq!(by_handle["handle"], "#1");
         assert_eq!(by_handle["body"], "Hi");
-        assert_eq!(rows(&conn), before);
+        assert_eq!(dump(&conn), before);
     }
 
     // Design 16.4. Defect: a Mono reads messages between two others, or the
@@ -6580,6 +6596,26 @@ pub(crate) mod tests {
         assert_eq!(hidden.hint, "No message you can read has that id.");
         let missing = read_error(read(&conn, &outsider, "m_aaaaaaaaaaaa"));
         assert_eq!(hidden, missing);
+    }
+
+    // Design 16.4, PR I3 review r1 m1. The party is the caller's Mono, never
+    // its session: session callers come with PR 7. Defect: a caller reads a
+    // message between two other Monos because it runs in the session that
+    // sent or handled it.
+    #[test]
+    fn get_message_keys_the_party_on_the_callers_mono_not_its_session() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_c(&conn);
+        let asked = ask_delivered(&conn, "ask", "turn-1");
+        for session_id in ["giga-chat", "a-chat"] {
+            let error = read_error(read(
+                &conn,
+                &caller_in("mono-c", session_id),
+                asked.as_str(),
+            ));
+            assert_eq!(error.code, "unknown_message", "{session_id}");
+        }
     }
 
     // Design 16.4: only accepted rows. Defect: a refused call reads as a

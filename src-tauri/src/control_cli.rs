@@ -638,7 +638,7 @@ pub fn app_tools() -> Value {
         {
             "name": "get_message",
             "action": "messages.get",
-            "description": "Read the full text of a message you sent or received. Call it only when the original is no longer in your context. Returns message_id, from, to, intent, reply_to, body, wanting_reply, status and created_at.",
+            "description": "Read the full text of a message you sent or received. Call it only when the original is no longer in your context. Returns message_id, from, to, intent, reply_to, body, wanting_reply, status and created_at, and handle when the message holds one in this turn.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -796,7 +796,7 @@ fn call_app(
             Err(failure) => return failure_response(failure, request_id),
         }
     }
-    crate::control::outcome_unknown()
+    crate::control::outcome_unknown(action)
 }
 
 fn read_capped(mut source: impl Read) -> Result<String, String> {
@@ -1419,6 +1419,13 @@ mod tests {
         assert_eq!(get["required"], json!(["handle"]));
         assert_eq!(get["properties"]["handle"]["type"], "string");
         assert_eq!(get["properties"].as_object().unwrap().len(), 1);
+        // PR I3 review r1 n1. Defect: a model that sees only the MCP schema
+        // does not know the answer can carry handle.
+        let described = tools[3]["description"].as_str().unwrap();
+        assert!(
+            described.contains("and handle when the message holds one in this turn"),
+            "{described}"
+        );
         assert_eq!(out[3]["id"], 4);
         assert_eq!(out[3]["error"]["code"], -32601);
         assert_eq!(out[4]["error"]["code"], -32600);
@@ -1498,6 +1505,27 @@ mod tests {
             requests[0]["requestId"], requests[1]["requestId"],
             "two tool calls shared a request id"
         );
+    }
+
+    // PR I3 review r1 m3. Defect: over MCP, a get_message whose every
+    // attempt timed out tells the model not to call it again.
+    #[test]
+    fn app_mcp_tells_a_timed_out_get_message_to_read_again() {
+        let timed_out = json!({"ok": false, "error": crate::control::REQUEST_TIMED_OUT});
+        let (endpoint, app) = fake_app(vec![timed_out; 3]);
+        let out = mcp(
+            Some(&endpoint),
+            &[rpc(
+                1,
+                "tools/call",
+                json!({"name": "get_message", "arguments": {"handle": "#1"}}),
+            )],
+        );
+        assert_eq!(app.join().unwrap().len(), 3);
+        let answer = &out[0]["result"]["structuredContent"];
+        assert_eq!(answer["code"], "outcome_unknown");
+        let hint = answer["hint"].as_str().unwrap();
+        assert!(hint.contains("call get_message again"), "{hint}");
     }
 
     // Defect: the app applies a call but answers too late; app-mcp sends it
