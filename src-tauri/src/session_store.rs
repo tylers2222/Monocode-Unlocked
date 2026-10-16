@@ -499,9 +499,18 @@ pub fn cancel_session_search(search_owner: String) {
     cancel_owned_session_search(&search_owner);
 }
 
-/// `end`: the session ends (design 7). Its token and turn go, and its Mono
-/// messages are cleared in the delete transaction. A discarded draft passes
-/// `false`: its id stays open and may be saved later.
+/// What deleting a session means for its Mono messages (design 7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Removal {
+    /// The session ends. Its token and turn go, and its Mono messages are
+    /// cleared in the delete transaction.
+    End,
+    /// A discarded draft. Its id stays open and may be saved later.
+    DiscardDraft,
+}
+
+/// `end` on the wire: `true` is [`Removal::End`], `false` is
+/// [`Removal::DiscardDraft`].
 #[tauri::command(async)]
 pub fn session_delete(
     app: AppHandle,
@@ -511,6 +520,11 @@ pub fn session_delete(
     end: bool,
 ) -> Result<(), String> {
     validate_id(&session_id, "session")?;
+    let removal = if end {
+        Removal::End
+    } else {
+        Removal::DiscardDraft
+    };
     let mut delete = |conn: &Connection| -> rusqlite::Result<crate::mono_messages::Notices> {
         let persisted_paths = get_session(conn, &session_id)
             .ok()
@@ -522,12 +536,13 @@ pub fn session_delete(
             conn,
             &session_id,
         )?);
-        delete_session(conn, &session_id, end)
+        delete_session(conn, &session_id, removal)
     };
-    if end {
-        crate::control::end_session(&app, &session_id, delete)?;
-    } else {
-        delete(&*store.lock_conn()?).map_err(|e| e.to_string())?;
+    match removal {
+        Removal::End => crate::control::end_session(&app, &session_id, delete)?,
+        Removal::DiscardDraft => {
+            delete(&*store.lock_conn()?).map_err(|e| e.to_string())?;
+        }
     }
     if !image_paths.is_empty() {
         if let Err(error) = crate::fs::delete_generated_images_sync(&app, &image_paths) {
@@ -1783,18 +1798,15 @@ fn optional_json(raw: Option<String>) -> Option<Value> {
     raw.and_then(|value| serde_json::from_str(&value).ok())
 }
 
-/// `end`: the session ends (design 7), so its Mono messages are cleared in
-/// this transaction.
 pub(crate) fn delete_session(
     conn: &Connection,
     session_id: &str,
-    end: bool,
+    removal: Removal,
 ) -> rusqlite::Result<crate::mono_messages::Notices> {
     let tx = conn.unchecked_transaction()?;
-    let notices = if end {
-        clear_ended(&tx, session_id)?
-    } else {
-        Default::default()
+    let notices = match removal {
+        Removal::End => clear_ended(&tx, session_id)?,
+        Removal::DiscardDraft => Default::default(),
     };
     let parent = worker_parent(&tx, session_id)?;
     // Ownership is also carried in transcripts for older clients. Release
@@ -2857,7 +2869,7 @@ mod tests {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
         upsert_session(&conn, &sample("s1", "/tmp/a", "First")).unwrap();
-        delete_session(&conn, "s1", false).unwrap();
+        delete_session(&conn, "s1", Removal::DiscardDraft).unwrap();
         assert!(get_session(&conn, "s1").unwrap().is_none());
         assert!(list_by_project(&conn, "/tmp/a").unwrap().is_empty());
     }
@@ -2883,7 +2895,7 @@ mod tests {
         let other =
             json!({"status":"active","tasks":[{"id":"other-task","sessionId":"other-worker"}]});
         save_orchestration(&conn, "other-lead", &other).unwrap();
-        delete_session(&conn, "lead", false).unwrap();
+        delete_session(&conn, "lead", Removal::DiscardDraft).unwrap();
 
         for id in ["earlier", "current"] {
             let worker = get_session(&conn, id).unwrap().unwrap();
@@ -2938,7 +2950,7 @@ mod tests {
             ]}),
         )
         .unwrap();
-        delete_session(&conn, "worker", false).unwrap();
+        delete_session(&conn, "worker", Removal::DiscardDraft).unwrap();
         assert!(get_session(&conn, "worker").unwrap().is_none());
         assert!(worker_parent(&conn, "worker").unwrap().is_none());
         assert_eq!(
@@ -2980,7 +2992,7 @@ mod tests {
         .unwrap();
         conn.execute_batch("CREATE TRIGGER reject_delete BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'test failure'); END;").unwrap();
         for id in ["lead", "worker"] {
-            assert!(delete_session(&conn, id, false).is_err());
+            assert!(delete_session(&conn, id, Removal::DiscardDraft).is_err());
             assert!(get_session(&conn, id).unwrap().is_some());
             assert_eq!(
                 worker_parent(&conn, "worker").unwrap().as_deref(),

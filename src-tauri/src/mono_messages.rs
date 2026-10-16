@@ -4542,12 +4542,22 @@ pub(crate) mod tests {
         };
         assert!(crate::session_store::set_archived(&conn, "a-chat", true).is_err());
         still_live("archive");
-        assert!(crate::session_store::delete_session(&conn, "a-chat", true).is_err());
+        assert!(crate::session_store::delete_session(
+            &conn,
+            "a-chat",
+            crate::session_store::Removal::End
+        )
+        .is_err());
         still_live("delete");
         sent(&conn, ("giga", "giga-chat"), "mono-a", "after", false);
         conn.execute_batch("DROP TRIGGER no_archive; DROP TRIGGER no_delete;")
             .unwrap();
-        let notices = crate::session_store::delete_session(&conn, "a-chat", true).unwrap();
+        let notices = crate::session_store::delete_session(
+            &conn,
+            "a-chat",
+            crate::session_store::Removal::End,
+        )
+        .unwrap();
         assert!(ended_at(&conn, "a-chat").is_some());
         assert!(matches!(
             get(&conn, &queued).unwrap().unwrap().status,
@@ -4557,6 +4567,36 @@ pub(crate) mod tests {
             serde_json::to_value(&notices).unwrap(),
             serde_json::json!({"sessions": ["giga-chat"]})
         );
+    }
+
+    // PR 6 review r2 m1, decision 407. Defect: a discarded draft clears its
+    // session like a delete, so a Mono whose fresh chat only held a draft
+    // can no longer be reached and the question queued for it is dropped.
+    #[test]
+    fn a_discarded_draft_stays_receiving() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let queued = sent_to_a(&conn, "queued", true);
+        let notices = crate::session_store::delete_session(
+            &conn,
+            "a-chat",
+            crate::session_store::Removal::DiscardDraft,
+        )
+        .unwrap();
+        assert_eq!(notices, Notices::default());
+        assert_eq!(ended_at(&conn, "a-chat"), None);
+        assert!(matches!(
+            get(&conn, &queued).unwrap().unwrap().status,
+            Status::Open { .. }
+        ));
+        accepted_ids(&call(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "after",
+            Tool::SendMessage,
+            serde_json::json!({"message": "Hi", "send_to": "mono-a", "wanting_reply": true}),
+            &[listed("a-chat", true, true)],
+        ));
     }
 
     // PR 6 review r1 m1. Defect: a call that the control host let through

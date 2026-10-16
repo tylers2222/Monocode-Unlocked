@@ -1395,6 +1395,48 @@ mod tests {
         );
     }
 
+    // PR 6 review r2 m2, decision 408. Defect: a failed delete or archive
+    // reports success, so the window drops a chat that is still in
+    // `sessions`, still receives and still holds its messages; or the failed
+    // step's clear notices go out for rows it rolled back.
+    #[test]
+    fn a_failed_remove_fails_the_end_and_leaves_the_session_receiving() {
+        let store = messaging_store();
+        let inner = Mutex::new(Inner::default());
+        run(&inner, "a-chat", "main", "turn-1");
+        let (ask, queued) = {
+            let conn = store.lock_conn().unwrap();
+            conn.execute_batch(
+                r#"INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
+                   VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat"}', 2, 1, 1);
+                   INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+                   VALUES ('b-chat', '/', 'codex', 'm', 'default', 'B', 1, 1);
+                   CREATE TEMP TRIGGER no_archive BEFORE UPDATE OF archived ON sessions
+                     BEGIN SELECT RAISE(ABORT, 'disk full'); END;"#,
+            )
+            .unwrap();
+            (
+                handed_off(&conn, "ask", true, "turn-1", "main", true),
+                sent(&conn, ("mono-b", "b-chat"), "mono-a", "queued", true),
+            )
+        };
+        let (notices, removed) =
+            end_session_with(&inner, &store, &HarnessHost::new(), "a-chat", |conn| {
+                crate::session_store::set_archived(conn, "a-chat", true)
+            });
+        assert!(removed.unwrap_err().contains("disk full"));
+        assert!(inner.lock().unwrap().active.is_empty());
+        assert!(matches!(status(&store, &ask), Status::Unanswered { .. }));
+        assert!(matches!(status(&store, &queued), Status::Open { .. }));
+        // Only the forget step's notices: none for `b-chat`, whose row stays.
+        assert_eq!(
+            payload(&notices),
+            json!({"sessions": ["a-chat", "giga-chat"]})
+        );
+        let conn = store.lock_conn().unwrap();
+        sent(&conn, ("giga", "giga-chat"), "mono-a", "after", false);
+    }
+
     // Design 2 review r3-r5, PR 4a review m11. Defect: a reloaded window
     // leaves its old turns in `active` with their questions open, keeps the
     // slots of openers it never sent, or is still named the owner of a
