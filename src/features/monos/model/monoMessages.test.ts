@@ -1,9 +1,11 @@
 import { expect, it } from "vitest";
 import {
+  type Intent,
   parseHandle,
   parseMessageId,
   parseMonoId,
   parseReplyInput,
+  parseRowIntent,
   parseSessionId,
 } from "./monoMessages";
 
@@ -58,4 +60,48 @@ it("accepts a reply's to as one handle or 1 to 9 different ones, always as a lis
     1,
   ])
     expect(() => reply(nearMiss)).toThrow("to must be");
+});
+
+// Design 16.1. Defect: the web app trusts a row that is new and names a
+// target, or an accepted continue, which the gate never lets through; or an
+// accepted row's result has no `Intent` type without a cast.
+it("reads an accepted row's intent only when it and replyTo agree", () => {
+  const target = "m_abcdefgh2345";
+  const row = (status: string, intent: unknown, replyTo: unknown) =>
+    parseRowIntent({ status, intent, replyTo });
+  const accepted = (status: string, intent: unknown, replyTo: unknown) => {
+    const parsed = row(status, intent, replyTo);
+    const read: Intent | undefined =
+      parsed?.status === "accepted" ? parsed.intent : undefined;
+    return read;
+  };
+  expect(accepted("delivered", "new", null)).toEqual({
+    intent: "new",
+    replyTo: null,
+  });
+  expect(accepted("open", "steer", target)).toEqual({
+    intent: "steer",
+    replyTo: target,
+  });
+  expect(accepted("answered", "reply", target)).toEqual({
+    intent: "reply",
+    replyTo: target,
+  });
+  for (const [intent, replyTo] of [
+    ["new", target],
+    ["continue", target],
+    ["steer", null],
+    ["reply", null],
+    ["queue", null],
+    ["steer", "m_NOTANID0000"],
+  ])
+    expect(row("delivered", intent, replyTo)).toBeUndefined();
+  expect(row("rejected", "continue", null)).toEqual({
+    status: "rejected",
+    asked: { intent: "continue", replyTo: null },
+  });
+  expect(row("rejected", "steer", null)).toEqual({
+    status: "rejected",
+    asked: { intent: "steer", replyTo: null },
+  });
 });

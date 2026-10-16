@@ -19,6 +19,13 @@ export type MonoRole = "giga" | "mono";
 export type Tool = "send_message" | "reply";
 export type ActionType = "queue" | "steer";
 export type Delivery = "submit" | "queue" | "steer";
+export type IntentKind = "new" | "reply" | "steer" | "continue";
+/** The intent of an accepted row (design 16.1). `continue` never passes the gate. */
+export type Intent =
+  | { intent: "new"; replyTo: null }
+  | { intent: "reply" | "steer"; replyTo: MessageId };
+/** What a rejected row asked for. `replyTo` only when it named a stored row. */
+export type AskedIntent = { intent: IntentKind; replyTo: MessageId | null };
 
 // One parse function per brand, each undefined on bad input. Only boundary
 // code calls them; everything past the boundary trusts the brand.
@@ -43,6 +50,39 @@ export function parseHandle(raw: unknown): Handle | undefined {
   return typeof raw === "string" && /^#[1-9][0-9]?$/.test(raw)
     ? (raw as Handle)
     : undefined;
+}
+
+function isIntentKind(raw: unknown): raw is IntentKind {
+  return (
+    raw === "new" || raw === "reply" || raw === "steer" || raw === "continue"
+  );
+}
+
+/** A row's intent columns, parsed: an accepted row has an `Intent`. */
+export type RowIntent =
+  | { status: "accepted"; intent: Intent }
+  | { status: "rejected"; asked: AskedIntent };
+
+/**
+ * The intent columns of a row from Rust. Undefined when they disagree: an
+ * accepted row is `new` without a target, or `reply`/`steer` with one.
+ */
+export function parseRowIntent(row: {
+  status: unknown;
+  intent: unknown;
+  replyTo: unknown;
+}): RowIntent | undefined {
+  const { intent } = row;
+  const replyTo = row.replyTo === null ? null : parseMessageId(row.replyTo);
+  if (replyTo === undefined || !isIntentKind(intent)) return undefined;
+  if (row.status === "rejected")
+    return { status: "rejected", asked: { intent, replyTo } };
+  if (intent === "new")
+    return replyTo === null
+      ? { status: "accepted", intent: { intent, replyTo } }
+      : undefined;
+  if (intent === "continue" || replyTo === null) return undefined;
+  return { status: "accepted", intent: { intent, replyTo } };
 }
 
 /** A turn id as `control_authorize_turn` takes it: 1 to 128 characters. */
@@ -82,9 +122,6 @@ type MessageBase = {
   addressed: string;
   body: string;
   bodyChars: number;
-  actionType: ActionType | null;
-  replyTo: MessageId | null;
-  steers: MessageId | null;
   hop: number;
   createdAt: number;
 };
@@ -101,32 +138,38 @@ type PlainSlot = { turnId: TurnId; deliveredAt: number | null };
 type Delivered<S> = S & { deliveredAt: number };
 
 export type MonoMessage =
-  | (MessageBase & {
-      status: "rejected";
-      gateResult: RejectCode;
-      wantingReply: boolean;
-    })
-  | (MessageBase & { status: "open"; wantingReply: true } & Routed & {
+  | (MessageBase &
+      AskedIntent & {
+        status: "rejected";
+        gateResult: RejectCode;
+        wantingReply: boolean;
+      })
+  | (MessageBase &
+      Intent & { status: "open"; wantingReply: true } & Routed & {
         slot: WaitingSlot | null;
       })
-  | (MessageBase & { status: "delivered"; wantingReply: false } & Routed & {
+  | (MessageBase &
+      Intent & { status: "delivered"; wantingReply: false } & Routed & {
         slot: PlainSlot | null;
       })
-  | (MessageBase & { status: "answered"; wantingReply: true } & Routed & {
+  | (MessageBase &
+      Intent & { status: "answered"; wantingReply: true } & Routed & {
         slot: WaitingSlot | null;
         closedAt: number;
       })
-  | (MessageBase & { status: "unanswered"; wantingReply: true } & Routed & {
+  | (MessageBase &
+      Intent & { status: "unanswered"; wantingReply: true } & Routed & {
         slot: Delivered<WaitingSlot>;
         closedAt: number;
         notifiedAt: number | null;
       })
-  | (MessageBase & {
-      status: "dropped";
-      wantingReply: boolean;
-      closedAt: number;
-      notifiedAt: number | null;
-    });
+  | (MessageBase &
+      Intent & {
+        status: "dropped";
+        wantingReply: boolean;
+        closedAt: number;
+        notifiedAt: number | null;
+      });
 
 export type RejectCode =
   | "too_large"

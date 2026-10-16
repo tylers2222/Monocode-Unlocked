@@ -10,7 +10,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::mono_messages::{
-    ActionType, Delivery, Handle, MessageId, MonoId, MonoMessage, Party, PayloadHash, RejectCode,
+    Delivery, Handle, Intent, MessageId, MonoId, MonoMessage, Party, PayloadHash, RejectCode,
     SessionId, Status, Tool,
 };
 
@@ -29,6 +29,22 @@ pub struct Caller {
     /// The turn that authorized the call (design 2 step 4). A reply answers
     /// only the messages of this turn.
     pub turn_id: String,
+}
+
+/// `send_message`'s requested route, an input only: no column keeps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionType {
+    Queue,
+    Steer,
+}
+
+impl ActionType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ActionType::Queue => "queue",
+            ActionType::Steer => "steer",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -328,8 +344,8 @@ pub struct OpenHandle {
 pub struct Outgoing {
     pub to: Party,
     pub route: Route,
-    /// The message this row answers; it becomes `answered`.
-    pub reply_to: Option<MessageId>,
+    /// What the row is; a `reply` makes its target `answered`.
+    pub intent: Intent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -518,7 +534,7 @@ pub fn decide_send(
                 session: target.session.clone(),
                 via: if steer { Via::Steer } else { Via::Queue },
             },
-            reply_to: None,
+            intent: Intent::New,
         }],
     }
 }
@@ -567,7 +583,7 @@ pub fn decide_reply(input: &ReplyInput, hash: &PayloadHash, facts: &Facts<ReplyF
                     Via::Queue
                 },
             },
-            reply_to: Some(handled.message.id.clone()),
+            intent: Intent::Reply(handled.message.id.clone()),
         });
     }
     Decision::Accept {
@@ -815,9 +831,6 @@ mod tests {
             }),
             addressed: "mono-a".into(),
             body: Body::new("Review PR 12 before the release goes out to everyone"),
-            action_type: Some(ActionType::Queue),
-            reply_to: None,
-            steers: None,
             hop,
             created_at: 1,
             status,
@@ -827,6 +840,7 @@ mod tests {
     fn open(handle: i64) -> Status {
         Status::Open {
             wanting_reply: Wanting,
+            intent: Intent::New,
             routed: Routed {
                 handled_by_session: session("a-chat"),
                 delivery: Delivery::Submit,
@@ -1250,7 +1264,7 @@ mod tests {
                         session: session("a-chat"),
                         via: Via::Queue
                     },
-                    reply_to: None,
+                    intent: Intent::New,
                 }],
             }
         );
@@ -1274,7 +1288,7 @@ mod tests {
                     session: session("a-chat"),
                     via,
                 },
-                reply_to: None,
+                intent: Intent::New,
             }],
         };
         let to_a: fn(Target) -> Recipient = |chat| mono_a(Some(chat));
@@ -1311,7 +1325,7 @@ mod tests {
                         session: session("p"),
                         via: Via::Steer
                     },
-                    reply_to: None,
+                    intent: Intent::New,
                 }],
             }
         );
@@ -1519,7 +1533,7 @@ mod tests {
                     session: session("giga-chat"),
                     via,
                 },
-                reply_to: Some(MessageId::parse("m_aaaaaaaaaaaa").unwrap()),
+                intent: Intent::Reply(MessageId::parse("m_aaaaaaaaaaaa").unwrap()),
             }],
         };
         assert_eq!(decide(live("giga-chat", true, true)), accept(Via::Steer));
