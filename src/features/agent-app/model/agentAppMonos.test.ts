@@ -71,11 +71,12 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
         throw new Error("Unknown Mono; run monos.list for IDs");
       return sessionConversationPage(shroomChat, options);
     }),
-    send: vi.fn(async () => ({
-      alreadySubmitted: false,
-      delivery: "sent" as const,
-    })),
   } as NonNullable<AgentAppHost["monos"]>;
+  const messages: NonNullable<AgentAppHost["messages"]> = {
+    getMonos: vi.fn(async () => ({ monos: [] })),
+    send: vi.fn(async () => ({ message_id: "m_aaaaaaaaaaaa" })),
+    reply: vi.fn(async () => ({ message_ids: [] })),
+  };
   const host = {
     isMono: (id: string) => kind === "mono" && id === source.id,
     isHabitRun: (id: string) => kind === "habit" && id === source.id,
@@ -84,13 +85,14 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
         ? { id: captain.id, name: captain.name, projects: [] }
         : undefined,
     monos,
+    messages,
   } as unknown as AgentAppHost;
   const run = (
     action: string,
     input: Record<string, unknown> = {},
     requestId = "req-1",
   ) => handleAgentApp(source, requestId, action, input, host);
-  return { run, send: vi.mocked(monos.send) };
+  return { run, send: vi.mocked(messages.send) };
 }
 
 /** What the CLI prints for a call that fails. */
@@ -107,16 +109,14 @@ it.each([
   ["monos.list", {}],
   ["monos.get", { monoId: "mono-2" }],
   ["monos.read", { monoId: "mono-2" }],
-  ["monos.send", { monoId: "mono-2", prompt: "Review PR 12" }],
 ])("refuses %s from a session that is not a Mono's", async (action, input) => {
-  const { run, send } = fixture("session");
+  const { run } = fixture("session");
   expect(await failure(run(action, input))).toEqual({
     ok: false,
     code: "not_a_mono",
     hint: "Only a Mono can use monos.* actions",
     error: "Only a Mono can use monos.* actions",
   });
-  expect(send).not.toHaveBeenCalled();
 });
 
 const captainListing = {
@@ -253,89 +253,50 @@ it("answers a reused request ID with different input with request_id_reused", as
   });
 });
 
-it("sends a Mono back to its own chat instead of messaging itself", async () => {
+// Defect: the removed action still delivers, or answers unknown_action
+// without the name of the action that replaced it.
+it("answers monos.send with action_removed and the name of messages.send", async () => {
   const { run, send } = fixture();
-  await expect(
-    run("monos.send", { monoId: "mono-1", prompt: "Remind me later" }),
-  ).rejects.toThrow("Use your own conversation to continue it");
+  expect(
+    await failure(
+      run("monos.send", { monoId: "mono-2", prompt: "Review PR 12" }),
+    ),
+  ).toEqual({
+    ok: false,
+    code: "action_removed",
+    hint: "Use messages.send (MCP send_message).",
+    error: "Use messages.send (MCP send_message).",
+  });
   expect(send).not.toHaveBeenCalled();
 });
 
+// Defect: a send without wanting_reply reaches the gate, or gets a default.
 it.each([
+  [{ message: "Review PR 12", send_to: "mono-2" }, "wanting_reply"],
   [
-    { monoId: "mono-2", prompt: "Review PR 12", whenBusy: "later" },
-    "req-1",
-    'whenBusy must be "steer" or "followUp"',
+    { message: "Review PR 12", send_to: "mono-2", wanting_reply: "yes" },
+    "wanting_reply",
   ],
   [
-    { monoId: "mono-2", prompt: "Review PR 12", project: "/code/app" },
-    "req-1",
-    "Unknown monos.send fields: project",
+    { message: "Hi", send_to: "mono-2", wanting_reply: false, from: "x" },
+    "from",
   ],
   [
-    { monoId: "mono-2", prompt: "Review PR 12" },
-    "bad/id",
-    "Invalid request ID",
+    {
+      message: "Hi",
+      send_to: "mono-2",
+      wanting_reply: false,
+      action_type: "now",
+    },
+    "action_type",
   ],
-])("rejects an invalid monos.send (%#)", async (input, requestId, message) => {
-  const { run, send } = fixture();
-  await expect(run("monos.send", input, requestId)).rejects.toThrow(message);
-  expect(send).not.toHaveBeenCalled();
-});
-
-it("delivers the prompt marked as coming from the sending Mono", async () => {
-  const { run, send } = fixture();
-  send.mockResolvedValueOnce({
-    alreadySubmitted: false,
-    delivery: "queued",
-    queuedMessageId: "q1",
-  });
-  expect(
-    await run(
-      "monos.send",
-      { monoId: "mono-2", prompt: "Review PR 12", whenBusy: "followUp" },
-      "ask-1",
-    ),
-  ).toEqual({
-    monoId: "mono-2",
-    submitted: true,
-    alreadySubmitted: false,
-    delivery: "queued",
-    queuedMessageId: "q1",
-  });
-  expect(send).toHaveBeenCalledWith(
-    "mono-2",
-    expect.any(String),
-    "app-caller-ask-1",
-    { whenBusy: "followUp" },
-  );
-  // The rules for answering live once in <mono_messaging_rules>, not in
-  // every message.
-  expect(send.mock.calls[0][1]).toBe(
-    '<mono_message from="Captain Jack" monoId="mono-1">\nReview PR 12\n</mono_message>',
-  );
-});
-
-it("lets a habit run message another Mono on behalf of its Mono", async () => {
-  const { run, send } = fixture("habit");
-  expect(
-    await run(
-      "monos.send",
-      { monoId: "mono-2", prompt: "CI is red on main" },
-      "habit-1",
-    ),
-  ).toEqual({
-    monoId: "mono-2",
-    submitted: true,
-    alreadySubmitted: false,
-    delivery: "sent",
-  });
-  expect(send).toHaveBeenCalledWith(
-    "mono-2",
-    expect.stringContaining(
-      '<mono_message from="Captain Jack" monoId="mono-1">',
-    ),
-    "app-caller-habit-1",
-    {},
-  );
-});
+])(
+  "answers an invalid messages.send with invalid_input (%#)",
+  async (input, named) => {
+    const { run, send } = fixture();
+    const answer = await failure(run("messages.send", input));
+    expect(answer).toMatchObject({ ok: false, code: "invalid_input" });
+    expect("hint" in answer && answer.hint).toContain(named);
+    expect(send).not.toHaveBeenCalled();
+  },
+);

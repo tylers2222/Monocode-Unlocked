@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isMonoSession } from "../../monos/model/mono";
 import { sanitizeMonoSpawnedSessions } from "../../monos/model/monoSpawnedSessions";
+import { parseMessageId } from "../../monos/model/monoMessages";
 import {
   isWeakToolTitle,
   titleFromToolInput,
@@ -304,6 +305,9 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
           : {}),
         ...(isAppRequestId(message.appRequestId)
           ? { appRequestId: message.appRequestId }
+          : {}),
+        ...(parseMessageId(message.monoMessageId) === message.id
+          ? { monoMessageId: message.monoMessageId }
           : {}),
         ...(typeof message.error === "string" && message.error
           ? { error: message.error }

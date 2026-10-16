@@ -6,6 +6,7 @@ import type { InboxAskContext } from "../../inbox/model/inboxAsk";
 import type { NoteCardMeta, NoteComposerCard } from "../../notes";
 import type { OrchestrationProposal } from "../../orchestration/model/orchestrationPlan";
 import type { LinkedWorkItemUpdateCard } from "../../inbox/model/linkedWorkItemActivity";
+import type { MessageId } from "../../monos/model/monoMessages";
 import {
   defaultSessionChoice,
   firstEnabledHarness,
@@ -288,6 +289,8 @@ export type QueuedMessage = {
   waitForIdle?: boolean;
   /** Stable CLI request that queued this follow-up, for safe retries. */
   appRequestId?: string;
+  /** The Mono message this item delivers. The item's id is that message id. */
+  monoMessageId?: MessageId;
   /** Delivery failed; the message remains available to retry or edit. */
   error?: string;
   /** MonoCode quit while this message waited; cleared when the queue resumes. */

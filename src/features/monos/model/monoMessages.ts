@@ -149,3 +149,81 @@ export type ToolError = {
   open_handles?: { handle: Handle; message_id: MessageId; from: string }[];
   candidates?: { message_id: MessageId; preview: string }[];
 };
+
+/** A `send_message` call as the model gave it (design 3.2), defaults filled in. */
+export type SendInput = {
+  message: string;
+  send_to: string;
+  wanting_reply: boolean;
+  action_type: ActionType;
+};
+
+/** A `reply` call (design 3.3). `to` arrives with handles in PR 5. */
+export type ReplyInput = { message: string; wanting_reply: boolean };
+
+function message(raw: Record<string, unknown>): string {
+  if (typeof raw.message !== "string" || !raw.message.trim())
+    throw new Error("message must be a non-empty string");
+  return raw.message;
+}
+
+/** Throws the `invalid_input` hint. Rust parses the same input again (S1). */
+export function parseSendInput(raw: Record<string, unknown>): SendInput {
+  const text = message(raw);
+  if (
+    typeof raw.send_to !== "string" ||
+    !raw.send_to.trim() ||
+    raw.send_to.length > 256
+  )
+    throw new Error(
+      "send_to must be a mono_id from get_monos or the id of a session in one of your projects",
+    );
+  if (typeof raw.wanting_reply !== "boolean")
+    throw new Error(
+      "wanting_reply is required: true when you need an answer, false otherwise",
+    );
+  if (
+    raw.action_type !== undefined &&
+    raw.action_type !== "steer" &&
+    raw.action_type !== "queue"
+  )
+    throw new Error('action_type must be "steer" or "queue"');
+  return {
+    message: text,
+    send_to: raw.send_to,
+    wanting_reply: raw.wanting_reply,
+    action_type: raw.action_type ?? "queue",
+  };
+}
+
+/** Throws the `invalid_input` hint (R1). */
+export function parseReplyInput(raw: Record<string, unknown>): ReplyInput {
+  const text = message(raw);
+  if (raw.wanting_reply !== undefined && typeof raw.wanting_reply !== "boolean")
+    throw new Error("wanting_reply must be true or false");
+  return { message: text, wanting_reply: raw.wanting_reply ?? false };
+}
+
+/**
+ * What the receiving agent reads (design 5.2, without the handle until
+ * PR 5). How to treat and answer it lives once in `<mono_messaging_rules>`.
+ */
+export function renderMonoMessage(
+  message: Pick<MessageBase, "id" | "fromMonoId" | "body"> & {
+    wantingReply: boolean;
+  },
+  sender: { name: string; role: MonoRole } | undefined,
+): string {
+  const name = (sender?.name ?? "a deleted Mono").replace(
+    /[&"<>]/g,
+    (c) => `&#${c.charCodeAt(0)};`,
+  );
+  const attributes = [
+    `message_id="${message.id}"`,
+    `from="${name}"`,
+    ...(message.fromMonoId ? [`mono_id="${message.fromMonoId}"`] : []),
+    ...(sender ? [`role="${sender.role}"`] : []),
+    `wanting_reply="${message.wantingReply}"`,
+  ];
+  return `<mono_message ${attributes.join(" ")}>\n${message.body}\n</mono_message>`;
+}

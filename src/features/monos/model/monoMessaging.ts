@@ -169,3 +169,18 @@ export function monoPendingTranscriptBlocks(
   }
   return changed ? visible : blocks;
 }
+
+/** Epoch ms of the newest message, finished turn or habit post in a chat. */
+export function chatUpdatedAt(blocks: readonly Block[]): number | undefined {
+  let latest = 0;
+  for (const block of blocks) {
+    const ended = block.startedAt && block.startedAt + (block.durationMs ?? 0);
+    latest = Math.max(
+      latest,
+      ended ?? 0,
+      block.sentAt ?? 0,
+      block.monoHabit?.at ?? 0,
+    );
+  }
+  return latest || undefined;
+}

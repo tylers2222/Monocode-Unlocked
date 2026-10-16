@@ -6,6 +6,12 @@ import {
   modelsFor,
 } from "../../sessions/model/models";
 import { requireHarnessModel } from "./agentModelChoice";
+import {
+  parseReplyInput,
+  parseSendInput,
+  type ReplyInput,
+  type SendInput,
+} from "../../monos/model/monoMessages";
 import { AppActionError, monoError } from "./appActionError";
 import {
   HARNESSES,
@@ -228,13 +234,6 @@ export type AgentAppHost = {
       monoId: string,
       options: SessionReadOptions,
     ): Promise<ReturnType<typeof sessionConversationPage>>;
-    /** text is already wrapped by agentApp.ts. requestId is already namespaced. */
-    send(
-      monoId: string,
-      text: string,
-      requestId: string,
-      options: { whenBusy?: WhenBusy },
-    ): Promise<AppSendResult>;
     /** The choice and projects are already checked. */
     create?(settings: NewMono): Promise<MonoSettings>;
     /**
@@ -245,6 +244,12 @@ export type AgentAppHost = {
       monoId: string,
       change: MonoChange,
     ): Promise<MonoSettings | undefined>;
+  };
+  /** messages.*: the calling session's Mono messaging (`monoRoute.ts`). */
+  messages?: {
+    getMonos(): Promise<unknown>;
+    send(requestId: string, input: SendInput): Promise<unknown>;
+    reply(requestId: string, input: ReplyInput): Promise<unknown>;
   };
   agentFiles(monoId: string): Promise<MonoFiles>;
   /** The shared Giga workspace, as the last ensure run left it. */
@@ -321,15 +326,20 @@ const FIELDS = new Map<string, readonly string[]>([
   ["monos.list", []],
   ["monos.get", ["monoId"]],
   ["monos.read", ["monoId", "before", "limit", "maxChars"]],
-  ["monos.send", ["monoId", "prompt", "whenBusy"]],
   ["monos.create", ["name", "harness", "model", "projects", "soul", "giga"]],
   ["monos.update", ["monoId", "harness", "model", "name", "projects"]],
+  ["messages.get_monos", []],
+  ["messages.send", ["message", "send_to", "wanting_reply", "action_type"]],
+  ["messages.reply", ["message", "wanting_reply"]],
   ["workspace.status", []],
   ["chat.card", [...CARD_FIELDS]],
 ]);
 
 /** Actions that were renamed, with what to use instead. */
-const REMOVED_ACTIONS = new Map([["monos.configure", "Use monos.update."]]);
+const REMOVED_ACTIONS = new Map([
+  ["monos.configure", "Use monos.update."],
+  ["monos.send", "Use messages.send (MCP send_message)."],
+]);
 
 function fields(action: string, input: Record<string, unknown>) {
   const removed = REMOVED_ACTIONS.get(action);
@@ -453,6 +463,25 @@ function requireProject(
   if (own) return own;
   if (mono.projects.length === 1) return mono.projects[0];
   throw new Error(`Pass "project" to choose one. Yours: ${choices()}`);
+}
+
+/**
+ * The session an app CLI call comes from. Inbox Asks and orchestration
+ * sessions keep their own tools, and a session this window no longer has
+ * cannot act, so each gets `app_cli_unavailable`.
+ */
+export function appCliSource(
+  source: Session | undefined,
+  orchestrated: (sessionId: string) => boolean,
+): Session {
+  if (
+    !source ||
+    source.inboxAsk ||
+    source.orchestrationLeadId ||
+    orchestrated(source.id)
+  )
+    throw monoError("app_cli_unavailable");
+  return source;
 }
 
 /** A Mono's chat lives outside its projects; project access follows its roster. */
@@ -943,18 +972,6 @@ async function handleHabits(
 }
 
 /**
- * What a Mono's chat receives when Mono `from` sends it `prompt`. How to
- * treat and answer it lives once in the Mono's `<mono_messaging_rules>`.
- */
-export function monoMessageText(
-  from: { id: string; name: string },
-  prompt: string,
-): string {
-  const name = from.name.replace(/[&"<>]/g, (c) => `&#${c.charCodeAt(0)};`);
-  return `<mono_message from="${name}" monoId="${from.id}">\n${prompt}\n</mono_message>`;
-}
-
-/**
  * A call already made with this request ID: the same result again, or
  * request_id_reused when the input differs.
  */
@@ -1003,7 +1020,6 @@ function monoListing(
 
 async function handleMonos(
   source: Session,
-  requestId: string,
   action: string,
   input: Record<string, unknown>,
   host: AgentAppHost,
@@ -1042,28 +1058,6 @@ async function handleMonos(
         return [requiredString(input.monoId, "monoId", 256), options] as const;
       });
       return monos.read(monoId, options);
-    }
-    case "monos.send": {
-      const monoId = requiredString(input.monoId, "monoId", 256);
-      const prompt = agentPrompt(input.prompt);
-      const whenBusy = parseWhenBusy(input.whenBusy);
-      if (monoId === mono.id)
-        throw new Error("Use your own conversation to continue it");
-      if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId))
-        throw new Error("Invalid request ID");
-      const { alreadySubmitted, delivery, queuedMessageId } = await monos.send(
-        monoId,
-        monoMessageText({ id: mono.id, name: mono.name ?? mono.id }, prompt),
-        `app-${source.id}-${requestId}`,
-        whenBusy ? { whenBusy } : {},
-      );
-      return {
-        monoId,
-        submitted: true,
-        alreadySubmitted,
-        delivery,
-        ...(queuedMessageId ? { queuedMessageId } : {}),
-      };
     }
   }
   throw new Error(`Unknown app action: ${action}`);
@@ -1302,7 +1296,22 @@ export async function handleAgentApp(
   if (action === "monos.create" || action === "monos.update")
     return handleGigaMonos(source, action, input, host);
   if (action.startsWith("monos."))
-    return handleMonos(source, requestId, action, input, host);
+    return handleMonos(source, action, input, host);
+  if (action.startsWith("messages.")) {
+    const messages = host.messages;
+    if (!messages) throw new Error("Mono messaging is unavailable here");
+    if (action === "messages.send")
+      return messages.send(
+        requestId,
+        checked(() => parseSendInput(input)),
+      );
+    if (action === "messages.reply")
+      return messages.reply(
+        requestId,
+        checked(() => parseReplyInput(input)),
+      );
+    return messages.getMonos();
+  }
   if (action === "workspace.status") {
     const mono = host.monoOf?.(source.id);
     if (!mono || !host.workspaceStatus)

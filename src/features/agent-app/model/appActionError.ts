@@ -1,3 +1,9 @@
+import type {
+  Handle,
+  MessageId,
+  RejectCode,
+} from "../../monos/model/monoMessages";
+
 /** Codes whose hint is always the same. */
 const HINTS = {
   not_a_mono: "Only a Mono can use monos.* actions",
@@ -8,13 +14,15 @@ const HINTS = {
   self_update: "A Mono cannot update itself",
   mono_busy:
     "That Mono is busy, so nothing was changed. Update it again after its turn ends",
+  app_cli_unavailable:
+    "This session cannot use the MonoCode app CLI: it is an Inbox Ask, an orchestration lead or worker, or no longer open in MonoCode. Do not retry.",
 } as const;
 
 /**
  * Every code an app action answers with. The one list in code: design 1.4's
  * `CallErrorCode` (PR 3) is this type. `unknown_token` and `turn_inactive`
- * come from `control.rs` and `roster_unavailable` from `resolveCaller`.
- * Nothing sends `no_token` yet; PR 4a makes the CLI send it.
+ * come from `control.rs`, `no_token` from the CLI and `roster_unavailable`
+ * from `resolveCaller`.
  */
 export type AppErrorCode =
   | keyof typeof HINTS
@@ -27,14 +35,22 @@ export type AppErrorCode =
   | "no_token"
   | "roster_unavailable";
 
+/** What a messaging failure adds to its code and hint (design 1.4 `ToolError`). */
+export type ToolErrorDetails = {
+  message_id?: MessageId;
+  open_handles?: { handle: Handle; message_id: MessageId; from: string }[];
+  duplicate?: true;
+};
+
 /**
  * An app action the app refused for a reason the agent can act on. `hint`
  * says how to fix the call; it is also the error message.
  */
 export class AppActionError extends Error {
   constructor(
-    readonly code: AppErrorCode,
+    readonly code: AppErrorCode | RejectCode,
     readonly hint: string,
+    readonly details: ToolErrorDetails = {},
   ) {
     super(hint);
   }
@@ -48,13 +64,22 @@ export function monoError(code: keyof typeof HINTS): AppActionError {
  * The `control_reply` body for a failed call. `error` stays equal to `hint`,
  * so callers that read only `error` see the same text as before.
  */
-export function appErrorResponse(
-  error: unknown,
-):
-  | { ok: false; code: AppErrorCode; hint: string; error: string }
+export function appErrorResponse(error: unknown):
+  | ({
+      ok: false;
+      code: AppErrorCode | RejectCode;
+      hint: string;
+      error: string;
+    } & ToolErrorDetails)
   | { ok: false; error: string } {
   if (error instanceof AppActionError)
-    return { ok: false, code: error.code, hint: error.hint, error: error.hint };
+    return {
+      ok: false,
+      code: error.code,
+      hint: error.hint,
+      error: error.hint,
+      ...error.details,
+    };
   return {
     ok: false,
     error: error instanceof Error ? error.message : String(error),

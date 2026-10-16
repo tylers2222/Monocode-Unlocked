@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 39] = [
+const APP_ACTIONS: [&str; 41] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -95,7 +95,9 @@ const APP_ACTIONS: [&str; 39] = [
     "monos.list",
     "monos.get",
     "monos.read",
-    "monos.send",
+    "messages.get_monos",
+    "messages.send",
+    "messages.reply",
     "monos.create",
     "monos.update",
     "workspace.status",
@@ -125,7 +127,7 @@ const APP_ACTIONS: [&str; 39] = [
 ];
 /// Renamed app actions. They still go to the app, which answers
 /// `action_removed` with the name to use instead; help does not list them.
-const REMOVED_APP_ACTIONS: [&str; 1] = ["monos.configure"];
+const REMOVED_APP_ACTIONS: [&str; 2] = ["monos.configure", "monos.send"];
 const APP_USAGE: &str = r#"MonoCode app access — use in a thread enabled by /operator.
 
 Usage: {exe} app ACTION [--json JSON | --input FILE|-] [--request-id ID]
@@ -229,15 +231,28 @@ Actions:
                   Read another Mono's chat. Paging works as in sessions.read.
                   Codes: unknown_mono, no_conversation (it has no chat yet),
                   invalid_input (a before that is not a turn ID).
-  monos.send     {"monoId":"...","prompt":"...","whenBusy":"steer"}
-                  Send a message into another Mono's chat. It is marked as
-                  from you. An idle Mono runs it as a new turn. A busy Mono
-                  rejects it unless whenBusy is set. whenBusy:"steer" adds
-                  it to the running turn at the next step. whenBusy:"followUp"
-                  waits in its queue until the turn ends. The result's
-                  delivery is sent, steered or queued. Steered and queued
-                  results also have queuedMessageId. Reuse --request-id on
-                  retries. You cannot send to yourself.
+  messages.get_monos {}  Mono or habit only. Every Mono in rail order as
+                  {mono_id, mono_name, role, you}; you is true for yourself.
+  messages.send  {"message":"...","send_to":"<mono_id or session id>",
+                  "wanting_reply":false,"action_type":"queue"}
+                  Mono or habit only. Send a message to another Mono's chat
+                  or to a session in one of your projects. wanting_reply is
+                  required: true only when you need an answer. The answer
+                  arrives later as a new message, so do not poll. A project
+                  session cannot answer; send it wanting_reply false.
+                  action_type "queue" (the default) waits until the
+                  receiver's turn ends; "steer" reaches its running turn.
+                  Returns message_id, status (open or delivered), delivery
+                  (submit, queue or steer) and hop. Messages are limited to
+                  8000 characters. Codes: invalid_input, request_id_reused,
+                  too_large, unknown_target, self_send, direction_forbidden,
+                  reply_unsupported_target, habit_cannot_wait,
+                  target_no_conversation, cannot_steer.
+  messages.reply {"message":"...","wanting_reply":false}
+                  Answer the <mono_message> that waits for your reply (it
+                  says wanting_reply="true"). Returns message_ids and
+                  answered. Codes: no_open_handle, ambiguous_reply (with
+                  open_handles), target_gone, too_large.
   monos.create   {"name":"...","harness":"codex","model":"codex:...",
                   "projects":["<path or name>"],"soul":"<Markdown>","giga":false}
                   Giga Mono or its habits only. Create a Mono and its chat on
@@ -410,15 +425,8 @@ fn run_mode(args: Vec<String>, app_mode: bool) -> i32 {
             println!("{value}");
             1
         }
-        Err(Failure { error, sent }) => {
-            // The call may have reached the run even though its answer was
-            // lost. Hand back the request ID so a retry cannot duplicate it.
-            let mut response = json!({"ok": false, "error": error});
-            if sent {
-                response["requestId"] = json!(request_id);
-                response["retryWith"] = json!(format!("--request-id {request_id}"));
-            }
-            println!("{response}");
+        Err(failure) => {
+            println!("{}", failure_response(failure, &request_id));
             1
         }
     }
@@ -447,40 +455,66 @@ struct Failure {
     error: String,
     /// The request was already on the wire, so the run may have applied it.
     sent: bool,
+    /// Set when the failure is definite, as an app answer with a code is.
+    code: Option<&'static str>,
 }
 fn unsent(error: impl Into<String>) -> Failure {
     Failure {
         error: error.into(),
         sent: false,
+        code: None,
     }
 }
 fn sent(error: impl Into<String>) -> Failure {
     Failure {
         error: error.into(),
         sent: true,
+        code: None,
     }
 }
 
-fn send(action: &str, input: &Value, request_id: &str, app_mode: bool) -> Result<Value, Failure> {
-    let endpoint_key = if app_mode {
-        "MONOCODE_APP_ENDPOINT"
-    } else {
-        "MONOCODE_CONTROL_ENDPOINT"
-    };
-    let token_key = if app_mode {
-        "MONOCODE_APP_TOKEN"
-    } else {
-        "MONOCODE_CONTROL_TOKEN"
-    };
-    let endpoint = std::env::var(endpoint_key).map_err(|_| {
-        unsent(if app_mode {
-            "No MonoCode app connection. Start this agent turn in MonoCode."
-        } else {
-            "No MonoCode connection. Confirm the Orchestrator proposal in MonoCode first."
-        })
+const NO_TOKEN: &str =
+    "MONOCODE_APP_TOKEN is not set. Only agent sessions that MonoCode started can call these tools.";
+
+fn failure_response(failure: Failure, request_id: &str) -> Value {
+    if let Some(code) = failure.code {
+        return json!({"ok": false, "code": code, "hint": failure.error, "error": failure.error});
+    }
+    // The call may have reached the run even though its answer was lost.
+    // Hand back the request ID so a retry cannot duplicate it.
+    let mut response = json!({"ok": false, "error": failure.error});
+    if failure.sent {
+        response["requestId"] = json!(request_id);
+        response["retryWith"] = json!(format!("--request-id {request_id}"));
+    }
+    response
+}
+
+/// The endpoint and token this agent process was started with.
+fn connection(
+    app_mode: bool,
+    var: impl Fn(&str) -> Option<String>,
+) -> Result<(String, String), Failure> {
+    let var = |key: &str| var(key).filter(|value| !value.is_empty());
+    if app_mode {
+        return match (var("MONOCODE_APP_ENDPOINT"), var("MONOCODE_APP_TOKEN")) {
+            (Some(endpoint), Some(token)) => Ok((endpoint, token)),
+            _ => Err(Failure {
+                code: Some("no_token"),
+                ..unsent(NO_TOKEN)
+            }),
+        };
+    }
+    let endpoint = var("MONOCODE_CONTROL_ENDPOINT").ok_or_else(|| {
+        unsent("No MonoCode connection. Confirm the Orchestrator proposal in MonoCode first.")
     })?;
-    let token = std::env::var(token_key)
-        .map_err(|_| unsent("No MonoCode session credential. Start the agent from MonoCode."))?;
+    let token = var("MONOCODE_CONTROL_TOKEN")
+        .ok_or_else(|| unsent("No MonoCode session credential. Start the agent from MonoCode."))?;
+    Ok((endpoint, token))
+}
+
+fn send(action: &str, input: &Value, request_id: &str, app_mode: bool) -> Result<Value, Failure> {
+    let (endpoint, token) = connection(app_mode, |key| std::env::var(key).ok())?;
     let address: SocketAddr = endpoint
         .parse()
         .map_err(|_| unsent("Invalid MonoCode endpoint"))?;
@@ -897,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn app_mode_exposes_mono_messaging_actions_and_documents_when_busy() {
+    fn app_mode_sends_mono_messaging_actions_and_forwards_the_removed_monos_send() {
         for (action, input) in [
             ("monos.list", r#"{}"#),
             ("monos.get", r#"{"monoId":"other"}"#),
@@ -905,10 +939,12 @@ mod tests {
                 "monos.read",
                 r#"{"monoId":"other","before":"turn-1","limit":3,"maxChars":1200}"#,
             ),
+            ("messages.get_monos", r#"{}"#),
             (
-                "monos.send",
-                r#"{"monoId":"other","prompt":"Check CI","whenBusy":"followUp"}"#,
+                "messages.send",
+                r#"{"message":"Check CI","send_to":"other","wanting_reply":true,"action_type":"steer"}"#,
             ),
+            ("messages.reply", r#"{"message":"CI is green"}"#),
         ] {
             assert!(matches!(
                 parse_args_for(&args(&[action, "--json", input]), true),
@@ -919,7 +955,12 @@ mod tests {
             assert!(parse_args_for(&args(&[action]), false).is_err());
             assert!(app_help().contains(action));
         }
-        assert!(app_help().contains(r#"{"monoId":"...","prompt":"...","whenBusy":"steer"}"#));
+        // The app answers monos.send with action_removed and the new name.
+        assert!(matches!(
+            parse_args_for(&args(&["monos.send", "--json", r#"{"monoId":"x"}"#]), true),
+            Ok(Parsed::Call(action, _, _)) if action == "monos.send"
+        ));
+        assert!(!app_help().contains("monos.send"));
     }
     #[test]
     fn monos_configure_is_renamed_to_monos_update_and_delete_is_never_an_action() {
@@ -977,5 +1018,39 @@ mod tests {
         );
         assert!(coded.get("retryWith").is_none());
         assert!(coded.get("requestId").is_none());
+    }
+
+    #[test]
+    fn an_app_call_without_its_endpoint_or_token_answers_no_token() {
+        let env = |endpoint: Option<&str>, token: Option<&str>| {
+            let endpoint = endpoint.map(String::from);
+            let token = token.map(String::from);
+            move |key: &str| match key {
+                "MONOCODE_APP_ENDPOINT" => endpoint.clone(),
+                "MONOCODE_APP_TOKEN" => token.clone(),
+                _ => None,
+            }
+        };
+        for (endpoint, token) in [
+            (None, Some("secret")),
+            (Some("127.0.0.1:1"), None),
+            (Some("127.0.0.1:1"), Some("")),
+        ] {
+            let Err(failure) = connection(true, env(endpoint, token)) else {
+                panic!("{endpoint:?} {token:?} connected");
+            };
+            let response = failure_response(failure, "id-1");
+            assert_eq!(
+                response,
+                json!({"ok": false, "code": "no_token", "hint": NO_TOKEN, "error": NO_TOKEN}),
+                "{endpoint:?} {token:?}"
+            );
+        }
+        assert!(connection(true, env(Some("127.0.0.1:1"), Some("secret"))).is_ok());
+        // The orchestration control CLI keeps its uncoded errors.
+        let Err(failure) = connection(false, env(None, None)) else {
+            panic!("control connected without a token");
+        };
+        assert!(failure_response(failure, "id-1").get("code").is_none());
     }
 }

@@ -366,7 +366,7 @@ case_4() {
   }
   measure >"$d/size-before.txt"
   local giga_turns_before; giga_turns_before="$(receipt_count "$slug")"
-  ui send "$GIGA" "Eval chain $tag. Use the app CLI. 1) Run app monos.list. If no Mono named Worker exists, create it with app monos.create: name Worker, harness $MODEL_HARNESS, model $MODEL_ID, projects [\"$SCRATCH\"], giga false. 2) Send Worker this prompt with app monos.send: 'Start one project session with app sessions.start in project $SCRATCH, harness $MODEL_HARNESS, model $MODEL_ID, with this prompt: Append the line CHAIN $tag to chain.txt, then run git add chain.txt and git commit -m \"chain $tag\". Reply with the session ID it returned.' 3) Reply with the requestId that monos.send returned."
+  ui send "$GIGA" "Eval chain $tag. Use the app CLI. 1) Run app monos.list. If no Mono named Worker exists, create it with app monos.create: name Worker, harness $MODEL_HARNESS, model $MODEL_ID, projects [\"$SCRATCH\"], giga false. 2) Send Worker this message with app messages.send, with send_to its mono_id from app messages.get_monos and wanting_reply false: 'Start one project session with app sessions.start in project $SCRATCH, harness $MODEL_HARNESS, model $MODEL_ID, with this prompt: Append the line CHAIN $tag to chain.txt, then run git add chain.txt and git commit -m \"chain $tag\". Reply with the session ID it returned.' 3) Reply with the message_id that messages.send returned."
   local i committed=0
   for i in $(seq 1 120); do
     git -C "$SCRATCH" log --format='%H %s' | grep -q "chain $tag" && { committed=1; break; }
@@ -383,7 +383,7 @@ case_4() {
     bash -c 'jq -e ".v == 1 and .kind == \"chat\" and .outcome == \"completed\"" "$1" >/dev/null' _ "$d/receipt.json"
   local to sid; to="$(jget '.sent[0].toMonoId // empty' "$d/receipt.json")"; sid="$(jget '.sessionId // empty' "$d/receipt.json")"
   jq -r '.sent[]?.requestId' "$d/receipt.json" >"$d/receipt-request-ids.txt" 2>/dev/null
-  check $c "receipt lists a monos.send request ID" "$d/receipt-request-ids.txt toMonoId=$to" bash -c 'grep -q "^app-" "$1" && [[ -n "$2" ]]' _ "$d/receipt-request-ids.txt" "$to"
+  check $c "receipt lists a messages.send request ID" "$d/receipt-request-ids.txt toMonoId=$to" bash -c 'grep -q "^app-" "$1" && [[ -n "$2" ]]' _ "$d/receipt-request-ids.txt" "$to"
   git -C "$ROOT" log --format='%H%x09%an <%ae>%x09%s' -n 10 >"$d/workspace-log.txt"
   check $c "Giga commit with the contract's author and subject" "$d/workspace-log.txt" \
     grep -qF "$(printf 'MonoCode Giga %s <giga+%s@monocode.local>\tgiga(%s): completed turn %s' "$slug" "$slug" "$slug" "${sid:0:8}")" "$d/workspace-log.txt"

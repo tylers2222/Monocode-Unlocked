@@ -32,6 +32,7 @@ mod menu;
 mod mono;
 #[cfg(target_os = "macos")]
 mod mono_chat;
+mod mono_gate;
 mod mono_messages;
 mod mono_roster;
 mod mono_transcript;
@@ -326,6 +327,7 @@ pub fn run() {
             control::control_attach_worker,
             control::control_authorize_turn,
             control::control_turn_finished,
+            control::control_loaded_sessions,
             control::control_forget_session,
             control::app_cli_path,
             default_cwd,
@@ -536,6 +538,11 @@ pub fn run() {
             mono_roster::monos_update,
             mono_roster::monos_delete,
             mono_roster::monos_import_legacy,
+            mono_messages::mono_message_submit,
+            mono_messages::mono_message_assign_slot,
+            mono_messages::mono_message_release,
+            mono_messages::mono_message_mark_delivery,
+            mono_messages::mono_messages_unqueued,
             session_store::session_delete,
             session_store::session_set_archived,
             session_store::session_set_pinned,

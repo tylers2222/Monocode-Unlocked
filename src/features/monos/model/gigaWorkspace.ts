@@ -72,20 +72,29 @@ export function gigaSlugFor(name: string, taken: readonly string[]): string {
 
 /**
  * Adds one finished app CLI call to the turn's records. Only the calls a
- * receipt names count, and a retried request ID is recorded once.
+ * receipt names count: a message sent to a Mono and a session started. A
+ * retried request ID is recorded once.
  */
 export function recordTurnCall(
   calls: TurnCalls,
   action: string,
   requestId: string,
+  input: Record<string, unknown>,
   result: unknown,
+  isMono: (id: string) => boolean,
 ): TurnCalls {
   const value = (result ?? {}) as Record<string, unknown>;
-  if (action === "monos.send" && typeof value.monoId === "string") {
+  const sentTo = input.send_to;
+  if (
+    action === "messages.send" &&
+    typeof value.message_id === "string" &&
+    typeof sentTo === "string" &&
+    isMono(sentTo)
+  ) {
     if (calls.sent.some((sent) => sent.requestId === requestId)) return calls;
     return {
       ...calls,
-      sent: [...calls.sent, { requestId, toMonoId: value.monoId }],
+      sent: [...calls.sent, { requestId, toMonoId: sentTo }],
     };
   }
   if (action === "sessions.start" && typeof value.id === "string") {
