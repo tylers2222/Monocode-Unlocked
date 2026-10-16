@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { AgentTranscript } from "../../src/features/sessions/ui/AgentTranscript";
 import { MonoComposer } from "../../src/features/monos/ui/MonoComposer";
 import { MessageQueue } from "../../src/features/sessions/ui/MessageQueue";
-import { visibleMonoCompletionMessages } from "../../src/features/monos/model/monoMessaging";
+import { monoQueueRows } from "../../src/features/monos/model/monoMessaging";
 import {
   newSession,
   type Block,
@@ -222,7 +222,7 @@ function MonoCompletionFixture() {
         />
       </div>
       <MessageQueue
-        messages={visibleMonoCompletionMessages({
+        messages={monoQueueRows({
           ...session,
           blocks: conversation,
           busy,
