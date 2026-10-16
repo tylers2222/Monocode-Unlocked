@@ -364,3 +364,22 @@ export function parseMonoNotice(item: {
     line: match[4],
   };
 }
+
+const NOTICE_WORDS: Record<NoticeStatus, { label: string; verb: string }> = {
+  unanswered: { label: "Unanswered", verb: "did not reply to" },
+  dropped: { label: "Dropped", verb: "never got" },
+};
+
+/** A notice in words (design U10): its status word and the sentence after it. */
+export function noticeSentence(notice: MonoNotice): {
+  label: string;
+  text: string;
+} {
+  const words = NOTICE_WORDS[notice.status];
+  // renderMonoNotice keeps 60 characters, so a full line was cut.
+  const cut = Array.from(notice.line).length >= 60 ? "…" : "";
+  return {
+    label: words.label,
+    text: `${notice.recipient} ${words.verb} “${notice.line}${cut}”`,
+  };
+}

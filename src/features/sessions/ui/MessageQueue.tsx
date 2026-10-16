@@ -12,6 +12,7 @@ import {
 } from "../../../shared/ui/icons";
 import { isImeComposition } from "../../../shared/lib/keyboard";
 import {
+  noticeSentence,
   parseMonoNotice,
   type MonoNotice,
 } from "../../monos/model/monoMessages";
@@ -57,7 +58,7 @@ export function MessageQueue({
   const failed = messages.some((message) => message.error);
   const notices = messages.flatMap((message) => {
     const notice = parseMonoNotice(message);
-    return notice ? [{ id: message.id, notice }] : [];
+    return notice ? [{ id: message.id, notice, error: message.error }] : [];
   });
   const rows = messages.filter(
     (message) => !notices.some((entry) => entry.id === message.id),
@@ -111,13 +112,14 @@ export function MessageQueue({
         {notices.length > 0 ? (
           <>
             <div className="py-1 text-[11px] text-content/70">
-              Notice from the app · starts its own turn
+              Notice from the app · not sent yet
             </div>
             <div className="divide-y divide-stroke">
-              {notices.map(({ id, notice }) => (
+              {notices.map(({ id, notice, error }) => (
                 <NoticeRow
                   key={id}
                   notice={notice}
+                  error={error}
                   disabled={sendingId === id}
                   onRemove={() => onDelete?.(id)}
                 />
@@ -252,50 +254,46 @@ export function MessageQueue({
   );
 }
 
-const NOTICE_SENTENCE: Record<
-  MonoNotice["status"],
-  { label: string; text: (recipient: string) => string }
-> = {
-  unanswered: {
-    label: "Unanswered",
-    text: (recipient) => `${recipient} did not reply to`,
-  },
-  dropped: { label: "Dropped", text: (recipient) => `${recipient} never got` },
-};
-
 /** Design U10: a sender notice, in words, with only a remove control. */
 function NoticeRow({
   notice,
+  error,
   disabled,
   onRemove,
 }: {
   notice: MonoNotice;
+  error?: string;
   disabled: boolean;
   onRemove: () => void;
 }) {
-  const sentence = NOTICE_SENTENCE[notice.status];
-  // renderMonoNotice keeps 60 characters, so a full line was cut.
-  const quote = `“${notice.line}${Array.from(notice.line).length >= 60 ? "…" : ""}”`;
-  const text = `${sentence.text(notice.recipient)} ${quote}`;
+  const sentence = noticeSentence(notice);
   return (
-    <div className="flex min-h-7 items-center gap-2 text-[12px]">
-      <Bell className="size-3.5 shrink-0 text-amber-400" />
-      <div
-        className="min-w-0 flex-1 truncate py-1 text-content/80"
-        title={`${sentence.label} · ${text}`}
-      >
-        <span className="text-amber-400">{sentence.label}</span> · {text}
+    <div className="text-[12px]">
+      <div className="flex min-h-7 items-center gap-2">
+        <Bell className="size-3.5 shrink-0 text-amber-400" />
+        <div
+          className="min-w-0 flex-1 truncate py-1 text-content/80"
+          title={`${sentence.label} · ${sentence.text}`}
+        >
+          <span className="text-amber-400">{sentence.label}</span> ·{" "}
+          {sentence.text}
+        </div>
+        <button
+          type="button"
+          title="Remove notice"
+          aria-label="Remove notice"
+          disabled={disabled}
+          onClick={onRemove}
+          className="grid size-6 shrink-0 place-items-center rounded-md hover:bg-content/10 hover:text-content"
+        >
+          <X className="size-3.5" />
+        </button>
       </div>
-      <button
-        type="button"
-        title="Remove notice"
-        aria-label="Remove notice"
-        disabled={disabled}
-        onClick={onRemove}
-        className="grid size-6 shrink-0 place-items-center rounded-md hover:bg-content/10 hover:text-content"
-      >
-        <X className="size-3.5" />
-      </button>
+      {error ? (
+        <p role="alert" className="pb-1 pl-[22px] text-red-400">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

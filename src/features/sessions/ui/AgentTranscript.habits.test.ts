@@ -10,6 +10,11 @@ import {
 import { copyMessage } from "../../../platform/tauri/clipboard";
 import { acknowledgeMonoMessage } from "../../monos/model/monoMessaging";
 import {
+  noticeRequestId,
+  renderMonoNotice,
+  type MessageId,
+} from "../../monos/model/monoMessages";
+import {
   enqueueMonoSessionCompletion,
   monoSessionCompletionMessage,
 } from "../../monos/model/monoSessionCompletion";
@@ -351,6 +356,46 @@ it("shows an emoji-only message large, without a bubble, time or actions", () =>
   expect(
     container
       .querySelector('[data-chat-message="words"]')!
+      .classList.contains("user-message-bubble"),
+  ).toBe(true);
+});
+
+// Frame nFG-U6oAjA. Defects: a sent notice reads as a message you typed (a
+// bubble with the raw tag), or the disclosure shows other text than the
+// agent read; a typed message that only quotes a notice loses its bubble.
+it("shows a sent notice as an app line that opens the exact text the agent got", () => {
+  const id = "m_vkmxdjpfogyw" as MessageId;
+  const text = renderMonoNotice(
+    { id, body: "Nightly check: is CI green?", status: "unanswered" },
+    "MonoGhost",
+  );
+  render([
+    {
+      id: "sent",
+      role: "user",
+      text,
+      appRequestId: noticeRequestId(id, "unanswered"),
+      startedAt: postedAt,
+    },
+    { id: "reply", role: "assistant", text: "CI is green." },
+    { id: "typed", role: "user", text, startedAt: postedAt },
+  ]);
+  const line = container.querySelector<HTMLElement>("[data-mono-notice]")!;
+  expect(line.querySelector(".user-message-bubble")).toBeNull();
+  expect(line.querySelector("[data-chat-message]")).toBeNull();
+  expect(line.textContent).toBe(
+    "Notice from the app · sent to Captain Awesome" +
+      "Unanswered · MonoGhost did not reply to “Nightly check: is CI green?”" +
+      "What the agent got" +
+      text,
+  );
+  const details = line.querySelector("details")!;
+  expect(details.open).toBe(false);
+  expect(details.querySelector("pre")!.textContent).toBe(text);
+  expect(container.querySelectorAll("[data-mono-notice]")).toHaveLength(1);
+  expect(
+    container
+      .querySelector('[data-chat-message="typed"]')!
       .classList.contains("user-message-bubble"),
   ).toBe(true);
 });

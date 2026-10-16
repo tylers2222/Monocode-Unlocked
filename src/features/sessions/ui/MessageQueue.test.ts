@@ -94,6 +94,11 @@ it("shows a sender notice in words with only a remove control", () => {
   expect(container.textContent).toContain(
     "Unanswered · Monocode General did not reply to “Nightly check: is CI green?”",
   );
+  // Frame n-wASP1amp: the header states no order, at a readable 70%.
+  const header = [...container.querySelectorAll("div")].find(
+    (element) => element.textContent === "Notice from the app · not sent yet",
+  );
+  expect(header?.className).toContain("text-content/70");
   expect(container.textContent).not.toContain("<mono_notice");
   expect(container.textContent).not.toContain("Steer");
   expect(
@@ -129,4 +134,31 @@ it("says a dropped notice never reached the recipient and marks a cut quote", ()
   expect(container.textContent).toContain(
     `Dropped · Monocode General never got “${Array.from(body).slice(0, 60).join("")}…”`,
   );
+});
+
+// Frame wBCOiNb5GF. Defect: a failed notice pauses the queue but never says
+// which notice failed or why.
+it("shows a failed notice's error under its sentence", () => {
+  const id = "m_aaaaaaaaaaaa" as MessageId;
+  const notice = {
+    id: noticeRequestId(id, "unanswered"),
+    appRequestId: noticeRequestId(id, "unanswered"),
+    text: renderMonoNotice(
+      { id, body: "Is CI green?", status: "unanswered" },
+      "MonoGhost",
+    ),
+    attachments: [],
+    waitForIdle: true,
+    error: "Delivery is unavailable. Retry when the agent is ready.",
+  };
+  const container = document.createElement("div");
+  container.innerHTML = renderToStaticMarkup(
+    createElement(MessageQueue, { messages: [notice], status: "paused" }),
+  );
+  const alert = container.querySelector('[role="alert"]');
+  expect(alert?.textContent).toBe(notice.error);
+  expect(alert?.previousElementSibling?.textContent).toContain(
+    "Unanswered · MonoGhost did not reply to “Is CI green?”",
+  );
+  expect(container.textContent).toContain("Retry");
 });
