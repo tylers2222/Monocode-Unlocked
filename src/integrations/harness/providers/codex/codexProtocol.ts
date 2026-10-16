@@ -23,6 +23,11 @@ import {
 import { formatShellIntent, inferShellIntent } from "../../core/shellIntent";
 import { streamTextDelta } from "../../core/streamText";
 import type { HarnessEvent } from "../../core/types";
+import {
+  codexMcpServer,
+  MONO_MCP_SERVER,
+  type MonoTools,
+} from "../../core/monoTools";
 
 /** Codex approval / sandbox settings for thread/start and turn/start. */
 export type CodexThreadConfig = {
@@ -115,6 +120,26 @@ export function buildThreadStartParams(input: {
     ...(input.serviceTier && input.serviceTier !== "default"
       ? { serviceTier: input.serviceTier }
       : {}),
+  };
+}
+
+/**
+ * The `config` override of `thread/start` and `thread/resume`. A Mono's
+ * private store passes the user's whole config; `monocode` joins its
+ * `mcp_servers` table, so the store's own servers stay.
+ */
+export function codexThreadConfig(
+  storeConfig: Record<string, unknown> | undefined,
+  monoTools: MonoTools | undefined,
+): Record<string, unknown> | undefined {
+  if (!monoTools) return storeConfig;
+  const servers = storeConfig?.mcp_servers;
+  return {
+    ...storeConfig,
+    mcp_servers: {
+      ...(servers !== null && typeof servers === "object" ? servers : {}),
+      [MONO_MCP_SERVER]: codexMcpServer(monoTools),
+    },
   };
 }
 

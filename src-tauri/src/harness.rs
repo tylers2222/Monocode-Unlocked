@@ -163,6 +163,18 @@ struct LiveSse {
     stop: Arc<AtomicBool>,
 }
 
+/// A spawn's stamp: the epoch of its own key and of the session that owns it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpawnEpoch {
+    own: u64,
+    session: u64,
+}
+
+/// The session a child key belongs to: `S` for `S` and for `S#n`.
+pub(crate) fn child_session(key: &str) -> &str {
+    key.split('#').next().unwrap_or(key)
+}
+
 struct HarnessInner {
     children: HashMap<String, Arc<LiveChild>>,
     epochs: HashMap<String, u64>,
@@ -215,28 +227,35 @@ impl HarnessHost {
     }
 
     /// Stamp this spawn and drop any child already registered under the id.
-    fn begin_spawn(&self, session_id: &str) -> (u64, u64, Option<Arc<LiveChild>>) {
+    fn begin_spawn(&self, session_id: &str) -> (SpawnEpoch, u64, Option<Arc<LiveChild>>) {
         let mut inner = self.lock_inner();
         let kill_all = self.kill_all_gen.load(Ordering::SeqCst);
         let epoch = inner.epochs.entry(session_id.to_string()).or_insert(0);
         *epoch += 1;
-        let epoch = *epoch;
+        let own = *epoch;
+        let session = inner
+            .epochs
+            .get(child_session(session_id))
+            .copied()
+            .unwrap_or(0);
         let prev = inner.children.remove(session_id);
-        (epoch, kill_all, prev)
+        (SpawnEpoch { own, session }, kill_all, prev)
     }
 
     #[cfg(all(test, unix))]
-    fn spawn_stamp_current(&self, session_id: &str, epoch: u64, kill_all: u64) -> bool {
+    fn spawn_stamp_current(&self, session_id: &str, epoch: SpawnEpoch, kill_all: u64) -> bool {
         let inner = self.lock_inner();
         self.kill_all_gen.load(Ordering::SeqCst) == kill_all
-            && inner.epochs.get(session_id) == Some(&epoch)
+            && inner.epochs.get(session_id) == Some(&epoch.own)
     }
 
     /// Keep the child only if nothing cancelled this spawn while it was forking.
+    /// A kill of session S also cancels a spawn of its child `S#n` in flight,
+    /// whose key no kill could know yet: that child would get S's token.
     fn install_spawn(
         &self,
         session_id: String,
-        epoch: u64,
+        epoch: SpawnEpoch,
         kill_all: u64,
         live: Arc<LiveChild>,
     ) -> Option<Arc<LiveChild>> {
@@ -244,7 +263,14 @@ impl HarnessHost {
         if self.kill_all_gen.load(Ordering::SeqCst) != kill_all {
             return Some(live);
         }
-        if inner.epochs.get(&session_id) != Some(&epoch) {
+        if inner.epochs.get(&session_id) != Some(&epoch.own)
+            || inner
+                .epochs
+                .get(child_session(&session_id))
+                .copied()
+                .unwrap_or(0)
+                != epoch.session
+        {
             return Some(live);
         }
         if let Some(prev) = inner.children.insert(session_id, live) {
@@ -3292,6 +3318,31 @@ pub(crate) mod tests {
             .install_spawn("s1".into(), epoch, kill_all, live)
             .is_some());
         assert!(host.get("s1").is_none());
+        reap(child);
+    }
+
+    // Defect: a kill of session S misses a spawn of its child `S#0` that is
+    // still forking, and that child then runs with S's app token.
+    #[test]
+    fn a_session_kill_cancels_its_numbered_child_spawn_in_flight() {
+        let host = HarnessHost::new();
+        let (epoch, kill_all, _) = host.begin_spawn("s1#0");
+        host.kill_session_tree("s1");
+        let (live, child) = live_child();
+        assert!(host
+            .install_spawn("s1#0".into(), epoch, kill_all, live)
+            .is_some());
+        assert!(host.get("s1#0").is_none());
+        reap(child);
+        let (epoch, kill_all, _) = host.begin_spawn("s1#1");
+        host.kill_session_tree("s10");
+        let (live, child) = live_child();
+        assert!(
+            host.install_spawn("s1#1".into(), epoch, kill_all, live)
+                .is_none(),
+            "a kill of another session cancelled the spawn"
+        );
+        host.kill_session_tree("s1");
         reap(child);
     }
 

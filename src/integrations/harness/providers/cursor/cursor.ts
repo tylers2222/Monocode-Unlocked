@@ -1,3 +1,4 @@
+import { acpMcpServers } from "../../core/monoTools";
 import { TurnNotReadyError } from "../../core/types";
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import { AcpSubagents } from "../../core/acpSubagents";
@@ -331,7 +332,7 @@ async function ensureLive(input: SendTurnInput): Promise<Live> {
         setup = await acp.request<SessionSetupResult>("session/load", {
           sessionId: resume.acpSessionId,
           cwd: input.cwd,
-          mcpServers: [],
+          mcpServers: acpMcpServers(input.monoTools),
         });
         acpSessionId = resume.acpSessionId;
         didLoad = true;
@@ -347,7 +348,7 @@ async function ensureLive(input: SendTurnInput): Promise<Live> {
     if (!acpSessionId) {
       setup = await acp.request<SessionSetupResult>("session/new", {
         cwd: input.cwd,
-        mcpServers: [],
+        mcpServers: acpMcpServers(input.monoTools),
       });
       acpSessionId = setup.sessionId?.trim();
     }

@@ -1,3 +1,4 @@
+import { acpMcpServers } from "../../core/monoTools";
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import { AcpSubagents } from "../../core/acpSubagents";
 import type { RuntimeMode } from "../../../../features/sessions/model/session";
@@ -339,7 +340,10 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       try {
         setup = await acp.request(
           "session/resume",
-          { sessionId: resume.acpSessionId },
+          {
+            sessionId: resume.acpSessionId,
+            mcpServers: acpMcpServers(input.monoTools),
+          },
           SESSION_TIMEOUT_MS,
         );
         acpSessionId = sessionIdFromResult(setup) ?? resume.acpSessionId;
@@ -352,7 +356,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
             {
               sessionId: resume.acpSessionId,
               cwd: input.cwd,
-              mcpServers: [],
+              mcpServers: acpMcpServers(input.monoTools),
             },
             SESSION_TIMEOUT_MS,
           );
@@ -372,7 +376,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       try {
         setup = await acp.request(
           "session/new",
-          grokSessionNewParams(input.cwd, input.runtimeMode),
+          grokSessionNewParams(
+            input.cwd,
+            input.runtimeMode,
+            acpMcpServers(input.monoTools),
+          ),
           SESSION_TIMEOUT_MS,
         );
       } catch (error) {

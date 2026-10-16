@@ -14,5 +14,8 @@ fn main() {
             std::env::args().skip(2).collect(),
         ));
     }
+    if std::env::args().nth(1).as_deref() == Some("app-mcp") {
+        std::process::exit(monocode_lib::control_cli::run_app_mcp());
+    }
     monocode_lib::run()
 }

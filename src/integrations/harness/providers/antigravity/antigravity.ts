@@ -1,3 +1,4 @@
+import { acpMcpServers } from "../../core/monoTools";
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import { AcpSubagents } from "../../core/acpSubagents";
 import type { RuntimeMode } from "../../../../features/sessions/model/session";
@@ -493,7 +494,11 @@ async function startLive(input: SendTurnInput, life: number): Promise<Live> {
       try {
         setup = await acp.request<SessionSetupResult>(
           "session/resume",
-          { sessionId: resume.acpSessionId, cwd: input.cwd, mcpServers: [] },
+          {
+            sessionId: resume.acpSessionId,
+            cwd: input.cwd,
+            mcpServers: acpMcpServers(input.monoTools),
+          },
           SESSION_TIMEOUT_MS,
         );
         acpSessionId = sessionIdFromResult(setup) ?? resume.acpSessionId;
@@ -512,7 +517,7 @@ async function startLive(input: SendTurnInput, life: number): Promise<Live> {
             {
               sessionId: resume.acpSessionId,
               cwd: input.cwd,
-              mcpServers: [],
+              mcpServers: acpMcpServers(input.monoTools),
             },
             SESSION_TIMEOUT_MS,
           );
@@ -533,7 +538,7 @@ async function startLive(input: SendTurnInput, life: number): Promise<Live> {
       const droppedBinding = canLoad && resume != null;
       setup = await acp.request<SessionSetupResult>(
         "session/new",
-        { cwd: input.cwd, mcpServers: [] },
+        { cwd: input.cwd, mcpServers: acpMcpServers(input.monoTools) },
         SESSION_TIMEOUT_MS,
       );
       acpSessionId = sessionIdFromResult(setup);
