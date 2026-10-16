@@ -5,7 +5,10 @@ import {
   dequeueQueuedMessage,
   steerableQueuedMessage,
 } from "../../sessions/model/messageQueue";
-import { sanitizeSessionForPersist } from "../../sessions/data/sessionStore";
+import {
+  deleteSession,
+  sanitizeSessionForPersist,
+} from "../../sessions/data/sessionStore";
 import {
   handleAgentApp,
   type AgentAppHost,
@@ -227,9 +230,11 @@ const rust = vi.hoisted(() => {
         entry.notifiedAt = 2;
         return true;
       }
-      // `clear_session`: the session's questions close without a notice, and
-      // the rows it still had to take are dropped and leave it.
-      case "mono_messages_clear_session": {
+      // `session_delete` with `end`: the clear in the delete transaction. The
+      // session's questions close without a notice, and the rows it still had
+      // to take are dropped and leave it.
+      case "session_delete": {
+        if (!args.end) return null;
         for (const entry of state.rows)
           if (
             entry.fromSessionId === args.sessionId &&
@@ -1387,7 +1392,7 @@ it("resetting A's chat gives the held Giga one notice per dropped message", asyn
   const reset = (current: Session) =>
     resetMonoSession(current, {
       stop: async () => current,
-      remove: async () => {},
+      remove: () => deleteSession(current.id),
       replace: () => {},
     });
   await reset(get("a-chat"));

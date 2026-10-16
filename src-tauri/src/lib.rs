@@ -331,7 +331,6 @@ pub fn run() {
             control::control_window_booted,
             control::control_owns_session,
             control::control_loaded_sessions,
-            control::mono_messages_clear_session,
             control::app_cli_path,
             control::app_tool_schemas,
             control::control_host_call,
