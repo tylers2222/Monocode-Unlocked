@@ -23,12 +23,14 @@ vi.mock("../../core/child", () => ({
 }));
 
 const {
+  bindGrokSession,
   compactGrokContext,
   sendGrokTurn,
   respondGrokApproval,
   stopGrokSession,
 } = await import("./grok");
 import type { HarnessEvent } from "../../core/types";
+import type { MonoTools } from "../../core/monoTools";
 
 function reply(id: number, result: unknown) {
   onLine!(JSON.stringify({ jsonrpc: "2.0", id, result }));
@@ -276,5 +278,66 @@ describe("grok live turn sequence", () => {
     reply(request.id, {});
     await compact;
     await stopGrokSession("t4");
+  });
+});
+
+describe("grok Mono messaging tools over ACP", () => {
+  beforeEach(() => {
+    sent.length = 0;
+  });
+
+  const monoTools: MonoTools = {
+    exe: "/fake/monocode",
+    tools: [],
+    call: async () => ({ ok: true }),
+  };
+  const server = {
+    name: "monocode",
+    command: "/fake/monocode",
+    args: ["app-mcp"],
+    env: [],
+  };
+
+  async function runTurn(
+    sessionId: string,
+    setup: "session/new" | "session/resume",
+    tools?: MonoTools,
+  ) {
+    const turn = sendGrokTurn({
+      sessionId,
+      cwd: "/repo",
+      model: "grok:grok-4.6",
+      runtimeMode: "full-access",
+      monoTools: tools,
+      text: "hey",
+      onEvent: () => {},
+    });
+    await waitFor(() => parse().some((m) => m.method === "initialize"), "initialize");
+    reply(parse().find((m) => m.method === "initialize")!.id, initResult);
+    await waitFor(() => parse().some((m) => m.method === "authenticate"), "authenticate");
+    reply(parse().find((m) => m.method === "authenticate")!.id, {});
+    await waitFor(() => parse().some((m) => m.method === setup), setup);
+    const request = parse().find((m) => m.method === setup)!;
+    reply(request.id, { sessionId: "S1", models: { currentModelId: "grok-4.6" } });
+    await waitFor(() => parse().some((m) => m.method === "session/prompt"), "prompt");
+    reply(parse().find((m) => m.method === "session/prompt")!.id, {
+      stopReason: "end_turn",
+    });
+    await turn;
+    await stopGrokSession(sessionId);
+    sent.length = 0;
+    return request.params;
+  }
+
+  // Defect: the ACP wiring the transport table relies on sends a wrong server
+  // shape (ACP wants env as an array), misses session/resume, or gives the
+  // server to a session without tools.
+  it("passes the monocode server on session/new and session/resume only with tools", async () => {
+    expect((await runTurn("g-mono", "session/new", monoTools)).mcpServers).toEqual([server]);
+    bindGrokSession("g-resume", "S1", "/repo");
+    expect((await runTurn("g-resume", "session/resume", monoTools)).mcpServers).toEqual([
+      server,
+    ]);
+    expect((await runTurn("g-project", "session/new")).mcpServers).toEqual([]);
   });
 });

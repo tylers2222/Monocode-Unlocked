@@ -14,6 +14,7 @@ const transport = vi.hoisted(() => ({
   spawnChild: vi.fn(),
   forkData: undefined as unknown,
   stateSessionId: undefined as string | undefined,
+  hostToolsUnknown: false,
 }));
 
 vi.mock("../../core/child", () => ({
@@ -80,6 +81,7 @@ beforeEach(() => {
   transport.fast = undefined;
   transport.forkData = undefined;
   transport.stateSessionId = undefined;
+  transport.hostToolsUnknown = false;
   transport.writeChild.mockReset();
   transport.writeChild.mockImplementation(
     async (sessionId: string, line: string) => {
@@ -90,6 +92,14 @@ beforeEach(() => {
         return transport.prompt?.(sessionId, command);
       if (command.type === "set_fast_mode" && transport.fast)
         return transport.fast(sessionId, command);
+      if (command.type === "set_host_tools" && transport.hostToolsUnknown)
+        return frame(sessionId, {
+          type: "response",
+          id: command.id,
+          command: command.type,
+          success: false,
+          error: `Unknown command: ${command.type}`,
+        });
       response(
         sessionId,
         command,
@@ -881,6 +891,28 @@ describe("OMP Mono messaging host tools", () => {
     done("project", project.request);
     await project.turn;
     expect(sent("project", "set_host_tools")).toHaveLength(0);
+  });
+
+  // Defect: an omp without `set_host_tools` fails every Mono turn instead of
+  // running it with the app CLI only.
+  it("runs a Mono turn without host tools when omp does not know set_host_tools", async () => {
+    transport.hostToolsUnknown = true;
+    const call = vi.fn<MonoTools["call"]>(async () => ({ ok: true }));
+    const running = await started({ ...input("mono-chat"), monoTools: monoTools(call) });
+    frame("mono-chat", {
+      type: "host_tool_call",
+      id: "host_1",
+      toolCallId: "toolu_01",
+      toolName: "get_monos",
+      arguments: {},
+    });
+    await vi.waitFor(() =>
+      expect(sent("mono-chat", "host_tool_result")).toHaveLength(1),
+    );
+    expect(call).not.toHaveBeenCalled();
+    done("mono-chat", running.request);
+    await running.turn;
+    expect(running.settled()).toBe(true);
   });
 
   // Defect: a host tool call never reaches the app, reuses omp's frame id or

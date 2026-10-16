@@ -41,12 +41,15 @@ export function acpMcpServers(tools: MonoTools | undefined): unknown[] {
 /**
  * codex clears an MCP child's environment and copies back only `env_vars`,
  * so the server names the two variables it needs, never their values.
+ * `tool_timeout_sec` outlasts app-mcp's own retries (3 × 35 s): codex must
+ * not give up first, or the model would send the message again.
  */
 export function codexMcpServer(tools: MonoTools): Record<string, unknown> {
   return {
     command: tools.exe,
     args: MCP_ARGS,
     env_vars: ["MONOCODE_APP_ENDPOINT", "MONOCODE_APP_TOKEN"],
+    tool_timeout_sec: 120,
   };
 }
 

@@ -606,9 +606,6 @@ pub fn app_tools() -> Value {
 }
 
 const MCP_PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
-/// The app answers a call it could not finish in time with this text; the
-/// same request id then returns the first outcome instead of a second row.
-const MCP_TIMEOUT_RETRIES: usize = 2;
 
 /// `app-mcp`: the Mono messaging tools as a stdio MCP server. The token
 /// comes from this process's environment on every call and never leaves it.
@@ -644,8 +641,15 @@ fn mcp_response(line: &str, var: &impl Fn(&str) -> Option<String>) -> Option<Val
             json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Parse error"}}),
         );
     };
-    let id = message.get("id")?.clone();
-    let method = message.get("method")?.as_str()?;
+    let invalid = |id: Value| json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32600, "message": "Invalid Request"}});
+    let Some(object) = message.as_object() else {
+        return Some(invalid(Value::Null));
+    };
+    // A notification (no id) gets no answer.
+    let id = object.get("id")?.clone();
+    let Some(method) = object.get("method").and_then(Value::as_str) else {
+        return Some(invalid(id));
+    };
     let params = message.get("params").cloned().unwrap_or(Value::Null);
     let result = match method {
         "initialize" => Ok(mcp_initialize(&params)),
@@ -714,8 +718,11 @@ fn mcp_call(params: &Value, var: &impl Fn(&str) -> Option<String>) -> Result<Val
     }))
 }
 
-/// One app call. A call the app answers "timed out" still runs there, so it
-/// is sent again with the same request id, which returns its outcome.
+/// One app call, under one request id this server owns. When the outcome is
+/// unknown (the app answered "timed out", or the answer was lost after the
+/// request was sent) the call is sent again with the same id, which returns
+/// the first outcome. If every attempt is unknown the model is told not to
+/// send it again: its own retry would get a new id and could deliver twice.
 fn call_app(
     action: &str,
     input: &Value,
@@ -726,27 +733,17 @@ fn call_app(
         Ok(connection) => connection,
         Err(failure) => return failure_response(failure, request_id),
     };
-    let mut retries = MCP_TIMEOUT_RETRIES;
-    loop {
+    for _ in 0..=crate::control::TOOL_CALL_RETRIES {
         match send_to(&endpoint, &token, action, input, request_id, true) {
             Ok(value)
-                if retries > 0
-                    && value.get("error").and_then(Value::as_str)
-                        == Some(crate::control::REQUEST_TIMED_OUT) =>
-            {
-                retries -= 1;
-            }
+                if value.get("error").and_then(Value::as_str)
+                    == Some(crate::control::REQUEST_TIMED_OUT) => {}
             Ok(value) => return value,
-            Err(failure) => {
-                // The model cannot pass a request id; the CLI flag would mislead it.
-                let mut response = failure_response(failure, request_id);
-                if let Some(response) = response.as_object_mut() {
-                    response.remove("retryWith");
-                }
-                return response;
-            }
+            Err(failure) if failure.sent => {}
+            Err(failure) => return failure_response(failure, request_id),
         }
     }
+    crate::control::outcome_unknown()
 }
 
 fn read_capped(mut source: impl Read) -> Result<String, String> {
@@ -1328,9 +1325,11 @@ mod tests {
                 rpc(2, "initialize", json!({"protocolVersion": "1999-01-01"})),
                 rpc(3, "tools/list", json!({})),
                 rpc(4, "resources/list", json!({})),
+                json!("not a request"),
+                json!({"jsonrpc": "2.0", "id": 5}),
             ],
         );
-        assert_eq!(out.len(), 4, "a notification was answered: {out:?}");
+        assert_eq!(out.len(), 6, "a notification was answered: {out:?}");
         assert_eq!(out[0]["result"]["protocolVersion"], "2025-03-26");
         assert_eq!(out[0]["result"]["capabilities"], json!({"tools": {}}));
         assert_eq!(out[0]["result"]["serverInfo"]["name"], "monocode");
@@ -1348,6 +1347,10 @@ mod tests {
         );
         assert_eq!(out[3]["id"], 4);
         assert_eq!(out[3]["error"]["code"], -32601);
+        assert_eq!(out[4]["error"]["code"], -32600);
+        assert_eq!(out[4]["id"], Value::Null);
+        assert_eq!(out[5]["error"]["code"], -32600);
+        assert_eq!(out[5]["id"], 5);
     }
 
     // Defect: a tool call reaches the app as the wrong action or namespace,
@@ -1400,7 +1403,15 @@ mod tests {
         let out = mcp(Some(&endpoint), &[send_call(2)]);
         let requests = app.join().unwrap();
         assert_eq!(requests.len(), 3, "more than two retries");
+        assert!(requests
+            .iter()
+            .all(|r| r["requestId"] == requests[0]["requestId"]));
         assert_eq!(out[0]["result"]["isError"], true);
+        let answer = &out[0]["result"]["structuredContent"];
+        assert_eq!(answer["code"], "outcome_unknown");
+        assert!(!answer
+            .to_string()
+            .contains("Retry with the same request ID"));
         let (endpoint, app) = fake_app(vec![json!({"ok": true}), json!({"ok": true})]);
         mcp(Some(&endpoint), &[send_call(3), send_call(4)]);
         let requests = app.join().unwrap();
@@ -1408,6 +1419,62 @@ mod tests {
             requests[0]["requestId"], requests[1]["requestId"],
             "two tool calls shared a request id"
         );
+    }
+
+    // Defect: the app applies a call but answers too late; app-mcp sends it
+    // again under a new request id (so the app delivers it twice), or hands
+    // the model a timeout it would answer with a second send.
+    #[test]
+    fn app_mcp_does_not_deliver_a_late_call_twice() {
+        // The first answer is either the app's "timed out" or lost on the way.
+        for late in [
+            Some(json!({"ok": false, "error": crate::control::REQUEST_TIMED_OUT})),
+            None,
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = listener.local_addr().unwrap().to_string();
+            // The app applies the first request of an id, but its answer
+            // does not arrive; the same id again returns the stored outcome.
+            let first = late.clone();
+            let app = std::thread::spawn(move || {
+                let mut applied = std::collections::HashMap::<String, Value>::new();
+                listener.set_nonblocking(true).unwrap();
+                let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                while std::time::Instant::now() < deadline {
+                    let Ok((stream, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    stream.set_nonblocking(false).unwrap();
+                    let mut line = String::new();
+                    BufReader::new(&stream).read_line(&mut line).unwrap();
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    let id = request["requestId"].as_str().unwrap().to_string();
+                    let reply = match applied.get(&id) {
+                        Some(outcome) => {
+                            let mut outcome = outcome.clone();
+                            outcome["duplicate"] = json!(true);
+                            Some(outcome)
+                        }
+                        None => {
+                            applied.insert(id, json!({"ok": true, "message_id": "m_abcdefghijkl"}));
+                            first.clone()
+                        }
+                    };
+                    if let Some(reply) = reply {
+                        writeln!(&stream, "{reply}").unwrap();
+                    }
+                }
+                applied.len()
+            });
+            let out = mcp(Some(&endpoint), &[send_call(1)]);
+            assert_eq!(app.join().unwrap(), 1, "delivered twice after {late:?}");
+            assert_eq!(out[0]["result"]["isError"], false, "after {late:?}");
+            assert_eq!(
+                out[0]["result"]["structuredContent"]["message_id"],
+                "m_abcdefghijkl"
+            );
+        }
     }
 
     // Defect: without MONOCODE_APP_TOKEN the server crashes or answers a

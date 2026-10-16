@@ -589,11 +589,17 @@ async function startLive(
     );
     bindState(flavor, input.sessionId, live, stateFrame.data);
     if (input.monoTools) {
-      await rpc.request({
-        type: "set_host_tools",
-        tools: ompHostTools(input.monoTools),
-      });
-      live.monoTools = input.monoTools;
+      // An omp without host tools still runs the Mono's turn; it keeps the CLI.
+      const registered = await rpc
+        .request({ type: "set_host_tools", tools: ompHostTools(input.monoTools) })
+        .then(
+          () => true,
+          (error: unknown) => {
+            console.warn(`[${flavor.id}] Mono tools unavailable; using the app CLI`, error);
+            return false;
+          },
+        );
+      if (registered) live.monoTools = input.monoTools;
     }
     await applyModel(flavor, live, input);
     if (live.providerSessionId) {
