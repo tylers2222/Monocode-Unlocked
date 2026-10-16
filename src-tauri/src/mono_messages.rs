@@ -2317,6 +2317,45 @@ fn drop_steers_of_ended_turns(
     Ok(notices)
 }
 
+/// `mono_message_submit` without Tauri (PR I2 review r2 m1): reads
+/// `running`, submits, then reads `running` again with no store lock held
+/// and drops a steer whose turn ended in between (design 16.12.3.3). The
+/// control lock is never held inside a store transaction (5.3).
+#[allow(clippy::too_many_arguments)]
+fn submit_and_recheck(
+    store: &SessionStore,
+    running: impl Fn() -> HashMap<String, String>,
+    caller: &Caller,
+    request_id: &RequestId,
+    input: Result<Input, String>,
+    live: &[LiveSession],
+    steerable_harnesses: &[String],
+    now: i64,
+) -> Result<(Submitted, Notices), String> {
+    let first = running();
+    let mut submitted = {
+        let conn = store.lock_conn()?;
+        submit(
+            &conn,
+            caller,
+            request_id,
+            input,
+            &Live {
+                sessions: live,
+                running: &first,
+                steerable_harnesses,
+            },
+            now,
+        )
+        .map_err(|error| error.to_string())?
+    };
+    let again = running();
+    let conn = store.lock_conn()?;
+    let notices = drop_steers_of_ended_turns(&conn, &mut submitted, &first, &again, now)
+        .map_err(|error| error.to_string())?;
+    Ok((submitted, notices))
+}
+
 /// The route of a new accept, sent to the window that owns its session.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2349,32 +2388,16 @@ pub fn mono_message_submit(
             "A request id has 1 to 128 letters, digits, - and _.".into(),
         ));
     };
-    let running = control.running_sessions();
-    let mut submitted = {
-        let conn = store.lock_conn()?;
-        submit(
-            &conn,
-            &caller,
-            &request_id,
-            mono_gate::parse(tool, &input),
-            &Live {
-                sessions: &live,
-                running: &running,
-                steerable_harnesses: &steerable_harnesses,
-            },
-            now_ms(),
-        )
-        .map_err(|error| error.to_string())?
-    };
-    // Design 16.12.3.3 (whole-turn review r1): `running` was read before the
-    // store lock, so a turn end may have committed since. Read it again with
-    // no store lock held (5.3).
-    let still_running = control.running_sessions();
-    let notices = {
-        let conn = store.lock_conn()?;
-        drop_steers_of_ended_turns(&conn, &mut submitted, &running, &still_running, now_ms())
-            .map_err(|error| error.to_string())?
-    };
+    let (mut submitted, notices) = submit_and_recheck(
+        &store,
+        || control.running_sessions(),
+        &caller,
+        &request_id,
+        mono_gate::parse(tool, &input),
+        &live,
+        &steerable_harnesses,
+        now_ms(),
+    )?;
     notices.emit(&app);
     // Design 6: the window that owns a session runs its routes, so no other
     // window loads a second copy of it to deliver. A window that is gone
@@ -6951,5 +6974,53 @@ pub(crate) mod tests {
                 "{request}"
             );
         }
+    }
+
+    // PR I2 review r2 m1. Defect: the command passes its first `running`
+    // read twice, or skips the drop, so a steer accepted for a turn that
+    // ended while the gate ran waits with no notice.
+    #[test]
+    fn the_submit_reads_running_again_and_drops_a_steer_whose_turn_ended() {
+        let store = messaging_store();
+        {
+            let conn = store.lock_conn().unwrap();
+            handed_off(&conn, "work", false, "turn-1", "main", true);
+            turn_ended(&conn, &session("a-chat"), "turn-1", 150).unwrap();
+        }
+        let reads = std::cell::Cell::new(0);
+        let running = || {
+            reads.set(reads.get() + 1);
+            if reads.get() == 1 {
+                HashMap::from([("a-chat".to_string(), "turn-1".to_string())])
+            } else {
+                HashMap::new()
+            }
+        };
+        let (submitted, notices) = submit_and_recheck(
+            &store,
+            running,
+            &caller_in("giga", "giga-chat"),
+            &RequestId::parse("whole").unwrap(),
+            mono_gate::parse(Tool::SendMessage, &whole_turn("mono-a")),
+            &[],
+            &["codex".to_string()],
+            160,
+        )
+        .unwrap();
+        assert_eq!(reads.get(), 2);
+        let Submitted::Accepted {
+            messages, routes, ..
+        } = &submitted
+        else {
+            panic!("{submitted:?}");
+        };
+        assert!(routes.is_empty(), "{routes:?}");
+        assert!(matches!(messages[0].status, Status::Dropped { .. }));
+        let conn = store.lock_conn().unwrap();
+        assert_eq!(stored_row(&conn, &messages[0].id).0, "dropped");
+        assert!(
+            notices.sessions.contains(&session("giga-chat")),
+            "{notices:?}"
+        );
     }
 }
