@@ -28,6 +28,7 @@ import {
   getMonos,
   handOff,
   reconcile,
+  removeQueued,
   replyMessage,
   routeMessages,
   sendMessage,
@@ -43,6 +44,7 @@ import {
   type SessionId,
   type TurnId,
 } from "./monoMessages";
+import { resetMonoSession } from "./monoWorkspace";
 
 /**
  * `mono_messages` as the Rust commands keep it: `submit` accepts every call
@@ -64,7 +66,7 @@ const rust = vi.hoisted(() => {
     hop: number;
     status: "open" | "delivered" | "unanswered" | "dropped";
     wantingReply: boolean;
-    handledBySession: string;
+    handledBySession: string | null;
     delivery: string;
     slot: {
       turnId: string;
@@ -224,6 +226,52 @@ const rust = vi.hoisted(() => {
           return false;
         entry.notifiedAt = 2;
         return true;
+      }
+      // `clear_session`: the session's questions close without a notice, and
+      // the rows it still had to take are dropped and leave it.
+      case "mono_messages_clear_session": {
+        for (const entry of state.rows)
+          if (
+            entry.fromSessionId === args.sessionId &&
+            (entry.status === "open" || entry.status === "unanswered")
+          ) {
+            entry.status = "dropped";
+            entry.notifiedAt = 1;
+          }
+        const dropped = state.rows.filter(
+          (entry) =>
+            entry.handledBySession === args.sessionId &&
+            (entry.status === "open" ||
+              (entry.status === "delivered" && !entry.slot?.deliveredAt)),
+        );
+        for (const entry of dropped) {
+          entry.status = "dropped";
+          entry.handledBySession = null;
+        }
+        const chats = [
+          ...new Set(
+            dropped.flatMap((entry) =>
+              entry.fromMonoId ? [state.chats[entry.fromMonoId]] : [],
+            ),
+          ),
+        ];
+        if (chats.length)
+          queueMicrotask(() =>
+            bus.emit("mono-message-notices", { sessions: chats }),
+          );
+        return null;
+      }
+      case "mono_message_drop": {
+        const entry = row(args.id);
+        if (
+          !entry ||
+          (entry.status !== "open" && entry.status !== "delivered") ||
+          entry.slot?.deliveredAt
+        )
+          return "closed";
+        if (entry.slot) return "in_flight";
+        entry.status = "dropped";
+        return "dropped";
       }
     }
     throw new Error(`unexpected command ${command}`);
@@ -1321,4 +1369,70 @@ it("keeps a notice pending when its chat is no longer in the window", async () =
   const { host } = world([]);
   await reconcile(host, "giga-chat");
   expect(rust.state.rows[0].notifiedAt).toBeNull();
+});
+
+// Design 7, 5.3 (review r3), E12. Defect: resetting a Mono's chat only
+// revokes its token, so the messages queued for it stay open with no chat to
+// take them and the Giga, held in its own turn, never hears they were
+// dropped; or it hears more than once.
+it("resetting A's chat gives the held Giga one notice per dropped message", async () => {
+  const { host, get, send } = world([
+    chat("giga-chat", { busy: true }),
+    chat("a-chat", { busy: true }),
+  ]);
+  listenForMonoNotices(host);
+  await send(ask(true), "r1");
+  await send(ask(false), "r2");
+  expect(ids(get("a-chat"))).toEqual(["m_aaaaaaaaaaaa", "m_bbbbbbbbbbbb"]);
+  const reset = (current: Session) =>
+    resetMonoSession(current, {
+      stop: async () => current,
+      remove: async () => {},
+      replace: () => {},
+    });
+  await reset(get("a-chat"));
+  await vi.waitFor(() =>
+    expect(ids(get("giga-chat"))).toEqual([
+      "notice-m_aaaaaaaaaaaa-dropped",
+      "notice-m_bbbbbbbbbbbb-dropped",
+    ]),
+  );
+  expect(rust.state.rows.map((entry) => entry.status)).toEqual([
+    "dropped",
+    "dropped",
+  ]);
+  expect(get("giga-chat").busy).toBe(true);
+  // The old chat's deletion clears it again.
+  await reset(get("a-chat"));
+  await Promise.resolve();
+  expect(ids(get("giga-chat"))).toHaveLength(2);
+});
+
+// Design 5.5 rule 8 (review r5). Defect: Remove takes away the item of a row
+// that a hand-off holds, so the text reaches the agent while its sender is
+// told it was dropped; or Remove never drops a waiting row, so reconcile
+// queues it again.
+it("Remove keeps the item of a row a hand-off holds and drops a waiting one", async () => {
+  const { host, get, send } = world([chat("a-chat", { busy: true })]);
+  await send(ask(true), "r1");
+  await send(ask(false), "r2");
+  const [held, waiting] = get("a-chat").queuedMessages!;
+  let deliver: (accepted: boolean) => void = () => {};
+  const handing = handOff(
+    host,
+    "a-chat",
+    held.id as MessageId,
+    "steer",
+    () => new Promise<boolean>((resolve) => (deliver = resolve)),
+  );
+  await vi.waitFor(() => expect(rust.state.rows[0].slot).not.toBeNull());
+  expect(await removeQueued(host, "a-chat", held.id)).toBe(false);
+  expect(await removeQueued(host, "a-chat", waiting.id)).toBe(true);
+  expect(ids(get("a-chat"))).toEqual([held.id]);
+  expect(rust.state.rows.map((entry) => entry.status)).toEqual([
+    "open",
+    "dropped",
+  ]);
+  deliver(true);
+  await handing;
 });

@@ -1878,12 +1878,21 @@ fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
     tx.commit()
 }
 
-fn set_archived(conn: &Connection, session_id: &str, archived: bool) -> rusqlite::Result<()> {
-    conn.execute(
+pub(crate) fn set_archived(
+    conn: &Connection,
+    session_id: &str,
+    archived: bool,
+) -> rusqlite::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
         "UPDATE sessions SET archived = ?1 WHERE id = ?2",
         params![if archived { 1 } else { 0 }, session_id],
     )?;
-    Ok(())
+    // The archive cleared the session (design 7); unarchived, it receives again.
+    if !archived {
+        crate::mono_messages::session_reopened(&tx, session_id)?;
+    }
+    tx.commit()
 }
 
 fn set_pinned(conn: &Connection, session_id: &str, pinned: bool) -> rusqlite::Result<()> {

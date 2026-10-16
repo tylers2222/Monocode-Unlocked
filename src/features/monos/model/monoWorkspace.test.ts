@@ -165,7 +165,7 @@ it("deletes the Mono's chat before replacing it with an empty provider session",
   const remove = vi.fn(async () => {
     expect(stop).toHaveBeenCalledExactlyOnceWith(current.id);
     expect(sessionOf(monoId)).toBe(current.id);
-    expect(invoke).toHaveBeenCalledExactlyOnceWith("control_forget_session", {
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("mono_messages_clear_session", {
       sessionId: current.id,
     });
   });

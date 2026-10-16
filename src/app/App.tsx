@@ -19,6 +19,7 @@ import {
   listenForMonoNotices,
   listenForMonoRoutes,
   opensTurn,
+  removeQueued,
   replyMessage,
   sendMessage,
   type MonoMessagingHost,
@@ -9243,16 +9244,13 @@ function Workspace({
 
   const onDeleteQueuedMessage = useCallback(
     (sessionId: string, messageId: string) => {
-      setSessions((prev) =>
-        prev.map((session) =>
-          session.id === sessionId
-            ? dequeueQueuedMessage(session, messageId)
-            : session,
-        ),
-      );
-      turnWatchers.current.cancel(messageId);
+      void removeQueued(monoQueue, sessionId, messageId)
+        .then((removed) => {
+          if (removed) turnWatchers.current.cancel(messageId);
+        })
+        .catch(console.error);
     },
-    [],
+    [monoQueue],
   );
 
   const onQueuedMessageEditingChange = useCallback(

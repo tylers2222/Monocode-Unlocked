@@ -262,6 +262,32 @@ export async function handOff(
   return accepted;
 }
 
+/** `mono_message_drop`'s answer (design 5.5 rule 8). */
+type DropAnswer = "dropped" | "closed" | "in_flight";
+
+/**
+ * Design 5.5 rule 8: the user removes queue item `itemId`. The item of a
+ * Mono row goes only after Rust dropped the row or found it closed; while a
+ * hand-off holds the row, the item stays. Returns whether the item went.
+ */
+export async function removeQueued(
+  host: Pick<MonoQueueHost, "session" | "update">,
+  sessionId: string,
+  itemId: string,
+): Promise<boolean> {
+  const item = host
+    .session(sessionId)
+    ?.queuedMessages?.find((queued) => queued.id === itemId);
+  if (item?.monoMessageId) {
+    const answer = await invoke<DropAnswer>("mono_message_drop", {
+      id: item.monoMessageId,
+    });
+    if (answer === "in_flight") return false;
+  }
+  host.update(sessionId, (session) => dequeueQueuedMessage(session, itemId));
+  return true;
+}
+
 /**
  * Design 5.4 for an opener: `submit` starts a turn and reports, through the
  * callback it is given, whether the provider took that turn. A submit that

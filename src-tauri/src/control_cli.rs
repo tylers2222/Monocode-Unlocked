@@ -252,7 +252,8 @@ Actions:
                   Answer a <mono_message> that waits for your reply (it says
                   wanting_reply="true" and has a handle such as
                   handle="#1"). Handles count from #1 in each turn and close
-                  when the turn ends. Without to, reply answers the one open
+                  when the turn ends, or when the sender's chat is reset,
+                  archived or deleted. Without to, reply answers the one open
                   handle. to is one handle, or a list of up to 9 different
                   handles such as ["#1","#2"]; each sender gets its own
                   answer. Returns message_ids and answered. Codes:

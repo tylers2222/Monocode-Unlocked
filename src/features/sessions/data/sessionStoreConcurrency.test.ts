@@ -62,7 +62,7 @@ describe("session persistence concurrency", () => {
     expect(commands).toEqual([
       "session_upsert",
       "session_upsert",
-      "control_forget_session",
+      "mono_messages_clear_session",
       "session_delete",
     ]);
     await upsertSession(worker);
@@ -103,10 +103,10 @@ describe("session persistence concurrency", () => {
 
     expect(commands).toEqual([
       "session_upsert",
-      "control_forget_session",
+      "mono_messages_clear_session",
       "session_delete",
     ]);
-    expect(mocks.invoke).toHaveBeenCalledWith("control_forget_session", {
+    expect(mocks.invoke).toHaveBeenCalledWith("mono_messages_clear_session", {
       sessionId: "s1",
     });
   });
@@ -213,7 +213,7 @@ describe("session persistence concurrency", () => {
     expect(commands).toEqual([
       "session_upsert",
       "session_upsert",
-      "control_forget_session",
+      "mono_messages_clear_session",
       "session_set_archived",
     ]);
     expect(mocks.invoke.mock.calls[1]?.[1]).toMatchObject({

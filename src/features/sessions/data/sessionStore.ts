@@ -775,7 +775,7 @@ export async function deleteSession(
       .map(([, pending]) => pending);
     if (pendingWrites.length > 0) await Promise.all(pendingWrites);
     await enqueueSessionWrite(sessionId, async () => {
-      await invoke<void>("control_forget_session", { sessionId });
+      await invoke<void>("mono_messages_clear_session", { sessionId });
       await invoke<void>("session_delete", { sessionId, imagePaths });
     });
     monoSavedBlocks.delete(sessionId);
@@ -805,8 +805,10 @@ export async function setSessionArchived(
   archived: boolean,
 ): Promise<void> {
   await enqueueSessionWrite(sessionId, async () => {
-    // An archived session's token must die with it; unarchive mints a new one.
-    if (archived) await invoke<void>("control_forget_session", { sessionId });
+    // An archived session's token and messages end with it; unarchive mints a
+    // new token and lets it receive again.
+    if (archived)
+      await invoke<void>("mono_messages_clear_session", { sessionId });
     await invoke<void>("session_set_archived", { sessionId, archived });
   });
 }

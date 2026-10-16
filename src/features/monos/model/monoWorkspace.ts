@@ -87,9 +87,10 @@ export async function resetMonoSession(
     stopped.runtimeMode,
     stopped.modelSettings,
   );
-  // Revoke the old chat's app token first, so no call from it lands while it
-  // is deleted. A failed deletion must leave the original conversation selected.
-  await invoke("control_forget_session", { sessionId: current.id });
+  // Revoke the old chat's app token and drop its messages first, so no call
+  // from it lands while it is deleted. A failed deletion must leave the
+  // original conversation selected.
+  await invoke("mono_messages_clear_session", { sessionId: current.id });
   await host.remove(stopped);
   forgetAgentContext(current.id);
   forgetMonoRotation(current.id);

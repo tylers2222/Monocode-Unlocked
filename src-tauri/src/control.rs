@@ -845,20 +845,48 @@ fn release_window_slots(store: &SessionStore, label: &str) -> Notices {
     })
 }
 
+/// Design 7: session `session_id` was reset, deleted or archived. Its token
+/// and turn go first, before the store transaction opens (5.3 lock order),
+/// so no call from it lands while its messages are dropped. Emits the
+/// notices of both steps after the clear commits.
 #[tauri::command(async)]
-pub fn control_forget_session(
+pub fn mono_messages_clear_session(
     app: AppHandle,
     host: State<'_, ControlHost>,
     harness: State<'_, crate::harness::HarnessHost>,
     session_id: String,
-) {
-    forget_session(
+) -> Result<(), String> {
+    let (notices, cleared) = clear_session(
         &host.inner,
         &app.state::<SessionStore>(),
         &harness,
         &session_id,
-    )
-    .emit(&app);
+    );
+    notices.emit(&app);
+    cleared
+}
+
+fn clear_session(
+    inner: &Mutex<Inner>,
+    store: &SessionStore,
+    harness: &crate::harness::HarnessHost,
+    session: &str,
+) -> (Notices, Result<(), String>) {
+    let mut notices = forget_session(inner, store, harness, session);
+    let Some(id) = SessionId::parse(session) else {
+        return (notices, Ok(()));
+    };
+    let cleared = store.lock_conn().and_then(|conn| {
+        mono_messages::clear_session(&conn, &id, mono_messages::now_ms())
+            .map_err(|error| error.to_string())
+    });
+    match cleared {
+        Ok(cleared) => {
+            notices.merge(cleared);
+            (notices, Ok(()))
+        }
+        Err(error) => (notices, Err(error)),
+    }
 }
 
 /// The turn the session ran ends with it (PR 5 review r2 m3): its questions
@@ -1323,6 +1351,34 @@ mod tests {
             status(&store, &opener),
             Status::Delivered { slot: None, .. }
         ));
+        assert_eq!(
+            payload(&notices),
+            json!({"sessions": ["a-chat", "giga-chat"]})
+        );
+    }
+
+    // Design 7 (review r3 order). Defect: a reset, delete or archive only
+    // revokes the token, so a message still queued for the chat stays open
+    // with no chat to take it and its sender is never told; or the clear
+    // runs before the turn ends, so a question the agent saw is dropped
+    // instead of closed as unanswered by the turn end.
+    #[test]
+    fn clearing_a_running_session_ends_its_turn_then_drops_what_it_had_to_take() {
+        let store = messaging_store();
+        let inner = Mutex::new(Inner::default());
+        run(&inner, "a-chat", "main", "turn-1");
+        let (ask, queued) = {
+            let conn = store.lock_conn().unwrap();
+            (
+                handed_off(&conn, "ask", true, "turn-1", "main", true),
+                sent(&conn, ("giga", "giga-chat"), "mono-a", "queued", true),
+            )
+        };
+        let (notices, cleared) = clear_session(&inner, &store, &HarnessHost::new(), "a-chat");
+        assert_eq!(cleared, Ok(()));
+        assert!(inner.lock().unwrap().active.is_empty());
+        assert!(matches!(status(&store, &ask), Status::Unanswered { .. }));
+        assert!(matches!(status(&store, &queued), Status::Dropped { .. }));
         assert_eq!(
             payload(&notices),
             json!({"sessions": ["a-chat", "giga-chat"]})
