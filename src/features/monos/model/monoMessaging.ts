@@ -9,6 +9,7 @@ import {
   QUIT_PAUSE_NOTICE,
   waitsForTurnEnd,
 } from "../../sessions/model/messageQueue";
+import { parseMonoNotice } from "./monoMessages";
 import type {
   Attachment,
   Block,
@@ -112,14 +113,21 @@ export function monoMessageDeliveries(
   );
 }
 
-/** Ready reports deliver in the background; only waiting or failed ones need a queue row. */
-export function visibleMonoCompletionMessages(
-  session: Session,
-): QueuedMessage[] {
+/**
+ * The rows a Mono chat's queue shows: its notices (design 5.3), first, and the
+ * completion reports that wait or failed. Ready reports deliver in the
+ * background; every other item shows as its bubble.
+ */
+export function monoQueueRows(session: Session): QueuedMessage[] {
   const ready = canDispatchQueuedHead(session);
-  return (session.queuedMessages ?? []).filter(
-    (message) => !!message.monoSessionCompletion && (!ready || !!message.error),
-  );
+  const queued = session.queuedMessages ?? [];
+  return [
+    ...queued.filter((message) => parseMonoNotice(message)),
+    ...queued.filter(
+      (message) =>
+        !!message.monoSessionCompletion && (!ready || !!message.error),
+    ),
+  ];
 }
 
 const legacyBubbles = new WeakMap<QueuedMessage, Block>();
@@ -129,7 +137,7 @@ export function monoPendingTranscriptBlocks(
   blocks: Block[],
 ): Block[] {
   const messages = session.queuedMessages?.filter(
-    (message) => !message.monoSessionCompletion,
+    (message) => !message.monoSessionCompletion && !parseMonoNotice(message),
   );
   if (!messages?.length) return blocks;
   const byBlock = new Map(

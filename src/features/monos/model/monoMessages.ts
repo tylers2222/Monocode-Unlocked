@@ -308,18 +308,59 @@ export function renderMonoMessage(
   return `<mono_message ${attributes.join(" ")}>\n${message.body}\n</mono_message>`;
 }
 
+export type NoticeStatus = "unanswered" | "dropped";
+
+/** A sender notice as its queue item holds it (design 5.3). */
+export type MonoNotice = {
+  messageId: MessageId;
+  status: NoticeStatus;
+  recipient: string;
+  /** The first 60 characters of the message, on one line. */
+  line: string;
+};
+
+/** The request id of a notice's queue item and bubble: one per row and status. */
+export function noticeRequestId(id: MessageId, status: NoticeStatus): string {
+  return `notice-${id}-${status}`;
+}
+
 /**
  * What the sender's chat reads when its message ended without an answer
  * (design 5.3): which message, to whom, and its first 60 characters.
  */
 export function renderMonoNotice(
-  message: Pick<MessageBase, "id" | "body"> & {
-    status: "unanswered" | "dropped";
-  },
+  message: Pick<MessageBase, "id" | "body"> & { status: NoticeStatus },
   recipient: string,
 ): string {
   const line = Array.from(message.body.trim().split(/\s+/).join(" "))
     .slice(0, 60)
     .join("");
   return `<mono_notice message_id="${message.id}" status="${message.status}" to="${attribute(recipient)}">\n${line}\n</mono_notice>`;
+}
+
+const NOTICE =
+  /^<mono_notice message_id="([^"]*)" status="(unanswered|dropped)" to="([^"]*)">\n([^\n]*)\n<\/mono_notice>$/;
+
+/**
+ * The notice a queue item or bubble holds. Only the pump's request id makes
+ * one: a message that merely quotes a `<mono_notice>` stays a message.
+ */
+export function parseMonoNotice(item: {
+  appRequestId?: string;
+  text: string;
+}): MonoNotice | undefined {
+  const match = NOTICE.exec(item.text);
+  const messageId = parseMessageId(match?.[1]);
+  if (!match || !messageId) return undefined;
+  const status = match[2] as NoticeStatus;
+  if (item.appRequestId !== noticeRequestId(messageId, status))
+    return undefined;
+  return {
+    messageId,
+    status,
+    recipient: match[3].replace(/&#(\d+);/g, (_, code: string) =>
+      String.fromCharCode(Number(code)),
+    ),
+    line: match[4],
+  };
 }

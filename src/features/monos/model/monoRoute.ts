@@ -10,6 +10,7 @@ import type { QueuedMessage, Session } from "../../sessions/model/session";
 import { enqueueMonoMessage } from "./monoMessaging";
 import {
   newTurnId,
+  noticeRequestId,
   renderMonoMessage,
   renderMonoNotice,
   type CallErrorCode,
@@ -20,6 +21,7 @@ import {
   type MonoId,
   type MonoMessage,
   type MonoRole,
+  type NoticeStatus,
   type RejectCode,
   type ReplyInput,
   type SendInput,
@@ -33,7 +35,7 @@ type Routed = Extract<MonoMessage, { handledBySession: unknown }>;
 /** A row `assign_slot` takes: it refuses every other status. */
 type Waiting = Extract<MonoMessage, { status: "open" | "delivered" }>;
 /** A row whose sender is owed a notice (design 5.3). */
-type Noticed = Extract<MonoMessage, { status: "unanswered" | "dropped" }>;
+type Noticed = Extract<MonoMessage, { status: NoticeStatus }>;
 
 /** A queue item waits for the turn end (`queue`) or may steer a running turn. */
 export type QueueKind = "queue" | "steer";
@@ -96,9 +98,10 @@ function queueItem(host: MonoQueueHost, message: Routed) {
 }
 
 /**
- * Design 5.3: a sender notice enters the chat once, as a message that waits
- * for the turn end. Its request id in the queue or the transcript means it
- * was queued or sent before, so a pump that runs again adds nothing.
+ * Design 5.3: a sender notice enters the chat once, as a queue row that
+ * waits for the turn end; it gets its bubble when it is sent. Its request id
+ * in the queue or the transcript means it was queued or sent before, so a
+ * pump that runs again adds nothing.
  */
 function ensureNotice(
   session: Session,
@@ -111,13 +114,20 @@ function ensureNotice(
     session.blocks.some((block) => block.appRequestId === notice.id)
   )
     return session;
-  return enqueueMonoMessage(session, {
-    id: notice.id,
-    appRequestId: notice.id,
-    text: notice.text,
-    attachments: [],
-    waitForIdle: true,
-  });
+  return {
+    ...session,
+    queuedMessages: [
+      ...(session.queuedMessages ?? []),
+      {
+        id: notice.id,
+        appRequestId: notice.id,
+        text: notice.text,
+        attachments: [],
+        waitForIdle: true,
+      },
+    ],
+    queueStatus: session.queueStatus === "paused" ? "paused" : "active",
+  };
 }
 
 function noticeItem(host: MonoQueueHost, message: Noticed) {
@@ -126,7 +136,7 @@ function noticeItem(host: MonoQueueHost, message: Noticed) {
       ? message.addressed
       : (host.sender(message.to?.monoId ?? null)?.name ?? "a deleted Mono");
   return {
-    id: `notice-${message.id}-${message.status}`,
+    id: noticeRequestId(message.id, message.status),
     text: renderMonoNotice(message, recipient),
   };
 }

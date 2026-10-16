@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  Bell,
   Check,
   CornerDownRight,
   ListEnd,
@@ -10,6 +11,10 @@ import {
   X,
 } from "../../../shared/ui/icons";
 import { isImeComposition } from "../../../shared/lib/keyboard";
+import {
+  parseMonoNotice,
+  type MonoNotice,
+} from "../../monos/model/monoMessages";
 import type { MessageQueueStatus, QueuedMessage } from "../model/session";
 
 export function MessageQueue({
@@ -50,6 +55,14 @@ export function MessageQueue({
   if (messages.length === 0) return null;
   const paused = status === "paused";
   const failed = messages.some((message) => message.error);
+  const notices = messages.flatMap((message) => {
+    const notice = parseMonoNotice(message);
+    return notice ? [{ id: message.id, notice }] : [];
+  });
+  const rows = messages.filter(
+    (message) => !notices.some((entry) => entry.id === message.id),
+  );
+  const statusLine = variant === "messages" && !paused && rows.length > 0;
 
   const startEdit = (message: QueuedMessage) => {
     setEditingId(message.id);
@@ -95,12 +108,34 @@ export function MessageQueue({
             </button>
           </div>
         ) : null}
-        {variant === "messages" && !paused ? (
-          <div role="status" className="py-1 text-[11px] text-content/50">
+        {notices.length > 0 ? (
+          <>
+            <div className="py-1 text-[11px] text-content/50">
+              Notice from the app · opens your next turn
+            </div>
+            <div className="divide-y divide-stroke">
+              {notices.map(({ id, notice }) => (
+                <NoticeRow
+                  key={id}
+                  notice={notice}
+                  disabled={sendingId === id}
+                  onRemove={() => onDelete?.(id)}
+                />
+              ))}
+            </div>
+          </>
+        ) : null}
+        {statusLine ? (
+          <div
+            role="status"
+            className={`py-1 text-[11px] text-content/50 ${
+              notices.length > 0 ? "border-t border-stroke" : ""
+            }`}
+          >
             {sendingId ? "Sending…" : "Waiting to send"}
           </div>
         ) : null}
-        {messages.map((message, index) => {
+        {rows.map((message, index) => {
           const sending = sendingId === message.id;
           const editing = editingId === message.id;
           const label =
@@ -116,7 +151,9 @@ export function MessageQueue({
             <div
               key={message.id}
               className={`flex min-h-7 items-center gap-2 text-[12px] ${
-                index > 0 ? "border-t border-stroke" : ""
+                index > 0 || (notices.length > 0 && !statusLine)
+                  ? "border-t border-stroke"
+                  : ""
               }`}
             >
               <ListEnd className="size-3.5 shrink-0" />
@@ -211,6 +248,54 @@ export function MessageQueue({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+const NOTICE_SENTENCE: Record<
+  MonoNotice["status"],
+  { label: string; text: (recipient: string) => string }
+> = {
+  unanswered: {
+    label: "Unanswered",
+    text: (recipient) => `${recipient} did not reply to`,
+  },
+  dropped: { label: "Dropped", text: (recipient) => `${recipient} never got` },
+};
+
+/** Design U10: a sender notice, in words, with only a remove control. */
+function NoticeRow({
+  notice,
+  disabled,
+  onRemove,
+}: {
+  notice: MonoNotice;
+  disabled: boolean;
+  onRemove: () => void;
+}) {
+  const sentence = NOTICE_SENTENCE[notice.status];
+  // renderMonoNotice keeps 60 characters, so a full line was cut.
+  const quote = `“${notice.line}${Array.from(notice.line).length >= 60 ? "…" : ""}”`;
+  const text = `${sentence.text(notice.recipient)} ${quote}`;
+  return (
+    <div className="flex min-h-7 items-center gap-2 text-[12px]">
+      <Bell className="size-3.5 shrink-0 text-amber-400" />
+      <div
+        className="min-w-0 flex-1 truncate py-1 text-content/80"
+        title={`${sentence.label} · ${text}`}
+      >
+        <span className="text-amber-400">{sentence.label}</span> · {text}
+      </div>
+      <button
+        type="button"
+        title="Remove notice"
+        aria-label="Remove notice"
+        disabled={disabled}
+        onClick={onRemove}
+        className="grid size-6 shrink-0 place-items-center rounded-md hover:bg-content/10 hover:text-content"
+      >
+        <X className="size-3.5" />
+      </button>
     </div>
   );
 }
