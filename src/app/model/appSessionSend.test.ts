@@ -1,13 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ControlOutcome } from "../../features/orchestration/model/orchestration";
 import { appendPreparingHandoff } from "../../features/sessions/model/handoff";
-import { dequeueQueuedMessage } from "../../features/sessions/model/messageQueue";
+import {
+  busyRoute,
+  planUserSend,
+} from "../../features/sessions/model/messageIntent";
+import {
+  dequeueQueuedMessage,
+  runningTurnMap,
+} from "../../features/sessions/model/messageQueue";
+import type { TurnId } from "../../features/monos/model/monoMessages";
 import {
   newSession,
+  WHOLE_TURN,
   type QueuedMessage,
   type Session,
 } from "../../features/sessions/model/session";
-import { appendUser } from "../../integrations/harness/core/apply";
+import {
+  appendSteerUser,
+  appendUser,
+} from "../../integrations/harness/core/apply";
 import {
   createTurnWatchers,
   deliverAppSteer,
@@ -249,6 +261,7 @@ describe("steerRunningTurn for a queued CLI follow-up", () => {
       sessionId: "session-a",
       gen: 4,
       queued: { id: "queued-1" },
+      sent: { block: {}, text: "Use TypeScript" },
       fallbackError: "codex could not steer the active turn",
       ...steps,
     });
@@ -321,6 +334,45 @@ describe("steerRunningTurn for a queued CLI follow-up", () => {
     expect(watcher).toHaveBeenCalledWith(completed);
     expect(fail).not.toHaveBeenCalled();
   });
+});
+
+// PR I5 review r2 m6. Defect: the user's untargeted steer into a busy project
+// session reaches the provider without its whole-turn line, or its block
+// misses the whole-turn link or the running turn (App.tsx forwarded these).
+it("steers the user's own text with the whole-turn line and records the link and the running turn", () => {
+  const turn = "turn-7" as TurnId;
+  let session = appendUser(newSession("codex", "/repo"), "Fix the parser", [], {
+    turnId: turn,
+  });
+  const sent = planUserSend({
+    origin: {},
+    item: undefined,
+    text: prompt,
+    route: busyRoute(session, runningTurnMap([[session.id, turn]]), "now"),
+  });
+  if (sent.kind !== "join") throw new Error(`planned ${sent.kind}`);
+  const provider: string[] = [];
+  const steered = steerRunningTurn({
+    watchers: createTurnWatchers(),
+    sessionId: session.id,
+    gen: 1,
+    sent,
+    record: (block) => {
+      session = appendSteerUser(session, prompt, [], block);
+    },
+    steer: async (text) => {
+      provider.push(text);
+    },
+    fallbackError: "codex could not steer the active turn",
+    fail: vi.fn(),
+  });
+  expect(steered).toBe(true);
+  expect(session.blocks.at(-1)).toMatchObject({
+    text: prompt,
+    link: WHOLE_TURN,
+    turnId: turn,
+  });
+  expect(provider).toEqual([`[steer → whole turn]\n${prompt}`]);
 });
 
 describe("priorAppSend on a retried request", () => {

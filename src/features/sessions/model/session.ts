@@ -317,10 +317,20 @@ export type QueuedMessage = {
   waitForIdle?: boolean;
   /**
    * The turn that ran when the user typed this message in a busy Mono chat.
-   * The pump steers it into that turn only; once the turn ends, the message
-   * waits and opens its own turn (design 16.12.4).
+   * The pump steers it into that turn only; when the turn ends, `missedTurn`
+   * replaces it with `waitForIdle`, and with `missed` unless it waits by
+   * choice, so the message opens its own turn (design 16.12.4).
    */
   typedInTurn?: TurnId;
+  /**
+   * The user typed it for a turn that ended, or while no turn ran. It waits
+   * for a turn end like `waitForIdle`, and the user's later messages wait
+   * behind it, so they reach the agent in the order typed (design 16.12.4).
+   * A reply, a continue, a cleared steer, plan, orchestrate or an `/operator`
+   * command only waits: the user's next message can still steer the running
+   * turn.
+   */
+  missed?: true;
   /** Stable CLI request that queued this follow-up, for safe retries. */
   appRequestId?: string;
   /** The Mono message this item delivers. The item's id is that message id. */

@@ -198,14 +198,18 @@ describe("optimistic Mono messages", () => {
     });
   });
 
-  it("tells the user a message that waits for the turn end will send after it", () => {
+  it("tells the user a Mono message that waits for the turn end will send after it, and not the user's message behind it", () => {
     const session = {
       ...newSession("codex", "/tmp"),
       busy: true,
       turnReadiness: "ready",
       queueStatus: "active" as const,
       queuedMessages: [
-        { ...message("waiting"), waitForIdle: true },
+        {
+          ...message("waiting"),
+          waitForIdle: true,
+          monoMessageId: "m_waitingwaiti" as MessageId,
+        },
         message("user"),
       ],
     };

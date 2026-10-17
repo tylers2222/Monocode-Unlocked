@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { TurnId } from "./monoMessages";
 import { submitWithSettlement } from "../../../app/model/managedSubmission";
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
 import {
@@ -91,7 +92,7 @@ describe("Mono session completion notifications", () => {
       "mono-completion-app-mono-request",
     ]);
     const next = dequeueQueuedMessage(mono, "chat");
-    expect(steerableQueuedMessage(next, undefined)).toBeUndefined();
+    expect(steerableQueuedMessage(next, "turn-1" as TurnId)).toBeUndefined();
     expect(
       queuedMessageForSubmit(next, "mono-completion-app-mono-request", "steer"),
     ).toBeUndefined();

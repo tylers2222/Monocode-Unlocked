@@ -624,7 +624,9 @@ it("queues a message for a busy Mono behind its running turn", async () => {
     delivery: "queue",
   });
   expect(get("a-chat").queuedMessages?.[0].waitForIdle).toBe(true);
-  expect(steerableQueuedMessage(get("a-chat"), undefined)).toBeUndefined();
+  expect(
+    steerableQueuedMessage(get("a-chat"), "run-a-chat" as TurnId),
+  ).toBeUndefined();
 });
 
 // Defect: a Mono steer waits for the turn end (it never reaches the running
@@ -646,9 +648,9 @@ it("steers a busy, ready Mono chat with the message, past a waiting item", async
   ]);
   expect(await send(ask(false, "steer"))).toMatchObject({ delivery: "steer" });
   expect(ids(get("a-chat"))).toEqual(["later", "m_aaaaaaaaaaaa"]);
-  expect(steerableQueuedMessage(get("a-chat"), undefined)?.id).toBe(
-    "m_aaaaaaaaaaaa",
-  );
+  expect(
+    steerableQueuedMessage(get("a-chat"), "run-a-chat" as TurnId)?.id,
+  ).toBe("m_aaaaaaaaaaaa");
 });
 
 // Defect: the second steer reaches the running turn first (head placement).
@@ -659,14 +661,16 @@ it("steers two messages into a starting turn in the order they came, once it is 
   ]);
   await send({ ...ask(false, "steer"), message: "First" }, "r1");
   await send({ ...ask(false, "steer"), message: "Second" }, "r2");
-  expect(steerableQueuedMessage(get("a-chat"), undefined)).toBeUndefined();
+  expect(
+    steerableQueuedMessage(get("a-chat"), "run-a-chat" as TurnId),
+  ).toBeUndefined();
   host.update("a-chat", (session) => ({ ...session, turnReadiness: "ready" }));
-  const first = steerableQueuedMessage(get("a-chat"), undefined);
+  const first = steerableQueuedMessage(get("a-chat"), "run-a-chat" as TurnId);
   expect(first?.text).toContain("First");
   host.update("a-chat", (session) => dequeueQueuedMessage(session, first!.id));
-  expect(steerableQueuedMessage(get("a-chat"), undefined)?.text).toContain(
-    "Second",
-  );
+  expect(
+    steerableQueuedMessage(get("a-chat"), "run-a-chat" as TurnId)?.text,
+  ).toContain("Second");
 });
 
 // Defect: a retried call routes again, so a message already handed off

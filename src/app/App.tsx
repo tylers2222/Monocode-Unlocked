@@ -533,19 +533,24 @@ import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
   failQueuedMessage,
+  nextQueuedSend,
   pauseQueue,
   queuedHead,
   queuedMessageForSubmit,
+  queuedSteer,
   resumeQueuedMessages,
-  steerableQueuedMessage,
+  runningTurnMap,
   withoutPauseReason,
 } from "../features/sessions/model/messageQueue";
-import { deliverQueuedFollowUp } from "../features/sessions/model/queuedFollowUp";
 import {
+  deliverQueuedFollowUp,
+  planQueuedSteer,
+  typedMonoMessage,
+} from "../features/sessions/model/queuedFollowUp";
+import {
+  busyRoute,
   planUserSend,
-  runningItems,
   STEER_TARGET_GONE,
-  type SendRoute,
 } from "../features/sessions/model/messageIntent";
 import {
   USAGE_LIMIT_RESUME_GRACE_MS,
@@ -1682,7 +1687,7 @@ function Workspace({
   const turnGen = useRef(new Map<string, number>());
   const turnWatchers = useRef(createTurnWatchers());
   /** The turn each session runs in this window now (design 5.2). */
-  const currentTurnIds = useRef(new Map<string, TurnId>());
+  const currentTurnIds = useRef(runningTurnMap());
   /** This window's side of Mono message delivery (design 5.5). */
   const monoQueue = useMemo(
     (): MonoQueueHost => ({
@@ -7167,24 +7172,9 @@ function Workspace({
         options?.ciRepair?.prompt ??
         (rawCommand ? submittedText : composeNoteMessage(noteCard, promptText));
       // Design 16.8, 16.12.4: where the message goes, what its block records
-      // and what the provider reads, decided in one pure plan.
-      const runningTurn = current.busy
-        ? currentTurnIds.current.get(sessionId)
-        : undefined;
-      const sendPlan = (route: SendRoute) =>
-        planUserSend({
-          origin: options,
-          item: queuedItem,
-          text: harnessText,
-          route,
-        });
-      const busy = (steers: "now" | "later" | "no"): SendRoute => ({
-        running: runningTurn,
-        items: runningItems(current, runningTurn),
-        steers,
-      });
-      // A steer whose work ended sends nothing; a queued one keeps its text
-      // with the reason, and the queue holds (decision 85).
+      // and what the provider reads are decided in pure plans. A steer whose
+      // work ended sends nothing; a queued one keeps its text with the reason,
+      // and the queue holds (decision 85).
       const targetGone = () => {
         const queuedId = options?.queuedMessageId;
         if (queuedId)
@@ -7209,8 +7199,20 @@ function Workspace({
       ) {
         // The pump steers the item later, into the turn it was typed in;
         // a reply, a continue or a cleared steer waits for the turn end.
-        const queued = sendPlan(busy("later"));
-        if (queued.kind !== "queue") return false;
+        const item = typedMonoMessage({
+          session: current,
+          turns: currentTurnIds.current,
+          origin: options,
+          message: {
+            id: crypto.randomUUID(),
+            text,
+            attachments,
+            noteCard,
+            handoffCard,
+            intent,
+          },
+        });
+        if (!item) return false;
         const next = sessionsRef.current.map((session) =>
           session.id === sessionId
             ? enqueueMonoMessage(
@@ -7220,15 +7222,7 @@ function Workspace({
                   noteCard: rawCommand ? session.noteCard : undefined,
                   handoffCard: rawCommand ? session.handoffCard : undefined,
                 },
-                {
-                  id: crypto.randomUUID(),
-                  text,
-                  attachments,
-                  noteCard,
-                  handoffCard,
-                  intent,
-                  ...queued.item,
-                },
+                item,
                 rawCommand ? undefined : userTurnCards(noteCard),
               )
             : session,
@@ -7245,14 +7239,19 @@ function Workspace({
         );
         if (
           !message ||
-          steerableQueuedMessage(current, runningTurn) !== message ||
           !canSteerHarness(current.harness) ||
           operatorCommand.matched
         )
           return false;
-        const joined = sendPlan(busy("now"));
-        if (joined.kind === "target_gone") return targetGone();
-        if (joined.kind !== "join") return false;
+        const joined = planQueuedSteer({
+          session: current,
+          turns: currentTurnIds.current,
+          message,
+          origin: options,
+          text: harnessText,
+        });
+        if (joined?.kind === "target_gone") return targetGone();
+        if (joined?.kind !== "join") return false;
         const gen = turnGen.current.get(sessionId);
         const change = (update: (session: Session) => Session) => {
           const next = sessionsRef.current.map((session) =>
@@ -7263,18 +7262,19 @@ function Workspace({
         };
         return deliverQueuedFollowUp({
           message,
-          turnId: runningTurn,
+          joined,
+          turns: currentTurnIds.current,
           current: () =>
             sessionsRef.current.find((session) => session.id === sessionId),
           isCurrentTurn: () => turnGen.current.get(sessionId) === gen,
-          prepare: async () => {
+          prepare: async (joinedText) => {
             const latest = sessionsRef.current.find(
               (session) => session.id === sessionId,
             );
             if (latest) await upsertSession(latest);
             return {
               attachments: await prepareAttachments(attachments),
-              text: await preparePrompt(joined.text, {
+              text: await preparePrompt(joinedText, {
                 harness: current.harness,
                 sessionId,
                 cwd: initialWorkCwd,
@@ -7294,13 +7294,13 @@ function Workspace({
               ),
               attachments: prepared.attachments,
             }),
-          delivered: () => {
+          delivered: (block) => {
             change((session) =>
               acknowledgeMonoMessage(session, message, {
                 mode: "follow-up",
                 text: submittedText,
                 attachments: displayAttachments(attachments),
-                cards: { ...userTurnCards(noteCard), ...joined.block },
+                cards: { ...userTurnCards(noteCard), ...block },
               }),
             );
             flushHarnessEvents();
@@ -7348,9 +7348,16 @@ function Workspace({
                   ? "steer"
                   : "queue"
                 : (options?.followUpBehavior ?? loadFollowUpBehavior());
-        const sent = sendPlan(
-          busy(followUpBehavior === "steer" ? "now" : "no"),
-        );
+        const sent = planUserSend({
+          origin: options,
+          item: queuedItem,
+          text: harnessText,
+          route: busyRoute(
+            current,
+            currentTurnIds.current,
+            followUpBehavior === "steer" ? "now" : "no",
+          ),
+        });
         if (sent.kind === "target_gone") return targetGone();
         if (sent.kind === "queue") {
           setSessions((prev) =>
@@ -7401,7 +7408,8 @@ function Workspace({
           queued: options?.queuedMessageId
             ? { id: options.queuedMessageId, watcher: options.onSettled }
             : undefined,
-          record: () => {
+          sent,
+          record: (block) => {
             dismissNoticesForContinuedSession(sessionId);
             const nextSessions = sessionsRef.current.map((s) => {
               if (s.id !== sessionId) return s;
@@ -7417,15 +7425,15 @@ function Workspace({
               return appendSteerUser(next, submittedText, visible, {
                 ...cards,
                 ...queuedAppDelivery(queuedItem),
-                ...sent.block,
+                ...block,
               });
             });
             sessionsRef.current = nextSessions;
             setSessions(nextSessions);
           },
-          steer: async () => {
+          steer: async (steerText) => {
             const prepared = await prepareAttachments(attachments);
-            const prompt = await preparePrompt(sent.text, {
+            const prompt = await preparePrompt(steerText, {
               harness: current.harness,
               sessionId,
               cwd: initialWorkCwd,
@@ -9158,15 +9166,12 @@ function Workspace({
     const scheduled = new Set<string>();
     // An idle session starts its head as a new turn. A busy Mono steers its
     // first steerable message; messages that wait for the turn end keep their place.
-    const nextQueuedSend = (session: Session) =>
-      canDispatchQueuedHead(session)
-        ? queuedHead(session)
-        : monoForSession(session.id) && canSteerHarness(session.harness)
-          ? steerableQueuedMessage(
-              session,
-              currentTurnIds.current.get(session.id),
-            )
-          : undefined;
+    const nextSend = (session: Session) =>
+      nextQueuedSend(
+        session,
+        currentTurnIds.current,
+        !!monoForSession(session.id) && canSteerHarness(session.harness),
+      );
     for (const session of sessions) {
       const queued = session.queuedMessages ?? [];
       if (queued.length === 0) continue;
@@ -9181,7 +9186,7 @@ function Workspace({
         );
         continue;
       }
-      const next = nextQueuedSend(session);
+      const next = nextSend(session);
       if (!next || queueDispatchingRef.current.has(session.id)) continue;
       queueDispatchingRef.current.add(session.id);
       scheduled.add(session.id);
@@ -9191,7 +9196,7 @@ function Workspace({
           const latest = sessionsRef.current.find(
             (entry) => entry.id === session.id,
           );
-          const head = latest ? nextQueuedSend(latest) : undefined;
+          const head = latest ? nextSend(latest) : undefined;
           if (!latest || !head || head.id !== next.id) {
             queueDispatchingRef.current.delete(session.id);
             return;
@@ -9246,10 +9251,7 @@ function Workspace({
               if (
                 current &&
                 (steering
-                  ? steerableQueuedMessage(
-                      current,
-                      currentTurnIds.current.get(session.id),
-                    )
+                  ? queuedSteer(current, currentTurnIds.current)
                   : canDispatchQueuedHead(current)
                     ? queuedHead(current)
                     : undefined) === head

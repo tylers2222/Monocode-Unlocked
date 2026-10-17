@@ -7,6 +7,7 @@ import {
   persistFingerprint,
 } from "./sessionStore";
 import { newSession, type Session } from "../model/session";
+import type { TurnId } from "../../monos/model/monoMessages";
 import {
   monoSessionCompletionMessage,
   monoSessionCompletionResult,
@@ -175,7 +176,7 @@ describe("Mono database pagination and writes", () => {
           turnReadiness: "ready",
           queueStatus: "active",
         },
-        undefined,
+        "turn-1" as TurnId,
       ),
     ).toBeUndefined();
     restored.blocks = [
@@ -342,6 +343,83 @@ describe("Mono database pagination and writes", () => {
       reason: "Paused when MonoCode quit",
     });
   });
+  // PR I5 review r2 m5. Defect: after a restart, a message the user typed for
+  // a turn of the last run shows no "Sends when this turn ends" while the
+  // next turn runs.
+  it("loads a message typed for a turn of the last run as one that waits for a turn end", async () => {
+    const stored = {
+      ...record(),
+      queuedMessages: [
+        {
+          id: "typed",
+          text: "deploy to staging",
+          attachments: [],
+          typedInTurn: "turn-1",
+        },
+      ],
+      queueStatus: "active",
+    };
+    call.mockResolvedValueOnce(stored);
+    const loaded = (await getSession(stored.id, { restart: true }))!;
+    const running: Session = {
+      ...loaded,
+      busy: true,
+      turnReadiness: "ready",
+      queueStatus: "active",
+      queuedMessages: [
+        ...loaded.queuedMessages!,
+        {
+          id: "later",
+          text: "actually, don't deploy",
+          attachments: [],
+          typedInTurn: "turn-2" as TurnId,
+        },
+      ],
+    };
+    expect(monoMessageDeliveries(running).get("typed")).toEqual({
+      status: "waiting",
+    });
+    expect(steerableQueuedMessage(running, "turn-2" as TurnId)).toBeUndefined();
+  });
+  // PR I5b review r1 M1. Defects: a saved message that missed its turn loses
+  // its marker on load, so the user's newer text overtakes it; or a saved
+  // message that only waits for the turn end (saved before the marker, or a
+  // ✕) holds the user's newer text after a restart.
+  it.each([
+    [{ waitForIdle: true, missed: true }, undefined],
+    [{ waitForIdle: true }, "later"],
+  ])(
+    "loads a waiting message %j so the user's next text steers: %s",
+    async (waits, steers) => {
+      const stored = {
+        ...record(),
+        queuedMessages: [
+          { id: "waits", text: "deploy to staging", attachments: [], ...waits },
+        ],
+        queueStatus: "active",
+      };
+      call.mockResolvedValueOnce(stored);
+      const loaded = (await getSession(stored.id, { restart: true }))!;
+      const running: Session = {
+        ...loaded,
+        busy: true,
+        turnReadiness: "ready",
+        queueStatus: "active",
+        queuedMessages: [
+          ...loaded.queuedMessages!,
+          {
+            id: "later",
+            text: "actually, don't deploy",
+            attachments: [],
+            typedInTurn: "turn-2" as TurnId,
+          },
+        ],
+      };
+      expect(
+        steerableQueuedMessage(running, "turn-2" as TurnId)?.id,
+      ).toBe(steers);
+    },
+  );
   it("keeps habit identity and posting time through saves, reloads and older pages", async () => {
     const monoHabit = { id: "habit", name: "Morning check", at: 1_000 };
     const report = {

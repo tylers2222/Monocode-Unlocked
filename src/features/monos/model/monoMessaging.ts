@@ -7,7 +7,7 @@ import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
   QUIT_PAUSE_NOTICE,
-  waitsForTurnEnd,
+  heldUntilTurnEnd,
 } from "../../sessions/model/messageQueue";
 import { parseMonoNotice } from "./monoMessages";
 import type {
@@ -95,6 +95,7 @@ export function acknowledgeMonoMessage(
 export function monoMessageDeliveries(
   session: Session,
 ): ReadonlyMap<string, MessageDelivery> {
+  const held = heldUntilTurnEnd(session);
   return new Map(
     (session.queuedMessages ?? [])
       .filter((message) => !message.monoSessionCompletion)
@@ -109,7 +110,7 @@ export function monoMessageDeliveries(
                   ? { reason: QUIT_PAUSE_NOTICE }
                   : {}),
               }
-            : session.busy && waitsForTurnEnd(message)
+            : held.has(message)
               ? { status: "waiting" }
               : { status: "pending" },
       ]),
