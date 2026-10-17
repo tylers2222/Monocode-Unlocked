@@ -1,3 +1,4 @@
+import { AppActionError } from "../../features/agent-app/model/appActionError";
 import {
   rememberProject,
   type RecentProject,
@@ -23,13 +24,29 @@ import {
 import type { SubmissionAcceptance } from "./submissionAcceptance";
 
 /**
- * Whether the app call that launches session `id` with `launch` already
- * did. Every app launch stamps `appRequestId` on its first user block, so a
- * repeat compares its text, its draft state and its caller (`startedBy`:
- * two callers' ids can join to one session id). A session with submitted
- * turns and no stamp was not launched by this call: the user sent its draft
- * or wrote it, so a start row would name the user's own turn (PR 7 review
- * r1 m5, n4). Throws on any conflict; false means launch it.
+ * A launch whose request id launched other work. Coded as every other key
+ * reuse is (PR 7 review r2 n4).
+ */
+function launchReused(): AppActionError {
+  return new AppActionError(
+    "request_id_reused",
+    "Request ID was already used for another session launch",
+  );
+}
+
+/**
+ * Whether the launch of session `id` with `launch` already happened. The one
+ * rule for a repeat: App's `host.start` asks it before the launch, and
+ * `acceptQuickLaunch` again where it makes the session (PR 7 review r2 n2).
+ * A block stamped with `appRequestId` is this id's launch: a repeat has its
+ * text, its caller (`startedBy`: two callers' ids can join to one session
+ * id) and, for a submitted launch, no draft. Every app launch stamps its
+ * first user block, so an app launch whose session has a submitted turn, or
+ * was accepted, with no stamp left is no repeat: the user sent, wrote or
+ * removed that turn, and a start row would name the user's own turn or work
+ * that never ran (PR 7 review r1 m5, n4; r2 n3). A floating-composer launch
+ * stamps only a draft, so its accepted session is a repeat. Throws on any
+ * conflict; false means launch it.
  */
 export function appLaunchRepeat(
   existing: Session | null | undefined,
@@ -43,11 +60,14 @@ export function appLaunchRepeat(
       previous.startedBy !== launch.startedBy ||
       (!launch.draft && !!previous.draft)
     )
-      throw new Error("Request ID was already used for another session launch");
+      throw launchReused();
     return true;
   }
-  if (existing?.blocks.some((block) => block.role === "user" && !block.draft))
-    throw new Error("Request ID was already used for another session launch");
+  const launched =
+    !!existing?.quickLaunchAccepted ||
+    !!existing?.blocks.some((block) => block.role === "user" && !block.draft);
+  if (!launch.startedBy) return launched;
+  if (launched) throw launchReused();
   if (existing && sessionDraftBlock(existing))
     throw new Error("Session ID already has a different draft");
   return false;
@@ -98,19 +118,7 @@ export async function acceptQuickLaunch(
   const existing = workspace
     .getSessions()
     .find((session) => session.id === deliveryId);
-  const previous = existing?.blocks.find(
-    (block) => block.appRequestId === deliveryId,
-  );
-  if (previous) {
-    if (previous.text !== launch.prompt || (!launch.draft && !!previous.draft))
-      throw new Error("Request ID was already used for another session launch");
-    return;
-  }
-  if (
-    existing?.quickLaunchAccepted ||
-    existing?.blocks.some((block) => block.role === "user" && !block.draft)
-  )
-    return;
+  if (appLaunchRepeat(existing, launch, deliveryId)) return;
   const session =
     existing ??
     applyQuickWorkspace(

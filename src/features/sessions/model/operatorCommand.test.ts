@@ -102,7 +102,7 @@ describe("Operator composer command", () => {
 // reaches the network in auto-accept-edits and auto with no approval.
 describe("turnAccess", () => {
   it("gives a started session app access and its runtime mode's network", () => {
-    const access = turnAccess("started", false);
+    const access = turnAccess("started", false, false);
     expect(access).toEqual({ appAccess: true, controlsAgents: false });
     for (const mode of ["supervised", "auto-accept-edits", "auto"] as const)
       expect(
@@ -112,17 +112,35 @@ describe("turnAccess", () => {
   });
 
   it("opens the network only for a typed /operator or a Mono's chat", () => {
-    expect(turnAccess("operator", false)).toEqual({
+    expect(turnAccess("operator", false, false)).toEqual({
       appAccess: true,
       controlsAgents: true,
     });
-    expect(turnAccess(null, true)).toEqual({
+    expect(turnAccess(null, true, false)).toEqual({
       appAccess: true,
       controlsAgents: true,
     });
-    expect(turnAccess(null, false)).toEqual({
+    expect(turnAccess(null, false, false)).toEqual({
       appAccess: false,
       controlsAgents: false,
+    });
+  });
+
+  // PR 7 review r2 m9. Defect: a harness call takes a turn's app access as
+  // its controlsAgents, so a started codex session opens its sandbox
+  // network; or an orchestration lead loses the control access of its run.
+  it("gives controlsAgents for an active orchestration run, and never for started access alone", () => {
+    expect(turnAccess("started", false, false)).toEqual({
+      appAccess: true,
+      controlsAgents: false,
+    });
+    expect(turnAccess("started", false, true)).toEqual({
+      appAccess: true,
+      controlsAgents: true,
+    });
+    expect(turnAccess(null, false, true)).toEqual({
+      appAccess: false,
+      controlsAgents: true,
     });
   });
 });

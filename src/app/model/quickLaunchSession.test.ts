@@ -6,6 +6,7 @@ import { launchReceiver } from "../../features/quick-composer/model/launchDelive
 import type { QuickLaunch } from "../../features/quick-composer/model/quickComposer";
 import {
   newSession,
+  removeSessionDraft,
   type Attachment,
   type Session,
 } from "../../features/sessions/model/session";
@@ -589,4 +590,53 @@ it("refuses a launch of a session id that another caller's start made", () => {
   expect(() => appLaunchRepeat(byX, appLaunch("Fix CI", "x-y"), id)).toThrow(
     "Request ID was already used for another session launch",
   );
+});
+
+// PR 7 review r1 m5, r2 n2. Defect: a launch goes ahead in a session id that
+// holds a draft this call did not save; or acceptQuickLaunch keeps an older
+// repeat rule of its own, which submits the launch over that draft.
+it("refuses a launch into a session id that holds another draft, before the launch and where it makes the session", async () => {
+  const { state, workspace } = setup();
+  const id = "app-lead-r1";
+  const drafted = appLaunched(id, [
+    { id: "u1", role: "user", text: "My own draft", draft: true },
+  ]);
+  expect(() => appLaunchRepeat(drafted, appLaunch("Fix CI"), id)).toThrow(
+    "Session ID already has a different draft",
+  );
+  state.sessions = [...state.sessions, drafted];
+  await expect(
+    acceptQuickLaunch(appLaunch("Fix CI"), id, workspace),
+  ).rejects.toThrow("Session ID already has a different draft");
+  expect(workspace.submit).not.toHaveBeenCalled();
+});
+
+// PR 7 review r2 n3. Defect: after the user removed the draft that a Mono's
+// draft start made, a submitted retry under its key passes as new, the
+// accepted session takes nothing, and the start is answered as submitted.
+it("refuses a submitted retry under the key of a draft start whose draft the user removed", async () => {
+  const { state, workspace } = setup();
+  const id = "app-mono-chat-r1";
+  await acceptQuickLaunch(
+    { ...appLaunch("Fix CI", "mono-chat"), draft: true },
+    id,
+    workspace,
+  );
+  state.sessions = state.sessions.map((session) =>
+    session.id === id
+      ? removeSessionDraft(session, session.blocks[0].id)!
+      : session,
+  );
+  const removed = state.sessions.find((session) => session.id === id)!;
+  const submitted = appLaunch("Fix CI", "mono-chat");
+  expect(() => appLaunchRepeat(removed, submitted, id)).toThrow(
+    "Request ID was already used for another session launch",
+  );
+  await expect(
+    acceptQuickLaunch(submitted, id, workspace),
+  ).rejects.toMatchObject({
+    code: "request_id_reused",
+    hint: "Request ID was already used for another session launch",
+  });
+  expect(workspace.submit).not.toHaveBeenCalled();
 });

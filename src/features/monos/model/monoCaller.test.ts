@@ -188,7 +188,12 @@ it("checks a Mono's app action without the roster", async () => {
     id === "worker" ? "lead" : undefined,
   );
   expect(
-    await gate.check("r1", { action: "sessions.send", target: "worker", input }),
+    await gate.check("r1", {
+      action: "sessions.send",
+      target: "worker",
+      startedSessionId: null,
+      input,
+    }),
   ).toEqual({ leadSessionId: null });
   expect(invoke).toHaveBeenCalledWith("mono_app_action_check", {
     caller: {
@@ -200,6 +205,7 @@ it("checks a Mono's app action without the roster", async () => {
     action: "sessions.send",
     target: "worker",
     targetLeadSessionId: "lead",
+    startedSessionId: null,
     requestId: "r1",
     input,
   });
@@ -225,6 +231,7 @@ it("throws the level check's refusal with its code, hint and row id", async () =
     levelGate(worker, turn, () => undefined).check("r1", {
       action: "notes.list",
       target: null,
+      startedSessionId: null,
       input: {},
     }),
   ).rejects.toMatchObject({
@@ -267,10 +274,60 @@ it("throws start_prior's failure with its code and hint", async () => {
     failed: { code: "request_id_reused", hint: "The session ended." },
   };
   const gate = levelGate(session("giga-chat"), turn, () => undefined);
-  await expect(gate.startPrior("r1", { prompt: "Fix CI" })).rejects.toMatchObject({
+  await expect(
+    gate.startPrior("r1", "app-giga-chat-r1", { prompt: "Fix CI" }),
+  ).rejects.toMatchObject({
     code: "request_id_reused",
     hint: "The session ended.",
   });
+});
+
+// PR 7 review r1 m6, r2 m4. Defect: start_prior's `same` answer (the key's
+// row is this start's) reads as a failure, so a Mono's retry of a start that
+// wrote its row fails instead of answering its first outcome.
+it("passes start_prior's same answer", async () => {
+  await loadMonoRoster();
+  db.answers.mono_message_start_prior = { same: "m_bbbbbbbbbbbb" };
+  const gate = levelGate(session("giga-chat"), turn, () => undefined);
+  await expect(
+    gate.startPrior("r1", "app-giga-chat-r1", { prompt: "Fix CI" }),
+  ).resolves.toBeUndefined();
+});
+
+// PR 7 review r2 m2. Defect: Rust never learns the id a start launches, so
+// a start with no row whose session the user deleted launches that id again.
+it("sends the id a start launches to start_prior and to the sessions.start check", async () => {
+  await loadMonoRoster();
+  db.answers.mono_message_start_prior = "none";
+  db.answers.mono_app_action_check = { outcome: "allowed", leadSessionId: "lead" };
+  const input = { prompt: "Fix CI" };
+  await levelGate(session("giga-chat"), turn, () => undefined).startPrior(
+    "r1",
+    "app-giga-chat-r1",
+    input,
+  );
+  expect(invoke).toHaveBeenLastCalledWith(
+    "mono_message_start_prior",
+    expect.objectContaining({ requestId: "r1", sessionId: "app-giga-chat-r1", input }),
+  );
+  await levelGate(
+    session("lead", { blocks: startedBy("giga-chat") }),
+    turn,
+    () => undefined,
+  ).check("r2", {
+    action: "sessions.start",
+    target: null,
+    startedSessionId: "app-lead-r2",
+    input,
+  });
+  expect(invoke).toHaveBeenLastCalledWith(
+    "mono_app_action_check",
+    expect.objectContaining({
+      action: "sessions.start",
+      startedSessionId: "app-lead-r2",
+      requestId: "r2",
+    }),
+  );
 });
 
 // PR 7 review r1 m4. Defect: the gate resolves the caller again after the
@@ -292,7 +349,7 @@ it("records a start as the caller its prior read named", async () => {
     turn,
     () => undefined,
   );
-  await gate.startPrior("r1", { prompt: "Fix CI" });
+  await gate.startPrior("r1", "app-giga-run-r1", { prompt: "Fix CI" });
   clearHabitRun("giga-run");
   await gate.recordStart("r1", "app-giga-run-r1", { prompt: "Fix CI" });
   const callers = vi
@@ -319,7 +376,7 @@ it("records a Mono chat's start after the Mono moved to a new chat", async () =>
     monos: [{ ...giga, data: { ...giga.data, sessionId: "giga-chat-2" } }],
   });
   const gate = levelGate(session("giga-chat"), turn, () => undefined);
-  await gate.startPrior("r2", { prompt: "Fix CI" });
+  await gate.startPrior("r2", "app-giga-chat-r2", { prompt: "Fix CI" });
   saveMonoSessionId("giga-1", "giga-chat-2");
   await expect(
     gate.recordStart("r2", "app-giga-chat-r2", { prompt: "Fix CI" }),

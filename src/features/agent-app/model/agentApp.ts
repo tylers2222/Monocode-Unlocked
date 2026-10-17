@@ -275,15 +275,23 @@ export type AgentAppHost = {
         action: string;
         /** The session the action acts on, as the call names it. */
         target: string | null;
+        /** The id a `sessions.start` launches; null for any other action. */
+        startedSessionId: string | null;
         input: Record<string, unknown>;
       },
     ): Promise<{ leadSessionId: string | null }>;
     /**
      * `mono_message_start_prior`: reads, and never writes, the row a Mono's
-     * request id already has. Throws when the start must not launch: the key
-     * names another call or a session that ended, or the caller ended.
+     * request id already has. `sessionId` is the id the start launches.
+     * Throws when the start must not launch: the key names another call or a
+     * session that ended (with no row: session `sessionId`), or the caller
+     * ended.
      */
-    startPrior(requestId: string, input: Record<string, unknown>): Promise<void>;
+    startPrior(
+      requestId: string,
+      sessionId: string,
+      input: Record<string, unknown>,
+    ): Promise<void>;
     /** `mono_message_record_start`: the start row of session `sessionId`, as its message id. Throws request_id_reused. */
     recordStart(
       requestId: string,
@@ -443,6 +451,8 @@ function boundaryInput(
       "prompt must not contain the character U+0000",
     );
   if (!FIELDS.get(action)?.includes("sessionId")) return input;
+  // Only a session card names a session (PR 7 review r2 m10).
+  if (action === "chat.card" && input.sessionId === undefined) return input;
   const sessionId =
     typeof input.sessionId === "string" ? input.sessionId.trim() : "";
   if (sessionId.length > 256 || !isPersistableId(sessionId))
@@ -629,6 +639,26 @@ function fileInMonoFolder(
     cwd,
     setFolderCustomColor(created.folders, created.id, folder.color),
   );
+}
+
+/**
+ * The id of the session a `sessions.start` launches. The level check and the
+ * start prior read it before any launch (PR 7 review r2 m2). Later calls
+ * name a session by an id of at most 256 characters, so a longer id is
+ * refused before the check (review r2 n8).
+ */
+function appLaunchId(source: Session, requestId: string): string {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId))
+    throw new Error(
+      "request ID must use letters, digits, underscores or hyphens",
+    );
+  const prefix = `app-${source.id}-`;
+  if (prefix.length + requestId.length > 256)
+    throw new AppActionError(
+      "invalid_input",
+      `The new session's id, app-<this session's id>-<request id>, would be over 256 characters. Use a shorter request id, of at most ${Math.max(256 - prefix.length, 0)} characters.`,
+    );
+  return prefix + requestId;
 }
 
 function startLaunch(
@@ -1413,6 +1443,8 @@ export async function handleAgentApp(
 ): Promise<unknown> {
   fields(action, rawInput);
   const input = boundaryInput(action, rawInput);
+  const launchId =
+    action === "sessions.start" ? appLaunchId(source, requestId) : null;
   // Design 6.6: one level check, before the action runs. messages.* get
   // theirs in mono_message_submit. A Mono's chat or habit run has only A5 to
   // meet; anything else gets A7's answer, no lead, without a write
@@ -1427,6 +1459,7 @@ export async function handleAgentApp(
           await levels.check(requestId, {
             action,
             target: typeof input.sessionId === "string" ? input.sessionId : null,
+            startedSessionId: launchId,
             input,
           })
         ).leadSessionId
@@ -1586,14 +1619,11 @@ export async function handleAgentApp(
       };
     }
     case "sessions.start": {
-      if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId))
-        throw new Error(
-          "request ID must use letters, digits, underscores or hyphens",
-        );
+      const id = launchId!;
       // Design 6.6 (intents review r3): the level check skips a Mono, so it
       // learns here, before any launch, whether its request id already names
       // another call. A draft too: a draft retry of a submitted start differs.
-      if (monoCaller) await host.levels.startPrior(requestId, input);
+      if (monoCaller) await host.levels.startPrior(requestId, id, input);
       const launch = startLaunch(source, input, host, leadSessionId);
       const notifyMonoId = completionRecipient(source, input, host, true);
       if (input.worktreeCwd !== undefined) {
@@ -1621,7 +1651,6 @@ export async function handleAgentApp(
           ? undefined
           : (optionalString(input.besideSessionId, "besideSessionId", 256) ??
             source.id);
-      const id = `app-${source.id}-${requestId}`;
       if (besideSessionId)
         await host.start(
           launch,

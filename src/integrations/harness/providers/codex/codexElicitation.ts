@@ -1,3 +1,4 @@
+import { MONO_MCP_SERVER } from "../../core/monoTools";
 import { asRecord, stringField } from "./codexProtocol";
 
 /** Only confirmations can be represented faithfully by the Allow/Deny UI. */
@@ -66,4 +67,22 @@ export function codexMcpConfirmation(params: unknown): {
     title: `${stringField(rec, "serverName") ?? "MCP"}: ${message}${detail ? ` — ${detail}` : ""}`,
     content,
   };
+}
+
+/**
+ * The `_meta` of an accepted MCP consent. Outside full-access, codex asks
+ * before each tool call of an MCP server. A consent to MonoCode's own
+ * `monocode` server holds for the session, so the reports of a lead or a
+ * worker ask once, not once per message; the app's level gate still decides
+ * each call (PR 7 review r2 m1). A consent to any other server holds for one
+ * call.
+ */
+export function codexMcpAcceptMeta(
+  params: unknown,
+): { persist: "session" } | null {
+  const rec = asRecord(params);
+  return rec?.serverName === MONO_MCP_SERVER &&
+    asRecord(rec._meta)?.codex_approval_kind === "mcp_tool_call"
+    ? { persist: "session" }
+    : null;
 }

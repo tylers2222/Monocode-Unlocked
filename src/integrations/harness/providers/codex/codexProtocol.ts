@@ -99,22 +99,22 @@ function baseCodexConfig(mode: RuntimeMode): CodexThreadConfig {
   }
 }
 
+/**
+ * `thread/start` and `thread/resume` take only the sandbox mode: codex has
+ * no thread-level `sandboxPolicy`, so each `turn/start` carries the policy
+ * and its network (PR 7 review r2 n9).
+ */
 export function buildThreadStartParams(input: {
   cwd: string;
   runtimeMode: RuntimeMode;
-  controlsAgents?: boolean;
   model?: string;
   serviceTier?: string;
 }): Record<string, unknown> {
-  const config = runtimeModeToCodexConfig(
-    input.runtimeMode,
-    input.controlsAgents,
-  );
+  const config = runtimeModeToCodexConfig(input.runtimeMode);
   return {
     cwd: input.cwd,
     approvalPolicy: config.approvalPolicy,
     sandbox: config.sandbox,
-    sandboxPolicy: config.sandboxPolicy,
     approvalsReviewer: config.approvalsReviewer,
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier && input.serviceTier !== "default"

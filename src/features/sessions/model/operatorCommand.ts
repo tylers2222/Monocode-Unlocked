@@ -64,18 +64,21 @@ export function appAccess(blocks: Block[]): AppAccess | null {
 }
 
 /**
- * What a turn gets from its thread's access (PR 7 review r1 M1): app access
- * for any access, and `controlsAgents` (codex opens its sandbox network so
- * the CLI reaches the app's loopback) only for access the user granted, a
- * Mono's chat or a typed /operator. A session that `sessions.start` made
- * keeps its runtime mode's network, as before PR 7.
+ * What a turn gets (PR 7 review r1 M1, r2 m9): app access for any access,
+ * and `controlsAgents` (codex opens its sandbox network so the CLI reaches
+ * the app's loopback) only for access the user granted, a Mono's chat or a
+ * typed /operator, or for an active orchestration run, whose lead keeps its
+ * own control access. A session that `sessions.start` made keeps its
+ * runtime mode's network, as before PR 7. Each harness call of a turn
+ * spreads this, so no call site picks either field itself.
  */
 export function turnAccess(
   access: AppAccess | null,
   mono: boolean,
+  orchestrating: boolean,
 ): { appAccess: boolean; controlsAgents: boolean } {
   return {
     appAccess: mono || access !== null,
-    controlsAgents: mono || access === "operator",
+    controlsAgents: mono || access === "operator" || orchestrating,
   };
 }
