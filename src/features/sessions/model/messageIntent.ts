@@ -333,5 +333,8 @@ export function planUserSend(input: PlanInput<SendRoute>): UserSend {
     };
   if (route.steers === "no") return { kind: "queue", item: {} };
   if (route.steers === "later") return { kind: "queue", item: later };
+  // Busy with no turn to join, as during a manual compaction: a steer would
+  // reach no turn, so the text waits for the session to go idle.
+  if (!route.running) return { kind: "queue", item: { waitForIdle: true } };
   return sent("join", route.running, own ? WHOLE_TURN : undefined);
 }

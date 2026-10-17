@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   appendSteerUser,
   appendUser,
+  applyHarnessEvent,
   stopStreaming,
 } from "../../../integrations/harness/core/apply";
 import {
@@ -18,7 +19,12 @@ import {
   enqueueMonoMessage,
   monoMessageDeliveries,
 } from "../../monos/model/monoMessaging";
-import { runningItems, type RunningItem } from "../model/messageIntent";
+import {
+  busyRoute,
+  planUserSend,
+  runningItems,
+  type RunningItem,
+} from "../model/messageIntent";
 import { nextQueuedSend, runningTurnMap } from "../model/messageQueue";
 import { typedMonoMessage } from "../model/queuedFollowUp";
 import {
@@ -388,4 +394,26 @@ it("shows no Steering bar and no hover Steer while a Mono chat compacts", () => 
   expect(runningItems(mono.chat, runningTurnOf(mono.chat))).not.toEqual([]);
   expect(mono.barText()).not.toContain("Steering");
   expect(mono.steerTargets()).toEqual(new Set());
+});
+
+// PR I5b review r3 m1. Defect: in a chat that is not a Mono's, compacting
+// by hand (busy, no turn) with the follow-up setting `steer`, the bar says
+// no Steering while the send steers the text into no turn.
+it("agrees with the send while a chat compacts: no Steering, and the text waits", () => {
+  const ran = appendUser(newSession("codex", "/tmp"), "Build it", [], {
+    turnId: "turn-1" as TurnId,
+  });
+  // As App.tsx builds a manual compaction.
+  const compacting = applyHarnessEvent(
+    { ...stopStreaming(ran), busy: true },
+    { type: "status", text: "Compacting context…" },
+  );
+  expect(steersTyped(compacting, false, "steer")).toBe(false);
+  const plan = planUserSend({
+    origin: {},
+    item: undefined,
+    text: "also fix the tests",
+    route: busyRoute(compacting, runningTurnMap(), "now"),
+  });
+  expect(plan).toEqual({ kind: "queue", item: { waitForIdle: true } });
 });

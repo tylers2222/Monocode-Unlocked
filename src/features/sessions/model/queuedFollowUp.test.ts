@@ -616,25 +616,30 @@ describe("the user's message after one that waits for the turn end", () => {
 
   // PR I5b review r2 m2. Defect: while a Mono chat compacts (busy, no turn
   // in this window) userTextHeld says false, so the composer says
-  // "Steering" for text that waits for the compaction to end.
-  it("userTextHeld says the user's next message waits while the chat compacts, and not while a turn starts", () => {
-    const turns = runningTurnMap();
-    const compacting = applyHarnessEvent(
-      { ...stopStreaming(t1Running()), busy: true },
-      { type: "status", text: "Compacting context…" },
-    );
-    expect(typed(compacting, turns, "b", "what changed?")).toMatchObject({
-      missed: true,
-    });
-    expect(userTextHeld(compacting)).toBe(true);
+  // "Steering" for text that waits for the compaction to end. PR I5b review
+  // r3 n3: or it says held while a turn starts or is deferred, though the
+  // text typed then is steered into that turn.
+  it.each(["starting", "deferred"] as const)(
+    "userTextHeld says the user's next message waits while the chat compacts, and not while a turn is %s",
+    (turnReadiness) => {
+      const turns = runningTurnMap();
+      const compacting = applyHarnessEvent(
+        { ...stopStreaming(t1Running()), busy: true },
+        { type: "status", text: "Compacting context…" },
+      );
+      expect(typed(compacting, turns, "b", "what changed?")).toMatchObject({
+        missed: true,
+      });
+      expect(userTextHeld(compacting)).toBe(true);
 
-    const starting = t1Running("starting");
-    const t1 = runningTurnMap([[starting.id, T1]]);
-    expect(typed(starting, t1, "b", "what changed?")).toMatchObject({
-      typedInTurn: T1,
-    });
-    expect(userTextHeld(starting)).toBe(false);
-  });
+      const opening = t1Running(turnReadiness);
+      const t1 = runningTurnMap([[opening.id, T1]]);
+      expect(typed(opening, t1, "b", "what changed?")).toMatchObject({
+        typedInTurn: T1,
+      });
+      expect(userTextHeld(opening)).toBe(false);
+    },
+  );
 
   // PR I5b review r1 n2. Defect: the steer plan joins a message the pump
   // would not steer now into the running turn: a message that missed its

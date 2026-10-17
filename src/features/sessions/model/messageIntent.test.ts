@@ -8,6 +8,7 @@ import type {
 import {
   appendSteerUser,
   appendUser,
+  applyHarnessEvent,
   stopStreaming,
 } from "../../../integrations/harness/core/apply";
 import {
@@ -19,6 +20,7 @@ import {
   enqueueMonoMessage,
 } from "../../monos/model/monoMessaging";
 import {
+  busyRoute,
   composerTarget,
   excerpt,
   intentLine,
@@ -36,6 +38,7 @@ import {
 import {
   canDispatchQueuedHead,
   queuedHead,
+  runningTurnMap,
   steerableQueuedMessage,
 } from "./messageQueue";
 import {
@@ -525,6 +528,37 @@ it("lets a message typed while no turn runs wait for the turn end", () => {
     kind: "queue",
     item: { waitForIdle: true },
   });
+});
+
+// PR I5b review r3 m1. Defect: in a chat compacting by hand (busy, no turn),
+// the user's text, or any sender's, is planned as a steer joined into no
+// turn, though nothing can take it until the compaction ends.
+it("lets text sent while a chat compacts wait for the compaction to end", () => {
+  const ran = appendUser(newSession("codex", "/tmp"), "Build it", [], {
+    turnId: turn1,
+  });
+  // As App.tsx builds a manual compaction.
+  const compacting = applyHarnessEvent(
+    { ...stopStreaming(ran), busy: true },
+    { type: "status", text: "Compacting context…" },
+  );
+  const route = busyRoute(compacting, runningTurnMap(), "now");
+  for (const origin of [{}, { managed: true }] satisfies SendOrigin[])
+    expect(plan(route, origin)).toEqual({
+      kind: "queue",
+      item: { waitForIdle: true },
+    });
+  expect(plan(route, { link: steerLink })).toEqual({ kind: "target_gone" });
+
+  const queued: Session = {
+    ...compacting,
+    queuedMessages: [
+      { id: "a", text: "Keep the API", attachments: [], waitForIdle: true },
+    ],
+  };
+  expect(canDispatchQueuedHead(queued)).toBe(false);
+  const done = { ...queued, busy: false };
+  expect(canDispatchQueuedHead(done) && queuedHead(done)?.id).toBe("a");
 });
 
 // Design 16.12.6. Defects: a guessed target, a blocked send, or a picked
