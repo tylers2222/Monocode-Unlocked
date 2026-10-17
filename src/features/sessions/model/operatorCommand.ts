@@ -64,6 +64,21 @@ export function appAccess(blocks: Block[]): AppAccess | null {
 }
 
 /**
+ * The access of the turn a submit starts: `operator` for a typed /operator,
+ * else the thread's, else `started` when this submit is the first turn of a
+ * session that `sessions.start` (`startedBy`) made, whose block it stamps
+ * (PR 7 review r2 m9).
+ */
+export function submitAccess(
+  blocks: Block[],
+  typedOperator: boolean,
+  startedBy: string | undefined,
+): AppAccess | null {
+  if (typedOperator) return "operator";
+  return appAccess(blocks) ?? (startedBy ? "started" : null);
+}
+
+/**
  * What a turn gets (PR 7 review r1 M1, r2 m9): app access for any access,
  * and `controlsAgents` (codex opens its sandbox network so the CLI reaches
  * the app's loopback) only for access the user granted, a Mono's chat or a

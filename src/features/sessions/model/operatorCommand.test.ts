@@ -6,6 +6,7 @@ import {
   operatorEnabledInThread,
   operatorUserPrompt,
   OPERATOR_COMMAND,
+  submitAccess,
   turnAccess,
 } from "./operatorCommand";
 import { runtimeModeToCodexConfig } from "../../../integrations/harness/providers/codex/codexProtocol";
@@ -142,5 +143,18 @@ describe("turnAccess", () => {
       appAccess: false,
       controlsAgents: true,
     });
+  });
+
+  // PR 7 review r2 m9 (reviewer row own2 32). Defect: the first turn of a
+  // session that sessions.start made gets /operator access, so its codex
+  // sandbox opens the network.
+  it("gives a started session's first submit started access, and a typed /operator operator", () => {
+    expect(submitAccess([], false, "lead")).toBe("started");
+    expect(turnAccess(submitAccess([], false, "lead"), false, false)).toEqual({
+      appAccess: true,
+      controlsAgents: false,
+    });
+    expect(submitAccess([], true, "lead")).toBe("operator");
+    expect(submitAccess([], false, undefined)).toBeNull();
   });
 });
