@@ -80,9 +80,10 @@ export function isOwnQueuedMessage(message: QueuedMessage): boolean {
  * that missed its turn, so the user's messages reach the agent in the order
  * typed (design 16.12.4). `missed` says whether a message missed the running
  * turn; `QueuedMessage.missed` marks one that missed an ended turn or none.
- * Only the user's own messages carry either. A reply, a continue or a cleared
- * steer waits but holds nothing behind it. A Mono row or a CLI follow-up
- * keeps its place but is never held behind the user's message.
+ * Only the user's own messages carry either. A message that waits by choice
+ * (a reply, a continue, a cleared steer (✕), an `/operator` command, a plan
+ * or an orchestrate item) waits but holds nothing behind it. A Mono row or a
+ * CLI follow-up keeps its place but is never held behind the user's message.
  */
 function heldMessages(
   messages: readonly QueuedMessage[],

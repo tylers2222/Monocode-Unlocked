@@ -7197,8 +7197,9 @@ function Workspace({
         !options?.queuedMessageId &&
         (current.busy || current.queuedMessages?.length)
       ) {
-        // The pump steers the item later, into the turn it was typed in;
-        // a reply, a continue or a cleared steer waits for the turn end.
+        // The pump steers the item later, into the turn it was typed in; a
+        // reply, a continue, a cleared steer (✕), an `/operator` command, a
+        // plan or an orchestrate item waits for the turn end.
         const item = typedMonoMessage({
           session: current,
           turns: currentTurnIds.current,
