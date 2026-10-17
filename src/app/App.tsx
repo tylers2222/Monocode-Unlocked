@@ -7176,13 +7176,10 @@ function Workspace({
           : undefined;
       // A session that sessions.start made has app access from its first
       // turn, whose user block this submit stamps.
-      const access = turnAccess(
-        operatorCommand.matched
-          ? "operator"
-          : (appAccess(current.blocks) ??
-              (options?.startedBy ? "started" : null)),
-        mono,
-      );
+      const access = operatorCommand.matched
+        ? "operator"
+        : (appAccess(current.blocks) ??
+          (options?.startedBy ? "started" : null));
       const monoFirstTurn =
         mono &&
         !current.blocks.some((block) => block.role === "user" && !block.draft);
@@ -8161,10 +8158,11 @@ function Workspace({
                 runtimeMode: current.runtimeMode,
                 ephemeral: current.ephemeral === true,
                 codexStore: mono ? "mono" : undefined,
-                controlsAgents:
-                  access.controlsAgents ||
+                ...turnAccess(
+                  access,
+                  mono,
                   orchestrator.run(sessionId)?.status === "active",
-                appAccess: access.appAccess,
+                ),
                 ...(editedProviderTurnId
                   ? { providerTurnId: editedProviderTurnId }
                   : {}),
@@ -8217,12 +8215,11 @@ function Workspace({
               ephemeral: current.ephemeral === true,
               codexStore: mono ? "mono" : undefined,
               intent: intent === "orchestrate" ? "plan" : intent,
-              // A /operator user turn enables app access for this thread;
-              // orchestration leads retain their separate control access.
-              controlsAgents:
-                access.controlsAgents ||
+              ...turnAccess(
+                access,
+                mono,
                 orchestrator.run(sessionId)?.status === "active",
-              appAccess: access.appAccess,
+              ),
               text,
               turnId,
               attachments: turnAttachments,
@@ -10407,10 +10404,8 @@ function Workspace({
       const gen = (turnGen.current.get(sessionId) ?? 0) + 1;
       turnGen.current.set(sessionId, gen);
       const workCwd = sessionWorkCwd(current);
-      const access = turnAccess(
-        appAccess(current.blocks),
-        isMonoSession(sessionId),
-      );
+      const access = appAccess(current.blocks);
+      const mono = isMonoSession(sessionId);
       const started = sessionsRef.current.map((session) =>
         session.id === sessionId
           ? applyHarnessEvent(
@@ -10439,10 +10434,11 @@ function Workspace({
             runtimeMode: current.runtimeMode,
             ephemeral: current.ephemeral === true,
             codexStore: isMonoSession(sessionId) ? "mono" : undefined,
-            controlsAgents:
-              access.controlsAgents ||
+            ...turnAccess(
+              access,
+              mono,
               orchestrator.run(sessionId)?.status === "active",
-            appAccess: access.appAccess,
+            ),
             onEvent: (event) => {
               if (turnGen.current.get(sessionId) !== gen) return;
               enqueueHarnessEvent(sessionId, event);
@@ -11290,6 +11286,12 @@ function Workspace({
                 });
               }
               for (const session of sessionsRef.current) {
+                // An Inbox Ask is no project session, as in `ownProject`; its
+                // saved record lists as a hidden session (PR 7 review r2 n5).
+                if (session.inboxAsk) {
+                  byId.delete(session.id);
+                  continue;
+                }
                 if (
                   session.orchestrationLeadId ||
                   isHabitRun(session.id) ||

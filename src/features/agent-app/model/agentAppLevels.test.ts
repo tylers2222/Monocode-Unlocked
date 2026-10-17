@@ -47,6 +47,9 @@ const PROJECT = "/code/app";
 const CHOICE = { harness: "codex", model: "codex:test" } as const;
 const REUSED =
   "This request id was already used with different input. Use a new request id.";
+const START_ENDED =
+  "The session this request id started was archived or deleted. Use a new request id.";
+const LAUNCH_REUSED = "Request ID was already used for another session launch";
 
 const note: Note = {
   id: "note-1",
@@ -76,7 +79,8 @@ type Row = {
  * A Mono's chat, the lead it started in its project, and that lead's
  * worker. The caller is one of them. The host keeps the rows that Rust
  * keeps: the level check (design 6.6 A1-A7, without A8), the start prior
- * and the start row, and the sends of messages.send.
+ * and the start row, the sends of messages.send, and the sessions that
+ * ended (`mono_session_ends`).
  */
 function world(
   caller: "mono" | "lead" | "worker",
@@ -102,6 +106,7 @@ function world(
   const mono = caller === "mono";
   const rows: Row[] = [];
   const inbox = new Map<string, string[]>();
+  const ended = new Set<string>();
   const hash = (action: string, input: unknown) =>
     JSON.stringify([action, input]);
   const keyed = (requestId: string) =>
@@ -118,7 +123,7 @@ function world(
     return written;
   };
   const levels: AgentAppHost["levels"] = {
-    check: vi.fn(async (requestId, { action, target, input }) => {
+    check: vi.fn(async (requestId, { action, target, startedSessionId, input }) => {
       const asked = hash(action, input);
       const prior = keyed(requestId);
       if (prior) {
@@ -131,6 +136,8 @@ function world(
           });
         return { leadSessionId: mono ? null : prior.fromSessionId };
       }
+      if (startedSessionId && ended.has(startedSessionId))
+        throw new AppActionError("request_id_reused", START_ENDED);
       const reject = (code: RejectCode, tool: Row["tool"]): never => {
         const row = write({
           tool,
@@ -162,10 +169,12 @@ function world(
           action === "sessions.start" && level === null ? source.id : null,
       };
     }),
-    startPrior: vi.fn(async (requestId, input) => {
+    startPrior: vi.fn(async (requestId, sessionId, input) => {
       const prior = keyed(requestId);
       if (prior && prior.hash !== hash("sessions.start", input))
         throw new AppActionError("request_id_reused", REUSED);
+      if (!prior && ended.has(sessionId))
+        throw new AppActionError("request_id_reused", START_ENDED);
     }),
     recordStart: vi.fn(async (requestId, sessionId, input) => {
       const asked = hash("sessions.start", input);
@@ -228,6 +237,7 @@ function world(
     }),
     notes: vi.fn(async () => [note]),
     isMono: (id: string) => id === "mono-chat",
+    postCard: vi.fn(),
     isHabitRun: () => false,
     monoOf: (id: string) =>
       id === "mono-chat" ? { id: "mono-1", projects: [PROJECT] } : undefined,
@@ -259,7 +269,7 @@ function world(
     input: Record<string, unknown>,
     requestId = "r1",
   ) => handleAgentApp(source, requestId, action, input, host);
-  return { run, host, levels, rows, sessions, inbox };
+  return { run, host, levels, rows, sessions, inbox, ended };
 }
 
 /** What the CLI prints for a call that fails. */
@@ -574,6 +584,41 @@ it("refuses a blank sessionId as invalid_input before the level check", async ()
   expect(rows).toEqual([]);
 });
 
+// PR 7 review r1 B1, r2 n1. Defect: the boundary refuses only a blank id,
+// so "work er" reaches the level check and the action.
+it("refuses a sessionId that is no session id as invalid_input before the level check", async () => {
+  const { run, host, levels, rows } = world("mono");
+  expect(
+    await failure(run("sessions.send", { sessionId: "work er", prompt: "Hi" })),
+  ).toMatchObject({ ok: false, code: "invalid_input" });
+  expect(levels.check).not.toHaveBeenCalled();
+  expect(host.send).not.toHaveBeenCalled();
+  expect(rows).toEqual([]);
+});
+
+// PR 7 review r2 m10. Defect: the B1 parse of sessionId runs for every
+// chat.card, so a pr, choices or habit card, which names no session, is
+// refused as invalid_input and never posted.
+it("posts a Mono's cards with and without a sessionId", async () => {
+  const { run, host } = world("mono");
+  const cards = [
+    { type: "pr", repo: "owner/repo", number: 123 },
+    { type: "choices", options: ["Review", "Ship"] },
+    {
+      type: "habit",
+      name: "Check CI",
+      instructions: "Check CI",
+      schedule: { kind: "daily", time: "09:00" },
+    },
+    { type: "session", sessionId: "worker", note: "See this" },
+  ];
+  for (const card of cards)
+    expect(await run("chat.card", card), card.type).toMatchObject({
+      posted: card.type,
+    });
+  expect(host.postCard).toHaveBeenCalledTimes(cards.length);
+});
+
 // Design 6.6 A5, PR 7 review r1 m13. Defect: a Mono's sessions.draft into
 // a worker skips the level check that its sessions.send gets.
 it("refuses a Mono's sessions.draft into a worker with steer_via_lead", async () => {
@@ -646,6 +691,33 @@ it.each(["mono", "lead"] as const)(
   },
 );
 
+// PR 7 review r2 n8. Defect: a start whose new id, app-<caller>-<request>,
+// is over 256 characters launches a session that no later call can name, so
+// its lead can never send to it, read it or stop it.
+it("refuses a start whose new session id would be over 256 characters, before any check or launch", async () => {
+  const { run, host, levels, rows, sessions } = world("lead");
+  // A lead that a Mono chat started under a 128-character request id: 169
+  // characters, so a request id of at most 82 characters fits.
+  const lead = sessions.get("lead")!;
+  lead.id = `app-${"c".repeat(36)}-${"r".repeat(128)}`;
+  const start = (requestId: string) =>
+    run("sessions.start", { ...CHOICE, prompt: "Fix CI" }, requestId);
+  expect(await failure(start("q".repeat(83)))).toMatchObject({
+    ok: false,
+    code: "invalid_input",
+    hint: expect.stringContaining(
+      "Use a shorter request id, of at most 82 characters.",
+    ),
+  });
+  expect(levels.check).not.toHaveBeenCalled();
+  expect(host.start).not.toHaveBeenCalled();
+  expect(rows).toEqual([]);
+  expect(await start("q".repeat(82))).toMatchObject({
+    id: `app-${lead.id}-${"q".repeat(82)}`,
+    submitted: true,
+  });
+});
+
 // PR 7 review r1 m5 and n6. Defect: after a failed record, a retry under
 // the key with other input meets the launched session, launches nothing
 // and is answered as a start with a row for work that never ran; the first
@@ -668,10 +740,29 @@ it("answers a changed retry after a failed record with an error, not a row", asy
     ),
   ).toEqual({
     ok: false,
-    error: "Request ID was already used for another session launch",
+    code: "request_id_reused",
+    hint: LAUNCH_REUSED,
+    error: LAUNCH_REUSED,
   });
   expect(rows).toEqual([]);
   expect(sessions.get("app-lead-r1")?.blocks[0].text).toBe("Fix the flaky test");
+});
+
+// PR 7 review r1 n6, r2 m5. Defect: a coded record failure after the launch
+// (unknown_token from a caller that ended, or request_id_reused from a
+// race) answers its bare hint, so the caller starts the work again.
+it("answers a coded record failure after the launch with its code and the started line", async () => {
+  const { run, levels } = world("lead");
+  vi.mocked(levels.recordStart).mockRejectedValueOnce(
+    new AppActionError("unknown_token", "The app token is unknown."),
+  );
+  expect(
+    await failure(run("sessions.start", { ...CHOICE, prompt: "Fix CI" })),
+  ).toMatchObject({
+    ok: false,
+    code: "unknown_token",
+    hint: "The app token is unknown. Session app-lead-r1 was started anyway, so do not start it again; read or steer it by its id.",
+  });
 });
 
 // PR 7 review r1 m5. Defect: a draft start that the user edited and sent
@@ -689,7 +780,69 @@ it("refuses a submitted retry of a draft start that the user sent", async () => 
   });
   expect(await failure(run("sessions.start", input))).toEqual({
     ok: false,
-    error: "Request ID was already used for another session launch",
+    code: "request_id_reused",
+    hint: LAUNCH_REUSED,
+    error: LAUNCH_REUSED,
   });
+  expect(rows).toEqual([]);
+});
+
+// PR 7 review r1 m5, r2 m5. Defect: a submitted retry of a draft start whose
+// draft is still in place passes as a repeat, launches nothing, and gets a
+// start row and a message_id for work that never ran.
+it("refuses a submitted retry of a draft start that is still a draft", async () => {
+  const { run, rows, host, sessions } = world("mono");
+  const input = { ...CHOICE, prompt: "Fix CI", notifyOnComplete: false };
+  await run("sessions.start", { ...input, draft: true });
+  expect(await failure(run("sessions.start", input))).toEqual({
+    ok: false,
+    code: "request_id_reused",
+    hint: LAUNCH_REUSED,
+    error: LAUNCH_REUSED,
+  });
+  expect(rows).toEqual([]);
+  expect(host.start).toHaveBeenCalledTimes(2);
+  expect(sessions.get("app-mono-chat-r1")?.blocks[0].draft).toBe(true);
+});
+
+// PR 7 review r2 m2. Defect: the start prior never learns the id a Mono's
+// start launches, so once the user deleted the session of its draft start,
+// which has no row, a retry under the key launches that id again.
+it("refuses a Mono's retry of a draft start whose session the user deleted, before any launch", async () => {
+  const { run, host, rows, sessions, ended } = world("mono");
+  const input = { ...CHOICE, prompt: "Fix CI", notifyOnComplete: false, draft: true };
+  await run("sessions.start", input);
+  sessions.delete("app-mono-chat-r1");
+  ended.add("app-mono-chat-r1");
+  expect(await failure(run("sessions.start", input))).toEqual({
+    ok: false,
+    code: "request_id_reused",
+    hint: START_ENDED,
+    error: START_ENDED,
+  });
+  expect(host.start).toHaveBeenCalledOnce();
+  expect(rows).toEqual([]);
+});
+
+// PR 7 review r2 m2. Defect: the level check never learns the id a lead's
+// start launches, so once the user deleted the session of a start whose
+// record failed, which has no row, a retry under the key launches that id
+// again and is answered as a start.
+it("refuses a lead's retry of a start whose record failed and whose session the user deleted, before any launch", async () => {
+  const { run, host, levels, rows, sessions, ended } = world("lead");
+  vi.mocked(levels.recordStart).mockRejectedValueOnce(
+    new Error("database is locked"),
+  );
+  const input = { ...CHOICE, prompt: "Fix CI" };
+  await failure(run("sessions.start", input));
+  sessions.delete("app-lead-r1");
+  ended.add("app-lead-r1");
+  expect(await failure(run("sessions.start", input))).toEqual({
+    ok: false,
+    code: "request_id_reused",
+    hint: START_ENDED,
+    error: START_ENDED,
+  });
+  expect(host.start).toHaveBeenCalledOnce();
   expect(rows).toEqual([]);
 });

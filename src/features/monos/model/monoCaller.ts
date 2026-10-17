@@ -127,7 +127,7 @@ export function levelGate(
     return resolved;
   };
   return {
-    async check(requestId, { action, target, input }) {
+    async check(requestId, { action, target, startedSessionId, input }) {
       const answer = await invoke<
         { outcome: "allowed"; leadSessionId: string | null } | Failed
       >("mono_app_action_check", {
@@ -135,6 +135,7 @@ export function levelGate(
         action,
         target,
         targetLeadSessionId: target === null ? null : (leadOf(target) ?? null),
+        startedSessionId,
         requestId,
         input,
       });
@@ -144,10 +145,15 @@ export function levelGate(
       }
       return { leadSessionId: answer.leadSessionId };
     },
-    async startPrior(requestId, input) {
+    async startPrior(requestId, sessionId, input) {
       const answer = await invoke<
         "none" | { same: string } | { failed: Failed["error"] }
-      >("mono_message_start_prior", { caller: caller(), requestId, input });
+      >("mono_message_start_prior", {
+        caller: caller(),
+        requestId,
+        sessionId,
+        input,
+      });
       if (typeof answer === "object" && "failed" in answer) {
         const { code, hint, ...details } = answer.failed;
         throw new AppActionError(code, hint, details);
