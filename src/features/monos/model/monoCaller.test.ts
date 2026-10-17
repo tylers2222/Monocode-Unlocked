@@ -257,3 +257,71 @@ it("answers the start row's message id, and request_id_reused for a row with oth
     gate.recordStart("r1", "app-giga-chat-r1", { prompt: "Fix the docs" }),
   ).rejects.toMatchObject({ code: "request_id_reused" });
 });
+
+// Design 9, PR 7 review r1 m2 and m6. Defect: the gate's start_prior
+// failure (a reused key, a key whose session ended, an ended caller) reads
+// as "no prior", so the start launches.
+it("throws start_prior's failure with its code and hint", async () => {
+  await loadMonoRoster();
+  db.answers.mono_message_start_prior = {
+    failed: { code: "request_id_reused", hint: "The session ended." },
+  };
+  const gate = levelGate(session("giga-chat"), turn, () => undefined);
+  await expect(gate.startPrior("r1", { prompt: "Fix CI" })).rejects.toMatchObject({
+    code: "request_id_reused",
+    hint: "The session ended.",
+  });
+});
+
+// PR 7 review r1 m4. Defect: the gate resolves the caller again after the
+// launch, so a habit run that timed out meanwhile writes its start row as a
+// session caller, and its Mono can never steer the lead it started.
+it("records a start as the caller its prior read named", async () => {
+  await loadMonoRoster();
+  vi.mocked(invoke).mockClear();
+  db.answers.mono_message_start_prior = "none";
+  db.answers.mono_message_record_start = {
+    outcome: "recorded",
+    messageId: "m_bbbbbbbbbbbb",
+  };
+  markHabitRun("giga-run", "giga-1");
+  const gate = levelGate(
+    session("giga-run", {
+      blocks: [{ id: "u1", role: "user", text: "Do the habit", monocode: true }],
+    }),
+    turn,
+    () => undefined,
+  );
+  await gate.startPrior("r1", { prompt: "Fix CI" });
+  clearHabitRun("giga-run");
+  await gate.recordStart("r1", "app-giga-run-r1", { prompt: "Fix CI" });
+  const callers = vi
+    .mocked(invoke)
+    .mock.calls.filter(([command]) => command.startsWith("mono_message_"))
+    .map(([, args]) => (args as { caller: unknown }).caller);
+  expect(callers).toEqual([
+    expect.objectContaining({ kind: "habit_run", monoId: "giga-1" }),
+    expect.objectContaining({ kind: "habit_run", monoId: "giga-1" }),
+  ]);
+});
+
+// PR 7 review r1 m4. Defect: a Mono chat that the user reset during the
+// launch is no caller any more, so the launched session gets no row.
+it("records a Mono chat's start after the Mono moved to a new chat", async () => {
+  await loadMonoRoster();
+  db.answers.mono_message_start_prior = "none";
+  db.answers.mono_message_record_start = {
+    outcome: "recorded",
+    messageId: "m_bbbbbbbbbbbb",
+  };
+  db.update = Promise.resolve({
+    revision: 2,
+    monos: [{ ...giga, data: { ...giga.data, sessionId: "giga-chat-2" } }],
+  });
+  const gate = levelGate(session("giga-chat"), turn, () => undefined);
+  await gate.startPrior("r2", { prompt: "Fix CI" });
+  saveMonoSessionId("giga-1", "giga-chat-2");
+  await expect(
+    gate.recordStart("r2", "app-giga-chat-r2", { prompt: "Fix CI" }),
+  ).resolves.toBe("m_bbbbbbbbbbbb");
+});

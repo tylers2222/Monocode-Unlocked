@@ -107,17 +107,21 @@ type Failed = {
  * Design 6.6: the level gate's commands for the app calls of `session` in
  * turn `turnId`. Unlike `resolveCaller` they need no roster: the gate reads
  * only lead ids, and writes a Mono caller's id through a subselect, so a
- * Mono can start sessions while `roster_unavailable` holds.
+ * Mono can start sessions while `roster_unavailable` holds. The caller is
+ * resolved once, so a start's row names the caller whose key its prior
+ * read checked, even when the roster changed during the launch (PR 7 review
+ * r1 m4).
  */
 export function levelGate(
   session: CallingSession,
   turnId: string | null,
   /** This window's copy of a session's lead; Rust reads it only for a session it has no row of. */
   leadOf: (sessionId: string) => string | undefined,
-): NonNullable<AgentAppHost["levels"]> {
+): AgentAppHost["levels"] {
+  let resolved: Caller | undefined;
   const caller = (): Caller => {
     const turn = parseTurnId(turnId);
-    const resolved = turn ? callerOf(session, turn) : undefined;
+    resolved ??= turn ? callerOf(session, turn) : undefined;
     if (!resolved)
       throw new AppActionError(TURN_INACTIVE.code, TURN_INACTIVE.hint);
     return resolved;
@@ -141,10 +145,13 @@ export function levelGate(
       return { leadSessionId: answer.leadSessionId };
     },
     async startPrior(requestId, input) {
-      return invoke<"none" | { same: string } | "reused">(
-        "mono_message_start_prior",
-        { caller: caller(), requestId, input },
-      );
+      const answer = await invoke<
+        "none" | { same: string } | { failed: Failed["error"] }
+      >("mono_message_start_prior", { caller: caller(), requestId, input });
+      if (typeof answer === "object" && "failed" in answer) {
+        const { code, hint, ...details } = answer.failed;
+        throw new AppActionError(code, hint, details);
+      }
     },
     async recordStart(requestId, sessionId, input) {
       const answer = await invoke<

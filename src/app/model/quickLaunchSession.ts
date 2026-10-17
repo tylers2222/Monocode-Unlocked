@@ -11,6 +11,7 @@ import {
 } from "../../features/sessions/model/models";
 import {
   newSession,
+  sessionDraftBlock,
   type Session,
   type Attachment,
 } from "../../features/sessions/model/session";
@@ -20,6 +21,37 @@ import {
   type WorkspaceTab,
 } from "../../features/workspace/model/layout";
 import type { SubmissionAcceptance } from "./submissionAcceptance";
+
+/**
+ * Whether the app call that launches session `id` with `launch` already
+ * did. Every app launch stamps `appRequestId` on its first user block, so a
+ * repeat compares its text, its draft state and its caller (`startedBy`:
+ * two callers' ids can join to one session id). A session with submitted
+ * turns and no stamp was not launched by this call: the user sent its draft
+ * or wrote it, so a start row would name the user's own turn (PR 7 review
+ * r1 m5, n4). Throws on any conflict; false means launch it.
+ */
+export function appLaunchRepeat(
+  existing: Session | null | undefined,
+  launch: QuickLaunch,
+  id: string,
+): boolean {
+  const previous = existing?.blocks.find((block) => block.appRequestId === id);
+  if (previous) {
+    if (
+      previous.text !== launch.prompt ||
+      previous.startedBy !== launch.startedBy ||
+      (!launch.draft && !!previous.draft)
+    )
+      throw new Error("Request ID was already used for another session launch");
+    return true;
+  }
+  if (existing?.blocks.some((block) => block.role === "user" && !block.draft))
+    throw new Error("Request ID was already used for another session launch");
+  if (existing && sessionDraftBlock(existing))
+    throw new Error("Session ID already has a different draft");
+  return false;
+}
 
 /** Complete the workspace handoff before the receiver acknowledges the launch. */
 export async function acceptQuickLaunch(

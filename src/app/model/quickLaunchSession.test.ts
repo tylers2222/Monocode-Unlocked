@@ -16,7 +16,7 @@ import {
   type WorkspaceTab,
 } from "../../features/workspace/model/layout";
 import { filterTabsForProject } from "../../features/workspace/model/workspaceTabGroups";
-import { acceptQuickLaunch } from "./quickLaunchSession";
+import { acceptQuickLaunch, appLaunchRepeat } from "./quickLaunchSession";
 import {
   submitAfterProjectSync,
   type SubmissionAcceptance,
@@ -542,4 +542,51 @@ it("gives no worker when the lead's save fails", async () => {
   expect(state.sessions.some((session) => session.id === "worker")).toBe(false);
   expect(workspace.appendTab).not.toHaveBeenCalled();
   expect(workspace.submit).not.toHaveBeenCalled();
+});
+
+/** Session `id` as an app launch by `startedBy` left it, with `blocks`. */
+function appLaunched(id: string, blocks: Session["blocks"]): Session {
+  return { ...newSession("codex", "/code/app", "codex:test"), id, blocks };
+}
+
+const appLaunch = (prompt: string, startedBy = "lead"): QuickLaunch => ({
+  cwd: "/code/app",
+  prompt,
+  harness: "codex",
+  model: "codex:test",
+  startedBy,
+});
+
+// PR 7 review r1 m5. Defect: an app launch with no completion monitor has
+// no stamp, so a retry under its key with other input passes as a repeat
+// and gets a start row for work that never ran.
+it("repeats an app launch only with its own stamp, text and caller", () => {
+  const id = "app-lead-r1";
+  const stamped = appLaunched(id, [
+    { id: "u1", role: "user", text: "Fix CI", appRequestId: id, startedBy: "lead" },
+  ]);
+  expect(appLaunchRepeat(stamped, appLaunch("Fix CI"), id)).toBe(true);
+  expect(appLaunchRepeat(undefined, appLaunch("Fix CI"), id)).toBe(false);
+  expect(() => appLaunchRepeat(stamped, appLaunch("Delete CI"), id)).toThrow(
+    "Request ID was already used for another session launch",
+  );
+  const unstamped = appLaunched(id, [
+    { id: "u1", role: "user", text: "Fix CI", startedBy: "lead" },
+  ]);
+  expect(() => appLaunchRepeat(unstamped, appLaunch("Fix CI"), id)).toThrow(
+    "Request ID was already used for another session launch",
+  );
+});
+
+// PR 7 review r1 n4. Defect: caller "x" with request "y-z" and caller
+// "x-y" with request "z" name one session, so the second caller's start
+// passes as a repeat and writes a row for the first caller's session.
+it("refuses a launch of a session id that another caller's start made", () => {
+  const id = "app-x-y-z";
+  const byX = appLaunched(id, [
+    { id: "u1", role: "user", text: "Fix CI", appRequestId: id, startedBy: "x" },
+  ]);
+  expect(() => appLaunchRepeat(byX, appLaunch("Fix CI", "x-y"), id)).toThrow(
+    "Request ID was already used for another session launch",
+  );
 });

@@ -22,7 +22,7 @@ use crate::mono_gate::{
     self, Access, ActionCall, ActionDecision, ActionFacts, Caller, CallerFacts, CallerKind,
     CallerMono, Closure, Decision, Facts, HandleState, Handled, Input, Level, MessageRef,
     OpenHandle, PairCount, Recipient, Referenced, Refusal, ReplyFacts, Route, SendFacts,
-    SessionLevel, Speaker, Target, TargetSession,
+    SessionLevel, Speaker, Target, TargetSession, TurnPin,
 };
 use crate::mono_roster::{validate_mono_id, MonoRole};
 use crate::session_store::{validate_id, SessionStore};
@@ -1500,6 +1500,30 @@ fn session_ended(conn: &Connection, session: &SessionId) -> rusqlite::Result<boo
         .is_some())
 }
 
+/// Design 7 (PR 6 review r1 m1): a call that a clear of its session
+/// overtook. It writes nothing, as the session can never be told.
+fn caller_ended() -> ToolError {
+    ToolError {
+        code: "unknown_token",
+        hint: crate::control::UNKNOWN_TOKEN.to_string(),
+        message_id: None,
+        open_handles: None,
+        duplicate: false,
+    }
+}
+
+/// PR 7 review r1 m6: `prior` is an accepted start row whose session was
+/// archived or deleted since.
+fn start_ended(conn: &Connection, prior: &MonoMessage) -> rusqlite::Result<bool> {
+    match (&prior.status, &prior.to) {
+        (Status::Rejected { .. }, _) => Ok(false),
+        (_, Some(Party::Session { session_id })) if prior.tool == Tool::StartSession => {
+            session_ended(conn, session_id)
+        }
+        _ => Ok(false),
+    }
+}
+
 fn target(conn: &Connection, session: SessionId, live: &Live) -> rusqlite::Result<Target> {
     let listed = live
         .sessions
@@ -1689,13 +1713,7 @@ pub fn submit(
     // committed. A row written now would never be dropped.
     if session_ended(&tx, &caller.session_id)? {
         return Ok(Submitted::Failed {
-            error: ToolError {
-                code: "unknown_token",
-                hint: crate::control::UNKNOWN_TOKEN.to_string(),
-                message_id: None,
-                open_handles: None,
-                duplicate: false,
-            },
+            error: caller_ended(),
         });
     }
     // Design 5.4 (2): a call bound to the turn shows that its provider runs
@@ -2117,12 +2135,13 @@ fn record(
             code,
             hint,
             to,
+            hop,
             open_handles,
         } => {
             let message = row(
                 Part::FIRST,
                 to,
-                0,
+                hop,
                 Status::Rejected {
                     gate_result: code,
                     wanting_reply,
@@ -2265,14 +2284,35 @@ pub fn assign_slot(
         _ => return Ok((None, Notices::default())),
     };
     if let (None, Some(Intent::Steer(target))) = (slot, message.status.intent()) {
-        // The turn the steer may join: its target's for a targeted steer,
-        // its pin for a whole-turn one (design 16.12.3.3).
+        // The turn the steer may join: its pin (design 16.6, PR 7 review r1
+        // B2), a whole-turn one's through `scope_turn_id` (design 16.12.3.3).
         let joins: Option<String> = match target {
-            SteerTarget::Message(target) => tx.query_row(
-                "SELECT turn_id FROM mono_messages WHERE id = ?1",
-                [target.as_str()],
-                |row| row.get(0),
-            )?,
+            SteerTarget::Message(target) => tx
+                .query_row(
+                    "SELECT tool, from_session_id, turn_id FROM mono_messages WHERE id = ?1",
+                    [target.as_str()],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )
+                .optional()?
+                .and_then(|(tool, from, turn)| {
+                    let pin = mono_gate::steer_pin(
+                        Tool::parse(&tool)?,
+                        &SessionId::parse(&from)?,
+                        turn.as_deref(),
+                        &routed.handled_by_session,
+                    );
+                    match pin {
+                        TurnPin::Turn(turn) => Some(turn),
+                        TurnPin::AnyTurn => Some(turn_id.to_string()),
+                        TurnPin::NotStarted => None,
+                    }
+                }),
             SteerTarget::Turn { turn_id } => Some(turn_id.clone()),
         };
         if delivery != Delivery::Steer || joins.as_deref() != Some(turn_id) {
@@ -2512,8 +2552,9 @@ fn end_turn_rows(
 /// row changed, so its owner reconciles it, and the chat of each sender now
 /// owed a notice. Design 16.6 (PR I2 review r1): a steer accepted for this
 /// turn that no hand-off slotted yet, also one in a paused queue, names work
-/// that is over, so it is dropped too: a targeted one through its target, a
-/// whole-turn one through its pin (design 16.12.3.3).
+/// that is over, so it is dropped too: through its pin (`steer_pin`), the
+/// target's turn or any turn of `session` (PR 7 review r1 B2), and a
+/// whole-turn one through `scope_turn_id` (design 16.12.3.3).
 pub fn turn_ended(
     conn: &Connection,
     session: &SessionId,
@@ -2526,9 +2567,11 @@ pub fn turn_ended(
         .prepare(
             "UPDATE mono_messages SET status = 'dropped', closed_at = ?1, updated_at = ?1
               WHERE intent = 'steer' AND status IN ('open', 'delivered') AND turn_id IS NULL
+                AND handled_by_session = ?2
                 AND (reply_to IN (SELECT id FROM mono_messages
-                                   WHERE handled_by_session = ?2 AND turn_id = ?3)
-                     OR (scope = 'turn' AND handled_by_session = ?2 AND scope_turn_id = ?3))
+                                   WHERE (handled_by_session = ?2 AND turn_id = ?3)
+                                      OR tool = 'start_session' OR from_session_id = ?2)
+                     OR (scope = 'turn' AND scope_turn_id = ?3))
               RETURNING id",
         )?
         .query_map(params![now, session.as_str(), turn_id], |row| {
@@ -2764,24 +2807,37 @@ pub enum StartPrior {
     None,
     /// The same start wrote this row.
     Same(MessageId),
-    /// Another call has the key.
-    Reused,
+    /// No launch: another call has the key, the start's session ended since,
+    /// or the caller's did.
+    Failed(ToolError),
 }
 
 /// Design 9, PR 7 (intents review r3): before `host.start` launches a start
 /// of a Mono chat or habit run, the row its request id already names. It
 /// reads only, since 6.6 keeps write transactions off a Mono's app calls.
+/// PR 7 review r1 m2 and m6: a caller that a clear ended, and a key whose
+/// session was archived or deleted, launch nothing.
 pub fn start_prior(
     conn: &Connection,
     caller: &Caller,
     request_id: &RequestId,
     input: &Value,
 ) -> rusqlite::Result<StartPrior> {
+    if session_ended(conn, &caller.session_id)? {
+        return Ok(StartPrior::Failed(caller_ended()));
+    }
     let hash = mono_gate::action_hash(START_ACTION, input);
     Ok(match keyed(conn, &caller.session_id, request_id)? {
         None => StartPrior::None,
-        Some(prior) if prior.payload_hash == hash => StartPrior::Same(prior.id),
-        Some(_) => StartPrior::Reused,
+        Some(prior) if prior.payload_hash != hash => StartPrior::Failed(refusal(
+            Refusal::RequestIdReused,
+            mono_gate::REQUEST_ID_REUSED.into(),
+        )),
+        Some(prior) if start_ended(conn, &prior)? => StartPrior::Failed(refusal(
+            Refusal::RequestIdReused,
+            mono_gate::START_ENDED.into(),
+        )),
+        Some(prior) => StartPrior::Same(prior.id),
     })
 }
 
@@ -2838,6 +2894,12 @@ pub fn record_start(
         },
     };
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    // PR 7 review r1 m2: a clear of the caller ran during the launch.
+    if session_ended(&tx, &caller.session_id)? {
+        return Ok(StartRecorded::Failed {
+            error: caller_ended(),
+        });
+    }
     insert_row(
         &tx,
         &row,
@@ -2876,8 +2938,8 @@ pub enum ActionChecked {
 
 /// Design 6.6: the A rows for one app action of `caller`, and the one
 /// rejected row they may write, in one `BEGIN IMMEDIATE` transaction, as
-/// `submit` does. `target` is the raw id the action names; `target_copy` is
-/// the web app's `leadSessionId` of that session.
+/// `submit` does. `target` is the session id the action names; `target_copy`
+/// is the web app's `leadSessionId` of that session.
 #[allow(clippy::too_many_arguments)]
 pub fn check_action(
     conn: &Connection,
@@ -2890,8 +2952,31 @@ pub fn check_action(
     now: i64,
 ) -> rusqlite::Result<ActionChecked> {
     let hash = mono_gate::action_hash(action, input);
-    let target_id = target.and_then(SessionId::parse);
+    // PR 7 review r1 B1: a target that is no session id is refused. Read as
+    // no target, it would skip A5 while the action ran on another reading.
+    let target_id = match target.map(|text| SessionId::parse(text).ok_or(text)) {
+        None => None,
+        Some(Ok(target)) => Some(target),
+        Some(Err(text)) => {
+            return Ok(ActionChecked::Failed {
+                error: refusal(
+                    Refusal::InvalidInput,
+                    format!("sessionId {text:?} is not a session id."),
+                ),
+            })
+        }
+    };
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    if session_ended(&tx, &caller.session_id)? {
+        return Ok(ActionChecked::Failed {
+            error: caller_ended(),
+        });
+    }
+    let prior = get_by_request(&tx, &caller.session_id, request_id)?;
+    let prior_start_ended = match prior.first() {
+        Some(first) => start_ended(&tx, first)?,
+        None => false,
+    };
     let facts = ActionFacts {
         caller_level: match &caller.speaker {
             Speaker::Mono { .. } => None,
@@ -2907,7 +2992,8 @@ pub fn check_action(
             .as_ref()
             .map(|target| session_level(&tx, target, target_copy))
             .transpose()?,
-        prior: get_by_request(&tx, &caller.session_id, request_id)?,
+        prior,
+        prior_start_ended,
     };
     let call = ActionCall {
         caller,
@@ -8530,21 +8616,27 @@ pub(crate) mod tests {
         let start = start_row(&conn, &mono, "lead", "start", "Build");
         let before = dump(&conn);
         assert_eq!(prior("Build"), StartPrior::Same(start.clone()));
-        assert_eq!(prior("Build something else"), StartPrior::Reused);
+        assert_eq!(prior("Build something else"), reused());
         assert_eq!(dump(&conn), before);
         assert_eq!(
-            [
-                StartPrior::None,
-                StartPrior::Same(start.clone()),
-                StartPrior::Reused
-            ]
-            .map(|answer| serde_json::to_value(answer).unwrap()),
+            [StartPrior::None, StartPrior::Same(start.clone()), reused()]
+                .map(|answer| serde_json::to_value(answer).unwrap()),
             [
                 serde_json::json!("none"),
                 serde_json::json!({"same": start.as_str()}),
-                serde_json::json!("reused"),
+                serde_json::json!({"failed": {
+                    "code": "request_id_reused",
+                    "hint": mono_gate::REQUEST_ID_REUSED,
+                }}),
             ]
         );
+    }
+
+    fn reused() -> StartPrior {
+        StartPrior::Failed(refusal(
+            Refusal::RequestIdReused,
+            mono_gate::REQUEST_ID_REUSED.into(),
+        ))
     }
 
     // Design 9, PR 7 (intents review r3). Defect: the prior read looks at
@@ -8563,7 +8655,7 @@ pub(crate) mod tests {
                 &start_input("Build"),
             )
             .unwrap(),
-            StartPrior::Reused
+            reused()
         );
     }
 
@@ -9181,5 +9273,488 @@ pub(crate) mod tests {
         .unwrap();
         let error = get(&conn, &id('c')).unwrap_err().to_string();
         assert!(error.contains("invalid mono_messages.tool"), "{error}");
+    }
+
+    /// The Mono's accepted steer into the running `lead` through its start
+    /// row (design 9, intents review r1).
+    fn steer_through_start_row(conn: &Connection) -> (MessageId, MessageId) {
+        seed_levels(conn);
+        let mono = caller_in("mono-a", "a-chat");
+        let start = start_row(conn, &mono, "lead", "start", "Build");
+        let steer = accepted_ids(&call_with(
+            conn,
+            &mono,
+            "steer",
+            Tool::SendMessage,
+            steering("lead", start.as_str()),
+            &[listed("lead", true, true)],
+            &["lead"],
+        ))
+        .remove(0);
+        (start, steer)
+    }
+
+    // Design 9 and 16.6, PR 7 review r1 B2. Defect: a steer joins only its
+    // target's turn and a start row has none, so the hand-off drops the
+    // Mono's accepted steer into its running lead and the Mono gets a
+    // `dropped` notice instead.
+    #[test]
+    fn a_monos_steer_through_the_start_row_is_delivered_in_the_leads_running_turn() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let (start, steer) = steer_through_start_row(&conn);
+        let (slot, notices) =
+            assign_slot(&conn, &steer, "turn-7", "main", Delivery::Steer, 150).unwrap();
+        assert_eq!(notices, Notices::default());
+        assert_eq!(slot.map(|row| row.message.id), Some(steer.clone()));
+        mark_delivery(&conn, &steer, "turn-7", 151).unwrap();
+        assert_eq!(
+            stored_row(&conn, &steer),
+            (
+                "delivered".into(),
+                Some("turn-7".into()),
+                Some(151),
+                Some(start.as_str().into())
+            )
+        );
+    }
+
+    // Design 16.6, PR 7 review r1 B2. Defect: the turn end selects waiting
+    // steers only through their target's turn, so a steer through a start
+    // row outlives the lead's turn and the next turn's hand-off takes it.
+    #[test]
+    fn a_steer_through_a_start_row_still_waiting_when_the_leads_turn_ends_is_dropped() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let (_, steer) = steer_through_start_row(&conn);
+        let notices = turn_ended(&conn, &session("lead"), "turn-1", 200).unwrap();
+        assert_eq!(stored_row(&conn, &steer).0, "dropped");
+        assert!(notices.sessions.contains(&session("a-chat")), "{notices:?}");
+        assert!(unqueued(&conn, &session("lead")).unwrap().is_empty());
+    }
+
+    /// Rule (b): the Giga's question, unanswered once `a-chat`'s turn-1
+    /// ended, and the Mono's late answer steered into turn-4 of the Giga's
+    /// chat.
+    fn late_answer(conn: &Connection) -> (MessageId, MessageId) {
+        let asked = ask_delivered(conn, "ask", "turn-1");
+        turn_ended(conn, &session("a-chat"), "turn-1", 100).unwrap();
+        let late = call_in_turns(
+            conn,
+            &caller_in_turn("mono-a", "a-chat", "turn-2"),
+            "late",
+            Tool::SendMessage,
+            steering("giga", asked.as_str()),
+            &[],
+            &[("giga-chat", "turn-4")],
+        );
+        assert_eq!(
+            route_of(&late),
+            Some(Routing {
+                session_id: session("giga-chat"),
+                via: Delivery::Steer
+            })
+        );
+        (asked, accepted_ids(&late).remove(0))
+    }
+
+    // Design 6.1 rule (b), PR 7 review r1 B2. Defect: the late answer may
+    // join only the turn of the Mono's chat that held the question, so the
+    // hand-off into the Giga's running turn drops it. PR I4 review n3: its
+    // target holds #1 in the Mono's chat, not in the Giga's turn, so the
+    // reader must name it by message id.
+    #[test]
+    fn a_monos_late_answer_is_delivered_in_the_gigas_running_turn() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let (asked, late) = late_answer(&conn);
+        let (slot, notices) =
+            assign_slot(&conn, &late, "turn-4", "main", Delivery::Steer, 150).unwrap();
+        assert_eq!(notices, Notices::default());
+        let target = slot.expect("the late answer joins turn-4").target.unwrap();
+        assert_eq!(
+            (target.message_id, target.handled_by_session, target.slot),
+            (
+                asked,
+                Some(session("a-chat")),
+                Some(TargetSlot {
+                    turn_id: "turn-1".into(),
+                    handle: Handle::parse("#1").unwrap()
+                })
+            )
+        );
+        mark_delivery(&conn, &late, "turn-4", 151).unwrap();
+        assert_eq!(stored_row(&conn, &late).0, "delivered");
+    }
+
+    // Design 16.6, PR 7 review r1 B2. Defect: a waiting late answer
+    // outlives the Giga's turn, or the end of the Mono's turn drops it.
+    #[test]
+    fn a_late_answer_still_waiting_when_the_gigas_turn_ends_is_dropped() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let (_, late) = late_answer(&conn);
+        turn_ended(&conn, &session("a-chat"), "turn-2", 200).unwrap();
+        assert_eq!(stored_row(&conn, &late).0, "delivered");
+        turn_ended(&conn, &session("giga-chat"), "turn-4", 201).unwrap();
+        assert_eq!(stored_row(&conn, &late).0, "dropped");
+    }
+
+    // Design 16.6, PR 7 review r1 B2. Defect: the end of any turn of a
+    // session drops every waiting steer whose target that session sent, so
+    // the Giga's own turn end drops its steer into a Mono's running turn.
+    #[test]
+    fn a_gigas_waiting_steer_into_a_monos_turn_outlives_the_gigas_own_turn() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let ask = ask_delivered(&conn, "ask", "turn-1");
+        let steer = accepted_ids(&call_in_turns(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "steer",
+            Tool::SendMessage,
+            steering("mono-a", ask.as_str()),
+            &[],
+            &[("a-chat", "turn-1")],
+        ))
+        .remove(0);
+        turn_ended(&conn, &session("giga-chat"), "turn-9", 200).unwrap();
+        assert_eq!(stored_row(&conn, &steer).0, "delivered");
+        turn_ended(&conn, &session("a-chat"), "turn-1", 201).unwrap();
+        assert_eq!(stored_row(&conn, &steer).0, "dropped");
+    }
+
+    // Design E25 and 6 (`Reject { code, hop, to }`), PR 7 review r1 m1 and
+    // decision 628. Defect: a rejected `hop_limit` row stores hop 0.
+    #[test]
+    fn a_hop_limit_row_stores_the_hop_the_steer_would_have_had() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let ask = ask_delivered(&conn, "ask", "turn-1");
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+            .unwrap();
+        conn.execute(
+            "UPDATE mono_messages SET hop = 4 WHERE id = ?1",
+            [ask.as_str()],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA ignore_check_constraints = OFF")
+            .unwrap();
+        let error = failed(call_in_turns(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "steer",
+            Tool::SendMessage,
+            steering("mono-a", ask.as_str()),
+            &[],
+            &[("a-chat", "turn-1")],
+        ));
+        assert_eq!(error.code, "hop_limit");
+        assert_columns(
+            &conn,
+            &error.message_id.unwrap(),
+            &[("status", text("rejected")), ("hop", Sql::Integer(5))],
+        );
+    }
+
+    /// A habit run of `mono-a` in session `a-run`, and an /operator `lead`.
+    fn run_and_operator_lead() -> [Caller; 2] {
+        [
+            Caller {
+                speaker: Speaker::Mono {
+                    kind: CallerKind::HabitRun,
+                    mono_id: mono("mono-a"),
+                },
+                session_id: session("a-run"),
+                turn_id: "turn-1".into(),
+            },
+            Caller {
+                speaker: Speaker::Session {
+                    access: Access::Operator,
+                    cwd: "/p".into(),
+                    lead_session_id: None,
+                },
+                session_id: session("lead"),
+                turn_id: "turn-1".into(),
+            },
+        ]
+    }
+
+    // Design 6.6 A5, PR 7 review r1 B1. Defect: a target that does not parse
+    // reads as "no target", so A5 never runs for " worker" while the action
+    // trims it and reaches the worker.
+    #[test]
+    fn check_action_refuses_a_target_that_is_no_session_id_and_writes_nothing() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let [run, operator_lead] = run_and_operator_lead();
+        let input = serde_json::json!({"sessionId": " worker", "prompt": "Rebase first"});
+        for caller in [caller_in("mono-a", "a-chat"), run, operator_lead] {
+            for target in [" worker", "worker\n", ""] {
+                let error = failed_check(
+                    check_action(
+                        &conn,
+                        &caller,
+                        "sessions.send",
+                        Some(target),
+                        None,
+                        &RequestId::parse("send").unwrap(),
+                        &input,
+                        100,
+                    )
+                    .unwrap(),
+                );
+                assert_eq!(
+                    error.code, "invalid_input",
+                    "{:?} {target:?}",
+                    caller.session_id
+                );
+            }
+        }
+        assert_eq!(rows(&conn), 0);
+    }
+
+    // Design 7, PR 7 review r1 m2. Defect: an app action of a caller whose
+    // session a clear ended still runs its A rows, so an archived lead's
+    // in-flight start makes a worker of it.
+    #[test]
+    fn app_calls_of_a_caller_a_clear_ended_are_unknown_token_and_write_nothing() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let lead = session_caller("lead", "/p", None);
+        let mono = caller_in("mono-a", "a-chat");
+        clear(&conn, "lead", 200);
+        clear(&conn, "a-chat", 200);
+        let key = RequestId::parse("start").unwrap();
+        let input = start_input("Build");
+        let codes = [
+            failed_check(
+                check_action(
+                    &conn,
+                    &lead,
+                    "sessions.start",
+                    None,
+                    None,
+                    &key,
+                    &input,
+                    300,
+                )
+                .unwrap(),
+            ),
+            match start_prior(&conn, &mono, &key, &input).unwrap() {
+                StartPrior::Failed(error) => error,
+                other => panic!("{other:?}"),
+            },
+            match record_start(&conn, &lead, &session("w2"), &key, &input, 300).unwrap() {
+                StartRecorded::Failed { error } => error,
+                other => panic!("{other:?}"),
+            },
+        ]
+        .map(|error| error.code);
+        assert_eq!(codes, ["unknown_token"; 3]);
+        assert_eq!(rows(&conn), 0);
+    }
+
+    // Design 9 (design.md "the launch itself is idempotent in host.start"),
+    // PR 7 review r1 m6. Defect: a retry of a start whose session the user
+    // deleted passes the key check, so host.start launches the id again.
+    #[test]
+    fn a_start_retried_after_its_session_ended_is_refused_before_any_launch() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let ended = refusal(Refusal::RequestIdReused, mono_gate::START_ENDED.into());
+        let mono = caller_in("mono-a", "a-chat");
+        let input = start_input("Build");
+        start_row(&conn, &mono, "app-a-chat-start", "start", "Build");
+        clear(&conn, "app-a-chat-start", 200);
+        assert_eq!(
+            start_prior(&conn, &mono, &RequestId::parse("start").unwrap(), &input).unwrap(),
+            StartPrior::Failed(ended.clone())
+        );
+        let lead = session_caller("lead", "/p", None);
+        start_row(&conn, &lead, "app-lead-spawn", "spawn", "Build");
+        clear(&conn, "app-lead-spawn", 200);
+        assert_eq!(
+            failed_check(
+                check_action(
+                    &conn,
+                    &lead,
+                    "sessions.start",
+                    None,
+                    None,
+                    &RequestId::parse("spawn").unwrap(),
+                    &input,
+                    300,
+                )
+                .unwrap()
+            ),
+            ended
+        );
+    }
+
+    // Decision 617, PR 7 review r1 M2 and m7. Defect: `access` "started"
+    // parses as Operator, so A8 never binds an app-started lead, or a Mono
+    // caller with session fields (or a session caller with a Mono) parses.
+    #[test]
+    fn caller_arg_parses_a_session_caller_and_refuses_mixed_combinations() {
+        let parse =
+            |value: serde_json::Value| serde_json::from_value::<CallerArg>(value).unwrap().parse();
+        for (access, parsed) in [("started", Access::Started), ("operator", Access::Operator)] {
+            assert_eq!(
+                parse(serde_json::json!({
+                    "kind": "session", "sessionId": "lead", "turnId": "turn-1",
+                    "access": access, "cwd": "/p", "leadSessionId": "boss"
+                }))
+                .unwrap(),
+                Caller {
+                    speaker: Speaker::Session {
+                        access: parsed,
+                        cwd: "/p".into(),
+                        lead_session_id: Some(session("boss"))
+                    },
+                    session_id: session("lead"),
+                    turn_id: "turn-1".into(),
+                }
+            );
+        }
+        assert!(
+            parse(serde_json::json!({
+                "kind": "mono_chat", "monoId": "giga", "sessionId": "giga-chat",
+                "turnId": "turn-1", "cwd": "/p"
+            }))
+            .is_err(),
+            "Mono caller with cwd"
+        );
+        assert!(
+            parse(serde_json::json!({
+                "kind": "session", "monoId": "giga", "sessionId": "lead",
+                "turnId": "turn-1", "access": "started", "cwd": "/p"
+            }))
+            .is_err(),
+            "session caller with monoId"
+        );
+    }
+
+    // Design 6.6 A8, PR 7 review r1 M2. Defect: the web app's `started`
+    // access reaches the gate as another access, so an app-started lead
+    // lists notes.
+    #[test]
+    fn a_started_lead_from_the_web_app_gets_lead_scope_for_notes_list() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let caller = serde_json::from_value::<CallerArg>(serde_json::json!({
+            "kind": "session", "sessionId": "lead", "turnId": "turn-1",
+            "access": "started", "cwd": "/p"
+        }))
+        .unwrap()
+        .parse()
+        .unwrap();
+        let error = failed_check(
+            check_action(
+                &conn,
+                &caller,
+                "notes.list",
+                None,
+                None,
+                &RequestId::parse("notes").unwrap(),
+                &serde_json::json!({}),
+                100,
+            )
+            .unwrap(),
+        );
+        assert_eq!(error.code, "lead_scope");
+    }
+
+    // Design 6.1 pair count (`created_at > now - 600 000`), PR 7 review r1
+    // n5. Defect: a send exactly 10 minutes old still counts.
+    #[test]
+    fn a_send_exactly_ten_minutes_old_no_longer_counts() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let giga = caller_in("giga", "giga-chat");
+        let send = |request_id: &str, now: i64| {
+            call_at(
+                &conn,
+                &giga,
+                request_id,
+                Tool::SendMessage,
+                hi("mono-a", false),
+                now,
+            )
+        };
+        for request_id in ["r1", "r2", "r3", "r4", "r5", "r6"] {
+            accepted_ids(&send(request_id, 100));
+        }
+        accepted_ids(&send("edge", 100 + 600_000));
+    }
+
+    // Design 6.1 pair count (the sender key of a Mono is its Mono), PR 7
+    // review r1 m11. Defect: a Mono's chat and its habit runs count apart,
+    // so together they send twice the limit.
+    #[test]
+    fn a_monos_chat_and_habit_runs_share_one_rate_count() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let chat = caller_in("giga", "giga-chat");
+        let run = Caller {
+            speaker: Speaker::Mono {
+                kind: CallerKind::HabitRun,
+                mono_id: mono("giga"),
+            },
+            session_id: session("giga-run"),
+            ..caller_in("giga", "giga-chat")
+        };
+        for n in 0..3 {
+            for (caller, key) in [(&chat, "chat"), (&run, "run")] {
+                accepted_ids(&call(
+                    &conn,
+                    caller,
+                    &format!("{key}-{n}"),
+                    Tool::SendMessage,
+                    hi("mono-a", false),
+                    &[],
+                ));
+            }
+        }
+        assert_eq!(
+            failed(call(
+                &conn,
+                &chat,
+                "seventh",
+                Tool::SendMessage,
+                hi("mono-a", false),
+                &[]
+            ))
+            .code,
+            "rate_limited"
+        );
+    }
+
+    // Design 13.5, PR 7 review r1 m12. Defect: an A3 row stores the whole
+    // prompt, so a prompt over 8000 code points fails the CHECK and the
+    // refusal is an SQLite error.
+    #[test]
+    fn a_workers_long_start_prompt_still_writes_its_refusal() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let error = failed_check(
+            check_action(
+                &conn,
+                &session_caller("worker", "/p", None),
+                "sessions.start",
+                None,
+                None,
+                &RequestId::parse("spawn").unwrap(),
+                &start_input(&"x".repeat(8001)),
+                100,
+            )
+            .unwrap(),
+        );
+        assert_eq!(error.code, "worker_cannot_spawn");
     }
 }
