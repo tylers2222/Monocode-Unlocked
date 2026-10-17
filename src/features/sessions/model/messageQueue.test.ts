@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import type { MessageId, TurnId } from "../../monos/model/monoMessages";
 import { appendPreparingHandoff } from "./handoff";
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
   isEditingQueuedHead,
+  nextQueuedSend,
   queuedHead,
   queuedMessageForSubmit,
   steerableQueuedMessage,
@@ -12,6 +14,9 @@ import {
   queuePauseNotice,
 } from "./messageQueue";
 import { newSession, type QueuedMessage, type Session } from "./session";
+
+const T1 = "turn-1" as TurnId;
+const T2 = "turn-2" as TurnId;
 
 function queued(id: string, text = id): QueuedMessage {
   return { id, text, attachments: [] };
@@ -90,6 +95,17 @@ describe("canDispatchQueuedHead", () => {
 });
 
 describe("steerableQueuedMessage", () => {
+  const ready = (queuedMessages?: QueuedMessage[]) =>
+    chat({
+      busy: true,
+      turnReadiness: "ready",
+      ...(queuedMessages ? { queuedMessages } : {}),
+    });
+  const row = (id: string): QueuedMessage => ({
+    ...queued(id),
+    monoMessageId: id as MessageId,
+  });
+
   it("still takes follow-ups while an optional asynchronous question is open", () => {
     expect(
       steerableQueuedMessage(
@@ -98,22 +114,15 @@ describe("steerableQueuedMessage", () => {
           turnReadiness: "ready",
           pendingQuestion: { requestId: 1, questions: [], autoResolveAt: 1000 },
         }),
-        undefined,
+        T1,
       )?.id,
     ).toBe("a");
   });
   it("holds during startup and allows delivery once the busy turn is ready", () => {
+    expect(steerableQueuedMessage(chat({ busy: true }), T1)).toBeUndefined();
+    expect(steerableQueuedMessage(ready(), T1)?.id).toBe("a");
     expect(
-      steerableQueuedMessage(chat({ busy: true }), undefined),
-    ).toBeUndefined();
-    expect(
-      steerableQueuedMessage(
-        chat({ busy: true, turnReadiness: "ready" }),
-        undefined,
-      )?.id,
-    ).toBe("a");
-    expect(
-      steerableQueuedMessage(chat({ turnReadiness: "ready" }), undefined),
+      steerableQueuedMessage(chat({ turnReadiness: "ready" }), T1),
     ).toBeUndefined();
   });
 
@@ -129,32 +138,46 @@ describe("steerableQueuedMessage", () => {
     expect(
       steerableQueuedMessage(
         chat({ busy: true, turnReadiness: "ready", ...patch }),
-        undefined,
+        T1,
       ),
     ).toBeUndefined();
   });
 
-  it.each<Partial<QueuedMessage>>([
-    { waitForIdle: true },
-    { intent: "plan" },
-    { intent: "orchestrate" },
-    { text: "/operator list sessions" },
-    {
-      monoSessionCompletion: {
-        sessionId: "worker",
-        title: "Worker",
-        status: "completed",
+  // PR I5 review r2 m4. Defect: an item with no typed turn (a Mono row, a CLI
+  // follow-up, an item saved before typedInTurn) never steers a running turn.
+  it.each<[string, QueuedMessage]>([
+    ["a Mono row", row("m_rowrowrowrow")],
+    ["a CLI follow-up", { ...queued("cli"), appRequestId: "request-1" }],
+    ["an item saved before typedInTurn", queued("legacy")],
+  ])("steers %s into whichever turn runs", (_kind, message) => {
+    expect(steerableQueuedMessage(ready([message]), T1)).toBe(message);
+  });
+
+  it("steers a message the user typed only into the turn it was typed in", () => {
+    const typed = { ...queued("typed"), typedInTurn: T1 };
+    expect(steerableQueuedMessage(ready([typed]), T1)).toBe(typed);
+    expect(steerableQueuedMessage(ready([typed]), T2)).toBeUndefined();
+    expect(steerableQueuedMessage(ready([typed]), undefined)).toBeUndefined();
+  });
+
+  it.each<[string, QueuedMessage]>([
+    ["a Mono row", { ...row("a"), waitForIdle: true }],
+    [
+      "a completion report",
+      {
+        ...queued("a"),
+        monoSessionCompletion: {
+          sessionId: "worker",
+          title: "Worker",
+          status: "completed",
+        },
       },
-    },
+    ],
   ])(
-    "steers the next message past a head that waits for the turn end: %j",
-    (patch) => {
-      const session = chat({
-        busy: true,
-        turnReadiness: "ready",
-        queuedMessages: [{ ...queued("a"), ...patch }, queued("b")],
-      });
-      expect(steerableQueuedMessage(session, undefined)?.id).toBe("b");
+    "steers the user's message past %s that waits for the turn end",
+    (_kind, head) => {
+      const session = ready([head, queued("b")]);
+      expect(steerableQueuedMessage(session, T1)?.id).toBe("b");
       expect(session.queuedMessages?.map((message) => message.id)).toEqual([
         "a",
         "b",
@@ -162,20 +185,58 @@ describe("steerableQueuedMessage", () => {
     },
   );
 
+  // PR I5 review r2 m5. Defect: the user's newer text reaches the agent
+  // before their older message, which then runs after it; a correction such
+  // as "don't deploy" lands before the message it corrects.
+  it.each<Partial<QueuedMessage>>([
+    { typedInTurn: T1 },
+    { waitForIdle: true },
+    { intent: "plan" },
+    { intent: "orchestrate" },
+    { text: "/operator list sessions" },
+  ])(
+    "keeps the user's later messages behind their own message that cannot steer, but lets a Mono row pass: %j",
+    (patch) => {
+      const session = ready([
+        { ...queued("a"), ...patch },
+        { ...queued("b", "actually, don't deploy"), typedInTurn: T2 },
+        queued("c"),
+        row("m_rowrowrowrow"),
+      ]);
+      expect(steerableQueuedMessage(session, T2)?.id).toBe("m_rowrowrowrow");
+    },
+  );
+
   it("keeps the order among messages that can steer", () => {
-    const session = chat({
+    const session = ready([
+      { ...row("a"), waitForIdle: true },
+      queued("b"),
+      queued("c"),
+    ]);
+    expect(steerableQueuedMessage(session, T1)?.id).toBe("b");
+    expect(
+      steerableQueuedMessage(dequeueQueuedMessage(session, "b"), T1)?.id,
+    ).toBe("c");
+  });
+});
+
+describe("nextQueuedSend", () => {
+  it("opens an idle session's head, and steers a busy Mono's message into the turn this window runs for it", () => {
+    const typed = { ...queued("typed"), typedInTurn: T1 };
+    const idle = chat({ queuedMessages: [typed] });
+    expect(nextQueuedSend(idle, new Map(), false)).toBe(typed);
+    const busy = chat({
       busy: true,
       turnReadiness: "ready",
-      queuedMessages: [
-        { ...queued("a"), waitForIdle: true },
-        queued("b"),
-        queued("c"),
-      ],
+      queuedMessages: [typed],
     });
-    expect(steerableQueuedMessage(session, undefined)?.id).toBe("b");
+    expect(nextQueuedSend(busy, new Map([[busy.id, T1]]), true)).toBe(typed);
     expect(
-      steerableQueuedMessage(dequeueQueuedMessage(session, "b"), undefined)?.id,
-    ).toBe("c");
+      nextQueuedSend(busy, new Map([[busy.id, T1]]), false),
+    ).toBeUndefined();
+    expect(
+      nextQueuedSend(busy, new Map([["other", T1]]), true),
+    ).toBeUndefined();
   });
 });
 

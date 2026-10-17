@@ -317,8 +317,9 @@ export type QueuedMessage = {
   waitForIdle?: boolean;
   /**
    * The turn that ran when the user typed this message in a busy Mono chat.
-   * The pump steers it into that turn only; once the turn ends, the message
-   * waits and opens its own turn (design 16.12.4).
+   * The pump steers it into that turn only; when the turn ends, `missedTurn`
+   * replaces it with `waitForIdle`, so the message opens its own turn
+   * (design 16.12.4).
    */
   typedInTurn?: TurnId;
   /** Stable CLI request that queued this follow-up, for safe retries. */

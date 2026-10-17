@@ -3,6 +3,7 @@ import { isMonoSession } from "../../monos/model/mono";
 import { sanitizeMonoSpawnedSessions } from "../../monos/model/monoSpawnedSessions";
 import { parseMessageId, parseTurnId } from "../../monos/model/monoMessages";
 import { parseMessageLink, parseTargetLink } from "../model/messageIntent";
+import { missedTurn } from "../model/messageQueue";
 import {
   isWeakToolTitle,
   titleFromToolInput,
@@ -1466,7 +1467,8 @@ function recordToSession(
         .filter((block): block is Block => block != null)
     : [];
   const linkedWorkItem = sanitizeLinkedWorkItem(record.linkedWorkItem);
-  const saved = sanitizeQueuedMessages(record.queuedMessages);
+  // No turn runs in this window yet, so a message typed for a turn missed it.
+  const saved = missedTurn(sanitizeQueuedMessages(record.queuedMessages));
   const queuedMessages =
     options.restart && record.queueStatus !== "paused"
       ? saved.map((message): QueuedMessage => ({

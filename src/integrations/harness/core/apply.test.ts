@@ -10,6 +10,7 @@ import {
   enqueueMonoMessage,
 } from "../../../features/monos/model/monoMessaging";
 import { steerableQueuedMessage } from "../../../features/sessions/model/messageQueue";
+import type { TurnId } from "../../../features/monos/model/monoMessages";
 import { previewFromTool } from "../providers/claude/claudeProtocol";
 import {
   appendUser,
@@ -19,6 +20,8 @@ import {
   promoteLastAssistantToPlan,
   stopStreaming,
 } from "./apply";
+
+const T1 = "turn-1" as TurnId;
 
 let now = 0;
 
@@ -76,18 +79,15 @@ describe("follow-up readiness", () => {
       "First",
     );
     expect(
-      steerableQueuedMessage(applyHarnessEvent(starting, leftover), undefined),
+      steerableQueuedMessage(applyHarnessEvent(starting, leftover), T1),
     ).toBeUndefined();
     expect(
-      steerableQueuedMessage(
-        applyHarnessEvents(starting, [leftover]),
-        undefined,
-      ),
+      steerableQueuedMessage(applyHarnessEvents(starting, [leftover]), T1),
     ).toBeUndefined();
     expect(
       steerableQueuedMessage(
         applyHarnessEvent(starting, { type: "turn.ready" }),
-        undefined,
+        T1,
       )?.id,
     ).toBe("b");
   });

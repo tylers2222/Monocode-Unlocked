@@ -13,6 +13,7 @@ import {
   type Session,
   type TargetLink,
 } from "./session";
+import { isOwnQueuedMessage, type RunningTurns } from "./messageQueue";
 
 /**
  * What a line needs of the message a Mono row refers to (design 16.7). Rust
@@ -220,32 +221,27 @@ export type SendOrigin = {
   link?: TargetLink;
   /** The user cleared the steer (✕). */
   waitForIdle?: true;
-  /** Text a Mono row, the orchestrator, CI repair or the app wrote. */
-  agentText?: string;
+  /** Text the orchestrator, CI repair or a CLI send wrote. */
   managed?: boolean;
   ciRepair?: unknown;
   appRequestId?: string;
-  monoSessionCompletion?: unknown;
 };
 
 /**
- * The text is the user's own: typed in the composer, not a Mono row, a CLI
- * request (decision 553), a completion report, an orchestrator turn or a CI
- * repair. Only the user's own text gets the user's link (design 16.12.4).
+ * The text is the user's own: typed in the composer, not an orchestrator
+ * turn, a CI repair, a CLI send (decision 553) or a queued item the user did
+ * not type (`isOwnQueuedMessage`). A Mono row's hand-off and a completion
+ * report always come with their item. Only the user's own text gets the
+ * user's link (design 16.12.4). The habit and automation runs pass no marker
+ * and reach only an idle session, which gets no line without a link.
  */
 function isOwnText(
   origin: SendOrigin | undefined,
   item: QueuedMessage | undefined,
 ): boolean {
-  return !(
-    origin?.agentText ||
-    origin?.managed ||
-    origin?.ciRepair ||
-    origin?.appRequestId ||
-    origin?.monoSessionCompletion ||
-    item?.monoMessageId ||
-    item?.appRequestId ||
-    item?.monoSessionCompletion
+  return (
+    !(origin?.managed || origin?.ciRepair || origin?.appRequestId) &&
+    (!item || isOwnQueuedMessage(item))
   );
 }
 
@@ -262,6 +258,16 @@ type BusyRoute = {
   items: readonly RunningItem[];
   steers: "now" | "later" | "no";
 };
+
+/** The route of a send into `session` while it is busy with the turn `turns` holds for it. */
+export function busyRoute(
+  session: Session,
+  turns: RunningTurns,
+  steers: BusyRoute["steers"],
+): SendRoute {
+  const running = session.busy ? turns.get(session.id) : undefined;
+  return { running, items: runningItems(session, running), steers };
+}
 
 /** The fields of a user block that place it in a turn and say what it names. */
 type TurnBlock = Pick<Block, "turnId" | "link">;

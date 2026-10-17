@@ -23,7 +23,10 @@ import { isReviewablePlan } from "../../../features/sessions/model/plan";
 import { resolveModel } from "../../../features/sessions/model/models";
 import type { HarnessEvent } from "./types";
 import { usageLimitFromError } from "../../../features/sessions/model/usageLimit";
-import { pauseQueue } from "../../../features/sessions/model/messageQueue";
+import {
+  missedTurn,
+  pauseQueue,
+} from "../../../features/sessions/model/messageQueue";
 
 /**
  * After a steer was refused as not ready, output from the running turn proves
@@ -560,6 +563,9 @@ export function stopStreaming(session: Session, endedAt = Date.now()): Session {
     settlePendingApprovals(session);
   return {
     ...settled,
+    ...(settled.queuedMessages
+      ? { queuedMessages: missedTurn(settled.queuedMessages) }
+      : {}),
     busy: false,
     turnReadiness: undefined,
     pendingQuestion: undefined,

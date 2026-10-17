@@ -204,17 +204,21 @@ export async function deliverAppSteer(steps: {
   return { alreadySubmitted: false, delivery: "steered" };
 }
 
-/** Steer a user message into running turn `gen`. A queued item's CLI watcher
- *  follows that turn, or gets the steer's failure. Returns false and changes
- *  nothing when that turn already settled, so the item stays queued with its
- *  watcher. `fail` reports a rejected steer to the user. */
+type SteerBlock = Pick<Block, "turnId" | "link">;
+
+/** Steer a user message into running turn `gen` as `sent` plans it: `record`
+ *  writes its block, `steer` gives the provider its text. A queued item's CLI
+ *  watcher follows that turn, or gets the steer's failure. Returns false and
+ *  changes nothing when that turn already settled, so the item stays queued
+ *  with its watcher. `fail` reports a rejected steer to the user. */
 export function steerRunningTurn(steps: {
   watchers: TurnWatchers;
   sessionId: string;
   gen: number;
   queued?: { id: string; watcher?: CompletionWatcher };
-  record: () => void;
-  steer: () => Promise<void>;
+  sent: { block: SteerBlock; text: string };
+  record: (block: SteerBlock) => void;
+  steer: (text: string) => Promise<void>;
   fallbackError: string;
   fail: (message: string) => void;
 }): boolean {
@@ -224,8 +228,8 @@ export function steerRunningTurn(steps: {
     if (!queued.watcher) watchers.hold(queued.id, watcher);
     return false;
   }
-  steps.record();
-  void steps.steer().catch((error: unknown) => {
+  steps.record(steps.sent.block);
+  void steps.steer(steps.sent.text).catch((error: unknown) => {
     const message =
       error instanceof Error ? error.message : steps.fallbackError;
     if (watcher && watchers.detach(sessionId, gen, watcher))

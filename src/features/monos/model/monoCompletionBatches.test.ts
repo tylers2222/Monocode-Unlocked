@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { TurnId } from "./monoMessages";
 import { submitWithSettlement } from "../../../app/model/managedSubmission";
 import {
   canDispatchQueuedHead,
@@ -136,7 +137,9 @@ describe("Mono completion batches", () => {
       queuedMessages: mono.queuedMessages!.slice(1),
     };
     expect(canDispatchQueuedHead(notification)).toBe(false);
-    expect(steerableQueuedMessage(notification, undefined)).toBeUndefined();
+    expect(
+      steerableQueuedMessage(notification, "turn-1" as TurnId),
+    ).toBeUndefined();
     expect(canDispatchQueuedHead({ ...notification, busy: false })).toBe(true);
   });
 
