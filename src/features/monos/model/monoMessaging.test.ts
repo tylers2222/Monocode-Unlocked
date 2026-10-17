@@ -305,3 +305,43 @@ it("shows a waiting notice as the first queue row of a Mono chat and not as a bu
     ),
   ).toEqual(["typed"]);
 });
+
+// Design 16.3, 16.12.4. Defects: a reply typed while busy shows no link on
+// its bubble; the whole-turn link is stamped at queue time, so a message
+// that later opens its own turn is labelled as a steer; or the link and the
+// turn are not written when the pump steers it in.
+it("links a queued bubble from its item and stamps the whole turn only when the pump steers it in", () => {
+  const link = {
+    intent: "reply" as const,
+    replyTo: "block-1",
+    quote: "Ship it?",
+  };
+  const replied = enqueueMonoMessage(
+    { ...newSession("codex", "/tmp"), busy: true },
+    { ...message("reply"), waitForIdle: true, link },
+  );
+  expect(replied.blocks.at(-1)).toMatchObject({ id: "reply", link });
+  expect(replied.blocks.at(-1)).not.toHaveProperty("turnId");
+
+  const item = message("typed");
+  const typed = enqueueMonoMessage(replied, item);
+  expect(typed.blocks.at(-1)).not.toHaveProperty("link");
+  const steered = acknowledgeMonoMessage(typed, item, {
+    mode: "follow-up",
+    cards: {
+      turnId: "turn-1" as never,
+      link: { intent: "steer", scope: "turn" },
+    },
+  });
+  expect(steered.blocks.at(-1)).toMatchObject({
+    id: "typed",
+    turnId: "turn-1",
+    link: { intent: "steer", scope: "turn" },
+  });
+  const opened = acknowledgeMonoMessage(stopStreaming(typed), item, {
+    mode: "new-turn",
+    cards: { turnId: "turn-2" as never },
+  });
+  expect(opened.blocks.at(-1)).toMatchObject({ id: "typed", turnId: "turn-2" });
+  expect(opened.blocks.at(-1)).not.toHaveProperty("link");
+});

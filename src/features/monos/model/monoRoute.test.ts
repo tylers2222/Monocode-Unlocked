@@ -111,6 +111,33 @@ const rust = vi.hoisted(() => {
   const row = (id: string) => state.rows.find((entry) => entry.id === id);
   const held = (entry: Row, turnId: string) =>
     entry.slot?.turnId === turnId && entry.slot.deliveredAt === null;
+  // `Targeted`: the row and what its line quotes (`reply_target`), read with
+  // its slot. reply_to is a foreign key, so a target this fixture did not
+  // write (`ask`'s m_zzzzzzzzzzzz) stands for a row sent before the test.
+  // IPC returns a copy, so later changes to the row do not show.
+  const targeted = (entry: Row) => {
+    const message = structuredClone(entry);
+    if (!entry.replyTo) return { message, target: null };
+    const target = row(entry.replyTo);
+    return {
+      message,
+      target: target
+        ? {
+            messageId: target.id,
+            body: target.body,
+            handledBySession: target.handledBySession,
+            slot: target.slot?.handle
+              ? { turnId: target.slot.turnId, handle: target.slot.handle }
+              : null,
+          }
+        : {
+            messageId: entry.replyTo,
+            body: "Earlier work",
+            handledBySession: entry.handledBySession,
+            slot: null,
+          },
+    };
+  };
   const invoke = async (command: string, args: Record<string, never>) => {
     state.commands.push(command);
     switch (command) {
@@ -137,7 +164,7 @@ const rust = vi.hoisted(() => {
         if (prior.length)
           return {
             outcome: "accepted",
-            messages: prior,
+            messages: prior.map(targeted),
             answered: [],
             duplicate: true,
             routes: [],
@@ -172,7 +199,7 @@ const rust = vi.hoisted(() => {
           accepted.status = "dropped";
           return {
             outcome: "accepted",
-            messages: [structuredClone(accepted)],
+            messages: [targeted(accepted)],
             answered: [],
             duplicate: false,
             routes: [],
@@ -180,8 +207,7 @@ const rust = vi.hoisted(() => {
         }
         return {
           outcome: "accepted",
-          // IPC returns a copy, so later changes to the row do not show.
-          messages: [structuredClone(accepted)],
+          messages: [targeted(accepted)],
           answered: answering
             ? [{ handle: "#1", message_id: answering.id }]
             : [],
@@ -200,31 +226,7 @@ const rust = vi.hoisted(() => {
         const entry = row(args.id);
         if (!entry || (entry.status !== "open" && entry.status !== "delivered"))
           return null;
-        // `reply_target`: what the row's line quotes, read with its slot.
-        // reply_to is a foreign key, so a target this fixture did not write
-        // (`ask`'s m_zzzzzzzzzzzz) stands for a row sent before the test.
-        const answer = () => {
-          if (!entry.replyTo) return { message: entry, target: null };
-          const target = row(entry.replyTo);
-          return {
-            message: entry,
-            target: target
-              ? {
-                  messageId: target.id,
-                  body: target.body,
-                  handledBySession: target.handledBySession,
-                  slot: target.slot?.handle
-                    ? { turnId: target.slot.turnId, handle: target.slot.handle }
-                    : null,
-                }
-              : {
-                  messageId: entry.replyTo,
-                  body: "Earlier work",
-                  handledBySession: entry.handledBySession,
-                  slot: null,
-                },
-          };
-        };
+        const answer = () => targeted(entry);
         if (entry.slot) return held(entry, args.turnId) ? answer() : null;
         // A steer only joins a running turn (design 16.6); an opener
         // hand-off drops it. The turn it names is Rust's to check.
@@ -272,12 +274,14 @@ const rust = vi.hoisted(() => {
         return (holders[0] ?? args.window) === args.window;
       }
       case "mono_messages_unqueued":
-        return state.rows.filter(
-          (entry) =>
-            entry.handledBySession === args.sessionId &&
-            !entry.slot &&
-            (entry.status === "open" || entry.status === "delivered"),
-        );
+        return state.rows
+          .filter(
+            (entry) =>
+              entry.handledBySession === args.sessionId &&
+              !entry.slot &&
+              (entry.status === "open" || entry.status === "delivered"),
+          )
+          .map(targeted);
       case "mono_messages_pending_notices":
         return state.rows.filter(
           (entry) =>
@@ -365,7 +369,7 @@ const rust = vi.hoisted(() => {
     }
     throw new Error(`unexpected command ${command}`);
   };
-  return { state, invoke };
+  return { state, invoke, targeted };
 });
 
 type Row = (typeof rust.state.rows)[number];
@@ -720,7 +724,11 @@ it("steers a project session with the line and records the block without it", as
     chat("project", { busy: true }),
   ]);
   rust.state.route = { sessionId: "project", via: "queue" };
-  await send({ ...ask(), message: "Refactor the login flow", send_to: "project" });
+  await send({
+    ...ask(),
+    message: "Refactor the login flow",
+    send_to: "project",
+  });
   const target = rust.state.rows[0].id as MessageId;
   await handOff(host, "project", target, "steer", () => true);
   rust.state.route = { sessionId: "project", via: "steer" };
@@ -744,6 +752,141 @@ it("steers a project session with the line and records the block without it", as
   expect(block?.text).toBe(
     `<mono_message message_id="${id}" from="Boss" mono_id="giga" role="giga" wanting_reply="false">\nKeep the API stable\n</mono_message>`,
   );
+});
+
+// PR I5 (design 16.3, 16.8). Defect: a Mono steer's block in a project
+// session has no turn id, so it is never a running item a user can steer,
+// or no link, so its quote can never show.
+it("records a project-session steer with the turn it joined and the message it names", async () => {
+  const { send, get, host, steerProject } = world([
+    chat("project", { busy: true }),
+  ]);
+  rust.state.route = { sessionId: "project", via: "queue" };
+  await send({
+    ...ask(),
+    message: "Refactor the login flow",
+    send_to: "project",
+  });
+  const target = rust.state.rows[0].id as MessageId;
+  await handOff(host, "project", target, "steer", () => true);
+  rust.state.route = { sessionId: "project", via: "steer" };
+  await send(
+    {
+      message: "Keep the API stable",
+      send_to: "project",
+      wanting_reply: false,
+      intent: "steer",
+      reply_to: target,
+    },
+    "r2",
+  );
+  const [[, handed, id]] = steerProject.mock.calls as unknown as [
+    [Session, HandedOff, string],
+  ];
+  const block = recordAppSteer(get("project"), handed.shown, id, {
+    turnId: handed.turnId,
+    link: handed.link,
+  }).blocks.at(-1);
+  expect(block).toMatchObject({
+    turnId: "run-project",
+    link: {
+      intent: "steer",
+      replyTo: target,
+      quote: "Refactor the login flow",
+    },
+  });
+});
+
+// PR I5 (PR I4 review r1 m4, design 16.3). Defect: the route payload has no
+// target, so a Mono steer's bubble has no link; or a new row gets one; or
+// the queue item carries it, where it would read as the user's own link.
+it("links a routed steer's bubble to the message it names, and a new row's bubble to none", async () => {
+  const { send, get } = world([
+    chat("a-chat", { busy: true, turnReadiness: "ready" }),
+  ]);
+  await send({
+    ...ask(true),
+    message: 'Fix the "login" bug\nin auth.ts — then run the tests and report',
+  });
+  const target = rust.state.rows[0].id as MessageId;
+  rust.state.route = { sessionId: "a-chat", via: "steer" };
+  await send(
+    {
+      message: "Keep the API stable",
+      send_to: "mono-a",
+      wanting_reply: false,
+      intent: "steer",
+      reply_to: target,
+    },
+    "r2",
+  );
+  const steer = rust.state.rows[1].id;
+  const bubble = (id: string) =>
+    get("a-chat").blocks.find((block) => block.id === id);
+  expect(bubble(steer)?.link).toEqual({
+    intent: "steer",
+    replyTo: target,
+    quote: 'Fix the "login" bug in auth.ts — then…',
+  });
+  expect(bubble(target)).not.toHaveProperty("link");
+  expect(
+    get("a-chat").queuedMessages?.find((item) => item.id === steer),
+  ).not.toHaveProperty("link");
+});
+
+// PR I5 (PR I4 review r1 m4). Defect: only routed bubbles have a link, so
+// after a reload the bubble reconcile queues has none.
+it("links a steer's bubble that reconcile queues after a reload as a route would", async () => {
+  const { send, get, host } = world([
+    chat("a-chat", { busy: true, turnReadiness: "ready" }),
+  ]);
+  await send({ ...ask(true), message: "Refactor the login flow" });
+  const target = rust.state.rows[0].id as MessageId;
+  rust.state.route = { sessionId: "a-chat", via: "steer" };
+  await send(
+    {
+      message: "Keep the API stable",
+      send_to: "mono-a",
+      wanting_reply: false,
+      intent: "steer",
+      reply_to: target,
+    },
+    "r2",
+  );
+  const steer = rust.state.rows[1].id;
+  host.update("a-chat", (session) => ({
+    ...session,
+    blocks: session.blocks.filter((block) => block.id !== steer),
+    queuedMessages: [],
+  }));
+  await reconcile(host, "a-chat");
+  expect(
+    get("a-chat").blocks.find((block) => block.id === steer)?.link,
+  ).toEqual({
+    intent: "steer",
+    replyTo: target,
+    quote: "Refactor the login flow",
+  });
+});
+
+// Design 16.12.6 (PR I5 builds the data). Defect: a whole-turn steer's
+// bubble cannot be labelled Steer · whole turn.
+it("links a whole-turn steer's bubble to the whole turn", async () => {
+  const { send, get } = world([
+    chat("a-chat", { busy: true, turnReadiness: "ready" }),
+  ]);
+  rust.state.route = { sessionId: "a-chat", via: "steer" };
+  await send({
+    message: "Stop and commit",
+    send_to: "mono-a",
+    wanting_reply: false,
+    intent: "steer",
+    scope: "turn",
+  });
+  expect(get("a-chat").blocks.at(-1)?.link).toEqual({
+    intent: "steer",
+    scope: "turn",
+  });
 });
 
 // Design 5.5 rule 4. Defect: a new message whose steer into a project
@@ -971,7 +1114,7 @@ it("leaves a route to the window that owns the session and runs one sent to it",
   expect(caller.open).not.toHaveBeenCalled();
   expect(caller.host.session("a-chat")).toBeUndefined();
   const owner = world([chat("a-chat", { busy: true })]);
-  await routeMessages(owner.host, rust.state.rows as never, {
+  await routeMessages(owner.host, rust.state.rows.map(rust.targeted) as never, {
     sessionId: "a-chat" as SessionId,
     via: "queue",
   });
@@ -1130,7 +1273,10 @@ it("refuses to render a hand-off whose target is not the row's reply_to", () => 
     turnId: "turn-1" as TurnId,
   };
   expect(() =>
-    renderMonoMessage(steer, undefined, undefined, { ...reading, target: null }),
+    renderMonoMessage(steer, undefined, undefined, {
+      ...reading,
+      target: null,
+    }),
   ).toThrow("names no target, not its reply_to m_bbbbbbbbbbbb");
   expect(() =>
     renderMonoMessage(steer, undefined, undefined, {
@@ -1189,10 +1335,14 @@ it("reports the delivery the owner window gives for the route it ran", async () 
   const sending = caller.send(ask());
   const owner = world([chat("a-chat")]);
   await vi.waitFor(() => expect(rust.state.rows).toHaveLength(1));
-  const delivery = await routeMessages(owner.host, rust.state.rows as never, {
-    sessionId: "a-chat" as SessionId,
-    via: "queue",
-  });
+  const delivery = await routeMessages(
+    owner.host,
+    rust.state.rows.map(rust.targeted) as never,
+    {
+      sessionId: "a-chat" as SessionId,
+      via: "queue",
+    },
+  );
   ownerDeliveries.settle({
     messageId: "m_aaaaaaaaaaaa" as MessageId,
     delivery,
@@ -1229,7 +1379,7 @@ it("runs a route only in the owner window, and the caller takes only the owner's
   await vi.waitFor(() => expect(rust.state.rows).toHaveLength(1));
   // mono_message_submit's emit_to(owner).
   await bus.emitTo("owner", "mono-message-route", {
-    messages: rust.state.rows,
+    messages: rust.state.rows.map(rust.targeted),
     route: { sessionId: "a-chat", via: "queue" },
     callerWindow: "caller",
   });
@@ -1329,8 +1479,7 @@ it("hands off a steer with the line that names its target, and queues it without
   const { send, get, host } = world([chat("a-chat", { busy: true })]);
   await send({
     ...ask(true),
-    message:
-      'Fix the "login" bug\nin auth.ts — then run 👨‍👩‍👧 tests and report',
+    message: 'Fix the "login" bug\nin auth.ts — then run 👨‍👩‍👧 tests and report',
   });
   const target = rust.state.rows[0].id as MessageId;
   const deliver = vi.fn((_: HandedOff) => true);

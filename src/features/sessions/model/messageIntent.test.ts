@@ -6,11 +6,32 @@ import type {
   TurnId,
 } from "../../monos/model/monoMessages";
 import {
+  appendSteerUser,
+  appendUser,
+  stopStreaming,
+} from "../../../integrations/harness/core/apply";
+import {
+  registerHarness,
+  type HarnessAdapter,
+} from "../../../integrations/harness/core/registry";
+import {
+  acknowledgeMonoMessage,
+  enqueueMonoMessage,
+} from "../../monos/model/monoMessaging";
+import {
+  composerTarget,
   excerpt,
   intentLine,
+  linkedText,
+  parseMessageLink,
+  parseTargetLink,
+  planUserSend,
+  runningItems,
   targetRef,
   type ReplyTarget,
+  type RunningItem,
 } from "./messageIntent";
+import { newSession, type Session, type TargetLink } from "./session";
 
 // Design 16.7 step 2 and 5. Defect: a ninth word reaches the line, or a text
 // that was not cut gets a false cut mark.
@@ -149,4 +170,189 @@ it("loads and cuts an excerpt where Intl.Segmenter is missing", async () => {
       configurable: true,
     });
   }
+});
+
+const turn1 = "turn-1" as TurnId;
+const turn2 = "turn-2" as TurnId;
+const queued = (id: string, text: string, waitForIdle?: true) => ({
+  id,
+  text,
+  attachments: [],
+  ...(waitForIdle ? { waitForIdle } : {}),
+});
+const ready = (session: Session): Session => ({
+  ...session,
+  turnReadiness: "ready",
+});
+const blockIds = (items: RunningItem[]) => items.map((item) => item.blockId);
+
+registerHarness({ id: "codex", live: true } as unknown as HarnessAdapter);
+
+// Design 16.8 (intents review r1, r2). Defects: a queued message counts as
+// running work; position after the last opener stands in for turn
+// membership, so a bubble queued in turn 1 that opens turn 2 drags turn 1's
+// joined steers into turn 2.
+it("lists the opener and the blocks that joined the running turn, and nothing queued or from an earlier turn", () => {
+  let session = appendUser(
+    newSession("codex", "/tmp"),
+    "Build the login page",
+    [],
+    { turnId: turn1 },
+  );
+  const opener = session.blocks[0].id;
+  const later = queued("later", "Then the signup page");
+  session = enqueueMonoMessage(ready(session), later);
+  session = appendSteerUser(session, "Use the blue button", [], {
+    turnId: turn1,
+  });
+  const steer = session.blocks.at(-1)!.id;
+  session = enqueueMonoMessage(session, queued("held", "After that", true));
+  expect(blockIds(runningItems(session, turn1))).toEqual([opener, steer]);
+  expect(runningItems(session, turn1)[0].quote).toBe("Build the login page");
+
+  session = acknowledgeMonoMessage(stopStreaming(session), later, {
+    mode: "new-turn",
+    cards: { turnId: turn2 },
+  });
+  session = appendSteerUser(ready(session), "Add a footer", [], {
+    turnId: turn2,
+  });
+  const footer = session.blocks.at(-1)!.id;
+  expect(blockIds(runningItems(session, turn2))).toEqual(["later", footer]);
+  expect(
+    runningItems({ ...session, turnReadiness: "starting" }, turn2),
+  ).toEqual([]);
+});
+
+// Design 16.3, 16.12.4. Defect: an illegal link persists: new with a target,
+// an unknown intent, a quote the 200 bound refuses, or a link with both a
+// target and the whole-turn scope.
+it("keeps a stored link only in one of its two shapes", () => {
+  const link = { intent: "steer", replyTo: "block-1", quote: "Fix it" };
+  expect(parseMessageLink(link)).toEqual(link);
+  expect(parseMessageLink({ intent: "steer", scope: "turn" })).toEqual({
+    intent: "steer",
+    scope: "turn",
+  });
+  for (const illegal of [
+    { intent: "new", replyTo: "block-1", quote: "Fix it" },
+    { intent: "answer", replyTo: "block-1", quote: "Fix it" },
+    { intent: "reply", replyTo: "", quote: "Fix it" },
+    { intent: "reply", replyTo: "b".repeat(129), quote: "Fix it" },
+    { intent: "reply", replyTo: "block-1", quote: "q".repeat(201) },
+    { intent: "steer", scope: "turn", replyTo: "x" },
+    { intent: "reply", scope: "turn" },
+    { intent: "steer", scope: "all" },
+  ])
+    expect(parseMessageLink(illegal)).toBeUndefined();
+  expect(parseTargetLink({ intent: "steer", scope: "turn" })).toBeUndefined();
+});
+
+// Design 16.7, 16.12.5. Defect: the provider gets no line, a plain block
+// gets a ref get_message cannot take, or new work gets a line.
+it("puts the line before the text the provider reads", () => {
+  expect(
+    linkedText(
+      { intent: "steer", replyTo: "block-1", quote: 'Fix the "login" bug' },
+      "Keep the API",
+    ),
+  ).toBe('[steer → "Fix the \\"login\\" bug"]\nKeep the API');
+  expect(
+    linkedText(
+      { intent: "reply", replyTo: "m_abcdefgh2345", quote: "Review PR 12" },
+      "Done",
+    ),
+  ).toBe('[reply → m_abcdefgh2345 · "Review PR 12"]\nDone');
+  expect(linkedText({ intent: "steer", scope: "turn" }, "Also docs")).toBe(
+    "[steer → whole turn]\nAlso docs",
+  );
+  expect(linkedText(undefined, "New work")).toBe("New work");
+});
+
+const running = [{ blockId: "block-1", quote: "Fix it" }];
+const steerLink: TargetLink = {
+  intent: "steer",
+  replyTo: "block-1",
+  quote: "Fix it",
+};
+
+// Design 16.8. Defects: a steer is sent as a guess after its work ended; a
+// reply or a cleared steer interrupts running work.
+it("steers only into the work a link names, and never steers a reply or a cleared steer", () => {
+  const plan = (input: Partial<Parameters<typeof planUserSend>[0]>) =>
+    planUserSend({
+      link: undefined,
+      waitForIdle: false,
+      own: true,
+      session: { running, steers: true },
+      ...input,
+    });
+  expect(plan({ link: steerLink })).toEqual({ kind: "join", link: steerLink });
+  expect(
+    plan({ link: steerLink, session: { running: [], steers: true } }),
+  ).toEqual({ kind: "target_gone" });
+  expect(plan({ link: steerLink, session: "idle" })).toEqual({
+    kind: "target_gone",
+  });
+  const reply: TargetLink = { ...steerLink, intent: "reply" };
+  expect(plan({ link: reply })).toEqual({
+    kind: "queue",
+    link: reply,
+    waitForIdle: true,
+  });
+  expect(plan({ waitForIdle: true })).toEqual({
+    kind: "queue",
+    waitForIdle: true,
+  });
+  expect(plan({ link: reply, session: "idle" })).toEqual({
+    kind: "open",
+    link: reply,
+  });
+});
+
+// Design 16.12.4. Defects: the user's steer stays implicit; a whole-turn link
+// lands on work that opened its own turn; an agent's row, handed off through
+// the same path, is labelled as the user's steer and gets a second line.
+it("makes the user's untargeted steer whole-turn only when the user's own text joins the running turn", () => {
+  const plan = (
+    own: boolean,
+    session: Parameters<typeof planUserSend>[0]["session"],
+  ) => planUserSend({ link: undefined, waitForIdle: false, own, session });
+  expect(plan(true, { running, steers: true })).toEqual({
+    kind: "join",
+    link: { intent: "steer", scope: "turn" },
+  });
+  expect(plan(false, { running, steers: true })).toEqual({ kind: "join" });
+  expect(plan(true, { running, steers: false })).toEqual({
+    kind: "queue",
+    waitForIdle: false,
+  });
+  expect(plan(true, "idle")).toEqual({ kind: "open" });
+});
+
+// Design 16.12.6. Defects: a guessed target, a blocked send, or a picked
+// steer whose work ended still shown as live.
+it("shows the whole turn with no pick while steering, and a picked steer as gone once its work ended", () => {
+  expect(composerTarget(running, null, true)).toEqual({ kind: "turn" });
+  expect(
+    composerTarget(
+      [...running, { blockId: "block-2", quote: "Also" }],
+      null,
+      true,
+    ),
+  ).toEqual({ kind: "turn" });
+  expect(composerTarget(running, null, false)).toEqual({ kind: "none" });
+  expect(composerTarget(running, steerLink, true)).toEqual({
+    kind: "picked",
+    link: steerLink,
+  });
+  expect(composerTarget([], steerLink, true)).toEqual({
+    kind: "gone",
+    link: steerLink,
+  });
+  const reply: TargetLink = { ...steerLink, intent: "reply" };
+  expect(composerTarget([], reply, false)).toEqual({
+    kind: "picked",
+    link: reply,
+  });
 });

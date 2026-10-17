@@ -542,6 +542,12 @@ import {
 } from "../features/sessions/model/messageQueue";
 import { deliverQueuedFollowUp } from "../features/sessions/model/queuedFollowUp";
 import {
+  linkedText,
+  planUserSend,
+  runningItems,
+  STEER_TARGET_GONE,
+} from "../features/sessions/model/messageIntent";
+import {
   USAGE_LIMIT_RESUME_GRACE_MS,
   resumeUsageLimitedSession,
   usageLimitResumeDue,
@@ -7160,6 +7166,40 @@ function Workspace({
         options?.agentText ??
         options?.ciRepair?.prompt ??
         (rawCommand ? submittedText : composeNoteMessage(noteCard, promptText));
+      // Design 16.8: the user's own link. A Mono row's link is on its bubble,
+      // and its text already carries its line (design 16.12.4).
+      const ownText = !queuedItem?.monoMessageId;
+      const link = ownText ? (options?.link ?? queuedItem?.link) : undefined;
+      const sendPlan = (into: "idle" | { steers: boolean }) =>
+        planUserSend({
+          link,
+          waitForIdle: !!options?.waitForIdle,
+          own: ownText,
+          session:
+            into === "idle"
+              ? into
+              : {
+                  running: runningItems(
+                    current,
+                    currentTurnIds.current.get(sessionId),
+                  ),
+                  steers: into.steers,
+                },
+        });
+      // A steer whose work ended sends nothing; a queued one keeps its text
+      // with the reason, and the queue holds (decision 85).
+      const targetGone = () => {
+        const queuedId = options?.queuedMessageId;
+        if (queuedId)
+          updateSessionState(sessionsRef, setSessions, (sessions) =>
+            sessions.map((session) =>
+              session.id === sessionId
+                ? failQueuedMessage(session, queuedId, STEER_TARGET_GONE)
+                : session,
+            ),
+          );
+        return false;
+      };
 
       const pendingSwitch = pendingComposerSwitch(current);
 
@@ -7170,6 +7210,10 @@ function Workspace({
         !options?.queuedMessageId &&
         (current.busy || current.queuedMessages?.length)
       ) {
+        // The pump steers the item later; only a reply, a continue or a
+        // cleared steer waits for the turn end.
+        const queued = sendPlan({ steers: true });
+        if (queued.kind === "target_gone") return false;
         const next = sessionsRef.current.map((session) =>
           session.id === sessionId
             ? enqueueMonoMessage(
@@ -7186,6 +7230,8 @@ function Workspace({
                   noteCard,
                   handoffCard,
                   intent,
+                  ...(link ? { link } : {}),
+                  ...(queued.kind === "queue" ? { waitForIdle: true } : {}),
                 },
                 rawCommand ? undefined : userTurnCards(noteCard),
               )
@@ -7208,6 +7254,10 @@ function Workspace({
           operatorCommand.matched
         )
           return false;
+        const joined = sendPlan({ steers: true });
+        if (joined.kind === "target_gone") return targetGone();
+        if (joined.kind !== "join") return false;
+        const joinedTurnId = currentTurnIds.current.get(sessionId);
         const gen = turnGen.current.get(sessionId);
         const change = (update: (session: Session) => Session) => {
           const next = sessionsRef.current.map((session) =>
@@ -7228,7 +7278,7 @@ function Workspace({
             if (latest) await upsertSession(latest);
             return {
               attachments: await prepareAttachments(attachments),
-              text: await preparePrompt(harnessText, {
+              text: await preparePrompt(linkedText(joined.link, harnessText), {
                 harness: current.harness,
                 sessionId,
                 cwd: initialWorkCwd,
@@ -7254,7 +7304,11 @@ function Workspace({
                 mode: "follow-up",
                 text: submittedText,
                 attachments: displayAttachments(attachments),
-                cards: userTurnCards(noteCard),
+                cards: {
+                  ...userTurnCards(noteCard),
+                  turnId: joinedTurnId,
+                  link: joined.link,
+                },
               }),
             );
             flushHarnessEvents();
@@ -7302,7 +7356,9 @@ function Workspace({
                   ? "steer"
                   : "queue"
                 : (options?.followUpBehavior ?? loadFollowUpBehavior());
-        if (followUpBehavior === "queue") {
+        const sent = sendPlan({ steers: followUpBehavior === "steer" });
+        if (sent.kind === "target_gone") return targetGone();
+        if (sent.kind === "queue") {
           setSessions((prev) =>
             prev.map((s) =>
               s.id === sessionId
@@ -7320,6 +7376,8 @@ function Workspace({
                         noteCard,
                         handoffCard,
                         intent,
+                        ...(sent.link ? { link: sent.link } : {}),
+                        ...(sent.waitForIdle ? { waitForIdle: true } : {}),
                       },
                     ],
                     queueStatus:
@@ -7343,6 +7401,7 @@ function Workspace({
         }
         const visible = displayAttachments(attachments);
         const cards = userTurnCards(noteCard);
+        const joinedTurnId = currentTurnIds.current.get(sessionId);
         const steered = steerRunningTurn({
           watchers: turnWatchers.current,
           sessionId,
@@ -7366,6 +7425,8 @@ function Workspace({
               return appendSteerUser(next, submittedText, visible, {
                 ...cards,
                 ...queuedAppDelivery(queuedItem),
+                turnId: joinedTurnId,
+                link: sent.link,
               });
             });
             sessionsRef.current = nextSessions;
@@ -7373,11 +7434,14 @@ function Workspace({
           },
           steer: async () => {
             const prepared = await prepareAttachments(attachments);
-            const prompt = await preparePrompt(harnessText, {
-              harness: current.harness,
-              sessionId,
-              cwd: initialWorkCwd,
-            });
+            const prompt = await preparePrompt(
+              linkedText(sent.link, harnessText),
+              {
+                harness: current.harness,
+                sessionId,
+                cwd: initialWorkCwd,
+              },
+            );
             await steerHarnessTurn({
               harness: current.harness,
               sessionId,
@@ -7403,6 +7467,10 @@ function Workspace({
         tookTurn(steered);
         return steered;
       }
+
+      const opened = sendPlan("idle");
+      if (opened.kind === "target_gone") return targetGone();
+      const openLink = opened.kind === "open" ? opened.link : undefined;
 
       if (
         !options?.projectLocationReady &&
@@ -7529,6 +7597,9 @@ function Workspace({
           : card
             ? SECOND_OPINION_TITLE
             : submittedText;
+      // Design 5.2: the turn's app calls and handles are bound to this id,
+      // minted before the commit so the opener block carries it (16.8).
+      let turnId = options?.turnId ?? newTurnId();
       const cards = {
         ...(rawCommand ? undefined : userTurnCards(noteCard, card)),
         ...(ciContext ? { ciContext } : {}),
@@ -7544,6 +7615,8 @@ function Workspace({
         ...(options?.monoSessionCompletion
           ? { monoSessionCompletion: options.monoSessionCompletion }
           : {}),
+        turnId,
+        ...(openLink ? { link: openLink } : {}),
       };
       const live = isLiveHarness(current.harness);
       // A Mono message goes back to its queue rather than into a turn that
@@ -7792,8 +7865,7 @@ function Workspace({
       let proposalText = "";
       let nativeProposalText = "";
       let completedProposal: OrchestrationProposal | undefined;
-      // Design 5.2: the turn's app calls and handles are bound to this id.
-      let turnId = options?.turnId ?? newTurnId();
+      // Design 5.2: this window runs turn `turnId` now.
       currentTurnIds.current.set(sessionId, turnId);
       void (async () => {
         // A Giga's turn starts after its workspace is in place, or after a
@@ -8027,7 +8099,7 @@ function Workspace({
           const prompt =
             intent === "build" && approvedPlan
               ? buildPlanPrompt(approvedPlan.text)
-              : await preparePrompt(harnessText, {
+              : await preparePrompt(linkedText(openLink, harnessText), {
                   harness: current.harness,
                   sessionId,
                   cwd: workCwd,
@@ -8888,7 +8960,8 @@ function Workspace({
       return opened;
     },
     reconciled: (id) => monoLoads.of(id),
-    steerProject: async (target, { text, shown }, id) => {
+    steerProject: async (target, handed, id) => {
+      const { text, shown } = handed;
       const change = (update: (session: Session) => Session) =>
         updateSessionState(sessionsRef, setSessions, (sessions) =>
           sessions.map((session) =>
@@ -8899,7 +8972,13 @@ function Workspace({
         watchers: turnWatchers.current,
         sessionId: target.id,
         gen: turnGen.current.get(target.id) ?? 0,
-        record: () => change((session) => recordAppSteer(session, shown, id)),
+        record: () =>
+          change((session) =>
+            recordAppSteer(session, shown, id, {
+              turnId: handed.turnId,
+              link: handed.link,
+            }),
+          ),
         steer: async () => {
           const cwd = sessionWorkCwd(target);
           await steerHarnessTurn({
@@ -11307,7 +11386,9 @@ function Workspace({
                     updateSessionState(sessionsRef, setSessions, (sessions) =>
                       sessions.map((session) =>
                         session.id === id
-                          ? recordAppSteer(session, prompt, requestId)
+                          ? recordAppSteer(session, prompt, requestId, {
+                              turnId: currentTurnIds.current.get(id),
+                            })
                           : session,
                       ),
                     );

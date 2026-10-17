@@ -5,9 +5,14 @@ import {
   AppActionError,
   type ToolErrorDetails,
 } from "../../agent-app/model/appActionError";
-import type { ReplyTarget } from "../../sessions/model/messageIntent";
+import { excerpt, type ReplyTarget } from "../../sessions/model/messageIntent";
 import { dequeueQueuedMessage } from "../../sessions/model/messageQueue";
-import type { QueuedMessage, Session } from "../../sessions/model/session";
+import {
+  WHOLE_TURN,
+  type MessageLink,
+  type QueuedMessage,
+  type Session,
+} from "../../sessions/model/session";
 import { enqueueMonoMessage } from "./monoMessaging";
 import {
   newTurnId,
@@ -35,10 +40,13 @@ import {
 
 /** A row that a session handles: the only kind `submit` accepts or lists. */
 type Routed = Extract<MonoMessage, { handledBySession: unknown }>;
+/** A row and the message its line names (Rust `Targeted`, design 16.7). */
+type Targeted<M extends MonoMessage> = {
+  message: M;
+  target: ReplyTarget | null;
+};
 /** A row `assign_slot` takes: it refuses every other status. */
 type Waiting = Extract<MonoMessage, { status: "open" | "delivered" }>;
-/** `assign_slot`'s answer: the row with its slot, and what it refers to. */
-type Assigned = { message: Waiting; target: ReplyTarget | null };
 /** A row whose sender is owed a notice (design 5.3). */
 type Noticed = Extract<MonoMessage, { status: NoticeStatus }>;
 
@@ -66,11 +74,12 @@ export type MonoQueueHost = {
  * whose id is the message id, unless the queue has one. `queue` waits for
  * the turn end; `steer` may steer the running turn. Both go to the tail, so
  * steers keep their order. A Mono chat's item reuses the bubble with that id,
- * or shows a new one.
+ * or shows a new one with the row's link (design 16.3); the item itself has
+ * no link, which is the user's own.
  */
 export function ensureQueued(
   session: Session,
-  message: { id: MessageId; text: string },
+  message: { id: MessageId; text: string; link?: MessageLink },
   kind: QueueKind,
   bubble: boolean,
 ): Session {
@@ -84,7 +93,11 @@ export function ensureQueued(
     ...(kind === "queue" ? { waitForIdle: true } : {}),
   };
   if (bubble && !session.blocks.some((block) => block.id === message.id))
-    return enqueueMonoMessage(session, item);
+    return enqueueMonoMessage(
+      session,
+      item,
+      message.link ? { link: message.link } : undefined,
+    );
   return {
     ...session,
     queuedMessages: [
@@ -95,10 +108,29 @@ export function ensureQueued(
   };
 }
 
-function queueItem(host: MonoQueueHost, message: Routed) {
+/**
+ * The link a Mono row's bubble shows (design 16.3, 16.12.6): what a reply
+ * or targeted steer names, with the target's excerpt, or the whole turn.
+ */
+function rowLink(
+  message: MonoMessage,
+  target: ReplyTarget | null,
+): MessageLink | undefined {
+  if (message.status === "rejected") return undefined;
+  if (message.scope === "turn") return WHOLE_TURN;
+  if (message.intent === "new" || !target) return undefined;
+  return {
+    intent: message.intent,
+    replyTo: target.messageId,
+    quote: excerpt(target.body),
+  };
+}
+
+function queueItem(host: MonoQueueHost, { message, target }: Targeted<Routed>) {
   return {
     id: message.id,
     text: renderMonoMessage(message, host.sender(message.fromMonoId)),
+    link: rowLink(message, target),
   };
 }
 
@@ -157,17 +189,17 @@ export async function reconcile(
   sessionId: string,
 ): Promise<void> {
   if (!(await host.owns(sessionId))) return;
-  const messages = await invoke<Routed[]>("mono_messages_unqueued", {
+  const rows = await invoke<Targeted<Routed>[]>("mono_messages_unqueued", {
     sessionId,
   });
-  for (const message of messages)
+  for (const row of rows)
     host.update(sessionId, (session) =>
       ensureQueued(
         session,
-        queueItem(host, message),
+        queueItem(host, row),
         // A steer only joins the running turn it names (design 16.6), so its
         // item never waits for the turn end.
-        message.intent === "steer" ? "steer" : "queue",
+        row.message.intent === "steer" ? "steer" : "queue",
         host.isMonoChat(sessionId),
       ),
     );
@@ -218,9 +250,14 @@ export function createLoadReconciles(host: MonoQueueHost) {
  * What a hand-off gives the provider: the row with its handle and its
  * inference line (`text`), and the turn. `shown` is the same row without
  * the line, for a transcript block (design 16.7: the line goes to the agent
- * only).
+ * only), and `link` is what that block names (design 16.3).
  */
-export type HandedOff = { text: string; shown: string; turnId: TurnId };
+export type HandedOff = {
+  text: string;
+  shown: string;
+  turnId: TurnId;
+  link?: MessageLink;
+};
 
 /**
  * An opener hand-off took its slot for a new turn `turnId`. A session that
@@ -250,10 +287,10 @@ export async function handOff(
   const turnId = mode === "dispatch" ? newTurnId() : host.turnId(sessionId);
   if (!turnId) return false;
   const slot = { id, turnId };
-  const assigned = await invoke<Assigned | null>("mono_message_assign_slot", {
-    ...slot,
-    kind: mode === "dispatch" ? "submit" : "steer",
-  });
+  const assigned = await invoke<Targeted<Waiting> | null>(
+    "mono_message_assign_slot",
+    { ...slot, kind: mode === "dispatch" ? "submit" : "steer" },
+  );
   if (!assigned) {
     host.update(sessionId, (session) => dequeueQueuedMessage(session, id));
     return false;
@@ -271,6 +308,7 @@ export async function handOff(
       }),
       shown: renderMonoMessage(row, sender, handle),
       turnId,
+      link: rowLink(row, assigned.target),
     });
   } finally {
     if (accepted) await invoke("mono_message_mark_delivery", slot);
@@ -281,7 +319,7 @@ export async function handOff(
           ? dequeueQueuedMessage(session, id)
           : ensureQueued(
               session,
-              queueItem(host, row),
+              queueItem(host, assigned),
               "queue",
               host.isMonoChat(sessionId),
             ),
@@ -376,11 +414,12 @@ export type MonoRouteHost = MonoQueueHost & {
   reconciled(id: string): Promise<void>;
   /**
    * Steers a running project session with `handed.text` and records
-   * `handed.shown` as its transcript block; throws when the turn ended.
+   * `handed.shown` as its transcript block, with the hand-off's turn and
+   * link; throws when the turn ended.
    */
   steerProject(
     session: Session,
-    handed: Pick<HandedOff, "text" | "shown">,
+    handed: HandedOff,
     id: MessageId,
   ): Promise<void>;
 };
@@ -413,7 +452,7 @@ type RouteGroup = Routing & { messageIds: MessageId[]; ownerWindow?: string };
 
 /** `mono-message-route`: a route this window runs because it owns the session. */
 export type MonoRouteEvent = {
-  messages: Routed[];
+  messages: Targeted<Routed>[];
   route: Routing;
   callerWindow: string;
 };
@@ -513,7 +552,7 @@ export function listenForMonoRoutes(
       void routeMessages(host(), payload.messages, payload.route)
         .then((delivery) =>
           emitTo(payload.callerWindow, "mono-message-routed", {
-            messageId: payload.messages[0].id,
+            messageId: payload.messages[0].message.id,
             delivery,
           } satisfies MonoRoutedEvent),
         )
@@ -558,7 +597,7 @@ type Sent = Routed | Extract<MonoMessage, { status: "dropped" }>;
 
 type Accepted = {
   outcome: "accepted";
-  messages: Sent[];
+  messages: Targeted<Sent>[];
   answered: { handle: Handle | null; message_id: MessageId }[];
   duplicate: boolean;
   /** Empty for a duplicate. */
@@ -619,7 +658,7 @@ async function submit(
  */
 export async function routeMessages(
   host: MonoRouteHost,
-  messages: Routed[],
+  messages: Targeted<Routed>[],
   { sessionId, via }: Routing,
 ): Promise<RouteOutcome> {
   const bubble = host.isMonoChat(sessionId);
@@ -632,14 +671,14 @@ export async function routeMessages(
   await host.reconciled(sessionId);
   const target = host.session(sessionId) ?? loaded;
   const kind = via === "steer" ? "steer" : "queue";
-  const routed = new Set<string>(messages.map((message) => message.id));
+  const routed = new Set<string>(messages.map((row) => row.message.id));
   // The load may have queued these rows already; they still open the turn.
   const idle =
     !target.busy &&
     (target.queuedMessages ?? []).every((queued) => routed.has(queued.id));
-  for (const message of messages)
+  for (const row of messages)
     host.update(sessionId, (session) =>
-      ensureQueued(session, queueItem(host, message), kind, bubble),
+      ensureQueued(session, queueItem(host, row), kind, bubble),
     );
   return kind === "steer" ? "steer" : idle ? "submit" : "queue";
 }
@@ -653,7 +692,7 @@ export async function routeMessages(
  */
 async function steerProjectSession(
   host: MonoRouteHost,
-  messages: Routed[],
+  messages: Targeted<Routed>[],
   sessionId: string,
 ): Promise<RouteOutcome> {
   const loaded = host.session(sessionId) ?? (await host.open(sessionId));
@@ -661,7 +700,7 @@ async function steerProjectSession(
   if (loaded) await host.reconciled(sessionId);
   const target = host.session(sessionId) ?? loaded;
   let steered = true;
-  for (const message of messages) {
+  for (const { message } of messages) {
     const delivered =
       target && host.turnId(sessionId)
         ? await handOff(
@@ -714,9 +753,9 @@ function route(
         return routeMessages(
           host,
           messages.filter(
-            (message): message is Routed =>
-              message.status !== "dropped" &&
-              group.messageIds.includes(message.id),
+            (row): row is Targeted<Routed> =>
+              row.message.status !== "dropped" &&
+              group.messageIds.includes(row.message.id),
           ),
           group,
         );
@@ -770,7 +809,7 @@ export async function sendMessage(
   input: SendInput,
 ) {
   const submitted = await submit(host, "send_message", requestId, input);
-  const [message] = submitted.messages;
+  const [{ message }] = submitted.messages;
   const delivery = await sendDelivery(host, submitted, message);
   // A steer that could not join its turn is dropped; the answer says so
   // (PR I2 review r1 M2).
@@ -815,7 +854,7 @@ export async function replyMessage(
   const submitted = await submit(host, "reply", requestId, input);
   if (!submitted.duplicate) await route(host, submitted, "skip");
   return {
-    message_ids: submitted.messages.map((message) => message.id),
+    message_ids: submitted.messages.map((row) => row.message.id),
     answered: submitted.answered,
     ...(submitted.duplicate ? { duplicate: true as const } : {}),
   };

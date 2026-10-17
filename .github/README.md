@@ -46,6 +46,7 @@ monocode app messages.reply --json '{"message":"CI is green."}'
 - The message arrives in the other Mono's chat as a `<mono_message>` tag that names the sender and says whether it wants a reply.
 - `wanting_reply` and `intent` are required. `intent: "new"` waits for a running turn to end. `intent: "steer"` with `reply_to` (the `message_id` of a message you sent) reaches the turn that runs that message's work, and is refused with `target_gone` when that work is not running. A Giga can pass `scope: "turn"` instead of `reply_to` to steer everything a Mono is doing now.
 - A reply or a steer starts with one line that names the message it refers to, such as `[steer → #1 · "first words…"]`, and the tag carries that message's id as `reply_to`. A whole-turn steer starts with `[steer → whole turn]`.
+- A message you type into a busy session that joins its running turn reaches the agent as a whole-turn steer, with `[steer → whole turn]` before your text. The transcript shows your text without it.
 - A Mono cannot send to itself.
 
 ## How it stays current

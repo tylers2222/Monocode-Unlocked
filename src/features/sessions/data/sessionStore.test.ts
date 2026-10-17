@@ -1049,3 +1049,59 @@ it("saves the exact CI context alongside the compact user message", () => {
     ciContext: context,
   });
 });
+
+// Design 16.3, 16.8. Defects: the whitelist drops a link or a turn id, so a
+// reload loses what a message refers to and which turn it ran in; an illegal
+// link persists; an old block without a link reads as anything but new.
+it("keeps a user block's link and turn id across a save, and drops an illegal link", () => {
+  const link = {
+    intent: "reply" as const,
+    replyTo: "block-1",
+    quote: "Ship it",
+  };
+  const session = newSession("codex", "/tmp");
+  session.blocks = [
+    { id: "a", role: "user", text: "Done", turnId: "turn-1" as never, link },
+    {
+      id: "b",
+      role: "user",
+      text: "Also",
+      link: { intent: "steer", scope: "turn" },
+    },
+    {
+      id: "c",
+      role: "user",
+      text: "Forged",
+      link: { intent: "new", replyTo: "block-1", quote: "x" } as never,
+    },
+    { id: "d", role: "user", text: "Old" },
+  ];
+  const [a, b, c, d] = sanitizeSessionForPersist(session).blocks;
+  expect(a).toMatchObject({ turnId: "turn-1", link });
+  expect(b.link).toEqual({ intent: "steer", scope: "turn" });
+  expect(c).not.toHaveProperty("link");
+  expect(d).not.toHaveProperty("link");
+});
+
+// Design 16.3. Defect: the queue whitelist drops a queued message's link, so
+// a reply sent while busy opens its turn with no line after a restart.
+it("keeps a queued message's link across a save and drops a whole-turn one", () => {
+  const link = {
+    intent: "continue" as const,
+    replyTo: "block-1",
+    quote: "Plan",
+  };
+  const session = newSession("codex", "/tmp");
+  session.queuedMessages = [
+    { id: "q1", text: "More", attachments: [], waitForIdle: true, link },
+    {
+      id: "q2",
+      text: "Turn",
+      attachments: [],
+      link: { intent: "steer", scope: "turn" } as never,
+    },
+  ];
+  const [kept, whole] = sanitizeSessionForPersist(session).queuedMessages ?? [];
+  expect(kept).toMatchObject({ id: "q1", waitForIdle: true, link });
+  expect(whole).not.toHaveProperty("link");
+});

@@ -25,7 +25,10 @@ export type MessageDelivery =
   | { status: "paused"; reason?: string }
   | { status: "failed"; error: string };
 
-/** Show the message now; the outbox only controls its delivery. */
+/**
+ * Show the message now; the outbox only controls its delivery. The bubble
+ * takes the item's link; it gets its turn id when its work starts (16.8).
+ */
 export function enqueueMonoMessage(
   session: Session,
   message: QueuedMessage,
@@ -35,7 +38,7 @@ export function enqueueMonoMessage(
     session,
     message.text,
     displayAttachments(message.attachments),
-    cards,
+    message.link ? { ...cards, link: message.link } : cards,
   );
   const bubble = {
     ...appended.blocks[appended.blocks.length - 1],
