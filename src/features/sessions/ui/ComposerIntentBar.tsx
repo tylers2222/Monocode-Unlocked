@@ -25,18 +25,24 @@ export type ComposerIntent = {
 
 /**
  * The bar of one composer. `typing` is whether the field holds text or
- * files. `queues` is true when the composer's own mode (plan, orchestrate,
- * /operator) sends the text to the queue, so it cannot steer.
+ * files. `queuedBy` names the composer's own mode (Plan, Orchestrator,
+ * Operator) while it sends the text to the queue, so the text cannot steer.
  */
 export function useComposerBar(
   intent: ComposerIntent | undefined,
   typing: boolean,
-  queues = false,
+  queuedBy?: string,
 ) {
-  const steering = !!intent?.steering && !queues;
+  const steering = !!intent?.steering && !queuedBy;
   const [sawTurn, setSawTurn] = useState(false);
   const bar: ComposerBar = intent
-    ? composerBar(intent.running, intent.choice, steering, sawTurn && typing)
+    ? composerBar(
+        intent.running,
+        intent.choice,
+        steering,
+        sawTurn && typing,
+        queuedBy,
+      )
     : { kind: "none" };
   const showingTurn = bar.kind === "turn" && typing;
   const cleared = intent?.choice.kind === "cleared";
@@ -52,8 +58,12 @@ export function useComposerBar(
   }, [typing, showingTurn, cleared, onChoiceChange]);
   return {
     bar,
-    /** The options a send carries; `null` while the bar blocks Send. */
-    send: barSend(bar, steering),
+    /**
+     * The options a send carries; `null` while the bar blocks Send. ✕ makes
+     * the message `new`, and a `new` message never steers (design 16.8), so
+     * it waits for the turn end even where the busy rule would queue it.
+     */
+    send: barSend(bar, steering || cleared),
     /** "Send as new": the same text as a `new` message. */
     asNew: barSend({ kind: "none" }, steering),
     /** The bar after a send the app took. */
@@ -100,7 +110,7 @@ export function ComposerIntentBar({
       data-composer-intent={bar.kind}
       className="composer-intent-bar popover-surface"
     >
-      {bar.kind === "picked" || bar.kind === "gone" ? (
+      {bar.kind === "picked" || bar.kind === "gone" || bar.kind === "held" ? (
         <>
           <IntentMenu
             link={bar.link}
@@ -128,13 +138,21 @@ export function ComposerIntentBar({
           {scope}
         </>
       )}
-      {bar.kind === "gone" || bar.kind === "ended" ? (
+      {bar.kind === "gone" || bar.kind === "ended" || bar.kind === "held" ? (
         <>
           <span
             className="composer-intent-chip"
-            title="That work finished. Edit the message or send it as new."
+            title={
+              bar.kind === "held"
+                ? `${bar.mode} sends this after the running turn, so it cannot steer. Pick Reply, turn ${bar.mode} off, or send it as new.`
+                : "That work finished. Edit the message or send it as new."
+            }
           >
-            {bar.kind === "gone" ? "Not running" : "Nothing running"}
+            {bar.kind === "held"
+              ? `${bar.mode} waits for the turn`
+              : bar.kind === "gone"
+                ? "Not running"
+                : "Nothing running"}
           </span>
           <button
             type="button"

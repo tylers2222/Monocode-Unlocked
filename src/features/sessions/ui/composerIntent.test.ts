@@ -26,6 +26,7 @@ import {
   runningTurnOf,
   steersTyped,
 } from "./composerIntent";
+import { ComposerIntentBar } from "./ComposerIntentBar";
 import { MessageQuote } from "./MessageQuote";
 import { MessageTargetsContext, PickTargetActions } from "./MessageTargets";
 
@@ -38,6 +39,7 @@ registerHarness({
 
 const turn1 = "turn-1" as TurnId;
 const turn2 = "turn-2" as TurnId;
+const turn3 = "turn-3" as TurnId;
 const running: RunningItem[] = [{ blockId: "opener", quote: "Build it" }];
 const steer: TargetLink = {
   intent: "steer",
@@ -124,6 +126,11 @@ it("reads the running turn from the opener that started last, not from block ord
   );
   expect(session.blocks.at(-1)!.turnId).toBe(turn1);
   expect(runningTurnOf(session)).toBe(turn2);
+  // An opener placed after turn 2's in the blocks, which started before it.
+  vi.setSystemTime(1_500);
+  const earlier = appendUser(session, "Old opener", [], { turnId: turn3 });
+  expect(earlier.blocks.at(-1)!.turnId).toBe(turn3);
+  expect(runningTurnOf(earlier)).toBe(turn2);
   expect(runningTurnOf(stopStreaming(session))).toBeUndefined();
 });
 
@@ -144,10 +151,12 @@ it("steers typed text only where the busy rule would", () => {
   expect(steersTyped({ ...busy, harness: "fx" }, true, "steer")).toBe(false);
 });
 
-// PR I4 review n2. Defect: an override or isolate in the target's text
-// reorders the quote, so the user reads the words in another order.
+// PR I4 review n2, PR I6 review r1 n1. Defect: an override or isolate in the
+// target's text reorders the quote, above the bubble or in the bar, so the
+// user reads the words in another order.
 it("drops bidirectional controls from a quote and isolates its direction", () => {
   const quote = "Pay \u202Eexe.txt\u202C and \u2067this\u2069\u200F now";
+  const bidi = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
   expect(quoteText(quote)).toBe("Pay exe.txt and this now");
   const html = renderToStaticMarkup(
     createElement(MessageQuote, {
@@ -155,7 +164,23 @@ it("drops bidirectional controls from a quote and isolates its direction", () =>
     }),
   );
   expect(html).toContain('dir="auto"');
-  expect(html).not.toMatch(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/);
+  expect(html).not.toMatch(bidi);
+  const link: TargetLink = { intent: "reply", replyTo: "m", quote };
+  const bar = renderToStaticMarkup(
+    createElement(ComposerIntentBar, {
+      bar: { kind: "picked", link },
+      intent: {
+        running: [],
+        steering: false,
+        choice: { kind: "picked", link },
+        onChoiceChange: () => {},
+      },
+      typing: true,
+      onSendAsNew: () => {},
+    }),
+  );
+  expect(bar).toContain("Pay exe.txt and this now");
+  expect(bar).not.toMatch(bidi);
 });
 
 // Doop E9, design 16.12.6. Defect: a whole-turn steer shows a target it does

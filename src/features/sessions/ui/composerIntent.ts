@@ -26,9 +26,15 @@ export const NO_CHOICE: BarChoice = { kind: "default" };
 
 /**
  * What the bar shows (design 16.12.6), plus `ended`: the bar showed `turn`
- * for this draft and the turn ended before Send (doop E10, decision 536).
+ * for this draft and the turn ended before Send (doop E10, decision 536);
+ * and `held`: a picked steer while the composer's mode (`mode`, the pill's
+ * label) sends the text to the queue, so the mode and the steer cannot both
+ * hold.
  */
-export type ComposerBar = ComposerTarget | { kind: "ended" };
+export type ComposerBar =
+  | ComposerTarget
+  | { kind: "ended" }
+  | { kind: "held"; link: TargetLink; mode: string };
 
 export function composerBar(
   running: readonly RunningItem[],
@@ -36,15 +42,25 @@ export function composerBar(
   steering: boolean,
   /** The bar showed `turn` for the text in the field now. */
   sawTurn: boolean,
+  /** The composer's mode that sends the text to the queue (Plan, Orchestrator, Operator). */
+  queuedBy?: string,
 ): ComposerBar {
   switch (choice.kind) {
     case "cleared":
       return { kind: "none" };
-    case "picked":
-      return composerTarget(running, choice.link, steering);
+    case "picked": {
+      const target = composerTarget(running, choice.link, steering);
+      return queuedBy &&
+        target.kind === "picked" &&
+        target.link.intent === "steer"
+        ? { kind: "held", link: target.link, mode: queuedBy }
+        : target;
+    }
     case "default": {
       const target = composerTarget(running, null, steering);
-      return target.kind === "none" && sawTurn ? { kind: "ended" } : target;
+      return target.kind === "none" && sawTurn && !queuedBy
+        ? { kind: "ended" }
+        : target;
     }
   }
 }
@@ -60,7 +76,7 @@ export type BarSend = Pick<ComposerTurnOptions, "link" | "waitForIdle">;
  * turn end and never joins it.
  */
 export function barSend(
-  bar: Exclude<ComposerBar, { kind: "gone" | "ended" }>,
+  bar: Exclude<ComposerBar, { kind: "gone" | "ended" | "held" }>,
   steering: boolean,
 ): BarSend;
 export function barSend(bar: ComposerBar, steering: boolean): BarSend | null;
@@ -74,6 +90,7 @@ export function barSend(bar: ComposerBar, steering: boolean): BarSend | null {
       return { link: bar.link };
     case "gone":
     case "ended":
+    case "held":
       return null;
   }
 }
@@ -114,6 +131,9 @@ export function steersTyped(
   followUp: FollowUpBehavior,
 ): boolean {
   if (!session.busy || !canSteerHarness(session.harness)) return false;
+  // M2 hook (PR I6 r1): when PR #19 lands, return false here while its model
+  // predicate says the queue would hold new text behind one of the user's
+  // own waiting messages, and hide the hover Steer in that state too.
   if (mono) return true;
   if (session.worktreePreparing) return false;
   return session.backgroundTasks?.length ? true : followUp === "steer";

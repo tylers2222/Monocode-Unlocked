@@ -948,11 +948,11 @@ html.theme-light .composer-intent-chip {
   align-items: center;
   font-family: var(--font-sans);
   gap: 4px;
-  padding: 0 6px;
+  padding: 0 8px;
   border-radius: 6px;
   font-size: 12px;
   font-weight: 500;
-  color: color-mix(in srgb, var(--color-content) 55%, transparent);
+  color: color-mix(in srgb, var(--color-content) 85%, transparent);
 }
 
 .pick-target-action:hover {
@@ -978,9 +978,12 @@ html.theme-light .composer-intent-chip {
 }
 
 @media (hover: hover) and (pointer: fine) {
+  /* The pill's bottom sits on the message's top edge. It overlaps 6px of a
+   * bubble's top padding, never its first line; a quoted message keeps the
+   * whole pill above its quote. */
   .pick-target-pill {
     position: absolute;
-    top: -15px;
+    bottom: calc(100% - 6px);
     right: 8px;
     z-index: 2;
     margin: 0;
@@ -988,6 +991,10 @@ html.theme-light .composer-intent-chip {
     opacity: 0;
     pointer-events: none;
     transition: opacity 120ms ease;
+  }
+
+  .pick-target-pill.pick-target-pill-quoted {
+    bottom: 100%;
   }
 
   .user-message-row:hover .pick-target-pill,

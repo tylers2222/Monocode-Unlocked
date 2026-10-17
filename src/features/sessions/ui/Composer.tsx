@@ -480,11 +480,6 @@ export function Composer({
   const [planSelected, setPlanSelected] = useState(false);
   const [operatorSelected, setOperatorSelected] = useState(false);
   const [orchestrationSelected, setOrchestrationSelected] = useState(false);
-  const intentBar = useComposerBar(
-    intent,
-    hasValue,
-    planSelected || orchestrationSelected || operatorSelected,
-  );
   const choice = intent?.choice;
   useEffect(() => {
     if (choice?.kind === "picked") ref.current?.focus();
@@ -659,6 +654,16 @@ export function Composer({
     orchestrationSelected || leadingMode?.name === ORCHESTRATOR_COMMAND.name;
   const draftActive = draftSelected || leadingMode?.name === DRAFT_COMMAND.name;
   const planActive = planSelected || leadingMode?.name === PLAN_COMMAND.name;
+  // The send resolves these modes to the queue (`submitSession`), so the bar
+  // reads the same: typed or toggled, the text cannot steer.
+  const queuedBy = planActive
+    ? "Plan"
+    : orchestrationActive
+      ? "Orchestrator"
+      : operatorActive
+        ? "Operator"
+        : undefined;
+  const intentBar = useComposerBar(intent, hasValue, queuedBy);
 
   /** Turning a mode off also drops its leading command from the text. */
   const clearLeadingMode = (name: string) => {

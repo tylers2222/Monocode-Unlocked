@@ -2691,7 +2691,8 @@ function UserMessageBlock({
         {block.draft ? null : (
           <PickTargetActions
             block={block}
-            className="pick-target-pill"
+            // Above the quote when there is one, so it never covers it.
+            className={`pick-target-pill ${block.link ? "pick-target-pill-quoted" : ""}`}
             // Above the bubble, which stacks by its turn (`stickyIndex`).
             style={{ zIndex: stickyIndex + 1 }}
           />

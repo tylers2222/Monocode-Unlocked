@@ -1877,6 +1877,67 @@ describe("Composer message target", () => {
     });
   });
 
+  // Review PR I6 r1 n2, design 16.8. Defect: ✕ where the busy rule queues
+  // sends a plain queued message, which the queue row can still steer.
+  it("sends ✕ as a message that waits even where the busy rule would queue it", async () => {
+    const onSubmit = vi.fn(() => true);
+    await renderWith({ choice: { kind: "cleared" } }, onSubmit);
+    await pressEnter();
+    expect(onSubmit).toHaveBeenLastCalledWith("Skip the migration test", [], {
+      intent: "default",
+      waitForIdle: true,
+    });
+  });
+
+  // Review PR I6 r1 M1. Defect: a typed mode command, which the send puts in
+  // the queue, shows "Steering · everything this session is doing".
+  it.each([
+    ["/plan Use the fixture", "Use the fixture", "plan"],
+    ["/orchestrator Use the fixture", "Use the fixture", "orchestrate"],
+    ["/operator Use the fixture", "/operator Use the fixture", "default"],
+  ] as const)(
+    "names no running turn for %s, whose send waits in the queue",
+    async (typed, sent, mode) => {
+      const onSubmit = vi.fn(() => true);
+      await renderWith({ steering: true }, onSubmit);
+      expect(container.querySelector('[data-composer-intent="turn"]')).not.toBeNull();
+      await typeText(typed);
+      expect(container.querySelector("[data-composer-intent]")).toBeNull();
+      await pressEnter();
+      expect(onSubmit).toHaveBeenLastCalledWith(sent, [], { intent: mode });
+    },
+  );
+
+  // Review PR I6 r1 m1 (decision: keep the mode and show it). Defect: a
+  // picked Steer under Plan steers as plain text and Plan is silently lost.
+  it("keeps Plan with a picked Steer: the bar names Plan, Send waits, and Send as new sends a plan", async () => {
+    const onSubmit = vi.fn(() => true);
+    await renderWith(
+      {
+        steering: true,
+        running: [{ blockId: "opener", quote: steer.quote }],
+        choice: { kind: "picked", link: steer },
+      },
+      onSubmit,
+    );
+    await typeText("/plan Use the fixture");
+    const bar = container.querySelector('[data-composer-intent="held"]');
+    expect(bar?.textContent).toContain("Plan waits for the turn");
+    await pressEnter();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(container.querySelector("textarea")!.value).toBe(
+      "/plan Use the fixture",
+    );
+
+    const asNew = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Send as new",
+    )!;
+    await act(async () => asNew.click());
+    expect(onSubmit).toHaveBeenLastCalledWith("Use the fixture", [], {
+      intent: "plan",
+    });
+  });
+
   async function typeText(value: string) {
     const textarea = container.querySelector("textarea")!;
     await act(async () => {
