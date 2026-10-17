@@ -25,6 +25,8 @@ import {
   type GetInput,
   type Handle,
   type MessageId,
+  type MessageSender,
+  type MessageTool,
   type MonoId,
   type MonoMessage,
   type ReadMessage,
@@ -63,6 +65,14 @@ export type MonoQueueHost = {
   isMonoChat(id: string): boolean;
   /** A Mono's name and role, from the roster. */
   sender(monoId: MonoId | null): { name: string; role: MonoRole } | undefined;
+  /**
+   * The lead or worker session that wrote a row with no Mono (design 13).
+   * Undefined for any other session: the row is a deleted Mono's. Never
+   * rejects.
+   */
+  sessionSender(
+    sessionId: SessionId,
+  ): Promise<Extract<MessageSender, { kind: "session" }> | undefined>;
   /** The turn this window runs for session `id` now, if any. */
   turnId(id: string): TurnId | undefined;
   /** `control_owns_session`: this window runs the routes of session `id`. */
@@ -126,12 +136,35 @@ function rowLink(
   };
 }
 
-function queueItem(host: MonoQueueHost, { message, target }: Targeted<Routed>) {
+/** Who sent a row: its Mono, else the lead or worker session that wrote it. */
+async function rowSender(
+  host: MonoQueueHost,
+  message: Pick<MonoMessage, "fromMonoId" | "fromSessionId">,
+): Promise<MessageSender | undefined> {
+  if (!message.fromMonoId) return host.sessionSender(message.fromSessionId);
+  const mono = host.sender(message.fromMonoId);
+  return mono && { kind: "mono", ...mono };
+}
+
+function queueItem(
+  { message, target }: Targeted<Routed>,
+  sender: MessageSender | undefined,
+) {
   return {
     id: message.id,
-    text: renderMonoMessage(message, host.sender(message.fromMonoId)),
+    text: renderMonoMessage(message, sender),
     link: rowLink(message, target),
   };
+}
+
+/**
+ * Each row's queue item. The senders resolve first, so the rows then queue
+ * in one synchronous run.
+ */
+function queueItems(host: MonoQueueHost, rows: Targeted<Routed>[]) {
+  return Promise.all(
+    rows.map(async (row) => queueItem(row, await rowSender(host, row.message))),
+  );
 }
 
 /**
@@ -192,17 +225,19 @@ export async function reconcile(
   const rows = await invoke<Targeted<Routed>[]>("mono_messages_unqueued", {
     sessionId,
   });
-  for (const row of rows)
+  const items = await queueItems(host, rows);
+  rows.forEach((row, index) =>
     host.update(sessionId, (session) =>
       ensureQueued(
         session,
-        queueItem(host, row),
+        items[index],
         // A steer only joins the running turn it names (design 16.6), so its
         // item never waits for the turn end.
         row.message.intent === "steer" ? "steer" : "queue",
         host.isMonoChat(sessionId),
       ),
-    );
+    ),
+  );
   const notices = await invoke<Noticed[]>("mono_messages_pending_notices", {
     sessionId,
   });
@@ -296,10 +331,11 @@ export async function handOff(
     return false;
   }
   const row = assigned.message;
-  const sender = host.sender(row.fromMonoId);
   const handle = row.status === "open" ? row.slot?.handle : undefined;
+  let sender: MessageSender | undefined;
   let accepted = false;
   try {
+    sender = await rowSender(host, row);
     accepted = await deliver({
       text: renderMonoMessage(row, sender, handle, {
         sessionId: row.handledBySession,
@@ -319,7 +355,7 @@ export async function handOff(
           ? dequeueQueuedMessage(session, id)
           : ensureQueued(
               session,
-              queueItem(host, assigned),
+              queueItem(assigned, sender),
               "queue",
               host.isMonoChat(sessionId),
             ),
@@ -616,7 +652,7 @@ type Submitted =
 
 async function submit(
   host: MonoMessagingHost,
-  tool: "send_message" | "reply",
+  tool: MessageTool,
   requestId: string,
   input: SendInput | ReplyInput,
 ): Promise<Accepted> {
@@ -640,6 +676,7 @@ async function submit(
         sessionId: session.id,
         steerable: host.steerable(session),
         ownProject: host.ownProject(session),
+        leadSessionId: session.leadSessionId ?? null,
       })),
     steerableHarnesses: host.steerableHarnesses(),
   });
@@ -669,6 +706,7 @@ export async function routeMessages(
   if (!loaded) return "queue";
   // Rows the load queues are older than these, so they go first.
   await host.reconciled(sessionId);
+  const items = await queueItems(host, messages);
   const target = host.session(sessionId) ?? loaded;
   const kind = via === "steer" ? "steer" : "queue";
   const routed = new Set<string>(messages.map((row) => row.message.id));
@@ -676,9 +714,9 @@ export async function routeMessages(
   const idle =
     !target.busy &&
     (target.queuedMessages ?? []).every((queued) => routed.has(queued.id));
-  for (const row of messages)
+  for (const item of items)
     host.update(sessionId, (session) =>
-      ensureQueued(session, queueItem(host, row), kind, bubble),
+      ensureQueued(session, item, kind, bubble),
     );
   return kind === "steer" ? "steer" : idle ? "submit" : "queue";
 }
@@ -774,7 +812,9 @@ export async function getMonos(host: MonoMessagingHost) {
       mono_id: mono.id,
       mono_name: mono.name,
       role: mono.role,
-      you: mono.id === resolved.caller.monoId,
+      you:
+        resolved.caller.kind !== "session" &&
+        mono.id === resolved.caller.monoId,
     })),
   };
 }

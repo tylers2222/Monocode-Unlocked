@@ -71,6 +71,10 @@ export type QuickLaunch = {
   worktreeCwd?: string;
   /** Bring the new session forward instead of starting it quietly. */
   reveal: boolean;
+  /** Change E level link, not the orchestration link: the lead of the worker this launch makes (design 13.3). */
+  leadSessionId?: string;
+  /** The session whose `sessions.start` made this launch; its first user block keeps it (design 13.4). */
+  startedBy?: string;
 };
 
 /** The panel exists on macOS only; elsewhere the shortcut is never claimed. */

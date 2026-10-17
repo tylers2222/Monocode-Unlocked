@@ -310,3 +310,27 @@ it("tells only a Giga Mono how to create and update Monos", () => {
     }),
   ).not.toContain("<giga_mono_rules>");
 });
+
+// Design 8 PR 7 row and 6.2. Defect: a Mono is not told how it may reach a
+// Giga or another Mono, or the limits, so it learns them only from refusals;
+// a Giga is told the upward rule, which never binds it; or a Giga is never
+// told the monos.update field that sets an allowlist.
+it("tells a Mono the upward and peer rules, every Mono the limits, and a Giga the allowlist field", () => {
+  const look = { name: "Scout", mascot: "skull", color: "#fff", projects: [] };
+  const soul = { soul: true, memory: false };
+  const rules = (text: string, tag: string) =>
+    text.match(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`))?.[0] ?? "";
+  const mono = rules(monoContext(look, files(), soul), "mono_messaging_rules");
+  const gigaContext = monoContext({ ...look, giga: true }, files(), soul);
+  const giga = rules(gigaContext, "mono_messaging_rules");
+  // 6 messages per recipient per 10 minutes, 4 replies deep, 8000 characters.
+  for (const limit of ["6", "10", "4", "8000"]) {
+    expect(mono).toMatch(new RegExp(`\\b${limit}\\b`));
+    expect(giga).toMatch(new RegExp(`\\b${limit}\\b`));
+  }
+  for (const upward of ["24 h", "allowlist"]) {
+    expect(mono).toContain(upward);
+    expect(giga).not.toContain(upward);
+  }
+  expect(rules(gigaContext, "giga_mono_rules")).toContain('"messageAllowlist"');
+});

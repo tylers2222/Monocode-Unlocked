@@ -41,14 +41,20 @@ export async function acceptQuickLaunch(
       sessionId: string,
       text: string,
       attachments: Attachment[],
-      options?: { intent: "plan" | "orchestrate" },
+      options?: { intent?: "plan" | "orchestrate"; startedBy?: string },
     ) => SubmissionAcceptance;
     saveDraft?: (
       sessionId: string,
       text: string,
       attachments: Attachment[],
       requestId: string,
+      startedBy?: string,
     ) => SubmissionAcceptance;
+    /**
+     * Design 13.2: saves the lead of the worker this launch makes, so the
+     * worker's first save finds the lead's row. Throws when it cannot.
+     */
+    persistLead?: () => Promise<void>;
   },
   placement?: { direction: SplitDir; besideSessionId: string },
   /** Off for a session followed elsewhere, such as from the Mono that ran it. */
@@ -56,6 +62,7 @@ export async function acceptQuickLaunch(
 ): Promise<void> {
   // Rehydrate image previews in this webview; the floating panel sends paths.
   const attachments = await prepareAttachments(launch.attachments ?? []);
+  await workspace.persistLead?.();
   const existing = workspace
     .getSessions()
     .find((session) => session.id === deliveryId);
@@ -80,6 +87,8 @@ export async function acceptQuickLaunch(
     );
   session.id = deliveryId;
   if (!existing && launch.sidebarHidden) session.sidebarHidden = true;
+  if (!existing && launch.leadSessionId)
+    session.leadSessionId = launch.leadSessionId;
   if (launch.modelSettings) {
     session.modelSettings = mergeModelSettings(
       resolveModel(session.harness, session.model),
@@ -111,17 +120,16 @@ export async function acceptQuickLaunch(
         launch.prompt,
         attachments,
         deliveryId,
+        ...(launch.startedBy ? [launch.startedBy] : []),
       ))
     ) {
       throw new Error("The workspace could not save the session draft yet.");
     }
   } else if (
-    !(await workspace.submit(
-      session.id,
-      launch.prompt,
-      attachments,
-      ...(launch.intent ? [{ intent: launch.intent }] : []),
-    ))
+    !(await workspace.submit(session.id, launch.prompt, attachments, {
+      ...(launch.intent ? { intent: launch.intent } : {}),
+      ...(launch.startedBy ? { startedBy: launch.startedBy } : {}),
+    }))
   ) {
     throw new Error("The workspace could not accept the queued session yet.");
   }

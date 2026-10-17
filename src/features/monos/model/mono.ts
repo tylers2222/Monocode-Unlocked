@@ -55,6 +55,11 @@ export type Mono = {
    * Set the first time Giga is turned on, and kept through renames.
    */
   gigaSlug?: string;
+  /**
+   * Other Monos it may message, and that may message it, without a shared
+   * project (design 6.1). Absent when empty.
+   */
+  messageAllowlist?: string[];
   /** Superseded by SOUL.md; only read once, to seed it. */
   instructions?: string;
   /**
@@ -183,6 +188,11 @@ function parseMono(value: unknown): Mono | undefined {
   const name = text("name");
   const instructions = text("instructions");
   const legacyProject = text("legacyProject");
+  const messageAllowlist = Array.isArray(entry.messageAllowlist)
+    ? entry.messageAllowlist.filter(
+        (id): id is string => typeof id === "string" && isMonoId(id),
+      )
+    : [];
   return {
     id: entry.id,
     ...(sessionId ? { sessionId } : {}),
@@ -203,6 +213,7 @@ function parseMono(value: unknown): Mono | undefined {
     /^[a-z0-9][a-z0-9-]{0,47}$/.test(entry.gigaSlug)
       ? { gigaSlug: entry.gigaSlug }
       : {}),
+    ...(messageAllowlist.length ? { messageAllowlist } : {}),
     ...(instructions ? { instructions } : {}),
     ...(legacyProject ? { legacyProject } : {}),
   };
@@ -312,6 +323,9 @@ function parseSnapshot(value: unknown): RosterSnapshot {
 const copyMono = (mono: Mono): Mono => ({
   ...mono,
   projects: [...mono.projects],
+  ...(mono.messageAllowlist
+    ? { messageAllowlist: [...mono.messageAllowlist] }
+    : {}),
 });
 
 /**
@@ -588,6 +602,7 @@ export function updateMono(
   const next = change(roster[index]);
   if (!customMonoName(next.name)) delete next.name;
   if (!next.instructions?.trim()) delete next.instructions;
+  if (!next.messageAllowlist?.length) delete next.messageAllowlist;
   next.projects = uniqueProjects(next.projects);
   roster[index] = next;
   saveRoster(roster);

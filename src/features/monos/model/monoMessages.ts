@@ -6,6 +6,7 @@ import {
   type ReplyTarget,
 } from "../../sessions/model/messageIntent";
 import { isPersistableId } from "../../sessions/data/sessionStore";
+import type { AppAccess } from "../../sessions/model/operatorCommand";
 import { isMonoId } from "./mono";
 
 declare const brand: unique symbol;
@@ -22,7 +23,14 @@ export type RequestId = Brand<string, "RequestId">;
 export type TurnId = Brand<string, "TurnId">;
 
 export type MonoRole = "giga" | "mono";
-export type Tool = "send_message" | "reply";
+export type MessageTool = "send_message" | "reply";
+/**
+ * Not a message (design 1.4, 16.2): a refused `sessions.start` or app action,
+ * or the accepted record of the first prompt of a session `sessions.start`
+ * made. Only a rejected row or an accepted `start_session` row carries one.
+ */
+export type RefusalTool = "start_session" | "app_action";
+export type Tool = MessageTool | RefusalTool;
 export type Delivery = "submit" | "queue" | "steer";
 export type IntentKind = "new" | "reply" | "steer" | "continue";
 /**
@@ -72,6 +80,15 @@ function isIntentKind(raw: unknown): raw is IntentKind {
   );
 }
 
+function isTool(raw: unknown): raw is Tool {
+  return (
+    raw === "send_message" ||
+    raw === "reply" ||
+    raw === "start_session" ||
+    raw === "app_action"
+  );
+}
+
 /** A row's intent columns, parsed: an accepted row has an `Intent`. */
 export type RowIntent =
   | { status: "accepted"; intent: Intent }
@@ -80,22 +97,33 @@ export type RowIntent =
 /**
  * The intent columns of a row from Rust. Undefined when they disagree: an
  * accepted row is `new` with no target, `reply` with `replyTo`, or `steer`
- * with exactly one of `replyTo` and `scope`.
+ * with exactly one of `replyTo` and `scope`. An accepted row is a message,
+ * or a delivered `new` start row (design 16.2); any tool may be rejected.
  */
 export function parseRowIntent(row: {
+  tool: unknown;
   status: unknown;
   intent: unknown;
   replyTo: unknown;
   scope: unknown;
 }): RowIntent | undefined {
-  const { intent } = row;
+  const { tool, intent } = row;
   const replyTo = row.replyTo === null ? null : parseMessageId(row.replyTo);
   const scope =
     row.scope === null || row.scope === "turn" ? row.scope : undefined;
-  if (replyTo === undefined || scope === undefined || !isIntentKind(intent))
+  if (
+    !isTool(tool) ||
+    replyTo === undefined ||
+    scope === undefined ||
+    !isIntentKind(intent)
+  )
     return undefined;
   if (row.status === "rejected")
     return { status: "rejected", asked: { intent, replyTo, scope } };
+  const startRow =
+    tool === "start_session" && row.status === "delivered" && intent === "new";
+  if (tool !== "send_message" && tool !== "reply" && !startRow)
+    return undefined;
   if (intent === "new")
     return replyTo === null && scope === null
       ? { status: "accepted", intent: { intent, replyTo, scope } }
@@ -122,22 +150,37 @@ export function newTurnId(): TurnId {
 
 export type Party =
   | { kind: "mono"; monoId: MonoId }
-  /** A project session; it only receives. */
+  /** A session. A lead or worker session also sends, as a caller of kind "session". */
   | { kind: "session"; sessionId: SessionId };
 
-export type Caller = {
-  kind: "mono_chat" | "habit_run";
-  monoId: MonoId;
-  sessionId: SessionId;
-  turnId: TurnId;
-};
+/**
+ * Who calls the gate (design 13.4): a Mono's chat or habit run, or (PR 7) a
+ * lead or worker session with app access. `leadSessionId` is the web app's
+ * copy of the Change E level link, not the orchestration link; Rust's stored
+ * row wins.
+ */
+export type Caller =
+  | {
+      kind: "mono_chat" | "habit_run";
+      monoId: MonoId;
+      sessionId: SessionId;
+      turnId: TurnId;
+    }
+  | {
+      kind: "session";
+      sessionId: SessionId;
+      turnId: TurnId;
+      access: AppAccess;
+      leadSessionId: SessionId | null;
+      cwd: string;
+    };
 
 type MessageBase = {
   id: MessageId;
   requestId: RequestId;
   part: number;
-  tool: Tool;
-  /** Null only after the Mono was deleted. */
+  tool: MessageTool;
+  /** Null for a lead or worker session's row (design 13.5), or after the Mono was deleted. */
   fromMonoId: MonoId | null;
   fromSessionId: SessionId;
   /** Null for unknown_target rows, or after the recipient Mono was deleted. */
@@ -161,8 +204,10 @@ type PlainSlot = { turnId: TurnId; deliveredAt: number | null };
 type Delivered<S> = S & { deliveredAt: number };
 
 export type MonoMessage =
-  | (MessageBase &
+  | (Omit<MessageBase, "tool"> &
       AskedIntent & {
+        /** A refused `sessions.start` or app action keeps its own tool. */
+        tool: Tool;
         status: "rejected";
         gateResult: RejectCode;
         wantingReply: boolean;
@@ -175,6 +220,16 @@ export type MonoMessage =
       Intent & { status: "delivered"; wantingReply: false } & Routed & {
         slot: PlainSlot | null;
       })
+  /**
+   * The first prompt of a session `sessions.start` made (design 16.2): a
+   * record and a steer target, never queued, so it never takes a slot.
+   */
+  | (Omit<MessageBase, "tool"> &
+      Extract<Intent, { intent: "new" }> & {
+        tool: "start_session";
+        status: "delivered";
+        wantingReply: false;
+      } & Routed & { slot: null })
   | (MessageBase &
       Intent & { status: "answered"; wantingReply: true } & Routed & {
         slot: WaitingSlot | null;
@@ -217,7 +272,12 @@ export type RejectCode =
   | "no_open_handle"
   | "unknown_handle"
   | "handle_closed"
-  | "ambiguous_reply";
+  | "ambiguous_reply"
+  | "worker_cannot_spawn"
+  | "worker_scope"
+  | "steer_via_lead"
+  | "session_cannot_wait"
+  | "lead_scope";
 
 /** Failures that write no row: every app action code, from the one list. */
 export type CallErrorCode = AppErrorCode;
@@ -377,18 +437,25 @@ export type Reading = {
   target: ReplyTarget | null;
 };
 
+/** Who sent a row, as its reader is told: a Mono, or a lead or worker session. */
+export type MessageSender =
+  | { kind: "mono"; name: string; role: MonoRole }
+  | { kind: "session"; title: string; level: "lead" | "worker" };
+
 /**
  * What the receiving agent reads (design 5.2, 16.7). A message that wants a
  * reply shows the handle of the turn it was handed to. A hand-off also
  * passes the `reading`, so a reply or steer starts with its inference line;
  * a queue item's text has none. How to treat and answer it lives once in
  * `<mono_messaging_rules>`. A reading whose target is not the row's
- * `reply_to` throws: the line would name another message, or none.
+ * `reply_to` throws: the line would name another message, or none. A lead
+ * or worker sender shows its session id, the `send_to` of an answer to it;
+ * a row with no known sender is a deleted Mono's.
  */
 export function renderMonoMessage(
-  message: Pick<MessageBase, "id" | "fromMonoId" | "body"> &
+  message: Pick<MessageBase, "id" | "fromMonoId" | "fromSessionId" | "body"> &
     Intent & { wantingReply: boolean },
-  sender: { name: string; role: MonoRole } | undefined,
+  sender: MessageSender | undefined,
   handle?: Handle,
   reading?: Reading,
 ): string {
@@ -405,11 +472,21 @@ export function renderMonoMessage(
       targetRef(reading.target, reading),
     );
   }
+  const from =
+    sender?.kind === "session"
+      ? [
+          `from="${attribute(sender.title)}"`,
+          `session_id="${message.fromSessionId}"`,
+          `level="${sender.level}"`,
+        ]
+      : [
+          `from="${attribute(sender?.name ?? "a deleted Mono")}"`,
+          ...(message.fromMonoId ? [`mono_id="${message.fromMonoId}"`] : []),
+          ...(sender ? [`role="${sender.role}"`] : []),
+        ];
   const attributes = [
     `message_id="${message.id}"`,
-    `from="${attribute(sender?.name ?? "a deleted Mono")}"`,
-    ...(message.fromMonoId ? [`mono_id="${message.fromMonoId}"`] : []),
-    ...(sender ? [`role="${sender.role}"`] : []),
+    ...from,
     `wanting_reply="${message.wantingReply}"`,
     ...(handle ? [`handle="${handle}"`] : []),
     ...(line && message.replyTo ? [`reply_to="${message.replyTo}"`] : []),
