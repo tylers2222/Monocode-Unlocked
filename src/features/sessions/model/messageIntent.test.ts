@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type {
   Handle,
   MessageId,
@@ -84,9 +84,7 @@ it("writes the exact line for each intent, with and without a ref", () => {
   expect(intentLine({ intent: "continue", quote }, "#3")).toBe(
     '[re #3 · "first words…"]',
   );
-  expect(intentLine({ intent: "continue", quote })).toBe(
-    '[re "first words…"]',
-  );
+  expect(intentLine({ intent: "continue", quote })).toBe('[re "first words…"]');
   expect(intentLine({ intent: "steer", scope: "turn" }, "#3")).toBe(
     "[steer → whole turn]",
   );
@@ -125,7 +123,30 @@ it("names a target by its handle only in the reader's own session and turn", () 
   expect(targetRef(target, reader("giga-chat", "turn-1"))).toBe(
     "m_abcdefgh2345",
   );
-  expect(
-    targetRef({ ...target, slot: null }, reader("a-chat", "turn-1")),
-  ).toBe("m_abcdefgh2345");
+  expect(targetRef({ ...target, slot: null }, reader("a-chat", "turn-1"))).toBe(
+    "m_abcdefgh2345",
+  );
+});
+
+// PR I4 review r1 m2. Defect: the module builds Intl.Segmenter when it
+// loads, so on a webview without it (Safari before 14.1) every import of
+// monoMessages throws; or excerpt throws there at its first call.
+it("loads and cuts an excerpt where Intl.Segmenter is missing", async () => {
+  const segmenter = Intl.Segmenter;
+  vi.resetModules();
+  Reflect.deleteProperty(Intl, "Segmenter");
+  try {
+    // A fresh load is the subject: a static import ran before the removal.
+    const fresh = await import("./messageIntent");
+    expect(fresh.excerpt("one two three four five six seven eight nine")).toBe(
+      "one two three four five six seven eight…",
+    );
+    expect(fresh.excerpt("漢".repeat(200))).toBe(`${"漢".repeat(60)}…`);
+  } finally {
+    Object.defineProperty(Intl, "Segmenter", {
+      value: segmenter,
+      writable: true,
+      configurable: true,
+    });
+  }
 });

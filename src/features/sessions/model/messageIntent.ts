@@ -27,7 +27,13 @@ const WORDS = 8;
 const CLUSTERS = 60;
 /** `parseMessageLink` keeps a stored quote of at most this many, `…` included. */
 const CODE_POINTS = 200;
-const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+/**
+ * Built on first use, so a webview without `Intl.Segmenter` (Safari before
+ * 14.1) can still load every module that imports this one. There each code
+ * point counts as a cluster: a ZWJ sequence may be cut, but the excerpt stays
+ * within its bounds. `null` once known missing.
+ */
+let graphemes: Intl.Segmenter | null | undefined;
 
 /**
  * The first words of `text` on one line (design 16.7): at most 8 words, 60
@@ -35,9 +41,19 @@ const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
  * Plain text: `intentLine` escapes it where it writes a line.
  */
 export function excerpt(text: string): string {
-  const words = text.replace(/[\s\p{Cc}]+/gu, " ").trim().split(" ");
+  const words = text
+    .replace(/[\s\p{Cc}]+/gu, " ")
+    .trim()
+    .split(" ");
   const kept = words.slice(0, WORDS).join(" ");
-  const clusters = Array.from(graphemes.segment(kept), (part) => part.segment);
+  if (graphemes === undefined)
+    graphemes =
+      typeof Intl.Segmenter === "function"
+        ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+        : null;
+  const clusters = graphemes
+    ? Array.from(graphemes.segment(kept), (part) => part.segment)
+    : Array.from(kept);
   if (
     words.length <= WORDS &&
     clusters.length <= CLUSTERS &&

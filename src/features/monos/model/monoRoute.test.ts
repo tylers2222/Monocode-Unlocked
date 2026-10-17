@@ -16,6 +16,7 @@ import {
 import { appErrorResponse } from "../../agent-app/model/appActionError";
 import {
   queuedAppDelivery,
+  recordAppSteer,
   TURN_FINISHED_ERROR,
 } from "../../../app/model/appSessionSend";
 import { acknowledgeMonoMessage } from "./monoMessaging";
@@ -200,8 +201,11 @@ const rust = vi.hoisted(() => {
         if (!entry || (entry.status !== "open" && entry.status !== "delivered"))
           return null;
         // `reply_target`: what the row's line quotes, read with its slot.
+        // reply_to is a foreign key, so a target this fixture did not write
+        // (`ask`'s m_zzzzzzzzzzzz) stands for a row sent before the test.
         const answer = () => {
-          const target = entry.replyTo ? row(entry.replyTo) : undefined;
+          if (!entry.replyTo) return { message: entry, target: null };
+          const target = row(entry.replyTo);
           return {
             message: entry,
             target: target
@@ -213,7 +217,12 @@ const rust = vi.hoisted(() => {
                     ? { turnId: target.slot.turnId, handle: target.slot.handle }
                     : null,
                 }
-              : null,
+              : {
+                  messageId: entry.replyTo,
+                  body: "Earlier work",
+                  handledBySession: entry.handledBySession,
+                  slot: null,
+                },
           };
         };
         if (entry.slot) return held(entry, args.turnId) ? answer() : null;
@@ -703,6 +712,40 @@ it("answers dropped for a project-session steer whose turn just finished", async
   expect(get("project").queuedMessages).toBeUndefined();
 });
 
+// PR I4 review r1 m1 (the reviewer's probe). Defect: a project-session steer
+// records the text with its inference line as the transcript block, so the
+// line shows in the session before PR I6, or the agent gets no line.
+it("steers a project session with the line and records the block without it", async () => {
+  const { send, get, host, steerProject } = world([
+    chat("project", { busy: true }),
+  ]);
+  rust.state.route = { sessionId: "project", via: "queue" };
+  await send({ ...ask(), message: "Refactor the login flow", send_to: "project" });
+  const target = rust.state.rows[0].id as MessageId;
+  await handOff(host, "project", target, "steer", () => true);
+  rust.state.route = { sessionId: "project", via: "steer" };
+  await send(
+    {
+      message: "Keep the API stable",
+      send_to: "project",
+      wanting_reply: false,
+      intent: "steer",
+      reply_to: target,
+    },
+    "r2",
+  );
+  const [[, handed, id]] = steerProject.mock.calls as unknown as [
+    [Session, { text: string; shown: string }, string],
+  ];
+  expect(handed.text).toContain(
+    `reply_to="${target}">\n[steer → ${target} · "Refactor the login flow"]\nKeep the API stable\n`,
+  );
+  const block = recordAppSteer(get("project"), handed.shown, id).blocks.at(-1);
+  expect(block?.text).toBe(
+    `<mono_message message_id="${id}" from="Boss" mono_id="giga" role="giga" wanting_reply="false">\nKeep the API stable\n</mono_message>`,
+  );
+});
+
 // Design 5.5 rule 4. Defect: a new message whose steer into a project
 // session failed is lost, or keeps its slot so nothing queues it again.
 it("queues a failed hand-off of new work again", async () => {
@@ -1068,6 +1111,38 @@ it("starts a reply with a line that names the question by its message id", () =>
   ).toBe(
     '<mono_message message_id="m_cccccccccccc" from="A" mono_id="mono-a" role="mono" wanting_reply="false" reply_to="m_bbbbbbbbbbbb">\n[reply → m_bbbbbbbbbbbb · "Is CI green on main?"]\nGreen.\n</mono_message>',
   );
+});
+
+// PR I4 review r1 n1. Defect: a hand-off whose target is missing, or is not
+// the row's reply_to, silently gives no line or names another message.
+it("refuses to render a hand-off whose target is not the row's reply_to", () => {
+  const steer = {
+    id: "m_cccccccccccc" as MessageId,
+    fromMonoId: "giga" as MonoId,
+    body: "Keep the API stable",
+    wantingReply: false,
+    intent: "steer" as const,
+    replyTo: "m_bbbbbbbbbbbb" as MessageId,
+    scope: null,
+  };
+  const reading = {
+    sessionId: "a-chat" as SessionId,
+    turnId: "turn-1" as TurnId,
+  };
+  expect(() =>
+    renderMonoMessage(steer, undefined, undefined, { ...reading, target: null }),
+  ).toThrow("names no target, not its reply_to m_bbbbbbbbbbbb");
+  expect(() =>
+    renderMonoMessage(steer, undefined, undefined, {
+      ...reading,
+      target: {
+        messageId: "m_dddddddddddd" as MessageId,
+        body: "Other work",
+        handledBySession: "a-chat" as SessionId,
+        slot: null,
+      },
+    }),
+  ).toThrow("names m_dddddddddddd, not its reply_to m_bbbbbbbbbbbb");
 });
 
 // Review PR 4a m2. Defect: a session whose worktree was removed counts as

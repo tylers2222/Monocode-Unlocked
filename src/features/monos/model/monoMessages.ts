@@ -382,7 +382,8 @@ export type Reading = {
  * reply shows the handle of the turn it was handed to. A hand-off also
  * passes the `reading`, so a reply or steer starts with its inference line;
  * a queue item's text has none. How to treat and answer it lives once in
- * `<mono_messaging_rules>`.
+ * `<mono_messaging_rules>`. A reading whose target is not the row's
+ * `reply_to` throws: the line would name another message, or none.
  */
 export function renderMonoMessage(
   message: Pick<MessageBase, "id" | "fromMonoId" | "body"> &
@@ -392,15 +393,17 @@ export function renderMonoMessage(
   reading?: Reading,
 ): string {
   let line: string | undefined;
-  let replyTo: MessageId | undefined;
   if (reading && message.scope === "turn")
     line = intentLine({ intent: "steer", scope: "turn" });
-  else if (reading?.target && message.intent !== "new") {
+  else if (reading && message.replyTo !== null) {
+    if (reading.target?.messageId !== message.replyTo)
+      throw new Error(
+        `The hand-off of ${message.id} names ${reading.target?.messageId ?? "no target"}, not its reply_to ${message.replyTo}`,
+      );
     line = intentLine(
       { intent: message.intent, quote: excerpt(reading.target.body) },
       targetRef(reading.target, reading),
     );
-    replyTo = reading.target.messageId;
   }
   const attributes = [
     `message_id="${message.id}"`,
@@ -409,7 +412,7 @@ export function renderMonoMessage(
     ...(sender ? [`role="${sender.role}"`] : []),
     `wanting_reply="${message.wantingReply}"`,
     ...(handle ? [`handle="${handle}"`] : []),
-    ...(replyTo ? [`reply_to="${replyTo}"`] : []),
+    ...(line && message.replyTo ? [`reply_to="${message.replyTo}"`] : []),
   ];
   return `<mono_message ${attributes.join(" ")}>\n${line ? `${line}\n` : ""}${message.body}\n</mono_message>`;
 }

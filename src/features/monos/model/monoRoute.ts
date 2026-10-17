@@ -214,8 +214,13 @@ export function createLoadReconciles(host: MonoQueueHost) {
   };
 }
 
-/** What a hand-off gives the provider: the row with its handle, and the turn. */
-export type HandedOff = { text: string; turnId: TurnId };
+/**
+ * What a hand-off gives the provider: the row with its handle and its
+ * inference line (`text`), and the turn. `shown` is the same row without
+ * the line, for a transcript block (design 16.7: the line goes to the agent
+ * only).
+ */
+export type HandedOff = { text: string; shown: string; turnId: TurnId };
 
 /**
  * An opener hand-off took its slot for a new turn `turnId`. A session that
@@ -254,19 +259,17 @@ export async function handOff(
     return false;
   }
   const row = assigned.message;
+  const sender = host.sender(row.fromMonoId);
+  const handle = row.status === "open" ? row.slot?.handle : undefined;
   let accepted = false;
   try {
     accepted = await deliver({
-      text: renderMonoMessage(
-        row,
-        host.sender(row.fromMonoId),
-        row.status === "open" ? row.slot?.handle : undefined,
-        {
-          sessionId: row.handledBySession,
-          turnId,
-          target: assigned.target,
-        },
-      ),
+      text: renderMonoMessage(row, sender, handle, {
+        sessionId: row.handledBySession,
+        turnId,
+        target: assigned.target,
+      }),
+      shown: renderMonoMessage(row, sender, handle),
       turnId,
     });
   } finally {
@@ -371,8 +374,15 @@ export type MonoRouteHost = MonoQueueHost & {
   open(id: string): Promise<Session | null>;
   /** The reconcile of this window's load of a session (`createLoadReconciles`). */
   reconciled(id: string): Promise<void>;
-  /** Steers a running project session; throws when the turn ended. */
-  steerProject(session: Session, text: string, id: MessageId): Promise<void>;
+  /**
+   * Steers a running project session with `handed.text` and records
+   * `handed.shown` as its transcript block; throws when the turn ended.
+   */
+  steerProject(
+    session: Session,
+    handed: Pick<HandedOff, "text" | "shown">,
+    id: MessageId,
+  ): Promise<void>;
 };
 
 export type MonoMessagingHost = MonoRouteHost & {
@@ -659,8 +669,8 @@ async function steerProjectSession(
             sessionId,
             message.id,
             "steer",
-            async ({ text }) => {
-              await host.steerProject(target, text, message.id);
+            async (handed) => {
+              await host.steerProject(target, handed, message.id);
               return true;
             },
           ).catch(() => false)
