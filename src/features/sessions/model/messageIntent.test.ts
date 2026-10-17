@@ -38,6 +38,7 @@ import {
 import {
   canDispatchQueuedHead,
   queuedHead,
+  queuedMessageForSubmit,
   runningTurnMap,
   steerableQueuedMessage,
 } from "./messageQueue";
@@ -559,6 +560,49 @@ it("lets text sent while a chat compacts wait for the compaction to end", () => 
   expect(canDispatchQueuedHead(queued)).toBe(false);
   const done = { ...queued, busy: false };
   expect(canDispatchQueuedHead(done) && queuedHead(done)?.id).toBe("a");
+});
+
+// PR I6 review r3 m2 and n4. Defect: Steer on a queued row whose send App
+// puts in the queue (a worktree in preparation, a plan row) or that finds
+// no turn to join plans a queue, and App appends a copy of the row, so its
+// text is sent twice.
+it("keeps a queued row in its place when its Steer would only queue it again", () => {
+  const running: Session = {
+    ...appendUser(newSession("codex", "/tmp"), "Build it", [], {
+      turnId: turn1,
+    }),
+    busy: true,
+    turnReadiness: "ready",
+  };
+  const turns = runningTurnMap([[running.id, turn1]]);
+  const row: QueuedMessage = { id: "q", text: "also docs", attachments: [] };
+  const compacting: Session = { ...stopStreaming(running), busy: true };
+  // App's busy branch plans a forced queue with "no" and a Steer with "now".
+  const steers: [Session, QueuedMessage, SendRoute][] = [
+    [
+      { ...running, turnReadiness: "starting", worktreePreparing: true },
+      row,
+      busyRoute(running, turns, "no"),
+    ],
+    [running, { ...row, intent: "plan" }, busyRoute(running, turns, "no")],
+    [compacting, row, busyRoute(compacting, runningTurnMap(), "now")],
+  ];
+  for (const [session, item, route] of steers) {
+    const resolved = queuedMessageForSubmit(
+      { ...session, queuedMessages: [item] },
+      item.id,
+      "steer",
+    );
+    expect(resolved).toBe(item);
+    expect(
+      planUserSend({ origin: {}, item: resolved, text: item.text, route }),
+    ).toEqual({ kind: "stays" });
+  }
+  // The same text typed in the composer is a new queue item.
+  expect(plan(busyRoute(running, turns, "no"))).toEqual({
+    kind: "queue",
+    item: {},
+  });
 });
 
 // Design 16.12.6. Defects: a guessed target, a blocked send, or a picked

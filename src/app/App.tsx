@@ -7360,6 +7360,10 @@ function Workspace({
           ),
         });
         if (sent.kind === "target_gone") return targetGone();
+        // Steer on a queued row that this send would only queue again (a
+        // worktree in preparation, a plan row, no turn to join): the row
+        // keeps its place, so its text is not queued twice.
+        if (sent.kind === "stays") return false;
         if (sent.kind === "queue") {
           setSessions((prev) =>
             prev.map((s) =>

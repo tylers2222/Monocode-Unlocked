@@ -281,9 +281,15 @@ type Queued = {
   kind: "queue";
   item: Pick<QueuedMessage, "link" | "waitForIdle" | "typedInTurn">;
 };
+/**
+ * The queued item this send delivers would only be queued again (PR I6
+ * review r3 m2, n4): it keeps its place and nothing is sent, so its text is
+ * never queued twice.
+ */
+type Stays = { kind: "stays" };
 
 /** Where a user's message goes (design 16.8, 16.12.4). */
-export type UserSend = TargetGone | Sent | Queued;
+export type UserSend = TargetGone | Sent | Queued | Stays;
 
 type PlanInput<R extends SendRoute> = {
   origin: SendOrigin | undefined;
@@ -299,6 +305,11 @@ export function planUserSend(
 ): TargetGone | (Sent & { kind: "open" });
 export function planUserSend(input: PlanInput<SendRoute>): UserSend;
 export function planUserSend(input: PlanInput<SendRoute>): UserSend {
+  const plan = planSend(input);
+  return plan.kind === "queue" && input.item ? { kind: "stays" } : plan;
+}
+
+function planSend(input: PlanInput<SendRoute>): TargetGone | Sent | Queued {
   const { origin, route } = input;
   const own = isOwnText(origin, input.item);
   const link = own ? (origin?.link ?? input.item?.link) : undefined;

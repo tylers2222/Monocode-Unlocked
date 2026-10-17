@@ -289,11 +289,7 @@ export function queuedMessageForSubmit(
   );
   if (!message) return undefined;
   if (mode === "steer")
-    // Busy with no turn to join (`userTextHeld`): the send would only queue
-    // the row a second time.
-    return message.monoSessionCompletion ||
-      message.waitForIdle ||
-      (session.busy && !session.turnReadiness)
+    return message.monoSessionCompletion || message.waitForIdle
       ? undefined
       : message;
   if (queuedHead(session)?.id !== messageId) return undefined;

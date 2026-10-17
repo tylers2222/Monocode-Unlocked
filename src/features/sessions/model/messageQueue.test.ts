@@ -333,14 +333,6 @@ describe("queuedMessageForSubmit", () => {
     expect(queuedMessageForSubmit(chat(), "missing", "steer")).toBeUndefined();
   });
 
-  // PR I5b review r3 m1. Defect: Steer on a queued row while the chat
-  // compacts (busy, no turn) plans a queue, so App queues the row twice.
-  it("resolves no row for Steer while the chat compacts", () => {
-    expect(
-      queuedMessageForSubmit(chat({ busy: true }), "b", "steer"),
-    ).toBeUndefined();
-  });
-
   it("never resolves a row that waits for an idle turn for Steer", () => {
     const session = chat({
       queuedMessages: [{ ...queued("a"), waitForIdle: true }, queued("b")],
