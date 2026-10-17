@@ -442,8 +442,8 @@ fn may_steer_turn(caller: &Level, recipient: &Recipient) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnPin {
     Turn(String),
-    /// A `start_session` row (PR 7): its work is the session it started,
-    /// so any turn of that session runs it.
+    /// A `start_session` row, or rule (b)'s answer to a Giga (PR 7): any
+    /// turn its session runs takes the steer ([`steer_pin`]).
     AnyTurn,
     NotStarted,
 }
@@ -528,14 +528,33 @@ pub fn target_session(
         }
         Status::Dropped { .. } | Status::Rejected { .. } => (None, None),
     };
-    let pin = match turn {
-        _ if m.tool == Tool::StartSession => TurnPin::AnyTurn,
-        Some(turn) => TurnPin::Turn(turn.clone()),
-        None => TurnPin::NotStarted,
-    };
     TargetSession::Receiver {
+        pin: match session {
+            Some(session) => steer_pin(
+                m.tool,
+                &m.from_session_id,
+                turn.map(String::as_str),
+                session,
+            ),
+            None => TurnPin::NotStarted,
+        },
         session: session.cloned(),
-        pin,
+    }
+}
+
+/// Design 16.6: the turn a steer into `session` joins when it names a row
+/// of `tool` that `from` sent and turn `turn` handles. A start row's work is
+/// the whole session it started, and rule (b) steers the Giga chat that sent
+/// M, which never handles it (S3 refuses a send to oneself): either joins
+/// whatever turn its session runs (PR 7 review r1 B2). Any other steer joins
+/// `turn`. The gate's S15 and `assign_slot` read this one pin.
+pub fn steer_pin(tool: Tool, from: &SessionId, turn: Option<&str>, session: &SessionId) -> TurnPin {
+    if tool == Tool::StartSession || from == session {
+        return TurnPin::AnyTurn;
+    }
+    match turn {
+        Some(turn) => TurnPin::Turn(turn.to_string()),
+        None => TurnPin::NotStarted,
     }
 }
 
@@ -743,11 +762,13 @@ pub enum Decision {
     },
     /// No row.
     Refuse { code: Refusal, hint: String },
-    /// One `rejected` row.
+    /// One `rejected` row. `hop` is the hop the call would have had for S18
+    /// and R9 (design 6, E25), and 0 for every other code.
     Reject {
         code: RejectCode,
         hint: String,
         to: Option<Party>,
+        hop: u32,
         open_handles: Vec<OpenHandle>,
     },
     /// One row per entry, in part order, each to its own route. A reply to
@@ -769,6 +790,7 @@ impl From<Rejection> for Decision {
             code: rejection.code,
             hint: rejection.hint,
             to: None,
+            hop: 0,
             open_handles: rejection.open_handles,
         }
     }
@@ -821,12 +843,19 @@ impl RejectCode {
 const NOT_A_MONO: &str = "Only a Mono's chat or its habit runs can use Mono messaging.";
 pub(crate) const REQUEST_ID_REUSED: &str =
     "This request id was already used with different input. Use a new request id.";
+pub(crate) const START_ENDED: &str =
+    "The session this request id started was archived or deleted. Use a new request id.";
 
 fn reject(code: RejectCode, to: Option<Party>) -> Decision {
+    reject_at(code, to, 0)
+}
+
+fn reject_at(code: RejectCode, to: Option<Party>, hop: u32) -> Decision {
     Decision::Reject {
         code,
         hint: code.hint().into(),
         to,
+        hop,
         open_handles: Vec::new(),
     }
 }
@@ -970,12 +999,14 @@ pub fn decide_send(
     };
     let recipient = &about.recipient;
     let to = recipient.party();
-    let reject = |code: RejectCode| Decision::Reject {
+    let reject_at = |code: RejectCode, hop: u32| Decision::Reject {
         code,
         hint: send_hint(code, row, input, about, now),
         to: to.clone(),
+        hop,
         open_handles: Vec::new(),
     };
+    let reject = |code: RejectCode| reject_at(code, 0);
     if too_large(&input.message) {
         return reject(RejectCode::TooLarge);
     }
@@ -1206,7 +1237,7 @@ pub fn decide_send(
     };
     // S18, S19: every accepted path counts in both.
     if hop > MAX_HOP {
-        return reject(RejectCode::HopLimit);
+        return reject_at(RejectCode::HopLimit, hop);
     }
     if about.pair.count >= RATE_LIMIT {
         return reject(RejectCode::RateLimited);
@@ -1254,7 +1285,7 @@ pub fn decide_reply(input: &ReplyInput, hash: &PayloadHash, facts: &Facts<ReplyF
         + 1;
     // R9, between R8 and R10.
     if hop > MAX_HOP {
-        return reject(RejectCode::HopLimit, None);
+        return reject_at(RejectCode::HopLimit, None, hop);
     }
     if let Some(rejection) = target_gone(&named) {
         return rejection.into();
@@ -1471,6 +1502,9 @@ pub struct ActionFacts {
     pub target_level: Option<SessionLevel>,
     /// Rows this caller session already wrote with this request id (any tool).
     pub prior: Vec<MonoMessage>,
+    /// A1: the session an accepted `start_session` prior launched was
+    /// archived or deleted since (PR 7 review r1 m6).
+    pub prior_start_ended: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1513,8 +1547,14 @@ pub fn decide_action(call: &ActionCall, facts: &ActionFacts) -> ActionDecision {
                 code: gate_result,
                 hint: action_hint(gate_result, facts),
             },
-            // The launch itself is idempotent in `host.start`, so a retry of
-            // a start goes on with the lead id the first call wrote.
+            // The launch is idempotent in `host.start` only while its session
+            // lives: after a delete it would launch the id again.
+            _ if facts.prior_start_ended => ActionDecision::Refuse {
+                code: Refusal::RequestIdReused,
+                hint: START_ENDED.into(),
+            },
+            // A retry of a start goes on with the lead id the first call
+            // wrote.
             _ => ActionDecision::Allow {
                 lead_session_id: caller
                     .mono_id()
@@ -1822,6 +1862,7 @@ mod tests {
             code,
             hint: code.hint().into(),
             to,
+            hop: 0,
             open_handles: Vec::new(),
         }
     }
@@ -2099,6 +2140,18 @@ mod tests {
             code,
             hint: hint.into(),
             to,
+            hop: 0,
+            open_handles: Vec::new(),
+        }
+    }
+
+    /// The S18 or R9 rejection of a call that would have had hop 5 (E25).
+    fn hop_limited(to: Option<Party>) -> Decision {
+        Decision::Reject {
+            code: RejectCode::HopLimit,
+            hint: HOP_LIMIT.into(),
+            to,
+            hop: 5,
             open_handles: Vec::new(),
         }
     }
@@ -3068,6 +3121,7 @@ mod tests {
             code: RejectCode::AmbiguousReply,
             hint,
             to: None,
+            hop: 0,
             open_handles,
         } = decision
         else {
@@ -3111,6 +3165,7 @@ mod tests {
             code: RejectCode::TargetGone,
             hint: hint.into(),
             to: None,
+            hop: 0,
             open_handles: Vec::new(),
         };
         assert_eq!(
@@ -4122,23 +4177,16 @@ mod tests {
             steer_at(3),
             steered(party_a(), "a-chat", &sent('a', 3, Some("turn-1")))
         );
-        assert_eq!(
-            steer_at(4),
-            send_rejected(RejectCode::HopLimit, party_a(), HOP_LIMIT)
-        );
+        assert_eq!(steer_at(4), hop_limited(party_a()));
         assert_eq!(
             answer_late(
                 question("giga-chat", 4, NOW - 1_000, unanswered()),
                 live("giga-chat", true, true),
                 PairCount::default()
             ),
-            send_rejected(
-                RejectCode::HopLimit,
-                Some(Party::Mono {
-                    mono_id: mono("giga")
-                }),
-                HOP_LIMIT
-            )
+            hop_limited(Some(Party::Mono {
+                mono_id: mono("giga")
+            }))
         );
     }
 
@@ -4253,7 +4301,7 @@ mod tests {
                 }],
             }
         );
-        let limit = send_rejected(RejectCode::HopLimit, None, HOP_LIMIT);
+        let limit = hop_limited(None);
         assert_eq!(at_hop(4, live("giga-chat", true, true)), limit);
         let gone = Target {
             exists: false,
@@ -4398,6 +4446,7 @@ mod tests {
                 caller_level,
                 target_level,
                 prior: Vec::new(),
+                prior_start_ended: false,
             },
         )
     }
@@ -4600,6 +4649,7 @@ mod tests {
                     caller_level: Some(SessionLevel::Lead),
                     target_level: None,
                     prior: vec![started],
+                    prior_start_ended: false,
                 }
             ),
             ActionDecision::Allow {
@@ -4633,6 +4683,7 @@ mod tests {
                     caller_level: Some(worker_of("l1")),
                     target_level: None,
                     prior: vec![refused.clone()],
+                    prior_start_ended: false,
                 }
             ),
             ActionDecision::Replay {
@@ -4660,6 +4711,7 @@ mod tests {
                     caller_level: None,
                     target_level: None,
                     prior: vec![row('a', Some("mono-a"), 0, open(1))],
+                    prior_start_ended: false,
                 }
             ),
             ActionDecision::Refuse {
@@ -4679,5 +4731,147 @@ mod tests {
         for (path, key) in fixture {
             assert_eq!(path_key(&path), key, "{path:?}");
         }
+    }
+
+    // L3 (design 6.3), PR 7 review r1 m9 and n5. Defect: a lead reports to
+    // a Giga whose projects do not hold its folder, or L3 compares folders
+    // by prefix, so a lead in a subfolder reaches a Mono of the parent.
+    #[test]
+    fn l3_refuses_a_giga_outside_the_leads_folder_and_a_lead_in_a_subfolder() {
+        let giga = mono_in("giga", MonoRole::Giga, &["/p/gamma"]);
+        assert_eq!(
+            decide_as(
+                &session_caller("l1"),
+                lead_row(),
+                &new("Done", "giga", false),
+                about(giga.clone())
+            ),
+            send_rejected(
+                RejectCode::DirectionForbidden,
+                giga.party(),
+                "That Mono has none of your project folders."
+            ),
+            "giga outside the folder"
+        );
+        let in_sub = CallerFacts::Session {
+            level: SessionLevel::Lead,
+            cwd: "/p/alpha/sub".into(),
+        };
+        let a = mono_in("mono-a", MonoRole::Mono, &["/p/alpha"]);
+        assert_eq!(
+            decide_as(
+                &session_caller("l1"),
+                in_sub,
+                &new("Done", "mono-a", false),
+                about(a.clone())
+            ),
+            send_rejected(
+                RejectCode::DirectionForbidden,
+                a.party(),
+                "That Mono has none of your project folders."
+            ),
+            "subfolder"
+        );
+    }
+
+    // Design 16.5 row order, PR 7 review r1 n5. Defect: S19 runs before
+    // S18, so a steer past hop 4 at the rate limit answers rate_limited and
+    // its row loses the hop.
+    #[test]
+    fn s18_runs_before_s19() {
+        let a_chat = live("a-chat", true, true);
+        let facts = Facts {
+            caller: Some(CallerFacts::Mono(giga_row())),
+            prior: Vec::new(),
+            about: SendFacts {
+                recipient: mono_a(Some(a_chat.clone())),
+                reply_to: Some(Referenced {
+                    message: sent('a', 4, Some("turn-1")),
+                    session: Some(a_chat),
+                }),
+                pair: PairCount {
+                    count: 6,
+                    oldest: Some(NOW - 1_000),
+                },
+            },
+        };
+        assert_eq!(
+            decide_send(
+                &caller(CallerKind::MonoChat),
+                &steer("m_aaaaaaaaaaaa"),
+                &hash(),
+                &facts,
+                NOW
+            ),
+            hop_limited(party_a())
+        );
+    }
+
+    // A8 (design 6.6), PR 7 review r1 m8. Defect: a started lead reads or
+    // archives a sibling lead, or cannot list models to pick a worker's.
+    #[test]
+    fn a8_a_started_lead_reads_and_archives_only_its_workers_and_lists_models() {
+        let started = session_caller("l1");
+        let lead_scope = act_rejected(RejectCode::LeadScope, LEAD_SCOPE, Tool::AppAction);
+        for action in ["sessions.read", "sessions.archive"] {
+            assert_eq!(
+                act(
+                    &started,
+                    action,
+                    Some(SessionLevel::Lead),
+                    Some(SessionLevel::Lead)
+                ),
+                lead_scope,
+                "{action} of a sibling"
+            );
+            assert_eq!(
+                act(
+                    &started,
+                    action,
+                    Some(SessionLevel::Lead),
+                    Some(worker_of("l1"))
+                ),
+                ALLOWED,
+                "{action} of its worker"
+            );
+        }
+        assert_eq!(
+            act(&started, "models.list", Some(SessionLevel::Lead), None),
+            ALLOWED,
+            "models.list"
+        );
+    }
+
+    // L7 and A3 (design 6.3 "every lead, /operator ones too", 13.4), PR 7
+    // review r1 m10. Defect: the level rules bind only `started` sessions,
+    // so an /operator lead messages a sibling lead and an /operator worker
+    // starts sessions.
+    #[test]
+    fn l7_and_a3_bind_operator_sessions_too() {
+        let sibling = in_alpha("l2", SessionLevel::Lead);
+        assert_eq!(
+            decide_as(
+                &operator("l1"),
+                lead_row(),
+                &new("Hi", "l2", false),
+                about(sibling.clone())
+            ),
+            send_rejected(RejectCode::LeadScope, sibling.party(), LEAD_SCOPE),
+            "L7"
+        );
+        assert_eq!(
+            act(
+                &operator("w1"),
+                "sessions.start",
+                Some(worker_of("l1")),
+                None
+            ),
+            act_rejected(
+                RejectCode::WorkerCannotSpawn,
+                r#"Only lead sessions can start sessions. Ask your lead (l1): messages.send with send_to "l1"."#,
+                Tool::StartSession
+            ),
+            "A3"
+        );
     }
 }

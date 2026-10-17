@@ -6,7 +6,9 @@ import {
   operatorEnabledInThread,
   operatorUserPrompt,
   OPERATOR_COMMAND,
+  turnAccess,
 } from "./operatorCommand";
+import { runtimeModeToCodexConfig } from "../../../integrations/harness/providers/codex/codexProtocol";
 
 describe("Operator composer command", () => {
   it("exposes a local slash command", () => {
@@ -92,5 +94,35 @@ describe("Operator composer command", () => {
         { id: "reply", role: "assistant", text: "Fixed." },
       ]),
     ).toBeNull();
+  });
+});
+
+// PR 7 review r1 M1. Defect: app access from a sessions.start stamp also
+// turns on codex sandbox network, so every Mono-started lead and worker
+// reaches the network in auto-accept-edits and auto with no approval.
+describe("turnAccess", () => {
+  it("gives a started session app access and its runtime mode's network", () => {
+    const access = turnAccess("started", false);
+    expect(access).toEqual({ appAccess: true, controlsAgents: false });
+    for (const mode of ["supervised", "auto-accept-edits", "auto"] as const)
+      expect(
+        runtimeModeToCodexConfig(mode, access.controlsAgents).sandboxPolicy,
+        mode,
+      ).not.toHaveProperty("networkAccess", true);
+  });
+
+  it("opens the network only for a typed /operator or a Mono's chat", () => {
+    expect(turnAccess("operator", false)).toEqual({
+      appAccess: true,
+      controlsAgents: true,
+    });
+    expect(turnAccess(null, true)).toEqual({
+      appAccess: true,
+      controlsAgents: true,
+    });
+    expect(turnAccess(null, false)).toEqual({
+      appAccess: false,
+      controlsAgents: false,
+    });
   });
 });

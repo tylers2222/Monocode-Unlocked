@@ -62,3 +62,20 @@ export function appAccess(blocks: Block[]): AppAccess | null {
   const first = blocks.find((block) => block.role === "user" && !block.draft);
   return first?.startedBy ? "started" : null;
 }
+
+/**
+ * What a turn gets from its thread's access (PR 7 review r1 M1): app access
+ * for any access, and `controlsAgents` (codex opens its sandbox network so
+ * the CLI reaches the app's loopback) only for access the user granted, a
+ * Mono's chat or a typed /operator. A session that `sessions.start` made
+ * keeps its runtime mode's network, as before PR 7.
+ */
+export function turnAccess(
+  access: AppAccess | null,
+  mono: boolean,
+): { appAccess: boolean; controlsAgents: boolean } {
+  return {
+    appAccess: mono || access !== null,
+    controlsAgents: mono || access === "operator",
+  };
+}

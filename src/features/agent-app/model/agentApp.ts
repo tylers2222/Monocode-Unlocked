@@ -15,6 +15,7 @@ import {
   type SendInput,
 } from "../../monos/model/monoMessages";
 import { AppActionError, monoError } from "./appActionError";
+import { isPersistableId } from "../../sessions/data/sessionStore";
 import {
   HARNESSES,
   RUNTIME_MODE_HINT,
@@ -259,10 +260,10 @@ export type AgentAppHost = {
     get(input: GetInput): Promise<unknown>;
   };
   /**
-   * Design 6.6 and 13: the level gate of this call's caller. Without it no
-   * level rule runs.
+   * Design 6.6 and 13: the level gate of this call's caller. Required, so a
+   * host cannot run app actions with no level rule (PR 7 review r1 n1).
    */
-  levels?: {
+  levels: {
     /**
      * `mono_app_action_check`. Throws its refusal or rejection as an
      * `AppActionError`; allowed, it answers the lead id that `sessions.start`
@@ -277,11 +278,12 @@ export type AgentAppHost = {
         input: Record<string, unknown>;
       },
     ): Promise<{ leadSessionId: string | null }>;
-    /** `mono_message_start_prior`: reads, and never writes, the row a Mono's request id already has. */
-    startPrior(
-      requestId: string,
-      input: Record<string, unknown>,
-    ): Promise<"none" | { same: string } | "reused">;
+    /**
+     * `mono_message_start_prior`: reads, and never writes, the row a Mono's
+     * request id already has. Throws when the start must not launch: the key
+     * names another call or a session that ended, or the caller ended.
+     */
+    startPrior(requestId: string, input: Record<string, unknown>): Promise<void>;
     /** `mono_message_record_start`: the start row of session `sessionId`, as its message id. Throws request_id_reused. */
     recordStart(
       requestId: string,
@@ -422,6 +424,33 @@ function requiredString(value: unknown, name: string, max = 30_000): string {
       `${name} must be a non-empty string under ${max} characters`,
     );
   return value.trim();
+}
+
+/**
+ * PR 7 review r1 B1: an action's input with its `sessionId` parsed once
+ * (trimmed, then a session id of at most 256 characters), so the level
+ * check and the action read the same id. Checked here, before any launch,
+ * a prompt with U+0000 is refused too: SQLite counts its text only up to
+ * that character, so its row could never be written (review m3).
+ */
+function boundaryInput(
+  action: string,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  if (typeof input.prompt === "string" && input.prompt.includes("\u0000"))
+    throw new AppActionError(
+      "invalid_input",
+      "prompt must not contain the character U+0000",
+    );
+  if (!FIELDS.get(action)?.includes("sessionId")) return input;
+  const sessionId =
+    typeof input.sessionId === "string" ? input.sessionId.trim() : "";
+  if (sessionId.length > 256 || !isPersistableId(sessionId))
+    throw new AppActionError(
+      "invalid_input",
+      "sessionId must be a session id: 1 to 256 letters, digits, underscores or hyphens",
+    );
+  return { ...input, sessionId };
 }
 
 function agentPrompt(value: unknown): string {
@@ -1049,6 +1078,20 @@ const REQUEST_ID_REUSED =
   "This request id was already used with different input. Use a new request id.";
 
 /**
+ * A start row that failed after `host.start` launched session `id`. The
+ * answer says so, since a hint like "use a new request id" alone would start
+ * the work a second time.
+ */
+function startedAnyway(error: unknown, id: string): Error {
+  const started = `Session ${id} was started anyway, so do not start it again; read or steer it by its id.`;
+  return error instanceof AppActionError
+    ? new AppActionError(error.code, `${error.hint} ${started}`, error.details)
+    : new Error(
+        `${error instanceof Error ? error.message : String(error)}. ${started}`,
+      );
+}
+
+/**
  * A call already made with this request ID: the same result again, or
  * request_id_reused when the input differs.
  */
@@ -1365,10 +1408,11 @@ export async function handleAgentApp(
   source: Session,
   requestId: string,
   action: string,
-  input: Record<string, unknown>,
+  rawInput: Record<string, unknown>,
   host: AgentAppHost,
 ): Promise<unknown> {
-  fields(action, input);
+  fields(action, rawInput);
+  const input = boundaryInput(action, rawInput);
   // Design 6.6: one level check, before the action runs. messages.* get
   // theirs in mono_message_submit. A Mono's chat or habit run has only A5 to
   // meet; anything else gets A7's answer, no lead, without a write
@@ -1549,12 +1593,7 @@ export async function handleAgentApp(
       // Design 6.6 (intents review r3): the level check skips a Mono, so it
       // learns here, before any launch, whether its request id already names
       // another call. A draft too: a draft retry of a submitted start differs.
-      if (
-        monoCaller &&
-        levels &&
-        (await levels.startPrior(requestId, input)) === "reused"
-      )
-        throw new AppActionError("request_id_reused", REQUEST_ID_REUSED);
+      if (monoCaller) await host.levels.startPrior(requestId, input);
       const launch = startLaunch(source, input, host, leadSessionId);
       const notifyMonoId = completionRecipient(source, input, host, true);
       if (input.worktreeCwd !== undefined) {
@@ -1597,11 +1636,15 @@ export async function handleAgentApp(
         fileInMonoFolder(launch.cwd, id, folder);
       // The start row names this work for steers (design 16.2). It takes
       // the input as the caller gave it, so a repeated start finds its row.
-      // A draft runs no work, so it has none.
-      const messageId =
-        levels && !launch.draft
-          ? await levels.recordStart(requestId, id, input)
-          : undefined;
+      // A draft runs no work, so it has none. A failure here comes after
+      // the launch, so its answer names the session (PR 7 review r1 n6).
+      const messageId = launch.draft
+        ? undefined
+        : await host.levels
+            .recordStart(requestId, id, input)
+            .catch((error: unknown) => {
+              throw startedAnyway(error, id);
+            });
       return {
         id,
         cwd: launch.cwd,

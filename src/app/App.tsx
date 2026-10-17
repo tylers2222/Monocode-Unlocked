@@ -40,7 +40,7 @@ import {
   monoSessionCompletionResult,
   MonoSessionCompletionBatches,
 } from "../features/monos/model/monoSessionCompletion";
-import { acceptQuickLaunch } from "./model/quickLaunchSession";
+import { acceptQuickLaunch, appLaunchRepeat } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import { HarnessEventQueue } from "./model/harnessFlush";
@@ -626,6 +626,7 @@ import { preparePrompt } from "../features/sessions/model/promptPreparation";
 import {
   appAccess,
   consumeOperatorCommand,
+  turnAccess,
 } from "../features/sessions/model/operatorCommand";
 import {
   createMono,
@@ -7175,11 +7176,13 @@ function Workspace({
           : undefined;
       // A session that sessions.start made has app access from its first
       // turn, whose user block this submit stamps.
-      const operatorAccess =
-        operatorCommand.matched ||
-        mono ||
-        appAccess(current.blocks) !== null ||
-        !!options?.startedBy;
+      const access = turnAccess(
+        operatorCommand.matched
+          ? "operator"
+          : (appAccess(current.blocks) ??
+              (options?.startedBy ? "started" : null)),
+        mono,
+      );
       const monoFirstTurn =
         mono &&
         !current.blocks.some((block) => block.role === "user" && !block.draft);
@@ -8159,9 +8162,9 @@ function Workspace({
                 ephemeral: current.ephemeral === true,
                 codexStore: mono ? "mono" : undefined,
                 controlsAgents:
-                  operatorAccess ||
+                  access.controlsAgents ||
                   orchestrator.run(sessionId)?.status === "active",
-                appAccess: operatorAccess,
+                appAccess: access.appAccess,
                 ...(editedProviderTurnId
                   ? { providerTurnId: editedProviderTurnId }
                   : {}),
@@ -8217,9 +8220,9 @@ function Workspace({
               // A /operator user turn enables app access for this thread;
               // orchestration leads retain their separate control access.
               controlsAgents:
-                operatorAccess ||
+                access.controlsAgents ||
                 orchestrator.run(sessionId)?.status === "active",
-              appAccess: operatorAccess,
+              appAccess: access.appAccess,
               text,
               turnId,
               attachments: turnAttachments,
@@ -8958,7 +8961,12 @@ function Workspace({
                   onSettled,
                   rejectionMessage: "The monitored session could not start.",
                 })
-              : submitSession(id, text, attachments, options),
+              : // Every app launch stamps its request id, so a retry
+                // compares its text (appLaunchRepeat, PR 7 review r1 m5).
+                submitSession(id, text, attachments, {
+                  ...options,
+                  ...(options?.startedBy ? { appRequestId: deliveryId } : {}),
+                }),
           saveDraft: (id, prompt, attachments, requestId, startedBy) =>
             flushSync(() =>
               onSaveDraft(id, prompt, attachments, requestId, startedBy),
@@ -10399,8 +10407,10 @@ function Workspace({
       const gen = (turnGen.current.get(sessionId) ?? 0) + 1;
       turnGen.current.set(sessionId, gen);
       const workCwd = sessionWorkCwd(current);
-      const withAppAccess =
-        isMonoSession(sessionId) || appAccess(current.blocks) !== null;
+      const access = turnAccess(
+        appAccess(current.blocks),
+        isMonoSession(sessionId),
+      );
       const started = sessionsRef.current.map((session) =>
         session.id === sessionId
           ? applyHarnessEvent(
@@ -10430,9 +10440,9 @@ function Workspace({
             ephemeral: current.ephemeral === true,
             codexStore: isMonoSession(sessionId) ? "mono" : undefined,
             controlsAgents:
-              withAppAccess ||
+              access.controlsAgents ||
               orchestrator.run(sessionId)?.status === "active",
-            appAccess: withAppAccess,
+            appAccess: access.appAccess,
             onEvent: (event) => {
               if (turnGen.current.get(sessionId) !== gen) return;
               enqueueHarnessEvent(sessionId, event);
@@ -11172,6 +11182,7 @@ function Workspace({
           ownProject: (session) =>
             !isMonoSession(session.id) &&
             !isHabitRun(session.id) &&
+            !session.inboxAsk &&
             !session.orchestrationLeadId &&
             !orchestrator.run(session.id) &&
             canAccessProject(session.cwd),
@@ -11215,30 +11226,10 @@ function Workspace({
               );
               const stored = open ? null : await getSession(id);
               const existing = open ?? stored;
-              const previous = existing?.blocks.find(
-                (block) => block.appRequestId === id,
-              );
-              if (previous) {
-                if (
-                  previous.text !== launch.prompt ||
-                  (!launch.draft && !!previous.draft)
-                )
-                  throw new Error(
-                    "Request ID was already used for another session launch",
-                  );
+              if (appLaunchRepeat(existing, launch, id)) {
                 rememberLaunch();
                 return;
               }
-              if (
-                existing?.blocks.some(
-                  (block) => block.role === "user" && !block.draft,
-                )
-              ) {
-                rememberLaunch();
-                return;
-              }
-              if (existing && sessionDraftBlock(existing))
-                throw new Error("Session ID already has a different draft");
               const onSettled = notifyMonoId
                 ? monitorCompletion(
                     notifyMonoId,

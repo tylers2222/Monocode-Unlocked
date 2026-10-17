@@ -130,6 +130,12 @@ function fixture() {
     note: vi.fn(async (id) => (id === note.id ? note : null)),
     saveNote: vi.fn(async (input) => ({ ...note, ...input })),
     isMono: () => false,
+    // The level rules have their own tests (agentAppLevels.test.ts).
+    levels: {
+      check: vi.fn(async () => ({ leadSessionId: null })),
+      startPrior: vi.fn(async () => {}),
+      recordStart: vi.fn(async () => "m_aaaaaaaaaaaa"),
+    },
   };
   return { source, host };
 }

@@ -16,6 +16,7 @@ import {
   parseMessageId,
   type RejectCode,
 } from "../../monos/model/monoMessages";
+import { appLaunchRepeat } from "../../../app/model/quickLaunchSession";
 import { handleAgentApp, type AgentAppHost } from "./agentApp";
 import { AppActionError, appErrorResponse } from "./appActionError";
 
@@ -116,7 +117,7 @@ function world(
     rows.push(written);
     return written;
   };
-  const levels: NonNullable<AgentAppHost["levels"]> = {
+  const levels: AgentAppHost["levels"] = {
     check: vi.fn(async (requestId, { action, target, input }) => {
       const asked = hash(action, input);
       const prior = keyed(requestId);
@@ -163,10 +164,8 @@ function world(
     }),
     startPrior: vi.fn(async (requestId, input) => {
       const prior = keyed(requestId);
-      if (!prior) return "none" as const;
-      return prior.hash === hash("sessions.start", input)
-        ? { same: prior.id }
-        : ("reused" as const);
+      if (prior && prior.hash !== hash("sessions.start", input))
+        throw new AppActionError("request_id_reused", REUSED);
     }),
     recordStart: vi.fn(async (requestId, sessionId, input) => {
       const asked = hash("sessions.start", input);
@@ -185,16 +184,10 @@ function world(
     }),
   };
   const host = {
-    // As App.tsx: a repeated id launches nothing and answers no error,
-    // unless its text differs or it submits what was a draft.
+    // As App.tsx: every launch stamps its request id on its first block,
+    // and a repeated id launches nothing unless appLaunchRepeat refuses it.
     start: vi.fn(async (launch: QuickLaunch, id: string) => {
-      const existing = sessions.get(id);
-      if (existing) {
-        const first = existing.blocks[0];
-        if (first.text !== launch.prompt || (!launch.draft && first.draft))
-          throw new Error("Request ID was already used for another session launch");
-        return;
-      }
+      if (appLaunchRepeat(sessions.get(id), launch, id)) return;
       sessions.set(id, {
         ...newSession(launch.harness, launch.cwd, launch.model, launch.runtimeMode),
         id,
@@ -204,6 +197,7 @@ function world(
             id: "first",
             role: "user",
             text: launch.prompt,
+            appRequestId: id,
             ...(launch.draft ? { draft: true } : {}),
             ...(launch.startedBy ? { startedBy: launch.startedBy } : {}),
           },
@@ -227,6 +221,10 @@ function world(
     send: vi.fn(async (id: string, prompt: string) => {
       inbox.set(id, [...(inbox.get(id) ?? []), prompt]);
       return { alreadySubmitted: false, delivery: "steered" as const };
+    }),
+    draft: vi.fn(async (id: string, prompt: string) => {
+      inbox.set(id, [...(inbox.get(id) ?? []), prompt]);
+      return { alreadySaved: false, draft: true };
     }),
     notes: vi.fn(async () => [note]),
     isMono: (id: string) => id === "mono-chat",
@@ -501,5 +499,197 @@ it("writes no start row for a draft start and answers no message_id", async () =
   expect(answer).toMatchObject({ submitted: false, draft: true });
   expect(answer).not.toHaveProperty("message_id");
   expect(levels.recordStart).not.toHaveBeenCalled();
+  expect(rows).toEqual([]);
+});
+
+/** A Mono chat, a habit run of its Mono, and an /operator lead that is not the worker's lead. */
+const NOT_THE_WORKERS_LEAD = [
+  {
+    who: "a Mono chat",
+    open: () => world("mono"),
+  },
+  {
+    who: "a habit run",
+    open: () => {
+      const opened = world("mono");
+      const roles = opened.host as unknown as {
+        isMono: (id: string) => boolean;
+        isHabitRun: (id: string) => boolean;
+      };
+      roles.isMono = () => false;
+      roles.isHabitRun = (id) => id === "mono-chat";
+      return opened;
+    },
+  },
+  {
+    who: "an /operator lead",
+    open: () => {
+      const opened = world("lead");
+      opened.sessions.get("lead")!.blocks = [
+        { id: "op", role: "user", text: "Turn on the app CLI", monocode: true },
+      ];
+      opened.sessions.get("worker")!.leadSessionId = "lead-2";
+      return opened;
+    },
+  },
+];
+
+// Design 6.6 A5, PR 7 review r1 B1. Defect: the level check reads the id
+// as given and the action trims it, so " worker" passes A5 as no target
+// and the text reaches the worker.
+it.each(NOT_THE_WORKERS_LEAD)(
+  "refuses $who's padded sessions.send and sessions.draft to a worker with a row and delivers nothing",
+  async ({ open }) => {
+    for (const [action, sessionId] of [
+      ["sessions.send", " worker"],
+      ["sessions.draft", "worker\n"],
+    ] as const) {
+      const { run, host, rows, inbox } = open();
+      expect(
+        await failure(run(action, { sessionId, prompt: "Stop and rebase" })),
+        action,
+      ).toMatchObject({ ok: false, code: "steer_via_lead" });
+      expect(host.send).not.toHaveBeenCalled();
+      expect(host.draft).not.toHaveBeenCalled();
+      expect(inbox.size).toBe(0);
+      expect(rows).toEqual([
+        expect.objectContaining({
+          tool: "app_action",
+          gateResult: "steer_via_lead",
+          toSessionId: "worker",
+        }),
+      ]);
+    }
+  },
+);
+
+// PR 7 review r1 B1. Defect: a blank id after the trim reaches the level
+// check as no target.
+it("refuses a blank sessionId as invalid_input before the level check", async () => {
+  const { run, levels, rows } = world("mono");
+  expect(
+    await failure(run("sessions.send", { sessionId: "  ", prompt: "Hi" })),
+  ).toMatchObject({ ok: false, code: "invalid_input" });
+  expect(levels.check).not.toHaveBeenCalled();
+  expect(rows).toEqual([]);
+});
+
+// Design 6.6 A5, PR 7 review r1 m13. Defect: a Mono's sessions.draft into
+// a worker skips the level check that its sessions.send gets.
+it("refuses a Mono's sessions.draft into a worker with steer_via_lead", async () => {
+  const { run, host, rows } = world("mono");
+  expect(
+    await failure(
+      run("sessions.draft", { sessionId: "worker", prompt: "Rebase first" }),
+    ),
+  ).toMatchObject({ ok: false, code: "steer_via_lead" });
+  expect(host.draft).not.toHaveBeenCalled();
+  expect(rows).toEqual([
+    expect.objectContaining({
+      tool: "app_action",
+      gateResult: "steer_via_lead",
+      toSessionId: "worker",
+    }),
+  ]);
+});
+
+// Design 6.6 runtime ceiling (a caller whose access is started), PR 7
+// review r1 m13. Defect: the ceiling also binds an /operator lead.
+it("starts a full-access worker from an /operator lead in supervised", async () => {
+  const { run, sessions } = world("lead");
+  sessions.get("lead")!.blocks = [
+    { id: "op", role: "user", text: "Turn on the app CLI", monocode: true },
+  ];
+  await run("sessions.start", {
+    ...CHOICE,
+    prompt: "Deploy",
+    runtimeMode: "full-access",
+  });
+  expect(sessions.get("app-lead-r1")?.runtimeMode).toBe("full-access");
+});
+
+// Design 9 (intents review r3), PR 7 review r1 m13. Defect: a habit run
+// skips the prior read, so it launches under a key a send used.
+it("refuses a habit run's start whose request id a messages.send used, before any launch", async () => {
+  const { run, host } = NOT_THE_WORKERS_LEAD[1].open();
+  await run("messages.send", {
+    message: "Is CI green?",
+    send_to: "mono-2",
+    wanting_reply: false,
+    intent: "new",
+  });
+  expect(
+    await failure(
+      run("sessions.start", {
+        ...CHOICE,
+        prompt: "Fix CI",
+        notifyOnComplete: false,
+      }),
+    ),
+  ).toMatchObject({ ok: false, code: "request_id_reused" });
+  expect(host.start).not.toHaveBeenCalled();
+});
+
+// PR 7 review r1 m3. Defect: SQLite counts a prompt only up to U+0000, so
+// a prompt with one passes every check, launches, and its row then fails.
+it.each(["mono", "lead"] as const)(
+  "refuses a %s's start whose prompt holds U+0000 before any check or launch",
+  async (who) => {
+    const { run, host, levels, rows } = world(who);
+    expect(
+      await failure(run("sessions.start", { ...CHOICE, prompt: "Fix\u0000it" })),
+    ).toMatchObject({ ok: false, code: "invalid_input" });
+    expect(levels.check).not.toHaveBeenCalled();
+    expect(levels.startPrior).not.toHaveBeenCalled();
+    expect(host.start).not.toHaveBeenCalled();
+    expect(rows).toEqual([]);
+  },
+);
+
+// PR 7 review r1 m5 and n6. Defect: after a failed record, a retry under
+// the key with other input meets the launched session, launches nothing
+// and is answered as a start with a row for work that never ran; the first
+// failure does not say the session runs.
+it("answers a changed retry after a failed record with an error, not a row", async () => {
+  const { run, levels, rows, sessions } = world("lead");
+  vi.mocked(levels.recordStart).mockRejectedValueOnce(
+    new Error("database is locked"),
+  );
+  expect(
+    await failure(run("sessions.start", { ...CHOICE, prompt: "Fix the flaky test" })),
+  ).toEqual({
+    ok: false,
+    error:
+      "database is locked. Session app-lead-r1 was started anyway, so do not start it again; read or steer it by its id.",
+  });
+  expect(
+    await failure(
+      run("sessions.start", { ...CHOICE, prompt: "Delete the flaky test" }),
+    ),
+  ).toEqual({
+    ok: false,
+    error: "Request ID was already used for another session launch",
+  });
+  expect(rows).toEqual([]);
+  expect(sessions.get("app-lead-r1")?.blocks[0].text).toBe("Fix the flaky test");
+});
+
+// PR 7 review r1 m5. Defect: a draft start that the user edited and sent
+// gets a start row on a submitted retry, so the user's own turn becomes a
+// Mono steer target.
+it("refuses a submitted retry of a draft start that the user sent", async () => {
+  const { run, rows, sessions } = world("mono");
+  const input = { ...CHOICE, prompt: "Fix CI", notifyOnComplete: false };
+  await run("sessions.start", { ...input, draft: true });
+  const launched = sessions.get("app-mono-chat-r1")!;
+  // The user's send replaces the draft block with one that has no stamp.
+  sessions.set(launched.id, {
+    ...launched,
+    blocks: [{ id: "user", role: "user", text: "Fix CI, but only the lint job" }],
+  });
+  expect(await failure(run("sessions.start", input))).toEqual({
+    ok: false,
+    error: "Request ID was already used for another session launch",
+  });
   expect(rows).toEqual([]);
 });
