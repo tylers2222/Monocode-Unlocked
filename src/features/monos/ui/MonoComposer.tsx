@@ -29,6 +29,13 @@ import {
   consumeQuoteRequest,
   type QuoteRequest,
 } from "../../sessions/model/quoteDraft";
+import {
+  ComposerIntentBar,
+  useComposerBar,
+  type ComposerIntent,
+} from "../../sessions/ui/ComposerIntentBar";
+import type { BarSend } from "../../sessions/ui/composerIntent";
+import { consumeOperatorCommand } from "../../sessions/model/operatorCommand";
 
 // Loaded on first open, with its emoji data, so neither weighs on startup.
 const EmojiPickerPopover = lazy(() =>
@@ -60,6 +67,7 @@ type Props = {
   onSubmit: (
     text: string,
     attachments: Attachment[],
+    target?: BarSend,
   ) => boolean | void | Promise<boolean | void>;
   onFocus?: () => void;
   /**
@@ -70,6 +78,8 @@ type Props = {
   controls?: ReactNode;
   /** Sits beside attach and emoji, on the left under the input. */
   tools?: ReactNode;
+  /** What the message refers to: the bar, Reply and Steer (design 16.8). */
+  intent?: ComposerIntent;
 };
 
 /**
@@ -91,6 +101,7 @@ export function MonoComposer({
   onFocus,
   controls,
   tools,
+  intent,
 }: Props) {
   const [text, setText] = useState(() => getComposerDraft(sessionId) ?? "");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -108,11 +119,21 @@ export function MonoComposer({
   const [dropError, setDropError] = useState<string | null>(null);
   const submittingRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
+  const typing = text.trim().length > 0 || attachments.length > 0;
+  // The queue holds a typed /operator until the turn ends (`waitsForTurnEnd`),
+  // so the bar names no running turn for it. /plan and /orchestrator are plain
+  // text in a Mono chat, and steer.
+  const intentBar = useComposerBar(
+    intent,
+    typing,
+    consumeOperatorCommand(text).matched ? "Operator" : undefined,
+  );
   const ready =
-    enabled &&
-    !submitting &&
-    pendingReads === 0 &&
-    (text.trim().length > 0 || attachments.length > 0);
+    enabled && !submitting && pendingReads === 0 && typing && !!intentBar.send;
+  const choice = intent?.choice;
+  useLayoutEffect(() => {
+    if (choice?.kind === "picked" && enabled) field.current?.focus();
+  }, [choice, enabled]);
   const inline = !controls;
   // Attachments sit above the field like a second line of text, so an inline
   // field moves above the buttons for them too.
@@ -265,16 +286,21 @@ export function MonoComposer({
     read: readDropped,
     onError: setDropError,
   });
-  const send = () => {
+  /** `asNew` is "Send as new": the same text as a `new` message. */
+  const send = (asNew?: BarSend) => {
     if (!enabled || submittingRef.current || pendingReadsRef.current > 0)
       return;
     const message = textRef.current.trim();
     const draft = textRef.current;
     const files = attachmentsRef.current;
     if (!message && !files.length) return;
+    // A steer whose work ended is never sent; the text stays (design 16.8).
+    const target = asNew ?? intentBar.send;
+    if (!target) return;
     const generation = readGeneration.current;
     const clear = (accepted: boolean | void) => {
       if (accepted === false) return;
+      intentBar.sent();
       if (generation !== readGeneration.current) {
         if (getComposerDraft(sessionId) === draft)
           setComposerDraft(sessionId, "");
@@ -285,7 +311,7 @@ export function MonoComposer({
       setAttachments([]);
       setDropError(null);
     };
-    const result = onSubmit(message, files);
+    const result = onSubmit(message, files, target);
     if (result instanceof Promise) {
       submittingRef.current = true;
       setSubmitting(true);
@@ -382,6 +408,14 @@ export function MonoComposer({
           <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center rounded-lg bg-accent/8 text-[12px] text-content/70">
             Drop files to attach
           </div>
+        ) : null}
+        {intent ? (
+          <ComposerIntentBar
+            bar={intentBar.bar}
+            intent={intent}
+            typing={typing}
+            onSendAsNew={() => send(intentBar.asNew)}
+          />
         ) : null}
         {dropError ? (
           <p role="alert" className="px-3 pt-2 text-xs text-red-400">

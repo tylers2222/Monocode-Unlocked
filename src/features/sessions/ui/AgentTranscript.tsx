@@ -154,6 +154,8 @@ import {
   type TurnItem,
 } from "../model/transcriptActivity";
 import { lastUserTurnBlock } from "../model/editLastTurn";
+import { MessageQuote } from "./MessageQuote";
+import { fitPillBeside, PickTargetActions } from "./MessageTargets";
 import {
   monoCodeToolCall,
   monoCodeWorkSummary,
@@ -1624,6 +1626,9 @@ function AgentTranscriptComponent({
                       : turn,
                   )}
                   onSaveNote={onSaveNote}
+                  replyTo={[...turn]
+                    .reverse()
+                    .find((block) => block.role === "assistant" && block.text)}
                   onShowWork={
                     inlineWork && onShowWork
                       ? () => onShowWork(turnId, turn)
@@ -1815,6 +1820,7 @@ function TurnDuration({
   completedAt,
   copyText: output,
   onSaveNote,
+  replyTo,
   onShowWork,
   workExpanded,
   fromHarness,
@@ -1833,6 +1839,8 @@ function TurnDuration({
   completedAt?: number;
   copyText?: string;
   onSaveNote?: (text: string) => void | Promise<void>;
+  /** The turn's final reply, which the user can answer with Reply (design 16.8). */
+  replyTo?: Block;
   onShowWork?: () => void;
   workExpanded?: boolean;
   fromHarness?: HarnessId;
@@ -1868,6 +1876,9 @@ function TurnDuration({
         ) : (
           <Check className="size-3.5" strokeWidth={1.75} />
         )}
+        {replyTo ? (
+          <PickTargetActions block={replyTo} className="flex items-center" />
+        ) : null}
         {onShowWork ? (
           <button
             type="button"
@@ -2634,6 +2645,7 @@ function UserMessageBlock({
     textOnly &&
     !monocode &&
     !messageLink &&
+    !block.link &&
     isEmojiOnlyMessage(displayText)
   ) {
     return (
@@ -2661,12 +2673,16 @@ function UserMessageBlock({
     );
   }
 
+  const pillBeside = chat && stackedOnPrevious;
+
   return (
     <div
       data-prompt-anchor={block.id}
       data-message-delivery={delivery?.status}
       data-message-stack={compactFollowUp ? "true" : undefined}
       data-editing-last-turn={editing ? "true" : undefined}
+      onPointerEnter={pillBeside ? fitPillBeside : undefined}
+      onFocus={pillBeside ? fitPillBeside : undefined}
       className={`user-message-row group/usermsg overflow-visible ${
         chat
           ? `flex flex-col items-end pr-4 pl-14 ${chatSpacing}`
@@ -2676,6 +2692,17 @@ function UserMessageBlock({
       <div
         className={`user-message-hover-zone min-w-0 overflow-visible ${chat ? "flex w-fit max-w-full flex-col items-end" : "w-full"}`}
       >
+        {block.draft ? null : (
+          <PickTargetActions
+            block={block}
+            // Beside the bubble under another message of the user's, which
+            // it would cover; else above the quote, so it never covers it.
+            className={`pick-target-pill ${pillBeside ? "pick-target-pill-beside" : block.link ? "pick-target-pill-quoted" : ""}`}
+            // Above the bubble, which stacks by its turn (`stickyIndex`).
+            style={{ zIndex: stickyIndex + 1 }}
+          />
+        )}
+        {block.link ? <MessageQuote link={block.link} /> : null}
         {/* Photos and their bubble enter as one message. */}
         <div
           data-chat-message={photos.length ? block.id : undefined}

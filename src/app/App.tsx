@@ -550,6 +550,7 @@ import {
 import {
   busyRoute,
   planUserSend,
+  stayNotice,
   STEER_TARGET_GONE,
 } from "../features/sessions/model/messageIntent";
 import {
@@ -7197,8 +7198,9 @@ function Workspace({
         !options?.queuedMessageId &&
         (current.busy || current.queuedMessages?.length)
       ) {
-        // The pump steers the item later, into the turn it was typed in;
-        // a reply, a continue or a cleared steer waits for the turn end.
+        // The pump steers the item later, into the turn it was typed in; a
+        // reply, a continue, a cleared steer (✕), an `/operator` command, a
+        // plan or an orchestrate item waits for the turn end.
         const item = typedMonoMessage({
           session: current,
           turns: currentTurnIds.current,
@@ -7359,6 +7361,20 @@ function Workspace({
           ),
         });
         if (sent.kind === "target_gone") return targetGone();
+        // Steer on a queued row that this send would only queue again (a
+        // worktree in preparation, a plan row, no turn to join): the row
+        // keeps its place, so its text is not queued twice, and the user
+        // reads why the click sent nothing.
+        if (sent.kind === "stays") {
+          if (options?.followUpBehavior === "steer") {
+            enqueueHarnessEvent(sessionId, {
+              type: "status",
+              text: stayNotice(current, intent),
+            });
+            flushHarnessEvents();
+          }
+          return false;
+        }
         if (sent.kind === "queue") {
           setSessions((prev) =>
             prev.map((s) =>

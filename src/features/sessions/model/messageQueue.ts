@@ -1,4 +1,4 @@
-import { isPreparingHandoff } from "./handoff";
+import { isPreparingHandoff, switchingProviders } from "./handoff";
 import { consumeOperatorCommand } from "./operatorCommand";
 import type { TurnId } from "../../monos/model/monoMessages";
 import type { QueuedMessage, Session } from "./session";
@@ -80,9 +80,10 @@ export function isOwnQueuedMessage(message: QueuedMessage): boolean {
  * that missed its turn, so the user's messages reach the agent in the order
  * typed (design 16.12.4). `missed` says whether a message missed the running
  * turn; `QueuedMessage.missed` marks one that missed an ended turn or none.
- * Only the user's own messages carry either. A reply, a continue or a cleared
- * steer waits but holds nothing behind it. A Mono row or a CLI follow-up
- * keeps its place but is never held behind the user's message.
+ * Only the user's own messages carry either. A message that waits by choice
+ * (a reply, a continue, a cleared steer (✕), an `/operator` command, a plan
+ * or an orchestrate item) waits but holds nothing behind it. A Mono row or a
+ * CLI follow-up keeps its place but is never held behind the user's message.
  */
 function heldMessages(
   messages: readonly QueuedMessage[],
@@ -143,6 +144,33 @@ export function userTextHeld(
 ): boolean {
   if (session.busy && !session.turnReadiness) return true;
   return !!session.queuedMessages?.some((message) => message.missed);
+}
+
+/**
+ * Every steer is held for now, though a turn may run that text could join:
+ * the session switches providers (`switchingProviders`, as App's send and the
+ * CLI read it), prepares its worktree (the provider has no turn yet), or, in
+ * a Mono chat, its queue is paused or resuming. Text the user types then
+ * waits for the turn end (design 16.8, PR I6 review r4 M1, m1).
+ */
+export function steersHeld(
+  session: Pick<
+    Session,
+    | "pendingSwitch"
+    | "harness"
+    | "providerAccountId"
+    | "blocks"
+    | "worktreePreparing"
+    | "queueStatus"
+  >,
+  mono: boolean,
+): boolean {
+  return (
+    switchingProviders(session) ||
+    !!session.worktreePreparing ||
+    (mono &&
+      (session.queueStatus === "paused" || session.queueStatus === "resuming"))
+  );
 }
 
 /**

@@ -8,6 +8,7 @@ import type {
 import {
   appendSteerUser,
   appendUser,
+  applyHarnessEvent,
   stopStreaming,
 } from "../../../integrations/harness/core/apply";
 import {
@@ -19,6 +20,7 @@ import {
   enqueueMonoMessage,
 } from "../../monos/model/monoMessaging";
 import {
+  busyRoute,
   composerTarget,
   excerpt,
   intentLine,
@@ -27,6 +29,7 @@ import {
   parseTargetLink,
   planUserSend,
   runningItems,
+  stayNotice,
   targetRef,
   type ReplyTarget,
   type RunningItem,
@@ -36,6 +39,8 @@ import {
 import {
   canDispatchQueuedHead,
   queuedHead,
+  queuedMessageForSubmit,
+  runningTurnMap,
   steerableQueuedMessage,
 } from "./messageQueue";
 import {
@@ -525,6 +530,97 @@ it("lets a message typed while no turn runs wait for the turn end", () => {
     kind: "queue",
     item: { waitForIdle: true },
   });
+});
+
+// PR I5b review r3 m1. Defect: in a chat compacting by hand (busy, no turn),
+// the user's text, or any sender's, is planned as a steer joined into no
+// turn, though nothing can take it until the compaction ends.
+it("lets text sent while a chat compacts wait for the compaction to end", () => {
+  const ran = appendUser(newSession("codex", "/tmp"), "Build it", [], {
+    turnId: turn1,
+  });
+  // As App.tsx builds a manual compaction.
+  const compacting = applyHarnessEvent(
+    { ...stopStreaming(ran), busy: true },
+    { type: "status", text: "Compacting context…" },
+  );
+  const route = busyRoute(compacting, runningTurnMap(), "now");
+  for (const origin of [{}, { managed: true }] satisfies SendOrigin[])
+    expect(plan(route, origin)).toEqual({
+      kind: "queue",
+      item: { waitForIdle: true },
+    });
+  expect(plan(route, { link: steerLink })).toEqual({ kind: "target_gone" });
+
+  const queued: Session = {
+    ...compacting,
+    queuedMessages: [
+      { id: "a", text: "Keep the API", attachments: [], waitForIdle: true },
+    ],
+  };
+  expect(canDispatchQueuedHead(queued)).toBe(false);
+  const done = { ...queued, busy: false };
+  expect(canDispatchQueuedHead(done) && queuedHead(done)?.id).toBe("a");
+});
+
+// PR I6 review r3 m2 and n4. Defect: Steer on a queued row whose send App
+// puts in the queue (a worktree in preparation, a plan row) or that finds
+// no turn to join plans a queue, and App appends a copy of the row, so its
+// text is sent twice; or, PR I6 review r4 n2, so is a CLI follow-up row's.
+it("keeps a queued row in its place when its Steer would only queue it again", () => {
+  const running: Session = {
+    ...appendUser(newSession("codex", "/tmp"), "Build it", [], {
+      turnId: turn1,
+    }),
+    busy: true,
+    turnReadiness: "ready",
+  };
+  const turns = runningTurnMap([[running.id, turn1]]);
+  const row: QueuedMessage = { id: "q", text: "also docs", attachments: [] };
+  const compacting: Session = { ...stopStreaming(running), busy: true };
+  // App's busy branch plans a forced queue with "no" and a Steer with "now".
+  const steers: [Session, QueuedMessage, SendRoute][] = [
+    [
+      { ...running, turnReadiness: "starting", worktreePreparing: true },
+      row,
+      busyRoute(running, turns, "no"),
+    ],
+    [running, { ...row, intent: "plan" }, busyRoute(running, turns, "no")],
+    [compacting, row, busyRoute(compacting, runningTurnMap(), "now")],
+    [
+      { ...running, turnReadiness: "starting", worktreePreparing: true },
+      { ...row, appRequestId: "request-1" },
+      busyRoute(running, turns, "no"),
+    ],
+  ];
+  for (const [session, item, route] of steers) {
+    const resolved = queuedMessageForSubmit(
+      { ...session, queuedMessages: [item] },
+      item.id,
+      "steer",
+    );
+    expect(resolved).toBe(item);
+    expect(
+      planUserSend({ origin: {}, item: resolved, text: item.text, route }),
+    ).toEqual({ kind: "stays" });
+  }
+  // The same text typed in the composer is a new queue item.
+  expect(plan(busyRoute(running, turns, "no"))).toEqual({
+    kind: "queue",
+    item: {},
+  });
+});
+
+// PR I6 review r4 n3. Defect: Steer on a row that keeps its place does
+// nothing and says nothing, or names a reason that is not the row's.
+it("says why a Steered row keeps its place", () => {
+  expect(stayNotice({ worktreePreparing: true }, "plan")).toBe(
+    "/plan starts a new turn after the current turn finishes.",
+  );
+  expect(stayNotice({ worktreePreparing: true }, "default")).toMatch(
+    /worktree is still being prepared/,
+  );
+  expect(stayNotice({}, "default")).toMatch(/sent once the session is idle/);
 });
 
 // Design 16.12.6. Defects: a guessed target, a blocked send, or a picked

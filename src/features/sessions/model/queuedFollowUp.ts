@@ -7,6 +7,7 @@ import {
 } from "./messageIntent";
 import {
   queuedSteer,
+  steersHeld,
   waitsForTurnEnd,
   type RunningTurns,
 } from "./messageQueue";
@@ -21,7 +22,10 @@ type JoinedTurn = { block: Pick<Block, "turnId" | "link">; text: string };
  * was typed in, and a reply, a continue, a cleared steer or an `/operator`
  * command waits for the turn end (design 16.8, 16.12.4). A plain message typed
  * while no turn runs missed every turn, so it also holds the user's later
- * messages behind it. Undefined for a picked steer whose work ended.
+ * messages behind it. So does one typed while every steer is held
+ * (`steersHeld`): it cannot join the running turn, and if the hold lifted
+ * before the turn ended, the user's later text would steer ahead of it (PR I6
+ * review r4 m1). Undefined for a picked steer whose work ended.
  */
 export function typedMonoMessage(input: {
   session: Session;
@@ -40,14 +44,16 @@ export function typedMonoMessage(input: {
   });
   if (queued.kind !== "queue") return undefined;
   const { item } = queued;
-  const chosenWait =
-    !!item.link ||
-    !!input.origin?.waitForIdle ||
-    waitsForTurnEnd(input.message);
+  if (item.link || waitsForTurnEnd(input.message))
+    return { ...input.message, ...item };
+  if (input.session.busy && steersHeld(input.session, true))
+    return { ...input.message, waitForIdle: true, missed: true };
   return {
     ...input.message,
     ...item,
-    ...(!item.typedInTurn && !chosenWait ? { missed: true as const } : {}),
+    ...(!item.typedInTurn && !input.origin?.waitForIdle
+      ? { missed: true as const }
+      : {}),
   };
 }
 

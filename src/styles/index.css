@@ -765,9 +765,310 @@ html.has-chat-background.chat-background-effect-ready.chat-background-gradient-b
 
 @media (prefers-reduced-motion: reduce) {
   .user-message-actions,
-  .turn-actions-hover {
+  .turn-actions-hover,
+  .pick-target-pill {
     transition: none;
   }
+}
+
+/* What a message refers to (design 16.8, doop E1 to E10). One colour per
+ * intent, readable on dark through weight and contrast (decision 280). */
+.composer-intent-bar,
+.message-quote,
+.pick-target-action {
+  --intent-steer: var(--color-amber-400, oklch(82.8% 0.189 84.429));
+  --intent-reply: #9cc9fb;
+  --intent-continue: color-mix(in srgb, var(--color-content) 82%, transparent);
+}
+
+html.theme-light
+  :is(.composer-intent-bar, .message-quote, .pick-target-action) {
+  --intent-steer: var(--color-amber-700, oklch(55.5% 0.163 48.998));
+  --intent-reply: var(--color-blue-600, oklch(54.6% 0.245 262.881));
+}
+
+.composer-intent-bar {
+  display: flex;
+  min-width: 0;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 10px;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--color-content) 8%, transparent);
+  border-top-left-radius: inherit;
+  border-top-right-radius: inherit;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+[data-composer-box] > .composer-intent-bar {
+  padding-left: 12px;
+}
+
+.composer-intent-label {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  border-radius: 5px;
+  font-weight: 600;
+  color: var(--intent-continue);
+}
+
+button.composer-intent-label:hover,
+button.composer-intent-label[aria-expanded="true"] {
+  background: var(--color-selection-hover);
+}
+
+.composer-intent-label[data-intent="steer"],
+.composer-intent-option[data-intent="steer"] .composer-intent-glyph,
+.message-quote[data-intent="steer"] .message-quote-glyph,
+.pick-target-action[data-pick-intent="steer"] > .pick-target-glyph {
+  color: var(--intent-steer);
+}
+
+.composer-intent-label[data-intent="reply"],
+.composer-intent-option[data-intent="reply"] .composer-intent-glyph,
+.message-quote[data-intent="reply"] .message-quote-glyph,
+.pick-target-action[data-pick-intent="reply"] > .pick-target-glyph {
+  color: var(--intent-reply);
+}
+
+.message-quote[data-intent="continue"] .message-quote-glyph {
+  color: var(--intent-continue);
+}
+
+.composer-intent-glyph {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.composer-intent-dot {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--color-content) 45%, transparent);
+}
+
+.composer-intent-target {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  unicode-bidi: isolate;
+  color: color-mix(in srgb, var(--color-content) 78%, transparent);
+}
+
+.composer-intent-name {
+  font-weight: 600;
+  color: var(--color-content);
+}
+
+.composer-intent-chip {
+  flex-shrink: 0;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 18px;
+  background: rgb(255 100 103 / 0.12);
+  color: var(--color-red-300, oklch(80.8% 0.114 19.571));
+}
+
+html.theme-light .composer-intent-chip {
+  color: var(--color-red-700, oklch(50.5% 0.213 27.518));
+}
+
+.composer-intent-act {
+  flex-shrink: 0;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--color-content);
+  color: var(--color-background-base);
+}
+
+.composer-intent-clear {
+  display: grid;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  place-items: center;
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--color-content) 60%, transparent);
+}
+
+.composer-intent-chip ~ .composer-intent-clear,
+.composer-intent-act ~ .composer-intent-clear {
+  margin-left: 0;
+}
+
+.composer-intent-clear:hover {
+  background: var(--color-selection-hover);
+  color: var(--color-content);
+}
+
+.composer-intent-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: -4px;
+  z-index: 30;
+  display: flex;
+  min-width: 140px;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--color-content) 12%, transparent);
+  border-radius: 8px;
+  background: var(--color-background-base);
+  box-shadow: var(--shadow-xl, 0 10px 30px rgb(0 0 0 / 0.35));
+}
+
+.composer-intent-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  text-align: left;
+  color: var(--color-content);
+}
+
+.composer-intent-option:hover,
+.composer-intent-option[aria-checked="true"] {
+  background: var(--color-selection-hover);
+}
+
+.pick-target-action {
+  display: inline-flex;
+  height: 24px;
+  align-items: center;
+  font-family: var(--font-sans);
+  gap: 4px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--color-content) 85%, transparent);
+}
+
+.pick-target-action:hover {
+  background: var(--color-selection-hover);
+  color: var(--color-content);
+}
+
+/* Reply and Steer sit in a small pill on the message's top edge, shown on
+ * hover like iMessage's, so stacked messages keep them too (doop E2). */
+.pick-target-pill {
+  display: flex;
+  width: fit-content;
+  gap: 2px;
+  margin-bottom: 4px;
+  padding: 2px;
+  border: 1px solid color-mix(in srgb, var(--color-content) 12%, transparent);
+  border-radius: 8px;
+  background: color-mix(
+    in srgb,
+    var(--color-content) 6%,
+    var(--color-background-base)
+  );
+}
+
+/* In the light theme the pill's 6% tint nearly matches the bubble it sits on
+ * (PR I6 review r2 n4), so it takes the page's ground and a firmer border. */
+html.theme-light .pick-target-pill {
+  border-color: color-mix(in srgb, var(--color-content) 24%, transparent);
+  background: var(--color-background-base);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  /* The pill's bottom sits on the message's top edge. It overlaps 6px of a
+   * bubble's top padding, never its first line; a quoted message keeps the
+   * whole pill above its quote. */
+  .pick-target-pill {
+    position: absolute;
+    bottom: calc(100% - 6px);
+    right: 8px;
+    z-index: 2;
+    margin: 0;
+    box-shadow: var(--shadow-xl, 0 10px 30px rgb(0 0 0 / 0.35));
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease;
+  }
+
+  .pick-target-pill.pick-target-pill-quoted {
+    bottom: 100%;
+  }
+
+  /* Under another of the user's messages the top edge would cover that
+   * message, so the pill sits beside the bubble, 4px off it (`PILL_GAP`). */
+  .pick-target-pill.pick-target-pill-beside {
+    top: 0;
+    right: calc(100% + 4px);
+    bottom: auto;
+    width: max-content;
+  }
+
+  .pick-target-pill-beside[data-glyphs] .pick-target-action {
+    width: 20px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .pick-target-pill-beside[data-glyphs] .pick-target-label {
+    display: none;
+  }
+
+  .user-message-row:hover .pick-target-pill,
+  .user-message-row:focus-within .pick-target-pill {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* The quote sits above the bubble on the bubble's side; a light grey
+ * excerpt, not a second bubble (doop E5, E9). */
+.message-quote {
+  display: flex;
+  max-width: min(100%, 520px);
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 6px;
+  padding: 1px 0 1px 10px;
+  border-left: 2px solid
+    color-mix(in srgb, var(--color-content) 42%, transparent);
+  font-family: var(--font-sans);
+}
+
+.message-quote-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-content) 82%, transparent);
+}
+
+.message-quote-glyph {
+  font-size: 12px;
+}
+
+.message-quote-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  unicode-bidi: isolate;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: color-mix(in srgb, var(--color-content) 72%, transparent);
 }
 
 .user-message-with-link {

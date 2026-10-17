@@ -45,6 +45,7 @@ import {
   getComposerDraft,
   setComposerDraft,
 } from "../model/draftCache";
+import type { ComposerIntent } from "./ComposerIntentBar";
 import type { UserQuestionPrompt } from "../model/userQuestion";
 
 function renderAction(
@@ -1748,4 +1749,283 @@ describe("Composer question focus", () => {
       window.removeEventListener("monocode:open-mcp-settings", onOpen);
     }
   });
+});
+
+describe("Composer message target", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  const steer = {
+    intent: "steer" as const,
+    replyTo: "opener",
+    quote: "Build PR 7: add the levels gate",
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  async function renderWith(
+    intent: Partial<ComposerIntent>,
+    onSubmit: (
+      text: string,
+      attachments: Attachment[],
+      options?: ComposerTurnOptions,
+    ) => boolean | void,
+    onDraftChange: (text: string) => void = () => {},
+  ) {
+    await act(async () =>
+      root.render(
+        createElement(Composer, {
+          focused: true,
+          harness: "claude",
+          model: "claude-sonnet",
+          runtimeMode: "supervised",
+          executionCwd: "/repo",
+          hideProjectPicker: true,
+          hideBranchPicker: true,
+          initialDraft: "Skip the migration test",
+          onDraftChange,
+          onFocus: vi.fn(),
+          onCwdChange: vi.fn(),
+          onModelChange: vi.fn(),
+          onRuntimeModeChange: vi.fn(),
+          onSubmit,
+          busy: true,
+          intent: {
+            running: [],
+            busy: true,
+            steering: false,
+            newWaits: false,
+            choice: { kind: "default" },
+            onChoiceChange: vi.fn(),
+            ...intent,
+          },
+        }),
+      ),
+    );
+  }
+
+  const pressEnter = () =>
+    act(async () =>
+      container.querySelector("textarea")!.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+
+  // Design 16.8 (intents review r1). Defect: a refused send loses the text,
+  // because the parent draft is cleared before the bar's check.
+  it("keeps the draft and sends nothing when Enter meets a steer whose work ended", async () => {
+    let parentDraft = "Skip the migration test";
+    const onDraftChange = vi.fn((text: string) => {
+      parentDraft = text;
+    });
+    const onSubmit = vi.fn(() => true);
+    const onChoiceChange = vi.fn();
+    await renderWith(
+      { choice: { kind: "picked", link: steer }, onChoiceChange },
+      onSubmit,
+      onDraftChange,
+    );
+    await pressEnter();
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onDraftChange).not.toHaveBeenCalledWith("");
+    expect(parentDraft).toBe("Skip the migration test");
+    expect(container.querySelector("textarea")!.value).toBe(
+      "Skip the migration test",
+    );
+    expect(container.textContent).toContain("Can't steer now");
+    // PR I6 review r2 n2. Defect: Send looks ready while the bar blocks it.
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send"]')!
+        .disabled,
+    ).toBe(true);
+
+    const asNew = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Send as new",
+    )!;
+    await act(async () => asNew.click());
+    expect(onSubmit).toHaveBeenCalledWith("Skip the migration test", [], {
+      intent: "default",
+    });
+    expect(onChoiceChange).toHaveBeenCalledWith({ kind: "default" });
+  });
+
+  // Design 16.12.4, 16.12.6. Defects: the composer drops the bar's options,
+  // so ✕ steers the running turn, or `turn` sends a guessed target.
+  it("sends ✕ while steering as a message that waits, and the whole turn with no link", async () => {
+    const onSubmit = vi.fn(() => true);
+    await renderWith({ steering: true, choice: { kind: "cleared" } }, onSubmit);
+    await pressEnter();
+    expect(onSubmit).toHaveBeenLastCalledWith("Skip the migration test", [], {
+      intent: "default",
+      waitForIdle: true,
+    });
+
+    await renderWith({ steering: true }, onSubmit);
+    await typeText("Use the existing fixture");
+    expect(container.textContent).toContain("everything this session is doing");
+    await pressEnter();
+    expect(onSubmit).toHaveBeenLastCalledWith("Use the existing fixture", [], {
+      intent: "default",
+    });
+  });
+
+  // Review PR I6 r1 n2, design 16.8. Defect: ✕ where the busy rule queues
+  // sends a plain queued message, which the queue row can still steer.
+  it("sends ✕ as a message that waits even where the busy rule would queue it", async () => {
+    const onSubmit = vi.fn(() => true);
+    await renderWith({ choice: { kind: "cleared" } }, onSubmit);
+    await pressEnter();
+    expect(onSubmit).toHaveBeenLastCalledWith("Skip the migration test", [], {
+      intent: "default",
+      waitForIdle: true,
+    });
+  });
+
+  // PR I6 review r1 n5, r2 n3, r3 n5. Defect: Enter pressed while a pasted
+  // file is still reading sends with the bar of the render that started the
+  // send, so a whole-turn steer whose turn ended meanwhile goes out as a new
+  // turn instead of waiting for "Send as new".
+  it("reads the bar after a paste in flight, so a turn that ended meanwhile holds the text", async () => {
+    let finishRead!: () => void;
+    vi.stubGlobal(
+      "FileReader",
+      class {
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        result: string | null = null;
+        readAsDataURL() {
+          finishRead = () => this.onerror?.();
+        }
+      },
+    );
+    const onSubmit = vi.fn(() => true);
+    await renderWith({ steering: true }, onSubmit);
+    expect(
+      container.querySelector('[data-composer-intent="turn"]'),
+    ).not.toBeNull();
+    const file = new File(["notes"], "notes.txt", { type: "text/plain" });
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        getData: () => "",
+        files: [file],
+        items: [{ kind: "file", type: file.type, getAsFile: () => file }],
+      },
+    });
+    await act(async () => {
+      container.querySelector("textarea")!.dispatchEvent(paste);
+    });
+    await pressEnter();
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    await renderWith({ steering: false, busy: false }, onSubmit);
+    expect(
+      container.querySelector('[data-composer-intent="ended"]'),
+    ).not.toBeNull();
+    await act(async () => finishRead());
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(container.querySelector("textarea")!.value).toBe(
+      "Skip the migration test",
+    );
+  });
+
+  // Review PR I6 r1 M1. Defect: a typed mode command, which the send puts in
+  // the queue, shows "Steering · everything this session is doing"; or, once
+  // that turn ends, "Nothing running", which blocks the mode's send.
+  it.each([
+    ["/plan Use the fixture", "Use the fixture", "plan"],
+    ["/orchestrator Use the fixture", "Use the fixture", "orchestrate"],
+    ["/operator Use the fixture", "/operator Use the fixture", "default"],
+  ] as const)(
+    "names no running turn for %s, whose send waits in the queue",
+    async (typed, sent, mode) => {
+      const onSubmit = vi.fn(() => true);
+      await renderWith({ steering: true }, onSubmit);
+      expect(container.querySelector('[data-composer-intent="turn"]')).not.toBeNull();
+      await typeText(typed);
+      expect(container.querySelector("[data-composer-intent]")).toBeNull();
+      // The turn the bar showed has ended: a mode still sends, as a new turn.
+      await renderWith({ steering: false, busy: false }, onSubmit);
+      expect(container.querySelector("[data-composer-intent]")).toBeNull();
+      await pressEnter();
+      expect(onSubmit).toHaveBeenLastCalledWith(sent, [], { intent: mode });
+    },
+  );
+
+  // Review PR I6 r1 m1 (decision: keep the mode and show it). Defect: a
+  // picked Steer under Plan steers as plain text and Plan is silently lost.
+  it("keeps Plan with a picked Steer: the bar names Plan, Send waits, and Send as new sends a plan", async () => {
+    const onSubmit = vi.fn(() => true);
+    await renderWith(
+      {
+        steering: true,
+        running: [{ blockId: "opener", quote: steer.quote }],
+        choice: { kind: "picked", link: steer },
+      },
+      onSubmit,
+    );
+    await typeText("/plan Use the fixture");
+    const bar = container.querySelector('[data-composer-intent="held"]');
+    expect(bar?.textContent).toContain("Plan waits for the turn");
+    await pressEnter();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(container.querySelector("textarea")!.value).toBe(
+      "/plan Use the fixture",
+    );
+
+    const asNew = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Send as new",
+    )!;
+    await act(async () => asNew.click());
+    expect(onSubmit).toHaveBeenLastCalledWith("Use the fixture", [], {
+      intent: "plan",
+    });
+  });
+
+  // PR I6 review r2 m5. Defect: Plan holds a picked Reply as it holds a
+  // Steer, so Send is blocked though a reply under Plan waits anyway.
+  it("sends a picked Reply under Plan as a plan that names its message", async () => {
+    const onSubmit = vi.fn(() => true);
+    const reply = { ...steer, intent: "reply" as const };
+    await renderWith(
+      {
+        steering: true,
+        running: [{ blockId: "opener", quote: steer.quote }],
+        choice: { kind: "picked", link: reply },
+      },
+      onSubmit,
+    );
+    await typeText("/plan Use the fixture");
+    expect(
+      container.querySelector('[data-composer-intent="picked"]'),
+    ).not.toBeNull();
+    await pressEnter();
+    expect(onSubmit).toHaveBeenLastCalledWith("Use the fixture", [], {
+      intent: "plan",
+      link: reply,
+    });
+  });
+
+  async function typeText(value: string) {
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => {
+      textarea.value = value;
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
 });
