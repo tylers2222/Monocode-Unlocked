@@ -977,6 +977,13 @@ html.theme-light .composer-intent-chip {
   );
 }
 
+/* In the light theme the pill's 6% tint nearly matches the bubble it sits on
+ * (PR I6 review r2 n4), so it takes the page's ground and a firmer border. */
+html.theme-light .pick-target-pill {
+  border-color: color-mix(in srgb, var(--color-content) 24%, transparent);
+  background: var(--color-background-base);
+}
+
 @media (hover: hover) and (pointer: fine) {
   /* The pill's bottom sits on the message's top edge. It overlaps 6px of a
    * bubble's top padding, never its first line; a quoted message keeps the
