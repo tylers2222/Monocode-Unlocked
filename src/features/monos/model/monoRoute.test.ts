@@ -16,6 +16,7 @@ import {
 import { appErrorResponse } from "../../agent-app/model/appActionError";
 import {
   queuedAppDelivery,
+  recordAppSteer,
   TURN_FINISHED_ERROR,
 } from "../../../app/model/appSessionSend";
 import { acknowledgeMonoMessage } from "./monoMessaging";
@@ -69,6 +70,8 @@ const rust = vi.hoisted(() => {
     body: string;
     hop: number;
     intent: "new" | "steer";
+    replyTo: string | null;
+    scope: "turn" | null;
     status: "open" | "delivered" | "unanswered" | "dropped";
     wantingReply: boolean;
     handledBySession: string | null;
@@ -121,6 +124,8 @@ const rust = vi.hoisted(() => {
             wanting_reply: boolean;
             send_to?: string;
             intent?: string;
+            reply_to?: string;
+            scope?: "turn";
           };
         };
         if (state.failure) return { outcome: "failed", error: state.failure };
@@ -153,6 +158,8 @@ const rust = vi.hoisted(() => {
           body: input.message,
           hop: input.intent === "steer" ? 1 : 0,
           intent: input.intent === "steer" ? "steer" : "new",
+          replyTo: input.reply_to ?? null,
+          scope: input.scope ?? null,
           status: input.wanting_reply ? "open" : "delivered",
           wantingReply: input.wanting_reply,
           handledBySession: state.route.sessionId,
@@ -193,7 +200,32 @@ const rust = vi.hoisted(() => {
         const entry = row(args.id);
         if (!entry || (entry.status !== "open" && entry.status !== "delivered"))
           return null;
-        if (entry.slot) return held(entry, args.turnId) ? entry : null;
+        // `reply_target`: what the row's line quotes, read with its slot.
+        // reply_to is a foreign key, so a target this fixture did not write
+        // (`ask`'s m_zzzzzzzzzzzz) stands for a row sent before the test.
+        const answer = () => {
+          if (!entry.replyTo) return { message: entry, target: null };
+          const target = row(entry.replyTo);
+          return {
+            message: entry,
+            target: target
+              ? {
+                  messageId: target.id,
+                  body: target.body,
+                  handledBySession: target.handledBySession,
+                  slot: target.slot?.handle
+                    ? { turnId: target.slot.turnId, handle: target.slot.handle }
+                    : null,
+                }
+              : {
+                  messageId: entry.replyTo,
+                  body: "Earlier work",
+                  handledBySession: entry.handledBySession,
+                  slot: null,
+                },
+          };
+        };
+        if (entry.slot) return held(entry, args.turnId) ? answer() : null;
         // A steer only joins a running turn (design 16.6); an opener
         // hand-off drops it. The turn it names is Rust's to check.
         if (entry.intent === "steer" && args.kind !== "steer") {
@@ -216,7 +248,7 @@ const rust = vi.hoisted(() => {
             : {}),
         };
         entry.delivery = args.kind;
-        return entry;
+        return answer();
       }
       case "mono_message_release": {
         const entry = row(args.id);
@@ -680,6 +712,40 @@ it("answers dropped for a project-session steer whose turn just finished", async
   expect(get("project").queuedMessages).toBeUndefined();
 });
 
+// PR I4 review r1 m1 (the reviewer's probe). Defect: a project-session steer
+// records the text with its inference line as the transcript block, so the
+// line shows in the session before PR I6, or the agent gets no line.
+it("steers a project session with the line and records the block without it", async () => {
+  const { send, get, host, steerProject } = world([
+    chat("project", { busy: true }),
+  ]);
+  rust.state.route = { sessionId: "project", via: "queue" };
+  await send({ ...ask(), message: "Refactor the login flow", send_to: "project" });
+  const target = rust.state.rows[0].id as MessageId;
+  await handOff(host, "project", target, "steer", () => true);
+  rust.state.route = { sessionId: "project", via: "steer" };
+  await send(
+    {
+      message: "Keep the API stable",
+      send_to: "project",
+      wanting_reply: false,
+      intent: "steer",
+      reply_to: target,
+    },
+    "r2",
+  );
+  const [[, handed, id]] = steerProject.mock.calls as unknown as [
+    [Session, { text: string; shown: string }, string],
+  ];
+  expect(handed.text).toContain(
+    `reply_to="${target}">\n[steer → ${target} · "Refactor the login flow"]\nKeep the API stable\n`,
+  );
+  const block = recordAppSteer(get("project"), handed.shown, id).blocks.at(-1);
+  expect(block?.text).toBe(
+    `<mono_message message_id="${id}" from="Boss" mono_id="giga" role="giga" wanting_reply="false">\nKeep the API stable\n</mono_message>`,
+  );
+});
+
 // Design 5.5 rule 4. Defect: a new message whose steer into a project
 // session failed is lost, or keeps its slot so nothing queues it again.
 it("queues a failed hand-off of new work again", async () => {
@@ -987,6 +1053,9 @@ it("renders the tags the agents read", () => {
     fromMonoId: "giga" as MonoId,
     body: "Is CI green?",
     wantingReply: true,
+    intent: "new" as const,
+    replyTo: null,
+    scope: null,
   };
   const sender = { name: 'Boss "B"', role: "giga" as const };
   expect(renderMonoMessage(message, sender)).toBe(
@@ -1008,6 +1077,72 @@ it("renders the tags the agents read", () => {
   ).toBe(
     `<mono_notice message_id="m_aaaaaaaaaaaa" status="dropped" to="Scout &#60;S&#62;">\n${"x".repeat(58)} 🦀\n</mono_notice>`,
   );
+});
+
+// Design 16.7, E47. Defect: a reply reaches its sender with no line, with the
+// wrong intent word, or with a handle of the session that answered, which
+// names nothing in the sender's turn.
+it("starts a reply with a line that names the question by its message id", () => {
+  const question = "m_bbbbbbbbbbbb" as MessageId;
+  expect(
+    renderMonoMessage(
+      {
+        id: "m_cccccccccccc" as MessageId,
+        fromMonoId: "mono-a" as MonoId,
+        body: "Green.",
+        wantingReply: false,
+        intent: "reply",
+        replyTo: question,
+        scope: null,
+      },
+      { name: "A", role: "mono" },
+      undefined,
+      {
+        sessionId: "giga-chat" as SessionId,
+        turnId: "turn-2" as TurnId,
+        target: {
+          messageId: question,
+          body: "Is CI green on main?",
+          handledBySession: "a-chat" as SessionId,
+          slot: { turnId: "turn-1" as TurnId, handle: "#1" as Handle },
+        },
+      },
+    ),
+  ).toBe(
+    '<mono_message message_id="m_cccccccccccc" from="A" mono_id="mono-a" role="mono" wanting_reply="false" reply_to="m_bbbbbbbbbbbb">\n[reply → m_bbbbbbbbbbbb · "Is CI green on main?"]\nGreen.\n</mono_message>',
+  );
+});
+
+// PR I4 review r1 n1. Defect: a hand-off whose target is missing, or is not
+// the row's reply_to, silently gives no line or names another message.
+it("refuses to render a hand-off whose target is not the row's reply_to", () => {
+  const steer = {
+    id: "m_cccccccccccc" as MessageId,
+    fromMonoId: "giga" as MonoId,
+    body: "Keep the API stable",
+    wantingReply: false,
+    intent: "steer" as const,
+    replyTo: "m_bbbbbbbbbbbb" as MessageId,
+    scope: null,
+  };
+  const reading = {
+    sessionId: "a-chat" as SessionId,
+    turnId: "turn-1" as TurnId,
+  };
+  expect(() =>
+    renderMonoMessage(steer, undefined, undefined, { ...reading, target: null }),
+  ).toThrow("names no target, not its reply_to m_bbbbbbbbbbbb");
+  expect(() =>
+    renderMonoMessage(steer, undefined, undefined, {
+      ...reading,
+      target: {
+        messageId: "m_dddddddddddd" as MessageId,
+        body: "Other work",
+        handledBySession: "a-chat" as SessionId,
+        slot: null,
+      },
+    }),
+  ).toThrow("names m_dddddddddddd, not its reply_to m_bbbbbbbbbbbb");
 });
 
 // Review PR 4a m2. Defect: a session whose worktree was removed counts as
@@ -1184,6 +1319,66 @@ it("hands off a message that wants a reply with its turn's handle, and queues it
     ' wanting_reply="true" handle="#1">\nReview PR 12\n',
   );
   expect(handed.turnId).toBe(rust.state.rows[0].slot?.turnId);
+});
+
+// Design 16.7, E47, PR I4 row. Defect: the steer reaches the agent with no
+// line, quotes the whole target, names it by a handle of another turn or
+// without the reply_to id a later turn needs, or the queued bubble text
+// carries the line.
+it("hands off a steer with the line that names its target, and queues it without one", async () => {
+  const { send, get, host } = world([chat("a-chat", { busy: true })]);
+  await send({
+    ...ask(true),
+    message:
+      'Fix the "login" bug\nin auth.ts — then run 👨‍👩‍👧 tests and report',
+  });
+  const target = rust.state.rows[0].id as MessageId;
+  const deliver = vi.fn((_: HandedOff) => true);
+  await handOff(host, "a-chat", target, "steer", deliver);
+  rust.state.route = { sessionId: "a-chat", via: "steer" };
+  await send(
+    {
+      message: "Keep the API stable",
+      send_to: "mono-a",
+      wanting_reply: false,
+      intent: "steer",
+      reply_to: target,
+    },
+    "r2",
+  );
+  const steer = rust.state.rows[1].id as MessageId;
+  const item = get("a-chat").queuedMessages?.find(
+    (queued) => queued.id === steer,
+  );
+  expect(item?.text).toContain("Keep the API stable");
+  expect(item?.text).not.toContain("[steer");
+  await handOff(host, "a-chat", steer, "steer", deliver);
+  expect(deliver.mock.calls[1][0].text).toBe(
+    `<mono_message message_id="${steer}" from="Boss" mono_id="giga" role="giga" wanting_reply="false" reply_to="${target}">\n[steer → #1 · "Fix the \\"login\\" bug in auth.ts — then…"]\nKeep the API stable\n</mono_message>`,
+  );
+});
+
+// Design 16.12.5. Defect: a whole-turn steer arrives with no line, or with a
+// reply_to that names nothing to fetch, or its queued bubble shows the line.
+it("hands off a whole-turn steer with its line and no reply_to", async () => {
+  const { send, get, host } = world([chat("a-chat", { busy: true })]);
+  rust.state.route = { sessionId: "a-chat", via: "steer" };
+  await send({
+    message: "Stop and commit",
+    send_to: "mono-a",
+    wanting_reply: false,
+    intent: "steer",
+    scope: "turn",
+  });
+  const id = rust.state.rows[0].id as MessageId;
+  expect(get("a-chat").queuedMessages?.[0].text).toBe(
+    `<mono_message message_id="${id}" from="Boss" mono_id="giga" role="giga" wanting_reply="false">\nStop and commit\n</mono_message>`,
+  );
+  const deliver = vi.fn((_: HandedOff) => true);
+  await handOff(host, "a-chat", id, "steer", deliver);
+  expect(deliver.mock.calls[0][0].text).toBe(
+    `<mono_message message_id="${id}" from="Boss" mono_id="giga" role="giga" wanting_reply="false">\n[steer → whole turn]\nStop and commit\n</mono_message>`,
+  );
 });
 
 // PR 4a review m7 (T02), design 5.5 rule 3. Defect: a hand-off takes the item

@@ -8888,7 +8888,7 @@ function Workspace({
       return opened;
     },
     reconciled: (id) => monoLoads.of(id),
-    steerProject: async (target, text, id) => {
+    steerProject: async (target, { text, shown }, id) => {
       const change = (update: (session: Session) => Session) =>
         updateSessionState(sessionsRef, setSessions, (sessions) =>
           sessions.map((session) =>
@@ -8899,7 +8899,7 @@ function Workspace({
         watchers: turnWatchers.current,
         sessionId: target.id,
         gen: turnGen.current.get(target.id) ?? 0,
-        record: () => change((session) => recordAppSteer(session, text, id)),
+        record: () => change((session) => recordAppSteer(session, shown, id)),
         steer: async () => {
           const cwd = sessionWorkCwd(target);
           await steerHarnessTurn({

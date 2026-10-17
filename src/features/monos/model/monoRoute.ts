@@ -5,6 +5,7 @@ import {
   AppActionError,
   type ToolErrorDetails,
 } from "../../agent-app/model/appActionError";
+import type { ReplyTarget } from "../../sessions/model/messageIntent";
 import { dequeueQueuedMessage } from "../../sessions/model/messageQueue";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
 import { enqueueMonoMessage } from "./monoMessaging";
@@ -36,6 +37,8 @@ import {
 type Routed = Extract<MonoMessage, { handledBySession: unknown }>;
 /** A row `assign_slot` takes: it refuses every other status. */
 type Waiting = Extract<MonoMessage, { status: "open" | "delivered" }>;
+/** `assign_slot`'s answer: the row with its slot, and what it refers to. */
+type Assigned = { message: Waiting; target: ReplyTarget | null };
 /** A row whose sender is owed a notice (design 5.3). */
 type Noticed = Extract<MonoMessage, { status: NoticeStatus }>;
 
@@ -211,8 +214,13 @@ export function createLoadReconciles(host: MonoQueueHost) {
   };
 }
 
-/** What a hand-off gives the provider: the row with its handle, and the turn. */
-export type HandedOff = { text: string; turnId: TurnId };
+/**
+ * What a hand-off gives the provider: the row with its handle and its
+ * inference line (`text`), and the turn. `shown` is the same row without
+ * the line, for a transcript block (design 16.7: the line goes to the agent
+ * only).
+ */
+export type HandedOff = { text: string; shown: string; turnId: TurnId };
 
 /**
  * An opener hand-off took its slot for a new turn `turnId`. A session that
@@ -242,22 +250,26 @@ export async function handOff(
   const turnId = mode === "dispatch" ? newTurnId() : host.turnId(sessionId);
   if (!turnId) return false;
   const slot = { id, turnId };
-  const row = await invoke<Waiting | null>("mono_message_assign_slot", {
+  const assigned = await invoke<Assigned | null>("mono_message_assign_slot", {
     ...slot,
     kind: mode === "dispatch" ? "submit" : "steer",
   });
-  if (!row) {
+  if (!assigned) {
     host.update(sessionId, (session) => dequeueQueuedMessage(session, id));
     return false;
   }
+  const row = assigned.message;
+  const sender = host.sender(row.fromMonoId);
+  const handle = row.status === "open" ? row.slot?.handle : undefined;
   let accepted = false;
   try {
     accepted = await deliver({
-      text: renderMonoMessage(
-        row,
-        host.sender(row.fromMonoId),
-        row.status === "open" ? row.slot?.handle : undefined,
-      ),
+      text: renderMonoMessage(row, sender, handle, {
+        sessionId: row.handledBySession,
+        turnId,
+        target: assigned.target,
+      }),
+      shown: renderMonoMessage(row, sender, handle),
       turnId,
     });
   } finally {
@@ -362,8 +374,15 @@ export type MonoRouteHost = MonoQueueHost & {
   open(id: string): Promise<Session | null>;
   /** The reconcile of this window's load of a session (`createLoadReconciles`). */
   reconciled(id: string): Promise<void>;
-  /** Steers a running project session; throws when the turn ended. */
-  steerProject(session: Session, text: string, id: MessageId): Promise<void>;
+  /**
+   * Steers a running project session with `handed.text` and records
+   * `handed.shown` as its transcript block; throws when the turn ended.
+   */
+  steerProject(
+    session: Session,
+    handed: Pick<HandedOff, "text" | "shown">,
+    id: MessageId,
+  ): Promise<void>;
 };
 
 export type MonoMessagingHost = MonoRouteHost & {
@@ -650,8 +669,8 @@ async function steerProjectSession(
             sessionId,
             message.id,
             "steer",
-            async ({ text }) => {
-              await host.steerProject(target, text, message.id);
+            async (handed) => {
+              await host.steerProject(target, handed, message.id);
               return true;
             },
           ).catch(() => false)
