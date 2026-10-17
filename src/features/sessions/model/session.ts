@@ -6,7 +6,7 @@ import type { InboxAskContext } from "../../inbox/model/inboxAsk";
 import type { NoteCardMeta, NoteComposerCard } from "../../notes";
 import type { OrchestrationProposal } from "../../orchestration/model/orchestrationPlan";
 import type { LinkedWorkItemUpdateCard } from "../../inbox/model/linkedWorkItemActivity";
-import type { MessageId } from "../../monos/model/monoMessages";
+import type { MessageId, TurnId } from "../../monos/model/monoMessages";
 import {
   defaultSessionChoice,
   firstEnabledHarness,
@@ -85,6 +85,27 @@ export type TaskListMeta = {
 
 /** One-shot behavior selected in the composer for the next harness turn. */
 export type TurnIntent = "default" | "plan" | "build" | "orchestrate";
+/**
+ * What a message refers to (design 16.1, 16.12.4). Absent means intent
+ * `new`. A reply, steer or continue names one target: a block id in this
+ * transcript, or a message id. `quote` is the target's excerpt when the
+ * message was sent, as plain text. A whole-turn steer names no target.
+ */
+export type MessageLink =
+  | TargetLink
+  | { intent: "steer"; scope: "turn"; replyTo?: never; quote?: never };
+/**
+ * A link that names one message. Only a sent block holds the whole-turn
+ * link: the app stamps it when the text joins the running turn.
+ */
+export type TargetLink = {
+  intent: "reply" | "steer" | "continue";
+  replyTo: string;
+  quote: string;
+  scope?: never;
+};
+/** The user's steer of everything the session is doing (design 16.12.4). */
+export const WHOLE_TURN: MessageLink = { intent: "steer", scope: "turn" };
 export type EditedResendRejection = {
   /** The provider removed the old turn, so retry as a normal unsent prompt. */
   providerRewound: boolean;
@@ -96,6 +117,13 @@ export type ComposerTurnOptions = {
   onResendRejected?: (recovery: EditedResendRejection) => void;
   /** Promote an existing unsent transcript block instead of appending a turn. */
   draftBlockId?: string;
+  /** What this message refers to; none for intent `new` (design 16.8). */
+  link?: TargetLink;
+  /**
+   * The user cleared the steer: a busy session queues the message for the
+   * turn end, and it never joins the running turn (design 16.12.4).
+   */
+  waitForIdle?: true;
 };
 
 export type PlanStatus = "streaming" | "ready" | "building" | "built";
@@ -287,10 +315,18 @@ export type QueuedMessage = {
   monoSessionCompletion?: MonoSessionCompletion;
   /** Waits for the running turn to end and starts a new turn; never steers. */
   waitForIdle?: boolean;
+  /**
+   * The turn that ran when the user typed this message in a busy Mono chat.
+   * The pump steers it into that turn only; once the turn ends, the message
+   * waits and opens its own turn (design 16.12.4).
+   */
+  typedInTurn?: TurnId;
   /** Stable CLI request that queued this follow-up, for safe retries. */
   appRequestId?: string;
   /** The Mono message this item delivers. The item's id is that message id. */
   monoMessageId?: MessageId;
+  /** What the user's message refers to. A Mono row's link is on its bubble only. */
+  link?: TargetLink;
   /** Delivery failed; the message remains available to retry or edit. */
   error?: string;
   /** MonoCode quit while this message waited; cleared when the queue resumes. */
@@ -337,6 +373,13 @@ export type Block = {
   durationMs?: number;
   /** Epoch ms when this message joined a turn that was already running. */
   sentAt?: number;
+  /**
+   * The turn this user message opened or joined (design 16.8). A queued
+   * bubble has none until its work starts.
+   */
+  turnId?: TurnId;
+  /** What this message refers to; absent means intent `new` (design 16.1). */
+  link?: MessageLink;
   /** Stable model label for this turn. Present on newly created user blocks. */
   turnModel?: TurnModel;
   /** Provider turn boundary used to replace this user message, when known. */

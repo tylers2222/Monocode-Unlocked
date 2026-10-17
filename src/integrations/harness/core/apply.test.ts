@@ -76,14 +76,18 @@ describe("follow-up readiness", () => {
       "First",
     );
     expect(
-      steerableQueuedMessage(applyHarnessEvent(starting, leftover)),
+      steerableQueuedMessage(applyHarnessEvent(starting, leftover), undefined),
     ).toBeUndefined();
     expect(
-      steerableQueuedMessage(applyHarnessEvents(starting, [leftover])),
+      steerableQueuedMessage(
+        applyHarnessEvents(starting, [leftover]),
+        undefined,
+      ),
     ).toBeUndefined();
     expect(
       steerableQueuedMessage(
         applyHarnessEvent(starting, { type: "turn.ready" }),
+        undefined,
       )?.id,
     ).toBe("b");
   });

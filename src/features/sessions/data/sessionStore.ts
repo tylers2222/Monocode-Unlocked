@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isMonoSession } from "../../monos/model/mono";
 import { sanitizeMonoSpawnedSessions } from "../../monos/model/monoSpawnedSessions";
-import { parseMessageId } from "../../monos/model/monoMessages";
+import { parseMessageId, parseTurnId } from "../../monos/model/monoMessages";
+import { parseMessageLink, parseTargetLink } from "../model/messageIntent";
 import {
   isWeakToolTitle,
   titleFromToolInput,
@@ -278,6 +279,8 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
       HARNESSES.includes(handoff.to)
         ? handoff
         : undefined;
+    const link = parseTargetLink(message.link);
+    const typedInTurn = parseTurnId(message.typedInTurn);
     if (
       !message.text.trim() &&
       !attachments.length &&
@@ -298,6 +301,7 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
         ...(handoffCard ? { handoffCard } : {}),
         ...(completion ? { monoSessionCompletion: completion } : {}),
         ...(message.waitForIdle === true ? { waitForIdle: true } : {}),
+        ...(typedInTurn ? { typedInTurn } : {}),
         ...(["default", "plan", "build", "orchestrate"].includes(
           message.intent ?? "",
         )
@@ -309,6 +313,7 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
         ...(parseMessageId(message.monoMessageId) === message.id
           ? { monoMessageId: message.monoMessageId }
           : {}),
+        ...(link ? { link } : {}),
         ...(typeof message.error === "string" && message.error
           ? { error: message.error }
           : {}),
@@ -933,6 +938,12 @@ function sanitizeBlock(
   }
   if (block.role === "user" && typeof block.sentAt === "number")
     next.sentAt = block.sentAt;
+  if (block.role === "user") {
+    const turnId = parseTurnId(block.turnId);
+    if (turnId) next.turnId = turnId;
+    const link = parseMessageLink(block.link);
+    if (link) next.link = link;
+  }
   const turnModel = sanitizeTurnModel(block.turnModel);
   if (block.role === "user" && turnModel) next.turnModel = turnModel;
   if (block.role === "user" && block.draft) next.draft = true;

@@ -1148,7 +1148,8 @@ pub enum Submitted {
     /// routed (design 5.5 rule 1), so a duplicate has no `routes`.
     #[serde(rename_all = "camelCase")]
     Accepted {
-        messages: Vec<MonoMessage>,
+        /// Each row with what its line names, so a queue can link its bubble.
+        messages: Vec<Targeted>,
         /// The messages this reply answered, with their handles.
         answered: Vec<Answered>,
         duplicate: bool,
@@ -1223,7 +1224,10 @@ fn accept_outcome(
         answered.push(Answered { handle, message_id });
     }
     Ok(Submitted::Accepted {
-        messages,
+        messages: messages
+            .into_iter()
+            .map(|message| targeted(conn, message))
+            .collect::<rusqlite::Result<_>>()?,
         answered,
         duplicate: routes.is_empty(),
         routes,
@@ -1951,13 +1955,22 @@ pub fn reply_target(conn: &Connection, id: &MessageId) -> rusqlite::Result<Reply
     )
 }
 
-/// A hand-off's row with its slot, and the message its line names: `None`
-/// for `new` and for a whole-turn steer (design 16.7, 16.12.5).
+/// A row and the message its line names: `None` for `new` and for a
+/// whole-turn steer (design 16.7, 16.12.5). A hand-off reads it for the
+/// line, a queue for its bubble's link (PR I5).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Assigned {
+pub struct Targeted {
     pub message: MonoMessage,
     pub target: Option<ReplyTarget>,
+}
+
+fn targeted(conn: &Connection, message: MonoMessage) -> rusqlite::Result<Targeted> {
+    let target = match message.status.intent().and_then(Intent::reply_to) {
+        Some(target) => Some(reply_target(conn, target)?),
+        None => None,
+    };
+    Ok(Targeted { message, target })
 }
 
 /// Design 5.5 rule 3: before a hand-off removes a queue item or sends its
@@ -1975,7 +1988,7 @@ pub fn assign_slot(
     window: &str,
     delivery: Delivery,
     now: i64,
-) -> rusqlite::Result<(Option<Assigned>, Notices)> {
+) -> rusqlite::Result<(Option<Targeted>, Notices)> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let Some(message) = get(&tx, id)? else {
         return Ok((None, Notices::default()));
@@ -2035,15 +2048,7 @@ pub fn assign_slot(
         }
     };
     let assigned = if assigned { get(&tx, id)? } else { None };
-    let assigned = assigned
-        .map(|message| {
-            let target = match message.status.intent().and_then(Intent::reply_to) {
-                Some(target) => Some(reply_target(&tx, target)?),
-                None => None,
-            };
-            Ok::<_, rusqlite::Error>(Assigned { message, target })
-        })
-        .transpose()?;
+    let assigned = assigned.map(|message| targeted(&tx, message)).transpose()?;
     tx.commit()?;
     Ok((assigned, Notices::default()))
 }
@@ -2115,15 +2120,20 @@ pub fn mark_delivery(
 }
 
 /// Design 5.5 rule 6: the rows `session` must still receive that neither a
-/// queue item nor a slot holds, oldest first.
-pub fn unqueued(conn: &Connection, session: &SessionId) -> rusqlite::Result<Vec<MonoMessage>> {
-    conn.prepare(&format!(
-        "{SELECT} WHERE handled_by_session = ?1 AND status IN ('open', 'delivered')
-           AND delivered_at IS NULL AND turn_id IS NULL
-         ORDER BY created_at, id"
-    ))?
-    .query_map([session.as_str()], parse_row)?
-    .collect()
+/// queue item nor a slot holds, oldest first, each with its target so the
+/// queue links its bubble as a route does (PR I5).
+pub fn unqueued(conn: &Connection, session: &SessionId) -> rusqlite::Result<Vec<Targeted>> {
+    let rows: Vec<MonoMessage> = conn
+        .prepare(&format!(
+            "{SELECT} WHERE handled_by_session = ?1 AND status IN ('open', 'delivered')
+               AND delivered_at IS NULL AND turn_id IS NULL
+             ORDER BY created_at, id"
+        ))?
+        .query_map([session.as_str()], parse_row)?
+        .collect::<rusqlite::Result<_>>()?;
+    rows.into_iter()
+        .map(|message| targeted(conn, message))
+        .collect()
 }
 
 /// Design 5.4: the provider of turn `turn_id` of `session` runs it, so it
@@ -2508,7 +2518,7 @@ fn drop_steers_of_ended_turns(
         return Ok(notices);
     };
     let mut ended = Vec::new();
-    for message in messages.iter_mut() {
+    for Targeted { message, .. } in messages.iter_mut() {
         if !matches!(message.status.intent(), Some(Intent::Steer(_))) {
             continue;
         }
@@ -2578,7 +2588,7 @@ fn submit_and_recheck(
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RouteEvent<'a> {
-    messages: &'a [MonoMessage],
+    messages: &'a [Targeted],
     route: &'a Routing,
     /// The window that made the call; the owner tells it the delivery.
     caller_window: &'a str,
@@ -2629,9 +2639,9 @@ pub fn mono_message_submit(
             if owner == window.label() || app.get_webview_window(&owner).is_none() {
                 continue;
             }
-            let rows: Vec<MonoMessage> = messages
+            let rows: Vec<Targeted> = messages
                 .iter()
-                .filter(|message| group.message_ids.contains(&message.id))
+                .filter(|row| group.message_ids.contains(&row.message.id))
                 .cloned()
                 .collect();
             let event = RouteEvent {
@@ -2658,7 +2668,7 @@ pub fn mono_message_assign_slot(
     id: String,
     turn_id: String,
     kind: String,
-) -> Result<Option<Assigned>, String> {
+) -> Result<Option<Targeted>, String> {
     let delivery = match kind.as_str() {
         "submit" => Delivery::Submit,
         "steer" => Delivery::Steer,
@@ -2723,7 +2733,7 @@ pub fn mono_message_mark_delivery(
 pub fn mono_messages_unqueued(
     store: State<'_, SessionStore>,
     session_id: String,
-) -> Result<Vec<MonoMessage>, String> {
+) -> Result<Vec<Targeted>, String> {
     let session = SessionId::parse(&session_id).ok_or("Invalid session id")?;
     let conn = store.lock_conn()?;
     unqueued(&conn, &session).map_err(|error| error.to_string())
@@ -4374,7 +4384,7 @@ pub(crate) mod tests {
     fn accepted_ids(submitted: &Submitted) -> Vec<MessageId> {
         match submitted {
             Submitted::Accepted { messages, .. } => {
-                messages.iter().map(|message| message.id.clone()).collect()
+                messages.iter().map(|row| row.message.id.clone()).collect()
             }
             Submitted::Failed { error } => panic!("refused: {error:?}"),
         }
@@ -4557,7 +4567,7 @@ pub(crate) mod tests {
         else {
             panic!("reply: {answer:?}");
         };
-        let [reply] = messages.as_slice() else {
+        let [Targeted { message: reply, .. }] = messages.as_slice() else {
             panic!("{messages:?}");
         };
         assert_eq!(
@@ -4726,7 +4736,7 @@ pub(crate) mod tests {
         let listed: Vec<MessageId> = unqueued(&conn, &session("a-chat"))
             .unwrap()
             .into_iter()
-            .map(|message| message.id)
+            .map(|row| row.message.id)
             .collect();
         assert_eq!(listed, vec![waiting]);
         assert!(unqueued(&conn, &session("giga-chat")).unwrap().is_empty());
@@ -5115,6 +5125,52 @@ pub(crate) mod tests {
         );
     }
 
+    // PR I5 (PR I4 review r1 m4). Defect: a route or a reload queues a row
+    // without the message it names, so its bubble gets no link.
+    #[test]
+    fn submit_and_unqueued_answer_each_row_with_its_target_and_none_without_one() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let work = handed_off(&conn, "work", true, "turn-1", "main", true);
+        let submitted = call_with(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "steer",
+            Tool::SendMessage,
+            steering("mono-a", work.as_str()),
+            &[],
+            &["a-chat"],
+        );
+        let Submitted::Accepted { messages, .. } = &submitted else {
+            panic!("{submitted:?}");
+        };
+        let wire = serde_json::to_value(messages).unwrap();
+        assert_eq!(
+            (&wire[0]["target"]["messageId"], &wire[0]["target"]["body"]),
+            (&serde_json::json!(work.as_str()), &serde_json::json!("Hi"))
+        );
+        let steer = messages[0].message.id.clone();
+        let whole = steered_turn(&conn, "whole");
+        let plain = sent_to_a(&conn, "plain", false);
+        let listed: Vec<(MessageId, serde_json::Value)> = unqueued(&conn, &session("a-chat"))
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row.message.id.clone(),
+                    serde_json::to_value(row).unwrap()["target"]["messageId"].clone(),
+                )
+            })
+            .collect();
+        for expected in [
+            (steer, serde_json::json!(work.as_str())),
+            (whole, serde_json::Value::Null),
+            (plain, serde_json::Value::Null),
+        ] {
+            assert!(listed.contains(&expected), "{expected:?} in {listed:?}");
+        }
+    }
+
     // Design 5.3. Defect: a question the agent saw stays open after its
     // turn, so the sender waits for good; or a hand-off whose text the
     // provider never took keeps its slot, so reconcile never queues it again.
@@ -5139,7 +5195,13 @@ pub(crate) mod tests {
             assert_eq!(slot_columns(&conn, id), (None, None, None));
         }
         assert_eq!(
-            sorted(ids(unqueued(&conn, &session("a-chat")).unwrap())),
+            sorted(
+                unqueued(&conn, &session("a-chat"))
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| row.message.id)
+                    .collect()
+            ),
             sorted(vec![unseen, plain])
         );
         assert!(matches!(
@@ -5202,7 +5264,13 @@ pub(crate) mod tests {
         ));
         assert_eq!(slot_columns(&conn, &unseen), (None, None, None));
         assert_eq!(
-            sorted(ids(unqueued(&conn, &session("a-chat")).unwrap())),
+            sorted(
+                unqueued(&conn, &session("a-chat"))
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| row.message.id)
+                    .collect()
+            ),
             sorted(vec![unseen, kept])
         );
         for id in [&unpersisted, &removed] {
@@ -5471,7 +5539,7 @@ pub(crate) mod tests {
         };
         let sent: Vec<_> = messages
             .iter()
-            .map(|message| {
+            .map(|Targeted { message, .. }| {
                 (
                     message.status.intent().cloned(),
                     message.to.clone(),
@@ -5491,12 +5559,12 @@ pub(crate) mod tests {
                 (Some(Intent::Reply(from_b.clone())), mono_party("mono-b"), 1),
             ]
         );
-        let group = |id: &str, via, message: &MonoMessage| RouteGroup {
+        let group = |id: &str, via, row: &Targeted| RouteGroup {
             route: Routing {
                 session_id: session(id),
                 via,
             },
-            message_ids: vec![message.id.clone()],
+            message_ids: vec![row.message.id.clone()],
             owner_window: None,
         };
         assert_eq!(
@@ -6545,7 +6613,7 @@ pub(crate) mod tests {
         assert!(unqueued(&conn, &session("a-chat"))
             .unwrap()
             .iter()
-            .all(|message| message.id != steer));
+            .all(|row| row.message.id != steer));
     }
 
     // PR I2 review r1 M1. Defect: a steer accepted for turn T that no
@@ -7478,7 +7546,7 @@ pub(crate) mod tests {
             };
             assert!(routes.is_empty(), "{request}");
             assert!(
-                matches!(messages[0].status, Status::Dropped { .. }),
+                matches!(messages[0].message.status, Status::Dropped { .. }),
                 "{request}"
             );
             assert_eq!(
@@ -7528,9 +7596,9 @@ pub(crate) mod tests {
             panic!("{submitted:?}");
         };
         assert!(routes.is_empty(), "{routes:?}");
-        assert!(matches!(messages[0].status, Status::Dropped { .. }));
+        assert!(matches!(messages[0].message.status, Status::Dropped { .. }));
         let conn = store.lock_conn().unwrap();
-        assert_eq!(stored_row(&conn, &messages[0].id).0, "dropped");
+        assert_eq!(stored_row(&conn, &messages[0].message.id).0, "dropped");
         assert!(
             notices.sessions.contains(&session("giga-chat")),
             "{notices:?}"

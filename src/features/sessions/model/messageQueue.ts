@@ -1,5 +1,6 @@
 import { isPreparingHandoff } from "./handoff";
 import { consumeOperatorCommand } from "./operatorCommand";
+import type { TurnId } from "../../monos/model/monoMessages";
 import type { QueuedMessage, Session } from "./session";
 
 export function queuedHead(session: Session): QueuedMessage | undefined {
@@ -62,13 +63,11 @@ export function waitsForTurnEnd(message: QueuedMessage): boolean {
 }
 
 /**
- * The message a busy, ready Mono steers next: the first one that can steer.
- * Messages that wait for the turn to end keep their place but never block it.
+ * A busy session takes a steer now: its turn is ready and nothing holds it
+ * (a pending question, a paused queue, a provider switch or a hand-off).
  */
-export function steerableQueuedMessage(
-  session: Session,
-): QueuedMessage | undefined {
-  if (
+function canSteerNow(session: Session): boolean {
+  return !(
     !session.busy ||
     session.turnReadiness !== "ready" ||
     session.worktreePreparing ||
@@ -80,10 +79,24 @@ export function steerableQueuedMessage(
     session.queueStatus === "paused" ||
     session.queueStatus === "resuming" ||
     isPreparingHandoff(session)
-  )
-    return undefined;
+  );
+}
+
+/**
+ * The message a busy, ready Mono steers next into running turn `turnId`: the
+ * first one that can steer. Messages that wait for the turn to end keep their
+ * place but never block it. A message the user typed during an earlier turn
+ * missed that turn, so it waits too (design 16.12.4).
+ */
+export function steerableQueuedMessage(
+  session: Session,
+  turnId: TurnId | undefined,
+): QueuedMessage | undefined {
+  if (!canSteerNow(session)) return undefined;
   const message = session.queuedMessages?.find(
-    (entry) => !waitsForTurnEnd(entry),
+    (entry) =>
+      !waitsForTurnEnd(entry) &&
+      (entry.typedInTurn === undefined || entry.typedInTurn === turnId),
   );
   return message && session.editingQueuedMessageId !== message.id
     ? message

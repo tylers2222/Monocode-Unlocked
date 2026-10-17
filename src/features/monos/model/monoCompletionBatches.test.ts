@@ -136,7 +136,7 @@ describe("Mono completion batches", () => {
       queuedMessages: mono.queuedMessages!.slice(1),
     };
     expect(canDispatchQueuedHead(notification)).toBe(false);
-    expect(steerableQueuedMessage(notification)).toBeUndefined();
+    expect(steerableQueuedMessage(notification, undefined)).toBeUndefined();
     expect(canDispatchQueuedHead({ ...notification, busy: false })).toBe(true);
   });
 

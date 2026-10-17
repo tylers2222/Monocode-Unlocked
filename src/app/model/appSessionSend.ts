@@ -7,6 +7,7 @@ import { isPreparingHandoff } from "../../features/sessions/model/handoff";
 import { consumeOperatorCommand } from "../../features/sessions/model/operatorCommand";
 import type {
   AppDelivery,
+  Block,
   HarnessId,
   QueuedMessage,
   Session,
@@ -104,17 +105,21 @@ export function planAppSend(input: {
 }
 
 /** Append the steer's user block, tagged so a retry reports "steered".
- *  Keeps `busy`: a steer never starts a turn. */
+ *  Keeps `busy`: a steer never starts a turn. `joined` is the running turn
+ *  the steer joins and what it names (design 16.3, 16.8). */
 export function recordAppSteer(
   session: Session,
   prompt: string,
   requestId: string,
+  joined?: Pick<Block, "turnId" | "link">,
 ): Session {
   return {
     ...session,
     blocks: appendSteerUser(session, prompt, [], {
       appRequestId: requestId,
       appDelivery: { via: "steered" },
+      turnId: joined?.turnId,
+      link: joined?.link,
     }).blocks,
   };
 }

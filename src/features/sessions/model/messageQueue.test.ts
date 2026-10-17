@@ -98,16 +98,22 @@ describe("steerableQueuedMessage", () => {
           turnReadiness: "ready",
           pendingQuestion: { requestId: 1, questions: [], autoResolveAt: 1000 },
         }),
+        undefined,
       )?.id,
     ).toBe("a");
   });
   it("holds during startup and allows delivery once the busy turn is ready", () => {
-    expect(steerableQueuedMessage(chat({ busy: true }))).toBeUndefined();
     expect(
-      steerableQueuedMessage(chat({ busy: true, turnReadiness: "ready" }))?.id,
+      steerableQueuedMessage(chat({ busy: true }), undefined),
+    ).toBeUndefined();
+    expect(
+      steerableQueuedMessage(
+        chat({ busy: true, turnReadiness: "ready" }),
+        undefined,
+      )?.id,
     ).toBe("a");
     expect(
-      steerableQueuedMessage(chat({ turnReadiness: "ready" })),
+      steerableQueuedMessage(chat({ turnReadiness: "ready" }), undefined),
     ).toBeUndefined();
   });
 
@@ -123,6 +129,7 @@ describe("steerableQueuedMessage", () => {
     expect(
       steerableQueuedMessage(
         chat({ busy: true, turnReadiness: "ready", ...patch }),
+        undefined,
       ),
     ).toBeUndefined();
   });
@@ -147,7 +154,7 @@ describe("steerableQueuedMessage", () => {
         turnReadiness: "ready",
         queuedMessages: [{ ...queued("a"), ...patch }, queued("b")],
       });
-      expect(steerableQueuedMessage(session)?.id).toBe("b");
+      expect(steerableQueuedMessage(session, undefined)?.id).toBe("b");
       expect(session.queuedMessages?.map((message) => message.id)).toEqual([
         "a",
         "b",
@@ -165,10 +172,10 @@ describe("steerableQueuedMessage", () => {
         queued("c"),
       ],
     });
-    expect(steerableQueuedMessage(session)?.id).toBe("b");
-    expect(steerableQueuedMessage(dequeueQueuedMessage(session, "b"))?.id).toBe(
-      "c",
-    );
+    expect(steerableQueuedMessage(session, undefined)?.id).toBe("b");
+    expect(
+      steerableQueuedMessage(dequeueQueuedMessage(session, "b"), undefined)?.id,
+    ).toBe("c");
   });
 });
 

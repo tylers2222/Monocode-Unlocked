@@ -475,6 +475,9 @@ type UserTurnExtra = {
   appRequestId?: string;
   appDelivery?: Block["appDelivery"];
   monoSessionCompletion?: Block["monoSessionCompletion"];
+  /** The turn this message opens or joins; the caller knows it (design 16.8). */
+  turnId?: Block["turnId"];
+  link?: Block["link"];
 };
 
 function userTurnFields(extra?: UserTurnExtra) {
@@ -490,6 +493,8 @@ function userTurnFields(extra?: UserTurnExtra) {
     ...(extra?.monoSessionCompletion
       ? { monoSessionCompletion: extra.monoSessionCompletion }
       : {}),
+    ...(extra?.turnId ? { turnId: extra.turnId } : {}),
+    ...(extra?.link ? { link: extra.link } : {}),
   };
 }
 

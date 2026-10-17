@@ -1,9 +1,18 @@
-import type {
-  Handle,
-  MessageId,
-  SessionId,
-  TurnId,
+import {
+  parseMessageId,
+  type Handle,
+  type MessageId,
+  type SessionId,
+  type TurnId,
 } from "../../monos/model/monoMessages";
+import {
+  WHOLE_TURN,
+  type Block,
+  type MessageLink,
+  type QueuedMessage,
+  type Session,
+  type TargetLink,
+} from "./session";
 
 /**
  * What a line needs of the message a Mono row refers to (design 16.7). Rust
@@ -98,4 +107,225 @@ export function targetRef(
     target.slot.turnId === reader.turnId
     ? target.slot.handle
     : target.messageId;
+}
+
+function isLinkIntent(raw: unknown): raw is TargetLink["intent"] {
+  return raw === "reply" || raw === "steer" || raw === "continue";
+}
+
+/**
+ * A stored link that names one message (design 16.3): intent reply, steer
+ * or continue, a target id of 1 to 128 characters and a quote of at most
+ * 200 code points. Anything else is no link, so the message is intent `new`.
+ */
+export function parseTargetLink(raw: unknown): TargetLink | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const { intent, replyTo, quote, scope } = raw as Record<string, unknown>;
+  if (
+    scope !== undefined ||
+    !isLinkIntent(intent) ||
+    typeof replyTo !== "string" ||
+    replyTo.length < 1 ||
+    replyTo.length > 128 ||
+    typeof quote !== "string" ||
+    [...quote].length > CODE_POINTS
+  )
+    return undefined;
+  return { intent, replyTo, quote };
+}
+
+/**
+ * A stored block's link (design 16.3, 16.12.4): a link that names one
+ * message, or exactly the whole-turn steer. A link with both, or a scope on
+ * another intent, is dropped.
+ */
+export function parseMessageLink(raw: unknown): MessageLink | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const { intent, replyTo, quote, scope } = raw as Record<string, unknown>;
+  if (scope === undefined) return parseTargetLink(raw);
+  return scope === "turn" &&
+    intent === "steer" &&
+    replyTo === undefined &&
+    quote === undefined
+    ? { intent: "steer", scope: "turn" }
+    : undefined;
+}
+
+/**
+ * What the provider reads for a user's message (design 16.7): the line,
+ * then the text. The ref is the target's message id when it is a Mono
+ * message, which `get_message` takes; a plain block has none.
+ */
+export function linkedText(link: MessageLink | undefined, text: string) {
+  if (!link) return text;
+  const ref = link.scope ? undefined : parseMessageId(link.replyTo);
+  return `${intentLine(link, ref)}\n${text}`;
+}
+
+/** A message whose work runs now, which a steer may name (design 16.8). */
+export type RunningItem = { blockId: string; quote: string };
+
+/**
+ * The user blocks and Mono bubbles of running turn `turnId` (design 16.8):
+ * the opener and every block that joined it, whether or not the turn can
+ * take a steer this moment. A queued bubble has no turn id until its work
+ * starts, and a hidden or unsent block is never a target.
+ */
+export function runningItems(
+  session: Session,
+  turnId: TurnId | undefined,
+): RunningItem[] {
+  if (!turnId) return [];
+  return session.blocks
+    .filter(
+      (block) =>
+        block.role === "user" &&
+        !block.draft &&
+        !block.internal &&
+        block.turnId === turnId,
+    )
+    .map((block) => ({ blockId: block.id, quote: excerpt(block.text) }));
+}
+
+/** What the composer's bar shows (design 16.12.6). */
+export type ComposerTarget =
+  | { kind: "none" }
+  | { kind: "picked"; link: TargetLink }
+  /** No pick while steering: everything the session is doing. */
+  | { kind: "turn" }
+  /** A picked steer whose work ended: offer to send it as new. */
+  | { kind: "gone"; link: TargetLink };
+
+export function composerTarget(
+  running: readonly RunningItem[],
+  picked: TargetLink | null,
+  steering: boolean,
+): ComposerTarget {
+  if (!picked) return steering ? { kind: "turn" } : { kind: "none" };
+  if (
+    picked.intent === "steer" &&
+    !running.some((item) => item.blockId === picked.replyTo)
+  )
+    return { kind: "gone", link: picked };
+  return { kind: "picked", link: picked };
+}
+
+/** Why a queued steer failed: its turn ended before it could join (16.8). */
+export const STEER_TARGET_GONE =
+  "That work finished. Edit the message or send it as new.";
+
+/** What a submit says about who wrote its text and what it names. */
+export type SendOrigin = {
+  /** What the user's message refers to (design 16.8). */
+  link?: TargetLink;
+  /** The user cleared the steer (✕). */
+  waitForIdle?: true;
+  /** Text a Mono row, the orchestrator, CI repair or the app wrote. */
+  agentText?: string;
+  managed?: boolean;
+  ciRepair?: unknown;
+  appRequestId?: string;
+  monoSessionCompletion?: unknown;
+};
+
+/**
+ * The text is the user's own: typed in the composer, not a Mono row, a CLI
+ * request (decision 553), a completion report, an orchestrator turn or a CI
+ * repair. Only the user's own text gets the user's link (design 16.12.4).
+ */
+function isOwnText(
+  origin: SendOrigin | undefined,
+  item: QueuedMessage | undefined,
+): boolean {
+  return !(
+    origin?.agentText ||
+    origin?.managed ||
+    origin?.ciRepair ||
+    origin?.appRequestId ||
+    origin?.monoSessionCompletion ||
+    item?.monoMessageId ||
+    item?.appRequestId ||
+    item?.monoSessionCompletion
+  );
+}
+
+/**
+ * Where a send goes. `opens`: the session is idle and the send opens turn
+ * `opens`. Otherwise turn `running` runs (its id, when this window knows it)
+ * with `items`, and the send steers it `now`, or is queued for the Mono
+ * pump to steer `later`, or, by today's busy rule, waits for the turn end.
+ */
+export type SendRoute = IdleRoute | BusyRoute;
+type IdleRoute = { opens: TurnId };
+type BusyRoute = {
+  running: TurnId | undefined;
+  items: readonly RunningItem[];
+  steers: "now" | "later" | "no";
+};
+
+/** The fields of a user block that place it in a turn and say what it names. */
+type TurnBlock = Pick<Block, "turnId" | "link">;
+
+/** A steer whose work is no longer running: nothing is sent. */
+type TargetGone = { kind: "target_gone" };
+/** Opens the turn or joins the running one; the block records `block`, the provider reads `text`. */
+type Sent = { kind: "open" | "join"; block: TurnBlock; text: string };
+/** Waits in the queue with these fields. */
+type Queued = {
+  kind: "queue";
+  item: Pick<QueuedMessage, "link" | "waitForIdle" | "typedInTurn">;
+};
+
+/** Where a user's message goes (design 16.8, 16.12.4). */
+export type UserSend = TargetGone | Sent | Queued;
+
+type PlanInput<R extends SendRoute> = {
+  origin: SendOrigin | undefined;
+  /** The queued item this send delivers. */
+  item: QueuedMessage | undefined;
+  /** What the provider reads, before any line. */
+  text: string;
+  route: R;
+};
+
+export function planUserSend(
+  input: PlanInput<IdleRoute>,
+): TargetGone | (Sent & { kind: "open" });
+export function planUserSend(input: PlanInput<SendRoute>): UserSend;
+export function planUserSend(input: PlanInput<SendRoute>): UserSend {
+  const { origin, route } = input;
+  const own = isOwnText(origin, input.item);
+  const link = own ? (origin?.link ?? input.item?.link) : undefined;
+  const sent = (
+    kind: "open" | "join",
+    turnId: TurnId | undefined,
+    stamp: MessageLink | undefined,
+  ): Sent => ({
+    kind,
+    block: { ...(turnId ? { turnId } : {}), ...(stamp ? { link: stamp } : {}) },
+    text: linkedText(stamp, input.text),
+  });
+  if ("opens" in route)
+    return link?.intent === "steer"
+      ? { kind: "target_gone" }
+      : sent("open", route.opens, link);
+  // A message queued for later may steer only the turn it was typed in.
+  const later = route.running
+    ? { typedInTurn: route.running }
+    : { waitForIdle: true };
+  if (link?.intent === "steer") {
+    if (!route.items.some((item) => item.blockId === link.replyTo))
+      return { kind: "target_gone" };
+    return route.steers === "later"
+      ? { kind: "queue", item: { link, ...later } }
+      : sent("join", route.running, link);
+  }
+  if (link || origin?.waitForIdle)
+    return {
+      kind: "queue",
+      item: { ...(link ? { link } : {}), waitForIdle: true },
+    };
+  if (route.steers === "no") return { kind: "queue", item: {} };
+  if (route.steers === "later") return { kind: "queue", item: later };
+  return sent("join", route.running, own ? WHOLE_TURN : undefined);
 }

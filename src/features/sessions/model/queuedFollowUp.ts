@@ -1,10 +1,13 @@
 import { TurnNotReadyError } from "../../../integrations/harness/core/types";
+import type { TurnId } from "../../monos/model/monoMessages";
 import { steerableQueuedMessage } from "./messageQueue";
 import type { QueuedMessage, Session } from "./session";
 
 /** Keep the pending message until the provider accepts it. Preparation is part of delivery. */
 export async function deliverQueuedFollowUp<T>(options: {
   message: QueuedMessage;
+  /** The running turn the message joins. */
+  turnId: TurnId | undefined;
   current: () => Session | undefined;
   isCurrentTurn: () => boolean;
   prepare: () => Promise<T>;
@@ -18,7 +21,7 @@ export async function deliverQueuedFollowUp<T>(options: {
     return (
       options.isCurrentTurn() &&
       !!session &&
-      steerableQueuedMessage(session) === options.message
+      steerableQueuedMessage(session, options.turnId) === options.message
     );
   };
   if (!canDeliver()) return false;

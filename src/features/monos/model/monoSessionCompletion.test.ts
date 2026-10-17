@@ -91,7 +91,7 @@ describe("Mono session completion notifications", () => {
       "mono-completion-app-mono-request",
     ]);
     const next = dequeueQueuedMessage(mono, "chat");
-    expect(steerableQueuedMessage(next)).toBeUndefined();
+    expect(steerableQueuedMessage(next, undefined)).toBeUndefined();
     expect(
       queuedMessageForSubmit(next, "mono-completion-app-mono-request", "steer"),
     ).toBeUndefined();
