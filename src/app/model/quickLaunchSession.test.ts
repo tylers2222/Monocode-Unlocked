@@ -481,3 +481,65 @@ it("does not submit an accepted prompt again after a lost ACK", async () => {
   expect(workspace.submit).toHaveBeenCalledOnce();
   expect(queue).toHaveLength(0);
 });
+
+// Design 13.3. Defect: a worker's first save carries no lead id, so it is
+// stored as a lead for good; or its first turn has no app access.
+it("writes a worker's lead id before its first save and stamps its first turn", async () => {
+  const { state, request, workspace } = setup();
+  request.leadSessionId = "lead";
+  request.startedBy = "lead";
+  const original = workspace.submit.getMockImplementation()!;
+  workspace.submit.mockImplementation((...args) => {
+    expect(
+      state.sessions.find((session) => session.id === args[0])?.leadSessionId,
+    ).toBe("lead");
+    return original(...args);
+  });
+  await acceptQuickLaunch(request, "worker", workspace);
+  expect(workspace.submit).toHaveBeenCalledWith("worker", request.prompt, [], {
+    startedBy: "lead",
+  });
+  expect(
+    state.sessions.find((session) => session.id === "worker")?.leadSessionId,
+  ).toBe("lead");
+});
+
+// Design 13.2. Defect: the worker's first save runs before its lead's row
+// exists, so the lead id is stored as NULL and the worker becomes a lead.
+it("awaits the lead's save before the worker exists", async () => {
+  const { state, request, workspace } = setup();
+  request.leadSessionId = "lead";
+  let saved!: () => void;
+  const persistLead = vi.fn(
+    () => new Promise<void>((resolve) => (saved = resolve)),
+  );
+  const accepting = acceptQuickLaunch(request, "worker", {
+    ...workspace,
+    persistLead,
+  });
+  await vi.waitFor(() => expect(persistLead).toHaveBeenCalledOnce());
+  expect(state.sessions.some((session) => session.id === "worker")).toBe(false);
+  saved();
+  await accepting;
+  expect(
+    state.sessions.find((session) => session.id === "worker")?.leadSessionId,
+  ).toBe("lead");
+});
+
+// Design 13.2. Defect: a worker starts although its lead could not be
+// saved, and its first save stores it as a lead.
+it("gives no worker when the lead's save fails", async () => {
+  const { state, request, workspace } = setup();
+  request.leadSessionId = "lead";
+  await expect(
+    acceptQuickLaunch(request, "worker", {
+      ...workspace,
+      persistLead: async () => {
+        throw new Error("database is locked");
+      },
+    }),
+  ).rejects.toThrow("database is locked");
+  expect(state.sessions.some((session) => session.id === "worker")).toBe(false);
+  expect(workspace.appendTab).not.toHaveBeenCalled();
+  expect(workspace.submit).not.toHaveBeenCalled();
+});

@@ -48,3 +48,17 @@ export function operatorUserPrompt(block: Block): string {
 export function operatorEnabledInThread(blocks: Block[]): boolean {
   return blocks.some(isOperatorUserTurn);
 }
+
+/** How a thread reached app access (design 13.4). */
+export type AppAccess = "operator" | "started";
+
+/**
+ * `operator` once the thread has a submitted /operator turn; else `started`
+ * when `sessions.start` made the session, which stamps its first user block;
+ * else none.
+ */
+export function appAccess(blocks: Block[]): AppAccess | null {
+  if (operatorEnabledInThread(blocks)) return "operator";
+  const first = blocks.find((block) => block.role === "user" && !block.draft);
+  return first?.startedBy ? "started" : null;
+}

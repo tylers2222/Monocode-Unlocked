@@ -476,6 +476,8 @@ type UserTurnExtra = {
   monocode?: boolean;
   intent?: Block["intent"];
   appRequestId?: string;
+  /** The session whose `sessions.start` made this first turn (design 13.4). */
+  startedBy?: string;
   appDelivery?: Block["appDelivery"];
   monoSessionCompletion?: Block["monoSessionCompletion"];
   /** The turn this message opens or joins; the caller knows it (design 16.8). */
@@ -492,6 +494,7 @@ function userTurnFields(extra?: UserTurnExtra) {
     ...(extra?.monocode ? { monocode: true } : {}),
     ...(extra?.intent ? { intent: extra.intent } : {}),
     ...(extra?.appRequestId ? { appRequestId: extra.appRequestId } : {}),
+    ...(extra?.startedBy ? { startedBy: extra.startedBy } : {}),
     ...(extra?.appDelivery ? { appDelivery: extra.appDelivery } : {}),
     ...(extra?.monoSessionCompletion
       ? { monoSessionCompletion: extra.monoSessionCompletion }

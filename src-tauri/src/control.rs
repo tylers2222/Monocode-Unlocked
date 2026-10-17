@@ -1386,7 +1386,7 @@ mod tests {
             let conn = store.lock_conn().unwrap();
             conn.execute_batch(
                 r#"INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
-                   VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat"}', 2, 1, 1);
+                   VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat","messageAllowlist":["mono-a"]}', 2, 1, 1);
                    INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
                    VALUES ('b-chat', '/', 'codex', 'm', 'default', 'B', 1, 1);"#,
             )
@@ -1423,7 +1423,7 @@ mod tests {
             let conn = store.lock_conn().unwrap();
             conn.execute_batch(
                 r#"INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
-                   VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat"}', 2, 1, 1);
+                   VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat","messageAllowlist":["mono-a"]}', 2, 1, 1);
                    INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
                    VALUES ('b-chat', '/', 'codex', 'm', 'default', 'B', 1, 1);
                    CREATE TEMP TRIGGER no_archive BEFORE UPDATE OF archived ON sessions

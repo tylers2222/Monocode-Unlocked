@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  appAccess,
   consumeOperatorCommand,
   isOperatorUserTurn,
   operatorEnabledInThread,
@@ -68,5 +69,28 @@ describe("Operator composer command", () => {
       expect(operatorUserPrompt(legacy)).toBe("list notes");
       expect(operatorEnabledInThread([legacy])).toBe(true);
     }
+  });
+
+  // Design 13.4. Defect: a session that sessions.start made gets no app
+  // access, a user's /operator in it stays "started" and keeps the narrow
+  // scope, or a plain user session gets access.
+  it("gives started access to a thread whose first user block has startedBy, and operator access once /operator is sent", () => {
+    const started = [
+      { id: "start", role: "user" as const, text: "Fix CI", startedBy: "lead" },
+      { id: "reply", role: "assistant" as const, text: "Fixed." },
+    ];
+    expect(appAccess(started)).toBe("started");
+    expect(
+      appAccess([
+        ...started,
+        { id: "op", role: "user", text: "list notes", monocode: true },
+      ]),
+    ).toBe("operator");
+    expect(
+      appAccess([
+        { id: "user", role: "user", text: "Fix CI" },
+        { id: "reply", role: "assistant", text: "Fixed." },
+      ]),
+    ).toBeNull();
   });
 });

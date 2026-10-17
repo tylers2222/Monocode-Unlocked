@@ -48,18 +48,25 @@ beforeEach(async () => {
   await loadMonoRoster();
 });
 
-// Defect: a project session gets the messaging tools, a Mono chat or habit
-// run on a proven harness does not, or a harness whose smoke has not passed
-// (or that scrubs the token) is registered anyway.
-it("gives the tools to a Mono chat or habit run on claude, codex and omp only", async () => {
+// Defect: a session with no app access gets the messaging tools; a Mono
+// chat, a habit run or (design 15 C7) a session with app access on a proven
+// harness does not; or a harness whose smoke has not passed (or that scrubs
+// the token) is registered anyway.
+it("gives the tools to a Mono chat, a habit run or a session with app access on claude, codex and omp only", async () => {
   markHabitRun("habit-run", "mono-1");
   for (const harness of ["claude", "codex", "omp"] as const) {
-    expect(await monoToolsFor(harness, "mono-chat")).toMatchObject({
+    expect(await monoToolsFor(harness, "mono-chat", false)).toMatchObject({
       exe: "/Applications/MonoCode.app/monocode",
       tools,
     });
-    expect(await monoToolsFor(harness, "habit-run")).toBeDefined();
-    expect(await monoToolsFor(harness, "project-session")).toBeUndefined();
+    expect(await monoToolsFor(harness, "habit-run", false)).toBeDefined();
+    expect(await monoToolsFor(harness, "lead-session", true)).toMatchObject({
+      exe: "/Applications/MonoCode.app/monocode",
+      tools,
+    });
+    expect(
+      await monoToolsFor(harness, "project-session", false),
+    ).toBeUndefined();
   }
   for (const harness of [
     "cursor",
@@ -71,14 +78,15 @@ it("gives the tools to a Mono chat or habit run on claude, codex and omp only", 
     "pi",
     "opencode",
   ] as const) {
-    expect(await monoToolsFor(harness, "mono-chat")).toBeUndefined();
+    expect(await monoToolsFor(harness, "mono-chat", false)).toBeUndefined();
+    expect(await monoToolsFor(harness, "lead-session", true)).toBeUndefined();
   }
 });
 
 // Defect: an omp host tool call runs for another session than the one the
 // tools were registered for.
 it("runs a host tool call for the session it was registered for", async () => {
-  const registered = await monoToolsFor("omp", "mono-chat");
+  const registered = await monoToolsFor("omp", "mono-chat", false);
   await registered!.call("messages.get_monos", {}, "req-1");
   expect(invoke).toHaveBeenCalledWith("control_host_call", {
     sessionId: "mono-chat",

@@ -404,6 +404,8 @@ export type Block = {
   appRequestId?: string;
   /** Set when the CLI request in `appRequestId` steered or queued this turn. */
   appDelivery?: AppDelivery;
+  /** Change E level link, not the orchestration link: the session whose `sessions.start` wrote this first user block. */
+  startedBy?: string;
   /** Provider-reported token metrics for this user turn, when available. */
   turnMetrics?: TurnMetrics;
   tool?: {
@@ -511,6 +513,8 @@ export type Session = {
   quickLaunchAccepted?: boolean;
   /** Internal worker: displayed in its lead's panel rather than a workspace tab. */
   orchestrationLeadId?: string;
+  /** Change E level link, not the orchestration link: the lead whose `sessions.start` made this worker. */
+  leadSessionId?: string;
   /** Inbox conversation: shares the runtime, saved only as a hidden record. */
   inboxAsk?: InboxAskContext;
   id: string;

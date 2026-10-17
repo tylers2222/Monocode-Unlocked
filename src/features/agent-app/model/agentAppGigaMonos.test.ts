@@ -9,6 +9,8 @@ import {
   createMono,
   findMono,
   listMonos,
+  loadMonoRoster,
+  monoWritesSettled,
   saveMonoGiga,
   saveMonoSessionId,
 } from "../../monos/model/mono";
@@ -22,8 +24,56 @@ vi.mock("../../../integrations/harness/core/availability", () => ({
   isHarnessAvailable: (id: string) => id === "codex" || id === "claude",
 }));
 
+/**
+ * `monocode.db` behind the roster commands once a test loads the roster, as
+ * `mono_roster.rs` keeps it: an update merges its patch into the stored data
+ * (RFC 7396), so a key the patch sets to null is gone. Arguments go through
+ * JSON, as over IPC.
+ */
+const db = vi.hoisted(() => ({
+  rows: new Map<
+    string,
+    {
+      id: string;
+      role: string;
+      data: Record<string, unknown>;
+      sortOrder: number;
+    }
+  >(),
+  revision: 0,
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: async (command: string, raw: Record<string, unknown> = {}) => {
+    const args = JSON.parse(JSON.stringify(raw));
+    if (command === "monos_create") db.rows.set(args.mono.id, args.mono);
+    else if (command === "monos_update")
+      for (const update of args.updates) {
+        const row = db.rows.get(update.id)!;
+        for (const [key, value] of Object.entries(update.patch ?? {}))
+          if (value === null) delete row.data[key];
+          else row.data[key] = value;
+        if (update.role) row.role = update.role;
+        if (update.sortOrder !== undefined) row.sortOrder = update.sortOrder;
+      }
+    else if (command !== "monos_list")
+      throw new Error(`unexpected command ${command}`);
+    if (command !== "monos_list") db.revision += 1;
+    return {
+      revision: db.revision,
+      monos: [...db.rows.values()]
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map((row) => structuredClone(row)),
+    };
+  },
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
+
 beforeEach(() => {
   __monosTestReset();
+  db.rows.clear();
+  db.revision = 0;
   const stored = new Map<string, string>();
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => stored.get(key) ?? null,
@@ -187,6 +237,7 @@ it("creates a Mono whose chat runs on exactly the harness and model given", asyn
     name: "Scout",
     giga: false,
     projects: ["/code/app"],
+    messageAllowlist: [],
     harness: "codex",
     model: "codex:test",
     created: true,
@@ -371,4 +422,40 @@ it("refuses a folder named MonoCode other than the workspace as a Mono's project
   } finally {
     setHomeDir(undefined);
   }
+});
+
+// Design 6.1 (review r4). Defect: TS sets the list but drops it when it reads
+// the roster back, so the next change cannot clear it and a reload hides it.
+it("keeps the messageAllowlist that monos.update set, then cleared, after a reload", async () => {
+  const reload = async () => {
+    await monoWritesSettled();
+    __monosTestReset();
+    await loadMonoRoster();
+  };
+  await loadMonoRoster();
+  const { run, boss, shroom } = fixture();
+  await expect(
+    run("monos.update", { monoId: shroom.id, messageAllowlist: [boss.id] }),
+  ).resolves.toMatchObject({ monoId: shroom.id, messageAllowlist: [boss.id] });
+  await reload();
+  expect(findMono(shroom.id)!.messageAllowlist).toEqual([boss.id]);
+  await expect(
+    run("monos.update", { monoId: shroom.id, messageAllowlist: [] }),
+  ).resolves.toMatchObject({ messageAllowlist: [] });
+  await reload();
+  expect(findMono(shroom.id)!.messageAllowlist).toBeUndefined();
+  expect(db.rows.get(shroom.id)!.data.messageAllowlist ?? []).toEqual([]);
+});
+
+// Defect: an allowlist that names a deleted Mono, a typo or the Mono itself
+// reports success, so the Giga believes two Monos can now message each other.
+it("refuses a messageAllowlist entry that is not another Mono, before changing anything", async () => {
+  const { run, shroom, monos } = fixture();
+  const before = JSON.stringify(listMonos());
+  for (const messageAllowlist of [["gone"], [shroom.id], "gone", [7]])
+    await expect(
+      run("monos.update", { monoId: shroom.id, messageAllowlist }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+  expect(monos.update).not.toHaveBeenCalled();
+  expect(JSON.stringify(listMonos())).toBe(before);
 });

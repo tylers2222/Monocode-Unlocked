@@ -11,6 +11,7 @@ import { pathKey, projectName } from "../../../shared/lib/paths";
 import {
   createMono,
   findMono,
+  listMonos,
   monoLook,
   saveMonoSessionId,
   updateMono,
@@ -25,6 +26,8 @@ export type MonoSettings = {
   name: string;
   giga: boolean;
   projects: string[];
+  /** The Monos it may message without a shared project (design 6.1). */
+  messageAllowlist: string[];
   harness: HarnessId;
   model: string;
 };
@@ -38,6 +41,8 @@ export type NewMono = {
 export type MonoChange = {
   name?: string;
   projects?: readonly string[];
+  /** Replaces the whole list; empty clears it. */
+  messageAllowlist?: readonly string[];
   /** The new harness and model, checked against its chat's current harness. */
   choice?: (current: HarnessId) => AgentModelChoice;
 };
@@ -51,6 +56,7 @@ function monoSettings(
     name: monoLook(mono).name,
     giga: mono.giga === true,
     projects: mono.projects,
+    messageAllowlist: mono.messageAllowlist ?? [],
     harness: chat.harness,
     model: chat.model,
   };
@@ -92,6 +98,29 @@ export function resolveMonoProjects(
       );
     return match;
   });
+}
+
+/**
+ * The Monos that Mono `monoId` may message, and be messaged by, without a
+ * shared project: other Monos on the rail, each named once by its id.
+ */
+export function resolveMessageAllowlist(
+  value: unknown,
+  monoId: string,
+): string[] {
+  if (!Array.isArray(value) || value.some((id) => typeof id !== "string"))
+    throw new Error(
+      "messageAllowlist must be an array of mono_id values; pass [] to clear it",
+    );
+  const others = new Set(
+    listMonos().flatMap((mono) => (mono.id === monoId ? [] : [mono.id])),
+  );
+  const unknown = (value as string[]).filter((id) => !others.has(id));
+  if (unknown.length)
+    throw new Error(
+      `Not another Mono's mono_id: ${unknown.join(", ")}. Run monos.list for IDs`,
+    );
+  return [...new Set(value as string[])];
 }
 
 /**
@@ -142,6 +171,9 @@ export async function updateMonoSettings(
     ...current,
     ...(change.name !== undefined ? { name: change.name } : {}),
     ...(change.projects ? { projects: [...change.projects] } : {}),
+    ...(change.messageAllowlist
+      ? { messageAllowlist: [...change.messageAllowlist] }
+      : {}),
   }));
   if (!updated) return undefined;
   if (next !== chat) host.replace(next);

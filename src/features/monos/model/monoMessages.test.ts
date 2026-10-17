@@ -89,7 +89,7 @@ it("reads an accepted row's intent only when it, replyTo and scope agree", () =>
     intent: unknown,
     replyTo: unknown,
     scope: unknown = null,
-  ) => parseRowIntent({ status, intent, replyTo, scope });
+  ) => parseRowIntent({ tool: "send_message", status, intent, replyTo, scope });
   const accepted = (
     status: string,
     intent: unknown,
@@ -142,6 +142,39 @@ it("reads an accepted row's intent only when it, replyTo and scope agree", () =>
     status: "rejected",
     asked: { intent: "steer", replyTo: null, scope: "turn" },
   });
+});
+
+// Design 1.4, 16.2. Defect: the web app refuses the delivered start row that
+// sessions.start writes, or a refused start or app action; or it reads an
+// accepted app_action row, or a start row that waits or was dropped, which
+// the CHECKs never let into the table.
+it("reads a tool that is not a message only on a rejected row or a delivered start row", () => {
+  type Columns = { intent: string; replyTo: string | null; scope: null };
+  const fresh: Columns = { intent: "new", replyTo: null, scope: null };
+  const row = (tool: string, status: string, intent = fresh) =>
+    parseRowIntent({ tool, status, ...intent });
+  expect(row("start_session", "delivered")).toEqual({
+    status: "accepted",
+    intent: fresh,
+  });
+  for (const tool of ["start_session", "app_action"])
+    expect(row(tool, "rejected")).toEqual({ status: "rejected", asked: fresh });
+  for (const [tool, status] of [
+    ["app_action", "delivered"],
+    ["start_session", "open"],
+    ["start_session", "dropped"],
+    ["start", "rejected"],
+  ])
+    expect(row(tool, status)).toBeUndefined();
+  const steer: Columns = {
+    intent: "steer",
+    replyTo: "m_abcdefgh2345",
+    scope: null,
+  };
+  expect(row("send_message", "delivered", steer)).toMatchObject({
+    status: "accepted",
+  });
+  expect(row("start_session", "delivered", steer)).toBeUndefined();
 });
 
 // Design U10. Defects: the queue shows the escaped name ("Scout &#60;S&#62;"),
