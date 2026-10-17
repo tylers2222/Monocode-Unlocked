@@ -452,7 +452,14 @@ const LocalSessionPane = memo(function LocalSessionPane({
             running: steerTargets(session, running),
             pick: (link) => setChoice({ kind: "picked", link }),
           },
-    [remoteSession, running, session.queuedMessages, setChoice],
+    [
+      remoteSession,
+      running,
+      session.queuedMessages,
+      session.busy,
+      session.turnReadiness,
+      setChoice,
+    ],
   );
   const composerIntent: ComposerIntent | undefined = remoteSession
     ? undefined

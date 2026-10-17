@@ -146,9 +146,15 @@ it("reads the running turn from the opener that started last, not from block ord
 });
 
 // Design 16.8 `steering`. Defect: the bar says Steering where the busy rule
-// queues the text, or stays silent where it steers.
+// queues the text, or stays silent where it steers; or, PR I5b review r2 m2,
+// it says Steering while a Mono chat compacts (busy, no turn), when typed text
+// waits for the compaction to end.
 it("steers typed text only where the busy rule would", () => {
-  const busy = { ...newSession("codex", "/tmp"), busy: true };
+  const busy: Session = {
+    ...newSession("codex", "/tmp"),
+    busy: true,
+    turnReadiness: "ready",
+  };
   expect(steersTyped(busy, true, "queue")).toBe(true);
   expect(steersTyped(busy, false, "steer")).toBe(true);
   expect(steersTyped(busy, false, "queue")).toBe(false);
@@ -160,6 +166,9 @@ it("steers typed text only where the busy rule would", () => {
   ).toBe(false);
   expect(steersTyped({ ...busy, busy: false }, true, "steer")).toBe(false);
   expect(steersTyped({ ...busy, harness: "fx" }, true, "steer")).toBe(false);
+  expect(steersTyped({ ...busy, turnReadiness: undefined }, true, "steer")).toBe(
+    false,
+  );
 });
 
 // PR I4 review n2, PR I6 review r1 n1. Defect: an override or isolate in the
@@ -354,4 +363,16 @@ it("holds text typed behind a missed message, with no Steering bar and no hover 
   expect(monoMessageDeliveries(mono.chat).get(held.id)).toEqual({
     status: "waiting",
   });
+});
+
+// PR I5b review r2 m2. Defect: while a Mono chat compacts (busy, no turn),
+// the bar says Steering, or the hover offers Steer on the ended turn's
+// messages, though text typed then waits for the compaction to end.
+it("shows no Steering bar and no hover Steer while a Mono chat compacts", () => {
+  const mono = monoChat("ready");
+  expect(mono.barText()).toContain("Steering");
+  mono.update((chat) => ({ ...stopStreaming(chat), busy: true }));
+  expect(runningItems(mono.chat, runningTurnOf(mono.chat))).not.toEqual([]);
+  expect(mono.barText()).not.toContain("Steering");
+  expect(mono.steerTargets()).toEqual(new Set());
 });

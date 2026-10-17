@@ -121,9 +121,10 @@ export function runningTurnOf(
  * Whether the busy rule would steer text typed now (design 16.8, the
  * busy branch of `submitSession`): a busy Mono chat whose harness can steer,
  * or a busy session whose follow-up setting is `steer` or whose agent only
- * waits on background work. Never while the queue holds new text behind the
- * user's own message that missed its turn (`userTextHeld`, design 16.12.4):
- * that text waits for the turn end, so the bar shows no Steering.
+ * waits on background work. Never while the queue holds new text: behind the
+ * user's own message that missed its turn, or while the session is busy with
+ * no turn, as during a compaction (`userTextHeld`, design 16.12.4). That text
+ * waits, so the bar shows no Steering.
  */
 export function steersTyped(
   session: Pick<
@@ -133,6 +134,7 @@ export function steersTyped(
     | "worktreePreparing"
     | "backgroundTasks"
     | "queuedMessages"
+    | "turnReadiness"
   >,
   mono: boolean,
   followUp: FollowUpBehavior,
@@ -150,12 +152,11 @@ export function steersTyped(
 
 /**
  * The blocks the hover Steer may name: the running items, or none while the
- * queue holds new text behind the user's own message that missed its turn
- * (`userTextHeld`). A steer picked then would wait behind that message and
+ * queue holds new text (`userTextHeld`). A steer picked then would wait and
  * fail once its turn ends.
  */
 export function steerTargets(
-  session: Pick<Session, "queuedMessages">,
+  session: Pick<Session, "queuedMessages" | "busy" | "turnReadiness">,
   running: readonly RunningItem[],
 ): ReadonlySet<string> {
   return new Set(
