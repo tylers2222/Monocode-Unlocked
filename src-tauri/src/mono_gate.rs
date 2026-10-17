@@ -229,7 +229,12 @@ pub fn parse(tool: Tool, raw: &Value) -> Result<Input, String> {
             allowed.join(", ")
         ));
     }
+    // PR 7 review r2 m3: SQLite counts a text only up to U+0000, so the row
+    // of such a body, accepted or rejected, fails its length CHECK.
     let message = match fields.get("message") {
+        Some(Value::String(text)) if text.contains('\0') => {
+            return Err("message must not contain the character U+0000".into())
+        }
         Some(Value::String(text)) if !text.trim().is_empty() => text.clone(),
         _ => return Err("message must be a non-empty string".into()),
     };
@@ -545,7 +550,7 @@ pub fn target_session(
 /// Design 16.6: the turn a steer into `session` joins when it names a row
 /// of `tool` that `from` sent and turn `turn` handles. A start row's work is
 /// the whole session it started, and rule (b) steers the Giga chat that sent
-/// M, which never handles it (S3 refuses a send to oneself): either joins
+/// M, which never handles it (S6 refuses a send to oneself): either joins
 /// whatever turn its session runs (PR 7 review r1 B2). Any other steer joins
 /// `turn`. The gate's S15 and `assign_slot` read this one pin.
 pub fn steer_pin(tool: Tool, from: &SessionId, turn: Option<&str>, session: &SessionId) -> TurnPin {
@@ -1502,8 +1507,10 @@ pub struct ActionFacts {
     pub target_level: Option<SessionLevel>,
     /// Rows this caller session already wrote with this request id (any tool).
     pub prior: Vec<MonoMessage>,
-    /// A1: the session an accepted `start_session` prior launched was
-    /// archived or deleted since (PR 7 review r1 m6).
+    /// A1: the session this request id started was archived or deleted
+    /// since: the session an accepted `start_session` prior launched (PR 7
+    /// review r1 m6), or, with no prior, the start's own launch id (review
+    /// r2 m2).
     pub prior_start_ended: bool,
 }
 
@@ -1561,6 +1568,12 @@ pub fn decide_action(call: &ActionCall, facts: &ActionFacts) -> ActionDecision {
                     .is_none()
                     .then(|| first.from_session_id.clone()),
             },
+        };
+    }
+    if facts.prior_start_ended {
+        return ActionDecision::Refuse {
+            code: Refusal::RequestIdReused,
+            hint: START_ENDED.into(),
         };
     }
     let reject = |code: RejectCode, tool: Tool| ActionDecision::Reject {
