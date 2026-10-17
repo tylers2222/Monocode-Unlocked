@@ -6,8 +6,7 @@ import {
   type ComposerTarget,
   type RunningItem,
 } from "../model/messageIntent";
-import { switchingProviders } from "../model/handoff";
-import { userTextHeld } from "../model/messageQueue";
+import { steersHeld, userTextHeld } from "../model/messageQueue";
 import type {
   Block,
   ComposerTurnOptions,
@@ -133,17 +132,17 @@ type SteerSession = Pick<
   | "pendingSwitch"
   | "providerAccountId"
   | "blocks"
+  | "worktreePreparing"
 >;
 
 /**
  * What a steer the user sends now meets (design 16.8). `steers`: the session
  * is busy, its harness can steer, and nothing holds the text. `paused`: a
- * turn runs that the text could join, but every steer is held for now: the
- * session is switching providers (`switchingProviders`, as App's send and
- * the CLI read it), or a Mono chat's queue is paused or resuming
- * (`canSteerNow`). `no`: idle, a harness that cannot steer, or the queue holds
- * the user's new text behind their message that missed its turn, or while the
- * session is busy with no turn (`userTextHeld`, design 16.12.4).
+ * turn runs that the text could join, but every steer is held for now
+ * (`steersHeld`: a provider switch, a worktree in preparation, or a Mono
+ * chat's paused queue). `no`: idle, a harness that cannot steer, or the queue
+ * holds the user's new text behind their message that missed its turn, or
+ * while the session is busy with no turn (`userTextHeld`, design 16.12.4).
  */
 function steerReach(
   session: SteerSession,
@@ -155,11 +154,7 @@ function steerReach(
     userTextHeld(session)
   )
     return "no";
-  return switchingProviders(session) ||
-    (mono &&
-      (session.queueStatus === "paused" || session.queueStatus === "resuming"))
-    ? "paused"
-    : "steers";
+  return steersHeld(session, mono) ? "paused" : "steers";
 }
 
 /** Whether a steer the user sends now reaches the running turn (design 16.8). */
@@ -172,8 +167,10 @@ export function steersNow(session: SteerSession, mono: boolean): boolean {
  * (PR I6 review r3 m1). A Mono chat's pump steers a plain queued message into
  * the turn it was typed in once the hold on steers lifts, so text typed while
  * the hold shows no bar would steer if the user resumed the queue before
- * the turn ended. Text the queue holds behind a missed message keeps `{}`:
- * the pump holds it, in typed order.
+ * the turn ended. App also marks such text missed (`typedMonoMessage`); the
+ * send says it too, because this window's copy of the session can lag App's.
+ * Text the queue holds behind a missed message keeps `{}`: the pump holds it,
+ * and its turn end marks it missed, so it keeps its typed order.
  */
 export function newTextWaits(session: SteerSession, mono: boolean): boolean {
   return mono && steerReach(session, mono) === "paused";
@@ -186,14 +183,12 @@ export function newTextWaits(session: SteerSession, mono: boolean): boolean {
  * background work. Text that waits gets no Steering bar.
  */
 export function steersTyped(
-  session: Parameters<typeof steersNow>[0] &
-    Pick<Session, "worktreePreparing" | "backgroundTasks">,
+  session: Parameters<typeof steersNow>[0] & Pick<Session, "backgroundTasks">,
   mono: boolean,
   followUp: FollowUpBehavior,
 ): boolean {
   if (!steersNow(session, mono)) return false;
   if (mono) return true;
-  if (session.worktreePreparing) return false;
   return session.backgroundTasks?.length ? true : followUp === "steer";
 }
 

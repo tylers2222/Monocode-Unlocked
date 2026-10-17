@@ -28,8 +28,10 @@ import {
 } from "../model/messageIntent";
 import { appendPreparingHandoff, planComposerSwitch } from "../model/handoff";
 import {
+  dequeueQueuedMessage,
   nextQueuedSend,
   pauseQueue,
+  resumeQueuedMessages,
   runningTurnMap,
 } from "../model/messageQueue";
 import { typedMonoMessage } from "../model/queuedFollowUp";
@@ -43,6 +45,7 @@ import {
   barSend,
   composerBar,
   newTextWaits,
+  linkTo,
   NO_CHOICE,
   quoteText,
   runningTurnOf,
@@ -525,3 +528,110 @@ it("agrees with the send while a chat compacts: no Steering, and the text waits"
   });
   expect(plan).toEqual({ kind: "queue", item: { waitForIdle: true } });
 });
+
+// PR I6 review r4 M1 (probe P8). Defect: while a worktree-mode session
+// creates its worktree for the first turn, the hover offers Steer and a
+// picked steer is sent, though the provider has no turn yet and refuses it
+// ("No active turn to steer"), so the agent never reads the text.
+it("offers no steer while the first turn's worktree is prepared", () => {
+  const preparing: Session = {
+    ...appendUser(newSession("claude", "/tmp"), "Build it", [], {
+      turnId: turn1,
+    }),
+    busy: true,
+    turnReadiness: "starting",
+    worktreePreparing: true,
+  };
+  const picked: BarChoice = {
+    kind: "picked",
+    link: linkTo("steer", preparing.blocks[0]),
+  };
+  for (const mono of [false, true]) {
+    expect(steersNow({ ...preparing, worktreePreparing: false }, mono)).toBe(
+      true,
+    );
+    // SessionPane gives the hover and the bar the running items only while a
+    // steer reaches them.
+    const reached = steersNow(preparing, mono)
+      ? runningItems(preparing, turn1)
+      : [];
+    expect(reached).toEqual([]);
+    const bar = composerBar(
+      reached,
+      picked,
+      steersTyped(preparing, mono, "steer"),
+      false,
+    );
+    expect(bar).toEqual({ kind: "gone", link: picked.link });
+    expect(barSend(bar, false)).toBeNull();
+  }
+  expect(steerBlockReason(preparing, "use tabs")).toMatch(
+    /preparing its worktree/,
+  );
+});
+
+/** The ids an idle chat opens its queued messages with, one turn each. */
+function idleOrder(chat: Session): string[] {
+  const order: string[] = [];
+  let idle = stopStreaming(chat);
+  for (
+    let next = nextQueuedSend(idle, runningTurnMap(), true);
+    next;
+    next = nextQueuedSend(idle, runningTurnMap(), true)
+  ) {
+    order.push(next.id);
+    idle = dequeueQueuedMessage(idle, next.id);
+  }
+  return order;
+}
+
+// PR I6 review r4 m1. Defect: text typed while every steer is held waits
+// by choice, which holds nothing behind it, so once the user resumes the
+// queue or reverts the switch before the turn ends, their later text steers
+// the running turn and reaches the agent before the earlier text.
+it.each<[string, (chat: Session) => Session, (chat: Session) => Session]>([
+  [
+    "the queue is paused and resumed",
+    (chat) =>
+      pauseQueue(
+        enqueueMonoMessage(chat, {
+          id: "failed",
+          text: "failed earlier",
+          attachments: [],
+          waitForIdle: true,
+          error: "provider error",
+        }),
+      ),
+    // As App's onResumeQueue resumes a Mono queue while the turn runs.
+    (chat) => ({
+      ...chat,
+      queueStatus: "active",
+      queuedMessages: resumeQueuedMessages(chat.queuedMessages),
+    }),
+  ],
+  [
+    "a provider switch is armed and reverted",
+    (chat) => {
+      const plan = planComposerSwitch(chat, "claude");
+      if (plan.kind !== "arm") throw new Error(`expected arm, got ${plan.kind}`);
+      return { ...chat, harness: "claude", pendingSwitch: plan.pending };
+    },
+    (chat) => ({ ...chat, harness: "codex", pendingSwitch: undefined }),
+  ],
+])(
+  "keeps the user's typed order when %s before the turn ends",
+  (_hold, hold, lift) => {
+    const mono = monoChat("ready");
+    mono.update(hold);
+    expect(mono.bar()).toEqual({ kind: "none" });
+    mono.type("rename it to foo");
+    mono.update(lift);
+    expect(mono.barText()).not.toContain("Steering");
+    mono.type("and the tests");
+    expect(mono.next()).toBeUndefined();
+    expect(idleOrder(mono.chat).filter((id) => id !== "failed")).toEqual([
+      "rename it to foo",
+      "and the tests",
+    ]);
+  },
+);

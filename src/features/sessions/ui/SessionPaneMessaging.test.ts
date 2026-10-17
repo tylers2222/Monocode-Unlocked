@@ -567,6 +567,19 @@ it("shows no Steering and no hover Steer while the chat switches providers or pr
   }
 });
 
+// PR I6 review r4 M1. Defect: while the chat's worktree is prepared for its
+// first turn, the hover offers Steer and a picked steer reads as live,
+// though the provider has no turn to take it.
+it("offers no Steer, and a picked steer cannot steer now, while the worktree is prepared", () => {
+  render(busyChat());
+  act(() => hoverAction("opener", "steer")!.click());
+  expect(barKind()).toBe("picked");
+  render(busyChat({ turnReadiness: "starting", worktreePreparing: true }));
+  expect(hoverAction("opener", "steer")).toBeNull();
+  expect(barKind()).toBe("gone");
+  expect(container.textContent).toContain("Can't steer now");
+});
+
 // PR I6 review r2 m5, design 16.8. Defect: the pane reads a Mono chat as a
 // project session, so with the follow-up setting `queue` the bar is silent
 // while the Mono pump steers the text.

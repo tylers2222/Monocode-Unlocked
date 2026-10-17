@@ -1,4 +1,4 @@
-import { isPreparingHandoff } from "./handoff";
+import { isPreparingHandoff, switchingProviders } from "./handoff";
 import { consumeOperatorCommand } from "./operatorCommand";
 import type { TurnId } from "../../monos/model/monoMessages";
 import type { QueuedMessage, Session } from "./session";
@@ -144,6 +144,33 @@ export function userTextHeld(
 ): boolean {
   if (session.busy && !session.turnReadiness) return true;
   return !!session.queuedMessages?.some((message) => message.missed);
+}
+
+/**
+ * Every steer is held for now, though a turn may run that text could join:
+ * the session switches providers (`switchingProviders`, as App's send and the
+ * CLI read it), prepares its worktree (the provider has no turn yet), or, in
+ * a Mono chat, its queue is paused or resuming. Text the user types then
+ * waits for the turn end (design 16.8, PR I6 review r4 M1, m1).
+ */
+export function steersHeld(
+  session: Pick<
+    Session,
+    | "pendingSwitch"
+    | "harness"
+    | "providerAccountId"
+    | "blocks"
+    | "worktreePreparing"
+    | "queueStatus"
+  >,
+  mono: boolean,
+): boolean {
+  return (
+    switchingProviders(session) ||
+    !!session.worktreePreparing ||
+    (mono &&
+      (session.queueStatus === "paused" || session.queueStatus === "resuming"))
+  );
 }
 
 /**
