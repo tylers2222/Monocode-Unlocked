@@ -1,4 +1,3 @@
-import { canSteerHarness } from "../../../integrations/harness/core/registry";
 import {
   parseMessageId,
   type Handle,
@@ -6,10 +5,11 @@ import {
   type SessionId,
   type TurnId,
 } from "../../monos/model/monoMessages";
-import { canSteerNow } from "./messageQueue";
 import {
   WHOLE_TURN,
+  type Block,
   type MessageLink,
+  type QueuedMessage,
   type Session,
   type TargetLink,
 } from "./session";
@@ -167,15 +167,15 @@ export type RunningItem = { blockId: string; quote: string };
 
 /**
  * The user blocks and Mono bubbles of running turn `turnId` (design 16.8):
- * the opener and every block that joined it. Empty unless a steer can go in
- * now. A queued bubble has no turn id until its work starts.
+ * the opener and every block that joined it, whether or not the turn can
+ * take a steer this moment. A queued bubble has no turn id until its work
+ * starts, and a hidden or unsent block is never a target.
  */
 export function runningItems(
   session: Session,
   turnId: TurnId | undefined,
 ): RunningItem[] {
-  if (!turnId || !canSteerNow(session) || !canSteerHarness(session.harness))
-    return [];
+  if (!turnId) return [];
   return session.blocks
     .filter(
       (block) =>
@@ -214,38 +214,118 @@ export function composerTarget(
 export const STEER_TARGET_GONE =
   "That work finished. Edit the message or send it as new.";
 
-/** Where a user's message goes (design 16.8, 16.12.4). */
-export type UserSend =
-  /** A steer whose work is no longer running: nothing is sent. */
-  | { kind: "target_gone" }
-  /** Starts a turn now. */
-  | { kind: "open"; link?: TargetLink }
-  /** Joins the running turn now; `link` is what its block records. */
-  | { kind: "join"; link?: MessageLink }
-  /**
-   * Waits for the turn end. `waitForIdle` when the link or the user chose
-   * it, so the message never steers; otherwise today's busy rule queued it.
-   */
-  | { kind: "queue"; link?: TargetLink; waitForIdle: boolean };
-
-export function planUserSend(input: {
-  link: TargetLink | undefined;
+/** What a submit says about who wrote its text and what it names. */
+export type SendOrigin = {
+  /** What the user's message refers to (design 16.8). */
+  link?: TargetLink;
   /** The user cleared the steer (✕). */
-  waitForIdle: boolean;
-  /** The user's own text, not a Mono row handed off through the same path. */
-  own: boolean;
-  /** Idle, or the running turn's items and whether today's busy rule steers. */
-  session: "idle" | { running: readonly RunningItem[]; steers: boolean };
-}): UserSend {
-  const { link, session } = input;
-  if (link?.intent === "steer")
-    return session !== "idle" &&
-      session.running.some((item) => item.blockId === link.replyTo)
-      ? { kind: "join", link }
-      : { kind: "target_gone" };
-  if (session === "idle") return { kind: "open", link };
-  if (link || input.waitForIdle)
-    return { kind: "queue", link, waitForIdle: true };
-  if (!session.steers) return { kind: "queue", waitForIdle: false };
-  return input.own ? { kind: "join", link: WHOLE_TURN } : { kind: "join" };
+  waitForIdle?: true;
+  /** Text a Mono row, the orchestrator, CI repair or the app wrote. */
+  agentText?: string;
+  managed?: boolean;
+  ciRepair?: unknown;
+  appRequestId?: string;
+  monoSessionCompletion?: unknown;
+};
+
+/**
+ * The text is the user's own: typed in the composer, not a Mono row, a CLI
+ * request (decision 553), a completion report, an orchestrator turn or a CI
+ * repair. Only the user's own text gets the user's link (design 16.12.4).
+ */
+function isOwnText(
+  origin: SendOrigin | undefined,
+  item: QueuedMessage | undefined,
+): boolean {
+  return !(
+    origin?.agentText ||
+    origin?.managed ||
+    origin?.ciRepair ||
+    origin?.appRequestId ||
+    origin?.monoSessionCompletion ||
+    item?.monoMessageId ||
+    item?.appRequestId ||
+    item?.monoSessionCompletion
+  );
+}
+
+/**
+ * Where a send goes. `opens`: the session is idle and the send opens turn
+ * `opens`. Otherwise turn `running` runs (its id, when this window knows it)
+ * with `items`, and the send steers it `now`, or is queued for the Mono
+ * pump to steer `later`, or, by today's busy rule, waits for the turn end.
+ */
+export type SendRoute = IdleRoute | BusyRoute;
+type IdleRoute = { opens: TurnId };
+type BusyRoute = {
+  running: TurnId | undefined;
+  items: readonly RunningItem[];
+  steers: "now" | "later" | "no";
+};
+
+/** The fields of a user block that place it in a turn and say what it names. */
+type TurnBlock = Pick<Block, "turnId" | "link">;
+
+/** A steer whose work is no longer running: nothing is sent. */
+type TargetGone = { kind: "target_gone" };
+/** Opens the turn or joins the running one; the block records `block`, the provider reads `text`. */
+type Sent = { kind: "open" | "join"; block: TurnBlock; text: string };
+/** Waits in the queue with these fields. */
+type Queued = {
+  kind: "queue";
+  item: Pick<QueuedMessage, "link" | "waitForIdle" | "typedInTurn">;
+};
+
+/** Where a user's message goes (design 16.8, 16.12.4). */
+export type UserSend = TargetGone | Sent | Queued;
+
+type PlanInput<R extends SendRoute> = {
+  origin: SendOrigin | undefined;
+  /** The queued item this send delivers. */
+  item: QueuedMessage | undefined;
+  /** What the provider reads, before any line. */
+  text: string;
+  route: R;
+};
+
+export function planUserSend(
+  input: PlanInput<IdleRoute>,
+): TargetGone | (Sent & { kind: "open" });
+export function planUserSend(input: PlanInput<SendRoute>): UserSend;
+export function planUserSend(input: PlanInput<SendRoute>): UserSend {
+  const { origin, route } = input;
+  const own = isOwnText(origin, input.item);
+  const link = own ? (origin?.link ?? input.item?.link) : undefined;
+  const sent = (
+    kind: "open" | "join",
+    turnId: TurnId | undefined,
+    stamp: MessageLink | undefined,
+  ): Sent => ({
+    kind,
+    block: { ...(turnId ? { turnId } : {}), ...(stamp ? { link: stamp } : {}) },
+    text: linkedText(stamp, input.text),
+  });
+  if ("opens" in route)
+    return link?.intent === "steer"
+      ? { kind: "target_gone" }
+      : sent("open", route.opens, link);
+  // A message queued for later may steer only the turn it was typed in.
+  const later = route.running
+    ? { typedInTurn: route.running }
+    : { waitForIdle: true };
+  if (link?.intent === "steer") {
+    if (!route.items.some((item) => item.blockId === link.replyTo))
+      return { kind: "target_gone" };
+    return route.steers === "later"
+      ? { kind: "queue", item: { link, ...later } }
+      : sent("join", route.running, link);
+  }
+  if (link || origin?.waitForIdle)
+    return {
+      kind: "queue",
+      item: { ...(link ? { link } : {}), waitForIdle: true },
+    };
+  if (route.steers === "no") return { kind: "queue", item: {} };
+  if (route.steers === "later") return { kind: "queue", item: later };
+  return sent("join", route.running, own ? WHOLE_TURN : undefined);
 }

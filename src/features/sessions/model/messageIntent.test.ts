@@ -30,8 +30,20 @@ import {
   targetRef,
   type ReplyTarget,
   type RunningItem,
+  type SendOrigin,
+  type SendRoute,
 } from "./messageIntent";
-import { newSession, type Session, type TargetLink } from "./session";
+import {
+  canDispatchQueuedHead,
+  queuedHead,
+  steerableQueuedMessage,
+} from "./messageQueue";
+import {
+  newSession,
+  type QueuedMessage,
+  type Session,
+  type TargetLink,
+} from "./session";
 
 // Design 16.7 step 2 and 5. Defect: a ninth word reaches the line, or a text
 // that was not cut gets a false cut mark.
@@ -219,9 +231,74 @@ it("lists the opener and the blocks that joined the running turn, and nothing qu
   });
   const footer = session.blocks.at(-1)!.id;
   expect(blockIds(runningItems(session, turn2))).toEqual(["later", footer]);
-  expect(
-    runningItems({ ...session, turnReadiness: "starting" }, turn2),
-  ).toEqual([]);
+  expect(runningItems(session, undefined)).toEqual([]);
+});
+
+// Review r1 m2. Defect: a turn that runs but cannot take a steer this moment
+// (it is starting, or a question is pending) loses its items, so a picked
+// steer of it fails with "That work finished" while the work still runs.
+it("keeps a running turn's items while it cannot take a steer yet, and joins a picked steer of it", () => {
+  const session = appendUser(newSession("codex", "/tmp"), "Fix it", [], {
+    turnId: turn1,
+  });
+  const opener = session.blocks[0].id;
+  for (const held of [
+    { ...session, busy: true, turnReadiness: "starting" as const },
+    {
+      ...session,
+      busy: true,
+      turnReadiness: "ready" as const,
+      pendingQuestion: { id: "q" } as Session["pendingQuestion"],
+    },
+  ]) {
+    const items = runningItems(held, turn1);
+    expect(blockIds(items)).toEqual([opener]);
+    const link: TargetLink = {
+      intent: "steer",
+      replyTo: opener,
+      quote: "Fix it",
+    };
+    expect(
+      planUserSend({
+        origin: { link },
+        item: undefined,
+        text: "Use the blue button",
+        route: { running: turn1, items, steers: "later" },
+      }),
+    ).toEqual({ kind: "queue", item: { link, typedInTurn: turn1 } });
+  }
+});
+
+// Review r1 m3. Defect: a hidden completion prompt or an unsent draft of the
+// running turn becomes a steer target.
+it("never lists a hidden or unsent block of the running turn", () => {
+  let session = appendUser(
+    newSession("codex", "/tmp"),
+    "Mono session finished: report",
+    [],
+    { turnId: turn1, internal: true },
+  );
+  session = appendSteerUser(session, "Use the blue button", [], {
+    turnId: turn1,
+  });
+  const steer = session.blocks.at(-1)!.id;
+  session = {
+    ...session,
+    blocks: [
+      ...session.blocks,
+      {
+        id: "draft",
+        role: "user",
+        text: "Half typed",
+        draft: true,
+        turnId: turn1,
+      },
+    ],
+  };
+  expect(session.blocks.filter((block) => block.turnId === turn1)).toHaveLength(
+    3,
+  );
+  expect(blockIds(runningItems(session, turn1))).toEqual([steer]);
 });
 
 // Design 16.3, 16.12.4. Defect: an illegal link persists: new with a target,
@@ -275,59 +352,179 @@ const steerLink: TargetLink = {
   replyTo: "block-1",
   quote: "Fix it",
 };
+const plan = (
+  route: SendRoute,
+  origin?: SendOrigin,
+  item?: QueuedMessage,
+  text = "Keep the API",
+) => planUserSend({ origin, item, text, route });
+const now = (steers: "now" | "later" | "no" = "now"): SendRoute => ({
+  running: turn1,
+  items: running,
+  steers,
+});
 
 // Design 16.8. Defects: a steer is sent as a guess after its work ended; a
 // reply or a cleared steer interrupts running work.
 it("steers only into the work a link names, and never steers a reply or a cleared steer", () => {
-  const plan = (input: Partial<Parameters<typeof planUserSend>[0]>) =>
-    planUserSend({
-      link: undefined,
-      waitForIdle: false,
-      own: true,
-      session: { running, steers: true },
-      ...input,
-    });
-  expect(plan({ link: steerLink })).toEqual({ kind: "join", link: steerLink });
+  expect(plan(now(), { link: steerLink })).toEqual({
+    kind: "join",
+    block: { turnId: turn1, link: steerLink },
+    text: '[steer → "Fix it"]\nKeep the API',
+  });
   expect(
-    plan({ link: steerLink, session: { running: [], steers: true } }),
+    plan({ running: turn1, items: [], steers: "now" }, { link: steerLink }),
   ).toEqual({ kind: "target_gone" });
-  expect(plan({ link: steerLink, session: "idle" })).toEqual({
+  expect(plan({ opens: turn2 }, { link: steerLink })).toEqual({
     kind: "target_gone",
   });
   const reply: TargetLink = { ...steerLink, intent: "reply" };
-  expect(plan({ link: reply })).toEqual({
+  expect(plan(now(), { link: reply })).toEqual({
     kind: "queue",
-    link: reply,
-    waitForIdle: true,
+    item: { link: reply, waitForIdle: true },
   });
-  expect(plan({ waitForIdle: true })).toEqual({
+  expect(plan(now(), { waitForIdle: true })).toEqual({
     kind: "queue",
-    waitForIdle: true,
+    item: { waitForIdle: true },
   });
-  expect(plan({ link: reply, session: "idle" })).toEqual({
+  expect(plan({ opens: turn2 }, { link: reply })).toEqual({
     kind: "open",
-    link: reply,
+    block: { turnId: turn2, link: reply },
+    text: '[reply → "Fix it"]\nKeep the API',
   });
 });
 
-// Design 16.12.4. Defects: the user's steer stays implicit; a whole-turn link
-// lands on work that opened its own turn; an agent's row, handed off through
-// the same path, is labelled as the user's steer and gets a second line.
-it("makes the user's untargeted steer whole-turn only when the user's own text joins the running turn", () => {
-  const plan = (
-    own: boolean,
-    session: Parameters<typeof planUserSend>[0]["session"],
-  ) => planUserSend({ link: undefined, waitForIdle: false, own, session });
-  expect(plan(true, { running, steers: true })).toEqual({
+// Design 16.12.4, I5 row. Defects: the user's steer stays implicit; the line
+// leaks into the block or never reaches the provider; the joined block or
+// the opener misses its turn id; a busy-rule queue gets a link.
+it("makes the user's own untargeted steer whole-turn, with the line only in the provider text", () => {
+  expect(plan(now())).toEqual({
     kind: "join",
-    link: { intent: "steer", scope: "turn" },
+    block: { turnId: turn1, link: { intent: "steer", scope: "turn" } },
+    text: "[steer → whole turn]\nKeep the API",
   });
-  expect(plan(false, { running, steers: true })).toEqual({ kind: "join" });
-  expect(plan(true, { running, steers: false })).toEqual({
+  expect(plan(now("no"))).toEqual({ kind: "queue", item: {} });
+  expect(plan({ opens: turn2 })).toEqual({
+    kind: "open",
+    block: { turnId: turn2 },
+    text: "Keep the API",
+  });
+  const cleared = plan({ opens: turn2 }, undefined, {
+    id: "q",
+    text: "Keep the API",
+    attachments: [],
+    waitForIdle: true,
+  });
+  expect(cleared).toEqual({
+    kind: "open",
+    block: { turnId: turn2 },
+    text: "Keep the API",
+  });
+});
+
+// Design 16.12.4 (whole-turn review r1), review r1 m1 and decision 553.
+// Defects: another sender's text, handed off through the user's path, is
+// labelled as the user's steer and gets a second line, or picks up the
+// user's link from its queue item.
+it("gives no link and no line to text the user did not type", () => {
+  const row: QueuedMessage = {
+    id: "m_abcdefgh2345",
+    text: "Review PR 12",
+    attachments: [],
+    monoMessageId: "m_abcdefgh2345" as MessageId,
+  };
+  const rowText = '<mono_message intent="new">Review PR 12</mono_message>';
+  const cli: QueuedMessage = {
+    id: "cli",
+    text: "Run the tests",
+    attachments: [],
+    appRequestId: "req-1",
+    link: steerLink,
+  };
+  const others: [SendOrigin | undefined, QueuedMessage | undefined][] = [
+    [{ agentText: rowText }, row],
+    [undefined, cli],
+    [{ managed: true }, undefined],
+    [{ ciRepair: { prompt: "Fix CI" } }, undefined],
+    [{ appRequestId: "req-2" }, undefined],
+  ];
+  for (const [origin, item] of others) {
+    expect(plan(now(), origin, item, rowText)).toEqual({
+      kind: "join",
+      block: { turnId: turn1 },
+      text: rowText,
+    });
+    expect(plan({ opens: turn2 }, origin, item, rowText)).toEqual({
+      kind: "open",
+      block: { turnId: turn2 },
+      text: rowText,
+    });
+  }
+});
+
+// Review r1 M1. Defect: a message typed during turn 1 that missed it is
+// steered into turn 2, which another sender's queued message opened, and
+// is labelled there as the user's whole-turn steer.
+it("steers a message the user typed only into the turn it was typed in, and opens its own turn once that turn ended", () => {
+  let chat: Session = {
+    ...appendUser(newSession("codex", "/tmp"), "Build it", [], {
+      turnId: turn1,
+    }),
+    busy: true,
+    turnReadiness: "starting",
+  };
+  const w: QueuedMessage = {
+    id: "m_wwwwwwwwwwww",
+    text: "<mono_message>please review PR 12</mono_message>",
+    attachments: [],
+    waitForIdle: true,
+    monoMessageId: "m_wwwwwwwwwwww" as MessageId,
+  };
+  chat = enqueueMonoMessage(chat, w);
+  const typed = plan(
+    { running: turn1, items: runningItems(chat, turn1), steers: "later" },
+    undefined,
+    undefined,
+    "stop, use the staging DB",
+  );
+  expect(typed).toEqual({ kind: "queue", item: { typedInTurn: turn1 } });
+  const a: QueuedMessage = {
+    id: "typed-a",
+    text: "stop, use the staging DB",
+    attachments: [],
+    ...(typed.kind === "queue" ? typed.item : {}),
+  };
+  chat = enqueueMonoMessage(chat, a);
+  expect(steerableQueuedMessage(ready(chat), turn1)?.id).toBe(a.id);
+
+  // Turn 1 ends before it can take the steer; W opens turn 2.
+  chat = { ...stopStreaming(chat), busy: false, queueStatus: "active" };
+  expect(queuedHead(chat)?.id).toBe(w.id);
+  chat = acknowledgeMonoMessage(chat, w, {
+    mode: "new-turn",
+    cards: { turnId: turn2 },
+  });
+  chat = { ...chat, busy: true, turnReadiness: "ready" };
+  expect(steerableQueuedMessage(chat, turn2)).toBeUndefined();
+
+  // Turn 2 ends; the message opens its own turn with no link and no line.
+  chat = { ...stopStreaming(chat), busy: false };
+  expect(canDispatchQueuedHead(chat) && queuedHead(chat)?.id).toBe(a.id);
+  const turn3 = "turn-3" as TurnId;
+  expect(plan({ opens: turn3 }, undefined, queuedHead(chat), a.text)).toEqual({
+    kind: "open",
+    block: { turnId: turn3 },
+    text: "stop, use the staging DB",
+  });
+});
+
+// Review r1 M1. Defect: a message typed while no turn runs (a Mono chat
+// with a queue that has not started) steers whichever turn opens next.
+it("lets a message typed while no turn runs wait for the turn end", () => {
+  expect(plan({ running: undefined, items: [], steers: "later" })).toEqual({
     kind: "queue",
-    waitForIdle: false,
+    item: { waitForIdle: true },
   });
-  expect(plan(true, "idle")).toEqual({ kind: "open" });
 });
 
 // Design 16.12.6. Defects: a guessed target, a blocked send, or a picked

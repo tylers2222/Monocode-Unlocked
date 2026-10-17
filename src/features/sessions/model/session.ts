@@ -315,6 +315,12 @@ export type QueuedMessage = {
   monoSessionCompletion?: MonoSessionCompletion;
   /** Waits for the running turn to end and starts a new turn; never steers. */
   waitForIdle?: boolean;
+  /**
+   * The turn that ran when the user typed this message in a busy Mono chat.
+   * The pump steers it into that turn only; once the turn ends, the message
+   * waits and opens its own turn (design 16.12.4).
+   */
+  typedInTurn?: TurnId;
   /** Stable CLI request that queued this follow-up, for safe retries. */
   appRequestId?: string;
   /** The Mono message this item delivers. The item's id is that message id. */

@@ -280,6 +280,7 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
         ? handoff
         : undefined;
     const link = parseTargetLink(message.link);
+    const typedInTurn = parseTurnId(message.typedInTurn);
     if (
       !message.text.trim() &&
       !attachments.length &&
@@ -300,6 +301,7 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
         ...(handoffCard ? { handoffCard } : {}),
         ...(completion ? { monoSessionCompletion: completion } : {}),
         ...(message.waitForIdle === true ? { waitForIdle: true } : {}),
+        ...(typedInTurn ? { typedInTurn } : {}),
         ...(["default", "plan", "build", "orchestrate"].includes(
           message.intent ?? "",
         )

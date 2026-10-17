@@ -1083,9 +1083,11 @@ it("keeps a user block's link and turn id across a save, and drops an illegal li
   expect(d).not.toHaveProperty("link");
 });
 
-// Design 16.3. Defect: the queue whitelist drops a queued message's link, so
-// a reply sent while busy opens its turn with no line after a restart.
-it("keeps a queued message's link across a save and drops a whole-turn one", () => {
+// Design 16.3, review r1 M1. Defects: the queue whitelist drops a queued
+// message's link, so a reply sent while busy opens its turn with no line
+// after a restart; or it drops the turn a message was typed in, so after a
+// reload the message steers a turn it never saw.
+it("keeps a queued message's link and typed turn across a save and drops a whole-turn link", () => {
   const link = {
     intent: "continue" as const,
     replyTo: "block-1",
@@ -1099,9 +1101,11 @@ it("keeps a queued message's link across a save and drops a whole-turn one", () 
       text: "Turn",
       attachments: [],
       link: { intent: "steer", scope: "turn" } as never,
+      typedInTurn: "turn-1" as never,
     },
   ];
   const [kept, whole] = sanitizeSessionForPersist(session).queuedMessages ?? [];
   expect(kept).toMatchObject({ id: "q1", waitForIdle: true, link });
   expect(whole).not.toHaveProperty("link");
+  expect(whole.typedInTurn).toBe("turn-1");
 });

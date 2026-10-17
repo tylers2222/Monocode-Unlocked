@@ -27,6 +27,7 @@ function delivery() {
   const message = session.queuedMessages![0];
   const options = {
     message,
+    turnId: undefined,
     current: () => session,
     isCurrentTurn: () => currentTurn,
     prepare: vi.fn(async () => message.text),
@@ -99,6 +100,7 @@ describe("pending Mono follow-up delivery", () => {
     const steer = vi.fn(async (_text: string) => {});
     const delivered = await deliverQueuedFollowUp({
       message: user,
+      turnId: undefined,
       current: () => session,
       isCurrentTurn: () => true,
       prepare: async () => user.text,

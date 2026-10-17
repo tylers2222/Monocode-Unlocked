@@ -168,12 +168,15 @@ describe("Mono database pagination and writes", () => {
     const restored = (await getSession(session.id))!;
     expect(restored.queuedMessages?.[0]).toEqual(notification);
     expect(
-      steerableQueuedMessage({
-        ...restored,
-        busy: true,
-        turnReadiness: "ready",
-        queueStatus: "active",
-      }),
+      steerableQueuedMessage(
+        {
+          ...restored,
+          busy: true,
+          turnReadiness: "ready",
+          queueStatus: "active",
+        },
+        undefined,
+      ),
     ).toBeUndefined();
     restored.blocks = [
       ...restored.blocks,
