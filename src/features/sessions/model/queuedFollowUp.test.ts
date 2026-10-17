@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { TurnNotReadyError } from "../../../integrations/harness/core/types";
 import {
-  applyHarnessEvent,
   stopStreaming,
   appendUser,
 } from "../../../integrations/harness/core/apply";
@@ -614,23 +613,20 @@ describe("the user's message after one that waits for the turn end", () => {
     expect(monoMessageDeliveries(chat).get("b")).toEqual({ status: "waiting" });
   });
 
-  // PR I5b review r2 m2. Defect: while a Mono chat compacts (busy, no turn
-  // in this window) userTextHeld says false, so the composer says
-  // "Steering" for text that waits for the compaction to end. PR I5b review
-  // r3 n3: or it says held while a turn starts or is deferred, though the
-  // text typed then is steered into that turn.
+  // PR I5b review r2 m2. Defect: while a Mono chat is busy with no turn in
+  // this window, userTextHeld says false, so the composer says "Steering"
+  // for text that waits until the chat is idle. PR I5b review r3 n3: or it
+  // says held while a turn starts or is deferred, though the text typed then
+  // is steered into that turn.
   it.each(["starting", "deferred"] as const)(
-    "userTextHeld says the user's next message waits while the chat compacts, and not while a turn is %s",
+    "userTextHeld says the user's next message waits while the chat is busy with no turn, and not while a turn is %s",
     (turnReadiness) => {
       const turns = runningTurnMap();
-      const compacting = applyHarnessEvent(
-        { ...stopStreaming(t1Running()), busy: true },
-        { type: "status", text: "Compacting context…" },
-      );
-      expect(typed(compacting, turns, "b", "what changed?")).toMatchObject({
+      const noTurn: Session = { ...stopStreaming(t1Running()), busy: true };
+      expect(typed(noTurn, turns, "b", "what changed?")).toMatchObject({
         missed: true,
       });
-      expect(userTextHeld(compacting)).toBe(true);
+      expect(userTextHeld(noTurn)).toBe(true);
 
       const opening = t1Running(turnReadiness);
       const t1 = runningTurnMap([[opening.id, T1]]);
@@ -762,9 +758,9 @@ describe("typed order against the other queue items", () => {
     expect(nextQueuedSend(chat, turns, true)?.id).toBe("b");
   });
 
-  // Defect: a message typed while the chat is busy with no turn id (manual
-  // compaction) is stuck, or steers a turn.
-  it("lets a message typed during a compaction open the next turn", () => {
+  // Defect: a message typed while the chat is busy with no turn id is stuck,
+  // or steers a turn.
+  it("lets a message typed while the chat is busy with no turn open the next turn", () => {
     const turns = runningTurnMap();
     let chat: Session = { ...newSession("codex", "/tmp"), busy: true };
     chat = enqueueMonoMessage(chat, typed(chat, turns, "b", "what changed?"));
