@@ -381,6 +381,45 @@ describe("Mono database pagination and writes", () => {
     });
     expect(steerableQueuedMessage(running, "turn-2" as TurnId)).toBeUndefined();
   });
+  // PR I5b review r1 M1. Defects: a saved message that missed its turn loses
+  // its marker on load, so the user's newer text overtakes it; or a saved
+  // message that only waits for the turn end (saved before the marker, or a
+  // ✕) holds the user's newer text after a restart.
+  it.each([
+    [{ waitForIdle: true, missed: true }, undefined],
+    [{ waitForIdle: true }, "later"],
+  ])(
+    "loads a waiting message %j so the user's next text steers: %s",
+    async (waits, steers) => {
+      const stored = {
+        ...record(),
+        queuedMessages: [
+          { id: "waits", text: "deploy to staging", attachments: [], ...waits },
+        ],
+        queueStatus: "active",
+      };
+      call.mockResolvedValueOnce(stored);
+      const loaded = (await getSession(stored.id, { restart: true }))!;
+      const running: Session = {
+        ...loaded,
+        busy: true,
+        turnReadiness: "ready",
+        queueStatus: "active",
+        queuedMessages: [
+          ...loaded.queuedMessages!,
+          {
+            id: "later",
+            text: "actually, don't deploy",
+            attachments: [],
+            typedInTurn: "turn-2" as TurnId,
+          },
+        ],
+      };
+      expect(
+        steerableQueuedMessage(running, "turn-2" as TurnId)?.id,
+      ).toBe(steers);
+    },
+  );
   it("keeps habit identity and posting time through saves, reloads and older pages", async () => {
     const monoHabit = { id: "habit", name: "Morning check", at: 1_000 };
     const report = {

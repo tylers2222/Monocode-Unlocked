@@ -14,8 +14,18 @@ import {
   enqueueMonoMessage,
   monoMessageDeliveries,
 } from "../../monos/model/monoMessaging";
-import { planUserSend } from "./messageIntent";
-import { dequeueQueuedMessage, nextQueuedSend } from "./messageQueue";
+import { planUserSend, type SendOrigin } from "./messageIntent";
+import {
+  dequeueQueuedMessage,
+  failQueuedMessage,
+  missedTurn,
+  nextQueuedSend,
+  resumeQueuedMessages,
+  runningTurnMap,
+  userTextHeld,
+  type RunningTurnMap,
+  type RunningTurns,
+} from "./messageQueue";
 import {
   deliverQueuedFollowUp,
   planQueuedSteer,
@@ -28,6 +38,7 @@ import {
   type Session,
   type TargetLink,
 } from "./session";
+import { sanitizeSessionForPersist } from "../data/sessionStore";
 
 registerHarness({ id: "codex", live: true } as unknown as HarnessAdapter);
 
@@ -60,7 +71,7 @@ function delivery() {
       },
     ],
   };
-  const turns = new Map([[session.id, T1]]);
+  const turns = runningTurnMap([[session.id, T1]]);
   let currentTurn = true;
   const message = session.queuedMessages![0];
   const options = {
@@ -114,14 +125,15 @@ const base = (id: string, text = id) => ({ id, text, attachments: [] });
 /** The item text the user types into a Mono chat becomes, as App.tsx enqueues it. */
 function typed(
   chat: Session,
-  turns: Map<string, TurnId>,
+  turns: RunningTurns,
   id: string,
   text: string,
+  origin: SendOrigin = {},
 ): QueuedMessage {
   const item = typedMonoMessage({
     session: chat,
     turns,
-    origin: {},
+    origin,
     message: base(id, text),
   });
   if (!item) throw new Error("the Mono enqueue refused the message");
@@ -169,7 +181,7 @@ describe("pending Mono follow-up delivery", () => {
     const delivered = await deliverQueuedFollowUp({
       message: user,
       joined: { block: { turnId: T1 }, text: user.text },
-      turns: new Map([[session.id, T1]]),
+      turns: runningTurnMap([[session.id, T1]]),
       current: () => session,
       isCurrentTurn: () => true,
       prepare: async (text) => text,
@@ -278,7 +290,7 @@ describe("a message the user types into a Mono chat", () => {
   // an idle chat whose ended turn is still known gives the item that turn.
   it("records the running turn while the chat is busy, and waits for a turn end while it is idle", () => {
     const busy = t1Running();
-    const turns = new Map([[busy.id, T1]]);
+    const turns = runningTurnMap([[busy.id, T1]]);
     expect(
       typedMonoMessage({
         session: busy,
@@ -294,7 +306,7 @@ describe("a message the user types into a Mono chat", () => {
         origin: {},
         message: base("b"),
       }),
-    ).toEqual({ ...base("b"), waitForIdle: true });
+    ).toEqual({ ...base("b"), waitForIdle: true, missed: true });
   });
 
   // PR I5 review r2 m4, m6. Defects: every message typed into a busy Mono
@@ -302,7 +314,7 @@ describe("a message the user types into a Mono chat", () => {
   // whole-turn line, or its bubble misses the link or the turn it joined.
   it("is steered into its running turn with the whole-turn line, and its bubble records the link and the turn", async () => {
     let chat = t1Running();
-    const turns = new Map([[chat.id, T1]]);
+    const turns = runningTurnMap([[chat.id, T1]]);
     chat = enqueueMonoMessage(chat, typed(chat, turns, "a", "use staging"));
     const message = nextQueuedSend(chat, turns, true)!;
     expect(message.id).toBe("a");
@@ -350,7 +362,7 @@ describe("a message the user types into a Mono chat", () => {
   // message shows no "Sends when this turn ends" while it waits.
   it("keeps the user's messages in typed order after one missed its turn, and says each waits", () => {
     let chat = enqueueMonoMessage(t1Running("starting"), row("m_wwwwwwwwwwww"));
-    const turns = new Map([[chat.id, T1]]);
+    const turns = runningTurnMap([[chat.id, T1]]);
     chat = enqueueMonoMessage(
       chat,
       typed(chat, turns, "a", "deploy to staging"),
@@ -428,7 +440,7 @@ describe("a queued item's own link", () => {
       replyTo: running.blocks[0].id,
       quote: "Build it",
     };
-    const turns = new Map([[running.id, T1]]);
+    const turns = runningTurnMap([[running.id, T1]]);
     const item = typedMonoMessage({
       session: running,
       turns,
@@ -472,5 +484,456 @@ describe("a queued item's own link", () => {
       block: { turnId: T2, link },
       text: '[reply → m_aaaaaaaaaaaa · "Which DB?"]\nstaging',
     });
+  });
+});
+
+/** T1 ran; the user typed "deploy" in it; T1 ended; a Mono row opened T2. */
+function missedInT1(): { chat: Session; turns: RunningTurnMap } {
+  let chat = enqueueMonoMessage(t1Running("starting"), row("m_wwwwwwwwwwww"));
+  const turns = runningTurnMap([[chat.id, T1]]);
+  chat = enqueueMonoMessage(chat, typed(chat, turns, "a", "deploy"));
+  chat = stopStreaming(chat);
+  turns.delete(chat.id);
+  chat = acknowledgeMonoMessage(chat, chat.queuedMessages![0], {
+    mode: "new-turn",
+    cards: { turnId: T2 },
+  });
+  chat = { ...chat, turnReadiness: "ready" };
+  turns.set(chat.id, T2);
+  return { chat, turns };
+}
+
+describe("the user's message after one that waits for the turn end", () => {
+  // PR I5b review r1 M1. Defect: one reply, continue or cleared steer (✕)
+  // queued for the turn end holds every later message of that turn, so
+  // "stop, wrong branch" reaches the agent only after the work it was typed
+  // to stop, and the composer says "Steering" for text the queue holds.
+  it.each<[string, (chat: Session) => SendOrigin]>([
+    ["a cleared steer (✕)", () => ({ waitForIdle: true })],
+    [
+      "a picked reply",
+      (chat) => ({
+        link: { intent: "reply", replyTo: chat.blocks[0].id, quote: "Build it" },
+      }),
+    ],
+  ])(
+    "after %s, the user's next message still steers the running turn and only the first one waits",
+    (_kind, origin) => {
+      let chat = t1Running();
+      const turns = runningTurnMap([[chat.id, T1]]);
+      chat = enqueueMonoMessage(
+        chat,
+        typed(chat, turns, "x", "after this, write docs", origin(chat)),
+      );
+      expect(userTextHeld(chat)).toBe(false);
+      chat = enqueueMonoMessage(
+        chat,
+        typed(chat, turns, "s", "stop, wrong branch"),
+      );
+      expect(nextQueuedSend(chat, turns, true)?.id).toBe("s");
+      expect(monoMessageDeliveries(chat).get("x")).toEqual({
+        status: "waiting",
+      });
+      expect(monoMessageDeliveries(chat).get("s")).toEqual({
+        status: "pending",
+      });
+    },
+  );
+
+  // PR I5b review r1 M1, idle case. Defect: a ✕ typed while no turn runs is
+  // taken as a message that missed its turn, so it holds the user's text
+  // typed in the next turn.
+  it("lets the user's text steer past a cleared steer (✕) typed while no turn ran", () => {
+    const turns = runningTurnMap();
+    let chat: Session = {
+      ...newSession("codex", "/tmp"),
+      queuedMessages: [row("m_wwwwwwwwwwww")],
+      queueStatus: "paused",
+    };
+    chat = enqueueMonoMessage(
+      chat,
+      typed(chat, turns, "x", "after this, write docs", { waitForIdle: true }),
+    );
+    expect(userTextHeld(chat)).toBe(false);
+    chat = acknowledgeMonoMessage(
+      { ...chat, queueStatus: "active" },
+      chat.queuedMessages![0],
+      { mode: "new-turn", cards: { turnId: T2 } },
+    );
+    chat = { ...chat, turnReadiness: "ready" };
+    turns.set(chat.id, T2);
+    chat = enqueueMonoMessage(chat, typed(chat, turns, "s", "stop"));
+    expect(nextQueuedSend(chat, turns, true)?.id).toBe("s");
+  });
+
+  // PR I6 review r1 M2. Defect: the composer says "Steering" for text the
+  // pump holds behind the user's message that missed its turn, or says it
+  // waits while the text would steer.
+  it("userTextHeld says the user's next message waits exactly while one of theirs missed its turn", () => {
+    const running = enqueueMonoMessage(t1Running(), row("m_wwwwwwwwwwww"));
+    const t1 = runningTurnMap([[running.id, T1]]);
+    expect(
+      userTextHeld(
+        enqueueMonoMessage(running, typed(running, t1, "a", "deploy")),
+      ),
+    ).toBe(false);
+
+    const { turns, ...missed } = missedInT1();
+    let chat = missed.chat;
+    expect(userTextHeld(chat)).toBe(true);
+    chat = enqueueMonoMessage(chat, typed(chat, turns, "b", "don't deploy"));
+    expect(nextQueuedSend(chat, turns, true)).toBeUndefined();
+    expect(monoMessageDeliveries(chat).get("b")).toEqual({ status: "waiting" });
+  });
+
+  // PR I5b review r1 n2. Defect: the steer plan joins a message the pump
+  // would not steer now into the running turn: a message that missed its
+  // turn, or a ✕ message, joins it as a whole-turn steer.
+  it("plans no steer for a message the pump does not steer now", () => {
+    const { chat, turns } = missedInT1();
+    const missed = chat.queuedMessages!.find((message) => message.id === "a")!;
+    expect(
+      planQueuedSteer({
+        session: chat,
+        turns,
+        message: missed,
+        origin: {},
+        text: missed.text,
+      }),
+    ).toBeUndefined();
+
+    let running = t1Running();
+    const t1 = runningTurnMap([[running.id, T1]]);
+    running = enqueueMonoMessage(
+      running,
+      typed(running, t1, "x", "after this, write docs", { waitForIdle: true }),
+    );
+    const cleared = running.queuedMessages![0];
+    expect(
+      planQueuedSteer({
+        session: running,
+        turns: t1,
+        message: cleared,
+        origin: {},
+        text: cleared.text,
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe("typed order against the other queue items", () => {
+  // PR I5b review r1, section 2. Defects: a Mono steer row or a CLI follow-up
+  // waits behind the user's held message; or a held message lets the user's
+  // later text pass.
+  it("lets a Mono steer row and a CLI follow-up pass the user's held messages, and holds the user's text", () => {
+    const { turns, ...missed } = missedInT1();
+    let chat = missed.chat;
+    chat = enqueueMonoMessage(chat, typed(chat, turns, "b", "don't deploy"));
+    chat = {
+      ...chat,
+      queuedMessages: [
+        ...chat.queuedMessages!,
+        {
+          ...base("m_ssssssssssss", "<mono_message>stop</mono_message>"),
+          monoMessageId: "m_ssssssssssss" as MessageId,
+        },
+        { ...base("c", "from the CLI"), appRequestId: "req-c" },
+      ],
+    };
+    expect(nextQueuedSend(chat, turns, true)?.id).toBe("m_ssssssssssss");
+    chat = dequeueQueuedMessage(chat, "m_ssssssssssss");
+    expect(nextQueuedSend(chat, turns, true)?.id).toBe("c");
+    chat = dequeueQueuedMessage(chat, "c");
+    expect(nextQueuedSend(chat, turns, true)).toBeUndefined();
+  });
+
+  // Defect: a Mono notice or a completion report waiting for the turn end
+  // holds the user's text typed in the running turn.
+  it("steers the user's text past a Mono notice and a completion report", () => {
+    let chat = t1Running();
+    const turns = runningTurnMap([[chat.id, T1]]);
+    chat = {
+      ...chat,
+      queuedMessages: [
+        row("m_nnnnnnnnnnnn"),
+        {
+          ...base("r", "report"),
+          monoSessionCompletion: {
+            sessionId: "worker",
+            title: "Worker",
+            status: "completed",
+          },
+        },
+      ],
+    };
+    chat = enqueueMonoMessage(chat, typed(chat, turns, "b", "use staging"));
+    expect(nextQueuedSend(chat, turns, true)?.id).toBe("b");
+    expect(monoMessageDeliveries(chat).get("b")).toEqual({ status: "pending" });
+  });
+
+  // PR I5b review r1 (decision 578's idle case). Defect: a message typed
+  // while no turn runs is overtaken by the user's text typed in the turn
+  // another message opens.
+  it("keeps a message typed while no turn ran ahead of the user's text typed in the next turn", () => {
+    const turns = runningTurnMap();
+    let chat: Session = {
+      ...newSession("codex", "/tmp"),
+      queuedMessages: [row("m_wwwwwwwwwwww")],
+    };
+    chat = failQueuedMessage(chat, "m_wwwwwwwwwwww", "Offline");
+    chat = enqueueMonoMessage(
+      chat,
+      typed(chat, turns, "b", "also check the docs"),
+    );
+    expect(nextQueuedSend(chat, turns, true)).toBeUndefined();
+    chat = {
+      ...chat,
+      queueStatus: "active",
+      queuedMessages: resumeQueuedMessages(chat.queuedMessages),
+    };
+    expect(nextQueuedSend(chat, turns, true)?.id).toBe("m_wwwwwwwwwwww");
+    chat = acknowledgeMonoMessage(chat, chat.queuedMessages![0], {
+      mode: "new-turn",
+      cards: { turnId: T2 },
+    });
+    chat = { ...chat, turnReadiness: "ready" };
+    turns.set(chat.id, T2);
+    chat = enqueueMonoMessage(chat, typed(chat, turns, "c", "skip the docs"));
+    expect(nextQueuedSend(chat, turns, true)).toBeUndefined();
+    expect(monoMessageDeliveries(chat).get("b")).toEqual({ status: "waiting" });
+    expect(monoMessageDeliveries(chat).get("c")).toEqual({ status: "waiting" });
+    chat = stopStreaming(chat);
+    turns.delete(chat.id);
+    expect(nextQueuedSend(chat, turns, true)?.id).toBe("b");
+  });
+
+  // Defect: a message typed while the chat is busy with no turn id (manual
+  // compaction) is stuck, or steers a turn.
+  it("lets a message typed during a compaction open the next turn", () => {
+    const turns = runningTurnMap();
+    let chat: Session = { ...newSession("codex", "/tmp"), busy: true };
+    chat = enqueueMonoMessage(chat, typed(chat, turns, "b", "what changed?"));
+    expect(chat.queuedMessages![0]).toMatchObject({ waitForIdle: true });
+    chat = { ...chat, busy: false };
+    expect(nextQueuedSend(chat, turns, true)?.id).toBe("b");
+  });
+});
+
+// PR I5b review r1, section 2: seeded walks over the real queue functions,
+// one App.tsx action per step. Defects they catch: a message held forever;
+// the user's messages reach the agent out of typed order (only a reply, a
+// continue or a ✕ may be passed); a message joins a turn it was not typed in
+// or loses its line; a Mono steer row is blocked; a bubble's label disagrees
+// with the pump; userTextHeld disagrees with the pump.
+describe("the Mono queue over seeded walks", () => {
+  type Sent = { id: string; how: "open" | "join"; turn: TurnId; text: string };
+  const steerRow = (id: string): QueuedMessage => ({
+    ...base(id, "<mono_message>[steer → whole turn] stop</mono_message>"),
+    monoMessageId: id as MessageId,
+  });
+
+  function rng(seed: number) {
+    let s = seed >>> 0;
+    return () => {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      return s / 2 ** 32;
+    };
+  }
+
+  /** What the pump steers into the running turn if nothing else happens. */
+  function steersThisTurn(chat: Session, turns: RunningTurns): Set<string> {
+    const ids = new Set<string>();
+    for (
+      let message = nextQueuedSend(chat, turns, true);
+      message;
+      message = nextQueuedSend(chat, turns, true)
+    ) {
+      ids.add(message.id);
+      chat = dequeueQueuedMessage(chat, message.id);
+    }
+    return ids;
+  }
+
+  function walk(seed: number, steps: number) {
+    const rand = rng(seed);
+    const turns = runningTurnMap();
+    let chat: Session = { ...newSession("codex", "/tmp"), id: `mono-${seed}` };
+    let turnNo = 0;
+    let n = 0;
+    const typedOrder: string[] = [];
+    const typedTurn = new Map<string, TurnId | undefined>();
+    const waits = new Set<string>();
+    const sent: Sent[] = [];
+
+    const open = (message: QueuedMessage | undefined, text: string, id: string) => {
+      const turn = `turn-${++turnNo}` as TurnId;
+      const plan = planUserSend({
+        origin: {},
+        item: message,
+        text,
+        route: { opens: turn },
+      });
+      if (plan.kind !== "open") throw new Error(`open planned ${plan.kind}`);
+      chat = message
+        ? acknowledgeMonoMessage(chat, message, {
+            mode: "new-turn",
+            cards: plan.block,
+          })
+        : appendUser(chat, text, [], plan.block);
+      chat = {
+        ...chat,
+        busy: true,
+        turnReadiness: rand() < 0.7 ? "ready" : "starting",
+      };
+      turns.set(chat.id, turn);
+      sent.push({ id, how: "open", turn, text: plan.text });
+    };
+
+    const pump = () => {
+      const next = nextQueuedSend(chat, turns, true);
+      if (!next) return false;
+      if (!chat.busy) {
+        open(next, next.text, next.id);
+        return true;
+      }
+      const joined = planQueuedSteer({
+        session: chat,
+        turns,
+        message: next,
+        origin: {},
+        text: next.text,
+      });
+      if (joined?.kind !== "join")
+        throw new Error(`steer planned ${joined?.kind}`);
+      chat = acknowledgeMonoMessage(chat, next, {
+        mode: "follow-up",
+        cards: joined.block,
+      });
+      sent.push({
+        id: next.id,
+        how: "join",
+        turn: turns.get(chat.id)!,
+        text: joined.text,
+      });
+      return true;
+    };
+
+    const typeOwn = (clear: boolean) => {
+      const id = `u${++n}`;
+      typedOrder.push(id);
+      if (!chat.busy && !chat.queuedMessages?.length) {
+        typedTurn.set(id, undefined);
+        open(undefined, id, id);
+        return;
+      }
+      if (clear) waits.add(id);
+      typedTurn.set(id, chat.busy ? turns.get(chat.id) : undefined);
+      chat = enqueueMonoMessage(
+        chat,
+        typed(chat, turns, id, id, clear ? { waitForIdle: true } : {}),
+      );
+    };
+
+    const check = () => {
+      const queue = chat.queuedMessages ?? [];
+      const ready =
+        chat.busy &&
+        chat.turnReadiness === "ready" &&
+        chat.queueStatus !== "paused";
+      if (!ready) return;
+      if (queue.some((message) => message.monoMessageId && !message.waitForIdle))
+        expect(
+          nextQueuedSend(chat, turns, true),
+          `seed ${seed}: a Mono steer row is blocked`,
+        ).toBeDefined();
+      const steers = steersThisTurn(chat, turns);
+      const labels = monoMessageDeliveries(chat);
+      for (const message of queue)
+        if (typedTurn.has(message.id))
+          expect(labels.get(message.id), `seed ${seed}: label of ${message.id}`).toEqual({
+            status: steers.has(message.id) ? "pending" : "waiting",
+          });
+      const probe = typed(chat, turns, "probe", "probe");
+      expect(
+        steersThisTurn(enqueueMonoMessage(chat, probe), turns).has("probe"),
+        `seed ${seed}: userTextHeld`,
+      ).toBe(!userTextHeld(chat));
+    };
+
+    for (let i = 0; i < steps; i++) {
+      const r = rand();
+      if (r < 0.25) typeOwn(false);
+      else if (r < 0.32) typeOwn(true);
+      else if (r < 0.38)
+        chat = enqueueMonoMessage(chat, steerRow(`m_s${String(++n).padStart(10, "0")}`));
+      else if (r < 0.44)
+        chat = enqueueMonoMessage(chat, row(`m_n${String(++n).padStart(10, "0")}`));
+      else if (r < 0.48)
+        chat = {
+          ...chat,
+          queuedMessages: [
+            ...(chat.queuedMessages ?? []),
+            { ...base(`c${++n}`, "from the CLI"), appRequestId: `req-${n}` },
+          ],
+        };
+      else if (r < 0.7) pump();
+      else if (r < 0.8) {
+        if (chat.busy) chat = { ...chat, turnReadiness: "ready" };
+      } else if (r < 0.95) {
+        if (chat.busy) {
+          chat = stopStreaming(chat);
+          turns.delete(chat.id);
+        }
+      } else {
+        // A reload, as recordToSession loads the chat; then the user resumes.
+        const saved = sanitizeSessionForPersist(chat);
+        chat = {
+          ...saved,
+          busy: false,
+          turnReadiness: undefined,
+          queuedMessages: resumeQueuedMessages(
+            missedTurn(saved.queuedMessages ?? []),
+          ),
+          queueStatus: "active",
+        };
+        turns.clear();
+      }
+      check();
+    }
+
+    for (let guard = 0; guard < 500; guard++) {
+      if (!chat.busy && !chat.queuedMessages?.length) break;
+      if (chat.busy) chat = { ...chat, turnReadiness: "ready" };
+      check();
+      if (!pump() && chat.busy) {
+        chat = stopStreaming(chat);
+        turns.delete(chat.id);
+      }
+    }
+    return { chat, sent, typedOrder, typedTurn, waits };
+  }
+
+  it("drains every queue, keeps typed order, and agrees with the pump in 400 walks", () => {
+    for (let seed = 1; seed <= 400; seed++) {
+      const { chat, sent, typedOrder, typedTurn, waits } = walk(seed, 60);
+      expect(chat.queuedMessages ?? [], `seed ${seed}: held forever`).toEqual([]);
+      const own = sent.filter((entry) => typedTurn.has(entry.id));
+      const position = new Map(own.map((entry, index) => [entry.id, index]));
+      typedOrder.forEach((earlier, i) => {
+        for (const later of typedOrder.slice(i + 1))
+          if (!waits.has(earlier))
+            expect(
+              position.get(earlier)! < position.get(later)!,
+              `seed ${seed}: ${later} reached the agent before ${earlier}`,
+            ).toBe(true);
+      });
+      for (const entry of own)
+        if (entry.how === "join") {
+          expect(entry.turn, `seed ${seed}: ${entry.id} joined another turn`).toBe(
+            typedTurn.get(entry.id),
+          );
+          expect(entry.text).toBe(`[steer → whole turn]\n${entry.id}`);
+        } else expect(entry.text).toBe(entry.id);
+    }
   });
 });

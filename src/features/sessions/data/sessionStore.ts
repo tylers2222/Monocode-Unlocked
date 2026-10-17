@@ -303,6 +303,7 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
         ...(completion ? { monoSessionCompletion: completion } : {}),
         ...(message.waitForIdle === true ? { waitForIdle: true } : {}),
         ...(typedInTurn ? { typedInTurn } : {}),
+        ...(message.missed === true ? { missed: true as const } : {}),
         ...(["default", "plan", "build", "orchestrate"].includes(
           message.intent ?? "",
         )

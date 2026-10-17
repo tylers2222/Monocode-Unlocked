@@ -8,6 +8,7 @@ import {
   nextQueuedSend,
   queuedHead,
   queuedMessageForSubmit,
+  runningTurnMap,
   steerableQueuedMessage,
   failQueuedMessage,
   pauseQueue,
@@ -190,12 +191,9 @@ describe("steerableQueuedMessage", () => {
   // as "don't deploy" lands before the message it corrects.
   it.each<Partial<QueuedMessage>>([
     { typedInTurn: T1 },
-    { waitForIdle: true },
-    { intent: "plan" },
-    { intent: "orchestrate" },
-    { text: "/operator list sessions" },
+    { waitForIdle: true, missed: true },
   ])(
-    "keeps the user's later messages behind their own message that cannot steer, but lets a Mono row pass: %j",
+    "keeps the user's later messages behind their own message that missed its turn, but lets a Mono row pass: %j",
     (patch) => {
       const session = ready([
         { ...queued("a"), ...patch },
@@ -204,6 +202,29 @@ describe("steerableQueuedMessage", () => {
         row("m_rowrowrowrow"),
       ]);
       expect(steerableQueuedMessage(session, T2)?.id).toBe("m_rowrowrowrow");
+    },
+  );
+
+  // PR I5b review r1 M1. Defect: one reply, continue or cleared steer (✕)
+  // queued for the turn end holds every later message, so "stop, wrong
+  // branch" reaches the agent only after the work it was typed to stop.
+  it.each<Partial<QueuedMessage>>([
+    { waitForIdle: true },
+    {
+      waitForIdle: true,
+      link: { intent: "reply", replyTo: "m_aaaaaaaaaaaa", quote: "Which DB?" },
+    },
+    { intent: "plan" },
+    { intent: "orchestrate" },
+    { text: "/operator list sessions" },
+  ])(
+    "steers the user's later message past their own message that only waits for the turn end: %j",
+    (patch) => {
+      const session = ready([
+        { ...queued("a"), ...patch },
+        { ...queued("b", "stop, wrong branch"), typedInTurn: T1 },
+      ]);
+      expect(steerableQueuedMessage(session, T1)?.id).toBe("b");
     },
   );
 
@@ -224,18 +245,18 @@ describe("nextQueuedSend", () => {
   it("opens an idle session's head, and steers a busy Mono's message into the turn this window runs for it", () => {
     const typed = { ...queued("typed"), typedInTurn: T1 };
     const idle = chat({ queuedMessages: [typed] });
-    expect(nextQueuedSend(idle, new Map(), false)).toBe(typed);
+    expect(nextQueuedSend(idle, runningTurnMap(), false)).toBe(typed);
     const busy = chat({
       busy: true,
       turnReadiness: "ready",
       queuedMessages: [typed],
     });
-    expect(nextQueuedSend(busy, new Map([[busy.id, T1]]), true)).toBe(typed);
+    expect(nextQueuedSend(busy, runningTurnMap([[busy.id, T1]]), true)).toBe(typed);
     expect(
-      nextQueuedSend(busy, new Map([[busy.id, T1]]), false),
+      nextQueuedSend(busy, runningTurnMap([[busy.id, T1]]), false),
     ).toBeUndefined();
     expect(
-      nextQueuedSend(busy, new Map([["other", T1]]), true),
+      nextQueuedSend(busy, runningTurnMap([["other", T1]]), true),
     ).toBeUndefined();
   });
 });

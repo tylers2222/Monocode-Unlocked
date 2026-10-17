@@ -73,10 +73,13 @@ export function isOwnQueuedMessage(message: QueuedMessage): boolean {
 
 /**
  * The messages that cannot steer the running turn: each one that waits for
- * the turn end or `missed` its turn, and every message the user typed after
- * one of their own that cannot, so the user's messages reach the agent in the
- * order typed (design 16.12.4). A Mono row or a CLI follow-up keeps its place
- * but never holds a later message.
+ * the turn end or missed its turn, and every message the user typed after one
+ * that missed its turn, so the user's messages reach the agent in the order
+ * typed (design 16.12.4). `missed` says whether a message missed the running
+ * turn; `QueuedMessage.missed` marks one that missed an ended turn or none.
+ * Only the user's own messages carry either. A reply, a continue or a cleared
+ * steer waits but holds nothing behind it. A Mono row or a CLI follow-up
+ * keeps its place but is never held behind the user's message.
  */
 function heldMessages(
   messages: readonly QueuedMessage[],
@@ -86,10 +89,10 @@ function heldMessages(
   let ownHeld = false;
   for (const message of messages) {
     const own = isOwnQueuedMessage(message);
-    if ((own && ownHeld) || waitsForTurnEnd(message) || missed(message)) {
+    const late = !!message.missed || missed(message);
+    if ((own && ownHeld) || late || waitsForTurnEnd(message))
       held.add(message);
-      ownHeld ||= own;
-    }
+    ownHeld ||= late;
   }
   return held;
 }
@@ -108,15 +111,28 @@ export function heldUntilTurnEnd(session: Session): ReadonlySet<QueuedMessage> {
 /**
  * The running turn ended, so every message the user typed for it missed it.
  * Each one now waits for a turn end and opens its own turn, as a message typed
- * while no turn runs does (design 16.12.4).
+ * while no turn runs does, and holds the user's later messages behind it
+ * (design 16.12.4).
  */
 export function missedTurn(messages: QueuedMessage[]): QueuedMessage[] {
   if (!messages.some((message) => message.typedInTurn)) return messages;
   return messages.map((message) => {
     if (!message.typedInTurn) return message;
     const { typedInTurn: _missed, ...rest } = message;
-    return { ...rest, waitForIdle: true };
+    return { ...rest, waitForIdle: true, missed: true };
   });
+}
+
+/**
+ * A message the user types now would wait behind one of their own that missed
+ * its turn, so it cannot steer the running turn (`heldMessages`, read with no
+ * running turn as `heldUntilTurnEnd` reads it). The composer reads this so
+ * its bar does not say "Steering" for text the queue holds.
+ */
+export function userTextHeld(
+  session: Pick<Session, "queuedMessages">,
+): boolean {
+  return !!session.queuedMessages?.some((message) => message.missed);
 }
 
 /**
@@ -160,8 +176,23 @@ export function steerableQueuedMessage(
     : undefined;
 }
 
-/** The turn each session runs in this window, by session id (design 5.2). */
-export type RunningTurns = ReadonlyMap<string, TurnId>;
+declare const runningTurnsBrand: unique symbol;
+type RunningTurnsBrand = { readonly [runningTurnsBrand]: true };
+
+/**
+ * The turn each session runs in this window, by session id (design 5.2). Only
+ * `runningTurnMap` makes one, so a call site cannot pass a `new Map()` in
+ * place of App's live map.
+ */
+export type RunningTurns = ReadonlyMap<string, TurnId> & RunningTurnsBrand;
+/** The writable form: App's `currentTurnIds`, or a test's map. */
+export type RunningTurnMap = Map<string, TurnId> & RunningTurnsBrand;
+
+export function runningTurnMap(
+  entries: Iterable<readonly [string, TurnId]> = [],
+): RunningTurnMap {
+  return new Map(entries) as RunningTurnMap;
+}
 
 /** The message a busy Mono steers next into the turn this window runs for it. */
 export function queuedSteer(

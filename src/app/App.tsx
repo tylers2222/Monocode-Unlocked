@@ -539,6 +539,7 @@ import {
   queuedMessageForSubmit,
   queuedSteer,
   resumeQueuedMessages,
+  runningTurnMap,
   withoutPauseReason,
 } from "../features/sessions/model/messageQueue";
 import {
@@ -1686,7 +1687,7 @@ function Workspace({
   const turnGen = useRef(new Map<string, number>());
   const turnWatchers = useRef(createTurnWatchers());
   /** The turn each session runs in this window now (design 5.2). */
-  const currentTurnIds = useRef(new Map<string, TurnId>());
+  const currentTurnIds = useRef(runningTurnMap());
   /** This window's side of Mono message delivery (design 5.5). */
   const monoQueue = useMemo(
     (): MonoQueueHost => ({

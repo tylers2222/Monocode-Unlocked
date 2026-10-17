@@ -5,7 +5,10 @@ import {
   busyRoute,
   planUserSend,
 } from "../../features/sessions/model/messageIntent";
-import { dequeueQueuedMessage } from "../../features/sessions/model/messageQueue";
+import {
+  dequeueQueuedMessage,
+  runningTurnMap,
+} from "../../features/sessions/model/messageQueue";
 import type { TurnId } from "../../features/monos/model/monoMessages";
 import {
   newSession,
@@ -345,7 +348,7 @@ it("steers the user's own text with the whole-turn line and records the link and
     origin: {},
     item: undefined,
     text: prompt,
-    route: busyRoute(session, new Map([[session.id, turn]]), "now"),
+    route: busyRoute(session, runningTurnMap([[session.id, turn]]), "now"),
   });
   if (sent.kind !== "join") throw new Error(`planned ${sent.kind}`);
   const provider: string[] = [];
