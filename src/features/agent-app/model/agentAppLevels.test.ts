@@ -584,6 +584,20 @@ it("refuses a blank sessionId as invalid_input before the level check", async ()
   expect(rows).toEqual([]);
 });
 
+// PR 7 review r1 B1 (reviewer row own2 3). Defect: the level check reads
+// the parsed id while the action reads the raw input, so a padded id whose
+// trimmed form is 256 characters passes the check and the action refuses
+// it (or acts on another reading).
+it("sends to a padded id whose trimmed form is 256 characters", async () => {
+  const { run, host, sessions } = world("mono");
+  const id = "w".repeat(256);
+  sessions.set(id, { ...newSession("codex", PROJECT, "codex:test"), id });
+  expect(
+    await run("sessions.send", { sessionId: ` ${id}`, prompt: "Hi" }),
+  ).toMatchObject({ sessionId: id, submitted: true });
+  expect(vi.mocked(host.send).mock.calls[0]?.[0]).toBe(id);
+});
+
 // PR 7 review r1 B1, r2 n1. Defect: the boundary refuses only a blank id,
 // so "work er" reaches the level check and the action.
 it("refuses a sessionId that is no session id as invalid_input before the level check", async () => {

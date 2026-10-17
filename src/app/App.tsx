@@ -625,6 +625,7 @@ import {
 import { preparePrompt } from "../features/sessions/model/promptPreparation";
 import {
   appAccess,
+  submitAccess,
   consumeOperatorCommand,
   turnAccess,
 } from "../features/sessions/model/operatorCommand";
@@ -7174,12 +7175,11 @@ function Workspace({
               (message) => message.id === options.queuedMessageId,
             )
           : undefined;
-      // A session that sessions.start made has app access from its first
-      // turn, whose user block this submit stamps.
-      const access = operatorCommand.matched
-        ? "operator"
-        : (appAccess(current.blocks) ??
-          (options?.startedBy ? "started" : null));
+      const access = submitAccess(
+        current.blocks,
+        operatorCommand.matched,
+        options?.startedBy,
+      );
       const monoFirstTurn =
         mono &&
         !current.blocks.some((block) => block.role === "user" && !block.draft);
