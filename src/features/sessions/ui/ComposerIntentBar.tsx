@@ -14,7 +14,14 @@ import {
 
 /** What a pane tells its composer about what the message refers to (design 16.8). */
 export type ComposerIntent = {
+  /**
+   * The running items a steer reaches now (`steersNow`), the same set the
+   * hover Steer offers. Empty while nothing could take a steer, so a picked
+   * steer then is `gone` and the label menu offers no Steering.
+   */
   running: readonly RunningItem[];
+  /** A turn runs, so a bar that stops steering says nothing ended. */
+  busy: boolean;
   /** The busy rule would steer the typed text into the running turn. */
   steering: boolean;
   choice: BarChoice;
@@ -40,7 +47,7 @@ export function useComposerBar(
         intent.running,
         intent.choice,
         steering,
-        sawTurn && typing,
+        sawTurn && typing && !intent.busy,
         queuedBy,
       )
     : { kind: "none" };
@@ -178,7 +185,7 @@ export function ComposerIntentBar({
   );
 }
 
-/** The bar's label: a menu that switches Reply, Continuing and, while the message's work runs, Steering. */
+/** The bar's label: a menu that switches Reply, Continuing and, while a steer sent now reaches the message (`running`), Steering. */
 function IntentMenu({
   link,
   running,

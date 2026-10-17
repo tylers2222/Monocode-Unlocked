@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MonoComposer } from "./MonoComposer";
 import { clearComposerDraft } from "../../sessions/model/draftCache";
 import { saveComposerAutocorrect } from "../../settings/model/displayPrefs";
+import type { BarChoice } from "../../sessions/ui/composerIntent";
 
 const { pick } = vi.hoisted(() => ({ pick: vi.fn() }));
 vi.mock("../../sessions/model/attachments", async (original) => ({
@@ -239,24 +240,33 @@ it("inserts a picked emoji where the cursor was, beside attach", async () => {
 });
 
 // Doop E10, decision 536. Defects: text typed as a whole-turn steer opens a
-// new turn on its own once the turn ends, or Enter clears it unsent.
+// new turn on its own once the turn ends, Enter clears it unsent, or Send
+// looks ready though the bar blocks it. PR I6 review r2 m1: the bar says
+// "Nothing running" while a turn still runs, as when the queue starts holding
+// the text.
 it("holds a whole-turn steer whose turn ended until the user sends it as new", () => {
   const onSubmit = vi.fn(() => true);
   const intent = {
     running: [],
+    busy: true,
     steering: true,
     choice: { kind: "default" as const },
     onChoiceChange: vi.fn(),
+    monoName: "Captain",
   };
-  render({ onSubmit, intent: { ...intent, monoName: "Captain" } });
+  const send = () =>
+    container.querySelector<HTMLButtonElement>('[aria-label="Send"]')!;
+  render({ onSubmit, intent });
   type("Stop after the gate rows");
   expect(container.textContent).toContain("everything Captain is doing");
 
-  render({
-    onSubmit,
-    intent: { ...intent, steering: false, monoName: "Captain" },
-  });
+  render({ onSubmit, intent: { ...intent, steering: false } });
+  expect(container.querySelector("[data-composer-intent]")).toBeNull();
+  expect(send().disabled).toBe(false);
+
+  render({ onSubmit, intent: { ...intent, steering: false, busy: false } });
   expect(container.textContent).toContain("Nothing running");
+  expect(send().disabled).toBe(true);
   act(submit);
   expect(onSubmit).not.toHaveBeenCalled();
   expect(field().value).toBe("Stop after the gate rows");
@@ -271,4 +281,52 @@ it("holds a whole-turn steer whose turn ended until the user sends it as new", (
     {},
   );
   expect(field().value).toBe("");
+});
+
+// PR I6 review r2 M1. Defect: the Mono bar says "Steering" for a typed
+// /operator, which the queue holds until the turn ends. /plan and
+// /orchestrator are plain text in a Mono chat and steer, so they keep it.
+it("names no running turn for a typed /operator, and keeps it for /plan", () => {
+  const onSubmit = vi.fn(() => true);
+  render({
+    onSubmit,
+    intent: {
+      running: [],
+      busy: true,
+      steering: true,
+      choice: { kind: "default" },
+      onChoiceChange: vi.fn(),
+      monoName: "Captain",
+    },
+  });
+  type("/operator list sessions");
+  expect(container.querySelector("[data-composer-intent]")).toBeNull();
+  act(submit);
+  expect(onSubmit).toHaveBeenLastCalledWith("/operator list sessions", [], {});
+
+  for (const text of ["/plan the docs", "/orchestrator the docs"]) {
+    type(text);
+    expect(
+      container.querySelector('[data-composer-intent="turn"]'),
+    ).not.toBeNull();
+  }
+});
+
+// PR I6 review r2 n2 (c96f01e). Defect: ✕ outlives the text it cleared, so
+// the next message waits for the turn end though the user never chose that.
+it("drops ✕ once its text is emptied", () => {
+  const onChoiceChange = vi.fn();
+  const intent = {
+    running: [],
+    busy: true,
+    steering: true,
+    choice: { kind: "default" } as BarChoice,
+    onChoiceChange,
+  };
+  render({ intent });
+  type("Not this one");
+  render({ intent: { ...intent, choice: { kind: "cleared" } } });
+  expect(onChoiceChange).not.toHaveBeenCalled();
+  type("");
+  expect(onChoiceChange).toHaveBeenCalledExactlyOnceWith({ kind: "default" });
 });

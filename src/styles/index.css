@@ -824,14 +824,14 @@ button.composer-intent-label[aria-expanded="true"] {
 .composer-intent-label[data-intent="steer"],
 .composer-intent-option[data-intent="steer"] .composer-intent-glyph,
 .message-quote[data-intent="steer"] .message-quote-glyph,
-.pick-target-action[data-pick-intent="steer"] > span {
+.pick-target-action[data-pick-intent="steer"] > .pick-target-glyph {
   color: var(--intent-steer);
 }
 
 .composer-intent-label[data-intent="reply"],
 .composer-intent-option[data-intent="reply"] .composer-intent-glyph,
 .message-quote[data-intent="reply"] .message-quote-glyph,
-.pick-target-action[data-pick-intent="reply"] > span {
+.pick-target-action[data-pick-intent="reply"] > .pick-target-glyph {
   color: var(--intent-reply);
 }
 
@@ -995,6 +995,25 @@ html.theme-light .composer-intent-chip {
 
   .pick-target-pill.pick-target-pill-quoted {
     bottom: 100%;
+  }
+
+  /* Under another of the user's messages the top edge would cover that
+   * message, so the pill sits beside the bubble, 4px off it (`PILL_GAP`). */
+  .pick-target-pill.pick-target-pill-beside {
+    top: 0;
+    right: calc(100% + 4px);
+    bottom: auto;
+    width: max-content;
+  }
+
+  .pick-target-pill-beside[data-glyphs] .pick-target-action {
+    width: 20px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .pick-target-pill-beside[data-glyphs] .pick-target-label {
+    display: none;
   }
 
   .user-message-row:hover .pick-target-pill,

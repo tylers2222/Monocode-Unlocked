@@ -4,6 +4,17 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SessionPane, type SessionPaneProps } from "./SessionPane";
 import { clearComposerDraft, setComposerDraft } from "../model/draftCache";
+import type { Block, Session } from "../model/session";
+import type { TurnId } from "../../monos/model/monoMessages";
+import { PickTargetActions } from "./MessageTargets";
+import {
+  isLiveHarness,
+  registerHarness,
+  type HarnessAdapter,
+} from "../../../integrations/harness/core/registry";
+import { antigravityAdapter } from "../../../integrations/harness/providers/antigravity/antigravityAdapter";
+import { devinAdapter } from "../../../integrations/harness/providers/devin/devinAdapter";
+import { grokAdapter } from "../../../integrations/harness/providers/grok/grokAdapter";
 
 const probes = vi.hoisted(() => ({
   pick: vi.fn(),
@@ -16,13 +27,30 @@ vi.mock("../model/attachments", async (original) => ({
   ...(await original<typeof import("../model/attachments")>()),
   pickAttachments: probes.pick,
 }));
+// The real hover actions for each user block, read from the pane's context.
 vi.mock("./AgentTranscript", () => ({
-  AgentTranscript: (props: { onAddToChat: (text: string) => void }) => {
+  AgentTranscript: (props: {
+    blocks: Block[];
+    onAddToChat: (text: string) => void;
+  }) => {
     probes.transcript(props);
     return createElement(
-      "button",
-      { onClick: () => props.onAddToChat("Selected response") },
-      "Quote response",
+      "div",
+      null,
+      createElement(
+        "button",
+        { onClick: () => props.onAddToChat("Selected response") },
+        "Quote response",
+      ),
+      props.blocks
+        .filter((block) => block.role === "user")
+        .map((block) =>
+          createElement(
+            "div",
+            { key: block.id, "data-block": block.id },
+            createElement(PickTargetActions, { block }),
+          ),
+        ),
     );
   },
 }));
@@ -367,4 +395,156 @@ it("keeps rapid sends out of the queue and steer interface", () => {
     container.querySelector('[aria-label="Edit queued message"]'),
   ).toBeNull();
   expect(container.textContent).not.toContain("Steer");
+});
+
+// A harness that can steer, as composerIntent.test registers it, and three
+// real adapters that cannot.
+registerHarness({ id: "codex", live: true } as unknown as HarnessAdapter);
+for (const adapter of [grokAdapter, devinAdapter, antigravityAdapter])
+  registerHarness(adapter);
+
+/** The Mono chat busy in turn 2, which a steer could join. */
+function busyChat(extra: Partial<Session> = {}): SessionPaneProps {
+  const pane = props();
+  pane.session = {
+    ...pane.session,
+    busy: true,
+    turnReadiness: "ready",
+    blocks: [
+      {
+        id: "opener",
+        role: "user",
+        text: "Build the login page",
+        startedAt: 1,
+        turnId: "turn-2" as TurnId,
+      },
+    ],
+    ...extra,
+  };
+  return pane;
+}
+/** The user's own message that missed turn 1: the queue holds new text. */
+const held: Partial<Session> = {
+  queuedMessages: [
+    {
+      id: "held",
+      text: "use the staging DB",
+      attachments: [],
+      waitForIdle: true,
+      missed: true,
+    },
+  ],
+};
+function hoverAction(block: string, intent: "reply" | "steer") {
+  return container.querySelector<HTMLButtonElement>(
+    `[data-block="${block}"] [data-pick-intent="${intent}"]`,
+  );
+}
+function barKind() {
+  return (
+    container
+      .querySelector("[data-composer-intent]")
+      ?.getAttribute("data-composer-intent") ?? null
+  );
+}
+/** The intents the bar's label menu offers; it closes again after. */
+function menuOptions() {
+  const label = container.querySelector<HTMLButtonElement>(
+    '[data-composer-intent] [aria-haspopup="menu"]',
+  )!;
+  act(() => label.click());
+  const options = [
+    ...container.querySelectorAll('[role="menuitemradio"]'),
+  ].map((option) => option.getAttribute("data-intent"));
+  act(() => label.click());
+  return options;
+}
+function typeDraft(text: string) {
+  const inputProps = Object.entries(field()).find(([key]) =>
+    key.startsWith("__reactProps"),
+  )![1];
+  act(() => inputProps.onChange({ target: { value: text } }));
+}
+
+// PR I6 review r2 M2 and m5. Defect: while the queue holds the user's text,
+// the label menu still offers Steering and a picked Steer still reads as
+// one, though the pump holds that steer and fails it when its turn ends; or
+// the hover set is not the one the pane passes; or a message that waits by
+// choice (✕), which holds nothing, hides Steer.
+it("offers Steer, in the hover and the label menu, only while a steer sent now reaches the turn", () => {
+  render(
+    busyChat({
+      queuedMessages: [
+        {
+          id: "later",
+          text: "after this, write docs",
+          attachments: [],
+          waitForIdle: true,
+        },
+      ],
+    }),
+  );
+  expect(hoverAction("opener", "steer")).not.toBeNull();
+  render(busyChat());
+  expect(hoverAction("opener", "steer")).not.toBeNull();
+  act(() => hoverAction("opener", "reply")!.click());
+  expect(menuOptions()).toEqual(["steer", "reply", "continue"]);
+  act(() => hoverAction("opener", "steer")!.click());
+  expect(barKind()).toBe("picked");
+
+  render(busyChat(held));
+  expect(hoverAction("opener", "steer")).toBeNull();
+  expect(barKind()).toBe("gone");
+  act(() => hoverAction("opener", "reply")!.click());
+  expect(barKind()).toBe("picked");
+  expect(menuOptions()).toEqual(["reply", "continue"]);
+});
+
+// PR I6 review r2 M3, design 16.8 (`canSteerHarness`). Defect: a session
+// whose harness cannot steer offers Steer, which App refuses mid-turn or the
+// Mono pump never sends.
+it.each(["grok", "devin", "antigravity"] as const)(
+  "offers no Steer on %s, whose harness cannot steer",
+  (harness) => {
+    expect(isLiveHarness(harness)).toBe(true);
+    render(busyChat({ harness }));
+    typeDraft("stop, wrong branch");
+    expect(barKind()).toBeNull();
+    expect(hoverAction("opener", "steer")).toBeNull();
+    act(() => hoverAction("opener", "reply")!.click());
+    expect(menuOptions()).toEqual(["reply", "continue"]);
+  },
+);
+
+// PR I6 review r2 m2. Defect: a Mono chat whose queue is paused says
+// Steering, though the pump holds every steer until the queue resumes.
+it("shows no Steering and no hover Steer while a Mono chat's queue is paused", () => {
+  render(busyChat({ queueStatus: "paused" }));
+  typeDraft("stop, wrong branch");
+  expect(barKind()).toBeNull();
+  expect(hoverAction("opener", "steer")).toBeNull();
+});
+
+// PR I6 review r2 m5, design 16.8. Defect: the pane reads a Mono chat as a
+// project session, so with the follow-up setting `queue` the bar is silent
+// while the Mono pump steers the text.
+it("says Steering in a Mono chat whatever the follow-up setting", () => {
+  localStorage.setItem("monocode.followUpBehavior", "queue");
+  render(busyChat());
+  typeDraft("stop, wrong branch");
+  expect(barKind()).toBe("turn");
+  expect(container.textContent).toContain("everything Captain is doing");
+});
+
+// PR I6 review r2 m1. Defect: when the queue starts holding the text being
+// typed, the bar says "Nothing running" while turn 2 runs.
+it("says Nothing running only once the chat is idle", () => {
+  render(busyChat());
+  typeDraft("stop, wrong branch");
+  expect(barKind()).toBe("turn");
+  render(busyChat(held));
+  expect(barKind()).toBeNull();
+  render(busyChat({ busy: false, turnReadiness: undefined }));
+  expect(barKind()).toBe("ended");
+  expect(container.textContent).toContain("Nothing running");
 });

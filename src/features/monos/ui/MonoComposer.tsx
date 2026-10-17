@@ -35,6 +35,7 @@ import {
   type ComposerIntent,
 } from "../../sessions/ui/ComposerIntentBar";
 import type { BarSend } from "../../sessions/ui/composerIntent";
+import { consumeOperatorCommand } from "../../sessions/model/operatorCommand";
 
 // Loaded on first open, with its emoji data, so neither weighs on startup.
 const EmojiPickerPopover = lazy(() =>
@@ -119,7 +120,14 @@ export function MonoComposer({
   const submittingRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
   const typing = text.trim().length > 0 || attachments.length > 0;
-  const intentBar = useComposerBar(intent, typing);
+  // The queue holds a typed /operator until the turn ends (`waitsForTurnEnd`),
+  // so the bar names no running turn for it. /plan and /orchestrator are plain
+  // text in a Mono chat, and steer.
+  const intentBar = useComposerBar(
+    intent,
+    typing,
+    consumeOperatorCommand(text).matched ? "Operator" : undefined,
+  );
   const ready =
     enabled && !submitting && pendingReads === 0 && typing && !!intentBar.send;
   const choice = intent?.choice;

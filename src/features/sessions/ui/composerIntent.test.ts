@@ -33,8 +33,8 @@ import {
   NO_CHOICE,
   quoteText,
   runningTurnOf,
+  steersNow,
   steersTyped,
-  steerTargets,
   type BarChoice,
 } from "./composerIntent";
 import { ComposerIntentBar } from "./ComposerIntentBar";
@@ -148,7 +148,8 @@ it("reads the running turn from the opener that started last, not from block ord
 // Design 16.8 `steering`. Defect: the bar says Steering where the busy rule
 // queues the text, or stays silent where it steers; or, PR I5b review r2 m2,
 // it says Steering while a Mono chat compacts (busy, no turn), when typed text
-// waits for the compaction to end.
+// waits for the compaction to end; or, PR I6 review r2 m2, while a Mono
+// chat's queue is paused, when the pump holds every steer.
 it("steers typed text only where the busy rule would", () => {
   const busy: Session = {
     ...newSession("codex", "/tmp"),
@@ -168,6 +169,14 @@ it("steers typed text only where the busy rule would", () => {
   expect(steersTyped({ ...busy, harness: "fx" }, true, "steer")).toBe(false);
   expect(steersTyped({ ...busy, turnReadiness: undefined }, true, "steer")).toBe(
     false,
+  );
+  for (const queueStatus of ["paused", "resuming"] as const) {
+    expect(steersTyped({ ...busy, queueStatus }, true, "steer")).toBe(false);
+    // A project session's busy send steers without the queue.
+    expect(steersTyped({ ...busy, queueStatus }, false, "steer")).toBe(true);
+  }
+  expect(steersTyped({ ...busy, queueStatus: "active" }, true, "steer")).toBe(
+    true,
   );
 });
 
@@ -191,6 +200,7 @@ it("drops bidirectional controls from a quote and isolates its direction", () =>
       bar: { kind: "picked", link },
       intent: {
         running: [],
+        busy: false,
         steering: false,
         choice: { kind: "picked", link },
         onChoiceChange: () => {},
@@ -263,7 +273,9 @@ function monoChat(turnReadiness: Session["turnReadiness"]) {
   };
   const turns = () => runningTurnMap([[chat.id, runningTurnOf(chat)!]]);
   const steering = () => steersTyped(chat, true, "steer");
-  const running = () => runningItems(chat, runningTurnOf(chat));
+  // SessionPane gives the bar the running items only while a steer reaches them.
+  const running = () =>
+    steersNow(chat, true) ? runningItems(chat, runningTurnOf(chat)) : [];
   const bar = (choice: BarChoice = NO_CHOICE) =>
     composerBar(running(), choice, steering(), false);
   return {
@@ -281,6 +293,7 @@ function monoChat(turnReadiness: Session["turnReadiness"]) {
           bar: bar(choice),
           intent: {
             running: running(),
+            busy: !!chat.busy,
             steering: steering(),
             choice,
             onChoiceChange: () => {},
@@ -309,7 +322,7 @@ function monoChat(turnReadiness: Session["turnReadiness"]) {
     },
     /** What the pump steers into the running turn now. */
     next: () => nextQueuedSend(chat, turns(), true),
-    steerTargets: () => steerTargets(chat, running()),
+    steerTargets: () => new Set(running().map((item) => item.blockId)),
   };
 }
 

@@ -1802,6 +1802,7 @@ describe("Composer message target", () => {
           busy: true,
           intent: {
             running: [],
+            busy: true,
             steering: false,
             choice: { kind: "default" },
             onChoiceChange: vi.fn(),
@@ -1846,6 +1847,11 @@ describe("Composer message target", () => {
       "Skip the migration test",
     );
     expect(container.textContent).toContain("Not running");
+    // PR I6 review r2 n2. Defect: Send looks ready while the bar blocks it.
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send"]')!
+        .disabled,
+    ).toBe(true);
 
     const asNew = [...container.querySelectorAll("button")].find(
       (button) => button.textContent === "Send as new",
@@ -1890,7 +1896,8 @@ describe("Composer message target", () => {
   });
 
   // Review PR I6 r1 M1. Defect: a typed mode command, which the send puts in
-  // the queue, shows "Steering · everything this session is doing".
+  // the queue, shows "Steering · everything this session is doing"; or, once
+  // that turn ends, "Nothing running", which blocks the mode's send.
   it.each([
     ["/plan Use the fixture", "Use the fixture", "plan"],
     ["/orchestrator Use the fixture", "Use the fixture", "orchestrate"],
@@ -1902,6 +1909,9 @@ describe("Composer message target", () => {
       await renderWith({ steering: true }, onSubmit);
       expect(container.querySelector('[data-composer-intent="turn"]')).not.toBeNull();
       await typeText(typed);
+      expect(container.querySelector("[data-composer-intent]")).toBeNull();
+      // The turn the bar showed has ended: a mode still sends, as a new turn.
+      await renderWith({ steering: false, busy: false }, onSubmit);
       expect(container.querySelector("[data-composer-intent]")).toBeNull();
       await pressEnter();
       expect(onSubmit).toHaveBeenLastCalledWith(sent, [], { intent: mode });
@@ -1935,6 +1945,30 @@ describe("Composer message target", () => {
     await act(async () => asNew.click());
     expect(onSubmit).toHaveBeenLastCalledWith("Use the fixture", [], {
       intent: "plan",
+    });
+  });
+
+  // PR I6 review r2 m5. Defect: Plan holds a picked Reply as it holds a
+  // Steer, so Send is blocked though a reply under Plan waits anyway.
+  it("sends a picked Reply under Plan as a plan that names its message", async () => {
+    const onSubmit = vi.fn(() => true);
+    const reply = { ...steer, intent: "reply" as const };
+    await renderWith(
+      {
+        steering: true,
+        running: [{ blockId: "opener", quote: steer.quote }],
+        choice: { kind: "picked", link: reply },
+      },
+      onSubmit,
+    );
+    await typeText("/plan Use the fixture");
+    expect(
+      container.querySelector('[data-composer-intent="picked"]'),
+    ).not.toBeNull();
+    await pressEnter();
+    expect(onSubmit).toHaveBeenLastCalledWith("Use the fixture", [], {
+      intent: "plan",
+      link: reply,
     });
   });
 

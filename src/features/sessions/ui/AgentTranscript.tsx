@@ -155,7 +155,7 @@ import {
 } from "../model/transcriptActivity";
 import { lastUserTurnBlock } from "../model/editLastTurn";
 import { MessageQuote } from "./MessageQuote";
-import { PickTargetActions } from "./MessageTargets";
+import { fitPillBeside, PickTargetActions } from "./MessageTargets";
 import {
   monoCodeToolCall,
   monoCodeWorkSummary,
@@ -2673,12 +2673,16 @@ function UserMessageBlock({
     );
   }
 
+  const pillBeside = chat && stackedOnPrevious;
+
   return (
     <div
       data-prompt-anchor={block.id}
       data-message-delivery={delivery?.status}
       data-message-stack={compactFollowUp ? "true" : undefined}
       data-editing-last-turn={editing ? "true" : undefined}
+      onPointerEnter={pillBeside ? fitPillBeside : undefined}
+      onFocus={pillBeside ? fitPillBeside : undefined}
       className={`user-message-row group/usermsg overflow-visible ${
         chat
           ? `flex flex-col items-end pr-4 pl-14 ${chatSpacing}`
@@ -2691,8 +2695,9 @@ function UserMessageBlock({
         {block.draft ? null : (
           <PickTargetActions
             block={block}
-            // Above the quote when there is one, so it never covers it.
-            className={`pick-target-pill ${block.link ? "pick-target-pill-quoted" : ""}`}
+            // Beside the bubble under another message of the user's, which
+            // it would cover; else above the quote, so it never covers it.
+            className={`pick-target-pill ${pillBeside ? "pick-target-pill-beside" : block.link ? "pick-target-pill-quoted" : ""}`}
             // Above the bubble, which stacks by its turn (`stickyIndex`).
             style={{ zIndex: stickyIndex + 1 }}
           />

@@ -32,26 +32,57 @@ export function PickTargetActions({
     : ["reply"];
   return (
     <span className={className} style={style}>
-      {intents.map((intent) => (
-        <button
-          key={intent}
-          type="button"
-          data-pick-intent={intent}
-          title={
-            intent === "steer"
-              ? "Steer the work this message started"
-              : "Reply to this message"
-          }
-          onClick={(event) => {
-            event.stopPropagation();
-            targets.pick(linkTo(intent, block));
-          }}
-          className="pick-target-action"
-        >
-          <span aria-hidden>{INTENT_LOOK[intent].glyph}</span>
-          {intent === "steer" ? "Steer" : "Reply"}
-        </button>
-      ))}
+      {intents.map((intent) => {
+        const label = intent === "steer" ? "Steer" : "Reply";
+        return (
+          <button
+            key={intent}
+            type="button"
+            data-pick-intent={intent}
+            aria-label={label}
+            title={
+              intent === "steer"
+                ? "Steer the work this message started"
+                : "Reply to this message"
+            }
+            onClick={(event) => {
+              event.stopPropagation();
+              targets.pick(linkTo(intent, block));
+            }}
+            className="pick-target-action"
+          >
+            <span aria-hidden className="pick-target-glyph">
+              {INTENT_LOOK[intent].glyph}
+            </span>
+            <span className="pick-target-label">{label}</span>
+          </button>
+        );
+      })}
     </span>
   );
 }
+
+/**
+ * A message stacked under another of the user's sits too close to it for a
+ * pill on its top edge, which would cover the message above and take its
+ * pointer (PR I6 review r2 m3). So the pill sits beside the bubble, in the
+ * room the right-aligned bubble leaves in its row. With its labels it may not
+ * fit there; then it shows only the glyphs, which fit the row's left gutter.
+ * The row calls this on hover and focus, before the pill shows.
+ */
+export function fitPillBeside({
+  currentTarget: row,
+}: {
+  currentTarget: HTMLElement;
+}) {
+  const pill = row.querySelector<HTMLElement>(".pick-target-pill-beside");
+  const zone = pill?.offsetParent;
+  if (!pill || !zone) return;
+  delete pill.dataset.glyphs;
+  const room =
+    zone.getBoundingClientRect().left - row.getBoundingClientRect().left;
+  if (pill.offsetWidth + PILL_GAP > room) pill.dataset.glyphs = "";
+}
+
+/** The space between the pill and the bubble beside it, as in index.css. */
+const PILL_GAP = 4;

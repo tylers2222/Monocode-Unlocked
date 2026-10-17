@@ -15,12 +15,12 @@ import type { ComposerIntent } from "./ComposerIntentBar";
 import {
   NO_CHOICE,
   runningTurnOf,
+  steersNow,
   steersTyped,
-  steerTargets,
   type BarChoice,
 } from "./composerIntent";
 import { MessageTargetsContext, type MessageTargets } from "./MessageTargets";
-import { runningItems } from "../model/messageIntent";
+import { runningItems, type RunningItem } from "../model/messageIntent";
 import { loadFollowUpBehavior } from "../../settings/model/settings";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
@@ -280,6 +280,9 @@ export type SessionPaneProps = {
   transcriptPool?: TranscriptPool;
 };
 
+/** Kept as one value so the hover set's memo holds while nothing is steerable. */
+const NOT_STEERABLE: readonly RunningItem[] = [];
+
 type Props = SessionPaneProps & {
   /** The session runtime is on another machine. */
   remoteSession?: boolean;
@@ -444,27 +447,24 @@ const LocalSessionPane = memo(function LocalSessionPane({
     () => runningItems(session, runningTurnOf(session)),
     [session.busy, session.blocks],
   );
+  // The hover Steer and the bar's label menu offer the same blocks, and only
+  // while a steer sent now reaches them; a picked steer outside them is `gone`.
+  const steerable = steersNow(session, !!agent) ? running : NOT_STEERABLE;
   const messageTargets = useMemo<MessageTargets | null>(
     () =>
       remoteSession
         ? null
         : {
-            running: steerTargets(session, running),
+            running: new Set(steerable.map((item) => item.blockId)),
             pick: (link) => setChoice({ kind: "picked", link }),
           },
-    [
-      remoteSession,
-      running,
-      session.queuedMessages,
-      session.busy,
-      session.turnReadiness,
-      setChoice,
-    ],
+    [remoteSession, steerable, setChoice],
   );
   const composerIntent: ComposerIntent | undefined = remoteSession
     ? undefined
     : {
-        running,
+        running: steerable,
+        busy: !!session.busy,
         steering: steersTyped(session, !!agent, loadFollowUpBehavior()),
         choice,
         onChoiceChange: setChoice,
