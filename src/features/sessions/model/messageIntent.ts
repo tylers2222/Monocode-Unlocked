@@ -11,6 +11,7 @@ import {
   type MessageLink,
   type QueuedMessage,
   type Session,
+  type TurnIntent,
   type TargetLink,
 } from "./session";
 import { isOwnQueuedMessage, type RunningTurns } from "./messageQueue";
@@ -287,6 +288,21 @@ type Queued = {
  * never queued twice.
  */
 type Stays = { kind: "stays" };
+
+/**
+ * What Steer on a queued row that `stays` tells the user (PR I6 review r4
+ * n3): why the row keeps its place, as Steer on an `/operator` row says.
+ */
+export function stayNotice(
+  session: Pick<Session, "worktreePreparing">,
+  intent: TurnIntent,
+): string {
+  if (intent === "plan")
+    return "/plan starts a new turn after the current turn finishes.";
+  if (session.worktreePreparing)
+    return "The worktree is still being prepared, so this message is sent after the current turn finishes.";
+  return "Nothing can be steered right now, so this message is sent once the session is idle.";
+}
 
 /** Where a user's message goes (design 16.8, 16.12.4). */
 export type UserSend = TargetGone | Sent | Queued | Stays;

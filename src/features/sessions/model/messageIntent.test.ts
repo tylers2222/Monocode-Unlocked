@@ -29,6 +29,7 @@ import {
   parseTargetLink,
   planUserSend,
   runningItems,
+  stayNotice,
   targetRef,
   type ReplyTarget,
   type RunningItem,
@@ -603,6 +604,18 @@ it("keeps a queued row in its place when its Steer would only queue it again", (
     kind: "queue",
     item: {},
   });
+});
+
+// PR I6 review r4 n3. Defect: Steer on a row that keeps its place does
+// nothing and says nothing, or names a reason that is not the row's.
+it("says why a Steered row keeps its place", () => {
+  expect(stayNotice({ worktreePreparing: true }, "plan")).toBe(
+    "/plan starts a new turn after the current turn finishes.",
+  );
+  expect(stayNotice({ worktreePreparing: true }, "default")).toMatch(
+    /worktree is still being prepared/,
+  );
+  expect(stayNotice({}, "default")).toMatch(/sent once the session is idle/);
 });
 
 // Design 16.12.6. Defects: a guessed target, a blocked send, or a picked

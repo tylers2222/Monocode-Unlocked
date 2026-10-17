@@ -550,6 +550,7 @@ import {
 import {
   busyRoute,
   planUserSend,
+  stayNotice,
   STEER_TARGET_GONE,
 } from "../features/sessions/model/messageIntent";
 import {
@@ -7362,8 +7363,18 @@ function Workspace({
         if (sent.kind === "target_gone") return targetGone();
         // Steer on a queued row that this send would only queue again (a
         // worktree in preparation, a plan row, no turn to join): the row
-        // keeps its place, so its text is not queued twice.
-        if (sent.kind === "stays") return false;
+        // keeps its place, so its text is not queued twice, and the user
+        // reads why the click sent nothing.
+        if (sent.kind === "stays") {
+          if (options?.followUpBehavior === "steer") {
+            enqueueHarnessEvent(sessionId, {
+              type: "status",
+              text: stayNotice(current, intent),
+            });
+            flushHarnessEvents();
+          }
+          return false;
+        }
         if (sent.kind === "queue") {
           setSessions((prev) =>
             prev.map((s) =>
