@@ -580,6 +580,50 @@ it("offers no Steer, and a picked steer cannot steer now, while the worktree is 
   expect(container.textContent).toContain("Can't steer now");
 });
 
+// PR I6 review r4 n2 (r3 m1 names Send as new). Defect: Send as new on a
+// steer the paused queue holds goes out as a plain message, which the pump
+// steers into the running turn if the user resumes the queue first.
+it("sends a held steer as new to wait for the turn end while the queue is paused", () => {
+  const onSubmit = vi.fn(() => true);
+  render({ ...busyChat(), onSubmit });
+  act(() => hoverAction("opener", "steer")!.click());
+  render({ ...busyChat({ queueStatus: "paused" }), onSubmit });
+  typeDraft("stop, wrong branch");
+  expect(barKind()).toBe("gone");
+  act(() =>
+    [...container.querySelectorAll("button")]
+      .find((button) => button.textContent === "Send as new")!
+      .click(),
+  );
+  expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+    "chat",
+    "stop, wrong branch",
+    [],
+    { waitForIdle: true },
+  );
+});
+
+// Decision 658, PR I6 review r4 n2. Defect: text the queue holds behind the
+// user's missed message is sent as a chosen wait, which holds nothing behind
+// it, so once it misses its turn the user's later text can pass it.
+it("sends text held behind a missed message as a plain message while the queue is paused", () => {
+  const pane = busyChat({ ...held, queueStatus: "paused" });
+  pane.onSubmit = vi.fn(() => true);
+  render(pane);
+  typeDraft("and seed it");
+  act(() =>
+    container
+      .querySelector("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
+  expect(pane.onSubmit).toHaveBeenCalledExactlyOnceWith(
+    "chat",
+    "and seed it",
+    [],
+    {},
+  );
+});
+
 // PR I6 review r2 m5, design 16.8. Defect: the pane reads a Mono chat as a
 // project session, so with the follow-up setting `queue` the bar is silent
 // while the Mono pump steers the text.

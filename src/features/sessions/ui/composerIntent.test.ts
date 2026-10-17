@@ -482,9 +482,10 @@ it("offers no steer while the session switches providers or prepares a hand-off"
 });
 
 // PR I6 review r3 n2. Defect: a picked steer that cannot reach a turn that
-// still runs says "Not running" and "That work finished".
+// still runs says "Not running" and "That work finished", in the chip or in
+// its tooltip (PR I6 review r4 n2).
 it("says a picked steer cannot steer now while the session is busy, and not running once idle", () => {
-  const chip = (busy: boolean) =>
+  const markup = (busy: boolean) =>
     renderToStaticMarkup(
       createElement(ComposerIntentBar, {
         bar: { kind: "gone", link: steer },
@@ -499,12 +500,18 @@ it("says a picked steer cannot steer now while the session is busy, and not runn
         typing: true,
         onSendAsNew: () => {},
       }),
-    )
-      .replace(/<[^>]+>/g, "")
-      .replaceAll("&#x27;", "'");
-  expect(chip(true)).toContain("Can't steer now");
-  expect(chip(true)).not.toContain("Not running");
-  expect(chip(false)).toContain("Not running");
+    ).replaceAll("&#x27;", "'");
+  const tooltip = /class="composer-intent-chip" title="([^"]*)"/;
+  const [busy, idle] = [markup(true), markup(false)];
+  expect(busy.replace(/<[^>]+>/g, "")).toContain("Can't steer now");
+  expect(busy.replace(/<[^>]+>/g, "")).not.toContain("Not running");
+  expect(tooltip.exec(busy)?.[1]).toBe(
+    "A steer cannot reach this work now. Pick Reply, or send it as new.",
+  );
+  expect(idle.replace(/<[^>]+>/g, "")).toContain("Not running");
+  expect(tooltip.exec(idle)?.[1]).toBe(
+    "That work finished. Edit the message or send it as new.",
+  );
 });
 
 // PR I5b review r3 m1. Defect: in a chat that is not a Mono's, compacting
@@ -635,3 +642,36 @@ it.each<[string, (chat: Session) => Session, (chat: Session) => Session]>([
     ]);
   },
 );
+
+// Decision 658, PR I6 review r4 n2. Defect: text typed behind the user's
+// missed message is sent as a chosen wait, which holds nothing behind it, so
+// after the missed message opens the next turn, text typed in that turn
+// steers ahead of it.
+it("keeps typed order for text held behind a missed message into the next turn", () => {
+  const mono = monoChat("ready");
+  mono.update((chat) =>
+    enqueueMonoMessage(chat, {
+      id: "use the staging DB",
+      text: "use the staging DB",
+      attachments: [],
+      waitForIdle: true,
+      missed: true,
+    }),
+  );
+  mono.type("and seed it");
+  // Turn 1 ends; the missed message opens turn 2.
+  mono.update((chat) => ({
+    ...appendUser(
+      dequeueQueuedMessage(stopStreaming(chat), "use the staging DB"),
+      "use the staging DB",
+      [],
+      { turnId: turn2 },
+    ),
+    busy: true,
+    turnReadiness: "ready",
+  }));
+  expect(mono.barText()).not.toContain("Steering");
+  mono.type("then run the tests");
+  expect(mono.next()).toBeUndefined();
+  expect(idleOrder(mono.chat)).toEqual(["and seed it", "then run the tests"]);
+});

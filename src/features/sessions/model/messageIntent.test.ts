@@ -566,7 +566,7 @@ it("lets text sent while a chat compacts wait for the compaction to end", () => 
 // PR I6 review r3 m2 and n4. Defect: Steer on a queued row whose send App
 // puts in the queue (a worktree in preparation, a plan row) or that finds
 // no turn to join plans a queue, and App appends a copy of the row, so its
-// text is sent twice.
+// text is sent twice; or, PR I6 review r4 n2, so is a CLI follow-up row's.
 it("keeps a queued row in its place when its Steer would only queue it again", () => {
   const running: Session = {
     ...appendUser(newSession("codex", "/tmp"), "Build it", [], {
@@ -587,6 +587,11 @@ it("keeps a queued row in its place when its Steer would only queue it again", (
     ],
     [running, { ...row, intent: "plan" }, busyRoute(running, turns, "no")],
     [compacting, row, busyRoute(compacting, runningTurnMap(), "now")],
+    [
+      { ...running, turnReadiness: "starting", worktreePreparing: true },
+      { ...row, appRequestId: "request-1" },
+      busyRoute(running, turns, "no"),
+    ],
   ];
   for (const [session, item, route] of steers) {
     const resolved = queuedMessageForSubmit(
