@@ -45,6 +45,7 @@ import {
   getComposerDraft,
   setComposerDraft,
 } from "../model/draftCache";
+import type { ComposerIntent } from "./ComposerIntentBar";
 import type { UserQuestionPrompt } from "../model/userQuestion";
 
 function renderAction(
@@ -1748,4 +1749,139 @@ describe("Composer question focus", () => {
       window.removeEventListener("monocode:open-mcp-settings", onOpen);
     }
   });
+});
+
+describe("Composer message target", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  const steer = {
+    intent: "steer" as const,
+    replyTo: "opener",
+    quote: "Build PR 7: add the levels gate",
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  async function renderWith(
+    intent: Partial<ComposerIntent>,
+    onSubmit: (
+      text: string,
+      attachments: Attachment[],
+      options?: ComposerTurnOptions,
+    ) => boolean | void,
+    onDraftChange: (text: string) => void = () => {},
+  ) {
+    await act(async () =>
+      root.render(
+        createElement(Composer, {
+          focused: true,
+          harness: "claude",
+          model: "claude-sonnet",
+          runtimeMode: "supervised",
+          executionCwd: "/repo",
+          hideProjectPicker: true,
+          hideBranchPicker: true,
+          initialDraft: "Skip the migration test",
+          onDraftChange,
+          onFocus: vi.fn(),
+          onCwdChange: vi.fn(),
+          onModelChange: vi.fn(),
+          onRuntimeModeChange: vi.fn(),
+          onSubmit,
+          busy: true,
+          intent: {
+            running: [],
+            steering: false,
+            choice: { kind: "default" },
+            onChoiceChange: vi.fn(),
+            ...intent,
+          },
+        }),
+      ),
+    );
+  }
+
+  const pressEnter = () =>
+    act(async () =>
+      container.querySelector("textarea")!.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+
+  // Design 16.8 (intents review r1). Defect: a refused send loses the text,
+  // because the parent draft is cleared before the bar's check.
+  it("keeps the draft and sends nothing when Enter meets a steer whose work ended", async () => {
+    let parentDraft = "Skip the migration test";
+    const onDraftChange = vi.fn((text: string) => {
+      parentDraft = text;
+    });
+    const onSubmit = vi.fn(() => true);
+    const onChoiceChange = vi.fn();
+    await renderWith(
+      { choice: { kind: "picked", link: steer }, onChoiceChange },
+      onSubmit,
+      onDraftChange,
+    );
+    await pressEnter();
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onDraftChange).not.toHaveBeenCalledWith("");
+    expect(parentDraft).toBe("Skip the migration test");
+    expect(container.querySelector("textarea")!.value).toBe(
+      "Skip the migration test",
+    );
+    expect(container.textContent).toContain("Not running");
+
+    const asNew = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Send as new",
+    )!;
+    await act(async () => asNew.click());
+    expect(onSubmit).toHaveBeenCalledWith("Skip the migration test", [], {
+      intent: "default",
+    });
+    expect(onChoiceChange).toHaveBeenCalledWith({ kind: "default" });
+  });
+
+  // Design 16.12.4, 16.12.6. Defects: the composer drops the bar's options,
+  // so ✕ steers the running turn, or `turn` sends a guessed target.
+  it("sends ✕ while steering as a message that waits, and the whole turn with no link", async () => {
+    const onSubmit = vi.fn(() => true);
+    await renderWith({ steering: true, choice: { kind: "cleared" } }, onSubmit);
+    await pressEnter();
+    expect(onSubmit).toHaveBeenLastCalledWith("Skip the migration test", [], {
+      intent: "default",
+      waitForIdle: true,
+    });
+
+    await renderWith({ steering: true }, onSubmit);
+    await typeText("Use the existing fixture");
+    expect(container.textContent).toContain("everything this session is doing");
+    await pressEnter();
+    expect(onSubmit).toHaveBeenLastCalledWith("Use the existing fixture", [], {
+      intent: "default",
+    });
+  });
+
+  async function typeText(value: string) {
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => {
+      textarea.value = value;
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
 });

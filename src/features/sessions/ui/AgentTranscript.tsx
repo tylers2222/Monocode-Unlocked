@@ -154,6 +154,8 @@ import {
   type TurnItem,
 } from "../model/transcriptActivity";
 import { lastUserTurnBlock } from "../model/editLastTurn";
+import { MessageQuote } from "./MessageQuote";
+import { PickTargetActions } from "./MessageTargets";
 import {
   monoCodeToolCall,
   monoCodeWorkSummary,
@@ -1624,6 +1626,9 @@ function AgentTranscriptComponent({
                       : turn,
                   )}
                   onSaveNote={onSaveNote}
+                  replyTo={[...turn]
+                    .reverse()
+                    .find((block) => block.role === "assistant" && block.text)}
                   onShowWork={
                     inlineWork && onShowWork
                       ? () => onShowWork(turnId, turn)
@@ -1815,6 +1820,7 @@ function TurnDuration({
   completedAt,
   copyText: output,
   onSaveNote,
+  replyTo,
   onShowWork,
   workExpanded,
   fromHarness,
@@ -1833,6 +1839,8 @@ function TurnDuration({
   completedAt?: number;
   copyText?: string;
   onSaveNote?: (text: string) => void | Promise<void>;
+  /** The turn's final reply, which the user can answer with Reply (design 16.8). */
+  replyTo?: Block;
   onShowWork?: () => void;
   workExpanded?: boolean;
   fromHarness?: HarnessId;
@@ -1868,6 +1876,7 @@ function TurnDuration({
         ) : (
           <Check className="size-3.5" strokeWidth={1.75} />
         )}
+        {replyTo ? <PickTargetActions block={replyTo} /> : null}
         {onShowWork ? (
           <button
             type="button"
@@ -2634,6 +2643,7 @@ function UserMessageBlock({
     textOnly &&
     !monocode &&
     !messageLink &&
+    !block.link &&
     isEmojiOnlyMessage(displayText)
   ) {
     return (
@@ -2676,6 +2686,7 @@ function UserMessageBlock({
       <div
         className={`user-message-hover-zone min-w-0 overflow-visible ${chat ? "flex w-fit max-w-full flex-col items-end" : "w-full"}`}
       >
+        {block.link ? <MessageQuote link={block.link} /> : null}
         {/* Photos and their bubble enter as one message. */}
         <div
           data-chat-message={photos.length ? block.id : undefined}
@@ -2852,6 +2863,7 @@ function UserMessageBlock({
             {text && onSaveNote ? (
               <SaveNoteButton text={text} onSave={onSaveNote} />
             ) : null}
+            {block.draft ? null : <PickTargetActions block={block} />}
             {messageAt != null ? (
               <time
                 dateTime={new Date(messageAt).toISOString()}

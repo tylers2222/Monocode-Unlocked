@@ -52,7 +52,7 @@ it("doesn't send on the Enter that picks an IME candidate", async () => {
     pressEnter(field, 229);
     expect(onSubmit).not.toHaveBeenCalled();
     pressEnter(field, 13);
-    expect(onSubmit).toHaveBeenCalledWith("你好", []);
+    expect(onSubmit).toHaveBeenCalledWith("你好", [], {});
   } finally {
     act(() => root.unmount());
     container.remove();

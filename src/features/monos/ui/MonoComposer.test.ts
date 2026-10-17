@@ -111,8 +111,8 @@ it("sends consecutive messages without duplicating rapid Enter presses", () => {
   type("Second");
   act(submit);
   expect(onSubmit.mock.calls).toEqual([
-    ["First", []],
-    ["Second", []],
+    ["First", [], {}],
+    ["Second", [], {}],
   ]);
   expect(field().value).toBe("");
 });
@@ -127,7 +127,7 @@ it("retains text and attachments if the message is rejected", async () => {
       .click(),
   );
   act(submit);
-  expect(onSubmit).toHaveBeenCalledWith("Keep these", [file]);
+  expect(onSubmit).toHaveBeenCalledWith("Keep these", [file], {});
   expect(field().value).toBe("Keep these");
   expect(container.querySelector('[title="/tmp/note.txt"]')).not.toBeNull();
 });
@@ -154,7 +154,11 @@ it("waits for attachment reads so they cannot leak into the next message", async
   expect(onSubmit).not.toHaveBeenCalled();
   await act(async () => accept([file]));
   act(submit);
-  expect(onSubmit).toHaveBeenCalledExactlyOnceWith("With this file", [file]);
+  expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+    "With this file",
+    [file],
+    {},
+  );
   expect(container.querySelector('[title="/tmp/note.txt"]')).toBeNull();
 });
 
@@ -232,4 +236,39 @@ it("inserts a picked emoji where the cursor was, beside attach", async () => {
   // The floating chat keeps its inline input, without the extra row.
   render();
   expect(container.querySelector('button[aria-label="Add emoji"]')).toBeNull();
+});
+
+// Doop E10, decision 536. Defects: text typed as a whole-turn steer opens a
+// new turn on its own once the turn ends, or Enter clears it unsent.
+it("holds a whole-turn steer whose turn ended until the user sends it as new", () => {
+  const onSubmit = vi.fn(() => true);
+  const intent = {
+    running: [],
+    steering: true,
+    choice: { kind: "default" as const },
+    onChoiceChange: vi.fn(),
+  };
+  render({ onSubmit, intent: { ...intent, monoName: "Captain" } });
+  type("Stop after the gate rows");
+  expect(container.textContent).toContain("everything Captain is doing");
+
+  render({
+    onSubmit,
+    intent: { ...intent, steering: false, monoName: "Captain" },
+  });
+  expect(container.textContent).toContain("Nothing running");
+  act(submit);
+  expect(onSubmit).not.toHaveBeenCalled();
+  expect(field().value).toBe("Stop after the gate rows");
+
+  const asNew = [...container.querySelectorAll("button")].find(
+    (button) => button.textContent === "Send as new",
+  )!;
+  act(() => asNew.click());
+  expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+    "Stop after the gate rows",
+    [],
+    {},
+  );
+  expect(field().value).toBe("");
 });

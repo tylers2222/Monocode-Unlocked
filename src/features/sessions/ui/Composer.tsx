@@ -198,6 +198,12 @@ import {
 } from "../../settings/model/mcpSettingsCache";
 import type { LastTurnRecall } from "../model/editLastTurn";
 import { useComposerAutocorrect } from "../../settings/model/displayPrefs";
+import {
+  ComposerIntentBar,
+  useComposerBar,
+  type ComposerIntent,
+} from "./ComposerIntentBar";
+import type { BarSend } from "./composerIntent";
 
 type Props = {
   enabled?: boolean;
@@ -292,6 +298,8 @@ type Props = {
   onDraftChange?: (text: string) => void;
   onRecallLastTurnReady?: (recall: () => void) => void;
   onEditingLastTurnChange?: (editing: boolean) => void;
+  /** What the message refers to: the bar, Reply and Steer (design 16.8). */
+  intent?: ComposerIntent;
   children?: ReactNode;
 };
 
@@ -408,6 +416,7 @@ export function Composer({
   onDraftChange,
   onRecallLastTurnReady,
   onEditingLastTurnChange,
+  intent,
   children,
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -471,6 +480,15 @@ export function Composer({
   const [planSelected, setPlanSelected] = useState(false);
   const [operatorSelected, setOperatorSelected] = useState(false);
   const [orchestrationSelected, setOrchestrationSelected] = useState(false);
+  const intentBar = useComposerBar(
+    intent,
+    hasValue,
+    planSelected || orchestrationSelected || operatorSelected,
+  );
+  const choice = intent?.choice;
+  useEffect(() => {
+    if (choice?.kind === "picked") ref.current?.focus();
+  }, [choice]);
   const [draftSelected, setDraftSelected] = useState(false);
   const [slash, setSlash] = useState<SlashToken | null>(null);
   const [skillActive, setSkillActive] = useState(0);
@@ -1270,14 +1288,15 @@ export function Composer({
     onRecallLastTurnReady(recallLastTurn);
   }, [editLastTurnSupported, onRecallLastTurnReady, recallLastTurn]);
 
-  const submit = (value: string) => {
+  /** `asNew` is "Send as new": the same text as a `new` message. */
+  const submit = (value: string, asNew?: BarSend) => {
     if (disabled || worktreeRemoved || submitLockRef.current) return;
     submitLockRef.current = true;
-    void completeSubmit(value).finally(() => {
+    void completeSubmit(value, asNew).finally(() => {
       submitLockRef.current = false;
     });
   };
-  const completeSubmit = async (submittedValue: string) => {
+  const completeSubmit = async (submittedValue: string, asNew?: BarSend) => {
     let pending = pasteFlightRef.current;
     const generation = pasteGenerationRef.current;
     while (pending) {
@@ -1396,6 +1415,10 @@ export function Composer({
         : text;
     const files = attachmentsRef.current;
     if (!text && files.length === 0 && !noteCard && !handoffCard) return;
+    // The bar blocks a steer whose work ended, before the parent draft is
+    // cleared, so a blocked send keeps the text (design 16.8).
+    const target = asNew ?? intentBar.send;
+    if (!target) return;
     // Clear the parent draft before onSubmit. The app can synchronously remount
     // the composer when the first message leaves an empty session (EmptySession →
     // docked layout). If draftRef still holds the sent text, the new instance
@@ -1419,6 +1442,7 @@ export function Composer({
             : orchestrationSelected || orchestratorCommand.matched
               ? "orchestrate"
               : "default",
+        ...target,
         ...(resendEdited
           ? {
               resendEdited: true,
@@ -1440,6 +1464,7 @@ export function Composer({
       restoreDraft(text, files);
       return;
     }
+    intentBar.sent();
     pasteGenerationRef.current += 1;
     if (ref.current) {
       ref.current.value = "";
@@ -1928,6 +1953,16 @@ export function Composer({
               Drop files to attach
             </div>
           ) : null}
+          {intent ? (
+            <ComposerIntentBar
+              bar={intentBar.bar}
+              intent={intent}
+              typing={hasValue}
+              onSendAsNew={() =>
+                submit(ref.current?.value ?? "", intentBar.asNew)
+              }
+            />
+          ) : null}
           {hideTopBar ? null : (
             <div className="flex min-w-0 items-center gap-2.5 overflow-hidden px-3 pt-2.5">
               {!remote && !hideProjectPicker ? (
@@ -2398,7 +2433,9 @@ export function Composer({
             <div className="flex shrink-0 items-center gap-1">
               <ComposerAction
                 busy={busy}
-                disabled={disabled}
+                disabled={
+                  disabled || (hasValue && !draftActive && !intentBar.send)
+                }
                 hasValue={hasValue && !worktreeRemoved}
                 allowBusySubmit={allowBusySubmit}
                 label={draftActive ? "Save draft" : "Send"}

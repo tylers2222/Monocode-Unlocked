@@ -189,9 +189,12 @@ it("keeps the same input, current draft and attachments when a question appears 
   act(() =>
     container.querySelector<HTMLButtonElement>('[aria-label="Send"]')!.click(),
   );
-  expect(pane.onSubmit).toHaveBeenCalledWith("chat", "Fresh draft", [
-    expect.objectContaining({ id: "file" }),
-  ]);
+  expect(pane.onSubmit).toHaveBeenCalledWith(
+    "chat",
+    "Fresh draft",
+    [expect.objectContaining({ id: "file" })],
+    {},
+  );
 });
 
 it("routes transcript quotes to the Mono draft", () => {
