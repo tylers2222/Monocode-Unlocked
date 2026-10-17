@@ -250,6 +250,7 @@ it("holds a whole-turn steer whose turn ended until the user sends it as new", (
     running: [],
     busy: true,
     steering: true,
+    newWaits: false,
     choice: { kind: "default" as const },
     onChoiceChange: vi.fn(),
     monoName: "Captain",
@@ -286,7 +287,8 @@ it("holds a whole-turn steer whose turn ended until the user sends it as new", (
 // PR I6 review r2 M1. Defect: the Mono bar says "Steering" for a typed
 // /operator, which the queue holds until the turn ends. /plan and
 // /orchestrator are plain text in a Mono chat and steer, so they keep it.
-it("names no running turn for a typed /operator, and keeps it for /plan", () => {
+// PR I6 review r3 n3: or it misses the /mono and /monocode aliases.
+it("names no running turn for a typed /operator or its aliases, and keeps it for /plan", () => {
   const onSubmit = vi.fn(() => true);
   render({
     onSubmit,
@@ -294,15 +296,22 @@ it("names no running turn for a typed /operator, and keeps it for /plan", () => 
       running: [],
       busy: true,
       steering: true,
+      newWaits: false,
       choice: { kind: "default" },
       onChoiceChange: vi.fn(),
       monoName: "Captain",
     },
   });
-  type("/operator list sessions");
-  expect(container.querySelector("[data-composer-intent]")).toBeNull();
-  act(submit);
-  expect(onSubmit).toHaveBeenLastCalledWith("/operator list sessions", [], {});
+  for (const command of ["/operator", "/mono", "/monocode"]) {
+    type(`${command} list sessions`);
+    expect(container.querySelector("[data-composer-intent]")).toBeNull();
+    act(submit);
+    expect(onSubmit).toHaveBeenLastCalledWith(
+      `${command} list sessions`,
+      [],
+      {},
+    );
+  }
 
   for (const text of ["/plan the docs", "/orchestrator the docs"]) {
     type(text);
@@ -320,6 +329,7 @@ it("drops ✕ once its text is emptied", () => {
     running: [],
     busy: true,
     steering: true,
+    newWaits: false,
     choice: { kind: "default" } as BarChoice,
     onChoiceChange,
   };

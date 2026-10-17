@@ -1804,6 +1804,7 @@ describe("Composer message target", () => {
             running: [],
             busy: true,
             steering: false,
+            newWaits: false,
             choice: { kind: "default" },
             onChoiceChange: vi.fn(),
             ...intent,
@@ -1846,7 +1847,7 @@ describe("Composer message target", () => {
     expect(container.querySelector("textarea")!.value).toBe(
       "Skip the migration test",
     );
-    expect(container.textContent).toContain("Not running");
+    expect(container.textContent).toContain("Can't steer now");
     // PR I6 review r2 n2. Defect: Send looks ready while the bar blocks it.
     expect(
       container.querySelector<HTMLButtonElement>('[aria-label="Send"]')!
@@ -1893,6 +1894,54 @@ describe("Composer message target", () => {
       intent: "default",
       waitForIdle: true,
     });
+  });
+
+  // PR I6 review r1 n5, r2 n3, r3 n5. Defect: Enter pressed while a pasted
+  // file is still reading sends with the bar of the render that started the
+  // send, so a whole-turn steer whose turn ended meanwhile goes out as a new
+  // turn instead of waiting for "Send as new".
+  it("reads the bar after a paste in flight, so a turn that ended meanwhile holds the text", async () => {
+    let finishRead!: () => void;
+    vi.stubGlobal(
+      "FileReader",
+      class {
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        result: string | null = null;
+        readAsDataURL() {
+          finishRead = () => this.onerror?.();
+        }
+      },
+    );
+    const onSubmit = vi.fn(() => true);
+    await renderWith({ steering: true }, onSubmit);
+    expect(
+      container.querySelector('[data-composer-intent="turn"]'),
+    ).not.toBeNull();
+    const file = new File(["notes"], "notes.txt", { type: "text/plain" });
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        getData: () => "",
+        files: [file],
+        items: [{ kind: "file", type: file.type, getAsFile: () => file }],
+      },
+    });
+    await act(async () => {
+      container.querySelector("textarea")!.dispatchEvent(paste);
+    });
+    await pressEnter();
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    await renderWith({ steering: false, busy: false }, onSubmit);
+    expect(
+      container.querySelector('[data-composer-intent="ended"]'),
+    ).not.toBeNull();
+    await act(async () => finishRead());
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(container.querySelector("textarea")!.value).toBe(
+      "Skip the migration test",
+    );
   });
 
   // Review PR I6 r1 M1. Defect: a typed mode command, which the send puts in

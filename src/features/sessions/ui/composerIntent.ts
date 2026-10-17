@@ -6,6 +6,7 @@ import {
   type ComposerTarget,
   type RunningItem,
 } from "../model/messageIntent";
+import { switchingProviders } from "../model/handoff";
 import { userTextHeld } from "../model/messageQueue";
 import type {
   Block,
@@ -77,18 +78,19 @@ export type BarSend = Pick<ComposerTurnOptions, "link" | "waitForIdle">;
  * The options a send carries, or `null` when the bar blocks it: a steer is
  * never sent as a guess (design 16.8). `turn` passes no link, because the app
  * stamps the whole-turn link when the text joins the turn (16.12.4). `none`
- * while steering means the user pressed ✕, so the message waits for the
- * turn end and never joins it.
+ * with `newWaits` says the message waits for the turn end and never joins
+ * it: the user pressed ✕ while steering, or a hold on steers would lift
+ * before the turn ends (`newTextWaits`).
  */
 export function barSend(
   bar: Exclude<ComposerBar, { kind: "gone" | "ended" | "held" }>,
-  steering: boolean,
+  newWaits: boolean,
 ): BarSend;
-export function barSend(bar: ComposerBar, steering: boolean): BarSend | null;
-export function barSend(bar: ComposerBar, steering: boolean): BarSend | null {
+export function barSend(bar: ComposerBar, newWaits: boolean): BarSend | null;
+export function barSend(bar: ComposerBar, newWaits: boolean): BarSend | null {
   switch (bar.kind) {
     case "none":
-      return steering ? { waitForIdle: true } : {};
+      return newWaits ? { waitForIdle: true } : {};
     case "turn":
       return {};
     case "picked":
@@ -121,30 +123,60 @@ export function runningTurnOf(
   return opener?.turnId;
 }
 
+type SteerSession = Pick<
+  Session,
+  | "busy"
+  | "harness"
+  | "queuedMessages"
+  | "turnReadiness"
+  | "queueStatus"
+  | "pendingSwitch"
+  | "providerAccountId"
+  | "blocks"
+>;
+
 /**
- * Whether a steer the user sends now reaches the running turn (design 16.8):
- * the session is busy, its harness can steer, and nothing holds the text.
- * The queue holds new text behind the user's own message that missed its
- * turn, or while the session is busy with no turn, as during a compaction
- * (`userTextHeld`, design 16.12.4). A Mono chat's pump also holds every steer
- * while its queue is paused or resuming (`canSteerNow`).
+ * What a steer the user sends now meets (design 16.8). `steers`: the session
+ * is busy, its harness can steer, and nothing holds the text. `paused`: a
+ * turn runs that the text could join, but every steer is held for now: the
+ * session is switching providers (`switchingProviders`, as App's send and
+ * the CLI read it), or a Mono chat's queue is paused or resuming
+ * (`canSteerNow`). `no`: idle, a harness that cannot steer, or the queue holds
+ * the user's new text behind their message that missed its turn, or while the
+ * session is busy with no turn (`userTextHeld`, design 16.12.4).
  */
-export function steersNow(
-  session: Pick<
-    Session,
-    "busy" | "harness" | "queuedMessages" | "turnReadiness" | "queueStatus"
-  >,
+function steerReach(
+  session: SteerSession,
   mono: boolean,
-): boolean {
-  return (
-    !!session.busy &&
-    canSteerHarness(session.harness) &&
-    !userTextHeld(session) &&
-    !(
-      mono &&
-      (session.queueStatus === "paused" || session.queueStatus === "resuming")
-    )
-  );
+): "steers" | "paused" | "no" {
+  if (
+    !session.busy ||
+    !canSteerHarness(session.harness) ||
+    userTextHeld(session)
+  )
+    return "no";
+  return switchingProviders(session) ||
+    (mono &&
+      (session.queueStatus === "paused" || session.queueStatus === "resuming"))
+    ? "paused"
+    : "steers";
+}
+
+/** Whether a steer the user sends now reaches the running turn (design 16.8). */
+export function steersNow(session: SteerSession, mono: boolean): boolean {
+  return steerReach(session, mono) === "steers";
+}
+
+/**
+ * Whether text the bar sends as new must say it waits for the turn end
+ * (PR I6 review r3 m1). A Mono chat's pump steers a plain queued message into
+ * the turn it was typed in once the hold on steers lifts, so text typed while
+ * the hold shows no bar would steer if the user resumed the queue before
+ * the turn ended. Text the queue holds behind a missed message keeps `{}`:
+ * the pump holds it, in typed order.
+ */
+export function newTextWaits(session: SteerSession, mono: boolean): boolean {
+  return mono && steerReach(session, mono) === "paused";
 }
 
 /**

@@ -13,6 +13,7 @@ import {
 import { Composer } from "./Composer";
 import type { ComposerIntent } from "./ComposerIntentBar";
 import {
+  newTextWaits,
   NO_CHOICE,
   runningTurnOf,
   steersNow,
@@ -466,6 +467,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
         running: steerable,
         busy: !!session.busy,
         steering: steersTyped(session, !!agent, loadFollowUpBehavior()),
+        newWaits: newTextWaits(session, !!agent),
         choice,
         onChoiceChange: setChoice,
         monoName: agent?.name,

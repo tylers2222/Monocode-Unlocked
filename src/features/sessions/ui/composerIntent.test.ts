@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, expect, it, vi } from "vitest";
+import { steerBlockReason } from "../../../app/model/appSessionSend";
 import {
   appendSteerUser,
   appendUser,
@@ -25,7 +26,12 @@ import {
   runningItems,
   type RunningItem,
 } from "../model/messageIntent";
-import { nextQueuedSend, runningTurnMap } from "../model/messageQueue";
+import { appendPreparingHandoff, planComposerSwitch } from "../model/handoff";
+import {
+  nextQueuedSend,
+  pauseQueue,
+  runningTurnMap,
+} from "../model/messageQueue";
 import { typedMonoMessage } from "../model/queuedFollowUp";
 import {
   newSession,
@@ -36,6 +42,7 @@ import {
 import {
   barSend,
   composerBar,
+  newTextWaits,
   NO_CHOICE,
   quoteText,
   runningTurnOf,
@@ -48,6 +55,7 @@ import { MessageQuote } from "./MessageQuote";
 import { MessageTargetsContext, PickTargetActions } from "./MessageTargets";
 
 registerHarness({ id: "codex", live: true } as unknown as HarnessAdapter);
+registerHarness({ id: "claude", live: true } as unknown as HarnessAdapter);
 registerHarness({
   id: "fx",
   live: true,
@@ -153,8 +161,8 @@ it("reads the running turn from the opener that started last, not from block ord
 
 // Design 16.8 `steering`. Defect: the bar says Steering where the busy rule
 // queues the text, or stays silent where it steers; or, PR I5b review r2 m2,
-// it says Steering while a Mono chat compacts (busy, no turn), when typed text
-// waits for the compaction to end; or, PR I6 review r2 m2, while a Mono
+// it says Steering while the session is busy with no turn, when typed text
+// waits until the session is idle; or, PR I6 review r2 m2, while a Mono
 // chat's queue is paused, when the pump holds every steer.
 it("steers typed text only where the busy rule would", () => {
   const busy: Session = {
@@ -208,6 +216,7 @@ it("drops bidirectional controls from a quote and isolates its direction", () =>
         running: [],
         busy: false,
         steering: false,
+        newWaits: false,
         choice: { kind: "picked", link },
         onChoiceChange: () => {},
       },
@@ -279,6 +288,7 @@ function monoChat(turnReadiness: Session["turnReadiness"]) {
   };
   const turns = () => runningTurnMap([[chat.id, runningTurnOf(chat)!]]);
   const steering = () => steersTyped(chat, true, "steer");
+  const newWaits = () => newTextWaits(chat, true);
   // SessionPane gives the bar the running items only while a steer reaches them.
   const running = () =>
     steersNow(chat, true) ? runningItems(chat, runningTurnOf(chat)) : [];
@@ -301,6 +311,7 @@ function monoChat(turnReadiness: Session["turnReadiness"]) {
             running: running(),
             busy: !!chat.busy,
             steering: steering(),
+            newWaits: newWaits(),
             choice,
             onChoiceChange: () => {},
             monoName: "Ada",
@@ -314,7 +325,7 @@ function monoChat(turnReadiness: Session["turnReadiness"]) {
     type(text: string, choice: BarChoice = NO_CHOICE) {
       const origin = barSend(
         bar(choice),
-        steering() || choice.kind === "cleared",
+        steering() || choice.kind === "cleared" || newWaits(),
       );
       expect(origin).not.toBeNull();
       const item = typedMonoMessage({
@@ -384,16 +395,113 @@ it("holds text typed behind a missed message, with no Steering bar and no hover 
   });
 });
 
-// PR I5b review r2 m2. Defect: while a Mono chat compacts (busy, no turn),
-// the bar says Steering, or the hover offers Steer on the ended turn's
-// messages, though text typed then waits for the compaction to end.
-it("shows no Steering bar and no hover Steer while a Mono chat compacts", () => {
+// PR I5b review r2 m2. Defect: while a Mono chat is busy with no turn, the
+// bar says Steering, or the hover offers Steer on the ended turn's messages,
+// though text typed then waits until the chat is idle.
+it("shows no Steering bar and no hover Steer while a Mono chat is busy with no turn", () => {
   const mono = monoChat("ready");
   expect(mono.barText()).toContain("Steering");
   mono.update((chat) => ({ ...stopStreaming(chat), busy: true }));
   expect(runningItems(mono.chat, runningTurnOf(mono.chat))).not.toEqual([]);
   expect(mono.barText()).not.toContain("Steering");
   expect(mono.steerTargets()).toEqual(new Set());
+});
+
+// PR I6 review r3 m1. Defect: text typed while a Mono chat's queue is paused
+// shows no bar but is sent as a plain message, so if the user resumes the
+// queue before the turn ends, the pump steers it into that turn as a
+// whole-turn steer.
+it("lets text typed while the queue is paused wait for the turn end, even if the queue resumes first", () => {
+  const mono = monoChat("ready");
+  mono.update((chat) =>
+    pauseQueue(
+      enqueueMonoMessage(chat, {
+        id: "failed",
+        text: "failed earlier",
+        attachments: [],
+        waitForIdle: true,
+        error: "provider error",
+      }),
+    ),
+  );
+  expect(mono.bar()).toEqual({ kind: "none" });
+  const typed = mono.type("rename it to foo");
+  // App's onResumeQueue sets a Mono queue active while the turn runs.
+  mono.update((chat) => ({ ...chat, queueStatus: "active" }));
+  expect(mono.next()).toBeUndefined();
+  expect(monoMessageDeliveries(mono.chat).get(typed.id)).toEqual({
+    status: "waiting",
+  });
+});
+
+// PR I6 review r3 M1. Defect: while a provider switch is armed or the
+// outgoing agent writes its hand-off brief, the bar says Steering and the
+// hover offers Steer, though App's send then cancels the running turn and
+// opens a hand-off turn (switch) or refuses the text (hand-off), and the CLI
+// refuses a steer.
+it("offers no steer while the session switches providers or prepares a hand-off", () => {
+  const running: Session = {
+    ...appendUser(newSession("claude", "/tmp"), "Build it", [], {
+      turnId: turn1,
+    }),
+    busy: true,
+    turnReadiness: "ready",
+  };
+  // As App's onModelChange arms a switch from the composer's model picker.
+  const plan = planComposerSwitch(running, "codex");
+  if (plan.kind !== "arm") throw new Error(`expected arm, got ${plan.kind}`);
+  const switching: Session = {
+    ...running,
+    harness: "codex",
+    pendingSwitch: plan.pending,
+  };
+  // As App reveals a hand-off turn while the outgoing agent writes its brief.
+  const handingOff: Session = {
+    ...appendUser(
+      {
+        ...appendPreparingHandoff(stopStreaming(running), "claude", "codex"),
+        harness: "codex",
+      },
+      "next",
+      [],
+      { turnId: turn2 },
+    ),
+    busy: true,
+  };
+  for (const mono of [false, true]) {
+    expect(steersNow(running, mono)).toBe(true);
+    for (const session of [switching, handingOff]) {
+      expect(steersNow(session, mono)).toBe(false);
+      expect(steersTyped(session, mono, "steer")).toBe(false);
+      expect(steerBlockReason(session, "stop")).toMatch(/switching providers/);
+    }
+  }
+});
+
+// PR I6 review r3 n2. Defect: a picked steer that cannot reach a turn that
+// still runs says "Not running" and "That work finished".
+it("says a picked steer cannot steer now while the session is busy, and not running once idle", () => {
+  const chip = (busy: boolean) =>
+    renderToStaticMarkup(
+      createElement(ComposerIntentBar, {
+        bar: { kind: "gone", link: steer },
+        intent: {
+          running: [],
+          busy,
+          steering: false,
+          newWaits: false,
+          choice: { kind: "picked", link: steer },
+          onChoiceChange: () => {},
+        },
+        typing: true,
+        onSendAsNew: () => {},
+      }),
+    )
+      .replace(/<[^>]+>/g, "")
+      .replaceAll("&#x27;", "'");
+  expect(chip(true)).toContain("Can't steer now");
+  expect(chip(true)).not.toContain("Not running");
+  expect(chip(false)).toContain("Not running");
 });
 
 // PR I5b review r3 m1. Defect: in a chat that is not a Mono's, compacting

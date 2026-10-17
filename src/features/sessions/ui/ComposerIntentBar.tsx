@@ -24,6 +24,8 @@ export type ComposerIntent = {
   busy: boolean;
   /** The busy rule would steer the typed text into the running turn. */
   steering: boolean;
+  /** Text sent as new must wait for the turn end (`newTextWaits`). */
+  newWaits: boolean;
   choice: BarChoice;
   onChoiceChange: (choice: BarChoice) => void;
   /** The Mono a whole-turn steer names; absent for a project session (Q-W1). */
@@ -70,9 +72,9 @@ export function useComposerBar(
      * the message `new`, and a `new` message never steers (design 16.8), so
      * it waits for the turn end even where the busy rule would queue it.
      */
-    send: barSend(bar, steering || cleared),
+    send: barSend(bar, steering || cleared || !!intent?.newWaits),
     /** "Send as new": the same text as a `new` message. */
-    asNew: barSend({ kind: "none" }, steering),
+    asNew: barSend({ kind: "none" }, steering || !!intent?.newWaits),
     /** The bar after a send the app took. */
     sent() {
       setSawTurn(false);
@@ -152,13 +154,17 @@ export function ComposerIntentBar({
             title={
               bar.kind === "held"
                 ? `${bar.mode} sends this after the running turn, so it cannot steer. Pick Reply, turn ${bar.mode} off, or send it as new.`
-                : "That work finished. Edit the message or send it as new."
+                : bar.kind === "gone" && intent.busy
+                  ? "A steer cannot reach this work now. Pick Reply, or send it as new."
+                  : "That work finished. Edit the message or send it as new."
             }
           >
             {bar.kind === "held"
               ? `${bar.mode} waits for the turn`
               : bar.kind === "gone"
-                ? "Not running"
+                ? intent.busy
+                  ? "Can't steer now"
+                  : "Not running"
                 : "Nothing running"}
           </span>
           <button

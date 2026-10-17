@@ -7,6 +7,7 @@ import { clearComposerDraft, setComposerDraft } from "../model/draftCache";
 import type { Block, Session } from "../model/session";
 import type { TurnId } from "../../monos/model/monoMessages";
 import { PickTargetActions } from "./MessageTargets";
+import { appendPreparingHandoff } from "../model/handoff";
 import {
   isLiveHarness,
   registerHarness,
@@ -495,6 +496,9 @@ it("offers Steer, in the hover and the label menu, only while a steer sent now r
   render(busyChat(held));
   expect(hoverAction("opener", "steer")).toBeNull();
   expect(barKind()).toBe("gone");
+  // PR I6 review r3 n2: the turn still runs, so nothing says it finished.
+  expect(container.textContent).toContain("Can't steer now");
+  expect(container.textContent).not.toContain("Not running");
   act(() => hoverAction("opener", "reply")!.click());
   expect(barKind()).toBe("picked");
   expect(menuOptions()).toEqual(["reply", "continue"]);
@@ -517,12 +521,50 @@ it.each(["grok", "devin", "antigravity"] as const)(
 );
 
 // PR I6 review r2 m2. Defect: a Mono chat whose queue is paused says
-// Steering, though the pump holds every steer until the queue resumes.
-it("shows no Steering and no hover Steer while a Mono chat's queue is paused", () => {
-  render(busyChat({ queueStatus: "paused" }));
+// Steering, though the pump holds every steer until the queue resumes. PR I6
+// review r3 m1: or its text goes out as a plain message, which the pump
+// steers if the user resumes the queue before the turn ends.
+it("shows no Steering and no hover Steer while a Mono chat's queue is paused, and sends the text to wait for the turn end", () => {
+  const pane = busyChat({ queueStatus: "paused" });
+  pane.onSubmit = vi.fn(() => true);
+  render(pane);
   typeDraft("stop, wrong branch");
   expect(barKind()).toBeNull();
   expect(hoverAction("opener", "steer")).toBeNull();
+  act(() =>
+    container
+      .querySelector("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
+  expect(pane.onSubmit).toHaveBeenCalledExactlyOnceWith(
+    "chat",
+    "stop, wrong branch",
+    [],
+    { waitForIdle: true },
+  );
+});
+
+// PR I6 review r3 M1. Defect: the Mono chat says Steering and offers Steer
+// while a provider switch is armed (from the usage-limit notice) or the
+// outgoing agent writes its hand-off brief, though App then refuses the text
+// or cancels the turn, and the pump steers nothing.
+it("shows no Steering and no hover Steer while the chat switches providers or prepares a hand-off", () => {
+  const switching = busyChat({
+    pendingSwitch: { from: "claude", fromModel: "sonnet", fromSettings: {} },
+  });
+  const handingOff = busyChat();
+  handingOff.session = appendPreparingHandoff(
+    handingOff.session,
+    "claude",
+    "codex",
+  );
+  for (const pane of [switching, handingOff]) {
+    render(pane);
+    typeDraft("stop, wrong branch");
+    expect(barKind()).toBeNull();
+    expect(hoverAction("opener", "steer")).toBeNull();
+    expect(hoverAction("opener", "reply")).not.toBeNull();
+  }
 });
 
 // PR I6 review r2 m5, design 16.8. Defect: the pane reads a Mono chat as a

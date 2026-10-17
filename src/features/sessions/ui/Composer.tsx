@@ -664,6 +664,10 @@ export function Composer({
         ? "Operator"
         : undefined;
   const intentBar = useComposerBar(intent, hasValue, queuedBy);
+  // A send that waited for a paste read reads the bar as it is now: the turn
+  // the bar named may have ended during the wait.
+  const intentSendRef = useRef(intentBar.send);
+  intentSendRef.current = intentBar.send;
 
   /** Turning a mode off also drops its leading command from the text. */
   const clearLeadingMode = (name: string) => {
@@ -1422,7 +1426,7 @@ export function Composer({
     if (!text && files.length === 0 && !noteCard && !handoffCard) return;
     // The bar blocks a steer whose work ended, before the parent draft is
     // cleared, so a blocked send keeps the text (design 16.8).
-    const target = asNew ?? intentBar.send;
+    const target = asNew ?? intentSendRef.current;
     if (!target) return;
     // Clear the parent draft before onSubmit. The app can synchronously remount
     // the composer when the first message leaves an empty session (EmptySession →

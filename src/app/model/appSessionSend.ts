@@ -3,7 +3,7 @@ import type {
   WhenBusy,
 } from "../../features/agent-app/model/agentApp";
 import type { ControlOutcome } from "../../features/orchestration/model/orchestration";
-import { isPreparingHandoff } from "../../features/sessions/model/handoff";
+import { switchingProviders } from "../../features/sessions/model/handoff";
 import { consumeOperatorCommand } from "../../features/sessions/model/operatorCommand";
 import type {
   AppDelivery,
@@ -65,7 +65,7 @@ export function steerBlockReason(
 ): string | undefined {
   if (session.worktreePreparing)
     return 'The session is preparing its worktree and cannot be steered yet; use whenBusy "followUp"';
-  if (session.pendingSwitch || isPreparingHandoff(session))
+  if (switchingProviders(session))
     return 'The session is switching providers and cannot be steered; use whenBusy "followUp"';
   if (consumeOperatorCommand(prompt).matched)
     return '/operator starts a new turn and cannot steer the running one; use whenBusy "followUp"';
