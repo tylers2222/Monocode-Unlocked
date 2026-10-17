@@ -143,7 +143,8 @@ it("says how to keep memory and update the soul only at the user's request", () 
   const rules = (tag: string) =>
     full.match(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`))?.[0] ?? "";
   // A Mono learns every messaging tool and field it can use, the notice it
-  // can get, and not the removed tool.
+  // can get, the inference line that can start a message (design 16.10 I4
+  // row), and not the removed tool.
   const messaging = rules("mono_messaging_rules");
   for (const tool of [
     "messages.get_monos",
@@ -161,6 +162,9 @@ it("says how to keep memory and update the soul only at the user's request", () 
     '"to"',
     "<mono_message>",
     "<mono_notice>",
+    '[steer → #1 · "',
+    "[steer → whole turn]",
+    "reply_to attribute",
   ])
     expect(messaging).toContain(tool);
   expect(full).not.toContain("monos.send");

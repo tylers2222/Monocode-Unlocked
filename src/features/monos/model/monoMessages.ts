@@ -1,4 +1,10 @@
 import type { AppErrorCode } from "../../agent-app/model/appActionError";
+import {
+  excerpt,
+  intentLine,
+  targetRef,
+  type ReplyTarget,
+} from "../../sessions/model/messageIntent";
 import { isPersistableId } from "../../sessions/data/sessionStore";
 import { isMonoId } from "./mono";
 
@@ -363,18 +369,39 @@ function attribute(value: string): string {
   return value.replace(/[&"<>]/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
+/** Who reads a handed-off message, and the message it refers to (design 16.7). */
+export type Reading = {
+  sessionId: SessionId;
+  turnId: TurnId;
+  /** Null for a `new` row and a whole-turn steer: neither names a message. */
+  target: ReplyTarget | null;
+};
+
 /**
- * What the receiving agent reads (design 5.2). A message that wants a reply
- * shows the handle of the turn it was handed to. How to treat and answer it
- * lives once in `<mono_messaging_rules>`.
+ * What the receiving agent reads (design 5.2, 16.7). A message that wants a
+ * reply shows the handle of the turn it was handed to. A hand-off also
+ * passes the `reading`, so a reply or steer starts with its inference line;
+ * a queue item's text has none. How to treat and answer it lives once in
+ * `<mono_messaging_rules>`.
  */
 export function renderMonoMessage(
-  message: Pick<MessageBase, "id" | "fromMonoId" | "body"> & {
-    wantingReply: boolean;
-  },
+  message: Pick<MessageBase, "id" | "fromMonoId" | "body"> &
+    Intent & { wantingReply: boolean },
   sender: { name: string; role: MonoRole } | undefined,
   handle?: Handle,
+  reading?: Reading,
 ): string {
+  let line: string | undefined;
+  let replyTo: MessageId | undefined;
+  if (reading && message.scope === "turn")
+    line = intentLine({ intent: "steer", scope: "turn" });
+  else if (reading?.target && message.intent !== "new") {
+    line = intentLine(
+      { intent: message.intent, quote: excerpt(reading.target.body) },
+      targetRef(reading.target, reading),
+    );
+    replyTo = reading.target.messageId;
+  }
   const attributes = [
     `message_id="${message.id}"`,
     `from="${attribute(sender?.name ?? "a deleted Mono")}"`,
@@ -382,8 +409,9 @@ export function renderMonoMessage(
     ...(sender ? [`role="${sender.role}"`] : []),
     `wanting_reply="${message.wantingReply}"`,
     ...(handle ? [`handle="${handle}"`] : []),
+    ...(replyTo ? [`reply_to="${replyTo}"`] : []),
   ];
-  return `<mono_message ${attributes.join(" ")}>\n${message.body}\n</mono_message>`;
+  return `<mono_message ${attributes.join(" ")}>\n${line ? `${line}\n` : ""}${message.body}\n</mono_message>`;
 }
 
 export type NoticeStatus = "unanswered" | "dropped";

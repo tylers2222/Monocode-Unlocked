@@ -5,6 +5,7 @@ import {
   AppActionError,
   type ToolErrorDetails,
 } from "../../agent-app/model/appActionError";
+import type { ReplyTarget } from "../../sessions/model/messageIntent";
 import { dequeueQueuedMessage } from "../../sessions/model/messageQueue";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
 import { enqueueMonoMessage } from "./monoMessaging";
@@ -36,6 +37,8 @@ import {
 type Routed = Extract<MonoMessage, { handledBySession: unknown }>;
 /** A row `assign_slot` takes: it refuses every other status. */
 type Waiting = Extract<MonoMessage, { status: "open" | "delivered" }>;
+/** `assign_slot`'s answer: the row with its slot, and what it refers to. */
+type Assigned = { message: Waiting; target: ReplyTarget | null };
 /** A row whose sender is owed a notice (design 5.3). */
 type Noticed = Extract<MonoMessage, { status: NoticeStatus }>;
 
@@ -242,14 +245,15 @@ export async function handOff(
   const turnId = mode === "dispatch" ? newTurnId() : host.turnId(sessionId);
   if (!turnId) return false;
   const slot = { id, turnId };
-  const row = await invoke<Waiting | null>("mono_message_assign_slot", {
+  const assigned = await invoke<Assigned | null>("mono_message_assign_slot", {
     ...slot,
     kind: mode === "dispatch" ? "submit" : "steer",
   });
-  if (!row) {
+  if (!assigned) {
     host.update(sessionId, (session) => dequeueQueuedMessage(session, id));
     return false;
   }
+  const row = assigned.message;
   let accepted = false;
   try {
     accepted = await deliver({
@@ -257,6 +261,11 @@ export async function handOff(
         row,
         host.sender(row.fromMonoId),
         row.status === "open" ? row.slot?.handle : undefined,
+        {
+          sessionId: row.handledBySession,
+          turnId,
+          target: assigned.target,
+        },
       ),
       turnId,
     });

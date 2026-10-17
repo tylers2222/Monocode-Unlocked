@@ -1909,14 +1909,65 @@ fn record(
     }
 }
 
+/// What an inference line needs of the message a row refers to (design
+/// 16.7): its text, and its handle with the session and turn that hold it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplyTarget {
+    pub message_id: MessageId,
+    pub body: String,
+    /// `None` once the chat that handled it was cleared (design 7).
+    pub handled_by_session: Option<SessionId>,
+    pub slot: Option<TargetSlot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetSlot {
+    pub turn_id: String,
+    pub handle: Handle,
+}
+
+/// The row `reply_to` names. The column is a foreign key, so it exists.
+pub fn reply_target(conn: &Connection, id: &MessageId) -> rusqlite::Result<ReplyTarget> {
+    conn.query_row(
+        "SELECT body, handled_by_session, turn_id, handle FROM mono_messages WHERE id = ?1",
+        [id.as_str()],
+        |row| {
+            let handle = row
+                .get::<_, Option<i64>>("handle")?
+                .map(|number| Handle::new(number).ok_or_else(|| invalid("handle")))
+                .transpose()?;
+            Ok(ReplyTarget {
+                message_id: id.clone(),
+                body: row.get("body")?,
+                handled_by_session: parsed(row, "handled_by_session", SessionId::parse)?,
+                slot: row
+                    .get::<_, Option<String>>("turn_id")?
+                    .zip(handle)
+                    .map(|(turn_id, handle)| TargetSlot { turn_id, handle }),
+            })
+        },
+    )
+}
+
+/// A hand-off's row with its slot, and the message its line names: `None`
+/// for `new` and for a whole-turn steer (design 16.7, 16.12.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Assigned {
+    pub message: MonoMessage,
+    pub target: Option<ReplyTarget>,
+}
+
 /// Design 5.5 rule 3: before a hand-off removes a queue item or sends its
 /// text, row `id` takes a slot of turn `turn_id`, set by `window`. Same row,
-/// same turn: the slot it has. Returns the row with its slot, or `None` when
-/// the row is no longer `open` or `delivered`, was already accepted, or holds
-/// another turn's slot; the caller then removes the item and delivers nothing
-/// (5.1). A steer row takes a slot only as a steer into the turn that runs
-/// the work it names; any other hand-off drops it, and its sender is owed a
-/// notice (design 16.6).
+/// same turn: the slot it has. Returns the row with its slot and its target,
+/// or `None` when the row is no longer `open` or `delivered`, was already
+/// accepted, or holds another turn's slot; the caller then removes the item
+/// and delivers nothing (5.1). A steer row takes a slot only as a steer into
+/// the turn that runs the work it names; any other hand-off drops it, and
+/// its sender is owed a notice (design 16.6).
 pub fn assign_slot(
     conn: &Connection,
     id: &MessageId,
@@ -1924,7 +1975,7 @@ pub fn assign_slot(
     window: &str,
     delivery: Delivery,
     now: i64,
-) -> rusqlite::Result<(Option<MonoMessage>, Notices)> {
+) -> rusqlite::Result<(Option<Assigned>, Notices)> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let Some(message) = get(&tx, id)? else {
         return Ok((None, Notices::default()));
@@ -1984,6 +2035,15 @@ pub fn assign_slot(
         }
     };
     let assigned = if assigned { get(&tx, id)? } else { None };
+    let assigned = assigned
+        .map(|message| {
+            let target = match message.status.intent().and_then(Intent::reply_to) {
+                Some(target) => Some(reply_target(&tx, target)?),
+                None => None,
+            };
+            Ok::<_, rusqlite::Error>(Assigned { message, target })
+        })
+        .transpose()?;
     tx.commit()?;
     Ok((assigned, Notices::default()))
 }
@@ -2598,7 +2658,7 @@ pub fn mono_message_assign_slot(
     id: String,
     turn_id: String,
     kind: String,
-) -> Result<Option<MonoMessage>, String> {
+) -> Result<Option<Assigned>, String> {
     let delivery = match kind.as_str() {
         "submit" => Delivery::Submit,
         "steer" => Delivery::Steer,
@@ -4990,7 +5050,8 @@ pub(crate) mod tests {
             let row = assign_slot(&conn, id, turn_id, "main", Delivery::Submit, 101)
                 .unwrap()
                 .0
-                .expect("a slot");
+                .expect("a slot")
+                .message;
             match row.status {
                 Status::Open {
                     slot: Some(slot), ..
@@ -5005,6 +5066,53 @@ pub(crate) mod tests {
         assert_eq!(handle(&second, "turn-1"), "#2");
         assert_eq!(handle(&first, "turn-1"), "#1");
         assert_eq!(handle(&next_turn, "turn-2"), "#1");
+    }
+
+    // Design 16.7, 16.12.5, PR I4 row. Defect: a hand-off gets no target, so
+    // the steer reaches the agent with no line; the target loses the handle
+    // and turn that make `#n` valid; or a new row or a whole-turn steer gets
+    // a target it does not name.
+    #[test]
+    fn assign_slot_answers_the_target_with_its_slot_and_none_for_a_new_row_or_a_whole_turn_steer() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let target = |id: &MessageId, turn_id: &str, delivery| {
+            let assigned = assign_slot(&conn, id, turn_id, "main", delivery, 103)
+                .unwrap()
+                .0
+                .expect("a slot");
+            serde_json::to_value(&assigned).unwrap()["target"].clone()
+        };
+        let work = handed_off(&conn, "work", true, "turn-1", "main", true);
+        let steer = accepted_ids(&call_with(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "steer",
+            Tool::SendMessage,
+            steering("mono-a", work.as_str()),
+            &[],
+            &["a-chat"],
+        ))
+        .remove(0);
+        assert_eq!(
+            target(&steer, "turn-1", Delivery::Steer),
+            serde_json::json!({
+                "messageId": work.as_str(),
+                "body": "Hi",
+                "handledBySession": "a-chat",
+                "slot": {"turnId": "turn-1", "handle": "#1"},
+            })
+        );
+        let whole = steered_turn(&conn, "whole");
+        assert_eq!(
+            target(&whole, "turn-1", Delivery::Steer),
+            serde_json::Value::Null
+        );
+        let plain = sent_to_a(&conn, "plain", false);
+        assert_eq!(
+            target(&plain, "turn-2", Delivery::Submit),
+            serde_json::Value::Null
+        );
     }
 
     // Design 5.3. Defect: a question the agent saw stays open after its
@@ -6400,7 +6508,10 @@ pub(crate) mod tests {
         let (slot, notices) =
             assign_slot(&conn, &steer, "turn-1", "main", Delivery::Steer, 101).unwrap();
         assert_eq!(notices, Notices::default());
-        assert_eq!(slot.map(|message| message.id), Some(steer.clone()));
+        assert_eq!(
+            slot.map(|assigned| assigned.message.id),
+            Some(steer.clone())
+        );
         assert_eq!(stored_delivery(&conn, &steer).as_deref(), Some("steer"));
     }
 
@@ -7266,7 +7377,10 @@ pub(crate) mod tests {
         let (slot, notices) =
             assign_slot(&conn, &steer, "turn-1", "main", Delivery::Steer, 101).unwrap();
         assert_eq!(notices, Notices::default());
-        assert_eq!(slot.map(|message| message.id), Some(steer.clone()));
+        assert_eq!(
+            slot.map(|assigned| assigned.message.id),
+            Some(steer.clone())
+        );
         assert_eq!(stored_delivery(&conn, &steer).as_deref(), Some("steer"));
     }
 
