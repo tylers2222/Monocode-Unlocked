@@ -12,19 +12,30 @@ import {
   registerHarness,
   type HarnessAdapter,
 } from "../../../integrations/harness/core/registry";
-import type { TurnId } from "../../monos/model/monoMessages";
+import type { MessageId, TurnId } from "../../monos/model/monoMessages";
 import {
   acknowledgeMonoMessage,
   enqueueMonoMessage,
+  monoMessageDeliveries,
 } from "../../monos/model/monoMessaging";
-import type { RunningItem } from "../model/messageIntent";
-import { newSession, WHOLE_TURN, type TargetLink } from "../model/session";
+import { runningItems, type RunningItem } from "../model/messageIntent";
+import { nextQueuedSend, runningTurnMap } from "../model/messageQueue";
+import { typedMonoMessage } from "../model/queuedFollowUp";
+import {
+  newSession,
+  WHOLE_TURN,
+  type Session,
+  type TargetLink,
+} from "../model/session";
 import {
   barSend,
   composerBar,
+  NO_CHOICE,
   quoteText,
   runningTurnOf,
   steersTyped,
+  steerTargets,
+  type BarChoice,
 } from "./composerIntent";
 import { ComposerIntentBar } from "./ComposerIntentBar";
 import { MessageQuote } from "./MessageQuote";
@@ -227,4 +238,120 @@ it("offers Steer only on a running message and picks a link to it", () => {
   });
   act(() => root.unmount());
   vi.unstubAllGlobals();
+});
+
+/**
+ * A busy Mono chat in turn 1, its composer as SessionPane wires it, and the
+ * queue pump that takes what the composer sends.
+ */
+function monoChat(turnReadiness: Session["turnReadiness"]) {
+  let chat: Session = {
+    ...appendUser(newSession("codex", "/tmp"), "Build it", [], {
+      turnId: turn1,
+    }),
+    busy: true,
+    turnReadiness,
+  };
+  const turns = () => runningTurnMap([[chat.id, runningTurnOf(chat)!]]);
+  const steering = () => steersTyped(chat, true, "steer");
+  const running = () => runningItems(chat, runningTurnOf(chat));
+  const bar = (choice: BarChoice = NO_CHOICE) =>
+    composerBar(running(), choice, steering(), false);
+  return {
+    get chat() {
+      return chat;
+    },
+    update(change: (chat: Session) => Session) {
+      chat = change(chat);
+    },
+    bar,
+    /** What the user reads above the field while typing. */
+    barText(choice: BarChoice = NO_CHOICE) {
+      return renderToStaticMarkup(
+        createElement(ComposerIntentBar, {
+          bar: bar(choice),
+          intent: {
+            running: running(),
+            steering: steering(),
+            choice,
+            onChoiceChange: () => {},
+            monoName: "Ada",
+          },
+          typing: true,
+          onSendAsNew: () => {},
+        }),
+      ).replace(/<[^>]+>/g, "");
+    },
+    /** Send `text` as the composer does (`useComposerBar` `send`). */
+    type(text: string, choice: BarChoice = NO_CHOICE) {
+      const origin = barSend(
+        bar(choice),
+        steering() || choice.kind === "cleared",
+      );
+      expect(origin).not.toBeNull();
+      const item = typedMonoMessage({
+        session: chat,
+        turns: turns(),
+        origin: origin!,
+        message: { id: text, text, attachments: [] },
+      })!;
+      chat = enqueueMonoMessage(chat, item);
+      return item;
+    },
+    /** What the pump steers into the running turn now. */
+    next: () => nextQueuedSend(chat, turns(), true),
+    steerTargets: () => steerTargets(chat, running()),
+  };
+}
+
+// PR I6 review r1 M2, with PR #19. Defect: the bar or the hover Steer is
+// hidden after ✕, so text the pump would steer reads as waiting.
+it("steers text typed after ✕, and says Steering for it", () => {
+  const mono = monoChat("ready");
+  mono.type("after this, write docs", { kind: "cleared" });
+  expect(mono.bar()).toEqual({ kind: "turn" });
+  expect(mono.barText()).toContain("Steering");
+  expect(mono.steerTargets()).toEqual(new Set([mono.chat.blocks[0].id]));
+  mono.type("stop, wrong branch");
+  expect(mono.next()?.text).toBe("stop, wrong branch");
+});
+
+// PR I6 review r1 M2, with PR #19. Defect: the bar says Steering, or the
+// hover offers Steer, for text the pump holds behind the user's own message
+// that missed its turn.
+it("holds text typed behind a missed message, with no Steering bar and no hover Steer", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000);
+  const mono = monoChat("starting");
+  const row = {
+    id: "m_rowrowrowrow",
+    text: "<mono_message>please review PR 12</mono_message>",
+    attachments: [],
+    waitForIdle: true as const,
+    monoMessageId: "m_rowrowrowrow" as MessageId,
+  };
+  mono.update((chat) => enqueueMonoMessage(chat, row));
+  mono.type("use the staging DB");
+  // Turn 1 ends before it takes the steer; the Mono row opens turn 2.
+  vi.setSystemTime(2_000);
+  mono.update((chat) =>
+    acknowledgeMonoMessage(
+      { ...stopStreaming(chat), queueStatus: "active" },
+      row,
+      { mode: "new-turn", cards: { turnId: turn2 } },
+    ),
+  );
+  mono.update((chat) => ({ ...chat, busy: true, turnReadiness: "ready" }));
+  expect(runningTurnOf(mono.chat)).toBe(turn2);
+  expect(mono.chat.queuedMessages?.[0]).toMatchObject({ missed: true });
+
+  expect(mono.bar()).toEqual({ kind: "none" });
+  expect(mono.barText()).not.toContain("Steering");
+  expect(runningItems(mono.chat, turn2)).not.toEqual([]);
+  expect(mono.steerTargets()).toEqual(new Set());
+  const held = mono.type("stop, wrong branch");
+  expect(mono.next()).toBeUndefined();
+  expect(monoMessageDeliveries(mono.chat).get(held.id)).toEqual({
+    status: "waiting",
+  });
 });

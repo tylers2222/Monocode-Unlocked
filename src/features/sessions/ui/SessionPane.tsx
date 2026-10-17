@@ -16,6 +16,7 @@ import {
   NO_CHOICE,
   runningTurnOf,
   steersTyped,
+  steerTargets,
   type BarChoice,
 } from "./composerIntent";
 import { MessageTargetsContext, type MessageTargets } from "./MessageTargets";
@@ -448,10 +449,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
       remoteSession
         ? null
         : {
-            running: new Set(running.map((item) => item.blockId)),
+            running: steerTargets(session, running),
             pick: (link) => setChoice({ kind: "picked", link }),
           },
-    [remoteSession, running, setChoice],
+    [remoteSession, running, session.queuedMessages, setChoice],
   );
   const composerIntent: ComposerIntent | undefined = remoteSession
     ? undefined

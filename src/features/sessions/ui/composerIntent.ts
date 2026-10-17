@@ -6,6 +6,7 @@ import {
   type ComposerTarget,
   type RunningItem,
 } from "../model/messageIntent";
+import { userTextHeld } from "../model/messageQueue";
 import type {
   Block,
   ComposerTurnOptions,
@@ -120,23 +121,46 @@ export function runningTurnOf(
  * Whether the busy rule would steer text typed now (design 16.8, the
  * busy branch of `submitSession`): a busy Mono chat whose harness can steer,
  * or a busy session whose follow-up setting is `steer` or whose agent only
- * waits on background work.
+ * waits on background work. Never while the queue holds new text behind the
+ * user's own message that missed its turn (`userTextHeld`, design 16.12.4):
+ * that text waits for the turn end, so the bar shows no Steering.
  */
 export function steersTyped(
   session: Pick<
     Session,
-    "busy" | "harness" | "worktreePreparing" | "backgroundTasks"
+    | "busy"
+    | "harness"
+    | "worktreePreparing"
+    | "backgroundTasks"
+    | "queuedMessages"
   >,
   mono: boolean,
   followUp: FollowUpBehavior,
 ): boolean {
-  if (!session.busy || !canSteerHarness(session.harness)) return false;
-  // M2 hook (PR I6 r1): when PR #19 lands, return false here while its model
-  // predicate says the queue would hold new text behind one of the user's
-  // own waiting messages, and hide the hover Steer in that state too.
+  if (
+    !session.busy ||
+    !canSteerHarness(session.harness) ||
+    userTextHeld(session)
+  )
+    return false;
   if (mono) return true;
   if (session.worktreePreparing) return false;
   return session.backgroundTasks?.length ? true : followUp === "steer";
+}
+
+/**
+ * The blocks the hover Steer may name: the running items, or none while the
+ * queue holds new text behind the user's own message that missed its turn
+ * (`userTextHeld`). A steer picked then would wait behind that message and
+ * fail once its turn ends.
+ */
+export function steerTargets(
+  session: Pick<Session, "queuedMessages">,
+  running: readonly RunningItem[],
+): ReadonlySet<string> {
+  return new Set(
+    userTextHeld(session) ? [] : running.map((item) => item.blockId),
+  );
 }
 
 /** A link that names `block`, with its first words as the quote. */
