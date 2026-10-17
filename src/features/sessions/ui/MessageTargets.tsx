@@ -1,4 +1,4 @@
-import { createContext, useContext } from "react";
+import { createContext, useContext, type CSSProperties } from "react";
 import type { Block, TargetLink } from "../model/session";
 import { INTENT_LOOK, linkTo } from "./composerIntent";
 
@@ -18,8 +18,12 @@ export const MessageTargetsContext = createContext<MessageTargets | null>(null);
  */
 export function PickTargetActions({
   block,
+  className,
+  style,
 }: {
   block: Pick<Block, "id" | "text">;
+  className?: string;
+  style?: CSSProperties;
 }) {
   const targets = useContext(MessageTargetsContext);
   if (!targets) return null;
@@ -27,7 +31,7 @@ export function PickTargetActions({
     ? ["reply", "steer"]
     : ["reply"];
   return (
-    <>
+    <span className={className} style={style}>
       {intents.map((intent) => (
         <button
           key={intent}
@@ -48,6 +52,6 @@ export function PickTargetActions({
           {intent === "steer" ? "Steer" : "Reply"}
         </button>
       ))}
-    </>
+    </span>
   );
 }

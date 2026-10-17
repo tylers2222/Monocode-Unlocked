@@ -1876,7 +1876,9 @@ function TurnDuration({
         ) : (
           <Check className="size-3.5" strokeWidth={1.75} />
         )}
-        {replyTo ? <PickTargetActions block={replyTo} /> : null}
+        {replyTo ? (
+          <PickTargetActions block={replyTo} className="flex items-center" />
+        ) : null}
         {onShowWork ? (
           <button
             type="button"
@@ -2686,6 +2688,14 @@ function UserMessageBlock({
       <div
         className={`user-message-hover-zone min-w-0 overflow-visible ${chat ? "flex w-fit max-w-full flex-col items-end" : "w-full"}`}
       >
+        {block.draft ? null : (
+          <PickTargetActions
+            block={block}
+            className="pick-target-pill"
+            // Above the bubble, which stacks by its turn (`stickyIndex`).
+            style={{ zIndex: stickyIndex + 1 }}
+          />
+        )}
         {block.link ? <MessageQuote link={block.link} /> : null}
         {/* Photos and their bubble enter as one message. */}
         <div
@@ -2863,7 +2873,6 @@ function UserMessageBlock({
             {text && onSaveNote ? (
               <SaveNoteButton text={text} onSave={onSaveNote} />
             ) : null}
-            {block.draft ? null : <PickTargetActions block={block} />}
             {messageAt != null ? (
               <time
                 dateTime={new Date(messageAt).toISOString()}

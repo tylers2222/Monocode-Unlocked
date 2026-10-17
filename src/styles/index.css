@@ -765,7 +765,8 @@ html.has-chat-background.chat-background-effect-ready.chat-background-gradient-b
 
 @media (prefers-reduced-motion: reduce) {
   .user-message-actions,
-  .turn-actions-hover {
+  .turn-actions-hover,
+  .pick-target-pill {
     transition: none;
   }
 }
@@ -945,6 +946,7 @@ html.theme-light .composer-intent-chip {
   display: inline-flex;
   height: 24px;
   align-items: center;
+  font-family: var(--font-sans);
   gap: 4px;
   padding: 0 6px;
   border-radius: 6px;
@@ -956,6 +958,43 @@ html.theme-light .composer-intent-chip {
 .pick-target-action:hover {
   background: var(--color-selection-hover);
   color: var(--color-content);
+}
+
+/* Reply and Steer sit in a small pill on the message's top edge, shown on
+ * hover like iMessage's, so stacked messages keep them too (doop E2). */
+.pick-target-pill {
+  display: flex;
+  width: fit-content;
+  gap: 2px;
+  margin-bottom: 4px;
+  padding: 2px;
+  border: 1px solid color-mix(in srgb, var(--color-content) 12%, transparent);
+  border-radius: 8px;
+  background: color-mix(
+    in srgb,
+    var(--color-content) 6%,
+    var(--color-background-base)
+  );
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pick-target-pill {
+    position: absolute;
+    top: -15px;
+    right: 8px;
+    z-index: 2;
+    margin: 0;
+    box-shadow: var(--shadow-xl, 0 10px 30px rgb(0 0 0 / 0.35));
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease;
+  }
+
+  .user-message-row:hover .pick-target-pill,
+  .user-message-row:focus-within .pick-target-pill {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 /* The quote sits above the bubble on the bubble's side; a light grey
