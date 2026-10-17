@@ -48,3 +48,52 @@ export function operatorUserPrompt(block: Block): string {
 export function operatorEnabledInThread(blocks: Block[]): boolean {
   return blocks.some(isOperatorUserTurn);
 }
+
+/** How a thread reached app access (design 13.4). */
+export type AppAccess = "operator" | "started";
+
+/**
+ * `operator` once the thread has a submitted /operator turn; else `started`
+ * when `sessions.start` made the session, which stamps its first user block;
+ * else none.
+ */
+export function appAccess(blocks: Block[]): AppAccess | null {
+  if (operatorEnabledInThread(blocks)) return "operator";
+  const first = blocks.find((block) => block.role === "user" && !block.draft);
+  return first?.startedBy ? "started" : null;
+}
+
+/**
+ * The access of the turn a submit starts: `operator` for a typed /operator,
+ * else the thread's, else `started` when this submit is the first turn of a
+ * session that `sessions.start` (`startedBy`) made, whose block it stamps
+ * (PR 7 review r2 m9).
+ */
+export function submitAccess(
+  blocks: Block[],
+  typedOperator: boolean,
+  startedBy: string | undefined,
+): AppAccess | null {
+  if (typedOperator) return "operator";
+  return appAccess(blocks) ?? (startedBy ? "started" : null);
+}
+
+/**
+ * What a turn gets (PR 7 review r1 M1, r2 m9): app access for any access,
+ * and `controlsAgents` (codex opens its sandbox network so the CLI reaches
+ * the app's loopback) only for access the user granted, a Mono's chat or a
+ * typed /operator, or for an active orchestration run, whose lead keeps its
+ * own control access. A session that `sessions.start` made keeps its
+ * runtime mode's network, as before PR 7. Each harness call of a turn
+ * spreads this, so no call site picks either field itself.
+ */
+export function turnAccess(
+  access: AppAccess | null,
+  mono: boolean,
+  orchestrating: boolean,
+): { appAccess: boolean; controlsAgents: boolean } {
+  return {
+    appAccess: mono || access !== null,
+    controlsAgents: mono || access === "operator" || orchestrating,
+  };
+}

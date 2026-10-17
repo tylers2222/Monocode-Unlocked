@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   displayPath,
   isEqualOrInside,
   joinPath,
   parentPath,
+  pathKey,
   prettyCwd,
   projectName,
   rebasePath,
@@ -12,6 +13,14 @@ import {
   resolveWorkspaceFileReference,
   resolveWorkspacePath,
 } from "./paths";
+import PATH_KEYS from "./pathKey.fixtures.json";
+import type * as Platform from "../../platform/tauri/platform";
+
+// The fixture holds the keys of a Mac or Linux build, which Rust shares.
+vi.mock("../../platform/tauri/platform", async (importOriginal) => ({
+  ...(await importOriginal<typeof Platform>()),
+  IS_WIN: false,
+}));
 
 describe("workspace file references", () => {
   it.each([
@@ -244,5 +253,13 @@ describe("path relations", () => {
     expect(displayPath("c:/USERS/me/App/src/a.ts", "C:/Users/ME/app")).toBe(
       "src/a.ts",
     );
+  });
+});
+
+// Design 6.1 (review r1): `path_key` in mono_gate.rs checks the same file,
+// so a project two Monos share in TS is shared in the gate too.
+describe("pathKey", () => {
+  it("keys every path of the fixture that Rust's path_key shares", () => {
+    for (const [input, key] of PATH_KEYS) expect(pathKey(input), input).toBe(key);
   });
 });

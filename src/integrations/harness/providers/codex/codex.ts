@@ -47,7 +47,10 @@ import {
   codexQuestions,
   codexQuestionResponse,
 } from "./codexQuestions";
-import { codexMcpConfirmation } from "./codexElicitation";
+import {
+  codexMcpAcceptMeta,
+  codexMcpConfirmation,
+} from "./codexElicitation";
 import { snapshotRemainder } from "../../core/streamText";
 import { prepareCodexMonoContext } from "./codexStore";
 import type {
@@ -92,7 +95,7 @@ type Live = {
   threadId: string;
   cwd: string;
   providerAccountId?: string;
-  /** Thread-level network policy used when this app-server opened the thread. */
+  /** The turn's controlsAgents when this app-server opened the thread; a change reopens it. */
   controlsAgents: boolean;
   ephemeral: boolean;
   codexStore?: "mono";
@@ -698,7 +701,6 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         const params = buildThreadStartParams({
           cwd: input.cwd,
           runtimeMode: input.runtimeMode,
-          controlsAgents: input.controlsAgents,
           model,
           serviceTier,
         });
@@ -726,7 +728,6 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       const params = buildThreadStartParams({
         cwd: input.cwd,
         runtimeMode: input.runtimeMode,
-        controlsAgents: input.controlsAgents,
         model,
         serviceTier,
       });
@@ -1456,7 +1457,7 @@ async function handleServerRequest(
       await live.rpc.respond(id, {
         action: "accept",
         content: confirmation.content,
-        _meta: null,
+        _meta: codexMcpAcceptMeta(params),
       });
       return;
     }
@@ -1475,7 +1476,7 @@ async function handleServerRequest(
       await live.rpc.respond(id, {
         action: decision === "allow" ? "accept" : "decline",
         content: decision === "allow" ? confirmation.content : null,
-        _meta: null,
+        _meta: decision === "allow" ? codexMcpAcceptMeta(params) : null,
       });
     return;
   }

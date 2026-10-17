@@ -635,6 +635,23 @@ describe("appendSteerUser", () => {
   });
 });
 
+// Design 13.4. Defect: appendUser drops the stamp, so the first turn of a
+// session that sessions.start made leaves no app access for its later turns.
+it("keeps the startedBy stamp on the first user block it appends", () => {
+  const session = appendUser(newSession("codex", "/tmp"), "Fix the build", [], {
+    appRequestId: "app-lead-r1",
+    startedBy: "lead",
+  });
+  expect(session.blocks).toMatchObject([
+    {
+      role: "user",
+      text: "Fix the build",
+      appRequestId: "app-lead-r1",
+      startedBy: "lead",
+    },
+  ]);
+});
+
 describe("usage limits", () => {
   it("records when a limited turn can resume", () => {
     const limited = applyHarnessEvent(newSession("codex", "/tmp"), {

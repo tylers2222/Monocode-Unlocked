@@ -15,6 +15,7 @@ import {
   type SendInput,
 } from "../../monos/model/monoMessages";
 import { AppActionError, monoError } from "./appActionError";
+import { isPersistableId } from "../../sessions/data/sessionStore";
 import {
   HARNESSES,
   RUNTIME_MODE_HINT,
@@ -48,7 +49,10 @@ import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
 import type { Worktree, Worktrees } from "../../source-control/model/worktrees";
 import { knownHomeDir, pathKey, projectName } from "../../../shared/lib/paths";
 import type { SplitDir } from "../../workspace/model/layout";
-import { consumeOperatorCommand } from "../../sessions/model/operatorCommand";
+import {
+  appAccess,
+  consumeOperatorCommand,
+} from "../../sessions/model/operatorCommand";
 import {
   sessionConversationPage,
   type SessionReadOptions,
@@ -87,6 +91,7 @@ import {
   topicName,
 } from "../../monos/model/monoMemory";
 import {
+  resolveMessageAllowlist,
   resolveMonoProjects,
   type MonoChange,
   type MonoSettings,
@@ -254,6 +259,46 @@ export type AgentAppHost = {
     reply(requestId: string, input: ReplyInput): Promise<unknown>;
     get(input: GetInput): Promise<unknown>;
   };
+  /**
+   * Design 6.6 and 13: the level gate of this call's caller. Required, so a
+   * host cannot run app actions with no level rule (PR 7 review r1 n1).
+   */
+  levels: {
+    /**
+     * `mono_app_action_check`. Throws its refusal or rejection as an
+     * `AppActionError`; allowed, it answers the lead id that `sessions.start`
+     * writes on the new session.
+     */
+    check(
+      requestId: string,
+      call: {
+        action: string;
+        /** The session the action acts on, as the call names it. */
+        target: string | null;
+        /** The id a `sessions.start` launches; null for any other action. */
+        startedSessionId: string | null;
+        input: Record<string, unknown>;
+      },
+    ): Promise<{ leadSessionId: string | null }>;
+    /**
+     * `mono_message_start_prior`: reads, and never writes, the row a Mono's
+     * request id already has. `sessionId` is the id the start launches.
+     * Throws when the start must not launch: the key names another call or a
+     * session that ended (with no row: session `sessionId`), or the caller
+     * ended.
+     */
+    startPrior(
+      requestId: string,
+      sessionId: string,
+      input: Record<string, unknown>,
+    ): Promise<void>;
+    /** `mono_message_record_start`: the start row of session `sessionId`, as its message id. Throws request_id_reused. */
+    recordStart(
+      requestId: string,
+      sessionId: string,
+      input: Record<string, unknown>,
+    ): Promise<string>;
+  };
   agentFiles(monoId: string): Promise<MonoFiles>;
   /** The shared Giga workspace, as the last ensure run left it. */
   workspaceStatus?(monoId: string): Promise<WorkspaceStatus>;
@@ -330,7 +375,10 @@ const FIELDS = new Map<string, readonly string[]>([
   ["monos.get", ["monoId"]],
   ["monos.read", ["monoId", "before", "limit", "maxChars"]],
   ["monos.create", ["name", "harness", "model", "projects", "soul", "giga"]],
-  ["monos.update", ["monoId", "harness", "model", "name", "projects"]],
+  [
+    "monos.update",
+    ["monoId", "harness", "model", "name", "projects", "messageAllowlist"],
+  ],
   ["messages.get_monos", []],
   [
     "messages.send",
@@ -384,6 +432,35 @@ function requiredString(value: unknown, name: string, max = 30_000): string {
       `${name} must be a non-empty string under ${max} characters`,
     );
   return value.trim();
+}
+
+/**
+ * PR 7 review r1 B1: an action's input with its `sessionId` parsed once
+ * (trimmed, then a session id of at most 256 characters), so the level
+ * check and the action read the same id. Checked here, before any launch,
+ * a prompt with U+0000 is refused too: SQLite counts its text only up to
+ * that character, so its row could never be written (review m3).
+ */
+function boundaryInput(
+  action: string,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  if (typeof input.prompt === "string" && input.prompt.includes("\u0000"))
+    throw new AppActionError(
+      "invalid_input",
+      "prompt must not contain the character U+0000",
+    );
+  if (!FIELDS.get(action)?.includes("sessionId")) return input;
+  // Only a session card names a session (PR 7 review r2 m10).
+  if (action === "chat.card" && input.sessionId === undefined) return input;
+  const sessionId =
+    typeof input.sessionId === "string" ? input.sessionId.trim() : "";
+  if (sessionId.length > 256 || !isPersistableId(sessionId))
+    throw new AppActionError(
+      "invalid_input",
+      "sessionId must be a session id: 1 to 256 letters, digits, underscores or hyphens",
+    );
+  return { ...input, sessionId };
 }
 
 function agentPrompt(value: unknown): string {
@@ -564,10 +641,31 @@ function fileInMonoFolder(
   );
 }
 
+/**
+ * The id of the session a `sessions.start` launches. The level check and the
+ * start prior read it before any launch (PR 7 review r2 m2). Later calls
+ * name a session by an id of at most 256 characters, so a longer id is
+ * refused before the check (review r2 n8).
+ */
+function appLaunchId(source: Session, requestId: string): string {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId))
+    throw new Error(
+      "request ID must use letters, digits, underscores or hyphens",
+    );
+  const prefix = `app-${source.id}-`;
+  if (prefix.length + requestId.length > 256)
+    throw new AppActionError(
+      "invalid_input",
+      `The new session's id, app-<this session's id>-<request id>, would be over 256 characters. Use a shorter request id, of at most ${Math.max(256 - prefix.length, 0)} characters.`,
+    );
+  return prefix + requestId;
+}
+
 function startLaunch(
   source: Session,
   input: Record<string, unknown>,
   host: AgentAppHost,
+  leadSessionId: string | null,
 ): QuickLaunch {
   const cwd = requireProject(source, input, host);
   const prompt = agentPrompt(input.prompt);
@@ -604,9 +702,22 @@ function startLaunch(
         `Invalid model setting ${key}; run models.list for allowed values`,
       );
   }
-  const runtimeMode = input.runtimeMode ?? source.runtimeMode;
-  if (!RUNTIME_MODES.includes(runtimeMode as Session["runtimeMode"]))
+  const runtimeMode =
+    input.runtimeMode == null
+      ? source.runtimeMode
+      : RUNTIME_MODES.find((mode) => mode === input.runtimeMode);
+  if (!runtimeMode)
     throw new Error(`runtimeMode must be one of: ${RUNTIME_MODES.join(", ")}`);
+  // Design 6.6: a session that sessions.start made starts nothing more
+  // permissive than itself. A Mono and an /operator session choose freely.
+  if (
+    appAccess(source.blocks) === "started" &&
+    RUNTIME_MODES.indexOf(runtimeMode) >
+      RUNTIME_MODES.indexOf(source.runtimeMode)
+  )
+    throw new Error(
+      `runtimeMode cannot be more permissive than this session's (${source.runtimeMode})`,
+    );
   const reveal = input.reveal ?? false;
   if (typeof reveal !== "boolean") throw new Error("reveal must be a boolean");
   const workspaceMode = input.workspaceMode ?? "current";
@@ -636,7 +747,7 @@ function startLaunch(
         : {}),
       ...(requestedSettings as Record<string, string>),
     }),
-    runtimeMode: runtimeMode as Session["runtimeMode"],
+    runtimeMode,
     // A Mono delegates work without navigating the user out of their chat.
     reveal: host.isMono(source.id) ? false : reveal,
     workspaceMode,
@@ -644,6 +755,8 @@ function startLaunch(
       ? { worktreeCwd: currentWorktree }
       : {}),
     ...(worktreeBase ? { worktreeBase } : {}),
+    startedBy: source.id,
+    ...(leadSessionId ? { leadSessionId } : {}),
   };
 }
 
@@ -991,6 +1104,23 @@ async function handleHabits(
   throw new Error(`Unknown app action: ${action}`);
 }
 
+const REQUEST_ID_REUSED =
+  "This request id was already used with different input. Use a new request id.";
+
+/**
+ * A start row that failed after `host.start` launched session `id`. The
+ * answer says so, since a hint like "use a new request id" alone would start
+ * the work a second time.
+ */
+function startedAnyway(error: unknown, id: string): Error {
+  const started = `Session ${id} was started anyway, so do not start it again; read or steer it by its id.`;
+  return error instanceof AppActionError
+    ? new AppActionError(error.code, `${error.hint} ${started}`, error.details)
+    : new Error(
+        `${error instanceof Error ? error.message : String(error)}. ${started}`,
+      );
+}
+
 /**
  * A call already made with this request ID: the same result again, or
  * request_id_reused when the input differs.
@@ -1001,10 +1131,7 @@ export function repeatedAppCall<T>(
 ): Promise<T> | undefined {
   if (!previous) return undefined;
   if (previous.signature !== signature)
-    throw new AppActionError(
-      "request_id_reused",
-      "This request id was already used with different input. Use a new request id.",
-    );
+    throw new AppActionError("request_id_reused", REQUEST_ID_REUSED);
   return previous.promise;
 }
 
@@ -1153,15 +1280,25 @@ async function handleGigaMonos(
       input.projects === undefined
         ? undefined
         : resolveMonoProjects(input.projects, knownHomeDir());
+    const messageAllowlist =
+      input.messageAllowlist === undefined
+        ? undefined
+        : resolveMessageAllowlist(input.messageAllowlist, monoId);
     const changesModel =
       input.harness !== undefined || input.model !== undefined;
-    if (!changesModel && name === undefined && projects === undefined)
+    if (
+      !changesModel &&
+      name === undefined &&
+      projects === undefined &&
+      messageAllowlist === undefined
+    )
       throw new Error(
-        "Pass harness and model, model, name or projects to change",
+        "Pass harness and model, model, name, projects or messageAllowlist to change",
       );
     return {
       ...(name !== undefined ? { name } : {}),
       ...(projects ? { projects } : {}),
+      ...(messageAllowlist ? { messageAllowlist } : {}),
       // A model alone has to suit the harness the Mono's chat is on now.
       ...(changesModel
         ? {
@@ -1301,10 +1438,32 @@ export async function handleAgentApp(
   source: Session,
   requestId: string,
   action: string,
-  input: Record<string, unknown>,
+  rawInput: Record<string, unknown>,
   host: AgentAppHost,
 ): Promise<unknown> {
-  fields(action, input);
+  fields(action, rawInput);
+  const input = boundaryInput(action, rawInput);
+  const launchId =
+    action === "sessions.start" ? appLaunchId(source, requestId) : null;
+  // Design 6.6: one level check, before the action runs. messages.* get
+  // theirs in mono_message_submit. A Mono's chat or habit run has only A5 to
+  // meet; anything else gets A7's answer, no lead, without a write
+  // transaction.
+  const levels = action.startsWith("messages.") ? undefined : host.levels;
+  const monoCaller =
+    !!levels && (host.isMono(source.id) || !!host.isHabitRun?.(source.id));
+  const leadSessionId =
+    levels &&
+    (!monoCaller || action === "sessions.send" || action === "sessions.draft")
+      ? (
+          await levels.check(requestId, {
+            action,
+            target: typeof input.sessionId === "string" ? input.sessionId : null,
+            startedSessionId: launchId,
+            input,
+          })
+        ).leadSessionId
+      : null;
   if (action.startsWith("artifacts."))
     return handleArtifacts(source, requestId, action, input, host);
   if (action.startsWith("soul."))
@@ -1460,11 +1619,12 @@ export async function handleAgentApp(
       };
     }
     case "sessions.start": {
-      if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId))
-        throw new Error(
-          "request ID must use letters, digits, underscores or hyphens",
-        );
-      const launch = startLaunch(source, input, host);
+      const id = launchId!;
+      // Design 6.6 (intents review r3): the level check skips a Mono, so it
+      // learns here, before any launch, whether its request id already names
+      // another call. A draft too: a draft retry of a submitted start differs.
+      if (monoCaller) await host.levels.startPrior(requestId, id, input);
+      const launch = startLaunch(source, input, host, leadSessionId);
       const notifyMonoId = completionRecipient(source, input, host, true);
       if (input.worktreeCwd !== undefined) {
         const chosen = (await host.worktrees(launch.cwd)).worktrees.find(
@@ -1491,7 +1651,6 @@ export async function handleAgentApp(
           ? undefined
           : (optionalString(input.besideSessionId, "besideSessionId", 256) ??
             source.id);
-      const id = `app-${source.id}-${requestId}`;
       if (besideSessionId)
         await host.start(
           launch,
@@ -1504,6 +1663,17 @@ export async function handleAgentApp(
       const folder = host.monoOf?.(source.id)?.folder;
       if (folder && !launch.sidebarHidden)
         fileInMonoFolder(launch.cwd, id, folder);
+      // The start row names this work for steers (design 16.2). It takes
+      // the input as the caller gave it, so a repeated start finds its row.
+      // A draft runs no work, so it has none. A failure here comes after
+      // the launch, so its answer names the session (PR 7 review r1 n6).
+      const messageId = launch.draft
+        ? undefined
+        : await host.levels
+            .recordStart(requestId, id, input)
+            .catch((error: unknown) => {
+              throw startedAnyway(error, id);
+            });
       return {
         id,
         cwd: launch.cwd,
@@ -1512,6 +1682,7 @@ export async function handleAgentApp(
         submitted: !launch.draft,
         draft: !!launch.draft,
         ...(notifyMonoId ? { notifyOnComplete: true } : {}),
+        ...(messageId ? { message_id: messageId } : {}),
       };
     }
     case "worktrees.list":

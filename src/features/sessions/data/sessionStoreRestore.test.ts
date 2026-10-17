@@ -4,7 +4,7 @@ import type { SessionRecord } from "./sessionStore";
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 
-const { getSession } = await import("./sessionStore");
+const { getSession, listSessionsByProject } = await import("./sessionStore");
 
 /** A saved Codex session holding the one row this PR repairs. */
 function codexRecord(): SessionRecord {
@@ -94,5 +94,40 @@ describe("restoring a session whose repair cannot be persisted", () => {
     expect(
       invoke.mock.calls.some(([cmd]) => cmd === "session_upsert"),
     ).toBe(true);
+  });
+});
+
+describe("a worker's lead", () => {
+  beforeEach(() => invoke.mockReset());
+
+  // Design 13.2. Defect: a reload forgets the lead, so the worker's
+  // messages name it a lead.
+  it("is read from the worker's record", async () => {
+    const record = { ...codexRecord(), leadSessionId: "lead" };
+    invoke.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === "session_get" ? record : null),
+    );
+    expect((await getSession("s1"))?.leadSessionId).toBe("lead");
+  });
+
+  // Design 13.2. Defect: the project's session list drops the lead, so a
+  // worker lists as a lead.
+  it("is read from the worker's summary", async () => {
+    invoke.mockResolvedValue([
+      {
+        id: "s1",
+        cwd: "/repo",
+        harness: "codex",
+        model: "gpt-5",
+        runtimeMode: "supervised",
+        title: "Fix CI",
+        createdAt: 1,
+        updatedAt: 2,
+        leadSessionId: "lead",
+      },
+    ]);
+    expect((await listSessionsByProject("/repo"))[0].leadSessionId).toBe(
+      "lead",
+    );
   });
 });

@@ -6,6 +6,7 @@ import { launchReceiver } from "../../features/quick-composer/model/launchDelive
 import type { QuickLaunch } from "../../features/quick-composer/model/quickComposer";
 import {
   newSession,
+  removeSessionDraft,
   type Attachment,
   type Session,
 } from "../../features/sessions/model/session";
@@ -16,7 +17,7 @@ import {
   type WorkspaceTab,
 } from "../../features/workspace/model/layout";
 import { filterTabsForProject } from "../../features/workspace/model/workspaceTabGroups";
-import { acceptQuickLaunch } from "./quickLaunchSession";
+import { acceptQuickLaunch, appLaunchRepeat } from "./quickLaunchSession";
 import {
   submitAfterProjectSync,
   type SubmissionAcceptance,
@@ -480,4 +481,162 @@ it("does not submit an accepted prompt again after a lost ACK", async () => {
   await vi.advanceTimersByTimeAsync(250);
   expect(workspace.submit).toHaveBeenCalledOnce();
   expect(queue).toHaveLength(0);
+});
+
+// Design 13.3. Defect: a worker's first save carries no lead id, so it is
+// stored as a lead for good; or its first turn has no app access.
+it("writes a worker's lead id before its first save and stamps its first turn", async () => {
+  const { state, request, workspace } = setup();
+  request.leadSessionId = "lead";
+  request.startedBy = "lead";
+  const original = workspace.submit.getMockImplementation()!;
+  workspace.submit.mockImplementation((...args) => {
+    expect(
+      state.sessions.find((session) => session.id === args[0])?.leadSessionId,
+    ).toBe("lead");
+    return original(...args);
+  });
+  await acceptQuickLaunch(request, "worker", workspace);
+  expect(workspace.submit).toHaveBeenCalledWith("worker", request.prompt, [], {
+    startedBy: "lead",
+  });
+  expect(
+    state.sessions.find((session) => session.id === "worker")?.leadSessionId,
+  ).toBe("lead");
+});
+
+// Design 13.2. Defect: the worker's first save runs before its lead's row
+// exists, so the lead id is stored as NULL and the worker becomes a lead.
+it("awaits the lead's save before the worker exists", async () => {
+  const { state, request, workspace } = setup();
+  request.leadSessionId = "lead";
+  let saved!: () => void;
+  const persistLead = vi.fn(
+    () => new Promise<void>((resolve) => (saved = resolve)),
+  );
+  const accepting = acceptQuickLaunch(request, "worker", {
+    ...workspace,
+    persistLead,
+  });
+  await vi.waitFor(() => expect(persistLead).toHaveBeenCalledOnce());
+  expect(state.sessions.some((session) => session.id === "worker")).toBe(false);
+  saved();
+  await accepting;
+  expect(
+    state.sessions.find((session) => session.id === "worker")?.leadSessionId,
+  ).toBe("lead");
+});
+
+// Design 13.2. Defect: a worker starts although its lead could not be
+// saved, and its first save stores it as a lead.
+it("gives no worker when the lead's save fails", async () => {
+  const { state, request, workspace } = setup();
+  request.leadSessionId = "lead";
+  await expect(
+    acceptQuickLaunch(request, "worker", {
+      ...workspace,
+      persistLead: async () => {
+        throw new Error("database is locked");
+      },
+    }),
+  ).rejects.toThrow("database is locked");
+  expect(state.sessions.some((session) => session.id === "worker")).toBe(false);
+  expect(workspace.appendTab).not.toHaveBeenCalled();
+  expect(workspace.submit).not.toHaveBeenCalled();
+});
+
+/** Session `id` as an app launch by `startedBy` left it, with `blocks`. */
+function appLaunched(id: string, blocks: Session["blocks"]): Session {
+  return { ...newSession("codex", "/code/app", "codex:test"), id, blocks };
+}
+
+const appLaunch = (prompt: string, startedBy = "lead"): QuickLaunch => ({
+  cwd: "/code/app",
+  prompt,
+  harness: "codex",
+  model: "codex:test",
+  startedBy,
+});
+
+// PR 7 review r1 m5. Defect: an app launch with no completion monitor has
+// no stamp, so a retry under its key with other input passes as a repeat
+// and gets a start row for work that never ran.
+it("repeats an app launch only with its own stamp, text and caller", () => {
+  const id = "app-lead-r1";
+  const stamped = appLaunched(id, [
+    { id: "u1", role: "user", text: "Fix CI", appRequestId: id, startedBy: "lead" },
+  ]);
+  expect(appLaunchRepeat(stamped, appLaunch("Fix CI"), id)).toBe(true);
+  expect(appLaunchRepeat(undefined, appLaunch("Fix CI"), id)).toBe(false);
+  expect(() => appLaunchRepeat(stamped, appLaunch("Delete CI"), id)).toThrow(
+    "Request ID was already used for another session launch",
+  );
+  const unstamped = appLaunched(id, [
+    { id: "u1", role: "user", text: "Fix CI", startedBy: "lead" },
+  ]);
+  expect(() => appLaunchRepeat(unstamped, appLaunch("Fix CI"), id)).toThrow(
+    "Request ID was already used for another session launch",
+  );
+});
+
+// PR 7 review r1 n4. Defect: caller "x" with request "y-z" and caller
+// "x-y" with request "z" name one session, so the second caller's start
+// passes as a repeat and writes a row for the first caller's session.
+it("refuses a launch of a session id that another caller's start made", () => {
+  const id = "app-x-y-z";
+  const byX = appLaunched(id, [
+    { id: "u1", role: "user", text: "Fix CI", appRequestId: id, startedBy: "x" },
+  ]);
+  expect(() => appLaunchRepeat(byX, appLaunch("Fix CI", "x-y"), id)).toThrow(
+    "Request ID was already used for another session launch",
+  );
+});
+
+// PR 7 review r1 m5, r2 n2. Defect: a launch goes ahead in a session id that
+// holds a draft this call did not save; or acceptQuickLaunch keeps an older
+// repeat rule of its own, which submits the launch over that draft.
+it("refuses a launch into a session id that holds another draft, before the launch and where it makes the session", async () => {
+  const { state, workspace } = setup();
+  const id = "app-lead-r1";
+  const drafted = appLaunched(id, [
+    { id: "u1", role: "user", text: "My own draft", draft: true },
+  ]);
+  expect(() => appLaunchRepeat(drafted, appLaunch("Fix CI"), id)).toThrow(
+    "Session ID already has a different draft",
+  );
+  state.sessions = [...state.sessions, drafted];
+  await expect(
+    acceptQuickLaunch(appLaunch("Fix CI"), id, workspace),
+  ).rejects.toThrow("Session ID already has a different draft");
+  expect(workspace.submit).not.toHaveBeenCalled();
+});
+
+// PR 7 review r2 n3. Defect: after the user removed the draft that a Mono's
+// draft start made, a submitted retry under its key passes as new, the
+// accepted session takes nothing, and the start is answered as submitted.
+it("refuses a submitted retry under the key of a draft start whose draft the user removed", async () => {
+  const { state, workspace } = setup();
+  const id = "app-mono-chat-r1";
+  await acceptQuickLaunch(
+    { ...appLaunch("Fix CI", "mono-chat"), draft: true },
+    id,
+    workspace,
+  );
+  state.sessions = state.sessions.map((session) =>
+    session.id === id
+      ? removeSessionDraft(session, session.blocks[0].id)!
+      : session,
+  );
+  const removed = state.sessions.find((session) => session.id === id)!;
+  const submitted = appLaunch("Fix CI", "mono-chat");
+  expect(() => appLaunchRepeat(removed, submitted, id)).toThrow(
+    "Request ID was already used for another session launch",
+  );
+  await expect(
+    acceptQuickLaunch(submitted, id, workspace),
+  ).rejects.toMatchObject({
+    code: "request_id_reused",
+    hint: "Request ID was already used for another session launch",
+  });
+  expect(workspace.submit).not.toHaveBeenCalled();
 });

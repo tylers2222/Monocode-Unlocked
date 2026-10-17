@@ -27,7 +27,7 @@ import {
   type MonoQueueHost,
   type MonoRouteHost,
 } from "../features/monos/model/monoRoute";
-import { resolveCaller } from "../features/monos/model/monoCaller";
+import { levelGate, resolveCaller } from "../features/monos/model/monoCaller";
 import {
   newTurnId,
   parseMonoId,
@@ -40,7 +40,7 @@ import {
   monoSessionCompletionResult,
   MonoSessionCompletionBatches,
 } from "../features/monos/model/monoSessionCompletion";
-import { acceptQuickLaunch } from "./model/quickLaunchSession";
+import { acceptQuickLaunch, appLaunchRepeat } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import { HarnessEventQueue } from "./model/harnessFlush";
@@ -624,8 +624,10 @@ import {
 } from "../features/workspace/model/tabVisitHistory";
 import { preparePrompt } from "../features/sessions/model/promptPreparation";
 import {
+  appAccess,
+  submitAccess,
   consumeOperatorCommand,
-  operatorEnabledInThread,
+  turnAccess,
 } from "../features/sessions/model/operatorCommand";
 import {
   createMono,
@@ -932,6 +934,8 @@ type SubmitOptions = ComposerTurnOptions & {
   managed?: boolean;
   orchestrationRetry?: OrchestrationProposal;
   appRequestId?: string;
+  /** The session whose `sessions.start` made this first turn (design 13.4). */
+  startedBy?: string;
   monoSessionCompletion?: Block["monoSessionCompletion"];
   onSettled?: (outcome: ControlOutcome) => void;
   /**
@@ -1713,6 +1717,23 @@ function Workspace({
             role: mono.giga ? "giga" : "mono",
           }
         );
+      },
+      sessionSender: async (sessionId) => {
+        const session =
+          sessionsRef.current.find((entry) => entry.id === sessionId) ??
+          (await getSession(sessionId).catch(() => null));
+        if (
+          !session ||
+          isMonoSession(session.id) ||
+          isHabitRun(session.id) ||
+          appAccess(session.blocks) === null
+        )
+          return undefined;
+        return {
+          kind: "session",
+          title: session.title,
+          level: session.leadSessionId ? "worker" : "lead",
+        };
       },
       turnId: (id) => currentTurnIds.current.get(id),
       owns: (id) => invoke<boolean>("control_owns_session", { sessionId: id }),
@@ -6866,6 +6887,7 @@ function Workspace({
       text: string,
       attachments: Attachment[] = [],
       appRequestId?: string,
+      startedBy?: string,
     ) => {
       const current = sessionsRef.current.find(
         (session) => session.id === sessionId,
@@ -6905,6 +6927,7 @@ function Workspace({
                     ...(attachments.length > 0 ? { attachments } : {}),
                     draft: true,
                     ...(appRequestId ? { appRequestId } : {}),
+                    ...(startedBy ? { startedBy } : {}),
                   },
                 ],
               }
@@ -7152,10 +7175,11 @@ function Workspace({
               (message) => message.id === options.queuedMessageId,
             )
           : undefined;
-      const operatorAccess =
-        operatorCommand.matched ||
-        mono ||
-        operatorEnabledInThread(current.blocks);
+      const access = submitAccess(
+        current.blocks,
+        operatorCommand.matched,
+        options?.startedBy,
+      );
       const monoFirstTurn =
         mono &&
         !current.blocks.some((block) => block.role === "user" && !block.draft);
@@ -7608,6 +7632,7 @@ function Workspace({
         ...(options?.appRequestId
           ? { appRequestId: options.appRequestId }
           : queuedAppDelivery(queuedItem)),
+        ...(options?.startedBy ? { startedBy: options.startedBy } : {}),
         // The orchestrator writes these turns, not the user; hide them.
         ...(options?.managed || options?.monoSessionCompletion
           ? { internal: true }
@@ -8133,9 +8158,11 @@ function Workspace({
                 runtimeMode: current.runtimeMode,
                 ephemeral: current.ephemeral === true,
                 codexStore: mono ? "mono" : undefined,
-                controlsAgents:
-                  operatorAccess ||
+                ...turnAccess(
+                  access,
+                  mono,
                   orchestrator.run(sessionId)?.status === "active",
+                ),
                 ...(editedProviderTurnId
                   ? { providerTurnId: editedProviderTurnId }
                   : {}),
@@ -8188,12 +8215,11 @@ function Workspace({
               ephemeral: current.ephemeral === true,
               codexStore: mono ? "mono" : undefined,
               intent: intent === "orchestrate" ? "plan" : intent,
-              // A /operator user turn enables app access for this thread;
-              // orchestration leads retain their separate control access.
-              controlsAgents:
-                operatorAccess ||
+              ...turnAccess(
+                access,
+                mono,
                 orchestrator.run(sessionId)?.status === "active",
-              appAccess: operatorAccess,
+              ),
               text,
               turnId,
               attachments: turnAttachments,
@@ -8866,6 +8892,7 @@ function Workspace({
       placement?: AppSessionPlacement,
       onSettled?: (outcome: ControlOutcome) => void,
       openTab?: boolean,
+      persistLead?: () => Promise<void>,
     ) =>
       acceptQuickLaunch(
         launch,
@@ -8931,9 +8958,17 @@ function Workspace({
                   onSettled,
                   rejectionMessage: "The monitored session could not start.",
                 })
-              : submitSession(id, text, attachments, options),
-          saveDraft: (id, prompt, attachments, requestId) =>
-            flushSync(() => onSaveDraft(id, prompt, attachments, requestId)),
+              : // Every app launch stamps its request id, so a retry
+                // compares its text (appLaunchRepeat, PR 7 review r1 m5).
+                submitSession(id, text, attachments, {
+                  ...options,
+                  ...(options?.startedBy ? { appRequestId: deliveryId } : {}),
+                }),
+          saveDraft: (id, prompt, attachments, requestId, startedBy) =>
+            flushSync(() =>
+              onSaveDraft(id, prompt, attachments, requestId, startedBy),
+            ),
+          persistLead,
         },
         placement,
         openTab,
@@ -10369,6 +10404,8 @@ function Workspace({
       const gen = (turnGen.current.get(sessionId) ?? 0) + 1;
       turnGen.current.set(sessionId, gen);
       const workCwd = sessionWorkCwd(current);
+      const access = appAccess(current.blocks);
+      const mono = isMonoSession(sessionId);
       const started = sessionsRef.current.map((session) =>
         session.id === sessionId
           ? applyHarnessEvent(
@@ -10397,10 +10434,11 @@ function Workspace({
             runtimeMode: current.runtimeMode,
             ephemeral: current.ephemeral === true,
             codexStore: isMonoSession(sessionId) ? "mono" : undefined,
-            controlsAgents:
-              isMonoSession(sessionId) ||
-              operatorEnabledInThread(current.blocks) ||
+            ...turnAccess(
+              access,
+              mono,
               orchestrator.run(sessionId)?.status === "active",
+            ),
             onEvent: (event) => {
               if (turnGen.current.get(sessionId) !== gen) return;
               enqueueHarnessEvent(sessionId, event);
@@ -11125,16 +11163,7 @@ function Workspace({
         };
         const messaging: MonoMessagingHost = {
           ...monoRouteHost.current,
-          caller: async () => {
-            const sessionId = parseSessionId(source.id);
-            if (!sessionId)
-              return {
-                ok: false,
-                code: "not_a_mono",
-                hint: "Only a Mono's chat or its habit runs can use Mono messaging.",
-              };
-            return resolveCaller(sessionId, payload.turnId);
-          },
+          caller: () => resolveCaller(source, payload.turnId),
           sessions: () => sessionsRef.current,
           stored: async (id) =>
             parseSessionId(id) ? getSession(id).catch(() => null) : null,
@@ -11149,6 +11178,7 @@ function Workspace({
           ownProject: (session) =>
             !isMonoSession(session.id) &&
             !isHabitRun(session.id) &&
+            !session.inboxAsk &&
             !session.orchestrationLeadId &&
             !orchestrator.run(session.id) &&
             canAccessProject(session.cwd),
@@ -11192,30 +11222,10 @@ function Workspace({
               );
               const stored = open ? null : await getSession(id);
               const existing = open ?? stored;
-              const previous = existing?.blocks.find(
-                (block) => block.appRequestId === id,
-              );
-              if (previous) {
-                if (
-                  previous.text !== launch.prompt ||
-                  (!launch.draft && !!previous.draft)
-                )
-                  throw new Error(
-                    "Request ID was already used for another session launch",
-                  );
+              if (appLaunchRepeat(existing, launch, id)) {
                 rememberLaunch();
                 return;
               }
-              if (
-                existing?.blocks.some(
-                  (block) => block.role === "user" && !block.draft,
-                )
-              ) {
-                rememberLaunch();
-                return;
-              }
-              if (existing && sessionDraftBlock(existing))
-                throw new Error("Session ID already has a different draft");
               const onSettled = notifyMonoId
                 ? monitorCompletion(
                     notifyMonoId,
@@ -11225,6 +11235,21 @@ function Workspace({
                     launch.prompt,
                   )
                 : undefined;
+              // Design 13.2: a worker's first save names its lead through
+              // the lead's row, so the lead is saved first; its usual save
+              // drops errors.
+              const lead = launch.leadSessionId
+                ? (sessionsRef.current.find(
+                    (session) => session.id === source.id,
+                  ) ?? source)
+                : undefined;
+              const persistLead =
+                lead && shouldPersistSession(lead)
+                  ? async () => {
+                      if (!(await upsertSession(lead)))
+                        throw new Error("The lead session could not be saved");
+                    }
+                  : undefined;
               try {
                 // A Mono's sessions open from its chat, not as workspace
                 // tabs, unless it places one beside an open pane.
@@ -11234,6 +11259,7 @@ function Workspace({
                   placement,
                   onSettled,
                   !isMonoSession(source.id) || !!placement,
+                  persistLead,
                 );
                 rememberLaunch();
                 onSettled?.accept();
@@ -11260,6 +11286,12 @@ function Workspace({
                 });
               }
               for (const session of sessionsRef.current) {
+                // An Inbox Ask is no project session, as in `ownProject`; its
+                // saved record lists as a hidden session (PR 7 review r2 n5).
+                if (session.inboxAsk) {
+                  byId.delete(session.id);
+                  continue;
+                }
                 if (
                   session.orchestrationLeadId ||
                   isHabitRun(session.id) ||
@@ -11674,6 +11706,13 @@ function Workspace({
                 replyMessage(messaging, requestId, input),
               get: (input) => getMessage(messaging, input),
             },
+            levels: levelGate(
+              source,
+              payload.turnId,
+              (id) =>
+                sessionsRef.current.find((session) => session.id === id)
+                  ?.leadSessionId,
+            ),
             habits: { load: loadHabits, update: updateHabits },
             agentFiles: (monoId) => loadMonoFiles(monoId),
             readAgentFile: (monoId, path) => readAgentFile(monoId, path),
