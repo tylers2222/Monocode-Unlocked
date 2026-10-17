@@ -51,8 +51,11 @@ export function canDispatchQueuedHead(session: Session): boolean {
   return true;
 }
 
-/** A message that can only start a new turn; it never steers a running one. */
-function waitsForTurnEnd(message: QueuedMessage): boolean {
+/**
+ * A message that can only start a new turn; it never steers a running one.
+ * It waits by choice, so it never misses a turn and holds nothing behind it.
+ */
+export function waitsForTurnEnd(message: QueuedMessage): boolean {
   return (
     !!message.waitForIdle ||
     !!message.monoSessionCompletion ||
@@ -112,26 +115,33 @@ export function heldUntilTurnEnd(session: Session): ReadonlySet<QueuedMessage> {
  * The running turn ended, so every message the user typed for it missed it.
  * Each one now waits for a turn end and opens its own turn, as a message typed
  * while no turn runs does, and holds the user's later messages behind it
- * (design 16.12.4).
+ * (design 16.12.4). One that waited by choice (`waitsForTurnEnd`, such as an
+ * `/operator` command) only waits: it holds nothing (decision 585).
  */
 export function missedTurn(messages: QueuedMessage[]): QueuedMessage[] {
   if (!messages.some((message) => message.typedInTurn)) return messages;
   return messages.map((message) => {
     if (!message.typedInTurn) return message;
     const { typedInTurn: _missed, ...rest } = message;
-    return { ...rest, waitForIdle: true, missed: true };
+    return waitsForTurnEnd(message)
+      ? { ...rest, waitForIdle: true }
+      : { ...rest, waitForIdle: true, missed: true };
   });
 }
 
 /**
- * A message the user types now would wait behind one of their own that missed
- * its turn, so it cannot steer the running turn (`heldMessages`, read with no
- * running turn as `heldUntilTurnEnd` reads it). The composer reads this so
- * its bar does not say "Steering" for text the queue holds.
+ * A message the user types now would wait for the turn end, so it cannot
+ * steer the running turn: one of their own missed its turn (`heldMessages`),
+ * or the session is busy with no turn the text can join, as during a manual
+ * compaction. `turnReadiness` is set for every turn (`appendUser`) and
+ * cleared at its end (`stopStreaming`), so its absence on a busy session
+ * means no turn runs. The composer reads this so its bar does not say
+ * "Steering" for text the queue holds.
  */
 export function userTextHeld(
-  session: Pick<Session, "queuedMessages">,
+  session: Pick<Session, "queuedMessages" | "busy" | "turnReadiness">,
 ): boolean {
+  if (session.busy && !session.turnReadiness) return true;
   return !!session.queuedMessages?.some((message) => message.missed);
 }
 

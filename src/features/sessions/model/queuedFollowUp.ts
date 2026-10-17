@@ -5,7 +5,11 @@ import {
   type SendOrigin,
   type UserSend,
 } from "./messageIntent";
-import { queuedSteer, type RunningTurns } from "./messageQueue";
+import {
+  queuedSteer,
+  waitsForTurnEnd,
+  type RunningTurns,
+} from "./messageQueue";
 import type { Block, QueuedMessage, Session } from "./session";
 
 /** What a send records on its block and gives the provider. */
@@ -14,10 +18,10 @@ type JoinedTurn = { block: Pick<Block, "turnId" | "link">; text: string };
 /**
  * The queue item a message the user sends into a busy Mono chat (or one whose
  * queue has not started) becomes: the pump steers it later into the turn it
- * was typed in, and a reply, a continue or a cleared steer waits for the turn
- * end (design 16.8, 16.12.4). A plain message typed while no turn runs missed
- * every turn, so it also holds the user's later messages behind it.
- * Undefined for a picked steer whose work ended.
+ * was typed in, and a reply, a continue, a cleared steer or an `/operator`
+ * command waits for the turn end (design 16.8, 16.12.4). A plain message typed
+ * while no turn runs missed every turn, so it also holds the user's later
+ * messages behind it. Undefined for a picked steer whose work ended.
  */
 export function typedMonoMessage(input: {
   session: Session;
@@ -36,7 +40,10 @@ export function typedMonoMessage(input: {
   });
   if (queued.kind !== "queue") return undefined;
   const { item } = queued;
-  const chosenWait = !!item.link || !!input.origin?.waitForIdle;
+  const chosenWait =
+    !!item.link ||
+    !!input.origin?.waitForIdle ||
+    waitsForTurnEnd(input.message);
   return {
     ...input.message,
     ...item,

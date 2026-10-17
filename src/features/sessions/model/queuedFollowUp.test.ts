@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { TurnNotReadyError } from "../../../integrations/harness/core/types";
 import {
+  applyHarnessEvent,
   stopStreaming,
   appendUser,
 } from "../../../integrations/harness/core/apply";
@@ -540,20 +541,20 @@ describe("the user's message after one that waits for the turn end", () => {
     },
   );
 
-  // PR I5b review r1 M1, idle case. Defect: a ✕ typed while no turn runs is
-  // taken as a message that missed its turn, so it holds the user's text
-  // typed in the next turn.
-  it("lets the user's text steer past a cleared steer (✕) typed while no turn ran", () => {
+  // PR I5b review r1 M1, idle case, and review r2 m1. Defect: a ✕ or an
+  // /operator command typed while no turn runs is taken as a message that
+  // missed its turn, so it holds the user's text typed in the next turn.
+  it.each<[string, string, SendOrigin]>([
+    ["a cleared steer (✕)", "after this, write docs", { waitForIdle: true }],
+    ["an /operator command", "/operator list sessions", {}],
+  ])("lets the user's text steer past %s typed while no turn ran", (_kind, text, origin) => {
     const turns = runningTurnMap();
     let chat: Session = {
       ...newSession("codex", "/tmp"),
       queuedMessages: [row("m_wwwwwwwwwwww")],
       queueStatus: "paused",
     };
-    chat = enqueueMonoMessage(
-      chat,
-      typed(chat, turns, "x", "after this, write docs", { waitForIdle: true }),
-    );
+    chat = enqueueMonoMessage(chat, typed(chat, turns, "x", text, origin));
     expect(userTextHeld(chat)).toBe(false);
     chat = acknowledgeMonoMessage(
       { ...chat, queueStatus: "active" },
@@ -564,6 +565,33 @@ describe("the user's message after one that waits for the turn end", () => {
     turns.set(chat.id, T2);
     chat = enqueueMonoMessage(chat, typed(chat, turns, "s", "stop"));
     expect(nextQueuedSend(chat, turns, true)?.id).toBe("s");
+  });
+
+  // PR I5b review r2 m1. Defect: an /operator command typed in T1 waits for
+  // the turn end by choice, but T1's end marks it missed, so it holds the
+  // user's text typed in T2 (decision 585).
+  it("lets the user's text in the next turn steer past an /operator command typed in T1", () => {
+    let chat = enqueueMonoMessage(t1Running(), row("m_wwwwwwwwwwww"));
+    const turns = runningTurnMap([[chat.id, T1]]);
+    chat = enqueueMonoMessage(
+      chat,
+      typed(chat, turns, "x", "/operator list sessions"),
+    );
+    chat = stopStreaming(chat);
+    turns.delete(chat.id);
+    expect(userTextHeld(chat)).toBe(false);
+    chat = acknowledgeMonoMessage(chat, chat.queuedMessages![0], {
+      mode: "new-turn",
+      cards: { turnId: T2 },
+    });
+    chat = { ...chat, turnReadiness: "ready" };
+    turns.set(chat.id, T2);
+    chat = enqueueMonoMessage(
+      chat,
+      typed(chat, turns, "s", "stop, wrong branch"),
+    );
+    expect(nextQueuedSend(chat, turns, true)?.id).toBe("s");
+    expect(monoMessageDeliveries(chat).get("x")).toEqual({ status: "waiting" });
   });
 
   // PR I6 review r1 M2. Defect: the composer says "Steering" for text the
@@ -584,6 +612,28 @@ describe("the user's message after one that waits for the turn end", () => {
     chat = enqueueMonoMessage(chat, typed(chat, turns, "b", "don't deploy"));
     expect(nextQueuedSend(chat, turns, true)).toBeUndefined();
     expect(monoMessageDeliveries(chat).get("b")).toEqual({ status: "waiting" });
+  });
+
+  // PR I5b review r2 m2. Defect: while a Mono chat compacts (busy, no turn
+  // in this window) userTextHeld says false, so the composer says
+  // "Steering" for text that waits for the compaction to end.
+  it("userTextHeld says the user's next message waits while the chat compacts, and not while a turn starts", () => {
+    const turns = runningTurnMap();
+    const compacting = applyHarnessEvent(
+      { ...stopStreaming(t1Running()), busy: true },
+      { type: "status", text: "Compacting context…" },
+    );
+    expect(typed(compacting, turns, "b", "what changed?")).toMatchObject({
+      missed: true,
+    });
+    expect(userTextHeld(compacting)).toBe(true);
+
+    const starting = t1Running("starting");
+    const t1 = runningTurnMap([[starting.id, T1]]);
+    expect(typed(starting, t1, "b", "what changed?")).toMatchObject({
+      typedInTurn: T1,
+    });
+    expect(userTextHeld(starting)).toBe(false);
   });
 
   // PR I5b review r1 n2. Defect: the steer plan joins a message the pump
@@ -913,10 +963,11 @@ describe("the Mono queue over seeded walks", () => {
     return { chat, sent, typedOrder, typedTurn, waits };
   }
 
-  it("drains every queue, keeps typed order, and agrees with the pump in 400 walks", () => {
-    for (let seed = 1; seed <= 400; seed++) {
+  it.each(Array.from({ length: 400 }, (_, i) => i + 1))(
+    "seed %i drains its queue, keeps typed order, and agrees with the pump",
+    (seed) => {
       const { chat, sent, typedOrder, typedTurn, waits } = walk(seed, 60);
-      expect(chat.queuedMessages ?? [], `seed ${seed}: held forever`).toEqual([]);
+      expect(chat.queuedMessages ?? [], "held forever").toEqual([]);
       const own = sent.filter((entry) => typedTurn.has(entry.id));
       const position = new Map(own.map((entry, index) => [entry.id, index]));
       typedOrder.forEach((earlier, i) => {
@@ -924,16 +975,16 @@ describe("the Mono queue over seeded walks", () => {
           if (!waits.has(earlier))
             expect(
               position.get(earlier)! < position.get(later)!,
-              `seed ${seed}: ${later} reached the agent before ${earlier}`,
+              `${later} reached the agent before ${earlier}`,
             ).toBe(true);
       });
       for (const entry of own)
         if (entry.how === "join") {
-          expect(entry.turn, `seed ${seed}: ${entry.id} joined another turn`).toBe(
+          expect(entry.turn, `${entry.id} joined another turn`).toBe(
             typedTurn.get(entry.id),
           );
           expect(entry.text).toBe(`[steer → whole turn]\n${entry.id}`);
         } else expect(entry.text).toBe(entry.id);
-    }
-  });
+    },
+  );
 });
