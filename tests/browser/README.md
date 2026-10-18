@@ -16,12 +16,15 @@ Each `<name>.html` loads a `<name>.tsx` that mounts one component with its own m
 
 For a live update, change the store with `page.evaluate(() => window.appBackend!.store...)`, then call `app.emit(event, payload)` to send the Tauri event that the Rust side would send.
 
-`window.appBackend.calls` lists every command the app sent, so a test can check that a click wrote what it should.
+`window.appBackend.calls` lists every command the app sent, so a test can check that a click wrote what it should. `window.appBackend.store.blocks` holds each session's saved blocks, as `session_upsert` and `mono_session_upsert` left them.
+
+To run a turn, fake the harness binary in `handlers`. Answer its `harness_resolve_<id>` and `harness_spawn`, and answer each line the app sends with `harness_write` by emitting `harness-stdout` lines. Install `page.clock` before `mount` to control turn timers. `g3-turn-guard.spec.ts` fakes Pi this way.
 
 ### Options
 
 - `platform`: `"macos"` (the default) or `"linux"`. The app picks its window chrome and shortcut labels from `navigator.platform`.
 - `handlers`: handlers for this test only, which replace or add to `HANDLERS`. A handler gets `(store, args)` and may be async. Write each as an arrow or function expression; `mount` throws on a method (`name() {…}`) and names the command. It runs in the page, so it can use only its arguments and page globals. Throw a string to reject the way a Rust `Err(String)` does.
+- `cannotSteer`: harnesses whose adapter the app sees with `canSteer: false`. Codex is not allowed: the app registers its own Codex adapter again over the copy. No shipped adapter reports a ready turn and also refuses steers, so this is the way to reach the app's own can-steer checks on a running turn.
 
 ### Loud failures
 
