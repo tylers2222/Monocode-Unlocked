@@ -630,9 +630,16 @@ fn send_to(
     serde_json::from_str(&line).map_err(|_| sent("MonoCode returned an invalid response"))
 }
 
-/// The Mono messaging tools, as MCP (`app-mcp`) and omp host tools both
-/// expose them (design 3 and 4). `action` is the app action each one calls.
+/// The Mono tools, as MCP (`app-mcp`) and omp host tools both expose them
+/// (design 3 and 4). `action` is the app action each one calls. No
+/// milestone schema takes `createdBy` or `by`: the app sets the writer.
 pub fn app_tools() -> Value {
+    let project = json!({"type": "string", "minLength": 1, "description": "Path or name of one of your projects. May be left out when you have a single project."});
+    let id = json!({"type": "string", "minLength": 1, "maxLength": 128});
+    let title = json!({"type": "string", "minLength": 1, "maxLength": 200});
+    let note = json!({"type": "string", "maxLength": 4000});
+    let status = json!({"type": "string", "enum": ["idea", "planned", "in_progress", "done"]});
+    let target = json!({"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "YYYY-MM-DD, or null for later."});
     json!([
         {
             "name": "get_monos",
@@ -682,6 +689,76 @@ pub fn app_tools() -> Value {
                     "handle": {"type": "string", "minLength": 1, "description": "The message_id, or a handle such as \"#1\" from this turn."}
                 },
                 "required": ["handle"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "list_milestones",
+            "action": "milestones.list",
+            "description": "List the project's milestones (future goals) in order, with settings {enabled, hiddenStatuses}. Each has id, title, note, status, target, order, createdBy, createdAt and updatedAt. It answers while milestones are off.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"project": project},
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "add_milestone",
+            "action": "milestones.add",
+            "description": "Keep a future goal for the project as a milestone. status defaults to idea. MonoCode records you as the writer. Returns the new milestone. Code milestones_off means the user turned milestones off: do not retry.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": project,
+                    "title": title,
+                    "note": note,
+                    "status": status,
+                    "target": target
+                },
+                "required": ["title"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "update_milestone",
+            "action": "milestones.update",
+            "description": "Change a milestone's title, note, status or target. Omitted fields stay; target null clears the date. Code unknown_milestone means the id is not in this project.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": project,
+                    "id": id,
+                    "title": title,
+                    "note": note,
+                    "status": status,
+                    "target": target
+                },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "remove_milestone",
+            "action": "milestones.remove",
+            "description": "Delete one milestone. Returns {removed: id}.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"project": project, "id": id},
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "reorder_milestones",
+            "action": "milestones.reorder",
+            "description": "Set the order of the project's milestones. ids is every id of the project, in the new order. Code stale_order means ids are not exactly the project's: call list_milestones and retry.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": project,
+                    "ids": {"type": "array", "items": id}
+                },
+                "required": ["ids"],
                 "additionalProperties": false
             }
         }
@@ -779,20 +856,34 @@ fn mcp_tools() -> Vec<Value> {
 fn mcp_call(params: &Value, var: &impl Fn(&str) -> Option<String>) -> Result<Value, (i64, String)> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let tools = app_tools();
-    let action = tools
+    let tool = tools
         .as_array()
         .into_iter()
         .flatten()
         .find(|tool| tool["name"] == name)
-        .and_then(|tool| tool["action"].as_str())
         .ok_or_else(|| (-32602, format!("Unknown tool: {name}")))?;
+    let action = tool["action"].as_str().unwrap_or_default();
     let input = match params.get("arguments") {
         None | Some(Value::Null) => json!({}),
         Some(input @ Value::Object(_)) => input.clone(),
         Some(_) => return Err((-32602, "arguments must be an object".into())),
     };
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let value = call_app(action, &input, &request_id, var);
+    // Clients need not enforce `additionalProperties: false`, so the server
+    // does, with the app's own refusal, before anything reaches the app.
+    let properties = &tool["inputSchema"]["properties"];
+    let unknown: Vec<&str> = input
+        .as_object()
+        .into_iter()
+        .flat_map(|object| object.keys())
+        .filter(|key| properties.get(key.as_str()).is_none())
+        .map(String::as_str)
+        .collect();
+    let value = if unknown.is_empty() {
+        call_app(action, &input, &uuid::Uuid::new_v4().to_string(), var)
+    } else {
+        let hint = format!("Unknown {action} fields: {}", unknown.join(", "));
+        json!({"ok": false, "code": "invalid_input", "hint": hint, "error": hint})
+    };
     let ok = value.get("ok").and_then(Value::as_bool) == Some(true);
     Ok(json!({
         "content": [{"type": "text", "text": value.to_string()}],
@@ -1445,7 +1536,7 @@ mod tests {
     // Defect: an MCP client cannot start (unsupported version, missing
     // capabilities) or sees tools that accept fields the gate refuses.
     #[test]
-    fn app_mcp_initializes_and_lists_the_four_strict_tools() {
+    fn app_mcp_initializes_and_lists_the_nine_strict_tools() {
         let out = mcp(
             None,
             &[
@@ -1465,10 +1556,45 @@ mod tests {
         assert_eq!(out[1]["result"]["protocolVersion"], "2025-06-18");
         let tools = out[2]["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["get_monos", "send_message", "reply", "get_message"]);
+        assert_eq!(
+            names,
+            [
+                "get_monos",
+                "send_message",
+                "reply",
+                "get_message",
+                "list_milestones",
+                "add_milestone",
+                "update_milestone",
+                "remove_milestone",
+                "reorder_milestones"
+            ]
+        );
         for tool in tools {
             assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{tool}");
             assert!(tool.get("action").is_none(), "{tool}");
+        }
+        // M-4. Defect: a milestone tool offers a field the app refuses, or
+        // offers createdBy or by, which would let a model pick the writer.
+        let fields = |tool: &Value| -> Vec<String> {
+            let mut keys: Vec<String> = tool["inputSchema"]["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            keys.sort();
+            keys
+        };
+        let expected: [&[&str]; 5] = [
+            &["project"],
+            &["note", "project", "status", "target", "title"],
+            &["id", "note", "project", "status", "target", "title"],
+            &["id", "project"],
+            &["ids", "project"],
+        ];
+        for (tool, expected) in tools[4..].iter().zip(expected) {
+            assert_eq!(fields(tool), expected, "{tool}");
         }
         // PR I2. Defect: the schema still offers action_type, or a client
         // refuses continue and reply itself, so the gate never writes the
@@ -1537,6 +1663,66 @@ mod tests {
         app.join().unwrap();
         assert_eq!(out[0]["result"]["isError"], true);
         assert_eq!(out[0]["result"]["structuredContent"], refused);
+    }
+
+    // M-4. Defect: add_milestone reaches the app as another action, or
+    // without the input the model sent.
+    #[test]
+    fn app_mcp_add_milestone_sends_milestones_add_with_its_input() {
+        let input = json!({"project": "app", "title": "Dark mode", "note": "Later", "status": "planned", "target": null});
+        let answer = json!({"ok": true, "result": {"id": "m1", "title": "Dark mode"}});
+        let (endpoint, app) = fake_app(vec![answer.clone()]);
+        let out = mcp(
+            Some(&endpoint),
+            &[rpc(
+                1,
+                "tools/call",
+                json!({"name": "add_milestone", "arguments": input}),
+            )],
+        );
+        let requests = app.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["action"], "milestones.add");
+        assert_eq!(requests[0]["input"], input);
+        assert_eq!(out[0]["result"]["structuredContent"], answer);
+        assert_eq!(out[0]["result"]["isError"], false);
+    }
+
+    // M-4. Defect: a client that ignores additionalProperties lets a model
+    // pick the writer (createdBy) or send a field the schema does not have.
+    #[test]
+    fn app_mcp_refuses_a_field_outside_the_tool_schema_without_calling_the_app() {
+        for (arguments, unknown) in [
+            (
+                json!({"title": "Dark mode", "createdBy": "user"}),
+                "createdBy",
+            ),
+            (
+                json!({"title": "Dark mode", "priority": "high"}),
+                "priority",
+            ),
+        ] {
+            let (endpoint, app) = fake_app(vec![json!({"ok": true, "result": {}})]);
+            let out = mcp(
+                Some(&endpoint),
+                &[rpc(
+                    1,
+                    "tools/call",
+                    json!({"name": "add_milestone", "arguments": arguments}),
+                )],
+            );
+            assert_eq!(
+                app.join().unwrap(),
+                Vec::<Value>::new(),
+                "{unknown} reached the app"
+            );
+            let hint = format!("Unknown milestones.add fields: {unknown}");
+            assert_eq!(
+                out[0]["result"]["structuredContent"],
+                json!({"ok": false, "code": "invalid_input", "hint": hint, "error": hint})
+            );
+            assert_eq!(out[0]["result"]["isError"], true);
+        }
     }
 
     // Defect: a call the app answered "timed out" is dropped, or retried
