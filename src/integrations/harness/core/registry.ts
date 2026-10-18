@@ -1,4 +1,5 @@
 import type {
+  AgentCwd,
   Block,
   HarnessId,
   TaskListMeta,
@@ -21,6 +22,9 @@ import type {
   TurnResult,
   SteerTurnInput,
 } from "./types";
+
+/** Harness calls for a session run in its agent's folder (`sessionAgentCwd`). */
+type AtAgentCwd = { cwd: AgentCwd };
 
 export type TitleInput = {
   sessionId: string;
@@ -272,7 +276,7 @@ export function listHarnesses(): HarnessAdapter[] {
 }
 
 export function sendHarnessTurn(
-  input: SendTurnInput & { harness: HarnessId },
+  input: SendTurnInput & AtAgentCwd & { harness: HarnessId },
 ): Promise<TurnResult> {
   return queueSessionOperation(input.sessionId, async () => {
     const adapter = requireHarness(input.harness);
@@ -324,7 +328,7 @@ export function canCompactHarnessContext(id: HarnessId): boolean {
 }
 
 export function compactHarnessContext(
-  input: CompactContextInput & { harness: HarnessId },
+  input: CompactContextInput & AtAgentCwd & { harness: HarnessId },
 ): Promise<void> {
   return queueSessionOperation(input.sessionId, async () => {
     const adapter = requireHarness(input.harness);
@@ -358,7 +362,7 @@ export function canRewindHarnessLastTurn(id: HarnessId): boolean {
 }
 
 export function rewindHarnessLastTurn(
-  input: RewindLastTurnInput & { harness: HarnessId },
+  input: RewindLastTurnInput & AtAgentCwd & { harness: HarnessId },
 ): Promise<RewindLastTurnResult> {
   return queueSessionOperation(input.sessionId, async () => {
     const adapter = requireHarness(input.harness);
@@ -380,7 +384,7 @@ export function rewindHarnessLastTurn(
 }
 
 export function steerHarnessTurn(
-  input: SteerTurnInput & { harness: HarnessId },
+  input: SteerTurnInput & AtAgentCwd & { harness: HarnessId },
 ): Promise<void> {
   return queueSteerOperation(input.sessionId, async () => {
     const adapter = requireHarness(input.harness);
@@ -453,7 +457,7 @@ export function bindHarnessSession(
   harness: HarnessId,
   threadId: string,
   providerSessionId: string,
-  cwd: string,
+  cwd: AgentCwd,
   providerAccountId?: string,
   /** Restored transcript, so the adapter can reseed its task state. */
   blocks?: Block[],
@@ -583,7 +587,7 @@ function cancelledTextPrompt(): Error {
 }
 
 export async function runHarnessTextPrompt(
-  input: TextPromptInput & { harness: HarnessId },
+  input: TextPromptInput & AtAgentCwd & { harness: HarnessId },
 ): Promise<string> {
   const adapter = requireHarness(input.harness);
   if (!adapter.live) {

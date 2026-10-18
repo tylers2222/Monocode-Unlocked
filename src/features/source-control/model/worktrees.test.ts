@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { newFileTab, newTerminalFile } from "../../workspace/model/layout";
-import { newSession, sessionWorkCwd } from "../../sessions/model/session";
+import {
+  newSession,
+  sessionAgentCwd,
+  sessionWorkCwd,
+} from "../../sessions/model/session";
 import {
   sessionInWorktree,
   detachSessionWorktree,
@@ -79,6 +83,19 @@ describe("working-copy context", () => {
     expect(main.worktreeCwd).toBeUndefined();
     expect(main.id).toBe(session.id);
     expect(sessionWorkCwd(main)).toBe("/repo");
+  });
+
+  it("runs a blank Giga session's agent in the worktree it selects", () => {
+    const session = { ...newSession("codex", "/repo"), workFolder: "/repo/gigas/alpha" };
+    const selected = sessionInWorktree(session, tree);
+    expect(sessionAgentCwd(selected)).toBe(tree.path);
+    const main = sessionInWorktree(selected, {
+      ...tree,
+      path: "/repo",
+      branch: "main",
+      isMain: true,
+    });
+    expect(sessionAgentCwd(main)).toBe("/repo/gigas/alpha");
   });
 
   it("starts a separate session on main without changing the worktree conversation", () => {

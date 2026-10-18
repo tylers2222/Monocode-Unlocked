@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { Block, HarnessId } from "./session";
+import {
+  newSession,
+  sessionAgentCwd,
+  sessionWorkingCopy,
+  type Block,
+  type HarnessId,
+} from "./session";
+import { joinPath } from "../../../shared/lib/paths";
 import {
   buildSecondOpinionCard,
   buildSecondOpinionPrompt,
@@ -109,6 +116,24 @@ describe("turn extracts", () => {
         "/repo",
       ),
     ).toEqual(["src/App.tsx"]);
+  });
+});
+
+describe("a session started from a Giga's session", () => {
+  it("runs its agent where the turn's file list is relative to", () => {
+    const source = {
+      ...newSession("codex", "/repo"),
+      workFolder: "/repo/gigas/alpha",
+    };
+    const turn = [user("u", "write the plan"), edit("e", "/repo/gigas/alpha/plan.md")];
+    const files = turnEditedFiles(turn, sessionAgentCwd(source));
+    const started = {
+      ...newSession("claude", source.cwd),
+      ...sessionWorkingCopy(source),
+    };
+    expect(files.map((file) => joinPath(sessionAgentCwd(started), file))).toEqual([
+      "/repo/gigas/alpha/plan.md",
+    ]);
   });
 });
 

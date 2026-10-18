@@ -125,6 +125,9 @@ pub struct SessionUpsert {
     pub branch: Option<String>,
     #[serde(default)]
     pub worktree_cwd: Option<String>,
+    /// Folder inside the working copy the agent process runs in.
+    #[serde(default)]
+    pub work_folder: Option<String>,
     #[serde(default)]
     pub worktree_removed: bool,
     #[serde(default)]
@@ -205,6 +208,8 @@ pub struct SessionRecord {
     pub branch: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_folder: Option<String>,
     #[serde(default)]
     pub worktree_removed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -816,6 +821,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("queued_messages_json", "TEXT NOT NULL DEFAULT '[]'"),
         ("queue_status", "TEXT"),
         ("sidebar_hidden", "INTEGER NOT NULL DEFAULT 0"),
+        ("work_folder", "TEXT"),
     ] {
         ensure_session_column(conn, column, decl)?;
     }
@@ -1209,6 +1215,11 @@ pub(crate) fn upsert_session(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let work_folder = session
+        .work_folder
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
     let has_user_message = has_user_block(&session.blocks);
     let is_draft = has_draft_block(&session.blocks);
@@ -1247,8 +1258,8 @@ pub(crate) fn upsert_session(
            provider_session_id, blocks_json, created_at, updated_at, branch,
            context_used, context_window, worktree_cwd, has_user_message,
            linked_work_item_json, provider_account_id, worktree_removed, is_draft,
-           automation_id, queued_messages_json, queue_status, sidebar_hidden
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
+           automation_id, queued_messages_json, queue_status, sidebar_hidden, work_folder
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
          ON CONFLICT(id) DO UPDATE SET
            cwd = excluded.cwd,
            harness = excluded.harness,
@@ -1271,7 +1282,8 @@ pub(crate) fn upsert_session(
            automation_id = excluded.automation_id,
            queued_messages_json = excluded.queued_messages_json,
            queue_status = excluded.queue_status,
-           sidebar_hidden = excluded.sidebar_hidden",
+           sidebar_hidden = excluded.sidebar_hidden,
+           work_folder = excluded.work_folder",
         params![
             session.id,
             session.cwd,
@@ -1297,6 +1309,7 @@ pub(crate) fn upsert_session(
             queued_messages_json,
             session.queue_status,
             i64::from(session.sidebar_hidden),
+            work_folder,
         ],
     )?;
 
@@ -2001,7 +2014,8 @@ fn get_session_record(
                 provider_session_id, {blocks}, created_at, updated_at,
                 context_used, context_window, branch, worktree_cwd,
                 linked_work_item_json, provider_account_id, worktree_removed,
-                automation_id, queued_messages_json, queue_status, sidebar_hidden
+                automation_id, queued_messages_json, queue_status, sidebar_hidden,
+                work_folder
          FROM sessions
          WHERE id = ?1 AND inbox_ask IS NULL"
         ),
@@ -2047,6 +2061,7 @@ fn get_session_record(
                 context_window: row.get(12)?,
                 branch: row.get(13)?,
                 worktree_cwd: row.get(14)?,
+                work_folder: row.get(22)?,
                 worktree_removed: row.get::<_, i64>(17)? != 0,
                 linked_work_item: optional_json(row.get(15)?),
                 provider_account_id: row.get(16)?,
@@ -2253,6 +2268,7 @@ mod tests {
             context_window: None,
             branch: None,
             worktree_cwd: None,
+            work_folder: None,
             worktree_removed: false,
             linked_work_item: None,
             automation_id: None,
@@ -2754,6 +2770,23 @@ mod tests {
         assert_eq!(listed[0].automation_id.as_deref(), Some("automation-id"));
         let stored = get_session(&conn, "s1").unwrap().unwrap();
         assert_eq!(stored.automation_id.as_deref(), Some("automation-id"));
+    }
+
+    // Defect: a Giga's session forgets its folder at restart and resumes at
+    // the project root.
+    #[test]
+    fn work_folder_round_trips() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let mut row = sample("s1", "/tmp/a", "Plan");
+        row.work_folder = Some("/tmp/a/gigas/alpha".into());
+        upsert_session(&conn, &row).unwrap();
+        let stored = get_session(&conn, "s1").unwrap().unwrap();
+        assert_eq!(stored.work_folder.as_deref(), Some("/tmp/a/gigas/alpha"));
+        assert_eq!(stored.worktree_cwd, None);
+        row.work_folder = None;
+        upsert_session(&conn, &row).unwrap();
+        assert_eq!(get_session(&conn, "s1").unwrap().unwrap().work_folder, None);
     }
 
     #[test]

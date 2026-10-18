@@ -1000,14 +1000,52 @@ static SESSION_SLUGS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, String>>,
 > = std::sync::LazyLock::new(Default::default);
 
-/// Gives a Giga's agent process its slug, so its own commits follow the hook.
-pub(crate) fn configure_child(session_id: &str, cmd: &mut Command) {
+/// Gives a Giga's agent process its slug, so its own commits follow the hook:
+/// the slug bound to the session (the Giga's chat or a habit run), else the
+/// slug of the Giga whose chat started the session, when the session runs in
+/// that Giga's folder.
+pub(crate) fn configure_child(
+    store: &crate::session_store::SessionStore,
+    home: Option<&Path>,
+    session_id: &str,
+    workdir: &Path,
+    cmd: &mut Command,
+) {
     cmd.env_remove("MONOCODE_GIGA_SLUG");
-    if let Ok(slugs) = SESSION_SLUGS.lock() {
-        if let Some(slug) = slugs.get(session_id) {
-            cmd.env("MONOCODE_GIGA_SLUG", slug);
-        }
+    let bound = SESSION_SLUGS
+        .lock()
+        .ok()
+        .and_then(|slugs| slugs.get(session_id).cloned());
+    // A session a Giga's chat started through `sessions.start` has the id
+    // `app-<chat>-<request>`.
+    let slug = bound.or_else(|| {
+        let started = session_id.strip_prefix("app-")?;
+        let slug = folder_slug(&workspace_root(home?), workdir)?;
+        let conn = store.lock_conn().ok()?;
+        let monos = crate::mono_roster::list(&conn).ok()?;
+        monos
+            .iter()
+            .any(|mono| {
+                mono.role == crate::mono_roster::MonoRole::Giga
+                    && mono.data["gigaSlug"] == slug.as_str()
+                    && mono.data["sessionId"]
+                        .as_str()
+                        .and_then(|chat| started.strip_prefix(chat))
+                        .is_some_and(|rest| rest.starts_with('-'))
+            })
+            .then_some(slug)
+    });
+    if let Some(slug) = slug {
+        cmd.env("MONOCODE_GIGA_SLUG", slug);
     }
+}
+
+/// The first folder under `gigas/` that holds `workdir`, if any.
+fn folder_slug(root: &Path, workdir: &Path) -> Option<String> {
+    let gigas = fs::canonicalize(root.join("gigas")).ok()?;
+    let workdir = fs::canonicalize(workdir).ok()?;
+    let slug = workdir.strip_prefix(gigas).ok()?.components().next()?;
+    slug.as_os_str().to_str().map(str::to_string)
 }
 
 #[tauri::command]
@@ -1467,6 +1505,89 @@ mod tests {
     fn hook_refuses_gigas_without_a_slug() {
         let home = hook_repo("hook-noslug");
         assert!(try_commit(&home.root(), "", &[("gigas/alpha/briefs/b.md", "plan")]).is_err());
+    }
+
+    // Defect: a session a Giga's chat starts in its folder cannot commit
+    // there, or another process in a Giga's folder gets that Giga's slug.
+    #[test]
+    fn only_a_session_its_chat_started_commits_as_that_giga() {
+        let home = hook_repo("hook-folder");
+        let root = home.root();
+        fs::create_dir_all(root.join("gigas/alpha/work")).unwrap();
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        {
+            let conn = store.lock_conn().unwrap();
+            for (id, role, data) in [
+                (
+                    "ga",
+                    "giga",
+                    serde_json::json!({"mascot": "skull", "gigaSlug": "alpha", "sessionId": "chat-a"}),
+                ),
+                (
+                    "gb",
+                    "giga",
+                    serde_json::json!({"mascot": "crab", "gigaSlug": "beta", "sessionId": "chat-b"}),
+                ),
+                (
+                    "m",
+                    "mono",
+                    serde_json::json!({"mascot": "owl", "sessionId": "chat-m", "gigaSlug": "beta", "projects": [root.join("gigas/beta")]}),
+                ),
+            ] {
+                let mono = serde_json::from_value(
+                    serde_json::json!({"id": id, "role": role, "data": data, "sortOrder": 0}),
+                )
+                .unwrap();
+                crate::mono_roster::create(
+                    &conn,
+                    &crate::mono_roster::validate_create(mono).unwrap(),
+                )
+                .unwrap();
+            }
+        }
+        let slug_of = |session: &str, dir: &str| {
+            let mut cmd = Command::new("true");
+            configure_child(&store, Some(&home.0), session, &root.join(dir), &mut cmd);
+            cmd.get_envs()
+                .find(|(key, _)| *key == "MONOCODE_GIGA_SLUG")
+                .and_then(|(_, value)| value)
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        assert_eq!(slug_of("app-chat-a-r1", "gigas/alpha"), "alpha");
+        assert_eq!(slug_of("app-chat-a-r1", "gigas/alpha/work"), "alpha");
+        assert_eq!(slug_of("app-chat-b-r1", "gigas/alpha/../beta"), "beta");
+        assert_eq!(slug_of("app-chat-a-r1", "gigas/alpha/../beta"), "");
+        assert_eq!(slug_of("app-chat-a-r1", ""), "");
+        assert_eq!(slug_of("user-session", "gigas/alpha"), "");
+        assert_eq!(slug_of("app-app-chat-a-r1-r2", "gigas/alpha"), "");
+        // A chat id that only starts with the Giga's chat id is another chat.
+        assert_eq!(slug_of("app-chat-ax-r1", "gigas/alpha"), "");
+        // Only `sessions.start` ids carry the chat that started them.
+        assert_eq!(slug_of("chat-a-r1", "gigas/alpha"), "");
+        // Giga A creates a Mono with project gigas/beta; that Mono's session
+        // runs there and must not commit as Giga B, even if its row names beta.
+        assert_eq!(slug_of("app-chat-m-r1", "gigas/beta"), "");
+        assert_eq!(
+            try_commit(
+                &root,
+                &slug_of("app-chat-a-r1", "gigas/alpha"),
+                &[("gigas/alpha/work/a.md", "a")]
+            ),
+            Ok(String::new())
+        );
+        assert!(try_commit(
+            &root,
+            &slug_of("app-chat-a-r1", "gigas/alpha"),
+            &[("gigas/beta/briefs/b.md", "b")]
+        )
+        .is_err());
+        assert!(try_commit(
+            &root,
+            &slug_of("app-chat-m-r1", "gigas/beta"),
+            &[("gigas/beta/briefs/m.md", "m")]
+        )
+        .is_err());
     }
 
     // Defect: shared/ is either closed to new files or open to edits.

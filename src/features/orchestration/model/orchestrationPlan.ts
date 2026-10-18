@@ -1,4 +1,10 @@
-import { HARNESSES, type Block, type HarnessId, type Session } from "../../sessions/model/session";
+import {
+  HARNESSES,
+  type Block,
+  type HarnessId,
+  type Session,
+  type WorkCwd,
+} from "../../sessions/model/session";
 import { isEqualOrInside, pathKey } from "../../../shared/lib/paths";
 
 export type OrchestrationChoice = {
@@ -26,7 +32,7 @@ export type OrchestrationProposal = {
   /** Project identity retained for history and proposal ownership. */
   cwd: string;
   /** Concrete checkout inspected while preparing this proposal. */
-  checkoutCwd?: string;
+  checkoutCwd?: WorkCwd;
   request: string;
   author: OrchestrationChoice;
   settings: OrchestrationSettings;

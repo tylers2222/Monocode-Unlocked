@@ -58,7 +58,9 @@ export function applyQuickWorkspace(
       worktreeBase: launch.worktreeBase || "HEAD",
     };
   }
-  return launch.worktreeCwd
-    ? { ...session, worktreeCwd: launch.worktreeCwd }
-    : session;
+  return {
+    ...session,
+    ...(launch.worktreeCwd ? { worktreeCwd: launch.worktreeCwd } : {}),
+    ...(launch.workFolder ? { workFolder: launch.workFolder } : {}),
+  };
 }

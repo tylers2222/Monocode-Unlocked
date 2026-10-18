@@ -51,6 +51,17 @@ describe("restoring a session whose repair cannot be persisted", () => {
     expect(repaired?.[1].session.sidebarHidden).toBe(true);
   });
 
+  it("restores the folder a Giga's session runs its agent in", async () => {
+    const record = codexRecord();
+    record.workFolder = "/repo/gigas/alpha";
+    invoke.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === "session_get" ? record : null),
+    );
+    const session = await getSession(record.id);
+    expect(session?.workFolder).toBe("/repo/gigas/alpha");
+    expect(session?.worktreeCwd).toBeUndefined();
+  });
+
   it("restores the turn's launched session links", async () => {
     const record = codexRecord();
     const launch = {

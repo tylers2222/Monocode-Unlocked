@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { WorkCwd } from "./session";
 
 export type CheckpointFile = {
   path: string;
@@ -87,7 +88,7 @@ export function ensureSessionCheckpoint(
 /** Record the workspace before execution, including existing uncommitted files. */
 export async function beginSessionTurn(
   sessionId: string,
-  cwd: string,
+  cwd: WorkCwd,
   editedPaths?: readonly string[],
 ): Promise<string | undefined> {
   if (!cwd || cwd === "~") return undefined;
@@ -109,7 +110,7 @@ export async function beginSessionTurn(
 /** Capture the settled workspace before exposing the turn's recorded diff. */
 export function finishSessionTurn(
   sessionId: string,
-  cwd: string,
+  cwd: WorkCwd,
   options?: { turnId?: string; after?: Promise<unknown> },
 ): Promise<void> {
   const active = activeTurns.get(sessionId);
@@ -134,7 +135,7 @@ export function finishSessionTurn(
 /** Capture a file immediately before a structured edit starts. */
 export function prepareSessionCheckpoint(
   sessionId: string,
-  cwd: string,
+  cwd: WorkCwd,
   paths: string[],
 ): Promise<void> {
   if (paths.length === 0) return Promise.resolve();
@@ -149,7 +150,7 @@ export function prepareSessionCheckpoint(
 
 export function captureSessionCheckpoint(
   sessionId: string,
-  cwd: string,
+  cwd: WorkCwd,
   paths: string[],
 ): Promise<void> {
   if (paths.length === 0) return Promise.resolve();

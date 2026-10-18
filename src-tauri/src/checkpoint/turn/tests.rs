@@ -250,6 +250,29 @@ fn shared_turns_only_review_files_with_their_own_successful_edit_events() {
     );
 }
 
+// Defect: a Giga session's turn, recorded where its agent runs (gigas/<slug>),
+// is missing from the review card, which reads it at the working copy.
+#[test]
+fn a_giga_sessions_folder_edits_are_reviewed_at_the_working_copy() {
+    let f = Fixture::new();
+    f.store.begin_turn("session", f.cwd(), "first").unwrap();
+    f.write("gigas/alpha/plan.md", "plan\n");
+    let edited = f.repo.join("gigas/alpha/plan.md");
+    f.store
+        .capture("session", f.cwd(), &[edited.to_str().unwrap().into()])
+        .unwrap();
+    f.store.finish_turn("session", f.cwd(), "first").unwrap();
+    let status = f.store.status("session", f.cwd()).unwrap();
+    assert_eq!(
+        status
+            .files
+            .iter()
+            .map(|file| file.relative.as_str())
+            .collect::<Vec<_>>(),
+        ["gigas/alpha/plan.md"]
+    );
+}
+
 #[test]
 fn shared_turns_with_different_edits_do_not_claim_each_others_files() {
     let f = Fixture::new();

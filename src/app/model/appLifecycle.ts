@@ -23,7 +23,7 @@ import {
   type DockSide,
   type ProjectTerminalDock,
 } from "../../features/projects/model/projectTerminal";
-import { sessionWorkCwd, type Session } from "../../features/sessions/model/session";
+import { sessionAgentCwd, type Session } from "../../features/sessions/model/session";
 import { sessionChildHarnesses } from "../../features/sessions/model/handoff";
 import { queuePauseNotice } from "../../features/sessions/model/messageQueue";
 import {
@@ -348,7 +348,7 @@ export function bindResumedSessions(sessions: Session[]): void {
       session.harness,
       session.id,
       session.providerSessionId,
-      sessionWorkCwd(session),
+      sessionAgentCwd(session),
       session.providerAccountId,
       session.blocks,
     );
