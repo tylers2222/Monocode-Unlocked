@@ -2935,15 +2935,23 @@ mod tests {
 
     /// The Mono `mono-a` from its chat `a-chat`, sending to `recipient`.
     fn from_mono_a(input: &SendInput, recipient: Recipient) -> Decision {
-        let mut facts = sends(recipient);
+        as_mono_a(CallerKind::MonoChat, input, sends(recipient))
+    }
+
+    /// The Mono `mono-a` from its chat `a-chat` or its habit run `a-run`.
+    fn as_mono_a(kind: CallerKind, input: &SendInput, mut facts: Facts<SendFacts>) -> Decision {
         facts.caller = Some(CallerMono {
             chat: Some(session("a-chat")),
             role: MonoRole::Mono,
         });
         let mono_a = Caller {
+            kind,
             mono_id: mono("mono-a"),
-            session_id: session("a-chat"),
-            ..caller(CallerKind::MonoChat)
+            session_id: session(match kind {
+                CallerKind::MonoChat => "a-chat",
+                CallerKind::HabitRun => "a-run",
+            }),
+            turn_id: "turn-1".into(),
         };
         decide_send(&mono_a, input, &hash(), &facts, NOW)
     }
@@ -2968,8 +2976,10 @@ mod tests {
         );
     }
 
-    // L4. Defect: a Mono or a Giga messages a worker around its lead, or the
-    // hint does not name the lead to message.
+    // L4, for every intent and sender (decisions 472, 503). Defect: a Mono, a
+    // habit run or a Giga messages a worker around its lead, a steer or a
+    // whole-turn steer slips past L4 (W2 answers steer_scope_not_allowed),
+    // or the hint does not name the lead to message.
     #[test]
     fn l4_no_mono_may_message_a_worker() {
         let w1 = in_alpha("w1", worker_of("l1"));
@@ -2979,16 +2989,65 @@ mod tests {
             rejected,
             "Mono"
         );
-        assert_eq!(
+        let giga = |input: SendInput| {
             decide_send(
                 &caller(CallerKind::MonoChat),
-                &new("Hi", "w1", false),
+                &SendInput {
+                    send_to: "w1".into(),
+                    ..input
+                },
                 &hash(),
                 &sends(w1.clone()),
-                NOW
+                NOW,
+            )
+        };
+        assert_eq!(giga(new("Hi", "w1", false)), rejected, "Giga");
+        assert_eq!(
+            giga(whole(IntentKind::Steer)),
+            rejected,
+            "Giga whole-turn steer"
+        );
+        let to_w1 = MonoMessage {
+            from_session_id: session("a-chat"),
+            to: Some(Party::Session {
+                session_id: session("w1"),
+            }),
+            addressed: "w1".into(),
+            status: Status::Delivered {
+                wanting_reply: Wanting,
+                intent: Intent::New,
+                routed: Routed {
+                    handled_by_session: session("w1"),
+                    delivery: Delivery::Queue,
+                },
+                slot: Some(PlainSlot {
+                    turn_id: "turn-1".into(),
+                    delivered_at: Some(2),
+                    window: "main".into(),
+                }),
+            },
+            ..row('s', Some("mono-a"), 0, open(1))
+        };
+        assert_eq!(
+            as_mono_a(
+                CallerKind::MonoChat,
+                &SendInput {
+                    send_to: "w1".into(),
+                    ..steer("m_ssssssssssss")
+                },
+                steering(w1.clone(), to_w1, Some(live("w1", true, true))),
             ),
             rejected,
-            "Giga"
+            "Mono steer with reply_to"
+        );
+        assert_eq!(
+            as_mono_a(
+                CallerKind::HabitRun,
+                &new("Hi", "w1", false),
+                sends(w1.clone())
+            ),
+            rejected,
+            "habit run"
         );
         let lead = in_alpha("l1", SessionLevel::Lead);
         assert!(matches!(
