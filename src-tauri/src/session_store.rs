@@ -322,6 +322,11 @@ fn rebase_project(conn: &Connection, from_cwd: &str, to_cwd: &str) -> rusqlite::
         "UPDATE milestones SET project_path = ?2 WHERE project_path = ?1",
         params![from_cwd, to_cwd],
     )?;
+    // The renamed project's settings win over a stale row already at the new path.
+    tx.execute(
+        "UPDATE OR REPLACE milestone_settings SET project_path = ?2 WHERE project_path = ?1",
+        params![from_cwd, to_cwd],
+    )?;
     tx.commit()
 }
 
@@ -3521,6 +3526,36 @@ mod tests {
     }
 
     #[test]
+    fn rebase_project_moves_settings() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        for (project, enabled) in [("/tmp/old", 0), ("/tmp/new", 1), ("/tmp/other", 0)] {
+            conn.execute(
+                "INSERT INTO milestone_settings (project_path, enabled, updated_at) VALUES (?1, ?2, 1)",
+                params![project, enabled],
+            )
+            .unwrap();
+        }
+
+        rebase_project(&conn, "/tmp/old", "/tmp/new").unwrap();
+
+        let rows: Vec<(String, bool)> = conn
+            .prepare("SELECT project_path, enabled FROM milestone_settings ORDER BY project_path")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            [
+                ("/tmp/new".to_string(), false),
+                ("/tmp/other".to_string(), false)
+            ]
+        );
+    }
+
+    #[test]
     fn rebase_project_moves_nothing_when_milestones_update_fails() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
@@ -3548,7 +3583,8 @@ mod tests {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
         upsert_session(&conn, &sample("kept", "/tmp/a", "Kept")).unwrap();
-        conn.execute_batch("DROP TABLE milestones").unwrap();
+        conn.execute_batch("DROP TABLE milestones; DROP TABLE milestone_settings")
+            .unwrap();
         let versions = |conn: &Connection| -> i64 {
             conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
                 row.get(0)
@@ -3562,12 +3598,13 @@ mod tests {
 
         let objects: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('milestones', 'milestones_project_order')",
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE name IN ('milestones', 'milestones_project_order', 'milestone_settings')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(objects, 2);
+        assert_eq!(objects, 3);
         assert_eq!(versions(&conn), before);
         assert_eq!(list_by_project(&conn, "/tmp/a").unwrap()[0].id, "kept");
     }

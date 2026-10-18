@@ -368,6 +368,8 @@ pub fn run() {
             milestones::milestones_remove,
             milestones::milestones_reorder,
             milestones::milestones_remove_project,
+            milestones::milestone_settings_get,
+            milestones::milestone_settings_set,
             external_editor::list_external_editors,
             external_editor::open_in_external_editor,
             fs::resolve_project_location,

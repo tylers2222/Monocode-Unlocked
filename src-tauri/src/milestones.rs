@@ -12,6 +12,7 @@ const TITLE_MAX: usize = 200;
 const NOTE_MAX: usize = 4000;
 const UNKNOWN: &str = "unknown_milestone";
 const STALE_ORDER: &str = "stale_order";
+const OFF: &str = "milestones_off";
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -31,11 +32,19 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            updated_at INTEGER NOT NULL
          );
          CREATE INDEX IF NOT EXISTS milestones_project_order
-           ON milestones (project_path, sort_order);",
+           ON milestones (project_path, sort_order);
+         CREATE TABLE IF NOT EXISTS milestone_settings (
+           project_path TEXT PRIMARY KEY
+             CHECK (project_path = '/' OR (project_path <> '' AND project_path NOT GLOB '*/')),
+           enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+           hidden_statuses TEXT NOT NULL DEFAULT '[]'
+             CHECK (json_valid(hidden_statuses) AND json_type(hidden_statuses) = 'array'),
+           updated_at INTEGER NOT NULL
+         );",
     )
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     #[default]
@@ -99,6 +108,37 @@ pub struct MilestonePatch {
     pub status: Option<Status>,
     #[serde(default, deserialize_with = "present")]
     pub target: Option<Option<String>>,
+}
+
+/// No row means on, nothing hidden.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MilestoneSettings {
+    pub enabled: bool,
+    pub hidden_statuses: Vec<Status>,
+}
+
+impl Default for MilestoneSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hidden_statuses: Vec::new(),
+        }
+    }
+}
+
+/// Absent fields stay as they are. Unknown status names fail to deserialize.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SettingsPatch {
+    pub enabled: Option<bool>,
+    pub hidden_statuses: Option<Vec<Status>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProjectMilestones {
+    pub settings: MilestoneSettings,
+    pub milestones: Vec<Milestone>,
 }
 
 fn present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
@@ -165,6 +205,65 @@ fn check_created_by(created_by: &str) -> Result<(), String> {
     require(ok, "createdBy must be user, mono:<id> or session:<id>")
 }
 
+/// `by` is `user` for the app, else the agent (`mono:<id>`, `session:<id>`).
+/// The app always writes; agents write only while the project's milestones are on.
+pub(crate) fn check_writer(conn: &Connection, project: &str, by: &str) -> Result<(), String> {
+    check_created_by(by)?;
+    if by != "user" && !settings(conn, project)?.enabled {
+        return Err(OFF.into());
+    }
+    Ok(())
+}
+
+pub(crate) fn settings(conn: &Connection, project: &str) -> Result<MilestoneSettings, String> {
+    check_project(project)?;
+    let row: Option<(bool, String)> = conn
+        .query_row(
+            "SELECT enabled, hidden_statuses FROM milestone_settings WHERE project_path = ?1",
+            [project],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some((enabled, hidden)) = row else {
+        return Ok(MilestoneSettings::default());
+    };
+    let hidden_statuses = serde_json::from_str(&hidden)
+        .map_err(|e| format!("invalid milestone_settings.hidden_statuses: {e}"))?;
+    Ok(MilestoneSettings {
+        enabled,
+        hidden_statuses,
+    })
+}
+
+pub(crate) fn set_settings(
+    conn: &Connection,
+    project: &str,
+    patch: SettingsPatch,
+    now: i64,
+) -> Result<MilestoneSettings, String> {
+    let current = settings(conn, project)?;
+    let mut hidden_statuses = patch.hidden_statuses.unwrap_or(current.hidden_statuses);
+    hidden_statuses.sort_unstable();
+    hidden_statuses.dedup();
+    let next = MilestoneSettings {
+        enabled: patch.enabled.unwrap_or(current.enabled),
+        hidden_statuses,
+    };
+    let hidden = serde_json::to_string(&next.hidden_statuses).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO milestone_settings (project_path, enabled, hidden_statuses, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (project_path) DO UPDATE SET
+           enabled = excluded.enabled,
+           hidden_statuses = excluded.hidden_statuses,
+           updated_at = excluded.updated_at",
+        params![project, next.enabled, hidden, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(next)
+}
+
 const COLUMNS: &str =
     "id, project_path, title, note, status, target, sort_order, created_by, created_at, updated_at";
 
@@ -217,10 +316,10 @@ pub(crate) fn add(
     now: i64,
 ) -> Result<Milestone, String> {
     check_project(project)?;
+    check_writer(conn, project, &input.created_by)?;
     let title = check_title(&input.title)?;
     check_note(&input.note)?;
     check_target(input.target.as_deref())?;
-    check_created_by(&input.created_by)?;
     let id = Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO milestones
@@ -247,9 +346,11 @@ pub(crate) fn update(
     project: &str,
     id: &str,
     patch: MilestonePatch,
+    by: &str,
     now: i64,
 ) -> Result<Milestone, String> {
     check_project(project)?;
+    check_writer(conn, project, by)?;
     let current = get(conn, project, id)?;
     let title = check_title(patch.title.as_deref().unwrap_or(&current.title))?;
     let note = patch.note.unwrap_or(current.note);
@@ -266,8 +367,9 @@ pub(crate) fn update(
     get(conn, project, id)
 }
 
-pub(crate) fn remove(conn: &Connection, project: &str, id: &str) -> Result<(), String> {
+pub(crate) fn remove(conn: &Connection, project: &str, id: &str, by: &str) -> Result<(), String> {
     check_project(project)?;
+    check_writer(conn, project, by)?;
     let removed = conn
         .execute(
             "DELETE FROM milestones WHERE id = ?1 AND project_path = ?2",
@@ -285,7 +387,9 @@ pub(crate) fn reorder(
     conn: &Connection,
     project: &str,
     ids: &[String],
+    by: &str,
 ) -> Result<Vec<Milestone>, String> {
+    check_writer(conn, project, by)?;
     let mut current: Vec<String> = list(conn, project)?.into_iter().map(|m| m.id).collect();
     let mut wanted = ids.to_vec();
     current.sort_unstable();
@@ -305,23 +409,55 @@ pub(crate) fn reorder(
     list(conn, project)
 }
 
+/// One transaction, so a removed project never keeps half its milestone data.
 pub(crate) fn remove_project(conn: &Connection, project: &str) -> Result<(), String> {
     check_project(project)?;
-    conn.execute("DELETE FROM milestones WHERE project_path = ?1", [project])
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    for table in ["milestones", "milestone_settings"] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE project_path = ?1"),
+            [project],
+        )
         .map_err(|e| e.to_string())?;
-    Ok(())
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 
 pub(crate) fn emit_changed(app: &AppHandle, project: &str) {
     let _ = app.emit(CHANGED, json!({ "projectPath": project }));
 }
 
+/// Never refused: an agent may read while milestones are off and sees `enabled: false`.
 #[tauri::command(async)]
 pub fn milestones_list(
     store: State<'_, SessionStore>,
     project_path: String,
-) -> Result<Vec<Milestone>, String> {
-    list(&*store.lock_conn()?, &project_path)
+) -> Result<ProjectMilestones, String> {
+    let conn = store.lock_conn()?;
+    Ok(ProjectMilestones {
+        settings: settings(&conn, &project_path)?,
+        milestones: list(&conn, &project_path)?,
+    })
+}
+
+#[tauri::command(async)]
+pub fn milestone_settings_get(
+    store: State<'_, SessionStore>,
+    project_path: String,
+) -> Result<MilestoneSettings, String> {
+    settings(&*store.lock_conn()?, &project_path)
+}
+
+#[tauri::command(async)]
+pub fn milestone_settings_set(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    project_path: String,
+    patch: SettingsPatch,
+) -> Result<MilestoneSettings, String> {
+    let saved = set_settings(&*store.lock_conn()?, &project_path, patch, now_millis())?;
+    emit_changed(&app, &project_path);
+    Ok(saved)
 }
 
 #[tauri::command(async)]
@@ -343,12 +479,14 @@ pub fn milestones_update(
     project_path: String,
     id: String,
     patch: MilestonePatch,
+    by: String,
 ) -> Result<Milestone, String> {
     let updated = update(
         &*store.lock_conn()?,
         &project_path,
         &id,
         patch,
+        &by,
         now_millis(),
     )?;
     emit_changed(&app, &project_path);
@@ -361,8 +499,9 @@ pub fn milestones_remove(
     store: State<'_, SessionStore>,
     project_path: String,
     id: String,
+    by: String,
 ) -> Result<(), String> {
-    remove(&*store.lock_conn()?, &project_path, &id)?;
+    remove(&*store.lock_conn()?, &project_path, &id, &by)?;
     emit_changed(&app, &project_path);
     Ok(())
 }
@@ -373,8 +512,9 @@ pub fn milestones_reorder(
     store: State<'_, SessionStore>,
     project_path: String,
     ids: Vec<String>,
+    by: String,
 ) -> Result<Vec<Milestone>, String> {
-    let listed = reorder(&*store.lock_conn()?, &project_path, &ids)?;
+    let listed = reorder(&*store.lock_conn()?, &project_path, &ids, &by)?;
     emit_changed(&app, &project_path);
     Ok(listed)
 }
@@ -436,7 +576,7 @@ mod tests {
         assert_eq!(titles(&conn, "/q"), ["other project"]);
 
         let [a, b, c] = <[String; 3]>::try_from(ids(&conn, "/p")).unwrap();
-        reorder(&conn, "/p", &[c, a, b]).unwrap();
+        reorder(&conn, "/p", &[c, a, b], "user").unwrap();
         add(&conn, "/p", new("d"), 2).unwrap();
         assert_eq!(titles(&conn, "/p"), ["c", "a", "b", "d"]);
     }
@@ -450,8 +590,11 @@ mod tests {
             title: Some("stolen".into()),
             ..Default::default()
         };
-        assert_eq!(update(&conn, "/q", &mine.id, patch, 2), Err(UNKNOWN.into()));
-        assert_eq!(remove(&conn, "/q", &mine.id), Err(UNKNOWN.into()));
+        assert_eq!(
+            update(&conn, "/q", &mine.id, patch, "user", 2),
+            Err(UNKNOWN.into())
+        );
+        assert_eq!(remove(&conn, "/q", &mine.id, "user"), Err(UNKNOWN.into()));
         assert_eq!(list(&conn, "/p").unwrap(), [mine]);
     }
 
@@ -465,7 +608,7 @@ mod tests {
         let added = add(&conn, "/p", input, 1).unwrap();
 
         let patch = serde_json::from_value(json!({ "status": "in_progress", "target": null }));
-        let updated = update(&conn, "/p", &added.id, patch.unwrap(), 2).unwrap();
+        let updated = update(&conn, "/p", &added.id, patch.unwrap(), "user", 2).unwrap();
         assert_eq!(
             (updated.title.as_str(), updated.note.as_str()),
             ("ship", "kept")
@@ -488,13 +631,16 @@ mod tests {
             vec![a.clone(), b.clone(), foreign.clone()],
             vec![a.clone(), a.clone()],
         ] {
-            assert_eq!(reorder(&conn, "/p", &stale), Err(STALE_ORDER.into()));
+            assert_eq!(
+                reorder(&conn, "/p", &stale, "user"),
+                Err(STALE_ORDER.into())
+            );
         }
         assert_eq!(titles(&conn, "/p"), ["a", "b"]);
         assert_eq!(titles(&conn, "/q"), ["x"]);
 
-        let once = reorder(&conn, "/p", &[b.clone(), a.clone()]).unwrap();
-        assert_eq!(reorder(&conn, "/p", &[b, a]).unwrap(), once);
+        let once = reorder(&conn, "/p", &[b.clone(), a.clone()], "user").unwrap();
+        assert_eq!(reorder(&conn, "/p", &[b, a], "user").unwrap(), once);
         let orders: Vec<i64> = once.iter().map(|m| m.order).collect();
         assert_eq!(orders, [0, 1]);
     }
@@ -590,9 +736,193 @@ mod tests {
         let conn = store.lock_conn().unwrap();
         add(&conn, "/p", new("gone"), 1).unwrap();
         add(&conn, "/q", new("kept"), 1).unwrap();
+        for project in ["/p", "/q"] {
+            set_settings(&conn, project, turn(false), 1).unwrap();
+        }
         remove_project(&conn, "/p").unwrap();
         assert!(list(&conn, "/p").unwrap().is_empty());
+        assert_eq!(settings(&conn, "/p").unwrap(), MilestoneSettings::default());
         assert_eq!(titles(&conn, "/q"), ["kept"]);
+        assert!(!settings(&conn, "/q").unwrap().enabled);
+    }
+
+    fn turn(enabled: bool) -> SettingsPatch {
+        SettingsPatch {
+            enabled: Some(enabled),
+            ..Default::default()
+        }
+    }
+
+    fn by(writer: &str, title: &str) -> NewMilestone {
+        NewMilestone {
+            created_by: writer.into(),
+            ..new(title)
+        }
+    }
+
+    #[test]
+    fn settings_default_when_no_row() {
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        let default = MilestoneSettings {
+            enabled: true,
+            hidden_statuses: vec![],
+        };
+        assert_eq!(settings(&conn, "/p").unwrap(), default);
+        add(&conn, "/p", by("mono:a", "agent may write"), 1).unwrap();
+
+        let hide: SettingsPatch =
+            serde_json::from_value(json!({ "hiddenStatuses": ["done", "idea", "done"] })).unwrap();
+        let hidden = set_settings(&conn, "/p", hide, 1).unwrap();
+        assert_eq!(hidden.hidden_statuses, [Status::Idea, Status::Done]);
+        assert!(hidden.enabled, "a hiddenStatuses-only patch keeps enabled");
+        let off = set_settings(&conn, "/p", turn(false), 2).unwrap();
+        assert_eq!(
+            off.hidden_statuses,
+            [Status::Idea, Status::Done],
+            "an enabled-only patch keeps hiddenStatuses"
+        );
+        assert_eq!(settings(&conn, "/p").unwrap(), off);
+
+        conn.execute("DELETE FROM milestone_settings", []).unwrap();
+        assert_eq!(settings(&conn, "/p").unwrap(), default);
+    }
+
+    #[test]
+    fn off_project_refuses_writes_but_lists() {
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        let first = add(&conn, "/p", new("first"), 1).unwrap();
+        let second = add(&conn, "/p", new("second"), 1).unwrap();
+        set_settings(&conn, "/p", turn(false), 1).unwrap();
+        let rows = list(&conn, "/p").unwrap();
+        let reversed = [second.id.clone(), first.id.clone()];
+
+        for agent in ["mono:alpha", "session:s1"] {
+            let patch = MilestonePatch {
+                title: Some("changed".into()),
+                ..Default::default()
+            };
+            let refused = [
+                ("add", add(&conn, "/p", by(agent, "new"), 2).map(|_| ())),
+                (
+                    "update",
+                    update(&conn, "/p", &first.id, patch, agent, 2).map(|_| ()),
+                ),
+                ("remove", remove(&conn, "/p", &first.id, agent)),
+                (
+                    "reorder",
+                    reorder(&conn, "/p", &reversed, agent).map(|_| ()),
+                ),
+            ];
+            for (write, result) in refused {
+                assert_eq!(result, Err(OFF.into()), "{agent} {write}");
+            }
+        }
+        assert_eq!(
+            list(&conn, "/p").unwrap(),
+            rows,
+            "a refused write changed rows"
+        );
+        assert!(!settings(&conn, "/p").unwrap().enabled);
+
+        let patch = MilestonePatch {
+            title: Some("by the user".into()),
+            ..Default::default()
+        };
+        update(&conn, "/p", &first.id, patch, "user", 3).unwrap();
+        reorder(&conn, "/p", &reversed, "user").unwrap();
+        remove(&conn, "/p", &second.id, "user").unwrap();
+        add(&conn, "/p", new("user add"), 3).unwrap();
+        assert_eq!(titles(&conn, "/p"), ["by the user", "user add"]);
+
+        set_settings(&conn, "/p", turn(true), 4).unwrap();
+        add(&conn, "/p", by("mono:alpha", "back on"), 4).unwrap();
+    }
+
+    #[test]
+    fn off_in_one_project_leaves_another_on() {
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        set_settings(&conn, "/p", turn(false), 1).unwrap();
+        assert_eq!(
+            add(&conn, "/p", by("mono:alpha", "refused"), 1).map(|_| ()),
+            Err(OFF.into())
+        );
+        add(&conn, "/q", by("mono:alpha", "allowed"), 1).unwrap();
+        assert_eq!(titles(&conn, "/q"), ["allowed"]);
+        assert!(settings(&conn, "/q").unwrap().enabled);
+    }
+
+    #[test]
+    fn hidden_only_patch_keeps_project_off() {
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        set_settings(&conn, "/p", turn(false), 1).unwrap();
+        let hide: SettingsPatch =
+            serde_json::from_value(json!({ "hiddenStatuses": ["done"] })).unwrap();
+        let saved = set_settings(&conn, "/p", hide, 2).unwrap();
+        let expected = MilestoneSettings {
+            enabled: false,
+            hidden_statuses: vec![Status::Done],
+        };
+        assert_eq!(saved, expected);
+        assert_eq!(settings(&conn, "/p").unwrap(), expected);
+        assert_eq!(
+            add(&conn, "/p", by("mono:alpha", "refused"), 2).map(|_| ()),
+            Err(OFF.into())
+        );
+    }
+
+    #[test]
+    fn hidden_statuses_rejects_unknown_status() {
+        let unknown = json!({ "hiddenStatuses": ["idea", "doing"] });
+        let error = serde_json::from_value::<SettingsPatch>(unknown).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown variant `doing`"),
+            "{error}"
+        );
+
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        conn.execute(
+            "INSERT INTO milestone_settings (project_path, hidden_statuses, updated_at)
+             VALUES ('/p', '[\"doing\"]', 1)",
+            [],
+        )
+        .unwrap();
+        let error = settings(&conn, "/p").unwrap_err();
+        assert!(error.contains("hidden_statuses"), "{error}");
+        assert!(add(&conn, "/p", by("mono:alpha", "x"), 1).is_err());
+    }
+
+    #[test]
+    fn settings_checks_reject_bad_rows() {
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        let insert = |path: &str, enabled: i64, hidden: &str| {
+            conn.execute(
+                "INSERT INTO milestone_settings (project_path, enabled, hidden_statuses, updated_at)
+                 VALUES (?1, ?2, ?3, 1)",
+                params![path, enabled, hidden],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        };
+        for (path, enabled, hidden) in [
+            ("/p", 1, "not json"),
+            ("/p", 1, "{\"idea\": true}"),
+            ("/p", 2, "[]"),
+            ("/a/b/", 1, "[]"),
+            ("", 1, "[]"),
+        ] {
+            let error = insert(path, enabled, hidden).unwrap_err();
+            assert!(
+                error.contains("CHECK constraint failed"),
+                "{path} {enabled} {hidden}: {error}"
+            );
+        }
+        insert("/", 0, "[\"done\"]").unwrap();
     }
 
     fn row_count(conn: &Connection) -> i64 {
@@ -649,7 +979,7 @@ mod tests {
             ("long note", json!({ "note": "n".repeat(NOTE_MAX + 1) })),
         ] {
             let parsed: MilestonePatch = serde_json::from_value(patch).unwrap();
-            let error = update(&conn, "/p", &kept.id, parsed, 2).unwrap_err();
+            let error = update(&conn, "/p", &kept.id, parsed, "user", 2).unwrap_err();
             assert!(error.starts_with("invalid_input"), "update {case}: {error}");
         }
         assert_eq!(list(&conn, "/p").unwrap(), [kept]);
