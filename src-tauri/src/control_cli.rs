@@ -630,9 +630,16 @@ fn send_to(
     serde_json::from_str(&line).map_err(|_| sent("MonoCode returned an invalid response"))
 }
 
-/// The Mono messaging tools, as MCP (`app-mcp`) and omp host tools both
-/// expose them (design 3 and 4). `action` is the app action each one calls.
+/// The Mono tools, as MCP (`app-mcp`) and omp host tools both expose them
+/// (design 3 and 4). `action` is the app action each one calls. No
+/// milestone schema takes `createdBy` or `by`: the app sets the writer.
 pub fn app_tools() -> Value {
+    let project = json!({"type": "string", "minLength": 1, "description": "Path or name of one of your projects. May be left out when you have a single project."});
+    let id = json!({"type": "string", "minLength": 1, "maxLength": 128});
+    let title = json!({"type": "string", "minLength": 1, "maxLength": 200});
+    let note = json!({"type": "string", "maxLength": 4000});
+    let status = json!({"type": "string", "enum": ["idea", "planned", "in_progress", "done"]});
+    let target = json!({"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "YYYY-MM-DD, or null for later."});
     json!([
         {
             "name": "get_monos",
@@ -682,6 +689,76 @@ pub fn app_tools() -> Value {
                     "handle": {"type": "string", "minLength": 1, "description": "The message_id, or a handle such as \"#1\" from this turn."}
                 },
                 "required": ["handle"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "list_milestones",
+            "action": "milestones.list",
+            "description": "List the project's milestones (future goals) in order, with settings {enabled, hiddenStatuses}. Each has id, title, note, status, target, order, createdBy, createdAt and updatedAt. It answers while milestones are off.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"project": project},
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "add_milestone",
+            "action": "milestones.add",
+            "description": "Keep a future goal for the project as a milestone. status defaults to idea. MonoCode records you as the writer. Returns the new milestone. Code milestones_off means the user turned milestones off: do not retry.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": project,
+                    "title": title,
+                    "note": note,
+                    "status": status,
+                    "target": target
+                },
+                "required": ["title"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "update_milestone",
+            "action": "milestones.update",
+            "description": "Change a milestone's title, note, status or target. Omitted fields stay; target null clears the date. Code unknown_milestone means the id is not in this project.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": project,
+                    "id": id,
+                    "title": title,
+                    "note": note,
+                    "status": status,
+                    "target": target
+                },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "remove_milestone",
+            "action": "milestones.remove",
+            "description": "Delete one milestone. Returns {removed: id}.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"project": project, "id": id},
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "reorder_milestones",
+            "action": "milestones.reorder",
+            "description": "Set the order of the project's milestones. ids is every id of the project, in the new order. Code stale_order means ids are not exactly the project's: call list_milestones and retry.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": project,
+                    "ids": {"type": "array", "items": id}
+                },
+                "required": ["ids"],
                 "additionalProperties": false
             }
         }
@@ -1445,7 +1522,7 @@ mod tests {
     // Defect: an MCP client cannot start (unsupported version, missing
     // capabilities) or sees tools that accept fields the gate refuses.
     #[test]
-    fn app_mcp_initializes_and_lists_the_four_strict_tools() {
+    fn app_mcp_initializes_and_lists_the_nine_strict_tools() {
         let out = mcp(
             None,
             &[
@@ -1465,7 +1542,20 @@ mod tests {
         assert_eq!(out[1]["result"]["protocolVersion"], "2025-06-18");
         let tools = out[2]["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["get_monos", "send_message", "reply", "get_message"]);
+        assert_eq!(
+            names,
+            [
+                "get_monos",
+                "send_message",
+                "reply",
+                "get_message",
+                "list_milestones",
+                "add_milestone",
+                "update_milestone",
+                "remove_milestone",
+                "reorder_milestones"
+            ]
+        );
         for tool in tools {
             assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{tool}");
             assert!(tool.get("action").is_none(), "{tool}");
@@ -1537,6 +1627,100 @@ mod tests {
         app.join().unwrap();
         assert_eq!(out[0]["result"]["isError"], true);
         assert_eq!(out[0]["result"]["structuredContent"], refused);
+    }
+
+    // M-4. Defect: a milestone tool calls another action (a remove that runs
+    // as a reorder, an update that adds a row), drops the model's input,
+    // offers a field the app refuses (createdBy or by would let a model pick
+    // the writer), requires the wrong fields, or cannot clear a date or set
+    // a status.
+    #[test]
+    fn app_mcp_milestone_tools_call_their_action_with_a_strict_schema() {
+        let cases = [
+            (
+                "list_milestones",
+                "milestones.list",
+                &["project"][..],
+                &[][..],
+                json!({"project": "app"}),
+            ),
+            (
+                "add_milestone",
+                "milestones.add",
+                &["note", "project", "status", "target", "title"][..],
+                &["title"][..],
+                json!({"title": "Dark mode", "note": "Later", "status": "planned", "target": null}),
+            ),
+            (
+                "update_milestone",
+                "milestones.update",
+                &["id", "note", "project", "status", "target", "title"][..],
+                &["id"][..],
+                json!({"id": "m1", "status": "done", "target": "2026-12-01"}),
+            ),
+            (
+                "remove_milestone",
+                "milestones.remove",
+                &["id", "project"][..],
+                &["id"][..],
+                json!({"id": "m1"}),
+            ),
+            (
+                "reorder_milestones",
+                "milestones.reorder",
+                &["ids", "project"][..],
+                &["ids"][..],
+                json!({"ids": ["m2", "m1"]}),
+            ),
+        ];
+        let listed = mcp(None, &[rpc(1, "tools/list", json!({}))]);
+        let tools = listed[0]["result"]["tools"].as_array().unwrap();
+        let schema = |name: &str| -> &Value {
+            &tools.iter().find(|tool| tool["name"] == name).unwrap()["inputSchema"]
+        };
+        for (name, _, fields, required, _) in &cases {
+            let schema = schema(name);
+            let mut keys: Vec<&str> = schema["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort();
+            assert_eq!(keys, *fields, "{name}");
+            let listed_required = schema.get("required").cloned().unwrap_or(json!([]));
+            assert_eq!(listed_required, json!(required), "{name}");
+        }
+        for name in ["add_milestone", "update_milestone"] {
+            let properties = &schema(name)["properties"];
+            assert_eq!(
+                properties["target"]["type"],
+                json!(["string", "null"]),
+                "{name}"
+            );
+            assert_eq!(
+                properties["status"]["enum"],
+                json!(["idea", "planned", "in_progress", "done"]),
+                "{name}"
+            );
+        }
+        let answer = json!({"ok": true, "result": {}});
+        let (endpoint, app) = fake_app(vec![answer.clone(); cases.len()]);
+        let calls: Vec<Value> = cases
+            .iter()
+            .zip(1..)
+            .map(|((name, _, _, _, input), id)| {
+                rpc(id, "tools/call", json!({"name": name, "arguments": input}))
+            })
+            .collect();
+        let out = mcp(Some(&endpoint), &calls);
+        let requests = app.join().unwrap();
+        assert_eq!(requests.len(), cases.len());
+        for (((name, action, _, _, input), request), out) in cases.iter().zip(&requests).zip(&out) {
+            assert_eq!(request["action"], *action, "{name}");
+            assert_eq!(request["input"], *input, "{name}");
+            assert_eq!(out["result"]["structuredContent"], answer, "{name}");
+        }
     }
 
     // Defect: a call the app answered "timed out" is dropped, or retried
