@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   MILESTONES_CHANGED,
+  subscribe,
   type Milestone,
   type ProjectMilestones,
 } from "../model/milestones";
@@ -18,7 +19,10 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
   invoke,
 }));
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: async (event: string, handler: (event: { payload: unknown }) => void) => {
+  listen: async (
+    event: string,
+    handler: (event: { payload: unknown }) => void,
+  ) => {
     listeners.set(event, handler);
     return () => listeners.delete(event);
   },
@@ -37,7 +41,9 @@ let container: HTMLDivElement;
 let root: Root;
 let store: Record<string, ProjectMilestones>;
 
-function milestone(fields: Partial<Milestone> & Pick<Milestone, "id">): Milestone {
+function milestone(
+  fields: Partial<Milestone> & Pick<Milestone, "id">,
+): Milestone {
   return {
     projectPath: APP,
     title: fields.id,
@@ -69,10 +75,13 @@ beforeEach(() => {
   });
   store = {};
   invoke.mockReset();
-  invoke.mockImplementation(async (command: string, args: { projectPath: string }) => {
-    if (command !== "milestones_list") throw new Error(`unexpected ${command}`);
-    return structuredClone(store[args.projectPath] ?? project([]));
-  });
+  invoke.mockImplementation(
+    async (command: string, args: { projectPath: string }) => {
+      if (command !== "milestones_list")
+        throw new Error(`unexpected ${command}`);
+      return structuredClone(store[args.projectPath] ?? project([]));
+    },
+  );
   listeners.clear();
   container = document.createElement("div");
   document.body.append(container);
@@ -122,7 +131,9 @@ it("opens on the cwd project and shows only its rows", async () => {
     milestone({ id: "Ship search", status: "in_progress" }),
     milestone({ id: "Dark mode", order: 1 }),
   ]);
-  store[SITE] = project([milestone({ id: "Site redesign", projectPath: SITE })]);
+  store[SITE] = project([
+    milestone({ id: "Site redesign", projectPath: SITE }),
+  ]);
   await open(`${APP}/`);
 
   expect(invoke).toHaveBeenCalledWith("milestones_list", { projectPath: APP });
@@ -133,7 +144,10 @@ it("opens on the cwd project and shows only its rows", async () => {
 
 it("reads the settings: hidden statuses leave the timeline and an off project says Off", async () => {
   store[APP] = project(
-    [milestone({ id: "Shipped", status: "done" }), milestone({ id: "Next", order: 1 })],
+    [
+      milestone({ id: "Shipped", status: "done" }),
+      milestone({ id: "Next", order: 1 }),
+    ],
     { hiddenStatuses: ["done"] },
   );
   store[SITE] = project([], { enabled: false });
@@ -167,7 +181,106 @@ it("refreshes on a milestones-changed event and marks an agent's new row for a s
   expect(added?.textContent).toContain("New");
 
   await act(async () => vi.advanceTimersByTime(4000));
-  expect(container.querySelector('[data-milestone="Voice notes"]')?.textContent).not.toContain(
-    "New",
+  expect(
+    container.querySelector('[data-milestone="Voice notes"]')?.textContent,
+  ).not.toContain("New");
+});
+
+const changed = (projectPath: string) =>
+  act(async () =>
+    listeners.get(MILESTONES_CHANGED)!({ payload: { projectPath } }),
   );
+
+function gate() {
+  let open!: () => void;
+  const opened = new Promise<void>((resolve) => (open = resolve));
+  return { opened, open: () => act(async () => open()) };
+}
+
+it("shows the open project's load error even when another project loads fine, until it loads", async () => {
+  invoke.mockImplementation(
+    async (_command: string, { projectPath }: { projectPath: string }) => {
+      if (projectPath === SITE) throw new Error("database is locked");
+      return project([milestone({ id: "Ship search" })]);
+    },
+  );
+  await open(SITE);
+  expect(container.querySelector("main")?.textContent).toBe(
+    "database is locked",
+  );
+
+  invoke.mockResolvedValue(
+    project([milestone({ id: "Site goal", projectPath: SITE })]),
+  );
+  await changed(SITE);
+  expect(titles()).toEqual(["Site goal"]);
+  expect(container.textContent).not.toContain("database is locked");
+});
+
+it("never shows another project's load error over the open project", async () => {
+  const siteFails = gate();
+  invoke.mockImplementation(
+    async (_command: string, { projectPath }: { projectPath: string }) => {
+      if (projectPath !== SITE)
+        return project([milestone({ id: "Ship search" })]);
+      await siteFails.opened;
+      throw new Error("site failed");
+    },
+  );
+  await open();
+  await siteFails.open();
+  expect(titles()).toEqual(["Ship search"]);
+  expect(container.textContent).not.toContain("site failed");
+});
+
+it("never lets a slow older list overwrite a newer one", async () => {
+  const slow = gate();
+  const lists = [[], ["old"], ["old", "new"]];
+  invoke.mockImplementation(
+    async (_command: string, { projectPath }: { projectPath: string }) => {
+      if (projectPath !== APP) return project([]);
+      const ids = lists.shift()!;
+      if (ids.length === 1) await slow.opened;
+      return project(ids.map((id, order) => milestone({ id, order })));
+    },
+  );
+  await open();
+  await changed(APP);
+  await changed(APP);
+  await slow.open();
+  expect(titles()).toEqual(["old", "new"]);
+});
+
+it("marks only rows an agent added after the first list", async () => {
+  store[APP] = project([milestone({ id: "Found", createdBy: "mono:m-1" })]);
+  await open();
+  store[APP] = project([
+    milestone({ id: "Found", createdBy: "mono:m-1" }),
+    milestone({ id: "Mine", order: 1 }),
+  ]);
+  await changed(APP);
+  expect(titles()).toEqual(["Found", "Mine"]);
+  expect(container.textContent).not.toContain("New");
+});
+
+it("unmount removes the listener and the pending highlight timer", async () => {
+  await open();
+  vi.useFakeTimers();
+  store[APP] = project([
+    milestone({ id: "Voice notes", createdBy: "mono:m-1" }),
+  ]);
+  await changed(APP);
+  expect(vi.getTimerCount()).toBe(1);
+
+  await act(async () => root.unmount());
+  expect(listeners.has(MILESTONES_CHANGED)).toBe(false);
+  expect(vi.getTimerCount()).toBe(0);
+  root = createRoot(container);
+});
+
+it("subscribe disposed before listen resolves still removes the listener", async () => {
+  const stop = subscribe(() => undefined);
+  stop();
+  await act(async () => undefined);
+  expect(listeners.has(MILESTONES_CHANGED)).toBe(false);
 });

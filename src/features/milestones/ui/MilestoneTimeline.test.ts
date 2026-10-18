@@ -93,16 +93,26 @@ it("groups rows Done, Today, In progress, Planned, Idea, each in sort order", as
 it("leaves hidden statuses out and keeps the Today line above the future", async () => {
   await render({
     milestones: [
-      milestone({ id: "done", status: "done" }),
       milestone({ id: "planned", status: "planned" }),
       milestone({ id: "idea" }),
     ],
-    hiddenStatuses: ["done", "idea"],
+    hiddenStatuses: ["idea"],
   });
   expect(layout()).toEqual(["today", "# Planned", "planned"]);
   expect(container.querySelector("[data-today]")?.textContent).toBe(
     `Today · ${TODAY.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`,
   );
+});
+
+it("draws no Today line while Done is hidden, as approved frame M·8 shows", async () => {
+  await render({
+    milestones: [
+      milestone({ id: "done", status: "done" }),
+      milestone({ id: "planned", status: "planned" }),
+    ],
+    hiddenStatuses: ["done"],
+  });
+  expect(layout()).toEqual(["# Planned", "planned"]);
 });
 
 it("shows the local target date, with the year only when it is not this year, or Later", async () => {

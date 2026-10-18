@@ -3,10 +3,18 @@ import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { projectKey, projectName } from "../../../shared/lib/paths";
-import { AlertCircle, Flag, LoaderCircle, Search } from "../../../shared/ui/icons";
+import {
+  AlertCircle,
+  Flag,
+  LoaderCircle,
+  Search,
+} from "../../../shared/ui/icons";
 import { findMono, monoLook } from "../../monos/model/mono";
 import { useTabGroupLogos } from "../../projects/hooks/useTabGroupLogos";
-import { normalizeProjectPath, type RecentProject } from "../../projects/model/recents";
+import {
+  normalizeProjectPath,
+  type RecentProject,
+} from "../../projects/model/recents";
 import { ProjectLogoIcon } from "../../projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
 import {
@@ -26,7 +34,12 @@ import {
   type ProjectMilestones,
 } from "../model/milestones";
 import { MilestoneTimeline, type CreatorLook } from "./MilestoneTimeline";
-import { STATUS_LABELS, TIMELINE_STATUSES, agentCreator, type AgentCreator } from "./timeline";
+import {
+  STATUS_LABELS,
+  TIMELINE_STATUSES,
+  agentCreator,
+  type AgentCreator,
+} from "./timeline";
 
 type Props = {
   besideRail?: boolean;
@@ -44,10 +57,16 @@ type Props = {
 const HIGHLIGHT_MS = 4000;
 
 /** Rows an agent added between two lists of one project. */
-function agentAdded(before: readonly Milestone[], after: readonly Milestone[]): string[] {
+function agentAdded(
+  before: readonly Milestone[],
+  after: readonly Milestone[],
+): string[] {
   const known = new Set(before.map((milestone) => milestone.id));
   return after
-    .filter((milestone) => !known.has(milestone.id) && agentCreator(milestone.createdBy))
+    .filter(
+      (milestone) =>
+        !known.has(milestone.id) && agentCreator(milestone.createdBy),
+    )
     .map((milestone) => milestone.id);
 }
 
@@ -55,10 +74,14 @@ function agentAdded(before: readonly Milestone[], after: readonly Milestone[]): 
 function projectSummary({ settings, milestones }: ProjectMilestones): string {
   if (milestones.length === 0) return "No milestones yet";
   const count = `${milestones.length} ${milestones.length === 1 ? "milestone" : "milestones"}`;
-  const hidden = TIMELINE_STATUSES.filter((status) => settings.hiddenStatuses.includes(status));
+  const hidden = TIMELINE_STATUSES.filter((status) =>
+    settings.hiddenStatuses.includes(status),
+  );
   if (hidden.length > 0)
     return `${count} · ${hidden.map((status) => STATUS_LABELS[status]).join(", ")} hidden`;
-  const inProgress = milestones.filter((milestone) => milestone.status === "in_progress").length;
+  const inProgress = milestones.filter(
+    (milestone) => milestone.status === "in_progress",
+  ).length;
   return inProgress > 0 ? `${count} · ${inProgress} in progress` : count;
 }
 
@@ -88,7 +111,10 @@ export function MilestonesView({
           <OverlayNav onBack={onClose} onToggleSidebar={onToggleSidebar} />
         )}
         <div className="flex min-w-0 flex-1 items-center gap-2 px-3 text-[13px]">
-          <Flag className="size-3.5 shrink-0 text-content/45" strokeWidth={1.75} />
+          <Flag
+            className="size-3.5 shrink-0 text-content/45"
+            strokeWidth={1.75}
+          />
           <span className="min-w-0 truncate text-content">Milestones</span>
         </div>
         {IS_MAC ? null : <WindowControls />}
@@ -104,7 +130,9 @@ function MilestonesContent({
   sessions,
 }: Pick<Props, "cwd" | "recents" | "sessions">) {
   const paths = useMemo(
-    () => [...new Set(recents.map((recent) => normalizeProjectPath(recent.path)))],
+    () => [
+      ...new Set(recents.map((recent) => normalizeProjectPath(recent.path))),
+    ],
     [recents],
   );
   const [selected, setSelected] = useState(() => {
@@ -112,9 +140,11 @@ function MilestonesContent({
     return current && paths.includes(current) ? current : (paths[0] ?? null);
   });
   const [lists, setLists] = useState<Record<string, ProjectMilestones>>({});
-  const [highlightIds, setHighlightIds] = useState<ReadonlySet<string>>(new Set());
+  const [highlightIds, setHighlightIds] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
   const [query, setQuery] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const listsRef = useRef(lists);
   const requests = useRef(new Map<string, number>());
   const timers = useRef(new Set<number>());
@@ -134,17 +164,24 @@ function MilestonesContent({
       const before = listsRef.current[path];
       listsRef.current = { ...listsRef.current, [path]: next };
       setLists(listsRef.current);
-      setError(null);
-      const added = before ? agentAdded(before.milestones, next.milestones) : [];
+      setErrors(({ [path]: _, ...others }) => others);
+      const added = before
+        ? agentAdded(before.milestones, next.milestones)
+        : [];
       if (added.length === 0) return;
       setHighlightIds((current) => new Set([...current, ...added]));
       const timer = window.setTimeout(() => {
         timers.current.delete(timer);
-        setHighlightIds((current) => new Set([...current].filter((id) => !added.includes(id))));
+        setHighlightIds(
+          (current) =>
+            new Set([...current].filter((id) => !added.includes(id))),
+        );
       }, HIGHLIGHT_MS);
       timers.current.add(timer);
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (requests.current.get(path) !== request) return;
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setErrors((current) => ({ ...current, [path]: message }));
     }
   }, []);
 
@@ -158,7 +195,9 @@ function MilestonesContent({
   const lookUpCreator = useCallback(
     (creator: AgentCreator): CreatorLook | undefined => {
       if (creator.kind === "session") {
-        const title = sessions.find((session) => session.id === creator.id)?.title;
+        const title = sessions.find(
+          (session) => session.id === creator.id,
+        )?.title;
         return title ? { name: title } : undefined;
       }
       const mono = findMono(creator.id);
@@ -175,6 +214,7 @@ function MilestonesContent({
   );
   const data = selected ? lists[selected] : undefined;
   const heading = selected ? look(selected, "size-[18px]") : null;
+  const error = selected ? errors[selected] : undefined;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 text-content">
@@ -238,7 +278,9 @@ function MilestonesContent({
                 {heading.icon}
                 <span className="min-w-0 truncate">{heading.name}</span>
               </h2>
-              <p className="mt-0.5 text-xs text-content/45">{projectSummary(data)}</p>
+              <p className="mt-0.5 text-xs text-content/45">
+                {projectSummary(data)}
+              </p>
             </header>
             {data.milestones.length > 0 ? (
               <MilestoneTimeline
@@ -257,8 +299,9 @@ function MilestonesContent({
                     No milestones for {heading.name} yet
                   </h3>
                   <p className="mt-1.5 text-xs leading-[18px] text-content/45">
-                    Write down where this project is going, so you don’t have to remember
-                    it. A Mono can add one too: “remember that we want X later”.
+                    Write down where this project is going, so you don’t have to
+                    remember it. A Mono can add one too: “remember that we want
+                    X later”.
                   </p>
                 </div>
               </div>
@@ -291,11 +334,20 @@ function useProjectLook() {
       return {
         name: resolveTabGroupLabel(key, groups.labels, seed),
         icon: logo ? (
-          <ProjectLogoIcon path={logo} className={`${size} shrink-0 rounded-sm`} imageClassName={size} />
+          <ProjectLogoIcon
+            path={logo}
+            className={`${size} shrink-0 rounded-sm`}
+            imageClassName={size}
+          />
         ) : (
           <ProjectMascot
             project={seed}
-            color={resolveTabGroupColor(key, groups.colors, groups.customColors, seed)}
+            color={resolveTabGroupColor(
+              key,
+              groups.colors,
+              groups.customColors,
+              seed,
+            )}
             name={resolveTabGroupMascot(key, groups.mascots)}
             className={`${size} shrink-0`}
           />

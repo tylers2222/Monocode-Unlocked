@@ -68,7 +68,10 @@ function timeOpen(page: Page, label: string, ready: string, count: number) {
   );
 }
 
-async function boot(app: { mount: (seed: object) => Promise<void> }, page: Page) {
+async function boot(
+  app: { mount: (seed: object) => Promise<void> },
+  page: Page,
+) {
   await app.mount({ projects: [PROJECT], milestones, automations: [digest] });
   // Let the idle preloads land, as they do before a user's first click.
   await page.waitForTimeout(1500);
@@ -76,7 +79,12 @@ async function boot(app: { mount: (seed: object) => Promise<void> }, page: Page)
 
 test("perf: Automations opens", async ({ app, page }) => {
   await boot(app, page);
-  const ms = await timeOpen(page, "Automations", '[aria-label="Open Morning digest"]', 1);
+  const ms = await timeOpen(
+    page,
+    "Automations",
+    '[aria-label="Open Morning digest"]',
+    1,
+  );
   console.log(`PERF automations-open ${ms.toFixed(1)}`);
 });
 
@@ -100,7 +108,9 @@ test("perf: an agent's add is visible", async ({ app, page }) => {
     };
     const start = performance.now();
     window.appBackend!.store.milestones.push(row);
-    await window.appBackend!.emit("monocode:milestones-changed", { projectPath: row.projectPath });
+    await window.appBackend!.emit("monocode:milestones-changed", {
+      projectPath: row.projectPath,
+    });
     await new Promise<void>((resolve) => {
       const tick = () =>
         document.querySelector(`[data-milestone="${row.id}"]`)

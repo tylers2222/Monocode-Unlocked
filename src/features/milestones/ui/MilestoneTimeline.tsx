@@ -62,7 +62,9 @@ export function MilestoneTimeline({
   );
   return (
     <div className="relative mx-auto w-full max-w-[780px] px-8 pt-1.5 pb-7 before:absolute before:top-[22px] before:bottom-[30px] before:left-[39px] before:w-px before:bg-content/16">
-      {groups[0]?.status === "done" ? null : todayLine}
+      {groups[0]?.status === "done" || hiddenStatuses.includes("done")
+        ? null
+        : todayLine}
       {groups.map(({ status, milestones }) => (
         <section key={status} aria-label={STATUS_LABELS[status]}>
           <h3 className="relative mt-4 grid h-[30px] grid-cols-[14px_1fr] items-center gap-3.5">
@@ -112,7 +114,9 @@ function MilestoneRow({
       tabIndex={0}
       data-milestone={milestone.id}
       className={`relative grid grid-cols-[14px_1fr_auto] items-start gap-3.5 rounded-lg py-2 pr-2.5 outline-none focus-visible:ring-1 focus-visible:ring-accent/50 focus-visible:ring-inset ${
-        highlighted ? "bg-accent/8 inset-ring inset-ring-accent/30 motion-safe:animate-[approval-toast-in_220ms_cubic-bezier(0.22,1,0.36,1)]" : ""
+        highlighted
+          ? "bg-accent/8 inset-ring inset-ring-accent/30 motion-safe:animate-[approval-toast-in_220ms_cubic-bezier(0.22,1,0.36,1)]"
+          : ""
       }`}
     >
       <span className="grid h-5 place-items-center">
