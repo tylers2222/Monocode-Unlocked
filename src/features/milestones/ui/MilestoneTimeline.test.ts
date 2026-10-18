@@ -3,7 +3,7 @@ import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MilestoneTimeline } from "./MilestoneTimeline";
-import type { Milestone } from "./timeline";
+import type { Milestone } from "../model/milestones";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -25,12 +25,15 @@ const TODAY = new Date(2026, 9, 18);
 
 function milestone(fields: Partial<Milestone> & Pick<Milestone, "id">): Milestone {
   return {
+    projectPath: "/work/app",
     title: fields.id,
     note: "",
     status: "idea",
     target: null,
     order: 0,
     createdBy: "user",
+    createdAt: 0,
+    updatedAt: 0,
     ...fields,
   };
 }
@@ -102,7 +105,7 @@ it("leaves hidden statuses out and keeps the Today line above the future", async
   );
 });
 
-it("shows the target date, or Later when there is none", async () => {
+it("shows the local target date, with the year only when it is not this year, or Later", async () => {
   await render({
     milestones: [
       milestone({ id: "dated", target: "2026-11-07" }),
@@ -111,12 +114,16 @@ it("shows the target date, or Later when there is none", async () => {
     ],
   });
   const day = { month: "short", day: "numeric" } as const;
-  expect(row("dated").textContent).toContain(
+  // vitest.config.ts pins TZ west of UTC, where a UTC parse reads Nov 6.
+  expect(row("dated").querySelector(".tabular-nums")?.textContent).toBe(
     new Date(2026, 10, 7).toLocaleDateString(undefined, day),
   );
   expect(row("dated").textContent).not.toContain("Later");
-  expect(row("next-year").textContent).toContain(
-    new Date(2027, 0, 5).toLocaleDateString(undefined, { ...day, year: "numeric" }),
+  expect(row("next-year").querySelector(".tabular-nums")?.textContent).toBe(
+    new Date(2027, 0, 5).toLocaleDateString(undefined, {
+      ...day,
+      year: "numeric",
+    }),
   );
   expect(row("undated").textContent).toContain("Later");
 });
@@ -127,7 +134,8 @@ it("marks rows a Mono or a session added, and not rows the user added", async ()
       milestone({ id: "by-mono", createdBy: "mono:m1" }),
       milestone({ id: "by-session", createdBy: "session:s1", order: 1 }),
       milestone({ id: "by-gone-mono", createdBy: "mono:gone", order: 2 }),
-      milestone({ id: "by-user", order: 3 }),
+      milestone({ id: "by-gone-session", createdBy: "session:gone", order: 3 }),
+      milestone({ id: "by-user", order: 4 }),
     ],
     lookUpCreator: ({ kind, id }) =>
       kind === "mono" && id === "m1"
@@ -141,6 +149,9 @@ it("marks rows a Mono or a session added, and not rows the user added", async ()
     "added by session · Execute plan M tasks",
   );
   expect(row("by-gone-mono").textContent).toContain("added by a Mono");
+  expect(row("by-gone-session").textContent).toBe(
+    "by-gone-sessionadded by sessionLater",
+  );
   expect(row("by-user").textContent).not.toContain("added by");
 });
 

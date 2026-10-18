@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { MilestoneTimeline } from "../../src/features/milestones/ui/MilestoneTimeline";
-import type { Milestone } from "../../src/features/milestones/ui/timeline";
+import type { Milestone } from "../../src/features/milestones/model/milestones";
 import "../../src/styles/index.css";
 
 // The rows of approved frame M·4; `?live` adds the agent rows of frame M·9.
@@ -16,12 +16,15 @@ const M4: Milestone[] = [
   ["idea", "Share one Mono between two Macs", "", null],
 ].map(([status, title, note, target], order) => ({
   id: `m${order}`,
+  projectPath: "/Users/tyler/MonoCode",
   title: title as string,
   note: note as string,
   status: status as Milestone["status"],
   target,
   order: order + 1,
   createdBy: "user",
+  createdAt: 0,
+  updatedAt: 0,
 }));
 
 const params = new URLSearchParams(location.search);
@@ -34,6 +37,7 @@ const milestones: Milestone[] = live
           : row,
       ),
       {
+        ...M4[0],
         id: "new",
         title: "Next milestone in the Mono overview",
         note: "So a Mono sees its project’s next goal when it starts a turn.",

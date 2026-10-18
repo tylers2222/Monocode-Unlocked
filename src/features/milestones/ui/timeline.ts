@@ -1,17 +1,4 @@
-/** The row `milestones_list` returns (Rust `Milestone`, camelCase). */
-export type MilestoneStatus = "idea" | "planned" | "in_progress" | "done";
-
-export type Milestone = {
-  id: string;
-  title: string;
-  note: string;
-  status: MilestoneStatus;
-  /** `YYYY-MM-DD`, or null for "Later". */
-  target: string | null;
-  order: number;
-  /** `user`, `mono:<monoId>` or `session:<sessionId>`. */
-  createdBy: string;
-};
+import type { Milestone, MilestoneStatus } from "../model/milestones";
 
 /** Past at the top, future below; the Today line sits after `done`. */
 export const TIMELINE_STATUSES: readonly MilestoneStatus[] = [

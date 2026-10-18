@@ -1,5 +1,6 @@
 import { Check, Terminal } from "../../../shared/ui/icons";
 import { PixelMascot } from "../../projects/ui/PixelMascot";
+import type { Milestone, MilestoneStatus } from "../model/milestones";
 import {
   STATUS_LABELS,
   agentCreator,
@@ -7,8 +8,6 @@ import {
   formatTarget,
   timelineGroups,
   type AgentCreator,
-  type Milestone,
-  type MilestoneStatus,
 } from "./timeline";
 
 /** How the page names an agent creator; a Mono also brings its mascot. */
@@ -56,7 +55,7 @@ export function MilestoneTimeline({
       className="grid h-[26px] mt-2.5 grid-cols-[14px_1fr] items-center gap-3.5"
     >
       <span className="h-0.5 w-3.5 rounded-sm bg-accent" />
-      <span className="flex items-center gap-2.5 text-[11px] font-medium text-accent after:flex-1 after:border-t after:border-dashed after:border-accent/35">
+      <span className="flex items-center gap-2.5 text-[11px] font-medium text-(--link-color) after:flex-1 after:border-t after:border-dashed after:border-accent/35 dark:text-accent">
         Today · {formatDay(today, today)}
       </span>
     </div>
@@ -112,7 +111,7 @@ function MilestoneRow({
     <li
       tabIndex={0}
       data-milestone={milestone.id}
-      className={`relative grid grid-cols-[14px_1fr_auto] items-start gap-3.5 rounded-lg py-2 pr-2.5 outline-none focus-visible:bg-content/4 ${
+      className={`relative grid grid-cols-[14px_1fr_auto] items-start gap-3.5 rounded-lg py-2 pr-2.5 outline-none focus-visible:ring-1 focus-visible:ring-accent/50 focus-visible:ring-inset ${
         highlighted ? "bg-accent/8 inset-ring inset-ring-accent/30" : ""
       }`}
     >
@@ -178,7 +177,9 @@ function AddedBy({
   return (
     <span
       className={`inline-flex shrink-0 items-center gap-1 rounded-full py-px pr-2 pl-[5px] text-[11px] font-normal whitespace-nowrap ${
-        highlighted ? "bg-accent/14 text-accent" : "bg-content/6 text-content/50"
+        highlighted
+          ? "bg-accent/12 text-(--link-color) dark:bg-accent/14 dark:text-accent"
+          : "bg-content/6 text-content/50"
       }`}
     >
       {look?.mascot ? (
