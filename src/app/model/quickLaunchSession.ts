@@ -49,6 +49,11 @@ export async function acceptQuickLaunch(
       attachments: Attachment[],
       requestId: string,
     ) => SubmissionAcceptance;
+    /**
+     * Design 13.2: saves the lead of the worker this launch makes, so the
+     * worker's first save finds the lead's row. Throws when it cannot.
+     */
+    persistLead?: () => Promise<void>;
   },
   placement?: { direction: SplitDir; besideSessionId: string },
   /** Off for a session followed elsewhere, such as from the Mono that ran it. */
@@ -56,6 +61,7 @@ export async function acceptQuickLaunch(
 ): Promise<void> {
   // Rehydrate image previews in this webview; the floating panel sends paths.
   const attachments = await prepareAttachments(launch.attachments ?? []);
+  await workspace.persistLead?.();
   const existing = workspace
     .getSessions()
     .find((session) => session.id === deliveryId);
@@ -80,6 +86,8 @@ export async function acceptQuickLaunch(
     );
   session.id = deliveryId;
   if (!existing && launch.sidebarHidden) session.sidebarHidden = true;
+  if (!existing && launch.leadSessionId)
+    session.leadSessionId = launch.leadSessionId;
   if (launch.modelSettings) {
     session.modelSettings = mergeModelSettings(
       resolveModel(session.harness, session.model),

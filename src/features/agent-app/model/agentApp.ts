@@ -594,6 +594,7 @@ function startLaunch(
   source: Session,
   input: Record<string, unknown>,
   host: AgentAppHost,
+  leadSessionId: string | null,
 ): { launch: QuickLaunch; listedWorktree?: string } {
   const cwd = requireProject(source, input, host);
   const prompt = agentPrompt(input.prompt);
@@ -688,6 +689,7 @@ function startLaunch(
       : {}),
     ...(workFolder ? { workFolder } : {}),
     ...(worktreeBase ? { worktreeBase } : {}),
+    ...(leadSessionId ? { leadSessionId } : {}),
   };
   return { launch, listedWorktree };
 }
@@ -1510,7 +1512,18 @@ export async function handleAgentApp(
         throw new Error(
           "request ID must use letters, digits, underscores or hyphens",
         );
-      const { launch, listedWorktree } = startLaunch(source, input, host);
+      // Design 13.3: a session that starts a session is its lead; a Mono's
+      // chat or habit run starts a lead.
+      const leadSessionId =
+        host.isMono(source.id) || host.isHabitRun?.(source.id)
+          ? null
+          : source.id;
+      const { launch, listedWorktree } = startLaunch(
+        source,
+        input,
+        host,
+        leadSessionId,
+      );
       const notifyMonoId = completionRecipient(source, input, host, true);
       if (listedWorktree) {
         const chosen = (await host.worktrees(launch.cwd)).worktrees.find(

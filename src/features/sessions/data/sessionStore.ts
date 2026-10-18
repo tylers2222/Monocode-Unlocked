@@ -58,6 +58,8 @@ import type { OrchestrationSummary } from "../../orchestration/model/orchestrati
 export type SessionSummary = {
   sidebarHidden?: boolean;
   orchestrationLeadId?: string;
+  /** Change E level link, not the orchestration link (design 13.2). */
+  leadSessionId?: string;
   orchestration?: OrchestrationSummary;
   id: string;
   cwd: string;
@@ -85,6 +87,7 @@ type SessionRecord = {
   sidebarHidden?: boolean;
   monoTranscript?: Session["monoTranscript"];
   orchestrationLeadId?: string;
+  leadSessionId?: string | null;
   id: string;
   cwd: string;
   harness: string;
@@ -111,6 +114,8 @@ type SessionRecord = {
 
 type SessionUpsertPayload = {
   sidebarHidden?: boolean;
+  /** Rust writes it on the session's first save only (design 13.2). */
+  leadSessionId?: string;
   id: string;
   cwd: string;
   harness: string;
@@ -199,6 +204,9 @@ function persistableMeta(
     ...(linkedWorkItem ? { linkedWorkItem } : {}),
     ...(session.automationId && isPersistableId(session.automationId)
       ? { automationId: session.automationId }
+      : {}),
+    ...(session.leadSessionId && isPersistableId(session.leadSessionId)
+      ? { leadSessionId: session.leadSessionId }
       : {}),
   };
 }
@@ -1450,6 +1458,11 @@ function normalizeSummary(summary: SessionSummary): SessionSummary {
     draft: summary.draft || undefined,
     sidebarHidden: summary.sidebarHidden === true || undefined,
     linkedWorkItem,
+    leadSessionId:
+      typeof summary.leadSessionId === "string" &&
+      isPersistableId(summary.leadSessionId)
+        ? summary.leadSessionId
+        : undefined,
     ...(typeof summary.automationId === "string" &&
     isPersistableId(summary.automationId)
       ? { automationId: summary.automationId }
@@ -1505,6 +1518,9 @@ function recordToSession(
         (block) =>
           block.orchestrationLeadId && block.orchestrationLeadId !== record.id,
       )?.orchestrationLeadId,
+    ...(record.leadSessionId && isPersistableId(record.leadSessionId)
+      ? { leadSessionId: record.leadSessionId }
+      : {}),
     ...(record.providerSessionId
       ? { providerSessionId: record.providerSessionId }
       : {}),
