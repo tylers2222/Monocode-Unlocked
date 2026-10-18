@@ -691,13 +691,17 @@ import {
   updateMonoSettings,
 } from "../features/monos/model/gigaMono";
 import {
+  armTurnGuard,
+  disarmTurnGuard,
   ensureGigaWorkspace,
   finishGigaTurn,
   gigaWorkspaceStatus,
   noteGigaTurnCall,
   prepareGigaTurn,
   setGigaWorkspacePoster,
+  setTurnGuardHost,
 } from "../features/monos/model/gigaWorkspaceRuntime";
+import { guardedTurn } from "../features/monos/model/gigaWorkspace";
 import {
   warmNativeSkills,
   isNativeCommandPrompt,
@@ -1836,6 +1840,7 @@ function Workspace({
         (session) => session.id === sessionId,
       );
       if (!open?.busy) return open;
+      disarmTurnGuard(sessionId);
 
       const gen = (turnGen.current.get(sessionId) ?? 0) + 1;
       turnGen.current.set(sessionId, gen);
@@ -7891,6 +7896,7 @@ function Workspace({
       let completedProposal: OrchestrationProposal | undefined;
       // Design 5.2: this window runs turn `turnId` now.
       currentTurnIds.current.set(sessionId, turnId);
+      armTurnGuard(sessionId, turnId);
       void (async () => {
         // A Giga's turn starts after its workspace is in place, or after a
         // short wait: the workspace never holds the turn back.
@@ -8537,6 +8543,7 @@ function Workspace({
           onSettled?.(outcome);
           turnWatchers.current.settle(sessionId, gen, outcome);
           finishGigaTurn(sessionId, promptText, outcome.status);
+          disarmTurnGuard(sessionId, turnId);
         });
       return true;
     },
@@ -8622,6 +8629,73 @@ function Workspace({
     const chatId = findMono(monoId)?.sessionId;
     if (chatId)
       appendToMono(chatId, { id: crypto.randomUUID(), role: "system", text });
+  });
+  /** Steers `text` into the running turn of `session` as an app steer tagged
+   *  `requestId`; its block shows `shown` and joins `joined`. */
+  const steerAppTurn = (
+    session: Session,
+    steer: {
+      text: string;
+      shown: string;
+      requestId: string;
+      joined: Pick<Block, "turnId" | "link">;
+    },
+  ) => {
+    const { text, shown, requestId, joined } = steer;
+    const change = (update: (entry: Session) => Session) =>
+      updateSessionState(sessionsRef, setSessions, (sessions) =>
+        sessions.map((entry) =>
+          entry.id === session.id ? update(entry) : entry,
+        ),
+      );
+    return deliverAppSteer({
+      watchers: turnWatchers.current,
+      sessionId: session.id,
+      gen: turnGen.current.get(session.id) ?? 0,
+      record: () =>
+        change((entry) => recordAppSteer(entry, shown, requestId, joined)),
+      steer: async () => {
+        const cwd = sessionAgentCwd(session);
+        await steerHarnessTurn({
+          harness: session.harness,
+          sessionId: session.id,
+          cwd,
+          model: session.model,
+          modelSettings: session.modelSettings,
+          text: await preparePrompt(text, {
+            harness: session.harness,
+            sessionId: session.id,
+            cwd,
+          }),
+        });
+      },
+      forget: () => change((entry) => forgetAppSteer(entry, requestId)),
+    });
+  };
+  setTurnGuardHost({
+    schedule: (run, ms) => {
+      const timer = window.setTimeout(run, ms);
+      return () => window.clearTimeout(timer);
+    },
+    turn: (sessionId, turnId) =>
+      guardedTurn(
+        sessionsRef.current.find((entry) => entry.id === sessionId),
+        currentTurnIds.current.get(sessionId),
+        turnId,
+        canSteerHarness,
+      ),
+    steer: async (sessionId, turnId, text, requestId) => {
+      const session = sessionsRef.current.find(
+        (entry) => entry.id === sessionId,
+      );
+      if (!session) throw new Error("The Giga's chat is gone");
+      await steerAppTurn(session, {
+        text,
+        shown: text,
+        requestId,
+        joined: { turnId },
+      });
+    },
   });
 
   useMonoHabits({
@@ -8987,40 +9061,11 @@ function Workspace({
     },
     reconciled: (id) => monoLoads.of(id),
     steerProject: async (target, handed, id) => {
-      const { text, shown } = handed;
-      const change = (update: (session: Session) => Session) =>
-        updateSessionState(sessionsRef, setSessions, (sessions) =>
-          sessions.map((session) =>
-            session.id === target.id ? update(session) : session,
-          ),
-        );
-      await deliverAppSteer({
-        watchers: turnWatchers.current,
-        sessionId: target.id,
-        gen: turnGen.current.get(target.id) ?? 0,
-        record: () =>
-          change((session) =>
-            recordAppSteer(session, shown, id, {
-              turnId: handed.turnId,
-              link: handed.link,
-            }),
-          ),
-        steer: async () => {
-          const cwd = sessionAgentCwd(target);
-          await steerHarnessTurn({
-            harness: target.harness,
-            sessionId: target.id,
-            cwd,
-            model: target.model,
-            modelSettings: target.modelSettings,
-            text: await preparePrompt(text, {
-              harness: target.harness,
-              sessionId: target.id,
-              cwd,
-            }),
-          });
-        },
-        forget: () => change((session) => forgetAppSteer(session, id)),
+      await steerAppTurn(target, {
+        text: handed.text,
+        shown: handed.shown,
+        requestId: id,
+        joined: { turnId: handed.turnId, link: handed.link },
       });
     },
   };
@@ -10487,6 +10532,7 @@ function Workspace({
         }
       }
       const session = sessionsRef.current.find((s) => s.id === sessionId);
+      disarmTurnGuard(sessionId);
       const gen = (turnGen.current.get(sessionId) ?? 0) + 1;
       turnGen.current.set(sessionId, gen);
       // Nothing runs under this gen; settling it refuses a late attach.

@@ -3,6 +3,9 @@
  * are pure functions here; `gigaWorkspaceRuntime.ts` carries them out.
  */
 import { joinPath } from "../../../shared/lib/paths";
+import { canSteerNow } from "../../sessions/model/messageQueue";
+import type { HarnessId, Session } from "../../sessions/model/session";
+import type { TurnId } from "./monoMessages";
 
 export const GIGA_SLUG_MAX = 48;
 export const RECEIPT_ASKED_MAX = 200;
@@ -161,4 +164,52 @@ export function workspaceStatus(
 export function ensureProblem(report: EnsureReport): string | undefined {
   if (report.state === "blocked") return report.reason ?? "blocked";
   return report.error ?? report.warning;
+}
+
+/** A Giga chat turn running this long is steered once to move its work. */
+export const TURN_GUARD_LIMIT_MS = 3 * 60_000;
+/** How long after a turn that could not take the steer it is checked once more. */
+export const TURN_GUARD_RETRY_MS = 30_000;
+export const TURN_GUARD_STEER =
+  "Move this work to a session in the MonoCode project and end your turn.";
+
+export type TurnGuardCheck = {
+  /** The turn takes a steer now. */
+  canSteer: boolean;
+  /** Checks of this turn made before this one. */
+  checks: number;
+};
+
+export type TurnGuardStep =
+  { kind: "steer" } | { kind: "wait"; ms: number } | { kind: "skip" };
+
+/**
+ * What the guard does for a turn it checks at the limit: steer, or give up.
+ * A turn that cannot take the steer, or rejects it, is checked once more;
+ * after that it is skipped, so the guard never loops.
+ */
+export function turnGuardStep(check: TurnGuardCheck): TurnGuardStep {
+  if (check.checks >= 2) return { kind: "skip" };
+  if (check.canSteer) return { kind: "steer" };
+  return check.checks === 0
+    ? { kind: "wait", ms: TURN_GUARD_RETRY_MS }
+    : { kind: "skip" };
+}
+
+/** Turn `turnId` as the guard sees it: undefined unless it is the turn
+ *  running in `session` now; else whether it takes a steer now. */
+export function guardedTurn(
+  session: Session | undefined,
+  currentTurnId: TurnId | undefined,
+  turnId: TurnId,
+  harnessSteers: (harness: HarnessId) => boolean,
+): { canSteer: boolean } | undefined {
+  if (!session || currentTurnId !== turnId) return undefined;
+  return { canSteer: canSteerNow(session) && harnessSteers(session.harness) };
+}
+
+/** The app request id of turn `turnId`'s guard steer; a rejected steer's
+ *  block is removed by it. */
+export function turnGuardRequestId(turnId: TurnId): string {
+  return `turn-guard-${turnId}`;
 }
