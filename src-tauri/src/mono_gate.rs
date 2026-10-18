@@ -438,9 +438,6 @@ fn may_steer_turn(caller: &Level, recipient: &Recipient) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnPin {
     Turn(String),
-    /// Rule (b)'s answer to a Giga: any turn its session runs takes the
-    /// steer ([`steer_pin`]).
-    AnyTurn,
     NotStarted,
 }
 
@@ -457,8 +454,12 @@ pub enum TargetSession {
     },
     /// Rule (b): a Mono's late answer to a Giga goes to the Giga's current
     /// chat, `None` when M came from another session of the Giga (a habit
-    /// run never takes a steer). Pin: any turn.
-    Giga { chat: Option<SessionId> },
+    /// run never takes a steer). Pin: the turn that chat runs now, which the
+    /// accepted answer keeps (review r1 m1).
+    Giga {
+        chat: Option<SessionId>,
+        pin: TurnPin,
+    },
 }
 
 /// Rule (b) (design 6.1): how long a Giga's question to a Mono stays open to
@@ -494,12 +495,14 @@ pub fn target_session(
             && matches!(m.status, Status::Unanswered { .. })
             && now - m.created_at <= ANSWER_WINDOW_MS;
         if qualifies {
+            let chat = chat
+                .as_ref()
+                .filter(|chat| chat.session == m.from_session_id);
             return TargetSession::Giga {
-                chat: chat
-                    .as_ref()
-                    .map(|chat| &chat.session)
-                    .filter(|chat| **chat == m.from_session_id)
-                    .cloned(),
+                chat: chat.map(|chat| chat.session.clone()),
+                pin: chat
+                    .and_then(|chat| chat.turn.clone())
+                    .map_or(TurnPin::NotStarted, TurnPin::Turn),
             };
         }
     }
@@ -510,41 +513,24 @@ pub fn target_session(
     if !from_caller || m.to.is_none() || m.to != recipient.party() {
         return TargetSession::NotBetween;
     }
-    let (session, turn) = match &m.status {
+    let turn = |turn_id: &str| TurnPin::Turn(turn_id.to_string());
+    let (session, pin) = match &m.status {
         Status::Open { routed, slot, .. } | Status::Answered { routed, slot, .. } => (
             Some(&routed.handled_by_session),
-            slot.as_ref().map(|slot| &slot.turn_id),
+            slot.as_ref().map(|slot| turn(&slot.turn_id)),
         ),
         Status::Delivered { routed, slot, .. } => (
             Some(&routed.handled_by_session),
-            slot.as_ref().map(|slot| &slot.turn_id),
+            slot.as_ref().map(|slot| turn(&slot.turn_id)),
         ),
         Status::Unanswered { routed, slot, .. } => {
-            (Some(&routed.handled_by_session), Some(&slot.turn_id))
+            (Some(&routed.handled_by_session), Some(turn(&slot.turn_id)))
         }
         Status::Dropped { .. } | Status::Rejected { .. } => (None, None),
     };
     TargetSession::Receiver {
-        pin: match session {
-            Some(session) => steer_pin(&m.from_session_id, turn.map(String::as_str), session),
-            None => TurnPin::NotStarted,
-        },
         session: session.cloned(),
-    }
-}
-
-/// Design 16.6: the turn a steer into `session` joins when it names a row
-/// that `from` sent and turn `turn` handles. Rule (b) steers the Giga chat
-/// that sent M, which never handles it (S6 refuses a send to oneself), so
-/// it joins whatever turn its session runs (PR 7 review r1 B2). Any other
-/// steer joins `turn`. The gate's S15 and `assign_slot` read this one pin.
-pub fn steer_pin(from: &SessionId, turn: Option<&str>, session: &SessionId) -> TurnPin {
-    if from == session {
-        return TurnPin::AnyTurn;
-    }
-    match turn {
-        Some(turn) => TurnPin::Turn(turn.to_string()),
-        None => TurnPin::NotStarted,
+        pin: pin.unwrap_or(TurnPin::NotStarted),
     }
 }
 
@@ -1143,14 +1129,14 @@ pub fn decide_send(
                     ..
                 }
             );
-        let (session, pin) =
+        let (session, pin, late) =
             match target_session(caller, &level, recipient, &referenced.message, now) {
-                TargetSession::Giga { chat } => (chat, TurnPin::AnyTurn),
+                TargetSession::Giga { chat, pin } => (chat, pin, true),
                 _ if upward => return reject(RejectCode::UpwardSteerForbidden, to),
                 TargetSession::NotBetween => return reject(RejectCode::SteerTargetMismatch, to),
-                TargetSession::Receiver { session, pin } => (session, pin),
+                TargetSession::Receiver { session, pin } => (session, pin, false),
             };
-        Some((referenced, session, pin))
+        Some((referenced, session, pin, late))
     } else {
         None
     };
@@ -1166,14 +1152,13 @@ pub fn decide_send(
         }
         _ => {}
     }
-    let (hop, route, intent) = if let Some((referenced, session, pin)) = steered {
+    let (hop, route, intent) = if let Some((referenced, session, pin, late)) = steered {
         // S15: the work M started must run now, in the turn that runs it.
         let running = referenced.session.as_ref().filter(|target| {
             session.as_ref() == Some(&target.session)
                 && target.exists
                 && match &pin {
                     TurnPin::Turn(turn) => target.turn.as_ref() == Some(turn),
-                    TurnPin::AnyTurn => target.running(),
                     TurnPin::NotStarted => false,
                 }
         });
@@ -1183,6 +1168,7 @@ pub fn decide_send(
         if !target.steerable {
             return reject(RejectCode::CannotSteer, to);
         }
+        let message = referenced.message.id.clone();
         // A steer is one hop deeper than the message it changes.
         (
             referenced.message.hop + 1,
@@ -1190,7 +1176,10 @@ pub fn decide_send(
                 session: target.session.clone(),
                 via: Via::Steer,
             },
-            Intent::Steer(SteerTarget::Message(referenced.message.id.clone())),
+            Intent::Steer(match (late, pin) {
+                (true, TurnPin::Turn(turn_id)) => SteerTarget::LateAnswer { message, turn_id },
+                _ => SteerTarget::Message(message),
+            }),
         )
     } else if let Asked::WholeTurn = asked {
         // W3: the recipient's own session must run a turn. S17 then.
@@ -3869,17 +3858,23 @@ mod tests {
         }
     }
 
-    /// A steer of `m` accepted into the running turn of `session_id`.
-    fn steered(to: Option<Party>, session_id: &str, m: &MonoMessage) -> Decision {
+    /// mono-a's late answer to `m`, accepted into turn `turn` of the Giga's
+    /// chat and pinned to it.
+    fn answered_late(m: &MonoMessage, turn: &str) -> Decision {
         Decision::Accept {
             hop: m.hop + 1,
             rows: vec![Outgoing {
-                to: to.unwrap(),
+                to: Party::Mono {
+                    mono_id: mono("giga"),
+                },
                 route: Route {
-                    session: session(session_id),
+                    session: session("giga-chat"),
                     via: Via::Steer,
                 },
-                intent: Intent::Steer(SteerTarget::Message(m.id.clone())),
+                intent: Intent::Steer(SteerTarget::LateAnswer {
+                    message: m.id.clone(),
+                    turn_id: turn.into(),
+                }),
             }],
         }
     }
@@ -3973,6 +3968,22 @@ mod tests {
                 question("giga-chat", 0, NOW - 1_000, wants_no_reply),
             ),
             ("its own message to the Giga", own),
+            (
+                "the Giga's question to another Mono",
+                MonoMessage {
+                    to: Some(Party::Mono {
+                        mono_id: mono("mono-b"),
+                    }),
+                    ..question("giga-chat", 0, NOW - 1_000, unanswered())
+                },
+            ),
+            (
+                "another Giga's question",
+                MonoMessage {
+                    from_mono_id: Some(mono("giga-2")),
+                    ..question("giga-chat", 0, NOW - 1_000, unanswered())
+                },
+            ),
         ] {
             assert_eq!(
                 answer_late(m, live("giga-chat", true, true)),
@@ -4004,7 +4015,7 @@ mod tests {
         let a_day_old = question("giga-chat", 2, NOW - DAY_MS, unanswered());
         assert_eq!(
             answer_late(a_day_old.clone(), running.clone()),
-            steered(giga.clone(), "giga-chat", &a_day_old)
+            answered_late(&a_day_old, "turn-4")
         );
         assert_eq!(
             answer_late(a_day_old, live("giga-chat", false, true)),

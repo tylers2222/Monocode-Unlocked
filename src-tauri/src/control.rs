@@ -202,38 +202,9 @@ impl Inner {
             .min()
             .map_or_else(|| caller.to_string(), Clone::clone)
     }
-    /// Whether `window` may run a turn of `session` in `cwd`: an
-    /// orchestrator's checkout runs only its own lead and workers.
-    fn may_run(&self, session: &str, window: &str, cwd: &str) -> Result<(), String> {
-        if let Some(lead) = self
-            .grants
-            .values()
-            .find(|grant| paths_overlap(&grant.cwd, cwd))
-        {
-            if lead.window != window
-                || (lead.session != session && self.workers.get(session) != Some(&lead.session))
-            {
-                return Err("This checkout is controlled by an orchestrator. Stop that run before starting independent work.".into());
-            }
-        }
-        Ok(())
-    }
-    /// Removes the turn of `session` that turn `turn_id` replaces, when that
-    /// is another turn, which no one finished: its window reloaded (design
-    /// 5.3).
-    fn take_replaced(&mut self, session: &str, turn_id: &str) -> Option<ActiveTurn> {
-        if self
-            .active
-            .get(session)
-            .is_some_and(|turn| turn.turn_id != turn_id)
-        {
-            self.active.remove(session)
-        } else {
-            None
-        }
-    }
     /// Authorizes turn `turn_id` of `session` in `window`. Returns the turn
-    /// it replaces when that is another turn.
+    /// it replaces when that is another turn, which no one finished: its
+    /// window reloaded (design 5.3).
     fn authorize_turn(
         &mut self,
         session: &str,
@@ -242,7 +213,17 @@ impl Inner {
         app_access: bool,
         turn_id: &str,
     ) -> Result<Option<ActiveTurn>, String> {
-        self.may_run(session, window, &cwd)?;
+        if let Some(lead) = self
+            .grants
+            .values()
+            .find(|grant| paths_overlap(&grant.cwd, &cwd))
+        {
+            if lead.window != window
+                || (lead.session != session && self.workers.get(session) != Some(&lead.session))
+            {
+                return Err("This checkout is controlled by an orchestrator. Stop that run before starting independent work.".into());
+            }
+        }
         let eligible = self.prepare_app_grant(session, window, &cwd);
         let replaced = self.active.insert(
             session.to_string(),
@@ -715,24 +696,14 @@ fn authorize_turn(
     app_access: bool,
     turn_id: &str,
 ) -> Result<Notices, String> {
-    // PR 7 review r2 m7: the replaced turn ends before the new turn is in
-    // `running`. Ended after, its turn end would drop a steer that the gate
-    // accepted for the new turn through rule (b).
-    let replaced = {
-        let mut inner = inner.lock().map_err(|_| "Control service unavailable")?;
-        inner.may_run(session, window, &cwd)?;
-        inner.take_replaced(session, turn_id)
-    };
-    let mut notices = end_turns(store, replaced.map(|turn| (session.to_string(), turn)));
-    let raced = inner
+    let replaced = inner
         .lock()
         .map_err(|_| "Control service unavailable")?
         .authorize_turn(session, window, cwd, app_access, turn_id)?;
-    notices.merge(end_turns(
+    Ok(end_turns(
         store,
-        raced.map(|turn| (session.to_string(), turn)),
-    ));
-    Ok(notices)
+        replaced.map(|turn| (session.to_string(), turn)),
+    ))
 }
 
 /// A window reports the sessions it has loaded, for [`Inner::route_owner`].
@@ -1245,7 +1216,9 @@ pub fn control_scopes(cwd: String, files: Vec<String>) -> Result<Vec<String>, St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mono_messages::tests::{hand_off, handed_off, messaging_store, sent};
+    use crate::mono_messages::tests::{
+        hand_off, handed_off, late_answer, messaging_store, sent, stored_row,
+    };
     use crate::mono_messages::{get, MessageId, Status};
 
     fn run(inner: &Mutex<Inner>, session: &str, window: &str, turn_id: &str) {
@@ -1257,6 +1230,46 @@ mod tests {
                 app_allowed: false,
                 turn_id: turn_id.into(),
             },
+        );
+    }
+
+    // Review r1 m1 (control level). Stop takes the Giga's turn-4 out of
+    // `active` before its end reaches the store; the next queued turn-5 is
+    // authorized in between, and a late answer is accepted for it. Defect:
+    // the kill's turn end drops that late answer, and the Mono gets a false
+    // `dropped` notice.
+    #[test]
+    fn a_kill_ends_its_turn_after_the_next_turn_takes_a_late_answer() {
+        let store = messaging_store();
+        let inner = Mutex::new(Inner::default());
+        run(&inner, "giga-chat", "main", "turn-4");
+        let harness = HarnessHost::new();
+        let late = std::thread::scope(|scope| {
+            let held = store.lock_conn().unwrap();
+            let killing = scope.spawn(|| kill_session(&inner, &store, "giga-chat", &harness));
+            while inner.lock().unwrap().active.contains_key("giga-chat") {
+                assert!(!killing.is_finished(), "the kill left turn-4 running");
+                std::thread::yield_now();
+            }
+            authorize_turn(
+                &inner,
+                &store,
+                "giga-chat",
+                "main",
+                "/giga-chat".into(),
+                false,
+                "turn-5",
+            )
+            .unwrap();
+            let (_, late) = late_answer(&held, "turn-5");
+            drop(held);
+            killing.join().unwrap();
+            late
+        });
+        assert_eq!(inner.lock().unwrap().active["giga-chat"].turn_id, "turn-5");
+        assert_eq!(
+            stored_row(&store.lock_conn().unwrap(), &late).0,
+            "delivered"
         );
     }
 
@@ -1341,47 +1354,6 @@ mod tests {
             payload(&notices),
             json!({"sessions": ["a-chat", "giga-chat"]})
         );
-    }
-
-    // Design 5.3 and 16.6, PR 7 review r2 m7. Defect: the new turn is in
-    // `active` while the replaced turn's end waits for the store, so the gate
-    // accepts a late answer for the new turn that the old turn's end then
-    // drops with a false `dropped` notice.
-    #[test]
-    fn a_replaced_turn_ends_before_the_new_turn_is_running() {
-        let store = messaging_store();
-        let inner = Mutex::new(Inner::default());
-        run(&inner, "a-chat", "main", "turn-1");
-        std::thread::scope(|scope| {
-            let held = store.lock_conn().unwrap();
-            let authorizing = scope.spawn(|| {
-                authorize_turn(
-                    &inner,
-                    &store,
-                    "a-chat",
-                    "main",
-                    "/a".into(),
-                    false,
-                    "turn-2",
-                )
-            });
-            let during_end = loop {
-                let turn = inner
-                    .lock()
-                    .unwrap()
-                    .active
-                    .get("a-chat")
-                    .map(|turn| turn.turn_id.clone());
-                if turn.as_deref() != Some("turn-1") {
-                    break turn;
-                }
-                std::thread::yield_now();
-            };
-            drop(held);
-            authorizing.join().unwrap().unwrap();
-            assert_eq!(during_end, None);
-        });
-        assert_eq!(inner.lock().unwrap().active["a-chat"].turn_id, "turn-2");
     }
 
     // Design 5.3 review r2. Defect: Stop after a reload cannot name the turn
