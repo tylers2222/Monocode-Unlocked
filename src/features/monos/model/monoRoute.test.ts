@@ -1336,6 +1336,42 @@ it("names the session that wrote a row with no Mono when it is a lead or worker"
   );
 });
 
+// PR7-6 review r1 nit 3, design 5.5 rule 4. Defect: a refused hand-off of a
+// lead's or worker's row queues it again as a deleted Mono's.
+it("queues a refused hand-off of a session sender's row again under its sender", async () => {
+  rust.state.rows = [
+    ended({
+      fromMonoId: null,
+      fromSessionId: "worker-1",
+      to: { kind: "session", sessionId: "lead-1" },
+      addressed: "lead-1",
+      body: "Report: done",
+      replyTo: null,
+      scope: null,
+      status: "delivered",
+      wantingReply: false,
+      handledBySession: "lead-1",
+      delivery: "queue",
+      slot: null,
+    }),
+  ];
+  const { host, get } = world([chat("lead-1")], [], {
+    senders: { "worker-1": { title: "Fix login", level: "worker" } },
+  });
+  const id = "m_aaaaaaaaaaaa" as MessageId;
+  expect(await handOff(host, "lead-1", id, "dispatch", () => false)).toBe(
+    false,
+  );
+  expect(get("lead-1").queuedMessages).toEqual([
+    expect.objectContaining({
+      id,
+      text: expect.stringContaining(
+        ' from="Fix login" session_id="worker-1" level="worker" ',
+      ),
+    }),
+  ]);
+});
+
 // Design 16.7, E47. Defect: a reply reaches its sender with no line, with the
 // wrong intent word, or with a handle of the session that answered, which
 // names nothing in the sender's turn.

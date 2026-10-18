@@ -71,10 +71,14 @@ it("resolves a Mono's chat to that Mono", async () => {
   });
 });
 
+// Design 13.4, PR7-6 review r1 nit 4: a habit run is a Mono caller even
+// after /operator.
 it("resolves a habit run to the Mono it works for", async () => {
   await loadMonoRoster();
   markHabitRun("giga-run", "giga-1");
-  expect(await resolveCaller(session("giga-run"), turn)).toMatchObject({
+  expect(
+    await resolveCaller(session("giga-run", { blocks: operator }), turn),
+  ).toMatchObject({
     ok: true,
     caller: { kind: "habit_run", monoId: "giga-1", sessionId: "giga-run" },
   });
