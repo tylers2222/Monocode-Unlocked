@@ -202,10 +202,10 @@ Actions:
                   Set worktreeCwd to a path from
                   worktrees.list to choose a specific existing checkout, or
                   workspaceMode:"worktree" and optional worktreeBase to make
-                  a new worktree with an automatic branch name. A Giga's
-                  session in the MonoCode project runs in the Giga's own
-                  gigas/<slug>/ folder and can commit there; pass the
-                  project path as worktreeCwd to run at its root. Omit
+                  a new worktree with an automatic branch name. A session
+                  a Giga's chat starts in the MonoCode project runs in the
+                  Giga's own gigas/<slug>/ folder and can commit there; pass
+                  the project path as worktreeCwd to run at its root. Omit
                   runtimeMode to inherit this
                   session's permission mode; set it to override. Run
                   models.list for allowed IDs. cwd is your project; no attachments.

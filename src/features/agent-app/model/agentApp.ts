@@ -119,6 +119,33 @@ export type AppSessionPlacement = {
   besideSessionId: string;
 };
 
+/** A Mono as app calls from its chat or habit runs see it. */
+export type AppMono = {
+  id: string;
+  name?: string;
+  /** It may create and configure other Monos. */
+  giga?: boolean;
+  /** Its folder is `gigas/<slug>/` in the Giga workspace. */
+  gigaSlug?: string;
+  projects: readonly string[];
+  showStartedSessionsInSidebar?: boolean;
+  /** Files the sessions it starts into a folder named after it. */
+  folder?: { name: string; color: string };
+};
+
+export function appMono(mono: Mono): AppMono {
+  const { name, giga, gigaSlug } = monoLook(mono);
+  return {
+    id: mono.id,
+    name,
+    ...(giga ? { giga } : {}),
+    ...(gigaSlug ? { gigaSlug } : {}),
+    projects: mono.projects,
+    showStartedSessionsInSidebar: mono.showStartedSessionsInSidebar,
+    ...(mono.useSidebarFolders ? { folder: { name, color: mono.color } } : {}),
+  };
+}
+
 /** What `sessions.send` does with a prompt for a busy session. */
 export type WhenBusy = "steer" | "followUp";
 export type AppSendResult = {
@@ -207,20 +234,7 @@ export type AgentAppHost = {
    * The Mono a session works for: its own conversation or one of its habit
    * runs. Its projects are the ones it may name with "project".
    */
-  monoOf?(sessionId: string):
-    | {
-        id: string;
-        name?: string;
-        /** It may create and configure other Monos. */
-        giga?: boolean;
-        /** Its folder is `gigas/<slug>/` in the Giga workspace. */
-        gigaSlug?: string;
-        projects: readonly string[];
-        showStartedSessionsInSidebar?: boolean;
-        /** Files the sessions it starts into a folder named after it. */
-        folder?: { name: string; color: string };
-      }
-    | undefined;
+  monoOf?(sessionId: string): AppMono | undefined;
   /** A run of one of a Mono's habits: it may remember, not schedule. */
   isHabitRun?(sessionId: string): boolean;
   /** Puts a card in the Mono's chat, or holds it for a habit run's report. */
@@ -571,25 +585,16 @@ function fileInMonoFolder(
 }
 
 /**
- * Where a Giga's session in the Giga workspace runs: its own folder, so the
- * project stays `~/MonoCode` while the work and its commits stay in
- * `gigas/<slug>/`.
+ * The launch, and the worktree the call named that must be a listed one. A
+ * Giga's session started from its chat into the Giga workspace runs in the
+ * Giga's own folder (`workFolder`): the project and working copy stay
+ * `~/MonoCode`, the work and its commits stay in `gigas/<slug>/`.
  */
-function ownGigaFolder(
-  cwd: string,
-  mono: { gigaSlug?: string } | undefined,
-): string | undefined {
-  const home = knownHomeDir();
-  return home && mono?.gigaSlug && isGigaWorkspaceProject(cwd, home)
-    ? gigaFolder(home, mono.gigaSlug)
-    : undefined;
-}
-
 function startLaunch(
   source: Session,
   input: Record<string, unknown>,
   host: AgentAppHost,
-): QuickLaunch {
+): { launch: QuickLaunch; listedWorktree?: string } {
   const cwd = requireProject(source, input, host);
   const prompt = agentPrompt(input.prompt);
   const draft = input.draft ?? false;
@@ -639,11 +644,28 @@ function startLaunch(
   const worktreeCwd = optionalString(input.worktreeCwd, "worktreeCwd");
   if (worktreeCwd && workspaceMode !== "current")
     throw new Error("worktreeCwd requires workspaceMode current");
+  const home = knownHomeDir();
+  const gigaSlug = host.isMono(source.id)
+    ? host.monoOf?.(source.id)?.gigaSlug
+    : undefined;
+  const ownFolder =
+    workspaceMode === "current" &&
+    home &&
+    gigaSlug &&
+    isGigaWorkspaceProject(cwd, home)
+      ? gigaFolder(home, gigaSlug)
+      : undefined;
+  const listedWorktree =
+    ownFolder && worktreeCwd && pathKey(worktreeCwd) === pathKey(ownFolder)
+      ? undefined
+      : worktreeCwd;
+  const workFolder = listedWorktree ? undefined : ownFolder;
   const currentWorktree =
-    worktreeCwd ||
-    ownGigaFolder(cwd, host.monoOf?.(source.id)) ||
-    (pathKey(cwd) === pathKey(source.cwd) ? source.worktreeCwd : undefined);
-  return {
+    listedWorktree ||
+    (!workFolder && pathKey(cwd) === pathKey(source.cwd)
+      ? source.worktreeCwd
+      : undefined);
+  const launch: QuickLaunch = {
     cwd,
     prompt,
     ...(host.monoOf?.(source.id)?.showStartedSessionsInSidebar !== true
@@ -665,8 +687,10 @@ function startLaunch(
     ...(workspaceMode === "current" && currentWorktree
       ? { worktreeCwd: currentWorktree }
       : {}),
+    ...(workFolder ? { workFolder } : {}),
     ...(worktreeBase ? { worktreeBase } : {}),
   };
+  return { launch, listedWorktree };
 }
 
 function memoryPath(topic: unknown): AgentFilePath {
@@ -1487,18 +1511,12 @@ export async function handleAgentApp(
         throw new Error(
           "request ID must use letters, digits, underscores or hyphens",
         );
-      const launch = startLaunch(source, input, host);
+      const { launch, listedWorktree } = startLaunch(source, input, host);
       const notifyMonoId = completionRecipient(source, input, host, true);
-      // A Giga's own folder is the one working copy git does not list.
-      const ownFolder = ownGigaFolder(launch.cwd, host.monoOf?.(source.id));
-      if (
-        input.worktreeCwd !== undefined &&
-        !(ownFolder && pathKey(ownFolder) === pathKey(launch.worktreeCwd!))
-      ) {
+      if (listedWorktree) {
         const chosen = (await host.worktrees(launch.cwd)).worktrees.find(
           (tree) =>
-            !tree.missing &&
-            pathKey(tree.path) === pathKey(launch.worktreeCwd!),
+            !tree.missing && pathKey(tree.path) === pathKey(listedWorktree),
         );
         if (!chosen)
           throw new Error(

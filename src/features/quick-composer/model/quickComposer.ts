@@ -69,6 +69,8 @@ export type QuickLaunch = {
   workspaceMode?: WorkspaceMode;
   worktreeBase?: string;
   worktreeCwd?: string;
+  /** Folder inside the working copy the agent runs in (`Session.workFolder`). */
+  workFolder?: string;
   /** Bring the new session forward instead of starting it quietly. */
   reveal: boolean;
 };

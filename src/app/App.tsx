@@ -48,6 +48,7 @@ import { updateSessionState } from "./model/sessionState";
 import { listenForControlRequests } from "./model/controlRequests";
 import {
   appCliSource,
+  appMono,
   handleAgentApp,
   canAccessAgentAppProject,
   repeatedAppCall,
@@ -509,6 +510,7 @@ import {
   removeSessionDraft,
   sessionDisplayTitle,
   sessionDraftBlock,
+  sessionAgentCwd,
   sessionWorkCwd,
   titleFromPrompt,
   type Attachment,
@@ -1843,7 +1845,7 @@ function Workspace({
           await stopHarnessSession(harness, sessionId);
         }),
       );
-      await finishSessionTurn(sessionId, sessionWorkCwd(open));
+      await finishSessionTurn(sessionId, sessionAgentCwd(open));
       flushHarnessEvents();
       return sessionsRef.current.find((session) => session.id === sessionId);
     },
@@ -4595,7 +4597,7 @@ function Workspace({
           restored.harness,
           restored.id,
           restored.providerSessionId,
-          sessionWorkCwd(restored),
+          sessionAgentCwd(restored),
           restored.providerAccountId,
           restored.blocks,
         );
@@ -5401,7 +5403,7 @@ function Workspace({
               pending.from,
               session.id,
               pending.fromProviderSessionId,
-              sessionWorkCwd(session),
+              sessionAgentCwd(session),
               pending.fromProviderAccountId,
               session.blocks,
             );
@@ -7106,7 +7108,7 @@ function Workspace({
       }
       if (isPreparingHandoff(current)) return false;
       saveRecentModelChoice(current.harness, current.model);
-      const initialWorkCwd = sessionWorkCwd(current);
+      const initialWorkCwd = sessionAgentCwd(current);
       const createDraftWorktree =
         !current.worktreeCwd && current.workspaceMode === "worktree";
       const accountProvider = supportsProviderAccounts(current.harness)
@@ -8995,7 +8997,7 @@ function Workspace({
             }),
           ),
         steer: async () => {
-          const cwd = sessionWorkCwd(target);
+          const cwd = sessionAgentCwd(target);
           await steerHarnessTurn({
             harness: target.harness,
             sessionId: target.id,
@@ -9679,7 +9681,7 @@ function Workspace({
       );
       if (!source || source.worktreeRemoved) return;
       const { harness, model, modelSettings } = target;
-      const cwd = sessionWorkCwd(source);
+      const cwd = sessionAgentCwd(source);
       const from = harnessForTurn(source.blocks, turn, source.harness);
       const request = buildSecondOpinionRequest({
         from,
@@ -9789,7 +9791,7 @@ function Workspace({
     }) => {
       const harness = input.harness;
       if (!supportsBtwHarness(harness)) return;
-      const cwd = sessionWorkCwd(input.source);
+      const cwd = sessionAgentCwd(input.source);
       const model = nativeModelId(
         input.thread.model ?? input.source.model,
       ).trim();
@@ -10300,7 +10302,7 @@ function Workspace({
       );
       if (!source || source.worktreeRemoved) return;
       const { harness, model, modelSettings } = target;
-      const cwd = sessionWorkCwd(source);
+      const cwd = sessionAgentCwd(source);
       const from = harnessForTurn(source.blocks, turn, source.harness);
       const sliced = sessionThroughTurn(source, turn);
       const userRequest = turnUserRequest(turn);
@@ -10384,7 +10386,7 @@ function Workspace({
 
       const gen = (turnGen.current.get(sessionId) ?? 0) + 1;
       turnGen.current.set(sessionId, gen);
-      const workCwd = sessionWorkCwd(current);
+      const workCwd = sessionAgentCwd(current);
       const started = sessionsRef.current.map((session) =>
         session.id === sessionId
           ? applyHarnessEvent(
@@ -10496,7 +10498,7 @@ function Workspace({
         }),
       );
       const checkpointFinished = session
-        ? finishSessionTurn(sessionId, sessionWorkCwd(session), {
+        ? finishSessionTurn(sessionId, sessionAgentCwd(session), {
             after: cancelling.catch(() => undefined),
           })
         : Promise.resolve();
@@ -10802,7 +10804,7 @@ function Workspace({
             worker.harness,
             worker.id,
             worker.providerSessionId,
-            sessionWorkCwd(worker),
+            sessionAgentCwd(worker),
             worker.providerAccountId,
             worker.blocks,
           );
@@ -10995,7 +10997,7 @@ function Workspace({
         await steerHarnessTurn({
           harness: session.harness,
           sessionId: id,
-          cwd: sessionWorkCwd(session),
+          cwd: sessionAgentCwd(session),
           model: session.model,
           modelSettings: session.modelSettings,
           text,
@@ -11409,7 +11411,7 @@ function Workspace({
                     );
                   },
                   steer: async () => {
-                    const cwd = sessionWorkCwd(latest);
+                    const cwd = sessionAgentCwd(latest);
                     const text = await preparePrompt(prompt, {
                       harness: latest.harness,
                       sessionId: id,
@@ -11581,18 +11583,7 @@ function Workspace({
             monoOf: (id) => {
               const mono =
                 monoForSession(id) ?? findMono(habitRunMono(id) ?? "");
-              if (!mono) return undefined;
-              const { name } = monoLook(mono);
-              return {
-                id: mono.id,
-                name,
-                ...(mono.giga ? { giga: true, gigaSlug: mono.gigaSlug } : {}),
-                projects: mono.projects,
-                showStartedSessionsInSidebar: mono.showStartedSessionsInSidebar,
-                ...(mono.useSidebarFolders
-                  ? { folder: { name, color: mono.color } }
-                  : {}),
-              };
+              return mono && appMono(mono);
             },
             monos: {
               list: async () =>

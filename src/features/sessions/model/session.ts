@@ -566,6 +566,12 @@ export type Session = {
   branch?: string;
   /** Selected working copy; cwd remains the project identity. */
   worktreeCwd?: string;
+  /**
+   * Folder inside the working copy the agent process runs in: a Giga's own
+   * `gigas/<slug>/` folder. Only agent starts read it; tabs, git and the
+   * explorer keep using the working copy.
+   */
+  workFolder?: string;
   /** Blank-composer choice; consumed when the first turn starts. */
   workspaceMode?: WorkspaceMode;
   /** Base ref for a worktree that will be created on first send. */
@@ -857,10 +863,19 @@ export function sessionDisplayTitle(title: string, harness: HarnessId): string {
   return title;
 }
 
-/** Working copy the agent and session git UIs should use. */
+/** Working copy the session git UIs, tabs and the explorer use. */
 export function sessionWorkCwd(session: {
   cwd: string;
   worktreeCwd?: string;
 }): string {
   return session.worktreeCwd || session.cwd;
+}
+
+/** Folder the agent process runs in. */
+export function sessionAgentCwd(session: {
+  cwd: string;
+  worktreeCwd?: string;
+  workFolder?: string;
+}): string {
+  return session.workFolder || sessionWorkCwd(session);
 }

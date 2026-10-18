@@ -1,4 +1,4 @@
-import { sessionWorkCwd, type HarnessId } from "./session";
+import { sessionAgentCwd, type HarnessId } from "./session";
 import { hasNativeCommands, type SkillCatalogContext } from "../../skills/model/skills";
 
 type SkillWarmupSession = {
@@ -6,6 +6,7 @@ type SkillWarmupSession = {
   harness: HarnessId;
   cwd: string;
   worktreeCwd?: string;
+  workFolder?: string;
 };
 
 export function nativeSkillContextForSession(
@@ -14,7 +15,7 @@ export function nativeSkillContextForSession(
   if (!hasNativeCommands(session.harness)) return null;
   return {
     harness: session.harness,
-    cwd: sessionWorkCwd(session),
+    cwd: sessionAgentCwd(session),
     ...(session.id ? { sessionId: session.id } : {}),
   };
 }

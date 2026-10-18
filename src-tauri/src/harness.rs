@@ -1025,7 +1025,13 @@ pub fn harness_spawn(
     };
 
     crate::control::configure_child(&app, &session_id, &mut cmd);
-    crate::giga_workspace::configure_child(&session_id, &workdir, &mut cmd);
+    crate::giga_workspace::configure_child(
+        &app.state::<crate::session_store::SessionStore>(),
+        crate::dirs_home().map(PathBuf::from).as_deref(),
+        &session_id,
+        &workdir,
+        &mut cmd,
+    );
 
     let mut child =
         spawn_managed(&mut cmd).map_err(|e| format!("Failed to start {command}: {e}"))?;

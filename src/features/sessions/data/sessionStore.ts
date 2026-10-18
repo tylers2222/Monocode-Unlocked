@@ -101,6 +101,7 @@ type SessionRecord = {
   contextWindow?: number | null;
   branch?: string | null;
   worktreeCwd?: string | null;
+  workFolder?: string | null;
   worktreeRemoved?: boolean;
   linkedWorkItem?: LinkedWorkItem | null;
   automationId?: string | null;
@@ -126,6 +127,7 @@ type SessionUpsertPayload = {
   contextWindow?: number;
   branch?: string;
   worktreeCwd?: string;
+  workFolder?: string;
   worktreeRemoved?: boolean;
   linkedWorkItem?: LinkedWorkItem;
   automationId?: string;
@@ -192,6 +194,7 @@ function persistableMeta(
       : {}),
     ...(session.branch ? { branch: session.branch } : {}),
     ...(session.worktreeCwd ? { worktreeCwd: session.worktreeCwd } : {}),
+    ...(session.workFolder ? { workFolder: session.workFolder } : {}),
     ...(session.worktreeRemoved ? { worktreeRemoved: true } : {}),
     ...(linkedWorkItem ? { linkedWorkItem } : {}),
     ...(session.automationId && isPersistableId(session.automationId)
@@ -1510,6 +1513,7 @@ function recordToSession(
       : {}),
     ...(record.branch ? { branch: record.branch } : {}),
     ...(record.worktreeCwd ? { worktreeCwd: record.worktreeCwd } : {}),
+    ...(record.workFolder ? { workFolder: record.workFolder } : {}),
     ...(record.worktreeRemoved ? { worktreeRemoved: true } : {}),
     ...(linkedWorkItem ? { linkedWorkItem } : {}),
     ...(record.automationId && isPersistableId(record.automationId)
