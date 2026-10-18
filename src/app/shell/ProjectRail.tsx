@@ -12,6 +12,7 @@ import {
   Plus,
   Search,
   Settings,
+  Flag,
   Zap,
 } from "../../shared/ui/icons";
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
@@ -108,6 +109,8 @@ type Props = {
   notesActive?: boolean;
   onOpenAutomations?: () => void;
   automationsActive?: boolean;
+  onOpenMilestones?: () => void;
+  milestonesActive?: boolean;
   onTogglePanel?: () => void;
   onSelectProject: (path: string) => void;
   onOpenProject: () => void;
@@ -147,6 +150,8 @@ export function ProjectRail({
   notesActive = false,
   onOpenAutomations,
   automationsActive = false,
+  onOpenMilestones,
+  milestonesActive = false,
   onTogglePanel,
   onSelectProject,
   onOpenProject,
@@ -333,6 +338,7 @@ export function ProjectRail({
     inboxActive ||
     notesActive ||
     automationsActive ||
+    milestonesActive ||
     !!monos?.activeId;
   const pinnedIds = sections.pinned.map((item) => item.path);
   const projectIds = groupedProjectSections.ungrouped.map((item) => item.path);
@@ -416,6 +422,15 @@ export function ProjectRail({
               active={automationsActive}
               ariaLabel="Automations"
             />
+            {onOpenMilestones ? (
+              <RailAction
+                label="Milestones"
+                icon={Flag}
+                onClick={onOpenMilestones}
+                active={milestonesActive}
+                ariaLabel="Milestones"
+              />
+            ) : null}
           </div>
 
           <div

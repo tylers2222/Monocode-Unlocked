@@ -1,6 +1,10 @@
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type { Automation } from "../../../src/features/automations/model/automations";
+import type {
+  Milestone,
+  MilestoneSettings,
+} from "../../../src/features/milestones/model/milestones";
 import {
   customMonoName,
   defaultMonoName,
@@ -72,6 +76,10 @@ export type FakeStore = {
   /** session_store.rs `work_folder`: on the record, not the summary. */
   workFolders: Record<string, string>;
   automations: Automation[];
+  /** milestones.rs rows of every project. */
+  milestones: Milestone[];
+  /** milestone_settings rows by project path; no row means on, nothing hidden. */
+  milestoneSettings: Record<string, MilestoneSettings>;
   /** sessionStore.ts `saveWorkspaceSnapshot`: the open tabs, as last saved. */
   workspace: unknown;
 };
@@ -83,6 +91,8 @@ export type FakeSeed = Partial<{
   sessions: SessionSummary[];
   monos: MonoSeed[];
   automations: Automation[];
+  milestones: Milestone[];
+  milestoneSettings: Record<string, MilestoneSettings>;
 }>;
 
 /**
@@ -342,6 +352,15 @@ const HANDLERS: Record<string, Handler> = {
   // mono.rs read: a file the Mono has not written.
   mono_read: async () => ({ text: null, hash: await contentHash("") }),
   automations_list: (store) => store.automations,
+  milestones_list: (store, { projectPath }) => ({
+    settings: store.milestoneSettings[projectPath as string] ?? {
+      enabled: true,
+      hiddenStatuses: [],
+    },
+    milestones: store.milestones
+      .filter((milestone) => milestone.projectPath === projectPath)
+      .sort((a, b) => a.order - b.order || a.createdAt - b.createdAt),
+  }),
   automation_runs_list: empty,
   control_load: none,
   control_owns_session: () => false,
@@ -527,6 +546,8 @@ function storeFrom(seed: FakeSeed): FakeStore {
     blocks: {},
     workFolders: {},
     automations: seed.automations ?? [],
+    milestones: seed.milestones ?? [],
+    milestoneSettings: seed.milestoneSettings ?? {},
     workspace: null,
   };
 }

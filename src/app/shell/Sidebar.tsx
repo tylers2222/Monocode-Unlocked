@@ -30,6 +30,7 @@ import {
   Share,
   Settings,
   StickyNote,
+  Flag,
   Zap,
 } from "../../shared/ui/icons";
 import {
@@ -325,11 +326,13 @@ type Props = {
   onOpenInboxItem?: (item: LinkedWorkItem, sessionId: string) => void;
   onOpenNotes?: () => void;
   onOpenAutomations?: () => void;
+  onOpenMilestones?: () => void;
   onGoToFile?: () => void;
   searchActive?: boolean;
   inboxActive?: boolean;
   notesActive?: boolean;
   automationsActive?: boolean;
+  milestonesActive?: boolean;
   notesEnabled?: boolean;
   onToggleProjectRail?: () => void;
   projectRailOpen?: boolean;
@@ -421,11 +424,13 @@ function SidebarComponent({
   onOpenInboxItem,
   onOpenNotes,
   onOpenAutomations,
+  onOpenMilestones,
   onGoToFile,
   searchActive = false,
   inboxActive = false,
   notesActive = false,
   automationsActive = false,
+  milestonesActive = false,
   notesEnabled = true,
   onToggleProjectRail,
   projectRailOpen = true,
@@ -836,6 +841,7 @@ function SidebarComponent({
     inboxActive ||
     notesActive ||
     automationsActive ||
+    milestonesActive ||
     settingsOpen;
   // A remembered Mono sits underneath these views; select it only while visible.
   const railMonos = monos
@@ -1798,10 +1804,12 @@ function SidebarComponent({
               onOpenNotificationSettings={onOpenNotificationSettings}
               onOpenNotes={notesEnabled ? onOpenNotes : undefined}
               onOpenAutomations={onOpenAutomations}
+              onOpenMilestones={onOpenMilestones}
               searchActive={searchActive}
               inboxActive={inboxActive}
               notesActive={notesActive}
               automationsActive={automationsActive}
+              milestonesActive={milestonesActive}
               inboxUnseen={inboxUnseen}
             />
           ) : null}
@@ -2327,6 +2335,8 @@ function SidebarComponent({
           notesActive={notesActive}
           onOpenAutomations={onOpenAutomations}
           automationsActive={automationsActive}
+          onOpenMilestones={onOpenMilestones}
+          milestonesActive={milestonesActive}
           onOpenSettings={onOpenSettings}
           onTogglePanel={onToggleProjectRail}
           onLeaveActive={onGoBack}
@@ -2358,6 +2368,8 @@ function SidebarComponent({
           notesActive={notesActive}
           onOpenAutomations={onOpenAutomations}
           automationsActive={automationsActive}
+          onOpenMilestones={onOpenMilestones}
+          milestonesActive={milestonesActive}
           onTogglePanel={onToggleProjectRail}
           onSelectProject={onSelectProject}
           onOpenProject={onOpenProject}
@@ -2435,10 +2447,12 @@ function SidebarProjectPicker({
   onOpenNotificationSettings,
   onOpenNotes,
   onOpenAutomations,
+  onOpenMilestones,
   searchActive = false,
   inboxActive = false,
   notesActive = false,
   automationsActive = false,
+  milestonesActive = false,
   inboxUnseen = false,
 }: {
   cwd: string;
@@ -2453,10 +2467,12 @@ function SidebarProjectPicker({
   onOpenNotificationSettings?: (projectPath?: string) => void;
   onOpenNotes?: () => void;
   onOpenAutomations?: () => void;
+  onOpenMilestones?: () => void;
   searchActive?: boolean;
   inboxActive?: boolean;
   notesActive?: boolean;
   automationsActive?: boolean;
+  milestonesActive?: boolean;
   inboxUnseen?: boolean;
 }) {
   const [inboxMenu, setInboxMenu] = useState<{ x: number; y: number } | null>(
@@ -2531,6 +2547,15 @@ function SidebarProjectPicker({
             <Zap className="size-3.5" strokeWidth={1.75} />
           </IconButton>
         ) : null}
+        {onOpenMilestones ? (
+          <IconButton
+            label="Milestones"
+            active={milestonesActive}
+            onClick={onOpenMilestones}
+          >
+            <Flag className="size-3.5" strokeWidth={1.75} />
+          </IconButton>
+        ) : null}
       </div>
       {inboxMenu ? (
         <InboxNotificationMenu
@@ -2573,6 +2598,8 @@ function CompactProjectRail({
   notesActive,
   onOpenAutomations,
   automationsActive,
+  onOpenMilestones,
+  milestonesActive,
   onOpenSettings,
   onTogglePanel,
   onLeaveActive,
@@ -2606,6 +2633,8 @@ function CompactProjectRail({
   notesActive: boolean;
   onOpenAutomations?: () => void;
   automationsActive: boolean;
+  onOpenMilestones?: () => void;
+  milestonesActive: boolean;
   onOpenSettings?: () => void;
   onTogglePanel?: () => void;
   onLeaveActive?: () => void;
@@ -2798,6 +2827,14 @@ function CompactProjectRail({
           active={automationsActive}
           onClick={action(automationsActive, onOpenAutomations)}
         />
+        {onOpenMilestones ? (
+          <CompactRailAction
+            label="Milestones"
+            icon={Flag}
+            active={milestonesActive}
+            onClick={action(milestonesActive, onOpenMilestones)}
+          />
+        ) : null}
       </div>
       <div className="min-h-2 flex-1" />
       <div className="flex w-full flex-col items-center gap-1 py-1.5">

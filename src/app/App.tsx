@@ -925,6 +925,13 @@ const AutomationsView = lazySurface(
   },
   { suspense: false },
 );
+const MilestonesView = lazySurface(
+  async () => {
+    const module = await import("../features/milestones/ui/MilestonesView");
+    return { default: module.MilestonesView };
+  },
+  { suspense: false },
+);
 
 type LinkedWorkItemPanelState = {
   item: LinkedWorkItem;
@@ -1354,7 +1361,11 @@ function Workspace({
     useState<InboxSessionPortal | null>(null);
   const openingInboxSessions = useRef(new Map<string, Promise<string>>());
   const [notesViewOpen, setNotesViewOpen] = useState(false);
+  // Milestones is a page of the Automations area: one flag closes either.
   const [automationsViewOpen, setAutomationsViewOpen] = useState(false);
+  const [automationsPage, setAutomationsPage] = useState<
+    "automations" | "milestones"
+  >("automations");
   const [inspectedWorkerId, setInspectedWorkerId] = useState<string | null>(
     null,
   );
@@ -1670,6 +1681,7 @@ function Workspace({
         InboxView.preload,
         LinkedWorkItemPanel.preload,
         AutomationsView.preload,
+        MilestonesView.preload,
         listAutomations,
         ...(notesEnabled ? [NotesView.preload, loadNotes] : []),
       ]),
@@ -12339,17 +12351,29 @@ function Workspace({
     setNotesViewOpen(false);
   }, []);
 
-  const onOpenAutomations = useCallback(() => {
-    workspaceNavigation.cancel();
-    startTransition(() => {
-      setFilePickerOpen(false);
-      setSettingsOpen(false);
-      setSearchViewOpen(false);
-      setInboxViewOpen(false);
-      setNotesViewOpen(false);
-      setAutomationsViewOpen(true);
-    });
-  }, []);
+  const openAutomationsPage = useCallback(
+    (page: "automations" | "milestones") => {
+      workspaceNavigation.cancel();
+      startTransition(() => {
+        setFilePickerOpen(false);
+        setSettingsOpen(false);
+        setSearchViewOpen(false);
+        setInboxViewOpen(false);
+        setNotesViewOpen(false);
+        setAutomationsPage(page);
+        setAutomationsViewOpen(true);
+      });
+    },
+    [],
+  );
+  const onOpenAutomations = useCallback(
+    () => openAutomationsPage("automations"),
+    [openAutomationsPage],
+  );
+  const onOpenMilestones = useCallback(
+    () => openAutomationsPage("milestones"),
+    [openAutomationsPage],
+  );
 
   const onLeaveAutomations = useCallback(() => {
     setAutomationsViewOpen(false);
@@ -13630,11 +13654,17 @@ function Workspace({
               onOpenInboxItem={onOpenLinkedWorkItem}
               onOpenNotes={notesEnabled ? onOpenNotes : undefined}
               onOpenAutomations={onOpenAutomations}
+              onOpenMilestones={onOpenMilestones}
               onGoToFile={onGoToFile}
               searchActive={searchViewOpen}
               inboxActive={inboxViewOpen}
               notesActive={notesViewOpen}
-              automationsActive={automationsViewOpen}
+              automationsActive={
+                automationsViewOpen && automationsPage === "automations"
+              }
+              milestonesActive={
+                automationsViewOpen && automationsPage === "milestones"
+              }
               notesEnabled={notesEnabled}
               projectRailOpen={projectRailOpen}
               compactProjectRail={compactProjectRail}
@@ -13996,7 +14026,18 @@ function Workspace({
                   onToggleSidebar={onToggleSidebar}
                 />
               ) : null}
-              {automationsViewOpen ? (
+              {automationsViewOpen && automationsPage === "milestones" ? (
+                <MilestonesView
+                  besideRail={projectRailOpen || compactProjectRail}
+                  compactRail={compactRailActive}
+                  cwd={projectCwd}
+                  recents={recents}
+                  sessions={sidebarHistory}
+                  onClose={onLeaveAutomations}
+                  onToggleSidebar={onToggleSidebar}
+                />
+              ) : null}
+              {automationsViewOpen && automationsPage === "automations" ? (
                 <AutomationsView
                   besideRail={projectRailOpen || compactProjectRail}
                   compactRail={compactRailActive}
