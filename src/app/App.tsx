@@ -448,6 +448,7 @@ import {
   rebaseProjectData,
   removeProjectData,
 } from "../features/projects/model/projectData";
+import * as milestones from "../features/milestones/model/milestones";
 import {
   forgetProjectLocation,
   rememberProjectLocation,
@@ -11736,6 +11737,7 @@ function Workspace({
                 replyMessage(messaging, requestId, input),
               get: (input) => getMessage(messaging, input),
             },
+            milestones,
             habits: { load: loadHabits, update: updateHabits },
             agentFiles: (monoId) => loadMonoFiles(monoId),
             readAgentFile: (monoId, path) => readAgentFile(monoId, path),
