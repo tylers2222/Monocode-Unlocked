@@ -122,22 +122,37 @@ export function newTurnId(): TurnId {
 
 export type Party =
   | { kind: "mono"; monoId: MonoId }
-  /** A project session; it only receives. */
+  /** A session. A lead or worker session also sends, as a caller of kind "session". */
   | { kind: "session"; sessionId: SessionId };
 
-export type Caller = {
-  kind: "mono_chat" | "habit_run";
-  monoId: MonoId;
-  sessionId: SessionId;
-  turnId: TurnId;
-};
+/**
+ * Who calls the gate (design 13.4): a Mono's chat or habit run, or a lead or
+ * worker session with app access. Only /operator gives a session app access
+ * so far. `leadSessionId` is the web app's copy of the Change E level link,
+ * not the orchestration link; Rust's stored row wins.
+ */
+export type Caller =
+  | {
+      kind: "mono_chat" | "habit_run";
+      monoId: MonoId;
+      sessionId: SessionId;
+      turnId: TurnId;
+    }
+  | {
+      kind: "session";
+      sessionId: SessionId;
+      turnId: TurnId;
+      access: "operator";
+      leadSessionId: SessionId | null;
+      cwd: string;
+    };
 
 type MessageBase = {
   id: MessageId;
   requestId: RequestId;
   part: number;
   tool: Tool;
-  /** Null only after the Mono was deleted. */
+  /** Null for a lead or worker session's row (design 13.5), or after the Mono was deleted. */
   fromMonoId: MonoId | null;
   fromSessionId: SessionId;
   /** Null for unknown_target rows, or after the recipient Mono was deleted. */
@@ -381,18 +396,25 @@ export type Reading = {
   target: ReplyTarget | null;
 };
 
+/** Who sent a row, as its reader is told: a Mono, or a lead or worker session. */
+export type MessageSender =
+  | { kind: "mono"; name: string; role: MonoRole }
+  | { kind: "session"; title: string; level: "lead" | "worker" };
+
 /**
  * What the receiving agent reads (design 5.2, 16.7). A message that wants a
  * reply shows the handle of the turn it was handed to. A hand-off also
  * passes the `reading`, so a reply or steer starts with its inference line;
  * a queue item's text has none. How to treat and answer it lives once in
  * `<mono_messaging_rules>`. A reading whose target is not the row's
- * `reply_to` throws: the line would name another message, or none.
+ * `reply_to` throws: the line would name another message, or none. A lead
+ * or worker sender shows its session id, the `send_to` of an answer to it;
+ * a row with no known sender is a deleted Mono's.
  */
 export function renderMonoMessage(
-  message: Pick<MessageBase, "id" | "fromMonoId" | "body"> &
+  message: Pick<MessageBase, "id" | "fromMonoId" | "fromSessionId" | "body"> &
     Intent & { wantingReply: boolean },
-  sender: { name: string; role: MonoRole } | undefined,
+  sender: MessageSender | undefined,
   handle?: Handle,
   reading?: Reading,
 ): string {
@@ -409,11 +431,21 @@ export function renderMonoMessage(
       targetRef(reading.target, reading),
     );
   }
+  const from =
+    sender?.kind === "session"
+      ? [
+          `from="${attribute(sender.title)}"`,
+          `session_id="${message.fromSessionId}"`,
+          `level="${sender.level}"`,
+        ]
+      : [
+          `from="${attribute(sender?.name ?? "a deleted Mono")}"`,
+          ...(message.fromMonoId ? [`mono_id="${message.fromMonoId}"`] : []),
+          ...(sender ? [`role="${sender.role}"`] : []),
+        ];
   const attributes = [
     `message_id="${message.id}"`,
-    `from="${attribute(sender?.name ?? "a deleted Mono")}"`,
-    ...(message.fromMonoId ? [`mono_id="${message.fromMonoId}"`] : []),
-    ...(sender ? [`role="${sender.role}"`] : []),
+    ...from,
     `wanting_reply="${message.wantingReply}"`,
     ...(handle ? [`handle="${handle}"`] : []),
     ...(line && message.replyTo ? [`reply_to="${message.replyTo}"`] : []),

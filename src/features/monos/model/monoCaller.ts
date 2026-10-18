@@ -1,3 +1,5 @@
+import { operatorEnabledInThread } from "../../sessions/model/operatorCommand";
+import type { Session } from "../../sessions/model/session";
 import {
   findMono,
   monoForSession,
@@ -7,12 +9,18 @@ import {
 import { habitRunMono } from "./monoHabits";
 import {
   parseMonoId,
+  parseSessionId,
   parseTurnId,
   type Caller,
   type MonoId,
-  type SessionId,
   type ToolError,
 } from "./monoMessages";
+
+/** What a caller needs from the session a call comes from. */
+export type CallingSession = Pick<
+  Session,
+  "id" | "blocks" | "cwd" | "leadSessionId"
+>;
 
 /**
  * The Mono a session speaks for: its chat, or one of its habit runs. This
@@ -20,7 +28,7 @@ import {
  */
 export function callerMono(
   sessionId: string,
-): { kind: Caller["kind"]; monoId: MonoId } | undefined {
+): Pick<Extract<Caller, { monoId: MonoId }>, "kind" | "monoId"> | undefined {
   const chat = monoForSession(sessionId);
   const mono = chat ?? findMono(habitRunMono(sessionId) ?? "");
   const monoId = parseMonoId(mono?.id);
@@ -29,12 +37,13 @@ export function callerMono(
 }
 
 /**
- * The Mono a messaging call comes from. Rust reads roles and projects from
- * `monos`, so the roster must be the database's and every write this window
- * queued must have landed first.
+ * The caller of a messaging call: a Mono's chat or habit run, or (design
+ * 13.4) a lead or worker session with /operator access. Rust reads roles
+ * and projects from `monos`, so the roster must be the database's and every
+ * write this window queued must have landed first.
  */
 export async function resolveCaller(
-  sessionId: SessionId,
+  session: CallingSession,
   turnId: string | null,
 ): Promise<{ ok: true; caller: Caller } | ToolError> {
   const turn = parseTurnId(turnId);
@@ -51,12 +60,25 @@ export async function resolveCaller(
       hint: "MonoCode could not load the Mono list from its database. Mono messaging is off until the app restarts. Use a new request id when you retry.",
     };
   await monoWritesSettled();
-  const mono = callerMono(sessionId);
-  if (!mono)
+  const sessionId = parseSessionId(session.id);
+  const mono = sessionId ? callerMono(sessionId) : undefined;
+  if (sessionId && mono)
+    return { ok: true, caller: { ...mono, sessionId, turnId: turn } };
+  if (!sessionId || !operatorEnabledInThread(session.blocks))
     return {
       ok: false,
       code: "not_a_mono",
-      hint: "Only a Mono's chat or its habit runs can use Mono messaging.",
+      hint: "Only a Mono's chat, its habit runs or a session with MonoCode app access can use Mono messaging.",
     };
-  return { ok: true, caller: { ...mono, sessionId, turnId: turn } };
+  return {
+    ok: true,
+    caller: {
+      kind: "session",
+      sessionId,
+      turnId: turn,
+      access: "operator",
+      leadSessionId: parseSessionId(session.leadSessionId) ?? null,
+      cwd: session.cwd,
+    },
+  };
 }

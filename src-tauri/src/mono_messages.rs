@@ -1803,11 +1803,11 @@ pub struct ReadMessage {
     pub handle: Option<Handle>,
 }
 
-/// Design 16.4: the accepted row `named` points at, when the caller's Mono is
-/// a party to it. A handle names a row of the caller's session and turn, in
-/// any status. A row between two others reads as no row. Writes nothing.
-/// A session caller has no Mono, so it reads no row until the session legs
-/// of the party rule land (PR 7 part 6).
+/// Design 16.4: the accepted row `named` points at, when the caller is a
+/// party to it: a Mono caller through its Mono (its chat and its habit
+/// runs), a session caller through its own session. A handle names a row of
+/// the caller's session and turn, in any status. A row between two others
+/// reads as no row. Writes nothing.
 pub fn readable(
     conn: &Connection,
     caller: &Caller,
@@ -1820,12 +1820,15 @@ pub fn readable(
             Sql::Integer(i64::from(handle.0)),
         ),
     };
+    // Decision 506: a leg of the other kind of caller would widen what a
+    // caller reads, so each kind gets only its own.
+    let party = match caller.speaker {
+        Speaker::Mono { .. } => "from_mono_id = ?1 OR to_mono_id = ?1",
+        Speaker::Session { .. } => "from_session_id = ?2 OR handled_by_session = ?2",
+    };
     let found = conn
         .query_row(
-            &format!(
-                "{SELECT} WHERE {filter} AND status <> 'rejected'
-                   AND (from_mono_id = ?1 OR to_mono_id = ?1)"
-            ),
+            &format!("{SELECT} WHERE {filter} AND status <> 'rejected' AND ({party})"),
             params![
                 caller.mono_id().map(MonoId::as_str),
                 caller.session_id.as_str(),
@@ -4751,6 +4754,65 @@ pub(crate) mod tests {
         }
     }
 
+    // Design 16.4, decision 506. Defect: a session caller cannot read the
+    // message it sent, so the id its send returned names nothing.
+    #[test]
+    fn get_message_lets_a_session_caller_read_a_row_it_sent() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let lead = session_caller("lead", "/p", None);
+        let report = accepted_ids(&call(
+            &conn,
+            &lead,
+            "report",
+            Tool::SendMessage,
+            hi("mono-a", false),
+            &[],
+        ))
+        .remove(0);
+        let read_back = found(read(&conn, &lead, report.as_str()));
+        assert_eq!(read_back["message_id"], report.as_str());
+        assert_eq!(read_back["from"], serde_json::json!({"session_id": "lead"}));
+        assert_eq!(
+            read_back["to"],
+            serde_json::json!({"mono_id": "mono-a", "mono_name": "A"})
+        );
+    }
+
+    // Design 16.4, decision 506. Defect: a lead cannot read a message its
+    // session took, or another session reads it.
+    #[test]
+    fn get_message_lets_a_session_caller_read_a_row_its_session_handled() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let brief = accepted_ids(&call(
+            &conn,
+            &caller_in("mono-a", "a-chat"),
+            "brief",
+            Tool::SendMessage,
+            hi("lead", false),
+            &[listed("lead", true, true)],
+        ))
+        .remove(0);
+        let read_back = found(read(
+            &conn,
+            &session_caller("lead", "/p", None),
+            brief.as_str(),
+        ));
+        assert_eq!(
+            read_back["from"],
+            serde_json::json!({"mono_id": "mono-a", "mono_name": "A"})
+        );
+        let other = read_error(read(
+            &conn,
+            &session_caller("worker", "/p", None),
+            brief.as_str(),
+        ));
+        assert_eq!(other.code, "unknown_message");
+    }
+
     // Design 13.1. Defect: the gate takes a session caller's own copy of its
     // lead over the stored row, so a worker whose lead was deleted (which
     // cleared its stored link) is still refused as a worker; or the copy is
@@ -7295,10 +7357,9 @@ pub(crate) mod tests {
         assert_eq!(hidden, missing);
     }
 
-    // Design 16.4, PR I3 review r1 m1. The party is the caller's Mono, never
-    // its session: session callers come with PR 7. Defect: a caller reads a
-    // message between two other Monos because it runs in the session that
-    // sent or handled it.
+    // Design 16.4, PR I3 review r1 m1. A Mono caller's party is its Mono,
+    // never its session. Defect: a caller reads a message between two other
+    // Monos because it runs in the session that sent or handled it.
     #[test]
     fn get_message_keys_the_party_on_the_callers_mono_not_its_session() {
         let store = messaging_store();
