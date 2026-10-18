@@ -332,3 +332,126 @@ describe("project selection", () => {
     ).toEqual({ action: "keep" });
   });
 });
+
+describe("project selection with a running session", () => {
+  function turn(
+    id: string,
+    startedAt?: number,
+    busy = false,
+    cwd = "/mono",
+  ): Session {
+    return {
+      ...newSession("claude", cwd),
+      id,
+      busy,
+      blocks: [{ id: `${id}-user`, role: "user", text: id, startedAt }],
+    };
+  }
+
+  function plan(
+    sessions: Session[],
+    memory = new Map<string, string>(),
+    activeTabId = "tab-other",
+  ) {
+    const all = [...sessions, turn("other", 0, false, "/other")];
+    const tabs = all
+      .filter((session) => !session.orchestrationLeadId)
+      .map((session) => ({ ...newTab(session.id), id: `tab-${session.id}` }));
+    return planProjectReturn({
+      memory,
+      tabs,
+      sessions: all,
+      activeTabId,
+      projectPath: "/mono",
+    });
+  }
+
+  const activates = (id: string) => ({
+    action: "activate",
+    tabId: `tab-${id}`,
+    paneId: id,
+  });
+
+  it("opens the running session instead of the remembered idle one", () => {
+    expect(
+      plan(
+        [turn("idle", 1), turn("running", 1, true)],
+        new Map([["/mono", "idle"]]),
+      ),
+    ).toEqual(activates("running"));
+  });
+
+  it("opens a running session in a later tab when nothing is remembered", () => {
+    expect(plan([turn("idle", 1), turn("running", 1, true)])).toEqual(
+      activates("running"),
+    );
+  });
+
+  it("opens the running session whose turn started last", () => {
+    expect(
+      plan(
+        [turn("idle", 9), turn("older", 1, true), turn("newer", 2, true)],
+        new Map([["/mono", "idle"]]),
+      ),
+    ).toEqual(activates("newer"));
+  });
+
+  it("keeps the remembered session when it is one of the running ones", () => {
+    expect(
+      plan(
+        [turn("newer", 2, true), turn("older", 1, true)],
+        new Map([["/mono", "older"]]),
+      ),
+    ).toEqual(activates("older"));
+  });
+
+  it("keeps today's first-tab choice when nothing runs", () => {
+    expect(plan([turn("first", 1), turn("second", 2)])).toEqual(
+      activates("first"),
+    );
+  });
+
+  it("stays on the project's focused idle session while another runs", () => {
+    expect(
+      plan([turn("idle", 1), turn("running", 2, true)], new Map(), "tab-idle"),
+    ).toEqual({ action: "keep" });
+  });
+
+  it("opens a lead whose worker is running", () => {
+    const worker = { ...turn("worker", 3, true), orchestrationLeadId: "lead" };
+    expect(plan([turn("idle", 1), turn("lead", 2), worker])).toEqual(
+      activates("lead"),
+    );
+  });
+
+  it("dates a lead's turn from its busy worker", () => {
+    const worker = { ...turn("worker", 9, true), orchestrationLeadId: "lead" };
+    expect(plan([turn("running", 5, true), turn("lead", 1), worker])).toEqual(
+      activates("lead"),
+    );
+  });
+
+  it("does not rank an idle lead by its own finished turn", () => {
+    const worker = { ...turn("worker", 50, true), orchestrationLeadId: "lead" };
+    expect(
+      plan([turn("running", 80, true), turn("lead", 100), worker]),
+    ).toEqual(activates("running"));
+  });
+
+  it("gives equal turn starts to the first tab", () => {
+    expect(plan([turn("first", 4, true), turn("second", 4, true)])).toEqual(
+      activates("first"),
+    );
+  });
+
+  it("dates a steered turn from the block that started it", () => {
+    const steered = turn("steered", 5, true);
+    steered.blocks.push(
+      { id: "reply", role: "assistant", text: "working" },
+      { id: "steer", role: "user", text: "also this", sentAt: 6 },
+    );
+    expect(plan([turn("fresh", 3, true), steered])).toEqual(
+      activates("steered"),
+    );
+  });
+});

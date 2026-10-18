@@ -43,6 +43,7 @@ let view: {
 let directOpen: (id: string) => void;
 let openProject: (path: string, landingTab: string) => void;
 let pins: Map<string, string>;
+let noWorkspace: Set<string>;
 const activate = vi.fn();
 const move =
   vi.fn<
@@ -95,7 +96,9 @@ async function mount(
       ...state,
       pins,
       tabWorkspace: (tab, list) =>
-        pins.get(tab.id) ?? workspaceTabWorktree(tab, list),
+        noWorkspace.has(tab.id)
+          ? null
+          : (pins.get(tab.id) ?? workspaceTabWorktree(tab, list)),
       moveSession: async (id, tree, isCurrent) => {
         await move(id, tree, isCurrent);
         if (isCurrent())
@@ -162,6 +165,7 @@ const screen = () => JSON.parse(container.textContent!);
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  noWorkspace = new Set();
   setWorktreeFocus(project, undefined);
   setWorktreeFocus(other, undefined);
   move.mockReset().mockResolvedValue(undefined);
@@ -347,6 +351,72 @@ it("project selection still restores the last tab in its remembered workspace", 
   expect(pins.get("tab-main")).toBeUndefined();
 });
 
+it("project selection keeps a running landing session in another workspace", async () => {
+  setWorktreeFocus(project, treeA);
+  await mount([
+    chat("worktree", project, treeA.path, true),
+    { ...chat("running", project, treeB.path, true), busy: true },
+    chat("other", other, undefined, true),
+  ]);
+  await act(async () => openProject(other, "tab-other"));
+  await act(async () => openProject(project, "tab-running"));
+  expect(screen()).toMatchObject({
+    activeTab: "tab-running",
+    workspace: treeB.path,
+    checkout: treeB.path,
+  });
+  expect(move).not.toHaveBeenCalled();
+});
+
+it("project selection keeps a running main-checkout session over the remembered worktree", async () => {
+  setWorktreeFocus(project, treeA);
+  await mount([
+    chat("worktree", project, treeA.path, true),
+    { ...chat("main", project, undefined, true), busy: true },
+    chat("other", other, undefined, true),
+  ]);
+  await act(async () => openProject(other, "tab-other"));
+  await act(async () => openProject(project, "tab-main"));
+  expect(screen()).toMatchObject({
+    activeTab: "tab-main",
+    workspace: project,
+    checkout: project,
+  });
+  expect(move).not.toHaveBeenCalled();
+});
+
+it("the worktree switcher still leaves a running session", async () => {
+  await mount([
+    { ...chat("main", project, undefined, true), busy: true },
+    chat("worktree", project, treeA.path, true),
+  ]);
+  await select(treeA);
+  expect(screen()).toMatchObject({
+    activeTab: "tab-worktree",
+    workspace: treeA.path,
+    checkout: treeA.path,
+  });
+  expect(move).not.toHaveBeenCalled();
+});
+
+it("project selection keeps today's worktree focus when a running landing tab reports no workspace", async () => {
+  setWorktreeFocus(project, treeA);
+  await mount([
+    chat("worktree", project, treeA.path, true),
+    { ...chat("running", project, undefined, true), busy: true },
+    chat("other", other, undefined, true),
+  ]);
+  noWorkspace.add("tab-running");
+  await act(async () => openProject(other, "tab-other"));
+  await act(async () => openProject(project, "tab-running"));
+  expect(screen()).toMatchObject({
+    activeTab: "tab-running",
+    workspace: treeA.path,
+    pending: false,
+  });
+  expect(move).not.toHaveBeenCalled();
+});
+
 it("selects an existing workspace tab without moving the current session", async () => {
   await mount([
     chat("main", project, undefined, true),
@@ -453,4 +523,23 @@ it("keeps a split tab grouped under another project without leaving navigation p
   expect(pins.get("tab-main")).toBe(project);
   expect(view.sessions).toHaveLength(2);
   expect(move).not.toHaveBeenCalled();
+});
+
+it("a running session in a split tab grouped under another project keeps today's worktree focus", async () => {
+  setWorktreeFocus(other, treeB);
+  const mixed = newTab("main");
+  mixed.id = "tab-main";
+  mixed.layout = splitPane(mixed.layout, "main", "right", "other");
+  mixed.focusedId = "other";
+  await mount(
+    [chat("main"), { ...chat("other", other), busy: true }],
+    "other",
+    [mixed],
+  );
+  await act(async () => navigation.selectProject(other));
+  expect(screen()).toMatchObject({
+    activeTab: "tab-main",
+    workspace: treeB.path,
+    pending: false,
+  });
 });
