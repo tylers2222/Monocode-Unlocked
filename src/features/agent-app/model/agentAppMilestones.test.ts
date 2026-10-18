@@ -5,6 +5,7 @@ import type {
   MilestoneSettings,
   Writer,
 } from "../../milestones/model/milestones";
+import { monoContext, type MonoFiles } from "../../monos/model/monoFiles";
 import { handleAgentApp, type AgentAppHost } from "./agentApp";
 import { appErrorResponse } from "./appActionError";
 
@@ -157,6 +158,51 @@ it("a Mono adds to a roster project by name as mono:<id>", async () => {
   ]);
 });
 
+it("a Mono lists and removes in a project it names", async () => {
+  const { run, rows } = fixture("mono");
+  await run("milestones.add", { title: "On site", project: SITE });
+  await run("milestones.add", { title: "On app", project: APP });
+  expect(await run("milestones.list", { project: SITE })).toMatchObject({
+    project: SITE,
+    milestones: [{ id: "m1", title: "On site" }],
+  });
+  expect(await run("milestones.remove", { id: "m1", project: SITE })).toEqual({
+    removed: "m1",
+  });
+  expect(rows.map((row) => row.title)).toEqual(["On app"]);
+});
+
+it("the Mono prompt's milestones commands work for a Mono with two projects", async () => {
+  const look = {
+    name: "Alpha",
+    mascot: "crab",
+    color: "#fff",
+    projects: [
+      { path: APP, name: "app" },
+      { path: SITE, name: "site" },
+    ],
+  };
+  const files = { soul: "", memory: "", topics: [] } as unknown as MonoFiles;
+  const prompt = monoContext(look, files, { soul: true, memory: false });
+  const commands = [
+    ...prompt.matchAll(/app (milestones\.\w+) --json '([^']*)'/g),
+  ].map(([, action, json]) => ({
+    action,
+    input: JSON.parse(
+      json.replace("<path or name>", "site").replace("...", "Dark mode"),
+    ) as Record<string, unknown>,
+  }));
+  expect(commands.map((command) => command.action)).toEqual([
+    "milestones.add",
+    "milestones.list",
+  ]);
+  const { run } = fixture("mono");
+  for (const { action, input } of commands) await run(action, input);
+  expect(await run("milestones.list", { project: SITE })).toMatchObject({
+    milestones: [{ title: "Dark mode", createdBy: "mono:mono-1" }],
+  });
+});
+
 it("a Mono naming a project outside its roster is refused", async () => {
   const { run, rows } = fixture("mono");
   expect(
@@ -303,3 +349,30 @@ it("update, reorder and remove answer with the changed rows", async () => {
     removed: "m2",
   });
 });
+
+it("add keeps the status and target it was given", async () => {
+  const { run, rows } = fixture("session");
+  expect(
+    await run("milestones.add", {
+      title: "Voice notes",
+      status: "in_progress",
+      target: "2026-12-01",
+    }),
+  ).toMatchObject({ status: "in_progress", target: "2026-12-01" });
+  expect(rows.map((row) => [row.status, row.target])).toEqual([
+    ["in_progress", "2026-12-01"],
+  ]);
+});
+
+it.each([["m1"], [[1]], [null]])(
+  "reorder with ids %j is invalid_input and changes nothing",
+  async (ids) => {
+    const { run, rows } = fixture("session");
+    await run("milestones.add", { title: "First" });
+    expect(await failure(run("milestones.reorder", { ids }))).toMatchObject({
+      code: "invalid_input",
+      hint: "ids must be an array of milestone ids",
+    });
+    expect(rows.map((row) => row.order)).toEqual([0]);
+  },
+);
