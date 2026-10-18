@@ -3,8 +3,8 @@
 //! [`Decision`]. The first matching row of design 16.5 or 6.4 wins.
 //!
 //! PR I2 has rows S1-S7, I1, I2, S9, S10, S13-S17, S20, W1-W3 (whole-turn)
-//! and R1-R8, R10, R11. PR 7 adds the hop limit, S18 and R9.
-//! The direction matrix, rule (b) and the rate limit come with PR 7.
+//! and R1-R8, R10, R11, and the hop limit (S18, R9). The direction matrix,
+//! rule (b) and the rate limit come later in PR 7.
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -725,13 +725,14 @@ pub fn decide_send(
     };
     let recipient = &facts.about.recipient;
     let to = recipient.party();
-    let reject = |code: RejectCode, to: Option<Party>| Decision::Reject {
+    let reject_at = |code: RejectCode, to: Option<Party>, hop: u32| Decision::Reject {
         code,
         hint: send_hint(code, input),
         to,
-        hop: 0,
+        hop,
         open_handles: Vec::new(),
     };
+    let reject = |code: RejectCode, to: Option<Party>| reject_at(code, to, 0);
     if too_large(&input.message) {
         return reject(RejectCode::TooLarge, to);
     }
@@ -2261,29 +2262,49 @@ mod tests {
         ));
     }
 
-    // S18 (a steer's hop is M.hop + 1). Defect: a chain of steers grows past
-    // hop 4, or the limit cuts one hop early.
+    // S18 (a steer's hop is M.hop + 1), after S15 and S17. Defect: a chain
+    // of steers grows past hop 4, the limit cuts one hop early, or a hop-4
+    // steer that S15 or S17 refuses is told to stop the chain instead.
     #[test]
     fn s18_a_steer_past_hop_4_is_hop_limit() {
-        let a_chat = live("a-chat", true, true);
-        let steer_at = |hop: u32| {
+        let steer_at = |hop: u32, handling: Target| {
             decide_send(
                 &caller(CallerKind::MonoChat),
                 &steer("m_aaaaaaaaaaaa"),
                 &hash(),
                 &steering(
-                    mono_a(Some(a_chat.clone())),
+                    mono_a(Some(live("a-chat", true, true))),
                     sent('a', hop, Some("turn-1")),
-                    Some(a_chat.clone()),
+                    Some(handling),
                 ),
             )
         };
+        let running = live("a-chat", true, true);
         assert!(
-            matches!(steer_at(3), Decision::Accept { hop: 4, .. }),
+            matches!(
+                steer_at(3, running.clone()),
+                Decision::Accept { hop: 4, .. }
+            ),
             "{:?}",
-            steer_at(3)
+            steer_at(3, running.clone())
         );
-        assert_eq!(steer_at(4), hop_limited(party_a()));
+        assert_eq!(steer_at(4, running), hop_limited(party_a()));
+        assert_eq!(
+            steer_at(4, live("a-chat", false, true)),
+            send_rejected(
+                RejectCode::TargetGone,
+                party_a(),
+                r#"The work that reply_to started is not running now: it finished, it has not started, or its session is idle, cleared or deleted. Send it with intent "new"."#
+            )
+        );
+        assert_eq!(
+            steer_at(4, live("a-chat", true, false)),
+            send_rejected(
+                RejectCode::CannotSteer,
+                party_a(),
+                r#"That session's provider cannot steer a running turn. Send it with intent "new"; it waits for the turn to end."#
+            )
+        );
     }
 
     // PR I2, S20. Defect: new work still steers a running turn, a steer
@@ -2548,8 +2569,9 @@ mod tests {
         );
     }
 
-    // R9 between R8 and R10. Defect: replies ping-pong past hop 4, or a reply
-    // at hop 5 to a gone sender is told about the sender first.
+    // R9 between R8 and R10. Defect: replies ping-pong past hop 4, a reply
+    // at hop 5 to a gone sender is told about the sender first, or a reply to
+    // several messages takes its hop from one that is not the deepest.
     #[test]
     fn r9_a_reply_past_hop_4_is_hop_limit() {
         let at_hop = |hop: u32, sender: Target| {
@@ -2582,6 +2604,26 @@ mod tests {
             ..live("giga-chat", true, true)
         };
         assert_eq!(at_hop(4, gone), limit);
+        let both = |shallow: u32, deep: u32| {
+            let at = |id, handle, hop| Handled {
+                message: row(id, Some("giga"), hop, open(handle)),
+                ..handled(id, handle, live("giga-chat", true, true))
+            };
+            decide_reply(
+                &ReplyInput {
+                    to: Some(vec![Handle::new(1).unwrap(), Handle::new(2).unwrap()]),
+                    ..reply("Done")
+                },
+                &hash(),
+                &replies(vec![at('a', 1, shallow), at('b', 2, deep)]),
+            )
+        };
+        assert!(
+            matches!(both(1, 3), Decision::Accept { hop: 4, .. }),
+            "{:?}",
+            both(1, 3)
+        );
+        assert_eq!(both(1, 4), limit);
     }
 
     // R10 and PR 5 review m4. Defect: a reply to a gone sender is accepted,

@@ -6536,6 +6536,7 @@ pub(crate) mod tests {
         let second = accepted_ids(&again).remove(0);
         assert_eq!(get(&conn, &second).unwrap().unwrap().hop, 2);
     }
+
     // Design E25 and 6 (`Reject { code, hop, to }`), PR 7 review r1 m1 and
     // decision 628. Defect: a rejected `hop_limit` row stores hop 0.
     #[test]
