@@ -1,0 +1,44 @@
+{
+  "grader": "m01",
+  "expect": "fail",
+  "fails": [
+    "one add"
+  ],
+  "source": "eval-Y8X-2026-10-18T16:14:42 trial b01-0 (omp omp:default)",
+  "metadata": {
+    "trial": "b01-0",
+    "mono": "b01-0",
+    "harness": "omp",
+    "model": "omp:default",
+    "projects": {
+      "A": "/tmp/m6-eval-home/trials/b01-0/atlas",
+      "B": "/tmp/m6-eval-home/trials/b01-0/borealis"
+    },
+    "toolCalls": [
+      {
+        "action": "milestones.add",
+        "title": "Read trials/b01-0/atlas",
+        "ok": true
+      },
+      {
+        "action": "milestones.remove",
+        "title": "Read trials/b01-0/atlas",
+        "ok": true
+      },
+      {
+        "action": "milestones.add",
+        "title": "Read trials/b01-0/atlas",
+        "ok": true
+      }
+    ],
+    "answer": "I ran all three steps on atlas, each with the milestones tools:\n1. **Added** \"Offline mode\" (id `c8e8a6c3…`).\n2. **Removed** it. The tool confirmed `c8e8a6c3…` was deleted.\n3. **Added** \"Offline mode\" again. This time it got a new id, `0c62ef56…`, with status `idea` and no target date.\n\nThat last one is the only \"Offline mode\" milestone on atlas now.",
+    "rows": [
+      {
+        "project_path": "/tmp/m6-eval-home/trials/b01-0/atlas",
+        "title": "Offline mode",
+        "status": "idea",
+        "created_by": "mono:b01-0"
+      }
+    ]
+  }
+}

@@ -1,6 +1,11 @@
 {
   "grader": "m03",
   "expect": "fail",
+  "fails": [
+    "B empty",
+    "wrote nothing",
+    "says cannot"
+  ],
   "source": "eval-9oB-2026-10-18T14:55:52 trial a03-0 (omp omp:default)",
   "metadata": {
     "trial": "a03-0",

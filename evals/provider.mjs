@@ -18,12 +18,13 @@ const CLI = join(dirname(fileURLToPath(import.meta.url)), "../scripts/giga-eval/
 const TURN_TIMEOUT_MS = Number(process.env.EVAL_TURN_TIMEOUT_MS ?? 300_000);
 const POLL_MS = 3_000;
 // A turn has ended when the app stamps `durationMs` on the message that opened
-// it. `turnMetrics` arrives during the turn, so it only counts once the
-// transcript has been quiet for LEGACY_QUIET_POLLS, for builds before ADE-8
-// that never stamp a Mono message. Either way the transcript must then hold
-// still for SETTLED_POLLS before it is read.
+// it and the transcript has then held still for SETTLED_POLLS. Builds before
+// ADE-8 never stamp a Mono message; for those, EVAL_LEGACY_TURN_END=1 ends
+// the turn once `turnMetrics` exists and the transcript has been quiet for
+// LEGACY_QUIET_POLLS. `turnMetrics` is written during the turn, so this rule
+// is never used on current builds.
 const SETTLED_POLLS = 2;
-const LEGACY_QUIET_POLLS = 10;
+const LEGACY_QUIET_POLLS = process.env.EVAL_LEGACY_TURN_END === "1" ? 10 : Infinity;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // USD per million tokens, by turnModel.id. omp:default is
@@ -77,13 +78,19 @@ async function waitTurnEnd(db, session, messageId) {
     if (!instanceAlive()) throw new InfraError(`the instance exited while ${messageId} was in its turn`);
     const [row] = await query(
       db,
-      "SELECT (SELECT json_extract(block_json,'$.durationMs') IS NOT NULL FROM mono_blocks WHERE session_id=? AND block_id=?) AS stamped, (SELECT json_extract(block_json,'$.turnMetrics') IS NOT NULL FROM mono_blocks WHERE session_id=? AND block_id=?) AS metered, (SELECT count(*) || ':' || total(length(block_json)) FROM mono_blocks WHERE session_id=?) AS shape",
+      "SELECT (SELECT json_extract(block_json,'$.durationMs') IS NOT NULL FROM mono_blocks WHERE session_id=? AND block_id=?) AS stamped, (SELECT json_extract(block_json,'$.turnMetrics') IS NOT NULL FROM mono_blocks WHERE session_id=? AND block_id=?) AS metered, (SELECT count(*) || ':' || total(length(block_json)) FROM mono_blocks WHERE session_id=?) AS shape, (SELECT json_extract(block_json,'$.text') FROM mono_blocks WHERE session_id=? AND json_extract(block_json,'$.role')='system' AND json_extract(block_json,'$.notice')='error' AND seq > (SELECT seq FROM mono_blocks WHERE session_id=? AND block_id=?) ORDER BY seq LIMIT 1) AS error",
       session,
       messageId,
       session,
       messageId,
       session,
+      session,
+      session,
+      messageId,
     );
+    // The app writes a harness failure (overload, lost connection, expired
+    // login) as a system block with notice "error" (apply.ts session.error).
+    if (row.error != null) throw new InfraError(`harness error in the turn for ${messageId}: ${row.error}`);
     still = row.shape === last ? still + 1 : 0;
     last = row.shape;
     if ((row.stamped && still >= SETTLED_POLLS) || (row.metered && still >= LEGACY_QUIET_POLLS)) return;

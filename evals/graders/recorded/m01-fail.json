@@ -1,6 +1,10 @@
 {
   "grader": "m01",
   "expect": "fail",
+  "fails": [
+    "project",
+    "B empty"
+  ],
   "source": "eval-9oB-2026-10-18T14:55:52 trial a01-0 (omp omp:default)",
   "metadata": {
     "trial": "a01-0",

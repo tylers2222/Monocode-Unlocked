@@ -5,8 +5,8 @@
 //
 // Per case: k, passes, model failures, infrastructure errors, pass rate over
 // graded trials, pass^k and a Wilson 95% interval. Exit 0 ok, 1 a core case
-// below FLOOR or below its baseline, 3 any infrastructure error.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+// below FLOOR or MARGIN trials below its baseline, 3 any infrastructure error.
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -51,15 +51,28 @@ export function summarize(rows) {
     });
 }
 
-export function verdict(cases, baseline) {
+// A drop of one trial out of k is noise at k=5; MARGIN trials below the
+// baseline fail the run, and a K=10 re-run decides whether it is a regression.
+const MARGIN = 2;
+
+export function verdict(cases, baseline, run) {
   const problems = [];
   for (const c of cases) {
     if (c.errors) problems.push({ exit: 3, text: `${c.id}: ${c.errors} infrastructure error(s); not a model result` });
-    const base = baseline[`${c.id}@${c.version}`];
     if (c.rate == null) continue;
     if (c.tier === "core" && c.rate < FLOOR) problems.push({ exit: 1, text: `${c.id}: ${pct(c.rate)} is below the ${pct(FLOOR)} floor` });
-    if (base && c.rate < base.pass_rate) {
-      problems.push({ exit: 1, text: `${c.id}: ${pct(c.rate)} is below baseline ${pct(base.pass_rate)}; re-run with K=10 before calling it a regression` });
+    const base = baseline[`${c.id}@${c.version}`];
+    if (!base) continue;
+    if (base.harness !== run.harness || base.model !== run.model) {
+      problems.push({ exit: 0, text: `${c.id}: baseline is ${base.harness} ${base.model}, not compared` });
+      continue;
+    }
+    const graded = c.passes + c.failures;
+    const drop = base.pass_rate * graded - c.passes;
+    if (drop >= MARGIN - 1e-9) {
+      problems.push({ exit: 1, text: `${c.id}: ${c.passes}/${graded} is ${MARGIN}+ trials below baseline ${pct(base.pass_rate)}; confirm with K=10` });
+    } else if (drop > 0) {
+      problems.push({ exit: 0, text: `${c.id}: ${c.passes}/${graded} is below baseline ${pct(base.pass_rate)} by less than ${MARGIN} trials; noted, not failed` });
     }
   }
   return { exit: Math.max(0, ...problems.map((p) => p.exit)), problems };
@@ -81,7 +94,7 @@ function markdown(cases, v, meta) {
         `| ${c.id}@${c.version} | ${c.k} | ${c.passes} | ${c.failures} | ${c.errors} | ${pct(c.rate)} | ${c.passAllK ? "yes" : "no"} | ${pct(c.ci[0])}-${pct(c.ci[1])} | ${money(c)} |`,
     ),
     "",
-    v.problems.length ? `Verdict: ${v.exit === 3 ? "INFRA" : "FAIL"}` : "Verdict: PASS",
+    `Verdict: ${{ 0: "PASS", 1: "FAIL", 3: "INFRA" }[v.exit]}`,
     ...v.problems.map((p) => `- ${p.text}`),
   ];
   const failed = cases.filter((c) => c.failed.length);
@@ -105,7 +118,6 @@ function main() {
   const rows = results.results.results;
   const cases = summarize(rows);
   const baseline = JSON.parse(readFileSync(BASELINE, "utf8"));
-  const v = verdict(cases, baseline);
   const dir = dirname(file);
   const plan = existsSync(join(dir, "trials.json")) ? JSON.parse(readFileSync(join(dir, "trials.json"), "utf8")) : {};
   const tags = results.config?.tags ?? {};
@@ -118,6 +130,7 @@ function main() {
     wall: wallSeconds == null ? "n/a" : `${Math.floor(wallSeconds / 60)}m${String(wallSeconds % 60).padStart(2, "0")}s`,
     cost: priced ? `$${total.toFixed(4)}` : `unpriced, ${cases.reduce((sum, c) => sum + c.tokens, 0)} tokens`,
   };
+  const v = verdict(cases, baseline, meta);
   const md = markdown(cases, v, meta);
   writeFileSync(join(dir, "report.md"), md);
   writeFileSync(join(dir, "report.json"), JSON.stringify({ ...meta, wall_seconds: wallSeconds, cost_usd: priced ? total : null, cases, verdict: v }, null, 2));
@@ -134,4 +147,5 @@ function main() {
   process.exit(v.exit);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+// Real paths: argv[1] may run through a symlink (/tmp) or hold a space.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) main();

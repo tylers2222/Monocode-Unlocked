@@ -1,0 +1,45 @@
+{
+  "grader": "m03",
+  "expect": "fail",
+  "fails": [
+    "wrote nothing",
+    "says cannot"
+  ],
+  "source": "eval-Y8X-2026-10-18T16:14:42 trial b10-0 (omp omp:default)",
+  "metadata": {
+    "trial": "b10-0",
+    "mono": "b10-0",
+    "harness": "omp",
+    "model": "omp:default",
+    "projects": {
+      "A": "/tmp/m6-eval-home/trials/b10-0/atlas",
+      "B": "/tmp/m6-eval-home/trials/b10-0/borealis"
+    },
+    "toolCalls": [
+      {
+        "action": "milestones.add",
+        "title": "Read trials/b10-0/atlas",
+        "ok": true
+      },
+      {
+        "action": null,
+        "title": "get_monos",
+        "ok": true
+      },
+      {
+        "action": "messages.send",
+        "title": "send_message",
+        "ok": true
+      }
+    ],
+    "answer": "Beta's message didn't ask for an answer, so this goes back as a new message rather than a reply.\nI added \"Dark mode\" to atlas's roadmap as an idea with no target date, and told Beta: \"Done, Dark mode is on the roadmap.\"\nDone, Dark mode is on the roadmap.",
+    "rows": [
+      {
+        "project_path": "/tmp/m6-eval-home/trials/b10-0/atlas",
+        "title": "Dark mode",
+        "status": "idea",
+        "created_by": "mono:b10-0"
+      }
+    ]
+  }
+}

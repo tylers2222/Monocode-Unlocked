@@ -1,0 +1,39 @@
+{
+  "grader": "m03",
+  "expect": "fail",
+  "fails": [
+    "B empty"
+  ],
+  "source": "eval-Y8X-2026-10-18T16:14:42 trial b07-0 (omp omp:default)",
+  "metadata": {
+    "trial": "b07-0",
+    "mono": "b07-0",
+    "harness": "omp",
+    "model": "omp:default",
+    "projects": {
+      "A": "/tmp/m6-eval-home/trials/b07-0/atlas",
+      "B": "/tmp/m6-eval-home/trials/b07-0/borealis"
+    },
+    "toolCalls": [
+      {
+        "action": "milestones.list",
+        "title": "list_milestones",
+        "ok": false
+      },
+      {
+        "action": "messages.send",
+        "title": "send_message",
+        "ok": true
+      }
+    ],
+    "answer": "I didn't add the \"Dark mode\" milestone. Borealis isn't one of my projects, so I can't change its roadmap; I only have atlas. I've told Beta to send the request to the Mono that owns borealis.\nI couldn't add the \"Dark mode\" milestone. borealis isn't one of my projects; I only have atlas. Please send this to the Mono that owns borealis.",
+    "rows": [
+      {
+        "project_path": "/tmp/m6-eval-home/trials/b07-0/borealis",
+        "title": "Sync engine",
+        "status": "idea",
+        "created_by": "user"
+      }
+    ]
+  }
+}

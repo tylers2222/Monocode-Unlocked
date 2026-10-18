@@ -8,7 +8,7 @@
 // The trial plan goes to $EVAL_OUT_DIR/trials.json for provider.mjs.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
@@ -31,6 +31,7 @@ function loadCase(path) {
   for (const key of ["id", "version", "grader", "fixture", "events"]) {
     if (c[key] == null) throw new Error(`${path}: missing ${key}`);
   }
+  if (!/^[\w-]+:\w+$/.test(c.grader)) throw new Error(`${path}: grader must be <file>:<export>, got ${c.grader}`);
   return { ...c, tier: c.tier ?? "core" };
 }
 
@@ -139,7 +140,8 @@ function seed(k, tier) {
   console.log(`seeded ${Object.values(trials).flat().length} trials (${harness} ${model}) -> ${e.manifest}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Real paths: argv[1] may run through a symlink (/tmp) or hold a space.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [k, tier] = process.argv.slice(2);
   if (!Number(k) || !["smoke", "full"].includes(tier)) {
     console.error("usage: node fixture.mjs <k> <smoke|full>");

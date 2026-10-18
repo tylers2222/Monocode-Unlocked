@@ -2,7 +2,7 @@ id: m01-remember-later
 version: 1
 tier: core
 description: A Mono with projects A and B, in a chat about A, keeps a future goal as one milestone on A.
-grader: m01
+grader: milestones:m01
 fixture:
   projects: { A: atlas, B: borealis }
   mono_projects: [A, B]

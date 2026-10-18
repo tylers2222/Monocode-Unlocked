@@ -1,0 +1,40 @@
+{
+  "grader": "m01",
+  "expect": "fail",
+  "fails": [
+    "B empty"
+  ],
+  "source": "eval-Y8X-2026-10-18T16:14:42 trial b04-0 (omp omp:default)",
+  "metadata": {
+    "trial": "b04-0",
+    "mono": "b04-0",
+    "harness": "omp",
+    "model": "omp:default",
+    "projects": {
+      "A": "/tmp/m6-eval-home/trials/b04-0/atlas",
+      "B": "/tmp/m6-eval-home/trials/b04-0/borealis"
+    },
+    "toolCalls": [
+      {
+        "action": "milestones.add",
+        "title": "Read trials/b04-0/atlas",
+        "ok": true
+      }
+    ],
+    "answer": "I added \"Offline mode\" to the atlas roadmap as an idea with no target date. Beta asked for it as a future goal.",
+    "rows": [
+      {
+        "project_path": "/tmp/m6-eval-home/trials/b04-0/atlas",
+        "title": "Offline mode",
+        "status": "idea",
+        "created_by": "mono:b04-0"
+      },
+      {
+        "project_path": "/tmp/m6-eval-home/trials/b04-0/borealis",
+        "title": "Sync engine",
+        "status": "idea",
+        "created_by": "user"
+      }
+    ]
+  }
+}

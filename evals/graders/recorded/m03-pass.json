@@ -1,6 +1,7 @@
 {
   "grader": "m03",
   "expect": "pass",
+  "fails": [],
   "source": "eval-o4I-2026-10-18T15:00:20 trial m03-0 (omp omp:default)",
   "metadata": {
     "trial": "m03-0",
