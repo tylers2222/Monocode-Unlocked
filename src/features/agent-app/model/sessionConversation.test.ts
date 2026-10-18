@@ -67,6 +67,53 @@ describe("sessionConversationPage", () => {
     expect(older.nextBefore).toBeNull();
   });
 
+  it("lists each turn's reasoning and tool rows in order only with work: true", () => {
+    const session = conversation([
+      { id: "u1", role: "user", text: "Check CI" },
+      { id: "r1", role: "reasoning", text: "Look at the checks first." },
+      {
+        id: "t1",
+        role: "tool",
+        text: "gh pr checks 20",
+        tool: {
+          kind: "shell",
+          title: "Shell",
+          status: "completed",
+          detail: "x".repeat(250),
+        },
+      },
+      { id: "t2", role: "tool", text: "Read ci.yml", tool: { kind: "read" } },
+      { id: "hidden", role: "tool", text: "app step", internal: true },
+      { id: "a1", role: "assistant", text: "CI is green." },
+    ]);
+    const prose = sessionConversationPage(session);
+    expect(prose.turns[0]).not.toHaveProperty("work");
+    expect(JSON.stringify(prose)).not.toMatch(/Look at the checks|gh pr/);
+
+    const page = sessionConversationPage(session, { work: true, maxChars: 200 });
+    expect(page.turns[0].assistant?.text).toBe("CI is green.");
+    expect(page.turns[0].work).toEqual([
+      { kind: "reasoning", text: "Look at the checks first.", truncated: false },
+      {
+        kind: "tool",
+        tool: "Shell",
+        status: "completed",
+        input: { text: "gh pr checks 20", truncated: false },
+        result: { text: "x".repeat(200), truncated: true },
+      },
+      {
+        kind: "tool",
+        tool: "read",
+        status: null,
+        input: { text: "Read ci.yml", truncated: false },
+        result: null,
+      },
+    ]);
+    expect(() =>
+      sessionConversationPage(session, { work: "yes" as unknown as boolean }),
+    ).toThrow("work must be true or false");
+  });
+
   it("caps individual messages and lets a caller request a larger excerpt", () => {
     const session = conversation([
       { id: "u", role: "user", text: "U".repeat(7000) },

@@ -2,12 +2,14 @@ import type { Block, Session } from "../../sessions/model/session";
 import { operatorUserPrompt } from "../../sessions/model/operatorCommand";
 import { AppActionError } from "./appActionError";
 
-type Exchange = { user: Block; assistants: Block[] };
+type Exchange = { user: Block; assistants: Block[]; work: Block[] };
 
 export type SessionReadOptions = {
   before?: string;
   limit?: number;
   maxChars?: number;
+  /** Also list each turn's reasoning and tool rows, in order. */
+  work?: boolean;
 };
 
 function capped(text: string, maxChars: number) {
@@ -18,7 +20,22 @@ function capped(text: string, maxChars: number) {
   };
 }
 
-/** Show conversation prose only, with a stable cursor for older exchanges. */
+function workRow(block: Block, maxChars: number) {
+  if (block.role === "reasoning")
+    return { kind: "reasoning" as const, ...capped(block.text, maxChars) };
+  return {
+    kind: "tool" as const,
+    tool: block.tool?.title ?? block.tool?.kind ?? null,
+    status: block.tool?.status ?? null,
+    input: capped(block.text, maxChars),
+    result: block.tool?.detail ? capped(block.tool.detail, maxChars) : null,
+  };
+}
+
+/**
+ * Show conversation prose, plus reasoning and tool rows when `work` is set,
+ * with a stable cursor for older exchanges.
+ */
 export function sessionConversationPage(
   session: Session,
   options: SessionReadOptions = {},
@@ -35,6 +52,8 @@ export function sessionConversationPage(
       "invalid_input",
       "maxChars must be an integer from 200 to 6000",
     );
+  if (options.work !== undefined && typeof options.work !== "boolean")
+    throw new AppActionError("invalid_input", "work must be true or false");
 
   const exchanges: Exchange[] = [];
   for (const block of session.blocks) {
@@ -43,7 +62,7 @@ export function sessionConversationPage(
       (!block.internal || block.monoSessionCompletion) &&
       !block.draft
     ) {
-      exchanges.push({ user: block, assistants: [] });
+      exchanges.push({ user: block, assistants: [], work: [] });
     } else if (
       block.role === "assistant" &&
       !block.internal &&
@@ -51,6 +70,13 @@ export function sessionConversationPage(
       exchanges.length > 0
     ) {
       exchanges[exchanges.length - 1].assistants.push(block);
+    } else if (
+      options.work &&
+      (block.role === "reasoning" || block.role === "tool") &&
+      !block.internal &&
+      exchanges.length > 0
+    ) {
+      exchanges[exchanges.length - 1].work.push(block);
     }
   }
 
@@ -71,7 +97,7 @@ export function sessionConversationPage(
     hasDraft: session.blocks.some(
       (block) => block.role === "user" && block.draft,
     ),
-    turns: selected.map(({ user, assistants }) => ({
+    turns: selected.map(({ user, assistants, work }) => ({
       turnId: user.id,
       user: capped(
         user.monoSessionCompletion
@@ -85,6 +111,9 @@ export function sessionConversationPage(
         ? capped(assistants[assistants.length - 1].text, maxChars)
         : null,
       earlierAssistantMessages: Math.max(0, assistants.length - 1),
+      ...(options.work
+        ? { work: work.map((block) => workRow(block, maxChars)) }
+        : {}),
     })),
     nextBefore: start > 0 ? selected[0]?.user.id : null,
   };

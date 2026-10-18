@@ -328,7 +328,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ["habits.remove", ["id"]],
   ["monos.list", []],
   ["monos.get", ["monoId"]],
-  ["monos.read", ["monoId", "before", "limit", "maxChars"]],
+  ["monos.read", ["monoId", "before", "limit", "maxChars", "work"]],
   ["monos.create", ["name", "harness", "model", "projects", "soul", "giga"]],
   ["monos.update", ["monoId", "harness", "model", "name", "projects"]],
   ["messages.get_monos", []],
@@ -1069,8 +1069,9 @@ async function handleMonos(
           before: optionalString(input.before, "before", 256),
           limit: input.limit as number | undefined,
           maxChars: input.maxChars as number | undefined,
+          work: input.work as boolean | undefined,
         };
-        // Checks limit and maxChars before the host loads anything.
+        // Checks limit, maxChars and work before the host loads anything.
         sessionConversationPage(
           { ...source, blocks: [] },
           { ...options, before: undefined },

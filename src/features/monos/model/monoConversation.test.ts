@@ -48,6 +48,26 @@ it("reads archived cursors directly and retains a cursor beyond the loaded page"
   expect(result.nextBefore).toBe("u10");
 });
 
+it("keeps the thinking and tool rows of archived turns with work: true", async () => {
+  vi.mocked(getMonoTranscriptPage).mockResolvedValue({
+    blocks: [
+      ...turns(12, 1),
+      { id: "r12", role: "reasoning", text: "Read the log first." },
+      { id: "t12", role: "tool", text: "tail app.log", tool: { kind: "shell" } },
+    ],
+    before: null,
+    hasNewer: true,
+  });
+  const result = await readMonoConversation(session(), {
+    before: "u13",
+    work: true,
+  });
+  expect(result.turns[0].work).toMatchObject([
+    { kind: "reasoning", text: "Read the log first." },
+    { kind: "tool", tool: "shell", input: { text: "tail app.log" } },
+  ]);
+});
+
 it("fills a page that crosses the edge of the writable window without mutating it", async () => {
   const current = session();
   vi.mocked(getMonoTranscriptPage).mockResolvedValue({
