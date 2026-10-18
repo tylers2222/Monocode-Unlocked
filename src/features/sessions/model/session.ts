@@ -512,7 +512,7 @@ export type Session = {
   quickLaunchAccepted?: boolean;
   /** Internal worker: displayed in its lead's panel rather than a workspace tab. */
   orchestrationLeadId?: string;
-  /** Change E level link, not the orchestration link: the lead whose `sessions.start` made this worker. */
+  /** The session whose `sessions.start` made this one; written on insert only. */
   leadSessionId?: string;
   /** Inbox conversation: shares the runtime, saved only as a hidden record. */
   inboxAsk?: InboxAskContext;

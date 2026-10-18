@@ -134,7 +134,7 @@ pub struct SessionUpsert {
     pub linked_work_item: Option<Value>,
     #[serde(default)]
     pub automation_id: Option<String>,
-    /// Change E level link to this worker's lead (not the orchestration link); written on insert only.
+    /// The session whose `sessions.start` made this one; written on insert only.
     #[serde(default)]
     pub lead_session_id: Option<String>,
 }
@@ -178,7 +178,7 @@ pub struct SessionSummary {
     pub linked_work_item: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub automation_id: Option<String>,
-    /// Change E level link to this worker's lead (not the orchestration link).
+    /// The session whose `sessions.start` made this one; written on insert only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lead_session_id: Option<String>,
 }
@@ -222,7 +222,7 @@ pub struct SessionRecord {
     pub linked_work_item: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub automation_id: Option<String>,
-    /// Change E level link to this worker's lead (not the orchestration link).
+    /// The session whose `sessions.start` made this one; written on insert only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lead_session_id: Option<String>,
     pub created_at: i64,
@@ -1021,7 +1021,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "CREATE INDEX IF NOT EXISTS sessions_legacy_inbox
          ON sessions (id) WHERE inbox_ask IS NOT NULL;",
     )?;
-    // The Change E level link, not the orchestration link. No version row:
+    // The lead link (see `lead_session_id`). No version row:
     // another build may reuse the number. The partial index serves the
     // ON DELETE SET NULL lookup when a lead is deleted.
     ensure_session_column(

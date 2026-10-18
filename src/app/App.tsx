@@ -8893,7 +8893,6 @@ function Workspace({
       placement?: AppSessionPlacement,
       onSettled?: (outcome: ControlOutcome) => void,
       openTab?: boolean,
-      persistLead?: () => Promise<void>,
     ) =>
       acceptQuickLaunch(
         launch,
@@ -8962,7 +8961,8 @@ function Workspace({
               : submitSession(id, text, attachments, options),
           saveDraft: (id, prompt, attachments, requestId) =>
             flushSync(() => onSaveDraft(id, prompt, attachments, requestId)),
-          persistLead,
+          saveSession: async (session) =>
+            !shouldPersistSession(session) || !!(await upsertSession(session)),
         },
         placement,
         openTab,
@@ -11252,21 +11252,6 @@ function Workspace({
                     launch.prompt,
                   )
                 : undefined;
-              // Design 13.2: a worker's first save names its lead through
-              // the lead's row, so the lead is saved first; its usual save
-              // drops errors.
-              const lead = launch.leadSessionId
-                ? (sessionsRef.current.find(
-                    (session) => session.id === source.id,
-                  ) ?? source)
-                : undefined;
-              const persistLead =
-                lead && shouldPersistSession(lead)
-                  ? async () => {
-                      if (!(await upsertSession(lead)))
-                        throw new Error("The lead session could not be saved");
-                    }
-                  : undefined;
               try {
                 // A Mono's sessions open from its chat, not as workspace
                 // tabs, unless it places one beside an open pane.
@@ -11276,7 +11261,6 @@ function Workspace({
                   placement,
                   onSettled,
                   !isMonoSession(source.id) || !!placement,
-                  persistLead,
                 );
                 rememberLaunch();
                 onSettled?.accept();

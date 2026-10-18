@@ -50,10 +50,10 @@ export async function acceptQuickLaunch(
       requestId: string,
     ) => SubmissionAcceptance;
     /**
-     * Design 13.2: saves the lead of the worker this launch makes, so the
-     * worker's first save finds the lead's row. Throws when it cannot.
+     * Saves a session that belongs in history now. False when that save
+     * failed, such as for a deleted session.
      */
-    persistLead?: () => Promise<void>;
+    saveSession: (session: Session) => Promise<boolean>;
   },
   placement?: { direction: SplitDir; besideSessionId: string },
   /** Off for a session followed elsewhere, such as from the Mono that ran it. */
@@ -61,7 +61,7 @@ export async function acceptQuickLaunch(
 ): Promise<void> {
   // Rehydrate image previews in this webview; the floating panel sends paths.
   const attachments = await prepareAttachments(launch.attachments ?? []);
-  await workspace.persistLead?.();
+  if (launch.leadSessionId) await saveLead(launch.leadSessionId, workspace);
   const existing = workspace
     .getSessions()
     .find((session) => session.id === deliveryId);
@@ -138,4 +138,24 @@ export async function acceptQuickLaunch(
       item.id === deliveryId ? { ...item, quickLaunchAccepted: true } : item,
     ),
   );
+}
+
+/**
+ * Design 13.2: a worker's first save names its lead through the lead's row,
+ * and the write is insert-only, so the lead is saved before the worker
+ * exists, or no worker starts.
+ */
+async function saveLead(
+  leadSessionId: string,
+  workspace: {
+    getSessions: () => Session[];
+    saveSession: (session: Session) => Promise<boolean>;
+  },
+): Promise<void> {
+  const lead = workspace
+    .getSessions()
+    .find((session) => session.id === leadSessionId);
+  if (!lead) throw new Error("The lead session is not open");
+  if (!(await workspace.saveSession(lead)))
+    throw new Error("The lead session could not be saved");
 }

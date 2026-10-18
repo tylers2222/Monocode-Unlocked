@@ -58,7 +58,7 @@ import type { OrchestrationSummary } from "../../orchestration/model/orchestrati
 export type SessionSummary = {
   sidebarHidden?: boolean;
   orchestrationLeadId?: string;
-  /** Change E level link, not the orchestration link (design 13.2). */
+  /** The session whose `sessions.start` made this one; written on insert only. */
   leadSessionId?: string;
   orchestration?: OrchestrationSummary;
   id: string;
@@ -87,7 +87,7 @@ type SessionRecord = {
   sidebarHidden?: boolean;
   monoTranscript?: Session["monoTranscript"];
   orchestrationLeadId?: string;
-  leadSessionId?: string | null;
+  leadSessionId?: string;
   id: string;
   cwd: string;
   harness: string;
@@ -1458,11 +1458,10 @@ function normalizeSummary(summary: SessionSummary): SessionSummary {
     draft: summary.draft || undefined,
     sidebarHidden: summary.sidebarHidden === true || undefined,
     linkedWorkItem,
-    leadSessionId:
-      typeof summary.leadSessionId === "string" &&
-      isPersistableId(summary.leadSessionId)
-        ? summary.leadSessionId
-        : undefined,
+    ...(typeof summary.leadSessionId === "string" &&
+    isPersistableId(summary.leadSessionId)
+      ? { leadSessionId: summary.leadSessionId }
+      : {}),
     ...(typeof summary.automationId === "string" &&
     isPersistableId(summary.automationId)
       ? { automationId: summary.automationId }
