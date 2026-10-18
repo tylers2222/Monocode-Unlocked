@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ControlOutcome } from "../../features/orchestration/model/orchestration";
-import { appendPreparingHandoff } from "../../features/sessions/model/handoff";
+import {
+  appendPreparingHandoff,
+  pendingComposerSwitch,
+} from "../../features/sessions/model/handoff";
 import {
   busyRoute,
   planUserSend,
@@ -137,6 +140,27 @@ describe("steerBlockReason", () => {
     const handingOff = appendPreparingHandoff(busySession(), "claude", "codex");
     expect(steerBlockReason(switching, prompt)).toMatch(/switching providers/);
     expect(steerBlockReason(handingOff, prompt)).toMatch(/switching providers/);
+  });
+
+  // PR I6 review r4 n1, decision 657. Defect: the CLI refuses a steer
+  // while a switch left on the session names its own harness and account,
+  // where App's send steers it (`pendingComposerSwitch` is null).
+  it("lets a steer through a switch from the session's own harness and account", () => {
+    const stale: Session = {
+      ...busySession(),
+      providerAccountId: "work",
+      pendingSwitch: {
+        from: "codex",
+        fromModel: "gpt-5",
+        fromSettings: {},
+        fromProviderAccountId: "work",
+      },
+    };
+    expect(pendingComposerSwitch(stale)).toBeNull();
+    expect(steerBlockReason(stale, prompt)).toBeUndefined();
+    expect(
+      steerBlockReason({ ...stale, providerAccountId: "home" }, prompt),
+    ).toMatch(/switching providers/);
   });
 
   it("blocks an /operator prompt, which starts its own turn", () => {

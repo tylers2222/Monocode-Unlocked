@@ -319,10 +319,14 @@ describe("queuedMessageForSubmit", () => {
     ).toBeUndefined();
   });
 
-  it("lets Steer target any remaining row, including while busy or paused", () => {
-    expect(queuedMessageForSubmit(chat({ busy: true }), "b", "steer")?.id).toBe(
-      "b",
-    );
+  it("lets Steer target any remaining row, including while a turn runs or the queue is paused", () => {
+    expect(
+      queuedMessageForSubmit(
+        chat({ busy: true, turnReadiness: "ready" }),
+        "b",
+        "steer",
+      )?.id,
+    ).toBe("b");
     expect(
       queuedMessageForSubmit(chat({ queueStatus: "paused" }), "a", "steer")?.id,
     ).toBe("a");

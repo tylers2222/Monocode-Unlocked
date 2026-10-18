@@ -11,6 +11,7 @@ import {
   type MessageLink,
   type QueuedMessage,
   type Session,
+  type TurnIntent,
   type TargetLink,
 } from "./session";
 import { isOwnQueuedMessage, type RunningTurns } from "./messageQueue";
@@ -281,9 +282,30 @@ type Queued = {
   kind: "queue";
   item: Pick<QueuedMessage, "link" | "waitForIdle" | "typedInTurn">;
 };
+/**
+ * The queued item this send delivers would only be queued again (PR I6
+ * review r3 m2, n4): it keeps its place and nothing is sent, so its text is
+ * never queued twice.
+ */
+type Stays = { kind: "stays" };
+
+/**
+ * What Steer on a queued row that `stays` tells the user (PR I6 review r4
+ * n3): why the row keeps its place, as Steer on an `/operator` row says.
+ */
+export function stayNotice(
+  session: Pick<Session, "worktreePreparing">,
+  intent: TurnIntent,
+): string {
+  if (intent === "plan")
+    return "/plan starts a new turn after the current turn finishes.";
+  if (session.worktreePreparing)
+    return "The worktree is still being prepared, so this message is sent after the current turn finishes.";
+  return "Nothing can be steered right now, so this message is sent once the session is idle.";
+}
 
 /** Where a user's message goes (design 16.8, 16.12.4). */
-export type UserSend = TargetGone | Sent | Queued;
+export type UserSend = TargetGone | Sent | Queued | Stays;
 
 type PlanInput<R extends SendRoute> = {
   origin: SendOrigin | undefined;
@@ -299,6 +321,11 @@ export function planUserSend(
 ): TargetGone | (Sent & { kind: "open" });
 export function planUserSend(input: PlanInput<SendRoute>): UserSend;
 export function planUserSend(input: PlanInput<SendRoute>): UserSend {
+  const plan = planSend(input);
+  return plan.kind === "queue" && input.item ? { kind: "stays" } : plan;
+}
+
+function planSend(input: PlanInput<SendRoute>): TargetGone | Sent | Queued {
   const { origin, route } = input;
   const own = isOwnText(origin, input.item);
   const link = own ? (origin?.link ?? input.item?.link) : undefined;
@@ -333,5 +360,8 @@ export function planUserSend(input: PlanInput<SendRoute>): UserSend {
     };
   if (route.steers === "no") return { kind: "queue", item: {} };
   if (route.steers === "later") return { kind: "queue", item: later };
+  // Busy with no turn to join, as during a manual compaction: a steer would
+  // reach no turn, so the text waits for the session to go idle.
+  if (!route.running) return { kind: "queue", item: { waitForIdle: true } };
   return sent("join", route.running, own ? WHOLE_TURN : undefined);
 }

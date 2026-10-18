@@ -124,7 +124,7 @@ export function sessionChildHarnesses(session: Session): HarnessId[] {
 
 /** Account switches also retire the old thread, even within one provider. */
 export function pendingComposerSwitch(
-  session: Session,
+  session: Pick<Session, "pendingSwitch" | "harness" | "providerAccountId">,
 ): PendingHarnessSwitch | null {
   const pending = session.pendingSwitch;
   return pending &&
@@ -153,11 +153,25 @@ export function lastHandoffBlock(blocks: Block[]): Block | undefined {
   return undefined;
 }
 
-export function isPreparingHandoff(session: Session): boolean {
+export function isPreparingHandoff(session: Pick<Session, "blocks">): boolean {
   return session.blocks.some(
     (block) =>
       block.role === "handoff" && block.handoff?.status === "preparing",
   );
+}
+
+/**
+ * The session is switching providers: a switch is armed, or the outgoing
+ * agent is writing its hand-off brief. Nothing steers its running turn then.
+ * App's send cancels the turn and opens a hand-off turn on the new provider
+ * (armed switch), or refuses the text (brief in preparation); the CLI refuses
+ * a steer; the composer offers none.
+ */
+export function switchingProviders(
+  session: Parameters<typeof pendingComposerSwitch>[0] &
+    Parameters<typeof isPreparingHandoff>[0],
+): boolean {
+  return !!pendingComposerSwitch(session) || isPreparingHandoff(session);
 }
 
 export function pendingHandoff(session: Session): {
