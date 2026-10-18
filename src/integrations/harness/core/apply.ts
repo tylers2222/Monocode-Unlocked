@@ -1,11 +1,12 @@
-import type {
-  AgentRunMeta,
-  AgentStep,
-  Attachment,
-  Block,
-  Session,
-  TaskListItem,
-  ToolPreview,
+import {
+  turnOpener,
+  type AgentRunMeta,
+  type AgentStep,
+  type Attachment,
+  type Block,
+  type Session,
+  type TaskListItem,
+  type ToolPreview,
 } from "../../../features/sessions/model/session";
 import { mergeContextUsage } from "../../../features/sessions/model/contextUsage";
 import { displayPath } from "../../../shared/lib/paths";
@@ -744,25 +745,12 @@ function stopBlockProgress(block: Block): Block {
 }
 
 function stampTurnDuration(blocks: Block[], endedAt: number): Block[] {
-  let lastUser = -1;
-  for (let i = blocks.length - 1; i >= 0; i--) {
-    const block = blocks[i];
-    // A message sent mid-turn joined it; the turn is timed from its start.
-    if (block.role === "user" && block.sentAt != null) continue;
-    if (block.role === "user") {
-      lastUser = i;
-      break;
-    }
-  }
-  if (lastUser < 0) return blocks;
-  const user = blocks[lastUser];
-  if (user.durationMs != null || user.startedAt == null) return blocks;
-  const next = blocks.slice();
-  next[lastUser] = {
-    ...user,
-    durationMs: Math.max(0, endedAt - user.startedAt),
-  };
-  return next;
+  const opener = turnOpener(blocks);
+  if (opener?.startedAt == null || opener.durationMs != null) return blocks;
+  const durationMs = Math.max(0, endedAt - opener.startedAt);
+  return blocks.map((block) =>
+    block === opener ? { ...opener, durationMs } : block,
+  );
 }
 
 /** Status pings repeat; keep one row per run instead of stacking identical lines. */
