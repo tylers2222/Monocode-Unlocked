@@ -122,6 +122,7 @@ const HANDLERS: Record<string, Handler> = {
   "plugin:app|version": () => "0.0.0-test",
   "plugin:app|bundle_type": none,
   "plugin:updater|check": none,
+  "plugin:window|is_maximized": () => false,
 };
 
 const DEFAULT_STORE: FakeStore = {
