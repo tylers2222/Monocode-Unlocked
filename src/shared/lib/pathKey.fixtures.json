@@ -18,5 +18,6 @@
   ["c:\\Users\\X", "c:/users/x"],
   ["C:", "c:"],
   ["//server/Share/", "//server/share"],
+  ["//server\\Share", "//server/share"],
   ["\\\\server\\Share", "//server/share"]
 ]

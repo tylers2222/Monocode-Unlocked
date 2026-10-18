@@ -135,6 +135,10 @@ function fixture(
     monos: {
       list: vi.fn(),
       read: vi.fn(),
+      get: vi.fn(async (monoId: string) => {
+        const mono = findMono(monoId);
+        return mono && { mono };
+      }),
       send: vi.fn(),
       create: vi.fn((settings) =>
         createMonoWithChat(settings, {
@@ -373,9 +377,12 @@ it("refuses a name the database would refuse, before changing anything", async (
   expect(findMono(shroom.id)!.name).toBe(longest);
 });
 
-// Design 6.1. Defect: TS sets the list but drops it when it reads the roster
-// back, so the next change cannot clear it and a reload hides it.
-it("keeps the messageAllowlist that monos.update set, then cleared, after a reload", async () => {
+// Design 6.1 and review r1 m1, n4, n5. Defect: TS sets the list but drops it
+// when it reads the roster back, so the next change cannot clear it and a
+// reload hides it; monos.get hides it, so a Giga that adds one id drops the
+// rest; a repeat is stored twice; a stored entry that is no Mono id is read;
+// or a reader's copy shares the roster's array.
+it("keeps, shows and clears the messageAllowlist that monos.update set, across reloads", async () => {
   const reload = async () => {
     await monoWritesSettled();
     __monosTestReset();
@@ -384,8 +391,19 @@ it("keeps the messageAllowlist that monos.update set, then cleared, after a relo
   await loadMonoRoster();
   const { run, boss, shroom } = fixture();
   await expect(
-    run("monos.update", { monoId: shroom.id, messageAllowlist: [boss.id] }),
+    run("monos.update", {
+      monoId: shroom.id,
+      messageAllowlist: [boss.id, boss.id],
+    }),
   ).resolves.toMatchObject({ monoId: shroom.id, messageAllowlist: [boss.id] });
+  await reload();
+  expect(findMono(shroom.id)!.messageAllowlist).toEqual([boss.id]);
+  await expect(run("monos.get", { monoId: shroom.id })).resolves.toMatchObject({
+    messageAllowlist: [boss.id],
+  });
+  findMono(shroom.id)!.messageAllowlist!.push("mono-x");
+  expect(findMono(shroom.id)!.messageAllowlist).toEqual([boss.id]);
+  db.rows.get(shroom.id)!.data.messageAllowlist = [boss.id, "not a mono id", 7];
   await reload();
   expect(findMono(shroom.id)!.messageAllowlist).toEqual([boss.id]);
   await expect(

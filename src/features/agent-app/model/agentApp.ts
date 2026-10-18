@@ -180,10 +180,14 @@ export type AppMonoListing = {
   self: boolean;
 };
 
-/** monos.get: the listing plus what its chat runs on, null until it has one. */
+/**
+ * monos.get: the listing, what its chat runs on (null until it has one) and
+ * its allowlist, which monos.update replaces as a whole.
+ */
 export type AppMonoDetails = AppMonoListing & {
   harness: HarnessId | null;
   model: string | null;
+  messageAllowlist: string[];
 };
 
 /** A Mono as the host knows it: its record and, when loaded, its chat. */
@@ -1133,6 +1137,7 @@ async function handleMonos(
         ...monoListing(entry, mono.id),
         harness: entry.chat?.harness ?? null,
         model: entry.chat?.model ?? null,
+        messageAllowlist: entry.mono.messageAllowlist ?? [],
       } satisfies AppMonoDetails;
     }
     case "monos.read": {

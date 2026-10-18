@@ -4796,18 +4796,20 @@ pub(crate) mod tests {
         ));
     }
 
-    // Design 6.1 "shares project". Defect: Monos' projects are compared as
-    // written, so two Monos on one folder written two ways cannot talk.
+    // Design 6.1 "shares project", review r1 n3. Defect: Monos' projects are
+    // compared as written, so two Monos on one folder written two ways cannot
+    // talk; or an empty project keys to "/", so two Monos that each hold ""
+    // share it.
     #[test]
     fn s8_compares_the_projects_of_two_monos_by_path_key() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         conn.execute_batch(
-            r#"UPDATE monos SET data_json = '{"sessionId":"a-chat","projects":["/w/app/"]}'
+            r#"UPDATE monos SET data_json = '{"sessionId":"a-chat","projects":["/w/app/",""]}'
                 WHERE id = 'mono-a';
                INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
                VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat","projects":["/w/app"]}', 2, 1, 1),
-                      ('mono-c', 'C', 'mono', '{"sessionId":"c-chat","projects":["/w/other"]}', 3, 1, 1);
+                      ('mono-c', 'C', 'mono', '{"sessionId":"c-chat","projects":["/w/other",""]}', 3, 1, 1);
                INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
                VALUES ('b-chat', '/', 'codex', 'm', 'default', 'B', 1, 1),
                       ('c-chat', '/', 'codex', 'm', 'default', 'C', 1, 1);"#,
