@@ -1391,14 +1391,15 @@ function milestoneStatus(value: unknown): MilestoneStatus {
   return value as MilestoneStatus;
 }
 
+/** "" and null both mean Later; the reply and the row hold null. */
 function milestoneTarget(value: unknown): string | null {
-  if (value === null) return null;
+  if (value === null || value === "") return null;
   const day =
     typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
       ? new Date(`${value}T00:00:00Z`)
       : undefined;
   if (!day || Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== value)
-    throw new Error("target must be a real YYYY-MM-DD date, or null for later");
+    throw new Error('target must be a real YYYY-MM-DD date, or "" or null for later');
   return value;
 }
 
