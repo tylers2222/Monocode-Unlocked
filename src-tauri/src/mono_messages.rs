@@ -19,9 +19,10 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use crate::control::ControlHost;
 use crate::mono_gate::{
-    self, Access, Caller, CallerFacts, CallerKind, CallerMono, Closure, Decision, Facts,
-    HandleState, Handled, Input, Level, MessageRef, OpenHandle, PairCount, Recipient, Referenced,
-    Refusal, ReplyFacts, Route, SendFacts, SessionLevel, Speaker, Target, TargetSession,
+    self, Access, ActionDecision, ActionFacts, Caller, CallerFacts, CallerKind, CallerMono,
+    Closure, Decision, Facts, HandleState, Handled, Input, Level, MessageRef, OpenHandle,
+    PairCount, Recipient, Referenced, Refusal, ReplyFacts, Route, SendFacts, SessionLevel, Speaker,
+    Target, TargetSession,
 };
 use crate::mono_roster::{validate_mono_id, MonoRole};
 use crate::session_store::{validate_id, SessionStore};
@@ -275,6 +276,11 @@ macro_rules! text_enum {
 text_enum!(Tool {
     SendMessage = "send_message",
     Reply = "reply",
+    // Design 16.2: a level refusal of a `sessions.start` (A3).
+    StartSession = "start_session",
+    // Design 6.6: a refused app action other than `messages.*`; rejected
+    // rows only.
+    AppAction = "app_action",
 });
 text_enum!(
     /// The intent a call asked for. A rejected row keeps it as asked.
@@ -426,6 +432,7 @@ text_enum!(RejectCode {
     UnknownHandle = "unknown_handle",
     HandleClosed = "handle_closed",
     AmbiguousReply = "ambiguous_reply",
+    WorkerCannotSpawn = "worker_cannot_spawn",
     WorkerScope = "worker_scope",
     SteerViaLead = "steer_via_lead",
     SessionCannotWait = "session_cannot_wait",
@@ -519,6 +526,17 @@ impl Body {
         Body {
             text: full.chars().take(Self::MAX_CHARS).collect(),
             chars: u32::try_from(full.chars().count()).unwrap_or(u32::MAX),
+        }
+    }
+
+    /// The first 8000 code points of `full`, counted as stored: the body of a
+    /// `start_session` or `app_action` row (design 13.5). A start prompt can
+    /// be far longer, and the CHECK ties a longer length to `too_large`.
+    pub fn stored(full: &str) -> Self {
+        let text: String = full.chars().take(Self::MAX_CHARS).collect();
+        Body {
+            chars: u32::try_from(text.chars().count()).unwrap_or(u32::MAX),
+            text,
         }
     }
 
@@ -881,6 +899,9 @@ impl<'a> StatusColumns<'a> {
     }
 }
 
+/// `from_mono_id` goes through `monos` (design 6.6): a refusal written while
+/// the caller's row is gone stores NULL, as the Mono's delete leaves its
+/// rows, instead of failing the foreign key.
 pub fn insert(conn: &Connection, message: &MonoMessage) -> rusqlite::Result<()> {
     let columns = StatusColumns::of(&message.status);
     let intent = message.status.intent_columns();
@@ -896,8 +917,9 @@ pub fn insert(conn: &Connection, message: &MonoMessage) -> rusqlite::Result<()> 
            intent, reply_to, scope, scope_turn_id, hop, status, gate_result, handled_by_session,
            delivery, turn_id, slot_window, handle, delivered_at, closed_at, notified_at,
            created_at, updated_at, pin_turn_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                   ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?29, ?30)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, (SELECT id FROM monos WHERE id = ?6), ?7, ?8, ?9,
+                   ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
+                   ?24, ?25, ?26, ?27, ?28, ?29, ?29, ?30)",
         params![
             message.id.as_str(),
             message.request_id.as_str(),
@@ -1105,6 +1127,12 @@ fn parse_row(row: &Row) -> rusqlite::Result<MonoMessage> {
         (None, None) => None,
         (Some(_), Some(_)) => return Err(invalid("to_session_id")),
     };
+    let tool = required(text("tool")?.as_deref().and_then(Tool::parse), "tool")?;
+    // Design 1.4 (levels review r1): an app action is only ever refused, so
+    // no accepted variant holds one.
+    if tool == Tool::AppAction && !matches!(status, Status::Rejected { .. }) {
+        return Err(invalid("tool"));
+    }
     Ok(MonoMessage {
         id: required(parsed(row, "id", MessageId::parse)?, "id")?,
         request_id: required(parsed(row, "request_id", RequestId::parse)?, "request_id")?,
@@ -1113,7 +1141,7 @@ fn parse_row(row: &Row) -> rusqlite::Result<MonoMessage> {
             parsed(row, "payload_hash", PayloadHash::parse)?,
             "payload_hash",
         )?,
-        tool: required(text("tool")?.as_deref().and_then(Tool::parse), "tool")?,
+        tool,
         from_mono_id: parsed(row, "from_mono_id", MonoId::parse)?,
         from_session_id: required(
             parsed(row, "from_session_id", SessionId::parse)?,
@@ -1264,17 +1292,24 @@ pub enum Submitted {
     },
 }
 
-fn refused(code: Refusal, hint: String) -> Submitted {
-    Submitted::Failed {
-        error: ToolError {
-            code: code.as_str(),
-            hint,
-            message_id: None,
-            open_handles: None,
-            duplicate: false,
-        },
+/// A failure that writes no row.
+fn refusal(code: Refusal, hint: String) -> ToolError {
+    ToolError {
+        code: code.as_str(),
+        hint,
+        message_id: None,
+        open_handles: None,
+        duplicate: false,
     }
 }
+
+fn refused(code: Refusal, hint: String) -> Submitted {
+    Submitted::Failed {
+        error: refusal(code, hint),
+    }
+}
+
+const REQUEST_ID_RULE: &str = "A request id has 1 to 128 letters, digits, - and _.";
 
 /// Where a new accept goes: the gate's route, which `delivery` does not hold
 /// until a hand-off writes it (design 1.2 review r2).
@@ -1478,6 +1513,18 @@ fn session_ended(conn: &Connection, session: &SessionId) -> rusqlite::Result<boo
         .is_some())
 }
 
+/// Design 7 (PR 6 review r1 m1): a call that a clear of its session
+/// overtook. It writes nothing, as the session can never be told.
+fn caller_ended() -> ToolError {
+    ToolError {
+        code: "unknown_token",
+        hint: crate::control::UNKNOWN_TOKEN.to_string(),
+        message_id: None,
+        open_handles: None,
+        duplicate: false,
+    }
+}
+
 fn target(conn: &Connection, session: SessionId, live: &Live) -> rusqlite::Result<Target> {
     let listed = live
         .sessions
@@ -1665,13 +1712,7 @@ pub fn submit(
     // committed. A row written now would never be dropped.
     if session_ended(&tx, &caller.session_id)? {
         return Ok(Submitted::Failed {
-            error: ToolError {
-                code: "unknown_token",
-                hint: crate::control::UNKNOWN_TOKEN.to_string(),
-                message_id: None,
-                open_handles: None,
-                duplicate: false,
-            },
+            error: caller_ended(),
         });
     }
     // Design 5.4 (2): a call bound to the turn shows that its provider runs
@@ -2714,6 +2755,129 @@ pub fn drop_message(
     Ok((answer, notices))
 }
 
+/// What `mono_app_action_check` answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum ActionChecked {
+    /// The action runs. A start writes `lead_session_id` on the new session
+    /// (design 13.3).
+    #[serde(rename_all = "camelCase")]
+    Allowed {
+        lead_session_id: Option<SessionId>,
+    },
+    Failed {
+        error: ToolError,
+    },
+}
+
+/// `input.prompt`, or `''` for an action without one.
+fn prompt_of(input: &Value) -> &str {
+    input.get("prompt").and_then(Value::as_str).unwrap_or("")
+}
+
+/// Design 6.6: the A rows for one app action of `caller`, and the one
+/// rejected row they may write, in one `BEGIN IMMEDIATE` transaction, as
+/// `submit` does. `target` is the session id the action names; `target_copy`
+/// is the web app's `leadSessionId` of that session.
+#[allow(clippy::too_many_arguments)]
+pub fn check_action(
+    conn: &Connection,
+    caller: &Caller,
+    action: &str,
+    target: Option<&str>,
+    target_copy: Option<SessionId>,
+    request_id: &RequestId,
+    input: &Value,
+    now: i64,
+) -> rusqlite::Result<ActionChecked> {
+    // PR 7 review r1 B1: a target that is no session id is refused. Read as
+    // no target, it would skip A5 while the action ran on another reading.
+    let target_id = match target.map(|text| SessionId::parse(text).ok_or(text)) {
+        None => None,
+        Some(Ok(target)) => Some(target),
+        Some(Err(text)) => {
+            return Ok(ActionChecked::Failed {
+                error: refusal(
+                    Refusal::InvalidInput,
+                    format!("sessionId {text:?} is not a session id."),
+                ),
+            })
+        }
+    };
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    if session_ended(&tx, &caller.session_id)? {
+        return Ok(ActionChecked::Failed {
+            error: caller_ended(),
+        });
+    }
+    let facts = ActionFacts {
+        caller_level: match &caller.speaker {
+            Speaker::Mono { .. } => None,
+            Speaker::Session {
+                lead_session_id, ..
+            } => Some(session_level(
+                &tx,
+                &caller.session_id,
+                lead_session_id.clone(),
+            )?),
+        },
+        target_level: target_id
+            .as_ref()
+            .map(|target| session_level(&tx, target, target_copy))
+            .transpose()?,
+    };
+    let checked = match mono_gate::decide_action(caller, action, &facts) {
+        ActionDecision::Allow { lead_session_id } => ActionChecked::Allowed { lead_session_id },
+        ActionDecision::Reject { code, hint, tool } => {
+            // Design 13.5: only an A5 row names its target session and keeps
+            // the prompt the steer would have carried.
+            let steer = code == RejectCode::SteerViaLead;
+            let row = MonoMessage {
+                id: new_message_id(),
+                request_id: request_id.clone(),
+                part: Part::FIRST,
+                payload_hash: mono_gate::action_hash(action, input),
+                tool,
+                from_mono_id: caller.mono_id().cloned(),
+                from_session_id: caller.session_id.clone(),
+                to: target_id
+                    .filter(|_| steer)
+                    .map(|session_id| Party::Session { session_id }),
+                addressed: match target {
+                    Some(target) => format!("{action} {target}"),
+                    None => action.into(),
+                },
+                body: Body::stored(if steer || tool == Tool::StartSession {
+                    prompt_of(input)
+                } else {
+                    ""
+                }),
+                hop: 0,
+                created_at: now,
+                status: Status::Rejected {
+                    gate_result: code,
+                    wanting_reply: false,
+                    intent: IntentKind::New,
+                    reply_to: None,
+                    scope: None,
+                },
+            };
+            insert(&tx, &row)?;
+            ActionChecked::Failed {
+                error: ToolError {
+                    code: code.as_str(),
+                    hint,
+                    message_id: Some(row.id),
+                    open_handles: None,
+                    duplicate: false,
+                },
+            }
+        }
+    };
+    tx.commit()?;
+    Ok(checked)
+}
+
 pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2850,10 +3014,7 @@ pub fn mono_message_submit(
     let caller = caller.parse()?;
     let tool = Tool::parse(&tool).ok_or("Unknown messaging tool")?;
     let Some(request_id) = RequestId::parse(&request_id) else {
-        return Ok(refused(
-            Refusal::InvalidInput,
-            "A request id has 1 to 128 letters, digits, - and _.".into(),
-        ));
+        return Ok(refused(Refusal::InvalidInput, REQUEST_ID_RULE.into()));
     };
     let (mut submitted, notices) = submit_and_recheck(
         &store,
@@ -3023,6 +3184,40 @@ pub fn mono_message_get(
     let caller = caller.parse()?;
     let conn = store.lock_conn()?;
     get_message(&conn, &caller, mono_gate::parse_get(&input)).map_err(|error| error.to_string())
+}
+
+#[tauri::command(async)]
+pub fn mono_app_action_check(
+    store: State<'_, SessionStore>,
+    caller: CallerArg,
+    action: String,
+    target: Option<String>,
+    target_lead_session_id: Option<String>,
+    request_id: String,
+    input: Value,
+) -> Result<ActionChecked, String> {
+    let caller = caller.parse()?;
+    let target_copy = target_lead_session_id
+        .as_deref()
+        .map(|lead| SessionId::parse(lead).ok_or("Invalid targetLeadSessionId"))
+        .transpose()?;
+    let Some(request_id) = RequestId::parse(&request_id) else {
+        return Ok(ActionChecked::Failed {
+            error: refusal(Refusal::InvalidInput, REQUEST_ID_RULE.into()),
+        });
+    };
+    let conn = store.lock_conn()?;
+    check_action(
+        &conn,
+        &caller,
+        &action,
+        target.as_deref(),
+        target_copy,
+        &request_id,
+        &input,
+        now_ms(),
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -8769,5 +8964,344 @@ pub(crate) mod tests {
             .code,
             "rate_limited"
         );
+    }
+
+    fn start_input(prompt: &str) -> serde_json::Value {
+        serde_json::json!({"prompt": prompt, "harness": "codex", "model": "codex:gpt-5"})
+    }
+
+    /// Asserts each `(column, value)` of row `id`.
+    fn assert_columns(conn: &Connection, id: &MessageId, expected: &[(&str, Sql)]) {
+        for (column, value) in expected {
+            let stored: Sql = conn
+                .query_row(
+                    &format!("SELECT {column} FROM mono_messages WHERE id = ?1"),
+                    [id.as_str()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(&stored, value, "{column}");
+        }
+    }
+
+    fn failed_check(checked: ActionChecked) -> ToolError {
+        match checked {
+            ActionChecked::Failed { error } => error,
+            allowed => panic!("{allowed:?}"),
+        }
+    }
+
+    // Design 6.6 A3 and 13.5. Defect: a worker's start is refused without
+    // its row, or the row is not the `start_session` refusal of 13.5.
+    #[test]
+    fn a_workers_start_writes_one_worker_cannot_spawn_row() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let input = start_input("Spawn a helper");
+        let error = failed_check(
+            check_action(
+                &conn,
+                &session_caller("worker", "/p", None),
+                "sessions.start",
+                None,
+                None,
+                &RequestId::parse("spawn").unwrap(),
+                &input,
+                100,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            (error.code, error.duplicate),
+            ("worker_cannot_spawn", false)
+        );
+        assert_eq!(rows(&conn), 1);
+        let hash = mono_gate::action_hash("sessions.start", &input);
+        assert_columns(
+            &conn,
+            error.message_id.as_ref().expect("a row"),
+            &[
+                ("request_id", text("spawn")),
+                ("part", Sql::Integer(0)),
+                ("payload_hash", text(hash.as_str())),
+                ("tool", text("start_session")),
+                ("from_mono_id", Sql::Null),
+                ("from_session_id", text("worker")),
+                ("to_mono_id", Sql::Null),
+                ("to_session_id", Sql::Null),
+                ("addressed", text("sessions.start")),
+                ("body", text("Spawn a helper")),
+                ("body_chars", Sql::Integer(14)),
+                ("wanting_reply", Sql::Integer(0)),
+                ("intent", text("new")),
+                ("reply_to", Sql::Null),
+                ("hop", Sql::Integer(0)),
+                ("status", text("rejected")),
+                ("gate_result", text("worker_cannot_spawn")),
+                ("handled_by_session", Sql::Null),
+                ("delivery", Sql::Null),
+            ],
+        );
+    }
+
+    // Design 6.6 (levels review r1). Defect: the A5 refusal of a Mono that
+    // the roster lost fails the foreign key instead of writing its row.
+    #[test]
+    fn a_steer_via_lead_refusal_of_a_mono_whose_row_is_gone_has_no_mono() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        conn.execute("DELETE FROM monos WHERE id = 'mono-a'", [])
+            .unwrap();
+        let error = failed_check(
+            check_action(
+                &conn,
+                &caller_in("mono-a", "a-chat"),
+                "sessions.send",
+                Some("worker"),
+                None,
+                &RequestId::parse("nudge").unwrap(),
+                &serde_json::json!({"sessionId": "worker", "prompt": "Stop"}),
+                100,
+            )
+            .unwrap(),
+        );
+        assert_eq!(error.code, "steer_via_lead");
+        assert_columns(
+            &conn,
+            error.message_id.as_ref().expect("a row"),
+            &[
+                ("tool", text("app_action")),
+                ("from_mono_id", Sql::Null),
+                ("from_session_id", text("a-chat")),
+                ("to_session_id", text("worker")),
+                ("addressed", text("sessions.send worker")),
+                ("body", text("Stop")),
+                ("gate_result", text("steer_via_lead")),
+            ],
+        );
+    }
+
+    // Design 1.4 (levels review r1): an app action is only ever refused, and
+    // a refused start row reads back as written. The CHECKs keep an accepted
+    // app_action row out, so they are off for it. Defect: `parse_row` reads
+    // an accepted app_action row.
+    #[test]
+    fn an_app_action_row_parses_only_as_rejected() {
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        let refused = |letter, tool, gate_result, addressed: &str, body| MonoMessage {
+            tool,
+            from_mono_id: None,
+            from_session_id: session("worker"),
+            to: None,
+            addressed: addressed.into(),
+            body: Body::stored(body),
+            ..message(
+                letter,
+                Status::Rejected {
+                    gate_result,
+                    wanting_reply: false,
+                    intent: IntentKind::New,
+                    reply_to: None,
+                    scope: None,
+                },
+            )
+        };
+        for row in [
+            refused(
+                'a',
+                Tool::AppAction,
+                RejectCode::WorkerScope,
+                "notes.list",
+                "",
+            ),
+            refused(
+                'b',
+                Tool::StartSession,
+                RejectCode::WorkerCannotSpawn,
+                "sessions.start",
+                "Spawn",
+            ),
+        ] {
+            insert(&conn, &row).unwrap();
+            assert_eq!(get(&conn, &row.id).unwrap(), Some(row));
+        }
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+            .unwrap();
+        raw_insert(
+            &conn,
+            &with(
+                row("delivered"),
+                &[
+                    ("id", text(id('c').as_str())),
+                    ("request_id", text("req-c")),
+                    ("tool", text("app_action")),
+                ],
+            ),
+        )
+        .unwrap();
+        let error = get(&conn, &id('c')).unwrap_err().to_string();
+        assert!(error.contains("invalid mono_messages.tool"), "{error}");
+    }
+
+    /// A habit run of `mono-a` in session `a-run`, and an /operator `lead`.
+    fn run_and_operator_lead() -> [Caller; 2] {
+        [
+            Caller {
+                speaker: Speaker::Mono {
+                    kind: CallerKind::HabitRun,
+                    mono_id: mono("mono-a"),
+                },
+                session_id: session("a-run"),
+                turn_id: "turn-1".into(),
+            },
+            Caller {
+                speaker: Speaker::Session {
+                    access: Access::Operator,
+                    cwd: "/p".into(),
+                    lead_session_id: None,
+                },
+                session_id: session("lead"),
+                turn_id: "turn-1".into(),
+            },
+        ]
+    }
+
+    // Design 6.6 A5, PR 7 review r1 B1. Defect: a target that does not parse
+    // reads as "no target", so A5 never runs for " worker" while the action
+    // trims it and reaches the worker.
+    #[test]
+    fn check_action_refuses_a_target_that_is_no_session_id_and_writes_nothing() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let [run, operator_lead] = run_and_operator_lead();
+        let input = serde_json::json!({"sessionId": " worker", "prompt": "Rebase first"});
+        for caller in [caller_in("mono-a", "a-chat"), run, operator_lead] {
+            for target in [" worker", "worker\n", ""] {
+                let error = failed_check(
+                    check_action(
+                        &conn,
+                        &caller,
+                        "sessions.send",
+                        Some(target),
+                        None,
+                        &RequestId::parse("send").unwrap(),
+                        &input,
+                        100,
+                    )
+                    .unwrap(),
+                );
+                assert_eq!(
+                    error.code, "invalid_input",
+                    "{:?} {target:?}",
+                    caller.session_id
+                );
+            }
+        }
+        assert_eq!(rows(&conn), 0);
+    }
+
+    // Design 7, PR 7 review r1 m2. Defect: an app action of a caller whose
+    // session a clear ended still runs its A rows, so an archived lead's
+    // in-flight start makes a worker of it, and a cleared Mono chat's A5
+    // send writes a rejected row (review r2 m8).
+    #[test]
+    fn app_calls_of_a_caller_a_clear_ended_are_unknown_token_and_write_nothing() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let lead = session_caller("lead", "/p", None);
+        let mono = caller_in("mono-a", "a-chat");
+        clear(&conn, "lead", 200);
+        clear(&conn, "a-chat", 200);
+        let codes = [
+            check_action(
+                &conn,
+                &lead,
+                "sessions.start",
+                None,
+                None,
+                &RequestId::parse("start").unwrap(),
+                &start_input("Build"),
+                300,
+            ),
+            check_action(
+                &conn,
+                &mono,
+                "sessions.send",
+                Some("worker"),
+                None,
+                &RequestId::parse("send").unwrap(),
+                &serde_json::json!({"sessionId": "worker", "prompt": "Rebase first"}),
+                300,
+            ),
+        ]
+        .map(|checked| failed_check(checked.unwrap()).code);
+        assert_eq!(codes, ["unknown_token"; 2]);
+        assert_eq!(rows(&conn), 0);
+    }
+
+    // Design 13.5, PR 7 review r1 m12. Defect: an A3 row stores the whole
+    // prompt, so a prompt over 8000 code points fails the CHECK and the
+    // refusal is an SQLite error.
+    #[test]
+    fn a_workers_long_start_prompt_still_writes_its_refusal() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let error = failed_check(
+            check_action(
+                &conn,
+                &session_caller("worker", "/p", None),
+                "sessions.start",
+                None,
+                None,
+                &RequestId::parse("spawn").unwrap(),
+                &start_input(&"x".repeat(8001)),
+                100,
+            )
+            .unwrap(),
+        );
+        assert_eq!(error.code, "worker_cannot_spawn");
+    }
+
+    // PR7-5b review: `access` decides Operator rights. Defect: a session
+    // caller with no or an unknown `access` parses (as Operator or as
+    // Started), so it reaches `decide_action` and its lead's start makes a
+    // worker of it, though the web app never granted it app access.
+    #[test]
+    fn a_session_caller_with_no_or_an_unknown_access_gets_no_operator_right() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        for (case, access) in [("no access", None), ("unknown access", Some("admin"))] {
+            let mut arg = serde_json::json!({
+                "kind": "session", "sessionId": "lead", "turnId": "turn-1", "cwd": "/p"
+            });
+            if let Some(access) = access {
+                arg["access"] = serde_json::json!(access);
+            }
+            let checked = serde_json::from_value::<CallerArg>(arg)
+                .unwrap()
+                .parse()
+                .map(|caller| {
+                    check_action(
+                        &conn,
+                        &caller,
+                        "sessions.start",
+                        None,
+                        None,
+                        &RequestId::parse("spawn").unwrap(),
+                        &start_input("Build"),
+                        100,
+                    )
+                    .unwrap()
+                });
+            assert_eq!(checked, Err("Invalid caller access".into()), "{case}");
+        }
+        assert_eq!(rows(&conn), 0);
     }
 }
