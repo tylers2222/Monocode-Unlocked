@@ -4397,6 +4397,36 @@ pub(crate) mod tests {
         }
     }
 
+    // Defect: U+0000 in a body reaches the insert, whose length CHECK fails:
+    // the agent gets a raw SQLite error with no code, and a gate refusal of
+    // that body loses its rejected row.
+    #[test]
+    fn a_message_with_u0000_is_invalid_input_and_writes_nothing() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        ask_delivered(&conn, "ask", "turn-1");
+        let before = rows(&conn);
+        for (caller, tool, input) in [
+            (
+                caller_in("giga", "giga-chat"),
+                Tool::SendMessage,
+                serde_json::json!({
+                    "message": "Ship\u{0}it", "send_to": "mono-a", "wanting_reply": false, "intent": "new"
+                }),
+            ),
+            (
+                caller_in("mono-a", "a-chat"),
+                Tool::Reply,
+                serde_json::json!({"message": "Ye\u{0}s", "to": "#1"}),
+            ),
+        ] {
+            let error = failed(call(&conn, &caller, "nul", tool, input, &[]));
+            assert_eq!(error.code, "invalid_input");
+            assert!(error.hint.contains("U+0000"), "{}", error.hint);
+        }
+        assert_eq!(rows(&conn), before);
+    }
+
     #[test]
     fn the_same_request_twice_writes_one_row_and_answers_duplicate() {
         let store = messaging_store();
