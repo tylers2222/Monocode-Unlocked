@@ -856,34 +856,20 @@ fn mcp_tools() -> Vec<Value> {
 fn mcp_call(params: &Value, var: &impl Fn(&str) -> Option<String>) -> Result<Value, (i64, String)> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let tools = app_tools();
-    let tool = tools
+    let action = tools
         .as_array()
         .into_iter()
         .flatten()
         .find(|tool| tool["name"] == name)
+        .and_then(|tool| tool["action"].as_str())
         .ok_or_else(|| (-32602, format!("Unknown tool: {name}")))?;
-    let action = tool["action"].as_str().unwrap_or_default();
     let input = match params.get("arguments") {
         None | Some(Value::Null) => json!({}),
         Some(input @ Value::Object(_)) => input.clone(),
         Some(_) => return Err((-32602, "arguments must be an object".into())),
     };
-    // Clients need not enforce `additionalProperties: false`, so the server
-    // does, with the app's own refusal, before anything reaches the app.
-    let properties = &tool["inputSchema"]["properties"];
-    let unknown: Vec<&str> = input
-        .as_object()
-        .into_iter()
-        .flat_map(|object| object.keys())
-        .filter(|key| properties.get(key.as_str()).is_none())
-        .map(String::as_str)
-        .collect();
-    let value = if unknown.is_empty() {
-        call_app(action, &input, &uuid::Uuid::new_v4().to_string(), var)
-    } else {
-        let hint = format!("Unknown {action} fields: {}", unknown.join(", "));
-        json!({"ok": false, "code": "invalid_input", "hint": hint, "error": hint})
-    };
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let value = call_app(action, &input, &request_id, var);
     let ok = value.get("ok").and_then(Value::as_bool) == Some(true);
     Ok(json!({
         "content": [{"type": "text", "text": value.to_string()}],
@@ -1574,28 +1560,6 @@ mod tests {
             assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{tool}");
             assert!(tool.get("action").is_none(), "{tool}");
         }
-        // M-4. Defect: a milestone tool offers a field the app refuses, or
-        // offers createdBy or by, which would let a model pick the writer.
-        let fields = |tool: &Value| -> Vec<String> {
-            let mut keys: Vec<String> = tool["inputSchema"]["properties"]
-                .as_object()
-                .unwrap()
-                .keys()
-                .cloned()
-                .collect();
-            keys.sort();
-            keys
-        };
-        let expected: [&[&str]; 5] = [
-            &["project"],
-            &["note", "project", "status", "target", "title"],
-            &["id", "note", "project", "status", "target", "title"],
-            &["id", "project"],
-            &["ids", "project"],
-        ];
-        for (tool, expected) in tools[4..].iter().zip(expected) {
-            assert_eq!(fields(tool), expected, "{tool}");
-        }
         // PR I2. Defect: the schema still offers action_type, or a client
         // refuses continue and reply itself, so the gate never writes the
         // intent_not_allowed row an eval reads.
@@ -1665,63 +1629,97 @@ mod tests {
         assert_eq!(out[0]["result"]["structuredContent"], refused);
     }
 
-    // M-4. Defect: add_milestone reaches the app as another action, or
-    // without the input the model sent.
+    // M-4. Defect: a milestone tool calls another action (a remove that runs
+    // as a reorder, an update that adds a row), drops the model's input,
+    // offers a field the app refuses (createdBy or by would let a model pick
+    // the writer), requires the wrong fields, or cannot clear a date or set
+    // a status.
     #[test]
-    fn app_mcp_add_milestone_sends_milestones_add_with_its_input() {
-        let input = json!({"project": "app", "title": "Dark mode", "note": "Later", "status": "planned", "target": null});
-        let answer = json!({"ok": true, "result": {"id": "m1", "title": "Dark mode"}});
-        let (endpoint, app) = fake_app(vec![answer.clone()]);
-        let out = mcp(
-            Some(&endpoint),
-            &[rpc(
-                1,
-                "tools/call",
-                json!({"name": "add_milestone", "arguments": input}),
-            )],
-        );
+    fn app_mcp_milestone_tools_call_their_action_with_a_strict_schema() {
+        let cases = [
+            (
+                "list_milestones",
+                "milestones.list",
+                &["project"][..],
+                &[][..],
+                json!({"project": "app"}),
+            ),
+            (
+                "add_milestone",
+                "milestones.add",
+                &["note", "project", "status", "target", "title"][..],
+                &["title"][..],
+                json!({"title": "Dark mode", "note": "Later", "status": "planned", "target": null}),
+            ),
+            (
+                "update_milestone",
+                "milestones.update",
+                &["id", "note", "project", "status", "target", "title"][..],
+                &["id"][..],
+                json!({"id": "m1", "status": "done", "target": "2026-12-01"}),
+            ),
+            (
+                "remove_milestone",
+                "milestones.remove",
+                &["id", "project"][..],
+                &["id"][..],
+                json!({"id": "m1"}),
+            ),
+            (
+                "reorder_milestones",
+                "milestones.reorder",
+                &["ids", "project"][..],
+                &["ids"][..],
+                json!({"ids": ["m2", "m1"]}),
+            ),
+        ];
+        let listed = mcp(None, &[rpc(1, "tools/list", json!({}))]);
+        let tools = listed[0]["result"]["tools"].as_array().unwrap();
+        let schema = |name: &str| -> &Value {
+            &tools.iter().find(|tool| tool["name"] == name).unwrap()["inputSchema"]
+        };
+        for (name, _, fields, required, _) in &cases {
+            let schema = schema(name);
+            let mut keys: Vec<&str> = schema["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort();
+            assert_eq!(keys, *fields, "{name}");
+            let listed_required = schema.get("required").cloned().unwrap_or(json!([]));
+            assert_eq!(listed_required, json!(required), "{name}");
+        }
+        for name in ["add_milestone", "update_milestone"] {
+            let properties = &schema(name)["properties"];
+            assert_eq!(
+                properties["target"]["type"],
+                json!(["string", "null"]),
+                "{name}"
+            );
+            assert_eq!(
+                properties["status"]["enum"],
+                json!(["idea", "planned", "in_progress", "done"]),
+                "{name}"
+            );
+        }
+        let answer = json!({"ok": true, "result": {}});
+        let (endpoint, app) = fake_app(vec![answer.clone(); cases.len()]);
+        let calls: Vec<Value> = cases
+            .iter()
+            .zip(1..)
+            .map(|((name, _, _, _, input), id)| {
+                rpc(id, "tools/call", json!({"name": name, "arguments": input}))
+            })
+            .collect();
+        let out = mcp(Some(&endpoint), &calls);
         let requests = app.join().unwrap();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0]["action"], "milestones.add");
-        assert_eq!(requests[0]["input"], input);
-        assert_eq!(out[0]["result"]["structuredContent"], answer);
-        assert_eq!(out[0]["result"]["isError"], false);
-    }
-
-    // M-4. Defect: a client that ignores additionalProperties lets a model
-    // pick the writer (createdBy) or send a field the schema does not have.
-    #[test]
-    fn app_mcp_refuses_a_field_outside_the_tool_schema_without_calling_the_app() {
-        for (arguments, unknown) in [
-            (
-                json!({"title": "Dark mode", "createdBy": "user"}),
-                "createdBy",
-            ),
-            (
-                json!({"title": "Dark mode", "priority": "high"}),
-                "priority",
-            ),
-        ] {
-            let (endpoint, app) = fake_app(vec![json!({"ok": true, "result": {}})]);
-            let out = mcp(
-                Some(&endpoint),
-                &[rpc(
-                    1,
-                    "tools/call",
-                    json!({"name": "add_milestone", "arguments": arguments}),
-                )],
-            );
-            assert_eq!(
-                app.join().unwrap(),
-                Vec::<Value>::new(),
-                "{unknown} reached the app"
-            );
-            let hint = format!("Unknown milestones.add fields: {unknown}");
-            assert_eq!(
-                out[0]["result"]["structuredContent"],
-                json!({"ok": false, "code": "invalid_input", "hint": hint, "error": hint})
-            );
-            assert_eq!(out[0]["result"]["isError"], true);
+        assert_eq!(requests.len(), cases.len());
+        for (((name, action, _, _, input), request), out) in cases.iter().zip(&requests).zip(&out) {
+            assert_eq!(request["action"], *action, "{name}");
+            assert_eq!(request["input"], *input, "{name}");
+            assert_eq!(out["result"]["structuredContent"], answer, "{name}");
         }
     }
 
