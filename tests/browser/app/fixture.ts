@@ -1,4 +1,5 @@
 import { test as base, expect, type Page } from "@playwright/test";
+import type { HarnessId } from "../../../src/features/sessions/model/session";
 import type { BackendReport, FakeSeed, Handler } from "./backend";
 
 export { expect };
@@ -16,6 +17,12 @@ export type MountOptions = {
    * its arguments and page globals, not variables from the test.
    */
   handlers?: Record<string, Handler>;
+  /**
+   * Harnesses whose adapter the app sees with `canSteer: false`. No shipped
+   * adapter both reports a ready turn and refuses steers, so this is how a
+   * test reaches the app's own can-steer checks on a running turn.
+   */
+  cannotSteer?: HarnessId[];
 };
 
 export type AppShell = {
@@ -45,15 +52,16 @@ function handlerSource(command: string, handler: Handler) {
 async function mount(
   page: Page,
   seed: FakeSeed = {},
-  { platform = "macos", handlers = {} }: MountOptions = {},
+  { platform = "macos", handlers = {}, cannotSteer = [] }: MountOptions = {},
 ) {
   await page.addInitScript(
-    ({ seed, platform, handlers }) => {
+    ({ seed, platform, handlers, cannotSteer }) => {
       Object.defineProperty(Navigator.prototype, "platform", {
         configurable: true,
         get: () => platform,
       });
       window.appBackendSeed = seed;
+      window.appBackendCannotSteer = cannotSteer;
       window.appBackendHandlers = Object.fromEntries(
         Object.entries(handlers).map(([command, source]) => [
           command,
@@ -64,6 +72,7 @@ async function mount(
     {
       seed,
       platform: PLATFORMS[platform],
+      cannotSteer,
       handlers: Object.fromEntries(
         Object.entries(handlers).map(([command, handler]) => [
           command,

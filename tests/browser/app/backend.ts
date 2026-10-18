@@ -7,6 +7,10 @@ import {
 } from "../../../src/features/monos/model/mono";
 import { defaultSoul } from "../../../src/features/monos/model/monoFiles";
 import type { SessionSummary } from "../../../src/features/sessions/data/sessionStore";
+import type {
+  Block,
+  HarnessId,
+} from "../../../src/features/sessions/model/session";
 
 /** A Mono as Rust `MonoRow` sends it (src-tauri/src/mono_roster.rs:101-110). */
 export type MonoRow = {
@@ -43,7 +47,7 @@ export type SessionRow = SessionSummary &
 type SessionUpsert = SessionSummary & {
   modelSettings: Record<string, string>;
   providerAccountId?: string;
-  blocks: { role: string; draft?: boolean }[];
+  blocks: Block[];
   queuedMessages?: unknown[];
   queueStatus?: string;
   contextUsed?: number;
@@ -58,6 +62,13 @@ export type FakeStore = {
   projects: string[];
   sessions: SessionRow[];
   monos: MonoRow[];
+  /** mono_roster.rs `Roster.revision`: one more after each roster write. */
+  rosterRevision: number;
+  /**
+   * Each session's saved blocks: session_store.rs `blocks_json`, or
+   * mono_transcript.rs `mono_blocks` for a Mono's chat.
+   */
+  blocks: Record<string, Block[]>;
   automations: Automation[];
 };
 
@@ -94,6 +105,7 @@ declare global {
   interface Window {
     appBackendSeed?: FakeSeed;
     appBackendHandlers?: Record<string, Handler>;
+    appBackendCannotSteer?: HarnessId[];
     /** Exposed by the fixture, so reports outlive a reload. */
     appBackendReport: (report: BackendReport) => Promise<void>;
     appBackend?: AppBackend;
@@ -157,10 +169,7 @@ async function contentHash(text: string): Promise<string> {
   ).join("");
 }
 
-/**
- * session_store.rs get_session. The fake store keeps summaries only, so a
- * record holds no messages.
- */
+/** session_store.rs get_session: the record and its saved blocks. */
 function sessionRecord(store: FakeStore, sessionId: unknown) {
   const row = store.sessions.find((session) => session.id === sessionId);
   if (!row) return null;
@@ -174,13 +183,19 @@ function sessionRecord(store: FakeStore, sessionId: unknown) {
     orchestration: _orchestration,
     ...record
   } = row;
-  return { ...record, modelSettings: {}, blocks: [], queuedMessages: [] };
+  return {
+    ...record,
+    modelSettings: {},
+    blocks: store.blocks[row.id] ?? [],
+    queuedMessages: [],
+  };
 }
 
 /**
- * session_store.rs upsert_session: stores the summary and answers with it.
- * The row keeps its createdAt, archived and pinned. Like the list, the
- * answer's `branch` is the repo's, unless the worktree is gone.
+ * session_store.rs upsert_session: stores the summary and the blocks it is
+ * given, and answers with the summary. The row keeps its createdAt, archived
+ * and pinned. Like the list, the answer's `branch` is the repo's, unless the
+ * worktree is gone.
  */
 const upsertSession: Handler = (store, { session }) => {
   const {
@@ -195,6 +210,7 @@ const upsertSession: Handler = (store, { session }) => {
     ...summary
   } = session as SessionUpsert;
   const kept = store.sessions.find((row) => row.id === summary.id);
+  store.blocks[summary.id] = blocks;
   const row = sessionRow({
     ...summary,
     createdAt: kept?.createdAt ?? Date.now(),
@@ -239,18 +255,54 @@ const HANDLERS: Record<string, Handler> = {
   session_upsert: upsertSession,
   // checkpoint.rs status: no turn recorded a change.
   session_checkpoint_status: () => ({ files: [] }),
-  monos_list: (store) => ({ revision: 1, monos: store.monos }),
+  monos_list: (store) => ({
+    revision: store.rosterRevision,
+    monos: store.monos,
+  }),
+  // mono_roster.rs update_many: a JSON merge patch on `data`, then the name.
+  monos_update: (store, { updates }) => {
+    for (const update of updates as MonoUpdate[]) {
+      const mono = store.monos.find((row) => row.id === update.id);
+      if (!mono) throw `Unknown Mono: ${update.id}`;
+      if (update.patch) mono.data = mergePatch(mono.data, update.patch);
+      mono.name =
+        customMonoName(mono.data.name as string | undefined) ??
+        defaultMonoName(mono.data.mascot as string);
+      if (update.role) mono.role = update.role;
+      if (update.sortOrder !== undefined) mono.sortOrder = update.sortOrder;
+    }
+    if ((updates as MonoUpdate[]).length) store.rosterRevision += 1;
+    return { revision: store.rosterRevision, monos: store.monos };
+  },
   // mono_transcript.rs mono_session_get: the record and its only page.
   mono_session_get: (store, { sessionId }) => {
     const record = sessionRecord(store, sessionId);
     return (
       record && {
         ...record,
-        monoTranscript: { before: null, firstBlockId: null },
+        monoTranscript: {
+          before: null,
+          firstBlockId: record.blocks[0]?.id ?? null,
+        },
       }
     );
   },
-  mono_session_upsert: upsertSession,
+  // mono_transcript.rs upsert_with_mode: the app sends only the blocks after
+  // an anchor; they replace what was saved after it.
+  mono_session_upsert: (store, args) => {
+    const { session, afterBlockId, fromBlockId, blocksChanged, appendOnly } =
+      args as MonoUpsert;
+    const saved = store.blocks[session.id] ?? [];
+    let kept = saved;
+    if (blocksChanged && !appendOnly) {
+      const anchor = afterBlockId ?? fromBlockId;
+      const at = anchor ? saved.findIndex((block) => block.id === anchor) : 0;
+      if (at < 0) throw "Query returned no rows";
+      kept = saved.slice(0, afterBlockId ? at + 1 : at);
+    }
+    const blocks = blocksChanged ? [...kept, ...session.blocks] : saved;
+    return upsertSession(store, { session: { ...session, blocks } });
+  },
   // mono.rs load: SOUL.md as the app seeds it, an empty memory, no topics.
   mono_load: async (store, { mono }) => {
     const dir = `${store.home}/Library/Application Support/com.monocode.desktop/monos/${mono}`;
@@ -285,6 +337,11 @@ const HANDLERS: Record<string, Handler> = {
     body: null,
     error: "Claude not signed in",
   }),
+  // pi_usage.rs while Pi is not signed in.
+  fetch_pi_usage: () => ({
+    status: "unavailable",
+    message: "Pi not signed in",
+  }),
   list_skills: empty,
   reminder_list: empty,
   reminder_take_open: none,
@@ -295,6 +352,11 @@ const HANDLERS: Record<string, Handler> = {
     state: "ready",
     created: [],
   }),
+  // giga_workspace.rs: no snapshot, no files changed, nothing to commit.
+  giga_workspace_bind: none,
+  giga_workspace_turn_start: none,
+  giga_workspace_turn_files: empty,
+  giga_workspace_turn_end: () => ({}),
   // fs.rs git_branches_for: a repo on `main` lists `main` as current.
   git_branches: () => ({
     current: BRANCH,
@@ -345,6 +407,41 @@ const HANDLERS: Record<string, Handler> = {
   "plugin:window|is_maximized": () => false,
 };
 
+/** mono_roster.rs `MonoUpdate`. */
+type MonoUpdate = {
+  id: string;
+  role?: MonoRow["role"];
+  patch?: Record<string, unknown>;
+  sortOrder?: number;
+};
+
+/** The arguments of mono_transcript.rs `mono_session_upsert`. */
+type MonoUpsert = {
+  session: SessionUpsert;
+  afterBlockId: string | null;
+  fromBlockId: string | null;
+  blocksChanged: boolean;
+  appendOnly: boolean;
+};
+
+/** RFC 7396, as mono_roster.rs `merge_patch`: null removes a key. */
+function mergePatch<T extends Record<string, unknown>>(
+  target: T,
+  patch: Record<string, unknown>,
+): T {
+  const merged: Record<string, unknown> = { ...target };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) delete merged[key];
+    else if (typeof value === "object" && !Array.isArray(value))
+      merged[key] = mergePatch(
+        (merged[key] ?? {}) as Record<string, unknown>,
+        value as Record<string, unknown>,
+      );
+    else merged[key] = value;
+  }
+  return merged as T;
+}
+
 function monoRow(seed: MonoSeed, index: number): MonoRow {
   return {
     name: customMonoName(seed.data.name) ?? defaultMonoName(seed.data.mascot),
@@ -374,6 +471,8 @@ function storeFrom(seed: FakeSeed): FakeStore {
     projects: seed.projects ?? [],
     sessions: (seed.sessions ?? []).map(sessionRow),
     monos: (seed.monos ?? []).map(monoRow),
+    rosterRevision: 1,
+    blocks: {},
     automations: seed.automations ?? [],
   };
 }
