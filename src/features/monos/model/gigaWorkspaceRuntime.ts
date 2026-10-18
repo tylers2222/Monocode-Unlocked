@@ -304,9 +304,8 @@ function checkTurnGuard(
 ): void {
   guard.cancel = undefined;
   const turn = host.turn(sessionId, guard.turnId);
-  if (!turn) return disarmTurnGuard(sessionId);
+  if (!turn) return disarmTurnGuard(sessionId, guard.turnId);
   const step = turnGuardStep({
-    gigaChat: !!monoForSession(sessionId)?.giga,
     canSteer: turn.canSteer,
     checks: guard.checks,
   });
@@ -318,7 +317,7 @@ function checkTurnGuard(
         ms,
       );
   };
-  if (step.kind === "skip") return disarmTurnGuard(sessionId);
+  if (step.kind === "skip") return disarmTurnGuard(sessionId, guard.turnId);
   if (step.kind === "wait") return recheck(step.ms);
   // A steer that lands leaves no timer, so the turn is not steered again.
   host

@@ -42,6 +42,8 @@ function fakeApp(runtime: Runtime) {
   /** The turn of every steer the guard tried, accepted or not. */
   const attempts: TurnId[] = [];
   let steerFails = false;
+  let steerHeld = false;
+  let rejectHeld: (() => void) | undefined;
   runtime.setTurnGuardHost({
     schedule: (run, ms) => {
       const timer = { at: now + ms, run };
@@ -56,6 +58,10 @@ function fakeApp(runtime: Runtime) {
     },
     steer: async (sessionId, turnId, text, requestId) => {
       attempts.push(turnId);
+      if (steerHeld)
+        return new Promise<void>((_, reject) => {
+          rejectHeld = () => reject(new Error("Turn not ready"));
+        });
       if (steerFails) throw new Error("Turn not ready");
       steers.push({ sessionId, turnId, text, requestId });
     },
@@ -66,6 +72,14 @@ function fakeApp(runtime: Runtime) {
     chats,
     failSteers: (fail: boolean) => {
       steerFails = fail;
+    },
+    /** Steers stay pending until `rejectHeldSteer` rejects the last one. */
+    holdSteers: () => {
+      steerHeld = true;
+    },
+    rejectHeldSteer: async () => {
+      rejectHeld?.();
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
     },
     /** Starts `turnId` in `sessionId` the way submitSession does. */
     start(sessionId: string, turnId: TurnId, canSteer = true) {
@@ -144,6 +158,7 @@ it("leaves a Mono chat and other sessions alone past 3 minutes", async () => {
   app.start(mono, T1);
   app.start("project-session", T2);
   app.start(habitRunSessionId(chat(true)), T3);
+  expect(app.pending()).toBe(0);
   await app.advance(TURN_GUARD_LIMIT_MS * 3);
   expect(app.steers).toEqual([]);
 });
@@ -213,6 +228,20 @@ it("tries a rejected steer once more, then gives up", async () => {
   app.failSteers(false);
   await app.advance(TURN_GUARD_RETRY_MS);
   expect(app.steers.map((steer) => steer.turnId)).toEqual([T2]);
+});
+
+// Defect: a late rejection of turn 1's steer clears turn 2's guard, so
+// turn 2 is never steered.
+it("leaves the next turn's guard alone when the last turn's steer rejects late", async () => {
+  const giga = chat(true);
+  app.holdSteers();
+  app.start(giga, T1);
+  await app.advance(TURN_GUARD_LIMIT_MS);
+  app.end(giga, T1);
+  app.start(giga, T2);
+  await app.rejectHeldSteer();
+  await app.advance(TURN_GUARD_LIMIT_MS);
+  expect(app.attempts).toEqual([T1, T2]);
 });
 
 function session(fields: Partial<Session>): Session {

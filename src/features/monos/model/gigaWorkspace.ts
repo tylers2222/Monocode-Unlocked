@@ -174,11 +174,9 @@ export const TURN_GUARD_STEER =
   "Move this work to a session in the MonoCode project and end your turn.";
 
 export type TurnGuardCheck = {
-  /** The session is a Giga's own chat. */
-  gigaChat: boolean;
   /** The turn takes a steer now. */
   canSteer: boolean;
-  /** Checks of this turn made before this one, all at or past the limit. */
+  /** Checks of this turn made before this one. */
   checks: number;
 };
 
@@ -191,7 +189,7 @@ export type TurnGuardStep =
  * after that it is skipped, so the guard never loops.
  */
 export function turnGuardStep(check: TurnGuardCheck): TurnGuardStep {
-  if (!check.gigaChat || check.checks >= 2) return { kind: "skip" };
+  if (check.checks >= 2) return { kind: "skip" };
   if (check.canSteer) return { kind: "steer" };
   return check.checks === 0
     ? { kind: "wait", ms: TURN_GUARD_RETRY_MS }
