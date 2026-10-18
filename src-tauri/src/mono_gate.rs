@@ -4,8 +4,10 @@
 //!
 //! PR I2 has rows S1-S7, I1, I2, S9, S10, S13-S17, S20, W1-W3 (whole-turn)
 //! and R1-R8, R10, R11, the hop limit (S18, R9) and the rate limit (S19).
-//! The level rows L1-L7 (design 13) come with session callers. The peer rule
-//! (S8), upward steers (S12) and rule (b) come later in PR 7.
+//! The level rows L1-L7 (design 13) come with session callers, then the peer
+//! rule (S8). Upward steers (S12) and rule (b) come later in PR 7.
+
+use std::borrow::Cow;
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -369,8 +371,10 @@ pub enum Recipient {
         /// `monos.role` (design 16.12): W2 reads it.
         role: MonoRole,
         chat: Option<Target>,
-        /// Each of its `projects` (design 6.1): L3.
+        /// `path_key` of each of its `projects` (design 6.1): S8 and L3.
         projects: Vec<String>,
+        /// Its `messageAllowlist` (design 6.1): S8.
+        allowlist: Vec<MonoId>,
     },
     /// An existing session. `own_project` is false for Mono chats, habit runs
     /// and sessions outside the caller's projects. `level` is its level
@@ -545,12 +549,13 @@ pub struct ReplyFacts {
 }
 
 /// The caller's `monos` row (design 16.12): its current chat, its role and
-/// (design 6.1) each of its projects.
+/// (design 6.1) the `path_key` of each project and its allowlist.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallerMono {
     pub chat: Option<SessionId>,
     pub role: MonoRole,
     pub projects: Vec<String>,
+    pub allowlist: Vec<MonoId>,
 }
 
 /// What the gate knows of the caller.
@@ -559,7 +564,8 @@ pub enum CallerFacts {
     /// A Mono caller's `monos` row.
     Mono(CallerMono),
     /// Design 13.1: a session caller's level (the stored `lead_session_id`
-    /// wins over the web app's copy) and its `cwd`, its one project.
+    /// wins over the web app's copy) and the `path_key` of its `cwd`, its one
+    /// project.
     Session { level: SessionLevel, cwd: String },
 }
 
@@ -819,6 +825,9 @@ fn send_hint(
                 },
             ) => with_lead(code, lead),
             (RejectCode::TargetGone, ..) => r#"The work that reply_to started is not running now: it finished, it has not started, or its session is idle, cleared or deleted. Send it with intent "new"."#.into(),
+            (RejectCode::DirectionForbidden, CallerFacts::Mono(_), Recipient::Mono { .. }) => {
+                "You and that Mono share no project and neither allowlists the other.".into()
+            }
             (
                 RejectCode::DirectionForbidden,
                 CallerFacts::Session { .. },
@@ -996,6 +1005,26 @@ pub fn decide_send(
             || matches!(recipient, Recipient::Mono { .. });
         if upward && !matches!(asked, Asked::New) {
             return reject(RejectCode::UpwardSteerForbidden, to);
+        }
+    }
+    // S8, the peer rule: two Monos of one role talk when they share a
+    // project or one allowlists the other.
+    if let (
+        CallerFacts::Mono(me),
+        Recipient::Mono {
+            mono_id,
+            role,
+            projects,
+            allowlist,
+            ..
+        },
+    ) = (row, recipient)
+    {
+        let shares = me.projects.iter().any(|project| projects.contains(project));
+        let allowlisted = me.allowlist.contains(mono_id)
+            || caller.mono_id().is_some_and(|me| allowlist.contains(me));
+        if me.role == *role && !shares && !allowlisted {
+            return reject(RejectCode::DirectionForbidden, to);
         }
     }
     let steered = if let Asked::Steer = asked {
@@ -1331,6 +1360,40 @@ fn reply_again(code: RejectCode, to: Option<&[Handle]>, then: &[Handled]) -> Rej
     }
 }
 
+/// TS `pathKey` (`src/shared/lib/paths.ts`), the key of design 6.1 "shares
+/// project"; `src/shared/lib/pathKey.fixtures.json` holds the keys both give.
+/// A Windows path (a drive letter and a slash or backslash, or `//` or `\\`)
+/// gets `/` for each backslash, as every path that does not start with `/`
+/// does on Windows. Trailing `/` go, and an empty result is `/`. A drive or
+/// UNC path is lowercased; any other keeps its case. `~`, `..` and inner `//`
+/// stay as written.
+pub fn path_key(path: &str) -> String {
+    let drive = |path: &str, after: fn(Option<&u8>) -> bool| {
+        let bytes = path.as_bytes();
+        bytes.len() >= 2
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && after(bytes.get(2))
+    };
+    let windows = drive(path, |next| matches!(next, Some(b'/' | b'\\')))
+        || path.starts_with("\\\\")
+        || path.starts_with("//");
+    let slashed = if windows || (cfg!(windows) && !path.starts_with('/')) {
+        Cow::Owned(path.replace('\\', "/"))
+    } else {
+        Cow::Borrowed(path)
+    };
+    let trimmed = match slashed.trim_end_matches('/') {
+        "" => "/",
+        trimmed => trimmed,
+    };
+    if drive(trimmed, |next| matches!(next, None | Some(b'/'))) || trimmed.starts_with("//") {
+        trimmed.to_lowercase()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1404,6 +1467,7 @@ mod tests {
             role: MonoRole::Mono,
             chat,
             projects: Vec::new(),
+            allowlist: Vec::new(),
         }
     }
 
@@ -1413,6 +1477,7 @@ mod tests {
             chat: Some(session("giga-chat")),
             role: MonoRole::Giga,
             projects: Vec::new(),
+            allowlist: Vec::new(),
         }
     }
 
@@ -1969,6 +2034,7 @@ mod tests {
             role,
             chat: Some(chat),
             projects: Vec::new(),
+            allowlist: Vec::new(),
         }
     }
 
@@ -2211,6 +2277,7 @@ mod tests {
             role: MonoRole::Giga,
             chat: Some(live("giga-chat", true, true)),
             projects: Vec::new(),
+            allowlist: Vec::new(),
         };
         let own_chat = Recipient::Session {
             target: live("giga-chat", true, true),
@@ -3130,6 +3197,7 @@ mod tests {
             chat: Some(session("a-chat")),
             role: MonoRole::Mono,
             projects: strings(&["/p/alpha"]),
+            allowlist: Vec::new(),
         })
     }
 
@@ -3149,6 +3217,7 @@ mod tests {
             role,
             chat: Some(live(&format!("{id}-chat"), true, true)),
             projects: strings(projects),
+            allowlist: Vec::new(),
         }
     }
 
@@ -3754,5 +3823,129 @@ mod tests {
             ),
             "subfolder"
         );
+    }
+
+    const PEER_RULE: &str = "You and that Mono share no project and neither allowlists the other.";
+
+    // S8, the peer rule (design 6.2). Defect: two Monos of one role with
+    // nothing in common talk, or a shared project or an allowlist on either
+    // side does not let them.
+    #[test]
+    fn s8_monos_of_one_role_talk_through_a_shared_project_or_an_allowlist() {
+        let b_caller = Caller {
+            speaker: Speaker::Mono {
+                kind: CallerKind::MonoChat,
+                mono_id: mono("mono-b"),
+            },
+            session_id: session("b-chat"),
+            turn_id: "turn-1".into(),
+        };
+        let b = |projects: &[&str], allowlist: &[&str]| {
+            CallerFacts::Mono(CallerMono {
+                chat: Some(session("b-chat")),
+                role: MonoRole::Mono,
+                projects: strings(projects),
+                allowlist: allowlist.iter().map(|id| mono(id)).collect(),
+            })
+        };
+        let a = |allowlist: &[&str]| Recipient::Mono {
+            mono_id: mono("mono-a"),
+            role: MonoRole::Mono,
+            chat: Some(live("a-chat", true, true)),
+            projects: strings(&["/p/alpha"]),
+            allowlist: allowlist.iter().map(|id| mono(id)).collect(),
+        };
+        let send = |caller_row: CallerFacts, recipient: Recipient| {
+            decide_as(
+                &b_caller,
+                caller_row,
+                &new("Hi", "mono-a", false),
+                about(recipient),
+            )
+        };
+        assert_eq!(
+            send(b(&["/p/beta"], &[]), a(&[])),
+            send_rejected(RejectCode::DirectionForbidden, party_a(), PEER_RULE)
+        );
+        for (case, caller_row, recipient) in [
+            ("shared project", b(&["/p/beta", "/p/alpha"], &[]), a(&[])),
+            (
+                "mono-b allowlists mono-a",
+                b(&["/p/beta"], &["mono-a"]),
+                a(&[]),
+            ),
+            (
+                "mono-a allowlists mono-b",
+                b(&["/p/beta"], &[]),
+                a(&["mono-b"]),
+            ),
+        ] {
+            assert_eq!(
+                send(caller_row, recipient),
+                queued(party_a(), "a-chat"),
+                "{case}"
+            );
+        }
+        let giga_in = |projects: &[&str]| {
+            CallerFacts::Mono(CallerMono {
+                projects: strings(projects),
+                ..giga_row()
+            })
+        };
+        let to_g2 = |caller_row: CallerFacts, projects: &[&str]| {
+            decide_as(
+                &caller(CallerKind::MonoChat),
+                caller_row,
+                &new("Hi", "giga-2", false),
+                about(mono_in("giga-2", MonoRole::Giga, projects)),
+            )
+        };
+        let g2 = Some(Party::Mono {
+            mono_id: mono("giga-2"),
+        });
+        assert_eq!(
+            to_g2(giga_in(&["/m"]), &["/n"]),
+            send_rejected(RejectCode::DirectionForbidden, g2.clone(), PEER_RULE)
+        );
+        assert_eq!(to_g2(giga_in(&["/m"]), &["/m"]), queued(g2, "giga-2-chat"));
+    }
+
+    // Design 6.2: the peer rule binds one role only. Defect: a Giga cannot
+    // message a Mono it shares no project with, or a Mono cannot queue new
+    // work for a Giga (rule (c)).
+    #[test]
+    fn s8_a_giga_messages_any_mono_and_any_mono_queues_work_for_a_giga() {
+        let a = mono_in("mono-a", MonoRole::Mono, &["/p/alpha"]);
+        assert_eq!(
+            decide_as(
+                &caller(CallerKind::MonoChat),
+                CallerFacts::Mono(giga_row()),
+                &new("Hi", "mono-a", false),
+                about(a.clone())
+            ),
+            queued(a.party(), "mono-a-chat")
+        );
+        let giga = mono_in("giga", MonoRole::Giga, &["/m"]);
+        assert_eq!(
+            decide_as(
+                &mono_a_caller(),
+                mono_a_row(),
+                &new("Done", "giga", false),
+                about(giga.clone())
+            ),
+            queued(giga.party(), "giga-chat")
+        );
+    }
+
+    // Design 6.1. Defect: Rust keys a project folder unlike TS `pathKey`, so
+    // S8 and L3 disagree with the projects TS shows.
+    #[test]
+    fn path_key_matches_ts_path_key_on_the_shared_fixture() {
+        let fixture: Vec<(String, String)> =
+            serde_json::from_str(include_str!("../../src/shared/lib/pathKey.fixtures.json"))
+                .unwrap();
+        for (path, key) in fixture {
+            assert_eq!(path_key(&path), key, "{path:?}");
+        }
     }
 }

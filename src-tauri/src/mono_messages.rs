@@ -1331,7 +1331,8 @@ fn new_message_id() -> MessageId {
 }
 
 /// A Mono's `monos` row (design 16.12, 6.1): `None` when it is gone, else
-/// its current chat, its role and each of its projects.
+/// its current chat, its role, the `path_key` of each of its projects and
+/// its `messageAllowlist` (missing is empty).
 fn mono_row(conn: &Connection, mono_id: &MonoId) -> rusqlite::Result<Option<CallerMono>> {
     let row: Option<(String, String)> = conn
         .query_row(
@@ -1345,15 +1346,13 @@ fn mono_row(conn: &Connection, mono_id: &MonoId) -> rusqlite::Result<Option<Call
         Ok(CallerMono {
             chat: chat_of(&data),
             role: required(MonoRole::parse(&role), "role")?,
-            // TS `parseMono` drops an empty path.
-            projects: data
-                .get("projects")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
+            // TS `parseMono` drops an empty path, whose key would be `/`.
+            projects: texts(&data, "projects")
                 .filter(|path| !path.is_empty())
-                .map(String::from)
+                .map(mono_gate::path_key)
+                .collect(),
+            allowlist: texts(&data, "messageAllowlist")
+                .filter_map(MonoId::parse)
                 .collect(),
         })
     })
@@ -1363,6 +1362,15 @@ fn mono_row(conn: &Connection, mono_id: &MonoId) -> rusqlite::Result<Option<Call
 /// `monos.data_json`; `null` when it is not JSON.
 fn json_of(data: &str) -> Value {
     serde_json::from_str(data).unwrap_or(Value::Null)
+}
+
+/// The strings of the array at `key` in `data`; nothing when it is not one.
+fn texts<'a>(data: &'a Value, key: &str) -> impl Iterator<Item = &'a str> {
+    data.get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
 }
 
 /// `data_json.sessionId`, a Mono's current chat.
@@ -1464,6 +1472,7 @@ fn recipient(conn: &Connection, send_to: &str, live: &Live) -> rusqlite::Result<
                 role: row.role,
                 chat,
                 projects: row.projects,
+                allowlist: row.allowlist,
             });
         }
     }
@@ -1630,7 +1639,7 @@ pub fn submit(
             ..
         } => Some(CallerFacts::Session {
             level: session_level(&tx, &caller.session_id, lead_session_id.clone())?,
-            cwd: cwd.clone(),
+            cwd: mono_gate::path_key(cwd),
         }),
     };
     let prior = get_by_request(&tx, &caller.session_id, request_id)?;
@@ -4754,6 +4763,110 @@ pub(crate) mod tests {
         }
     }
 
+    // L3 (design 6.3) with design 6.1 keys, decision 728. Defect: L3
+    // compares the lead's cwd with the Mono's projects as written, so a lead
+    // in "/p/" cannot report to the Mono of "/p", nor a lead in "/p" to a
+    // Mono whose project reads "/p//".
+    #[test]
+    fn l3_compares_the_leads_cwd_and_the_monos_projects_by_path_key() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        accepted_ids(&call(
+            &conn,
+            &session_caller("lead", "/p/", None),
+            "slash-cwd",
+            Tool::SendMessage,
+            hi("mono-a", false),
+            &[],
+        ));
+        conn.execute(
+            r#"UPDATE monos SET data_json = '{"sessionId":"a-chat","projects":["/p//"]}'
+                WHERE id = 'mono-a'"#,
+            [],
+        )
+        .unwrap();
+        accepted_ids(&call(
+            &conn,
+            &session_caller("lead", "/p", None),
+            "slash-project",
+            Tool::SendMessage,
+            hi("mono-a", false),
+            &[],
+        ));
+    }
+
+    // Design 6.1 "shares project". Defect: Monos' projects are compared as
+    // written, so two Monos on one folder written two ways cannot talk.
+    #[test]
+    fn s8_compares_the_projects_of_two_monos_by_path_key() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        conn.execute_batch(
+            r#"UPDATE monos SET data_json = '{"sessionId":"a-chat","projects":["/w/app/"]}'
+                WHERE id = 'mono-a';
+               INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
+               VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat","projects":["/w/app"]}', 2, 1, 1),
+                      ('mono-c', 'C', 'mono', '{"sessionId":"c-chat","projects":["/w/other"]}', 3, 1, 1);
+               INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+               VALUES ('b-chat', '/', 'codex', 'm', 'default', 'B', 1, 1),
+                      ('c-chat', '/', 'codex', 'm', 'default', 'C', 1, 1);"#,
+        )
+        .unwrap();
+        let a = caller_in("mono-a", "a-chat");
+        accepted_ids(&call(
+            &conn,
+            &a,
+            "to-b",
+            Tool::SendMessage,
+            hi("mono-b", false),
+            &[],
+        ));
+        let to_c = failed(call(
+            &conn,
+            &a,
+            "to-c",
+            Tool::SendMessage,
+            hi("mono-c", false),
+            &[],
+        ));
+        assert_eq!(to_c.code, "direction_forbidden");
+    }
+
+    // Design 6.1 "allowlisted". Defect: `messageAllowlist` is not read, so
+    // two Monos that the user let talk are refused for sharing no project.
+    #[test]
+    fn s8_lets_two_monos_talk_when_one_allowlists_the_other() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        conn.execute_batch(
+            r#"UPDATE monos SET data_json = '{"sessionId":"a-chat","projects":["/a"]}'
+                WHERE id = 'mono-a';
+               INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
+               VALUES ('mono-b', 'B', 'mono',
+                       '{"sessionId":"b-chat","projects":["/b"],"messageAllowlist":["mono-a"]}', 2, 1, 1);
+               INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+               VALUES ('b-chat', '/', 'codex', 'm', 'default', 'B', 1, 1);"#,
+        )
+        .unwrap();
+        accepted_ids(&call(
+            &conn,
+            &caller_in("mono-a", "a-chat"),
+            "to-b",
+            Tool::SendMessage,
+            hi("mono-b", false),
+            &[],
+        ));
+        accepted_ids(&call(
+            &conn,
+            &caller_in("mono-b", "b-chat"),
+            "to-a",
+            Tool::SendMessage,
+            hi("mono-a", false),
+            &[],
+        ));
+    }
+
     // Design 16.4, decision 506. Defect: a session caller cannot read the
     // message it sent, so the id its send returned names nothing.
     #[test]
@@ -6034,7 +6147,7 @@ pub(crate) mod tests {
         let conn = store.lock_conn().unwrap();
         conn.execute_batch(
             r#"INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
-               VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat"}', 2, 1, 1);
+               VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat","messageAllowlist":["mono-a"]}', 2, 1, 1);
                INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
                VALUES ('b-chat', '/', 'codex', 'm', 'default', 'B', 1, 1);"#,
         )
@@ -8255,7 +8368,7 @@ pub(crate) mod tests {
         let conn = store.lock_conn().unwrap();
         conn.execute_batch(
             r#"INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
-               VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat"}', 2, 1, 1);
+               VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat","messageAllowlist":["mono-a"]}', 2, 1, 1);
                INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
                VALUES ('b-chat', '/', 'codex', 'm', 'default', 'B', 1, 1);"#,
         )

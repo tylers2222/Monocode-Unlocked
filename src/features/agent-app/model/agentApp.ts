@@ -87,6 +87,7 @@ import {
   topicName,
 } from "../../monos/model/monoMemory";
 import {
+  resolveMessageAllowlist,
   resolveMonoProjects,
   type MonoChange,
   type MonoSettings,
@@ -363,7 +364,10 @@ const FIELDS = new Map<string, readonly string[]>([
   ["monos.get", ["monoId"]],
   ["monos.read", ["monoId", "before", "limit", "maxChars", "work"]],
   ["monos.create", ["name", "harness", "model", "projects", "soul", "giga"]],
-  ["monos.update", ["monoId", "harness", "model", "name", "projects"]],
+  [
+    "monos.update",
+    ["monoId", "harness", "model", "name", "projects", "messageAllowlist"],
+  ],
   ["messages.get_monos", []],
   [
     "messages.send",
@@ -1222,15 +1226,25 @@ async function handleGigaMonos(
       input.projects === undefined
         ? undefined
         : resolveMonoProjects(input.projects, knownHomeDir());
+    const messageAllowlist =
+      input.messageAllowlist === undefined
+        ? undefined
+        : resolveMessageAllowlist(input.messageAllowlist, monoId);
     const changesModel =
       input.harness !== undefined || input.model !== undefined;
-    if (!changesModel && name === undefined && projects === undefined)
+    if (
+      !changesModel &&
+      name === undefined &&
+      projects === undefined &&
+      messageAllowlist === undefined
+    )
       throw new Error(
-        "Pass harness and model, model, name or projects to change",
+        "Pass harness and model, model, name, projects or messageAllowlist to change",
       );
     return {
       ...(name !== undefined ? { name } : {}),
       ...(projects ? { projects } : {}),
+      ...(messageAllowlist ? { messageAllowlist } : {}),
       // A model alone has to suit the harness the Mono's chat is on now.
       ...(changesModel
         ? {
