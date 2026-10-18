@@ -3,6 +3,7 @@ import { isInFlightSession } from "./inFlight";
 import { displayPath } from "../../../shared/lib/paths";
 import {
   sessionDisplayTitle,
+  turnOpener,
   type Block,
   type HarnessId,
   type Session,
@@ -64,6 +65,7 @@ function toLiveAgent(session: Session, unseenFinished: boolean): LiveAgent {
   const pendingQuestion = session.pendingQuestion;
   const done = unseenFinished && !isInFlightSession(session);
   const activityBlock = pending ?? lastActivityBlock(session.blocks);
+  const opener = turnOpener(session.blocks);
   return {
     id: session.id,
     cwd: session.cwd,
@@ -76,8 +78,8 @@ function toLiveAgent(session: Session, unseenFinished: boolean): LiveAgent {
           pendingQuestion.questions[0]?.prompt ||
           "Question"
         : activityLabel(activityBlock, session.cwd),
-    startedAt: turnStartedAt(session.blocks),
-    durationMs: done ? turnDurationMs(session.blocks) : undefined,
+    startedAt: opener?.startedAt,
+    durationMs: done ? opener?.durationMs : undefined,
     needsApproval: Boolean(pending) || Boolean(pendingQuestion),
     done,
   };
@@ -99,20 +101,6 @@ function lastActivityBlock(blocks: Block[]): Block | undefined {
     if (block.role === "handoff" && block.handoff?.status === "preparing") {
       return block;
     }
-  }
-  return undefined;
-}
-
-function turnStartedAt(blocks: Block[]): number | undefined {
-  for (let i = blocks.length - 1; i >= 0; i--) {
-    if (blocks[i].role === "user") return blocks[i].startedAt;
-  }
-  return undefined;
-}
-
-function turnDurationMs(blocks: Block[]): number | undefined {
-  for (let i = blocks.length - 1; i >= 0; i--) {
-    if (blocks[i].role === "user") return blocks[i].durationMs;
   }
   return undefined;
 }

@@ -1,5 +1,5 @@
 import { leafIds, type WorkspaceTab } from "../../workspace/model/layout";
-import type { Session } from "../../sessions/model/session";
+import { turnOpener, type Session } from "../../sessions/model/session";
 import { pathKey } from "../../../shared/lib/paths";
 import { isRemoteProjectPath, sameProjectPath } from "./recents";
 
@@ -100,17 +100,6 @@ function tabContainsPane(tab: WorkspaceTab, paneId: string): boolean {
   );
 }
 
-function turnStart(session: Session): number {
-  for (let index = session.blocks.length - 1; index >= 0; index -= 1) {
-    const block = session.blocks[index];
-    // A steer joins a running turn with `sentAt` and no `startedAt`.
-    if (block.role === "user" && block.startedAt !== undefined) {
-      return block.startedAt;
-    }
-  }
-  return -Infinity;
-}
-
 /** When the session's running turn started, or undefined when it is idle. A
  * busy worker has no tab, so its lead counts as running in its place. Only
  * busy sessions count: a lead's finished turn is not a running turn. */
@@ -122,7 +111,10 @@ export function runningTurnStart(
   for (const session of sessions) {
     if (!session.busy) continue;
     if (session.id !== id && session.orchestrationLeadId !== id) continue;
-    start = Math.max(start ?? -Infinity, turnStart(session));
+    start = Math.max(
+      start ?? -Infinity,
+      turnOpener(session.blocks)?.startedAt ?? -Infinity,
+    );
   }
   return start;
 }
