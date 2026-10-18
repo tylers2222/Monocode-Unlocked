@@ -20,6 +20,8 @@ For a live update, change the store with `page.evaluate(() => window.appBackend!
 
 To run a turn, fake the harness binary in `handlers`. Answer its `harness_resolve_<id>` and `harness_spawn`, and answer each line the app sends with `harness_write` by emitting `harness-stdout` lines. Install `page.clock` before `mount` to control turn timers. `g3-turn-guard.spec.ts` fakes Pi this way.
 
+To check what survives a restart, call `app.restart()`. It sends the `quit_commit` event that Rust's quit coordinator sends, waits for the app's `quit_ready`, and opens the app again on the same store, with the sessions, blocks and workspace snapshot that the quit saved. `g2-giga-folder.spec.ts` uses it.
+
 ### Options
 
 - `platform`: `"macos"` (the default) or `"linux"`. The app picks its window chrome and shortcut labels from `navigator.platform`.
