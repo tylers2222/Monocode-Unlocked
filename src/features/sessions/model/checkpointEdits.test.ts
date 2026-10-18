@@ -1,7 +1,12 @@
 import { expect, it } from "vitest";
 import { applyHarnessEvent } from "../../../integrations/harness/core/apply";
-import { newSession, type Block } from "./session";
-import { sessionEditPaths } from "./checkpointEdits";
+import {
+  newSession,
+  sessionAgentCwd,
+  sessionWorkCwd,
+  type Block,
+} from "./session";
+import { checkpointPaths, sessionEditPaths } from "./checkpointEdits";
 
 it("recovers successful edits from before a continuation, excluding reads and failed edits", () => {
   const blocks: Block[] = [
@@ -87,4 +92,19 @@ it("retains every path in a completed multi-file edit after serializing the tran
     "README.md",
     "docs/setup.md",
   ]);
+});
+
+it("keeps a Giga session's relative edits in its folder for the checkpoint at the working copy", () => {
+  const session = { ...newSession("codex", "/repo"), workFolder: "/repo/gigas/alpha" };
+  expect(
+    checkpointPaths(
+      ["plan.md", "/repo/gigas/alpha/notes.md", "plan.md"],
+      sessionAgentCwd(session),
+      sessionWorkCwd(session),
+    ),
+  ).toEqual(["/repo/gigas/alpha/plan.md", "/repo/gigas/alpha/notes.md"]);
+  const plain = newSession("codex", "/repo");
+  expect(
+    checkpointPaths(["src/a.ts"], sessionAgentCwd(plain), sessionWorkCwd(plain)),
+  ).toEqual(["src/a.ts"]);
 });

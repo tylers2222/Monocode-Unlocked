@@ -645,9 +645,8 @@ function startLaunch(
   if (worktreeCwd && workspaceMode !== "current")
     throw new Error("worktreeCwd requires workspaceMode current");
   const home = knownHomeDir();
-  const gigaSlug = host.isMono(source.id)
-    ? host.monoOf?.(source.id)?.gigaSlug
-    : undefined;
+  const mono = host.monoOf?.(source.id);
+  const gigaSlug = host.isMono(source.id) ? mono?.gigaSlug : undefined;
   const ownFolder =
     workspaceMode === "current" &&
     home &&
@@ -668,7 +667,7 @@ function startLaunch(
   const launch: QuickLaunch = {
     cwd,
     prompt,
-    ...(host.monoOf?.(source.id)?.showStartedSessionsInSidebar !== true
+    ...(mono?.showStartedSessionsInSidebar !== true
       ? { sidebarHidden: true }
       : {}),
     ...(draft ? { draft: true } : {}),

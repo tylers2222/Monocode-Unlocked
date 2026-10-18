@@ -6,14 +6,14 @@ import {
   sendHarnessTurn,
 } from "../../../integrations/harness/core/registry";
 import { mergeStream } from "../../../integrations/harness/core/streamText";
-import type { HarnessId } from "./session";
+import type { AgentCwd, HarnessId } from "./session";
 
 const HANDOFF_TIMEOUT_MS = 45_000;
 
 export async function requestOutgoingHandoff(input: {
   harness: HarnessId;
   sessionId: string;
-  cwd: string;
+  cwd: AgentCwd;
   model: string;
   modelSettings?: Record<string, string>;
   providerAccountId?: string;

@@ -297,9 +297,6 @@ describe("agent app commands", () => {
       ]);
     });
 
-    // Review G-2 r1 major: the Giga folder must not become a worktree
-    // workspace, which hides the tab from the MonoCode deck, drops it from
-    // the saved tabs, relabels the explorer root and leaks into clear-tab.
     it("keeps the session in the MonoCode workspace everywhere but the agent", async () => {
       const { source, host } = gigaFixture();
       await start(host, source);
@@ -336,6 +333,27 @@ describe("agent app commands", () => {
       await start(host, source, { worktreeCwd: workspace });
       expect(launched(host).worktreeCwd).toBeUndefined();
       expect(launched(host).workFolder).toBeUndefined();
+    });
+
+    it("starts a new worktree outside its folder", async () => {
+      const { source, host } = gigaFixture();
+      await start(host, source, { workspaceMode: "worktree" });
+      expect(launched(host).workspaceMode).toBe("worktree");
+      expect(launched(host).workFolder).toBeUndefined();
+      const session = applyQuickWorkspace(
+        newSession("codex", workspace, "codex:test"),
+        launched(host),
+      );
+      expect(sessionAgentCwd(session)).toBe(workspace);
+    });
+
+    it("runs in its folder, not in the worktree its chat has open", async () => {
+      const { source, host } = gigaFixture();
+      source.cwd = workspace;
+      source.worktreeCwd = `${workspace}-worktrees/feat`;
+      await start(host, source);
+      expect(launched(host).worktreeCwd).toBeUndefined();
+      expect(launched(host).workFolder).toBe(alphaFolder);
     });
 
     it.each([

@@ -15,6 +15,7 @@ import {
   resolveModel,
 } from "./models";
 import { loadProjectProviderSettings } from "./projectProviders";
+import { isEqualOrInside } from "../../../shared/lib/paths";
 
 export type HarnessId =
   | "claude"
@@ -863,19 +864,45 @@ export function sessionDisplayTitle(title: string, harness: HarnessId): string {
   return title;
 }
 
-/** Working copy the session git UIs, tabs and the explorer use. */
+declare const workCwdBrand: unique symbol;
+/** The session's working copy: tabs, git, the explorer and turn checkpoints. */
+export type WorkCwd = string & { readonly [workCwdBrand]: true };
+declare const agentCwdBrand: unique symbol;
+/** The folder a harness runs the session's agent process in. */
+export type AgentCwd = string & { readonly [agentCwdBrand]: true };
+
+/** Working copy the session git UIs, tabs, the explorer and checkpoints use. */
 export function sessionWorkCwd(session: {
   cwd: string;
   worktreeCwd?: string;
-}): string {
-  return session.worktreeCwd || session.cwd;
+}): WorkCwd {
+  return (session.worktreeCwd || session.cwd) as WorkCwd;
 }
 
-/** Folder the agent process runs in. */
+/**
+ * Folder the agent process runs in: `workFolder` while it is inside the
+ * session's working copy, else the working copy itself.
+ */
 export function sessionAgentCwd(session: {
   cwd: string;
   worktreeCwd?: string;
   workFolder?: string;
-}): string {
-  return session.workFolder || sessionWorkCwd(session);
+}): AgentCwd {
+  const work = sessionWorkCwd(session);
+  return (
+    session.workFolder && isEqualOrInside(session.workFolder, work)
+      ? session.workFolder
+      : work
+  ) as AgentCwd;
+}
+
+/** The working copy and folder a session started from `source` shares. */
+export function sessionWorkingCopy(
+  source: Pick<Session, "worktreeCwd" | "branch" | "workFolder">,
+): Pick<Session, "worktreeCwd" | "branch" | "workFolder"> {
+  return {
+    worktreeCwd: source.worktreeCwd,
+    branch: source.branch,
+    workFolder: source.workFolder,
+  };
 }

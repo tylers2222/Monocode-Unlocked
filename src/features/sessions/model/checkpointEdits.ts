@@ -1,6 +1,7 @@
 import { isEditTool } from "../../../integrations/harness/core/preview";
 import { CONTINUE_PROMPT } from "./inFlight";
-import type { Block } from "./session";
+import type { AgentCwd, Block, WorkCwd } from "./session";
+import { joinPath, pathKey } from "../../../shared/lib/paths";
 
 /** Successful edits from the latest turn and its interrupted continuations. */
 export function sessionEditPaths(blocks: readonly Block[]): string[] {
@@ -30,4 +31,20 @@ export function sessionEditPaths(blocks: readonly Block[]): string[] {
     if (tool.preview?.path) paths.add(tool.preview.path);
   }
   return [...paths];
+}
+
+/**
+ * Edit paths for a checkpoint kept at the working copy. An agent reports a
+ * relative path against its own folder, which may sit below the copy.
+ */
+export function checkpointPaths(
+  paths: readonly string[],
+  agentCwd: AgentCwd,
+  workCwd: WorkCwd,
+): string[] {
+  const unique = [...new Set(paths)];
+  if (pathKey(agentCwd) === pathKey(workCwd)) return unique;
+  return unique.map((path) =>
+    /^(?:[/\\~]|[A-Za-z]:[/\\])/.test(path) ? path : joinPath(agentCwd, path),
+  );
 }

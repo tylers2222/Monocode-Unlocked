@@ -10,7 +10,7 @@ import {
   type OrchestrationRun,
   shellPath,
 } from "./orchestration";
-import { newSession } from "../../sessions/model/session";
+import { newSession, sessionWorkCwd } from "../../sessions/model/session";
 import type { OrchestrationProposal } from "./orchestrationPlan";
 import { normalizeOrchestrationRun } from "./orchestrationState";
 import { previewFromToolPart } from "../../../integrations/harness/providers/opencode/opencodeProtocol";
@@ -480,6 +480,17 @@ describe("local orchestration", () => {
       switched.manager.startApproved("lead", "card", card),
     ).rejects.toThrow("proposal's checkout");
     expect(switched.store.enable).not.toHaveBeenCalled();
+  });
+  it("starts a Giga session's proposal in its working copy, not its agent folder", async () => {
+    const f = setup();
+    f.lead.busy = false;
+    f.lead.workFolder = "/repo/gigas/alpha";
+    const card = { ...proposal(), checkoutCwd: sessionWorkCwd(f.lead) };
+    f.store.scopes.mockImplementation(async (cwd: string, files: string[]) =>
+      files.map((file) => (file === "." ? cwd : `${cwd}/${file}`)),
+    );
+    await f.manager.startApproved("lead", "card", card);
+    expect(f.manager.run("lead")?.workspace?.checkoutCwd).toBe("/repo");
   });
   it("persists dispatch authority and binds review to the completed attempt", async () => {
     const f = setup();

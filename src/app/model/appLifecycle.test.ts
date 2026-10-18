@@ -1,12 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { forgetHarnessSession } from "../../integrations/harness/core/registry";
+import {
+  bindHarnessSession,
+  forgetHarnessSession,
+  isLiveHarness,
+} from "../../integrations/harness/core/registry";
 import { killAllChildren } from "../../integrations/harness/core/child";
 import { newSession } from "../../features/sessions/model/session";
 import { newTab } from "../../features/workspace/model/layout";
 import {
   askQuitConfirmation,
+  bindResumedSessions,
   closeBusyWindow,
   commitQuit,
   confirmReload,
@@ -508,5 +513,18 @@ describe("remembering the terminal dock side across restarts", () => {
     const { handleQuitRequested } = await import("./appLifecycle");
     await handleQuitRequested();
     expect(await lastSavedDockSide()).toBe("left");
+  });
+});
+
+describe("resuming sessions at boot", () => {
+  it("binds a Giga's session in the folder its agent ran in", () => {
+    vi.mocked(isLiveHarness).mockReturnValue(true);
+    const session = {
+      ...newSession("codex", "/w"),
+      providerSessionId: "p",
+      workFolder: "/w/gigas/a",
+    };
+    bindResumedSessions([session]);
+    expect(vi.mocked(bindHarnessSession).mock.calls[0][3]).toBe("/w/gigas/a");
   });
 });

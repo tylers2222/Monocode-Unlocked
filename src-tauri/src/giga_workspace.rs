@@ -1531,7 +1531,7 @@ mod tests {
                 (
                     "m",
                     "mono",
-                    serde_json::json!({"mascot": "owl", "sessionId": "chat-m", "projects": [root.join("gigas/beta")]}),
+                    serde_json::json!({"mascot": "owl", "sessionId": "chat-m", "gigaSlug": "beta", "projects": [root.join("gigas/beta")]}),
                 ),
             ] {
                 let mono = serde_json::from_value(
@@ -1561,8 +1561,12 @@ mod tests {
         assert_eq!(slug_of("app-chat-a-r1", ""), "");
         assert_eq!(slug_of("user-session", "gigas/alpha"), "");
         assert_eq!(slug_of("app-app-chat-a-r1-r2", "gigas/alpha"), "");
+        // A chat id that only starts with the Giga's chat id is another chat.
+        assert_eq!(slug_of("app-chat-ax-r1", "gigas/alpha"), "");
+        // Only `sessions.start` ids carry the chat that started them.
+        assert_eq!(slug_of("chat-a-r1", "gigas/alpha"), "");
         // Giga A creates a Mono with project gigas/beta; that Mono's session
-        // runs there and must not commit as Giga B.
+        // runs there and must not commit as Giga B, even if its row names beta.
         assert_eq!(slug_of("app-chat-m-r1", "gigas/beta"), "");
         assert_eq!(
             try_commit(
