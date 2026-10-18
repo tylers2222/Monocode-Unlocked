@@ -1740,7 +1740,12 @@ function Workspace({
   const lastPersistedUserBlock = useRef(new Map<string, string>());
   const inFlightSyncKey = useRef<string | null>(null);
   const sawInFlight = useRef(false);
-  const workspaceSyncKey = useRef<string | null>(null);
+  // `saved` is the snapshot last written. `pending` outlives re-renders, so
+  // one that keeps the same snapshot leaves its write scheduled.
+  const workspaceSave = useRef<{
+    saved?: string;
+    pending?: { key: string; timer: number };
+  }>({});
   const observedSessions = useRef(new Map<string, Session>());
   const pendingPersist = useRef(new Map<string, Session>());
   const removingSessionIds = useRef(new Set<string>());
@@ -2640,6 +2645,7 @@ function Workspace({
 
   useEffect(() => {
     if (windowTransfer) return;
+    const save = workspaceSave.current;
     const snapshot = collectWorkspaceSnapshot(
       tabs,
       sessions,
@@ -2656,12 +2662,16 @@ function Workspace({
       keepWorkspaceTab,
     );
     const key = workspaceSnapshotKey(snapshot);
-    if (workspaceSyncKey.current === key) return;
-    workspaceSyncKey.current = key;
+    if (save.pending?.key === key) return;
+    window.clearTimeout(save.pending?.timer);
+    save.pending = undefined;
+    if (save.saved === key) return;
     const timer = window.setTimeout(() => {
+      save.saved = key;
+      save.pending = undefined;
       void saveWorkspaceSnapshot(snapshot).catch(() => undefined);
     }, 250);
-    return () => window.clearTimeout(timer);
+    save.pending = { key, timer };
   }, [
     tabs,
     sessions,
