@@ -332,15 +332,16 @@ Actions:
                   "target":"2026-12-01"}
                   Keep a future goal for the project. status is idea
                   (default), planned, in_progress or done. target is a
-                  YYYY-MM-DD date, or null for later. title is 1 to 200
-                  characters, note at most 4000. MonoCode records you as
-                  the writer; do not send createdBy or by. Returns the new
-                  milestone. Codes: invalid_input, milestones_off (the user
-                  turned them off; do not retry).
+                  YYYY-MM-DD date, or "" or null for later. title is 1 to
+                  200 characters, note at most 4000. MonoCode records you
+                  as the writer; do not send createdBy or by. Returns the
+                  new milestone. Codes: invalid_input, milestones_off (the
+                  user turned them off; do not retry).
   milestones.update {"id":"...","status":"in_progress","target":null}
                   Change title, note, status or target. Omitted fields stay;
-                  target null clears the date. Codes: unknown_milestone (not
-                  in this project), invalid_input, milestones_off.
+                  target "" or null clears the date. Codes:
+                  unknown_milestone (not in this project), invalid_input,
+                  milestones_off.
   milestones.remove {"id":"..."}  Delete one. Returns removed. Codes:
                   unknown_milestone, invalid_input, milestones_off.
   milestones.reorder {"ids":["...","..."]}
@@ -639,7 +640,7 @@ pub fn app_tools() -> Value {
     let title = json!({"type": "string", "minLength": 1, "maxLength": 200});
     let note = json!({"type": "string", "maxLength": 4000});
     let status = json!({"type": "string", "enum": ["idea", "planned", "in_progress", "done"]});
-    let target = json!({"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "YYYY-MM-DD, or null for later."});
+    let target = json!({"type": ["string", "null"], "pattern": "^(\\d{4}-\\d{2}-\\d{2})?$", "description": "YYYY-MM-DD, or \"\" or null for later."});
     json!([
         {
             "name": "get_monos",
@@ -722,7 +723,7 @@ pub fn app_tools() -> Value {
         {
             "name": "update_milestone",
             "action": "milestones.update",
-            "description": "Change a milestone's title, note, status or target. Omitted fields stay; target null clears the date. Code unknown_milestone means the id is not in this project.",
+            "description": "Change a milestone's title, note, status or target. Omitted fields stay; target \"\" or null clears the date. Code unknown_milestone means the id is not in this project.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1720,6 +1721,31 @@ mod tests {
             assert_eq!(request["action"], *action, "{name}");
             assert_eq!(request["input"], *input, "{name}");
             assert_eq!(out["result"]["structuredContent"], answer, "{name}");
+        }
+    }
+
+    // M-9 R1. Defect: a client that enforces the tool schema refuses target
+    // "" (Later, as the page means it) before the call reaches the app, or
+    // lets an ambiguous or partial date through.
+    #[test]
+    fn app_mcp_target_schema_accepts_empty_for_later() {
+        let tools = app_tools();
+        for name in ["add_milestone", "update_milestone"] {
+            let tool = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap();
+            let target = &tool["inputSchema"]["properties"]["target"];
+            let pattern = regex::Regex::new(target["pattern"].as_str().unwrap()).unwrap();
+            for ok in ["", "2026-12-12"] {
+                assert!(pattern.is_match(ok), "{name} refuses {ok:?}");
+            }
+            for bad in ["12/11/2026", "2026-1-1", "Dec 12, 2026", " ", "2026-12-12 "] {
+                assert!(!pattern.is_match(bad), "{name} allows {bad:?}");
+            }
+            assert_eq!(target["type"], json!(["string", "null"]), "{name}");
         }
     }
 

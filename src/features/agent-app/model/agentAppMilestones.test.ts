@@ -216,19 +216,46 @@ it("a Mono naming a project outside its roster is refused", async () => {
   expect(rows).toEqual([]);
 });
 
-it.each(["2026-13-01", "2026-02-30", "26-01-01", "later", 20261201])(
-  "target %s is invalid_input and writes nothing",
-  async (target) => {
-    const { run, rows } = fixture("session");
-    expect(
-      await failure(run("milestones.add", { title: "X", target })),
-    ).toMatchObject({
-      code: "invalid_input",
-      hint: "target must be a real YYYY-MM-DD date, or null for later",
-    });
-    expect(rows).toEqual([]);
-  },
-);
+it.each([
+  "2026-13-01",
+  "2026-02-30",
+  "26-01-01",
+  "later",
+  20261201,
+  " ",
+  0,
+  false,
+])("target %s is invalid_input and writes nothing", async (target) => {
+  const { run, rows } = fixture("session");
+  expect(
+    await failure(run("milestones.add", { title: "X", target })),
+  ).toMatchObject({
+    code: "invalid_input",
+    hint: 'target must be a real YYYY-MM-DD date, or "" or null for later',
+  });
+  expect(rows).toEqual([]);
+});
+
+// M-9 R1. Defect: an agent sending target "" (Later, as the page means it)
+// is refused, stores "", or "" on update keeps the old date.
+it('target "" and null both mean Later on add and clear the date on update', async () => {
+  const { run, rows } = fixture("session");
+  await run("milestones.add", { title: "Empty", target: "" });
+  await run("milestones.add", { title: "Null", target: null });
+  await run("milestones.add", { title: "Dated", target: "2026-12-12" });
+  expect(rows.map((row) => [row.title, row.target])).toEqual([
+    ["Empty", null],
+    ["Null", null],
+    ["Dated", "2026-12-12"],
+  ]);
+  expect(
+    await run("milestones.update", { id: "m3", target: "" }),
+  ).toMatchObject({ id: "m3", target: null });
+  await run("milestones.update", { id: "m3", target: "2026-12-12" });
+  expect(
+    await run("milestones.update", { id: "m3", target: null }),
+  ).toMatchObject({ id: "m3", target: null });
+});
 
 it.each([
   [{}, "title is required"],

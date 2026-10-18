@@ -27,7 +27,7 @@ RUN_ID="$(date +%Y%m%d-%H%M%S)"
 
 # Cases run in this order: migration, Beta's turn, ALPHA_CASES and PAGE_CASES
 # while Alpha's turn is held, restart, then PAGE_RESTART_CASES.
-ALPHA_CASES=(empty_list add_list edit_reorder_status_delete a_never_sees_b no_write_to_b settings_off)
+ALPHA_CASES=(empty_list add_list edit_reorder_status_delete empty_target_cli empty_target_mcp omp_empty_target a_never_sees_b no_write_to_b settings_off)
 # M-11 adds its page cases to these two lists.
 PAGE_CASES=()
 PAGE_RESTART_CASES=()
@@ -56,8 +56,10 @@ need() {
 # A requested habit run whose agent sleeps, so the Mono's app token stays live.
 hold() {
   mkdir -p "$DATA/monos/$1"
+  local first=""
+  [[ -n "${3:-}" ]] && first="First do only this: $3 Then run"
   cat >"$DATA/monos/$1/habits.json" <<EOF
-[{"id":"hold-$1-$RUN_ID","name":"Hold","instructions":"Run exactly this shell command and nothing else: sleep $2. When it finishes, reply with the single word held.","schedule":{"scheduleKind":"daily","time":"09:00","minute":0,"dayOfWeek":1},"enabled":false,"createdAt":0,"nextRunAt":0,"runRequested":true}]
+[{"id":"hold-$1-$RUN_ID","name":"Hold","instructions":"${first:-Run} exactly this shell command and nothing else: sleep $2. When it finishes, reply with the single word held.","schedule":{"scheduleKind":"daily","time":"09:00","minute":0,"dayOfWeek":1},"enabled":false,"createdAt":0,"nextRunAt":0,"runRequested":true}]
 EOF
 }
 
@@ -98,7 +100,7 @@ reset_state() {
   git_repo "$A"
   git_repo "$B"
   sed -e "s|@HOME@|$EVAL_HOME|g" -e "s|@A@|$A|g" -e "s|@B@|$B|g" "$HERE/fixtures/pre-m.sql" | sqlite3 "$DB"
-  hold beta 30
+  hold beta 30 'call your add_milestone tool with title \"Omp dated\" and target \"2026-12-12\", then call your update_milestone tool with the id it returned and target set to the empty string \"\". Do not retry a refused call.'
   hold alpha 900
 }
 
@@ -167,6 +169,51 @@ case_edit_reorder_status_delete() {
   r="$(cli alpha milestones.remove "{\"id\":\"$ID2\"}")"
   need "second remove: ${r:0:200}" [ "$(jv "$r" .code)" = unknown_milestone ] || return 1
   EV="edit, status in_progress, target cleared, reorder kept, remove leaves 1, second remove unknown_milestone"
+}
+
+# "" is Later on the CLI path: add stores NULL, update with "" clears a date.
+case_empty_target_cli() {
+  local r1 r2 r3 id1 id2 stored
+  r1="$(cli alpha milestones.add '{"title":"CLI later","target":""}')"
+  r2="$(cli alpha milestones.add '{"title":"CLI dated","target":"2026-12-12"}')"
+  id1="$(jv "$r1" '.result.id // empty')"
+  id2="$(jv "$r2" '.result.id // empty')"
+  r3="$(cli alpha milestones.update "{\"id\":\"$id2\",\"target\":\"\"}")"
+  stored="$(q "SELECT group_concat(title || ':' || ifnull(target, 'NULL'), ',') FROM (SELECT title, target FROM milestones WHERE id IN ('$id1', '$id2') ORDER BY sort_order)")"
+  cli alpha milestones.remove "{\"id\":\"$id1\"}" >/dev/null
+  cli alpha milestones.remove "{\"id\":\"$id2\"}" >/dev/null
+  need "add \"\": ${r1:0:200}" [ "$(jv "$r1" '[.ok, .result.target] | @csv')" = "true," ] || return 1
+  need "update \"\": ${r3:0:200}" [ "$(jv "$r3" '[.ok, .result.target] | @csv')" = "true," ] || return 1
+  need "rows: $stored" [ "$stored" = "CLI later:NULL,CLI dated:NULL" ] || return 1
+  EV="add target \"\" answers null and stores NULL; update \"\" clears 2026-12-12 to NULL"
+}
+
+# The same through the real app-mcp server's tools/call.
+case_empty_target_mcp() {
+  local r1 r2 r3 id1 id2 stored
+  r1="$(cli alpha app-mcp '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_milestone","arguments":{"title":"MCP later","target":""}}}')"
+  r2="$(cli alpha milestones.add '{"title":"MCP dated","target":"2026-12-12"}')"
+  id1="$(jv "$r1" '.result.structuredContent.result.id // empty')"
+  id2="$(jv "$r2" '.result.id // empty')"
+  r3="$(cli alpha app-mcp "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"update_milestone\",\"arguments\":{\"id\":\"$id2\",\"target\":\"\"}}}")"
+  stored="$(q "SELECT group_concat(title || ':' || ifnull(target, 'NULL'), ',') FROM (SELECT title, target FROM milestones WHERE id IN ('$id1', '$id2') ORDER BY sort_order)")"
+  cli alpha milestones.remove "{\"id\":\"$id1\"}" >/dev/null
+  cli alpha milestones.remove "{\"id\":\"$id2\"}" >/dev/null
+  need "mcp add \"\": ${r1:0:300}" [ "$(jv "$r1" '.result.structuredContent | [.ok, .result.target] | @csv')" = "true," ] || return 1
+  need "mcp update \"\": ${r3:0:300}" [ "$(jv "$r3" '.result.structuredContent | [.ok, .result.target] | @csv')" = "true," ] || return 1
+  need "rows: $stored" [ "$stored" = "MCP later:NULL,MCP dated:NULL" ] || return 1
+  EV="app-mcp add_milestone target \"\" stores NULL; update_milestone \"\" clears a date to NULL"
+}
+
+# Beta's held omp turn added a dated row with its host tool, then cleared the
+# date with update_milestone target "". A field omp dropped, or a refusal,
+# would leave the date.
+case_omp_empty_target() {
+  local row deadline=$((SECONDS + 90))
+  until row="$(q "SELECT count(*) || ':' || ifnull(max(target), 'NULL') || ':' || ifnull(max(created_by), '') || ':' || (max(updated_at) > max(created_at)) FROM milestones WHERE project_path = '$B' AND title = 'Omp dated'")"
+    [[ "$row" == 1:NULL:* ]] || ((SECONDS > deadline)); do sleep 3; done
+  need "B rows titled Omp dated (count:target:by:updated): $row" [ "$row" = "1:NULL:mono:beta:1" ] || return 1
+  EV="omp host tools: add_milestone with 2026-12-12, then update_milestone target \"\" cleared it to NULL (by mono:beta)"
 }
 
 case_a_never_sees_b() {
