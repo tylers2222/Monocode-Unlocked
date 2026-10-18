@@ -20,7 +20,7 @@ export type ComposerIntent = {
    * steer then is `gone` and the label menu offers no Steering.
    */
   running: readonly RunningItem[];
-  /** A turn runs, so a bar that stops steering says nothing ended. */
+  /** A turn runs, so a picked steer that cannot reach its work says "Can't steer now". */
   busy: boolean;
   /** The busy rule would steer the typed text into the running turn. */
   steering: boolean;
@@ -43,28 +43,15 @@ export function useComposerBar(
   queuedBy?: string,
 ) {
   const steering = !!intent?.steering && !queuedBy;
-  const [sawTurn, setSawTurn] = useState(false);
   const bar: ComposerBar = intent
-    ? composerBar(
-        intent.running,
-        intent.choice,
-        steering,
-        sawTurn && typing && !intent.busy,
-        queuedBy,
-      )
+    ? composerBar(intent.running, intent.choice, steering, queuedBy)
     : { kind: "none" };
-  const showingTurn = bar.kind === "turn" && typing;
   const cleared = intent?.choice.kind === "cleared";
   const onChoiceChange = intent?.onChoiceChange;
   useEffect(() => {
-    if (typing) {
-      if (showingTurn) setSawTurn(true);
-      return;
-    }
     // ✕ belongs to the text it cleared; the next message starts fresh.
-    setSawTurn(false);
-    if (cleared) onChoiceChange?.(NO_CHOICE);
-  }, [typing, showingTurn, cleared, onChoiceChange]);
+    if (!typing && cleared) onChoiceChange?.(NO_CHOICE);
+  }, [typing, cleared, onChoiceChange]);
   return {
     bar,
     /**
@@ -77,7 +64,6 @@ export function useComposerBar(
     asNew: barSend({ kind: "none" }, steering || !!intent?.newWaits),
     /** The bar after a send the app took. */
     sent() {
-      setSawTurn(false);
       if (intent && intent.choice.kind !== "default")
         intent.onChoiceChange(NO_CHOICE);
     },
@@ -87,7 +73,7 @@ export function useComposerBar(
 /**
  * The line above the composer's field that names what the message refers
  * to, with ✕ to make it a new message (design 16.8, 16.12.6, doop E1, E6,
- * E8, E10). `turn` and `ended` show only while the user types.
+ * E8). `turn` shows only while the user types.
  */
 export function ComposerIntentBar({
   bar,
@@ -101,7 +87,7 @@ export function ComposerIntentBar({
   onSendAsNew: () => void;
 }) {
   if (bar.kind === "none") return null;
-  if ((bar.kind === "turn" || bar.kind === "ended") && !typing) return null;
+  if (bar.kind === "turn" && !typing) return null;
   const clear = () => intent.onChoiceChange({ kind: "cleared" });
   const scope = (
     <span className="composer-intent-target">
@@ -147,25 +133,23 @@ export function ComposerIntentBar({
           {scope}
         </>
       )}
-      {bar.kind === "gone" || bar.kind === "ended" || bar.kind === "held" ? (
+      {bar.kind === "gone" || bar.kind === "held" ? (
         <>
           <span
             className="composer-intent-chip"
             title={
               bar.kind === "held"
                 ? `${bar.mode} sends this after the running turn, so it cannot steer. Pick Reply, turn ${bar.mode} off, or send it as new.`
-                : bar.kind === "gone" && intent.busy
+                : intent.busy
                   ? "A steer cannot reach this work now. Pick Reply, or send it as new."
                   : "That work finished. Edit the message or send it as new."
             }
           >
             {bar.kind === "held"
               ? `${bar.mode} waits for the turn`
-              : bar.kind === "gone"
-                ? intent.busy
-                  ? "Can't steer now"
-                  : "Not running"
-                : "Nothing running"}
+              : intent.busy
+                ? "Can't steer now"
+                : "Not running"}
           </span>
           <button
             type="button"

@@ -239,12 +239,9 @@ it("inserts a picked emoji where the cursor was, beside attach", async () => {
   expect(container.querySelector('button[aria-label="Add emoji"]')).toBeNull();
 });
 
-// Doop E10, decision 536. Defects: text typed as a whole-turn steer opens a
-// new turn on its own once the turn ends, Enter clears it unsent, or Send
-// looks ready though the bar blocks it. PR I6 review r2 m1: the bar says
-// "Nothing running" while a turn still runs, as when the queue starts holding
-// the text.
-it("holds a whole-turn steer whose turn ended until the user sends it as new", () => {
+// ADE-6. Defect: once the turn ends, the bar keeps "Steering" for the text
+// typed during it and blocks Send, so the message cannot be sent.
+it("drops Steering when the turn ends, keeps the text, and sends it as a new message", () => {
   const onSubmit = vi.fn(() => true);
   const intent = {
     running: [],
@@ -259,23 +256,15 @@ it("holds a whole-turn steer whose turn ended until the user sends it as new", (
     container.querySelector<HTMLButtonElement>('[aria-label="Send"]')!;
   render({ onSubmit, intent });
   type("Stop after the gate rows");
-  expect(container.textContent).toContain("everything Captain is doing");
-
-  render({ onSubmit, intent: { ...intent, steering: false } });
-  expect(container.querySelector("[data-composer-intent]")).toBeNull();
-  expect(send().disabled).toBe(false);
+  expect(
+    container.querySelector('[data-composer-intent="turn"]')?.textContent,
+  ).toContain("Steering");
 
   render({ onSubmit, intent: { ...intent, steering: false, busy: false } });
-  expect(container.textContent).toContain("Nothing running");
-  expect(send().disabled).toBe(true);
-  act(submit);
-  expect(onSubmit).not.toHaveBeenCalled();
+  expect(container.querySelector("[data-composer-intent]")).toBeNull();
   expect(field().value).toBe("Stop after the gate rows");
-
-  const asNew = [...container.querySelectorAll("button")].find(
-    (button) => button.textContent === "Send as new",
-  )!;
-  act(() => asNew.click());
+  expect(send().disabled).toBe(false);
+  act(submit);
   expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
     "Stop after the gate rows",
     [],

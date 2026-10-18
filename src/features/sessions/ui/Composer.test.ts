@@ -1799,7 +1799,7 @@ describe("Composer message target", () => {
           onModelChange: vi.fn(),
           onRuntimeModeChange: vi.fn(),
           onSubmit,
-          busy: true,
+          busy: intent.busy ?? true,
           intent: {
             running: [],
             busy: true,
@@ -1864,6 +1864,33 @@ describe("Composer message target", () => {
     expect(onChoiceChange).toHaveBeenCalledWith({ kind: "default" });
   });
 
+  // ADE-6. Defect: once the turn ends, the bar keeps "Steering" for the text
+  // typed during it and blocks Send, so the message cannot be sent.
+  it("drops Steering when the turn ends, keeps the text, and sends it as a new message", async () => {
+    const onSubmit = vi.fn(() => true);
+    await renderWith({ steering: true }, onSubmit);
+    await typeText("Use the existing fixture");
+    expect(
+      container.querySelector('[data-composer-intent="turn"]')?.textContent,
+    ).toContain("Steering");
+
+    await renderWith({ steering: false, busy: false }, onSubmit);
+    expect(container.querySelector("[data-composer-intent]")).toBeNull();
+    expect(container.querySelector("textarea")!.value).toBe(
+      "Use the existing fixture",
+    );
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send"]')!
+        .disabled,
+    ).toBe(false);
+    await pressEnter();
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+      "Use the existing fixture",
+      [],
+      { intent: "default" },
+    );
+  });
+
   // Design 16.12.4, 16.12.6. Defects: the composer drops the bar's options,
   // so ✕ steers the running turn, or `turn` sends a guessed target.
   it("sends ✕ while steering as a message that waits, and the whole turn with no link", async () => {
@@ -1898,9 +1925,8 @@ describe("Composer message target", () => {
 
   // PR I6 review r1 n5, r2 n3, r3 n5. Defect: Enter pressed while a pasted
   // file is still reading sends with the bar of the render that started the
-  // send, so a whole-turn steer whose turn ended meanwhile goes out as a new
-  // turn instead of waiting for "Send as new".
-  it("reads the bar after a paste in flight, so a turn that ended meanwhile holds the text", async () => {
+  // send, so a picked steer whose work ended meanwhile goes out as a guess.
+  it("reads the bar after a paste in flight, so a steer whose work ended meanwhile holds the text", async () => {
     let finishRead!: () => void;
     vi.stubGlobal(
       "FileReader",
@@ -1914,9 +1940,14 @@ describe("Composer message target", () => {
       },
     );
     const onSubmit = vi.fn(() => true);
-    await renderWith({ steering: true }, onSubmit);
+    const picked = {
+      steering: true,
+      running: [{ blockId: "opener", quote: steer.quote }],
+      choice: { kind: "picked" as const, link: steer },
+    };
+    await renderWith(picked, onSubmit);
     expect(
-      container.querySelector('[data-composer-intent="turn"]'),
+      container.querySelector('[data-composer-intent="picked"]'),
     ).not.toBeNull();
     const file = new File(["notes"], "notes.txt", { type: "text/plain" });
     const paste = new Event("paste", { bubbles: true, cancelable: true });
@@ -1933,9 +1964,12 @@ describe("Composer message target", () => {
     await pressEnter();
     expect(onSubmit).not.toHaveBeenCalled();
 
-    await renderWith({ steering: false, busy: false }, onSubmit);
+    await renderWith(
+      { ...picked, steering: false, busy: false, running: [] },
+      onSubmit,
+    );
     expect(
-      container.querySelector('[data-composer-intent="ended"]'),
+      container.querySelector('[data-composer-intent="gone"]'),
     ).not.toBeNull();
     await act(async () => finishRead());
     expect(onSubmit).not.toHaveBeenCalled();
@@ -1946,7 +1980,7 @@ describe("Composer message target", () => {
 
   // Review PR I6 r1 M1. Defect: a typed mode command, which the send puts in
   // the queue, shows "Steering · everything this session is doing"; or, once
-  // that turn ends, "Nothing running", which blocks the mode's send.
+  // that turn ends, blocks the mode's send.
   it.each([
     ["/plan Use the fixture", "Use the fixture", "plan"],
     ["/orchestrator Use the fixture", "Use the fixture", "orchestrate"],

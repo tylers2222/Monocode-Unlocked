@@ -26,27 +26,19 @@ export type BarChoice =
 export const NO_CHOICE: BarChoice = { kind: "default" };
 
 /**
- * What the bar shows (design 16.12.6), plus `ended`: the bar showed `turn`
- * for this draft and the turn ended before Send (doop E10, decision 536);
- * and `held`: a picked steer while the composer's mode (`mode`, the pill's
- * label) sends the text to the queue, so the mode and the steer cannot both
- * hold.
+ * What the bar shows (design 16.12.6), plus `held`: a picked steer while the
+ * composer's mode (`mode`, the pill's label) sends the text to the queue, so
+ * the mode and the steer cannot both hold. Derived from the live turn state;
+ * it keeps no memory of earlier renders.
  */
 export type ComposerBar =
   | ComposerTarget
-  | { kind: "ended" }
   | { kind: "held"; link: TargetLink; mode: string };
 
 export function composerBar(
   running: readonly RunningItem[],
   choice: BarChoice,
   steering: boolean,
-  /**
-   * The bar showed `turn` for the text in the field now, and the session is
-   * no longer busy. A busy session that stops steering (the queue holds the
-   * text, or pauses) still runs a turn, so its bar is `none`.
-   */
-  turnEnded: boolean,
   /** The composer's mode that sends the text to the queue (Plan, Orchestrator, Operator). */
   queuedBy?: string,
 ): ComposerBar {
@@ -61,12 +53,8 @@ export function composerBar(
         ? { kind: "held", link: target.link, mode: queuedBy }
         : target;
     }
-    case "default": {
-      const target = composerTarget(running, null, steering);
-      return target.kind === "none" && turnEnded && !queuedBy
-        ? { kind: "ended" }
-        : target;
-    }
+    case "default":
+      return composerTarget(running, null, steering);
   }
 }
 
@@ -82,7 +70,7 @@ export type BarSend = Pick<ComposerTurnOptions, "link" | "waitForIdle">;
  * before the turn ends (`newTextWaits`).
  */
 export function barSend(
-  bar: Exclude<ComposerBar, { kind: "gone" | "ended" | "held" }>,
+  bar: Exclude<ComposerBar, { kind: "gone" | "held" }>,
   newWaits: boolean,
 ): BarSend;
 export function barSend(bar: ComposerBar, newWaits: boolean): BarSend | null;
@@ -95,7 +83,6 @@ export function barSend(bar: ComposerBar, newWaits: boolean): BarSend | null {
     case "picked":
       return { link: bar.link };
     case "gone":
-    case "ended":
     case "held":
       return null;
   }
