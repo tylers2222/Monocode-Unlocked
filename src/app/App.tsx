@@ -11586,7 +11586,7 @@ function Workspace({
               return {
                 id: mono.id,
                 name,
-                ...(mono.giga ? { giga: true } : {}),
+                ...(mono.giga ? { giga: true, gigaSlug: mono.gigaSlug } : {}),
                 projects: mono.projects,
                 showStartedSessionsInSidebar: mono.showStartedSessionsInSidebar,
                 ...(mono.useSidebarFolders

@@ -98,7 +98,11 @@ import {
   MONO_NAME_MAX,
   type Mono,
 } from "../../monos/model/mono";
-import type { WorkspaceStatus } from "../../monos/model/gigaWorkspace";
+import {
+  gigaFolder,
+  type WorkspaceStatus,
+} from "../../monos/model/gigaWorkspace";
+import { isGigaWorkspaceProject } from "../../projects/model/reservedProjectName";
 
 export type AppSessionListing = {
   id: string;
@@ -209,6 +213,8 @@ export type AgentAppHost = {
         name?: string;
         /** It may create and configure other Monos. */
         giga?: boolean;
+        /** Its folder is `gigas/<slug>/` in the Giga workspace. */
+        gigaSlug?: string;
         projects: readonly string[];
         showStartedSessionsInSidebar?: boolean;
         /** Files the sessions it starts into a folder named after it. */
@@ -564,6 +570,21 @@ function fileInMonoFolder(
   );
 }
 
+/**
+ * Where a Giga's session in the Giga workspace runs: its own folder, so the
+ * project stays `~/MonoCode` while the work and its commits stay in
+ * `gigas/<slug>/`.
+ */
+function ownGigaFolder(
+  cwd: string,
+  mono: { gigaSlug?: string } | undefined,
+): string | undefined {
+  const home = knownHomeDir();
+  return home && mono?.gigaSlug && isGigaWorkspaceProject(cwd, home)
+    ? gigaFolder(home, mono.gigaSlug)
+    : undefined;
+}
+
 function startLaunch(
   source: Session,
   input: Record<string, unknown>,
@@ -620,6 +641,7 @@ function startLaunch(
     throw new Error("worktreeCwd requires workspaceMode current");
   const currentWorktree =
     worktreeCwd ||
+    ownGigaFolder(cwd, host.monoOf?.(source.id)) ||
     (pathKey(cwd) === pathKey(source.cwd) ? source.worktreeCwd : undefined);
   return {
     cwd,
@@ -1467,7 +1489,12 @@ export async function handleAgentApp(
         );
       const launch = startLaunch(source, input, host);
       const notifyMonoId = completionRecipient(source, input, host, true);
-      if (input.worktreeCwd !== undefined) {
+      // A Giga's own folder is the one working copy git does not list.
+      const ownFolder = ownGigaFolder(launch.cwd, host.monoOf?.(source.id));
+      if (
+        input.worktreeCwd !== undefined &&
+        !(ownFolder && pathKey(ownFolder) === pathKey(launch.worktreeCwd!))
+      ) {
         const chosen = (await host.worktrees(launch.cwd)).worktrees.find(
           (tree) =>
             !tree.missing &&

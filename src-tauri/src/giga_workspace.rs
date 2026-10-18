@@ -1000,14 +1000,31 @@ static SESSION_SLUGS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, String>>,
 > = std::sync::LazyLock::new(Default::default);
 
-/// Gives a Giga's agent process its slug, so its own commits follow the hook.
-pub(crate) fn configure_child(session_id: &str, cmd: &mut Command) {
+/// Gives a Giga's agent process its slug, so its own commits follow the hook:
+/// the slug bound to the session, else the Giga whose folder it runs in.
+pub(crate) fn configure_child(session_id: &str, workdir: &Path, cmd: &mut Command) {
     cmd.env_remove("MONOCODE_GIGA_SLUG");
-    if let Ok(slugs) = SESSION_SLUGS.lock() {
-        if let Some(slug) = slugs.get(session_id) {
-            cmd.env("MONOCODE_GIGA_SLUG", slug);
-        }
+    let root = home().ok().map(|home| workspace_root(&home));
+    if let Some(slug) = child_slug(session_id, root.as_deref(), workdir) {
+        cmd.env("MONOCODE_GIGA_SLUG", slug);
     }
+}
+
+fn child_slug(session_id: &str, root: Option<&Path>, workdir: &Path) -> Option<String> {
+    let bound = SESSION_SLUGS
+        .lock()
+        .ok()
+        .and_then(|slugs| slugs.get(session_id).cloned());
+    bound.or_else(|| folder_slug(root?, workdir))
+}
+
+/// The Giga whose `gigas/<slug>/` folder holds `workdir`, if any.
+fn folder_slug(root: &Path, workdir: &Path) -> Option<String> {
+    let gigas = fs::canonicalize(root.join("gigas")).ok()?;
+    let workdir = fs::canonicalize(workdir).ok()?;
+    let slug = workdir.strip_prefix(gigas).ok()?.components().next()?;
+    let slug = slug.as_os_str().to_str()?;
+    is_valid_slug(slug).then(|| slug.to_string())
 }
 
 #[tauri::command]
@@ -1467,6 +1484,37 @@ mod tests {
     fn hook_refuses_gigas_without_a_slug() {
         let home = hook_repo("hook-noslug");
         assert!(try_commit(&home.root(), "", &[("gigas/alpha/briefs/b.md", "plan")]).is_err());
+    }
+
+    // Defect: a session a Giga starts in its folder cannot commit there, or
+    // a process elsewhere in the workspace gets a Giga's slug.
+    #[test]
+    fn a_session_in_a_giga_folder_commits_as_that_giga() {
+        let home = hook_repo("hook-folder");
+        let root = home.root();
+        fs::create_dir_all(root.join("gigas/alpha/work")).unwrap();
+        let slug_in =
+            |dir: &str| child_slug("started", Some(&root), &root.join(dir)).unwrap_or_default();
+        assert_eq!(slug_in("gigas/alpha"), "alpha");
+        assert_eq!(slug_in("gigas/alpha/work"), "alpha");
+        assert_eq!(slug_in("gigas/alpha/../beta"), "beta");
+        assert_eq!(slug_in(""), "");
+        assert_eq!(slug_in("shared"), "");
+        assert_eq!(
+            try_commit(
+                &root,
+                &slug_in("gigas/alpha"),
+                &[("gigas/alpha/work/a.md", "a")]
+            ),
+            Ok(String::new())
+        );
+        assert!(try_commit(
+            &root,
+            &slug_in("gigas/alpha"),
+            &[("gigas/beta/briefs/b.md", "b")]
+        )
+        .is_err());
+        assert!(try_commit(&root, &slug_in(""), &[("gigas/alpha/work/a.md", "a")]).is_err());
     }
 
     // Defect: shared/ is either closed to new files or open to edits.

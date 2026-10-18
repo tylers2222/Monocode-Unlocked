@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { newSession } from "../../sessions/model/session";
+import { newSession, type Session } from "../../sessions/model/session";
+import { setHomeDir } from "../../../shared/lib/paths";
 import {
   resetHarnessModelOverlays,
   saveLastModelChoice,
@@ -218,6 +219,88 @@ describe("agent app commands", () => {
       notifyOnComplete: false,
     }, host);
     expect(loadSessionFolders(source.cwd)).toEqual([]);
+  });
+
+  describe("a Giga's session in the Giga workspace", () => {
+    const workspace = "/home/u/MonoCode";
+    const alphaFolder = `${workspace}/gigas/alpha`;
+    function gigaFixture(mono: { gigaSlug?: string; projects?: string[] }) {
+      const { source, host } = fixture();
+      source.cwd = alphaFolder;
+      host.isMono = () => true;
+      host.monoOf = () => ({
+        id: "giga",
+        giga: true,
+        projects: [workspace, "/code/app"],
+        showStartedSessionsInSidebar: true,
+        folder: { name: "Alpha", color: "#5b8def" },
+        ...mono,
+      });
+      vi.mocked(host.worktrees).mockResolvedValue({
+        worktrees: [
+          { ...featureWorktree, path: workspace, isMain: true, branch: "main" },
+        ],
+        defaultRoot: `${workspace}-worktrees`,
+      });
+      return { source, host };
+    }
+    const start = (
+      host: AgentAppHost,
+      source: Session,
+      input: Record<string, unknown> = {},
+    ) =>
+      handleAgentApp(source, "giga-run", "sessions.start", {
+        ...CHOICE,
+        prompt: "Write the plan",
+        project: "MonoCode",
+        ...input,
+      }, host);
+    beforeEach(() => setHomeDir("/home/u"));
+    afterEach(() => setHomeDir(undefined));
+
+    it("runs in the Giga's folder, filed under MonoCode, reporting to the Giga", async () => {
+      const { source, host } = gigaFixture({ gigaSlug: "alpha" });
+      await start(host, source);
+      expect(host.start).toHaveBeenCalledWith(
+        expect.objectContaining({ cwd: workspace, worktreeCwd: alphaFolder }),
+        "app-lead-giga-run",
+        undefined,
+        "lead",
+      );
+      expect(vi.mocked(host.start).mock.calls[0][0].sidebarHidden).toBeUndefined();
+      expect(loadSessionFolders(workspace)).toEqual([
+        expect.objectContaining({
+          name: "Alpha",
+          sessionIds: ["app-lead-giga-run"],
+        }),
+      ]);
+    });
+
+    it("accepts its own folder by name and refuses another Giga's", async () => {
+      const { source, host } = gigaFixture({ gigaSlug: "alpha" });
+      await start(host, source, { worktreeCwd: alphaFolder });
+      expect(vi.mocked(host.start).mock.calls[0][0].worktreeCwd).toBe(
+        alphaFolder,
+      );
+      await expect(
+        start(host, source, { worktreeCwd: `${workspace}/gigas/beta` }),
+      ).rejects.toThrow("Worktree is unavailable in this project");
+    });
+
+    it("runs at the workspace root when asked for it", async () => {
+      const { source, host } = gigaFixture({ gigaSlug: "alpha" });
+      await start(host, source, { worktreeCwd: workspace });
+      expect(vi.mocked(host.start).mock.calls[0][0].worktreeCwd).toBeUndefined();
+    });
+
+    it.each([
+      ["a Mono without a Giga folder", {}, "MonoCode"],
+      ["a Giga naming another project", { gigaSlug: "alpha" }, "app"],
+    ])("leaves %s where it was", async (_, mono, project) => {
+      const { source, host } = gigaFixture(mono);
+      await start(host, source, { project });
+      expect(vi.mocked(host.start).mock.calls[0][0].worktreeCwd).toBeUndefined();
+    });
   });
 
   describe.each([
