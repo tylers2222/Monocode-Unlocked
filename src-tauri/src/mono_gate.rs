@@ -3,8 +3,8 @@
 //! [`Decision`]. The first matching row of design 16.5 or 6.4 wins.
 //!
 //! PR I2 has rows S1-S7, I1, I2, S9, S10, S13-S17, S20, W1-W3 (whole-turn)
-//! and R1-R8, R10, R11, and the hop limit (S18, R9). The direction matrix,
-//! rule (b) and the rate limit come later in PR 7.
+//! and R1-R8, R10, R11, the hop limit (S18, R9) and the rate limit (S19).
+//! The direction matrix and rule (b) come later in PR 7.
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -417,6 +417,18 @@ pub struct SendFacts {
     pub recipient: Recipient,
     /// `None` without `reply_to`, or when it named no accepted row (S9).
     pub reply_to: Option<Referenced>,
+    /// S19 (design 6.1): the caller's accepted sends to this recipient in the
+    /// last 10 minutes.
+    pub pair: PairCount,
+}
+
+/// Design 6.1 "pair count": accepted `send_message` rows with the caller's
+/// sender key and this recipient, `created_at > now - RATE_WINDOW_MS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PairCount {
+    pub count: u32,
+    /// `created_at` of the oldest counted row, for the retry hint.
+    pub oldest: Option<i64>,
 }
 
 /// How a reply's handle stands in the caller's turn (design 5.2).
@@ -530,6 +542,10 @@ pub struct OpenHandle {
     pub from: String,
 }
 
+/// The window of the pair count (design 6.1), 10 minutes.
+pub const RATE_WINDOW_MS: i64 = 600_000;
+/// S19: the accepted sends one pair may have in the window.
+const RATE_LIMIT: u32 = 6;
 /// S18 and R9: the deepest hop a call may write.
 const MAX_HOP: u32 = 4;
 
@@ -681,8 +697,8 @@ fn too_large(message: &str) -> bool {
 }
 
 /// The hint of a send rejection (design 16.5, 16.12): the intent codes and
-/// S15 name what this call asked for.
-fn send_hint(code: RejectCode, input: &SendInput) -> String {
+/// S15 name what this call asked for, and S19 the time to wait.
+fn send_hint(code: RejectCode, input: &SendInput, pair: PairCount, now: i64) -> String {
     match (code, input.intent, &input.target) {
         (RejectCode::IntentMismatch, IntentKind::New, Some(SendTarget::Turn)) => {
             r#"intent "new" takes no scope. Remove scope, or use intent "steer"."#.into()
@@ -696,8 +712,24 @@ fn send_hint(code: RejectCode, input: &SendInput) -> String {
         ),
         (RejectCode::IntentNotAllowed, IntentKind::Reply, _) => r##"send_message cannot reply. Use reply (to: "#n") to answer a message that waits for you."##.into(),
         (RejectCode::TargetGone, _, _) => r#"The work that reply_to started is not running now: it finished, it has not started, or its session is idle, cleared or deleted. Send it with intent "new"."#.into(),
+        (RejectCode::RateLimited, _, _) => rate_hint(pair, now),
         _ => code.hint().into(),
     }
+}
+
+/// Design 3.4 `rate_limited`: `<n>` is the whole seconds, rounded up, until
+/// the oldest counted send leaves the window.
+fn rate_hint(pair: PairCount, now: i64) -> String {
+    let Some(oldest) = pair.oldest else {
+        return RejectCode::RateLimited.hint().into();
+    };
+    let seconds = (oldest + RATE_WINDOW_MS - now)
+        .max(1)
+        .unsigned_abs()
+        .div_ceil(1000);
+    format!(
+        "{RATE_LIMIT} messages to that recipient in 10 minutes. Retry after {seconds} s with a new request id."
+    )
 }
 
 /// What an intent-checked send asks for.
@@ -707,16 +739,18 @@ enum Asked {
     WholeTurn,
 }
 
-/// Design 16.5 and 16.12.2.1, the rows of PR 4a and PR I2 in order.
+/// Design 16.5 and 16.12.2.1, the rows of PR 4a, PR I2 and S19 in order.
 pub fn decide_send(
     caller: &Caller,
     input: &SendInput,
     hash: &PayloadHash,
     facts: &Facts<SendFacts>,
+    now: i64,
 ) -> Decision {
+    let pair = facts.about.pair;
     let again = |code: RejectCode| Rejection {
         code,
-        hint: send_hint(code, input),
+        hint: send_hint(code, input, pair, now),
         open_handles: Vec::new(),
     };
     let caller_row = match prelude(facts, hash, again) {
@@ -727,7 +761,7 @@ pub fn decide_send(
     let to = recipient.party();
     let reject_at = |code: RejectCode, to: Option<Party>, hop: u32| Decision::Reject {
         code,
-        hint: send_hint(code, input),
+        hint: send_hint(code, input, pair, now),
         to,
         hop,
         open_handles: Vec::new(),
@@ -793,8 +827,7 @@ pub fn decide_send(
         }
         _ => {}
     }
-    let to_party = || to.clone().expect("a resolved recipient is a party");
-    if let Some((referenced, session, pin)) = steered {
+    let (hop, route, intent) = if let Some((referenced, session, pin)) = steered {
         // S15: the work M started must run now, in the turn that runs it.
         let running = referenced.session.as_ref().filter(|target| {
             session.as_ref() == Some(&target.session)
@@ -810,24 +843,16 @@ pub fn decide_send(
         if !target.steerable {
             return reject(RejectCode::CannotSteer, to);
         }
-        // S18: a steer is one hop deeper than the message it changes.
-        let hop = referenced.message.hop + 1;
-        if hop > MAX_HOP {
-            return reject_at(RejectCode::HopLimit, to.clone(), hop);
-        }
-        return Decision::Accept {
-            hop,
-            rows: vec![Outgoing {
-                to: to_party(),
-                route: Route {
-                    session: target.session.clone(),
-                    via: Via::Steer,
-                },
-                intent: Intent::Steer(SteerTarget::Message(referenced.message.id.clone())),
-            }],
-        };
-    }
-    if let Asked::WholeTurn = asked {
+        // A steer is one hop deeper than the message it changes.
+        (
+            referenced.message.hop + 1,
+            Route {
+                session: target.session.clone(),
+                via: Via::Steer,
+            },
+            Intent::Steer(SteerTarget::Message(referenced.message.id.clone())),
+        )
+    } else if let Asked::WholeTurn = asked {
         // W3: the recipient's own session must run a turn. S17 then.
         let running = match recipient {
             Recipient::Mono {
@@ -842,38 +867,48 @@ pub fn decide_send(
             return reject(RejectCode::CannotSteer, to);
         }
         // One row, one route: nothing here reads the recipient's sessions.
-        return Decision::Accept {
-            hop: 0,
-            rows: vec![Outgoing {
-                to: to_party(),
-                route: Route {
-                    session: chat.session.clone(),
-                    via: Via::Steer,
-                },
-                intent: Intent::Steer(SteerTarget::Turn {
-                    turn_id: turn.clone(),
-                }),
-            }],
+        (
+            0,
+            Route {
+                session: chat.session.clone(),
+                via: Via::Steer,
+            },
+            Intent::Steer(SteerTarget::Turn {
+                turn_id: turn.clone(),
+            }),
+        )
+    } else {
+        // S16: new work goes to the recipient's chat or the project session,
+        // and always waits for the turn end.
+        let session = match recipient {
+            Recipient::Session { target, .. } => &target.session,
+            Recipient::Mono {
+                chat: Some(chat), ..
+            } if chat.exists => &chat.session,
+            _ => return reject(RejectCode::TargetNoConversation, to),
         };
-    }
-    // S16: new work goes to the recipient's chat or the project session,
-    // and always waits for the turn end.
-    let session = match recipient {
-        Recipient::Session { target, .. } => &target.session,
-        Recipient::Mono {
-            chat: Some(chat), ..
-        } if chat.exists => &chat.session,
-        _ => return reject(RejectCode::TargetNoConversation, to),
-    };
-    Decision::Accept {
-        hop: 0,
-        rows: vec![Outgoing {
-            to: to_party(),
-            route: Route {
+        (
+            0,
+            Route {
                 session: session.clone(),
                 via: Via::Queue,
             },
-            intent: Intent::New,
+            Intent::New,
+        )
+    };
+    // S18, S19: every accepted path counts in both.
+    if hop > MAX_HOP {
+        return reject_at(RejectCode::HopLimit, to, hop);
+    }
+    if pair.count >= RATE_LIMIT {
+        return reject(RejectCode::RateLimited, to);
+    }
+    Decision::Accept {
+        hop,
+        rows: vec![Outgoing {
+            to: to.expect("a resolved recipient is a party"),
+            route,
+            intent,
         }],
     }
 }
@@ -1188,10 +1223,13 @@ mod tests {
         }
     }
 
+    const NOW: i64 = 1_000_000_000;
+
     fn sends(recipient: Recipient) -> Facts<SendFacts> {
         facts(SendFacts {
             recipient,
             reply_to: None,
+            pair: PairCount::default(),
         })
     }
 
@@ -1204,6 +1242,7 @@ mod tests {
         facts(SendFacts {
             recipient,
             reply_to: Some(Referenced { message, session }),
+            pair: PairCount::default(),
         })
     }
 
@@ -1422,6 +1461,7 @@ mod tests {
                 &new("Hi", "mono-a", false),
                 &hash(),
                 &gone,
+                NOW,
             ),
             Decision::Refuse {
                 code: Refusal::NotAMono,
@@ -1441,6 +1481,7 @@ mod tests {
                 &new("Ship it", "mono-a", false),
                 &hash(),
                 &again,
+                NOW,
             ),
             Decision::Duplicate {
                 prior,
@@ -1460,6 +1501,7 @@ mod tests {
                 &other,
                 &Input::Send(other.clone()).payload_hash(),
                 &again,
+                NOW,
             ),
             Decision::Refuse {
                 code: Refusal::RequestIdReused,
@@ -1494,6 +1536,7 @@ mod tests {
                     &other,
                     &Input::Send(other.clone()).payload_hash(),
                     facts,
+                    NOW,
                 ),
                 Decision::Refuse {
                     code: Refusal::RequestIdReused,
@@ -1508,6 +1551,7 @@ mod tests {
                 &first_steer,
                 &Input::Send(first_steer.clone()).payload_hash(),
                 &steered,
+                NOW,
             ),
             Decision::Duplicate { .. }
         ));
@@ -1521,6 +1565,7 @@ mod tests {
                 &new(&"é".repeat(chars), "mono-a", false),
                 &hash(),
                 &sends(mono_a(Some(live("a-chat", false, true)))),
+                NOW,
             )
         };
         assert_eq!(at(8001), rejected(RejectCode::TooLarge, party_a()));
@@ -1531,6 +1576,7 @@ mod tests {
             &new(&"😀".repeat(8000), "mono-a", false),
             &hash(),
             &sends(mono_a(Some(live("a-chat", false, true)))),
+            NOW,
         );
         assert!(matches!(emoji, Decision::Accept { .. }), "{emoji:?}");
     }
@@ -1567,6 +1613,7 @@ mod tests {
                 &input,
                 &hash(),
                 &sends(mono_a(Some(live("a-chat", true, true)))),
+                NOW,
             )
         };
         let new_with_target = r#"intent "new" takes no reply_to. Remove reply_to, or use intent "steer" to change the work that message started."#;
@@ -1635,6 +1682,7 @@ mod tests {
                 &input,
                 &hash(),
                 &sends(recipient),
+                NOW,
             )
         };
         let a_running = || mono_a(Some(live("a-chat", true, true)));
@@ -1710,6 +1758,7 @@ mod tests {
             &whole(IntentKind::Steer),
             &hash(),
             &facts,
+            NOW,
         )
     }
 
@@ -1743,6 +1792,7 @@ mod tests {
                 &asking(IntentKind::Steer, None),
                 &hash(),
                 &sends(a_running),
+                NOW,
             ),
             send_rejected(
                 RejectCode::SteerNeedsTarget,
@@ -1918,6 +1968,7 @@ mod tests {
                 &with_scope,
                 &Input::Send(with_scope.clone()).payload_hash(),
                 &again,
+                NOW,
             ),
             Decision::Refuse {
                 code: Refusal::RequestIdReused,
@@ -1943,6 +1994,7 @@ mod tests {
                 &new("Hi", "nope", false),
                 &hash(),
                 &sends(Recipient::Unknown),
+                NOW,
             ),
             rejected(RejectCode::UnknownTarget, None)
         );
@@ -1979,6 +2031,7 @@ mod tests {
                     &new("Hi", "giga", false),
                     &hash(),
                     &sends(recipient),
+                    NOW,
                 ),
                 rejected(RejectCode::SelfSend, Some(to))
             );
@@ -1997,6 +2050,7 @@ mod tests {
                     target: live("giga-chat", false, true),
                     own_project: true,
                 }),
+                NOW,
             ),
             rejected(
                 RejectCode::SelfSend,
@@ -2018,6 +2072,7 @@ mod tests {
                     target: live("other", false, true),
                     own_project: false,
                 }),
+                NOW,
             ),
             rejected(
                 RejectCode::DirectionForbidden,
@@ -2068,6 +2123,7 @@ mod tests {
                 &steer("m_aaaaaaaaaaaa"),
                 &hash(),
                 &sends(mono_a(Some(live("a-chat", true, true)))),
+                NOW,
             ),
             rejected(RejectCode::UnknownMessage, party_a())
         );
@@ -2109,6 +2165,7 @@ mod tests {
                     &steer(message.id.as_str()),
                     &hash(),
                     &steering(mono_a(a_chat.clone()), message.clone(), a_chat.clone()),
+                    NOW,
                 ),
                 rejected(RejectCode::SteerTargetMismatch, party_a()),
                 "{message:?}"
@@ -2127,6 +2184,7 @@ mod tests {
                     target: live("p", false, true),
                     own_project: true,
                 }),
+                NOW,
             ),
             rejected(
                 RejectCode::ReplyUnsupportedTarget,
@@ -2145,6 +2203,7 @@ mod tests {
                 &new("Hi", "mono-a", true),
                 &hash(),
                 &sends(mono_a(Some(live("a-chat", false, true)))),
+                NOW,
             )
         };
         assert_eq!(
@@ -2203,6 +2262,7 @@ mod tests {
                         message,
                         Some(session)
                     ),
+                    NOW,
                 ),
                 send_rejected(RejectCode::TargetGone, party_a(), gone_hint),
                 "{case}"
@@ -2223,6 +2283,7 @@ mod tests {
                     &new("Hi", "mono-a", false),
                     &hash(),
                     &sends(mono_a(chat)),
+                    NOW,
                 ),
                 rejected(RejectCode::TargetNoConversation, party_a())
             );
@@ -2244,6 +2305,7 @@ mod tests {
                     sent('a', 0, Some("turn-1")),
                     Some(stiff.clone())
                 ),
+                NOW,
             ),
             send_rejected(
                 RejectCode::CannotSteer,
@@ -2257,6 +2319,7 @@ mod tests {
                 &new("Hi", "mono-a", false),
                 &hash(),
                 &sends(mono_a(Some(stiff))),
+                NOW,
             ),
             Decision::Accept { .. }
         ));
@@ -2277,6 +2340,7 @@ mod tests {
                     sent('a', hop, Some("turn-1")),
                     Some(handling),
                 ),
+                NOW,
             )
         };
         let running = live("a-chat", true, true);
@@ -2307,6 +2371,98 @@ mod tests {
         );
     }
 
+    // S19 (design 6.1 pair count). Defect: one path lets a pair flood past 6
+    // sends in 10 minutes, or the hint gives no time to retry after.
+    #[test]
+    fn s19_a_seventh_send_to_one_recipient_in_10_minutes_is_rate_limited() {
+        let a_chat = live("a-chat", true, true);
+        let giga_sends = |input: SendInput, reply_to: Option<Referenced>, pair: PairCount| {
+            let facts = facts(SendFacts {
+                recipient: mono_a(Some(a_chat.clone())),
+                reply_to,
+                pair,
+            });
+            decide_send(&caller(CallerKind::MonoChat), &input, &hash(), &facts, NOW)
+        };
+        let every_path = |count: u32| {
+            let pair = PairCount {
+                count,
+                oldest: Some(NOW - RATE_WINDOW_MS + 42_500),
+            };
+            let target = Referenced {
+                message: sent('a', 0, Some("turn-1")),
+                session: Some(a_chat.clone()),
+            };
+            [
+                ("new", giga_sends(new("Hi", "mono-a", false), None, pair)),
+                (
+                    "steer",
+                    giga_sends(steer("m_aaaaaaaaaaaa"), Some(target), pair),
+                ),
+                (
+                    "whole turn",
+                    giga_sends(whole(IntentKind::Steer), None, pair),
+                ),
+            ]
+        };
+        for (case, decision) in every_path(5) {
+            assert!(
+                matches!(decision, Decision::Accept { .. }),
+                "{case}: {decision:?}"
+            );
+        }
+        let hint =
+            "6 messages to that recipient in 10 minutes. Retry after 43 s with a new request id.";
+        for (case, decision) in every_path(6) {
+            assert_eq!(
+                decision,
+                send_rejected(RejectCode::RateLimited, party_a(), hint),
+                "{case}"
+            );
+        }
+        let one_ms_left = PairCount {
+            count: 6,
+            oldest: Some(NOW - RATE_WINDOW_MS + 1),
+        };
+        assert_eq!(
+            giga_sends(new("Hi", "mono-a", false), None, one_ms_left),
+            send_rejected(
+                RejectCode::RateLimited,
+                party_a(),
+                "6 messages to that recipient in 10 minutes. Retry after 1 s with a new request id."
+            )
+        );
+    }
+
+    // Design 16.5 row order, PR 7 review r1 n5. Defect: S19 runs before
+    // S18, so a steer past hop 4 at the rate limit answers rate_limited and
+    // its row loses the hop.
+    #[test]
+    fn s18_runs_before_s19() {
+        let a_chat = live("a-chat", true, true);
+        let facts = facts(SendFacts {
+            recipient: mono_a(Some(a_chat.clone())),
+            reply_to: Some(Referenced {
+                message: sent('a', 4, Some("turn-1")),
+                session: Some(a_chat),
+            }),
+            pair: PairCount {
+                count: 6,
+                oldest: Some(NOW - 1_000),
+            },
+        });
+        assert_eq!(
+            decide_send(
+                &caller(CallerKind::MonoChat),
+                &steer("m_aaaaaaaaaaaa"),
+                &hash(),
+                &facts,
+                NOW
+            ),
+            hop_limited(party_a())
+        );
+    }
+
     // PR I2, S20. Defect: new work still steers a running turn, a steer
     // goes anywhere but the session handling its target, or its hop does
     // not grow, so the hop limit cannot bound a chain of steers.
@@ -2319,6 +2475,7 @@ mod tests {
                 &new("Hi", "mono-a", true),
                 &hash(),
                 &sends(mono_a(Some(a_chat.clone()))),
+                NOW,
             ),
             Decision::Accept {
                 hop: 0,
@@ -2361,6 +2518,7 @@ mod tests {
                 &steer("m_aaaaaaaaaaaa"),
                 &hash(),
                 &steering(mono_a(Some(a_chat)), target, Some(old_chat)),
+                NOW,
             ),
             Decision::Accept {
                 hop: 3,
@@ -2415,6 +2573,7 @@ mod tests {
                     to_project,
                     Some(project),
                 ),
+                NOW,
             ),
             Decision::Accept {
                 hop: 1,

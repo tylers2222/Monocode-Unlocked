@@ -20,8 +20,8 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use crate::control::ControlHost;
 use crate::mono_gate::{
     self, Caller, CallerKind, CallerMono, Closure, Decision, Facts, HandleState, Handled, Input,
-    MessageRef, OpenHandle, Recipient, Referenced, Refusal, ReplyFacts, Route, SendFacts, Target,
-    TargetSession,
+    MessageRef, OpenHandle, PairCount, Recipient, Referenced, Refusal, ReplyFacts, Route,
+    SendFacts, Target, TargetSession,
 };
 use crate::mono_roster::{validate_mono_id, MonoRole};
 use crate::session_store::{validate_id, SessionStore};
@@ -1529,6 +1529,7 @@ pub fn submit(
                 None => None,
             };
             referenced_id = reply_to.as_ref().map(|found| found.message.id.clone());
+            let pair = pair_count(&tx, caller, &recipient, now)?;
             mono_gate::decide_send(
                 caller,
                 send,
@@ -1539,8 +1540,10 @@ pub fn submit(
                     about: SendFacts {
                         recipient,
                         reply_to,
+                        pair,
                     },
                 },
+                now,
             )
         }
         Input::Reply(reply) => {
@@ -1582,6 +1585,39 @@ pub fn submit(
 /// message id only (PR I2 review r1).
 fn resolve_ref(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<MonoMessage>> {
     Ok(get(conn, id)?.filter(|message| !matches!(message.status, Status::Rejected { .. })))
+}
+
+/// Design 6.1 "pair count" (S19): the caller's accepted sends to `recipient`
+/// in the rate window. The sender key is the caller's Mono, so its chat and
+/// its habit runs share one count.
+fn pair_count(
+    conn: &Connection,
+    caller: &Caller,
+    recipient: &Recipient,
+    now: i64,
+) -> rusqlite::Result<PairCount> {
+    let (to_mono, to_session) = match recipient {
+        Recipient::Unknown => return Ok(PairCount::default()),
+        Recipient::Mono { mono_id, .. } => (Some(mono_id.as_str()), None),
+        Recipient::Session { target, .. } => (None, Some(target.session.as_str())),
+    };
+    conn.query_row(
+        "SELECT count(*), min(created_at) FROM mono_messages
+          WHERE from_mono_id = ?1 AND to_mono_id IS ?2 AND to_session_id IS ?3
+            AND tool = 'send_message' AND status <> 'rejected' AND created_at > ?4",
+        params![
+            caller.mono_id.as_str(),
+            to_mono,
+            to_session,
+            now - mono_gate::RATE_WINDOW_MS
+        ],
+        |row| {
+            Ok(PairCount {
+                count: row.get(0)?,
+                oldest: row.get(1)?,
+            })
+        },
+    )
 }
 
 /// `message` with the session target_session gives for it, as live sees it.
@@ -7057,36 +7093,48 @@ pub(crate) mod tests {
             in_old_chat,
             to("mono-a", "to-older-turn", "a-chat", "turn-0"),
         ];
-        let running = [
+        let running: HashMap<String, String> = [
             ("a-chat", "turn-1"),
             ("b-chat", "turn-7"),
             ("project", "turn-3"),
             ("a-old", "turn-5"),
-        ];
+        ]
+        .into_iter()
+        .map(|(id, turn)| (id.to_string(), turn.to_string()))
+        .collect();
         // Class i % 7: 0 to 2 name running work; 3 names queued work; 4 names
         // work that A's earlier chat runs, not its current chat; 5 names a
         // turn of A's chat older than the one it runs; 6 names B's work but
         // is sent to A.
-        for i in (0..49).map(|i| (i * 17 + 5) % 49) {
+        for (step, i) in (0..49).map(|i| (i * 17 + 5) % 49).enumerate() {
             let (to, target) = match i % 7 {
                 6 => ("mono-a", &targets[1].1),
                 class => (targets[class].0.as_str(), &targets[class].1),
             };
-            let outcome = call_in_turns(
+            // Each steer in a rate window of its own: S19 is not under test.
+            let now = 100 + (step as i64 + 1) * mono_gate::RATE_WINDOW_MS;
+            let outcome = submit(
                 &conn,
                 &caller_in("giga", "giga-chat"),
-                &format!("s{i}"),
-                Tool::SendMessage,
-                serde_json::json!({
-                    "message": format!("s{i}-{to}"),
-                    "send_to": to,
-                    "wanting_reply": false,
-                    "intent": "steer",
-                    "reply_to": target.as_str(),
-                }),
-                &live,
-                &running,
-            );
+                &RequestId::parse(&format!("s{i}")).unwrap(),
+                mono_gate::parse(
+                    Tool::SendMessage,
+                    &serde_json::json!({
+                        "message": format!("s{i}-{to}"),
+                        "send_to": to,
+                        "wanting_reply": false,
+                        "intent": "steer",
+                        "reply_to": target.as_str(),
+                    }),
+                ),
+                &Live {
+                    sessions: &live,
+                    running: &running,
+                    steerable_harnesses: &["codex".to_string()],
+                },
+                now,
+            )
+            .unwrap();
             let refused = match i % 7 {
                 3 | 5 => Some("target_gone"),
                 6 => Some("steer_target_mismatch"),
@@ -7668,6 +7716,191 @@ pub(crate) mod tests {
         assert!(
             notices.sessions.contains(&session("giga-chat")),
             "{notices:?}"
+        );
+    }
+
+    // Design 6.1 "pair count" (S19). Defect: the gate gets no count, or not
+    // the oldest counted send, so a Mono floods one recipient or is told to
+    // wait the wrong time.
+    #[test]
+    fn a_monos_seventh_send_to_one_recipient_in_ten_minutes_is_rate_limited() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let giga = caller_in("giga", "giga-chat");
+        let send = |request_id: &str, now: i64| {
+            call_at(
+                &conn,
+                &giga,
+                request_id,
+                Tool::SendMessage,
+                hi("mono-a", false),
+                now,
+            )
+        };
+        // Ten seconds apart, so the hint shows which send it counts from.
+        for n in 0..6 {
+            accepted_ids(&send(&format!("r{n}"), 100 + n * 10_000));
+        }
+        let refused = failed(send("r6", 60_100));
+        assert_eq!(refused.code, "rate_limited");
+        assert!(
+            refused.hint.contains("Retry after 540 s"),
+            "{}",
+            refused.hint
+        );
+    }
+
+    // Design 6.1: the count covers 10 minutes. Defect: older sends still
+    // count, so a Mono stays limited after the window.
+    #[test]
+    fn a_send_after_the_ten_minute_window_is_accepted() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let giga = caller_in("giga", "giga-chat");
+        let send = |request_id: &str, now: i64| {
+            call_at(
+                &conn,
+                &giga,
+                request_id,
+                Tool::SendMessage,
+                hi("mono-a", false),
+                now,
+            )
+        };
+        for request_id in ["r1", "r2", "r3", "r4", "r5", "r6"] {
+            accepted_ids(&send(request_id, 100));
+        }
+        assert_eq!(failed(send("inside", 100 + 599_999)).code, "rate_limited");
+        accepted_ids(&send("after", 100 + 600_001));
+    }
+
+    // Design 6.1 pair count (`created_at > now - 600 000`), PR 7 review r1
+    // n5. Defect: a send exactly 10 minutes old still counts.
+    #[test]
+    fn a_send_exactly_ten_minutes_old_no_longer_counts() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let giga = caller_in("giga", "giga-chat");
+        let send = |request_id: &str, now: i64| {
+            call_at(
+                &conn,
+                &giga,
+                request_id,
+                Tool::SendMessage,
+                hi("mono-a", false),
+                now,
+            )
+        };
+        for request_id in ["r1", "r2", "r3", "r4", "r5", "r6"] {
+            accepted_ids(&send(request_id, 100));
+        }
+        accepted_ids(&send("edge", 100 + 600_000));
+    }
+
+    // Design 6.1: only accepted sends count. Defect: refused sends count, so
+    // a Mono that fixes a refused call is then rate-limited.
+    #[test]
+    fn refused_sends_do_not_count_toward_the_rate_limit() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let giga = caller_in("giga", "giga-chat");
+        let long = serde_json::json!({"message": "x".repeat(8001), "send_to": "mono-a", "wanting_reply": false, "intent": "new"});
+        for request_id in ["r1", "r2", "r3", "r4", "r5"] {
+            accepted_ids(&call(
+                &conn,
+                &giga,
+                request_id,
+                Tool::SendMessage,
+                hi("mono-a", false),
+                &[],
+            ));
+        }
+        for request_id in ["long-1", "long-2", "long-3"] {
+            let error = failed(call(
+                &conn,
+                &giga,
+                request_id,
+                Tool::SendMessage,
+                long.clone(),
+                &[],
+            ));
+            assert_eq!(error.code, "too_large");
+        }
+        accepted_ids(&call(
+            &conn,
+            &giga,
+            "r6",
+            Tool::SendMessage,
+            hi("mono-a", false),
+            &[],
+        ));
+    }
+
+    // Design 6.4: a reply is never rate-limited and never counts. Defect: a
+    // Mono that answered its Giga's questions cannot send it new work.
+    #[test]
+    fn replies_do_not_count_toward_the_rate_limit() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let a = caller_in("mono-a", "a-chat");
+        for n in 1..=3 {
+            ask_delivered(&conn, &format!("ask-{n}"), "turn-1");
+            accepted_ids(&call(
+                &conn,
+                &a,
+                &format!("answer-{n}"),
+                Tool::Reply,
+                yes(),
+                &[],
+            ));
+        }
+        for n in 1..=6 {
+            accepted_ids(&call(
+                &conn,
+                &a,
+                &format!("send-{n}"),
+                Tool::SendMessage,
+                hi("giga", false),
+                &[],
+            ));
+        }
+    }
+
+    // Design 6.1 pair count (the sender key of a Mono is its Mono), PR 7
+    // review r1 m11. Defect: a Mono's chat and its habit runs count apart,
+    // so together they send twice the limit.
+    #[test]
+    fn a_monos_chat_and_habit_runs_share_one_rate_count() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let chat = caller_in("giga", "giga-chat");
+        let run = Caller {
+            kind: CallerKind::HabitRun,
+            ..caller_in("giga", "giga-run")
+        };
+        for n in 0..3 {
+            for (caller, key) in [(&chat, "chat"), (&run, "run")] {
+                accepted_ids(&call(
+                    &conn,
+                    caller,
+                    &format!("{key}-{n}"),
+                    Tool::SendMessage,
+                    hi("mono-a", false),
+                    &[],
+                ));
+            }
+        }
+        assert_eq!(
+            failed(call(
+                &conn,
+                &chat,
+                "seventh",
+                Tool::SendMessage,
+                hi("mono-a", false),
+                &[]
+            ))
+            .code,
+            "rate_limited"
         );
     }
 }
