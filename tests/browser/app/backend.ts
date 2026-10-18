@@ -127,6 +127,9 @@ const HARNESSES = [
   "pi",
 ];
 
+/** Every project is a git repo on this branch. */
+const BRANCH = "main";
+
 const HANDLERS: Record<string, Handler> = {
   ...Object.fromEntries(IGNORED.map((command) => [command, none])),
   ...Object.fromEntries(
@@ -137,13 +140,19 @@ const HANDLERS: Record<string, Handler> = {
   take_window_transfer: none,
   workspace_get_snapshot: none,
   session_list_in_flight: empty,
-  // session_store.rs list_by_project: ORDER BY updated_at DESC, id ASC.
+  // session_store.rs list_by_project: ORDER BY updated_at DESC, id ASC, and
+  // `branch` is the stored one, else the repo's, unless the worktree is gone.
   session_list_by_project: (store, { cwd }) =>
     store.sessions
       .filter((session) => session.cwd === cwd)
       .sort(
         (a, b) =>
           b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      )
+      .map(({ branch, ...session }) =>
+        session.worktreeRemoved
+          ? session
+          : { ...session, branch: branch || BRANCH },
       ),
   monos_list: (store) => ({ revision: 1, monos: store.monos }),
   automations_list: (store) => store.automations,
@@ -165,9 +174,9 @@ const HANDLERS: Record<string, Handler> = {
   }),
   // fs.rs git_branches_for: a repo on `main` lists `main` as current.
   git_branches: () => ({
-    current: "main",
+    current: BRANCH,
     detached: false,
-    branches: [{ name: "main", current: true, remote: null }],
+    branches: [{ name: BRANCH, current: true, remote: null }],
   }),
   git_diff_stats: () => ({ files: 0, additions: 0, deletions: 0 }),
   git_github_repositories: empty,
@@ -176,7 +185,7 @@ const HANDLERS: Record<string, Handler> = {
     worktrees: [
       {
         path: cwd,
-        branch: "main",
+        branch: BRANCH,
         head: "0000000000000000000000000000000000000000",
         isMain: true,
         locked: false,
@@ -184,8 +193,16 @@ const HANDLERS: Record<string, Handler> = {
         missing: false,
         dirty: false,
         unpushed: 0,
+        // worktrees.rs session_ids: live sessions whose worktree_cwd, else
+        // cwd, is inside the worktree.
         sessionIds: store.sessions
-          .filter((session) => (session.worktreeCwd || session.cwd) === cwd)
+          .filter((session) => {
+            const path = session.worktreeCwd || session.cwd;
+            return (
+              !session.worktreeRemoved &&
+              (path === cwd || path.startsWith(`${cwd}/`))
+            );
+          })
           .map((session) => session.id),
       },
     ],

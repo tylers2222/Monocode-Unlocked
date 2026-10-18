@@ -26,6 +26,21 @@ export type AppShell = {
   /** Returns and clears the harness reports, for a test that expects some. */
   takeReports: () => Promise<BackendReport[]>;
 };
+/**
+ * A handler crosses into the page as source text. A method (`name() {…}`)
+ * does not parse as an expression there, which would drop every override.
+ */
+function handlerSource(command: string, handler: Handler) {
+  const source = handler.toString();
+  try {
+    new Function(`return (${source})`);
+  } catch {
+    throw new Error(
+      `handler "${command}" must be an arrow or function expression, not a method`,
+    );
+  }
+  return source;
+}
 
 async function mount(
   page: Page,
@@ -52,7 +67,7 @@ async function mount(
       handlers: Object.fromEntries(
         Object.entries(handlers).map(([command, handler]) => [
           command,
-          handler.toString(),
+          handlerSource(command, handler),
         ]),
       ),
     },

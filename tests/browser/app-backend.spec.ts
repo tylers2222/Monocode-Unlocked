@@ -119,6 +119,7 @@ test("answers have the shapes the Rust commands send", async ({
         createdAt: 1,
         updatedAt: 5,
         pinned: true,
+        branch: "feat/b",
       },
       {
         id: "s-a",
@@ -129,6 +130,28 @@ test("answers have the shapes the Rust commands send", async ({
         title: "New A",
         createdAt: 1,
         updatedAt: 5,
+      },
+      {
+        id: "s-removed",
+        cwd: PROJECT,
+        harness: "claude",
+        model: "sonnet",
+        runtimeMode: "supervised",
+        title: "Removed",
+        createdAt: 1,
+        updatedAt: 3,
+        branch: "feat/gone",
+        worktreeRemoved: true,
+      },
+      {
+        id: "s-sub",
+        cwd: `${PROJECT}/packages/web`,
+        harness: "claude",
+        model: "sonnet",
+        runtimeMode: "supervised",
+        title: "Sub",
+        createdAt: 1,
+        updatedAt: 1,
       },
     ],
     monos: [
@@ -170,8 +193,9 @@ test("answers have the shapes the Rust commands send", async ({
       },
     ],
   });
-  // session_store.rs list_by_project: ORDER BY updated_at DESC, id ASC, and
-  // the SessionSummary fields without skip_serializing_if.
+  // session_store.rs list_by_project: ORDER BY updated_at DESC, id ASC, the
+  // SessionSummary fields without skip_serializing_if, and `branch` from the
+  // row or the repo unless the worktree was removed (1714-1718).
   const always = {
     sidebarHidden: false,
     worktreeRemoved: false,
@@ -192,6 +216,7 @@ test("answers have the shapes the Rust commands send", async ({
       title: "New A",
       createdAt: 1,
       updatedAt: 5,
+      branch: "main",
     },
     {
       ...always,
@@ -204,6 +229,19 @@ test("answers have the shapes the Rust commands send", async ({
       createdAt: 1,
       updatedAt: 5,
       pinned: true,
+      branch: "feat/b",
+    },
+    {
+      ...always,
+      id: "s-removed",
+      cwd: PROJECT,
+      harness: "claude",
+      model: "sonnet",
+      runtimeMode: "supervised",
+      title: "Removed",
+      createdAt: 1,
+      updatedAt: 3,
+      worktreeRemoved: true,
     },
     {
       ...always,
@@ -215,6 +253,7 @@ test("answers have the shapes the Rust commands send", async ({
       title: "Old",
       createdAt: 1,
       updatedAt: 1,
+      branch: "main",
     },
   ]);
   // fs.rs git_branches_for: the current branch is in the list.
@@ -223,18 +262,39 @@ test("answers have the shapes the Rust commands send", async ({
     detached: false,
     branches: [{ name: "main", current: true, remote: null }],
   });
-  // worktrees.rs git_worktrees: the main worktree, default_root beside it.
+  // worktrees.rs git_worktrees: the main worktree, default_root beside it;
+  // sessionIds holds live sessions inside it, subfolders too (103-121).
   expect(answers.worktrees).toEqual({
     worktrees: [
       expect.objectContaining({
         path: PROJECT,
         branch: "main",
         isMain: true,
-        sessionIds: ["s-old", "s-b", "s-a"],
+        sessionIds: ["s-old", "s-b", "s-a", "s-sub"],
       }),
     ],
     defaultRoot: `${PROJECT}-worktrees`,
   });
+});
+
+test("a handler written as a method fails mount and names the command", async ({
+  app,
+}) => {
+  await expect(
+    app.mount(
+      {},
+      {
+        handlers: {
+          probe_arrow: () => "kept",
+          monos_list() {
+            return { revision: 99, monos: [] };
+          },
+        },
+      },
+    ),
+  ).rejects.toThrow(
+    'handler "monos_list" must be an arrow or function expression, not a method',
+  );
 });
 
 test("mount renders the macOS app unless a test asks for Linux", async ({

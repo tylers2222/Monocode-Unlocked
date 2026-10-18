@@ -21,7 +21,7 @@ For a live update, change the store with `page.evaluate(() => window.appBackend!
 ### Options
 
 - `platform`: `"macos"` (the default) or `"linux"`. The app picks its window chrome and shortcut labels from `navigator.platform`.
-- `handlers`: handlers for this test only, which replace or add to `HANDLERS`. A handler gets `(store, args)` and may be async. It runs in the page, so it can use only its arguments and page globals. Throw a string to reject the way a Rust `Err(String)` does.
+- `handlers`: handlers for this test only, which replace or add to `HANDLERS`. A handler gets `(store, args)` and may be async. Write each as an arrow or function expression; `mount` throws on a method (`name() {…}`) and names the command. It runs in the page, so it can use only its arguments and page globals. Throw a string to reject the way a Rust `Err(String)` does.
 
 ### Loud failures
 
