@@ -103,6 +103,14 @@ import {
   type WorkspaceStatus,
 } from "../../monos/model/gigaWorkspace";
 import { isGigaWorkspaceProject } from "../../projects/model/reservedProjectName";
+import {
+  MILESTONE_STATUSES,
+  type Milestone,
+  type MilestonePatch,
+  type MilestoneStatus,
+  type Writer,
+} from "../../milestones/model/milestones";
+import type * as milestonesModel from "../../milestones/model/milestones";
 
 export type AppSessionListing = {
   id: string;
@@ -274,6 +282,11 @@ export type AgentAppHost = {
     reply(requestId: string, input: ReplyInput): Promise<unknown>;
     get(input: GetInput): Promise<unknown>;
   };
+  /** milestones.*: `milestones.ts`; Rust refuses agent writes while off. */
+  milestones?: Pick<
+    typeof milestonesModel,
+    "list" | "add" | "update" | "remove" | "reorder"
+  >;
   agentFiles(monoId: string): Promise<MonoFiles>;
   /** The shared Giga workspace, as the last ensure run left it. */
   workspaceStatus?(monoId: string): Promise<WorkspaceStatus>;
@@ -358,6 +371,14 @@ const FIELDS = new Map<string, readonly string[]>([
   ],
   ["messages.reply", ["message", "wanting_reply", "to"]],
   ["messages.get", ["handle"]],
+  ["milestones.list", ["project"]],
+  ["milestones.add", ["project", "title", "note", "status", "target"]],
+  [
+    "milestones.update",
+    ["project", "id", "title", "note", "status", "target"],
+  ],
+  ["milestones.remove", ["project", "id"]],
+  ["milestones.reorder", ["project", "ids"]],
   ["workspace.status", []],
   ["chat.card", [...CARD_FIELDS]],
 ]);
@@ -1345,6 +1366,122 @@ async function handleArtifacts(
   return { ...card, saved: true, attached: true };
 }
 
+function milestoneStatus(value: unknown): MilestoneStatus {
+  if (!MILESTONE_STATUSES.includes(value as MilestoneStatus))
+    throw new Error(`status must be one of ${MILESTONE_STATUSES.join(", ")}`);
+  return value as MilestoneStatus;
+}
+
+function milestoneTarget(value: unknown): string | null {
+  if (value === null) return null;
+  const day =
+    typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
+      ? new Date(`${value}T00:00:00Z`)
+      : undefined;
+  if (!day || Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== value)
+    throw new Error("target must be a real YYYY-MM-DD date, or null for later");
+  return value;
+}
+
+/** Types only; Rust checks the lengths, so there is one limit. */
+function milestonePatch(input: Record<string, unknown>): MilestonePatch {
+  for (const name of ["title", "note"] as const)
+    if (input[name] !== undefined && typeof input[name] !== "string")
+      throw new Error(`${name} must be a string`);
+  return {
+    ...(input.title === undefined ? {} : { title: input.title as string }),
+    ...(input.note === undefined ? {} : { note: input.note as string }),
+    ...(input.status === undefined
+      ? {}
+      : { status: milestoneStatus(input.status) }),
+    ...(input.target === undefined
+      ? {}
+      : { target: milestoneTarget(input.target) }),
+  };
+}
+
+function milestoneIds(value: unknown): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.some((id) => typeof id !== "string" || id.length > 128)
+  )
+    throw new Error("ids must be an array of milestone ids");
+  return value as string[];
+}
+
+/** The reply drops `projectPath`: every row is in the one project named. */
+function milestoneView({ projectPath: _, ...view }: Milestone) {
+  return view;
+}
+
+/** Rust refuses with a bare code, or `invalid_input: <reason>`. */
+function milestoneRefusal(error: unknown): unknown {
+  if (
+    error === "unknown_milestone" ||
+    error === "milestones_off" ||
+    error === "stale_order"
+  )
+    return monoError(error);
+  const reason =
+    typeof error === "string" ? /^invalid_input: (.*)$/s.exec(error)?.[1] : undefined;
+  return reason === undefined ? error : new AppActionError("invalid_input", reason);
+}
+
+async function handleMilestones(
+  source: Session,
+  action: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+): Promise<unknown> {
+  const milestones = host.milestones;
+  if (!milestones) throw new Error("Milestones are unavailable here");
+  const project = checked(() => requireProject(source, input, host));
+  // The writer is the caller Rust's grant names, never input: Rust lets
+  // "user" write while milestones are off and refuses every agent.
+  const monoId = host.monoOf?.(source.id)?.id;
+  const by: Writer = monoId ? `mono:${monoId}` : `session:${source.id}`;
+  const rust = <T>(call: Promise<T>) =>
+    call.catch((error: unknown) => {
+      throw milestoneRefusal(error);
+    });
+  switch (action) {
+    case "milestones.list": {
+      const listed = await rust(milestones.list(project));
+      return {
+        project,
+        settings: listed.settings,
+        milestones: listed.milestones.map(milestoneView),
+      };
+    }
+    case "milestones.add": {
+      const milestone = checked(() => {
+        if (input.title === undefined) throw new Error("title is required");
+        return { ...milestonePatch(input), title: input.title as string };
+      });
+      return milestoneView(await rust(milestones.add(project, milestone, by)));
+    }
+    case "milestones.update": {
+      const [id, patch] = checked(
+        () => [requiredString(input.id, "id", 128), milestonePatch(input)] as const,
+      );
+      return milestoneView(
+        await rust(milestones.update(project, id, patch, by)),
+      );
+    }
+    case "milestones.remove": {
+      const id = checked(() => requiredString(input.id, "id", 128));
+      await rust(milestones.remove(project, id, by));
+      return { removed: id };
+    }
+    case "milestones.reorder": {
+      const ids = checked(() => milestoneIds(input.ids));
+      const listed = await rust(milestones.reorder(project, ids, by));
+      return { project, milestones: listed.map(milestoneView) };
+    }
+  }
+  throw new Error(`Unknown app action: ${action}`);
+}
+
 export async function handleAgentApp(
   source: Session,
   requestId: string,
@@ -1361,6 +1498,8 @@ export async function handleAgentApp(
     return handleMemory(source, action, input, host);
   if (action.startsWith("habits."))
     return handleHabits(source, action, input, host);
+  if (action.startsWith("milestones."))
+    return handleMilestones(source, action, input, host);
   if (action === "monos.create" || action === "monos.update")
     return handleGigaMonos(source, action, input, host);
   if (action.startsWith("monos."))

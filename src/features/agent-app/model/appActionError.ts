@@ -16,6 +16,12 @@ const HINTS = {
     "That Mono is busy, so nothing was changed. Update it again after its turn ends",
   app_cli_unavailable:
     "This session cannot use the MonoCode app CLI: it is an Inbox Ask, an orchestration lead or worker, or no longer open in MonoCode. Do not retry.",
+  unknown_milestone:
+    "No milestone with that id in this project; run milestones.list for ids",
+  milestones_off:
+    "The user turned milestones off for this project, so nothing was changed. Do not retry; milestones.list still reads it",
+  stale_order:
+    "ids must be every milestone id of the project, each once. Run milestones.list and send the full list",
 } as const;
 
 /**

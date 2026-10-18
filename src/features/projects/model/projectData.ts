@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { removeProject as removeProjectMilestones } from "../../milestones/model/milestones";
 import { projectKey } from "../../../shared/lib/paths";
 import { clearProjectLogo } from "./projectLogos";
 import { clearProjectChatBackground } from "./chatBackground";
@@ -37,9 +37,7 @@ export async function removeProjectData(path: string): Promise<void> {
   for (const session of sessions) {
     await deleteSession(session.id).catch(() => undefined);
   }
-  await invoke("milestones_remove_project", { projectPath: normalized }).catch(
-    () => undefined,
-  );
+  await removeProjectMilestones(normalized).catch(() => undefined);
   // Drops the copied image from app data; the localStorage entry goes with it.
   await clearProjectLogo(key).catch(() => undefined);
   await clearProjectChatBackground(key).catch(() => undefined);
