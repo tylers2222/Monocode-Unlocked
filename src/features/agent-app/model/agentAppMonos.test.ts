@@ -47,6 +47,13 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
     { id: "u1", role: "user", text: "Is CI green?" },
     { id: "a1", role: "assistant", text: "Yes, every check passes." },
     { id: "u2", role: "user", text: "Ship it?" },
+    { id: "r2", role: "reasoning", text: "Tag first, then publish." },
+    {
+      id: "t2",
+      role: "tool",
+      text: "npm publish",
+      tool: { kind: "shell", status: "completed", detail: "+ app@2.1.0" },
+    },
     { id: "a2", role: "assistant", text: "Shipped v2.1." },
   ];
   const shroomChat = {
@@ -227,6 +234,35 @@ it("reads another Mono's chat a page at a time", async () => {
     turns: [{ turnId: "u1", user: { text: "Is CI green?" } }],
     nextBefore: null,
   });
+});
+
+it("adds the thinking and tool rows to monos.read only with work: true", async () => {
+  const { run } = fixture();
+  const prose = await run("monos.read", { monoId: "mono-2", limit: 1 });
+  expect(JSON.stringify(prose)).not.toMatch(/Tag first|npm publish|"work"/);
+  expect(
+    await run("monos.read", { monoId: "mono-2", limit: 1, work: true }),
+  ).toMatchObject({
+    turns: [
+      {
+        turnId: "u2",
+        assistant: { text: "Shipped v2.1." },
+        work: [
+          { kind: "reasoning", text: "Tag first, then publish." },
+          {
+            kind: "tool",
+            tool: "shell",
+            status: "completed",
+            input: { text: "npm publish" },
+            result: { text: "+ app@2.1.0" },
+          },
+        ],
+      },
+    ],
+  });
+  expect(
+    await failure(run("monos.read", { monoId: "mono-2", work: 1 })),
+  ).toMatchObject({ code: "invalid_input", hint: "work must be true or false" });
 });
 
 it("answers monos.read with a before that is not a turn ID with invalid_input", async () => {

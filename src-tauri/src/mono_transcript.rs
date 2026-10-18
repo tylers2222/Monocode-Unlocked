@@ -690,4 +690,20 @@ mod tests {
             21
         );
     }
+
+    #[test]
+    fn a_mono_chat_round_trip_keeps_reasoning_and_tool_blocks() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut session = sample("mono", 1);
+        let work = [
+            json!({"id":"r0", "role":"reasoning", "text":"Check the log."}),
+            json!({"id":"t0", "role":"tool", "text":"tail app.log", "tool":{"kind":"shell", "title":"Shell", "status":"completed", "detail":"ok"}}),
+        ];
+        let blocks = session.blocks.as_array_mut().unwrap();
+        blocks.splice(1..1, work);
+        upsert(&conn, &session, None, None, true).unwrap();
+        let saved = page(&conn, "mono", None, None).unwrap().blocks;
+        assert_eq!(Value::Array(saved), session.blocks);
+    }
 }

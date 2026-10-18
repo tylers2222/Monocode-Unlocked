@@ -69,6 +69,28 @@ describe("Mono database pagination and writes", () => {
       }),
     );
   });
+  it("keeps a Mono chat's reasoning and tool blocks through a save and a page read", async () => {
+    const session = await load();
+    const work = [
+      { id: "r", role: "reasoning" as const, text: "Check the log." },
+      {
+        id: "t",
+        role: "tool" as const,
+        text: "tail app.log",
+        tool: { kind: "shell", title: "Shell", status: "completed", detail: "ok" },
+      },
+    ];
+    call.mockResolvedValueOnce(saved(session));
+    await upsertSession({ ...session, blocks: [...session.blocks, ...work] });
+    expect(call).toHaveBeenLastCalledWith(
+      "mono_session_upsert",
+      expect.objectContaining({
+        session: expect.objectContaining({ blocks: work }),
+      }),
+    );
+    call.mockResolvedValueOnce({ blocks: work, before: null, hasNewer: false });
+    expect((await getMonoTranscriptPage(session.id, {})).blocks).toEqual(work);
+  });
   it("keeps document and visual references on the source turn after saving and reopening", async () => {
     let session = await load();
     const card = {
