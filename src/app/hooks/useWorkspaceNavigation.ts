@@ -3,7 +3,10 @@ import {
   isRemoteProjectPath,
   sameProjectPath,
 } from "../../features/projects/model/recents";
-import { isBlankSession } from "../../features/projects/model/projectReturn";
+import {
+  isBlankSession,
+  runningTurnStart,
+} from "../../features/projects/model/projectReturn";
 import type { Session } from "../../features/sessions/model/session";
 import {
   setWorktreeFocus,
@@ -104,7 +107,21 @@ export function useWorkspaceNavigation(options: Options) {
         const session = view.sessions.find(
           (entry) => entry.id === tab.focusedId,
         );
-        const path = next.focus?.path ?? next.project;
+        const landing = view.tabWorkspace(tab, view.sessions);
+        const landingFocus =
+          landing && !sameProjectPath(landing, next.project)
+            ? { path: landing, branch: session?.branch ?? null }
+            : undefined;
+        // A project opened to a running session stays on it, in its own
+        // workspace, rather than the remembered workspace's tab.
+        const focus =
+          next.kind === "project" &&
+          landing &&
+          session &&
+          runningTurnStart(session.id, view.sessions) !== undefined
+            ? landingFocus
+            : next.focus;
+        const path = focus?.path ?? next.project;
         const key = workspaceKey(next.project, path);
         const isCurrent = () =>
           mounted.current &&
@@ -123,7 +140,7 @@ export function useWorkspaceNavigation(options: Options) {
               next.project,
             )
           ) {
-            setWorktreeFocus(next.project, next.focus);
+            setWorktreeFocus(next.project, focus);
             continue;
           }
           const scoped = filterTabsForProject(
@@ -134,9 +151,8 @@ export function useWorkspaceNavigation(options: Options) {
             const workspace = view.tabWorkspace(entry, view.sessions);
             return !workspace || sameProjectPath(workspace, path);
           });
-          const workspace = view.tabWorkspace(tab, view.sessions);
           const target =
-            !workspace || sameProjectPath(workspace, path)
+            !landing || sameProjectPath(landing, path)
               ? tab
               : (scoped.find((entry) => entry.id === memory.current.get(key)) ??
                 scoped[scoped.length - 1]);
@@ -153,9 +169,9 @@ export function useWorkspaceNavigation(options: Options) {
               session.id,
               {
                 path,
-                branch: next.focus?.branch ?? null,
+                branch: focus?.branch ?? null,
                 head: "",
-                isMain: !next.focus,
+                isMain: !focus,
                 locked: false,
                 prunable: false,
                 missing: false,
@@ -173,7 +189,7 @@ export function useWorkspaceNavigation(options: Options) {
             // Its checkout stays attached to that conversation.
             tabId = tab.id;
           } else {
-            tabId = view.createTab(next.project, next.focus);
+            tabId = view.createTab(next.project, focus);
           }
           if (!isCurrent()) continue;
           // Only a successful, current request publishes the workspace. A
@@ -183,7 +199,7 @@ export function useWorkspaceNavigation(options: Options) {
             refreshPins((value) => value + 1);
           }
           memory.current.set(key, tabId);
-          setWorktreeFocus(next.project, next.focus);
+          setWorktreeFocus(next.project, focus);
           view.activateTab(tabId);
         } catch (caught) {
           if (isCurrent()) {
@@ -191,14 +207,7 @@ export function useWorkspaceNavigation(options: Options) {
             // If restoring the remembered workspace fails, keep that landing
             // usable and label the workspace it actually belongs to.
             if (next.kind === "project") {
-              const landing =
-                view.tabWorkspace(tab, view.sessions) ?? next.project;
-              setWorktreeFocus(
-                next.project,
-                sameProjectPath(landing, next.project)
-                  ? undefined
-                  : { path: landing, branch: session?.branch ?? null },
-              );
+              setWorktreeFocus(next.project, landingFocus);
             }
             setError({
               project: next.project,

@@ -347,6 +347,23 @@ it("project selection still restores the last tab in its remembered workspace", 
   expect(pins.get("tab-main")).toBeUndefined();
 });
 
+it("project selection keeps a running landing session in another workspace", async () => {
+  setWorktreeFocus(project, treeA);
+  await mount([
+    chat("worktree", project, treeA.path, true),
+    { ...chat("running", project, treeB.path, true), busy: true },
+    chat("other", other, undefined, true),
+  ]);
+  await act(async () => openProject(other, "tab-other"));
+  await act(async () => openProject(project, "tab-running"));
+  expect(screen()).toMatchObject({
+    activeTab: "tab-running",
+    workspace: treeB.path,
+    checkout: treeB.path,
+  });
+  expect(move).not.toHaveBeenCalled();
+});
+
 it("selects an existing workspace tab without moving the current session", async () => {
   await mount([
     chat("main", project, undefined, true),
