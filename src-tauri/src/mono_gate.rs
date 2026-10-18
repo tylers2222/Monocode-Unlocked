@@ -155,7 +155,12 @@ pub fn parse(tool: Tool, raw: &Value) -> Result<Input, String> {
             allowed.join(", ")
         ));
     }
+    // SQLite counts a text only up to U+0000, so the row of such a body,
+    // accepted or rejected, fails its length CHECK.
     let message = match fields.get("message") {
+        Some(Value::String(text)) if text.contains('\0') => {
+            return Err("message must not contain the character U+0000".into())
+        }
         Some(Value::String(text)) if !text.trim().is_empty() => text.clone(),
         _ => return Err("message must be a non-empty string".into()),
     };
