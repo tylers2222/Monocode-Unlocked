@@ -20,8 +20,8 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use crate::control::ControlHost;
 use crate::mono_gate::{
     self, Access, Caller, CallerFacts, CallerKind, CallerMono, Closure, Decision, Facts,
-    HandleState, Handled, Input, MessageRef, OpenHandle, PairCount, Recipient, Referenced, Refusal,
-    ReplyFacts, Route, SendFacts, SessionLevel, Speaker, Target, TargetSession,
+    HandleState, Handled, Input, Level, MessageRef, OpenHandle, PairCount, Recipient, Referenced,
+    Refusal, ReplyFacts, Route, SendFacts, SessionLevel, Speaker, Target, TargetSession,
 };
 use crate::mono_roster::{validate_mono_id, MonoRole};
 use crate::session_store::{validate_id, SessionStore};
@@ -29,6 +29,16 @@ use crate::session_store::{validate_id, SessionStore};
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     rebuild_mono_messages(conn)?;
     conn.execute_batch(&table_sql("mono_messages"))?;
+    let pinned: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('mono_messages') WHERE name = 'pin_turn_id')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !pinned {
+        conn.execute_batch(&format!(
+            "ALTER TABLE mono_messages ADD COLUMN {PIN_TURN_ID}"
+        ))?;
+    }
     conn.execute_batch(INDEXES)?;
     conn.execute_batch(
         "-- A session that was cleared or deleted. The gate trusts this over
@@ -39,6 +49,11 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
          );",
     )
 }
+
+/// Rule (b) (review r1 m1): the turn of the Giga's chat that a late answer
+/// was accepted for. Only that turn takes it, and only its end drops it.
+const PIN_TURN_ID: &str = "pin_turn_id TEXT CHECK (pin_turn_id IS NULL OR
+  (length(pin_turn_id) BETWEEN 1 AND 128 AND intent = 'steer' AND reply_to IS NOT NULL))";
 
 /// The table of design 16.2 under `name`. Its foreign keys always name
 /// `mono_messages`, so the rebuild's copy keeps them after the rename.
@@ -76,6 +91,7 @@ fn table_sql(name: &str) -> String {
            notified_at        INTEGER,
            created_at         INTEGER NOT NULL,
            updated_at         INTEGER NOT NULL,
+           {PIN_TURN_ID},
            UNIQUE (from_session_id, request_id, part),
            CHECK ((status = 'rejected') = (gate_result <> 'ok')),
            CHECK (status NOT IN ('open', 'unanswered') OR wanting_reply = 1),
@@ -285,6 +301,10 @@ pub enum Intent {
 pub enum SteerTarget {
     /// The work `reply_to` started.
     Message(MessageId),
+    /// Rule (b): a late answer to the Giga's question `message`, pinned to
+    /// turn `turn_id` of the Giga's chat, the turn that ran when the gate
+    /// accepted it.
+    LateAnswer { message: MessageId, turn_id: String },
     /// Everything the recipient's session does in turn `turn_id`, the turn
     /// that ran when the gate accepted the steer.
     Turn { turn_id: String },
@@ -307,7 +327,9 @@ impl Intent {
     pub fn reply_to(&self) -> Option<&MessageId> {
         match self {
             Intent::New | Intent::Steer(SteerTarget::Turn { .. }) => None,
-            Intent::Reply(id) | Intent::Steer(SteerTarget::Message(id)) => Some(id),
+            Intent::Reply(id)
+            | Intent::Steer(SteerTarget::Message(id))
+            | Intent::Steer(SteerTarget::LateAnswer { message: id, .. }) => Some(id),
         }
     }
 
@@ -326,20 +348,32 @@ impl Intent {
         }
     }
 
-    /// The four columns of an accepted row; `None` when they disagree.
+    /// The Giga turn a late answer is pinned to (`pin_turn_id`).
+    fn pin_turn_id(&self) -> Option<&str> {
+        match self {
+            Intent::Steer(SteerTarget::LateAnswer { turn_id, .. }) => Some(turn_id),
+            _ => None,
+        }
+    }
+
+    /// The five columns of an accepted row; `None` when they disagree.
     fn of_columns(
         kind: IntentKind,
         reply_to: Option<MessageId>,
         scope: Option<Scope>,
         scope_turn_id: Option<String>,
+        pin_turn_id: Option<String>,
     ) -> Option<Self> {
-        match (kind, reply_to, scope, scope_turn_id) {
-            (IntentKind::New, None, None, None) => Some(Intent::New),
-            (IntentKind::Reply, Some(id), None, None) => Some(Intent::Reply(id)),
-            (IntentKind::Steer, Some(id), None, None) => {
+        match (kind, reply_to, scope, scope_turn_id, pin_turn_id) {
+            (IntentKind::New, None, None, None, None) => Some(Intent::New),
+            (IntentKind::Reply, Some(id), None, None, None) => Some(Intent::Reply(id)),
+            (IntentKind::Steer, Some(id), None, None, None) => {
                 Some(Intent::Steer(SteerTarget::Message(id)))
             }
-            (IntentKind::Steer, None, Some(Scope::Turn), Some(turn_id)) => {
+            (IntentKind::Steer, Some(message), None, None, Some(turn_id)) => {
+                Some(Intent::Steer(SteerTarget::LateAnswer { message, turn_id }))
+            }
+            (IntentKind::Steer, None, Some(Scope::Turn), Some(turn_id), None) => {
                 Some(Intent::Steer(SteerTarget::Turn { turn_id }))
             }
             _ => None,
@@ -348,7 +382,7 @@ impl Intent {
 }
 
 /// Flat as `intent`, `replyTo` and `scope`, the shape a rejected row has
-/// too. `scope_turn_id` stays in Rust.
+/// too. `scope_turn_id` and `pin_turn_id` stay in Rust.
 impl Serialize for Intent {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
@@ -667,7 +701,8 @@ impl Status {
         }
     }
 
-    /// The `intent`, `reply_to`, `scope` and `scope_turn_id` columns.
+    /// The `intent`, `reply_to`, `scope`, `scope_turn_id` and `pin_turn_id`
+    /// columns.
     fn intent_columns(&self) -> IntentColumns<'_> {
         match self {
             Status::Rejected {
@@ -680,6 +715,7 @@ impl Status {
                 reply_to: reply_to.as_ref(),
                 scope: *scope,
                 scope_turn_id: None,
+                pin_turn_id: None,
             },
             Status::Open { intent, .. }
             | Status::Delivered { intent, .. }
@@ -690,6 +726,7 @@ impl Status {
                 reply_to: intent.reply_to(),
                 scope: intent.scope(),
                 scope_turn_id: intent.scope_turn_id(),
+                pin_turn_id: intent.pin_turn_id(),
             },
         }
     }
@@ -700,6 +737,7 @@ struct IntentColumns<'a> {
     reply_to: Option<&'a MessageId>,
     scope: Option<Scope>,
     scope_turn_id: Option<&'a str>,
+    pin_turn_id: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -857,9 +895,9 @@ pub fn insert(conn: &Connection, message: &MonoMessage) -> rusqlite::Result<()> 
            to_mono_id, to_session_id, addressed, body, body_chars, wanting_reply,
            intent, reply_to, scope, scope_turn_id, hop, status, gate_result, handled_by_session,
            delivery, turn_id, slot_window, handle, delivered_at, closed_at, notified_at,
-           created_at, updated_at
+           created_at, updated_at, pin_turn_id
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                   ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?29)",
+                   ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?29, ?30)",
         params![
             message.id.as_str(),
             message.request_id.as_str(),
@@ -890,6 +928,7 @@ pub fn insert(conn: &Connection, message: &MonoMessage) -> rusqlite::Result<()> 
             columns.closed_at,
             columns.notified_at,
             message.created_at,
+            intent.pin_turn_id,
         ],
     )?;
     Ok(())
@@ -899,7 +938,7 @@ const SELECT: &str = "SELECT id, request_id, part, payload_hash, tool, from_mono
        from_session_id, to_mono_id, to_session_id, addressed, body, body_chars,
        wanting_reply, intent, reply_to, scope, scope_turn_id, hop, status, gate_result,
        handled_by_session, delivery, turn_id, slot_window, handle, delivered_at,
-       closed_at, notified_at, created_at
+       closed_at, notified_at, created_at, pin_turn_id
   FROM mono_messages";
 
 pub fn get(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<MonoMessage>> {
@@ -984,9 +1023,16 @@ fn parse_row(row: &Row) -> rusqlite::Result<MonoMessage> {
     let reply_to = parsed(row, "reply_to", MessageId::parse)?;
     let scope = parsed(row, "scope", Scope::parse)?;
     let scope_turn_id = text("scope_turn_id")?;
+    let pin_turn_id = text("pin_turn_id")?;
     let intent = || {
         required(
-            Intent::of_columns(intent_kind, reply_to.clone(), scope, scope_turn_id.clone()),
+            Intent::of_columns(
+                intent_kind,
+                reply_to.clone(),
+                scope,
+                scope_turn_id.clone(),
+                pin_turn_id.clone(),
+            ),
             "intent",
         )
     };
@@ -1647,11 +1693,15 @@ pub fn submit(
     let decision = match &input {
         Input::Send(send) => {
             let recipient = recipient(&tx, &send.send_to, live)?;
-            let reply_to = match send.reply_to() {
-                Some(id) => resolve_ref(&tx, id)?
-                    .map(|message| referenced(&tx, caller, &recipient, message, live))
+            // Without its `monos` row a Mono caller has no level to resolve
+            // `reply_to` with; the gate refuses it with `not_a_mono` first.
+            let reply_to = match (send.reply_to(), &caller_row) {
+                (Some(id), Some(row)) => resolve_ref(&tx, id)?
+                    .map(|message| {
+                        referenced(&tx, caller, &row.level(), &recipient, message, live, now)
+                    })
                     .transpose()?,
-                None => None,
+                _ => None,
             };
             referenced_id = reply_to.as_ref().map(|found| found.message.id.clone());
             let pair = pair_count(&tx, caller, &recipient, now)?;
@@ -1755,17 +1805,24 @@ fn pair_count(
     )
 }
 
-/// `message` with the session target_session gives for it, as live sees it.
+/// `message` with the session target_session gives for it, the receiver's
+/// or rule (b)'s Giga chat, as live sees it.
 fn referenced(
     conn: &Connection,
     caller: &Caller,
+    level: &Level,
     recipient: &Recipient,
     message: MonoMessage,
     live: &Live,
+    now: i64,
 ) -> rusqlite::Result<Referenced> {
-    let session = match mono_gate::target_session(caller, recipient, &message) {
+    let session = match mono_gate::target_session(caller, level, recipient, &message, now) {
         TargetSession::Receiver {
             session: Some(session),
+            ..
+        }
+        | TargetSession::Giga {
+            chat: Some(session),
             ..
         } => Some(target(conn, session, live)?),
         _ => None,
@@ -2186,14 +2243,16 @@ pub fn assign_slot(
     };
     if let (None, Some(Intent::Steer(target))) = (slot, message.status.intent()) {
         // The turn the steer may join: its target's for a targeted steer,
-        // its pin for a whole-turn one (design 16.12.3.3).
+        // its pin for a whole-turn one (design 16.12.3.3) or a late answer.
         let joins: Option<String> = match target {
             SteerTarget::Message(target) => tx.query_row(
                 "SELECT turn_id FROM mono_messages WHERE id = ?1",
                 [target.as_str()],
                 |row| row.get(0),
             )?,
-            SteerTarget::Turn { turn_id } => Some(turn_id.clone()),
+            SteerTarget::LateAnswer { turn_id, .. } | SteerTarget::Turn { turn_id } => {
+                Some(turn_id.clone())
+            }
         };
         if delivery != Delivery::Steer || joins.as_deref() != Some(turn_id) {
             let notices = drop_steer(&tx, id, now)?;
@@ -2432,8 +2491,10 @@ fn end_turn_rows(
 /// row changed, so its owner reconciles it, and the chat of each sender now
 /// owed a notice. Design 16.6 (PR I2 review r1): a steer accepted for this
 /// turn that no hand-off slotted yet, also one in a paused queue, names work
-/// that is over, so it is dropped too: a targeted one through its target, a
-/// whole-turn one through its pin (design 16.12.3.3).
+/// that is over, so it is dropped too: a targeted one through its target's
+/// turn, a late answer through `pin_turn_id` (review r1 m1) and a whole-turn
+/// one through `scope_turn_id` (design 16.12.3.3). Only steers into
+/// `session`: a late answer names a row of another session.
 pub fn turn_ended(
     conn: &Connection,
     session: &SessionId,
@@ -2446,9 +2507,11 @@ pub fn turn_ended(
         .prepare(
             "UPDATE mono_messages SET status = 'dropped', closed_at = ?1, updated_at = ?1
               WHERE intent = 'steer' AND status IN ('open', 'delivered') AND turn_id IS NULL
+                AND handled_by_session = ?2
                 AND (reply_to IN (SELECT id FROM mono_messages
                                    WHERE handled_by_session = ?2 AND turn_id = ?3)
-                     OR (scope = 'turn' AND handled_by_session = ?2 AND scope_turn_id = ?3))
+                     OR pin_turn_id = ?3
+                     OR (scope = 'turn' AND scope_turn_id = ?3))
               RETURNING id",
         )?
         .query_map(params![now, session.as_str(), turn_id], |row| {
@@ -3410,7 +3473,7 @@ pub(crate) mod tests {
 
     /// Every row, each column but the ones the rebuild maps, by column name.
     fn copied_columns(conn: &Connection) -> Vec<Vec<(String, Sql)>> {
-        const MAPPED: [&str; 7] = [
+        const MAPPED: [&str; 8] = [
             "action_type",
             "steers",
             "intent",
@@ -3418,6 +3481,7 @@ pub(crate) mod tests {
             "hop",
             "scope",
             "scope_turn_id",
+            "pin_turn_id",
         ];
         let mut statement = conn
             .prepare("SELECT * FROM mono_messages ORDER BY id")
@@ -3475,6 +3539,23 @@ pub(crate) mod tests {
     fn foreign_keys(conn: &Connection) -> i64 {
         conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))
             .unwrap()
+    }
+
+    // Review r1 m1. Defect: a database made before the late-answer pin keeps
+    // a table without `pin_turn_id`, so every read and write of a row fails
+    // there; or a second open adds the column again and fails.
+    #[test]
+    fn ensure_tables_adds_pin_turn_id_to_a_table_made_before_it() {
+        let conn = Connection::open_in_memory().unwrap();
+        let before = table_sql("mono_messages").replace(&format!("{PIN_TURN_ID},"), "");
+        conn.execute_batch(&before).unwrap();
+        assert!(!has_column(&conn, "pin_turn_id"));
+        ensure_tables(&conn).unwrap();
+        ensure_tables(&conn).unwrap();
+        assert!(has_column(&conn, "pin_turn_id"));
+        assert!(get(&conn, &MessageId::parse("m_aaaaaaaaaaaa").unwrap())
+            .unwrap()
+            .is_none());
     }
 
     // Design 16.2 map. Defects: a wrong CASE line, a lost row, or a column
@@ -7036,7 +7117,7 @@ pub(crate) mod tests {
     }
 
     /// `status`, `turn_id`, `delivered_at` and `reply_to` as stored.
-    fn stored_row(
+    pub(crate) fn stored_row(
         conn: &Connection,
         id: &MessageId,
     ) -> (String, Option<String>, Option<i64>, Option<String>) {
@@ -7161,6 +7242,142 @@ pub(crate) mod tests {
         );
         let second = accepted_ids(&again).remove(0);
         assert_eq!(get(&conn, &second).unwrap().unwrap().hop, 2);
+    }
+
+    /// Rule (b): the Giga's question, unanswered once `a-chat`'s turn-1
+    /// ended, and the Mono's late answer, accepted while the Giga's chat ran
+    /// `giga_turn`.
+    pub(crate) fn late_answer(conn: &Connection, giga_turn: &str) -> (MessageId, MessageId) {
+        let asked = ask_delivered(conn, "ask", "turn-1");
+        turn_ended(conn, &session("a-chat"), "turn-1", 100).unwrap();
+        let late = call_in_turns(
+            conn,
+            &caller_in_turn("mono-a", "a-chat", "turn-2"),
+            "late",
+            Tool::SendMessage,
+            steering("giga", asked.as_str()),
+            &[],
+            &[("giga-chat", giga_turn)],
+        );
+        assert_eq!(
+            route_of(&late),
+            Some(Routing {
+                session_id: session("giga-chat"),
+                via: Delivery::Steer
+            })
+        );
+        (asked, accepted_ids(&late).remove(0))
+    }
+
+    // Design 6.1 rule (b), PR 7 review r1 B2. Defect: the late answer may
+    // join only the turn of the Mono's chat that held the question, so the
+    // hand-off into the Giga's running turn drops it. PR I4 review n3: its
+    // target holds #1 in the Mono's chat, not in the Giga's turn, so the
+    // reader must name it by message id.
+    #[test]
+    fn a_monos_late_answer_is_delivered_in_the_gigas_running_turn() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let (asked, late) = late_answer(&conn, "turn-4");
+        let (slot, notices) =
+            assign_slot(&conn, &late, "turn-4", "main", Delivery::Steer, 150).unwrap();
+        assert_eq!(notices, Notices::default());
+        let target = slot.expect("the late answer joins turn-4").target.unwrap();
+        assert_eq!(
+            (target.message_id, target.handled_by_session, target.slot),
+            (
+                asked,
+                Some(session("a-chat")),
+                Some(TargetSlot {
+                    turn_id: "turn-1".into(),
+                    handle: Handle::parse("#1").unwrap()
+                })
+            )
+        );
+        mark_delivery(&conn, &late, "turn-4", 151).unwrap();
+        assert_eq!(stored_row(&conn, &late).0, "delivered");
+    }
+
+    // Design 16.6, PR 7 review r1 B2. Defect: a waiting late answer
+    // outlives the Giga's turn, or the end of a turn of the Mono's chat with
+    // the same turn id drops it.
+    #[test]
+    fn a_late_answer_still_waiting_when_the_gigas_turn_ends_is_dropped() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let (_, late) = late_answer(&conn, "turn-4");
+        turn_ended(&conn, &session("a-chat"), "turn-4", 200).unwrap();
+        assert_eq!(stored_row(&conn, &late).0, "delivered");
+        let notices = turn_ended(&conn, &session("giga-chat"), "turn-4", 201).unwrap();
+        assert_eq!(stored_row(&conn, &late).0, "dropped");
+        assert!(notices.sessions.contains(&session("a-chat")), "{notices:?}");
+    }
+
+    // Design 16.6, PR 7 review r2 m6. Defect: after Stop or a switch the web
+    // app's next turn takes a late answer accepted in the turn that is still
+    // ending, whose end then no longer drops it.
+    #[test]
+    fn a_late_answer_joins_only_the_turn_it_was_accepted_for() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let (_, late) = late_answer(&conn, "turn-4");
+        let (slot, notices) =
+            assign_slot(&conn, &late, "turn-5", "main", Delivery::Steer, 150).unwrap();
+        assert!(slot.is_none());
+        assert!(notices.sessions.contains(&session("a-chat")), "{notices:?}");
+        assert_eq!(stored_row(&conn, &late).0, "dropped");
+    }
+
+    // Design 16.12.3.3 and rule (b), review r2 m1. Defect: the Giga's turn-4
+    // ends after the gate read `running` and before the insert, the recheck
+    // skips the late answer pinned to turn-4, and no later turn end drops
+    // it: the caller gets a route into an ended turn and no notice.
+    #[test]
+    fn the_submit_recheck_drops_a_late_answer_whose_turn_ended_meanwhile() {
+        let store = messaging_store();
+        let asked = {
+            let conn = store.lock_conn().unwrap();
+            let asked = ask_delivered(&conn, "ask", "turn-1");
+            turn_ended(&conn, &session("a-chat"), "turn-1", 100).unwrap();
+            turn_ended(&conn, &session("giga-chat"), "turn-4", 105).unwrap();
+            asked
+        };
+        let reads = std::cell::Cell::new(0);
+        let running = || {
+            reads.set(reads.get() + 1);
+            if reads.get() == 1 {
+                return HashMap::from([("giga-chat".to_string(), "turn-4".to_string())]);
+            }
+            HashMap::new()
+        };
+        let (first, notices) = submit_and_recheck(
+            &store,
+            running,
+            &caller_in_turn("mono-a", "a-chat", "turn-2"),
+            &RequestId::parse("c0").unwrap(),
+            mono_gate::parse(Tool::SendMessage, &steering("giga", asked.as_str())),
+            &[],
+            &["codex".to_string()],
+            110,
+        )
+        .unwrap();
+        let conn = store.lock_conn().unwrap();
+        assert_eq!(stored_row(&conn, &accepted_ids(&first)[0]).0, "dropped");
+        assert_eq!(route_of(&first), None);
+        assert!(notices.sessions.contains(&session("a-chat")), "{notices:?}");
+    }
+
+    // Review r1 m1 (store level). Defect: the end of the Giga's turn-4,
+    // recorded after turn-5 runs (Stop, then the next queued turn), drops a
+    // late answer accepted for turn-5, and the Mono gets a false `dropped`
+    // notice.
+    #[test]
+    fn an_old_turns_end_leaves_a_late_answer_accepted_for_the_next_turn() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let (_, late) = late_answer(&conn, "turn-5");
+        let notices = turn_ended(&conn, &session("giga-chat"), "turn-4", 120).unwrap();
+        assert_eq!(stored_row(&conn, &late).0, "delivered", "{notices:?}");
     }
 
     // Design E25 and 6 (`Reject { code, hop, to }`), PR 7 review r1 m1 and
@@ -7926,7 +8143,10 @@ pub(crate) mod tests {
         ensure_tables(&conn).unwrap();
         assert!(has_column(&conn, "scope") && has_column(&conn, "scope_turn_id"));
         assert_eq!(foreign_keys(&conn), 1);
-        assert_eq!(all_columns(&conn, &["scope", "scope_turn_id"]), before);
+        assert_eq!(
+            all_columns(&conn, &["scope", "scope_turn_id", "pin_turn_id"]),
+            before
+        );
         let scopes: Vec<(Option<String>, Option<String>)> = conn
             .prepare("SELECT scope, scope_turn_id FROM mono_messages")
             .unwrap()
