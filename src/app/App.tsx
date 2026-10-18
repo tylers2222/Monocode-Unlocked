@@ -6368,6 +6368,11 @@ function Workspace({
           setProjectCwd(last.path);
           activateTab(last.tabId, last.paneId);
           break;
+        case "open-session":
+          // A running session with no tab opens the way its sidebar row
+          // does, which also selects its project.
+          void onSelectHistorySession(last.sessionId);
+          break;
         case "keep":
           setProjectCwd(last.path);
           break;
@@ -6378,7 +6383,13 @@ function Workspace({
       // Every project opened is remembered, the one chosen last most recently.
       for (const step of steps) setRecents(rememberProject(step.path));
     },
-    [activateTab, insertBeside, onCwdChange, readProjectReturnMemory],
+    [
+      activateTab,
+      insertBeside,
+      onCwdChange,
+      onSelectHistorySession,
+      readProjectReturnMemory,
+    ],
   );
 
   const onSelectProject = useCallback(

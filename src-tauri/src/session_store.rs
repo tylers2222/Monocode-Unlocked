@@ -3728,6 +3728,62 @@ mod tests {
         assert!(!second.contains("t1"));
     }
 
+    // ADE-5. The project-open rule finds a running session with no tab only
+    // through these reads: the session keeps its project as `cwd` while it
+    // works in a worktree, its opening user block keeps `startedAt`, the
+    // in-flight list names it with that project, and the snapshot keeps its
+    // stub although no tab shows it.
+    #[test]
+    fn rows_loaded_at_start_carry_a_running_session_with_no_tab() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let mut conn = store.conn.lock().unwrap();
+        let id = "app-mono-chat-request-1";
+        let mut started = sample(id, "/repo", "Mono-started");
+        started.harness = "omp".into();
+        started.worktree_cwd = Some("/repo-worktrees/feature".into());
+        started.blocks = json!([
+            { "id": "u1", "role": "user", "text": "Build it", "startedAt": 1_792_360_319_663_i64, "turnId": "t1" },
+            { "id": "a1", "role": "assistant", "text": "Working" }
+        ]);
+        upsert_session(&conn, &started).unwrap();
+        upsert_session(&conn, &sample("finished", "/repo", "Finished")).unwrap();
+        replace_in_flight(
+            &mut conn,
+            &[InFlightSession {
+                session_id: id.into(),
+                cwd: "/repo".into(),
+            }],
+        )
+        .unwrap();
+        let snapshot = json!({
+            "activeTabId": "tab-finished",
+            "projectCwd": "/repo",
+            "sessions": [
+                { "id": "finished", "cwd": "/repo" },
+                { "id": id, "cwd": "/repo" }
+            ],
+            "tabs": [{ "id": "tab-finished", "focusedId": "finished", "layout": { "id": "finished", "type": "leaf" } }]
+        });
+        set_workspace_snapshot(&conn, &snapshot.to_string()).unwrap();
+
+        let record = json!(get_session(&conn, id).unwrap().unwrap());
+        assert_eq!(record["cwd"], "/repo");
+        assert_eq!(record["worktreeCwd"], "/repo-worktrees/feature");
+        assert_eq!(record["blocks"][0]["startedAt"], 1_792_360_319_663_i64);
+        let in_flight = list_in_flight(&conn).unwrap();
+        assert_eq!(
+            in_flight
+                .iter()
+                .map(|row| (row.session_id.as_str(), row.cwd.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(id, "/repo")]
+        );
+        let saved: Value =
+            serde_json::from_str(&get_workspace_snapshot(&conn).unwrap().unwrap()).unwrap();
+        assert_eq!(saved["sessions"][1]["id"], id);
+        assert_eq!(saved["tabs"].as_array().unwrap().len(), 1);
+    }
+
     #[test]
     fn migrate_creates_workspace_tables_when_versions_already_recorded() {
         let path = std::env::temp_dir().join(format!(

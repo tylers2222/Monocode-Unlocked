@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { newFileTab, newTab, placePane, type WorkspaceTab } from "../../workspace/model/layout";
 import { newSession, type Session } from "../../sessions/model/session";
 import { planProjectReturn, reconcileProjectReturn } from "./projectReturn";
@@ -9,6 +9,13 @@ import {
 } from "../../workspace/model/tabVisitHistory";
 import { removeSessionFromWorkspace } from "../../sessions/model/sessionWorkspaceLifecycle";
 import { applyPlaceSessionOnPane } from "../../workspace/model/workspaceTabGroups";
+import { clearHabitRun, markHabitRun } from "../../monos/model/monoHabits";
+import type * as MonoModel from "../../monos/model/mono";
+
+vi.mock("../../monos/model/mono", async (original) => ({
+  ...(await original<typeof MonoModel>()),
+  isMonoSession: (id: string) => id === "mono-chat",
+}));
 
 function chat(id: string, cwd: string): Session {
   return {
@@ -352,10 +359,14 @@ describe("project selection with a running session", () => {
     sessions: Session[],
     memory = new Map<string, string>(),
     activeTabId = "tab-other",
+    tabless: readonly string[] = [],
   ) {
     const all = [...sessions, turn("other", 0, false, "/other")];
     const tabs = all
-      .filter((session) => !session.orchestrationLeadId)
+      .filter(
+        (session) =>
+          !session.orchestrationLeadId && !tabless.includes(session.id),
+      )
       .map((session) => ({ ...newTab(session.id), id: `tab-${session.id}` }));
     return planProjectReturn({
       memory,
@@ -411,10 +422,90 @@ describe("project selection with a running session", () => {
     );
   });
 
-  it("stays on the project's focused idle session while another runs", () => {
+  it("leaves the project's focused idle session for one that runs", () => {
     expect(
       plan([turn("idle", 1), turn("running", 2, true)], new Map(), "tab-idle"),
+    ).toEqual(activates("running"));
+  });
+
+  it("stays on the project's focused session while it runs", () => {
+    expect(
+      plan(
+        [turn("focused", 1, true), turn("newer", 2, true)],
+        new Map(),
+        "tab-focused",
+      ),
     ).toEqual({ action: "keep" });
+  });
+
+  it("opens a running session that has no tab", () => {
+    expect(
+      plan(
+        [turn("idle", 1), turn("started", 2, true)],
+        new Map([["/mono", "idle"]]),
+        "tab-other",
+        ["started"],
+      ),
+    ).toEqual({ action: "open-session", sessionId: "started" });
+  });
+
+  it("leaves the focused idle session for a running one with no tab", () => {
+    expect(
+      plan(
+        [turn("idle", 1), turn("started", 2, true)],
+        new Map(),
+        "tab-idle",
+        ["started"],
+      ),
+    ).toEqual({ action: "open-session", sessionId: "started" });
+  });
+
+  it("ranks running sessions with and without a tab by turn start", () => {
+    const sessions = [turn("tabbed", 2, true), turn("started", 3, true)];
+    expect(plan(sessions, new Map(), "tab-other", ["started"])).toEqual({
+      action: "open-session",
+      sessionId: "started",
+    });
+    sessions[0] = turn("tabbed", 4, true);
+    expect(plan(sessions, new Map(), "tab-other", ["started"])).toEqual(
+      activates("tabbed"),
+    );
+  });
+
+  it("opens the lead with no tab of a running worker", () => {
+    const worker = { ...turn("worker", 3, true), orchestrationLeadId: "lead" };
+    expect(
+      plan([turn("idle", 1), turn("lead", 2), worker], new Map(), "tab-other", [
+        "lead",
+      ]),
+    ).toEqual({ action: "open-session", sessionId: "lead" });
+  });
+
+  it.each([
+    ["an Inbox Ask", { inboxAsk: { kind: "pr" } }],
+    ["an ephemeral session", { ephemeral: true }],
+    ["a Mono's chat", { id: "mono-chat" }],
+  ])("does not open %s that runs with no tab", (_, fields) => {
+    const running = { ...turn("started", 2, true), ...fields } as Session;
+    expect(
+      plan([turn("first", 1), running], new Map(), "tab-other", [running.id]),
+    ).toEqual(activates("first"));
+  });
+
+  it("does not open a habit run that runs with no tab", () => {
+    markHabitRun("habit-run", "mono");
+    try {
+      expect(
+        plan(
+          [turn("first", 1), { ...turn("habit-run", 2, true) }],
+          new Map(),
+          "tab-other",
+          ["habit-run"],
+        ),
+      ).toEqual(activates("first"));
+    } finally {
+      clearHabitRun("habit-run");
+    }
   });
 
   it("opens a lead whose worker is running", () => {
