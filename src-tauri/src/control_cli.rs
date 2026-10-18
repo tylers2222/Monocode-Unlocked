@@ -327,25 +327,27 @@ Actions:
                   hiddenStatuses} and milestones in order, each with id,
                   title, note, status, target, order, createdBy, createdAt
                   and updatedAt. It answers while milestones are off.
+                  Codes: invalid_input.
   milestones.add {"title":"Dark mode","note":"...","status":"idea",
                   "target":"2026-12-01"}
                   Keep a future goal for the project. status is idea
                   (default), planned, in_progress or done. target is a
                   YYYY-MM-DD date, or null for later. title is 1 to 200
-                  characters, note at most 4000. createdBy is you. Returns
-                  the new milestone. Codes: invalid_input, milestones_off
-                  (the user turned them off; do not retry).
+                  characters, note at most 4000. MonoCode records you as
+                  the writer; do not send createdBy or by. Returns the new
+                  milestone. Codes: invalid_input, milestones_off (the user
+                  turned them off; do not retry).
   milestones.update {"id":"...","status":"in_progress","target":null}
                   Change title, note, status or target. Omitted fields stay;
                   target null clears the date. Codes: unknown_milestone (not
                   in this project), invalid_input, milestones_off.
   milestones.remove {"id":"..."}  Delete one. Returns removed. Codes:
-                  unknown_milestone, milestones_off.
+                  unknown_milestone, invalid_input, milestones_off.
   milestones.reorder {"ids":["...","..."]}
                   Every id of the project, in the new order. Returns project
-                  and milestones in the new order.
-                  Codes: stale_order (ids are not exactly the project's;
-                  run milestones.list), milestones_off.
+                  and milestones in the new order. Codes: stale_order (ids
+                  are not exactly the project's; run milestones.list),
+                  invalid_input, milestones_off.
   notes.list     {"limit":30,"offset":0}  Titles and short previews only.
   notes.read     {"id":"..."}  Full body of one note.
   notes.write    {"title":"Plan","body":"Markdown","tags":["work"]}
@@ -1270,9 +1272,18 @@ mod tests {
                         && parsed_input == serde_json::from_str::<Value>(input).unwrap()
             ));
             assert!(parse_args_for(&args(&[action]), false).is_err());
-            assert!(app_help().contains(&format!("\n  {action} {{")), "{action}");
+            let help = app_help();
+            let entry = &help[help.find(&format!("\n  {action} {{")).unwrap() + 1..];
+            let mut lines = entry.lines();
+            let first = lines.next().unwrap_or_default();
+            let block: Vec<&str> = std::iter::once(first)
+                .chain(lines.take_while(|line| line.starts_with("   ")))
+                .collect();
+            assert!(block.join(" ").contains("invalid_input"), "{action}");
         }
-        assert!(app_help().contains("folders.* and milestones.* actions"));
+        let help = app_help();
+        assert!(help.contains("folders.* and milestones.* actions"));
+        assert!(help.contains("do not send createdBy or by"));
     }
 
     #[test]
