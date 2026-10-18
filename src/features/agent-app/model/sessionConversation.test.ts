@@ -125,40 +125,45 @@ describe("sessionConversationPage", () => {
     ).toThrow("work must be true or false");
   });
 
-  it("keeps each turn's newest work rows under the CLI reply cap and counts the rest", () => {
-    const ansi = "\u001b[32m✓\u001b[0m\n".repeat(1000);
-    const blocks: Block[] = [];
-    for (let t = 1; t <= 3; t += 1) {
-      blocks.push({ id: `u${t}`, role: "user", text: "Go" });
-      for (let i = 1; i <= 120; i += 1)
-        blocks.push({
-          id: `t${t}-${i}`,
-          role: "tool",
-          text: `step ${i} ${ansi}`,
-          tool: { kind: "execute", detail: ansi },
+  it.each([
+    ["ANSI escapes", "\u001b[32m✓\u001b[0m\n".repeat(1000)],
+    ["non-ASCII text", "✓".repeat(8000)],
+  ])(
+    "keeps each turn's newest work rows under the CLI reply cap and counts the rest (%s)",
+    (_, output) => {
+      const blocks: Block[] = [];
+      for (let t = 1; t <= 3; t += 1) {
+        blocks.push({ id: `u${t}`, role: "user", text: "Go" });
+        for (let i = 1; i <= 120; i += 1)
+          blocks.push({
+            id: `t${t}-${i}`,
+            role: "tool",
+            text: `step ${i} ${output}`,
+            tool: { kind: "execute", detail: output },
+          });
+      }
+      const page = sessionConversationPage(conversation(blocks), {
+        work: true,
+        maxChars: 6000,
+      });
+      expect(
+        new TextEncoder().encode(JSON.stringify(page)).length,
+      ).toBeLessThan(4_000_000);
+      for (const turn of page.turns) {
+        const kept = turn.work ?? [];
+        expect(turn.omittedWork).toBeGreaterThan(0);
+        expect(kept.length + (turn.omittedWork ?? 0)).toBe(120);
+        expect(kept[0]).toMatchObject({
+          input: {
+            text: expect.stringMatching(`^step ${turn.omittedWork! + 1} `),
+          },
         });
-    }
-    const page = sessionConversationPage(conversation(blocks), {
-      work: true,
-      maxChars: 6000,
-    });
-    expect(new TextEncoder().encode(JSON.stringify(page)).length).toBeLessThan(
-      4_000_000,
-    );
-    for (const turn of page.turns) {
-      const kept = turn.work ?? [];
-      expect(turn.omittedWork).toBeGreaterThan(0);
-      expect(kept.length + (turn.omittedWork ?? 0)).toBe(120);
-      expect(kept[0]).toMatchObject({
-        input: {
-          text: expect.stringMatching(`^step ${turn.omittedWork! + 1} `),
-        },
-      });
-      expect(kept.at(-1)).toMatchObject({
-        input: { text: expect.stringMatching(/^step 120 /) },
-      });
-    }
-  });
+        expect(kept.at(-1)).toMatchObject({
+          input: { text: expect.stringMatching(/^step 120 /) },
+        });
+      }
+    },
+  );
 
   it("redacts secrets in work rows", () => {
     const token = `ghp_${"A1b2".repeat(9)}`;
@@ -177,6 +182,27 @@ describe("sessionConversationPage", () => {
     );
     expect(json).not.toContain(token);
     expect(json.match(/«redacted/g)).toHaveLength(3);
+  });
+
+  it("redacts a secret that crosses the maxChars cut", () => {
+    const keyBody = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".repeat(20);
+    const key = `-----BEGIN PRIVATE KEY-----\n${keyBody}\n-----END PRIVATE KEY-----`;
+    const token = `ghp_${"A1b2".repeat(9)}`;
+    const session = conversation([
+      { id: "u", role: "user", text: "Auth?" },
+      {
+        id: "t",
+        role: "tool",
+        text: `${"x".repeat(180)} ${token}`,
+        tool: { kind: "execute", detail: `${"y".repeat(150)} ${key}` },
+      },
+    ]);
+    const json = JSON.stringify(
+      sessionConversationPage(session, { work: true, maxChars: 200 }),
+    );
+    expect(json).not.toContain("BEGIN");
+    expect(json).not.toContain(keyBody.slice(0, 16));
+    expect(json).not.toContain("ghp_");
   });
 
   it("caps individual messages and lets a caller request a larger excerpt", () => {
