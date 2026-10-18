@@ -11,10 +11,12 @@ Each `<name>.html` loads a `<name>.tsx` that mounts one component with its own m
 `app.html` boots the real `src/main.tsx` on the fake backend in `app/backend.ts`. To test a page of the app:
 
 1. Import `test` and `expect` from `./app/fixture`.
-2. Call `app.mount(seed, options)`. The seed fills the in-memory store (`home`, `projects`, `sessions`, `monos`, `automations`). The store adds the fields Rust always sends, such as a Mono's `name` and `sortOrder` or a session's `pinned`. `home` defaults to `/Users/test`; the other fields default to empty.
+2. Call `app.mount(seed, options)`. The seed fills the in-memory store (`home`, `projects`, `sessions`, `monos`, `automations`, `milestones`, `milestoneSettings`). The store adds the fields Rust always sends, such as a Mono's `name` and `sortOrder` or a session's `pinned`. `home` defaults to `/Users/test`; the other fields default to empty.
 3. Drive the UI with Playwright as a user would. `app-shell.spec.ts` is the example.
 
 For a live update, change the store with `page.evaluate(() => window.appBackend!.store...)`, then call `app.emit(event, payload)` to send the Tauri event that the Rust side would send.
+
+For a second window, open another page in the same context and call the exported `mount(page, seed)` on it, after `page.exposeFunction("appBackendReport", …)`. Each page keeps its own store, so write the change into each page's store and emit the event in each. `milestones-page.spec.ts` lane 6 does this.
 
 `window.appBackend.calls` lists every command the app sent, so a test can check that a click wrote what it should. `window.appBackend.store.blocks` holds each session's saved blocks, as `session_upsert` and `mono_session_upsert` left them.
 

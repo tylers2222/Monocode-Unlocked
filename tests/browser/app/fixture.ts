@@ -58,7 +58,8 @@ function handlerSource(command: string, handler: Handler) {
   return source;
 }
 
-async function mount(
+/** Boots the app on `page`; the `app` fixture's `mount` is this on its own page. */
+export async function mount(
   page: Page,
   seed: FakeSeed = {},
   { platform = "macos", handlers = {}, cannotSteer = [] }: MountOptions = {},
