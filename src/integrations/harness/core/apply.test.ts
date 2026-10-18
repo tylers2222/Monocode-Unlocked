@@ -185,6 +185,45 @@ describe("turn duration", () => {
     expect(session.blocks[0]?.durationMs).toBe(7_000);
   });
 
+  it("stamps the queued Mono message that opened the turn", () => {
+    now = 1_000;
+    let session = appendUser(newSession("claude", "/tmp"), "first");
+    session = stopStreaming(session, 2_000);
+    now = 3_000;
+    const message = { id: "queued", text: "next", attachments: [] };
+    session = enqueueMonoMessage(session, message);
+    now = 5_000;
+    session = acknowledgeMonoMessage(
+      session,
+      { ...message, blockId: "queued" },
+      { mode: "new-turn" },
+    );
+    session = stopStreaming(session, 9_000);
+    expect(session.blocks.map((block) => block.durationMs)).toEqual([
+      1_000,
+      4_000,
+    ]);
+  });
+
+  it("stamps the turn's opener when a saved draft follows it", () => {
+    now = 1_000;
+    const session = appendUser(newSession("claude", "/tmp"), "go");
+    const done = stopStreaming(
+      {
+        ...session,
+        blocks: [
+          ...session.blocks,
+          { id: "draft", role: "user", text: "later", draft: true },
+        ],
+      },
+      9_000,
+    );
+    expect(done.blocks.map((block) => block.durationMs)).toEqual([
+      8_000,
+      undefined,
+    ]);
+  });
+
   it("marks orphaned subagent work failed when the provider dies", () => {
     let session = appendUser(newSession("codex", "/tmp"), "delegate it");
     session = applyHarnessEvent(session, {
