@@ -3,7 +3,10 @@ import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { TitleBar, type Tab } from "../../src/app/shell/TitleBar";
 import { ProjectRail } from "../../src/app/shell/ProjectRail";
 import { planProjectReturn } from "../../src/features/projects/model/projectReturn";
-import { newSession, type Session } from "../../src/features/sessions/model/session";
+import {
+  newSession,
+  type Session,
+} from "../../src/features/sessions/model/session";
 import { newTab } from "../../src/features/workspace/model/layout";
 import "../../src/styles/index.css";
 
@@ -24,7 +27,8 @@ type Row = { id: string; title: string; busy: boolean; startedAt: number };
 type Scenario = { rows: Row[]; remembered: string; before?: boolean };
 
 const scenarios: Record<string, Scenario> = {
-  // Today's rule returns to the remembered pane, which is idle here.
+  // The rule before ADE-5 ignored running state. The fixture asks the rule
+  // with every session idle, which runs only the steps that rule had.
   before: {
     rows: [
       { id: "a", title: "Fix PR7 review nits", busy: false, startedAt: 1 },
@@ -88,13 +92,14 @@ const tabIdBySession = new Map(
 const decision = planProjectReturn({
   memory: new Map([[project, scenario.remembered]]),
   tabs: workspaceTabs,
-  sessions,
+  sessions: scenario.before
+    ? sessions.map((session) => ({ ...session, busy: false }))
+    : sessions,
   activeTabId: tabIdBySession.get("elsewhere")!,
   projectPath: project,
 });
-const landing = scenario.before
-  ? scenario.remembered
-  : decision.action === "activate"
+const landing =
+  decision.action === "activate"
     ? workspaceTabs.find((tab) => tab.id === decision.tabId)!.focusedId
     : decision.action;
 

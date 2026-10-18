@@ -334,7 +334,12 @@ describe("project selection", () => {
 });
 
 describe("project selection with a running session", () => {
-  function turn(id: string, startedAt?: number, busy = false, cwd = "/mono"): Session {
+  function turn(
+    id: string,
+    startedAt?: number,
+    busy = false,
+    cwd = "/mono",
+  ): Session {
     return {
       ...newSession("claude", cwd),
       id,
@@ -369,7 +374,10 @@ describe("project selection with a running session", () => {
 
   it("opens the running session instead of the remembered idle one", () => {
     expect(
-      plan([turn("idle", 1), turn("running", 1, true)], new Map([["/mono", "idle"]])),
+      plan(
+        [turn("idle", 1), turn("running", 1, true)],
+        new Map([["/mono", "idle"]]),
+      ),
     ).toEqual(activates("running"));
   });
 
@@ -416,12 +424,34 @@ describe("project selection with a running session", () => {
     );
   });
 
+  it("dates a lead's turn from its busy worker", () => {
+    const worker = { ...turn("worker", 9, true), orchestrationLeadId: "lead" };
+    expect(plan([turn("running", 5, true), turn("lead", 1), worker])).toEqual(
+      activates("lead"),
+    );
+  });
+
+  it("does not rank an idle lead by its own finished turn", () => {
+    const worker = { ...turn("worker", 50, true), orchestrationLeadId: "lead" };
+    expect(
+      plan([turn("running", 80, true), turn("lead", 100), worker]),
+    ).toEqual(activates("running"));
+  });
+
+  it("gives equal turn starts to the first tab", () => {
+    expect(plan([turn("first", 4, true), turn("second", 4, true)])).toEqual(
+      activates("first"),
+    );
+  });
+
   it("dates a steered turn from the block that started it", () => {
     const steered = turn("steered", 5, true);
     steered.blocks.push(
       { id: "reply", role: "assistant", text: "working" },
       { id: "steer", role: "user", text: "also this", sentAt: 6 },
     );
-    expect(plan([turn("fresh", 3, true), steered])).toEqual(activates("steered"));
+    expect(plan([turn("fresh", 3, true), steered])).toEqual(
+      activates("steered"),
+    );
   });
 });

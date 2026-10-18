@@ -5,7 +5,7 @@ test.use({ viewport: { width: 1180, height: 340 } });
 const cases = [
   {
     scenario: "before",
-    name: "before the fix, opening the project lands on the remembered idle session",
+    name: "the rule without running state (before ADE-5) lands on the remembered idle session",
     landing: "a",
   },
   {

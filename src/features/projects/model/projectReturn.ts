@@ -112,20 +112,19 @@ function turnStart(session: Session): number {
 }
 
 /** When the session's running turn started, or undefined when it is idle. A
- * busy worker has no tab, so its lead counts as running in its place. */
+ * busy worker has no tab, so its lead counts as running in its place. Only
+ * busy sessions count: a lead's finished turn is not a running turn. */
 export function runningTurnStart(
   id: string,
   sessions: readonly Session[],
 ): number | undefined {
-  let running = false;
-  let start = -Infinity;
+  let start: number | undefined;
   for (const session of sessions) {
-    const busyWorker = session.busy && session.orchestrationLeadId === id;
-    if (session.id !== id && !busyWorker) continue;
-    running ||= !!session.busy;
-    start = Math.max(start, turnStart(session));
+    if (!session.busy) continue;
+    if (session.id !== id && session.orchestrationLeadId !== id) continue;
+    start = Math.max(start ?? -Infinity, turnStart(session));
   }
-  return running ? start : undefined;
+  return start;
 }
 
 function runningPaneForProject(

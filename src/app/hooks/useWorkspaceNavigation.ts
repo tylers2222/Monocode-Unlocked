@@ -140,7 +140,7 @@ export function useWorkspaceNavigation(options: Options) {
               next.project,
             )
           ) {
-            setWorktreeFocus(next.project, focus);
+            setWorktreeFocus(next.project, next.focus);
             continue;
           }
           const scoped = filterTabsForProject(
