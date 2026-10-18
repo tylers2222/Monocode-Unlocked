@@ -100,7 +100,7 @@ reset_state() {
   git_repo "$A"
   git_repo "$B"
   sed -e "s|@HOME@|$EVAL_HOME|g" -e "s|@A@|$A|g" -e "s|@B@|$B|g" "$HERE/fixtures/pre-m.sql" | sqlite3 "$DB"
-  hold beta 30 'call your add_milestone tool once with title \"Omp later\" and target set to the empty string \"\". If it is refused, do not call it again.'
+  hold beta 30 'call your add_milestone tool with title \"Omp dated\" and target \"2026-12-12\", then call your update_milestone tool with the id it returned and target set to the empty string \"\". Do not retry a refused call.'
   hold alpha 900
 }
 
@@ -205,13 +205,15 @@ case_empty_target_mcp() {
   EV="app-mcp add_milestone target \"\" stores NULL; update_milestone \"\" clears a date to NULL"
 }
 
-# Beta's held omp turn called its add_milestone host tool with target "".
+# Beta's held omp turn added a dated row with its host tool, then cleared the
+# date with update_milestone target "". A field omp dropped, or a refusal,
+# would leave the date.
 case_omp_empty_target() {
   local row deadline=$((SECONDS + 90))
-  until row="$(q "SELECT count(*) || ':' || ifnull(max(target), 'NULL') || ':' || ifnull(max(created_by), '') FROM milestones WHERE project_path = '$B' AND title = 'Omp later'")"
-    [[ "$row" != 0:* ]] || ((SECONDS > deadline)); do sleep 3; done
-  need "B rows titled Omp later (count:target:by): $row" [ "$row" = "1:NULL:mono:beta" ] || return 1
-  EV="omp host tool add_milestone with target \"\": one row in B, target NULL, by mono:beta"
+  until row="$(q "SELECT count(*) || ':' || ifnull(max(target), 'NULL') || ':' || ifnull(max(created_by), '') || ':' || (max(updated_at) > max(created_at)) FROM milestones WHERE project_path = '$B' AND title = 'Omp dated'")"
+    [[ "$row" == 1:NULL:* ]] || ((SECONDS > deadline)); do sleep 3; done
+  need "B rows titled Omp dated (count:target:by:updated): $row" [ "$row" = "1:NULL:mono:beta:1" ] || return 1
+  EV="omp host tools: add_milestone with 2026-12-12, then update_milestone target \"\" cleared it to NULL (by mono:beta)"
 }
 
 case_a_never_sees_b() {
