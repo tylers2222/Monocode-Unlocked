@@ -175,6 +175,7 @@ it("gets one Mono as monos.list shows it, with the harness and model its chat ru
     ...shroomListing,
     harness: "claude",
     model: "claude:opus",
+    messageAllowlist: [],
   });
   // Defect: a Mono with no chat loaded reports another Mono's model.
   expect(await run("monos.get", { monoId: "mono-3" })).toMatchObject({

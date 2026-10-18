@@ -1,0 +1,23 @@
+[
+  ["/p/alpha", "/p/alpha"],
+  ["/p/alpha/", "/p/alpha"],
+  ["/p/alpha///", "/p/alpha"],
+  ["/p//alpha", "/p//alpha"],
+  ["/p/alpha/../beta", "/p/alpha/../beta"],
+  ["/p/alpha/..", "/p/alpha/.."],
+  ["/p/alpha beta/", "/p/alpha beta"],
+  ["/", "/"],
+  ["", "/"],
+  ["~", "~"],
+  ["~/", "~"],
+  ["~/code/app/", "~/code/app"],
+  ["/P/Alpha", "/P/Alpha"],
+  ["/Users/tyler/MonoCode", "/Users/tyler/MonoCode"],
+  ["/a\\b", "/a\\b"],
+  ["C:/Users/X/", "c:/users/x"],
+  ["c:\\Users\\X", "c:/users/x"],
+  ["C:", "c:"],
+  ["//server/Share/", "//server/share"],
+  ["//server\\Share", "//server/share"],
+  ["\\\\server\\Share", "//server/share"]
+]
