@@ -251,6 +251,28 @@ it("never lets a slow older list overwrite a newer one", async () => {
   expect(titles()).toEqual(["old", "new"]);
 });
 
+it("ignores a late failure from an older request: the newer rows stay and no error shows", async () => {
+  const slow = gate();
+  let call = 0;
+  invoke.mockImplementation(
+    async (_command: string, { projectPath }: { projectPath: string }) => {
+      if (projectPath !== APP) return project([]);
+      call += 1;
+      if (call === 2) {
+        await slow.opened;
+        throw new Error("stale failure");
+      }
+      return project(call === 1 ? [] : [milestone({ id: "newer" })]);
+    },
+  );
+  await open();
+  await changed(APP);
+  await changed(APP);
+  await slow.open();
+  expect(titles()).toEqual(["newer"]);
+  expect(container.textContent).not.toContain("stale failure");
+});
+
 it("marks only rows an agent added after the first list", async () => {
   store[APP] = project([milestone({ id: "Found", createdBy: "mono:m-1" })]);
   await open();
