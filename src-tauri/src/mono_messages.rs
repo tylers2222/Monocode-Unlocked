@@ -4643,10 +4643,13 @@ pub(crate) mod tests {
         assert_eq!(rows(&conn), before);
     }
 
-    // Decision 617, PR 7 review r1 M2 and m7. Defect: `access` "started"
-    // parses as Operator, so A8 never binds an app-started lead, or a Mono
-    // caller with session fields (any of them, review r2 n1) or a session
-    // caller with a Mono parses.
+    // Decision 617, PR 7 review r1 M2 and m7, PR7-5b review r1 m1. Defect:
+    // `access` "started" parses as Operator, so A8 never binds an
+    // app-started lead; a session caller with no or an unknown `access`
+    // parses (as Operator it fails open from PR 9 on), or with no or an
+    // empty `cwd`, or its invalid `leadSessionId` is dropped and it reads as
+    // a lead; or a Mono caller with session fields (any of them, review r2
+    // n1) or a session caller with a Mono parses.
     #[test]
     fn caller_arg_parses_a_session_caller_and_refuses_mixed_combinations() {
         let parse =
@@ -4668,6 +4671,30 @@ pub(crate) mod tests {
                     turn_id: "turn-1".into(),
                 }
             );
+        }
+        for (case, field, value) in [
+            ("no access", "access", None),
+            ("unknown access", "access", Some("admin")),
+            ("no cwd", "cwd", None),
+            ("empty cwd", "cwd", Some("")),
+            ("empty leadSessionId", "leadSessionId", Some("")),
+            (
+                "invalid leadSessionId",
+                "leadSessionId",
+                Some("not a session id"),
+            ),
+        ] {
+            let mut arg = serde_json::json!({
+                "kind": "session", "sessionId": "lead", "turnId": "turn-1",
+                "access": "started", "cwd": "/p", "leadSessionId": "boss"
+            });
+            match value {
+                Some(value) => arg[field] = serde_json::json!(value),
+                None => {
+                    arg.as_object_mut().unwrap().remove(field);
+                }
+            }
+            assert!(parse(arg).is_err(), "session caller with {case}");
         }
         for (field, value) in [
             ("cwd", "/p"),

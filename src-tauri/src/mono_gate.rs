@@ -3431,9 +3431,10 @@ mod tests {
         );
     }
 
-    // L5 before S13. Defect: a session caller waits for an answer whose
-    // notice can never reach it, or gets reply_unsupported_target, a code
-    // about the recipient, for a limit of its own.
+    // L5 before S9 and S13. Defect: a session caller waits for an answer
+    // whose notice can never reach it, gets reply_unsupported_target, a code
+    // about the recipient, for a limit of its own, or a steer that names an
+    // unknown message gets unknown_message first.
     #[test]
     fn l5_a_session_caller_cannot_wait_for_an_answer() {
         let hint = "A lead or worker session cannot wait for an answer. Send with wanting_reply false. The recipient answers with a new message if it needs to.";
@@ -3472,6 +3473,23 @@ mod tests {
                 "{case}"
             );
         }
+        assert_eq!(
+            decide_as(
+                &session_caller("l1"),
+                lead_row(),
+                &SendInput {
+                    wanting_reply: true,
+                    ..at("w1", steer("m_uuuuuuuuuuuu"))
+                },
+                about(in_alpha("w1", worker_of("l1")))
+            ),
+            send_rejected(
+                RejectCode::SessionCannotWait,
+                in_alpha("w1", worker_of("l1")).party(),
+                hint
+            ),
+            "lead's steer with an unknown reply_to"
+        );
     }
 
     // L6 before S9. Defect: a worker steers its lead's work or a lead its
@@ -3515,6 +3533,27 @@ mod tests {
                 "{who}"
             );
         }
+    }
+
+    // W2 before L6 (design 16.12): until PR 8 no session caller steers a
+    // whole turn. Defect: a worker that steers its own lead's whole turn gets
+    // upward_steer_forbidden from L6 instead of steer_scope_not_allowed.
+    #[test]
+    fn w2_a_worker_steering_its_leads_whole_turn_is_steer_scope_not_allowed() {
+        let l1 = in_alpha("l1", SessionLevel::Lead);
+        assert_eq!(
+            decide_as(
+                &session_caller("w1"),
+                worker_row(),
+                &at("l1", whole(IntentKind::Steer)),
+                about(l1.clone())
+            ),
+            send_rejected(
+                RejectCode::SteerScopeNotAllowed,
+                l1.party(),
+                RejectCode::SteerScopeNotAllowed.hint()
+            )
+        );
     }
 
     // Intents review r1 dropped the sender side of target_session, so a row
