@@ -1861,12 +1861,13 @@ fn record(
             code,
             hint,
             to,
+            hop,
             open_handles,
         } => {
             let message = row(
                 Part::FIRST,
                 to,
-                0,
+                hop,
                 Status::Rejected {
                     gate_result: code,
                     wanting_reply,
@@ -6534,6 +6535,40 @@ pub(crate) mod tests {
         );
         let second = accepted_ids(&again).remove(0);
         assert_eq!(get(&conn, &second).unwrap().unwrap().hop, 2);
+    }
+    // Design E25 and 6 (`Reject { code, hop, to }`), PR 7 review r1 m1 and
+    // decision 628. Defect: a rejected `hop_limit` row stores hop 0.
+    #[test]
+    fn a_hop_limit_row_stores_the_hop_the_steer_would_have_had() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let ask = ask_delivered(&conn, "ask", "turn-1");
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+            .unwrap();
+        conn.execute(
+            "UPDATE mono_messages SET hop = 4 WHERE id = ?1",
+            [ask.as_str()],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA ignore_check_constraints = OFF")
+            .unwrap();
+        let error = failed(call_in_turns(
+            &conn,
+            &caller_in("giga", "giga-chat"),
+            "steer",
+            Tool::SendMessage,
+            steering("mono-a", ask.as_str()),
+            &[],
+            &[("a-chat", "turn-1")],
+        ));
+        assert_eq!(error.code, "hop_limit");
+        let message = get(&conn, &error.message_id.unwrap()).unwrap().unwrap();
+        assert!(
+            matches!(message.status, Status::Rejected { .. }),
+            "{:?}",
+            message.status
+        );
+        assert_eq!(message.hop, 5);
     }
 
     // PR I2, S15 with the turn ids of Live.running. Defect: a steer joins a
