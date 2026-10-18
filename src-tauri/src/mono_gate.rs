@@ -3999,6 +3999,40 @@ mod tests {
         }
     }
 
+    // S12 binds a Mono caller only (review r2 n2). Defect: a Giga's steer to
+    // another Giga about a message not between them gets S12's
+    // upward_steer_forbidden, whose hint names a late answer, instead of
+    // S10's steer_target_mismatch.
+    #[test]
+    fn s12_leaves_a_gigas_steer_to_another_giga_to_s10() {
+        let a_chat = Some(live("a-chat", true, true));
+        assert_eq!(
+            decide_send(
+                &caller(CallerKind::MonoChat),
+                &steer("m_aaaaaaaaaaaa"),
+                &hash(),
+                &steering(
+                    Recipient::Mono {
+                        mono_id: mono("giga-2"),
+                        role: MonoRole::Giga,
+                        chat: Some(live("g2-chat", true, true)),
+                        projects: Vec::new(),
+                        allowlist: vec![mono("giga")],
+                    },
+                    sent('a', 0, Some("turn-1")),
+                    a_chat,
+                ),
+                NOW,
+            ),
+            rejected(
+                RejectCode::SteerTargetMismatch,
+                Some(Party::Mono {
+                    mono_id: mono("giga-2")
+                })
+            )
+        );
+    }
+
     // Rule (b) (design 16.6, intents review r1). Defect: a Mono's late answer
     // never reaches the Giga, lands in its idle chat as new work, reaches a
     // finished habit run, or closes the question as answered (only reply

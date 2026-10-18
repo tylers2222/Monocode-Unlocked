@@ -7328,6 +7328,45 @@ pub(crate) mod tests {
         assert_eq!(stored_row(&conn, &late).0, "dropped");
     }
 
+    // Design 16.12.3.3 and rule (b), review r2 m1. Defect: the Giga's turn-4
+    // ends after the gate read `running` and before the insert, the recheck
+    // skips the late answer pinned to turn-4, and no later turn end drops
+    // it: the caller gets a route into an ended turn and no notice.
+    #[test]
+    fn the_submit_recheck_drops_a_late_answer_whose_turn_ended_meanwhile() {
+        let store = messaging_store();
+        let asked = {
+            let conn = store.lock_conn().unwrap();
+            let asked = ask_delivered(&conn, "ask", "turn-1");
+            turn_ended(&conn, &session("a-chat"), "turn-1", 100).unwrap();
+            turn_ended(&conn, &session("giga-chat"), "turn-4", 105).unwrap();
+            asked
+        };
+        let reads = std::cell::Cell::new(0);
+        let running = || {
+            reads.set(reads.get() + 1);
+            if reads.get() == 1 {
+                return HashMap::from([("giga-chat".to_string(), "turn-4".to_string())]);
+            }
+            HashMap::new()
+        };
+        let (first, notices) = submit_and_recheck(
+            &store,
+            running,
+            &caller_in_turn("mono-a", "a-chat", "turn-2"),
+            &RequestId::parse("c0").unwrap(),
+            mono_gate::parse(Tool::SendMessage, &steering("giga", asked.as_str())),
+            &[],
+            &["codex".to_string()],
+            110,
+        )
+        .unwrap();
+        let conn = store.lock_conn().unwrap();
+        assert_eq!(stored_row(&conn, &accepted_ids(&first)[0]).0, "dropped");
+        assert_eq!(route_of(&first), None);
+        assert!(notices.sessions.contains(&session("a-chat")), "{notices:?}");
+    }
+
     // Review r1 m1 (store level). Defect: the end of the Giga's turn-4,
     // recorded after turn-5 runs (Stop, then the next queued turn), drops a
     // late answer accepted for turn-5, and the Mono gets a false `dropped`
