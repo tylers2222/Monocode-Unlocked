@@ -3,6 +3,7 @@
  * are pure functions here; `gigaWorkspaceRuntime.ts` carries them out.
  */
 import { joinPath } from "../../../shared/lib/paths";
+import type { MonoRole, TurnId } from "./monoMessages";
 
 export const GIGA_SLUG_MAX = 48;
 export const RECEIPT_ASKED_MAX = 200;
@@ -161,4 +162,47 @@ export function workspaceStatus(
 export function ensureProblem(report: EnsureReport): string | undefined {
   if (report.state === "blocked") return report.reason ?? "blocked";
   return report.error ?? report.warning;
+}
+
+/** A Giga chat turn running this long is steered once to move its work. */
+export const TURN_GUARD_LIMIT_MS = 3 * 60_000;
+/** How long after a turn that could not take the steer it is checked once more. */
+export const TURN_GUARD_RETRY_MS = 30_000;
+export const TURN_GUARD_STEER =
+  "Move this work to a session in the MonoCode project and end your turn.";
+
+export type TurnGuardCheck = {
+  /** Role of the Mono whose own chat this is; undefined for any other session. */
+  role: MonoRole | undefined;
+  elapsedMs: number;
+  /** The turn already holds the guard's steer. */
+  steered: boolean;
+  /** The turn takes a steer now. */
+  canSteer: boolean;
+  /** Checks made at or past the limit so far this turn. */
+  checks: number;
+};
+
+export type TurnGuardStep =
+  { kind: "steer" } | { kind: "wait"; ms: number } | { kind: "skip" };
+
+/**
+ * What the guard does for a running turn: wait for the limit, steer, or give
+ * up. A turn that cannot take the steer at the limit is checked once more;
+ * after that it is skipped, so the guard never loops.
+ */
+export function turnGuardStep(check: TurnGuardCheck): TurnGuardStep {
+  if (check.role !== "giga" || check.steered) return { kind: "skip" };
+  if (check.elapsedMs < TURN_GUARD_LIMIT_MS)
+    return { kind: "wait", ms: TURN_GUARD_LIMIT_MS - check.elapsedMs };
+  if (check.checks >= 2) return { kind: "skip" };
+  if (check.canSteer) return { kind: "steer" };
+  return check.checks === 0
+    ? { kind: "wait", ms: TURN_GUARD_RETRY_MS }
+    : { kind: "skip" };
+}
+
+/** The app request id of turn `turnId`'s guard steer; its block marks the turn steered. */
+export function turnGuardRequestId(turnId: TurnId): string {
+  return `turn-guard-${turnId}`;
 }

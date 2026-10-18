@@ -10,7 +10,12 @@ import {
   gigaWorkspaceRoot,
   receiptLine,
   recordTurnCall,
+  turnGuardRequestId,
+  turnGuardStep,
   workspaceStatus,
+  TURN_GUARD_LIMIT_MS,
+  TURN_GUARD_RETRY_MS,
+  TURN_GUARD_STEER,
   type EnsureReport,
   type EnsureTrigger,
   type LastEnsure,
@@ -20,6 +25,7 @@ import {
   type WorkspaceStatus,
 } from "./gigaWorkspace";
 import { addProjectOnce } from "../../projects/model/recents";
+import type { Block } from "../../sessions/model/session";
 import {
   findMono,
   listMonos,
@@ -29,6 +35,7 @@ import {
   type Mono,
 } from "./mono";
 import { habitRunMono, isHabitRun } from "./monoHabits";
+import type { MonoRole, TurnId } from "./monoMessages";
 
 export const GIGA_WORKSPACE_PREFIX = "Giga workspace:";
 
@@ -38,6 +45,7 @@ let lastEnsure: LastEnsure | undefined;
 const reported = new Set<string>();
 const turnCalls = new Map<string, TurnCalls>();
 const turnStarts = new Map<string, TurnStart>();
+const turnGuards = new Map<string, TurnGuard>();
 let post: (monoId: string, text: string) => void = () => {};
 
 /** How a status line reaches a Giga's chat. The app sets it once. */
@@ -45,6 +53,41 @@ export function setGigaWorkspacePoster(
   poster: (monoId: string, text: string) => void,
 ): void {
   post = poster;
+}
+
+/** A running Giga chat turn's guard. Whether the turn was steered is read
+ *  from its blocks, so it survives a reload. */
+type TurnGuard = {
+  turnId: TurnId;
+  startedAt: number;
+  checks: number;
+  cancel?: () => void;
+};
+
+/** What the turn guard needs from the app. */
+export type TurnGuardHost = {
+  now: () => number;
+  /** Runs `run` after `ms`; returns its cancel. */
+  schedule: (run: () => void, ms: number) => () => void;
+  /** Turn `turnId` while it still runs in `sessionId`, else undefined. */
+  turn: (
+    sessionId: string,
+    turnId: TurnId,
+  ) =>
+    | { blocks: readonly Pick<Block, "appRequestId">[]; canSteer: boolean }
+    | undefined;
+  /** Steers `text` into turn `turnId` as an app steer tagged `requestId`. */
+  steer: (
+    sessionId: string,
+    turnId: TurnId,
+    text: string,
+    requestId: string,
+  ) => Promise<void>;
+};
+let guardHost: TurnGuardHost | undefined;
+
+export function setTurnGuardHost(host: TurnGuardHost): void {
+  guardHost = host;
 }
 
 async function knownHome(): Promise<string> {
@@ -232,6 +275,82 @@ export function finishGigaTurn(
       error instanceof Error ? error.message : String(error),
     )
     .then((problem) => reportOnce(problem, [giga.id]));
+}
+
+function chatRole(sessionId: string): MonoRole | undefined {
+  const mono = monoForSession(sessionId);
+  return mono ? (mono.giga ? "giga" : "mono") : undefined;
+}
+
+/**
+ * Starts the guard of turn `turnId`: a Giga's own chat still running it at
+ * the limit is steered once to move the work to a session.
+ */
+export function armTurnGuard(sessionId: string, turnId: TurnId): void {
+  const host = guardHost;
+  if (!host) return;
+  disarmTurnGuard(sessionId);
+  const first = turnGuardStep({
+    role: chatRole(sessionId),
+    elapsedMs: 0,
+    steered: false,
+    canSteer: false,
+    checks: 0,
+  });
+  if (first.kind !== "wait") return;
+  const guard: TurnGuard = { turnId, startedAt: host.now(), checks: 0 };
+  turnGuards.set(sessionId, guard);
+  guard.cancel = host.schedule(
+    () => checkTurnGuard(sessionId, guard, host),
+    first.ms,
+  );
+}
+
+/** Clears the guard of `sessionId`, or only the one of turn `turnId`. */
+export function disarmTurnGuard(sessionId: string, turnId?: TurnId): void {
+  const guard = turnGuards.get(sessionId);
+  if (!guard || (turnId !== undefined && guard.turnId !== turnId)) return;
+  guard.cancel?.();
+  turnGuards.delete(sessionId);
+}
+
+function checkTurnGuard(
+  sessionId: string,
+  guard: TurnGuard,
+  host: TurnGuardHost,
+): void {
+  guard.cancel = undefined;
+  if (turnGuards.get(sessionId) !== guard) return;
+  const turn = host.turn(sessionId, guard.turnId);
+  if (!turn) return disarmTurnGuard(sessionId);
+  const elapsedMs = host.now() - guard.startedAt;
+  const requestId = turnGuardRequestId(guard.turnId);
+  const step = turnGuardStep({
+    role: chatRole(sessionId),
+    elapsedMs,
+    steered: turn.blocks.some((block) => block.appRequestId === requestId),
+    canSteer: turn.canSteer,
+    checks: guard.checks,
+  });
+  const recheck = (ms: number) => {
+    if (turnGuards.get(sessionId) === guard)
+      guard.cancel = host.schedule(
+        () => checkTurnGuard(sessionId, guard, host),
+        ms,
+      );
+  };
+  if (step.kind === "skip") return disarmTurnGuard(sessionId);
+  if (step.kind === "wait") {
+    if (elapsedMs >= TURN_GUARD_LIMIT_MS) guard.checks += 1;
+    return recheck(step.ms);
+  }
+  guard.checks += 1;
+  // The steer's block is recorded before the harness call, so the turn reads
+  // as steered from here on; a rejected steer removes it again.
+  host
+    .steer(sessionId, guard.turnId, TURN_GUARD_STEER, requestId)
+    .then(() => disarmTurnGuard(sessionId, guard.turnId))
+    .catch(() => recheck(TURN_GUARD_RETRY_MS));
 }
 
 /** Where a Giga's chat and habit runs work, once the home folder is known. */

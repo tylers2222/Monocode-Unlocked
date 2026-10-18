@@ -177,7 +177,7 @@ export function steersHeld(
  * A busy session takes a steer now: its turn is ready and nothing holds it
  * (a pending question, a paused queue, a provider switch or a hand-off).
  */
-function canSteerNow(session: Session): boolean {
+export function canSteerNow(session: Session): boolean {
   return !(
     !session.busy ||
     session.turnReadiness !== "ready" ||
