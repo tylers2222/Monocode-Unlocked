@@ -855,6 +855,26 @@ mod tests {
     }
 
     #[test]
+    fn hidden_only_patch_keeps_project_off() {
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        set_settings(&conn, "/p", turn(false), 1).unwrap();
+        let hide: SettingsPatch =
+            serde_json::from_value(json!({ "hiddenStatuses": ["done"] })).unwrap();
+        let saved = set_settings(&conn, "/p", hide, 2).unwrap();
+        let expected = MilestoneSettings {
+            enabled: false,
+            hidden_statuses: vec![Status::Done],
+        };
+        assert_eq!(saved, expected);
+        assert_eq!(settings(&conn, "/p").unwrap(), expected);
+        assert_eq!(
+            add(&conn, "/p", by("mono:alpha", "refused"), 2).map(|_| ()),
+            Err(OFF.into())
+        );
+    }
+
+    #[test]
     fn hidden_statuses_rejects_unknown_status() {
         let unknown = json!({ "hiddenStatuses": ["idea", "doing"] });
         let error = serde_json::from_value::<SettingsPatch>(unknown).unwrap_err();
