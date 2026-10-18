@@ -93,6 +93,13 @@ export type Handler = (
 /** A harness problem that the fixture fails the test with. */
 export type BackendReport = { command: string; problem: string };
 
+/**
+ * A harness `cannotSteer` can turn into one that refuses steers. Not codex:
+ * `ensureCodexRegistered` registers its own adapter again whenever the
+ * registry holds another object, so the app would undo the copy.
+ */
+export type SteerlessHarness = Exclude<HarnessId, "codex">;
+
 /** What a test can reach on `window.appBackend` through `page.evaluate`. */
 export type AppBackend = {
   store: FakeStore;
@@ -105,7 +112,7 @@ declare global {
   interface Window {
     appBackendSeed?: FakeSeed;
     appBackendHandlers?: Record<string, Handler>;
-    appBackendCannotSteer?: HarnessId[];
+    appBackendCannotSteer?: SteerlessHarness[];
     /** Exposed by the fixture, so reports outlive a reload. */
     appBackendReport: (report: BackendReport) => Promise<void>;
     appBackend?: AppBackend;

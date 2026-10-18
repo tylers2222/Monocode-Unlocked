@@ -151,13 +151,21 @@ async function mountGiga(
   );
 }
 
-/** Opens the Giga's chat and sends `text` with the clock paused at 0:00. */
-async function startGigaTurn(page: Page, app: AppShell, text: string) {
-  await page.getByRole("button", { name: "Atlas" }).first().click();
-  await expect(page.getByPlaceholder("Message Atlas")).toBeVisible();
+const ATLAS = { name: "Atlas", sessionId: GIGA_CHAT };
+const PIP = { name: "Pip", sessionId: MONO_CHAT };
+
+/** Opens a Mono's chat and sends `text` with the clock paused at 0:00. */
+async function startTurn(
+  page: Page,
+  app: AppShell,
+  text: string,
+  { name, sessionId } = ATLAS,
+) {
+  await page.getByRole("button", { name: new RegExp(`^${name}, `) }).click();
+  await expect(page.getByPlaceholder(`Message ${name}`)).toBeVisible();
   await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
-  await send(page, "Atlas", text);
-  await acceptPrompt(page, app, GIGA_CHAT);
+  await send(page, name, text);
+  await acceptPrompt(page, app, sessionId);
   return turnClock(page);
 }
 
@@ -186,7 +194,7 @@ test("a Giga turn still running at 3:00 is steered once into that turn", async (
   page,
 }) => {
   await mountGiga(page, app);
-  const at = await startGigaTurn(page, app, "Plan the launch");
+  const at = await startTurn(page, app, "Plan the launch");
 
   await at(3 * MINUTE - 1_000);
   expect(await steers(page, GIGA_CHAT)).toEqual([]);
@@ -209,7 +217,7 @@ test("a Giga turn on a harness that cannot steer is not steered", async ({
   page,
 }) => {
   await mountGiga(page, app, { cannotSteer: ["pi"] });
-  const at = await startGigaTurn(page, app, "Plan the launch");
+  const at = await startTurn(page, app, "Plan the launch");
 
   await at(10 * MINUTE);
   expect(await steers(page, GIGA_CHAT)).toEqual([]);
@@ -222,7 +230,7 @@ test("a rejected steer is retried once at 3:30 and its block is removed", async 
 }) => {
   await mountGiga(page, app);
   await page.evaluate(() => (window.piRejectsSteers = true));
-  const at = await startGigaTurn(page, app, "Plan the launch");
+  const at = await startTurn(page, app, "Plan the launch");
 
   await at(3 * MINUTE);
   expect(await steers(page, GIGA_CHAT)).toHaveLength(1);
@@ -246,7 +254,7 @@ test("a turn that ends early leaves the next turn its own 3 minutes", async ({
   page,
 }) => {
   await mountGiga(page, app);
-  const at = await startGigaTurn(page, app, "Plan the launch");
+  const at = await startTurn(page, app, "Plan the launch");
 
   await at(1 * MINUTE);
   await app.emit("harness-stdout", {
@@ -273,7 +281,7 @@ test("a turn that ends early leaves the next turn its own 3 minutes", async ({
 
 test("a Giga turn stopped at 2:00 is not steered", async ({ app, page }) => {
   await mountGiga(page, app);
-  const at = await startGigaTurn(page, app, "Plan the launch");
+  const at = await startTurn(page, app, "Plan the launch");
 
   await at(2 * MINUTE);
   await page.getByPlaceholder("Message Atlas").press("Escape");
@@ -293,11 +301,7 @@ test("a plain Mono's chat and a project session are never steered", async ({
   page,
 }) => {
   await mountGiga(page, app);
-  await page.getByRole("button", { name: /^Pip, / }).click();
-  await expect(page.getByPlaceholder("Message Pip")).toBeVisible();
-  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
-  await send(page, "Pip", "Review the login flow");
-  await acceptPrompt(page, app, MONO_CHAT);
+  await startTurn(page, app, "Review the login flow", PIP);
 
   await page.getByRole("button", { name: "acme", exact: true }).click();
   await page.getByText("Fix the login redirect").click();
@@ -307,8 +311,9 @@ test("a plain Mono's chat and a project session are never steered", async ({
   await acceptPrompt(page, app, PROJECT_SESSION);
 
   // A project session redraws on every animation frame, which runFor fires
-  // one by one; the jump still fires a guard timer due at 3:00 once.
-  await page.clock.fastForward(10 * MINUTE);
+  // one by one. One 10-minute jump missed a guard armed for a project
+  // session; 30-second jumps fire it at 3:00.
+  for (let jump = 0; jump < 20; jump++) await page.clock.fastForward(30_000);
   expect(await steers(page, MONO_CHAT)).toEqual([]);
   expect(await steers(page, PROJECT_SESSION)).toEqual([]);
   await expect(

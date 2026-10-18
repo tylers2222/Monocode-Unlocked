@@ -9,8 +9,9 @@ if (cannotSteer.length) {
     await import("../../../src/integrations/harness/core/register");
   const { getHarness, registerHarness } =
     await import("../../../src/integrations/harness/core/registry");
-  // App.tsx registers the built-in adapters at import, each only once, so the
-  // copies registered here are the ones the app uses.
+  // App.tsx registers the built-in adapters again at import. Each one except
+  // codex skips a second registration, so these copies are the ones the app
+  // uses; `SteerlessHarness` leaves codex out.
   registerBuiltinHarnesses();
   for (const id of cannotSteer)
     registerHarness({ ...getHarness(id)!, canSteer: false });

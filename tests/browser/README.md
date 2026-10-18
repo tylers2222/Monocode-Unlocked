@@ -24,7 +24,7 @@ To run a turn, fake the harness binary in `handlers`. Answer its `harness_resolv
 
 - `platform`: `"macos"` (the default) or `"linux"`. The app picks its window chrome and shortcut labels from `navigator.platform`.
 - `handlers`: handlers for this test only, which replace or add to `HANDLERS`. A handler gets `(store, args)` and may be async. Write each as an arrow or function expression; `mount` throws on a method (`name() {…}`) and names the command. It runs in the page, so it can use only its arguments and page globals. Throw a string to reject the way a Rust `Err(String)` does.
-- `cannotSteer`: harnesses whose adapter the app sees with `canSteer: false`. No shipped adapter reports a ready turn and also refuses steers, so this is the way to reach the app's own can-steer checks on a running turn.
+- `cannotSteer`: harnesses whose adapter the app sees with `canSteer: false`. Codex is not allowed: the app registers its own Codex adapter again over the copy. No shipped adapter reports a ready turn and also refuses steers, so this is the way to reach the app's own can-steer checks on a running turn.
 
 ### Loud failures
 

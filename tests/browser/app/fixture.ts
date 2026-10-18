@@ -1,6 +1,10 @@
 import { test as base, expect, type Page } from "@playwright/test";
-import type { HarnessId } from "../../../src/features/sessions/model/session";
-import type { BackendReport, FakeSeed, Handler } from "./backend";
+import type {
+  BackendReport,
+  FakeSeed,
+  Handler,
+  SteerlessHarness,
+} from "./backend";
 
 export { expect };
 export type { BackendReport, FakeSeed, Handler };
@@ -22,7 +26,7 @@ export type MountOptions = {
    * adapter both reports a ready turn and refuses steers, so this is how a
    * test reaches the app's own can-steer checks on a running turn.
    */
-  cannotSteer?: HarnessId[];
+  cannotSteer?: SteerlessHarness[];
 };
 
 export type AppShell = {
