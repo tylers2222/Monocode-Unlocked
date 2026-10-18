@@ -1,8 +1,29 @@
 import type { Block, Session } from "../../sessions/model/session";
 import { operatorUserPrompt } from "../../sessions/model/operatorCommand";
+import { redactSecrets } from "../../monos/model/monoMemory";
 import { AppActionError } from "./appActionError";
 
-type Exchange = { user: Block; assistants: Block[]; work: Block[] };
+type Exchange = { user: Block; assistants: Block[]; work?: Block[] };
+type Excerpt = { text: string; truncated: boolean };
+
+/** One reasoning or tool row of a turn, as `work: true` returns it. */
+export type WorkRow =
+  | ({ kind: "reasoning" } & Excerpt)
+  | {
+      kind: "tool";
+      tool: string | null;
+      status: string | null;
+      input: Excerpt;
+      result: Excerpt | null;
+    };
+
+/** JSON bytes of work rows per turn: 3 turns stay under the CLI's 4 MB reply cap. */
+export const WORK_BYTES_MAX = 1_000_000;
+const utf8 = new TextEncoder();
+const WORK_ROLES: Partial<Record<Block["role"], true>> = {
+  reasoning: true,
+  tool: true,
+};
 
 export type SessionReadOptions = {
   before?: string;
@@ -20,16 +41,30 @@ function capped(text: string, maxChars: number) {
   };
 }
 
-function workRow(block: Block, maxChars: number) {
+function workRow(block: Block, maxChars: number): WorkRow {
+  const excerpt = (text: string) => capped(redactSecrets(text), maxChars);
   if (block.role === "reasoning")
-    return { kind: "reasoning" as const, ...capped(block.text, maxChars) };
+    return { kind: "reasoning", ...excerpt(block.text) };
   return {
-    kind: "tool" as const,
-    tool: block.tool?.title ?? block.tool?.kind ?? null,
+    kind: "tool",
+    tool: block.tool?.kind ?? null,
     status: block.tool?.status ?? null,
-    input: capped(block.text, maxChars),
-    result: block.tool?.detail ? capped(block.tool.detail, maxChars) : null,
+    input: excerpt(block.text),
+    result: block.tool?.detail ? excerpt(block.tool.detail) : null,
   };
+}
+
+/** The turn's newest rows that fit WORK_BYTES_MAX, in order, and how many older rows were left out. */
+function workPage(work: Block[], maxChars: number) {
+  const rows: WorkRow[] = [];
+  let bytes = 0;
+  for (let i = work.length - 1; i >= 0; i -= 1) {
+    const row = workRow(work[i], maxChars);
+    bytes += utf8.encode(JSON.stringify(row)).length + 1;
+    if (bytes > WORK_BYTES_MAX) break;
+    rows.push(row);
+  }
+  return { work: rows.reverse(), omittedWork: work.length - rows.length };
 }
 
 /**
@@ -62,7 +97,11 @@ export function sessionConversationPage(
       (!block.internal || block.monoSessionCompletion) &&
       !block.draft
     ) {
-      exchanges.push({ user: block, assistants: [], work: [] });
+      exchanges.push({
+        user: block,
+        assistants: [],
+        ...(options.work ? { work: [] } : {}),
+      });
     } else if (
       block.role === "assistant" &&
       !block.internal &&
@@ -72,11 +111,11 @@ export function sessionConversationPage(
       exchanges[exchanges.length - 1].assistants.push(block);
     } else if (
       options.work &&
-      (block.role === "reasoning" || block.role === "tool") &&
+      WORK_ROLES[block.role] &&
       !block.internal &&
       exchanges.length > 0
     ) {
-      exchanges[exchanges.length - 1].work.push(block);
+      exchanges[exchanges.length - 1].work?.push(block);
     }
   }
 
@@ -111,9 +150,7 @@ export function sessionConversationPage(
         ? capped(assistants[assistants.length - 1].text, maxChars)
         : null,
       earlierAssistantMessages: Math.max(0, assistants.length - 1),
-      ...(options.work
-        ? { work: work.map((block) => workRow(block, maxChars)) }
-        : {}),
+      ...(work && workPage(work, maxChars)),
     })),
     nextBefore: start > 0 ? selected[0]?.user.id : null,
   };

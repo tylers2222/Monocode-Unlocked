@@ -232,7 +232,8 @@ Actions:
                   "work":true}
                   Read another Mono's chat. Paging works as in sessions.read.
                   work:true also lists each turn's reasoning and tool rows
-                  in order as "work", each capped by maxChars.
+                  in order as "work", each capped by maxChars. A turn keeps
+                  its newest rows up to 1 MB; "omittedWork" counts the rest.
                   Codes: unknown_mono, no_conversation (it has no chat yet),
                   invalid_input (a before that is not a turn ID).
   messages.get_monos {}  Mono or habit only. Every Mono in rail order as

@@ -68,16 +68,18 @@ describe("sessionConversationPage", () => {
   });
 
   it("lists each turn's reasoning and tool rows in order only with work: true", () => {
+    const command = `gh pr checks 20 --watch ${"-v ".repeat(100)}`;
     const session = conversation([
+      { id: "early", role: "tool", text: "before any user message" },
       { id: "u1", role: "user", text: "Check CI" },
-      { id: "r1", role: "reasoning", text: "Look at the checks first." },
+      { id: "r1", role: "reasoning", text: "R".repeat(250) },
       {
         id: "t1",
         role: "tool",
-        text: "gh pr checks 20",
+        text: command,
         tool: {
-          kind: "shell",
-          title: "Shell",
+          kind: "execute",
+          title: command,
           status: "completed",
           detail: "x".repeat(250),
         },
@@ -88,17 +90,22 @@ describe("sessionConversationPage", () => {
     ]);
     const prose = sessionConversationPage(session);
     expect(prose.turns[0]).not.toHaveProperty("work");
-    expect(JSON.stringify(prose)).not.toMatch(/Look at the checks|gh pr/);
+    expect(prose.turns[0]).not.toHaveProperty("omittedWork");
+    expect(JSON.stringify(prose)).not.toMatch(/RRR|gh pr|before any/);
 
-    const page = sessionConversationPage(session, { work: true, maxChars: 200 });
+    const page = sessionConversationPage(session, {
+      work: true,
+      maxChars: 200,
+    });
     expect(page.turns[0].assistant?.text).toBe("CI is green.");
+    expect(page.turns[0].omittedWork).toBe(0);
     expect(page.turns[0].work).toEqual([
-      { kind: "reasoning", text: "Look at the checks first.", truncated: false },
+      { kind: "reasoning", text: "R".repeat(200), truncated: true },
       {
         kind: "tool",
-        tool: "Shell",
+        tool: "execute",
         status: "completed",
-        input: { text: "gh pr checks 20", truncated: false },
+        input: { text: command.slice(0, 200), truncated: true },
         result: { text: "x".repeat(200), truncated: true },
       },
       {
@@ -109,9 +116,67 @@ describe("sessionConversationPage", () => {
         result: null,
       },
     ]);
+    const strings = JSON.stringify(page.turns[0].work).match(/"[^"]*"/g) ?? [];
+    expect(Math.max(...strings.map((s) => s.length - 2))).toBeLessThanOrEqual(
+      200,
+    );
     expect(() =>
       sessionConversationPage(session, { work: "yes" as unknown as boolean }),
     ).toThrow("work must be true or false");
+  });
+
+  it("keeps each turn's newest work rows under the CLI reply cap and counts the rest", () => {
+    const ansi = "\u001b[32m✓\u001b[0m\n".repeat(1000);
+    const blocks: Block[] = [];
+    for (let t = 1; t <= 3; t += 1) {
+      blocks.push({ id: `u${t}`, role: "user", text: "Go" });
+      for (let i = 1; i <= 120; i += 1)
+        blocks.push({
+          id: `t${t}-${i}`,
+          role: "tool",
+          text: `step ${i} ${ansi}`,
+          tool: { kind: "execute", detail: ansi },
+        });
+    }
+    const page = sessionConversationPage(conversation(blocks), {
+      work: true,
+      maxChars: 6000,
+    });
+    expect(new TextEncoder().encode(JSON.stringify(page)).length).toBeLessThan(
+      4_000_000,
+    );
+    for (const turn of page.turns) {
+      const kept = turn.work ?? [];
+      expect(turn.omittedWork).toBeGreaterThan(0);
+      expect(kept.length + (turn.omittedWork ?? 0)).toBe(120);
+      expect(kept[0]).toMatchObject({
+        input: {
+          text: expect.stringMatching(`^step ${turn.omittedWork! + 1} `),
+        },
+      });
+      expect(kept.at(-1)).toMatchObject({
+        input: { text: expect.stringMatching(/^step 120 /) },
+      });
+    }
+  });
+
+  it("redacts secrets in work rows", () => {
+    const token = `ghp_${"A1b2".repeat(9)}`;
+    const session = conversation([
+      { id: "u", role: "user", text: "Auth?" },
+      { id: "r", role: "reasoning", text: `Saw ${token}` },
+      {
+        id: "t",
+        role: "tool",
+        text: `gh auth login --with-token ${token}`,
+        tool: { kind: "execute", detail: `Token: ${token}` },
+      },
+    ]);
+    const json = JSON.stringify(
+      sessionConversationPage(session, { work: true }).turns[0].work,
+    );
+    expect(json).not.toContain(token);
+    expect(json.match(/«redacted/g)).toHaveLength(3);
   });
 
   it("caps individual messages and lets a caller request a larger excerpt", () => {
