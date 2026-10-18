@@ -19,9 +19,9 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use crate::control::ControlHost;
 use crate::mono_gate::{
-    self, Caller, CallerKind, CallerMono, Closure, Decision, Facts, HandleState, Handled, Input,
-    MessageRef, OpenHandle, PairCount, Recipient, Referenced, Refusal, ReplyFacts, Route,
-    SendFacts, SessionLevel, Target, TargetSession,
+    self, Access, Caller, CallerFacts, CallerKind, CallerMono, Closure, Decision, Facts,
+    HandleState, Handled, Input, MessageRef, OpenHandle, PairCount, Recipient, Referenced, Refusal,
+    ReplyFacts, Route, SendFacts, SessionLevel, Speaker, Target, TargetSession,
 };
 use crate::mono_roster::{validate_mono_id, MonoRole};
 use crate::session_store::{validate_id, SessionStore};
@@ -123,6 +123,9 @@ const INDEXES: &str = "
     CREATE INDEX IF NOT EXISTS mono_messages_pair
       ON mono_messages (from_mono_id, to_mono_id, to_session_id, created_at)
       WHERE tool = 'send_message' AND status <> 'rejected';
+    CREATE INDEX IF NOT EXISTS mono_messages_session_pair
+      ON mono_messages (from_session_id, to_mono_id, to_session_id, created_at)
+      WHERE from_mono_id IS NULL AND tool = 'send_message' AND status <> 'rejected';
     CREATE INDEX IF NOT EXISTS mono_messages_session
       ON mono_messages (handled_by_session, status) WHERE handled_by_session IS NOT NULL;
     CREATE INDEX IF NOT EXISTS mono_messages_from_session
@@ -389,7 +392,10 @@ text_enum!(RejectCode {
     UnknownHandle = "unknown_handle",
     HandleClosed = "handle_closed",
     AmbiguousReply = "ambiguous_reply",
+    WorkerScope = "worker_scope",
     SteerViaLead = "steer_via_lead",
+    SessionCannotWait = "session_cannot_wait",
+    LeadScope = "lead_scope",
 });
 
 /// A text value the table stores as is, built only through `parse`.
@@ -1096,13 +1102,23 @@ pub struct LiveSession {
     pub lead_session_id: Option<String>,
 }
 
+/// The caller as the web app sends it: `kind` `mono_chat` or `habit_run`
+/// with `monoId`, or `session` with `access`, `leadSessionId` and `cwd`.
+/// [`CallerArg::parse`] refuses any other combination.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CallerArg {
     kind: String,
-    mono_id: String,
+    #[serde(default)]
+    mono_id: Option<String>,
     session_id: String,
     turn_id: String,
+    #[serde(default)]
+    access: Option<String>,
+    #[serde(default)]
+    lead_session_id: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
 /// What the web app and `ControlHost` know about sessions, read before the
@@ -1119,13 +1135,50 @@ pub struct Live<'a> {
 
 impl CallerArg {
     fn parse(self) -> Result<Caller, String> {
+        let session_fields =
+            self.access.is_some() || self.lead_session_id.is_some() || self.cwd.is_some();
+        let mono = |kind| -> Result<Speaker, String> {
+            if session_fields {
+                return Err("A Mono caller has no access, leadSessionId or cwd".into());
+            }
+            Ok(Speaker::Mono {
+                kind,
+                mono_id: self
+                    .mono_id
+                    .as_deref()
+                    .and_then(MonoId::parse)
+                    .ok_or("Invalid caller Mono id")?,
+            })
+        };
+        let speaker = match self.kind.as_str() {
+            "mono_chat" => mono(CallerKind::MonoChat)?,
+            "habit_run" => mono(CallerKind::HabitRun)?,
+            "session" => {
+                if self.mono_id.is_some() {
+                    return Err("A session caller has no monoId".into());
+                }
+                Speaker::Session {
+                    access: match self.access.as_deref() {
+                        Some("operator") => Access::Operator,
+                        Some("started") => Access::Started,
+                        _ => return Err("Invalid caller access".into()),
+                    },
+                    cwd: self
+                        .cwd
+                        .clone()
+                        .filter(|cwd| !cwd.is_empty())
+                        .ok_or("Invalid caller cwd")?,
+                    lead_session_id: self
+                        .lead_session_id
+                        .as_deref()
+                        .map(|lead| SessionId::parse(lead).ok_or("Invalid caller leadSessionId"))
+                        .transpose()?,
+                }
+            }
+            _ => return Err("Invalid caller kind".into()),
+        };
         Ok(Caller {
-            kind: match self.kind.as_str() {
-                "mono_chat" => CallerKind::MonoChat,
-                "habit_run" => CallerKind::HabitRun,
-                _ => return Err("Invalid caller kind".into()),
-            },
-            mono_id: MonoId::parse(&self.mono_id).ok_or("Invalid caller Mono id")?,
+            speaker,
             session_id: SessionId::parse(&self.session_id).ok_or("Invalid caller session id")?,
             turn_id: parse_turn_id(&self.turn_id)?.to_string(),
         })
@@ -1277,8 +1330,8 @@ fn new_message_id() -> MessageId {
     MessageId::parse(&format!("m_{tail}")).expect("base32 id")
 }
 
-/// A Mono's `monos` row (design 16.12): `None` when it is gone, else its
-/// current chat and its role.
+/// A Mono's `monos` row (design 16.12, 6.1): `None` when it is gone, else
+/// its current chat, its role and each of its projects.
 fn mono_row(conn: &Connection, mono_id: &MonoId) -> rusqlite::Result<Option<CallerMono>> {
     let row: Option<(String, String)> = conn
         .query_row(
@@ -1288,19 +1341,33 @@ fn mono_row(conn: &Connection, mono_id: &MonoId) -> rusqlite::Result<Option<Call
         )
         .optional()?;
     row.map(|(role, data)| {
+        let data = json_of(&data);
         Ok(CallerMono {
             chat: chat_of(&data),
             role: required(MonoRole::parse(&role), "role")?,
+            // TS `parseMono` drops an empty path.
+            projects: data
+                .get("projects")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|path| !path.is_empty())
+                .map(String::from)
+                .collect(),
         })
     })
     .transpose()
 }
 
+/// `monos.data_json`; `null` when it is not JSON.
+fn json_of(data: &str) -> Value {
+    serde_json::from_str(data).unwrap_or(Value::Null)
+}
+
 /// `data_json.sessionId`, a Mono's current chat.
-fn chat_of(data: &str) -> Option<SessionId> {
-    serde_json::from_str::<Value>(data)
-        .ok()
-        .and_then(|data| data.get("sessionId")?.as_str().and_then(SessionId::parse))
+fn chat_of(data: &Value) -> Option<SessionId> {
+    data.get("sessionId")?.as_str().and_then(SessionId::parse)
 }
 
 /// The Mono whose current chat is `chat`.
@@ -1313,7 +1380,7 @@ fn mono_of_chat(conn: &Connection, chat: &SessionId) -> rusqlite::Result<Option<
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(monos
         .into_iter()
-        .find(|(_, data)| chat_of(data).as_ref() == Some(chat))
+        .find(|(_, data)| chat_of(&json_of(data)).as_ref() == Some(chat))
         .and_then(|(id, _)| MonoId::parse(&id)))
 }
 
@@ -1396,6 +1463,7 @@ fn recipient(conn: &Connection, send_to: &str, live: &Live) -> rusqlite::Result<
                 mono_id,
                 role: row.role,
                 chat,
+                projects: row.projects,
             });
         }
     }
@@ -1554,7 +1622,17 @@ pub fn submit(
     // Design 5.4 (2): a call bound to the turn shows that its provider runs
     // it, so it took the text that opened it.
     confirm_openers(&tx, &caller.session_id, &caller.turn_id, now)?;
-    let caller_row = mono_row(&tx, &caller.mono_id)?;
+    let caller_row = match &caller.speaker {
+        Speaker::Mono { mono_id, .. } => mono_row(&tx, mono_id)?.map(CallerFacts::Mono),
+        Speaker::Session {
+            cwd,
+            lead_session_id,
+            ..
+        } => Some(CallerFacts::Session {
+            level: session_level(&tx, &caller.session_id, lead_session_id.clone())?,
+            cwd: cwd.clone(),
+        }),
+    };
     let prior = get_by_request(&tx, &caller.session_id, request_id)?;
     let mut referenced_id = None;
     let decision = match &input {
@@ -1627,7 +1705,8 @@ fn resolve_ref(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<Mon
 
 /// Design 6.1 "pair count" (S19): the caller's accepted sends to `recipient`
 /// in the rate window. The sender key is the caller's Mono, so its chat and
-/// its habit runs share one count.
+/// its habit runs share one count, or the session of a session caller,
+/// whose rows have no Mono.
 fn pair_count(
     conn: &Connection,
     caller: &Caller,
@@ -1639,12 +1718,21 @@ fn pair_count(
         Recipient::Mono { mono_id, .. } => (Some(mono_id.as_str()), None),
         Recipient::Session { target, .. } => (None, Some(target.session.as_str())),
     };
+    let (from, from_key) = match caller.mono_id() {
+        Some(mono_id) => ("from_mono_id = ?1", mono_id.as_str()),
+        None => (
+            "from_mono_id IS NULL AND from_session_id = ?1",
+            caller.session_id.as_str(),
+        ),
+    };
     conn.query_row(
-        "SELECT count(*), min(created_at) FROM mono_messages
-          WHERE from_mono_id = ?1 AND to_mono_id IS ?2 AND to_session_id IS ?3
-            AND tool = 'send_message' AND status <> 'rejected' AND created_at > ?4",
+        &format!(
+            "SELECT count(*), min(created_at) FROM mono_messages
+              WHERE {from} AND to_mono_id IS ?2 AND to_session_id IS ?3
+                AND tool = 'send_message' AND status <> 'rejected' AND created_at > ?4"
+        ),
         params![
-            caller.mono_id.as_str(),
+            from_key,
             to_mono,
             to_session,
             now - mono_gate::RATE_WINDOW_MS
@@ -1718,7 +1806,8 @@ pub struct ReadMessage {
 /// Design 16.4: the accepted row `named` points at, when the caller's Mono is
 /// a party to it. A handle names a row of the caller's session and turn, in
 /// any status. A row between two others reads as no row. Writes nothing.
-/// The session legs of the party rule come with PR 7's session callers.
+/// A session caller has no Mono, so it reads no row until the session legs
+/// of the party rule land (PR 7 part 6).
 pub fn readable(
     conn: &Connection,
     caller: &Caller,
@@ -1738,7 +1827,7 @@ pub fn readable(
                    AND (from_mono_id = ?1 OR to_mono_id = ?1)"
             ),
             params![
-                caller.mono_id.as_str(),
+                caller.mono_id().map(MonoId::as_str),
                 caller.session_id.as_str(),
                 caller.turn_id,
                 key
@@ -1901,7 +1990,7 @@ fn record(
         part,
         payload_hash: hash.clone(),
         tool: input.tool(),
-        from_mono_id: Some(caller.mono_id.clone()),
+        from_mono_id: caller.mono_id().cloned(),
         from_session_id: caller.session_id.clone(),
         to,
         addressed: addressed.into(),
@@ -4381,8 +4470,10 @@ pub(crate) mod tests {
 
     fn caller_in_turn(mono_id: &str, session_id: &str, turn_id: &str) -> Caller {
         Caller {
-            kind: CallerKind::MonoChat,
-            mono_id: mono(mono_id),
+            speaker: Speaker::Mono {
+                kind: CallerKind::MonoChat,
+                mono_id: mono(mono_id),
+            },
             session_id: session(session_id),
             turn_id: turn_id.into(),
         }
@@ -4487,6 +4578,20 @@ pub(crate) mod tests {
         }
     }
 
+    /// A session caller with `started` access in `cwd`, bound to turn
+    /// `turn-1`. `lead` is the web app's copy of its lead.
+    fn session_caller(session_id: &str, cwd: &str, lead: Option<&str>) -> Caller {
+        Caller {
+            speaker: Speaker::Session {
+                access: Access::Started,
+                cwd: cwd.into(),
+                lead_session_id: lead.map(session),
+            },
+            session_id: session(session_id),
+            turn_id: "turn-1".into(),
+        }
+    }
+
     /// `mono-a` works on `/p`, where the lead `lead` and its worker `worker`
     /// run.
     fn seed_levels(conn: &Connection) {
@@ -4519,6 +4624,13 @@ pub(crate) mod tests {
                 }),
             ),
             (
+                session_caller("worker", "/p", Some("lead")),
+                Tool::SendMessage,
+                serde_json::json!({
+                    "message": "Ship\u{0}it", "send_to": "lead", "wanting_reply": false, "intent": "new"
+                }),
+            ),
+            (
                 caller_in("mono-a", "a-chat"),
                 Tool::Reply,
                 serde_json::json!({"message": "Ye\u{0}s", "to": "#1"}),
@@ -4529,6 +4641,113 @@ pub(crate) mod tests {
             assert!(error.hint.contains("U+0000"), "{}", error.hint);
         }
         assert_eq!(rows(&conn), before);
+    }
+
+    // Decision 617, PR 7 review r1 M2 and m7. Defect: `access` "started"
+    // parses as Operator, so A8 never binds an app-started lead, or a Mono
+    // caller with session fields (any of them, review r2 n1) or a session
+    // caller with a Mono parses.
+    #[test]
+    fn caller_arg_parses_a_session_caller_and_refuses_mixed_combinations() {
+        let parse =
+            |value: serde_json::Value| serde_json::from_value::<CallerArg>(value).unwrap().parse();
+        for (access, parsed) in [("started", Access::Started), ("operator", Access::Operator)] {
+            assert_eq!(
+                parse(serde_json::json!({
+                    "kind": "session", "sessionId": "lead", "turnId": "turn-1",
+                    "access": access, "cwd": "/p", "leadSessionId": "boss"
+                }))
+                .unwrap(),
+                Caller {
+                    speaker: Speaker::Session {
+                        access: parsed,
+                        cwd: "/p".into(),
+                        lead_session_id: Some(session("boss"))
+                    },
+                    session_id: session("lead"),
+                    turn_id: "turn-1".into(),
+                }
+            );
+        }
+        for (field, value) in [
+            ("cwd", "/p"),
+            ("access", "started"),
+            ("leadSessionId", "boss"),
+        ] {
+            let mut arg = serde_json::json!({
+                "kind": "mono_chat", "monoId": "giga", "sessionId": "giga-chat",
+                "turnId": "turn-1"
+            });
+            arg[field] = serde_json::json!(value);
+            assert!(parse(arg).is_err(), "Mono caller with {field}");
+        }
+        assert!(
+            parse(serde_json::json!({
+                "kind": "session", "monoId": "giga", "sessionId": "lead",
+                "turnId": "turn-1", "access": "started", "cwd": "/p"
+            }))
+            .is_err(),
+            "session caller with monoId"
+        );
+    }
+
+    // Design 13.4, 13.5 and C8. Defect: the row of a lead's report to its
+    // Mono names a Mono, so a drop gives that Mono a notice about a message
+    // it never sent.
+    #[test]
+    fn a_session_callers_send_has_no_mono_and_its_drop_owes_no_notice() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let lead = session_caller("lead", "/p", None);
+        let report = accepted_ids(&call(
+            &conn,
+            &lead,
+            "report",
+            Tool::SendMessage,
+            hi("mono-a", false),
+            &[],
+        ))
+        .remove(0);
+        let row = get(&conn, &report).unwrap().unwrap();
+        assert_eq!(
+            (row.from_mono_id, row.from_session_id),
+            (None, session("lead"))
+        );
+        assert_eq!(clear(&conn, "a-chat", 200), Notices::default());
+        assert_eq!(stored_row(&conn, &report).0, "dropped");
+        for chat in ["a-chat", "giga-chat"] {
+            assert!(
+                pending_notices(&conn, &session(chat)).unwrap().is_empty(),
+                "{chat}"
+            );
+        }
+    }
+
+    // Design 13.1. Defect: the gate takes a session caller's own copy of its
+    // lead over the stored row, so a worker whose lead was deleted (which
+    // cleared its stored link) is still refused as a worker; or the copy is
+    // ignored for a caller that `sessions` lacks.
+    #[test]
+    fn a_session_callers_stored_lead_wins_over_its_copy() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        conn.execute("DELETE FROM sessions WHERE id = 'lead'", [])
+            .unwrap();
+        let report = |caller: &Caller| {
+            call(
+                &conn,
+                caller,
+                "report",
+                Tool::SendMessage,
+                hi("mono-a", false),
+                &[],
+            )
+        };
+        accepted_ids(&report(&session_caller("worker", "/p", Some("lead"))));
+        let unpersisted = failed(report(&session_caller("remote", "/p", Some("lead"))));
+        assert_eq!(unpersisted.code, "worker_scope");
     }
 
     // Design 13.1. Defect: a recipient's level comes from the live list over
@@ -4570,6 +4789,57 @@ pub(crate) mod tests {
             hi("lead", false),
             &[live("lead", Some("worker"))],
         ));
+    }
+
+    // Design 6.1 (levels) and 13.5. Defect: the rate count keys a session
+    // caller on `from_mono_id`, which its rows leave NULL, so a worker
+    // floods its lead without a limit.
+    #[test]
+    fn a_workers_seventh_send_to_its_lead_in_ten_minutes_is_rate_limited() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let worker = session_caller("worker", "/p", None);
+        let report = |request_id: &str| {
+            call(
+                &conn,
+                &worker,
+                request_id,
+                Tool::SendMessage,
+                hi("lead", false),
+                &[listed("lead", true, true)],
+            )
+        };
+        for request_id in ["r1", "r2", "r3", "r4", "r5", "r6"] {
+            accepted_ids(&report(request_id));
+        }
+        assert_eq!(failed(report("r7")).code, "rate_limited");
+    }
+
+    // Design 6.1 (levels) and 13.5. Defect: the rate count of a session
+    // caller keys on `from_mono_id IS NULL` alone, so every session of no
+    // Mono shares one count, and one worker's flood silences another.
+    #[test]
+    fn two_sessions_of_no_mono_keep_separate_rate_counts() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let report = |worker: &Caller, request_id: &str| {
+            call(
+                &conn,
+                worker,
+                request_id,
+                Tool::SendMessage,
+                hi("lead", false),
+                &[listed("lead", true, true)],
+            )
+        };
+        let worker = session_caller("worker", "/p", None);
+        for request_id in ["r1", "r2", "r3", "r4", "r5", "r6"] {
+            accepted_ids(&report(&worker, request_id));
+        }
+        accepted_ids(&report(&session_caller("remote", "/p", Some("lead")), "r1"));
+        assert_eq!(failed(report(&worker, "r7")).code, "rate_limited");
     }
 
     #[test]
@@ -5966,7 +6236,10 @@ pub(crate) mod tests {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         let run = Caller {
-            kind: CallerKind::HabitRun,
+            speaker: Speaker::Mono {
+                kind: CallerKind::HabitRun,
+                mono_id: mono("giga"),
+            },
             ..caller_in("giga", "giga-run")
         };
         rejected_row(
@@ -6328,8 +6601,10 @@ pub(crate) mod tests {
         let conn = store.lock_conn().unwrap();
         let from_chat = sent(&conn, ("mono-a", "a-chat"), "giga", "chat", false);
         let run = Caller {
-            kind: CallerKind::HabitRun,
-            mono_id: mono("mono-a"),
+            speaker: Speaker::Mono {
+                kind: CallerKind::HabitRun,
+                mono_id: mono("mono-a"),
+            },
             session_id: session("a-run"),
             turn_id: "turn-1".into(),
         };
@@ -6959,7 +7234,10 @@ pub(crate) mod tests {
         );
         // A habit run of the Giga is another session of the same Mono.
         let habit = Caller {
-            kind: CallerKind::HabitRun,
+            speaker: Speaker::Mono {
+                kind: CallerKind::HabitRun,
+                mono_id: mono("giga"),
+            },
             session_id: session("giga-habit"),
             ..caller_in("giga", "giga-chat")
         };
@@ -8038,7 +8316,10 @@ pub(crate) mod tests {
         let conn = store.lock_conn().unwrap();
         let chat = caller_in("giga", "giga-chat");
         let run = Caller {
-            kind: CallerKind::HabitRun,
+            speaker: Speaker::Mono {
+                kind: CallerKind::HabitRun,
+                mono_id: mono("giga"),
+            },
             ..caller_in("giga", "giga-run")
         };
         for n in 0..3 {
