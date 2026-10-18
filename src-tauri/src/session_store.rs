@@ -3314,6 +3314,29 @@ mod tests {
     }
 
     #[test]
+    fn rebase_project_moves_nothing_when_milestones_update_fails() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        upsert_session(&conn, &sample("s", "/tmp/old", "S")).unwrap();
+        conn.execute(
+            "INSERT INTO milestones (id, project_path, title, status, sort_order, created_by, created_at, updated_at)
+             VALUES (?1, '/tmp/old', 'goal', 'idea', 0, 'user', 1, 1)",
+            ["a".repeat(36)],
+        )
+        .unwrap();
+
+        // "/tmp/new/" breaks the milestones project_path CHECK, so the second UPDATE fails.
+        let error = rebase_project(&conn, "/tmp/old", "/tmp/new/").unwrap_err();
+        assert!(error.to_string().contains("CHECK"), "{error}");
+        assert_eq!(
+            list_by_project(&conn, "/tmp/old").unwrap().len(),
+            1,
+            "sessions moved without milestones"
+        );
+        assert!(list_by_project(&conn, "/tmp/new/").unwrap().is_empty());
+    }
+
+    #[test]
     fn migrate_adds_milestones_to_an_existing_db() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();

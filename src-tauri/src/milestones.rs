@@ -594,4 +594,73 @@ mod tests {
         assert!(list(&conn, "/p").unwrap().is_empty());
         assert_eq!(titles(&conn, "/q"), ["kept"]);
     }
+
+    fn row_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM milestones", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn bad_input_is_invalid_input_and_writes_nothing() {
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        for project in ["/a/b/", "", "C:\\proj", "C:\\", "/a\\b"] {
+            let error = add(&conn, project, new("x"), 1).unwrap_err();
+            assert!(error.starts_with("invalid_input"), "{project:?}: {error}");
+        }
+        let long_title = "t".repeat(TITLE_MAX + 1);
+        let long_note = "n".repeat(NOTE_MAX + 1);
+        let bad_inputs = [
+            (
+                "blank title",
+                json!({ "title": "   ", "createdBy": "user" }),
+            ),
+            (
+                "long title",
+                json!({ "title": long_title, "createdBy": "user" }),
+            ),
+            (
+                "long note",
+                json!({ "title": "t", "note": long_note, "createdBy": "user" }),
+            ),
+            (
+                "mono: with no id",
+                json!({ "title": "t", "createdBy": "mono:" }),
+            ),
+            (
+                "session: with no id",
+                json!({ "title": "t", "createdBy": "session:" }),
+            ),
+            (
+                "unknown author",
+                json!({ "title": "t", "createdBy": "bot" }),
+            ),
+        ];
+        for (case, input) in bad_inputs {
+            let milestone: NewMilestone = serde_json::from_value(input).unwrap();
+            let error = add(&conn, "/p", milestone, 1).unwrap_err();
+            assert!(error.starts_with("invalid_input"), "{case}: {error}");
+        }
+        assert_eq!(row_count(&conn), 0);
+
+        let kept = add(&conn, "/p", new("kept"), 1).unwrap();
+        for (case, patch) in [
+            ("blank title", json!({ "title": "  " })),
+            ("long note", json!({ "note": "n".repeat(NOTE_MAX + 1) })),
+        ] {
+            let parsed: MilestonePatch = serde_json::from_value(patch).unwrap();
+            let error = update(&conn, "/p", &kept.id, parsed, 2).unwrap_err();
+            assert!(error.starts_with("invalid_input"), "update {case}: {error}");
+        }
+        assert_eq!(list(&conn, "/p").unwrap(), [kept]);
+    }
+
+    #[test]
+    fn add_allows_the_root_path_and_stores_the_title_trimmed() {
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        let added = add(&conn, "/", new("  ship  "), 1).unwrap();
+        assert_eq!(added.title, "ship");
+        assert_eq!(list(&conn, "/").unwrap(), [added]);
+    }
 }
