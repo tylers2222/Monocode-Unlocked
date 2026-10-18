@@ -2,6 +2,7 @@
 # Run the target's own `monocode app ...` CLI as one Mono.
 #
 #   cli.sh <mono name|id> <action> [json] [--request-id ID]
+#   cli.sh <mono name|id> app-mcp '<JSON-RPC line>'   one call to the MCP server
 #   GIGA_EVAL_TARGET=instance|installed   (default instance)
 #
 # The credentials come from the environment of that Mono's agent process
@@ -47,6 +48,10 @@ for p in $candidates; do
     echo "$p" >"$cache"
     if [[ "$action" == "monos.list" && ${#extra[@]} -eq 0 ]]; then
       printf '%s\n' "$listing"; exit 0
+    fi
+    if [[ "$action" == app-mcp ]]; then
+      ( set -a; source "$file"; set +a; printf '%s\n' "$json" | "$bin" app-mcp )
+      exit $?
     fi
     run_with "$file" "$action" --json "$json" ${extra[@]+"${extra[@]}"}
     exit $?
