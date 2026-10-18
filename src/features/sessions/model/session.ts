@@ -830,6 +830,21 @@ export function sessionDraftBlock(
   return session.blocks.find((block) => block.role === "user" && block.draft);
 }
 
+/**
+ * The user message that opened the latest turn. A steer or queued message
+ * carries `sentAt` and no `startedAt` because it joins or waits on a running
+ * turn, and a draft is unsent, so none of them opens a turn.
+ */
+export function turnOpener(blocks: readonly Block[]): Block | undefined {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    if (block.role !== "user" || block.draft) continue;
+    if (block.sentAt != null && block.startedAt == null) continue;
+    return block;
+  }
+  return undefined;
+}
+
 /** Remove one saved draft without disturbing the conversation before it. */
 export function removeSessionDraft(
   session: Session,

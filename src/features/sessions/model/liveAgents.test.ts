@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  appendSteerUser,
+  appendUser,
+  stopStreaming,
+} from "../../../integrations/harness/core/apply";
 import {
   formatLiveElapsed,
   liveAgentsFromSessions,
@@ -148,6 +153,31 @@ describe("liveAgentsFromSessions", () => {
     expect(liveAgentsFromSessions([newer, older]).map((row) => row.cwd)).toEqual(
       ["/tmp/old", "/tmp/new"],
     );
+  });
+
+  describe("a steered turn", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function steered(): Session {
+      vi.useFakeTimers();
+      vi.setSystemTime(1_000);
+      const session = appendUser(newSession("claude", "/tmp/steered"), "go");
+      vi.setSystemTime(4_000);
+      return appendSteerUser(session, "also this");
+    }
+
+    it("times a running turn from the message that started it", () => {
+      expect(liveAgentsFromSessions([steered()])[0]?.startedAt).toBe(1_000);
+    });
+
+    it("reports a finished turn's full duration", () => {
+      const finished = stopStreaming(steered(), 9_000);
+      expect(
+        liveAgentsFromSessions([finished], new Set([finished.id]))[0],
+      ).toMatchObject({ startedAt: 1_000, durationMs: 8_000, done: true });
+    });
   });
 
   it("keeps an unfocused finished session until it is seen", () => {
