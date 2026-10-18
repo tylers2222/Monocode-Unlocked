@@ -1770,6 +1770,44 @@ it("names a steer's target by its message id when its handle is from an earlier 
   );
 });
 
+// PR 7 review r1 B2, and the PR I4 n3 re-check. A rule (b) late answer
+// joins the Giga's running turn, while its target holds #1 in the Mono's
+// chat; the turn ids here are equal, so only the session tells them apart.
+// Defect: the line names the target by a handle the Giga's turn does not
+// hold, because the hand-off reads the target's session as the reader's.
+it("names a late answer's target by its message id in the Giga's turn", async () => {
+  const target = ended({
+    slot: { turnId: "run-giga-chat", handle: "#1", deliveredAt: 1 },
+  });
+  rust.state.rows = [
+    target,
+    ended({
+      id: "m_bbbbbbbbbbbb",
+      requestId: "late",
+      fromMonoId: "mono-a",
+      fromSessionId: "a-chat",
+      to: { kind: "mono", monoId: "giga" },
+      addressed: "giga",
+      body: "It is green now",
+      hop: 1,
+      intent: "steer",
+      replyTo: target.id,
+      status: "delivered",
+      wantingReply: false,
+      handledBySession: "giga-chat",
+      delivery: "steer",
+      slot: null,
+    }),
+  ];
+  const { host } = world([chat("giga-chat", { busy: true }), chat("a-chat")]);
+  const deliver = vi.fn((_: HandedOff) => true);
+  await handOff(host, "giga-chat", "m_bbbbbbbbbbbb" as MessageId, "steer", deliver);
+  expect(deliver.mock.calls[0][0].turnId).toBe("run-giga-chat");
+  expect(deliver.mock.calls[0][0].text).toContain(
+    `\n[steer → ${target.id} · "Is CI green?"]\nIt is green now\n`,
+  );
+});
+
 // PR 4a review m7 (T02), design 5.5 rule 3. Defect: a hand-off takes the item
 // out before assign_slot holds the row, so for that time neither an item nor
 // a slot holds it.

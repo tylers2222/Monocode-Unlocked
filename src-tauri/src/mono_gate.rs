@@ -5,7 +5,7 @@
 //! PR I2 has rows S1-S7, I1, I2, S9, S10, S13-S17, S20, W1-W3 (whole-turn)
 //! and R1-R8, R10, R11, the hop limit (S18, R9) and the rate limit (S19).
 //! The level rows L1-L7 (design 13) come with session callers, then the peer
-//! rule (S8). Upward steers (S12) and rule (b) come later in PR 7.
+//! rule (S8), upward steers (S12) and rule (b).
 
 use std::borrow::Cow;
 
@@ -84,6 +84,16 @@ impl Caller {
 /// orchestration link.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionLevel {
+    Lead,
+    Worker { lead: SessionId },
+}
+
+/// Design 13.1: every level a caller can have. Giga and Mono come from
+/// `monos.role` (a habit run has its Mono's level).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Level {
+    Giga,
+    Mono,
     Lead,
     Worker { lead: SessionId },
 }
@@ -400,16 +410,23 @@ impl Recipient {
     }
 }
 
-/// Design 16.12.2.2 (whole-turn): who may steer a recipient's whole turn.
-/// Before PR 7 only a Giga (its chat or a habit run) may, and only a Mono of
-/// role `mono`; a session recipient is refused.
-fn may_steer_turn(caller_role: MonoRole, recipient: &Recipient) -> bool {
+/// Design 16.12.2.2 (whole-turn): who may steer a recipient's whole turn. A
+/// Giga steers a Mono's, and a Mono a lead's in one of its projects. A lead
+/// or a worker steers no whole turn, and no caller a worker's.
+fn may_steer_turn(caller: &Level, recipient: &Recipient) -> bool {
     matches!(
-        (caller_role, recipient),
+        (caller, recipient),
         (
-            MonoRole::Giga,
+            Level::Giga,
             Recipient::Mono {
                 role: MonoRole::Mono,
+                ..
+            }
+        ) | (
+            Level::Mono,
+            Recipient::Session {
+                level: SessionLevel::Lead,
+                own_project: true,
                 ..
             }
         )
@@ -421,11 +438,14 @@ fn may_steer_turn(caller_role: MonoRole, recipient: &Recipient) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnPin {
     Turn(String),
+    /// Rule (b)'s answer to a Giga: any turn its session runs takes the
+    /// steer ([`steer_pin`]).
+    AnyTurn,
     NotStarted,
 }
 
-/// Where a steer that names M goes (design 16.6, receiver side; rule (b)'s
-/// `Giga` variant comes with PR 7).
+/// Where a steer that names M goes (design 16.6): the receiver side, or
+/// rule (b)'s `Giga` variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TargetSession {
     /// M is not a message from the caller to the recipient.
@@ -435,43 +455,102 @@ pub enum TargetSession {
         session: Option<SessionId>,
         pin: TurnPin,
     },
+    /// Rule (b): a Mono's late answer to a Giga goes to the Giga's current
+    /// chat, `None` when M came from another session of the Giga (a habit
+    /// run never takes a steer). Pin: any turn.
+    Giga { chat: Option<SessionId> },
 }
 
-/// Design 16.6: a steer reaches the session handling `reply_to`, and only
-/// when the caller sent M to this recipient (from a session caller: a row
-/// with no Mono that its session wrote).
-pub fn target_session(caller: &Caller, recipient: &Recipient, m: &MonoMessage) -> TargetSession {
+/// Rule (b) (design 6.1): how long a Giga's question to a Mono stays open to
+/// a late answer, 24 h.
+const ANSWER_WINDOW_MS: i64 = 86_400_000;
+
+/// Design 16.6: where a steer that names M goes. The receiver side when M
+/// is the caller's message to the recipient (from a session caller: a row
+/// with no Mono that its session wrote); the `Giga` variant when M
+/// qualifies rule (b).
+pub fn target_session(
+    caller: &Caller,
+    level: &Level,
+    recipient: &Recipient,
+    m: &MonoMessage,
+    now: i64,
+) -> TargetSession {
+    if let (
+        Level::Mono,
+        Recipient::Mono {
+            mono_id: giga,
+            role: MonoRole::Giga,
+            chat,
+            ..
+        },
+        Some(me),
+    ) = (level, recipient, caller.mono_id())
+    {
+        // Only an unanswered M: an open one is answered with reply, which
+        // closes its handle (intents review r1).
+        let qualifies = m.from_mono_id.as_ref() == Some(giga)
+            && matches!(&m.to, Some(Party::Mono { mono_id }) if mono_id == me)
+            && matches!(m.status, Status::Unanswered { .. })
+            && now - m.created_at <= ANSWER_WINDOW_MS;
+        if qualifies {
+            return TargetSession::Giga {
+                chat: chat
+                    .as_ref()
+                    .map(|chat| &chat.session)
+                    .filter(|chat| **chat == m.from_session_id)
+                    .cloned(),
+            };
+        }
+    }
     let from_caller = match caller.mono_id() {
         Some(mono_id) => m.from_mono_id.as_ref() == Some(mono_id),
         None => m.from_mono_id.is_none() && m.from_session_id == caller.session_id,
     };
-    let between = from_caller && m.to.is_some() && m.to == recipient.party();
-    if !between {
+    if !from_caller || m.to.is_none() || m.to != recipient.party() {
         return TargetSession::NotBetween;
     }
-    let turn = |turn_id: &str| TurnPin::Turn(turn_id.to_string());
-    let (session, pin) = match &m.status {
+    let (session, turn) = match &m.status {
         Status::Open { routed, slot, .. } | Status::Answered { routed, slot, .. } => (
             Some(&routed.handled_by_session),
-            slot.as_ref().map(|slot| turn(&slot.turn_id)),
+            slot.as_ref().map(|slot| &slot.turn_id),
         ),
         Status::Delivered { routed, slot, .. } => (
             Some(&routed.handled_by_session),
-            slot.as_ref().map(|slot| turn(&slot.turn_id)),
+            slot.as_ref().map(|slot| &slot.turn_id),
         ),
         Status::Unanswered { routed, slot, .. } => {
-            (Some(&routed.handled_by_session), Some(turn(&slot.turn_id)))
+            (Some(&routed.handled_by_session), Some(&slot.turn_id))
         }
         Status::Dropped { .. } | Status::Rejected { .. } => (None, None),
     };
     TargetSession::Receiver {
+        pin: match session {
+            Some(session) => steer_pin(&m.from_session_id, turn.map(String::as_str), session),
+            None => TurnPin::NotStarted,
+        },
         session: session.cloned(),
-        pin: pin.unwrap_or(TurnPin::NotStarted),
+    }
+}
+
+/// Design 16.6: the turn a steer into `session` joins when it names a row
+/// that `from` sent and turn `turn` handles. Rule (b) steers the Giga chat
+/// that sent M, which never handles it (S6 refuses a send to oneself), so
+/// it joins whatever turn its session runs (PR 7 review r1 B2). Any other
+/// steer joins `turn`. The gate's S15 and `assign_slot` read this one pin.
+pub fn steer_pin(from: &SessionId, turn: Option<&str>, session: &SessionId) -> TurnPin {
+    if from == session {
+        return TurnPin::AnyTurn;
+    }
+    match turn {
+        Some(turn) => TurnPin::Turn(turn.to_string()),
+        None => TurnPin::NotStarted,
     }
 }
 
 /// The accepted row `reply_to` named, and the session target_session gives
-/// for it as the live list and `ControlHost` see it.
+/// for it (the receiver's session, or rule (b)'s Giga chat) as the live
+/// list and `ControlHost` see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Referenced {
     pub message: MonoMessage,
@@ -567,6 +646,29 @@ pub enum CallerFacts {
     /// wins over the web app's copy) and the `path_key` of its `cwd`, its one
     /// project.
     Session { level: SessionLevel, cwd: String },
+}
+
+impl CallerFacts {
+    pub fn level(&self) -> Level {
+        match self {
+            CallerFacts::Mono(CallerMono {
+                role: MonoRole::Giga,
+                ..
+            }) => Level::Giga,
+            CallerFacts::Mono(CallerMono {
+                role: MonoRole::Mono,
+                ..
+            }) => Level::Mono,
+            CallerFacts::Session {
+                level: SessionLevel::Lead,
+                ..
+            } => Level::Lead,
+            CallerFacts::Session {
+                level: SessionLevel::Worker { lead },
+                ..
+            } => Level::Worker { lead: lead.clone() },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -710,7 +812,7 @@ impl RejectCode {
             RejectCode::AmbiguousReply => "Several handles are open. Pass to.",
             RejectCode::SteerNeedsTarget => "name a message or use scope turn",
             RejectCode::NothingRunning => "send it as a new message",
-            RejectCode::SteerScopeNotAllowed => "You cannot steer this recipient's whole turn. Only a Giga may steer a Mono's whole turn. Steer one message with reply_to, or send with intent \"new\".",
+            RejectCode::SteerScopeNotAllowed => "You cannot steer this recipient's whole turn. A Giga may steer a Mono's whole turn, and a Mono one of its leads. Steer one message with reply_to, or send with intent \"new\".",
             RejectCode::WorkerScope => "A worker can message only its lead. Message your lead: messages.send with send_to set to your lead's session id.",
             RejectCode::SteerViaLead => "That session is a worker of a lead session. Message the lead; only its lead steers its workers.",
             RejectCode::SessionCannotWait => "A lead or worker session cannot wait for an answer. Send with wanting_reply false. The recipient answers with a new message if it needs to.",
@@ -991,8 +1093,8 @@ pub fn decide_send(
     }
     // W2: the sender learns it may not send this before anything about the
     // recipient's state.
-    let may_steer = matches!(row, CallerFacts::Mono(me) if may_steer_turn(me.role, recipient));
-    if matches!(asked, Asked::WholeTurn) && !may_steer {
+    let level = row.level();
+    if matches!(asked, Asked::WholeTurn) && !may_steer_turn(&level, recipient) {
         return reject(RejectCode::SteerScopeNotAllowed, to);
     }
     if let CallerFacts::Session { level, .. } = row {
@@ -1028,14 +1130,27 @@ pub fn decide_send(
         }
     }
     let steered = if let Asked::Steer = asked {
-        // S9, then S10.
+        // S9, S12, then S10: an upward steer names a message on the Giga's
+        // side, so S10 would hide the S12 hint that names reply.
         let Some(referenced) = &about.reply_to else {
             return reject(RejectCode::UnknownMessage, to);
         };
-        match target_session(caller, recipient, &referenced.message) {
-            TargetSession::NotBetween => return reject(RejectCode::SteerTargetMismatch, to),
-            TargetSession::Receiver { session, pin } => Some((referenced, session, pin)),
-        }
+        let upward = level == Level::Mono
+            && matches!(
+                recipient,
+                Recipient::Mono {
+                    role: MonoRole::Giga,
+                    ..
+                }
+            );
+        let (session, pin) =
+            match target_session(caller, &level, recipient, &referenced.message, now) {
+                TargetSession::Giga { chat } => (chat, TurnPin::AnyTurn),
+                _ if upward => return reject(RejectCode::UpwardSteerForbidden, to),
+                TargetSession::NotBetween => return reject(RejectCode::SteerTargetMismatch, to),
+                TargetSession::Receiver { session, pin } => (session, pin),
+            };
+        Some((referenced, session, pin))
     } else {
         None
     };
@@ -1058,6 +1173,7 @@ pub fn decide_send(
                 && target.exists
                 && match &pin {
                     TurnPin::Turn(turn) => target.turn.as_ref() == Some(turn),
+                    TurnPin::AnyTurn => target.running(),
                     TurnPin::NotStarted => false,
                 }
         });
@@ -1078,12 +1194,16 @@ pub fn decide_send(
         )
     } else if let Asked::WholeTurn = asked {
         // W3: the recipient's own session must run a turn. S17 then.
-        let running = match recipient {
+        let own = match recipient {
             Recipient::Mono {
                 chat: Some(chat), ..
-            } if chat.exists => chat.turn.as_ref().map(|turn| (chat, turn)),
-            _ => None,
+            } => Some(chat),
+            Recipient::Session { target, .. } => Some(target),
+            Recipient::Mono { chat: None, .. } | Recipient::Unknown => None,
         };
+        let running = own
+            .filter(|target| target.exists)
+            .and_then(|target| target.turn.as_ref().map(|turn| (target, turn)));
         let Some((chat, turn)) = running else {
             return reject(RejectCode::NothingRunning, to);
         };
@@ -1398,7 +1518,7 @@ pub fn path_key(path: &str) -> String {
 mod tests {
     use super::*;
     use crate::mono_messages::{
-        Body, Part, PlainSlot, RequestId, Routed, Status, WaitingSlot, Wanting,
+        Body, DeliveredSlot, Part, PlainSlot, RequestId, Routed, Status, WaitingSlot, Wanting,
     };
 
     fn mono(id: &str) -> MonoId {
@@ -1490,6 +1610,10 @@ mod tests {
     }
 
     const NOW: i64 = 1_000_000_000;
+    const DAY_MS: i64 = 86_400_000;
+    const SCOPE: &str = "You cannot steer this recipient's whole turn. A Giga may steer a Mono's whole turn, and a Mono one of its leads. Steer one message with reply_to, or send with intent \"new\".";
+    const UPWARD: &str = "You can steer a Giga only about a message it sent you in the last 24 h. Answer an open handle with reply, or send with intent \"new\"; it is queued.";
+    const TARGET_GONE: &str = r#"The work that reply_to started is not running now: it finished, it has not started, or its session is idle, cleared or deleted. Send it with intent "new"."#;
 
     fn sends(recipient: Recipient) -> Facts<SendFacts> {
         facts(SendFacts {
@@ -2071,21 +2195,20 @@ mod tests {
         );
     }
 
-    // Whole-turn, W2. Defect: a sender the spec refuses steers a whole turn.
+    // Whole-turn, W2 (design 16.12.2.2). Defect: a sender the spec refuses
+    // steers a whole turn, or a Mono cannot steer its own lead's.
     #[test]
-    fn w2_only_a_giga_may_steer_a_monos_whole_turn_before_pr_7() {
+    fn w2_a_giga_may_steer_a_monos_whole_turn_and_a_mono_a_leads() {
         let running = |id: &str| live(id, true, true);
         let a = || mono_a(Some(running("a-chat")));
         for kind in [CallerKind::MonoChat, CallerKind::HabitRun] {
-            assert!(
-                matches!(
-                    steer_turn(kind, MonoRole::Giga, a()),
-                    Decision::Accept { .. }
-                ),
-                "{kind:?}"
-            );
+            for (role, recipient) in [(MonoRole::Giga, a()), (MonoRole::Mono, project(true))] {
+                assert!(
+                    matches!(steer_turn(kind, role, recipient), Decision::Accept { .. }),
+                    "{kind:?} {role:?}"
+                );
+            }
         }
-        let hint = "You cannot steer this recipient's whole turn. Only a Giga may steer a Mono's whole turn. Steer one message with reply_to, or send with intent \"new\".";
         for (case, role, recipient) in [
             (
                 "Mono to Giga",
@@ -2099,12 +2222,11 @@ mod tests {
             ),
             ("Mono to Mono", MonoRole::Mono, a()),
             ("Giga to project session", MonoRole::Giga, project(true)),
-            ("Mono to project session", MonoRole::Mono, project(true)),
         ] {
             let to = recipient.party();
             assert_eq!(
                 steer_turn(CallerKind::MonoChat, role, recipient),
-                send_rejected(RejectCode::SteerScopeNotAllowed, to, hint),
+                send_rejected(RejectCode::SteerScopeNotAllowed, to, SCOPE),
                 "{case}"
             );
         }
@@ -2602,8 +2724,9 @@ mod tests {
     }
 
     // S18 (a steer's hop is M.hop + 1), after S15 and S17. Defect: a chain
-    // of steers grows past hop 4, the limit cuts one hop early, or a hop-4
-    // steer that S15 or S17 refuses is told to stop the chain instead.
+    // of steers or late answers grows past hop 4, the limit cuts one hop
+    // early, or a hop-4 steer that S15 or S17 refuses is told to stop the
+    // chain instead.
     #[test]
     fn s18_a_steer_past_hop_4_is_hop_limit() {
         let steer_at = |hop: u32, handling: Target| {
@@ -2631,11 +2754,7 @@ mod tests {
         assert_eq!(steer_at(4, running), hop_limited(party_a()));
         assert_eq!(
             steer_at(4, live("a-chat", false, true)),
-            send_rejected(
-                RejectCode::TargetGone,
-                party_a(),
-                r#"The work that reply_to started is not running now: it finished, it has not started, or its session is idle, cleared or deleted. Send it with intent "new"."#
-            )
+            send_rejected(RejectCode::TargetGone, party_a(), TARGET_GONE)
         );
         assert_eq!(
             steer_at(4, live("a-chat", true, false)),
@@ -2644,6 +2763,15 @@ mod tests {
                 party_a(),
                 r#"That session's provider cannot steer a running turn. Send it with intent "new"; it waits for the turn to end."#
             )
+        );
+        assert_eq!(
+            answer_late(
+                question("giga-chat", 4, NOW - 1_000, unanswered()),
+                live("giga-chat", true, true),
+            ),
+            hop_limited(Some(Party::Mono {
+                mono_id: mono("giga")
+            }))
         );
     }
 
@@ -3604,8 +3732,8 @@ mod tests {
         }
     }
 
-    // W2 before L6 (design 16.12): until PR 8 no session caller steers a
-    // whole turn. Defect: a worker that steers its own lead's whole turn gets
+    // W2 before L6 (design 16.12): no session caller steers a whole turn.
+    // Defect: a worker that steers its own lead's whole turn gets
     // upward_steer_forbidden from L6 instead of steer_scope_not_allowed.
     #[test]
     fn w2_a_worker_steering_its_leads_whole_turn_is_steer_scope_not_allowed() {
@@ -3622,6 +3750,269 @@ mod tests {
                 l1.party(),
                 RejectCode::SteerScopeNotAllowed.hint()
             )
+        );
+    }
+
+    // Design 16.12.9.2. Defect: a session caller steers a whole turn, a Mono
+    // cannot steer its own lead's, or a worker's whole turn is steered around
+    // its lead.
+    #[test]
+    fn w2_whole_turn_steers_between_levels() {
+        let l1 = Recipient::Session {
+            target: Target {
+                turn: Some("turn-7".into()),
+                ..live("l1", true, true)
+            },
+            own_project: true,
+            level: SessionLevel::Lead,
+        };
+        let w1 = in_alpha("w1", worker_of("l1"));
+        let a = mono_in("mono-a", MonoRole::Mono, &["/p/alpha"]);
+        let swt = |who: &Caller, caller_row: CallerFacts, send_to: &str, recipient: &Recipient| {
+            decide_as(
+                who,
+                caller_row,
+                &at(send_to, whole(IntentKind::Steer)),
+                about(recipient.clone()),
+            )
+        };
+        assert_eq!(
+            swt(&mono_a_caller(), mono_a_row(), "l1", &l1),
+            Decision::Accept {
+                hop: 0,
+                rows: vec![Outgoing {
+                    to: Party::Session {
+                        session_id: session("l1")
+                    },
+                    route: Route {
+                        session: session("l1"),
+                        via: Via::Steer
+                    },
+                    intent: Intent::Steer(SteerTarget::Turn {
+                        turn_id: "turn-7".into()
+                    }),
+                }],
+            }
+        );
+        for (case, who, caller_row, send_to, recipient, code, hint) in [
+            (
+                "A to W1",
+                mono_a_caller(),
+                mono_a_row(),
+                "w1",
+                &w1,
+                RejectCode::SteerViaLead,
+                via_lead("l1"),
+            ),
+            (
+                "L to W1",
+                session_caller("l1"),
+                lead_row(),
+                "w1",
+                &w1,
+                RejectCode::SteerScopeNotAllowed,
+                SCOPE.to_string(),
+            ),
+            (
+                "W1 to L",
+                session_caller("w1"),
+                worker_row(),
+                "l1",
+                &l1,
+                RejectCode::SteerScopeNotAllowed,
+                SCOPE.to_string(),
+            ),
+            (
+                "W1 to A",
+                session_caller("w1"),
+                worker_row(),
+                "mono-a",
+                &a,
+                RejectCode::WorkerScope,
+                worker_scope("l1"),
+            ),
+            (
+                "L to A",
+                session_caller("l1"),
+                lead_row(),
+                "mono-a",
+                &a,
+                RejectCode::SteerScopeNotAllowed,
+                SCOPE.to_string(),
+            ),
+        ] {
+            assert_eq!(
+                swt(&who, caller_row, send_to, recipient),
+                send_rejected(code, recipient.party(), &hint),
+                "{case}"
+            );
+        }
+    }
+
+    // Design 16.12.2.2. Defect: the rule lets a worker's whole turn be
+    // steered and leans on L4 running first.
+    #[test]
+    fn may_steer_turn_is_false_for_a_worker_even_when_called_directly() {
+        let w1 = in_alpha("w1", worker_of("l1"));
+        for level in [
+            Level::Giga,
+            Level::Mono,
+            Level::Lead,
+            Level::Worker {
+                lead: session("l1"),
+            },
+        ] {
+            assert!(
+                !may_steer_turn(&level, &w1),
+                "{level:?} may steer a worker's whole turn"
+            );
+        }
+    }
+
+    /// A steer of `m` accepted into the running turn of `session_id`.
+    fn steered(to: Option<Party>, session_id: &str, m: &MonoMessage) -> Decision {
+        Decision::Accept {
+            hop: m.hop + 1,
+            rows: vec![Outgoing {
+                to: to.unwrap(),
+                route: Route {
+                    session: session(session_id),
+                    via: Via::Steer,
+                },
+                intent: Intent::Steer(SteerTarget::Message(m.id.clone())),
+            }],
+        }
+    }
+
+    /// The Giga's question to mono-a from the Giga's session `from`, asked at
+    /// `created_at`.
+    fn question(from: &str, hop: u32, created_at: i64, status: Status) -> MonoMessage {
+        MonoMessage {
+            from_session_id: session(from),
+            created_at,
+            ..row('q', Some("giga"), hop, status)
+        }
+    }
+
+    /// A question that a-chat held in `turn-1`, and that turn ended.
+    fn unanswered() -> Status {
+        Status::Unanswered {
+            wanting_reply: Wanting,
+            intent: Intent::New,
+            routed: Routed {
+                handled_by_session: session("a-chat"),
+                delivery: Delivery::Submit,
+            },
+            slot: DeliveredSlot {
+                turn_id: "turn-1".into(),
+                handle: Handle::new(1).unwrap(),
+                delivered_at: 2,
+                window: "main".into(),
+            },
+            closed_at: 3,
+            notified_at: None,
+        }
+    }
+
+    /// mono-a steers the Giga about `m`, with the Giga's chat as `chat`.
+    fn answer_late(m: MonoMessage, chat: Target) -> Decision {
+        let input = at("giga", steer(m.id.as_str()));
+        decide_as(
+            &mono_a_caller(),
+            mono_a_row(),
+            &input,
+            SendFacts {
+                recipient: mono_with_role("giga", MonoRole::Giga, chat.clone()),
+                reply_to: Some(Referenced {
+                    message: m,
+                    session: Some(chat),
+                }),
+                pair: PairCount::default(),
+            },
+        )
+    }
+
+    // S12 before S10 (intents review r1). Defect: a Mono steers a Giga about
+    // anything but its late answer to the Giga's question, answers an open
+    // handle by steer (the handle stays open), or is refused with
+    // steer_target_mismatch, which never names reply.
+    #[test]
+    fn s12_a_monos_steer_to_a_giga_needs_the_gigas_unanswered_question_of_the_last_24_h() {
+        let own = MonoMessage {
+            from_session_id: session("a-chat"),
+            to: Some(Party::Mono {
+                mono_id: mono("giga"),
+            }),
+            status: Status::Delivered {
+                wanting_reply: Wanting,
+                intent: Intent::New,
+                routed: Routed {
+                    handled_by_session: session("giga-chat"),
+                    delivery: Delivery::Submit,
+                },
+                slot: Some(PlainSlot {
+                    turn_id: "turn-1".into(),
+                    delivered_at: Some(2),
+                    window: "main".into(),
+                }),
+            },
+            ..row('m', Some("mono-a"), 0, open(1))
+        };
+        let wants_no_reply = sent('q', 0, Some("turn-1")).status;
+        for (case, m) in [
+            (
+                "an open question",
+                question("giga-chat", 0, NOW - 1_000, open(1)),
+            ),
+            (
+                "a question a day and 1 ms old",
+                question("giga-chat", 0, NOW - DAY_MS - 1, unanswered()),
+            ),
+            (
+                "a message that wants no reply",
+                question("giga-chat", 0, NOW - 1_000, wants_no_reply),
+            ),
+            ("its own message to the Giga", own),
+        ] {
+            assert_eq!(
+                answer_late(m, live("giga-chat", true, true)),
+                send_rejected(
+                    RejectCode::UpwardSteerForbidden,
+                    Some(Party::Mono {
+                        mono_id: mono("giga")
+                    }),
+                    UPWARD
+                ),
+                "{case}"
+            );
+        }
+    }
+
+    // Rule (b) (design 16.6, intents review r1). Defect: a Mono's late answer
+    // never reaches the Giga, lands in its idle chat as new work, reaches a
+    // finished habit run, or closes the question as answered (only reply
+    // closes a message).
+    #[test]
+    fn rule_b_a_late_answer_steers_the_gigas_running_chat_and_leaves_the_question_open_to_reply() {
+        let giga = Some(Party::Mono {
+            mono_id: mono("giga"),
+        });
+        let running = Target {
+            turn: Some("turn-4".into()),
+            ..live("giga-chat", true, true)
+        };
+        let a_day_old = question("giga-chat", 2, NOW - DAY_MS, unanswered());
+        assert_eq!(
+            answer_late(a_day_old.clone(), running.clone()),
+            steered(giga.clone(), "giga-chat", &a_day_old)
+        );
+        assert_eq!(
+            answer_late(a_day_old, live("giga-chat", false, true)),
+            send_rejected(RejectCode::TargetGone, giga.clone(), TARGET_GONE)
+        );
+        assert_eq!(
+            answer_late(question("giga-run", 2, NOW - DAY_MS, unanswered()), running),
+            send_rejected(RejectCode::TargetGone, giga, TARGET_GONE)
         );
     }
 
