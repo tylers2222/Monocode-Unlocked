@@ -4517,17 +4517,23 @@ mod tests {
         );
     }
 
-    // A4. Defect: a worker reads notes or acts on sessions, though it may only
-    // message its lead.
+    // A4, before A5 (design 6.6 table order). Defect: a worker reads notes or
+    // acts on sessions, though it may only message its lead; or its send into
+    // another worker gets A5's steer_via_lead instead of worker_scope.
     #[test]
     fn a4_a_worker_may_use_no_app_action() {
-        for action in ["notes.list", "sessions.list", "sessions.read"] {
+        for (action, target) in [
+            ("notes.list", SessionLevel::Lead),
+            ("sessions.list", SessionLevel::Lead),
+            ("sessions.read", SessionLevel::Lead),
+            ("sessions.send", worker_of("l1")),
+        ] {
             assert_eq!(
                 act(
                     &session_caller("w1"),
                     action,
                     Some(worker_of("l1")),
-                    Some(SessionLevel::Lead)
+                    Some(target)
                 ),
                 act_rejected(
                     RejectCode::WorkerScope,

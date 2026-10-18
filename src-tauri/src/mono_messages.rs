@@ -4960,16 +4960,27 @@ pub(crate) mod tests {
                 }
             );
         }
-        for (case, field, value) in [
-            ("no access", "access", None),
-            ("unknown access", "access", Some("admin")),
-            ("no cwd", "cwd", None),
-            ("empty cwd", "cwd", Some("")),
-            ("empty leadSessionId", "leadSessionId", Some("")),
+        for (case, field, value, error) in [
+            ("no access", "access", None, "Invalid caller access"),
+            (
+                "unknown access",
+                "access",
+                Some("admin"),
+                "Invalid caller access",
+            ),
+            ("no cwd", "cwd", None, "Invalid caller cwd"),
+            ("empty cwd", "cwd", Some(""), "Invalid caller cwd"),
+            (
+                "empty leadSessionId",
+                "leadSessionId",
+                Some(""),
+                "Invalid caller leadSessionId",
+            ),
             (
                 "invalid leadSessionId",
                 "leadSessionId",
                 Some("not a session id"),
+                "Invalid caller leadSessionId",
             ),
         ] {
             let mut arg = serde_json::json!({
@@ -4982,7 +4993,7 @@ pub(crate) mod tests {
                     arg.as_object_mut().unwrap().remove(field);
                 }
             }
-            assert!(parse(arg).is_err(), "session caller with {case}");
+            assert_eq!(parse(arg), Err(error.into()), "session caller with {case}");
         }
         for (field, value) in [
             ("cwd", "/p"),
@@ -9266,42 +9277,123 @@ pub(crate) mod tests {
             .unwrap(),
         );
         assert_eq!(error.code, "worker_cannot_spawn");
+        assert_columns(
+            &conn,
+            error.message_id.as_ref().expect("a row"),
+            &[("body_chars", Sql::Integer(8000))],
+        );
     }
 
-    // PR7-5b review: `access` decides Operator rights. Defect: a session
-    // caller with no or an unknown `access` parses (as Operator or as
-    // Started), so it reaches `decide_action` and its lead's start makes a
-    // worker of it, though the web app never granted it app access.
+    // Design 6.6 A4 and 13.5. Defect: the `app_action` row of a worker's
+    // refused action keeps its prompt, or names the session the action named
+    // as if the worker had messaged it.
     #[test]
-    fn a_session_caller_with_no_or_an_unknown_access_gets_no_operator_right() {
+    fn a_workers_app_action_row_keeps_no_prompt_and_names_no_session() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         seed_levels(&conn);
-        for (case, access) in [("no access", None), ("unknown access", Some("admin"))] {
-            let mut arg = serde_json::json!({
-                "kind": "session", "sessionId": "lead", "turnId": "turn-1", "cwd": "/p"
-            });
-            if let Some(access) = access {
-                arg["access"] = serde_json::json!(access);
-            }
-            let checked = serde_json::from_value::<CallerArg>(arg)
-                .unwrap()
-                .parse()
-                .map(|caller| {
-                    check_action(
-                        &conn,
-                        &caller,
-                        "sessions.start",
-                        None,
-                        None,
-                        &RequestId::parse("spawn").unwrap(),
-                        &start_input("Build"),
-                        100,
-                    )
-                    .unwrap()
-                });
-            assert_eq!(checked, Err("Invalid caller access".into()), "{case}");
-        }
-        assert_eq!(rows(&conn), 0);
+        let error = failed_check(
+            check_action(
+                &conn,
+                &session_caller("worker", "/p", None),
+                "sessions.read",
+                Some("lead"),
+                None,
+                &RequestId::parse("peek").unwrap(),
+                &serde_json::json!({"sessionId": "lead", "prompt": "Show me"}),
+                100,
+            )
+            .unwrap(),
+        );
+        assert_eq!(error.code, "worker_scope");
+        assert_columns(
+            &conn,
+            error.message_id.as_ref().expect("a row"),
+            &[
+                ("tool", text("app_action")),
+                ("gate_result", text("worker_scope")),
+                ("to_session_id", Sql::Null),
+                ("addressed", text("sessions.read lead")),
+                ("body", text("")),
+                ("body_chars", Sql::Integer(0)),
+            ],
+        );
+    }
+
+    // Design 13.1 and 6.6 (PR7-9a review r1 m1). Defect: `check_action`
+    // drops the web app's lead copy of an unsaved target or caller, so a Mono
+    // steers a new worker around its lead and a new worker starts sessions;
+    // or it gives a Mono chat its session's level, so a Mono's start makes a
+    // worker of the chat.
+    #[test]
+    fn check_action_reads_the_lead_copies_of_unsaved_sessions_and_no_level_for_a_mono() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let chat_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = 'a-chat'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(chat_rows, 1, "the Mono chat has a sessions row");
+        let mono = caller_in("mono-a", "a-chat");
+        let steer = failed_check(
+            check_action(
+                &conn,
+                &mono,
+                "sessions.send",
+                Some("ghost"),
+                Some(session("lead")),
+                &RequestId::parse("nudge").unwrap(),
+                &serde_json::json!({"sessionId": "ghost", "prompt": "Stop"}),
+                100,
+            )
+            .unwrap(),
+        );
+        assert_eq!(steer.code, "steer_via_lead", "unsaved target");
+        assert_columns(
+            &conn,
+            steer.message_id.as_ref().expect("a row"),
+            &[
+                ("tool", text("app_action")),
+                ("from_mono_id", text("mono-a")),
+                ("to_session_id", text("ghost")),
+                ("body", text("Stop")),
+            ],
+        );
+        let spawn = failed_check(
+            check_action(
+                &conn,
+                &session_caller("ghost-w", "/p", Some("lead")),
+                "sessions.start",
+                None,
+                None,
+                &RequestId::parse("spawn").unwrap(),
+                &start_input("Help"),
+                100,
+            )
+            .unwrap(),
+        );
+        assert_eq!(spawn.code, "worker_cannot_spawn", "unsaved caller");
+        assert_eq!(
+            check_action(
+                &conn,
+                &mono,
+                "sessions.start",
+                None,
+                None,
+                &RequestId::parse("start").unwrap(),
+                &start_input("Build"),
+                100,
+            )
+            .unwrap(),
+            ActionChecked::Allowed {
+                lead_session_id: None
+            },
+            "Mono chat with a sessions row"
+        );
+        assert_eq!(rows(&conn), 2);
     }
 }
