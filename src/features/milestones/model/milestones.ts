@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { normalizeProjectPath } from "../../projects/model/recents";
+
+/** Rust emits it after every write, page or agent, to every window. */
+export const MILESTONES_CHANGED = "monocode:milestones-changed";
 
 export type MilestoneStatus = "idea" | "planned" | "in_progress" | "done";
 
@@ -109,4 +113,22 @@ export function removeProject(project: string): Promise<void> {
   return invoke("milestones_remove_project", {
     projectPath: normalizeProjectPath(project),
   });
+}
+
+/** Calls `onChange` with the normalized path of each project that changed. */
+export function subscribe(onChange: (projectPath: string) => void): () => void {
+  let disposed = false;
+  let unlisten: (() => void) | undefined;
+  void listen<{ projectPath: string }>(MILESTONES_CHANGED, (event) =>
+    onChange(event.payload.projectPath),
+  )
+    .then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    })
+    .catch(() => undefined);
+  return () => {
+    disposed = true;
+    unlisten?.();
+  };
 }

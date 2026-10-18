@@ -112,7 +112,7 @@ function MilestoneRow({
       tabIndex={0}
       data-milestone={milestone.id}
       className={`relative grid grid-cols-[14px_1fr_auto] items-start gap-3.5 rounded-lg py-2 pr-2.5 outline-none focus-visible:ring-1 focus-visible:ring-accent/50 focus-visible:ring-inset ${
-        highlighted ? "bg-accent/8 inset-ring inset-ring-accent/30" : ""
+        highlighted ? "bg-accent/8 inset-ring inset-ring-accent/30 motion-safe:animate-[approval-toast-in_220ms_cubic-bezier(0.22,1,0.36,1)]" : ""
       }`}
     >
       <span className="grid h-5 place-items-center">
