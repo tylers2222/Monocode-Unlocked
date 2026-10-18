@@ -635,15 +635,25 @@ it("says Steering in a Mono chat whatever the follow-up setting", () => {
   expect(container.textContent).toContain("everything Captain is doing");
 });
 
-// PR I6 review r2 m1. Defect: when the queue starts holding the text being
-// typed, the bar says "Nothing running" while turn 2 runs.
-it("says Nothing running only once the chat is idle", () => {
-  render(busyChat());
+// ADE-6. Defect: the bar keeps "Steering" once the chat's turn ends, so the
+// text typed during the turn cannot be sent.
+it("drops Steering when the chat's turn ends and sends the kept text as a new message", () => {
+  const onSubmit = vi.fn(() => true);
+  render({ ...busyChat(), onSubmit });
   typeDraft("stop, wrong branch");
   expect(barKind()).toBe("turn");
-  render(busyChat(held));
+  render({ ...busyChat({ busy: false, turnReadiness: undefined }), onSubmit });
   expect(barKind()).toBeNull();
-  render(busyChat({ busy: false, turnReadiness: undefined }));
-  expect(barKind()).toBe("ended");
-  expect(container.textContent).toContain("Nothing running");
+  expect(field().value).toBe("stop, wrong branch");
+  act(() =>
+    container
+      .querySelector("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
+  expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+    "chat",
+    "stop, wrong branch",
+    [],
+    {},
+  );
 });

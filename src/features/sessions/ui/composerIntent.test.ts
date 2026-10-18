@@ -86,7 +86,7 @@ it("steers the whole turn with no pick, for one running item or several, and pas
     running,
     [...running, { blockId: "steer-2", quote: "Also" }],
   ]) {
-    const bar = composerBar(items, { kind: "default" }, true, false);
+    const bar = composerBar(items, { kind: "default" }, true);
     expect(bar).toEqual({ kind: "turn" });
     expect(barSend(bar, true)).toEqual({});
   }
@@ -95,7 +95,7 @@ it("steers the whole turn with no pick, for one running item or several, and pas
 // Design 16.12.4, 16.12.6 (whole-turn review r1 M2). Defect: a cleared steer
 // sends like `turn`, so the message the user made new joins the running turn.
 it("makes ✕ a new message that waits for the turn end while the session would steer", () => {
-  const bar = composerBar(running, { kind: "cleared" }, true, true);
+  const bar = composerBar(running, { kind: "cleared" }, true);
   expect(bar).toEqual({ kind: "none" });
   expect(barSend(bar, true)).toEqual({ waitForIdle: true });
   expect(barSend(bar, false)).toEqual({});
@@ -103,31 +103,12 @@ it("makes ✕ a new message that waits for the turn end while the session would 
 
 // Design 16.8. Defect: a steer whose work ended is sent as a guess.
 it("blocks a picked steer whose block left the running turn and offers it as new", () => {
-  const bar = composerBar([], { kind: "picked", link: steer }, false, false);
+  const bar = composerBar([], { kind: "picked", link: steer }, false);
   expect(bar).toEqual({ kind: "gone", link: steer });
   expect(barSend(bar, false)).toBeNull();
   expect(barSend({ kind: "none" }, false)).toEqual({});
-  const live = composerBar(
-    running,
-    { kind: "picked", link: steer },
-    true,
-    false,
-  );
+  const live = composerBar(running, { kind: "picked", link: steer }, true);
   expect(barSend(live, true)).toEqual({ link: steer });
-});
-
-// Doop E10, decision 536. Defect: text typed as a whole-turn steer silently
-// opens a new turn when the turn ends before Send.
-it("blocks Send once the turn the bar named has ended, until the user sends it as new or clears it", () => {
-  const ended = composerBar([], { kind: "default" }, false, true);
-  expect(ended).toEqual({ kind: "ended" });
-  expect(barSend(ended, false)).toBeNull();
-  expect(composerBar([], { kind: "default" }, false, false)).toEqual({
-    kind: "none",
-  });
-  expect(composerBar([], { kind: "cleared" }, false, true)).toEqual({
-    kind: "none",
-  });
 });
 
 // Design 16.8 (intents review r1). Defect: position stands in for the
@@ -296,7 +277,7 @@ function monoChat(turnReadiness: Session["turnReadiness"]) {
   const running = () =>
     steersNow(chat, true) ? runningItems(chat, runningTurnOf(chat)) : [];
   const bar = (choice: BarChoice = NO_CHOICE) =>
-    composerBar(running(), choice, steering(), false);
+    composerBar(running(), choice, steering());
   return {
     get chat() {
       return chat;
@@ -567,7 +548,6 @@ it("offers no steer while the first turn's worktree is prepared", () => {
       reached,
       picked,
       steersTyped(preparing, mono, "steer"),
-      false,
     );
     expect(bar).toEqual({ kind: "gone", link: picked.link });
     expect(barSend(bar, false)).toBeNull();
