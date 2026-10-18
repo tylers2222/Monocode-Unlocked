@@ -100,6 +100,52 @@ function tabContainsPane(tab: WorkspaceTab, paneId: string): boolean {
   );
 }
 
+function turnStart(session: Session): number {
+  for (let index = session.blocks.length - 1; index >= 0; index -= 1) {
+    const block = session.blocks[index];
+    // A steer joins a running turn with `sentAt` and no `startedAt`.
+    if (block.role === "user" && block.startedAt !== undefined) {
+      return block.startedAt;
+    }
+  }
+  return -Infinity;
+}
+
+/** When the session's running turn started, or undefined when it is idle. A
+ * busy worker has no tab, so its lead counts as running in its place. */
+export function runningTurnStart(
+  id: string,
+  sessions: readonly Session[],
+): number | undefined {
+  let running = false;
+  let start = -Infinity;
+  for (const session of sessions) {
+    const busyWorker = session.busy && session.orchestrationLeadId === id;
+    if (session.id !== id && !busyWorker) continue;
+    running ||= !!session.busy;
+    start = Math.max(start, turnStart(session));
+  }
+  return running ? start : undefined;
+}
+
+function runningPaneForProject(
+  tabs: readonly WorkspaceTab[],
+  sessions: readonly Session[],
+  target: string,
+  paneById: PaneProject,
+): { tabId: string; paneId: string } | undefined {
+  let best: { tabId: string; paneId: string; start: number } | undefined;
+  for (const tab of tabs) {
+    for (const paneId of leafIds(tab.layout)) {
+      if (!paneBelongsToProject(paneId, target, paneById)) continue;
+      const start = runningTurnStart(paneId, sessions);
+      if (start === undefined || (best && start <= best.start)) continue;
+      best = { tabId: tab.id, paneId, start };
+    }
+  }
+  return best && { tabId: best.tabId, paneId: best.paneId };
+}
+
 export function reconcileProjectReturn({
   memory,
   tabs,
@@ -155,18 +201,23 @@ export function planProjectReturn({
   }
 
   const remembered = memory.get(target);
-  if (remembered) {
-    const rememberedTab = tabs.find((tab) => tabContainsPane(tab, remembered));
-    if (
-      rememberedTab &&
-      paneBelongsToProject(remembered, target, byPane)
-    ) {
-      return {
-        action: "activate",
-        tabId: rememberedTab.id,
-        paneId: remembered,
-      };
-    }
+  const rememberedTab =
+    remembered && paneBelongsToProject(remembered, target, byPane)
+      ? tabs.find((tab) => tabContainsPane(tab, remembered))
+      : undefined;
+  if (
+    remembered &&
+    rememberedTab &&
+    runningTurnStart(remembered, sessions) !== undefined
+  ) {
+    return { action: "activate", tabId: rememberedTab.id, paneId: remembered };
+  }
+
+  const running = runningPaneForProject(tabs, sessions, target, byPane);
+  if (running) return { action: "activate", ...running };
+
+  if (remembered && rememberedTab) {
+    return { action: "activate", tabId: rememberedTab.id, paneId: remembered };
   }
 
   for (const tab of tabs) {
