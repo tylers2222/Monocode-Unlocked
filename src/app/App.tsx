@@ -9035,6 +9035,8 @@ function Workspace({
               : submitSession(id, text, attachments, options),
           saveDraft: (id, prompt, attachments, requestId) =>
             flushSync(() => onSaveDraft(id, prompt, attachments, requestId)),
+          saveSession: async (session) =>
+            !shouldPersistSession(session) || !!(await upsertSession(session)),
         },
         placement,
         openTab,

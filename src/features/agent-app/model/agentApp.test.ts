@@ -194,6 +194,28 @@ describe("agent app commands", () => {
     );
   });
 
+  // Design 13.3. Defect: a session's start stores no lead, so its worker
+  // saves as a lead; or a Mono's start stores the Mono's chat as a lead.
+  it.each([
+    ["a session", "lead", false],
+    ["a Mono's chat", undefined, true],
+    ["a habit run", undefined, true],
+  ] as const)(
+    "names %s that starts a session as its lead only when it is no Mono",
+    async (caller, lead, mono) => {
+      const { source, host } = fixture();
+      if (caller === "a Mono's chat") host.isMono = () => true;
+      if (caller === "a habit run") host.isHabitRun = () => true;
+      if (mono) host.monoOf = () => ({ id: "mono", projects: [source.cwd] });
+      await handleAgentApp(source, "worker", "sessions.start", {
+        ...CHOICE,
+        prompt: "Review the project",
+        notifyOnComplete: false,
+      }, host);
+      expect(vi.mocked(host.start).mock.calls[0][0].leadSessionId).toBe(lead);
+    },
+  );
+
   it("files a Mono's sessions into a folder named after it", async () => {
     const { source, host } = fixture();
     host.isMono = () => true;

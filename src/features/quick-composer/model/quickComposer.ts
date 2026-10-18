@@ -73,6 +73,8 @@ export type QuickLaunch = {
   workFolder?: string;
   /** Bring the new session forward instead of starting it quietly. */
   reveal: boolean;
+  /** The session whose `sessions.start` makes this launch's session (design 13.3). */
+  leadSessionId?: string;
 };
 
 /** The panel exists on macOS only; elsewhere the shortcut is never claimed. */

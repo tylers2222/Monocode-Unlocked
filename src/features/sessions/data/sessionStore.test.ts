@@ -416,6 +416,16 @@ describe("sanitizeSessionForPersist", () => {
     });
   });
 
+  // Design 13.2. Defect: the upsert sends no lead id, so Rust stores the
+  // worker as a lead.
+  it("sends a worker's lead id with the session", () => {
+    const worker = {
+      ...appendUser(newSession("codex", "/repo"), "Fix CI"),
+      leadSessionId: "lead",
+    };
+    expect(sanitizeSessionForPersist(worker).leadSessionId).toBe("lead");
+  });
+
   it("persists a queued follow-up's CLI request ID and drops a malformed one", () => {
     const session = newSession("codex", "/repo");
     session.queuedMessages = [

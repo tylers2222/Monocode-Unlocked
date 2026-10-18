@@ -49,6 +49,11 @@ export async function acceptQuickLaunch(
       attachments: Attachment[],
       requestId: string,
     ) => SubmissionAcceptance;
+    /**
+     * Saves a session that belongs in history now. False when that save
+     * failed, such as for a deleted session.
+     */
+    saveSession: (session: Session) => Promise<boolean>;
   },
   placement?: { direction: SplitDir; besideSessionId: string },
   /** Off for a session followed elsewhere, such as from the Mono that ran it. */
@@ -56,6 +61,7 @@ export async function acceptQuickLaunch(
 ): Promise<void> {
   // Rehydrate image previews in this webview; the floating panel sends paths.
   const attachments = await prepareAttachments(launch.attachments ?? []);
+  if (launch.leadSessionId) await saveLead(launch.leadSessionId, workspace);
   const existing = workspace
     .getSessions()
     .find((session) => session.id === deliveryId);
@@ -80,6 +86,8 @@ export async function acceptQuickLaunch(
     );
   session.id = deliveryId;
   if (!existing && launch.sidebarHidden) session.sidebarHidden = true;
+  if (!existing && launch.leadSessionId)
+    session.leadSessionId = launch.leadSessionId;
   if (launch.modelSettings) {
     session.modelSettings = mergeModelSettings(
       resolveModel(session.harness, session.model),
@@ -130,4 +138,24 @@ export async function acceptQuickLaunch(
       item.id === deliveryId ? { ...item, quickLaunchAccepted: true } : item,
     ),
   );
+}
+
+/**
+ * Design 13.2: a worker's first save names its lead through the lead's row,
+ * and the write is insert-only, so the lead is saved before the worker
+ * exists, or no worker starts.
+ */
+async function saveLead(
+  leadSessionId: string,
+  workspace: {
+    getSessions: () => Session[];
+    saveSession: (session: Session) => Promise<boolean>;
+  },
+): Promise<void> {
+  const lead = workspace
+    .getSessions()
+    .find((session) => session.id === leadSessionId);
+  if (!lead) throw new Error("The lead session is not open");
+  if (!(await workspace.saveSession(lead)))
+    throw new Error("The lead session could not be saved");
 }

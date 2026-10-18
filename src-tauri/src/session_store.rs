@@ -134,6 +134,9 @@ pub struct SessionUpsert {
     pub linked_work_item: Option<Value>,
     #[serde(default)]
     pub automation_id: Option<String>,
+    /// The session whose `sessions.start` made this one; written on insert only.
+    #[serde(default)]
+    pub lead_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,6 +178,9 @@ pub struct SessionSummary {
     pub linked_work_item: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub automation_id: Option<String>,
+    /// The session whose `sessions.start` made this one; written on insert only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lead_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,6 +222,9 @@ pub struct SessionRecord {
     pub linked_work_item: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub automation_id: Option<String>,
+    /// The session whose `sessions.start` made this one; written on insert only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lead_session_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -1023,19 +1032,43 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "CREATE INDEX IF NOT EXISTS sessions_legacy_inbox
          ON sessions (id) WHERE inbox_ask IS NOT NULL;",
     )?;
+    // The lead link (see `lead_session_id`). No version row:
+    // another build may reuse the number. The partial index serves the
+    // ON DELETE SET NULL lookup when a lead is deleted.
+    ensure_session_column(
+        conn,
+        "lead_session_id",
+        "TEXT REFERENCES sessions(id) ON DELETE SET NULL",
+    )?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS sessions_lead
+         ON sessions (lead_session_id) WHERE lead_session_id IS NOT NULL;",
+    )?;
     // Unscoped session search pins this index with `INDEXED BY`, and SQLite
     // rejects that statement outright when the index is missing instead of
     // falling back to another plan. The versioned blocks above are the normal
     // path, but a recorded version can outlive the schema it describes, so
     // restore the index here for the same reason the tables above are
     // restored: a missing index would fail every search without a `cwd`.
+    // The listing also reads `lead_session_id`, which has no version row, so
+    // an index built without it is rebuilt by content.
+    let cover: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'sessions_cwd_cover_idx'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if cover.is_some_and(|sql| !sql.contains("lead_session_id")) {
+        conn.execute("DROP INDEX sessions_cwd_cover_idx", [])?;
+    }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS sessions_cwd_cover_idx
            ON sessions (cwd, has_user_message, updated_at DESC, id, harness,
                         model, runtime_mode, title, provider_session_id,
                         created_at, branch, archived, pinned,
                         linked_work_item_json, worktree_cwd, worktree_removed,
-                        is_draft, automation_id, sidebar_hidden);",
+                        is_draft, automation_id, sidebar_hidden, lead_session_id);",
     )?;
     crate::notes::ensure_notes_table(conn)?;
     crate::reminders::ensure_table(conn)?;
@@ -1264,14 +1297,19 @@ pub(crate) fn upsert_session(
         .map(|(_, _, _, _, value, _)| *value != 0)
         .unwrap_or(false);
 
-    conn.execute(
+    // `lead_session_id` is insert-only: a stale copy cannot restore a lead id
+    // that a lead delete cleared, and a worker whose lead row is gone saves as
+    // a lead instead of failing the whole upsert on the FK.
+    let lead_session_id: Option<String> = conn.query_row(
         "INSERT INTO sessions (
            id, cwd, harness, model, model_settings, runtime_mode, title,
            provider_session_id, blocks_json, created_at, updated_at, branch,
            context_used, context_window, worktree_cwd, has_user_message,
            linked_work_item_json, provider_account_id, worktree_removed, is_draft,
-           automation_id, queued_messages_json, queue_status, sidebar_hidden, work_folder
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+           automation_id, queued_messages_json, queue_status, sidebar_hidden, work_folder,
+           lead_session_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
+           (SELECT id FROM sessions WHERE id = ?26))
          ON CONFLICT(id) DO UPDATE SET
            cwd = excluded.cwd,
            harness = excluded.harness,
@@ -1295,7 +1333,8 @@ pub(crate) fn upsert_session(
            queued_messages_json = excluded.queued_messages_json,
            queue_status = excluded.queue_status,
            sidebar_hidden = excluded.sidebar_hidden,
-           work_folder = excluded.work_folder",
+           work_folder = excluded.work_folder
+         RETURNING lead_session_id",
         params![
             session.id,
             session.cwd,
@@ -1322,7 +1361,9 @@ pub(crate) fn upsert_session(
             session.queue_status,
             i64::from(session.sidebar_hidden),
             work_folder,
+            session.lead_session_id,
         ],
+        |row| row.get(0),
     )?;
 
     remember_worker_from_blocks(conn, &session.id, &session.blocks)?;
@@ -1350,6 +1391,7 @@ pub(crate) fn upsert_session(
         draft: is_draft,
         linked_work_item: session.linked_work_item.clone(),
         automation_id: automation_id.map(str::to_owned),
+        lead_session_id,
     })
 }
 
@@ -1697,7 +1739,7 @@ fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<Session
                 created_at, updated_at, branch, archived, pinned,
                 linked_work_item_json,
                 (SELECT summary FROM orchestration_sidebar WHERE lead_id = sessions.id), worktree_cwd,
-                worktree_removed, is_draft, automation_id, sidebar_hidden
+                worktree_removed, is_draft, automation_id, sidebar_hidden, lead_session_id
          FROM sessions
          WHERE cwd = ?1
            AND has_user_message = 1
@@ -1738,6 +1780,7 @@ fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<Session
             draft: row.get::<_, i64>(16)? != 0,
             linked_work_item,
             automation_id: nonempty(row.get(17)?),
+            lead_session_id: row.get(19)?,
         })
     })?;
     rows.collect()
@@ -1749,7 +1792,7 @@ fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
                 created_at, updated_at, branch, archived, pinned,
                 linked_work_item_json,
                 (SELECT summary FROM orchestration_sidebar WHERE lead_id = sessions.id), worktree_cwd,
-                worktree_removed, is_draft, automation_id, sidebar_hidden
+                worktree_removed, is_draft, automation_id, sidebar_hidden, lead_session_id
          FROM sessions
          WHERE has_user_message = 1
            AND linked_work_item_json IS NOT NULL
@@ -1784,6 +1827,7 @@ fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
             draft: row.get::<_, i64>(16)? != 0,
             linked_work_item: optional_json(row.get(12)?),
             automation_id: nonempty(row.get(17)?),
+            lead_session_id: row.get(19)?,
         })
     })?;
     rows.collect()
@@ -2027,7 +2071,7 @@ fn get_session_record(
                 context_used, context_window, branch, worktree_cwd,
                 linked_work_item_json, provider_account_id, worktree_removed,
                 automation_id, queued_messages_json, queue_status, sidebar_hidden,
-                work_folder
+                work_folder, lead_session_id
          FROM sessions
          WHERE id = ?1 AND inbox_ask IS NULL"
         ),
@@ -2078,6 +2122,7 @@ fn get_session_record(
                 linked_work_item: optional_json(row.get(15)?),
                 provider_account_id: row.get(16)?,
                 automation_id: nonempty(row.get(18)?),
+                lead_session_id: row.get(23)?,
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
             })
@@ -2284,6 +2329,7 @@ mod tests {
             worktree_removed: false,
             linked_work_item: None,
             automation_id: None,
+            lead_session_id: None,
         }
     }
 
@@ -2431,7 +2477,7 @@ mod tests {
                  SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
                         created_at, updated_at, branch, archived, pinned,
                         linked_work_item_json, worktree_cwd, worktree_removed, is_draft,
-                        automation_id, sidebar_hidden,
+                        automation_id, sidebar_hidden, lead_session_id,
                         (SELECT summary FROM orchestration_sidebar WHERE lead_id = sessions.id)
                  FROM sessions
                  WHERE cwd = ?1
@@ -3139,6 +3185,167 @@ mod tests {
         set_archived(&conn, "s1", false).unwrap();
         let listed = list_by_project(&conn, "/tmp/a").unwrap();
         assert!(!listed[0].archived);
+    }
+
+    fn lead_of(conn: &Connection, id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT lead_session_id FROM sessions WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn worker(id: &str, lead: &str) -> SessionUpsert {
+        SessionUpsert {
+            lead_session_id: Some(lead.into()),
+            ..sample(id, "/tmp/a", id)
+        }
+    }
+
+    #[test]
+    fn migrate_twice_leaves_the_lead_session_id_schema_unchanged() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let schema = || -> Vec<(String, String)> {
+            conn.prepare(
+                "SELECT name, sql FROM sqlite_master
+                 WHERE tbl_name = 'sessions' AND sql IS NOT NULL ORDER BY name",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+        };
+        let before = schema();
+        migrate(&conn).unwrap();
+        assert_eq!(schema(), before);
+        let foreign_keys: Vec<(String, String, String, String)> = conn
+            .prepare(r#"SELECT "table", "from", "to", on_delete FROM pragma_foreign_key_list('sessions')"#)
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            foreign_keys,
+            [(
+                "sessions".into(),
+                "lead_session_id".into(),
+                "id".into(),
+                "SET NULL".into()
+            )]
+        );
+        assert!(before.iter().any(|(name, _)| name == "sessions_lead"));
+    }
+
+    #[test]
+    fn deleting_a_lead_turns_its_workers_into_leads() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        for id in ["lead", "other-lead"] {
+            upsert_session(&conn, &sample(id, "/tmp/a", id)).unwrap();
+        }
+        upsert_session(&conn, &worker("worker", "lead")).unwrap();
+        upsert_session(&conn, &worker("other-worker", "other-lead")).unwrap();
+        delete_session(&conn, "lead", Removal::DiscardDraft).unwrap();
+        assert_eq!(lead_of(&conn, "worker"), None);
+        assert_eq!(
+            lead_of(&conn, "other-worker").as_deref(),
+            Some("other-lead")
+        );
+    }
+
+    #[test]
+    fn archiving_a_lead_keeps_its_workers_linked() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &sample("lead", "/tmp/a", "Lead")).unwrap();
+        upsert_session(&conn, &worker("worker", "lead")).unwrap();
+        set_archived(&conn, "lead", true).unwrap();
+        assert_eq!(lead_of(&conn, "worker").as_deref(), Some("lead"));
+    }
+
+    #[test]
+    fn a_worker_whose_lead_row_is_gone_saves_as_a_lead() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &sample("lead", "/tmp/a", "Lead")).unwrap();
+        delete_session(&conn, "lead", Removal::DiscardDraft).unwrap();
+        let summary = upsert_session(&conn, &worker("worker", "lead")).unwrap();
+        assert_eq!(summary.lead_session_id, None);
+        assert_eq!(lead_of(&conn, "worker"), None);
+    }
+
+    #[test]
+    fn a_later_upsert_never_changes_the_stored_lead() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        for id in ["lead-a", "lead-b"] {
+            upsert_session(&conn, &sample(id, "/tmp/a", id)).unwrap();
+        }
+        upsert_session(&conn, &worker("worker", "lead-a")).unwrap();
+        let summary = upsert_session(&conn, &worker("worker", "lead-b")).unwrap();
+        assert_eq!(summary.lead_session_id.as_deref(), Some("lead-a"));
+        assert_eq!(lead_of(&conn, "worker").as_deref(), Some("lead-a"));
+        upsert_session(&conn, &sample("worker", "/tmp/a", "worker")).unwrap();
+        assert_eq!(lead_of(&conn, "worker").as_deref(), Some("lead-a"));
+    }
+
+    #[test]
+    fn record_and_summaries_answer_the_stored_lead_id() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut lead = sample("lead", "/tmp/a", "Lead");
+        lead.linked_work_item = Some(json!({"kind": "pr", "number": 1}));
+        let lead_summary = upsert_session(&conn, &lead).unwrap();
+        let worker: SessionUpsert = serde_json::from_value(json!({
+            "id": "worker", "cwd": "/tmp/a", "harness": "codex", "model": "m",
+            "modelSettings": {}, "runtimeMode": "supervised", "title": "Worker",
+            "blocks": [{"id": "u", "role": "user", "text": "Task"}],
+            "linkedWorkItem": {"kind": "pr", "number": 1},
+            "leadSessionId": "lead"
+        }))
+        .unwrap();
+        let summary = upsert_session(&conn, &worker).unwrap();
+        assert_eq!(
+            serde_json::to_value(&summary).unwrap()["leadSessionId"],
+            "lead"
+        );
+        assert!(serde_json::to_value(&lead_summary)
+            .unwrap()
+            .get("leadSessionId")
+            .is_none());
+        let record = get_session(&conn, "worker").unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(&record).unwrap()["leadSessionId"],
+            "lead"
+        );
+        let metadata = get_session_metadata(&conn, "worker").unwrap().unwrap();
+        assert_eq!(metadata.lead_session_id.as_deref(), Some("lead"));
+        let lead_record = get_session(&conn, "lead").unwrap().unwrap();
+        assert!(serde_json::to_value(&lead_record)
+            .unwrap()
+            .get("leadSessionId")
+            .is_none());
+        for listed in [
+            list_by_project(&conn, "/tmp/a").unwrap(),
+            list_linked(&conn).unwrap(),
+        ] {
+            let mut leads: Vec<_> = listed
+                .into_iter()
+                .map(|row| (row.id, row.lead_session_id))
+                .collect();
+            leads.sort();
+            assert_eq!(
+                leads,
+                [
+                    ("lead".into(), None),
+                    ("worker".into(), Some("lead".into()))
+                ]
+            );
+        }
     }
 
     #[test]

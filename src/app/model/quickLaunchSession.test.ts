@@ -128,6 +128,7 @@ function setup(reveal = false) {
         return true;
       },
     ),
+    saveSession: vi.fn(async (_session: Session) => true),
   };
   const queue = [{ id: "quick-session", request }];
   const ack = vi.fn(async () => {
@@ -480,4 +481,63 @@ it("does not submit an accepted prompt again after a lost ACK", async () => {
   await vi.advanceTimersByTimeAsync(250);
   expect(workspace.submit).toHaveBeenCalledOnce();
   expect(queue).toHaveLength(0);
+});
+
+// Design 13.3. Defect: a worker's first save carries no lead id, so it is
+// stored as a lead for good.
+it("writes a worker's lead id before its first save", async () => {
+  const { state, request, workspace } = setup();
+  const lead = state.sessions[0].id;
+  request.leadSessionId = lead;
+  const original = workspace.submit.getMockImplementation()!;
+  workspace.submit.mockImplementation((...args) => {
+    expect(
+      state.sessions.find((session) => session.id === args[0])?.leadSessionId,
+    ).toBe(lead);
+    return original(...args);
+  });
+  await acceptQuickLaunch(request, "worker", workspace);
+  expect(workspace.submit).toHaveBeenCalledOnce();
+  expect(
+    state.sessions.find((session) => session.id === "worker")?.leadSessionId,
+  ).toBe(lead);
+});
+
+// Design 13.2. Defect: the worker's first save runs before its lead's row
+// exists, so the lead id is stored as NULL and the worker becomes a lead.
+it("saves the lead before the worker exists", async () => {
+  const { state, request, workspace } = setup();
+  const lead = state.sessions[0];
+  request.leadSessionId = lead.id;
+  let saved!: (ok: boolean) => void;
+  workspace.saveSession.mockImplementation(
+    () => new Promise<boolean>((resolve) => (saved = resolve)),
+  );
+  const accepting = acceptQuickLaunch(request, "worker", workspace);
+  await vi.waitFor(() =>
+    expect(workspace.saveSession).toHaveBeenCalledExactlyOnceWith(lead),
+  );
+  expect(state.sessions.some((session) => session.id === "worker")).toBe(false);
+  saved(true);
+  await accepting;
+  expect(
+    state.sessions.find((session) => session.id === "worker")?.leadSessionId,
+  ).toBe(lead.id);
+});
+
+// Design 13.2. Defect: a worker starts although its lead was not saved, and
+// its first save stores it as a lead.
+it.each([
+  ["the save fails", false, "The lead session could not be saved"],
+  ["the lead is not open", true, "The lead session is not open"],
+])("gives no worker when %s", async (_case, saves, message) => {
+  const { state, request, workspace } = setup();
+  request.leadSessionId = saves ? "closed-lead" : state.sessions[0].id;
+  workspace.saveSession.mockResolvedValue(saves);
+  await expect(acceptQuickLaunch(request, "worker", workspace)).rejects.toThrow(
+    message,
+  );
+  expect(state.sessions.some((session) => session.id === "worker")).toBe(false);
+  expect(workspace.appendTab).not.toHaveBeenCalled();
+  expect(workspace.submit).not.toHaveBeenCalled();
 });
