@@ -539,7 +539,6 @@ import {
 
 import {
   canDispatchQueuedHead,
-  canSteerNow,
   dequeueQueuedMessage,
   failQueuedMessage,
   nextQueuedSend,
@@ -702,6 +701,7 @@ import {
   setGigaWorkspacePoster,
   setTurnGuardHost,
 } from "../features/monos/model/gigaWorkspaceRuntime";
+import { guardedTurn } from "../features/monos/model/gigaWorkspace";
 import {
   warmNativeSkills,
   isNativeCommandPrompt,
@@ -8630,50 +8630,70 @@ function Workspace({
     if (chatId)
       appendToMono(chatId, { id: crypto.randomUUID(), role: "system", text });
   });
+  /** Steers `text` into the running turn of `session` as an app steer tagged
+   *  `requestId`; its block shows `shown` and joins `joined`. */
+  const steerAppTurn = (
+    session: Session,
+    steer: {
+      text: string;
+      shown: string;
+      requestId: string;
+      joined: Pick<Block, "turnId" | "link">;
+    },
+  ) => {
+    const { text, shown, requestId, joined } = steer;
+    const change = (update: (entry: Session) => Session) =>
+      updateSessionState(sessionsRef, setSessions, (sessions) =>
+        sessions.map((entry) =>
+          entry.id === session.id ? update(entry) : entry,
+        ),
+      );
+    return deliverAppSteer({
+      watchers: turnWatchers.current,
+      sessionId: session.id,
+      gen: turnGen.current.get(session.id) ?? 0,
+      record: () =>
+        change((entry) => recordAppSteer(entry, shown, requestId, joined)),
+      steer: async () => {
+        const cwd = sessionAgentCwd(session);
+        await steerHarnessTurn({
+          harness: session.harness,
+          sessionId: session.id,
+          cwd,
+          model: session.model,
+          modelSettings: session.modelSettings,
+          text: await preparePrompt(text, {
+            harness: session.harness,
+            sessionId: session.id,
+            cwd,
+          }),
+        });
+      },
+      forget: () => change((entry) => forgetAppSteer(entry, requestId)),
+    });
+  };
   setTurnGuardHost({
-    now: Date.now,
     schedule: (run, ms) => {
       const timer = window.setTimeout(run, ms);
       return () => window.clearTimeout(timer);
     },
-    turn: (sessionId, turnId) => {
-      const session = sessionsRef.current.find(
-        (entry) => entry.id === sessionId,
-      );
-      if (!session || currentTurnIds.current.get(sessionId) !== turnId)
-        return undefined;
-      return {
-        blocks: session.blocks,
-        canSteer: canSteerNow(session) && canSteerHarness(session.harness),
-      };
-    },
+    turn: (sessionId, turnId) =>
+      guardedTurn(
+        sessionsRef.current.find((entry) => entry.id === sessionId),
+        currentTurnIds.current.get(sessionId),
+        turnId,
+        canSteerHarness,
+      ),
     steer: async (sessionId, turnId, text, requestId) => {
       const session = sessionsRef.current.find(
         (entry) => entry.id === sessionId,
       );
       if (!session) throw new Error("The Giga's chat is gone");
-      const change = (update: (session: Session) => Session) =>
-        updateSessionState(sessionsRef, setSessions, (sessions) =>
-          sessions.map((entry) =>
-            entry.id === sessionId ? update(entry) : entry,
-          ),
-        );
-      await deliverAppSteer({
-        watchers: turnWatchers.current,
-        sessionId,
-        gen: turnGen.current.get(sessionId) ?? 0,
-        record: () =>
-          change((entry) => recordAppSteer(entry, text, requestId, { turnId })),
-        steer: () =>
-          steerHarnessTurn({
-            harness: session.harness,
-            sessionId,
-            cwd: sessionAgentCwd(session),
-            model: session.model,
-            modelSettings: session.modelSettings,
-            text,
-          }),
-        forget: () => change((entry) => forgetAppSteer(entry, requestId)),
+      await steerAppTurn(session, {
+        text,
+        shown: text,
+        requestId,
+        joined: { turnId },
       });
     },
   });
@@ -9041,40 +9061,11 @@ function Workspace({
     },
     reconciled: (id) => monoLoads.of(id),
     steerProject: async (target, handed, id) => {
-      const { text, shown } = handed;
-      const change = (update: (session: Session) => Session) =>
-        updateSessionState(sessionsRef, setSessions, (sessions) =>
-          sessions.map((session) =>
-            session.id === target.id ? update(session) : session,
-          ),
-        );
-      await deliverAppSteer({
-        watchers: turnWatchers.current,
-        sessionId: target.id,
-        gen: turnGen.current.get(target.id) ?? 0,
-        record: () =>
-          change((session) =>
-            recordAppSteer(session, shown, id, {
-              turnId: handed.turnId,
-              link: handed.link,
-            }),
-          ),
-        steer: async () => {
-          const cwd = sessionAgentCwd(target);
-          await steerHarnessTurn({
-            harness: target.harness,
-            sessionId: target.id,
-            cwd,
-            model: target.model,
-            modelSettings: target.modelSettings,
-            text: await preparePrompt(text, {
-              harness: target.harness,
-              sessionId: target.id,
-              cwd,
-            }),
-          });
-        },
-        forget: () => change((session) => forgetAppSteer(session, id)),
+      await steerAppTurn(target, {
+        text: handed.text,
+        shown: handed.shown,
+        requestId: id,
+        joined: { turnId: handed.turnId, link: handed.link },
       });
     },
   };

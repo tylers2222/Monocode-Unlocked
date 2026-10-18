@@ -6,15 +6,16 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import {
+  guardedTurn,
   TURN_GUARD_LIMIT_MS,
   TURN_GUARD_RETRY_MS,
-  TURN_GUARD_STEER,
   turnGuardRequestId,
 } from "./gigaWorkspace";
 import * as gigaRuntime from "./gigaWorkspaceRuntime";
 import { createMono, saveMonoGiga, saveMonoSessionId } from "./mono";
 import { habitRunSessionId } from "./monoHabits";
 import type { TurnId } from "./monoMessages";
+import type { Session } from "../../sessions/model/session";
 
 const T1 = "t1" as TurnId;
 const T2 = "t2" as TurnId;
@@ -24,12 +25,8 @@ type Runtime = Pick<
   typeof gigaRuntime,
   "setTurnGuardHost" | "armTurnGuard" | "disarmTurnGuard"
 >;
-/** A chat as the guard sees it: its running turn, if any, and its blocks. */
-type Chat = {
-  turnId?: TurnId;
-  canSteer: boolean;
-  blocks: { appRequestId?: string }[];
-};
+/** A chat as the guard sees it: its running turn, if any. */
+type Chat = { turnId?: TurnId; canSteer: boolean };
 
 /** A fake app: a clock moved by hand, its chats, the steers it got. */
 function fakeApp(runtime: Runtime) {
@@ -42,9 +39,10 @@ function fakeApp(runtime: Runtime) {
     text: string;
     requestId: string;
   }[] = [];
+  /** The turn of every steer the guard tried, accepted or not. */
+  const attempts: TurnId[] = [];
   let steerFails = false;
   runtime.setTurnGuardHost({
-    now: () => now,
     schedule: (run, ms) => {
       const timer = { at: now + ms, run };
       timers.push(timer);
@@ -57,21 +55,21 @@ function fakeApp(runtime: Runtime) {
       return chat?.turnId === turnId ? chat : undefined;
     },
     steer: async (sessionId, turnId, text, requestId) => {
+      attempts.push(turnId);
       if (steerFails) throw new Error("Turn not ready");
       steers.push({ sessionId, turnId, text, requestId });
-      chats.get(sessionId)?.blocks.push({ appRequestId: requestId });
     },
   });
   return {
     steers,
+    attempts,
     chats,
     failSteers: (fail: boolean) => {
       steerFails = fail;
     },
     /** Starts `turnId` in `sessionId` the way submitSession does. */
     start(sessionId: string, turnId: TurnId, canSteer = true) {
-      const blocks = chats.get(sessionId)?.blocks ?? [];
-      chats.set(sessionId, { turnId, canSteer, blocks });
+      chats.set(sessionId, { turnId, canSteer });
       runtime.armTurnGuard(sessionId, turnId);
     },
     /** Ends the running turn; `finished` runs submitSession's finally. */
@@ -99,7 +97,7 @@ function fakeApp(runtime: Runtime) {
   };
 }
 
-let runtime: Runtime = gigaRuntime;
+const runtime: Runtime = gigaRuntime;
 let app = fakeApp(runtime);
 
 function chat(giga: boolean): string {
@@ -117,7 +115,6 @@ beforeEach(() => {
     setItem: (key: string, value: string) => stored.set(key, value),
     removeItem: (key: string) => stored.delete(key),
   });
-  runtime = gigaRuntime;
   app = fakeApp(runtime);
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -134,7 +131,7 @@ it("steers a Giga chat turn once it runs 3 minutes", async () => {
     {
       sessionId: giga,
       turnId: T1,
-      text: TURN_GUARD_STEER,
+      text: "Move this work to a session in the MonoCode project and end your turn.",
       requestId: turnGuardRequestId(T1),
     },
   ]);
@@ -168,29 +165,7 @@ it("gives a turn that ends before 3 minutes nothing", async () => {
   expect(app.pending()).toBe(0);
 });
 
-// Defect: a second check of the same turn steers it again, whether the guard
-// is armed again in this run or after a reload, where the steer's block is
-// the only record left.
-it("never steers the same turn twice, even after a reload", async () => {
-  const giga = chat(true);
-  app.start(giga, T1);
-  await app.advance(TURN_GUARD_LIMIT_MS);
-  runtime.armTurnGuard(giga, T1);
-  await app.advance(TURN_GUARD_LIMIT_MS * 3);
-  expect(app.steers).toHaveLength(1);
-
-  const saved = app.chats.get(giga)!;
-  // A reload is a fresh copy of the module: only the session's blocks remain.
-  vi.resetModules();
-  runtime = await import("./gigaWorkspaceRuntime");
-  app = fakeApp(runtime);
-  app.chats.set(giga, saved);
-  runtime.armTurnGuard(giga, T1);
-  await app.advance(TURN_GUARD_LIMIT_MS * 3);
-  expect(app.steers).toEqual([]);
-});
-
-// Defect: the first turn's steer marks the next turn steered, the next turn
+// Defect: the first turn's guard steers the next turn, the next turn
 // keeps the old guard, or the old turn's late finally clears the new guard.
 it("re-arms for the next turn", async () => {
   const giga = chat(true);
@@ -223,12 +198,13 @@ it("checks a turn that cannot take the steer once more, then gives up", async ()
   expect(app.steers.map((steer) => steer.turnId)).toEqual([T2]);
 });
 
-// Defect: a steer the harness rejects is retried in a loop.
+// Defect: a steer the harness rejects is retried in a loop, or more than once.
 it("tries a rejected steer once more, then gives up", async () => {
   const giga = chat(true);
   app.failSteers(true);
   app.start(giga, T1);
   await app.advance(TURN_GUARD_LIMIT_MS + TURN_GUARD_RETRY_MS * 10);
+  expect(app.attempts).toEqual([T1, T1]);
   expect(app.pending()).toBe(0);
 
   app.end(giga, T1);
@@ -237,4 +213,33 @@ it("tries a rejected steer once more, then gives up", async () => {
   app.failSteers(false);
   await app.advance(TURN_GUARD_RETRY_MS);
   expect(app.steers.map((steer) => steer.turnId)).toEqual([T2]);
+});
+
+function session(fields: Partial<Session>): Session {
+  return {
+    id: "chat",
+    harness: "claude",
+    busy: true,
+    turnReadiness: "ready",
+    blocks: [],
+    ...fields,
+  } as Session;
+}
+
+// Defect: the guard steers a turn that is no longer the running one, or a
+// turn held by a pending question.
+it("sees only the running turn, and steers it only when it is ready", () => {
+  const steers = () => true;
+  expect(guardedTurn(session({}), T2, T1, steers)).toBeUndefined();
+  expect(
+    guardedTurn(
+      session({
+        pendingQuestion: { autoResolveAt: null } as Session["pendingQuestion"],
+      }),
+      T1,
+      T1,
+      steers,
+    ),
+  ).toEqual({ canSteer: false });
+  expect(guardedTurn(session({}), T1, T1, steers)).toEqual({ canSteer: true });
 });
