@@ -724,7 +724,6 @@ fn rate_hint(pair: PairCount, now: i64) -> String {
         return RejectCode::RateLimited.hint().into();
     };
     let seconds = (oldest + RATE_WINDOW_MS - now)
-        .max(1)
         .unsigned_abs()
         .div_ceil(1000);
     format!(

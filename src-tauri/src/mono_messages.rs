@@ -4386,6 +4386,20 @@ pub(crate) mod tests {
         live: &[LiveSession],
         running: &[(&str, &str)],
     ) -> Submitted {
+        call_in_turns_at(conn, caller, request_id, tool, input, live, running, 100)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn call_in_turns_at(
+        conn: &Connection,
+        caller: &Caller,
+        request_id: &str,
+        tool: Tool,
+        input: serde_json::Value,
+        live: &[LiveSession],
+        running: &[(&str, &str)],
+        now: i64,
+    ) -> Submitted {
         let running: HashMap<String, String> = running
             .iter()
             .map(|(id, turn)| (id.to_string(), turn.to_string()))
@@ -4400,7 +4414,7 @@ pub(crate) mod tests {
                 running: &running,
                 steerable_harnesses: &["codex".to_string()],
             },
-            100,
+            now,
         )
         .unwrap()
     }
@@ -7093,15 +7107,12 @@ pub(crate) mod tests {
             in_old_chat,
             to("mono-a", "to-older-turn", "a-chat", "turn-0"),
         ];
-        let running: HashMap<String, String> = [
+        let running = [
             ("a-chat", "turn-1"),
             ("b-chat", "turn-7"),
             ("project", "turn-3"),
             ("a-old", "turn-5"),
-        ]
-        .into_iter()
-        .map(|(id, turn)| (id.to_string(), turn.to_string()))
-        .collect();
+        ];
         // Class i % 7: 0 to 2 name running work; 3 names queued work; 4 names
         // work that A's earlier chat runs, not its current chat; 5 names a
         // turn of A's chat older than the one it runs; 6 names B's work but
@@ -7111,30 +7122,23 @@ pub(crate) mod tests {
                 6 => ("mono-a", &targets[1].1),
                 class => (targets[class].0.as_str(), &targets[class].1),
             };
-            // Each steer in a rate window of its own: S19 is not under test.
-            let now = 100 + (step as i64 + 1) * mono_gate::RATE_WINDOW_MS;
-            let outcome = submit(
+            let outcome = call_in_turns_at(
                 &conn,
                 &caller_in("giga", "giga-chat"),
-                &RequestId::parse(&format!("s{i}")).unwrap(),
-                mono_gate::parse(
-                    Tool::SendMessage,
-                    &serde_json::json!({
-                        "message": format!("s{i}-{to}"),
-                        "send_to": to,
-                        "wanting_reply": false,
-                        "intent": "steer",
-                        "reply_to": target.as_str(),
-                    }),
-                ),
-                &Live {
-                    sessions: &live,
-                    running: &running,
-                    steerable_harnesses: &["codex".to_string()],
-                },
-                now,
-            )
-            .unwrap();
+                &format!("s{i}"),
+                Tool::SendMessage,
+                serde_json::json!({
+                    "message": format!("s{i}-{to}"),
+                    "send_to": to,
+                    "wanting_reply": false,
+                    "intent": "steer",
+                    "reply_to": target.as_str(),
+                }),
+                &live,
+                &running,
+                // Each steer in a rate window of its own: S19 is not under test.
+                100 + (step as i64 + 1) * mono_gate::RATE_WINDOW_MS,
+            );
             let refused = match i % 7 {
                 3 | 5 => Some("target_gone"),
                 6 => Some("steer_target_mismatch"),
@@ -7719,6 +7723,18 @@ pub(crate) mod tests {
         );
     }
 
+    /// A `hi` from the Giga's chat to `mono-a` at `now`.
+    fn giga_to_a_at(conn: &Connection, request_id: &str, now: i64) -> Submitted {
+        call_at(
+            conn,
+            &caller_in("giga", "giga-chat"),
+            request_id,
+            Tool::SendMessage,
+            hi("mono-a", false),
+            now,
+        )
+    }
+
     // Design 6.1 "pair count" (S19). Defect: the gate gets no count, or not
     // the oldest counted send, so a Mono floods one recipient or is told to
     // wait the wrong time.
@@ -7726,22 +7742,11 @@ pub(crate) mod tests {
     fn a_monos_seventh_send_to_one_recipient_in_ten_minutes_is_rate_limited() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
-        let giga = caller_in("giga", "giga-chat");
-        let send = |request_id: &str, now: i64| {
-            call_at(
-                &conn,
-                &giga,
-                request_id,
-                Tool::SendMessage,
-                hi("mono-a", false),
-                now,
-            )
-        };
         // Ten seconds apart, so the hint shows which send it counts from.
         for n in 0..6 {
-            accepted_ids(&send(&format!("r{n}"), 100 + n * 10_000));
+            accepted_ids(&giga_to_a_at(&conn, &format!("r{n}"), 100 + n * 10_000));
         }
-        let refused = failed(send("r6", 60_100));
+        let refused = failed(giga_to_a_at(&conn, "r6", 60_100));
         assert_eq!(refused.code, "rate_limited");
         assert!(
             refused.hint.contains("Retry after 540 s"),
@@ -7756,22 +7761,14 @@ pub(crate) mod tests {
     fn a_send_after_the_ten_minute_window_is_accepted() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
-        let giga = caller_in("giga", "giga-chat");
-        let send = |request_id: &str, now: i64| {
-            call_at(
-                &conn,
-                &giga,
-                request_id,
-                Tool::SendMessage,
-                hi("mono-a", false),
-                now,
-            )
-        };
         for request_id in ["r1", "r2", "r3", "r4", "r5", "r6"] {
-            accepted_ids(&send(request_id, 100));
+            accepted_ids(&giga_to_a_at(&conn, request_id, 100));
         }
-        assert_eq!(failed(send("inside", 100 + 599_999)).code, "rate_limited");
-        accepted_ids(&send("after", 100 + 600_001));
+        assert_eq!(
+            failed(giga_to_a_at(&conn, "inside", 100 + 599_999)).code,
+            "rate_limited"
+        );
+        accepted_ids(&giga_to_a_at(&conn, "after", 100 + 600_001));
     }
 
     // Design 6.1 pair count (`created_at > now - 600 000`), PR 7 review r1
@@ -7780,21 +7777,90 @@ pub(crate) mod tests {
     fn a_send_exactly_ten_minutes_old_no_longer_counts() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
+        for request_id in ["r1", "r2", "r3", "r4", "r5", "r6"] {
+            accepted_ids(&giga_to_a_at(&conn, request_id, 100));
+        }
+        accepted_ids(&giga_to_a_at(&conn, "edge", 100 + 600_000));
+    }
+
+    // Design 6.1: the pair is (sender, recipient), PR7-4 review r1 m1.
+    // Defect: the count drops the sender, so one Mono's sends rate-limit
+    // every other Mono that writes to the same recipient.
+    #[test]
+    fn another_monos_sends_do_not_count_toward_the_rate_limit() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
+               VALUES ('mono-b', 'B', 'mono', '{"sessionId":"b-chat"}', 2, 1, 1);
+               INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+               VALUES ('b-chat', '/', 'codex', 'm', 'default', 'B', 1, 1);"#,
+        )
+        .unwrap();
+        let b = caller_in("mono-b", "b-chat");
+        for n in 0..6 {
+            accepted_ids(&giga_to_a_at(&conn, &format!("g{n}"), 100));
+        }
+        for n in 0..6 {
+            accepted_ids(&call(
+                &conn,
+                &b,
+                &format!("b{n}"),
+                Tool::SendMessage,
+                hi("mono-a", false),
+                &[],
+            ));
+        }
+    }
+
+    // Design 6.1: a project session is a recipient of its own, PR7-4 review
+    // r1 m1. Defect: sends to a session never count, so a Mono floods a
+    // project session; or every session shares one count.
+    #[test]
+    fn a_monos_seventh_send_to_one_project_session_is_rate_limited() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
         let giga = caller_in("giga", "giga-chat");
-        let send = |request_id: &str, now: i64| {
-            call_at(
+        let live = [listed("project", true, true), listed("other", true, true)];
+        let send = |request_id: &str, to: &str| {
+            call(
                 &conn,
                 &giga,
                 request_id,
                 Tool::SendMessage,
-                hi("mono-a", false),
-                now,
+                hi(to, false),
+                &live,
             )
         };
-        for request_id in ["r1", "r2", "r3", "r4", "r5", "r6"] {
-            accepted_ids(&send(request_id, 100));
+        for n in 0..6 {
+            accepted_ids(&send(&format!("p{n}"), "project"));
         }
-        accepted_ids(&send("edge", 100 + 600_000));
+        assert_eq!(failed(send("p6", "project")).code, "rate_limited");
+        accepted_ids(&send("o0", "other"));
+    }
+
+    // Design 6.1: every accepted send counts, whatever its status, PR7-4
+    // review r1 m1. Defect: only `delivered` rows count, so sends that want
+    // a reply (`open`, `answered`, `unanswered`) never count.
+    #[test]
+    fn sends_that_want_a_reply_count_toward_the_rate_limit() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        let giga = caller_in("giga", "giga-chat");
+        let ask = |request_id: &str| {
+            call(
+                &conn,
+                &giga,
+                request_id,
+                Tool::SendMessage,
+                hi("mono-a", true),
+                &[],
+            )
+        };
+        for n in 0..6 {
+            accepted_ids(&ask(&format!("w{n}")));
+        }
+        assert_eq!(failed(ask("w6")).code, "rate_limited");
     }
 
     // Design 6.1: only accepted sends count. Defect: refused sends count, so
