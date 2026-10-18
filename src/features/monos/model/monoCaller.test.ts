@@ -7,9 +7,9 @@ import {
   loadMonoRoster,
   saveMonoSessionId,
 } from "./mono";
-import { resolveCaller } from "./monoCaller";
+import { resolveCaller, type CallingSession } from "./monoCaller";
 import { clearHabitRun, markHabitRun } from "./monoHabits";
-import type { SessionId, TurnId } from "./monoMessages";
+import type { TurnId } from "./monoMessages";
 
 const db = vi.hoisted(() => ({
   update: undefined as Promise<unknown> | undefined,
@@ -33,7 +33,15 @@ const giga = {
   data: { sessionId: "giga-chat", mascot: "crab", color: "red", projects: [] },
 };
 const turn = "turn-1" as TurnId;
-const session = (id: string) => id as SessionId;
+/** A session as the window has it; with no /operator turn it has no app access. */
+const session = (
+  id: string,
+  extra: Partial<CallingSession> = {},
+): CallingSession => ({ id, blocks: [], cwd: "/code/app", ...extra });
+/** A submitted /operator turn: the thread has app access from then on. */
+const operator = [
+  { id: "u1", role: "user" as const, text: "Fix CI", monocode: true },
+];
 
 beforeEach(() => {
   __monosTestReset();
@@ -47,9 +55,12 @@ beforeEach(() => {
   });
 });
 
+// Design 13.4: a Mono's chat is a Mono caller even after /operator.
 it("resolves a Mono's chat to that Mono", async () => {
   await loadMonoRoster();
-  expect(await resolveCaller(session("giga-chat"), turn)).toEqual({
+  expect(
+    await resolveCaller(session("giga-chat", { blocks: operator }), turn),
+  ).toEqual({
     ok: true,
     caller: {
       kind: "mono_chat",
@@ -60,20 +71,61 @@ it("resolves a Mono's chat to that Mono", async () => {
   });
 });
 
+// Design 13.4, PR7-6 review r1 nit 4: a habit run is a Mono caller even
+// after /operator.
 it("resolves a habit run to the Mono it works for", async () => {
   await loadMonoRoster();
   markHabitRun("giga-run", "giga-1");
-  expect(await resolveCaller(session("giga-run"), turn)).toMatchObject({
+  expect(
+    await resolveCaller(session("giga-run", { blocks: operator }), turn),
+  ).toMatchObject({
     ok: true,
     caller: { kind: "habit_run", monoId: "giga-1", sessionId: "giga-run" },
   });
 });
 
-it("refuses a session that is neither a Mono chat nor a habit run", async () => {
+// Design 13.4. Defect: a session the user never gave app access, which
+// cannot call the CLI, still messages as a lead.
+it("refuses a session with no app access with not_a_mono", async () => {
   await loadMonoRoster();
   expect(await resolveCaller(session("project-session"), turn)).toMatchObject({
     ok: false,
     code: "not_a_mono",
+  });
+});
+
+// Design 13.4. Defect: a lead or worker with /operator access answers
+// not_a_mono, so it cannot report, or Rust gets no level facts for it.
+it("resolves a lead and a worker with app access to session callers", async () => {
+  await loadMonoRoster();
+  expect(
+    await resolveCaller(session("lead", { blocks: operator }), turn),
+  ).toEqual({
+    ok: true,
+    caller: {
+      kind: "session",
+      sessionId: "lead",
+      turnId: "turn-1",
+      access: "operator",
+      leadSessionId: null,
+      cwd: "/code/app",
+    },
+  });
+  expect(
+    await resolveCaller(
+      session("worker", { blocks: operator, leadSessionId: "lead" }),
+      turn,
+    ),
+  ).toEqual({
+    ok: true,
+    caller: {
+      kind: "session",
+      sessionId: "worker",
+      turnId: "turn-1",
+      access: "operator",
+      leadSessionId: "lead",
+      cwd: "/code/app",
+    },
   });
 });
 

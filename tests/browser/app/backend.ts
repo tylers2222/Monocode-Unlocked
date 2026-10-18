@@ -386,6 +386,37 @@ const HANDLERS: Record<string, Handler> = {
   }),
   git_diff_stats: () => ({ files: 0, additions: 0, deletions: 0 }),
   git_github_repositories: empty,
+  // fs.rs git_github_*: `gh` installed and signed in, with nothing to list.
+  git_github_status: () => ({
+    connected: true,
+    installed: true,
+    authenticated: true,
+  }),
+  git_github_work_items: empty,
+  // fs.rs git_github_repo: a project with no GitHub remote.
+  git_github_repo: () => {
+    throw "No GitHub remote";
+  },
+  git_github_work_item_details: () => ({
+    body: "",
+    author: "",
+    authorAvatarUrl: "",
+    baseRefName: "",
+    headRefName: "",
+    reviewDecision: "",
+  }),
+  git_github_work_item_thread: () => ({
+    comments: [],
+    commits: [],
+    truncated: false,
+    reviewDecision: "",
+    baseRefName: "",
+    headRefName: "",
+  }),
+  git_github_pr_checks: () => ({ headOid: "", checks: [] }),
+  // session_store.rs list_linked: threads with a linked work item, no Asks.
+  session_list_linked: (store) =>
+    store.sessions.filter((session) => session.linkedWorkItem),
   // worktrees.rs git_worktrees: the main worktree first, default_root beside it.
   git_worktrees: (store, { cwd }) => ({
     worktrees: [

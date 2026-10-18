@@ -43,6 +43,7 @@ import {
 import {
   renderMonoMessage,
   renderMonoNotice,
+  type Caller,
   type Handle,
   type MessageId,
   type MonoId,
@@ -65,7 +66,10 @@ const rust = vi.hoisted(() => {
     requestId: string;
     fromMonoId: string | null;
     fromSessionId: string;
-    to: { kind: "mono"; monoId: string } | null;
+    to:
+      | { kind: "mono"; monoId: string }
+      | { kind: "session"; sessionId: string }
+      | null;
     addressed: string;
     body: string;
     hop: number;
@@ -144,7 +148,7 @@ const rust = vi.hoisted(() => {
       case "mono_message_submit": {
         state.submitted.push(args);
         const { caller, requestId, input } = args as {
-          caller: { monoId: string; sessionId: string };
+          caller: { monoId?: string; sessionId: string };
           requestId: string;
           input: {
             message: string;
@@ -178,7 +182,7 @@ const rust = vi.hoisted(() => {
         const accepted: Row = {
           id: `m_${String.fromCharCode(97 + state.rows.length).repeat(12)}`,
           requestId,
-          fromMonoId: caller.monoId,
+          fromMonoId: caller.monoId ?? null,
           fromSessionId: caller.sessionId,
           to: input.send_to ? { kind: "mono", monoId: input.send_to } : null,
           addressed: input.send_to ?? "",
@@ -466,11 +470,13 @@ function world(
   loaded: Session[],
   unloaded: Session[] = [],
   {
-    caller = "giga",
+    caller = "giga" as "giga" | "mono-a" | Caller,
     stored = [] as Session[],
     ownerDeliveries = createOwnerDeliveries(50),
     label = "main",
     opening = Promise.resolve(),
+    /** The lead and worker sessions `sessionSender` knows, by id. */
+    senders = {} as Record<string, { title: string; level: "lead" | "worker" }>,
   } = {},
 ) {
   let sessions = loaded;
@@ -499,6 +505,8 @@ function world(
     },
     isMonoChat: (id) => id.endsWith("-chat"),
     sender: (monoId) => monos.find((mono) => mono.id === monoId),
+    sessionSender: async (id) =>
+      senders[id] ? { kind: "session", ...senders[id] } : undefined,
     turnId: (id) =>
       host.session(id)?.busy ? (`run-${id}` as TurnId) : undefined,
     owns: (id) =>
@@ -512,12 +520,17 @@ function world(
         : loads.of(id),
     caller: async () => ({
       ok: true,
-      caller: {
-        kind: "mono_chat",
-        monoId: (caller === "giga" ? "giga" : "mono-a") as MonoId,
-        sessionId: (caller === "giga" ? "giga-chat" : "a-chat") as SessionId,
-        turnId: "t" as TurnId,
-      },
+      caller:
+        typeof caller === "object"
+          ? caller
+          : {
+              kind: "mono_chat",
+              monoId: (caller === "giga" ? "giga" : "mono-a") as MonoId,
+              sessionId: (caller === "giga"
+                ? "giga-chat"
+                : "a-chat") as SessionId,
+              turnId: "t" as TurnId,
+            },
     }),
     sessions: () => sessions,
     stored: async (id) => stored.find((session) => session.id === id) ?? null,
@@ -541,7 +554,13 @@ function world(
       get: (input: never) => getMessage(host, input),
     },
   } as unknown as AgentAppHost;
-  const source = chat(caller === "giga" ? "giga-chat" : "a-chat");
+  const source = chat(
+    typeof caller === "object"
+      ? caller.sessionId
+      : caller === "giga"
+        ? "giga-chat"
+        : "a-chat",
+  );
   return {
     host,
     open,
@@ -1202,13 +1221,18 @@ it("renders the tags the agents read", () => {
   const message = {
     id: "m_aaaaaaaaaaaa" as MessageId,
     fromMonoId: "giga" as MonoId,
+    fromSessionId: "giga-chat" as SessionId,
     body: "Is CI green?",
     wantingReply: true,
     intent: "new" as const,
     replyTo: null,
     scope: null,
   };
-  const sender = { name: 'Boss "B"', role: "giga" as const };
+  const sender = {
+    kind: "mono" as const,
+    name: 'Boss "B"',
+    role: "giga" as const,
+  };
   expect(renderMonoMessage(message, sender)).toBe(
     '<mono_message message_id="m_aaaaaaaaaaaa" from="Boss &#34;B&#34;" mono_id="giga" role="giga" wanting_reply="true">\nIs CI green?\n</mono_message>',
   );
@@ -1230,6 +1254,124 @@ it("renders the tags the agents read", () => {
   );
 });
 
+// Design 13. Defect: a lead's or worker's message reads as a deleted Mono's,
+// with no session_id to send an answer to and no level; or a deleted Mono's
+// message reads as a session's.
+it("names a lead or worker sender by its title, session id and level", () => {
+  const message = {
+    id: "m_aaaaaaaaaaaa" as MessageId,
+    fromMonoId: null,
+    fromSessionId: "lead-1" as SessionId,
+    body: "Done: tests pass",
+    wantingReply: false,
+    intent: "new" as const,
+    replyTo: null,
+    scope: null,
+  };
+  expect(
+    renderMonoMessage(message, {
+      kind: "session",
+      title: 'Fix "login"',
+      level: "lead",
+    }),
+  ).toBe(
+    '<mono_message message_id="m_aaaaaaaaaaaa" from="Fix &#34;login&#34;" session_id="lead-1" level="lead" wanting_reply="false">\nDone: tests pass\n</mono_message>',
+  );
+  expect(
+    renderMonoMessage(message, {
+      kind: "session",
+      title: "Tests",
+      level: "worker",
+    }),
+  ).toContain(' from="Tests" session_id="lead-1" level="worker" ');
+  expect(renderMonoMessage(message, undefined)).toBe(
+    '<mono_message message_id="m_aaaaaaaaaaaa" from="a deleted Mono" wanting_reply="false">\nDone: tests pass\n</mono_message>',
+  );
+});
+
+// Design 13. Defect: a window shows a row that a lead or worker wrote as a
+// deleted Mono's, in its queue item or in the text its hand-off sends.
+it("names the session that wrote a row with no Mono when it is a lead or worker", async () => {
+  const report = {
+    fromMonoId: null,
+    to: { kind: "session" as const, sessionId: "lead-1" },
+    addressed: "lead-1",
+    replyTo: null,
+    scope: null,
+    status: "delivered" as const,
+    wantingReply: false,
+    handledBySession: "lead-1",
+    delivery: "queue",
+    slot: null,
+  };
+  rust.state.rows = [
+    ended({ ...report, fromSessionId: "worker-1", body: "Report: done" }),
+    ended({
+      ...report,
+      id: "m_bbbbbbbbbbbb",
+      requestId: "r1",
+      fromSessionId: "old-chat",
+      body: "From a Mono since deleted",
+    }),
+  ];
+  const { host, get } = world([chat("lead-1")], [], {
+    senders: { "worker-1": { title: "Fix login", level: "worker" } },
+  });
+  await reconcile(host, "lead-1");
+  const [fromWorker, fromDeleted] = get("lead-1").queuedMessages ?? [];
+  expect(fromWorker.text).toContain(
+    ' from="Fix login" session_id="worker-1" level="worker" ',
+  );
+  expect(fromDeleted.text).toContain(' from="a deleted Mono" wanting_reply=');
+  const deliver = vi.fn((_: HandedOff) => true);
+  await handOff(
+    host,
+    "lead-1",
+    fromWorker.id as MessageId,
+    "dispatch",
+    deliver,
+  );
+  expect(deliver.mock.calls[0][0].text).toBe(
+    '<mono_message message_id="m_aaaaaaaaaaaa" from="Fix login" session_id="worker-1" level="worker" wanting_reply="false">\nReport: done\n</mono_message>',
+  );
+});
+
+// PR7-6 review r1 nit 3, design 5.5 rule 4. Defect: a refused hand-off of a
+// lead's or worker's row queues it again as a deleted Mono's.
+it("queues a refused hand-off of a session sender's row again under its sender", async () => {
+  rust.state.rows = [
+    ended({
+      fromMonoId: null,
+      fromSessionId: "worker-1",
+      to: { kind: "session", sessionId: "lead-1" },
+      addressed: "lead-1",
+      body: "Report: done",
+      replyTo: null,
+      scope: null,
+      status: "delivered",
+      wantingReply: false,
+      handledBySession: "lead-1",
+      delivery: "queue",
+      slot: null,
+    }),
+  ];
+  const { host, get } = world([chat("lead-1")], [], {
+    senders: { "worker-1": { title: "Fix login", level: "worker" } },
+  });
+  const id = "m_aaaaaaaaaaaa" as MessageId;
+  expect(await handOff(host, "lead-1", id, "dispatch", () => false)).toBe(
+    false,
+  );
+  expect(get("lead-1").queuedMessages).toEqual([
+    expect.objectContaining({
+      id,
+      text: expect.stringContaining(
+        ' from="Fix login" session_id="worker-1" level="worker" ',
+      ),
+    }),
+  ]);
+});
+
 // Design 16.7, E47. Defect: a reply reaches its sender with no line, with the
 // wrong intent word, or with a handle of the session that answered, which
 // names nothing in the sender's turn.
@@ -1240,13 +1382,14 @@ it("starts a reply with a line that names the question by its message id", () =>
       {
         id: "m_cccccccccccc" as MessageId,
         fromMonoId: "mono-a" as MonoId,
+        fromSessionId: "a-chat" as SessionId,
         body: "Green.",
         wantingReply: false,
         intent: "reply",
         replyTo: question,
         scope: null,
       },
-      { name: "A", role: "mono" },
+      { kind: "mono", name: "A", role: "mono" },
       undefined,
       {
         sessionId: "giga-chat" as SessionId,
@@ -1270,6 +1413,7 @@ it("refuses to render a hand-off whose target is not the row's reply_to", () => 
   const steer = {
     id: "m_cccccccccccc" as MessageId,
     fromMonoId: "giga" as MonoId,
+    fromSessionId: "giga-chat" as SessionId,
     body: "Keep the API stable",
     wantingReply: false,
     intent: "steer" as const,
@@ -1309,6 +1453,68 @@ it("never lists a session whose worktree was removed", async () => {
   await send({ ...ask(), send_to: "old-wt" });
   const live = rust.state.submitted[0].live as { sessionId: string }[];
   expect(live.map((entry) => entry.sessionId)).toEqual([]);
+});
+
+// Design 13.1, PR7-5a review n2: Rust reads a session's level from its
+// stored row, and from this list only for a session it has no row for.
+// Defect: a worker that `sessions` has not saved yet is a lead to the gate.
+it("tells the gate each live session's lead", async () => {
+  const { send } = world([
+    chat("worker-1", { leadSessionId: "lead-1" }),
+    chat("lead-1"),
+  ]);
+  await send({ ...ask(), send_to: "worker-1" });
+  expect(rust.state.submitted[0].live).toEqual([
+    {
+      sessionId: "worker-1",
+      steerable: true,
+      ownProject: true,
+      leadSessionId: "lead-1",
+    },
+    {
+      sessionId: "lead-1",
+      steerable: true,
+      ownProject: true,
+      leadSessionId: null,
+    },
+  ]);
+});
+
+// Design 13.4, PR7-5b: a session caller's call reaches Rust as that
+// session, and the level refusal Rust answers reaches the agent whole.
+// Defect: the refusal loses its code or hint on the way back, or the call
+// goes as a Mono.
+it("answers a session caller's send with the level refusal Rust gave it", async () => {
+  const hint =
+    'A worker can message only its lead. Message your lead (lead-1): messages.send with send_to "lead-1".';
+  rust.state.failure = {
+    code: "worker_scope",
+    hint,
+    message_id: "m_cccccccccccc",
+  };
+  const worker: Caller = {
+    kind: "session",
+    sessionId: "worker-1" as SessionId,
+    turnId: "t" as TurnId,
+    access: "operator",
+    leadSessionId: "lead-1" as SessionId,
+    cwd: "/Users/me",
+  };
+  const { send } = world([chat("worker-1"), chat("a-chat")], [], {
+    caller: worker,
+  });
+  const failed = await send(ask()).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  expect(appErrorResponse(failed)).toEqual({
+    ok: false,
+    code: "worker_scope",
+    hint,
+    error: hint,
+    message_id: "m_cccccccccccc",
+  });
+  expect(rust.state.submitted[0].caller).toEqual(worker);
 });
 
 // Review PR 4a r2 m10. Defect: an opener whose submit refuses or throws
@@ -1535,6 +1741,32 @@ it("hands off a whole-turn steer with its line and no reply_to", async () => {
   await handOff(host, "a-chat", id, "steer", deliver);
   expect(deliver.mock.calls[0][0].text).toBe(
     `<mono_message message_id="${id}" from="Boss" mono_id="giga" role="giga" wanting_reply="false">\n[steer → whole turn]\nStop and commit\n</mono_message>`,
+  );
+});
+
+// PR I4 review n3. Handles restart at #1 in each turn, so the handle a
+// target holds from an earlier turn of the reader's own session names
+// another message in the turn the steer joins. Defect: the line names the
+// target by that handle instead of its message id.
+it("names a steer's target by its message id when its handle is from an earlier turn of the session", async () => {
+  rust.state.rows = [ended({})];
+  const [target] = rust.state.rows;
+  const { send, host } = world([chat("a-chat", { busy: true })]);
+  rust.state.route = { sessionId: "a-chat", via: "steer" };
+  await send({
+    message: "Use the cached result",
+    send_to: "mono-a",
+    wanting_reply: false,
+    intent: "steer",
+    reply_to: target.id,
+  });
+  const steer = rust.state.rows[1].id as MessageId;
+  const deliver = vi.fn((_: HandedOff) => true);
+  await handOff(host, "a-chat", steer, "steer", deliver);
+  expect(target.slot).toMatchObject({ turnId: "t-gone", handle: "#1" });
+  expect(deliver.mock.calls[0][0].turnId).toBe("run-a-chat");
+  expect(deliver.mock.calls[0][0].text).toBe(
+    `<mono_message message_id="${steer}" from="Boss" mono_id="giga" role="giga" wanting_reply="false" reply_to="${target.id}">\n[steer → ${target.id} · "Is CI green?"]\nUse the cached result\n</mono_message>`,
   );
 });
 

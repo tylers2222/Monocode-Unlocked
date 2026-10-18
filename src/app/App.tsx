@@ -1728,6 +1728,23 @@ function Workspace({
           }
         );
       },
+      sessionSender: async (sessionId) => {
+        const session =
+          sessionsRef.current.find((entry) => entry.id === sessionId) ??
+          (await getSession(sessionId).catch(() => null));
+        if (
+          !session ||
+          isMonoSession(session.id) ||
+          isHabitRun(session.id) ||
+          !operatorEnabledInThread(session.blocks)
+        )
+          return undefined;
+        return {
+          kind: "session",
+          title: session.title,
+          level: session.leadSessionId ? "worker" : "lead",
+        };
+      },
       turnId: (id) => currentTurnIds.current.get(id),
       owns: (id) => invoke<boolean>("control_owns_session", { sessionId: id }),
     }),
@@ -11209,16 +11226,7 @@ function Workspace({
         };
         const messaging: MonoMessagingHost = {
           ...monoRouteHost.current,
-          caller: async () => {
-            const sessionId = parseSessionId(source.id);
-            if (!sessionId)
-              return {
-                ok: false,
-                code: "not_a_mono",
-                hint: "Only a Mono's chat or its habit runs can use Mono messaging.",
-              };
-            return resolveCaller(sessionId, payload.turnId);
-          },
+          caller: () => resolveCaller(source, payload.turnId),
           sessions: () => sessionsRef.current,
           stored: async (id) =>
             parseSessionId(id) ? getSession(id).catch(() => null) : null,
@@ -11233,6 +11241,7 @@ function Workspace({
           ownProject: (session) =>
             !isMonoSession(session.id) &&
             !isHabitRun(session.id) &&
+            !session.inboxAsk &&
             !session.orchestrationLeadId &&
             !orchestrator.run(session.id) &&
             canAccessProject(session.cwd),
@@ -11344,6 +11353,12 @@ function Workspace({
                 });
               }
               for (const session of sessionsRef.current) {
+                // An Inbox Ask is no project session, as in `ownProject`; its
+                // saved record lists as a hidden session (PR 7 review r2 n5).
+                if (session.inboxAsk) {
+                  byId.delete(session.id);
+                  continue;
+                }
                 if (
                   session.orchestrationLeadId ||
                   isHabitRun(session.id) ||
