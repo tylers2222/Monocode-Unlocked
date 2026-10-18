@@ -1,6 +1,6 @@
 import { isEditTool } from "../../../integrations/harness/core/preview";
 import { CONTINUE_PROMPT } from "./inFlight";
-import type { AgentCwd, Block, WorkCwd } from "./session";
+import { opensTurn, type AgentCwd, type Block, type WorkCwd } from "./session";
 import { joinPath, pathKey } from "../../../shared/lib/paths";
 
 /** Successful edits from the latest turn and its interrupted continuations. */
@@ -8,12 +8,7 @@ export function sessionEditPaths(blocks: readonly Block[]): string[] {
   let start = 0;
   for (let index = blocks.length - 1; index >= 0; index--) {
     const block = blocks[index];
-    if (
-      block.role !== "user" ||
-      block.draft ||
-      (block.sentAt != null && block.startedAt == null)
-    )
-      continue;
+    if (!opensTurn(block)) continue;
     start = index;
     if (block.text.trim() !== CONTINUE_PROMPT) break;
   }

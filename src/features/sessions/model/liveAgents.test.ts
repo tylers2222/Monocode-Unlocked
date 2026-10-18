@@ -5,10 +5,19 @@ import {
   stopStreaming,
 } from "../../../integrations/harness/core/apply";
 import {
+  acknowledgeMonoMessage,
+  enqueueMonoMessage,
+} from "../../monos/model/monoMessaging";
+import {
   formatLiveElapsed,
   liveAgentsFromSessions,
 } from "./liveAgents";
-import { newSession, type Block, type Session } from "./session";
+import {
+  newSession,
+  type Block,
+  type QueuedMessage,
+  type Session,
+} from "./session";
 
 function chat(cwd: string, patch: Partial<Session> = {}): Session {
   const session = newSession("claude", cwd);
@@ -155,17 +164,29 @@ describe("liveAgentsFromSessions", () => {
     );
   });
 
-  describe("a steered turn", () => {
+  describe("the turn a card times", () => {
     afterEach(() => {
       vi.useRealTimers();
     });
 
-    function steered(): Session {
+    function at(ms: number) {
       vi.useFakeTimers();
-      vi.setSystemTime(1_000);
+      vi.setSystemTime(ms);
+    }
+
+    function steered(): Session {
+      at(1_000);
       const session = appendUser(newSession("claude", "/tmp/steered"), "go");
-      vi.setSystemTime(4_000);
+      at(4_000);
       return appendSteerUser(session, "also this");
+    }
+
+    function finishedTurn(cwd: string): Session {
+      at(1_000);
+      return stopStreaming(
+        appendUser(newSession("claude", cwd), "first"),
+        2_000,
+      );
     }
 
     it("times a running turn from the message that started it", () => {
@@ -177,6 +198,48 @@ describe("liveAgentsFromSessions", () => {
       expect(
         liveAgentsFromSessions([finished], new Set([finished.id]))[0],
       ).toMatchObject({ startedAt: 1_000, durationMs: 8_000, done: true });
+    });
+
+    it("skips a saved draft after the running turn", () => {
+      at(1_000);
+      const session = appendUser(newSession("claude", "/tmp/draft"), "go");
+      const draft: Block = {
+        id: "draft",
+        role: "user",
+        text: "later",
+        draft: true,
+      };
+      const withDraft = { ...session, blocks: [...session.blocks, draft] };
+      expect(liveAgentsFromSessions([withDraft])[0]?.startedAt).toBe(1_000);
+    });
+
+    it("times a turn opened by a queued message from when it started", () => {
+      let session = finishedTurn("/tmp/queued");
+      at(3_000);
+      const message: QueuedMessage = {
+        id: "queued",
+        text: "next",
+        attachments: [],
+      };
+      session = enqueueMonoMessage(session, message);
+      at(5_000);
+      session = acknowledgeMonoMessage(
+        session,
+        { ...message, blockId: "queued" },
+        { mode: "new-turn" },
+      );
+      expect(liveAgentsFromSessions([session])[0]?.startedAt).toBe(5_000);
+    });
+
+    it("does not take an older turn's start when the latest message has no time", () => {
+      const finished = finishedTurn("/tmp/bare");
+      const bare: Block = { id: "bare", role: "user", text: "saved untimed" };
+      const session = {
+        ...finished,
+        busy: true,
+        blocks: [...finished.blocks, bare],
+      };
+      expect(liveAgentsFromSessions([session])[0]?.startedAt).toBeUndefined();
     });
   });
 

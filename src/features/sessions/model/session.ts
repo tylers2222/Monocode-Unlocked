@@ -831,16 +831,19 @@ export function sessionDraftBlock(
 }
 
 /**
- * The user message that opened the latest turn. A steer or queued message
- * carries `sentAt` and no `startedAt` because it joins or waits on a running
- * turn, and a draft is unsent, so none of them opens a turn.
+ * Whether a block is a user message that opened a turn. A steer or queued
+ * message carries `sentAt` and no `startedAt` because it joins or waits on a
+ * running turn, and a draft is unsent, so none of them opens a turn.
  */
+export function opensTurn(block: Block): boolean {
+  if (block.role !== "user" || block.draft) return false;
+  return block.sentAt == null || block.startedAt != null;
+}
+
+/** The user message that opened the latest turn. */
 export function turnOpener(blocks: readonly Block[]): Block | undefined {
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
-    const block = blocks[index];
-    if (block.role !== "user" || block.draft) continue;
-    if (block.sentAt != null && block.startedAt == null) continue;
-    return block;
+    if (opensTurn(blocks[index])) return blocks[index];
   }
   return undefined;
 }
