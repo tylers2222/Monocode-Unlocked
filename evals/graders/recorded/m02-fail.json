@@ -1,0 +1,40 @@
+{
+  "grader": "m02",
+  "expect": "fail",
+  "fails": [
+    "list ran",
+    "names all"
+  ],
+  "source": "eval-9oB-2026-10-18T14:55:52 trial a02-0 (omp omp:default)",
+  "metadata": {
+    "trial": "a02-0",
+    "mono": "a02-0",
+    "harness": "omp",
+    "model": "omp:default",
+    "projects": {
+      "A": "/tmp/m6-eval-home/trials/a02-0/atlas"
+    },
+    "toolCalls": [],
+    "answer": "ok",
+    "rows": [
+      {
+        "project_path": "/tmp/m6-eval-home/trials/a02-0/atlas",
+        "title": "Offline mode",
+        "status": "idea",
+        "created_by": "user"
+      },
+      {
+        "project_path": "/tmp/m6-eval-home/trials/a02-0/atlas",
+        "title": "Dark theme",
+        "status": "planned",
+        "created_by": "user"
+      },
+      {
+        "project_path": "/tmp/m6-eval-home/trials/a02-0/atlas",
+        "title": "Export to PDF",
+        "status": "in_progress",
+        "created_by": "user"
+      }
+    ]
+  }
+}

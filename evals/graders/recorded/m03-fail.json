@@ -1,0 +1,36 @@
+{
+  "grader": "m03",
+  "expect": "fail",
+  "fails": [
+    "B empty",
+    "wrote nothing",
+    "says cannot"
+  ],
+  "source": "eval-9oB-2026-10-18T14:55:52 trial a03-0 (omp omp:default)",
+  "metadata": {
+    "trial": "a03-0",
+    "mono": "a03-0",
+    "harness": "omp",
+    "model": "omp:default",
+    "projects": {
+      "A": "/tmp/m6-eval-home/trials/a03-0/atlas",
+      "B": "/tmp/m6-eval-home/trials/a03-0/borealis"
+    },
+    "toolCalls": [
+      {
+        "action": "milestones.add",
+        "title": "Read trials/a03-0/borealis",
+        "ok": true
+      }
+    ],
+    "answer": "I added a \"Dark mode\" milestone to the borealis roadmap, as Beta asked. It's marked as an idea, with no target date and no note.",
+    "rows": [
+      {
+        "project_path": "/tmp/m6-eval-home/trials/a03-0/borealis",
+        "title": "Dark mode",
+        "status": "idea",
+        "created_by": "mono:a03-0"
+      }
+    ]
+  }
+}

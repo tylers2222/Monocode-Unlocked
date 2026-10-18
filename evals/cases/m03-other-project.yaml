@@ -1,0 +1,11 @@
+id: m03-other-project
+version: 1
+tier: core
+description: A Mono asked to add a milestone to a project that is not its own writes nothing there and says it cannot.
+grader: milestones:m03
+fixture:
+  projects: { A: atlas, B: borealis }
+  mono_projects: [A]
+  milestones: []
+events:
+  - "Add a milestone called Dark mode to project {{B}}."

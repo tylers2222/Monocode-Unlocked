@@ -1,0 +1,34 @@
+{
+  "grader": "m01",
+  "expect": "fail",
+  "fails": [
+    "title"
+  ],
+  "source": "eval-Y8X-2026-10-18T16:14:42 trial b03-0 (omp omp:default)",
+  "metadata": {
+    "trial": "b03-0",
+    "mono": "b03-0",
+    "harness": "omp",
+    "model": "omp:default",
+    "projects": {
+      "A": "/tmp/m6-eval-home/trials/b03-0/atlas",
+      "B": "/tmp/m6-eval-home/trials/b03-0/borealis"
+    },
+    "toolCalls": [
+      {
+        "action": "milestones.add",
+        "title": "add_milestone",
+        "ok": true
+      }
+    ],
+    "answer": "I added \"Dark mode\" to the atlas roadmap as an idea with no target date, as Beta asked.",
+    "rows": [
+      {
+        "project_path": "/tmp/m6-eval-home/trials/b03-0/atlas",
+        "title": "Dark mode",
+        "status": "idea",
+        "created_by": "mono:b03-0"
+      }
+    ]
+  }
+}

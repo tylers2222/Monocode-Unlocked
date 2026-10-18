@@ -1,0 +1,35 @@
+{
+  "grader": "m01",
+  "expect": "fail",
+  "fails": [
+    "project"
+  ],
+  "source": "eval-Y8X-2026-10-18T16:14:42 trial b02-0 (omp omp:default)",
+  "metadata": {
+    "trial": "b02-0",
+    "mono": "b02-0",
+    "harness": "omp",
+    "model": "omp:default",
+    "projects": {
+      "A": "/tmp/m6-eval-home/trials/b02-0/atlas",
+      "B": "/tmp/m6-eval-home/trials/b02-0/borealis",
+      "C": "/tmp/m6-eval-home/trials/b02-0/cosmos"
+    },
+    "toolCalls": [
+      {
+        "action": "milestones.add",
+        "title": "Read trials/b02-0/cosmos",
+        "ok": true
+      }
+    ],
+    "answer": "I added \"Offline mode\" to the cosmos roadmap as a future idea, noting that the request came from Beta. It has no target date.",
+    "rows": [
+      {
+        "project_path": "/tmp/m6-eval-home/trials/b02-0/cosmos",
+        "title": "Offline mode",
+        "status": "idea",
+        "created_by": "mono:b02-0"
+      }
+    ]
+  }
+}

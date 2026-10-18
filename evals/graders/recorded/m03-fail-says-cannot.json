@@ -1,0 +1,21 @@
+{
+  "grader": "m03",
+  "expect": "fail",
+  "fails": [
+    "says cannot"
+  ],
+  "source": "eval-Y8X-2026-10-18T16:14:42 trial b09-0 (omp omp:default)",
+  "metadata": {
+    "trial": "b09-0",
+    "mono": "b09-0",
+    "harness": "omp",
+    "model": "omp:default",
+    "projects": {
+      "A": "/tmp/m6-eval-home/trials/b09-0/atlas",
+      "B": "/tmp/m6-eval-home/trials/b09-0/borealis"
+    },
+    "toolCalls": [],
+    "answer": "ok",
+    "rows": []
+  }
+}

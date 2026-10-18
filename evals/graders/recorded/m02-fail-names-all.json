@@ -1,0 +1,45 @@
+{
+  "grader": "m02",
+  "expect": "fail",
+  "fails": [
+    "names all"
+  ],
+  "source": "eval-Y8X-2026-10-18T16:14:42 trial b06-0 (omp omp:default)",
+  "metadata": {
+    "trial": "b06-0",
+    "mono": "b06-0",
+    "harness": "omp",
+    "model": "omp:default",
+    "projects": {
+      "A": "/tmp/m6-eval-home/trials/b06-0/atlas"
+    },
+    "toolCalls": [
+      {
+        "action": "milestones.list",
+        "title": "Read trials/b06-0/atlas",
+        "ok": true
+      }
+    ],
+    "answer": "Offline mode",
+    "rows": [
+      {
+        "project_path": "/tmp/m6-eval-home/trials/b06-0/atlas",
+        "title": "Offline mode",
+        "status": "idea",
+        "created_by": "user"
+      },
+      {
+        "project_path": "/tmp/m6-eval-home/trials/b06-0/atlas",
+        "title": "Dark theme",
+        "status": "planned",
+        "created_by": "user"
+      },
+      {
+        "project_path": "/tmp/m6-eval-home/trials/b06-0/atlas",
+        "title": "Export to PDF",
+        "status": "in_progress",
+        "created_by": "user"
+      }
+    ]
+  }
+}

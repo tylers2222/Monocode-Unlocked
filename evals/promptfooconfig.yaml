@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+# Run through evals/run.sh, which seeds and starts the GigaEval instance first.
+description: MonoCode Mono evals
+prompts:
+  - "{{case_id}}"
+providers:
+  - id: file://provider.mjs
+    label: mono
+tests: file://cases.mjs
+evaluateOptions:
+  cache: false
