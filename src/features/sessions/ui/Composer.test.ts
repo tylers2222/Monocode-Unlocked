@@ -1799,7 +1799,7 @@ describe("Composer message target", () => {
           onModelChange: vi.fn(),
           onRuntimeModeChange: vi.fn(),
           onSubmit,
-          busy: true,
+          busy: intent.busy ?? true,
           intent: {
             running: [],
             busy: true,
@@ -1862,6 +1862,33 @@ describe("Composer message target", () => {
       intent: "default",
     });
     expect(onChoiceChange).toHaveBeenCalledWith({ kind: "default" });
+  });
+
+  // ADE-6. Defect: once the turn ends, the bar keeps "Steering" for the text
+  // typed during it and blocks Send, so the message cannot be sent.
+  it("drops Steering when the turn ends, keeps the text, and sends it as a new message", async () => {
+    const onSubmit = vi.fn(() => true);
+    await renderWith({ steering: true }, onSubmit);
+    await typeText("Use the existing fixture");
+    expect(
+      container.querySelector('[data-composer-intent="turn"]')?.textContent,
+    ).toContain("Steering");
+
+    await renderWith({ steering: false, busy: false }, onSubmit);
+    expect(container.querySelector("[data-composer-intent]")).toBeNull();
+    expect(container.querySelector("textarea")!.value).toBe(
+      "Use the existing fixture",
+    );
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Send"]')!
+        .disabled,
+    ).toBe(false);
+    await pressEnter();
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+      "Use the existing fixture",
+      [],
+      { intent: "default" },
+    );
   });
 
   // Design 16.12.4, 16.12.6. Defects: the composer drops the bar's options,
