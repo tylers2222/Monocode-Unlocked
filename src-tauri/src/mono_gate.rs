@@ -3,8 +3,9 @@
 //! [`Decision`]. The first matching row of design 16.5 or 6.4 wins.
 //!
 //! PR I2 has rows S1-S7, I1, I2, S9, S10, S13-S17, S20, W1-W3 (whole-turn)
-//! and R1-R8, R10, R11, the hop limit (S18, R9) and the rate limit (S19).
-//! The direction matrix and rule (b) come later in PR 7.
+//! and R1-R8, R10, R11, the hop limit (S18, R9), the rate limit (S19) and
+//! the level row L4 (design 13). The direction matrix and rule (b) come
+//! later in PR 7.
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -31,6 +32,15 @@ pub struct Caller {
     /// The turn that authorized the call (design 2 step 4). A reply answers
     /// only the messages of this turn.
     pub turn_id: String,
+}
+
+/// Design 13.1: a session's level, derived on each call from
+/// `sessions.lead_session_id`. This is the Change E level link, not the
+/// orchestration link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionLevel {
+    Lead,
+    Worker { lead: SessionId },
 }
 
 /// What a send names (design 16.12, whole-turn). One value: "reply_to and
@@ -318,8 +328,13 @@ pub enum Recipient {
         chat: Option<Target>,
     },
     /// An existing session. `own_project` is false for Mono chats, habit runs
-    /// and sessions outside the caller's projects.
-    Session { target: Target, own_project: bool },
+    /// and sessions outside the caller's projects. `level` is its level
+    /// (design 13.1): the stored row wins over the live list.
+    Session {
+        target: Target,
+        own_project: bool,
+        level: SessionLevel,
+    },
 }
 
 impl Recipient {
@@ -629,6 +644,7 @@ impl RejectCode {
             RejectCode::SteerNeedsTarget => "name a message or use scope turn",
             RejectCode::NothingRunning => "send it as a new message",
             RejectCode::SteerScopeNotAllowed => "You cannot steer this recipient's whole turn. Only a Giga may steer a Mono's whole turn. Steer one message with reply_to, or send with intent \"new\".",
+            RejectCode::SteerViaLead => "That session is a worker of a lead session. Message the lead; only its lead steers its workers.",
         }
     }
 
@@ -696,9 +712,10 @@ fn too_large(message: &str) -> bool {
     message.chars().count() > crate::mono_messages::Body::MAX_CHARS
 }
 
-/// The hint of a send rejection (design 16.5, 16.12): the intent codes and
-/// S15 name what this call asked for, and S19 the time to wait.
-fn send_hint(code: RejectCode, input: &SendInput, pair: PairCount, now: i64) -> String {
+/// The hint of a send rejection (design 3.4, 16.5, 16.12): the intent codes
+/// and S15 name what this call asked for, L4 the lead to message, and S19
+/// the time to wait.
+fn send_hint(code: RejectCode, input: &SendInput, about: &SendFacts, now: i64) -> String {
     match (code, input.intent, &input.target) {
         (RejectCode::IntentMismatch, IntentKind::New, Some(SendTarget::Turn)) => {
             r#"intent "new" takes no scope. Remove scope, or use intent "steer"."#.into()
@@ -712,7 +729,25 @@ fn send_hint(code: RejectCode, input: &SendInput, pair: PairCount, now: i64) -> 
         ),
         (RejectCode::IntentNotAllowed, IntentKind::Reply, _) => r##"send_message cannot reply. Use reply (to: "#n") to answer a message that waits for you."##.into(),
         (RejectCode::TargetGone, _, _) => r#"The work that reply_to started is not running now: it finished, it has not started, or its session is idle, cleared or deleted. Send it with intent "new"."#.into(),
-        (RejectCode::RateLimited, _, _) => rate_hint(pair, now),
+        (RejectCode::RateLimited, _, _) => rate_hint(about.pair, now),
+        (RejectCode::SteerViaLead, _, _) => match &about.recipient {
+            Recipient::Session {
+                level: SessionLevel::Worker { lead },
+                ..
+            } => with_lead(code, lead),
+            _ => code.hint().into(),
+        },
+        _ => code.hint().into(),
+    }
+}
+
+/// Design 3.4: a level hint with the lead's id filled in.
+fn with_lead(code: RejectCode, lead: &SessionId) -> String {
+    let lead = lead.as_str();
+    match code {
+        RejectCode::SteerViaLead => format!(
+            "That session is a worker of lead {lead}. Message the lead ({lead}); only its lead steers its workers."
+        ),
         _ => code.hint().into(),
     }
 }
@@ -746,21 +781,21 @@ pub fn decide_send(
     facts: &Facts<SendFacts>,
     now: i64,
 ) -> Decision {
-    let pair = facts.about.pair;
+    let about = &facts.about;
     let again = |code: RejectCode| Rejection {
         code,
-        hint: send_hint(code, input, pair, now),
+        hint: send_hint(code, input, about, now),
         open_handles: Vec::new(),
     };
     let caller_row = match prelude(facts, hash, again) {
         Ok(row) => row,
         Err(decision) => return decision,
     };
-    let recipient = &facts.about.recipient;
+    let recipient = &about.recipient;
     let to = recipient.party();
     let reject_at = |code: RejectCode, to: Option<Party>, hop: u32| Decision::Reject {
         code,
-        hint: send_hint(code, input, pair, now),
+        hint: send_hint(code, input, about, now),
         to,
         hop,
         open_handles: Vec::new(),
@@ -799,6 +834,15 @@ pub fn decide_send(
         } => return reject(RejectCode::DirectionForbidden, to),
         Recipient::Session { .. } | Recipient::Mono { .. } => {}
     }
+    // L4 after S7, so a session outside the caller's projects keeps its lead
+    // hidden: only its lead messages a worker, and no caller here is a lead.
+    if let Recipient::Session {
+        level: SessionLevel::Worker { .. },
+        ..
+    } = recipient
+    {
+        return reject(RejectCode::SteerViaLead, to);
+    }
     // W2: the sender learns it may not send this before anything about the
     // recipient's state.
     if matches!(asked, Asked::WholeTurn) && !may_steer_turn(caller_row.role, recipient) {
@@ -806,7 +850,7 @@ pub fn decide_send(
     }
     let steered = if let Asked::Steer = asked {
         // S9, then S10.
-        let Some(referenced) = &facts.about.reply_to else {
+        let Some(referenced) = &about.reply_to else {
             return reject(RejectCode::UnknownMessage, to);
         };
         match target_session(caller, recipient, &referenced.message) {
@@ -899,7 +943,7 @@ pub fn decide_send(
     if hop > MAX_HOP {
         return reject_at(RejectCode::HopLimit, to, hop);
     }
-    if pair.count >= RATE_LIMIT {
+    if about.pair.count >= RATE_LIMIT {
         return reject(RejectCode::RateLimited, to);
     }
     Decision::Accept {
@@ -1773,6 +1817,7 @@ mod tests {
         Recipient::Session {
             target: live("p", running, true),
             own_project: true,
+            level: SessionLevel::Lead,
         }
     }
 
@@ -1848,6 +1893,7 @@ mod tests {
         let outside = Recipient::Session {
             target: live("other", true, true),
             own_project: false,
+            level: SessionLevel::Lead,
         };
         for (recipient, code) in [
             (Recipient::Unknown, RejectCode::UnknownTarget),
@@ -2009,6 +2055,7 @@ mod tests {
         let own_chat = Recipient::Session {
             target: live("giga-chat", true, true),
             own_project: true,
+            level: SessionLevel::Lead,
         };
         for (recipient, to) in [
             (
@@ -2048,6 +2095,7 @@ mod tests {
                 &sends(Recipient::Session {
                     target: live("giga-chat", false, true),
                     own_project: true,
+                    level: SessionLevel::Lead,
                 }),
                 NOW,
             ),
@@ -2070,6 +2118,7 @@ mod tests {
                 &sends(Recipient::Session {
                     target: live("other", false, true),
                     own_project: false,
+                    level: SessionLevel::Lead,
                 }),
                 NOW,
             ),
@@ -2182,6 +2231,7 @@ mod tests {
                 &sends(Recipient::Session {
                     target: live("p", false, true),
                     own_project: true,
+                    level: SessionLevel::Lead,
                 }),
                 NOW,
             ),
@@ -2568,6 +2618,7 @@ mod tests {
                     Recipient::Session {
                         target: project.clone(),
                         own_project: true,
+                        level: SessionLevel::Lead,
                     },
                     to_project,
                     Some(project),
@@ -2859,5 +2910,149 @@ mod tests {
         assert_eq!(decide(live("giga-chat", true, true)), accept(Via::Steer));
         assert_eq!(decide(live("giga-chat", false, true)), accept(Via::Queue));
         assert_eq!(decide(live("giga-chat", true, false)), accept(Via::Queue));
+    }
+
+    fn worker_of(lead: &str) -> SessionLevel {
+        SessionLevel::Worker {
+            lead: session(lead),
+        }
+    }
+
+    /// A steerable session in `/p/alpha` that runs `turn-1`.
+    fn in_alpha(id: &str, level: SessionLevel) -> Recipient {
+        Recipient::Session {
+            target: live(id, true, true),
+            own_project: true,
+            level,
+        }
+    }
+
+    fn via_lead(lead: &str) -> String {
+        format!(
+            "That session is a worker of lead {lead}. Message the lead ({lead}); only its lead steers its workers."
+        )
+    }
+
+    /// The Mono `mono-a` from its chat `a-chat`, sending to `recipient`.
+    fn from_mono_a(input: &SendInput, recipient: Recipient) -> Decision {
+        as_mono_a(CallerKind::MonoChat, input, sends(recipient))
+    }
+
+    /// The Mono `mono-a` from its chat `a-chat` or its habit run `a-run`.
+    fn as_mono_a(kind: CallerKind, input: &SendInput, mut facts: Facts<SendFacts>) -> Decision {
+        facts.caller = Some(CallerMono {
+            chat: Some(session("a-chat")),
+            role: MonoRole::Mono,
+        });
+        let mono_a = Caller {
+            kind,
+            mono_id: mono("mono-a"),
+            session_id: session(match kind {
+                CallerKind::MonoChat => "a-chat",
+                CallerKind::HabitRun => "a-run",
+            }),
+            turn_id: "turn-1".into(),
+        };
+        decide_send(&mono_a, input, &hash(), &facts, NOW)
+    }
+
+    // S7 before L4. Defect: a Mono learns the lead of a worker outside its
+    // projects from the steer_via_lead hint.
+    #[test]
+    fn s7_runs_before_l4_so_a_worker_outside_the_callers_projects_keeps_its_lead_hidden() {
+        let outside = Recipient::Session {
+            target: live("w9", true, true),
+            own_project: false,
+            level: worker_of("l9"),
+        };
+        let to = outside.party();
+        assert_eq!(
+            from_mono_a(&new("Hi", "w9", false), outside),
+            send_rejected(
+                RejectCode::DirectionForbidden,
+                to,
+                "That session is not in one of your projects."
+            )
+        );
+    }
+
+    // L4, for every intent and sender (decisions 472, 503). Defect: a Mono, a
+    // habit run or a Giga messages a worker around its lead, a steer or a
+    // whole-turn steer slips past L4 (W2 answers steer_scope_not_allowed),
+    // or the hint does not name the lead to message.
+    #[test]
+    fn l4_no_mono_may_message_a_worker() {
+        let w1 = in_alpha("w1", worker_of("l1"));
+        let rejected = send_rejected(RejectCode::SteerViaLead, w1.party(), &via_lead("l1"));
+        assert_eq!(
+            from_mono_a(&new("Hi", "w1", false), w1.clone()),
+            rejected,
+            "Mono"
+        );
+        let giga = |input: SendInput| {
+            decide_send(
+                &caller(CallerKind::MonoChat),
+                &SendInput {
+                    send_to: "w1".into(),
+                    ..input
+                },
+                &hash(),
+                &sends(w1.clone()),
+                NOW,
+            )
+        };
+        assert_eq!(giga(new("Hi", "w1", false)), rejected, "Giga");
+        assert_eq!(
+            giga(whole(IntentKind::Steer)),
+            rejected,
+            "Giga whole-turn steer"
+        );
+        let to_w1 = MonoMessage {
+            from_session_id: session("a-chat"),
+            to: Some(Party::Session {
+                session_id: session("w1"),
+            }),
+            addressed: "w1".into(),
+            status: Status::Delivered {
+                wanting_reply: Wanting,
+                intent: Intent::New,
+                routed: Routed {
+                    handled_by_session: session("w1"),
+                    delivery: Delivery::Queue,
+                },
+                slot: Some(PlainSlot {
+                    turn_id: "turn-1".into(),
+                    delivered_at: Some(2),
+                    window: "main".into(),
+                }),
+            },
+            ..row('s', Some("mono-a"), 0, open(1))
+        };
+        assert_eq!(
+            as_mono_a(
+                CallerKind::MonoChat,
+                &SendInput {
+                    send_to: "w1".into(),
+                    ..steer("m_ssssssssssss")
+                },
+                steering(w1.clone(), to_w1, Some(live("w1", true, true))),
+            ),
+            rejected,
+            "Mono steer with reply_to"
+        );
+        assert_eq!(
+            as_mono_a(
+                CallerKind::HabitRun,
+                &new("Hi", "w1", false),
+                sends(w1.clone())
+            ),
+            rejected,
+            "habit run"
+        );
+        let lead = in_alpha("l1", SessionLevel::Lead);
+        assert!(matches!(
+            from_mono_a(&new("Hi", "l1", false), lead),
+            Decision::Accept { .. }
+        ));
     }
 }

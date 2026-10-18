@@ -21,7 +21,7 @@ use crate::control::ControlHost;
 use crate::mono_gate::{
     self, Caller, CallerKind, CallerMono, Closure, Decision, Facts, HandleState, Handled, Input,
     MessageRef, OpenHandle, PairCount, Recipient, Referenced, Refusal, ReplyFacts, Route,
-    SendFacts, Target, TargetSession,
+    SendFacts, SessionLevel, Target, TargetSession,
 };
 use crate::mono_roster::{validate_mono_id, MonoRole};
 use crate::session_store::{validate_id, SessionStore};
@@ -389,6 +389,7 @@ text_enum!(RejectCode {
     UnknownHandle = "unknown_handle",
     HandleClosed = "handle_closed",
     AmbiguousReply = "ambiguous_reply",
+    SteerViaLead = "steer_via_lead",
 });
 
 /// A text value the table stores as is, built only through `parse`.
@@ -1089,6 +1090,10 @@ pub struct LiveSession {
     /// A session in one of the caller's projects that is not a Mono chat,
     /// habit run or orchestration session.
     pub own_project: bool,
+    /// The web app's copy of the session's lead (design 13.1, the Change E
+    /// level link). It counts only when `sessions` has no row for it.
+    #[serde(default)]
+    pub lead_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1312,6 +1317,34 @@ fn mono_of_chat(conn: &Connection, chat: &SessionId) -> rusqlite::Result<Option<
         .and_then(|(id, _)| MonoId::parse(&id)))
 }
 
+/// Design 13.1: the level of `session`. Its stored `lead_session_id` wins;
+/// `copy`, the web app's, counts only when `sessions` has no row for it. A
+/// lead's delete clears the stored link at once, while a loaded copy can
+/// still name the deleted lead.
+fn session_level(
+    conn: &Connection,
+    session: &SessionId,
+    copy: Option<SessionId>,
+) -> rusqlite::Result<SessionLevel> {
+    let stored: Option<Option<String>> = conn
+        .query_row(
+            "SELECT lead_session_id FROM sessions WHERE id = ?1",
+            [session.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let lead = match stored {
+        Some(lead) => lead
+            .map(|lead| required(SessionId::parse(&lead), "sessions.lead_session_id"))
+            .transpose()?,
+        None => copy,
+    };
+    Ok(match lead {
+        Some(lead) => SessionLevel::Worker { lead },
+        None => SessionLevel::Lead,
+    })
+}
+
 /// Design 7: `session` was reset, deleted or archived.
 fn session_ended(conn: &Connection, session: &SessionId) -> rusqlite::Result<bool> {
     Ok(conn
@@ -1367,13 +1400,18 @@ fn recipient(conn: &Connection, send_to: &str, live: &Live) -> rusqlite::Result<
         }
     }
     if let Some(session) = SessionId::parse(send_to) {
-        let own_project = live
+        let listed = live
             .sessions
             .iter()
-            .any(|entry| entry.session_id == send_to && entry.own_project);
+            .find(|entry| entry.session_id == send_to);
+        let own_project = listed.is_some_and(|entry| entry.own_project);
         let target = target(conn, session, live)?;
         if target.exists {
+            let copy = listed
+                .and_then(|entry| entry.lead_session_id.as_deref())
+                .and_then(SessionId::parse);
             return Ok(Recipient::Session {
+                level: session_level(conn, &target.session, copy)?,
                 target,
                 own_project,
             });
@@ -4424,6 +4462,7 @@ pub(crate) mod tests {
             session_id: id.into(),
             steerable,
             own_project,
+            lead_session_id: None,
         }
     }
 
@@ -4446,6 +4485,20 @@ pub(crate) mod tests {
             Submitted::Failed { error } => error,
             accepted => panic!("accepted: {accepted:?}"),
         }
+    }
+
+    /// `mono-a` works on `/p`, where the lead `lead` and its worker `worker`
+    /// run.
+    fn seed_levels(conn: &Connection) {
+        conn.execute_batch(
+            r#"UPDATE monos SET data_json = '{"sessionId":"a-chat","projects":["/p"]}'
+                WHERE id = 'mono-a';
+               INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at,
+                                     updated_at, lead_session_id)
+               VALUES ('lead', '/p', 'codex', 'm', 'default', 'L', 1, 1, NULL),
+                      ('worker', '/p', 'codex', 'm', 'default', 'W', 1, 1, 'lead');"#,
+        )
+        .unwrap();
     }
 
     // Defect: U+0000 in a body reaches the insert, whose length CHECK fails:
@@ -4476,6 +4529,47 @@ pub(crate) mod tests {
             assert!(error.hint.contains("U+0000"), "{}", error.hint);
         }
         assert_eq!(rows(&conn), before);
+    }
+
+    // Design 13.1. Defect: a recipient's level comes from the live list over
+    // the stored row, or the live copy is ignored for a session that
+    // `sessions` lacks, so a Mono messages a worker past its lead.
+    #[test]
+    fn a_recipients_stored_lead_wins_and_the_live_copy_counts_without_a_row() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let giga = caller_in("giga", "giga-chat");
+        let live = |session_id: &str, lead: Option<&str>| LiveSession {
+            lead_session_id: lead.map(String::from),
+            ..listed(session_id, true, true)
+        };
+        let to_worker = failed(call(
+            &conn,
+            &giga,
+            "worker",
+            Tool::SendMessage,
+            hi("worker", false),
+            &[live("worker", None)],
+        ));
+        assert_eq!(to_worker.code, "steer_via_lead");
+        let to_remote = failed(call(
+            &conn,
+            &giga,
+            "remote",
+            Tool::SendMessage,
+            hi("remote", false),
+            &[live("remote", Some("lead"))],
+        ));
+        assert_eq!(to_remote.code, "steer_via_lead");
+        accepted_ids(&call(
+            &conn,
+            &giga,
+            "lead",
+            Tool::SendMessage,
+            hi("lead", false),
+            &[live("lead", Some("worker"))],
+        ));
     }
 
     #[test]
@@ -4545,11 +4639,13 @@ pub(crate) mod tests {
                 session_id: "project".into(),
                 steerable: true,
                 own_project: true,
+                lead_session_id: None,
             },
             LiveSession {
                 session_id: "a-chat".into(),
                 steerable: true,
                 own_project: false,
+                lead_session_id: None,
             },
         ];
         let giga = caller_in("giga", "giga-chat");
@@ -4637,6 +4733,7 @@ pub(crate) mod tests {
                 session_id: "giga-chat".into(),
                 steerable: true,
                 own_project: false,
+                lead_session_id: None,
             }],
         );
         let Submitted::Accepted {

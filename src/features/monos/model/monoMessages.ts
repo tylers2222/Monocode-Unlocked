@@ -217,7 +217,8 @@ export type RejectCode =
   | "no_open_handle"
   | "unknown_handle"
   | "handle_closed"
-  | "ambiguous_reply";
+  | "ambiguous_reply"
+  | "steer_via_lead";
 
 /** Failures that write no row: every app action code, from the one list. */
 export type CallErrorCode = AppErrorCode;
