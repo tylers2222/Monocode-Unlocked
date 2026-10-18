@@ -39,8 +39,8 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium webkit
       - run: npm run test:browser
-      - name: Upload browser failure traces
-        if: failure()
+      - name: Upload browser screenshots and failure traces
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: browser-test-results
