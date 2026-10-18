@@ -1,20 +1,62 @@
 import { test as base, expect, type Page } from "@playwright/test";
-import type { FakeStore } from "./backend";
+import type { BackendReport, FakeSeed, Handler } from "./backend";
 
 export { expect };
-export type { FakeStore };
+export type { BackendReport, FakeSeed, Handler };
+
+/** `navigator.platform`, which the app reads to pick its window chrome. */
+const PLATFORMS = { macos: "MacIntel", linux: "Linux x86_64" };
+
+export type MountOptions = {
+  /** Defaults to macOS, the app the design frames show. */
+  platform?: keyof typeof PLATFORMS;
+  /**
+   * Handlers that replace or add to the defaults for this test. They run in
+   * the page, so each must be an arrow or function expression that uses only
+   * its arguments and page globals, not variables from the test.
+   */
+  handlers?: Record<string, Handler>;
+};
 
 export type AppShell = {
   /** Boots the real app (src/main.tsx) on a fake backend seeded with `seed`. */
-  mount: (seed?: Partial<FakeStore>) => Promise<void>;
+  mount: (seed?: FakeSeed, options?: MountOptions) => Promise<void>;
   /** Emits a Tauri event to the app, as the Rust side would. */
   emit: (event: string, payload?: unknown) => Promise<void>;
+  /** Returns and clears the harness reports, for a test that expects some. */
+  takeReports: () => Promise<BackendReport[]>;
 };
 
-async function mount(page: Page, seed: Partial<FakeStore> = {}) {
-  await page.addInitScript((value) => {
-    window.appBackendSeed = value;
-  }, seed);
+async function mount(
+  page: Page,
+  seed: FakeSeed = {},
+  { platform = "macos", handlers = {} }: MountOptions = {},
+) {
+  await page.addInitScript(
+    ({ seed, platform, handlers }) => {
+      Object.defineProperty(Navigator.prototype, "platform", {
+        configurable: true,
+        get: () => platform,
+      });
+      window.appBackendSeed = seed;
+      window.appBackendHandlers = Object.fromEntries(
+        Object.entries(handlers).map(([command, source]) => [
+          command,
+          (0, eval)(`(${source})`),
+        ]),
+      );
+    },
+    {
+      seed,
+      platform: PLATFORMS[platform],
+      handlers: Object.fromEntries(
+        Object.entries(handlers).map(([command, handler]) => [
+          command,
+          handler.toString(),
+        ]),
+      ),
+    },
+  );
   await page.goto("/tests/browser/app.html");
   // A cold Vite cache optimizes deps on the first load, which takes seconds.
   await expect(page.getByRole("button", { name: "Automations" })).toBeVisible({
@@ -24,20 +66,27 @@ async function mount(page: Page, seed: Partial<FakeStore> = {}) {
 
 export const test = base.extend<{ app: AppShell }>({
   app: async ({ page }, use) => {
+    const reports: BackendReport[] = [];
+    await page.exposeFunction("appBackendReport", (report: BackendReport) => {
+      reports.push(report);
+    });
+    // One round trip delivers reports the page sent before it.
+    const takeReports = async () => {
+      await page.evaluate(() => undefined);
+      return reports.splice(0);
+    };
     await use({
-      mount: (seed) => mount(page, seed),
+      mount: (seed, options) => mount(page, seed, options),
       emit: (event, payload) =>
         page.evaluate(
           ({ event, payload }) => window.appBackend!.emit(event, payload),
           { event, payload },
         ),
+      takeReports,
     });
-    const unmocked = await page.evaluate(
-      () => window.appBackend?.unmocked ?? [],
-    );
     expect(
-      unmocked,
-      "Add these commands to HANDLERS in tests/browser/app/backend.ts",
+      await takeReports(),
+      "Add unmocked commands to HANDLERS in tests/browser/app/backend.ts and fix handlers that threw",
     ).toEqual([]);
   },
 });
