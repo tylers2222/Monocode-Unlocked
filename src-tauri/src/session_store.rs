@@ -286,6 +286,7 @@ pub fn session_list_by_project(
 
 #[tauri::command(async)]
 pub fn session_rebase_project(
+    app: AppHandle,
     store: State<'_, SessionStore>,
     from_cwd: String,
     to_cwd: String,
@@ -294,15 +295,25 @@ pub fn session_rebase_project(
         return Err("project paths are required".into());
     }
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    rebase_project(&conn, &from_cwd, &to_cwd).map_err(|error| error.to_string())
+    rebase_project(&conn, &from_cwd, &to_cwd).map_err(|error| error.to_string())?;
+    drop(conn);
+    crate::milestones::emit_changed(&app, &from_cwd);
+    crate::milestones::emit_changed(&app, &to_cwd);
+    Ok(())
 }
 
+/// One transaction, so a failed move never leaves sessions and milestones apart.
 fn rebase_project(conn: &Connection, from_cwd: &str, to_cwd: &str) -> rusqlite::Result<()> {
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
         "UPDATE sessions SET cwd = ?2 WHERE cwd = ?1",
         params![from_cwd, to_cwd],
     )?;
-    Ok(())
+    tx.execute(
+        "UPDATE milestones SET project_path = ?2 WHERE project_path = ?1",
+        params![from_cwd, to_cwd],
+    )?;
+    tx.commit()
 }
 
 #[tauri::command(async)]
@@ -1035,6 +1046,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::mono_roster::ensure_tables(conn)?;
     // Mono messages reference `monos`, so they come after it.
     crate::mono_messages::ensure_tables(conn)?;
+    crate::milestones::ensure_tables(conn)?;
     Ok(())
 }
 
@@ -3272,6 +3284,62 @@ mod tests {
         assert!(list_by_project(&conn, "/tmp/old").unwrap().is_empty());
         assert_eq!(list_by_project(&conn, "/tmp/new").unwrap()[0].id, "moved");
         assert_eq!(list_by_project(&conn, "/tmp/other").unwrap()[0].id, "other");
+    }
+
+    #[test]
+    fn rebase_project_moves_milestones() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let raw = |id: char, project: &str| {
+            conn.execute(
+                "INSERT INTO milestones (id, project_path, title, status, sort_order, created_by, created_at, updated_at)
+                 VALUES (?1, ?2, 'goal', 'idea', 0, 'user', 1, 1)",
+                params![id.to_string().repeat(36), project],
+            )
+            .unwrap();
+        };
+        raw('a', "/tmp/old");
+        raw('b', "/tmp/other");
+
+        rebase_project(&conn, "/tmp/old", "/tmp/new").unwrap();
+
+        let projects: Vec<String> = conn
+            .prepare("SELECT project_path FROM milestones ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(projects, ["/tmp/new", "/tmp/other"]);
+    }
+
+    #[test]
+    fn migrate_adds_milestones_to_an_existing_db() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        upsert_session(&conn, &sample("kept", "/tmp/a", "Kept")).unwrap();
+        conn.execute_batch("DROP TABLE milestones").unwrap();
+        let versions = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        let before = versions(&conn);
+
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+
+        let objects: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('milestones', 'milestones_project_order')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(objects, 2);
+        assert_eq!(versions(&conn), before);
+        assert_eq!(list_by_project(&conn, "/tmp/a").unwrap()[0].id, "kept");
     }
 
     #[test]

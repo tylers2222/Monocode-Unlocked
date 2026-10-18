@@ -29,6 +29,7 @@ mod macos;
 mod macos_background;
 mod mcp;
 mod menu;
+mod milestones;
 mod mono;
 #[cfg(target_os = "macos")]
 mod mono_chat;
@@ -361,6 +362,12 @@ pub fn run() {
             automations::automations_claim_due,
             automations::automations_claim_event,
             automations::automation_run_update,
+            milestones::milestones_list,
+            milestones::milestones_add,
+            milestones::milestones_update,
+            milestones::milestones_remove,
+            milestones::milestones_reorder,
+            milestones::milestones_remove_project,
             external_editor::list_external_editors,
             external_editor::open_in_external_editor,
             fs::resolve_project_location,
