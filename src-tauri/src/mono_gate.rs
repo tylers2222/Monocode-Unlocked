@@ -187,9 +187,14 @@ impl Input {
                 json!(["reply", fields])
             }
         };
-        let digest = format!("{:x}", Sha256::digest(canonical.to_string().as_bytes()));
-        PayloadHash::parse(&digest).expect("sha256 is 64 lowercase hex digits")
+        sha256(&canonical.to_string())
     }
+}
+
+/// sha256 of a canonical call text, as 64 lowercase hex digits.
+fn sha256(text: &str) -> PayloadHash {
+    let digest = format!("{:x}", Sha256::digest(text.as_bytes()));
+    PayloadHash::parse(&digest).expect("sha256 is 64 lowercase hex digits")
 }
 
 /// S1 and R1: the input the model sent, or the `invalid_input` hint.
@@ -206,6 +211,9 @@ pub fn parse(tool: Tool, raw: &Value) -> Result<Input, String> {
             "scope",
         ],
         Tool::Reply => &["message", "wanting_reply", "to"],
+        Tool::StartSession | Tool::AppAction => {
+            return Err(format!("{} is not a messaging tool", tool.as_str()))
+        }
     };
     let unknown: Vec<&str> = fields
         .keys()
@@ -799,6 +807,7 @@ impl RejectCode {
             RejectCode::SteerNeedsTarget => "name a message or use scope turn",
             RejectCode::NothingRunning => "send it as a new message",
             RejectCode::SteerScopeNotAllowed => "You cannot steer this recipient's whole turn. A Giga may steer a Mono's whole turn, and a Mono one of its leads. Steer one message with reply_to, or send with intent \"new\".",
+            RejectCode::WorkerCannotSpawn => "Only lead sessions can start sessions. Ask your lead: messages.send with send_to set to your lead's session id.",
             RejectCode::WorkerScope => "A worker can message only its lead. Message your lead: messages.send with send_to set to your lead's session id.",
             RejectCode::SteerViaLead => "That session is a worker of a lead session. Message the lead; only its lead steers its workers.",
             RejectCode::SessionCannotWait => "A lead or worker session cannot wait for an answer. Send with wanting_reply false. The recipient answers with a new message if it needs to.",
@@ -934,6 +943,9 @@ fn send_hint(
 fn with_lead(code: RejectCode, lead: &SessionId) -> String {
     let lead = lead.as_str();
     match code {
+        RejectCode::WorkerCannotSpawn => format!(
+            r#"Only lead sessions can start sessions. Ask your lead ({lead}): messages.send with send_to "{lead}"."#
+        ),
         RejectCode::WorkerScope => format!(
             r#"A worker can message only its lead. Message your lead ({lead}): messages.send with send_to "{lead}"."#
         ),
@@ -1466,6 +1478,66 @@ fn reply_again(code: RejectCode, to: Option<&[Handle]>, then: &[Handled]) -> Rej
             target_gone(&named).unwrap_or_else(|| listing(code, None, &[]))
         }
         _ => listing(code, None, &open),
+    }
+}
+
+/// The `payload_hash` of an A row (design 6.6): sha256 hex of the compact
+/// JSON text of `[action, input]`.
+/// Object keys are sorted (serde_json without `preserve_order`), so the key
+/// order of the call never changes the hash.
+pub fn action_hash(action: &str, input: &Value) -> PayloadHash {
+    sha256(&serde_json::to_string(&(action, input)).expect("a JSON value serializes"))
+}
+
+/// What the A rows read (design 6.6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionFacts {
+    /// A session caller's level (stored row wins); `None` for a Mono chat or
+    /// habit run.
+    pub caller_level: Option<SessionLevel>,
+    /// The level of the session the action's target names, when it names an
+    /// existing session.
+    pub target_level: Option<SessionLevel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionDecision {
+    /// A6 or A7: the action runs. `lead_session_id` is the lead id
+    /// `sessions.start` writes on the new session.
+    Allow { lead_session_id: Option<SessionId> },
+    /// A3, A4, A5: one rejected row with `tool` (`StartSession` or
+    /// `AppAction`).
+    Reject {
+        code: RejectCode,
+        hint: String,
+        tool: Tool,
+    },
+}
+
+/// Design 6.6, rows A3, A4, A5, A6, A7 in this order, for one app action
+/// other than `messages.*`.
+pub fn decide_action(caller: &Caller, action: &str, facts: &ActionFacts) -> ActionDecision {
+    let reject = |code: RejectCode, tool: Tool, lead: &SessionId| ActionDecision::Reject {
+        code,
+        hint: with_lead(code, lead),
+        tool,
+    };
+    let starts = action == "sessions.start";
+    if let Some(SessionLevel::Worker { lead }) = &facts.caller_level {
+        return if starts {
+            reject(RejectCode::WorkerCannotSpawn, Tool::StartSession, lead)
+        } else {
+            reject(RejectCode::WorkerScope, Tool::AppAction, lead)
+        };
+    }
+    if let Some(SessionLevel::Worker { lead }) = &facts.target_level {
+        if matches!(action, "sessions.send" | "sessions.draft") && *lead != caller.session_id {
+            return reject(RejectCode::SteerViaLead, Tool::AppAction, lead);
+        }
+    }
+    ActionDecision::Allow {
+        lead_session_id: (starts && facts.caller_level == Some(SessionLevel::Lead))
+            .then(|| caller.session_id.clone()),
     }
 }
 
@@ -3275,6 +3347,17 @@ mod tests {
         }
     }
 
+    fn operator(id: &str) -> Caller {
+        Caller {
+            speaker: Speaker::Session {
+                access: Access::Operator,
+                cwd: "/p/alpha".into(),
+                lead_session_id: None,
+            },
+            ..session_caller(id)
+        }
+    }
+
     fn worker_of(lead: &str) -> SessionLevel {
         SessionLevel::Worker {
             lead: session(lead),
@@ -4383,5 +4466,187 @@ mod tests {
         for (path, key) in fixture {
             assert_eq!(path_key(&path), key, "{path:?}");
         }
+    }
+
+    const ALLOWED: ActionDecision = ActionDecision::Allow {
+        lead_session_id: None,
+    };
+
+    fn act(
+        who: &Caller,
+        action: &str,
+        caller_level: Option<SessionLevel>,
+        target_level: Option<SessionLevel>,
+    ) -> ActionDecision {
+        decide_action(
+            who,
+            action,
+            &ActionFacts {
+                caller_level,
+                target_level,
+            },
+        )
+    }
+
+    fn act_rejected(code: RejectCode, hint: &str, tool: Tool) -> ActionDecision {
+        ActionDecision::Reject {
+            code,
+            hint: hint.into(),
+            tool,
+        }
+    }
+
+    const WORKER_CANNOT_SPAWN_L1: &str = r#"Only lead sessions can start sessions. Ask your lead (l1): messages.send with send_to "l1"."#;
+
+    // A3. Defect: a worker starts a session, so the tree grows past two
+    // levels, or is refused with a code that does not say who may start one.
+    #[test]
+    fn a3_a_worker_cannot_start_a_session() {
+        assert_eq!(
+            act(
+                &session_caller("w1"),
+                "sessions.start",
+                Some(worker_of("l1")),
+                None
+            ),
+            act_rejected(
+                RejectCode::WorkerCannotSpawn,
+                WORKER_CANNOT_SPAWN_L1,
+                Tool::StartSession
+            )
+        );
+    }
+
+    // A4, before A5 (design 6.6 table order). Defect: a worker reads notes or
+    // acts on sessions, though it may only message its lead; or its send into
+    // another worker gets A5's steer_via_lead instead of worker_scope.
+    #[test]
+    fn a4_a_worker_may_use_no_app_action() {
+        for (action, target) in [
+            ("notes.list", SessionLevel::Lead),
+            ("sessions.list", SessionLevel::Lead),
+            ("sessions.read", SessionLevel::Lead),
+            ("sessions.send", worker_of("l1")),
+        ] {
+            assert_eq!(
+                act(
+                    &session_caller("w1"),
+                    action,
+                    Some(worker_of("l1")),
+                    Some(target)
+                ),
+                act_rejected(
+                    RejectCode::WorkerScope,
+                    &worker_scope("l1"),
+                    Tool::AppAction
+                ),
+                "{action}"
+            );
+        }
+    }
+
+    // A5 (design 15 C6). Defect: sessions.send or sessions.draft reaches a
+    // worker around its lead, or its lead is refused.
+    #[test]
+    fn a5_only_its_lead_may_send_or_draft_into_a_worker() {
+        for action in ["sessions.send", "sessions.draft"] {
+            for (case, who, level) in [
+                ("Mono", mono_a_caller(), None),
+                ("Giga", caller(CallerKind::MonoChat), None),
+                (
+                    "another lead",
+                    session_caller("l2"),
+                    Some(SessionLevel::Lead),
+                ),
+            ] {
+                assert_eq!(
+                    act(&who, action, level, Some(worker_of("l1"))),
+                    act_rejected(RejectCode::SteerViaLead, &via_lead("l1"), Tool::AppAction),
+                    "{case} {action}"
+                );
+            }
+            assert_eq!(
+                act(
+                    &session_caller("l1"),
+                    action,
+                    Some(SessionLevel::Lead),
+                    Some(worker_of("l1"))
+                ),
+                ALLOWED,
+                "{action}"
+            );
+        }
+        assert_eq!(
+            act(
+                &mono_a_caller(),
+                "sessions.stop",
+                None,
+                Some(worker_of("l1"))
+            ),
+            ALLOWED
+        );
+    }
+
+    // A6. Defect: a lead's start makes a lead, not a worker of that lead.
+    #[test]
+    fn a6_a_leads_start_makes_a_worker_of_that_lead() {
+        for lead in [session_caller("l1"), operator("l1")] {
+            assert_eq!(
+                act(&lead, "sessions.start", Some(SessionLevel::Lead), None),
+                ActionDecision::Allow {
+                    lead_session_id: Some(session("l1"))
+                },
+                "{lead:?}"
+            );
+        }
+    }
+
+    // A7. Defect: a Mono's start makes a worker of the Mono's chat or habit
+    // run.
+    #[test]
+    fn a7_a_monos_start_makes_a_lead() {
+        let run = Caller {
+            speaker: Speaker::Mono {
+                kind: CallerKind::HabitRun,
+                mono_id: mono("mono-a"),
+            },
+            session_id: session("a-run"),
+            turn_id: "turn-1".into(),
+        };
+        for who in [mono_a_caller(), run] {
+            assert_eq!(act(&who, "sessions.start", None, None), ALLOWED, "{who:?}");
+        }
+    }
+
+    // Review r1 m10. Defect: the level rules bind only `started` sessions,
+    // so an /operator lead messages a sibling lead and an /operator worker
+    // starts sessions.
+    #[test]
+    fn l7_and_a3_bind_operator_sessions_too() {
+        let sibling = in_alpha("l2", SessionLevel::Lead);
+        assert_eq!(
+            decide_as(
+                &operator("l1"),
+                lead_row(),
+                &new("Hi", "l2", false),
+                about(sibling.clone())
+            ),
+            send_rejected(RejectCode::LeadScope, sibling.party(), LEAD_SCOPE),
+            "L7"
+        );
+        assert_eq!(
+            act(
+                &operator("w1"),
+                "sessions.start",
+                Some(worker_of("l1")),
+                None
+            ),
+            act_rejected(
+                RejectCode::WorkerCannotSpawn,
+                WORKER_CANNOT_SPAWN_L1,
+                Tool::StartSession
+            ),
+            "A3"
+        );
     }
 }
