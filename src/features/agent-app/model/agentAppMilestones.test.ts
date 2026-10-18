@@ -216,19 +216,25 @@ it("a Mono naming a project outside its roster is refused", async () => {
   expect(rows).toEqual([]);
 });
 
-it.each(["2026-13-01", "2026-02-30", "26-01-01", "later", 20261201])(
-  "target %s is invalid_input and writes nothing",
-  async (target) => {
-    const { run, rows } = fixture("session");
-    expect(
-      await failure(run("milestones.add", { title: "X", target })),
-    ).toMatchObject({
-      code: "invalid_input",
-      hint: 'target must be a real YYYY-MM-DD date, or "" or null for later',
-    });
-    expect(rows).toEqual([]);
-  },
-);
+it.each([
+  "2026-13-01",
+  "2026-02-30",
+  "26-01-01",
+  "later",
+  20261201,
+  " ",
+  0,
+  false,
+])("target %s is invalid_input and writes nothing", async (target) => {
+  const { run, rows } = fixture("session");
+  expect(
+    await failure(run("milestones.add", { title: "X", target })),
+  ).toMatchObject({
+    code: "invalid_input",
+    hint: 'target must be a real YYYY-MM-DD date, or "" or null for later',
+  });
+  expect(rows).toEqual([]);
+});
 
 // M-9 R1. Defect: an agent sending target "" (Later, as the page means it)
 // is refused, stores "", or "" on update keeps the old date.
