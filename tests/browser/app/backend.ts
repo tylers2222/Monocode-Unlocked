@@ -5,6 +5,7 @@ import {
   customMonoName,
   defaultMonoName,
 } from "../../../src/features/monos/model/mono";
+import { defaultSoul } from "../../../src/features/monos/model/monoFiles";
 import type { SessionSummary } from "../../../src/features/sessions/data/sessionStore";
 
 /** A Mono as Rust `MonoRow` sends it (src-tauri/src/mono_roster.rs:101-110). */
@@ -37,6 +38,18 @@ export type SessionRow = SessionSummary &
       | "draft"
     >
   >;
+
+/** What `session_upsert` saves (session_store.rs SessionUpsert). */
+type SessionUpsert = SessionSummary & {
+  modelSettings: Record<string, string>;
+  providerAccountId?: string;
+  blocks: { role: string; draft?: boolean }[];
+  queuedMessages?: unknown[];
+  queueStatus?: string;
+  contextUsed?: number;
+  contextWindow?: number;
+  workFolder?: string;
+};
 
 /** Everything the fake backend knows, in the shapes Rust sends. */
 export type FakeStore = {
@@ -107,6 +120,9 @@ const IGNORED = [
   "quick_composer_set_enabled",
   "reminder_configure",
   "reminder_register_window",
+  "session_checkpoint_begin_turn",
+  "session_checkpoint_finish_turn",
+  "session_set_in_flight",
   "set_dock_badge",
   "set_traffic_lights_visible",
   "set_window_background_blur",
@@ -129,6 +145,71 @@ const HARNESSES = [
 
 /** Every project is a git repo on this branch. */
 const BRANCH = "main";
+
+/** mono.rs content_hash: the SHA-256 of a file's text, in hex. */
+async function contentHash(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+/**
+ * session_store.rs get_session. The fake store keeps summaries only, so a
+ * record holds no messages.
+ */
+function sessionRecord(store: FakeStore, sessionId: unknown) {
+  const row = store.sessions.find((session) => session.id === sessionId);
+  if (!row) return null;
+  const {
+    additions: _additions,
+    deletions: _deletions,
+    archived: _archived,
+    pinned: _pinned,
+    draft: _draft,
+    repo: _repo,
+    orchestration: _orchestration,
+    ...record
+  } = row;
+  return { ...record, modelSettings: {}, blocks: [], queuedMessages: [] };
+}
+
+/**
+ * session_store.rs upsert_session: stores the summary and answers with it.
+ * The row keeps its createdAt, archived and pinned. Like the list, the
+ * answer's `branch` is the repo's, unless the worktree is gone.
+ */
+const upsertSession: Handler = (store, { session }) => {
+  const {
+    modelSettings: _modelSettings,
+    providerAccountId: _providerAccountId,
+    blocks,
+    queuedMessages: _queuedMessages,
+    queueStatus: _queueStatus,
+    contextUsed: _contextUsed,
+    contextWindow: _contextWindow,
+    workFolder: _workFolder,
+    ...summary
+  } = session as SessionUpsert;
+  const kept = store.sessions.find((row) => row.id === summary.id);
+  const row = sessionRow({
+    ...summary,
+    createdAt: kept?.createdAt ?? Date.now(),
+    updatedAt: Date.now(),
+    archived: kept?.archived ?? false,
+    pinned: kept?.pinned ?? false,
+    draft: blocks.some((block) => block.role === "user" && block.draft),
+  });
+  store.sessions = [
+    ...store.sessions.filter((other) => other.id !== row.id),
+    row,
+  ];
+  const { branch: _branch, ...answer } = row;
+  return row.worktreeRemoved ? answer : { ...answer, branch: BRANCH };
+};
 
 const HANDLERS: Record<string, Handler> = {
   ...Object.fromEntries(IGNORED.map((command) => [command, none])),
@@ -154,7 +235,39 @@ const HANDLERS: Record<string, Handler> = {
           ? session
           : { ...session, branch: branch || BRANCH },
       ),
+  session_get: (store, { sessionId }) => sessionRecord(store, sessionId),
+  session_upsert: upsertSession,
+  // checkpoint.rs status: no turn recorded a change.
+  session_checkpoint_status: () => ({ files: [] }),
   monos_list: (store) => ({ revision: 1, monos: store.monos }),
+  // mono_transcript.rs mono_session_get: the record and its only page.
+  mono_session_get: (store, { sessionId }) => {
+    const record = sessionRecord(store, sessionId);
+    return (
+      record && {
+        ...record,
+        monoTranscript: { before: null, firstBlockId: null },
+      }
+    );
+  },
+  mono_session_upsert: upsertSession,
+  // mono.rs load: SOUL.md as the app seeds it, an empty memory, no topics.
+  mono_load: async (store, { mono }) => {
+    const dir = `${store.home}/Library/Application Support/com.monocode.desktop/monos/${mono}`;
+    const soul = defaultSoul();
+    return {
+      id: mono,
+      dir,
+      soul,
+      soulHash: await contentHash(soul),
+      memory: "",
+      memoryHash: await contentHash(""),
+      memoryPath: `${dir}/MEMORY.md`,
+      topics: [],
+    };
+  },
+  // mono.rs read: a file the Mono has not written.
+  mono_read: async () => ({ text: null, hash: await contentHash("") }),
   automations_list: (store) => store.automations,
   automation_runs_list: empty,
   control_load: none,
@@ -162,6 +275,16 @@ const HANDLERS: Record<string, Handler> = {
   harness_runtime_binary_paths: () => ({}),
   harness_update_check_claim: () => false,
   list_external_editors: empty,
+  // control.rs: the app's own executable.
+  app_cli_path: () => "/Applications/MonoCode.app/Contents/MacOS/monocode",
+  // account_identity.rs and rate_limits.rs while the CLI is not signed in.
+  provider_account_identity: none,
+  fetch_claude_usage: () => ({
+    status: "unavailable",
+    httpStatus: null,
+    body: null,
+    error: "Claude not signed in",
+  }),
   list_skills: empty,
   reminder_list: empty,
   reminder_take_open: none,
