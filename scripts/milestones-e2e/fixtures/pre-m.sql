@@ -212,16 +212,16 @@ CREATE TABLE mono_session_ends (
            ended_at   INTEGER NOT NULL
          );
 INSERT INTO schema_migrations (version, applied_at) VALUES
-  (1, 1791447456815), (2, 1791447456815), (3, 1791447456816), (4, 1791447456816),
-  (5, 1791447456816), (6, 1791447456816), (7, 1791447456816), (8, 1791447456817),
-  (9, 1791447456818), (10, 1791447456818), (11, 1791447456819), (12, 1791447456819),
-  (13, 1791447456819), (14, 1791447456819), (15, 1791447456819), (16, 1791447456819),
-  (17, 1791447456820), (18, 1791447456820), (19, 1791447456820);
-INSERT INTO monos_legacy_import (id, imported_at) VALUES (1, 1791447456821);
+  (1, 1700000000000), (2, 1700000000000), (3, 1700000000000), (4, 1700000000000),
+  (5, 1700000000000), (6, 1700000000000), (7, 1700000000000), (8, 1700000000000),
+  (9, 1700000000000), (10, 1700000000000), (11, 1700000000000), (12, 1700000000000),
+  (13, 1700000000000), (14, 1700000000000), (15, 1700000000000), (16, 1700000000000),
+  (17, 1700000000000), (18, 1700000000000), (19, 1700000000000);
+INSERT INTO monos_legacy_import (id, imported_at) VALUES (1, 1700000001000);
 INSERT INTO sessions (id, cwd, harness, model, model_settings, runtime_mode, title, blocks_json, created_at, updated_at, has_user_message) VALUES
-  ('11111111-1111-4111-8111-111111111111', '@HOME@', 'omp', 'omp:default', '{}', 'auto', 'Alpha', '[]', 1791447456900, 1791447456900, 0),
-  ('22222222-2222-4222-8222-222222222222', '@HOME@', 'omp', 'omp:default', '{}', 'auto', 'Beta', '[]', 1791447456900, 1791447456900, 0),
-  ('33333333-3333-4333-8333-333333333333', '@A@', 'omp', 'omp:default', '{}', 'auto', 'Before M', '[]', 1791447456900, 1791447456900, 1);
+  ('11111111-1111-4111-8111-111111111111', '@HOME@', 'omp', 'omp:default', '{}', 'auto', 'Alpha', '[]', 1700000001000, 1700000001000, 0),
+  ('22222222-2222-4222-8222-222222222222', '@HOME@', 'omp', 'omp:default', '{}', 'auto', 'Beta', '[]', 1700000001000, 1700000001000, 0),
+  ('33333333-3333-4333-8333-333333333333', '@A@', 'omp', 'omp:default', '{}', 'auto', 'Before M', '[]', 1700000001000, 1700000001000, 1);
 INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at) VALUES
-  ('beta', 'Beta', 'mono', json_object('name', 'Beta', 'mascot', 'ghost', 'color', '#22c55e', 'projects', json_array('@B@'), 'sessionId', '22222222-2222-4222-8222-222222222222'), 0, 1791447456900, 1791447456900),
-  ('alpha', 'Alpha', 'mono', json_object('name', 'Alpha', 'mascot', 'crab', 'color', '#3b82f6', 'projects', json_array('@A@'), 'sessionId', '11111111-1111-4111-8111-111111111111'), 1, 1791447456900, 1791447456900);
+  ('beta', 'Beta', 'mono', json_object('name', 'Beta', 'mascot', 'ghost', 'color', '#22c55e', 'projects', json_array('@B@'), 'sessionId', '22222222-2222-4222-8222-222222222222'), 0, 1700000001000, 1700000001000),
+  ('alpha', 'Alpha', 'mono', json_object('name', 'Alpha', 'mascot', 'crab', 'color', '#3b82f6', 'projects', json_array('@A@'), 'sessionId', '11111111-1111-4111-8111-111111111111'), 1, 1700000001000, 1700000001000);

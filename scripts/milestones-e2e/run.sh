@@ -199,6 +199,11 @@ case_no_write_to_b() {
 
 case_settings_off() {
   local before after codes="" l r
+  sqlite3 "$DB" "INSERT INTO milestone_settings (project_path, enabled, hidden_statuses, updated_at)
+    VALUES ('$B', 0, '[]', 0) ON CONFLICT (project_path) DO UPDATE SET enabled = 0"
+  r="$(cli alpha milestones.add '{"title":"While B is off"}')"
+  l="$(cli alpha milestones.list)"
+  need "A with only B off: add ${r:0:150}; list ${l:0:150}" [ "$(jv "$r" .ok),$(jv "$l" .result.settings.enabled)" = "true,true" ] || return 1
   before="$(rows "SELECT * FROM milestones WHERE project_path = '$A' ORDER BY sort_order")"
   sqlite3 "$DB" "INSERT INTO milestone_settings (project_path, enabled, hidden_statuses, updated_at)
     VALUES ('$A', 0, '[]', 0) ON CONFLICT (project_path) DO UPDATE SET enabled = 0"
@@ -210,11 +215,11 @@ case_settings_off() {
   after="$(rows "SELECT * FROM milestones WHERE project_path = '$A' ORDER BY sort_order")"
   sqlite3 "$DB" "UPDATE milestone_settings SET enabled = 1 WHERE project_path = '$A'"
   need "codes while off: $codes" [ "$codes" = "milestones_off milestones_off milestones_off milestones_off" ] || return 1
-  need "list while off: ${l:0:200}" [ "$(jv "$l" '[.ok, .result.settings.enabled, (.result.milestones | length)] | @csv')" = "true,false,1" ] || return 1
+  need "list while off: ${l:0:200}" [ "$(jv "$l" '[.ok, .result.settings.enabled, (.result.milestones | length)] | @csv')" = "true,false,2" ] || return 1
   need "A rows changed while off" [ "$before" = "$after" ] || return 1
   r="$(cli alpha milestones.add '{"title":"Voice notes"}')"
-  need "add after turning on: ${r:0:200}" [ "$(jv "$r" '.ok')" = true ] || return 1
-  EV="4 writes milestones_off, list answers enabled:false, rows unchanged; on again, add works"
+  need "add after turning A on, B still off: ${r:0:200}" [ "$(jv "$r" '.ok')" = true ] || return 1
+  EV="B off leaves A on (add ok, enabled:true); A off: 4 writes milestones_off, list enabled:false, rows unchanged; A on again, add works"
 }
 
 case_restart() {
