@@ -1,0 +1,24 @@
+{
+  "grader": "m03",
+  "expect": "pass",
+  "source": "eval-o4I-2026-10-18T15:00:20 trial m03-0 (omp omp:default)",
+  "metadata": {
+    "trial": "m03-0",
+    "mono": "m03-0",
+    "harness": "omp",
+    "model": "omp:default",
+    "projects": {
+      "A": "/tmp/m6-eval-home/trials/m03-0/atlas",
+      "B": "/tmp/m6-eval-home/trials/m03-0/borealis"
+    },
+    "toolCalls": [
+      {
+        "action": "messages.send",
+        "title": "send_message",
+        "ok": true
+      }
+    ],
+    "answer": "I didn't add the milestone. Beta asked for \"Dark mode\" on the borealis project, but I only have access to atlas. I sent Beta a message saying this and suggested it go to the Mono that owns borealis.\nI can't add the \"Dark mode\" milestone. borealis is not one of my projects. I only work on atlas. Please send this to the Mono that owns borealis, or add it yourself if it is yours.",
+    "rows": []
+  }
+}

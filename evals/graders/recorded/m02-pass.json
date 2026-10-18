@@ -1,0 +1,47 @@
+{
+  "grader": "m02",
+  "expect": "pass",
+  "source": "eval-o4I-2026-10-18T15:00:20 trial m02-0 (omp omp:default)",
+  "metadata": {
+    "trial": "m02-0",
+    "mono": "m02-0",
+    "harness": "omp",
+    "model": "omp:default",
+    "projects": {
+      "A": "/tmp/m6-eval-home/trials/m02-0/atlas"
+    },
+    "toolCalls": [
+      {
+        "action": "milestones.list",
+        "title": "Read trials/m02-0/atlas",
+        "ok": true
+      },
+      {
+        "action": "messages.send",
+        "title": "send_message",
+        "ok": true
+      }
+    ],
+    "answer": "Beta asked what's on the atlas roadmap, and I sent them the answer. It has three milestones, none with a target date:\n\n1. Offline mode: idea\n2. Dark theme: planned\n3. Export to PDF: in progress\nAtlas roadmap (3 milestones, in order, none with a target date):\n1. Offline mode — idea\n2. Dark theme — planned\n3. Export to PDF — in progress",
+    "rows": [
+      {
+        "project_path": "/tmp/m6-eval-home/trials/m02-0/atlas",
+        "title": "Offline mode",
+        "status": "idea",
+        "created_by": "user"
+      },
+      {
+        "project_path": "/tmp/m6-eval-home/trials/m02-0/atlas",
+        "title": "Dark theme",
+        "status": "planned",
+        "created_by": "user"
+      },
+      {
+        "project_path": "/tmp/m6-eval-home/trials/m02-0/atlas",
+        "title": "Export to PDF",
+        "status": "in_progress",
+        "created_by": "user"
+      }
+    ]
+  }
+}

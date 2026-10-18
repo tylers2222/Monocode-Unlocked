@@ -1,0 +1,31 @@
+{
+  "grader": "m01",
+  "expect": "pass",
+  "source": "eval-o4I-2026-10-18T15:00:20 trial m01-0 (omp omp:default)",
+  "metadata": {
+    "trial": "m01-0",
+    "mono": "m01-0",
+    "harness": "omp",
+    "model": "omp:default",
+    "projects": {
+      "A": "/tmp/m6-eval-home/trials/m01-0/atlas",
+      "B": "/tmp/m6-eval-home/trials/m01-0/borealis"
+    },
+    "toolCalls": [
+      {
+        "action": "milestones.add",
+        "title": "Read trials/m01-0/atlas",
+        "ok": true
+      }
+    ],
+    "answer": "I put \"Offline mode\" on the atlas roadmap as a milestone. Its status is idea and it has no target date.",
+    "rows": [
+      {
+        "project_path": "/tmp/m6-eval-home/trials/m01-0/atlas",
+        "title": "Offline mode",
+        "status": "idea",
+        "created_by": "mono:m01-0"
+      }
+    ]
+  }
+}

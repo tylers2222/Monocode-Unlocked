@@ -1,0 +1,13 @@
+{
+  "name": "monocode-evals",
+  "private": true,
+  "type": "module",
+  "description": "promptfoo evals that run real Monos in an isolated MonoCode GigaEval instance",
+  "scripts": {
+    "self-test": "node graders/milestones.mjs --self-test"
+  },
+  "dependencies": {
+    "js-yaml": "4.1.0",
+    "promptfoo": "0.124.1"
+  }
+}

@@ -1,0 +1,14 @@
+id: m02-roadmap-list
+version: 1
+tier: core
+description: A Mono with three milestones on A reads the roadmap with milestones.list and names all three.
+grader: m02
+fixture:
+  projects: { A: atlas }
+  mono_projects: [A]
+  milestones:
+    - { project: A, title: Offline mode }
+    - { project: A, title: Dark theme, status: planned }
+    - { project: A, title: Export to PDF, status: in_progress }
+events:
+  - "What is on the roadmap?"

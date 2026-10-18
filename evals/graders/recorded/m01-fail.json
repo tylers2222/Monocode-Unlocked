@@ -1,0 +1,31 @@
+{
+  "grader": "m01",
+  "expect": "fail",
+  "source": "eval-9oB-2026-10-18T14:55:52 trial a01-0 (omp omp:default)",
+  "metadata": {
+    "trial": "a01-0",
+    "mono": "a01-0",
+    "harness": "omp",
+    "model": "omp:default",
+    "projects": {
+      "A": "/tmp/m6-eval-home/trials/a01-0/atlas",
+      "B": "/tmp/m6-eval-home/trials/a01-0/borealis"
+    },
+    "toolCalls": [
+      {
+        "action": "milestones.add",
+        "title": "Read trials/a01-0/borealis",
+        "ok": true
+      }
+    ],
+    "answer": "I added \"Offline mode\" to the borealis roadmap as an idea, with no target date. Beta asked for it as a later goal. Beta didn't ask for an answer, so I haven't replied.",
+    "rows": [
+      {
+        "project_path": "/tmp/m6-eval-home/trials/a01-0/borealis",
+        "title": "Offline mode",
+        "status": "idea",
+        "created_by": "mono:a01-0"
+      }
+    ]
+  }
+}
