@@ -21,6 +21,7 @@ const probes = vi.hoisted(() => ({
   pick: vi.fn(),
   transcript: vi.fn(),
   runs: [],
+  giga: false,
 }));
 vi.mock("./Composer", () => ({ Composer: () => null }));
 vi.mock("../hooks/useFileDrop", () => ({ useFileDrop: () => false }));
@@ -74,6 +75,7 @@ vi.mock("../../monos/model/mono", async (original) => ({
     mascot: "cat",
     color: "#6ba",
     projects: [],
+    ...(probes.giga ? { giga: true as const } : {}),
   }),
 }));
 let container: HTMLDivElement;
@@ -115,6 +117,7 @@ afterEach(() => {
   container.remove();
   clearComposerDraft("chat");
   vi.unstubAllGlobals();
+  probes.giga = false;
 });
 const noop = () => {};
 function props(): SessionPaneProps {
@@ -636,24 +639,33 @@ it("says Steering in a Mono chat whatever the follow-up setting", () => {
 });
 
 // ADE-6. Defect: the bar keeps "Steering" once the chat's turn ends, so the
-// text typed during the turn cannot be sent.
-it("drops Steering when the chat's turn ends and sends the kept text as a new message", () => {
-  const onSubmit = vi.fn(() => true);
-  render({ ...busyChat(), onSubmit });
-  typeDraft("stop, wrong branch");
-  expect(barKind()).toBe("turn");
-  render({ ...busyChat({ busy: false, turnReadiness: undefined }), onSubmit });
-  expect(barKind()).toBeNull();
-  expect(field().value).toBe("stop, wrong branch");
-  act(() =>
-    container
-      .querySelector("form")!
-      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
-  );
-  expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
-    "chat",
-    "stop, wrong branch",
-    [],
-    {},
-  );
-});
+// text typed during the turn cannot be sent. A Giga chat uses the same pane.
+it.each([false, true])(
+  "drops Steering when the chat's turn ends and sends the kept text as a new message (Giga: %s)",
+  (giga) => {
+    probes.giga = giga;
+    const onSubmit = vi.fn(() => true);
+    render({ ...busyChat(), onSubmit });
+    typeDraft("stop, wrong branch");
+    expect(barKind()).toBe("turn");
+    render({
+      ...busyChat({ busy: false, turnReadiness: undefined }),
+      onSubmit,
+    });
+    expect(barKind()).toBeNull();
+    expect(field().value).toBe("stop, wrong branch");
+    act(() =>
+      container
+        .querySelector("form")!
+        .dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        ),
+    );
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+      "chat",
+      "stop, wrong branch",
+      [],
+      {},
+    );
+  },
+);

@@ -278,6 +278,46 @@ it("keeps the draft when the workspace rejects delivery", async () => {
   );
 });
 
+// ADE-6. Defect: the floating chat's composer gets a steer intent, so it can
+// keep a "Steering" bar after the turn ends and block the send.
+it("shows no Steering bar while a turn runs and sends the text typed during it after the turn ends", async () => {
+  const busy = snapshot(0);
+  busy.session = {
+    ...busy.session!,
+    busy: true,
+    turnReadiness: "ready",
+    blocks: [
+      { id: "opener", role: "user", text: "Build it", startedAt: 1 },
+      ...busy.session!.blocks,
+    ],
+  };
+  native.invoke.mockImplementation(async (command) =>
+    command === "mono_chat_state" ? busy : undefined,
+  );
+  await render();
+  const field = container.querySelector<HTMLTextAreaElement>(
+    '[aria-label="Message Captain"]',
+  )!;
+  const props = Object.entries(field).find(([key]) =>
+    key.startsWith("__reactProps"),
+  )![1];
+  act(() => props.onChange({ target: { value: "stop, wrong branch" } }));
+  expect(container.querySelector("[data-composer-intent]")).toBeNull();
+
+  act(() => receive({ payload: snapshot(0) }));
+  expect(container.querySelector("[data-composer-intent]")).toBeNull();
+  expect(field.value).toBe("stop, wrong branch");
+  await act(async () =>
+    container
+      .querySelector("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
+  expect(native.invoke).toHaveBeenCalledWith("mono_chat_action", {
+    monoId: "first",
+    action: { kind: "submit", text: "stop, wrong branch", attachments: [] },
+  });
+});
+
 it("ignores a stale initial snapshot after a newer update arrives", async () => {
   let initial!: (view: FloatingMonoView) => void;
   native.invoke.mockImplementation(

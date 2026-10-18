@@ -28,8 +28,8 @@ export const NO_CHOICE: BarChoice = { kind: "default" };
 /**
  * What the bar shows (design 16.12.6), plus `held`: a picked steer while the
  * composer's mode (`mode`, the pill's label) sends the text to the queue, so
- * the mode and the steer cannot both hold. Derived from the live turn state
- * on every render, so the bar follows the turn's end (ADE-6).
+ * the mode and the steer cannot both hold. Derived from the live turn state;
+ * it keeps no memory of earlier renders.
  */
 export type ComposerBar =
   | ComposerTarget
