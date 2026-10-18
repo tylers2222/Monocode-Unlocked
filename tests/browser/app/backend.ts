@@ -69,7 +69,11 @@ export type FakeStore = {
    * mono_transcript.rs `mono_blocks` for a Mono's chat.
    */
   blocks: Record<string, Block[]>;
+  /** session_store.rs `work_folder`: on the record, not the summary. */
+  workFolders: Record<string, string>;
   automations: Automation[];
+  /** sessionStore.ts `saveWorkspaceSnapshot`: the open tabs, as last saved. */
+  workspace: unknown;
 };
 
 /** What a test seeds. `installBackend` fills in what Rust would add. */
@@ -106,6 +110,8 @@ export type AppBackend = {
   /** Every command the app sent, in call order. */
   calls: { command: string; args: unknown }[];
   emit: (event: string, payload?: unknown) => Promise<void>;
+  /** Hands the store to the next page load, as Rust's database outlives a reload. */
+  keepStore: () => void;
 };
 
 declare global {
@@ -137,6 +143,7 @@ const IGNORED = [
   "plugin:webview|set_webview_zoom",
   "plugin:window|set_title",
   "quick_composer_set_enabled",
+  "quit_ready",
   "reminder_configure",
   "reminder_register_window",
   "session_checkpoint_begin_turn",
@@ -145,7 +152,6 @@ const IGNORED = [
   "set_dock_badge",
   "set_traffic_lights_visible",
   "set_window_background_blur",
-  "workspace_set_snapshot",
 ];
 
 const HARNESSES = [
@@ -190,8 +196,10 @@ function sessionRecord(store: FakeStore, sessionId: unknown) {
     orchestration: _orchestration,
     ...record
   } = row;
+  const workFolder = store.workFolders[row.id];
   return {
     ...record,
+    ...(workFolder ? { workFolder } : {}),
     modelSettings: {},
     blocks: store.blocks[row.id] ?? [],
     queuedMessages: [],
@@ -199,10 +207,10 @@ function sessionRecord(store: FakeStore, sessionId: unknown) {
 }
 
 /**
- * session_store.rs upsert_session: stores the summary and the blocks it is
- * given, and answers with the summary. The row keeps its createdAt, archived
- * and pinned. Like the list, the answer's `branch` is the repo's, unless the
- * worktree is gone.
+ * session_store.rs upsert_session: stores the summary, the blocks and the
+ * work folder it is given, and answers with the summary. The row keeps its
+ * createdAt, archived and pinned. Like the list, the answer's `branch` is the
+ * repo's, unless the worktree is gone.
  */
 const upsertSession: Handler = (store, { session }) => {
   const {
@@ -213,11 +221,13 @@ const upsertSession: Handler = (store, { session }) => {
     queueStatus: _queueStatus,
     contextUsed: _contextUsed,
     contextWindow: _contextWindow,
-    workFolder: _workFolder,
+    workFolder,
     ...summary
   } = session as SessionUpsert;
   const kept = store.sessions.find((row) => row.id === summary.id);
   store.blocks[summary.id] = blocks;
+  if (workFolder) store.workFolders[summary.id] = workFolder;
+  else delete store.workFolders[summary.id];
   const row = sessionRow({
     ...summary,
     createdAt: kept?.createdAt ?? Date.now(),
@@ -242,7 +252,11 @@ const HANDLERS: Record<string, Handler> = {
   home_dir: (store) => store.home,
   default_cwd: (store) => store.home,
   take_window_transfer: none,
-  workspace_get_snapshot: none,
+  workspace_get_snapshot: (store) => store.workspace,
+  workspace_set_snapshot: (store, { snapshot }) => {
+    store.workspace = snapshot;
+    return null;
+  },
   session_list_in_flight: empty,
   // session_store.rs list_by_project: ORDER BY updated_at DESC, id ASC, and
   // `branch` is the stored one, else the repo's, unless the worktree is gone.
@@ -480,9 +494,14 @@ function storeFrom(seed: FakeSeed): FakeStore {
     monos: (seed.monos ?? []).map(monoRow),
     rosterRevision: 1,
     blocks: {},
+    workFolders: {},
     automations: seed.automations ?? [],
+    workspace: null,
   };
 }
+
+/** Where `keepStore` hands the store to the next page load. */
+const KEPT_STORE = "appBackendStore";
 
 /**
  * Replaces the Tauri backend with an in-memory store. A command without a
@@ -493,13 +512,20 @@ export function installBackend(
   seed: FakeSeed = {},
   overrides: Record<string, Handler> = {},
 ) {
-  const store = storeFrom(seed);
+  const kept = sessionStorage.getItem(KEPT_STORE);
+  sessionStorage.removeItem(KEPT_STORE);
+  const store: FakeStore = kept ? JSON.parse(kept) : storeFrom(seed);
   const handlers = { ...HANDLERS, ...overrides };
   localStorage.setItem(
     "monocode.recentProjects",
     JSON.stringify(store.projects.map((path) => ({ path, openedAt: 1 }))),
   );
-  const backend: AppBackend = { store, calls: [], emit };
+  const backend: AppBackend = {
+    store,
+    calls: [],
+    emit,
+    keepStore: () => sessionStorage.setItem(KEPT_STORE, JSON.stringify(store)),
+  };
   mockWindows("main");
   mockIPC(
     async (command, args) => {

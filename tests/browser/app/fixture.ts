@@ -36,6 +36,11 @@ export type AppShell = {
   emit: (event: string, payload?: unknown) => Promise<void>;
   /** Returns and clears the harness reports, for a test that expects some. */
   takeReports: () => Promise<BackendReport[]>;
+  /**
+   * Quits the app and opens it again on the same backend store, as a restart
+   * finds the Rust database as the quit left it.
+   */
+  restart: () => Promise<void>;
 };
 /**
  * A handler crosses into the page as source text. A method (`name() {…}`)
@@ -86,10 +91,35 @@ async function mount(
     },
   );
   await page.goto("/tests/browser/app.html");
+  await booted(page);
+}
+
+async function booted(page: Page) {
   // A cold Vite cache optimizes deps on the first load, which takes seconds.
   await expect(page.getByRole("button", { name: "Automations" })).toBeVisible({
     timeout: 30_000,
   });
+}
+
+/**
+ * Quits the way Rust's quit coordinator does (`quit_commit`, then the app's
+ * `quit_ready`), then opens the app again on the same store.
+ */
+async function restart(page: Page) {
+  await page.evaluate(() => window.appBackend!.emit("quit_commit", 1));
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.appBackend!.calls.find(
+            ({ command }) => command === "quit_ready",
+          )?.args,
+      ),
+    )
+    .toEqual({ id: 1, persisted: true });
+  await page.evaluate(() => window.appBackend!.keepStore());
+  await page.reload();
+  await booted(page);
 }
 
 export const test = base.extend<{ app: AppShell }>({
@@ -111,6 +141,7 @@ export const test = base.extend<{ app: AppShell }>({
           { event, payload },
         ),
       takeReports,
+      restart: () => restart(page),
     });
     expect(
       await takeReports(),
