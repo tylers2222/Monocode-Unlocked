@@ -120,12 +120,53 @@ async function archiveFromRail(page: Page, name: string) {
   await page.getByRole("menuitem", { name: "Archive" }).click();
 }
 
-async function mountRealDb(app: AppShell) {
+/** Pip's chat, which the live-agents rail and the project rule leave out. */
+const PIP_CHAT = "mono-chat-0001";
+
+/**
+ * Pip's chat and a run of Pip's habit, both running in acme with turns newer
+ * than any other: mono.rs serves a habits.json that asks for one run now, and
+ * Pip's chat comes back from the restart with a turn of its own in acme.
+ */
+const excludedRunning: MountOptions["handlers"] = {
+  mono_read: (_store, { mono, path }) =>
+    mono === "mono-1" && path === "habits.json"
+      ? {
+          text:
+            (window as { habitsText?: string }).habitsText ??
+            JSON.stringify([
+              {
+                id: "habit-1",
+                name: "Tidy the docs",
+                instructions: "Tidy the docs folder.",
+                schedule: { scheduleKind: "daily", time: "09:00" },
+                enabled: true,
+                createdAt: 1,
+                nextRunAt: 4_102_444_800_000,
+                runRequested: true,
+              },
+            ]),
+          hash: "habits",
+        }
+      : {
+          text: null,
+          hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+  mono_save: (_store, { path, text }) => {
+    if (path === "habits.json")
+      (window as { habitsText?: string }).habitsText = text as string;
+    return "saved";
+  },
+};
+
+async function mountRealDb(app: AppShell, withExcludedRunning = false) {
+  const pipInAcme = (session: SessionSummary) =>
+    withExcludedRunning && session.id === PIP_CHAT ? { ...session, cwd: ACME } : session;
   await app.mount(
     {
       projects: [ACME, NOTES],
       sessions: [
-        ...records.map(summary),
+        ...records.map(summary).map(pipInAcme),
         {
           id: "home",
           cwd: HOME,
@@ -140,6 +181,13 @@ async function mountRealDb(app: AppShell) {
       blocks: {
         ...Object.fromEntries(records.map((record) => [record.id, record.blocks])),
         home: [{ id: "home-u", role: "user", text: "Plan the week", startedAt: 1, durationMs: 1 }],
+        ...(withExcludedRunning
+          ? {
+              [PIP_CHAT]: [
+                { id: "pip-u", role: "user", text: "Check acme", startedAt: Date.now() },
+              ],
+            }
+          : {}),
       },
       workFolders: Object.fromEntries(
         records.flatMap((record) =>
@@ -147,7 +195,9 @@ async function mountRealDb(app: AppShell) {
         ),
       ),
       workspace: realDb.snapshot,
-      inFlight: realDb.inFlight,
+      inFlight: withExcludedRunning
+        ? [...realDb.inFlight, { sessionId: PIP_CHAT, cwd: ACME }]
+        : realDb.inFlight,
       monos: [
         {
           id: "mono-1",
@@ -174,7 +224,7 @@ async function mountRealDb(app: AppShell) {
         },
       ],
     },
-    { handlers },
+    { handlers: withExcludedRunning ? { ...handlers, ...excludedRunning } : handlers },
   );
 }
 
@@ -197,8 +247,12 @@ function savedWorkspace(page: Page) {
  * The resumed sessions come back in tabs; closing a tab keeps its turn
  * running, which is one way the shipped app reached this state.
  */
-async function runningWithNoTab(app: AppShell, page: Page) {
-  await mountRealDb(app);
+async function runningWithNoTab(
+  app: AppShell,
+  page: Page,
+  withExcludedRunning = false,
+) {
+  await mountRealDb(app, withExcludedRunning);
   await expect(page.getByText(`${running.length} working agents`)).toBeVisible();
   for (const title of runningIn(ACME)) await closeTab(page, title).click();
   await railProject(page, "notes").click();
@@ -242,6 +296,33 @@ test("the rail row on an idle tab of the project opens its running session", asy
   page,
 }) => {
   await onIdleAcmeTab(app, page);
+  await railProject(page, "acme").click();
+  await expectOnRunningAcmeSession(page);
+});
+
+/** The sessions this window last wrote to session_set_in_flight as running. */
+function inFlightIds(page: Page) {
+  return page.evaluate(() => {
+    const writes = window.appBackend!.calls.filter(
+      ({ command }) => command === "session_set_in_flight",
+    );
+    const last = writes[writes.length - 1]?.args as
+      | { sessions: { sessionId: string }[] }
+      | undefined;
+    return last?.sessions.map((ref) => ref.sessionId) ?? [];
+  });
+}
+
+test("the rail row does not open a running habit run or Mono chat of the project", async ({
+  app,
+  page,
+}) => {
+  await runningWithNoTab(app, page, true);
+  await expect
+    .poll(() => inFlightIds(page))
+    .toEqual(
+      expect.arrayContaining([PIP_CHAT, expect.stringMatching(/^app-mono-chat-0001-habit-/)]),
+    );
   await railProject(page, "acme").click();
   await expectOnRunningAcmeSession(page);
 });

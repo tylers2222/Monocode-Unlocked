@@ -2343,6 +2343,16 @@ function Workspace({
     busySessionIds,
     activeSessionId,
   );
+  // What the live-agents rail never lists, for the rail and the project rule.
+  // Identity moves only when the set does, not with every streamed batch.
+  const liveAgentExcludedIdsNow = useMemo(
+    () => liveAgentExclusions(sessions, monoSessionIds, isHabitRun),
+    [sessions, monoSessionIds],
+  );
+  const liveAgentExcludedIds = useStableValue(
+    liveAgentExcludedIdsNow,
+    setsEqual,
+  );
 
   const liveAgentRows = useMemo(
     () =>
@@ -2350,10 +2360,10 @@ function Workspace({
         ? liveAgentsFromSessions(
             sessions,
             unseenFinishedIds,
-            liveAgentExclusions(sessions, monoSessionIds, isHabitRun),
+            liveAgentExcludedIds,
           )
         : [],
-    [liveAgentsEnabled, sessions, unseenFinishedIds, monoSessionIds],
+    [liveAgentsEnabled, sessions, unseenFinishedIds, liveAgentExcludedIds],
   );
   // Rebuilt for every streamed batch; identity only moves when a row does.
   const liveAgents = useStableValue(liveAgentRows);
@@ -6313,11 +6323,7 @@ function Workspace({
         tabs: tabsRef.current,
         sessions: sessionsRef.current,
         activeTabId: activeTabIdRef.current,
-        excludedIds: liveAgentExclusions(
-          sessionsRef.current,
-          monoSessionIds,
-          isHabitRun,
-        ),
+        excludedIds: liveAgentExcludedIds,
         paths,
       });
       const last = steps[steps.length - 1];
@@ -6390,7 +6396,7 @@ function Workspace({
     [
       activateTab,
       insertBeside,
-      monoSessionIds,
+      liveAgentExcludedIds,
       onCwdChange,
       onSelectHistorySession,
       readProjectReturnMemory,
