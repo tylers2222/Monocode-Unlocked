@@ -44,9 +44,12 @@ jobs:
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npx jscpd . --baseline-from-ref "$BASE" --fail-on-new-clones
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned: a new clippy can change which baseline #[expect] markers fire.
+      # Bump it in its own PR.
+      - uses: dtolnay/rust-toolchain@master
         if: ${{ !cancelled() }}
         with:
+          toolchain: 1.99.1
           components: clippy
 
       - name: Install Linux system dependencies
