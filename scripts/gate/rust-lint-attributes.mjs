@@ -1,7 +1,9 @@
 // Finds the lint suppressions in Rust source: each lint named in an allow( or
-// expect( inside an attribute, outer or inner, spaced or not, cfg_attr included.
-// An attribute whose body holds a macro metavariable ($meta, $($t)*) forwards
-// whatever the caller passes, so it counts as attr(<body>), whitespace removed.
+// expect( anywhere in code (comments and strings stripped), so an attribute counts
+// however it is spelled or assembled, including through a macro that builds the
+// # and the [...] from separate tokens. An attribute whose body holds a macro
+// metavariable ($meta, $($t)*) forwards whatever the caller passes, so it also
+// counts as attr(<body>), whitespace removed.
 
 const RAW_STRING = /r(#*)"/y;
 const LINE_COMMENT = /\/\/[^\n]*/y;
@@ -70,16 +72,13 @@ export function* lintAttributes(source) {
   for (const attribute of code.matchAll(/#\s*!?\s*\[/g)) {
     const open = attribute.index + attribute[0].length - 1;
     const body = code.slice(open, closing(code, open));
-    if (body.includes("$")) {
-      yield `attr(${body.replace(/\s+/g, "")}])`;
-      continue;
-    }
-    for (const call of body.matchAll(/(?<![\w.])(allow|expect)\s*\(/g)) {
-      const args = call.index + call[0].length - 1;
-      for (const item of body.slice(args + 1, closing(body, args)).split(",")) {
-        const lint = item.replace(/\s+/g, "");
-        if (lint && !lint.startsWith("reason")) yield `${call[1]}(${lint})`;
-      }
+    if (body.includes("$")) yield `attr(${body.replace(/\s+/g, "")}])`;
+  }
+  for (const call of code.matchAll(/(?<![\w.])(allow|expect)\s*\(/g)) {
+    const args = call.index + call[0].length - 1;
+    for (const item of code.slice(args + 1, closing(code, args)).split(",")) {
+      const lint = item.replace(/\s+/g, "");
+      if (lint && !lint.startsWith("reason")) yield `${call[1]}(${lint})`;
     }
   }
 }

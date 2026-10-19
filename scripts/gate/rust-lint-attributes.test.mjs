@@ -43,6 +43,13 @@ test("an attribute forwarded through a macro counts as attr(<body>)", () => {
   assert.deepEqual(lints(inCfgAttr), ["attr([cfg_attr(all(),$a)])"]);
 });
 
+test("an allow built from separate # and [...] tokens in a macro counts", () => {
+  const hashToken = 'macro_rules! m { ($h:tt) => { $h[allow(dead_code, reason = "probe")] fn f() {} } }\nm!(#);';
+  const bracketToken = 'macro_rules! m { ($b:tt) => { # $b fn f() {} } }\nm!([allow(dead_code, reason = "probe")]);';
+  assert.deepEqual(lints(hashToken), ["allow(dead_code)"]);
+  assert.deepEqual(lints(bracketToken), ["allow(dead_code)"]);
+});
+
 test("allow( and expect( count only as whole names, not inside other names or method calls", () => {
   const source = '#[disallow(dead_code)]\n#[my_expect(unused)]\n#[doc = x.expect(y)]\nfn f() {}';
   assert.deepEqual(lints(source), []);
