@@ -42,7 +42,7 @@ exec perl -e '
 
   my ($merge_base, $head) = @ARGV;
   my $GATE_FILE = qr{^(\.github/(workflows|actions)/.*|scripts/gate/.*|scripts/install-linux-deps-[^/]*\.sh|\.github/rust-version|rust-toolchain(\.toml)?)$|(^|/)(eslint\.config\.[cm]?[jt]s|\.?clippy\.toml|\.jscpd\.json|\.cargo/config(\.toml)?|\.npmrc)$};
-  my $SIZE_EXEMPT = qr{(^|/)(tests?|__tests__|fixtures?)/|\.(test|spec|fixtures?)\.[^/]+$|(^|/)(eslint-suppressions\.json|package-lock\.json)$};
+  my $SIZE_EXEMPT = qr{(^|/)(tests?|__tests__|fixtures?)/|\.(test|spec|fixtures?)\.[^/]+$|(^|/)(eslint-suppressions\.json|package-lock\.json)$|(^|/)tests\.rs$};
   my $JS = qr{\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$};
   my $SOURCE = qr{\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|rs)$|(^|/)Cargo\.toml$};
   # Changed lines in these files that can switch gate/lint off: Cargo lint tables and

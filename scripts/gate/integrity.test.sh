@@ -78,6 +78,7 @@ probe at-500 0 'ok, 500 non-test lines' lines src/big.ts 500
 probe test-file 0 'ok, 0 non-test lines' lines src/big.test.ts 600
 probe fixture 0 'ok, 0 non-test lines' eval 'mkdir -p src/fixtures && lines src/fixtures/f.ts 600'
 probe cfg-test 0 'ok, 0 non-test lines' rust_test_mod
+probe rust-tests-module 0 'ok, 5 non-test lines' eval 'mkdir -p src/foo && lines src/foo/tests.rs 600 && lines src/foo/tests_util.rs 2 && lines src/foo/mod.rs 3'
 probe cfg-test-one-line 1 'more than 500' cfg_test_one_line
 probe cfg-test-variant 1 'more than 500' cfg_test_variant
 probe binary 1 'diffs as binary' eval 'printf "// \0\n" > src/bin.ts'
