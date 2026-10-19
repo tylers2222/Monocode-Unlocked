@@ -727,6 +727,7 @@ fn ensure_column(conn: &Connection, name: &str, decl: &str) -> rusqlite::Result<
     Ok(())
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1206,6 +1207,7 @@ fn orchestration_summary(conn: &Connection, id: &str) -> rusqlite::Result<Option
     ))
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 pub(crate) fn upsert_session(
     conn: &Connection,
     session: &SessionUpsert,
@@ -1460,6 +1462,7 @@ fn search_sessions_sql(include_archived: bool, cwd_scoped: bool) -> String {
     sql
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 fn search_sessions_with_connection(
     conn: &Connection,
     options: &SessionSearchOptions,
@@ -1872,6 +1875,7 @@ fn optional_json(raw: Option<String>) -> Option<Value> {
     raw.and_then(|value| serde_json::from_str(&value).ok())
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 pub(crate) fn delete_session(
     conn: &Connection,
     session_id: &str,

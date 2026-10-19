@@ -1015,6 +1015,7 @@ fn parsed<T>(row: &Row, column: &str, parse: fn(&str) -> Option<T>) -> rusqlite:
         .transpose()
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 fn parse_row(row: &Row) -> rusqlite::Result<MonoMessage> {
     let text = |column: &str| row.get::<_, Option<String>>(column);
     let wanting_reply: bool = row.get("wanting_reply")?;
@@ -2081,7 +2082,8 @@ fn accepted(wanting_reply: bool, route: &Route, intent: Intent) -> Status {
 
 /// `reply_to` is the row the call's `reply_to` resolved to, which a
 /// rejected row keeps (the column is a foreign key, so only a stored row).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "baseline 2026-10")]
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 fn record(
     tx: &Connection,
     caller: &Caller,
@@ -2887,7 +2889,7 @@ pub fn record_start(
 /// rejected row they may write, in one `BEGIN IMMEDIATE` transaction, as
 /// `submit` does. `target` is the session id the action names; `target_copy`
 /// is the web app's `leadSessionId` of that session.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "baseline 2026-10")]
 pub fn check_action(
     conn: &Connection,
     caller: &Caller,
@@ -3060,7 +3062,7 @@ fn drop_steers_of_ended_turns(
 /// `running`, submits, then reads `running` again with no store lock held
 /// and drops a steer whose turn ended in between (design 16.12.3.3). The
 /// control lock is never held inside a store transaction (5.3).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "baseline 2026-10")]
 fn submit_and_recheck(
     store: &SessionStore,
     running: impl Fn() -> HashMap<String, String>,
@@ -3105,7 +3107,7 @@ struct RouteEvent<'a> {
     caller_window: &'a str,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "baseline 2026-10")]
 #[tauri::command(async)]
 pub fn mono_message_submit(
     app: AppHandle,
@@ -3914,6 +3916,7 @@ pub(crate) mod tests {
     // Design 16.2 map. Defects: a wrong CASE line, a lost row, or a column
     // value lost or moved by the copy.
     #[test]
+    #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
     fn the_rebuild_maps_every_old_row_shape() {
         let conn = pr3_database();
         for row in [
@@ -4964,7 +4967,7 @@ pub(crate) mod tests {
         call_in_turns_at(conn, caller, request_id, tool, input, live, running, 100)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "baseline 2026-10")]
     fn call_in_turns_at(
         conn: &Connection,
         caller: &Caller,
@@ -8218,6 +8221,7 @@ pub(crate) mod tests {
     // chat, the recipient's current chat, or the busiest session), or a steer
     // at queued work or at an older turn of a running session is let through.
     #[test]
+    #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
     fn a_shuffled_run_of_steers_reaches_only_the_sessions_that_handle_their_targets() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();

@@ -953,7 +953,8 @@ pub fn harness_free_port() -> Result<u16, String> {
 /// login-shell read. Callers await this before writing to the child. Kill can
 /// still race the fork, so a cancelled spawn must not reinsert the child.
 #[tauri::command(async)]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "baseline 2026-10")]
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 pub fn harness_spawn(
     app: AppHandle,
     host: State<'_, HarnessHost>,
@@ -3687,6 +3688,7 @@ pub(crate) mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
     fn configured_binary_paths_fail_closed_and_stay_exact() {
         use std::os::unix::fs::PermissionsExt;
 

@@ -36,7 +36,10 @@ fn set_autosave_menu_checked(app: &AppHandle, enabled: bool) {
     let _ = item.set_checked(enabled);
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(dead_code, reason = "called only by the macOS menu")
+)]
 fn custom_accelerator(shortcut: &str) -> String {
     let mut parts = shortcut.split('+');
     let key = parts.next_back().unwrap_or_default();
@@ -193,6 +196,7 @@ fn emit_to_focused(app: &AppHandle, id: &str) {
 }
 
 #[cfg(target_os = "macos")]
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 fn build(
     app: &AppHandle,
     overrides: &HashMap<String, KeybindingOverride>,
@@ -549,6 +553,9 @@ fn build(
         return Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window_menu, &help]);
     }
 
-    #[allow(unreachable_code)]
+    #[cfg_attr(
+        target_os = "macos",
+        expect(unreachable_code, reason = "macOS returns its own menu above")
+    )]
     Menu::with_items(app, &[&file, &edit, &view])
 }

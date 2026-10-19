@@ -356,6 +356,7 @@ fn upsert_note(conn: &Connection, note: &NoteUpsert) -> rusqlite::Result<Note> {
     upsert_content(conn, note, "note", None)
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 pub(crate) fn upsert_content(
     conn: &Connection,
     note: &NoteUpsert,
