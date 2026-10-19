@@ -176,6 +176,60 @@ test("the Approvals row counts the open cards of a copy of the app database", as
   );
 });
 
+type HeldReply = { hold?: Promise<void>; release?: () => void };
+
+test("a count reply that lands after a newer one does not replace it", async ({
+  app,
+  page,
+}) => {
+  await app.mount(
+    { ...REAL_DB, approvals: [...CLOSED, ...OPEN.slice(0, 3)] },
+    {
+      handlers: {
+        ...allowReservedNameDialog,
+        approvals_open_counts: async (store) => {
+          const total = store.approvals.filter(
+            (row) => row.status === "open",
+          ).length;
+          const held = window as unknown as HeldReply;
+          const hold = held.hold;
+          held.hold = undefined;
+          if (hold) await hold;
+          return { total, byProject: {} };
+        },
+      },
+    },
+  );
+  await expect(button(page, "Approvals, 3 open")).toBeVisible();
+
+  await page.evaluate(() => {
+    const held = window as unknown as HeldReply;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    held.hold = promise;
+    held.release = resolve;
+  });
+  await setCards(page, [...CLOSED, ...OPEN.slice(0, 5)], "focus");
+  await setCards(page, [...CLOSED, ...OPEN.slice(0, 7)], "changed");
+  await expect(button(page, "Approvals, 7 open")).toBeVisible();
+
+  await page.evaluate(() => (window as unknown as HeldReply).release!());
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.appBackend!.calls.every(
+          (call) =>
+            call.command !== "approvals_open_counts" ||
+            call.reply !== undefined,
+        ),
+      ),
+    )
+    .toBe(true);
+  await expect(
+    button(page, "Approvals, 7 open"),
+    "the older reply is dropped",
+  ).toBeVisible();
+});
+
 for (const mode of ["compact", "hidden"] as const) {
   test(`the ${mode} rail's Approvals button has the corner dot while cards are open`, async ({
     app,
