@@ -1130,6 +1130,162 @@
         "id": "ffffffff-ffff-4fff-8fff-ffffffffffff"
       },
       "name": "18: giga-a withdraws an unknown id"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "giga-a",
+      "calls": [],
+      "expect": "invalid_input",
+      "input": {
+        "heading": "Pick a store",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/app",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [],
+          "pros": [
+            "Local"
+          ],
+          "risks": [
+            "Disk"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "19: giga-a files tradeoffs with an unknown key"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "giga-a",
+      "calls": [],
+      "expect": "invalid_input",
+      "input": {
+        "heading": "Pick a store",
+        "links": [
+          {
+            "icon": "pr",
+            "kind": "pr",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/app",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "20: giga-a files a link with an unknown key"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "giga-a",
+      "calls": [],
+      "expect": "invalid_input",
+      "input": {
+        "heading": "Pick a store",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/app",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "urgent"
+      },
+      "name": "21: giga-a files an unknown urgency"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "giga-a",
+      "calls": [],
+      "expect": "invalid_input",
+      "input": {
+        "heading": "Pick a store",
+        "links": [
+          {
+            "kind": "github",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/app",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "22: giga-a files a link of an unknown kind"
     }
   ]
 }

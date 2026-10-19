@@ -66,6 +66,10 @@ const STEPS: Step[] = [
   { name: "16: giga-a withdraws its card", caller: "giga-a", action: "approvals.withdraw", input: { id: CARD_ID }, expect: "ok" },
   { name: "17: giga-a updates its withdrawn card", caller: "giga-a", action: "approvals.update", input: { id: CARD_ID, ...CARD }, expect: "approval_not_open" },
   { name: "18: giga-a withdraws an unknown id", caller: "giga-a", action: "approvals.withdraw", input: { id: "ffffffff-ffff-4fff-8fff-ffffffffffff" }, expect: "unknown_approval" },
+  { name: "19: giga-a files tradeoffs with an unknown key", caller: "giga-a", action: "approvals.file", input: { ...FILE, tradeoffs: { pros: ["Local"], cons: [], risks: ["Disk"] } }, expect: "invalid_input" },
+  { name: "20: giga-a files a link with an unknown key", caller: "giga-a", action: "approvals.file", input: { ...FILE, links: [{ kind: "pr", url: "https://github.com/tylers2222/monocode/pull/1", icon: "pr" }] }, expect: "invalid_input" },
+  { name: "21: giga-a files an unknown urgency", caller: "giga-a", action: "approvals.file", input: { ...FILE, urgency: "urgent" }, expect: "invalid_input" },
+  { name: "22: giga-a files a link of an unknown kind", caller: "giga-a", action: "approvals.file", input: { ...FILE, links: [{ kind: "github", url: "https://github.com/tylers2222/monocode/pull/1" }] }, expect: "invalid_input" },
 ];
 
 type Call = {
@@ -210,4 +214,29 @@ it.skipIf(WRITE)("refiles the first card and withdraws it", async () => {
   };
   expect((await card(2)).id).toBe((await card(1)).id);
   expect((await card(16)).status).toEqual({ state: "withdrawn", withdrawnAt: 16 });
+});
+
+// Defect: a Giga cannot send back the card that approvals.file returned,
+// because the reply carries null for an empty description, title or origin.
+it.skipIf(WRITE)("takes back the card a filing returned, nulls included", async () => {
+  const reply = cases[0].calls[0].reply;
+  if (!("Ok" in reply)) throw new Error(`step 1 was refused: ${reply.Err}`);
+  // The fixture holds the Approval that Rust's approvals_file returned.
+  const returned = reply.Ok as approvals.Approval;
+  expect(returned.options.map(({ description }) => description)).toContain(null);
+  const card = {
+    ...Object.fromEntries(approvals.CARD_FIELDS.map((key) => [key, returned[key]])),
+    links: returned.links.map((link) => ({ ...link, title: null })),
+    origin: null,
+  };
+  rust.reply = () => ({ Ok: returned });
+  const outcome = await run({
+    name: "the returned card",
+    caller: "giga-a",
+    action: "approvals.update",
+    input: { id: returned.id, ...card },
+    expect: "ok",
+  });
+  expect(outcome).toEqual({ value: returned });
+  expect(ipcCalls()).toEqual([["approvals_update", { id: returned.id, by: "giga-a", card }]]);
 });

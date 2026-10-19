@@ -73,8 +73,9 @@ function cardText(value: unknown, name: string): string {
   return value;
 }
 
+/** Absent or null is null, the form the card comes back in from Rust. */
 function optionalCardText(value: unknown, name: string): string | null {
-  return value === undefined ? null : cardText(value, name);
+  return value === undefined || value === null ? null : cardText(value, name);
 }
 
 function cardList<T>(

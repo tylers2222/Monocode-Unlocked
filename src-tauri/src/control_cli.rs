@@ -726,6 +726,7 @@ pub fn app_tools() -> Value {
     let status = json!({"type": "string", "enum": ["idea", "planned", "in_progress", "done"]});
     let target = json!({"type": ["string", "null"], "pattern": "^(\\d{4}-\\d{2}-\\d{2})?$", "description": "YYYY-MM-DD, or \"\" or null for later."});
     let label = json!({"type": "string", "minLength": 1, "maxLength": 200});
+    let optional_label = json!({"type": ["string", "null"], "minLength": 1, "maxLength": 200, "description": "null is the same as leaving it out."});
     let texts =
         json!({"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 8000}});
     let card = json!({
@@ -746,7 +747,7 @@ pub fn app_tools() -> Value {
                 "type": "object",
                 "properties": {
                     "label": label,
-                    "description": label,
+                    "description": optional_label,
                     "recommended": {"type": "boolean"}
                 },
                 "required": ["label"],
@@ -760,14 +761,14 @@ pub fn app_tools() -> Value {
                 "type": "object",
                 "properties": {
                     "kind": {"type": "string", "enum": ["pr", "doop", "linear"]},
-                    "title": label,
+                    "title": optional_label,
                     "url": {"type": "string", "pattern": "^https://"}
                 },
                 "required": ["kind", "url"],
                 "additionalProperties": false
             }
         },
-        "origin": label
+        "origin": optional_label
     });
     let approval = |key: &str, value: Value| {
         let mut properties = card.clone();
@@ -1971,7 +1972,8 @@ mod tests {
     // an update), drops the model's input, offers a field the app sets (the
     // exact key lists leave out number, requested_by, requested_by_name,
     // created_at, status and a filing's id), requires the wrong fields, or
-    // lets a nested object take a key the app refuses.
+    // lets a nested object take a key the app refuses, or refuses the null
+    // that a returned card carries for an empty description, title or origin.
     #[test]
     fn app_mcp_approval_tools_call_their_action_with_a_strict_schema() {
         let card = json!({
@@ -2038,6 +2040,13 @@ mod tests {
                 &properties["links"]["items"],
             ] {
                 assert_eq!(nested["additionalProperties"], false, "{name}: {nested}");
+            }
+            for optional in [
+                &properties["options"]["items"]["properties"]["description"],
+                &properties["links"]["items"]["properties"]["title"],
+                &properties["origin"],
+            ] {
+                assert_eq!(optional["type"], json!(["string", "null"]), "{name}");
             }
         }
     }
