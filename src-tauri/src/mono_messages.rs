@@ -1529,6 +1529,19 @@ fn session_ended(conn: &Connection, session: &SessionId) -> rusqlite::Result<boo
         .is_some())
 }
 
+/// A1: `prior` is an accepted start row whose session was archived or
+/// deleted since.
+fn start_ended(conn: &Connection, prior: &MonoMessage) -> rusqlite::Result<bool> {
+    match (&prior.status, &prior.to) {
+        (Status::Delivered { .. }, Some(Party::Session { session_id }))
+            if prior.tool == Tool::StartSession =>
+        {
+            session_ended(conn, session_id)
+        }
+        _ => Ok(false),
+    }
+}
+
 /// Design 7 (PR 6 review r1 m1): a call that a clear of its session
 /// overtook. It writes nothing, as the session can never be told.
 fn caller_ended() -> ToolError {
@@ -2886,7 +2899,8 @@ pub fn record_start(
 /// Design 6.6: the A rows for one app action of `caller`, and the one
 /// rejected row they may write, in one `BEGIN IMMEDIATE` transaction, as
 /// `submit` does. `target` is the session id the action names; `target_copy`
-/// is the web app's `leadSessionId` of that session.
+/// is the web app's `leadSessionId` of that session; `started` is the id a
+/// `sessions.start` launches.
 #[allow(clippy::too_many_arguments)]
 pub fn check_action(
     conn: &Connection,
@@ -2894,6 +2908,7 @@ pub fn check_action(
     action: &str,
     target: Option<&str>,
     target_copy: Option<SessionId>,
+    started: Option<&SessionId>,
     request_id: &RequestId,
     input: &Value,
     now: i64,
@@ -2918,6 +2933,17 @@ pub fn check_action(
             error: caller_ended(),
         });
     }
+    let prior = get_by_request(&tx, &caller.session_id, request_id)?
+        .into_iter()
+        .next();
+    let prior_start_ended = match (&prior, started) {
+        (Some(prior), _) => start_ended(&tx, prior)?,
+        // A start with no row (a draft, or a failed record) whose session
+        // ended: `host.start` would launch its id again.
+        (None, Some(started)) => session_ended(&tx, started)?,
+        (None, None) => false,
+    };
+    let hash = mono_gate::action_hash(action, input);
     let facts = ActionFacts {
         caller_level: match &caller.speaker {
             Speaker::Mono { .. } => None,
@@ -2933,9 +2959,23 @@ pub fn check_action(
             .as_ref()
             .map(|target| session_level(&tx, target, target_copy))
             .transpose()?,
+        prior,
+        prior_start_ended,
     };
-    let checked = match mono_gate::decide_action(caller, action, &facts) {
+    let checked = match mono_gate::decide_action(caller, action, &hash, &facts) {
         ActionDecision::Allow { lead_session_id } => ActionChecked::Allowed { lead_session_id },
+        ActionDecision::Refuse { code, hint } => ActionChecked::Failed {
+            error: refusal(code, hint),
+        },
+        ActionDecision::Replay { prior, code, hint } => ActionChecked::Failed {
+            error: ToolError {
+                code: code.as_str(),
+                hint,
+                message_id: Some(prior),
+                open_handles: None,
+                duplicate: true,
+            },
+        },
         ActionDecision::Reject { code, hint, tool } => {
             // Design 13.5: only an A5 row names its target session and keeps
             // the prompt the steer would have carried.
@@ -2944,7 +2984,7 @@ pub fn check_action(
                 id: new_message_id(),
                 request_id: request_id.clone(),
                 part: Part::FIRST,
-                payload_hash: mono_gate::action_hash(action, input),
+                payload_hash: hash,
                 tool,
                 from_mono_id: caller.mono_id().cloned(),
                 from_session_id: caller.session_id.clone(),
@@ -3303,6 +3343,7 @@ pub struct AppActionCall {
     action: String,
     target: Option<String>,
     target_lead_session_id: Option<String>,
+    started_session_id: Option<String>,
     request_id: String,
     input: Value,
 }
@@ -3314,6 +3355,11 @@ impl AppActionCall {
             .target_lead_session_id
             .as_deref()
             .map(|lead| SessionId::parse(lead).ok_or("Invalid targetLeadSessionId"))
+            .transpose()?;
+        let started = self
+            .started_session_id
+            .as_deref()
+            .map(|id| SessionId::parse(id).ok_or("Invalid startedSessionId"))
             .transpose()?;
         let Some(request_id) = RequestId::parse(&self.request_id) else {
             return Ok(ActionChecked::Failed {
@@ -3327,6 +3373,7 @@ impl AppActionCall {
             &self.action,
             self.target.as_deref(),
             target_copy,
+            started.as_ref(),
             &request_id,
             &self.input,
             now,
@@ -9175,6 +9222,7 @@ pub(crate) mod tests {
                 "sessions.start",
                 None,
                 None,
+                None,
                 &RequestId::parse("spawn").unwrap(),
                 &input,
                 100,
@@ -9229,6 +9277,7 @@ pub(crate) mod tests {
                 &caller_in("mono-a", "a-chat"),
                 "sessions.send",
                 Some("worker"),
+                None,
                 None,
                 &RequestId::parse("nudge").unwrap(),
                 &serde_json::json!({"sessionId": "worker", "prompt": "Stop"}),
@@ -9357,6 +9406,7 @@ pub(crate) mod tests {
                         "sessions.send",
                         Some(target),
                         None,
+                        None,
                         &RequestId::parse("send").unwrap(),
                         &input,
                         100,
@@ -9393,6 +9443,7 @@ pub(crate) mod tests {
                 "sessions.start",
                 None,
                 None,
+                None,
                 &RequestId::parse("start").unwrap(),
                 &start_input("Build"),
                 300,
@@ -9402,6 +9453,7 @@ pub(crate) mod tests {
                 &mono,
                 "sessions.send",
                 Some("worker"),
+                None,
                 None,
                 &RequestId::parse("send").unwrap(),
                 &serde_json::json!({"sessionId": "worker", "prompt": "Rebase first"}),
@@ -9443,6 +9495,7 @@ pub(crate) mod tests {
                 "sessions.start",
                 None,
                 None,
+                None,
                 &RequestId::parse("spawn").unwrap(),
                 &start_input(&"x".repeat(8001)),
                 100,
@@ -9471,6 +9524,7 @@ pub(crate) mod tests {
                 &session_caller("worker", "/p", None),
                 "sessions.read",
                 Some("lead"),
+                None,
                 None,
                 &RequestId::parse("peek").unwrap(),
                 &serde_json::json!({"sessionId": "lead", "prompt": "Show me"}),
@@ -9519,6 +9573,7 @@ pub(crate) mod tests {
                 "sessions.send",
                 Some("ghost"),
                 Some(session("lead")),
+                None,
                 &RequestId::parse("nudge").unwrap(),
                 &serde_json::json!({"sessionId": "ghost", "prompt": "Stop"}),
                 100,
@@ -9543,6 +9598,7 @@ pub(crate) mod tests {
                 "sessions.start",
                 None,
                 None,
+                None,
                 &RequestId::parse("spawn").unwrap(),
                 &start_input("Help"),
                 100,
@@ -9555,6 +9611,7 @@ pub(crate) mod tests {
                 &conn,
                 &mono,
                 "sessions.start",
+                None,
                 None,
                 None,
                 &RequestId::parse("start").unwrap(),
@@ -9779,6 +9836,7 @@ pub(crate) mod tests {
                 "sessions.start",
                 None,
                 None,
+                None,
                 &key,
                 &input,
                 100,
@@ -9788,11 +9846,11 @@ pub(crate) mod tests {
         let refused = failed_check(check(&session_caller("fresh", "/p", Some("lead"))));
         assert_eq!(refused.code, "worker_cannot_spawn");
         let lead = session_caller("fresh", "/p", None);
+        // PR 11's A1 answers the refusal again before any launch.
+        let replayed = failed_check(check(&lead));
         assert_eq!(
-            check(&lead),
-            ActionChecked::Allowed {
-                lead_session_id: Some(session("fresh"))
-            }
+            (replayed.code, replayed.message_id, replayed.duplicate),
+            ("worker_cannot_spawn", refused.message_id.clone(), true)
         );
         assert_eq!(
             record_start(&conn, &lead, &session("app-fresh-spawn"), &key, &input, 200).unwrap(),
@@ -10019,6 +10077,205 @@ pub(crate) mod tests {
         assert!(unqueued(&conn, &session("lead")).unwrap().is_empty());
     }
 
+    /// The session id `caller`'s `sessions.start` with `key` launches
+    /// (`appLaunchId` in agentApp.ts).
+    fn launch(caller: &Caller, key: &RequestId) -> SessionId {
+        session(&format!(
+            "app-{}-{}",
+            caller.session_id.as_str(),
+            key.as_str()
+        ))
+    }
+
+    // Design 9 and 6.6 A1. Defect: the start row's hash is not the check's,
+    // so a lead's retry of a start it launched is refused, or the retry loses
+    // the lead id the first call wrote; or other input under the key passes.
+    #[test]
+    fn a_leads_repeated_start_passes_a1_with_its_own_lead_id() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let lead = session_caller("lead", "/p", None);
+        let key = RequestId::parse("spawn").unwrap();
+        let check = |input: &serde_json::Value| {
+            check_action(
+                &conn,
+                &lead,
+                "sessions.start",
+                None,
+                None,
+                Some(&launch(&lead, &key)),
+                &key,
+                input,
+                100,
+            )
+            .unwrap()
+        };
+        let allowed = ActionChecked::Allowed {
+            lead_session_id: Some(session("lead")),
+        };
+        assert_eq!(check(&start_input("Fix the build")), allowed);
+        start_row(
+            &conn,
+            &lead,
+            launch(&lead, &key).as_str(),
+            "spawn",
+            "Fix the build",
+        );
+        assert_eq!(check(&start_input("Fix the build")), allowed);
+        assert_eq!(
+            failed_check(check(&start_input("Fix the tests"))),
+            refusal(
+                Refusal::RequestIdReused,
+                mono_gate::REQUEST_ID_REUSED.into()
+            )
+        );
+        assert_eq!(rows(&conn), 1);
+    }
+
+    // Design 9, A1. Defect: a retry of a start whose session the user
+    // archived or deleted passes the key check, so `host.start` launches the
+    // id again.
+    #[test]
+    fn a_start_retried_after_its_session_ended_is_refused_before_any_launch() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let ended = refusal(Refusal::RequestIdReused, mono_gate::START_ENDED.into());
+        for (caller, key) in [
+            (caller_in("mono-a", "a-chat"), "start"),
+            (session_caller("lead", "/p", None), "spawn"),
+        ] {
+            let key = RequestId::parse(key).unwrap();
+            let started = launch(&caller, &key);
+            start_row(&conn, &caller, started.as_str(), key.as_str(), "Build");
+            clear(&conn, started.as_str(), 200);
+            assert_eq!(
+                failed_check(
+                    check_action(
+                        &conn,
+                        &caller,
+                        "sessions.start",
+                        None,
+                        None,
+                        Some(&started),
+                        &key,
+                        &start_input("Build"),
+                        300,
+                    )
+                    .unwrap()
+                ),
+                ended,
+                "{:?}",
+                caller.session_id
+            );
+        }
+        assert_eq!(rows(&conn), 2);
+    }
+
+    // Design 9, A1 (a draft, or a failed record, writes no row). Defect: a
+    // retry of a start with no row whose session the user deleted passes,
+    // so `host.start` launches the deleted id again; or the command drops
+    // the `startedSessionId` the web app sends.
+    #[test]
+    fn a_rowless_start_whose_session_ended_is_refused_before_any_launch() {
+        let store = messaging_store();
+        seed_levels(&store.lock_conn().unwrap());
+        let ended = refusal(Refusal::RequestIdReused, mono_gate::START_ENDED.into());
+        for (caller, lead, started) in [
+            (
+                serde_json::json!({"kind": "mono_chat", "monoId": "mono-a", "sessionId": "a-chat", "turnId": "turn-1"}),
+                None,
+                "app-a-chat-r1",
+            ),
+            (
+                serde_json::json!({"kind": "session", "access": "started", "cwd": "/p", "leadSessionId": null, "sessionId": "lead", "turnId": "turn-1"}),
+                Some(session("lead")),
+                "app-lead-r1",
+            ),
+        ] {
+            // The command the web app calls, with the id `appLaunchId` sends.
+            let check = || {
+                serde_json::from_value::<AppActionCall>(serde_json::json!({
+                    "caller": caller, "action": "sessions.start", "target": null,
+                    "targetLeadSessionId": null, "startedSessionId": started,
+                    "requestId": "r1", "input": start_input("Fix CI")
+                }))
+                .unwrap()
+                .check(&store, 300)
+                .unwrap()
+            };
+            assert_eq!(
+                check(),
+                ActionChecked::Allowed {
+                    lead_session_id: lead
+                }
+            );
+            clear(&store.lock_conn().unwrap(), started, 200);
+            assert_eq!(failed_check(check()), ended, "{started}");
+        }
+        assert_eq!(rows(&store.lock_conn().unwrap()), 0);
+    }
+
+    // #91 N1 and #97 N4. Tauri binds each command argument by its parameter
+    // name. Defect: a command's parameter is renamed from `call` (or the web
+    // app sends another key), so every app action or start record fails in
+    // the app while every other test, which calls the Rust functions or
+    // mocks `invoke`, passes.
+    #[test]
+    fn each_level_gate_command_binds_the_call_key_the_web_app_sends() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../src/features/agent-app/model/appActionCheck.fixtures.json"
+        ))
+        .unwrap();
+        let calls: Vec<Value> = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|case| case["name"].as_str().unwrap().starts_with("A6"))
+            .flat_map(|case| case["calls"].as_array().unwrap().clone())
+            .collect();
+        let app = tauri::test::mock_builder()
+            .manage(messaging_store())
+            .invoke_handler(tauri::generate_handler![
+                super::mono_app_action_check,
+                super::mono_message_record_start
+            ])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+            .build()
+            .unwrap();
+        let invoke = |command: &str, args: &Value| {
+            tauri::test::get_ipc_response(
+                &webview,
+                tauri::webview::InvokeRequest {
+                    cmd: command.into(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: "tauri://localhost".parse().unwrap(),
+                    body: tauri::ipc::InvokeBody::Json(args.clone()),
+                    headers: Default::default(),
+                    invoke_key: tauri::test::INVOKE_KEY.into(),
+                },
+            )
+            .map(|body| body.deserialize::<Value>().unwrap())
+        };
+        let commands: Vec<&str> = calls
+            .iter()
+            .map(|call| call["command"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            commands,
+            ["mono_app_action_check", "mono_message_record_start"]
+        );
+        for call in &calls {
+            let command = call["command"].as_str().unwrap();
+            let answer = invoke(command, &call["args"]).unwrap();
+            assert_eq!(answer["outcome"], call["reply"]["outcome"], "{command}");
+        }
+    }
+
     // PR7-9b and PR7-10 real-state proof. `appActionCheck.fixtures.json`
     // holds the exact `mono_app_action_check` and `mono_message_record_start`
     // calls that the web app's real `levelGate` sends (agentAppLevels.test.ts
@@ -10068,8 +10325,16 @@ pub(crate) mod tests {
             // fixture writes the n-th as `m_` and the n-th letter 12 times.
             let mut ids: Vec<MessageId> = Vec::new();
             let calls = case["calls"].as_array_mut().unwrap();
-            let mut ran = 0;
-            for call in calls.iter_mut() {
+            // A step starts with its check; after a refusal the web app makes
+            // no more calls in that step (agentAppLevels.test.ts checks it).
+            let mut kept = vec![true; calls.len()];
+            let mut refused = false;
+            for (index, call) in calls.iter_mut().enumerate() {
+                let checks = call["command"] == "mono_app_action_check";
+                if refused && !checks {
+                    kept[index] = false;
+                    continue;
+                }
                 // Tauri hands the command the `call` key of the invoke arguments.
                 let args = call["args"].as_object().unwrap();
                 assert_eq!(args.keys().collect::<Vec<_>>(), ["call"], "{name}");
@@ -10106,22 +10371,24 @@ pub(crate) mod tests {
                         *id = serde_json::json!(format!("m_{}", letter.to_string().repeat(12)));
                     }
                 }
-                let refused = answer["outcome"] == "failed";
+                refused = answer["outcome"] == "failed";
                 if write {
                     call["reply"] = answer;
                 } else {
                     assert_eq!(answer, call["reply"], "{name}");
                 }
-                ran += 1;
-                // The web app stops at a refusal; agentAppLevels.test.ts checks it.
-                if refused {
-                    break;
-                }
             }
             if write {
-                calls.truncate(ran);
+                let mut index = 0;
+                calls.retain(|_| {
+                    index += 1;
+                    kept[index - 1]
+                });
             } else {
-                assert_eq!(ran, calls.len(), "{name}");
+                assert!(
+                    kept.iter().all(|kept| *kept),
+                    "{name}: a call after a refusal"
+                );
             }
             // One row per id: a repeated start keeps its first row.
             let rows: i64 = store

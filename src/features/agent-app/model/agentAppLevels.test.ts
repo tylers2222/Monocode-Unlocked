@@ -44,15 +44,18 @@ type Scenario = {
   requestId: string;
   /** The host method an allowed call reaches. */
   ran: "start" | "send" | "stop" | null;
-  /** How many times the agent makes the call; 1 when absent. */
-  times?: number;
+  /** The agent's next calls under the same request id, in order. */
+  then?: { action: string; input: Record<string, unknown> }[];
 };
 
 const CHOICE = { harness: "codex", model: "codex:test", notifyOnComplete: false };
 const SCENARIOS: Scenario[] = [
   { name: "A6: a lead's start makes a worker of it", caller: "lead", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" }, requestId: "a6-start", ran: "start" },
   { name: "A7: a Mono's start makes a lead", caller: "a-chat", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" }, requestId: "a7-start", ran: "start" },
-  { name: "A7: a Mono's repeated start answers its first row", caller: "a-chat", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" }, requestId: "a7-again", ran: "start", times: 2 },
+  { name: "A7: a Mono's repeated start answers its first row", caller: "a-chat", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" }, requestId: "a7-again", ran: "start", then: [{ action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" } }] },
+  { name: "A1: a refused start again answers its first refusal", caller: "worker", action: "sessions.start", input: { ...CHOICE, prompt: "Spawn a helper" }, requestId: "a1-refused", ran: null, then: [{ action: "sessions.start", input: { ...CHOICE, prompt: "Spawn a helper" } }] },
+  { name: "A2: a lead's start again with other input is refused before the launch", caller: "lead", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" }, requestId: "a2-other", ran: "start", then: [{ action: "sessions.start", input: { ...CHOICE, prompt: "Fix the tests" } }] },
+  { name: "A2: a Mono's start under the request id of its refused send is refused", caller: "a-chat", action: "sessions.send", input: { sessionId: "worker", prompt: "Stop" }, requestId: "a2-send", ran: null, then: [{ action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" } }] },
   { name: "A5: a lead sends into its own worker", caller: "lead", action: "sessions.send", input: { sessionId: "worker", prompt: "Rebase first" }, requestId: "a5-own", ran: "send" },
   { name: "A5: a Mono may stop a worker", caller: "a-chat", action: "sessions.stop", input: { sessionId: "worker" }, requestId: "a5-stop", ran: "stop" },
   { name: "A5: a Mono's send into a worker, padded id parsed once", caller: "a-chat", action: "sessions.send", input: { sessionId: " worker\n", prompt: "Stop" }, requestId: "a5-send", ran: null },
@@ -228,33 +231,42 @@ function sortedJson(value: unknown): string {
   return `${JSON.stringify(sort(value), null, 2)}\n`;
 }
 
-/** Runs a scenario `times` times, as the agent repeats a call. */
+/** Runs a scenario's calls in order, each with the level gate calls it made. */
 async function runScenario(scenario: Scenario) {
   const { run, host, actions } = world(scenario.caller);
-  const outcomes: ({ value: unknown } | { error: unknown })[] = [];
-  for (let n = 0; n < (scenario.times ?? 1); n += 1)
-    outcomes.push(
-      await run(scenario.action, scenario.input, scenario.requestId).then(
-        (value) => ({ value }),
-        (error: unknown) => ({ error }),
-      ),
+  const steps: { outcome: { value: unknown } | { error: unknown }; calls: number }[] = [];
+  for (const { action, input } of [scenario, ...(scenario.then ?? [])]) {
+    const before = gateCalls().length;
+    const outcome = await run(action, input, scenario.requestId).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
     );
-  return { host, actions, outcomes };
+    steps.push({ outcome, calls: gateCalls().length - before });
+  }
+  return { host, actions, steps };
 }
 
 it.runIf(WRITE)("writes the fixture from the real calls", async () => {
   const written: Case[] = [];
   for (const scenario of SCENARIOS) {
     vi.mocked(invoke).mockClear();
-    await runScenario(scenario);
+    // Each call gets the reply the file holds at its place, so a scenario
+    // follows Rust's answers; a new call gets the default, which the Rust
+    // write then replaces.
     const kept = cases.find((entry) => entry.name === scenario.name)?.calls;
+    const answered: unknown[] = [];
+    command.answer = (name) => {
+      const at = kept?.[answered.length];
+      const reply =
+        at?.command === name ? at.reply : ANSWERS[name as Call["command"]];
+      answered.push(reply);
+      return reply;
+    };
+    await runScenario(scenario);
     const calls = gateCalls().map(([command, args], index): Call => ({
       command: command as Call["command"],
       args: args as Call["args"],
-      reply:
-        kept?.[index]?.command === command
-          ? kept[index].reply
-          : ANSWERS[command as Call["command"]],
+      reply: answered[index],
     }));
     written.push({ ...scenario, calls });
   }
@@ -275,9 +287,10 @@ it.skipIf(WRITE)("holds every scenario and the world in the fixture", () => {
 
 // Design 6.6, 13.3 and 16.2, the Rust contract. Defect: an app action runs
 // with no level check, or with a check that names another action, target,
-// lead copy or input than Rust reads; Rust's refusal does not stop the
-// action or loses its code, hint or row id; the web app decides the new
-// session's lead itself instead of taking Rust's answer; or a submitted
+// lead copy, launch id or input than Rust reads; Rust's refusal (A3-A5), its
+// replay (A1) or its request id refusal (A2) does not stop the action or
+// loses its code, hint, row id or duplicate flag; the web app decides the
+// new session's lead itself instead of taking Rust's answer; or a submitted
 // start writes no start row, sends another key or input than the check, or
 // answers another message_id than its row's.
 it.skipIf(WRITE).each(cases.map((entry) => [entry.name, entry] as const))(
@@ -285,39 +298,36 @@ it.skipIf(WRITE).each(cases.map((entry) => [entry.name, entry] as const))(
   async (_name, entry) => {
     const replies = entry.calls.map((call) => call.reply);
     command.answer = () => replies.shift();
-    const { host, actions, outcomes } = await runScenario(entry);
+    const { host, actions, steps } = await runScenario(entry);
     expect(gateCalls()).toEqual(
       entry.calls.map(({ command, args }) => [command, args]),
     );
-    const reply = entry.calls[0].reply as ActionChecked;
-    if (reply.outcome === "failed") {
-      expect(outcomes).toEqual([
-        {
-          error: expect.objectContaining({
-            code: reply.error.code,
-            hint: reply.error.hint,
-            details: { message_id: reply.error.message_id },
-          }),
-        },
-      ]);
+    let next = 0;
+    let allowed = 0;
+    for (const { outcome, calls } of steps) {
+      const [check, record] = entry.calls.slice(next, next + calls);
+      next += calls;
+      const reply = check.reply as ActionChecked;
+      if (reply.outcome === "failed") {
+        const { code, hint, ...details } = reply.error;
+        expect(outcome).toEqual({
+          error: expect.objectContaining({ code, hint, details }),
+        });
+        continue;
+      }
+      allowed += 1;
+      expect(
+        (outcome as { value: { message_id?: string } }).value.message_id,
+      ).toBe((record?.reply as { messageId?: string } | undefined)?.messageId);
+      if (entry.action === "sessions.start" && allowed === 1)
+        expect(vi.mocked(host.start).mock.calls[0][0].leadSessionId).toBe(
+          reply.leadSessionId ?? undefined,
+        );
+    }
+    if (entry.ran) expect(actions[entry.ran]).toHaveBeenCalledTimes(allowed);
+    if (!allowed)
       for (const action of Object.values(actions))
         expect(action).not.toHaveBeenCalled();
-      return;
-    }
-    if (entry.ran)
-      expect(actions[entry.ran]).toHaveBeenCalledTimes(entry.times ?? 1);
-    const rows = entry.calls
-      .filter((call) => call.command === "mono_message_record_start")
-      .map((call) => (call.reply as { messageId: string }).messageId);
-    expect(
-      outcomes.map(
-        (outcome) => (outcome as { value: { message_id?: string } }).value.message_id,
-      ),
-    ).toEqual(rows.length ? rows : outcomes.map(() => undefined));
-    if (entry.action === "sessions.start")
-      expect(vi.mocked(host.start).mock.calls[0][0].leadSessionId).toBe(
-        reply.leadSessionId ?? undefined,
-      );
   },
 );
 
@@ -458,6 +468,27 @@ it("answers a coded record failure after the launch with its code and the starte
     hint: "Use a new request id; session app-lead-r9 was started anyway, so do not start it again; read or steer it by its id.",
   });
   expect(actions.start).toHaveBeenCalledOnce();
+});
+
+// Design 9 (appLaunchId). Defect: a start whose new session id,
+// app-<caller>-<request id>, is over 256 characters reaches the level check
+// and launches, though no later call can name that session; or an id of
+// exactly 256 characters is refused.
+it("refuses a start whose new session id would be over 256 characters, before the check", async () => {
+  const { host, actions, sessions } = world("lead");
+  const caller = { ...sessions.get("lead")!, id: "s".repeat(200) };
+  const start = (requestId: string) =>
+    handleAgentApp(caller, requestId, "sessions.start", { ...CHOICE, prompt: "Fix it" }, host);
+  const fits = "r".repeat(256 - "app-".length - 200 - "-".length);
+  await expect(start(`${fits}r`)).rejects.toMatchObject({ code: "invalid_input" });
+  expect(checks()).toEqual([]);
+  expect(actions.start).not.toHaveBeenCalled();
+  await start(fits).catch(() => {});
+  expect(
+    checks().map((args) => (args as { call: { startedSessionId: string } }).call.startedSessionId),
+  ).toEqual([
+    `app-${caller.id}-${fits}`,
+  ]);
 });
 
 // #93 review r1 m2. Defect: a record that fails with no code (a Rust Err

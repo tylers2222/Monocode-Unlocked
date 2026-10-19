@@ -38,6 +38,8 @@ png = "0.18"
 
 [dev-dependencies]
 regex = "1"
+# tauri::test drives the real commands through Tauri's argument binding.
+tauri = { version = "2", features = ["test"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

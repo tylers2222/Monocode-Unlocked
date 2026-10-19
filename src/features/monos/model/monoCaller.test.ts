@@ -177,10 +177,11 @@ it("waits for queued roster writes before it answers", async () => {
   });
 });
 
-// Design 6.6. Defect: the level check needs the persisted roster as
+// Design 6.6 and 9. Defect: the level check needs the persisted roster as
 // messaging does, so a Mono cannot steer, stop or start sessions while
-// roster_unavailable holds; or Rust misses the window's copy of an unsaved
-// target's lead.
+// roster_unavailable holds; Rust misses the window's copy of an unsaved
+// target's lead; or Rust misses the session id a start would launch, so a
+// retry after that session ended launches again.
 it("checks a Mono's app action without the roster", async () => {
   const mono = createMono();
   saveMonoSessionId(mono.id, "memory-chat");
@@ -190,7 +191,12 @@ it("checks a Mono's app action without the roster", async () => {
     id === "worker" ? "lead" : undefined,
   );
   expect(
-    await gate.check("r1", { action: "sessions.send", target: "worker", input }),
+    await gate.check("r1", {
+      action: "sessions.send",
+      target: "worker",
+      startedSessionId: null,
+      input,
+    }),
   ).toEqual({ leadSessionId: null });
   expect(invoke).toHaveBeenCalledWith("mono_app_action_check", {
     call: {
@@ -203,9 +209,24 @@ it("checks a Mono's app action without the roster", async () => {
       action: "sessions.send",
       target: "worker",
       targetLeadSessionId: "lead",
+      startedSessionId: null,
       requestId: "r1",
       input,
     },
+  });
+  const start = { prompt: "Build" };
+  await gate.check("r2", {
+    action: "sessions.start",
+    target: null,
+    startedSessionId: "app-memory-chat-r2",
+    input: start,
+  });
+  expect(invoke).toHaveBeenLastCalledWith("mono_app_action_check", {
+    call: expect.objectContaining({
+      action: "sessions.start",
+      startedSessionId: "app-memory-chat-r2",
+      requestId: "r2",
+    }),
   });
 });
 
@@ -218,6 +239,7 @@ it("refuses a check with no turn as turn_inactive and calls nothing", async () =
     levelGate(session("giga-chat"), null, () => undefined).check("r1", {
       action: "sessions.list",
       target: null,
+      startedSessionId: null,
       input: {},
     }),
   ).rejects.toMatchObject({ code: "turn_inactive" });
@@ -242,6 +264,7 @@ it("throws the level check's refusal with its code, hint and row id", async () =
     levelGate(worker, turn, () => undefined).check("r1", {
       action: "notes.list",
       target: null,
+      startedSessionId: null,
       input: {},
     }),
   ).rejects.toMatchObject({

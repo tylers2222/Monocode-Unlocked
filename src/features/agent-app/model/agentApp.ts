@@ -302,6 +302,8 @@ export type AgentAppHost = {
         action: string;
         /** The session the action names: the parsed `input.sessionId`. */
         target: string | null;
+        /** The id a `sessions.start` launches (`appLaunchId`); null for any other action. */
+        startedSessionId: string | null;
         input: Record<string, unknown>;
       },
     ): Promise<{ leadSessionId: string | null }>;
@@ -492,6 +494,25 @@ function boundaryInput(
       "sessionId must be a session id: 1 to 256 letters, digits, underscores or hyphens",
     );
   return { ...input, sessionId };
+}
+
+/**
+ * The id of the session a `sessions.start` launches, which the level check
+ * reads before any launch (A1). Later calls name a session by an id of at
+ * most 256 characters, so a longer one is refused before the check.
+ */
+function appLaunchId(source: Session, requestId: string): string {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId))
+    throw new Error(
+      "request ID must use letters, digits, underscores or hyphens",
+    );
+  const prefix = `app-${source.id}-`;
+  if (prefix.length + requestId.length > 256)
+    throw new AppActionError(
+      "invalid_input",
+      `The new session's id, app-<this session's id>-<request id>, would be over 256 characters. Use a shorter request id, of at most ${Math.max(256 - prefix.length, 0)} characters.`,
+    );
+  return prefix + requestId;
 }
 
 /**
@@ -1588,6 +1609,8 @@ export async function handleAgentApp(
 ): Promise<unknown> {
   fields(action, rawInput);
   const input = boundaryInput(action, rawInput);
+  const launchId =
+    action === "sessions.start" ? appLaunchId(source, requestId) : null;
   // Design 6.6: Rust decides every app action once, before it runs.
   // messages.* get their own gate in mono_message_submit.
   const { leadSessionId } = action.startsWith("messages.")
@@ -1595,6 +1618,7 @@ export async function handleAgentApp(
     : await host.levels.check(requestId, {
         action,
         target: typeof input.sessionId === "string" ? input.sessionId : null,
+        startedSessionId: launchId,
         input,
       });
   if (action.startsWith("artifacts."))
@@ -1754,10 +1778,6 @@ export async function handleAgentApp(
       };
     }
     case "sessions.start": {
-      if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId))
-        throw new Error(
-          "request ID must use letters, digits, underscores or hyphens",
-        );
       const { launch, listedWorktree } = startLaunch(
         source,
         input,
@@ -1789,7 +1809,7 @@ export async function handleAgentApp(
           ? undefined
           : (optionalString(input.besideSessionId, "besideSessionId", 256) ??
             source.id);
-      const id = `app-${source.id}-${requestId}`;
+      const id = launchId!;
       if (besideSessionId)
         await host.start(
           launch,

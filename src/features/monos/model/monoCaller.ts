@@ -185,12 +185,13 @@ export function levelGate(
     return resolved;
   };
   return {
-    async check(requestId, { action, target, input }) {
+    async check(requestId, { action, target, startedSessionId, input }) {
       const call = {
         caller: caller(),
         action,
         target,
         targetLeadSessionId: target === null ? null : (leadOf(target) ?? null),
+        startedSessionId,
         requestId,
         input,
       };

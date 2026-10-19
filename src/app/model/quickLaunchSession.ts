@@ -1,3 +1,4 @@
+import { AppActionError } from "../../features/agent-app/model/appActionError";
 import {
   rememberProject,
   type RecentProject,
@@ -11,6 +12,7 @@ import {
 } from "../../features/sessions/model/models";
 import {
   newSession,
+  sessionDraftBlock,
   type Session,
   type Attachment,
 } from "../../features/sessions/model/session";
@@ -20,6 +22,43 @@ import {
   type WorkspaceTab,
 } from "../../features/workspace/model/layout";
 import type { SubmissionAcceptance } from "./submissionAcceptance";
+
+/**
+ * Whether the launch of session `id` with `launch` already happened: the one
+ * repeat rule, which App's `host.start` asks before the launch and
+ * `acceptQuickLaunch` again where it makes the session. A block stamped with
+ * `appRequestId` is this id's launch; a repeat has its text and, for a
+ * submitted launch, no draft. Every app launch (`app`) stamps its first user
+ * block, so an app launch into a session that has a submitted turn, or was
+ * accepted, with no stamp is no repeat: the user sent, wrote or removed that
+ * turn. A floating-composer launch stamps only a draft, so its accepted
+ * session is a repeat. Throws on a conflict; false means launch it.
+ */
+export function appLaunchRepeat(
+  existing: Session | null | undefined,
+  launch: QuickLaunch,
+  id: string,
+  app: boolean,
+): boolean {
+  const reused = new AppActionError(
+    "request_id_reused",
+    "Request ID was already used for another session launch",
+  );
+  const previous = existing?.blocks.find((block) => block.appRequestId === id);
+  if (previous) {
+    if (previous.text !== launch.prompt || (!launch.draft && !!previous.draft))
+      throw reused;
+    return true;
+  }
+  const launched =
+    !!existing?.quickLaunchAccepted ||
+    !!existing?.blocks.some((block) => block.role === "user" && !block.draft);
+  if (!app) return launched;
+  if (launched) throw reused;
+  if (existing && sessionDraftBlock(existing))
+    throw new Error("Session ID already has a different draft");
+  return false;
+}
 
 /** Complete the workspace handoff before the receiver acknowledges the launch. */
 export async function acceptQuickLaunch(
@@ -41,7 +80,7 @@ export async function acceptQuickLaunch(
       sessionId: string,
       text: string,
       attachments: Attachment[],
-      options?: { intent: "plan" | "orchestrate" },
+      options?: { intent?: "plan" | "orchestrate"; appRequestId?: string },
     ) => SubmissionAcceptance;
     saveDraft?: (
       sessionId: string,
@@ -58,6 +97,8 @@ export async function acceptQuickLaunch(
   placement?: { direction: SplitDir; besideSessionId: string },
   /** Off for a session followed elsewhere, such as from the Mono that ran it. */
   openTab = true,
+  /** An app CLI launch, which stamps its first user block (`appLaunchRepeat`). */
+  app = false,
 ): Promise<void> {
   // Rehydrate image previews in this webview; the floating panel sends paths.
   const attachments = await prepareAttachments(launch.attachments ?? []);
@@ -65,19 +106,7 @@ export async function acceptQuickLaunch(
   const existing = workspace
     .getSessions()
     .find((session) => session.id === deliveryId);
-  const previous = existing?.blocks.find(
-    (block) => block.appRequestId === deliveryId,
-  );
-  if (previous) {
-    if (previous.text !== launch.prompt || (!launch.draft && !!previous.draft))
-      throw new Error("Request ID was already used for another session launch");
-    return;
-  }
-  if (
-    existing?.quickLaunchAccepted ||
-    existing?.blocks.some((block) => block.role === "user" && !block.draft)
-  )
-    return;
+  if (appLaunchRepeat(existing, launch, deliveryId, app)) return;
   const session =
     existing ??
     applyQuickWorkspace(
@@ -128,7 +157,15 @@ export async function acceptQuickLaunch(
       session.id,
       launch.prompt,
       attachments,
-      ...(launch.intent ? [{ intent: launch.intent }] : []),
+      ...(launch.intent || app
+        ? [
+            {
+              ...(launch.intent ? { intent: launch.intent } : {}),
+              // Every app launch stamps its first block (appLaunchRepeat).
+              ...(app ? { appRequestId: deliveryId } : {}),
+            },
+          ]
+        : []),
     ))
   ) {
     throw new Error("The workspace could not accept the queued session yet.");
