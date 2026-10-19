@@ -149,6 +149,28 @@ test("lane 2: Done hidden in one project still shows in another", async ({
   expect((await stored(page, ORBIT))?.hiddenStatuses).toEqual(["done"]);
 });
 
+test("the popover closes on a second click of its button and on a click outside it", async ({
+  app,
+  page,
+}) => {
+  await openPage(app, page);
+  await settingsButton(page).click();
+  await expect(popover(page)).toBeVisible();
+  await expect(settingsButton(page)).toHaveAttribute("aria-expanded", "true");
+  await settingsButton(page).click();
+  await expect(popover(page)).toHaveCount(0);
+  await expect(settingsButton(page)).toHaveAttribute("aria-expanded", "false");
+
+  // Another project's row is outside the popover: the click closes it and
+  // opens that project.
+  await settingsButton(page).click();
+  await expect(popover(page)).toBeVisible();
+  await projectRow(page, "orbit-site").click();
+  await expect(popover(page)).toHaveCount(0);
+  await expect(settingsButton(page)).toHaveAttribute("aria-expanded", "false");
+  await expect(main(page).locator("h2")).toHaveText("orbit-site");
+});
+
 test("lane 3: turning a project off marks it Off; the page keeps its timeline", async ({
   app,
   page,
@@ -273,10 +295,10 @@ test("lane 8: every status hidden leaves no group on the timeline and says so", 
   );
   await expect(main(page).getByRole("region")).toHaveCount(0);
   expect((await stored(page, ORBIT))?.hiddenStatuses).toEqual([
-    "done",
     "idea",
-    "in_progress",
     "planned",
+    "in_progress",
+    "done",
   ]);
   await page.keyboard.press("Escape");
   await shot(page, "all-hidden");
@@ -352,7 +374,7 @@ test("lane 10: keyboard only: every setting is reachable and works", async ({
   await expect(settingsButton(page)).toBeFocused();
   expect(await stored(page, ORBIT)).toEqual({
     enabled: false,
-    hiddenStatuses: ["idea", "in_progress", "planned"],
+    hiddenStatuses: ["idea", "planned", "in_progress"],
   });
 });
 

@@ -667,8 +667,8 @@ test("the page's writes match the committed fixture that Rust replays", async ({
       .first(),
   ).toHaveAttribute("data-milestone", VOICE.id);
 
-  // Settings: hide Done and turn the project off; the folder is renamed;
-  // then, at the new path, show Done, hide Idea and turn it on again.
+  // Settings: hide Done and In progress and turn the project off; the folder
+  // is renamed; then, at the new path, show both, hide Idea and turn it on.
   const settings = page.getByRole("button", { name: "Milestone settings" });
   const dialog = page.getByRole("dialog", { name: /^Milestones in / });
   const box = (name: string) =>
@@ -677,11 +677,16 @@ test("the page's writes match the committed fixture that Rust replays", async ({
   await settings.click();
   await box("Done").click();
   await expect(box("Done")).not.toBeChecked();
+  // Rust stores hidden statuses in its own order: [in_progress, done].
+  await box("In progress").click();
+  await expect(box("In progress")).not.toBeChecked();
   await onOff.click();
   await expect(onOff).toHaveAttribute("aria-checked", "false");
   await page.keyboard.press("Escape");
   await renameFolder(page, ORBIT, RENAMED);
   await settings.click();
+  await box("In progress").click();
+  await expect(box("In progress")).toBeChecked();
   await box("Done").click();
   await expect(box("Done")).toBeChecked();
   await box("Idea").click();

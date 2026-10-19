@@ -10,6 +10,7 @@ import {
   type Milestone,
   type MilestonePatch,
   type MilestoneSettings,
+  type MilestoneStatus,
   type NewMilestone,
 } from "../../../src/features/milestones/model/milestones";
 import {
@@ -155,6 +156,14 @@ declare global {
 }
 
 const none: Handler = () => null;
+
+/** milestones.rs `Status` in declaration order, which its derived `Ord` sorts by. */
+const RUST_STATUS_ORDER: readonly MilestoneStatus[] = [
+  "idea",
+  "planned",
+  "in_progress",
+  "done",
+];
 
 /** milestones.rs settings: no row means on, nothing hidden. */
 function settingsOf(store: FakeStore, project: string): MilestoneSettings {
@@ -469,12 +478,14 @@ const HANDLERS: Record<string, Handler> = {
     void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath });
     return null;
   },
-  // milestones.rs set_settings: a partial patch; hidden statuses sorted, no
-  // duplicates. Emits CHANGED to every window.
+  // milestones.rs set_settings: a partial patch; hidden statuses without
+  // duplicates, in the order of Rust's `Status` enum. Emits CHANGED to every window.
   milestone_settings_set: (store, { projectPath, patch }) => {
     const current = settingsOf(store, projectPath as string);
     const next = { ...current, ...(patch as Partial<MilestoneSettings>) };
-    next.hiddenStatuses = [...new Set(next.hiddenStatuses)].sort();
+    next.hiddenStatuses = [...new Set(next.hiddenStatuses)].sort(
+      (a, b) => RUST_STATUS_ORDER.indexOf(a) - RUST_STATUS_ORDER.indexOf(b),
+    );
     store.milestoneSettings[projectPath as string] = next;
     void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath });
     return next;

@@ -394,7 +394,6 @@ function MilestonesContent({
               {data.milestones.length > 0 ? addButton : null}
               <button
                 type="button"
-                data-milestone-settings
                 aria-label="Milestone settings"
                 aria-expanded={settingsAt !== null}
                 title="Milestone settings"
