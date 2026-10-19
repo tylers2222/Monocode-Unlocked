@@ -645,6 +645,10 @@ fn bad_input_is_invalid_input_and_writes_nothing() {
     blank_con.tradeoffs.cons.push(" ".into());
     let mut no_tradeoffs = card("No tradeoffs");
     no_tradeoffs.tradeoffs.pros.clear();
+    let mut long_label = with_options("Long label");
+    long_label.options[0].label = "l".repeat(201);
+    let mut long_con = card("Long con");
+    long_con.tradeoffs.cons.push("c".repeat(8001));
     let cases = [
         ("blank heading", card("  ")),
         ("long heading", card(&"h".repeat(201))),
@@ -655,8 +659,16 @@ fn bad_input_is_invalid_input_and_writes_nothing() {
                 ..card("Blank summary")
             },
         ),
+        (
+            "long summary",
+            Card {
+                summary: "s".repeat(8001),
+                ..card("Long summary")
+            },
+        ),
         ("blank pro", blank_pro),
         ("blank con", blank_con),
+        ("long con", long_con),
         ("no pros or cons", no_tradeoffs),
         (
             "blank origin",
@@ -665,8 +677,16 @@ fn bad_input_is_invalid_input_and_writes_nothing() {
                 ..card("Blank origin")
             },
         ),
+        (
+            "long origin",
+            Card {
+                origin: Some("o".repeat(201)),
+                ..card("Long origin")
+            },
+        ),
         ("same labels", same_labels),
         ("blank label", blank_label),
+        ("long label", long_label),
         ("blank description", blank_description),
         ("http link", http),
         ("blank link title", blank_title),
@@ -680,40 +700,36 @@ fn bad_input_is_invalid_input_and_writes_nothing() {
     assert_eq!(list(&conn, PROJECT).unwrap(), []);
 }
 
-// Defect: a write the board must show sends no `approvals-changed`, sends it
-// twice or names another project, or a refused call sends one. The calls go
-// through Tauri's IPC, so a command argument the web app does not send fails
-// here too. Not on Windows: see `tauri` under
-// `[target.'cfg(not(windows))'.dev-dependencies]` in Cargo.toml.
+/// The three write commands behind Tauri's mock IPC, on `store`. Not on
+/// Windows: see `tauri` under `[target.'cfg(not(windows))'.dev-dependencies]`
+/// in Cargo.toml.
 #[cfg(not(windows))]
-#[test]
-fn each_write_announces_its_project_once_and_a_refusal_announces_nothing() {
-    use tauri::Listener;
+struct Commands {
+    app: tauri::App<tauri::test::MockRuntime>,
+    webview: tauri::WebviewWindow<tauri::test::MockRuntime>,
+}
 
-    let store = SessionStore::open_in_memory().unwrap();
-    giga(&store.lock_conn().unwrap(), "giga-a", "Giga A");
-    giga(&store.lock_conn().unwrap(), "giga-b", "Giga B");
-    let app = tauri::test::mock_builder()
-        .manage(store)
-        .invoke_handler(tauri::generate_handler![
-            approvals_file,
-            approvals_update,
-            approvals_withdraw
-        ])
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
-    let (heard, events) = std::sync::mpsc::channel::<Value>();
-    app.listen_any(CHANGED, move |event| {
-        heard
-            .send(serde_json::from_str(event.payload()).unwrap())
+#[cfg(not(windows))]
+impl Commands {
+    fn new(store: SessionStore) -> Self {
+        let app = tauri::test::mock_builder()
+            .manage(store)
+            .invoke_handler(tauri::generate_handler![
+                approvals_file,
+                approvals_update,
+                approvals_withdraw
+            ])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-    });
-    let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
-        .build()
-        .unwrap();
-    let invoke = |command: &str, args: Value| {
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+            .build()
+            .unwrap();
+        Self { app, webview }
+    }
+
+    fn invoke(&self, command: &str, args: Value) -> Result<Value, Value> {
         let answer = tauri::test::get_ipc_response(
-            &webview,
+            &self.webview,
             tauri::webview::InvokeRequest {
                 cmd: command.into(),
                 callback: tauri::ipc::CallbackFn(0),
@@ -725,7 +741,29 @@ fn each_write_announces_its_project_once_and_a_refusal_announces_nothing() {
             },
         );
         answer.map(|body| body.deserialize::<Value>().unwrap())
-    };
+    }
+}
+
+// Defect: a write the board must show sends no `approvals-changed`, sends it
+// twice or names another project, or a refused call sends one. The calls go
+// through Tauri's IPC, so a command argument the web app does not send fails
+// here too.
+#[cfg(not(windows))]
+#[test]
+fn each_write_announces_its_project_once_and_a_refusal_announces_nothing() {
+    use tauri::Listener;
+
+    let store = SessionStore::open_in_memory().unwrap();
+    giga(&store.lock_conn().unwrap(), "giga-a", "Giga A");
+    giga(&store.lock_conn().unwrap(), "giga-b", "Giga B");
+    let commands = Commands::new(store);
+    let (heard, events) = std::sync::mpsc::channel::<Value>();
+    commands.app.listen_any(CHANGED, move |event| {
+        heard
+            .send(serde_json::from_str(event.payload()).unwrap())
+            .unwrap();
+    });
+    let invoke = |command: &str, args: Value| commands.invoke(command, args);
     let sent = |heading: &str| serde_json::to_value(card(heading)).unwrap();
     let file = |project: &str, by: &str, heading: &str| {
         (
@@ -785,5 +823,58 @@ fn each_write_announces_its_project_once_and_a_refusal_announces_nothing() {
             project(OTHER)
         ],
         "one event per write: file, refile, update, withdraw, then the other project"
+    );
+}
+
+// Defect: a command emits `approvals-changed` while it still holds the store
+// lock. A Rust listener runs inside `emit`, so a listener that reads the
+// store (the badge count) waits on that lock and the write never returns.
+// The listener reads on a helper thread with a timeout, so the defect fails
+// this test instead of hanging it.
+#[cfg(not(windows))]
+#[test]
+fn a_listener_reads_the_store_when_the_event_arrives() {
+    use std::time::Duration;
+    use tauri::{Listener, Manager};
+
+    let store = SessionStore::open_in_memory().unwrap();
+    giga(&store.lock_conn().unwrap(), "giga-a", "Giga A");
+    let commands = Commands::new(store);
+    let (heard, counts) = std::sync::mpsc::channel::<Result<u32, String>>();
+    let handle = commands.app.handle().clone();
+    commands.app.listen_any(CHANGED, move |_| {
+        let (sent, read) = std::sync::mpsc::channel();
+        let handle = handle.clone();
+        std::thread::spawn(move || {
+            let store = handle.state::<SessionStore>();
+            let _ = sent.send(open_counts(&store.lock_conn().unwrap()).map(|c| c.total));
+        });
+        let seen = read
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| "the store was still locked when the event arrived".to_string())
+            .and_then(|count| count);
+        heard.send(seen).unwrap();
+    });
+    let sent = |heading: &str| serde_json::to_value(card(heading)).unwrap();
+    let filed = commands
+        .invoke(
+            "approvals_file",
+            json!({"projectPath": PROJECT, "by": "giga-a", "card": sent("Ship it")}),
+        )
+        .unwrap();
+    let id = &filed["id"];
+    commands
+        .invoke(
+            "approvals_update",
+            json!({"id": id, "by": "giga-a", "card": sent("Ship it now")}),
+        )
+        .unwrap();
+    commands
+        .invoke("approvals_withdraw", json!({"id": id, "by": "giga-a"}))
+        .unwrap();
+    assert_eq!(
+        counts.try_iter().collect::<Vec<_>>(),
+        [Ok(1), Ok(1), Ok(0)],
+        "each listener read the store and saw its write: open after file and update, none after withdraw"
     );
 }
