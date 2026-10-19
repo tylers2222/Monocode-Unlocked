@@ -29,8 +29,7 @@ jobs:
           node-version: 24
           cache: npm
 
-      # --ignore-scripts: no package.json or dependency lifecycle script runs, so
-      # nothing from the PR can write $GITHUB_ENV before ESLint and clippy.
+      # --ignore-scripts: no package.json or dependency lifecycle script runs.
       - id: deps
         run: npm ci --ignore-scripts
 
