@@ -16,7 +16,7 @@ import {
   type WorkspaceTab,
 } from "../../features/workspace/model/layout";
 import { filterTabsForProject } from "../../features/workspace/model/workspaceTabGroups";
-import { acceptQuickLaunch } from "./quickLaunchSession";
+import { acceptQuickLaunch, appLaunchRepeat } from "./quickLaunchSession";
 import {
   submitAfterProjectSync,
   type SubmissionAcceptance,
@@ -540,4 +540,117 @@ it.each([
   expect(state.sessions.some((session) => session.id === "worker")).toBe(false);
   expect(workspace.appendTab).not.toHaveBeenCalled();
   expect(workspace.submit).not.toHaveBeenCalled();
+});
+
+/** A session `app-lead-r1` holding `blocks`, as an app launch left it. */
+function launched(blocks: Session["blocks"], extra: Partial<Session> = {}) {
+  return { ...newSession("codex", "/p"), id: "app-lead-r1", blocks, ...extra };
+}
+const APP_LAUNCH: QuickLaunch = {
+  cwd: "/p",
+  harness: "codex",
+  prompt: "Build",
+};
+const reused = { code: "request_id_reused" };
+
+// Design 9, the one repeat rule. Defect: a repeat with other text, or a
+// submitted retry of a draft launch, answers as the first launch did; or the
+// same launch again launches twice.
+it("repeats an app launch only with its own stamp and text", () => {
+  const stamped = (draft: boolean) =>
+    launched([
+      {
+        id: "u1",
+        role: "user",
+        text: "Build",
+        appRequestId: "app-lead-r1",
+        ...(draft ? { draft } : {}),
+      },
+    ]);
+  expect(appLaunchRepeat(stamped(false), APP_LAUNCH, "app-lead-r1", true)).toBe(
+    true,
+  );
+  expect(
+    appLaunchRepeat(
+      stamped(true),
+      { ...APP_LAUNCH, draft: true },
+      "app-lead-r1",
+      true,
+    ),
+  ).toBe(true);
+  expect(() =>
+    appLaunchRepeat(
+      stamped(false),
+      { ...APP_LAUNCH, prompt: "Test" },
+      "app-lead-r1",
+      true,
+    ),
+  ).toThrow(expect.objectContaining(reused));
+  expect(() =>
+    appLaunchRepeat(stamped(true), APP_LAUNCH, "app-lead-r1", true),
+  ).toThrow(expect.objectContaining(reused));
+});
+
+// Design 9. Defect: an app launch into a session whose turn the user sent or
+// wrote (no stamp), or that was accepted, counts as a repeat, so a start row
+// names the user's own work; or a floating-composer launch, which stamps
+// only drafts, launches its accepted session again.
+it("refuses an app launch into a session the user worked in, and repeats a floating one", () => {
+  for (const existing of [
+    launched([{ id: "u1", role: "user", text: "Build" }]),
+    launched([], { quickLaunchAccepted: true }),
+  ]) {
+    expect(() =>
+      appLaunchRepeat(existing, APP_LAUNCH, "app-lead-r1", true),
+    ).toThrow(expect.objectContaining(reused));
+    expect(appLaunchRepeat(existing, APP_LAUNCH, "app-lead-r1", false)).toBe(
+      true,
+    );
+  }
+});
+
+// Design 9. Defect: an app launch lands in a session id that holds the
+// user's other draft, or refuses a fresh id.
+it("refuses an app launch into another draft and launches a fresh id", () => {
+  const draft = launched([
+    { id: "d1", role: "user", text: "Mine", draft: true },
+  ]);
+  expect(() => appLaunchRepeat(draft, APP_LAUNCH, "app-lead-r1", true)).toThrow(
+    "Session ID already has a different draft",
+  );
+  expect(appLaunchRepeat(undefined, APP_LAUNCH, "app-lead-r1", true)).toBe(
+    false,
+  );
+  expect(appLaunchRepeat(launched([]), APP_LAUNCH, "app-lead-r1", true)).toBe(
+    false,
+  );
+});
+
+// Design 9: every app launch stamps its first block. Defect: a submitted app
+// launch is not stamped, so its repeat finds no stamp and is refused as the
+// user's work; or a floating launch is stamped as an app launch.
+it("stamps a submitted app launch with its request id and leaves a floating one unstamped", async () => {
+  const { request, workspace } = setup();
+  await acceptQuickLaunch(
+    request,
+    "app-lead-r1",
+    workspace,
+    undefined,
+    true,
+    true,
+  );
+  expect(workspace.submit).toHaveBeenLastCalledWith(
+    "app-lead-r1",
+    request.prompt,
+    [],
+    {
+      appRequestId: "app-lead-r1",
+    },
+  );
+  await acceptQuickLaunch(request, "quick-session", workspace);
+  expect(workspace.submit).toHaveBeenLastCalledWith(
+    "quick-session",
+    request.prompt,
+    [],
+  );
 });

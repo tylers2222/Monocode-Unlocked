@@ -144,6 +144,7 @@ async function mountSessions(
   app: AppShell,
   withAccess: ("lead" | "worker")[],
   extra: MountOptions["handlers"] = {},
+  more: SessionSummary[] = [],
 ) {
   await app.mount(
     {
@@ -151,6 +152,7 @@ async function mountSessions(
       sessions: [
         session("lead", "Fix login"),
         session("worker", "Write the tests", { leadSessionId: "lead" }),
+        ...more,
       ],
     },
     { handlers: { ...handlers, ...extra } },
@@ -484,4 +486,79 @@ test("an Inbox Ask is no project session for the gate or sessions.list", async (
   const ids = JSON.stringify(listed);
   expect(ids).toContain('"worker"');
   expect(ids).not.toContain(askId);
+});
+
+/** `sessions.start` from the lead's running turn under request id r1. */
+async function startFromLead(page: Page, app: AppShell, id: string) {
+  await app.emit("monocode-control-request", {
+    id,
+    namespace: "app",
+    sessionId: "lead",
+    requestId: "r1",
+    action: "sessions.start",
+    input: { harness: "pi", model: "pi:default", prompt: "Write the tests" },
+    turnId: "turn-1",
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (id) => window.controlReplies?.find((reply) => reply.id === id),
+        id,
+      ),
+    )
+    .toBeDefined();
+  return page.evaluate(
+    (id) => window.controlReplies!.find((reply) => reply.id === id)!.response,
+    id,
+  );
+}
+
+// Design 9: every app launch stamps its first block (appLaunchRepeat). PR7-11.
+// A restart drops the window's receipts, so only the stamp tells the
+// agent's retry from the user's own session. Defect: the window launches an
+// app start without its request id stamp, so the retry after a restart is
+// refused as request_id_reused, or launches a second agent turn.
+test("a lead's start repeated under its request id after a restart answers the same session and launches once", async ({
+  page,
+  app,
+}) => {
+  await mountSessions(page, app, ["lead"]);
+  await page.getByText("Fix login").click();
+  const first = await startFromLead(page, app, "start-1");
+  expect(first).toMatchObject({ ok: true, result: { id: "app-lead-r1" } });
+  await expect
+    .poll(() => prompts(page, "app-lead-r1"))
+    .toEqual(["Write the tests"]);
+  await app.restart();
+  await page.getByText("Fix login").first().click();
+  const again = await startFromLead(page, app, "start-2");
+  expect(again).toMatchObject({ ok: true, result: { id: "app-lead-r1" } });
+  expect(await prompts(page, "app-lead-r1")).toEqual([]);
+});
+
+// Design 9, PR7-11 review r1 m2. A launched session that is stored but not
+// open (a Mono's start opens no tab) is seen only by host.start's check,
+// which reads the stored session. Defect: that check is skipped or reads
+// only open sessions, so the agent's retry launches the session again.
+test("a start repeated into its stored, unopened session answers that session and launches nothing", async ({
+  page,
+  app,
+}) => {
+  await mountSessions(page, app, ["lead"], {}, [
+    session("app-lead-r1", "Write the tests", { leadSessionId: "lead" }),
+  ]);
+  await page.evaluate(() => {
+    window.appBackend!.store.blocks["app-lead-r1"] = [
+      {
+        id: "u1",
+        role: "user",
+        text: "Write the tests",
+        appRequestId: "app-lead-r1",
+      },
+    ];
+  });
+  await page.getByText("Fix login").click();
+  const again = await startFromLead(page, app, "start-1");
+  expect(again).toMatchObject({ ok: true, result: { id: "app-lead-r1" } });
+  expect(await prompts(page, "app-lead-r1")).toEqual([]);
 });

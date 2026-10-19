@@ -1510,13 +1510,29 @@ pub struct ActionFacts {
     /// The level of the session the action's target names, when it names an
     /// existing session.
     pub target_level: Option<SessionLevel>,
+    /// The row this caller session already wrote with this request id (part
+    /// 0, any tool).
+    pub prior: Option<MonoMessage>,
+    /// A1: the session this request id started was archived or deleted
+    /// since: the session an accepted start row names, or, with no row, the
+    /// session the start would launch.
+    pub prior_start_ended: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionDecision {
-    /// A6 or A7: the action runs. `lead_session_id` is the lead id
-    /// `sessions.start` writes on the new session.
+    /// A6, A7, or A1 with an accepted start row: the action runs.
+    /// `lead_session_id` is the lead id `sessions.start` writes on the new
+    /// session.
     Allow { lead_session_id: Option<SessionId> },
+    /// A1 or A2 refusing the request id: no row.
+    Refuse { code: Refusal, hint: String },
+    /// A1 with a rejected row: its answer again, no new row.
+    Replay {
+        prior: MessageId,
+        code: RejectCode,
+        hint: String,
+    },
     /// A3, A4, A5: one rejected row with `tool` (`StartSession` or
     /// `AppAction`).
     Reject {
@@ -1526,9 +1542,47 @@ pub enum ActionDecision {
     },
 }
 
-/// Design 6.6, rows A3, A4, A5, A6, A7 in this order, for one app action
-/// other than `messages.*`.
-pub fn decide_action(caller: &Caller, action: &str, facts: &ActionFacts) -> ActionDecision {
+pub(crate) const START_ENDED: &str =
+    "The session this request id started was archived or deleted. Use a new request id.";
+
+/// Design 6.6, rows A1, A2, A3, A4, A5, A6, A7 in this order, for one app
+/// action other than `messages.*` whose `[action, input]` hashes to `hash`.
+pub fn decide_action(
+    caller: &Caller,
+    action: &str,
+    hash: &PayloadHash,
+    facts: &ActionFacts,
+) -> ActionDecision {
+    let refuse = |hint: &str| ActionDecision::Refuse {
+        code: Refusal::RequestIdReused,
+        hint: hint.into(),
+    };
+    if let Some(prior) = &facts.prior {
+        if prior.payload_hash != *hash {
+            return refuse(REQUEST_ID_REUSED);
+        }
+        return match prior.status {
+            Status::Rejected { gate_result, .. } => ActionDecision::Replay {
+                prior: prior.id.clone(),
+                code: gate_result,
+                hint: action_hint(gate_result, facts),
+            },
+            // `host.start` repeats a launch only while its session lives.
+            _ if facts.prior_start_ended => refuse(START_ENDED),
+            // Only a start writes an accepted row. Its first outcome stands
+            // (A1), so A3 to A7 do not run again: a session caller is the
+            // new session's lead, as A6 made it the first time.
+            _ => ActionDecision::Allow {
+                lead_session_id: caller
+                    .mono_id()
+                    .is_none()
+                    .then(|| caller.session_id.clone()),
+            },
+        };
+    }
+    if facts.prior_start_ended {
+        return refuse(START_ENDED);
+    }
     let reject = |code: RejectCode, tool: Tool, lead: &SessionId| ActionDecision::Reject {
         code,
         hint: with_lead(code, lead),
@@ -1550,6 +1604,23 @@ pub fn decide_action(caller: &Caller, action: &str, facts: &ActionFacts) -> Acti
     ActionDecision::Allow {
         lead_session_id: (starts && facts.caller_level == Some(SessionLevel::Lead))
             .then(|| caller.session_id.clone()),
+    }
+}
+
+/// The hint of a replayed A row, built again from its facts: a lead id only
+/// ever goes to NULL (design 13.2), so it names the same lead while the link
+/// stands.
+fn action_hint(code: RejectCode, facts: &ActionFacts) -> String {
+    match (code, &facts.caller_level, &facts.target_level) {
+        (
+            RejectCode::WorkerCannotSpawn | RejectCode::WorkerScope,
+            Some(SessionLevel::Worker { lead }),
+            _,
+        )
+        | (RejectCode::SteerViaLead, _, Some(SessionLevel::Worker { lead })) => {
+            with_lead(code, lead)
+        }
+        _ => code.hint().into(),
     }
 }
 
@@ -4493,9 +4564,12 @@ mod tests {
         decide_action(
             who,
             action,
+            &action_hash(action, &json!({})),
             &ActionFacts {
                 caller_level,
                 target_level,
+                prior: None,
+                prior_start_ended: false,
             },
         )
     }
@@ -4793,5 +4867,147 @@ mod tests {
             ),
             pinned_steer(&start, "w1", "turn-1")
         );
+    }
+
+    fn act_on(who: &Caller, hash: &PayloadHash, facts: ActionFacts) -> ActionDecision {
+        decide_action(who, "sessions.start", hash, &facts)
+    }
+
+    // A1. Defect: a lead's retried start is refused, replayed as a refusal or
+    // loses its lead id; a retried refusal is decided again (and writes a
+    // second row); or a start whose session ended is launched again.
+    #[test]
+    fn a1_the_same_action_again_answers_its_first_outcome() {
+        let input = json!({"prompt": "Build it", "harness": "codex"});
+        let hash = action_hash("sessions.start", &input);
+        let lead = session_caller("l1");
+        let started = MonoMessage {
+            payload_hash: hash.clone(),
+            ..start_row(None, "l1", "w1")
+        };
+        let facts = |level: SessionLevel, prior: MonoMessage, ended: bool| ActionFacts {
+            caller_level: Some(level),
+            target_level: None,
+            prior: Some(prior),
+            prior_start_ended: ended,
+        };
+        assert_eq!(
+            act_on(
+                &lead,
+                &hash,
+                facts(SessionLevel::Lead, started.clone(), false)
+            ),
+            ActionDecision::Allow {
+                lead_session_id: Some(session("l1"))
+            }
+        );
+        assert_eq!(
+            act_on(&lead, &hash, facts(SessionLevel::Lead, started, true)),
+            ActionDecision::Refuse {
+                code: Refusal::RequestIdReused,
+                hint: START_ENDED.into()
+            }
+        );
+        let worker = session_caller("w1");
+        let refused = MonoMessage {
+            payload_hash: hash.clone(),
+            tool: Tool::StartSession,
+            from_session_id: session("w1"),
+            to: None,
+            addressed: "sessions.start".into(),
+            status: Status::Rejected {
+                gate_result: RejectCode::WorkerCannotSpawn,
+                wanting_reply: false,
+                intent: IntentKind::New,
+                reply_to: None,
+                scope: None,
+            },
+            ..row('r', None, 0, open(1))
+        };
+        // The refusal again, even when the caller has become a lead since.
+        for level in [worker_of("l1"), SessionLevel::Lead] {
+            assert_eq!(
+                act_on(&worker, &hash, facts(level.clone(), refused.clone(), false)),
+                ActionDecision::Replay {
+                    prior: refused.id.clone(),
+                    code: RejectCode::WorkerCannotSpawn,
+                    hint: if level == SessionLevel::Lead {
+                        RejectCode::WorkerCannotSpawn.hint().into()
+                    } else {
+                        WORKER_CANNOT_SPAWN_L1.into()
+                    },
+                },
+                "{level:?}"
+            );
+        }
+        // m1: a Mono's refused steer of a worker (A5) again names the
+        // target's lead, not the generic hint.
+        let send = json!({"sessionId": "w1", "prompt": "Stop"});
+        let steer_hash = action_hash("sessions.send", &send);
+        let steer = MonoMessage {
+            payload_hash: steer_hash.clone(),
+            status: Status::Rejected {
+                gate_result: RejectCode::SteerViaLead,
+                wanting_reply: false,
+                intent: IntentKind::New,
+                reply_to: None,
+                scope: None,
+            },
+            ..row('s', Some("mono-a"), 0, open(1))
+        };
+        assert_eq!(
+            decide_action(
+                &mono_a_caller(),
+                "sessions.send",
+                &steer_hash,
+                &ActionFacts {
+                    caller_level: None,
+                    target_level: Some(worker_of("l1")),
+                    prior: Some(steer.clone()),
+                    prior_start_ended: false,
+                },
+            ),
+            ActionDecision::Replay {
+                prior: steer.id,
+                code: RejectCode::SteerViaLead,
+                hint: "That session is a worker of lead l1. Message the lead (l1); only its lead steers its workers.".into(),
+            }
+        );
+    }
+
+    // A2. Defect: a request id that another call already used (a send, or a
+    // start with other input) starts a session, or answers as that call did;
+    // or a start with no row whose session ended is launched again.
+    #[test]
+    fn a2_a_request_id_used_with_other_input_is_refused() {
+        let who = mono_a_caller();
+        let hash = action_hash("sessions.start", &json!({"prompt": "Build it"}));
+        let facts = |prior: Option<MonoMessage>, ended: bool| ActionFacts {
+            caller_level: None,
+            target_level: None,
+            prior,
+            prior_start_ended: ended,
+        };
+        let refused = |hint: &str| ActionDecision::Refuse {
+            code: Refusal::RequestIdReused,
+            hint: hint.into(),
+        };
+        assert_eq!(
+            act_on(
+                &who,
+                &hash,
+                facts(Some(row('a', Some("mono-a"), 0, open(1))), false)
+            ),
+            refused(REQUEST_ID_REUSED)
+        );
+        let other_input = MonoMessage {
+            payload_hash: action_hash("sessions.start", &json!({"prompt": "Build that"})),
+            ..start_row(Some("mono-a"), "a-chat", "l1")
+        };
+        assert_eq!(
+            act_on(&who, &hash, facts(Some(other_input), false)),
+            refused(REQUEST_ID_REUSED)
+        );
+        assert_eq!(act_on(&who, &hash, facts(None, true)), refused(START_ENDED));
     }
 }

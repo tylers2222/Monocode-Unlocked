@@ -39,6 +39,14 @@ png = "0.18"
 [dev-dependencies]
 regex = "1"
 
+# tauri::test drives the real commands through Tauri's argument binding. Not
+# on Windows: with it the lib test harness imports comctl32's
+# TaskDialogIndirect, and tauri-build embeds the Common Controls v6 manifest
+# in bin targets only, so the harness fails to load (0xc0000139,
+# tauri-apps/tauri#13419).
+[target.'cfg(not(windows))'.dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

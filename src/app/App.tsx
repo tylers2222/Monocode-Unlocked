@@ -40,7 +40,10 @@ import {
   monoSessionCompletionResult,
   MonoSessionCompletionBatches,
 } from "../features/monos/model/monoSessionCompletion";
-import { acceptQuickLaunch } from "./model/quickLaunchSession";
+import {
+  acceptQuickLaunch,
+  appLaunchRepeat,
+} from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import { HarnessEventQueue } from "./model/harnessFlush";
@@ -9041,6 +9044,7 @@ function Workspace({
       placement?: AppSessionPlacement,
       onSettled?: (outcome: ControlOutcome) => void,
       openTab?: boolean,
+      app?: boolean,
     ) =>
       acceptQuickLaunch(
         launch,
@@ -9100,7 +9104,6 @@ function Workspace({
                   submit: (settle) =>
                     submitSession(id, text, attachments, {
                       ...options,
-                      appRequestId: deliveryId,
                       onSettled: settle,
                     }),
                   onSettled,
@@ -9114,6 +9117,7 @@ function Workspace({
         },
         placement,
         openTab,
+        app,
       ),
     [appendTab, submitSession, onSaveDraft],
   );
@@ -11331,30 +11335,10 @@ function Workspace({
               );
               const stored = open ? null : await getSession(id);
               const existing = open ?? stored;
-              const previous = existing?.blocks.find(
-                (block) => block.appRequestId === id,
-              );
-              if (previous) {
-                if (
-                  previous.text !== launch.prompt ||
-                  (!launch.draft && !!previous.draft)
-                )
-                  throw new Error(
-                    "Request ID was already used for another session launch",
-                  );
+              if (appLaunchRepeat(existing, launch, id, true)) {
                 rememberLaunch();
                 return;
               }
-              if (
-                existing?.blocks.some(
-                  (block) => block.role === "user" && !block.draft,
-                )
-              ) {
-                rememberLaunch();
-                return;
-              }
-              if (existing && sessionDraftBlock(existing))
-                throw new Error("Session ID already has a different draft");
               const onSettled = notifyMonoId
                 ? monitorCompletion(
                     notifyMonoId,
@@ -11373,6 +11357,7 @@ function Workspace({
                   placement,
                   onSettled,
                   !isMonoSession(source.id) || !!placement,
+                  true,
                 );
                 rememberLaunch();
                 onSettled?.accept();

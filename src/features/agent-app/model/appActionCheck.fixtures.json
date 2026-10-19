@@ -23,6 +23,7 @@
                 "prompt": "Fix the flaky test"
               },
               "requestId": "a6-start",
+              "startedSessionId": "app-lead-a6-start",
               "target": null,
               "targetLeadSessionId": null
             }
@@ -92,6 +93,7 @@
                 "prompt": "Fix the flaky test"
               },
               "requestId": "a7-start",
+              "startedSessionId": "app-a-chat-a7-start",
               "target": null,
               "targetLeadSessionId": null
             }
@@ -159,6 +161,7 @@
                 "prompt": "Fix the flaky test"
               },
               "requestId": "a7-again",
+              "startedSessionId": "app-a-chat-a7-again",
               "target": null,
               "targetLeadSessionId": null
             }
@@ -211,6 +214,7 @@
                 "prompt": "Fix the flaky test"
               },
               "requestId": "a7-again",
+              "startedSessionId": "app-a-chat-a7-again",
               "target": null,
               "targetLeadSessionId": null
             }
@@ -256,7 +260,313 @@
       "name": "A7: a Mono's repeated start answers its first row",
       "ran": "start",
       "requestId": "a7-again",
-      "times": 2
+      "then": [
+        {
+          "action": "sessions.start",
+          "input": {
+            "harness": "codex",
+            "model": "codex:test",
+            "notifyOnComplete": false,
+            "prompt": "Fix the flaky test"
+          }
+        }
+      ]
+    },
+    {
+      "action": "sessions.start",
+      "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.start",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Spawn a helper"
+              },
+              "requestId": "a1-refused",
+              "startedSessionId": "app-worker-a1-refused",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_cannot_spawn",
+              "hint": "Only lead sessions can start sessions. Ask your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        },
+        {
+          "args": {
+            "call": {
+              "action": "sessions.start",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Spawn a helper"
+              },
+              "requestId": "a1-refused",
+              "startedSessionId": "app-worker-a1-refused",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_cannot_spawn",
+              "duplicate": true,
+              "hint": "Only lead sessions can start sessions. Ask your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
+      "input": {
+        "harness": "codex",
+        "model": "codex:test",
+        "notifyOnComplete": false,
+        "prompt": "Spawn a helper"
+      },
+      "name": "A1: a refused start again answers its first refusal",
+      "ran": null,
+      "requestId": "a1-refused",
+      "then": [
+        {
+          "action": "sessions.start",
+          "input": {
+            "harness": "codex",
+            "model": "codex:test",
+            "notifyOnComplete": false,
+            "prompt": "Spawn a helper"
+          }
+        }
+      ]
+    },
+    {
+      "action": "sessions.start",
+      "caller": "lead",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.start",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": null,
+                "sessionId": "lead",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Fix the flaky test"
+              },
+              "requestId": "a2-other",
+              "startedSessionId": "app-lead-a2-other",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "leadSessionId": "lead",
+            "outcome": "allowed"
+          }
+        },
+        {
+          "args": {
+            "call": {
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": null,
+                "sessionId": "lead",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Fix the flaky test"
+              },
+              "requestId": "a2-other",
+              "sessionId": "app-lead-a2-other"
+            }
+          },
+          "command": "mono_message_record_start",
+          "reply": {
+            "messageId": "m_aaaaaaaaaaaa",
+            "outcome": "recorded"
+          }
+        },
+        {
+          "args": {
+            "call": {
+              "action": "sessions.start",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": null,
+                "sessionId": "lead",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Fix the tests"
+              },
+              "requestId": "a2-other",
+              "startedSessionId": "app-lead-a2-other",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "request_id_reused",
+              "hint": "This request id was already used with different input. Use a new request id."
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
+      "input": {
+        "harness": "codex",
+        "model": "codex:test",
+        "notifyOnComplete": false,
+        "prompt": "Fix the flaky test"
+      },
+      "name": "A2: a lead's start again with other input is refused before the launch",
+      "ran": "start",
+      "requestId": "a2-other",
+      "then": [
+        {
+          "action": "sessions.start",
+          "input": {
+            "harness": "codex",
+            "model": "codex:test",
+            "notifyOnComplete": false,
+            "prompt": "Fix the tests"
+          }
+        }
+      ]
+    },
+    {
+      "action": "sessions.send",
+      "caller": "a-chat",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.send",
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "prompt": "Stop",
+                "sessionId": "worker"
+              },
+              "requestId": "a2-send",
+              "startedSessionId": null,
+              "target": "worker",
+              "targetLeadSessionId": "lead"
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "steer_via_lead",
+              "hint": "That session is a worker of lead lead. Message the lead (lead); only its lead steers its workers.",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        },
+        {
+          "args": {
+            "call": {
+              "action": "sessions.start",
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Fix the flaky test"
+              },
+              "requestId": "a2-send",
+              "startedSessionId": "app-a-chat-a2-send",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "request_id_reused",
+              "hint": "This request id was already used with different input. Use a new request id."
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
+      "input": {
+        "prompt": "Stop",
+        "sessionId": "worker"
+      },
+      "name": "A2: a Mono's start under the request id of its refused send is refused",
+      "ran": null,
+      "requestId": "a2-send",
+      "then": [
+        {
+          "action": "sessions.start",
+          "input": {
+            "harness": "codex",
+            "model": "codex:test",
+            "notifyOnComplete": false,
+            "prompt": "Fix the flaky test"
+          }
+        }
+      ]
     },
     {
       "action": "sessions.send",
@@ -279,6 +589,7 @@
                 "sessionId": "worker"
               },
               "requestId": "a5-own",
+              "startedSessionId": null,
               "target": "worker",
               "targetLeadSessionId": "lead"
             }
@@ -316,6 +627,7 @@
                 "sessionId": "worker"
               },
               "requestId": "a5-stop",
+              "startedSessionId": null,
               "target": "worker",
               "targetLeadSessionId": "lead"
             }
@@ -353,6 +665,7 @@
                 "sessionId": "worker"
               },
               "requestId": "a5-send",
+              "startedSessionId": null,
               "target": "worker",
               "targetLeadSessionId": "lead"
             }
@@ -395,6 +708,7 @@
                 "sessionId": "worker"
               },
               "requestId": "a5-draft",
+              "startedSessionId": null,
               "target": "worker",
               "targetLeadSessionId": "lead"
             }
@@ -437,6 +751,7 @@
                 "sessionId": "ghost"
               },
               "requestId": "a5-ghost",
+              "startedSessionId": null,
               "target": "ghost",
               "targetLeadSessionId": "lead"
             }
@@ -478,6 +793,7 @@
               },
               "input": {},
               "requestId": "w-models-list",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -516,6 +832,7 @@
               },
               "input": {},
               "requestId": "w-sessions-list",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -556,6 +873,7 @@
                 "sessionId": "lead"
               },
               "requestId": "w-sessions-read",
+              "startedSessionId": null,
               "target": "lead",
               "targetLeadSessionId": null
             }
@@ -598,6 +916,7 @@
                 "sessionId": "lead"
               },
               "requestId": "w-sessions-send",
+              "startedSessionId": null,
               "target": "lead",
               "targetLeadSessionId": null
             }
@@ -640,6 +959,7 @@
                 "sessionId": "lead"
               },
               "requestId": "w-sessions-draft",
+              "startedSessionId": null,
               "target": "lead",
               "targetLeadSessionId": null
             }
@@ -682,6 +1002,7 @@
                 "sessionId": "lead"
               },
               "requestId": "w-sessions-stop",
+              "startedSessionId": null,
               "target": "lead",
               "targetLeadSessionId": null
             }
@@ -724,6 +1045,7 @@
                 "sessionId": "lead"
               },
               "requestId": "w-sessions-archive",
+              "startedSessionId": null,
               "target": "lead",
               "targetLeadSessionId": null
             }
@@ -766,6 +1088,7 @@
                 "sessionId": "lead"
               },
               "requestId": "w-sessions-delete",
+              "startedSessionId": null,
               "target": "lead",
               "targetLeadSessionId": null
             }
@@ -806,6 +1129,7 @@
               },
               "input": {},
               "requestId": "w-sessions-start",
+              "startedSessionId": "app-worker-w-sessions-start",
               "target": null,
               "targetLeadSessionId": null
             }
@@ -844,6 +1168,7 @@
               },
               "input": {},
               "requestId": "w-worktrees-list",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -882,6 +1207,7 @@
               },
               "input": {},
               "requestId": "w-worktrees-create",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -920,6 +1246,7 @@
               },
               "input": {},
               "requestId": "w-folders-list",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -960,6 +1287,7 @@
                 "sessionId": "lead"
               },
               "requestId": "w-folders-move",
+              "startedSessionId": null,
               "target": "lead",
               "targetLeadSessionId": null
             }
@@ -1000,6 +1328,7 @@
               },
               "input": {},
               "requestId": "w-notes-list",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1038,6 +1367,7 @@
               },
               "input": {},
               "requestId": "w-notes-read",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1076,6 +1406,7 @@
               },
               "input": {},
               "requestId": "w-notes-write",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1114,6 +1445,7 @@
               },
               "input": {},
               "requestId": "w-artifacts-list",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1152,6 +1484,7 @@
               },
               "input": {},
               "requestId": "w-artifacts-read",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1190,6 +1523,7 @@
               },
               "input": {},
               "requestId": "w-artifacts-write",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1228,6 +1562,7 @@
               },
               "input": {},
               "requestId": "w-soul-read",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1266,6 +1601,7 @@
               },
               "input": {},
               "requestId": "w-soul-update",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1304,6 +1640,7 @@
               },
               "input": {},
               "requestId": "w-memory-read",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1342,6 +1679,7 @@
               },
               "input": {},
               "requestId": "w-memory-search",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1380,6 +1718,7 @@
               },
               "input": {},
               "requestId": "w-memory-add",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1418,6 +1757,7 @@
               },
               "input": {},
               "requestId": "w-memory-replace",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1456,6 +1796,7 @@
               },
               "input": {},
               "requestId": "w-memory-remove",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1494,6 +1835,7 @@
               },
               "input": {},
               "requestId": "w-habits-list",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1532,6 +1874,7 @@
               },
               "input": {},
               "requestId": "w-habits-add",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1570,6 +1913,7 @@
               },
               "input": {},
               "requestId": "w-habits-update",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1608,6 +1952,7 @@
               },
               "input": {},
               "requestId": "w-habits-run",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1646,6 +1991,7 @@
               },
               "input": {},
               "requestId": "w-habits-remove",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1684,6 +2030,7 @@
               },
               "input": {},
               "requestId": "w-monos-list",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1722,6 +2069,7 @@
               },
               "input": {},
               "requestId": "w-monos-get",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1760,6 +2108,7 @@
               },
               "input": {},
               "requestId": "w-monos-read",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1798,6 +2147,7 @@
               },
               "input": {},
               "requestId": "w-monos-create",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1836,6 +2186,7 @@
               },
               "input": {},
               "requestId": "w-monos-update",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1874,6 +2225,7 @@
               },
               "input": {},
               "requestId": "w-milestones-list",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1912,6 +2264,7 @@
               },
               "input": {},
               "requestId": "w-milestones-add",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1950,6 +2303,7 @@
               },
               "input": {},
               "requestId": "w-milestones-update",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -1988,6 +2342,7 @@
               },
               "input": {},
               "requestId": "w-milestones-remove",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -2026,6 +2381,7 @@
               },
               "input": {},
               "requestId": "w-milestones-reorder",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -2064,6 +2420,7 @@
               },
               "input": {},
               "requestId": "w-workspace-status",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
@@ -2102,6 +2459,7 @@
               },
               "input": {},
               "requestId": "w-chat-card",
+              "startedSessionId": null,
               "target": null,
               "targetLeadSessionId": null
             }
