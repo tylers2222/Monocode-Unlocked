@@ -16,11 +16,7 @@ test("file preview decodes, plays and seeks a video, then pauses on tab change",
             : null,
           networkState: element.networkState,
         })),
-      // Allow the cold WebKit media pipeline to initialize on shared runners.
-      {
-        timeout: 15_000,
-        message: "Video should load metadata without a media error",
-      },
+      { message: "Video should load metadata without a media error" },
     )
     .toMatchObject({ metadataReady: true, error: null });
   await expect(page.locator("footer").first()).toContainText("160 × 90");
@@ -28,6 +24,9 @@ test("file preview decodes, plays and seeks a video, then pauses on tab change",
 
   await video.evaluate(async (element: HTMLVideoElement) => {
     element.muted = true;
+    // The clip is 3 s, shorter than a poll. Without a loop it ends by itself and
+    // reports paused, so the pause checks below would pass with no pause code.
+    element.loop = true;
     await element.play();
   });
   await expect
@@ -44,7 +43,7 @@ test("file preview decodes, plays and seeks a video, then pauses on tab change",
     )
     .toBeGreaterThanOrEqual(1.5);
 
-  await page.getByText("other.mp4", { exact: true }).click();
+  await page.getByText("other.png", { exact: true }).click();
   await expect(video).toBeHidden();
   await expect
     .poll(() => video.evaluate((element: HTMLVideoElement) => element.paused))
