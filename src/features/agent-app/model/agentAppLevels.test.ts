@@ -49,7 +49,7 @@ type Scenario = {
   input: Record<string, unknown>;
   requestId: string;
   /** The host method an allowed call reaches. */
-  ran: "start" | "send" | "stop" | null;
+  ran: "start" | "send" | "stop" | "approvalWithdraw" | null;
   /** The agent's next calls under the same request id, in order. */
   then?: { action: string; input: Record<string, unknown> }[];
 };
@@ -67,8 +67,8 @@ const SCENARIOS: Scenario[] = [
   { name: "A5: a Mono's send into a worker, padded id parsed once", caller: "a-chat", action: "sessions.send", input: { sessionId: " worker\n", prompt: "Stop" }, requestId: "a5-send", ran: null },
   { name: "A5: a Mono's draft into a worker", caller: "a-chat", action: "sessions.draft", input: { sessionId: "worker", prompt: "Draft this" }, requestId: "a5-draft", ran: null },
   { name: "A5: an unsaved worker counts by the window's lead copy", caller: "a-chat", action: "sessions.send", input: { sessionId: "ghost", prompt: "Hi" }, requestId: "a5-ghost", ran: null },
-  { name: "Giga row: a Giga's approvals.withdraw", caller: "g-chat", action: "approvals.withdraw", input: { id: "00000000-0000-4000-8000-000000000001" }, requestId: "g-withdraw", ran: null },
-  { name: "Giga row: a Giga habit run's approvals.withdraw", caller: "g-run", action: "approvals.withdraw", input: { id: "00000000-0000-4000-8000-000000000001" }, requestId: "g-run-withdraw", ran: null },
+  { name: "Giga row: a Giga's approvals.withdraw", caller: "g-chat", action: "approvals.withdraw", input: { id: "00000000-0000-4000-8000-000000000001" }, requestId: "g-withdraw", ran: "approvalWithdraw" },
+  { name: "Giga row: a Giga habit run's approvals.withdraw", caller: "g-run", action: "approvals.withdraw", input: { id: "00000000-0000-4000-8000-000000000001" }, requestId: "g-run-withdraw", ran: "approvalWithdraw" },
   { name: "Giga row: a Mono's approvals.file", caller: "a-chat", action: "approvals.file", input: { project: PROJECT, heading: "Pick a store" }, requestId: "m-file", ran: null },
   { name: "Giga row: a lead's approvals.withdraw", caller: "lead", action: "approvals.withdraw", input: { id: "00000000-0000-4000-8000-000000000001" }, requestId: "l-withdraw", ran: null },
   // A3 and A4: a worker's call of every action the gate checks.
@@ -187,6 +187,9 @@ function world(caller: string) {
     saveNote: vi.fn(async () => ({})),
     createWorktree: vi.fn(async () => ({})),
     messageSend: vi.fn(async () => ({ message_id: "m_bbbbbbbbbbbb" })),
+    approvalFile: vi.fn(async () => ({})),
+    approvalUpdate: vi.fn(async () => ({})),
+    approvalWithdraw: vi.fn(async () => ({})),
   };
   const host = {
     ...actions,
@@ -210,6 +213,11 @@ function world(caller: string) {
       send: actions.messageSend,
       reply: async () => ({}),
       get: async () => ({}),
+    },
+    approvals: {
+      file: actions.approvalFile,
+      update: actions.approvalUpdate,
+      withdraw: actions.approvalWithdraw,
     },
     levels: levelGate(source, "turn-1", (id) => sessions.get(id)?.leadSessionId),
   } as unknown as AgentAppHost;
@@ -331,7 +339,6 @@ it.skipIf(WRITE).each(cases.map((entry) => [entry.name, entry] as const))(
         continue;
       }
       allowed += 1;
-      if (!entry.ran) continue;
       expect(
         (outcome as { value: { message_id?: string } }).value.message_id,
       ).toBe((record?.reply as { messageId?: string } | undefined)?.messageId);

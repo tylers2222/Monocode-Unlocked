@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 47] = [
+const APP_ACTIONS: [&str; 50] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -111,6 +111,9 @@ const APP_ACTIONS: [&str; 47] = [
     "milestones.update",
     "milestones.remove",
     "milestones.reorder",
+    "approvals.file",
+    "approvals.update",
+    "approvals.withdraw",
     "notes.list",
     "notes.read",
     "notes.write",
@@ -402,6 +405,32 @@ Actions:
                   and milestones in the new order. Codes: stale_order (ids
                   are not exactly the project's; run milestones.list),
                   invalid_input, milestones_off.
+  approvals.file {"project":"<path or name>","heading":"...","summary":"...",
+                  "tradeoffs":{"pros":["..."],"cons":["..."]},
+                  "options":[{"label":"...","description":"...",
+                  "recommended":true}],"urgency":"blocking",
+                  "links":[{"kind":"pr","title":"...","url":"https://..."}],
+                  "origin":"..."}
+                  Giga only (code not_a_giga for any other caller). project
+                  is required and can be any project in MonoCode. When a
+                  Mono escalates something only the user can decide, talk it
+                  through with that Mono first, then file one card. urgency
+                  is blocking or not_blocking; kind is pr, doop or linear;
+                  options, links and origin are optional. Filing the same
+                  heading again in the project updates your open card.
+                  MonoCode sets id, number, requested_by, requested_by_name,
+                  created_at and status; do not send them. Returns the card.
+                  Codes: not_a_giga, invalid_input, heading_taken (another
+                  Giga's open card has that heading).
+  approvals.update {"id":"...","heading":"...","summary":"...",
+                  "tradeoffs":{...},"urgency":"not_blocking"}
+                  Giga only. Replaces the whole card you filed. Codes:
+                  not_a_giga, invalid_input, unknown_approval,
+                  not_your_approval, approval_not_open, heading_taken.
+  approvals.withdraw {"id":"..."}  Giga only. Take back your open card when
+                  it no longer needs a decision. Codes: not_a_giga,
+                  invalid_input, unknown_approval, not_your_approval,
+                  approval_not_open.
   notes.list     {"limit":30,"offset":0}  Titles and short previews only.
   notes.read     {"id":"..."}  Full body of one note.
   notes.write    {"title":"Plan","body":"Markdown","tags":["work"]}
@@ -686,7 +715,8 @@ fn send_to(
 
 /// The Mono tools, as MCP (`app-mcp`) and omp host tools both expose them
 /// (design 3 and 4). `action` is the app action each one calls. No
-/// milestone schema takes `createdBy` or `by`: the app sets the writer.
+/// milestone schema takes `createdBy` or `by`: the app sets the writer. No
+/// approval schema takes a field the app sets (the id is only a card's name).
 #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 pub fn app_tools() -> Value {
     let project = json!({"type": "string", "minLength": 1, "description": "Path or name of one of your projects. May be left out when you have a single project."});
@@ -695,6 +725,60 @@ pub fn app_tools() -> Value {
     let note = json!({"type": "string", "maxLength": 4000});
     let status = json!({"type": "string", "enum": ["idea", "planned", "in_progress", "done"]});
     let target = json!({"type": ["string", "null"], "pattern": "^(\\d{4}-\\d{2}-\\d{2})?$", "description": "YYYY-MM-DD, or \"\" or null for later."});
+    let label = json!({"type": "string", "minLength": 1, "maxLength": 200});
+    let texts =
+        json!({"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 8000}});
+    let card = json!({
+        "heading": {"type": "string", "minLength": 1, "maxLength": 200, "description": "Filing it again in the project updates your open card."},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 8000},
+        "tradeoffs": {
+            "type": "object",
+            "properties": {
+                "pros": texts,
+                "cons": texts
+            },
+            "required": ["pros", "cons"],
+            "additionalProperties": false
+        },
+        "options": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": label,
+                    "description": label,
+                    "recommended": {"type": "boolean"}
+                },
+                "required": ["label"],
+                "additionalProperties": false
+            }
+        },
+        "urgency": {"type": "string", "enum": ["blocking", "not_blocking"]},
+        "links": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["pr", "doop", "linear"]},
+                    "title": label,
+                    "url": {"type": "string", "pattern": "^https://"}
+                },
+                "required": ["kind", "url"],
+                "additionalProperties": false
+            }
+        },
+        "origin": label
+    });
+    let approval = |key: &str, value: Value| {
+        let mut properties = card.clone();
+        properties[key] = value;
+        json!({
+            "type": "object",
+            "properties": properties,
+            "required": [key, "heading", "summary", "tradeoffs", "urgency"],
+            "additionalProperties": false
+        })
+    };
     json!([
         {
             "name": "get_monos",
@@ -814,6 +898,29 @@ pub fn app_tools() -> Value {
                     "ids": {"type": "array", "items": id}
                 },
                 "required": ["ids"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "file_approval",
+            "action": "approvals.file",
+            "description": "Approvals board (Giga only): when a Mono escalated something only the user can decide and you talked it through with that Mono, file one card for the user. Filing the same heading again in the project updates your open card. MonoCode records you as the filer. Returns the card with its id. Codes: not_a_giga, invalid_input, heading_taken.",
+            "inputSchema": approval("project", json!({"type": "string", "minLength": 1, "description": "Path or name of a project in MonoCode."}))
+        },
+        {
+            "name": "update_approval",
+            "action": "approvals.update",
+            "description": "Approvals board (Giga only): replace the whole card you filed; send every field again. Codes: unknown_approval, not_your_approval, approval_not_open, heading_taken.",
+            "inputSchema": approval("id", id.clone())
+        },
+        {
+            "name": "withdraw_approval",
+            "action": "approvals.withdraw",
+            "description": "Approvals board (Giga only): take back your open card when it no longer needs a decision. Codes: unknown_approval, not_your_approval, approval_not_open.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"id": id},
+                "required": ["id"],
                 "additionalProperties": false
             }
         }
@@ -1364,13 +1471,7 @@ mod tests {
             ("messages.reply", r#"{"message":"CI is green"}"#),
             ("messages.get", r##"{"handle":"#1"}"##),
         ] {
-            assert!(matches!(
-                parse_args_for(&args(&[action, "--json", input]), true),
-                Ok(Parsed::Call(parsed_action, parsed_input, _))
-                    if parsed_action == action
-                        && parsed_input == serde_json::from_str::<Value>(input).unwrap()
-            ));
-            assert!(parse_args_for(&args(&[action]), false).is_err());
+            assert_app_call(action, input);
             // "messages.get" is a prefix of "messages.get_monos", so each
             // entry is matched with the space that follows its name.
             assert!(app_help().contains(&format!("  {action} ")), "{action}");
@@ -1381,6 +1482,25 @@ mod tests {
             Ok(Parsed::Call(action, _, _)) if action == "monos.send"
         ));
         assert!(!app_help().contains("monos.send"));
+    }
+    fn assert_app_call(action: &str, input: &str) {
+        assert!(matches!(
+            parse_args_for(&args(&[action, "--json", input]), true),
+            Ok(Parsed::Call(parsed_action, parsed_input, _))
+                if parsed_action == action
+                    && parsed_input == serde_json::from_str::<Value>(input).unwrap()
+        ));
+        assert!(parse_args_for(&args(&[action]), false).is_err());
+    }
+    fn help_entry(action: &str) -> String {
+        let help = app_help();
+        let entry = &help[help.find(&format!("\n  {action} {{")).unwrap() + 1..];
+        let mut lines = entry.lines();
+        let first = lines.next().unwrap_or_default();
+        std::iter::once(first)
+            .chain(lines.take_while(|line| line.starts_with("   ")))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
     #[test]
     fn app_mode_sends_milestones_actions_and_help_lists_each() {
@@ -1397,21 +1517,8 @@ mod tests {
             ("milestones.remove", r#"{"id":"m"}"#),
             ("milestones.reorder", r#"{"ids":["b","a"]}"#),
         ] {
-            assert!(matches!(
-                parse_args_for(&args(&[action, "--json", input]), true),
-                Ok(Parsed::Call(parsed_action, parsed_input, _))
-                    if parsed_action == action
-                        && parsed_input == serde_json::from_str::<Value>(input).unwrap()
-            ));
-            assert!(parse_args_for(&args(&[action]), false).is_err());
-            let help = app_help();
-            let entry = &help[help.find(&format!("\n  {action} {{")).unwrap() + 1..];
-            let mut lines = entry.lines();
-            let first = lines.next().unwrap_or_default();
-            let block: Vec<&str> = std::iter::once(first)
-                .chain(lines.take_while(|line| line.starts_with("   ")))
-                .collect();
-            assert!(block.join(" ").contains("invalid_input"), "{action}");
+            assert_app_call(action, input);
+            assert!(help_entry(action).contains("invalid_input"), "{action}");
         }
         let help = app_help();
         assert!(help.contains("folders.* and milestones.* actions"));
@@ -1439,6 +1546,28 @@ mod tests {
             "8000 characters (too_large)",
         ] {
             assert!(words.contains(limit), "help omits {limit:?}");
+        }
+    }
+
+    // Defect: the CLI refuses an approvals action, or its help does not tell
+    // a caller that only a Giga may call it or which input is bad.
+    #[test]
+    fn app_mode_sends_approvals_actions_and_help_lists_each() {
+        for (action, input) in [
+            (
+                "approvals.file",
+                r#"{"project":"app","heading":"Pick a store","summary":"Where cards live.","tradeoffs":{"pros":["Local"],"cons":[]},"urgency":"blocking"}"#,
+            ),
+            (
+                "approvals.update",
+                r#"{"id":"a","heading":"Pick a store","summary":"S","tradeoffs":{"pros":[],"cons":["Slow"]},"urgency":"not_blocking"}"#,
+            ),
+            ("approvals.withdraw", r#"{"id":"a"}"#),
+        ] {
+            assert_app_call(action, input);
+            let entry = help_entry(action);
+            assert!(entry.contains("not_a_giga"), "{action}");
+            assert!(entry.contains("invalid_input"), "{action}");
         }
     }
 
@@ -1601,7 +1730,7 @@ mod tests {
     // Defect: an MCP client cannot start (unsupported version, missing
     // capabilities) or sees tools that accept fields the gate refuses.
     #[test]
-    fn app_mcp_initializes_and_lists_the_nine_strict_tools() {
+    fn app_mcp_initializes_and_lists_the_twelve_strict_tools() {
         let out = mcp(
             None,
             &[
@@ -1632,7 +1761,10 @@ mod tests {
                 "add_milestone",
                 "update_milestone",
                 "remove_milestone",
-                "reorder_milestones"
+                "reorder_milestones",
+                "file_approval",
+                "update_approval",
+                "withdraw_approval"
             ]
         );
         for tool in tools {
@@ -1708,6 +1840,71 @@ mod tests {
         assert_eq!(out[0]["result"]["structuredContent"], refused);
     }
 
+    fn input_schema<'a>(tools: &'a [Value], name: &str) -> &'a Value {
+        &tools.iter().find(|tool| tool["name"] == name).unwrap()["inputSchema"]
+    }
+
+    struct ToolCase<'a> {
+        tool: &'a str,
+        action: &'a str,
+        /// Its schema's property keys, sorted.
+        fields: &'a [&'a str],
+        required: &'a [&'a str],
+        input: Value,
+    }
+
+    fn listed_tools() -> Vec<Value> {
+        let listed = mcp(None, &[rpc(1, "tools/list", json!({}))]);
+        listed[0]["result"]["tools"].as_array().unwrap().clone()
+    }
+
+    fn assert_schemas(tools: &[Value], cases: &[ToolCase<'_>]) {
+        for ToolCase {
+            tool,
+            fields,
+            required,
+            ..
+        } in cases
+        {
+            let schema = input_schema(tools, tool);
+            let mut keys: Vec<&str> = schema["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort();
+            assert_eq!(keys, *fields, "{tool}");
+            let listed_required = schema.get("required").cloned().unwrap_or(json!([]));
+            assert_eq!(listed_required, json!(required), "{tool}");
+        }
+    }
+
+    fn assert_calls_reach_the_app(cases: &[ToolCase<'_>]) {
+        let answer = json!({"ok": true, "result": {}});
+        let (endpoint, app) = fake_app(vec![answer.clone(); cases.len()]);
+        let calls: Vec<Value> = cases
+            .iter()
+            .zip(1..)
+            .map(|(case, id)| {
+                rpc(
+                    id,
+                    "tools/call",
+                    json!({"name": case.tool, "arguments": case.input}),
+                )
+            })
+            .collect();
+        let out = mcp(Some(&endpoint), &calls);
+        let requests = app.join().unwrap();
+        assert_eq!(requests.len(), cases.len());
+        for ((case, request), out) in cases.iter().zip(&requests).zip(&out) {
+            let tool = case.tool;
+            assert_eq!(request["action"], case.action, "{tool}");
+            assert_eq!(request["input"], case.input, "{tool}");
+            assert_eq!(out["result"]["structuredContent"], answer, "{tool}");
+        }
+    }
+
     // M-4. Defect: a milestone tool calls another action (a remove that runs
     // as a reorder, an update that adds a row), drops the model's input,
     // offers a field the app refuses (createdBy or by would let a model pick
@@ -1716,62 +1913,47 @@ mod tests {
     #[test]
     fn app_mcp_milestone_tools_call_their_action_with_a_strict_schema() {
         let cases = [
-            (
-                "list_milestones",
-                "milestones.list",
-                &["project"][..],
-                &[][..],
-                json!({"project": "app"}),
-            ),
-            (
-                "add_milestone",
-                "milestones.add",
-                &["note", "project", "status", "target", "title"][..],
-                &["title"][..],
-                json!({"title": "Dark mode", "note": "Later", "status": "planned", "target": null}),
-            ),
-            (
-                "update_milestone",
-                "milestones.update",
-                &["id", "note", "project", "status", "target", "title"][..],
-                &["id"][..],
-                json!({"id": "m1", "status": "done", "target": "2026-12-01"}),
-            ),
-            (
-                "remove_milestone",
-                "milestones.remove",
-                &["id", "project"][..],
-                &["id"][..],
-                json!({"id": "m1"}),
-            ),
-            (
-                "reorder_milestones",
-                "milestones.reorder",
-                &["ids", "project"][..],
-                &["ids"][..],
-                json!({"ids": ["m2", "m1"]}),
-            ),
+            ToolCase {
+                tool: "list_milestones",
+                action: "milestones.list",
+                fields: &["project"],
+                required: &[],
+                input: json!({"project": "app"}),
+            },
+            ToolCase {
+                tool: "add_milestone",
+                action: "milestones.add",
+                fields: &["note", "project", "status", "target", "title"],
+                required: &["title"],
+                input: json!({"title": "Dark mode", "note": "Later", "status": "planned", "target": null}),
+            },
+            ToolCase {
+                tool: "update_milestone",
+                action: "milestones.update",
+                fields: &["id", "note", "project", "status", "target", "title"],
+                required: &["id"],
+                input: json!({"id": "m1", "status": "done", "target": "2026-12-01"}),
+            },
+            ToolCase {
+                tool: "remove_milestone",
+                action: "milestones.remove",
+                fields: &["id", "project"],
+                required: &["id"],
+                input: json!({"id": "m1"}),
+            },
+            ToolCase {
+                tool: "reorder_milestones",
+                action: "milestones.reorder",
+                fields: &["ids", "project"],
+                required: &["ids"],
+                input: json!({"ids": ["m2", "m1"]}),
+            },
         ];
-        let listed = mcp(None, &[rpc(1, "tools/list", json!({}))]);
-        let tools = listed[0]["result"]["tools"].as_array().unwrap();
-        let schema = |name: &str| -> &Value {
-            &tools.iter().find(|tool| tool["name"] == name).unwrap()["inputSchema"]
-        };
-        for (name, _, fields, required, _) in &cases {
-            let schema = schema(name);
-            let mut keys: Vec<&str> = schema["properties"]
-                .as_object()
-                .unwrap()
-                .keys()
-                .map(String::as_str)
-                .collect();
-            keys.sort();
-            assert_eq!(keys, *fields, "{name}");
-            let listed_required = schema.get("required").cloned().unwrap_or(json!([]));
-            assert_eq!(listed_required, json!(required), "{name}");
-        }
+        let tools = listed_tools();
+        assert_schemas(&tools, &cases);
+        assert_calls_reach_the_app(&cases);
         for name in ["add_milestone", "update_milestone"] {
-            let properties = &schema(name)["properties"];
+            let properties = &input_schema(&tools, name)["properties"];
             assert_eq!(
                 properties["target"]["type"],
                 json!(["string", "null"]),
@@ -1783,22 +1965,80 @@ mod tests {
                 "{name}"
             );
         }
-        let answer = json!({"ok": true, "result": {}});
-        let (endpoint, app) = fake_app(vec![answer.clone(); cases.len()]);
-        let calls: Vec<Value> = cases
-            .iter()
-            .zip(1..)
-            .map(|((name, _, _, _, input), id)| {
-                rpc(id, "tools/call", json!({"name": name, "arguments": input}))
-            })
-            .collect();
-        let out = mcp(Some(&endpoint), &calls);
-        let requests = app.join().unwrap();
-        assert_eq!(requests.len(), cases.len());
-        for (((name, action, _, _, input), request), out) in cases.iter().zip(&requests).zip(&out) {
-            assert_eq!(request["action"], *action, "{name}");
-            assert_eq!(request["input"], *input, "{name}");
-            assert_eq!(out["result"]["structuredContent"], answer, "{name}");
+    }
+
+    // Defect: an approval tool calls another action (a withdraw that runs as
+    // an update), drops the model's input, offers a field the app sets (the
+    // exact key lists leave out number, requested_by, requested_by_name,
+    // created_at, status and a filing's id), requires the wrong fields, or
+    // lets a nested object take a key the app refuses.
+    #[test]
+    fn app_mcp_approval_tools_call_their_action_with_a_strict_schema() {
+        let card = json!({
+            "heading": "Pick a store",
+            "summary": "Where approval cards live.",
+            "tradeoffs": {"pros": ["Local"], "cons": []},
+            "options": [{"label": "SQLite", "description": "One file.", "recommended": true}],
+            "urgency": "blocking",
+            "links": [{"kind": "pr", "title": "PR #1", "url": "https://github.com/o/r/pull/1"}],
+            "origin": "MonoCode General"
+        });
+        let (mut file, mut update) = (card.clone(), card);
+        file["project"] = json!("app");
+        update["id"] = json!("a1");
+        let cases = [
+            ToolCase {
+                tool: "file_approval",
+                action: "approvals.file",
+                fields: &[
+                    "heading",
+                    "links",
+                    "options",
+                    "origin",
+                    "project",
+                    "summary",
+                    "tradeoffs",
+                    "urgency",
+                ],
+                required: &["project", "heading", "summary", "tradeoffs", "urgency"],
+                input: file,
+            },
+            ToolCase {
+                tool: "update_approval",
+                action: "approvals.update",
+                fields: &[
+                    "heading",
+                    "id",
+                    "links",
+                    "options",
+                    "origin",
+                    "summary",
+                    "tradeoffs",
+                    "urgency",
+                ],
+                required: &["id", "heading", "summary", "tradeoffs", "urgency"],
+                input: update,
+            },
+            ToolCase {
+                tool: "withdraw_approval",
+                action: "approvals.withdraw",
+                fields: &["id"],
+                required: &["id"],
+                input: json!({"id": "a1"}),
+            },
+        ];
+        let tools = listed_tools();
+        assert_schemas(&tools, &cases);
+        assert_calls_reach_the_app(&cases);
+        for name in ["file_approval", "update_approval"] {
+            let properties = &input_schema(&tools, name)["properties"];
+            for nested in [
+                &properties["tradeoffs"],
+                &properties["options"]["items"],
+                &properties["links"]["items"],
+            ] {
+                assert_eq!(nested["additionalProperties"], false, "{name}: {nested}");
+            }
         }
     }
 

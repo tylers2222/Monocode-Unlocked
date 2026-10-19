@@ -452,6 +452,7 @@ import {
   removeProjectData,
 } from "../features/projects/model/projectData";
 import * as milestones from "../features/milestones/model/milestones";
+import * as approvals from "../features/approvals/model/approvals";
 import {
   forgetProjectLocation,
   rememberProjectLocation,
@@ -11813,6 +11814,7 @@ function Workspace({
                   ?.leadSessionId,
             ),
             milestones,
+            approvals,
             habits: { load: loadHabits, update: updateHabits },
             agentFiles: (monoId) => loadMonoFiles(monoId),
             readAgentFile: (monoId, path) => readAgentFile(monoId, path),

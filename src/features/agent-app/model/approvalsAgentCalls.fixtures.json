@@ -1,0 +1,1135 @@
+{
+  "steps": [
+    {
+      "action": "approvals.file",
+      "caller": "giga-a",
+      "calls": [
+        {
+          "args": {
+            "by": "giga-a",
+            "card": {
+              "heading": "Pick a store",
+              "links": [
+                {
+                  "kind": "pr",
+                  "title": "PR #1",
+                  "url": "https://github.com/tylers2222/monocode/pull/1"
+                }
+              ],
+              "options": [
+                {
+                  "description": "One file next to the app.",
+                  "label": "SQLite",
+                  "recommended": true
+                },
+                {
+                  "description": null,
+                  "label": "Server",
+                  "recommended": false
+                }
+              ],
+              "origin": "MonoCode Fork Orchestrator",
+              "summary": "Where approval cards live.",
+              "tradeoffs": {
+                "cons": [
+                  "One machine"
+                ],
+                "pros": [
+                  "Local and fast"
+                ]
+              },
+              "urgency": "blocking"
+            },
+            "projectPath": "/code/app"
+          },
+          "command": "approvals_file",
+          "reply": {
+            "Ok": {
+              "createdAt": 1,
+              "heading": "Pick a store",
+              "id": "00000000-0000-4000-8000-000000000001",
+              "links": [
+                {
+                  "kind": "pr",
+                  "title": "PR #1",
+                  "url": "https://github.com/tylers2222/monocode/pull/1"
+                }
+              ],
+              "number": 1,
+              "options": [
+                {
+                  "description": "One file next to the app.",
+                  "label": "SQLite",
+                  "recommended": true
+                },
+                {
+                  "description": null,
+                  "label": "Server",
+                  "recommended": false
+                }
+              ],
+              "origin": "MonoCode Fork Orchestrator",
+              "projectPath": "/code/app",
+              "requestedBy": {
+                "id": "giga-a",
+                "name": "Giga A"
+              },
+              "status": {
+                "state": "open"
+              },
+              "summary": "Where approval cards live.",
+              "tradeoffs": {
+                "cons": [
+                  "One machine"
+                ],
+                "pros": [
+                  "Local and fast"
+                ]
+              },
+              "urgency": "blocking"
+            }
+          }
+        }
+      ],
+      "expect": "ok",
+      "input": {
+        "heading": "Pick a store",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/app",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "1: giga-a files a card with two options and a link"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "giga-a",
+      "calls": [
+        {
+          "args": {
+            "by": "giga-a",
+            "card": {
+              "heading": "  Pick a store ",
+              "links": [
+                {
+                  "kind": "pr",
+                  "title": "PR #1",
+                  "url": "https://github.com/tylers2222/monocode/pull/1"
+                }
+              ],
+              "options": [
+                {
+                  "description": "One file next to the app.",
+                  "label": "SQLite",
+                  "recommended": true
+                },
+                {
+                  "description": null,
+                  "label": "Server",
+                  "recommended": false
+                }
+              ],
+              "origin": "MonoCode Fork Orchestrator",
+              "summary": "Now with costs.",
+              "tradeoffs": {
+                "cons": [
+                  "One machine"
+                ],
+                "pros": [
+                  "Local and fast"
+                ]
+              },
+              "urgency": "blocking"
+            },
+            "projectPath": "/code/app"
+          },
+          "command": "approvals_file",
+          "reply": {
+            "Ok": {
+              "createdAt": 1,
+              "heading": "Pick a store",
+              "id": "00000000-0000-4000-8000-000000000001",
+              "links": [
+                {
+                  "kind": "pr",
+                  "title": "PR #1",
+                  "url": "https://github.com/tylers2222/monocode/pull/1"
+                }
+              ],
+              "number": 1,
+              "options": [
+                {
+                  "description": "One file next to the app.",
+                  "label": "SQLite",
+                  "recommended": true
+                },
+                {
+                  "description": null,
+                  "label": "Server",
+                  "recommended": false
+                }
+              ],
+              "origin": "MonoCode Fork Orchestrator",
+              "projectPath": "/code/app",
+              "requestedBy": {
+                "id": "giga-a",
+                "name": "Giga A"
+              },
+              "status": {
+                "state": "open"
+              },
+              "summary": "Now with costs.",
+              "tradeoffs": {
+                "cons": [
+                  "One machine"
+                ],
+                "pros": [
+                  "Local and fast"
+                ]
+              },
+              "urgency": "blocking"
+            }
+          }
+        }
+      ],
+      "expect": "ok",
+      "input": {
+        "heading": "  Pick a store ",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/app",
+        "summary": "Now with costs.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "2: giga-a files the same heading with padding and a new summary"
+    },
+    {
+      "action": "approvals.update",
+      "caller": "giga-a",
+      "calls": [
+        {
+          "args": {
+            "by": "giga-a",
+            "card": {
+              "heading": "Pick a card store",
+              "links": [
+                {
+                  "kind": "pr",
+                  "title": "PR #1",
+                  "url": "https://github.com/tylers2222/monocode/pull/1"
+                }
+              ],
+              "options": [
+                {
+                  "description": "One file next to the app.",
+                  "label": "SQLite",
+                  "recommended": true
+                },
+                {
+                  "description": null,
+                  "label": "Server",
+                  "recommended": false
+                }
+              ],
+              "origin": "MonoCode Fork Orchestrator",
+              "summary": "Where approval cards live.",
+              "tradeoffs": {
+                "cons": [
+                  "One machine"
+                ],
+                "pros": [
+                  "Local and fast"
+                ]
+              },
+              "urgency": "blocking"
+            },
+            "id": "00000000-0000-4000-8000-000000000001"
+          },
+          "command": "approvals_update",
+          "reply": {
+            "Ok": {
+              "createdAt": 1,
+              "heading": "Pick a card store",
+              "id": "00000000-0000-4000-8000-000000000001",
+              "links": [
+                {
+                  "kind": "pr",
+                  "title": "PR #1",
+                  "url": "https://github.com/tylers2222/monocode/pull/1"
+                }
+              ],
+              "number": 1,
+              "options": [
+                {
+                  "description": "One file next to the app.",
+                  "label": "SQLite",
+                  "recommended": true
+                },
+                {
+                  "description": null,
+                  "label": "Server",
+                  "recommended": false
+                }
+              ],
+              "origin": "MonoCode Fork Orchestrator",
+              "projectPath": "/code/app",
+              "requestedBy": {
+                "id": "giga-a",
+                "name": "Giga A"
+              },
+              "status": {
+                "state": "open"
+              },
+              "summary": "Where approval cards live.",
+              "tradeoffs": {
+                "cons": [
+                  "One machine"
+                ],
+                "pros": [
+                  "Local and fast"
+                ]
+              },
+              "urgency": "blocking"
+            }
+          }
+        }
+      ],
+      "expect": "ok",
+      "input": {
+        "heading": "Pick a card store",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "3: giga-a updates the card with a new heading"
+    },
+    {
+      "action": "approvals.update",
+      "caller": "giga-b",
+      "calls": [
+        {
+          "args": {
+            "by": "giga-b",
+            "card": {
+              "heading": "Pick a store",
+              "links": [
+                {
+                  "kind": "pr",
+                  "title": "PR #1",
+                  "url": "https://github.com/tylers2222/monocode/pull/1"
+                }
+              ],
+              "options": [
+                {
+                  "description": "One file next to the app.",
+                  "label": "SQLite",
+                  "recommended": true
+                },
+                {
+                  "description": null,
+                  "label": "Server",
+                  "recommended": false
+                }
+              ],
+              "origin": "MonoCode Fork Orchestrator",
+              "summary": "Where approval cards live.",
+              "tradeoffs": {
+                "cons": [
+                  "One machine"
+                ],
+                "pros": [
+                  "Local and fast"
+                ]
+              },
+              "urgency": "blocking"
+            },
+            "id": "00000000-0000-4000-8000-000000000001"
+          },
+          "command": "approvals_update",
+          "reply": {
+            "Err": "not_your_approval"
+          }
+        }
+      ],
+      "expect": "not_your_approval",
+      "input": {
+        "heading": "Pick a store",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "4: giga-b updates giga-a's card"
+    },
+    {
+      "action": "approvals.withdraw",
+      "caller": "giga-b",
+      "calls": [
+        {
+          "args": {
+            "by": "giga-b",
+            "id": "00000000-0000-4000-8000-000000000001"
+          },
+          "command": "approvals_withdraw",
+          "reply": {
+            "Err": "not_your_approval"
+          }
+        }
+      ],
+      "expect": "not_your_approval",
+      "input": {
+        "id": "00000000-0000-4000-8000-000000000001"
+      },
+      "name": "5: giga-b withdraws giga-a's card"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "giga-b",
+      "calls": [
+        {
+          "args": {
+            "by": "giga-b",
+            "card": {
+              "heading": "Pick a card store",
+              "links": [
+                {
+                  "kind": "pr",
+                  "title": "PR #1",
+                  "url": "https://github.com/tylers2222/monocode/pull/1"
+                }
+              ],
+              "options": [
+                {
+                  "description": "One file next to the app.",
+                  "label": "SQLite",
+                  "recommended": true
+                },
+                {
+                  "description": null,
+                  "label": "Server",
+                  "recommended": false
+                }
+              ],
+              "origin": "MonoCode Fork Orchestrator",
+              "summary": "Where approval cards live.",
+              "tradeoffs": {
+                "cons": [
+                  "One machine"
+                ],
+                "pros": [
+                  "Local and fast"
+                ]
+              },
+              "urgency": "blocking"
+            },
+            "projectPath": "/code/app"
+          },
+          "command": "approvals_file",
+          "reply": {
+            "Err": "heading_taken"
+          }
+        }
+      ],
+      "expect": "heading_taken",
+      "input": {
+        "heading": "Pick a card store",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/app",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "6: giga-b files giga-a's heading"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "giga-a",
+      "calls": [],
+      "expect": "invalid_input",
+      "input": {
+        "heading": "Pick a store",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/app",
+        "requested_by": "giga-b",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "7: giga-a files with a forged requested_by"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "giga-a",
+      "calls": [],
+      "expect": "invalid_input",
+      "input": {
+        "heading": "Pick a store",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/app",
+        "requested_by_name": "Giga B",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "8: giga-a files with a forged requested_by_name"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "giga-a",
+      "calls": [],
+      "expect": "invalid_input",
+      "input": {
+        "heading": "Pick a store",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/app",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "9: giga-a files with a forged id"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "giga-a",
+      "calls": [],
+      "expect": "invalid_input",
+      "input": {
+        "heading": "Pick a store",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "number": 7,
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/app",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "10: giga-a files with a forged number"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "giga-a",
+      "calls": [],
+      "expect": "invalid_input",
+      "input": {
+        "created_at": 1,
+        "heading": "Pick a store",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/app",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "11: giga-a files with a forged created_at"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "giga-a",
+      "calls": [],
+      "expect": "invalid_input",
+      "input": {
+        "heading": "Pick a store",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/app",
+        "status": "approved",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "12: giga-a files with a forged status"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "giga-a",
+      "calls": [],
+      "expect": "invalid_input",
+      "input": {
+        "heading": "Pick a store",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/elsewhere",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "13: giga-a files in a project that is not on the rail"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "giga-a",
+      "calls": [],
+      "expect": "invalid_input",
+      "input": {
+        "heading": "Pick a store",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "icon": "db",
+            "label": "SQLite"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/app",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "14: giga-a files an option with an unknown key"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "giga-a",
+      "calls": [
+        {
+          "args": {
+            "by": "giga-a",
+            "card": {
+              "heading": "  ",
+              "links": [
+                {
+                  "kind": "pr",
+                  "title": "PR #1",
+                  "url": "https://github.com/tylers2222/monocode/pull/1"
+                }
+              ],
+              "options": [
+                {
+                  "description": "One file next to the app.",
+                  "label": "SQLite",
+                  "recommended": true
+                },
+                {
+                  "description": null,
+                  "label": "Server",
+                  "recommended": false
+                }
+              ],
+              "origin": "MonoCode Fork Orchestrator",
+              "summary": "Where approval cards live.",
+              "tradeoffs": {
+                "cons": [
+                  "One machine"
+                ],
+                "pros": [
+                  "Local and fast"
+                ]
+              },
+              "urgency": "blocking"
+            },
+            "projectPath": "/code/app"
+          },
+          "command": "approvals_file",
+          "reply": {
+            "Err": "invalid_input: heading must be 1 to 200 characters"
+          }
+        }
+      ],
+      "expect": "invalid_input",
+      "input": {
+        "heading": "  ",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "project": "/code/app",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "15: giga-a files a blank heading"
+    },
+    {
+      "action": "approvals.withdraw",
+      "caller": "giga-a",
+      "calls": [
+        {
+          "args": {
+            "by": "giga-a",
+            "id": "00000000-0000-4000-8000-000000000001"
+          },
+          "command": "approvals_withdraw",
+          "reply": {
+            "Ok": {
+              "createdAt": 1,
+              "heading": "Pick a card store",
+              "id": "00000000-0000-4000-8000-000000000001",
+              "links": [
+                {
+                  "kind": "pr",
+                  "title": "PR #1",
+                  "url": "https://github.com/tylers2222/monocode/pull/1"
+                }
+              ],
+              "number": 1,
+              "options": [
+                {
+                  "description": "One file next to the app.",
+                  "label": "SQLite",
+                  "recommended": true
+                },
+                {
+                  "description": null,
+                  "label": "Server",
+                  "recommended": false
+                }
+              ],
+              "origin": "MonoCode Fork Orchestrator",
+              "projectPath": "/code/app",
+              "requestedBy": {
+                "id": "giga-a",
+                "name": "Giga A"
+              },
+              "status": {
+                "state": "withdrawn",
+                "withdrawnAt": 16
+              },
+              "summary": "Where approval cards live.",
+              "tradeoffs": {
+                "cons": [
+                  "One machine"
+                ],
+                "pros": [
+                  "Local and fast"
+                ]
+              },
+              "urgency": "blocking"
+            }
+          }
+        }
+      ],
+      "expect": "ok",
+      "input": {
+        "id": "00000000-0000-4000-8000-000000000001"
+      },
+      "name": "16: giga-a withdraws its card"
+    },
+    {
+      "action": "approvals.update",
+      "caller": "giga-a",
+      "calls": [
+        {
+          "args": {
+            "by": "giga-a",
+            "card": {
+              "heading": "Pick a store",
+              "links": [
+                {
+                  "kind": "pr",
+                  "title": "PR #1",
+                  "url": "https://github.com/tylers2222/monocode/pull/1"
+                }
+              ],
+              "options": [
+                {
+                  "description": "One file next to the app.",
+                  "label": "SQLite",
+                  "recommended": true
+                },
+                {
+                  "description": null,
+                  "label": "Server",
+                  "recommended": false
+                }
+              ],
+              "origin": "MonoCode Fork Orchestrator",
+              "summary": "Where approval cards live.",
+              "tradeoffs": {
+                "cons": [
+                  "One machine"
+                ],
+                "pros": [
+                  "Local and fast"
+                ]
+              },
+              "urgency": "blocking"
+            },
+            "id": "00000000-0000-4000-8000-000000000001"
+          },
+          "command": "approvals_update",
+          "reply": {
+            "Err": "approval_not_open"
+          }
+        }
+      ],
+      "expect": "approval_not_open",
+      "input": {
+        "heading": "Pick a store",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "links": [
+          {
+            "kind": "pr",
+            "title": "PR #1",
+            "url": "https://github.com/tylers2222/monocode/pull/1"
+          }
+        ],
+        "options": [
+          {
+            "description": "One file next to the app.",
+            "label": "SQLite",
+            "recommended": true
+          },
+          {
+            "label": "Server"
+          }
+        ],
+        "origin": "MonoCode Fork Orchestrator",
+        "summary": "Where approval cards live.",
+        "tradeoffs": {
+          "cons": [
+            "One machine"
+          ],
+          "pros": [
+            "Local and fast"
+          ]
+        },
+        "urgency": "blocking"
+      },
+      "name": "17: giga-a updates its withdrawn card"
+    },
+    {
+      "action": "approvals.withdraw",
+      "caller": "giga-a",
+      "calls": [
+        {
+          "args": {
+            "by": "giga-a",
+            "id": "ffffffff-ffff-4fff-8fff-ffffffffffff"
+          },
+          "command": "approvals_withdraw",
+          "reply": {
+            "Err": "unknown_approval"
+          }
+        }
+      ],
+      "expect": "unknown_approval",
+      "input": {
+        "id": "ffffffff-ffff-4fff-8fff-ffffffffffff"
+      },
+      "name": "18: giga-a withdraws an unknown id"
+    }
+  ]
+}

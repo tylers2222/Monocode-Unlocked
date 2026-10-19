@@ -4,6 +4,24 @@ import type {
   RejectCode,
 } from "../../monos/model/monoMessages";
 
+/** Codes a Rust command answers with as its whole error, and their hints. */
+const RUST_COMMAND_HINTS = {
+  unknown_milestone:
+    "No milestone with that id in this project; run milestones.list for ids",
+  milestones_off:
+    "The user turned milestones off for this project, so nothing was changed. Do not retry; milestones.list still reads it",
+  stale_order:
+    "ids must be every milestone id of the project, each once. Run milestones.list and send the full list",
+  unknown_approval:
+    "No approval card with that id. Use the id that approvals.file returned.",
+  not_your_approval:
+    "Another Giga filed that card. You can update or withdraw only your own cards.",
+  approval_not_open:
+    "That card is decided or withdrawn, so nothing changed. File a new card if it still needs a decision.",
+  heading_taken:
+    "Another Giga has an open card with that heading in this project. Use another heading.",
+} as const;
+
 /** Codes whose hint is always the same. */
 const HINTS = {
   not_a_mono: "Only a Mono can use monos.* actions",
@@ -16,12 +34,7 @@ const HINTS = {
     "That Mono is busy, so nothing was changed. Update it again after its turn ends",
   app_cli_unavailable:
     "This session cannot use the MonoCode app CLI: it is an Inbox Ask, an orchestration lead or worker, or no longer open in MonoCode. Do not retry.",
-  unknown_milestone:
-    "No milestone with that id in this project; run milestones.list for ids",
-  milestones_off:
-    "The user turned milestones off for this project, so nothing was changed. Do not retry; milestones.list still reads it",
-  stale_order:
-    "ids must be every milestone id of the project, each once. Run milestones.list and send the full list",
+  ...RUST_COMMAND_HINTS,
 } as const;
 
 /**
@@ -64,6 +77,15 @@ export class AppActionError extends Error {
 
 export function monoError(code: keyof typeof HINTS): AppActionError {
   return new AppActionError(code, HINTS[code]);
+}
+
+export function isRustCommandCode(
+  code: unknown,
+): code is keyof typeof RUST_COMMAND_HINTS {
+  return (
+    typeof code === "string" &&
+    Object.prototype.hasOwnProperty.call(RUST_COMMAND_HINTS, code)
+  );
 }
 
 /**

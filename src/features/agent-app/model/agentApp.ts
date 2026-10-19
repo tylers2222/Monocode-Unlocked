@@ -15,7 +15,11 @@ import {
   type ReplyInput,
   type SendInput,
 } from "../../monos/model/monoMessages";
-import { AppActionError, monoError } from "./appActionError";
+import {
+  AppActionError,
+  isRustCommandCode,
+  monoError,
+} from "./appActionError";
 import {
   HARNESSES,
   RUNTIME_MODE_HINT,
@@ -116,6 +120,7 @@ import {
   type Writer,
 } from "../../milestones/model/milestones";
 import type * as milestonesModel from "../../milestones/model/milestones";
+import * as approvalsModel from "../../approvals/model/approvals";
 
 export type AppSessionListing = {
   id: string;
@@ -326,6 +331,8 @@ export type AgentAppHost = {
     typeof milestonesModel,
     "list" | "add" | "update" | "remove" | "reorder"
   >;
+  /** approvals.*: `approvals.ts`; the Rust gate lets only a Giga through. */
+  approvals?: Pick<typeof approvalsModel, "file" | "update" | "withdraw">;
   agentFiles(monoId: string): Promise<MonoFiles>;
   /** The shared Giga workspace, as the last ensure run left it. */
   workspaceStatus?(monoId: string): Promise<WorkspaceStatus>;
@@ -343,16 +350,6 @@ export type AgentAppHost = {
   /** The clock entries are dated by; tests pin it. */
   now?(): Date;
 };
-
-const APPROVAL_CARD_FIELDS = [
-  "heading",
-  "summary",
-  "tradeoffs",
-  "options",
-  "urgency",
-  "links",
-  "origin",
-];
 
 /** Every app action with the input fields it takes. */
 export const FIELDS = new Map<string, readonly string[]>([
@@ -432,8 +429,8 @@ export const FIELDS = new Map<string, readonly string[]>([
   ],
   ["milestones.remove", ["project", "id"]],
   ["milestones.reorder", ["project", "ids"]],
-  ["approvals.file", ["project", ...APPROVAL_CARD_FIELDS]],
-  ["approvals.update", ["id", ...APPROVAL_CARD_FIELDS]],
+  ["approvals.file", ["project", ...approvalsModel.CARD_FIELDS]],
+  ["approvals.update", ["id", ...approvalsModel.CARD_FIELDS]],
   ["approvals.withdraw", ["id"]],
   ["workspace.status", []],
   ["chat.card", [...CARD_FIELDS]],
@@ -1566,16 +1563,13 @@ function milestoneView({ projectPath: _, ...view }: Milestone) {
 }
 
 /** Rust refuses with a bare code, or `invalid_input: <reason>`. */
-function milestoneRefusal(error: unknown): unknown {
-  if (
-    error === "unknown_milestone" ||
-    error === "milestones_off" ||
-    error === "stale_order"
-  )
-    return monoError(error);
-  const reason =
-    typeof error === "string" ? /^invalid_input: (.*)$/s.exec(error)?.[1] : undefined;
-  return reason === undefined ? error : new AppActionError("invalid_input", reason);
+function rust<T>(call: Promise<T>): Promise<T> {
+  return call.catch((error: unknown) => {
+    if (isRustCommandCode(error)) throw monoError(error);
+    const reason =
+      typeof error === "string" ? /^invalid_input: (.*)$/s.exec(error)?.[1] : undefined;
+    throw reason === undefined ? error : new AppActionError("invalid_input", reason);
+  });
 }
 
 async function handleMilestones(
@@ -1591,13 +1585,9 @@ async function handleMilestones(
   // "user" write while milestones are off and refuses every agent.
   const monoId = host.monoOf?.(source.id)?.id;
   const by: Writer = monoId ? `mono:${monoId}` : `session:${source.id}`;
-  const rust = <T>(call: Promise<T>) =>
-    call.catch((error: unknown) => {
-      throw milestoneRefusal(error);
-    });
   switch (action) {
     case "milestones.list": {
-      const listed = await rust(milestones.list(project));
+      const listed = await milestones.list(project);
       return {
         project,
         settings: listed.settings,
@@ -1609,25 +1599,60 @@ async function handleMilestones(
         if (input.title === undefined) throw new Error("title is required");
         return { ...milestonePatch(input), title: input.title as string };
       });
-      return milestoneView(await rust(milestones.add(project, milestone, by)));
+      return milestoneView(await milestones.add(project, milestone, by));
     }
     case "milestones.update": {
       const [id, patch] = checked(
         () => [requiredString(input.id, "id", 128), milestonePatch(input)] as const,
       );
-      return milestoneView(
-        await rust(milestones.update(project, id, patch, by)),
-      );
+      return milestoneView(await milestones.update(project, id, patch, by));
     }
     case "milestones.remove": {
       const id = checked(() => requiredString(input.id, "id", 128));
-      await rust(milestones.remove(project, id, by));
+      await milestones.remove(project, id, by);
       return { removed: id };
     }
     case "milestones.reorder": {
       const ids = checked(() => milestoneIds(input.ids));
-      const listed = await rust(milestones.reorder(project, ids, by));
+      const listed = await milestones.reorder(project, ids, by);
       return { project, milestones: listed.map(milestoneView) };
+    }
+  }
+  throw new Error(`Unknown app action: ${action}`);
+}
+
+async function handleApprovals(
+  source: Session,
+  action: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+): Promise<unknown> {
+  const giga = host.monoOf?.(source.id);
+  const approvals = host.approvals;
+  if (!giga || !approvals)
+    throw new Error("Approval cards are unavailable here");
+  switch (action) {
+    case "approvals.file": {
+      const card = checked(() => approvalsModel.parseApprovalCard(input));
+      // Not requireProject: a Giga files for any project in MonoCode, not
+      // only its own.
+      const project = checked(
+        () =>
+          resolveMonoProjects(
+            [requiredString(input.project, "project", 4096)],
+            knownHomeDir(),
+          )[0],
+      );
+      return approvals.file(project, card, giga.id);
+    }
+    case "approvals.update": {
+      const id = checked(() => requiredString(input.id, "id", 128));
+      const card = checked(() => approvalsModel.parseApprovalCard(input));
+      return approvals.update(id, card, giga.id);
+    }
+    case "approvals.withdraw": {
+      const id = checked(() => requiredString(input.id, "id", 128));
+      return approvals.withdraw(id, giga.id);
     }
   }
   throw new Error(`Unknown app action: ${action}`);
@@ -1663,7 +1688,9 @@ export async function handleAgentApp(
   if (action.startsWith("habits."))
     return handleHabits(source, action, input, host);
   if (action.startsWith("milestones."))
-    return handleMilestones(source, action, input, host);
+    return rust(handleMilestones(source, action, input, host));
+  if (action.startsWith("approvals."))
+    return rust(handleApprovals(source, action, input, host));
   if (action === "monos.create" || action === "monos.update")
     return handleGigaMonos(source, action, input, host);
   if (action.startsWith("monos."))

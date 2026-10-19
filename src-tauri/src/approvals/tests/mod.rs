@@ -878,3 +878,76 @@ fn a_listener_reads_the_store_when_the_event_arrives() {
         "each listener read the store and saw its write: open after file and update, none after withdraw"
     );
 }
+
+fn placeholder(n: usize) -> String {
+    format!("00000000-0000-4000-8000-{n:012}")
+}
+
+fn replay(conn: &Connection, call: &Value, ids: &[String], now: i64) -> Result<Approval, String> {
+    let args = call["args"].as_object().unwrap();
+    let text = |key: &str| serde_json::from_value::<String>(args[key].clone()).unwrap();
+    let sent_card = || serde_json::from_value::<Card>(args["card"].clone()).unwrap();
+    let id = || {
+        let id = text("id");
+        (1..=ids.len())
+            .find(|&n| placeholder(n) == id)
+            .map_or(id, |n| ids[n - 1].clone())
+    };
+    let keys: Vec<&str> = args.keys().map(String::as_str).collect();
+    let by = parse_by(&text("by"))?;
+    match call["command"].as_str().unwrap() {
+        "approvals_file" => {
+            assert_eq!(keys, ["by", "card", "projectPath"]);
+            file(conn, &text("projectPath"), &by, sent_card(), now)
+        }
+        "approvals_update" => {
+            assert_eq!(keys, ["by", "card", "id"]);
+            update(conn, &id(), &by, sent_card())
+        }
+        "approvals_withdraw" => {
+            assert_eq!(keys, ["by", "id"]);
+            withdraw(conn, &id(), &by, now)
+        }
+        other => panic!("unknown command {other}"),
+    }
+}
+
+// Defect: a command reads another argument name or card shape than the web
+// app sends, or answers with another shape, card id or error than the web
+// app acts on.
+#[test]
+fn approvals_commands_answer_every_call_the_web_app_sends() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../src/features/agent-app/model/approvalsAgentCalls.fixtures.json"
+    );
+    let write = std::env::var("WRITE_APPROVALS_FIXTURE").as_deref() == Ok("1");
+    let mut fixture: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let store = SessionStore::open_in_memory().unwrap();
+    let conn = store.lock_conn().unwrap();
+    giga(&conn, "giga-a", "Giga A");
+    giga(&conn, "giga-b", "Giga B");
+    let mut ids: Vec<String> = Vec::new();
+    for (now, step) in (1..).zip(fixture["steps"].as_array_mut().unwrap()) {
+        let name = step["name"].as_str().unwrap().to_string();
+        for call in step["calls"].as_array_mut().unwrap() {
+            let mut reply = serde_json::to_value(replay(&conn, call, &ids, now)).unwrap();
+            if let Some(id) = reply.pointer_mut("/Ok/id") {
+                let real = id.as_str().unwrap().to_string();
+                if !ids.contains(&real) {
+                    ids.push(real.clone());
+                }
+                let n = ids.iter().position(|seen| *seen == real).unwrap() + 1;
+                *id = json!(placeholder(n));
+            }
+            if write {
+                call["reply"] = reply;
+            } else {
+                assert_eq!(reply, call["reply"], "{name}");
+            }
+        }
+    }
+    if write {
+        std::fs::write(path, serde_json::to_string_pretty(&fixture).unwrap() + "\n").unwrap();
+    }
+}
