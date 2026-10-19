@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test("milestone timeline renders frame M·4 in order and tabs through its rows", async ({
   page,
+  browserName,
 }, testInfo) => {
   await page.goto("/tests/browser/milestone-timeline.html");
   await expect(page.locator("h3")).toHaveText([
@@ -14,6 +15,11 @@ test("milestone timeline renders frame M·4 in order and tabs through its rows",
 
   const rows = page.locator("[data-milestone]");
   await page.keyboard.press("Tab");
+  // WebKit on macOS tabs past buttons unless Full Keyboard Access is on.
+  const arrow = page.getByRole("button", { name: "Hide Done" });
+  if (browserName !== "webkit") await expect(arrow).toBeFocused();
+  if (await arrow.evaluate((element) => element === document.activeElement))
+    await page.keyboard.press("Tab");
   for (let index = 0; index < (await rows.count()); index++) {
     await expect(rows.nth(index)).toBeFocused();
     await page.keyboard.press("Tab");
