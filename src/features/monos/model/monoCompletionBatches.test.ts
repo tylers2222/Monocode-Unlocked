@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TurnId } from "./monoMessages";
 import { submitWithSettlement } from "../../../app/model/managedSubmission";
 import {
@@ -8,11 +8,13 @@ import {
 import { newSession, type Session } from "../../sessions/model/session";
 import {
   enqueueMonoSessionCompletion,
+  MONO_COMPLETION_HOLD_MS,
   monoSessionCompletionResult,
   MonoSessionCompletionBatches,
 } from "./monoSessionCompletion";
 
 const origin = { monoId: "mono", turn: 1 };
+const schedule = (run: () => void, ms: number) => setTimeout(run, ms);
 function result(
   id: string,
   status: "completed" | "failed" | "cancelled" = "completed",
@@ -31,9 +33,12 @@ function result(
 }
 
 describe("Mono completion batches", () => {
-  it("waits for the launching turn and all children, even when a fast child finishes before the others launch", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("waits for the launching turn, then sends results that stop within the hold together", () => {
     const ready = vi.fn();
-    const batches = new MonoSessionCompletionBatches(ready);
+    const batches = new MonoSessionCompletionBatches(ready, schedule);
     const a = batches.watch(origin, "a");
     a(result("a"));
     batches.closeInactive(() => true);
@@ -42,6 +47,7 @@ describe("Mono completion batches", () => {
     const c = batches.watch(origin, "c");
     c(result("c"));
     batches.closeInactive(() => false);
+    vi.advanceTimersByTime(MONO_COMPLETION_HOLD_MS - 1);
     expect(ready).not.toHaveBeenCalled();
     b(result("b"));
     expect(ready).toHaveBeenCalledOnce();
@@ -61,12 +67,13 @@ describe("Mono completion batches", () => {
     a(result("a"));
     b(result("b"));
     batches.closeInactive(() => false);
+    vi.runAllTimers();
     expect(ready).toHaveBeenCalledOnce();
   });
 
-  it("counts failures and cancellations as finished without releasing partial results", async () => {
+  it("sends failures and cancellations when the hold ends, then a later result alone", async () => {
     const ready = vi.fn();
-    const batches = new MonoSessionCompletionBatches(ready);
+    const batches = new MonoSessionCompletionBatches(ready, schedule);
     const failed = batches.watch(origin, "failed");
     const cancelled = batches.watch(origin, "cancelled");
     const succeeded = batches.watch(origin, "success");
@@ -86,18 +93,30 @@ describe("Mono completion batches", () => {
       rejectionMessage: "Launch failed",
     });
     cancelled(result("cancelled", "cancelled"));
+    vi.advanceTimersByTime(MONO_COMPLETION_HOLD_MS - 1);
     expect(ready).not.toHaveBeenCalled();
-    succeeded(result("success"));
+    vi.advanceTimersByTime(1);
+    expect(ready).toHaveBeenCalledOnce();
     const message = ready.mock.calls[0][1];
-    expect(message.monoSessionCompletion.status).toBe("failed");
+    expect(message.monoSessionCompletion).toMatchObject({
+      status: "failed",
+      sessionCount: 2,
+    });
     expect(message.text).toContain("Launch failed");
     expect(message.text).toContain('"status":"cancelled"');
-    expect(message.text).toContain('"status":"completed"');
+    expect(message.text).not.toContain('"sessionId":"success"');
+    succeeded(result("success"));
+    expect(ready).toHaveBeenCalledTimes(2);
+    expect(ready.mock.calls[1][1].monoSessionCompletion).toEqual({
+      sessionId: "success",
+      title: "Agent session",
+      status: "completed",
+    });
   });
 
-  it("keeps later requests and other Monos independent of a slow earlier batch", () => {
+  it("keeps later requests and other Monos independent of a slow earlier group", () => {
     const ready = vi.fn();
-    const batches = new MonoSessionCompletionBatches(ready);
+    const batches = new MonoSessionCompletionBatches(ready, schedule);
     const slow = batches.watch(origin, "slow");
     batches.watch(origin, "also-slow");
     const later = batches.watch({ ...origin, turn: 2 }, "later");
@@ -111,6 +130,9 @@ describe("Mono completion batches", () => {
     ]);
     slow(result("slow"));
     expect(ready).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(MONO_COMPLETION_HOLD_MS);
+    expect(ready).toHaveBeenCalledTimes(3);
+    expect(ready.mock.calls[2][1].monoSessionCompletion.sessionId).toBe("slow");
   });
 
   it("queues one consolidated report behind chat and never steers a busy Mono", () => {
@@ -124,14 +146,16 @@ describe("Mono completion batches", () => {
     };
     const batches = new MonoSessionCompletionBatches((_, message) => {
       mono = enqueueMonoSessionCompletion(mono, message);
-    });
+    }, schedule);
     const a = batches.watch(origin, "a");
     const b = batches.watch(origin, "b");
     batches.closeInactive(() => false);
     b(result("b"));
+    vi.advanceTimersByTime(MONO_COMPLETION_HOLD_MS - 1);
     expect(mono.queuedMessages).toHaveLength(1);
     a(result("a"));
     expect(mono.queuedMessages).toHaveLength(2);
+    expect(mono.queuedMessages![1].monoSessionCompletion?.sessionCount).toBe(2);
     const notification = {
       ...mono,
       queuedMessages: mono.queuedMessages!.slice(1),
@@ -145,7 +169,7 @@ describe("Mono completion batches", () => {
 
   it("keeps single-session reports compatible", () => {
     const ready = vi.fn();
-    const batches = new MonoSessionCompletionBatches(ready);
+    const batches = new MonoSessionCompletionBatches(ready, schedule);
     const done = batches.watch(origin, "request");
     const snapshot = result("worker");
     done(snapshot);
@@ -166,7 +190,7 @@ describe("Mono completion batches", () => {
 
   it("waits for a retry of a rejected launch and ignores its old settlement callback", () => {
     const ready = vi.fn();
-    const batches = new MonoSessionCompletionBatches(ready);
+    const batches = new MonoSessionCompletionBatches(ready, schedule);
     const rejected = batches.watch(origin, "request");
     rejected(result("worker", "failed"));
     const retry = batches.watch(origin, "request");
@@ -182,7 +206,7 @@ describe("Mono completion batches", () => {
 
   it("dismisses the calling Mono's pending cancellation without losing other session results", () => {
     const ready = vi.fn();
-    const batches = new MonoSessionCompletionBatches(ready);
+    const batches = new MonoSessionCompletionBatches(ready, schedule);
     const stopped = batches.watch(origin, "stop-request", "stopped-session");
     const other = batches.watch(origin, "other-request", "other-session");
     batches.closeInactive(() => false);
@@ -201,7 +225,7 @@ describe("Mono completion batches", () => {
 
   it("keeps other Monos and future monitored turns on the same session independent", () => {
     const ready = vi.fn();
-    const batches = new MonoSessionCompletionBatches(ready);
+    const batches = new MonoSessionCompletionBatches(ready, schedule);
     const cancelled = batches.watch(origin, "request", "worker");
     const other = batches.watch(
       { monoId: "another", turn: 1 },
@@ -234,7 +258,7 @@ describe("Mono completion batches", () => {
 
   it("does not repeat a rejected launch after the successfully launched session is archived", async () => {
     const ready = vi.fn();
-    const batches = new MonoSessionCompletionBatches(ready);
+    const batches = new MonoSessionCompletionBatches(ready, schedule);
     const rejected = batches.watch(
       origin,
       "rejected-request",
@@ -267,7 +291,7 @@ describe("Mono completion batches", () => {
     "does not deliver a rejected submission when the Mono becomes idle before acceptance (throws: %s)",
     async (throws) => {
       const ready = vi.fn();
-      const batches = new MonoSessionCompletionBatches(ready);
+      const batches = new MonoSessionCompletionBatches(ready, schedule);
       const rejected = batches.watch(origin, "request", "worker", {
         awaitAcceptance: true,
       });
@@ -309,7 +333,7 @@ describe("Mono completion batches", () => {
     "keeps an early %s event from an accepted submission and releases it after acceptance",
     (status) => {
       const ready = vi.fn();
-      const batches = new MonoSessionCompletionBatches(ready);
+      const batches = new MonoSessionCompletionBatches(ready, schedule);
       const watched = batches.watch(origin, "request", "worker", {
         awaitAcceptance: true,
       });
@@ -326,7 +350,7 @@ describe("Mono completion batches", () => {
 
   it("releases an accepted sibling when an undecided submission is rejected", () => {
     const ready = vi.fn();
-    const batches = new MonoSessionCompletionBatches(ready);
+    const batches = new MonoSessionCompletionBatches(ready, schedule);
     const rejected = batches.watch(origin, "rejected-request", "rejected", {
       awaitAcceptance: true,
     });
@@ -342,9 +366,31 @@ describe("Mono completion batches", () => {
     expect(ready.mock.calls[0][1].text).not.toContain('"sessionId":"rejected"');
   });
 
+  it("sends an accepted sibling when the hold ends, then an undecided submission once accepted", () => {
+    const ready = vi.fn();
+    const batches = new MonoSessionCompletionBatches(ready, schedule);
+    const undecided = batches.watch(origin, "undecided-request", "undecided", {
+      awaitAcceptance: true,
+    });
+    batches.watch(origin, "accepted-request", "accepted")(result("accepted"));
+    batches.closeInactive(() => false);
+    undecided(result("undecided", "failed"));
+    vi.advanceTimersByTime(MONO_COMPLETION_HOLD_MS);
+    expect(ready).toHaveBeenCalledOnce();
+    expect(ready.mock.calls[0][1].monoSessionCompletion.sessionId).toBe(
+      "accepted",
+    );
+    undecided.accept();
+    expect(ready).toHaveBeenCalledTimes(2);
+    expect(ready.mock.calls[1][1].monoSessionCompletion).toMatchObject({
+      sessionId: "undecided",
+      status: "failed",
+    });
+  });
+
   it("lets a discarded request retry while ignoring the old callback and discard", () => {
     const ready = vi.fn();
-    const batches = new MonoSessionCompletionBatches(ready);
+    const batches = new MonoSessionCompletionBatches(ready, schedule);
     const rejected = batches.watch(origin, "request", "worker");
     rejected.discard();
     const retry = batches.watch(origin, "request", "worker");
@@ -373,6 +419,7 @@ describe("Mono completion batches", () => {
           const message = current();
           if (message) delivered(message);
         },
+        schedule,
       );
       batches.watch(origin, "request", "worker")(result("worker", "cancelled"));
       if (retainOther) batches.watch(origin, "other", "other")(result("other"));
@@ -398,7 +445,7 @@ describe("Mono completion batches", () => {
 
   it("bounds a large group's reports while retaining every session's identity and outcome", () => {
     const ready = vi.fn();
-    const batches = new MonoSessionCompletionBatches(ready);
+    const batches = new MonoSessionCompletionBatches(ready, schedule);
     for (let index = 0; index < 40; index++) {
       const id = `worker-${index}`;
       batches.watch(

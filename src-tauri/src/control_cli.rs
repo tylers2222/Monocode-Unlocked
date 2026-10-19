@@ -193,8 +193,9 @@ Actions:
                   when the user asks not to receive a report. Drafts do not
                   notify; notifyOnComplete:true cannot be combined with draft:true.
                   Sessions monitored during the same Mono turn form one group:
-                  their results arrive together after every session stops.
-                  The Mono reviews the whole group and gives one combined report.
+                  results ready within 60 seconds after that turn ends arrive
+                  together, and each later session reports when it stops.
+                  The Mono gives one combined report for each notice.
                   Rejected launches or follow-ups return a CLI error without
                   a later completion report. When a Mono successfully stops,
                   archives or deletes a monitored session, its pending report

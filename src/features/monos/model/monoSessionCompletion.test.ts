@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { TurnId } from "./monoMessages";
 import { submitWithSettlement } from "../../../app/model/managedSubmission";
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
@@ -36,7 +36,7 @@ function groupedMessage() {
   let message!: QueuedMessage;
   const batches = new MonoSessionCompletionBatches((_, ready) => {
     message = ready;
-  });
+  }, vi.fn());
   for (const [sessionId, status] of [
     ["stopped", "cancelled"],
     ["failed", "failed"],
