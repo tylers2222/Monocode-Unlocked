@@ -8,7 +8,7 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::milestones::{check_project, require};
-use crate::mono_messages::MonoId;
+use crate::mono_messages::{now_ms, MonoId};
 use crate::session_store::SessionStore;
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
@@ -50,7 +50,7 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Urgency {
     Blocking,
@@ -103,7 +103,7 @@ pub struct Link {
     pub url: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Card {
     pub heading: String,
     pub summary: String,
@@ -489,6 +489,47 @@ pub fn approvals_open_counts(store: State<'_, SessionStore>) -> Result<OpenCount
     open_counts(&*store.lock_conn()?)
 }
 
+/// `by` is the calling Giga, which the web app takes from the caller and
+/// never from the agent's input.
+fn parse_by(by: &str) -> Result<MonoId, String> {
+    MonoId::parse(by).ok_or_else(|| "invalid_input: by is not a mono id".into())
+}
+
+#[tauri::command(async)]
+pub fn approvals_file(
+    store: State<'_, SessionStore>,
+    project_path: String,
+    by: String,
+    card: Card,
+) -> Result<Approval, String> {
+    file(
+        &*store.lock_conn()?,
+        &project_path,
+        &parse_by(&by)?,
+        card,
+        now_ms(),
+    )
+}
+
+#[tauri::command(async)]
+pub fn approvals_update(
+    store: State<'_, SessionStore>,
+    id: String,
+    by: String,
+    card: Card,
+) -> Result<Approval, String> {
+    update(&*store.lock_conn()?, &id, &parse_by(&by)?, card)
+}
+
+#[tauri::command(async)]
+pub fn approvals_withdraw(
+    store: State<'_, SessionStore>,
+    id: String,
+    by: String,
+) -> Result<Approval, String> {
+    withdraw(&*store.lock_conn()?, &id, &parse_by(&by)?, now_ms())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -496,7 +537,7 @@ mod tests {
 
     use rusqlite::types::Value as Sql;
     use rusqlite::OptionalExtension;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use uuid::Uuid;
 
     use super::*;
@@ -649,10 +690,67 @@ mod tests {
         cards_survive_reopen(path);
     }
 
+    /// `MONOCODE_DB_COPY`: a fresh copy of the app's monocode.db.
+    fn app_database_copy() -> PathBuf {
+        PathBuf::from(std::env::var("MONOCODE_DB_COPY").unwrap())
+    }
+
     #[test]
     #[ignore = "needs MONOCODE_DB_COPY, a fresh copy of the app's monocode.db"]
     fn cards_survive_reopen_on_a_copy_of_the_app_database() {
-        cards_survive_reopen(PathBuf::from(std::env::var("MONOCODE_DB_COPY").unwrap()));
+        cards_survive_reopen(app_database_copy());
+    }
+
+    /// The first Mono with a chat of `role` in the copy: id, name, data.
+    fn real_mono(store: &SessionStore, role: &str) -> (String, String, Value) {
+        let (id, name, data): (String, String, String) = store
+            .lock_conn()
+            .unwrap()
+            .query_row(
+                "SELECT id, name, data_json FROM monos
+                 WHERE role = ?1 AND json_extract(data_json, '$.sessionId') IS NOT NULL
+                 ORDER BY sort_order, id LIMIT 1",
+                [role],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        (id, name, serde_json::from_str(&data).unwrap())
+    }
+
+    // ADE-51 real-state proof on the app's own Giga and a real project.
+    // Defects: the card loses the real Giga's name, or filing the same
+    // heading again makes a second card.
+    #[test]
+    #[ignore = "needs MONOCODE_DB_COPY, a fresh copy of the app's monocode.db"]
+    fn writes_on_a_copy_of_the_app_database() {
+        let store = SessionStore::open(app_database_copy()).unwrap();
+        let (giga, giga_name, _) = real_mono(&store, "giga");
+        let (_, _, mono_data) = real_mono(&store, "mono");
+        let conn = store.lock_conn().unwrap();
+        let project = mono_data["projects"][0].as_str().unwrap();
+        let by = parse_by(&giga).unwrap();
+        let heading = format!("Real-state check {}", Uuid::new_v4().simple());
+        let filed = file(&conn, project, &by, card(&heading), now_ms()).unwrap();
+        let again = Card {
+            heading: format!("  {heading} "),
+            summary: "Filed again with padding.".into(),
+            ..card(&heading)
+        };
+        let refiled = file(&conn, project, &by, again, now_ms()).unwrap();
+        assert_eq!(refiled.id, filed.id);
+        let listed = list(&conn, project).unwrap().into_iter();
+        let same_heading = listed.filter(|approval| approval.card.heading == heading);
+        assert_eq!(same_heading.count(), 1, "the refile kept one card");
+        update(&conn, &filed.id, &by, card(&format!("{heading} renamed"))).unwrap();
+        let withdrawn = withdraw(&conn, &filed.id, &by, now_ms()).unwrap();
+        assert!(matches!(withdrawn.status, Status::Withdrawn { .. }));
+        assert_eq!(
+            withdrawn.requested_by,
+            Filer {
+                id: Some(by),
+                name: giga_name
+            }
+        );
     }
 
     // Defects: the board mixes closed cards among open ones, puts a newer
