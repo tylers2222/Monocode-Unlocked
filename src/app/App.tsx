@@ -11806,13 +11806,7 @@ function Workspace({
                 replyMessage(messaging, requestId, input),
               get: (input) => getMessage(messaging, input),
             },
-            levels: levelGate(
-              source,
-              payload.turnId,
-              (id) =>
-                sessionsRef.current.find((session) => session.id === id)
-                  ?.leadSessionId,
-            ),
+            levels: levelGate(source, payload.turnId),
             milestones,
             approvals,
             habits: { load: loadHabits, update: updateHabits },

@@ -40,15 +40,8 @@ pub enum Speaker {
     /// A Mono's chat or one of its habit runs.
     Mono { kind: CallerKind, mono_id: MonoId },
     /// Design 13.4: a lead or worker session with app access. It has no
-    /// Mono. `lead_session_id` is the web app's copy (the Change E level
-    /// link, not the orchestration link); the gate's level comes from the
-    /// stored `sessions.lead_session_id`, and this copy counts only when
-    /// `sessions` has no row for the caller (design 13.1).
-    Session {
-        access: Access,
-        cwd: String,
-        lead_session_id: Option<SessionId>,
-    },
+    /// Mono. Its level comes only from its stored `sessions` row (R4).
+    Session { access: Access, cwd: String },
 }
 
 /// A call as the web app resolved it.
@@ -96,6 +89,18 @@ pub enum Level {
     Mono,
     Lead,
     Worker { lead: SessionId },
+}
+
+impl Level {
+    /// 1 for a Giga down to 4 for a worker: a higher rank is further down.
+    pub fn rank(&self) -> u8 {
+        match self {
+            Level::Giga => 1,
+            Level::Mono => 2,
+            Level::Lead => 3,
+            Level::Worker { .. } => 4,
+        }
+    }
 }
 
 /// What a send names (design 16.12, whole-turn). One value: "reply_to and
@@ -654,6 +659,31 @@ pub enum CallerFacts {
     Session { level: SessionLevel, cwd: String },
 }
 
+impl Recipient {
+    /// The recipient's level; `None` for an unknown target.
+    pub fn level(&self) -> Option<Level> {
+        match self {
+            Recipient::Mono {
+                role: MonoRole::Giga,
+                ..
+            } => Some(Level::Giga),
+            Recipient::Mono {
+                role: MonoRole::Mono,
+                ..
+            } => Some(Level::Mono),
+            Recipient::Session {
+                level: SessionLevel::Lead,
+                ..
+            } => Some(Level::Lead),
+            Recipient::Session {
+                level: SessionLevel::Worker { lead },
+                ..
+            } => Some(Level::Worker { lead: lead.clone() }),
+            Recipient::Unknown => None,
+        }
+    }
+}
+
 impl CallerFacts {
     pub fn level(&self) -> Level {
         match self {
@@ -823,6 +853,7 @@ impl RejectCode {
             RejectCode::WorkerScope => "A worker can message only its lead. Message your lead: messages.send with send_to set to your lead's session id.",
             RejectCode::SteerViaLead => "That session is a worker of a lead session. Message the lead; only its lead steers its workers.",
             RejectCode::SessionCannotWait => "A lead or worker session cannot wait for an answer. Send with wanting_reply false. The recipient answers with a new message if it needs to.",
+            RejectCode::UnknownCaller => "MonoCode has no saved session for the calling session, so it cannot tell its level. Send a message in that session so MonoCode saves it, then retry with a new request id.",
             RejectCode::LeadScope => "A lead acts only on its own workers. Start workers with sessions.start, steer or stop only sessions you started, and report to your Mono with messages.send.",
             RejectCode::NotAGiga => "Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: a Mono messages its Giga with messages.send, and a lead or worker reports to its lead or Mono.",
         }
@@ -1116,14 +1147,15 @@ pub fn decide_send(
     if matches!(asked, Asked::WholeTurn) && !may_steer_turn(&level, recipient) {
         return reject(RejectCode::SteerScopeNotAllowed, to);
     }
-    if let CallerFacts::Session { level, .. } = row {
+    if let CallerFacts::Session { .. } = row {
         // L5: no notice can reach a session caller (design 13.4).
         if input.wanting_reply {
             return reject(RejectCode::SessionCannotWait, to);
         }
         // L6: a session holds no handle, so it never answers upward by steer.
-        let upward = matches!(level, SessionLevel::Worker { .. })
-            || matches!(recipient, Recipient::Mono { .. });
+        let upward = recipient
+            .level()
+            .is_some_and(|to| to.rank() < row.level().rank());
         if upward && !matches!(asked, Asked::New) {
             return reject(RejectCode::UpwardSteerForbidden, to);
         }
@@ -3476,7 +3508,6 @@ mod tests {
             speaker: Speaker::Session {
                 access: Access::Started,
                 cwd: "/p/alpha".into(),
-                lead_session_id: None,
             },
             session_id: session(id),
             turn_id: "turn-1".into(),
@@ -3488,7 +3519,6 @@ mod tests {
             speaker: Speaker::Session {
                 access: Access::Operator,
                 cwd: "/p/alpha".into(),
-                lead_session_id: None,
             },
             ..session_caller(id)
         }

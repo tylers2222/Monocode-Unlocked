@@ -162,7 +162,10 @@ upward_steer_forbidden, one with scope steer_scope_not_allowed). Until
 a session with a more permissive runtimeMode, and as a lead it may only list
 models, sessions and worktrees, create worktrees, start workers, and read,
 send to, draft in, stop, archive or delete its own workers; its other
-actions, except messages.*, get lead_scope.
+actions, except messages.*, get lead_scope. A session's level comes only
+from MonoCode's saved session, never from the call; a session MonoCode has
+not saved yet gets unknown_caller and should retry after its first message
+is saved.
 
 Actions:
   models.list    {}  Available providers, models, settings and permission modes.

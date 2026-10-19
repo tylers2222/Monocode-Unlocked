@@ -1455,10 +1455,10 @@ it("never lists a session whose worktree was removed", async () => {
   expect(live.map((entry) => entry.sessionId)).toEqual([]);
 });
 
-// Design 13.1, PR7-5a review n2: Rust reads a session's level from its
-// stored row, and from this list only for a session it has no row for.
-// Defect: a worker that `sessions` has not saved yet is a lead to the gate.
-it("tells the gate each live session's lead", async () => {
+// R4: Rust reads a session's level only from its stored row. Defect: the
+// window's copy of a session's lead reaches the gate, where an agent could
+// set it.
+it("tells the gate no live session's lead", async () => {
   const { send } = world([
     chat("worker-1", { leadSessionId: "lead-1" }),
     chat("lead-1"),
@@ -1469,13 +1469,11 @@ it("tells the gate each live session's lead", async () => {
       sessionId: "worker-1",
       steerable: true,
       ownProject: true,
-      leadSessionId: "lead-1",
     },
     {
       sessionId: "lead-1",
       steerable: true,
       ownProject: true,
-      leadSessionId: null,
     },
   ]);
 });
@@ -1497,7 +1495,6 @@ it("answers a session caller's send with the level refusal Rust gave it", async 
     sessionId: "worker-1" as SessionId,
     turnId: "t" as TurnId,
     access: "operator",
-    leadSessionId: "lead-1" as SessionId,
     cwd: "/Users/me",
   };
   const { send } = world([chat("worker-1"), chat("a-chat")], [], {

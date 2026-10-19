@@ -153,9 +153,8 @@ export type Party =
 
 /**
  * Who calls the gate (design 13.4): a Mono's chat or habit run, or a lead or
- * worker session with app access. Only /operator gives a session app access
- * so far. `leadSessionId` is the web app's copy of the Change E level link,
- * not the orchestration link; Rust's stored row wins.
+ * worker session with app access: /operator, or the `startedBy` stamp. Its
+ * level comes only from its stored `sessions` row in Rust (R4).
  */
 export type Caller =
   | {
@@ -169,7 +168,6 @@ export type Caller =
       sessionId: SessionId;
       turnId: TurnId;
       access: AppAccess;
-      leadSessionId: SessionId | null;
       cwd: string;
     };
 

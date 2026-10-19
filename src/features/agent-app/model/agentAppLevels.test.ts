@@ -66,11 +66,11 @@ const SCENARIOS: Scenario[] = [
   { name: "A5: a Mono may stop a worker", caller: "a-chat", action: "sessions.stop", input: { sessionId: "worker" }, requestId: "a5-stop", ran: "stop" },
   { name: "A5: a Mono's send into a worker, padded id parsed once", caller: "a-chat", action: "sessions.send", input: { sessionId: " worker\n", prompt: "Stop" }, requestId: "a5-send", ran: null },
   { name: "A5: a Mono's draft into a worker", caller: "a-chat", action: "sessions.draft", input: { sessionId: "worker", prompt: "Draft this" }, requestId: "a5-draft", ran: null },
-  { name: "A5: an unsaved worker counts by the window's lead copy", caller: "a-chat", action: "sessions.send", input: { sessionId: "ghost", prompt: "Hi" }, requestId: "a5-ghost", ran: null },
   { name: "Giga row: a Giga's approvals.withdraw", caller: "g-chat", action: "approvals.withdraw", input: { id: "00000000-0000-4000-8000-000000000001" }, requestId: "g-withdraw", ran: "approvalWithdraw" },
   { name: "Giga row: a Giga habit run's approvals.withdraw", caller: "g-run", action: "approvals.withdraw", input: { id: "00000000-0000-4000-8000-000000000001" }, requestId: "g-run-withdraw", ran: "approvalWithdraw" },
   { name: "Giga row: a Mono's approvals.file", caller: "a-chat", action: "approvals.file", input: { project: PROJECT, heading: "Pick a store" }, requestId: "m-file", ran: null },
   { name: "Giga row: a lead's approvals.withdraw", caller: "lead", action: "approvals.withdraw", input: { id: "00000000-0000-4000-8000-000000000001" }, requestId: "l-withdraw", ran: null },
+  { name: "R4: an unsaved session counts as a lead, whatever lead the window holds", caller: "a-chat", action: "sessions.send", input: { sessionId: "ghost", prompt: "Hi" }, requestId: "a5-ghost", ran: null },
   // A3 and A4: a worker's call of every action the gate checks.
   ...[...FIELDS]
     .filter(([action]) => !action.startsWith("messages."))
@@ -219,7 +219,7 @@ function world(caller: string) {
       update: actions.approvalUpdate,
       withdraw: actions.approvalWithdraw,
     },
-    levels: levelGate(source, "turn-1", (id) => sessions.get(id)?.leadSessionId),
+    levels: levelGate(source, "turn-1"),
   } as unknown as AgentAppHost;
   const run = (action: string, input: Record<string, unknown>, requestId = "r1") =>
     handleAgentApp(source, requestId, action, input, host);

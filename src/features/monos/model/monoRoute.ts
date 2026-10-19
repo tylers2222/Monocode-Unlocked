@@ -675,7 +675,6 @@ async function submit(
         sessionId: session.id,
         steerable: host.steerable(session),
         ownProject: host.ownProject(session),
-        leadSessionId: session.leadSessionId ?? null,
       })),
     steerableHarnesses: host.steerableHarnesses(),
   });
