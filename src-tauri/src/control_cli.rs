@@ -134,13 +134,32 @@ const APP_ACTIONS: [&str; 47] = [
 /// Renamed app actions. They still go to the app, which answers
 /// `action_removed` with the name to use instead; help does not list them.
 const REMOVED_APP_ACTIONS: [&str; 2] = ["monos.configure", "monos.send"];
-const APP_USAGE: &str = r##"MonoCode app access — use in a thread enabled by /operator.
+const APP_USAGE: &str = r##"MonoCode app access — use in a thread enabled by /operator, or in a
+session that sessions.start started.
 
 Usage: {exe} app ACTION [--json JSON | --input FILE|-] [--request-id ID]
 
 A Mono works on several projects: add "project":"<path or name>" to the
 sessions.*, worktrees.*, folders.* and milestones.* actions to choose which
 one. It may be left out when the Mono has a single project.
+
+Levels: a session that a lead session starts with sessions.start is a worker
+of that lead. Every other session is a lead. A Mono chat, a habit run, or a
+session with app access (/operator, or started by sessions.start) may call
+messages.*. A worker may call only messages.*, and it messages only its lead:
+sessions.start gets worker_cannot_spawn and its other calls get worker_scope.
+A lead messages its own workers and the Monos that have its project; another
+lead or a user session gets lead_scope. A Mono messages a lead in one of its
+projects and never a worker. Only a worker's lead may message it or use
+sessions.send or sessions.draft on it; other callers get steer_via_lead. A
+lead or worker always sends wanting_reply false (else session_cannot_wait)
+and sends only intent "new" to its lead or a Mono (a steer with reply_to gets
+upward_steer_forbidden, one with scope steer_scope_not_allowed). Until
+/operator is typed in it, a session that sessions.start started cannot start
+a session with a more permissive runtimeMode, and as a lead it may only list
+models, sessions and worktrees, create worktrees, start workers, and read,
+send to, draft in, stop, archive or delete its own workers; its other
+actions, except messages.*, get lead_scope.
 
 Actions:
   models.list    {}  Available providers, models, settings and permission modes.
@@ -213,8 +232,19 @@ Actions:
                   Giga's own gigas/<slug>/ folder and can commit there; pass
                   the project path as worktreeCwd to run at its root. Omit
                   runtimeMode to inherit this
-                  session's permission mode; set it to override. Run
+                  session's permission mode; set it to override (see Levels
+                  for a session that sessions.start started). Run
                   models.list for allowed IDs. cwd is your project; no attachments.
+                  A submitted start also returns message_id, the start's
+                  message: pass it as reply_to with intent "steer" in
+                  messages.send to change the work it started. A draft has
+                  no message_id. A lead session's start makes a worker of
+                  that lead; a Mono's start makes a lead. The same start
+                  again with the same --request-id answers the same session.
+                  The id used again with other input, or for a start whose
+                  session was archived or deleted, gets request_id_reused
+                  before anything launches. Codes: worker_cannot_spawn,
+                  request_id_reused.
   sessions.stop {"sessionId":"..."}
                   Stop a session's current turn and pause its queued messages.
                   The conversation and checkout are kept. Idle sessions are
@@ -236,7 +266,8 @@ Actions:
                   hasConversation, updatedAt and self (true for you).
   monos.get      {"monoId":"..."}  Mono or habit only. One Mono as monos.list
                   shows it, plus the harness and model its chat runs on (null
-                  until it has a chat). Unknown IDs get code unknown_mono.
+                  until it has a chat) and its messageAllowlist. Unknown IDs
+                  get code unknown_mono.
   monos.read     {"monoId":"...","before":"<turnId>","limit":3,"maxChars":1200,
                   "work":true}
                   Read another Mono's chat. Paging works as in sessions.read.
@@ -245,35 +276,50 @@ Actions:
                   its newest rows up to 1 MB; "omittedWork" counts the rest.
                   Codes: unknown_mono, no_conversation (it has no chat yet),
                   invalid_input (a before that is not a turn ID).
-  messages.get_monos {}  Mono or habit only. Every Mono in rail order as
-                  {mono_id, mono_name, role, you}; you is true for yourself.
+  messages.get_monos {}  Every Mono in rail order as {mono_id, mono_name,
+                  role, you}; you is true for yourself.
   messages.send  {"message":"...","send_to":"<mono_id or session id>",
                   "wanting_reply":false,"intent":"new"}
-                  Mono or habit only. Send a message to another Mono's chat
-                  or to a session in one of your projects. wanting_reply and
-                  intent are required. wanting_reply is true only when you
-                  need an answer. The answer arrives later as a new message,
-                  so do not poll. A project session cannot answer; send it
-                  wanting_reply false. intent "new" starts new work and waits
-                  until the receiver's turn ends. intent "steer" changes work
-                  a message of yours started: pass reply_to, the message_id
-                  your send returned; it reaches the session running that
-                  work, and is refused when that work is not running.
-                  intent "steer" with "scope":"turn" changes everything the
-                  recipient is doing now (a Giga to a Mono); it never
-                  reaches the recipient's sessions. Never pass both reply_to
-                  and scope. Answer a waiting message with messages.reply.
-                  continue is for users only. Returns message_id, status
-                  (open or delivered; dropped when a steer missed its turn),
-                  delivery (submit, queue, steer, or dropped) and hop.
-                  Messages are limited to 8000 characters. Codes:
+                  Send a message to another Mono's chat or to a session in
+                  one of your projects, as Levels allows. A Giga may message
+                  any regular Mono. Two Gigas, or two regular Monos, need a
+                  project they share, or one of them in the other's
+                  messageAllowlist (see monos.update); else
+                  direction_forbidden. A regular Mono sends a Giga only
+                  intent "new" or steers it with reply_to set to an
+                  unanswered message that Giga sent it in the last 24 hours
+                  (else upward_steer_forbidden), while the Giga chat that
+                  sent it runs (else target_gone).
+                  wanting_reply and intent are required. wanting_reply is
+                  true only when you need an answer. The answer arrives later
+                  as a new message, so do not poll. A project session cannot
+                  answer; send it wanting_reply false. intent "new" starts
+                  new work and waits until the receiver's turn ends. intent
+                  "steer" changes work a message of yours started: pass
+                  reply_to, the message_id your send returned; it reaches the
+                  session running that work, and is refused when that work is
+                  not running. intent "steer" with "scope":"turn" changes
+                  everything the recipient is doing now (a Giga to a regular
+                  Mono, or a regular Mono to a lead in one of its projects);
+                  it never reaches the recipient's sessions. Never pass both
+                  reply_to and scope. Answer a waiting message with
+                  messages.reply. continue is for users only. Returns
+                  message_id, status (open or delivered; dropped when a steer
+                  missed its turn), delivery (submit, queue, steer, or
+                  dropped) and hop. Limits for every sender: 6 messages to
+                  one recipient in 10 minutes (rate_limited; replies and
+                  refused calls do not count), chains of replies and steers
+                  4 deep (hop_limit), and 8000 characters (too_large). Codes:
                   invalid_input, request_id_reused, too_large,
                   intent_mismatch, steer_needs_target, intent_not_allowed,
-                  unknown_target, self_send, direction_forbidden,
-                  steer_scope_not_allowed, unknown_message,
+                  worker_scope, unknown_target, self_send,
+                  direction_forbidden, steer_via_lead, lead_scope,
+                  steer_scope_not_allowed, session_cannot_wait,
+                  upward_steer_forbidden, unknown_message,
                   steer_target_mismatch, reply_unsupported_target,
                   habit_cannot_wait, target_gone, nothing_running,
-                  target_no_conversation, cannot_steer.
+                  target_no_conversation, cannot_steer, hop_limit,
+                  rate_limited.
   messages.reply {"message":"...","to":"#1","wanting_reply":false}
                   Answer a <mono_message> that waits for your reply (it says
                   wanting_reply="true" and has a handle such as
@@ -284,9 +330,10 @@ Actions:
                   handles such as ["#1","#2"]; each sender gets its own
                   answer. Returns message_ids and answered. Codes:
                   no_open_handle, ambiguous_reply and unknown_handle (with
-                  open_handles), handle_closed, target_gone, too_large.
-  messages.get   {"handle":"#1"}  Mono or habit only. The full text of a
-                  message you sent or received. handle is its message_id, or
+                  open_handles), handle_closed, hop_limit, target_gone,
+                  too_large.
+  messages.get   {"handle":"#1"}  The full text of a message you sent or
+                  received. handle is its message_id, or
                   a handle such as "#1" from this turn. Call it only when the
                   original is no longer in your context. Returns message with
                   message_id, from, to, intent, reply_to, body, wanting_reply,
@@ -304,13 +351,18 @@ Actions:
                   characters. Returns monoId and settings. Codes: giga_only
                   for other callers, invalid_input.
   monos.update   {"monoId":"...","harness":"codex","model":"codex:...",
-                  "name":"...","projects":["<path or name>"]}
+                  "name":"...","projects":["<path or name>"],
+                  "messageAllowlist":["<mono_id>"]}
                   Giga Mono or its habits only. Change another Mono's chat
-                  harness and model, name or projects. A model alone must suit
-                  its current harness; a harness needs a model. name is 1 to
-                  256 characters. Codes: giga_only for other callers,
-                  self_update for yourself, unknown_mono, mono_busy (nothing
-                  changed; try again when it is idle), invalid_input.
+                  harness and model, name, projects or messageAllowlist. A
+                  model alone must suit its current harness; a harness needs
+                  a model. name is 1 to 256 characters. messageAllowlist
+                  holds mono_id values of other Monos (from get_monos): this
+                  Mono and each Mono in the list may message each other
+                  without a shared project; [] clears it. Codes: giga_only
+                  for other callers, self_update for yourself, unknown_mono,
+                  mono_busy (nothing changed; try again when it is idle),
+                  invalid_input.
   workspace.status {}  Mono or its habits only. The shared Giga workspace
                   ~/MonoCode: root, state ready or blocked (with reason),
                   gigaSlug for a Giga, and lastEnsure {at, trigger, created,
@@ -662,7 +714,7 @@ pub fn app_tools() -> Value {
                     "wanting_reply": {"type": "boolean", "description": "true only when you need an answer."},
                     "intent": {"type": "string", "enum": ["new", "steer", "reply", "continue"], "description": "new for new work; steer to change work that reply_to started. Answer a waiting message with the reply tool. continue is for users only."},
                     "reply_to": {"type": "string", "minLength": 1, "description": "The message_id (m_…) of a message you sent: steer the work it started. For steer pass reply_to or scope, not both. Refused for new."},
-                    "scope": {"type": "string", "enum": ["turn"], "description": "With intent steer and no reply_to: steer everything the recipient is doing now, in its own running turn only. Only a Giga may steer a Mono this way. Not with reply_to."}
+                    "scope": {"type": "string", "enum": ["turn"], "description": "With intent steer and no reply_to: steer everything the recipient is doing now, in its own running turn only. A Giga may steer a regular Mono this way, and a regular Mono a lead in one of its projects. Not with reply_to."}
                 },
                 "required": ["message", "send_to", "wanting_reply", "intent"],
                 "additionalProperties": false
@@ -1364,6 +1416,30 @@ mod tests {
         let help = app_help();
         assert!(help.contains("folders.* and milestones.* actions"));
         assert!(help.contains("do not send createdBy or by"));
+    }
+
+    // Design 3.4 and 6.6. Defect: a model that reads only the help meets a
+    // refusal code the help never names, such as a level code, or a code
+    // added to the gate later without help text.
+    #[test]
+    fn app_help_names_every_level_code() {
+        let help = app_help();
+        let missing: Vec<&str> = crate::mono_messages::RejectCode::ALL
+            .iter()
+            .map(|code| code.as_str())
+            .filter(|code| !help.contains(code))
+            .collect();
+        assert!(missing.is_empty(), "help omits {missing:?}");
+        // Review r1 N3: the send limits, as string literals of the help
+        // text (6 per recipient in 10 minutes, 4 deep, 8000 characters).
+        let words = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        for limit in [
+            "6 messages to one recipient in 10 minutes",
+            "4 deep (hop_limit)",
+            "8000 characters (too_large)",
+        ] {
+            assert!(words.contains(limit), "help omits {limit:?}");
+        }
     }
 
     #[test]

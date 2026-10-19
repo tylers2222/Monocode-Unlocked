@@ -311,3 +311,34 @@ it("tells only a Giga Mono how to create and update Monos", () => {
     }),
   ).not.toContain("<giga_mono_rules>");
 });
+
+// Design 6.2 and S8, S18, S19. Defect: a Mono is not told how it may reach
+// a Giga, another Mono, a lead or a worker, or the limits, so it learns them
+// only from refusals; a Giga is told the upward rule, which never binds it, or not
+// the peer rule, which does; or a Giga is never told the monos.update
+// field that sets an allowlist.
+it("tells a Mono the upward and peer rules, every Mono the limits, and a Giga the allowlist field", () => {
+  const look = { name: "Scout", mascot: "skull", color: "#fff", projects: [] };
+  const soul = { soul: true, memory: false };
+  const rules = (text: string, tag: string) =>
+    text.match(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`))?.[0] ?? "";
+  const mono = rules(monoContext(look, files(), soul), "mono_messaging_rules");
+  const gigaContext = monoContext({ ...look, giga: true }, files(), soul);
+  const giga = rules(gigaContext, "mono_messaging_rules");
+  // 6 messages per recipient per 10 minutes, 4 deep, 8000 characters.
+  for (const limit of ["6", "10", "4", "8000"]) {
+    expect(mono).toMatch(new RegExp(`\\b${limit}\\b`));
+    expect(giga).toMatch(new RegExp(`\\b${limit}\\b`));
+  }
+  expect(mono).toContain("24 h");
+  expect(giga).not.toContain("24 h");
+  expect(mono).toContain("Another regular Mono must share a project");
+  expect(giga).toContain("Another Giga must share a project");
+  // Design 13.3 and W2 (review r1 m1): every Mono learns that only a
+  // worker's lead reaches it, and a regular Mono that it may steer a lead's
+  // whole turn.
+  expect(mono).toContain("Message a lead, never a worker");
+  expect(giga).toContain("Message a lead, never a worker");
+  expect(mono).toContain("a regular Mono steering a lead session");
+  expect(rules(gigaContext, "giga_mono_rules")).toContain('"messageAllowlist"');
+});
