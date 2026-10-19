@@ -2811,9 +2811,8 @@ pub enum StartRecorded {
 
 /// Design 16.2 and 9: the accepted `start_session` row of session `started`,
 /// which a submitted `sessions.start` of `caller` launched, so a steer can
-/// name the work it began. The body is the prompt as the caller gave it,
-/// and the hash is the one `check_action` writes on a refused start. The
-/// same start again answers its first row; another call with the key
+/// name its work. Body: the prompt as given; hash: the one `check_action`
+/// writes. A repeat answers its first row; any other row under the key
 /// answers `request_id_reused`.
 pub fn record_start(
     conn: &Connection,
@@ -2836,15 +2835,10 @@ pub fn record_start(
         .into_iter()
         .next()
     {
-        // Only this start's own accepted row answers it: a refused row under
-        // the key names no session (review r1 m1).
-        Some(prior)
-            if prior.tool == Tool::StartSession
-                && matches!(prior.status, Status::Delivered { .. }) =>
-        {
-            Some(prior)
-        }
-        Some(_) => None,
+        // A refused row under the key names no session (review r1 m1).
+        Some(prior) => (prior.tool == Tool::StartSession
+            && matches!(prior.status, Status::Delivered { .. }))
+        .then_some(prior),
         None => {
             let row = MonoMessage {
                 id: new_message_id(),
