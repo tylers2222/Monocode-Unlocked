@@ -124,3 +124,46 @@ test("perf: an agent's add is visible", async ({ app, page }) => {
   console.log(`PERF agent-add ${ms.toFixed(1)}`);
   expect(ms).toBeLessThan(1000);
 });
+
+// M-9a: from the Save click to the edited row painted, with 200 rows.
+test("perf: a save in the editor paints the row", async ({ app, page }) => {
+  await boot(app, page);
+  await timeOpen(page, "Milestones", "[data-milestone]", 200);
+  const runs: number[] = [];
+  for (let run = 0; run < 5; run++) {
+    const title = `Saved title ${run}`;
+    await page.locator(`[data-milestone="${milestones[199].id}"]`).click();
+    await page
+      .locator("[data-milestone-editor]")
+      .getByLabel("Title")
+      .fill(title);
+    runs.push(
+      await page.evaluate(
+        async ({ id, title }) => {
+          const save = [
+            ...document.querySelectorAll("[data-milestone-editor] button"),
+          ].find((button) => button.textContent === "Save") as HTMLElement;
+          const start = performance.now();
+          save.click();
+          const painted = Promise.withResolvers<void>();
+          const tick = () =>
+            document
+              .querySelector(`[data-milestone="${id}"]`)
+              ?.textContent?.includes(title)
+              ? painted.resolve()
+              : requestAnimationFrame(tick);
+          tick();
+          await painted.promise;
+          await new Promise(requestAnimationFrame);
+          return performance.now() - start;
+        },
+        { id: milestones[199].id, title },
+      ),
+    );
+  }
+  const median = [...runs].sort((a, b) => a - b)[2];
+  console.log(
+    `PERF save-to-row ${runs.map((ms) => ms.toFixed(1)).join(" ")} median ${median.toFixed(1)}`,
+  );
+  expect(median).toBeLessThan(200);
+});
