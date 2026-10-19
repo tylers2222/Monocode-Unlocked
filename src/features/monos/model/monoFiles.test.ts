@@ -176,7 +176,8 @@ it("says how to keep memory and update the soul only at the user's request", () 
     "Submitted sessions notify you on completion by default",
   );
   expect(full).toContain('set "notifyOnComplete":false on sessions.start');
-  expect(full).toContain("waits for every session in that group to stop");
+  expect(full).toContain("within 60 seconds after");
+  expect(full).toContain("sends its own result when it stops");
   expect(full).toContain("give one consolidated report");
   expect(full).toContain("acknowledge the action in your current reply");
   expect(full).toContain("dismisses your pending report for that session");

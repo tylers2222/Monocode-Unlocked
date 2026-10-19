@@ -1170,6 +1170,11 @@ function currentWorkspace(project: string): string {
   return worktreeFocus(project)?.path ?? project;
 }
 
+function scheduleAfter(run: () => void, ms: number): () => void {
+  const timer = window.setTimeout(run, ms);
+  return () => window.clearTimeout(timer);
+}
+
 export default function App(props: AppProps) {
   return (
     <Suspense fallback={null}>
@@ -8750,10 +8755,7 @@ function Workspace({
     });
   };
   setTurnGuardHost({
-    schedule: (run, ms) => {
-      const timer = window.setTimeout(run, ms);
-      return () => window.clearTimeout(timer);
-    },
+    schedule: scheduleAfter,
     turn: (sessionId, turnId) =>
       guardedTurn(
         sessionsRef.current.find((entry) => entry.id === sessionId),
@@ -9028,6 +9030,7 @@ function Workspace({
     monoCompletionBatches.current = new MonoSessionCompletionBatches(
       (monoId, message, current) =>
         queueMonoSessionCompletionRef.current(monoId, message, current),
+      scheduleAfter,
     );
   }
   useEffect(() => {

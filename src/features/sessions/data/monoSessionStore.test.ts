@@ -120,7 +120,7 @@ describe("Mono database pagination and writes", () => {
     const session = await load();
     const batches = new MonoSessionCompletionBatches((_, message) => {
       session.queuedMessages = [message];
-    });
+    }, vi.fn());
     for (const id of ["first", "second"]) {
       batches.watch(
         { monoId: session.id, turn: 1 },
