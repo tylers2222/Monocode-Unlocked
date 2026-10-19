@@ -1,12 +1,15 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
-use rusqlite::{Connection, Row};
+use rusqlite::types::Value as Sql;
+use rusqlite::{params, Connection, OptionalExtension, Row, ToSql};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use serde_json::json;
+use tauri::{AppHandle, Emitter, Runtime, State};
+use uuid::Uuid;
 
-use crate::milestones::check_project;
-use crate::mono_messages::MonoId;
+use crate::milestones::{check_project, require};
+use crate::mono_messages::{now_ms, MonoId};
 use crate::session_store::SessionStore;
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
@@ -48,7 +51,7 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Urgency {
     Blocking,
@@ -101,7 +104,7 @@ pub struct Link {
     pub url: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Card {
     pub heading: String,
     pub summary: String,
@@ -275,6 +278,205 @@ pub(crate) fn open_counts(conn: &Connection) -> Result<OpenCounts, String> {
     })
 }
 
+pub(crate) const UNKNOWN: &str = "unknown_approval";
+pub(crate) const NOT_YOURS: &str = "not_your_approval";
+pub(crate) const NOT_OPEN: &str = "approval_not_open";
+pub(crate) const HEADING_TAKEN: &str = "heading_taken";
+
+const HEADING_MAX: usize = 200;
+const TEXT_MAX: usize = 8000;
+const LABEL_MAX: usize = 200;
+
+fn check_text(field: &str, value: &str, max: usize) -> Result<String, String> {
+    let value = value.trim();
+    let length = value.chars().count();
+    require(
+        (1..=max).contains(&length),
+        &format!("{field} must be 1 to {max} characters"),
+    )?;
+    Ok(value.to_string())
+}
+
+fn check_optional(field: &str, value: Option<String>) -> Result<Option<String>, String> {
+    value
+        .map(|value| check_text(field, &value, LABEL_MAX))
+        .transpose()
+}
+
+fn check_each(field: &str, values: &[String]) -> Result<Vec<String>, String> {
+    values
+        .iter()
+        .map(|value| check_text(field, value, TEXT_MAX))
+        .collect()
+}
+
+fn to_json<T: Serialize>(value: &T) -> String {
+    serde_json::to_string(value).expect("plain data serializes")
+}
+
+type Named<'a> = Vec<(&'a str, &'a dyn ToSql)>;
+
+impl Card {
+    fn into_columns(self) -> Result<[(&'static str, Sql); 7], String> {
+        let options = self
+            .options
+            .into_iter()
+            .map(|option| {
+                Ok(ApprovalOption {
+                    label: check_text("option label", &option.label, LABEL_MAX)?,
+                    description: check_optional("option description", option.description)?,
+                    recommended: option.recommended,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let labels: HashSet<&str> = options.iter().map(|option| option.label.as_str()).collect();
+        require(labels.len() == options.len(), "option labels must differ")?;
+        let links = self
+            .links
+            .into_iter()
+            .map(|link| {
+                require(link.url.starts_with("https://"), "links must be https URLs")?;
+                Ok(Link {
+                    title: check_optional("link title", link.title)?,
+                    ..link
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let tradeoffs = Tradeoffs {
+            pros: check_each("pro", &self.tradeoffs.pros)?,
+            cons: check_each("con", &self.tradeoffs.cons)?,
+        };
+        require(
+            !(tradeoffs.pros.is_empty() && tradeoffs.cons.is_empty()),
+            "tradeoffs need at least one pro or con",
+        )?;
+        Ok([
+            (
+                ":heading",
+                check_text("heading", &self.heading, HEADING_MAX)?.into(),
+            ),
+            (
+                ":summary",
+                check_text("summary", &self.summary, TEXT_MAX)?.into(),
+            ),
+            (":tradeoffs", to_json(&tradeoffs).into()),
+            (":options", to_json(&options).into()),
+            (":urgency", self.urgency.as_str().to_string().into()),
+            (":links", to_json(&links).into()),
+            (":origin", check_optional("origin", self.origin)?.into()),
+        ])
+    }
+}
+
+fn named<'a>(columns: &'a [(&'static str, Sql)], more: Named<'a>) -> Named<'a> {
+    let card = columns
+        .iter()
+        .map(|(name, value)| (*name, value as &dyn ToSql));
+    more.into_iter().chain(card).collect()
+}
+
+pub(crate) fn get(conn: &Connection, id: &str) -> Result<Approval, String> {
+    conn.query_row(
+        &format!("SELECT {COLUMNS} FROM approvals WHERE id = ?1"),
+        [id],
+        row_to_approval,
+    )
+    .optional()
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| UNKNOWN.to_string())
+}
+
+/// Inserts a card, or rewrites the open card `by` filed with the same project
+/// and heading. Another Giga's open card with that heading is `heading_taken`.
+/// The card keeps a copy of the Giga's name for when the Giga is deleted.
+pub(crate) fn file(
+    conn: &Connection,
+    project: &str,
+    by: &MonoId,
+    card: Card,
+    now: i64,
+) -> Result<Approval, String> {
+    check_project(project)?;
+    let columns = card.into_columns()?;
+    let id = Uuid::new_v4().to_string();
+    let filed: Option<String> = conn
+        .query_row(
+            "INSERT INTO approvals (id, project_path, heading, summary, tradeoffs, options,
+               urgency, links, origin, requested_by, requested_by_name, created_at, status)
+             VALUES (:id, :project, :heading, :summary, :tradeoffs, :options,
+               :urgency, :links, :origin, :by, (SELECT name FROM monos WHERE id = :by),
+               :now, 'open')
+             ON CONFLICT (project_path, heading) WHERE status = 'open' DO UPDATE SET
+               summary = excluded.summary, tradeoffs = excluded.tradeoffs,
+               options = excluded.options, urgency = excluded.urgency,
+               links = excluded.links, origin = excluded.origin
+             WHERE approvals.requested_by = excluded.requested_by
+             RETURNING id",
+            &*named(
+                &columns,
+                vec![
+                    (":id", &id),
+                    (":project", &project),
+                    (":by", &by.as_str()),
+                    (":now", &now),
+                ],
+            ),
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    get(conn, &filed.ok_or(HEADING_TAKEN)?)
+}
+
+fn check_filed_by_and_open(conn: &Connection, id: &str, by: &MonoId) -> Result<(), String> {
+    let approval = get(conn, id)?;
+    if approval.requested_by.id.as_ref() != Some(by) {
+        return Err(NOT_YOURS.into());
+    }
+    if approval.status != Status::Open {
+        return Err(NOT_OPEN.into());
+    }
+    Ok(())
+}
+
+pub(crate) fn update(
+    conn: &Connection,
+    id: &str,
+    by: &MonoId,
+    card: Card,
+) -> Result<Approval, String> {
+    let columns = card.into_columns()?;
+    check_filed_by_and_open(conn, id, by)?;
+    conn.execute(
+        "UPDATE approvals SET heading = :heading, summary = :summary, tradeoffs = :tradeoffs,
+           options = :options, urgency = :urgency, links = :links, origin = :origin
+         WHERE id = :id",
+        &*named(&columns, vec![(":id", &id)]),
+    )
+    .map_err(|e| match e.sqlite_error() {
+        Some(error) if error.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE => {
+            HEADING_TAKEN.to_string()
+        }
+        _ => e.to_string(),
+    })?;
+    get(conn, id)
+}
+
+pub(crate) fn withdraw(
+    conn: &Connection,
+    id: &str,
+    by: &MonoId,
+    now: i64,
+) -> Result<Approval, String> {
+    check_filed_by_and_open(conn, id, by)?;
+    conn.execute(
+        "UPDATE approvals SET status = 'withdrawn', withdrawn_at = ?2 WHERE id = ?1",
+        params![id, now],
+    )
+    .map_err(|e| e.to_string())?;
+    get(conn, id)
+}
+
 #[tauri::command(async)]
 pub fn approvals_list(
     store: State<'_, SessionStore>,
@@ -288,415 +490,66 @@ pub fn approvals_open_counts(store: State<'_, SessionStore>) -> Result<OpenCount
     open_counts(&*store.lock_conn()?)
 }
 
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+/// Every window hears it after a write, so the board and the badge reload.
+pub(crate) const CHANGED: &str = "approvals-changed";
 
-    use rusqlite::types::Value as Sql;
-    use rusqlite::OptionalExtension;
-    use serde_json::json;
-    use uuid::Uuid;
-
-    use super::*;
-
-    const PROJECT: &str = "/Users/test/orbit";
-    const OTHER: &str = "/Users/test/other";
-
-    fn text(value: &str) -> Sql {
-        Sql::Text(value.into())
+/// Tells every window about a write that succeeded; a refusal changed nothing.
+fn announce<R: Runtime>(
+    app: &AppHandle<R>,
+    written: Result<Approval, String>,
+) -> Result<Approval, String> {
+    if let Ok(approval) = &written {
+        let _ = app.emit(CHANGED, json!({ "projectPath": approval.project_path }));
     }
-
-    fn giga(conn: &Connection, id: &str, name: &str) {
-        conn.execute(
-            "INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
-             VALUES (?1, ?2, 'giga', '{}', 0, 0, 0)",
-            [id, name],
-        )
-        .unwrap();
-    }
-
-    /// Inserts a valid open card with `changes` applied and returns its number.
-    fn insert(conn: &Connection, changes: &[(&'static str, Sql)]) -> rusqlite::Result<i64> {
-        let id = Uuid::new_v4().to_string();
-        let mut row = vec![
-            ("id", text(&id)),
-            ("project_path", text(PROJECT)),
-            ("heading", text(&id)),
-            ("summary", text("Pick where approval cards live.")),
-            (
-                "tradeoffs",
-                text(r#"{"pros":["Local"],"cons":["One machine"]}"#),
-            ),
-            ("options", text("[]")),
-            ("urgency", text("blocking")),
-            ("links", text("[]")),
-            ("requested_by_name", text("Giga A")),
-            ("created_at", Sql::Integer(1)),
-            ("status", text("open")),
-        ];
-        for (column, value) in changes {
-            match row.iter_mut().find(|(name, _)| name == column) {
-                Some((_, cell)) => *cell = value.clone(),
-                None => row.push((column, value.clone())),
-            }
-        }
-        let names: Vec<&str> = row.iter().map(|(name, _)| *name).collect();
-        conn.query_row(
-            &format!(
-                "INSERT INTO approvals ({}) VALUES ({}) RETURNING number",
-                names.join(", "),
-                vec!["?"; names.len()].join(", ")
-            ),
-            rusqlite::params_from_iter(row.iter().map(|(_, value)| value)),
-            |row| row.get(0),
-        )
-    }
-
-    fn closed(status: &'static str, at: i64) -> Vec<(&'static str, Sql)> {
-        let column = if status == "withdrawn" {
-            "withdrawn_at"
-        } else {
-            "decided_at"
-        };
-        vec![("status", text(status)), (column, Sql::Integer(at))]
-    }
-
-    fn snapshot(conn: &Connection) -> Vec<(String, Option<String>, i64)> {
-        let objects: Vec<(String, String, Option<String>)> = conn
-            .prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
-            .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        objects
-            .into_iter()
-            .map(|(kind, name, sql)| {
-                let rows = if kind == "table" {
-                    conn.query_row(&format!("SELECT COUNT(*) FROM \"{name}\""), [], |row| {
-                        row.get(0)
-                    })
-                    .unwrap()
-                } else {
-                    -1
-                };
-                (name, sql, rows)
-            })
-            .collect()
-    }
-
-    fn cards_survive_reopen(path: PathBuf) {
-        let (cards, counts, after_filing) = {
-            let store = SessionStore::open(path.clone()).unwrap();
-            let conn = store.lock_conn().unwrap();
-            let first_giga: Option<(String, String)> = conn
-                .query_row(
-                    "SELECT id, name FROM monos WHERE role = 'giga' ORDER BY sort_order, id LIMIT 1",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .unwrap();
-            let (id, name) = first_giga.unwrap_or_else(|| {
-                giga(&conn, "giga-a", "Giga A");
-                ("giga-a".into(), "Giga A".into())
-            });
-            let filer = [
-                ("requested_by", text(&id)),
-                ("requested_by_name", text(&name)),
-            ];
-            insert(&conn, &filer).unwrap();
-            insert(&conn, &[filer.to_vec(), closed("approved", 12)].concat()).unwrap();
-            (
-                list(&conn, PROJECT).unwrap(),
-                open_counts(&conn).unwrap(),
-                snapshot(&conn),
-            )
-        };
-        assert_eq!(cards.len(), 2);
-        assert_eq!(counts.total, 1);
-        for open in ["second", "third"] {
-            let store = SessionStore::open(path.clone()).unwrap();
-            let conn = store.lock_conn().unwrap();
-            assert_eq!(
-                list(&conn, PROJECT).unwrap(),
-                cards,
-                "the {open} open keeps every card"
-            );
-            assert_eq!(open_counts(&conn).unwrap(), counts);
-            assert_eq!(
-                snapshot(&conn),
-                after_filing,
-                "the {open} open changes no table, index or row count"
-            );
-        }
-    }
-
-    // Defects: the table is not created by `migrate`, a reopen drops or
-    // recreates it, or its CREATE fails on a database that already has it.
-    #[test]
-    fn cards_survive_reopen_and_a_second_open_changes_nothing() {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "monocode-approvals-{}-{nanos}.db",
-            std::process::id()
-        ));
-        cards_survive_reopen(path);
-    }
-
-    #[test]
-    #[ignore = "needs MONOCODE_DB_COPY, a fresh copy of the app's monocode.db"]
-    fn cards_survive_reopen_on_a_copy_of_the_app_database() {
-        cards_survive_reopen(PathBuf::from(std::env::var("MONOCODE_DB_COPY").unwrap()));
-    }
-
-    // Defects: the board mixes closed cards among open ones, puts a newer
-    // not-blocking card above an older blocking one, sorts closed cards by
-    // filing time, does not put the newer of two same-time cards first,
-    // counts closed cards, reuses a deleted card's number, or lists a path
-    // that is not normalized.
-    #[test]
-    fn list_orders_cards_as_the_board_does_and_open_counts_count_open_cards() {
-        let store = SessionStore::open_in_memory().unwrap();
-        let conn = store.lock_conn().unwrap();
-        let card =
-            |project: &str, urgency: &str, created_at: i64, closing: &[(&'static str, Sql)]| {
-                let mut changes = vec![
-                    ("project_path", text(project)),
-                    ("urgency", text(urgency)),
-                    ("created_at", Sql::Integer(created_at)),
-                ];
-                changes.extend_from_slice(closing);
-                insert(&conn, &changes).unwrap()
-            };
-        let old_blocking = card(PROJECT, "blocking", 1, &[]);
-        let rejected = card(PROJECT, "blocking", 0, &closed("rejected", 6));
-        let new_not_blocking = card(PROJECT, "not_blocking", 4, &[]);
-        let withdrawn = card(PROJECT, "not_blocking", 1, &closed("withdrawn", 7));
-        let new_blocking = card(PROJECT, "blocking", 3, &[]);
-        let same_time_later = card(PROJECT, "blocking", 3, &[]);
-        let approved = card(PROJECT, "blocking", 4, &closed("approved", 5));
-        let old_not_blocking = card(PROJECT, "not_blocking", 2, &[]);
-        card(OTHER, "not_blocking", 1, &[]);
-        let last = card(OTHER, "blocking", 1, &closed("withdrawn", 2));
-        let numbers: Vec<i64> = list(&conn, PROJECT)
-            .unwrap()
-            .into_iter()
-            .map(|approval| approval.number)
-            .collect();
-        assert_eq!(
-            numbers,
-            [
-                same_time_later,
-                new_blocking,
-                old_blocking,
-                new_not_blocking,
-                old_not_blocking,
-                withdrawn,
-                rejected,
-                approved
-            ]
-        );
-        assert_eq!(
-            open_counts(&conn).unwrap(),
-            OpenCounts {
-                total: 6,
-                by_project: BTreeMap::from([(PROJECT.into(), 5), (OTHER.into(), 1)]),
-            }
-        );
-        conn.execute("DELETE FROM approvals WHERE number = ?1", [last])
-            .unwrap();
-        assert_eq!(card(OTHER, "blocking", 3, &[]), last + 1);
-        let error = list(&conn, "/Users/test/orbit/").unwrap_err();
-        assert!(error.starts_with("invalid_input"), "{error}");
-    }
-
-    // Defects: a stored field does not reach the board, a key written by a
-    // newer build (in tradeoffs, options or links) makes the row unreadable,
-    // or deleting the filing Giga deletes the card, is refused, or loses the
-    // Giga's name.
-    #[test]
-    fn a_card_reads_back_whole_and_keeps_its_filer_name_when_the_giga_is_deleted() {
-        let store = SessionStore::open_in_memory().unwrap();
-        let conn = store.lock_conn().unwrap();
-        giga(&conn, "giga-a", "Giga A");
-        let decided_id = "00000000-0000-4000-8000-000000000001";
-        let withdrawn_id = "00000000-0000-4000-8000-000000000002";
-        let decided = insert(
-            &conn,
-            &[
-                ("id", text(decided_id)),
-                ("heading", text("Pick a store")),
-                ("tradeoffs", text(r#"{"pros":["Local"],"cons":["One machine"],"risks":[]}"#)),
-                ("options", text(r#"[{"label":"SQLite","description":"Local.","recommended":true,"icon":"db"},{"label":"Server"}]"#)),
-                ("links", text(r#"[{"kind":"pr","title":"PR #109 caller identity","url":"https://x.dev/109","pinned":true},{"kind":"linear","url":"https://x.dev/ADE-51"}]"#)),
-                ("origin", text("MonoCode Fork Orchestrator")),
-                ("requested_by", text("giga-a")),
-                ("created_at", Sql::Integer(10)),
-                ("status", text("changes_requested")),
-                ("decided_at", Sql::Integer(12)),
-                ("decision_note", text("Add costs")),
-                ("chosen_options", text(r#"["Server"]"#)),
-            ],
-        )
-        .unwrap();
-        let withdrawn = insert(
-            &conn,
-            &[
-                ("id", text(withdrawn_id)),
-                ("heading", text("Bump Playwright")),
-                ("urgency", text("not_blocking")),
-                ("requested_by", text("giga-a")),
-                ("status", text("withdrawn")),
-                ("withdrawn_at", Sql::Integer(11)),
-            ],
-        )
-        .unwrap();
-        let mut board = json!([
-            {
-                "id": decided_id, "number": decided, "projectPath": PROJECT,
-                "heading": "Pick a store", "summary": "Pick where approval cards live.",
-                "tradeoffs": { "pros": ["Local"], "cons": ["One machine"] },
-                "options": [
-                    { "label": "SQLite", "description": "Local.", "recommended": true },
-                    { "label": "Server", "description": null, "recommended": false }
-                ],
-                "urgency": "blocking",
-                "links": [
-                    { "kind": "pr", "title": "PR #109 caller identity", "url": "https://x.dev/109" },
-                    { "kind": "linear", "title": null, "url": "https://x.dev/ADE-51" }
-                ],
-                "origin": "MonoCode Fork Orchestrator",
-                "requestedBy": { "id": "giga-a", "name": "Giga A" },
-                "createdAt": 10,
-                "status": {
-                    "state": "decided", "verdict": "changes_requested", "decidedAt": 12,
-                    "note": "Add costs", "chosen": ["Server"]
-                }
-            },
-            {
-                "id": withdrawn_id, "number": withdrawn, "projectPath": PROJECT,
-                "heading": "Bump Playwright", "summary": "Pick where approval cards live.",
-                "tradeoffs": { "pros": ["Local"], "cons": ["One machine"] },
-                "options": [], "urgency": "not_blocking", "links": [], "origin": null,
-                "requestedBy": { "id": "giga-a", "name": "Giga A" },
-                "createdAt": 1,
-                "status": { "state": "withdrawn", "withdrawnAt": 11 }
-            }
-        ]);
-        let read = || serde_json::to_value(list(&conn, PROJECT).unwrap()).unwrap();
-        assert_eq!(read(), board);
-        assert!(crate::mono_roster::delete(&conn, "giga-a").unwrap());
-        board[0]["requestedBy"]["id"] = json!(null);
-        board[1]["requestedBy"]["id"] = json!(null);
-        assert_eq!(read(), board, "the cards stay, with the Giga's name");
-    }
-
-    // Defect: a second open card takes a heading that is open in the project,
-    // or a closed card's heading cannot be filed again.
-    #[test]
-    fn one_open_card_per_project_and_heading() {
-        let store = SessionStore::open_in_memory().unwrap();
-        let conn = store.lock_conn().unwrap();
-        let heading = ("heading", text("Ship it"));
-        insert(
-            &conn,
-            &[vec![heading.clone()], closed("rejected", 2)].concat(),
-        )
-        .unwrap();
-        insert(&conn, std::slice::from_ref(&heading)).unwrap();
-        insert(&conn, &[heading.clone(), ("project_path", text(OTHER))]).unwrap();
-        let error = insert(&conn, &[heading]).unwrap_err().to_string();
-        assert!(error.contains("UNIQUE constraint failed"), "{error}");
-    }
-
-    // Defect: a CHECK is missing, so the table holds a row `row_to_approval`
-    // cannot turn into a `Status`. Each refused row breaks one CHECK only.
-    #[test]
-    fn checks_refuse_rows_the_types_cannot_hold() {
-        let store = SessionStore::open_in_memory().unwrap();
-        let conn = store.lock_conn().unwrap();
-        let options = ("options", text(r#"[{"label":"A"}]"#));
-        let chosen = ("chosen_options", text(r#"["A"]"#));
-        let approved = || closed("approved", 1);
-        insert(&conn, &[]).unwrap();
-        insert(&conn, &closed("withdrawn", 1)).unwrap();
-        let note = ("decision_note", text("n"));
-        insert(
-            &conn,
-            &[
-                approved(),
-                vec![note.clone(), options.clone(), chosen.clone()],
-            ]
-            .concat(),
-        )
-        .unwrap();
-        for (case, changes) in [
-            ("an unknown status", vec![("status", text("closed"))]),
-            (
-                "decided_at on an open card",
-                vec![("decided_at", Sql::Integer(1))],
-            ),
-            (
-                "approved with no decided_at",
-                vec![("status", text("approved"))],
-            ),
-            (
-                "withdrawn_at on an open card",
-                vec![("withdrawn_at", Sql::Integer(1))],
-            ),
-            (
-                "withdrawn with no withdrawn_at",
-                vec![("status", text("withdrawn"))],
-            ),
-            (
-                "a note on a withdrawn card",
-                [closed("withdrawn", 1), vec![note]].concat(),
-            ),
-            (
-                "chosen options on an open card",
-                vec![options.clone(), chosen.clone()],
-            ),
-            (
-                "chosen options with no options",
-                [approved(), vec![chosen]].concat(),
-            ),
-            (
-                "an empty chosen list",
-                [approved(), vec![options, ("chosen_options", text("[]"))]].concat(),
-            ),
-            ("options that are not a list", vec![("options", text("{}"))]),
-            ("links that are not a list", vec![("links", text("{}"))]),
-            ("tradeoffs that are a list", vec![("tradeoffs", text("[]"))]),
-            (
-                "tradeoffs with no cons",
-                vec![("tradeoffs", text(r#"{"pros":[]}"#))],
-            ),
-            (
-                "tradeoffs with no pros",
-                vec![("tradeoffs", text(r#"{"cons":[]}"#))],
-            ),
-            ("an unknown urgency", vec![("urgency", text("urgent"))]),
-            ("an untrimmed heading", vec![("heading", text(" Ship it"))]),
-            ("an untrimmed origin", vec![("origin", text(" General"))]),
-            (
-                "a project path ending in /",
-                vec![("project_path", text("/Users/test/orbit/"))],
-            ),
-        ] {
-            let error = insert(&conn, &changes).expect_err(case).to_string();
-            assert!(error.contains("CHECK constraint failed"), "{case}: {error}");
-        }
-        let error = insert(&conn, &[("requested_by_name", Sql::Null)])
-            .expect_err("a card with no filer name")
-            .to_string();
-        assert!(
-            error.contains("NOT NULL constraint failed: approvals.requested_by_name"),
-            "{error}"
-        );
-    }
+    written
 }
+
+/// `by` is the calling Giga, which the web app takes from the caller and
+/// never from the agent's input.
+fn parse_by(by: &str) -> Result<MonoId, String> {
+    MonoId::parse(by).ok_or_else(|| "invalid_input: by is not a mono id".into())
+}
+
+#[tauri::command(async)]
+pub fn approvals_file<R: Runtime>(
+    app: AppHandle<R>,
+    store: State<'_, SessionStore>,
+    project_path: String,
+    by: String,
+    card: Card,
+) -> Result<Approval, String> {
+    let written = file(
+        &*store.lock_conn()?,
+        &project_path,
+        &parse_by(&by)?,
+        card,
+        now_ms(),
+    );
+    announce(&app, written)
+}
+
+#[tauri::command(async)]
+pub fn approvals_update<R: Runtime>(
+    app: AppHandle<R>,
+    store: State<'_, SessionStore>,
+    id: String,
+    by: String,
+    card: Card,
+) -> Result<Approval, String> {
+    let written = update(&*store.lock_conn()?, &id, &parse_by(&by)?, card);
+    announce(&app, written)
+}
+
+#[tauri::command(async)]
+pub fn approvals_withdraw<R: Runtime>(
+    app: AppHandle<R>,
+    store: State<'_, SessionStore>,
+    id: String,
+    by: String,
+) -> Result<Approval, String> {
+    let written = withdraw(&*store.lock_conn()?, &id, &parse_by(&by)?, now_ms());
+    announce(&app, written)
+}
+
+#[cfg(test)]
+mod tests;

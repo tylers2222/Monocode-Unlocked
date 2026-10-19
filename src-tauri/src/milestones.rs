@@ -145,7 +145,7 @@ fn present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D:
     Option::deserialize(d).map(Some)
 }
 
-fn require(ok: bool, reason: &str) -> Result<(), String> {
+pub(crate) fn require(ok: bool, reason: &str) -> Result<(), String> {
     if ok {
         Ok(())
     } else {
