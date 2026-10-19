@@ -124,9 +124,10 @@ async function archiveFromRail(page: Page, name: string) {
 const PIP_CHAT = "mono-chat-0001";
 
 /**
- * Pip's chat and a run of Pip's habit, both running in acme with turns newer
- * than any other: mono.rs serves a habits.json that asks for one run now, and
- * Pip's chat comes back from the restart with a turn of its own in acme.
+ * Pip (a Mono of acme) has one habit, and Pip's chat comes back from the
+ * restart with a turn of its own in acme. mono.rs serves habits.json and
+ * keeps what the app saves to it, so the panel's Run now reaches the app's own
+ * habit scheduler.
  */
 const excludedRunning: MountOptions["handlers"] = {
   mono_read: (_store, { mono, path }) =>
@@ -143,7 +144,6 @@ const excludedRunning: MountOptions["handlers"] = {
                 enabled: true,
                 createdAt: 1,
                 nextRunAt: 4_102_444_800_000,
-                runRequested: true,
               },
             ]),
           hash: "habits",
@@ -318,6 +318,13 @@ test("the rail row does not open a running habit run or Mono chat of the project
   page,
 }) => {
   await runningWithNoTab(app, page, true);
+  // Started after the resumed turns, so the habit run's turn is the newest
+  // in acme and only its exclusion keeps the rule off it.
+  await page.getByRole("button", { name: /^Pip, / }).click();
+  await page.getByRole("tab", { name: "Habits", exact: true }).click();
+  const habit = page.locator('[data-habit="habit-1"]');
+  await habit.hover();
+  await habit.getByRole("button", { name: "Run now" }).click();
   await expect
     .poll(() => inFlightIds(page))
     .toEqual(

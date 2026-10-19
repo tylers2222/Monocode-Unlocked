@@ -1038,16 +1038,10 @@ function AutomationEditor({
               <SearchableProjectPicker
                 cwd={draft.cwd}
                 recents={recents}
-                onSelectProject={(cwd) =>
-                  // A folder belongs to its project; re-choosing keeps it.
-                  onChange({
-                    ...draft,
-                    cwd,
-                    sessionFolderId: sameProjectPath(cwd, draft.cwd)
-                      ? draft.sessionFolderId
-                      : "",
-                  })
-                }
+                onSelectProject={(cwd) => {
+                  if (sameProjectPath(cwd, draft.cwd)) return;
+                  onChange({ ...draft, cwd, sessionFolderId: "" });
+                }}
               />
               {onDelete ? (
                 <>

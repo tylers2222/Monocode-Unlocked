@@ -30,7 +30,7 @@ const automation: Automation = {
   updatedAt: 1,
 };
 
-test("choosing the automation's own project keeps its session folder", async ({
+test("choosing the automation's own project keeps its session folder and a clean editor", async ({
   app,
   page,
 }) => {
@@ -39,6 +39,9 @@ test("choosing the automation's own project keeps its session folder", async ({
   await page.getByText("Morning digest").click();
   const folder = page.getByText("Removed folder");
   await expect(folder).toBeVisible();
+  const editor = page.locator("form");
+  await expect(editor.getByRole("button", { name: "Save" })).toBeDisabled();
+  await expect(editor.getByRole("button", { name: "Reset" })).toHaveCount(0);
   await page
     .getByRole("button", { name: /current project acme/ })
     .last()
@@ -49,4 +52,6 @@ test("choosing the automation's own project keeps its session folder", async ({
     .click();
   await expect(page.getByRole("dialog", { name: "Project picker" })).toHaveCount(0);
   await expect(folder).toBeVisible();
+  await expect(editor.getByRole("button", { name: "Save" })).toBeDisabled();
+  await expect(editor.getByRole("button", { name: "Reset" })).toHaveCount(0);
 });
