@@ -14,7 +14,7 @@
 #   - a JS/TS, Rust or Cargo.toml file that git diffs as binary, or a file name with
 #     an escape git does not document;
 #   - more than 500 changed non-test lines. Tests, fixtures, Rust #[cfg(test)] items,
-#     eslint-suppressions.json and package-lock.json do not count.
+#     Rust tests.rs modules, eslint-suppressions.json and package-lock.json do not count.
 # The diff is read line by line, so it is weaker than gate/lint: a lint added on its
 # own line inside an existing multi-line attribute, or text in a block comment or a
 # multi-line string, is not seen.
