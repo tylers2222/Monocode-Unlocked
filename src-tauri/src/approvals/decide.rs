@@ -16,12 +16,20 @@ use crate::session_store::SessionStore;
 
 const NO_CHAT: &str = "filer_has_no_chat";
 
-const SENDER: &str = "approvals-board";
+macro_rules! sender {
+    () => {
+        "approvals-board"
+    };
+}
+
+const SENDER: &str = sender!();
 
 /// `not_sent` of a card: its decision row was dropped before the Giga took it.
-pub(super) const NOT_SENT: &str = "EXISTS (SELECT 1 FROM mono_messages
-  WHERE from_session_id = 'approvals-board' AND request_id = approvals.id
-    AND status = 'dropped') AS not_sent";
+pub(super) const NOT_SENT: &str = concat!(
+    "EXISTS (SELECT 1 FROM mono_messages WHERE from_session_id = '",
+    sender!(),
+    "' AND request_id = approvals.id AND status = 'dropped') AS not_sent"
+);
 
 fn decision_text(approval: &Approval, decision: &Decision) -> String {
     let mut text = format!(
@@ -88,10 +96,11 @@ fn deliver(
     Ok(notices)
 }
 
-/// Moves each decision row that was dropped before its Giga took it (chat
-/// reset, deleted, archived, or gone at startup) to the Giga's current chat.
-/// A row stays dropped, so its card is `not_sent`, while that chat ended or
-/// is the one it was dropped from.
+/// Moves each decision row that a chat reset, delete or archive, or a chat
+/// gone at startup, dropped before its Giga took it to the Giga's current
+/// chat. A row the user removed from the queue (`notified_at`) stays dropped,
+/// and so does one while that chat ended or, after startup, is still the
+/// chat it was dropped from. A dropped row's card is `not_sent`.
 pub(crate) fn requeue(conn: &Connection, now: i64) -> rusqlite::Result<Notices> {
     let chats = conn
         .prepare(
@@ -101,6 +110,7 @@ pub(crate) fn requeue(conn: &Connection, now: i64) -> rusqlite::Result<Notices> 
              FROM (SELECT id AS mono, json_extract(data_json, '$.sessionId') AS id FROM monos) AS chat
              WHERE chat.mono = mono_messages.to_mono_id AND chat.id IS NOT NULL
                AND from_session_id = ?1 AND status = 'dropped' AND delivered_at IS NULL
+               AND notified_at IS NULL
                AND chat.id IS NOT handled_by_session
                AND chat.id NOT IN (SELECT session_id FROM mono_session_ends)
              RETURNING handled_by_session",

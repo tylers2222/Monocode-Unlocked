@@ -255,6 +255,22 @@ fn not_sent(conn: &Connection, card: &Approval) -> bool {
     }
 }
 
+/// Giga A's card rejected at 5 into chat-a, Giga B's at 6 into chat-b.
+fn rejected_by_two_gigas(conn: &Connection) -> (Approval, Approval) {
+    giga_with_chat(conn, "giga-a", CHAT_A);
+    giga_with_chat(conn, "giga-b", CHAT_B);
+    let a = filed(conn, "giga-a", "Pick a store", "[]");
+    let b = filed(conn, "giga-b", "Pick a host", "[]");
+    decide(conn, &a.id, Verdict::Rejected, None, &[], 5).unwrap();
+    decide(conn, &b.id, Verdict::Rejected, None, &[], 6).unwrap();
+    (a, b)
+}
+
+fn rejected_row(card: &Approval, chat: &str, at: i64) -> serde_json::Value {
+    let body = said(card, "decision: rejected\nchosen_options: []");
+    decision_row(card, chat, at, &body)
+}
+
 // Defects: a decision whose chat is reset, deleted or archived before the
 // Giga takes it is lost; it goes to an ended chat or back to the chat it
 // was dropped from; or its card does not show that it was not sent.
@@ -262,16 +278,7 @@ fn not_sent(conn: &Connection, card: &Approval) -> bool {
 fn a_dropped_decision_follows_the_giga_to_its_next_chat_or_reads_not_sent() {
     let store = SessionStore::open_in_memory().unwrap();
     let conn = store.lock_conn().unwrap();
-    giga_with_chat(&conn, "giga-a", CHAT_A);
-    giga_with_chat(&conn, "giga-b", CHAT_B);
-    let a = filed(&conn, "giga-a", "Pick a store", "[]");
-    let b = filed(&conn, "giga-b", "Pick a host", "[]");
-    decide(&conn, &a.id, Verdict::Rejected, None, &[], 5).unwrap();
-    decide(&conn, &b.id, Verdict::Rejected, None, &[], 6).unwrap();
-    let row = |card: &Approval, chat: &str, at: i64| {
-        let body = said(card, "decision: rejected\nchosen_options: []");
-        decision_row(card, chat, at, &body)
-    };
+    let (a, b) = rejected_by_two_gigas(&conn);
 
     assert_eq!(clear(&conn, CHAT_A, 7), Notices::default());
     assert!(
@@ -279,21 +286,60 @@ fn a_dropped_decision_follows_the_giga_to_its_next_chat_or_reads_not_sent() {
         "the reset chat took the decision with it"
     );
     assert_eq!(move_chat(&conn, "giga-a", "chat-a2"), naming("chat-a2"));
-    assert_eq!(queued(&conn, "chat-a2"), [row(&a, "chat-a2", 5)]);
+    assert_eq!(queued(&conn, "chat-a2"), [rejected_row(&a, "chat-a2", 5)]);
     assert!(!not_sent(&conn, &a));
 
     assert_eq!(move_chat(&conn, "giga-b", "chat-b2"), Notices::default());
     assert_eq!(clear(&conn, CHAT_B, 8), naming("chat-b2"));
-    assert_eq!(queued(&conn, "chat-b2"), [row(&b, "chat-b2", 6)]);
+    assert_eq!(queued(&conn, "chat-b2"), [rejected_row(&b, "chat-b2", 6)]);
 
     move_chat(&conn, "giga-b", "chat-b3");
+    conn.execute(
+        "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+         VALUES ('chat-b3', '/', 'codex', 'm', 'default', 'B', 1, 1)",
+        [],
+    )
+    .unwrap();
+    move_chat(&conn, "giga-a", "chat-a3");
     mono_messages::startup(&conn, 9).unwrap();
+    assert!(not_sent(&conn, &a), "chat-a3 is not a session either");
+    assert!(queued(&conn, "chat-a3").is_empty());
+    assert_eq!(queued(&conn, "chat-b3"), [rejected_row(&b, "chat-b3", 6)]);
+    assert!(!not_sent(&conn, &b));
+    move_chat(&conn, "giga-b", "chat-b3");
     assert!(
         not_sent(&conn, &a),
-        "chat-a2 is gone and giga-a has no other chat"
+        "a later roster write keeps it out of gone chat-a3"
     );
+}
+
+// Defects: a decision the user removed from the Giga's queue comes back
+// when the Giga moves to a new chat, or one an archive dropped stays unsent
+// after the chat is unarchived.
+#[test]
+fn a_removed_decision_stays_removed_and_an_unarchived_chat_gets_its_decision_back() {
+    let store = SessionStore::open_in_memory().unwrap();
+    let conn = store.lock_conn().unwrap();
+    let (a, b) = rejected_by_two_gigas(&conn);
+
+    let removed: String = conn
+        .query_row(
+            "SELECT id FROM mono_messages WHERE request_id = ?1",
+            [&a.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let removed = mono_messages::MessageId::parse(&removed).unwrap();
+    mono_messages::drop_message(&conn, &removed, 7).unwrap();
+    assert_eq!(move_chat(&conn, "giga-a", "chat-a2"), Notices::default());
     assert!(queued(&conn, "chat-a2").is_empty());
-    assert_eq!(queued(&conn, "chat-b3"), [row(&b, "chat-b3", 6)]);
+    assert!(not_sent(&conn, &a), "the user removed it");
+
+    let archive = |archived| crate::session_store::set_archived(&conn, CHAT_B, archived).unwrap();
+    assert_eq!(archive(true), Notices::default());
+    assert!(not_sent(&conn, &b));
+    assert_eq!(archive(false), naming(CHAT_B));
+    assert_eq!(queued(&conn, CHAT_B), [rejected_row(&b, CHAT_B, 6)]);
     assert!(!not_sent(&conn, &b));
 }
 
@@ -374,7 +420,10 @@ fn approvals_decide_emits_the_chat_notice_and_approvals_changed_once_per_decisio
 
     let app = tauri::test::mock_builder()
         .manage(SessionStore::open_in_memory().unwrap())
-        .invoke_handler(tauri::generate_handler![approvals_decide])
+        .invoke_handler(tauri::generate_handler![
+            approvals_decide,
+            crate::mono_roster::monos_update
+        ])
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
@@ -411,5 +460,17 @@ fn approvals_decide_emits_the_chat_notice_and_approvals_changed_once_per_decisio
         heard.lock().unwrap().len(),
         2,
         "a refused decide emits nothing"
+    );
+    clear(
+        &app.state::<SessionStore>().inner().lock_conn().unwrap(),
+        CHAT_A,
+        9,
+    );
+    let moved = json!({ "updates": [{ "id": "giga-a", "patch": { "sessionId": "chat-a2" } }] });
+    invoke_command(&webview, "monos_update", &moved).unwrap();
+    assert_eq!(
+        heard.lock().unwrap()[2],
+        ("mono-message-notices", json!({ "sessions": ["chat-a2"] })),
+        "the Giga's new chat is told about the decision it now holds"
     );
 }

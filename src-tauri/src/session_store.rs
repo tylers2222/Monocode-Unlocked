@@ -2030,8 +2030,7 @@ pub(crate) fn set_archived(
     let notices = if archived {
         clear_ended(&tx, session_id)?
     } else {
-        crate::mono_messages::session_reopened(&tx, session_id)?;
-        Default::default()
+        crate::mono_messages::session_reopened(&tx, session_id)?
     };
     tx.execute(
         "UPDATE sessions SET archived = ?1 WHERE id = ?2",

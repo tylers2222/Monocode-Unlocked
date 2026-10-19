@@ -2655,18 +2655,23 @@ pub fn startup(conn: &Connection, now: i64) -> rusqlite::Result<()> {
           WHERE intent = 'steer' AND status IN ('open', 'delivered') AND delivered_at IS NULL",
         [now],
     )?;
-    tx.execute(
-        &format!(
-            "UPDATE mono_messages SET status = 'dropped', closed_at = ?1, updated_at = ?1
-              WHERE (status = 'open' OR (status = 'delivered' AND delivered_at IS NULL))
-                AND {MESSAGE_TOOLS}
-                AND NOT EXISTS (SELECT 1 FROM sessions
-                                 WHERE sessions.id = mono_messages.handled_by_session
-                                   AND worktree_removed = 0)"
-        ),
-        [now],
-    )?;
+    let drop_gone = || {
+        tx.execute(
+            &format!(
+                "UPDATE mono_messages SET status = 'dropped', closed_at = ?1, updated_at = ?1
+                  WHERE (status = 'open' OR (status = 'delivered' AND delivered_at IS NULL))
+                    AND {MESSAGE_TOOLS}
+                    AND NOT EXISTS (SELECT 1 FROM sessions
+                                     WHERE sessions.id = mono_messages.handled_by_session
+                                       AND worktree_removed = 0)"
+            ),
+            [now],
+        )
+    };
+    drop_gone()?;
+    // A decision moved to a chat that is gone too is dropped again there.
     crate::approvals::decide::requeue(&tx, now)?;
+    drop_gone()?;
     tx.commit()
 }
 
@@ -2750,13 +2755,14 @@ pub fn clear_session(
     Ok(notices)
 }
 
-/// Design 7: an archived session was unarchived, so it can receive again.
-pub(crate) fn session_reopened(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
+/// Design 7: an archived session was unarchived, so it can receive again,
+/// starting with the decisions its archive dropped.
+pub(crate) fn session_reopened(conn: &Connection, session_id: &str) -> rusqlite::Result<Notices> {
     conn.execute(
         "DELETE FROM mono_session_ends WHERE session_id = ?1",
         [session_id],
     )?;
-    Ok(())
+    crate::approvals::decide::requeue(conn, now_ms())
 }
 
 /// Design 5.5 rule 8: what the user's Remove of a queued Mono row did.
@@ -2793,8 +2799,11 @@ pub fn drop_message(
     };
     let mut notices = Notices::default();
     if answer == DropAnswer::Dropped {
+        // A row with no sender Mono owes no notice. Its `notified_at` marks
+        // a drop the user chose, which `requeue` never undoes.
         tx.execute(
-            "UPDATE mono_messages SET status = 'dropped', closed_at = ?2, updated_at = ?2
+            "UPDATE mono_messages SET status = 'dropped', closed_at = ?2, updated_at = ?2,
+               notified_at = CASE WHEN from_mono_id IS NULL THEN ?2 END
               WHERE id = ?1",
             params![id.as_str(), now],
         )?;
