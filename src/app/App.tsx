@@ -11259,6 +11259,8 @@ function Workspace({
             { awaitAcceptance: true },
           );
           return Object.assign(
+            // Every watcher of one turn end gets the same outcome, so it names
+            // the end: a steer and the start it joined report it once.
             (outcome: ControlOutcome) =>
               settle(
                 monoSessionCompletionResult({
@@ -11271,6 +11273,7 @@ function Workspace({
                     (session) => session.id === sessionId,
                   ),
                 }),
+                outcome,
               ),
             { accept: settle.accept, discard: settle.discard },
           );

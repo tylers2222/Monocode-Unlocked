@@ -1,11 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TurnId } from "./monoMessages";
+import {
+  createTurnWatchers,
+  deliverAppSteer,
+} from "../../../app/model/appSessionSend";
 import { submitWithSettlement } from "../../../app/model/managedSubmission";
+import type { ControlOutcome } from "../../orchestration/model/orchestration";
 import {
   canDispatchQueuedHead,
   steerableQueuedMessage,
 } from "../../sessions/model/messageQueue";
-import { newSession, type Session } from "../../sessions/model/session";
+import {
+  newSession,
+  type QueuedMessage,
+  type Session,
+} from "../../sessions/model/session";
 import {
   enqueueMonoSessionCompletion,
   MONO_COMPLETION_HOLD_MS,
@@ -467,5 +476,144 @@ describe("Mono completion batches", () => {
       ),
     ).toBe(true);
     expect(message.text.length).toBeLessThan(60_000);
+  });
+
+  describe("a session that a start and a later steer both watch (ADE-47)", () => {
+    function reportedSessions(message: QueuedMessage): string[] {
+      const payload = JSON.parse(message.text.split("\n\n")[1]);
+      return (payload.sessions ?? [payload]).map(
+        (entry: { sessionId: string }) => entry.sessionId,
+      );
+    }
+
+    /** One Mono request as `monitorCompletion` in App.tsx wires it. */
+    function monitor(
+      batches: MonoSessionCompletionBatches,
+      mono: { monoId: string; turn: number },
+      requestId: string,
+      sessionId: string,
+    ) {
+      const settle = batches.watch(mono, requestId, sessionId, {
+        awaitAcceptance: true,
+      });
+      return Object.assign(
+        (outcome: ControlOutcome) =>
+          settle(
+            monoSessionCompletionResult({
+              requestId,
+              sessionId,
+              project: "/code/project",
+              prompt: `Prompt ${requestId}`,
+              outcome,
+            }),
+            outcome,
+          ),
+        { accept: settle.accept, discard: settle.discard },
+      );
+    }
+
+    /**
+     * Mono turn 1 starts `s` with `sessions.start`. Mono turn 2 starts `x`
+     * and steers `s` with `sessions.send` while turn 1's request still
+     * watches it, so `s`'s turn 1 has two watchers.
+     */
+    async function startThenSteer(
+      batches: MonoSessionCompletionBatches,
+      turnWatchers: ReturnType<typeof createTurnWatchers>,
+    ) {
+      const start = monitor(batches, origin, "s", "s");
+      start.accept();
+      batches.closeInactive(() => false);
+      vi.advanceTimersByTime(MONO_COMPLETION_HOLD_MS);
+      const x = monitor(batches, { ...origin, turn: 2 }, "x", "x");
+      x.accept();
+      await deliverAppSteer({
+        watchers: turnWatchers,
+        sessionId: "s",
+        gen: 1,
+        watcher: monitor(batches, { ...origin, turn: 2 }, "send-s", "s"),
+        record: () => undefined,
+        steer: async () => undefined,
+        forget: () => undefined,
+      });
+      // How `submitSession` settles the end of `s`'s turn 1.
+      const endTurn = (outcome: ControlOutcome) => {
+        start(outcome);
+        turnWatchers.settle("s", 1, outcome);
+      };
+      return { endTurn, x };
+    }
+
+    it("reports the end once while the Mono is idle, and a later end again", async () => {
+      const reports: string[] = [];
+      const batches = new MonoSessionCompletionBatches((_, message) => {
+        reports.push(...reportedSessions(message));
+      }, schedule);
+      const turnWatchers = createTurnWatchers();
+      const { endTurn } = await startThenSteer(batches, turnWatchers);
+      batches.closeInactive(() => false);
+      vi.advanceTimersByTime(MONO_COMPLETION_HOLD_MS);
+      endTurn({ status: "completed", text: "s finished" });
+      expect(reports).toEqual(["s"]);
+      vi.runAllTimers();
+      expect(reports).toEqual(["s"]);
+
+      const again = monitor(batches, { ...origin, turn: 3 }, "send-s-2", "s");
+      again.accept();
+      batches.closeInactive(() => false);
+      again({ status: "completed", text: "s finished again" });
+      expect(reports).toEqual(["s", "s"]);
+    });
+
+    it("reports the end once while the Mono is mid-turn, and the request's other session once", async () => {
+      let mono: Session = {
+        ...newSession("codex", "/code/project"),
+        busy: true,
+        turnReadiness: "ready",
+      };
+      const batches = new MonoSessionCompletionBatches((_, message) => {
+        mono = enqueueMonoSessionCompletion(mono, message);
+      }, schedule);
+      const turnWatchers = createTurnWatchers();
+      const { endTurn, x } = await startThenSteer(batches, turnWatchers);
+      batches.closeInactive(({ turn }) => turn === 2);
+      endTurn({ status: "completed", text: "s finished" });
+      batches.closeInactive(() => false);
+      // Turn 2's group no longer waits on the steer once `x` stops.
+      x({ status: "completed", text: "x finished" });
+      expect(mono.queuedMessages?.map(reportedSessions)).toEqual([
+        ["s"],
+        ["x"],
+      ]);
+      vi.runAllTimers();
+      expect(mono.queuedMessages).toHaveLength(2);
+    });
+
+    it("gives each Mono that watches the end its own single report", async () => {
+      const reports: [string, string[]][] = [];
+      const batches = new MonoSessionCompletionBatches((monoId, message) => {
+        reports.push([monoId, reportedSessions(message)]);
+      }, schedule);
+      const turnWatchers = createTurnWatchers();
+      const { endTurn } = await startThenSteer(batches, turnWatchers);
+      const other = { monoId: "other", turn: 1 };
+      await deliverAppSteer({
+        watchers: turnWatchers,
+        sessionId: "s",
+        gen: 1,
+        watcher: monitor(batches, other, "other-send-s", "s"),
+        record: () => undefined,
+        steer: async () => undefined,
+        forget: () => undefined,
+      });
+      batches.closeInactive(() => false);
+      vi.advanceTimersByTime(MONO_COMPLETION_HOLD_MS);
+      endTurn({ status: "completed", text: "s finished" });
+      vi.runAllTimers();
+      expect(reports).toEqual([
+        ["mono", ["s"]],
+        ["other", ["s"]],
+      ]);
+    });
   });
 });

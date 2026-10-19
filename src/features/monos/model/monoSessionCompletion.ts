@@ -1,8 +1,9 @@
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
-import type {
-  MonoSessionCompletion,
-  QueuedMessage,
-  Session,
+import {
+  opensTurn,
+  type MonoSessionCompletion,
+  type QueuedMessage,
+  type Session,
 } from "../../sessions/model/session";
 
 const RESULT_MAX_CHARS = 12_000;
@@ -38,10 +39,12 @@ export function monoSessionCompletionResult(
     session?.blocks.findIndex(
       (block) => block.role === "user" && block.appRequestId === requestId,
     ) ?? -1;
+  // The request's turn runs until the next message that opens a turn; a steer
+  // that joins it does not, so the reply is the turn's last one.
   let reply = "";
   if (session && start >= 0) {
     for (const block of session.blocks.slice(start + 1)) {
-      if (block.role === "user") break;
+      if (opensTurn(block)) break;
       if (
         block.role === "assistant" &&
         !block.tool &&
@@ -163,6 +166,12 @@ function releasableResults(
 export class MonoSessionCompletionBatches {
   private batches = new Map<string, CompletionBatch>();
   private deliveries = new Set<CompletionDelivery>();
+  /**
+   * Session ends that a request already reports, and to which Monos. A steer
+   * joins the turn another request watches, so both requests settle with one
+   * end, and the Mono gets one report of it (ADE-47).
+   */
+  private reportedEnds = new WeakMap<object, Set<string>>();
 
   constructor(
     private onReady: (
@@ -195,10 +204,18 @@ export class MonoSessionCompletionBatches {
     const entry = result;
     const group = batch;
     return Object.assign(
-      (value: MonoSessionCompletionResult) => {
+      /** Watchers settled with the same `end` give each Mono one report. */
+      (value: MonoSessionCompletionResult, end: object = value) => {
         if (entry.value || group.results.get(requestId) !== entry) return;
-        entry.sessionId = value.sessionId;
-        entry.value = value;
+        const monos = this.reportedEnds.get(end) ?? new Set<string>();
+        if (monos.has(origin.monoId)) {
+          // An earlier request of this Mono reports the same end.
+          group.results.delete(requestId);
+        } else {
+          this.reportedEnds.set(end, monos.add(origin.monoId));
+          entry.sessionId = value.sessionId;
+          entry.value = value;
+        }
         this.release(key, group);
       },
       {

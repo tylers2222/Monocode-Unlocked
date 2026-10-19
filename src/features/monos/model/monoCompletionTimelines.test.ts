@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ControlOutcome } from "../../orchestration/model/orchestration";
 import {
   newSession,
   type QueuedMessage,
@@ -115,13 +116,13 @@ const TIMELINES: Timeline[] = [
       { at: "10-19 19:43:26", kind: "end", session: "7a1eab69" },
       { at: "10-19 19:52:39", kind: "end", session: "4d93f1f2" },
     ],
-    // 30f5be8b reports once per request, as on tyler/main (seq 1892 and 1914).
+    // Both requests watch 30f5be8b's one turn end. tyler/main reported it to
+    // each (seq 1892 and 1914); the Mono now gets it once (ADE-47).
     notices: [
       ["10-19 18:38:56", ["960dacc8"]],
       ["10-19 18:43:24", ["281d65ca"]],
       ["10-19 18:43:50", ["8b05c54b"]],
       ["10-19 18:46:11", ["ef8f4c9c"]],
-      ["10-19 19:27:31", ["30f5be8b"]],
       ["10-19 19:27:31", ["30f5be8b"]],
       ["10-19 19:43:26", ["7a1eab69"]],
       ["10-19 19:52:39", ["4d93f1f2"]],
@@ -164,7 +165,7 @@ function replay(events: Event[]) {
   /** Every request that watches a session's running turn. */
   const watchers = new Map<
     string,
-    ((result: MonoSessionCompletionResult) => void)[]
+    ((result: MonoSessionCompletionResult, end: ControlOutcome) => void)[]
   >();
   let turn = 1;
   let monoBusy = true;
@@ -188,6 +189,11 @@ function replay(events: Event[]) {
     } else if (event.kind === "monoIdle") {
       monoBusy = false;
     } else {
+      // The turn's one outcome reaches every watcher, as in `submitSession`.
+      const outcome: ControlOutcome = {
+        status: "completed",
+        text: `Done ${event.session}`,
+      };
       for (const settle of watchers.get(event.session)!)
         settle(
           monoSessionCompletionResult({
@@ -195,8 +201,9 @@ function replay(events: Event[]) {
             sessionId: event.session,
             project: "/Users/me/monocode",
             prompt: `Brief for ${event.session}`,
-            outcome: { status: "completed", text: `Done ${event.session}` },
+            outcome,
           }),
+          outcome,
         );
       watchers.delete(event.session);
     }

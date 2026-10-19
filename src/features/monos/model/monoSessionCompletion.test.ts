@@ -138,6 +138,34 @@ describe("Mono session completion notifications", () => {
     });
   });
 
+  it("reports the turn's final answer when a steer joined the watched turn", () => {
+    const session = newSession("codex", options.project);
+    session.blocks = [
+      {
+        id: "u",
+        role: "user",
+        text: options.prompt,
+        appRequestId: options.requestId,
+        startedAt: 1,
+      },
+      { id: "early", role: "assistant", text: "Now open the PR." },
+      {
+        id: "steer",
+        role: "user",
+        text: "Also state the size",
+        appRequestId: "steer-request",
+        sentAt: 2,
+      },
+      { id: "final", role: "assistant", text: "PR #103 is open." },
+      { id: "next", role: "user", text: "New task", startedAt: 3 },
+      { id: "next-reply", role: "assistant", text: "Unrelated answer" },
+    ];
+    for (const requestId of [options.requestId, "steer-request"])
+      expect(
+        monoSessionCompletionResult({ ...options, requestId, session }).result,
+      ).toBe("PR #103 is open.");
+  });
+
   it.each(["failed", "cancelled"] as const)(
     "reports %s with available output and an error",
     (status) => {
