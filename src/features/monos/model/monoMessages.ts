@@ -23,9 +23,14 @@ export type TurnId = Brand<string, "TurnId">;
 
 export type MonoRole = "giga" | "mono";
 export type MessageTool = "send_message" | "reply";
-/** Not a message (design 1.4, 16.2): a refused `sessions.start` or app action. Only a rejected row carries one. */
-export type RefusalTool = "start_session" | "app_action";
-export type Tool = MessageTool | RefusalTool;
+/**
+ * Not a message (design 1.4, 16.2): a refused `sessions.start` or app
+ * action, or the accepted record of the first prompt of a session that
+ * `sessions.start` made. Only a rejected row or a delivered start row
+ * carries one.
+ */
+export type NonMessageTool = "start_session" | "app_action";
+export type Tool = MessageTool | NonMessageTool;
 export type Delivery = "submit" | "queue" | "steer";
 export type IntentKind = "new" | "reply" | "steer" | "continue";
 /**
@@ -212,6 +217,16 @@ export type MonoMessage =
       Intent & { status: "delivered"; wantingReply: false } & Routed & {
         slot: PlainSlot | null;
       })
+  /**
+   * The first prompt of a session `sessions.start` made (design 16.2): a
+   * record and a steer target, never queued, so it never takes a slot.
+   */
+  | (Omit<MessageBase, "tool"> &
+      Extract<Intent, { intent: "new" }> & {
+        tool: "start_session";
+        status: "delivered";
+        wantingReply: false;
+      } & Routed & { slot: null })
   | (MessageBase &
       Intent & { status: "answered"; wantingReply: true } & Routed & {
         slot: WaitingSlot | null;

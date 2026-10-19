@@ -88,7 +88,10 @@ function fixture(kind: "session" | "mono", off: string[] = []) {
   source.id = "caller";
   const rust = rustMilestones(off);
   const host = {
-    levels: { check: async () => ({ leadSessionId: null }) },
+    levels: {
+      check: async () => ({ leadSessionId: null }),
+      recordStart: async () => "m_aaaaaaaaaaaa",
+    },
     isMono: (id: string) => kind === "mono" && id === source.id,
     monoOf: (id: string) =>
       kind === "mono" && id === source.id

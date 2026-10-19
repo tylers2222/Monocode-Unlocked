@@ -44,12 +44,15 @@ type Scenario = {
   requestId: string;
   /** The host method an allowed call reaches. */
   ran: "start" | "send" | "stop" | null;
+  /** How many times the agent makes the call; 1 when absent. */
+  times?: number;
 };
 
 const CHOICE = { harness: "codex", model: "codex:test", notifyOnComplete: false };
 const SCENARIOS: Scenario[] = [
   { name: "A6: a lead's start makes a worker of it", caller: "lead", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" }, requestId: "a6-start", ran: "start" },
   { name: "A7: a Mono's start makes a lead", caller: "a-chat", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" }, requestId: "a7-start", ran: "start" },
+  { name: "A7: a Mono's repeated start answers its first row", caller: "a-chat", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" }, requestId: "a7-again", ran: "start", times: 2 },
   { name: "A5: a lead sends into its own worker", caller: "lead", action: "sessions.send", input: { sessionId: "worker", prompt: "Rebase first" }, requestId: "a5-own", ran: "send" },
   { name: "A5: a Mono may stop a worker", caller: "a-chat", action: "sessions.stop", input: { sessionId: "worker" }, requestId: "a5-stop", ran: "stop" },
   { name: "A5: a Mono's send into a worker, padded id parsed once", caller: "a-chat", action: "sessions.send", input: { sessionId: " worker\n", prompt: "Stop" }, requestId: "a5-send", ran: null },
@@ -71,12 +74,22 @@ const SCENARIOS: Scenario[] = [
     })),
 ];
 
-type Case = Scenario & { args: { call: { requestId: string } }; reply: unknown };
+/** One IPC call a scenario made, and the reply Rust gave it. */
+type Call = {
+  command: "mono_app_action_check" | "mono_message_record_start";
+  args: { call: { requestId: string } };
+  reply: unknown;
+};
+type Case = Scenario & { calls: Call[] };
 const cases = fixture.cases as Case[];
+const ANSWERS = {
+  mono_app_action_check: ALLOWED,
+  mono_message_record_start: { outcome: "recorded", messageId: "m_aaaaaaaaaaaa" },
+};
 
 const command = vi.hoisted(() => ({
   answer: undefined as
-    | ((args: { call: { requestId: string } }) => unknown)
+    | ((name: string, args: { call: { requestId: string } }) => unknown)
     | undefined,
 }));
 
@@ -96,7 +109,8 @@ vi.mock("@tauri-apps/api/core", () => ({
           },
         })),
       };
-    if (name === "mono_app_action_check") return command.answer!(args);
+    if (name === "mono_app_action_check" || name === "mono_message_record_start")
+      return command.answer!(name, args);
     throw new Error(`unexpected ${name}`);
   }),
 }));
@@ -119,10 +133,7 @@ beforeEach(async () => {
   ]);
   __monosTestReset();
   await loadMonoRoster();
-  command.answer = (args) =>
-    cases.find((entry) => entry.args.call.requestId === args.call.requestId)
-      ?.reply ??
-    ALLOWED;
+  command.answer = (name) => ANSWERS[name as Call["command"]];
 });
 
 /** WORLD's sessions as this window has them; lead, worker and ghost have /operator access. */
@@ -195,6 +206,13 @@ const checks = () =>
     .mock.calls.filter(([name]) => name === "mono_app_action_check")
     .map(([, args]) => args);
 
+/** Every level gate call so far, as `[command, args]`. */
+const gateCalls = () =>
+  vi
+    .mocked(invoke)
+    .mock.calls.filter(([name]) => name in ANSWERS)
+    .map(([name, args]) => [name, args]);
+
 /** JSON with sorted keys, as serde_json writes it, so both writers agree byte for byte. */
 function sortedJson(value: unknown): string {
   const sort = (node: unknown): unknown =>
@@ -210,17 +228,35 @@ function sortedJson(value: unknown): string {
   return `${JSON.stringify(sort(value), null, 2)}\n`;
 }
 
+/** Runs a scenario `times` times, as the agent repeats a call. */
+async function runScenario(scenario: Scenario) {
+  const { run, host, actions } = world(scenario.caller);
+  const outcomes: ({ value: unknown } | { error: unknown })[] = [];
+  for (let n = 0; n < (scenario.times ?? 1); n += 1)
+    outcomes.push(
+      await run(scenario.action, scenario.input, scenario.requestId).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      ),
+    );
+  return { host, actions, outcomes };
+}
+
 it.runIf(WRITE)("writes the fixture from the real calls", async () => {
   const written: Case[] = [];
   for (const scenario of SCENARIOS) {
     vi.mocked(invoke).mockClear();
-    const { run } = world(scenario.caller);
-    await run(scenario.action, scenario.input, scenario.requestId).catch(
-      () => undefined,
-    );
-    const [args] = checks() as Case["args"][];
-    const kept = cases.find((entry) => entry.name === scenario.name);
-    written.push({ ...scenario, args, reply: kept?.reply ?? ALLOWED });
+    await runScenario(scenario);
+    const kept = cases.find((entry) => entry.name === scenario.name)?.calls;
+    const calls = gateCalls().map(([command, args], index): Call => ({
+      command: command as Call["command"],
+      args: args as Call["args"],
+      reply:
+        kept?.[index]?.command === command
+          ? kept[index].reply
+          : ANSWERS[command as Call["command"]],
+    }));
+    written.push({ ...scenario, calls });
   }
   writeFileSync(
     `${process.cwd()}/src/features/agent-app/model/appActionCheck.fixtures.json`,
@@ -232,43 +268,53 @@ it.runIf(WRITE)("writes the fixture from the real calls", async () => {
 // FIELDS entry) is missing from the fixture, so Rust never replays it.
 it.skipIf(WRITE)("holds every scenario and the world in the fixture", () => {
   expect({ sessions: fixture.sessions, monos: fixture.monos }).toEqual(WORLD);
-  expect(
-    cases.map(({ name, caller, action, input, requestId, ran }) => ({
-      name,
-      caller,
-      action,
-      input,
-      requestId,
-      ran,
-    })),
-  ).toEqual(SCENARIOS);
+  expect(cases.map(({ calls: _calls, ...scenario }) => scenario)).toEqual(
+    SCENARIOS,
+  );
 });
 
-// Design 6.6 and 13.3, the Rust contract. Defect: an app action runs with no
-// level check, or with a check that names another action, target, lead copy
-// or input than Rust reads; Rust's refusal does not stop the action or loses
-// its code, hint or row id; or the web app decides the new session's lead
-// itself instead of taking Rust's answer.
+// Design 6.6, 13.3 and 16.2, the Rust contract. Defect: an app action runs
+// with no level check, or with a check that names another action, target,
+// lead copy or input than Rust reads; Rust's refusal does not stop the
+// action or loses its code, hint or row id; the web app decides the new
+// session's lead itself instead of taking Rust's answer; or a submitted
+// start writes no start row, sends another key or input than the check, or
+// answers another message_id than its row's.
 it.skipIf(WRITE).each(cases.map((entry) => [entry.name, entry] as const))(
-  "%s: sends the fixture's check and acts on its reply",
+  "%s: sends the fixture's calls and acts on their replies",
   async (_name, entry) => {
-    const { run, host, actions } = world(entry.caller);
-    const reply = entry.reply as ActionChecked;
-    const answer = run(entry.action, entry.input, entry.requestId);
+    const replies = entry.calls.map((call) => call.reply);
+    command.answer = () => replies.shift();
+    const { host, actions, outcomes } = await runScenario(entry);
+    expect(gateCalls()).toEqual(
+      entry.calls.map(({ command, args }) => [command, args]),
+    );
+    const reply = entry.calls[0].reply as ActionChecked;
     if (reply.outcome === "failed") {
-      await expect(answer).rejects.toMatchObject({
-        code: reply.error.code,
-        hint: reply.error.hint,
-        details: { message_id: reply.error.message_id },
-      });
+      expect(outcomes).toEqual([
+        {
+          error: expect.objectContaining({
+            code: reply.error.code,
+            hint: reply.error.hint,
+            details: { message_id: reply.error.message_id },
+          }),
+        },
+      ]);
       for (const action of Object.values(actions))
         expect(action).not.toHaveBeenCalled();
-    } else {
-      await answer;
-      if (entry.ran) expect(actions[entry.ran]).toHaveBeenCalledOnce();
+      return;
     }
-    expect(checks()).toEqual([entry.args]);
-    if (entry.action === "sessions.start" && reply.outcome === "allowed")
+    if (entry.ran)
+      expect(actions[entry.ran]).toHaveBeenCalledTimes(entry.times ?? 1);
+    const rows = entry.calls
+      .filter((call) => call.command === "mono_message_record_start")
+      .map((call) => (call.reply as { messageId: string }).messageId);
+    expect(
+      outcomes.map(
+        (outcome) => (outcome as { value: { message_id?: string } }).value.message_id,
+      ),
+    ).toEqual(rows.length ? rows : outcomes.map(() => undefined));
+    if (entry.action === "sessions.start")
       expect(vi.mocked(host.start).mock.calls[0][0].leadSessionId).toBe(
         reply.leadSessionId ?? undefined,
       );
@@ -377,6 +423,68 @@ it.each([
     }),
   ).rejects.toThrow("The level check answered in an unknown form");
   expect(actions.start).not.toHaveBeenCalled();
+});
+
+// Design 16.2. Defect: a draft start, which runs no work, writes a start row
+// that a steer could name, or answers a message_id.
+it("writes no start row for a draft start and answers no message_id", async () => {
+  const { run, actions } = world("a-chat");
+  const answer = await run("sessions.start", {
+    ...CHOICE,
+    prompt: "Fix the flaky test",
+    draft: true,
+  });
+  expect(actions.start).toHaveBeenCalledOnce();
+  expect(gateCalls().map(([name]) => name)).toEqual(["mono_app_action_check"]);
+  expect(answer).not.toHaveProperty("message_id");
+});
+
+// Design 16.2. Defect: a start row that fails after the launch answers only
+// its own hint ("use a new request id"), so the agent starts the work again,
+// or loses the failure's code.
+it("answers a coded record failure after the launch with its code and the started line", async () => {
+  const { run, actions } = world("lead");
+  command.answer = (name) =>
+    name === "mono_message_record_start"
+      ? {
+          outcome: "failed",
+          error: { code: "request_id_reused", hint: "Use a new request id." },
+        }
+      : { outcome: "allowed", leadSessionId: "lead" };
+  await expect(
+    run("sessions.start", { ...CHOICE, prompt: "Fix the flaky test" }, "r9"),
+  ).rejects.toMatchObject({
+    code: "request_id_reused",
+    hint: "Use a new request id; session app-lead-r9 was started anyway, so do not start it again; read or steer it by its id.",
+  });
+  expect(actions.start).toHaveBeenCalledOnce();
+});
+
+// #93 review r1 m2. Defect: a record that fails with no code (a Rust Err
+// such as "database is locked", or a reply this window cannot read) drops
+// the started line, so the agent starts the work again; or its text says
+// the action did not run.
+it.each([
+  ["a Rust Err", "database is locked", "database is locked"],
+  ["an unknown reply", { outcome: "stored" }, "The start row answered in an unknown form"],
+])("answers %s from the record after the launch in one sentence with the started line", async (_case, reply, failure) => {
+  const { run, actions } = world("lead");
+  command.answer = (name) => {
+    if (name !== "mono_message_record_start")
+      return { outcome: "allowed", leadSessionId: "lead" };
+    if (typeof reply === "string") throw reply;
+    return reply;
+  };
+  const error = await run(
+    "sessions.start",
+    { ...CHOICE, prompt: "Fix the flaky test" },
+    "r10",
+  ).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toBe(
+    `${failure}; session app-lead-r10 was started anyway, so do not start it again; read or steer it by its id.`,
+  );
+  expect(actions.start).toHaveBeenCalledOnce();
 });
 
 // PR7-9a review r1 point 4. Defect: when mono_app_action_check fails (a

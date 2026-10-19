@@ -15,6 +15,7 @@ const db = vi.hoisted(() => ({
   update: undefined as Promise<unknown> | undefined,
   monos: [] as unknown[],
   check: undefined as unknown,
+  record: undefined as unknown,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -22,6 +23,7 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (command === "monos_list") return { revision: 1, monos: db.monos };
     if (command === "monos_update") return db.update;
     if (command === "mono_app_action_check") return db.check;
+    if (command === "mono_message_record_start") return db.record;
     throw new Error(`unexpected ${command}`);
   }),
 }));
@@ -247,4 +249,45 @@ it("throws the level check's refusal with its code, hint and row id", async () =
     hint,
     details: { message_id: "m_aaaaaaaaaaaa" },
   });
+});
+
+// Design 16.2 and 9. Defect: the start row's message id is lost, a failed
+// record (another call has the key) reads as recorded, or a reply this window
+// cannot read gives an id that names no row.
+it("answers the start row's message id, and throws request_id_reused or an unknown reply", async () => {
+  await loadMonoRoster();
+  const gate = levelGate(session("giga-chat"), turn, () => undefined);
+  const input = { prompt: "Build" };
+  db.record = { outcome: "recorded", messageId: "m_bbbbbbbbbbbb" };
+  expect(await gate.recordStart("r1", "app-giga-chat-r1", input)).toBe(
+    "m_bbbbbbbbbbbb",
+  );
+  expect(invoke).toHaveBeenCalledWith("mono_message_record_start", {
+    call: {
+      caller: {
+        kind: "mono_chat",
+        monoId: "giga-1",
+        sessionId: "giga-chat",
+        turnId: "turn-1",
+      },
+      sessionId: "app-giga-chat-r1",
+      requestId: "r1",
+      input,
+    },
+  });
+  const hint =
+    "This request id was already used with different input. Use a new request id.";
+  db.record = { outcome: "failed", error: { code: "request_id_reused", hint } };
+  await expect(
+    gate.recordStart("r1", "app-giga-chat-r1", input),
+  ).rejects.toMatchObject({ code: "request_id_reused", hint });
+  for (const reply of [
+    { outcome: "recorded", messageId: "not an id" },
+    { outcome: "Recorded", messageId: "m_bbbbbbbbbbbb" },
+  ]) {
+    db.record = reply;
+    await expect(
+      gate.recordStart("r1", "app-giga-chat-r1", input),
+    ).rejects.toThrow("The start row answered in an unknown form");
+  }
 });

@@ -446,6 +446,10 @@ fn may_steer_turn(caller: &Level, recipient: &Recipient) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnPin {
     Turn(String),
+    /// M started no turn of its own, so the steer joins the turn its session
+    /// runs now, and the accepted row keeps it (`SteerTarget::Pinned`): rule
+    /// (b)'s late answer, or a start row (design 16.2).
+    Live(String),
     NotStarted,
 }
 
@@ -510,7 +514,7 @@ pub fn target_session(
                 chat: chat.map(|chat| chat.session.clone()),
                 pin: chat
                     .and_then(|chat| chat.turn.clone())
-                    .map_or(TurnPin::NotStarted, TurnPin::Turn),
+                    .map_or(TurnPin::NotStarted, TurnPin::Live),
             };
         }
     }
@@ -529,7 +533,15 @@ pub fn target_session(
         ),
         Status::Delivered { routed, slot, .. } => (
             Some(&routed.handled_by_session),
-            slot.as_ref().map(|slot| turn(&slot.turn_id)),
+            match (slot, recipient) {
+                (Some(slot), _) => Some(turn(&slot.turn_id)),
+                // Design 16.2: a start row's work is its whole session, so a
+                // steer through it is pinned to the turn that session runs.
+                (None, Recipient::Session { target, .. }) if m.tool == Tool::StartSession => {
+                    target.turn.clone().map(TurnPin::Live)
+                }
+                (None, _) => None,
+            },
         ),
         Status::Unanswered { routed, slot, .. } => {
             (Some(&routed.handled_by_session), Some(turn(&slot.turn_id)))
@@ -825,7 +837,7 @@ impl RejectCode {
 }
 
 const NOT_A_MONO: &str = "Only a Mono's chat or its habit runs can use Mono messaging.";
-const REQUEST_ID_REUSED: &str =
+pub(crate) const REQUEST_ID_REUSED: &str =
     "This request id was already used with different input. Use a new request id.";
 
 fn reject(code: RejectCode, to: Option<Party>) -> Decision {
@@ -1141,14 +1153,14 @@ pub fn decide_send(
                     ..
                 }
             );
-        let (session, pin, late) =
+        let (session, pin) =
             match target_session(caller, &level, recipient, &referenced.message, now) {
-                TargetSession::Giga { chat, pin } => (chat, pin, true),
+                TargetSession::Giga { chat, pin } => (chat, pin),
                 _ if upward => return reject(RejectCode::UpwardSteerForbidden, to),
                 TargetSession::NotBetween => return reject(RejectCode::SteerTargetMismatch, to),
-                TargetSession::Receiver { session, pin } => (session, pin, false),
+                TargetSession::Receiver { session, pin } => (session, pin),
             };
-        Some((referenced, session, pin, late))
+        Some((referenced, session, pin))
     } else {
         None
     };
@@ -1164,13 +1176,13 @@ pub fn decide_send(
         }
         _ => {}
     }
-    let (hop, route, intent) = if let Some((referenced, session, pin, late)) = steered {
+    let (hop, route, intent) = if let Some((referenced, session, pin)) = steered {
         // S15: the work M started must run now, in the turn that runs it.
         let running = referenced.session.as_ref().filter(|target| {
             session.as_ref() == Some(&target.session)
                 && target.exists
                 && match &pin {
-                    TurnPin::Turn(turn) => target.turn.as_ref() == Some(turn),
+                    TurnPin::Turn(turn) | TurnPin::Live(turn) => target.turn.as_ref() == Some(turn),
                     TurnPin::NotStarted => false,
                 }
         });
@@ -1188,8 +1200,8 @@ pub fn decide_send(
                 session: target.session.clone(),
                 via: Via::Steer,
             },
-            Intent::Steer(match (late, pin) {
-                (true, TurnPin::Turn(turn_id)) => SteerTarget::LateAnswer { message, turn_id },
+            Intent::Steer(match pin {
+                TurnPin::Live(turn_id) => SteerTarget::Pinned { message, turn_id },
                 _ => SteerTarget::Message(message),
             }),
         )
@@ -3954,7 +3966,7 @@ mod tests {
                     session: session("giga-chat"),
                     via: Via::Steer,
                 },
-                intent: Intent::Steer(SteerTarget::LateAnswer {
+                intent: Intent::Steer(SteerTarget::Pinned {
                     message: m.id.clone(),
                     turn_id: turn.into(),
                 }),
@@ -4647,6 +4659,139 @@ mod tests {
                 Tool::StartSession
             ),
             "A3"
+        );
+    }
+
+    /// The accepted `start_session` row (design 16.2) that `from_session`
+    /// wrote when it started `started`: no slot, so no turn of its own.
+    fn start_row(from_mono: Option<&str>, from_session: &str, started: &str) -> MonoMessage {
+        MonoMessage {
+            tool: Tool::StartSession,
+            from_session_id: session(from_session),
+            to: Some(Party::Session {
+                session_id: session(started),
+            }),
+            addressed: "sessions.start".into(),
+            status: Status::Delivered {
+                wanting_reply: Wanting,
+                intent: Intent::New,
+                routed: Routed {
+                    handled_by_session: session(started),
+                    delivery: Delivery::Submit,
+                },
+                slot: None,
+            },
+            ..row('s', from_mono, 0, open(1))
+        }
+    }
+
+    /// A steer through `start` into session `into`, pinned to its turn `turn`.
+    fn pinned_steer(start: &MonoMessage, into: &str, turn: &str) -> Decision {
+        Decision::Accept {
+            hop: start.hop + 1,
+            rows: vec![Outgoing {
+                to: Party::Session {
+                    session_id: session(into),
+                },
+                route: Route {
+                    session: session(into),
+                    via: Via::Steer,
+                },
+                intent: Intent::Steer(SteerTarget::Pinned {
+                    message: start.id.clone(),
+                    turn_id: turn.into(),
+                }),
+            }],
+        }
+    }
+
+    // Design 16.2 and 16.6: a start row names the work of the whole session
+    // it started. PR 8 pins a steer with no turn of its own to the turn its
+    // session runs when the gate accepts it. Defect: a Mono can never steer
+    // the lead it started, the steer reaches an idle lead as new work, or it
+    // is not pinned, so no hand-off can deliver it.
+    #[test]
+    fn a_steer_naming_a_start_row_is_pinned_to_the_turn_that_session_runs() {
+        let start = start_row(Some("mono-a"), "a-chat", "l1");
+        let steer_through = |m: &MonoMessage, l1: Target| {
+            decide_as(
+                &mono_a_caller(),
+                mono_a_row(),
+                &at("l1", steer("m_ssssssssssss")),
+                SendFacts {
+                    recipient: Recipient::Session {
+                        target: l1.clone(),
+                        own_project: true,
+                        level: SessionLevel::Lead,
+                    },
+                    reply_to: Some(Referenced {
+                        message: m.clone(),
+                        session: Some(l1),
+                    }),
+                    pair: PairCount::default(),
+                },
+            )
+        };
+        let steer_l1 = |l1: Target| steer_through(&start, l1);
+        let a_later_turn = Target {
+            turn: Some("turn-9".into()),
+            ..live("l1", true, true)
+        };
+        assert_eq!(steer_l1(a_later_turn), pinned_steer(&start, "l1", "turn-9"));
+        assert_eq!(
+            steer_l1(live("l1", false, true)),
+            send_rejected(
+                RejectCode::TargetGone,
+                Some(Party::Session {
+                    session_id: session("l1")
+                }),
+                TARGET_GONE
+            )
+        );
+        // Only a start row: a message to l1 still waiting in its queue
+        // started no work, so a steer naming it is target_gone.
+        let queued = MonoMessage {
+            tool: Tool::SendMessage,
+            addressed: "l1".into(),
+            ..start.clone()
+        };
+        assert_eq!(
+            steer_through(&queued, live("l1", true, true)),
+            send_rejected(
+                RejectCode::TargetGone,
+                Some(Party::Session {
+                    session_id: session("l1")
+                }),
+                TARGET_GONE
+            )
+        );
+    }
+
+    // Design 16.2: a session caller's own rows have no Mono. Defect: a lead
+    // cannot steer the worker it started.
+    #[test]
+    fn a_lead_steers_its_worker_by_the_start_row_it_wrote() {
+        let start = start_row(None, "l1", "w1");
+        let w1 = live("w1", true, true);
+        assert_eq!(
+            decide_as(
+                &session_caller("l1"),
+                lead_row(),
+                &at("w1", steer("m_ssssssssssss")),
+                SendFacts {
+                    recipient: Recipient::Session {
+                        target: w1.clone(),
+                        own_project: true,
+                        level: worker_of("l1"),
+                    },
+                    reply_to: Some(Referenced {
+                        message: start.clone(),
+                        session: Some(w1),
+                    }),
+                    pair: PairCount::default(),
+                },
+            ),
+            pinned_steer(&start, "w1", "turn-1")
         );
     }
 }

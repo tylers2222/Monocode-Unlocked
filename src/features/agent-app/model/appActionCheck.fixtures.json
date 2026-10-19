@@ -2,29 +2,65 @@
   "cases": [
     {
       "action": "sessions.start",
-      "args": {
-        "call": {
-          "action": "sessions.start",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": null,
-            "sessionId": "lead",
-            "turnId": "turn-1"
-          },
-          "input": {
-            "harness": "codex",
-            "model": "codex:test",
-            "notifyOnComplete": false,
-            "prompt": "Fix the flaky test"
-          },
-          "requestId": "a6-start",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "lead",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.start",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": null,
+                "sessionId": "lead",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Fix the flaky test"
+              },
+              "requestId": "a6-start",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "leadSessionId": "lead",
+            "outcome": "allowed"
+          }
+        },
+        {
+          "args": {
+            "call": {
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": null,
+                "sessionId": "lead",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Fix the flaky test"
+              },
+              "requestId": "a6-start",
+              "sessionId": "app-lead-a6-start"
+            }
+          },
+          "command": "mono_message_record_start",
+          "reply": {
+            "messageId": "m_aaaaaaaaaaaa",
+            "outcome": "recorded"
+          }
+        }
+      ],
       "input": {
         "harness": "codex",
         "model": "codex:test",
@@ -33,35 +69,65 @@
       },
       "name": "A6: a lead's start makes a worker of it",
       "ran": "start",
-      "reply": {
-        "leadSessionId": "lead",
-        "outcome": "allowed"
-      },
       "requestId": "a6-start"
     },
     {
       "action": "sessions.start",
-      "args": {
-        "call": {
-          "action": "sessions.start",
-          "caller": {
-            "kind": "mono_chat",
-            "monoId": "mono-a",
-            "sessionId": "a-chat",
-            "turnId": "turn-1"
-          },
-          "input": {
-            "harness": "codex",
-            "model": "codex:test",
-            "notifyOnComplete": false,
-            "prompt": "Fix the flaky test"
-          },
-          "requestId": "a7-start",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "a-chat",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.start",
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Fix the flaky test"
+              },
+              "requestId": "a7-start",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "leadSessionId": null,
+            "outcome": "allowed"
+          }
+        },
+        {
+          "args": {
+            "call": {
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Fix the flaky test"
+              },
+              "requestId": "a7-start",
+              "sessionId": "app-a-chat-a7-start"
+            }
+          },
+          "command": "mono_message_record_start",
+          "reply": {
+            "messageId": "m_aaaaaaaaaaaa",
+            "outcome": "recorded"
+          }
+        }
+      ],
       "input": {
         "harness": "codex",
         "model": "codex:test",
@@ -70,1634 +136,1990 @@
       },
       "name": "A7: a Mono's start makes a lead",
       "ran": "start",
-      "reply": {
-        "leadSessionId": null,
-        "outcome": "allowed"
-      },
       "requestId": "a7-start"
     },
     {
-      "action": "sessions.send",
-      "args": {
-        "call": {
-          "action": "sessions.send",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
+      "action": "sessions.start",
+      "caller": "a-chat",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.start",
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Fix the flaky test"
+              },
+              "requestId": "a7-again",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
             "leadSessionId": null,
-            "sessionId": "lead",
-            "turnId": "turn-1"
+            "outcome": "allowed"
+          }
+        },
+        {
+          "args": {
+            "call": {
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Fix the flaky test"
+              },
+              "requestId": "a7-again",
+              "sessionId": "app-a-chat-a7-again"
+            }
           },
-          "input": {
-            "prompt": "Rebase first",
-            "sessionId": "worker"
+          "command": "mono_message_record_start",
+          "reply": {
+            "messageId": "m_aaaaaaaaaaaa",
+            "outcome": "recorded"
+          }
+        },
+        {
+          "args": {
+            "call": {
+              "action": "sessions.start",
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Fix the flaky test"
+              },
+              "requestId": "a7-again",
+              "target": null,
+              "targetLeadSessionId": null
+            }
           },
-          "requestId": "a5-own",
-          "target": "worker",
-          "targetLeadSessionId": "lead"
+          "command": "mono_app_action_check",
+          "reply": {
+            "leadSessionId": null,
+            "outcome": "allowed"
+          }
+        },
+        {
+          "args": {
+            "call": {
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Fix the flaky test"
+              },
+              "requestId": "a7-again",
+              "sessionId": "app-a-chat-a7-again"
+            }
+          },
+          "command": "mono_message_record_start",
+          "reply": {
+            "messageId": "m_aaaaaaaaaaaa",
+            "outcome": "recorded"
+          }
         }
+      ],
+      "input": {
+        "harness": "codex",
+        "model": "codex:test",
+        "notifyOnComplete": false,
+        "prompt": "Fix the flaky test"
       },
+      "name": "A7: a Mono's repeated start answers its first row",
+      "ran": "start",
+      "requestId": "a7-again",
+      "times": 2
+    },
+    {
+      "action": "sessions.send",
       "caller": "lead",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.send",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": null,
+                "sessionId": "lead",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "prompt": "Rebase first",
+                "sessionId": "worker"
+              },
+              "requestId": "a5-own",
+              "target": "worker",
+              "targetLeadSessionId": "lead"
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "leadSessionId": null,
+            "outcome": "allowed"
+          }
+        }
+      ],
       "input": {
         "prompt": "Rebase first",
         "sessionId": "worker"
       },
       "name": "A5: a lead sends into its own worker",
       "ran": "send",
-      "reply": {
-        "leadSessionId": null,
-        "outcome": "allowed"
-      },
       "requestId": "a5-own"
     },
     {
       "action": "sessions.stop",
-      "args": {
-        "call": {
-          "action": "sessions.stop",
-          "caller": {
-            "kind": "mono_chat",
-            "monoId": "mono-a",
-            "sessionId": "a-chat",
-            "turnId": "turn-1"
-          },
-          "input": {
-            "sessionId": "worker"
-          },
-          "requestId": "a5-stop",
-          "target": "worker",
-          "targetLeadSessionId": "lead"
-        }
-      },
       "caller": "a-chat",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.stop",
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "sessionId": "worker"
+              },
+              "requestId": "a5-stop",
+              "target": "worker",
+              "targetLeadSessionId": "lead"
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "leadSessionId": null,
+            "outcome": "allowed"
+          }
+        }
+      ],
       "input": {
         "sessionId": "worker"
       },
       "name": "A5: a Mono may stop a worker",
       "ran": "stop",
-      "reply": {
-        "leadSessionId": null,
-        "outcome": "allowed"
-      },
       "requestId": "a5-stop"
     },
     {
       "action": "sessions.send",
-      "args": {
-        "call": {
-          "action": "sessions.send",
-          "caller": {
-            "kind": "mono_chat",
-            "monoId": "mono-a",
-            "sessionId": "a-chat",
-            "turnId": "turn-1"
-          },
-          "input": {
-            "prompt": "Stop",
-            "sessionId": "worker"
-          },
-          "requestId": "a5-send",
-          "target": "worker",
-          "targetLeadSessionId": "lead"
-        }
-      },
       "caller": "a-chat",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.send",
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "prompt": "Stop",
+                "sessionId": "worker"
+              },
+              "requestId": "a5-send",
+              "target": "worker",
+              "targetLeadSessionId": "lead"
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "steer_via_lead",
+              "hint": "That session is a worker of lead lead. Message the lead (lead); only its lead steers its workers.",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {
         "prompt": "Stop",
         "sessionId": " worker\n"
       },
       "name": "A5: a Mono's send into a worker, padded id parsed once",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "steer_via_lead",
-          "hint": "That session is a worker of lead lead. Message the lead (lead); only its lead steers its workers.",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "a5-send"
     },
     {
       "action": "sessions.draft",
-      "args": {
-        "call": {
-          "action": "sessions.draft",
-          "caller": {
-            "kind": "mono_chat",
-            "monoId": "mono-a",
-            "sessionId": "a-chat",
-            "turnId": "turn-1"
-          },
-          "input": {
-            "prompt": "Draft this",
-            "sessionId": "worker"
-          },
-          "requestId": "a5-draft",
-          "target": "worker",
-          "targetLeadSessionId": "lead"
-        }
-      },
       "caller": "a-chat",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.draft",
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "prompt": "Draft this",
+                "sessionId": "worker"
+              },
+              "requestId": "a5-draft",
+              "target": "worker",
+              "targetLeadSessionId": "lead"
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "steer_via_lead",
+              "hint": "That session is a worker of lead lead. Message the lead (lead); only its lead steers its workers.",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {
         "prompt": "Draft this",
         "sessionId": "worker"
       },
       "name": "A5: a Mono's draft into a worker",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "steer_via_lead",
-          "hint": "That session is a worker of lead lead. Message the lead (lead); only its lead steers its workers.",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "a5-draft"
     },
     {
       "action": "sessions.send",
-      "args": {
-        "call": {
-          "action": "sessions.send",
-          "caller": {
-            "kind": "mono_chat",
-            "monoId": "mono-a",
-            "sessionId": "a-chat",
-            "turnId": "turn-1"
-          },
-          "input": {
-            "prompt": "Hi",
-            "sessionId": "ghost"
-          },
-          "requestId": "a5-ghost",
-          "target": "ghost",
-          "targetLeadSessionId": "lead"
-        }
-      },
       "caller": "a-chat",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.send",
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "prompt": "Hi",
+                "sessionId": "ghost"
+              },
+              "requestId": "a5-ghost",
+              "target": "ghost",
+              "targetLeadSessionId": "lead"
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "steer_via_lead",
+              "hint": "That session is a worker of lead lead. Message the lead (lead); only its lead steers its workers.",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {
         "prompt": "Hi",
         "sessionId": "ghost"
       },
       "name": "A5: an unsaved worker counts by the window's lead copy",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "steer_via_lead",
-          "hint": "That session is a worker of lead lead. Message the lead (lead); only its lead steers its workers.",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "a5-ghost"
     },
     {
       "action": "models.list",
-      "args": {
-        "call": {
-          "action": "models.list",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-models-list",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "models.list",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-models-list",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's models.list",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-models-list"
     },
     {
       "action": "sessions.list",
-      "args": {
-        "call": {
-          "action": "sessions.list",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-sessions-list",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.list",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-sessions-list",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's sessions.list",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-sessions-list"
     },
     {
       "action": "sessions.read",
-      "args": {
-        "call": {
-          "action": "sessions.read",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {
-            "sessionId": "lead"
-          },
-          "requestId": "w-sessions-read",
-          "target": "lead",
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.read",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "sessionId": "lead"
+              },
+              "requestId": "w-sessions-read",
+              "target": "lead",
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {
         "sessionId": "lead"
       },
       "name": "A4: a worker's sessions.read",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-sessions-read"
     },
     {
       "action": "sessions.send",
-      "args": {
-        "call": {
-          "action": "sessions.send",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {
-            "sessionId": "lead"
-          },
-          "requestId": "w-sessions-send",
-          "target": "lead",
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.send",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "sessionId": "lead"
+              },
+              "requestId": "w-sessions-send",
+              "target": "lead",
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {
         "sessionId": "lead"
       },
       "name": "A4: a worker's sessions.send",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-sessions-send"
     },
     {
       "action": "sessions.draft",
-      "args": {
-        "call": {
-          "action": "sessions.draft",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {
-            "sessionId": "lead"
-          },
-          "requestId": "w-sessions-draft",
-          "target": "lead",
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.draft",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "sessionId": "lead"
+              },
+              "requestId": "w-sessions-draft",
+              "target": "lead",
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {
         "sessionId": "lead"
       },
       "name": "A4: a worker's sessions.draft",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-sessions-draft"
     },
     {
       "action": "sessions.stop",
-      "args": {
-        "call": {
-          "action": "sessions.stop",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {
-            "sessionId": "lead"
-          },
-          "requestId": "w-sessions-stop",
-          "target": "lead",
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.stop",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "sessionId": "lead"
+              },
+              "requestId": "w-sessions-stop",
+              "target": "lead",
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {
         "sessionId": "lead"
       },
       "name": "A4: a worker's sessions.stop",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-sessions-stop"
     },
     {
       "action": "sessions.archive",
-      "args": {
-        "call": {
-          "action": "sessions.archive",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {
-            "sessionId": "lead"
-          },
-          "requestId": "w-sessions-archive",
-          "target": "lead",
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.archive",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "sessionId": "lead"
+              },
+              "requestId": "w-sessions-archive",
+              "target": "lead",
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {
         "sessionId": "lead"
       },
       "name": "A4: a worker's sessions.archive",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-sessions-archive"
     },
     {
       "action": "sessions.delete",
-      "args": {
-        "call": {
-          "action": "sessions.delete",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {
-            "sessionId": "lead"
-          },
-          "requestId": "w-sessions-delete",
-          "target": "lead",
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.delete",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "sessionId": "lead"
+              },
+              "requestId": "w-sessions-delete",
+              "target": "lead",
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {
         "sessionId": "lead"
       },
       "name": "A4: a worker's sessions.delete",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-sessions-delete"
     },
     {
       "action": "sessions.start",
-      "args": {
-        "call": {
-          "action": "sessions.start",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-sessions-start",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.start",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-sessions-start",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_cannot_spawn",
+              "hint": "Only lead sessions can start sessions. Ask your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A3: a worker's sessions.start",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_cannot_spawn",
-          "hint": "Only lead sessions can start sessions. Ask your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-sessions-start"
     },
     {
       "action": "worktrees.list",
-      "args": {
-        "call": {
-          "action": "worktrees.list",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-worktrees-list",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "worktrees.list",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-worktrees-list",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's worktrees.list",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-worktrees-list"
     },
     {
       "action": "worktrees.create",
-      "args": {
-        "call": {
-          "action": "worktrees.create",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-worktrees-create",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "worktrees.create",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-worktrees-create",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's worktrees.create",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-worktrees-create"
     },
     {
       "action": "folders.list",
-      "args": {
-        "call": {
-          "action": "folders.list",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-folders-list",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "folders.list",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-folders-list",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's folders.list",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-folders-list"
     },
     {
       "action": "folders.move",
-      "args": {
-        "call": {
-          "action": "folders.move",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {
-            "sessionId": "lead"
-          },
-          "requestId": "w-folders-move",
-          "target": "lead",
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "folders.move",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "sessionId": "lead"
+              },
+              "requestId": "w-folders-move",
+              "target": "lead",
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {
         "sessionId": "lead"
       },
       "name": "A4: a worker's folders.move",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-folders-move"
     },
     {
       "action": "notes.list",
-      "args": {
-        "call": {
-          "action": "notes.list",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-notes-list",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "notes.list",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-notes-list",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's notes.list",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-notes-list"
     },
     {
       "action": "notes.read",
-      "args": {
-        "call": {
-          "action": "notes.read",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-notes-read",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "notes.read",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-notes-read",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's notes.read",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-notes-read"
     },
     {
       "action": "notes.write",
-      "args": {
-        "call": {
-          "action": "notes.write",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-notes-write",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "notes.write",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-notes-write",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's notes.write",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-notes-write"
     },
     {
       "action": "artifacts.list",
-      "args": {
-        "call": {
-          "action": "artifacts.list",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-artifacts-list",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "artifacts.list",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-artifacts-list",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's artifacts.list",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-artifacts-list"
     },
     {
       "action": "artifacts.read",
-      "args": {
-        "call": {
-          "action": "artifacts.read",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-artifacts-read",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "artifacts.read",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-artifacts-read",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's artifacts.read",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-artifacts-read"
     },
     {
       "action": "artifacts.write",
-      "args": {
-        "call": {
-          "action": "artifacts.write",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-artifacts-write",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "artifacts.write",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-artifacts-write",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's artifacts.write",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-artifacts-write"
     },
     {
       "action": "soul.read",
-      "args": {
-        "call": {
-          "action": "soul.read",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-soul-read",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "soul.read",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-soul-read",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's soul.read",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-soul-read"
     },
     {
       "action": "soul.update",
-      "args": {
-        "call": {
-          "action": "soul.update",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-soul-update",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "soul.update",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-soul-update",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's soul.update",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-soul-update"
     },
     {
       "action": "memory.read",
-      "args": {
-        "call": {
-          "action": "memory.read",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-memory-read",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "memory.read",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-memory-read",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's memory.read",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-memory-read"
     },
     {
       "action": "memory.search",
-      "args": {
-        "call": {
-          "action": "memory.search",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-memory-search",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "memory.search",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-memory-search",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's memory.search",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-memory-search"
     },
     {
       "action": "memory.add",
-      "args": {
-        "call": {
-          "action": "memory.add",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-memory-add",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "memory.add",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-memory-add",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's memory.add",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-memory-add"
     },
     {
       "action": "memory.replace",
-      "args": {
-        "call": {
-          "action": "memory.replace",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-memory-replace",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "memory.replace",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-memory-replace",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's memory.replace",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-memory-replace"
     },
     {
       "action": "memory.remove",
-      "args": {
-        "call": {
-          "action": "memory.remove",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-memory-remove",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "memory.remove",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-memory-remove",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's memory.remove",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-memory-remove"
     },
     {
       "action": "habits.list",
-      "args": {
-        "call": {
-          "action": "habits.list",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-habits-list",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "habits.list",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-habits-list",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's habits.list",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-habits-list"
     },
     {
       "action": "habits.add",
-      "args": {
-        "call": {
-          "action": "habits.add",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-habits-add",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "habits.add",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-habits-add",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's habits.add",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-habits-add"
     },
     {
       "action": "habits.update",
-      "args": {
-        "call": {
-          "action": "habits.update",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-habits-update",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "habits.update",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-habits-update",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's habits.update",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-habits-update"
     },
     {
       "action": "habits.run",
-      "args": {
-        "call": {
-          "action": "habits.run",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-habits-run",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "habits.run",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-habits-run",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's habits.run",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-habits-run"
     },
     {
       "action": "habits.remove",
-      "args": {
-        "call": {
-          "action": "habits.remove",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-habits-remove",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "habits.remove",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-habits-remove",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's habits.remove",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-habits-remove"
     },
     {
       "action": "monos.list",
-      "args": {
-        "call": {
-          "action": "monos.list",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-monos-list",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "monos.list",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-monos-list",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's monos.list",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-monos-list"
     },
     {
       "action": "monos.get",
-      "args": {
-        "call": {
-          "action": "monos.get",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-monos-get",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "monos.get",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-monos-get",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's monos.get",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-monos-get"
     },
     {
       "action": "monos.read",
-      "args": {
-        "call": {
-          "action": "monos.read",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-monos-read",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "monos.read",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-monos-read",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's monos.read",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-monos-read"
     },
     {
       "action": "monos.create",
-      "args": {
-        "call": {
-          "action": "monos.create",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-monos-create",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "monos.create",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-monos-create",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's monos.create",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-monos-create"
     },
     {
       "action": "monos.update",
-      "args": {
-        "call": {
-          "action": "monos.update",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-monos-update",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "monos.update",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-monos-update",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's monos.update",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-monos-update"
     },
     {
       "action": "milestones.list",
-      "args": {
-        "call": {
-          "action": "milestones.list",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-milestones-list",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "milestones.list",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-milestones-list",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's milestones.list",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-milestones-list"
     },
     {
       "action": "milestones.add",
-      "args": {
-        "call": {
-          "action": "milestones.add",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-milestones-add",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "milestones.add",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-milestones-add",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's milestones.add",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-milestones-add"
     },
     {
       "action": "milestones.update",
-      "args": {
-        "call": {
-          "action": "milestones.update",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-milestones-update",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "milestones.update",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-milestones-update",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's milestones.update",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-milestones-update"
     },
     {
       "action": "milestones.remove",
-      "args": {
-        "call": {
-          "action": "milestones.remove",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-milestones-remove",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "milestones.remove",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-milestones-remove",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's milestones.remove",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-milestones-remove"
     },
     {
       "action": "milestones.reorder",
-      "args": {
-        "call": {
-          "action": "milestones.reorder",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-milestones-reorder",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "milestones.reorder",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-milestones-reorder",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's milestones.reorder",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-milestones-reorder"
     },
     {
       "action": "workspace.status",
-      "args": {
-        "call": {
-          "action": "workspace.status",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-workspace-status",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "workspace.status",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-workspace-status",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's workspace.status",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-workspace-status"
     },
     {
       "action": "chat.card",
-      "args": {
-        "call": {
-          "action": "chat.card",
-          "caller": {
-            "access": "operator",
-            "cwd": "/code/app",
-            "kind": "session",
-            "leadSessionId": "lead",
-            "sessionId": "worker",
-            "turnId": "turn-1"
-          },
-          "input": {},
-          "requestId": "w-chat-card",
-          "target": null,
-          "targetLeadSessionId": null
-        }
-      },
       "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "chat.card",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-chat-card",
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
       "input": {},
       "name": "A4: a worker's chat.card",
       "ran": null,
-      "reply": {
-        "error": {
-          "code": "worker_scope",
-          "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
-          "message_id": "m_aaaaaaaaaaaa"
-        },
-        "outcome": "failed"
-      },
       "requestId": "w-chat-card"
     }
   ],
