@@ -133,6 +133,12 @@ type CompletionBatch = {
   results: Map<string, CompletionMember>;
 };
 
+/** Results handed to `onReady`; a dismissal can still remove one before it is queued. */
+type CompletionDelivery = {
+  monoId: string;
+  results: Map<string, MonoSessionCompletionResult>;
+};
+
 export const MONO_COMPLETION_HOLD_MS = 60_000;
 
 /**
@@ -142,10 +148,13 @@ export const MONO_COMPLETION_HOLD_MS = 60_000;
 function releasableResults(
   results: ReadonlyMap<string, CompletionMember>,
   phase: CompletionPhase,
-): [string, CompletionMember][] {
+): [string, MonoSessionCompletionResult][] {
   if (phase === "turn") return [];
-  const ready = [...results].filter(
-    ([, result]) => result.accepted && result.value,
+  const ready = [...results].flatMap(
+    ([requestId, { accepted, value }]): [
+      string,
+      MonoSessionCompletionResult,
+    ][] => (accepted && value ? [[requestId, value]] : []),
   );
   return phase === "open" || ready.length === results.size ? ready : [];
 }
@@ -153,7 +162,7 @@ function releasableResults(
 /** Group a Mono turn's monitored results and send each one exactly once. */
 export class MonoSessionCompletionBatches {
   private batches = new Map<string, CompletionBatch>();
-  private deliveries = new Set<CompletionBatch>();
+  private deliveries = new Set<CompletionDelivery>();
 
   constructor(
     private onReady: (
@@ -212,16 +221,18 @@ export class MonoSessionCompletionBatches {
 
   /** The calling Mono already knows the outcome of its own lifecycle command. */
   dismissSession(monoId: string, sessionId: string) {
-    const groups = new Set([
-      ...this.batches.values(),
-      ...this.deliveries.values(),
-    ]);
-    for (const batch of groups) {
-      if (batch.origin.monoId !== monoId) continue;
-      for (const [requestId, result] of batch.results) {
-        if (result.sessionId === sessionId) batch.results.delete(requestId);
+    const dismiss = (results: Map<string, { sessionId: string }>) => {
+      for (const [requestId, result] of results) {
+        if (result.sessionId === sessionId) results.delete(requestId);
       }
-      this.release(`${monoId}:${batch.origin.turn}`, batch);
+    };
+    for (const delivery of this.deliveries) {
+      if (delivery.monoId === monoId) dismiss(delivery.results);
+    }
+    for (const [key, batch] of this.batches) {
+      if (batch.origin.monoId !== monoId) continue;
+      dismiss(batch.results);
+      this.release(key, batch);
     }
   }
 
@@ -245,19 +256,20 @@ export class MonoSessionCompletionBatches {
     for (const requestId of results.keys()) group.results.delete(requestId);
     if (!group.results.size) this.batches.delete(key);
     if (!results.size) return;
-    const delivery = { ...group, results };
+    const delivery: CompletionDelivery = {
+      monoId: group.origin.monoId,
+      results,
+    };
     const id =
       results.size === 1
         ? `mono-completion-${[...results.keys()][0]}`
         : `mono-completion-batch-${crypto.randomUUID()}`;
     const current = () => {
-      const values = [...delivery.results.values()].map(
-        (result) => result.value!,
-      );
+      const values = [...delivery.results.values()];
       return values.length ? completionMessage(id, values) : undefined;
     };
     this.deliveries.add(delivery);
-    const delivered = this.onReady(delivery.origin.monoId, current()!, current);
+    const delivered = this.onReady(delivery.monoId, current()!, current);
     if (delivered) {
       void delivered
         .finally(() => this.deliveries.delete(delivery))
