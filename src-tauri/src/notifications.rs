@@ -29,9 +29,10 @@ fn handle_click(app: &AppHandle, identifier: &str) {
 #[cfg(target_os = "macos")]
 pub use platform::install_delegate;
 
-/// Each platform constructs only the variants it can reach, so the lint is
-/// silenced for the whole enum rather than per target.
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "each platform constructs only the variants it can reach"
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Permission {

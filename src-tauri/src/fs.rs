@@ -387,6 +387,7 @@ fn active_omp_assistant_texts(path: &Path) -> Result<Vec<OmpAssistantText>, Stri
         .collect())
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 fn parse_omp_interjections(path: &Path) -> Result<Vec<OmpInterjectionAnchor>, String> {
     let entries = read_omp_entries(path)?;
     let nodes: HashMap<_, _> = entries
@@ -1851,6 +1852,7 @@ pub(crate) fn git_diff_files_for(root: &Path) -> GitDiffIndex {
     git_diff_index_with(root, false)
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 fn git_diff_index_with(root: &Path, include_sync: bool) -> GitDiffIndex {
     let mut files: HashMap<String, FileAcc> = HashMap::new();
     let mut statuses: HashMap<String, &'static str> = HashMap::new();
@@ -8560,6 +8562,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
     fn parse_github_work_item_thread_merges_conversation() {
         let json = r#"{
             "data": {

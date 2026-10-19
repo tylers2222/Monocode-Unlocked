@@ -183,6 +183,7 @@ fn read_cursor_metadata(connection: &Connection) -> Result<Value, String> {
     serde_json::from_slice(&bytes).map_err(|e| e.to_string())
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 fn read_subagent_steps(
     connection: &Connection,
     agent_id: &str,

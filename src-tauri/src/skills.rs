@@ -361,7 +361,15 @@ fn managed_settings_root() -> Option<PathBuf> {
     {
         return Some(PathBuf::from(r"C:\Program Files\ClaudeCode"));
     }
-    #[allow(unreachable_code)]
+    #[cfg_attr(
+        any(
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "android",
+            target_os = "windows"
+        ),
+        expect(unreachable_code, reason = "each listed platform returns above")
+    )]
     None
 }
 

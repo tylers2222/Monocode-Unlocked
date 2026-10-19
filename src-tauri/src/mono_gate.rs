@@ -994,6 +994,11 @@ enum Asked {
 
 /// Design 16.5 and 16.12.2.1, the rows of PR 4a, PR I2, S19 and the level
 /// rows L1-L7 in order.
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "baseline 2026-10"
+)]
 pub fn decide_send(
     caller: &Caller,
     input: &SendInput,
@@ -3047,6 +3052,7 @@ mod tests {
     // goes anywhere but the session handling its target, or its hop does
     // not grow, so the hop limit cannot bound a chain of steers.
     #[test]
+    #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
     fn s20_new_work_is_queued_and_a_steer_goes_into_the_turn_that_runs_its_target() {
         let a_chat = live("a-chat", true, true);
         assert_eq!(
