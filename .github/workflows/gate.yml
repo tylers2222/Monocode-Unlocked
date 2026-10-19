@@ -29,8 +29,10 @@ jobs:
           node-version: 24
           cache: npm
 
+      # --ignore-scripts: no package.json or dependency lifecycle script runs, so
+      # nothing from the PR can write $GITHUB_ENV before ESLint and clippy.
       - id: deps
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Growth check parser tests
         if: ${{ !cancelled() }}
@@ -61,10 +63,14 @@ jobs:
           toolchain: ${{ steps.rust-version.outputs.version }}
           components: clippy
 
-      - name: Install Linux system dependencies
+      # Clippy needs these libraries, so this step cannot move after it. It runs
+      # the base branch's copy of the script, so the PR cannot change what it does.
+      - name: Install Linux system dependencies (base-branch script)
         id: linux-deps
         if: ${{ !cancelled() }}
-        run: bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
+        run: |
+          git show "$BASE:scripts/install-linux-deps-debian.sh" > "$RUNNER_TEMP/install-linux-deps.sh"
+          bash "$RUNNER_TEMP/install-linux-deps.sh" --sources /etc/apt/sources.list.d/ubuntu.sources
 
       - uses: Swatinem/rust-cache@v2
         if: ${{ !cancelled() }}
