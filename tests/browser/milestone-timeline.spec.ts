@@ -14,12 +14,10 @@ test("milestone timeline renders frame M·4 in order and tabs through its rows",
   await page.screenshot({ path: testInfo.outputPath("m4.png") });
 
   const rows = page.locator("[data-milestone]");
+  // WebKit on macOS reaches buttons with Alt+Tab unless Full Keyboard Access is on.
+  await page.keyboard.press(browserName === "webkit" ? "Alt+Tab" : "Tab");
+  await expect(page.getByRole("button", { name: "Hide Done" })).toBeFocused();
   await page.keyboard.press("Tab");
-  // WebKit on macOS tabs past buttons unless Full Keyboard Access is on.
-  const arrow = page.getByRole("button", { name: "Hide Done" });
-  if (browserName !== "webkit") await expect(arrow).toBeFocused();
-  if (await arrow.evaluate((element) => element === document.activeElement))
-    await page.keyboard.press("Tab");
   for (let index = 0; index < (await rows.count()); index++) {
     await expect(rows.nth(index)).toBeFocused();
     await page.keyboard.press("Tab");

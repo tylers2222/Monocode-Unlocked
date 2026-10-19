@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
 import type {
   Milestone,
   MilestoneStatus,
+  ProjectMilestones,
 } from "../../src/features/milestones/model/milestones";
 import { expect, test } from "./app/fixture";
 
@@ -96,19 +98,75 @@ test("the Done arrow hides and shows the Done rows", async ({ app, page }) => {
   await expect(page.getByText("Shipped one")).toBeVisible();
 });
 
-for (const timezoneId of ["Australia/Sydney", "America/Los_Angeles"]) {
+/** 2026-10-19 01:30 in Sydney, 2026-10-18 07:30 in Los Angeles. */
+const SPLIT_DAY = new Date("2026-10-18T14:30:00Z");
+const ZONES = [
+  { timezoneId: "Australia/Sydney", today: "Today · Oct 19" },
+  { timezoneId: "America/Los_Angeles", today: "Today · Oct 18" },
+];
+
+/** `milestones_list` from the real store: milestones.rs list_reply_for_every_target_shape_matches_the_page_fixture. */
+const REAL: ProjectMilestones = JSON.parse(
+  readFileSync(
+    new URL("./fixtures/milestones-real-list.json", import.meta.url),
+    "utf8",
+  ),
+);
+const REAL_LABELS: Record<string, string> = {
+  "2026-10-15": "Oct 15",
+  "2026-10-18": "Oct 18",
+  "2026-10-19": "Oct 19",
+  "2026-12-12": "Dec 12",
+  "2026-01-01": "Jan 1",
+  "2027-01-09": "Jan 9, 2027",
+  "2025-01-05": "Jan 5, 2025",
+  "2028-02-29": "Feb 29, 2028",
+  "2026-12-31": "Dec 31",
+};
+
+for (const { timezoneId, today } of ZONES) {
   test.describe(`in ${timezoneId}`, () => {
     test.use({ timezoneId });
 
-    test("a stored date shows as that day, not the day before", async ({
+    test("a stored date shows as that day, and Today is the local day", async ({
       app,
       page,
     }) => {
+      await page.clock.setFixedTime(SPLIT_DAY);
       await openPage(app, page, DATED);
-      await expect(page.getByText("Today · Oct 18")).toBeVisible();
+      await expect(page.locator("[data-today]")).toHaveText(today);
       await expect(row(page, 0)).toContainText("Oct 15");
       await expect(row(page, 1)).toContainText("Dec 12");
       await expect(row(page, 2)).toContainText("Jan 9, 2027");
+    });
+
+    test.describe("with locale de-DE", () => {
+      test.use({ locale: "de-DE" });
+
+      test("every target shape the real store sends renders in English", async ({
+        app,
+        page,
+      }) => {
+        await page.clock.setFixedTime(SPLIT_DAY);
+        await openPage(app, page, REAL.milestones);
+        expect(
+          await page.evaluate(() => ({
+            language: navigator.language,
+            month: new Intl.DateTimeFormat(undefined, { month: "long" }).format(
+              new Date(2026, 2, 5),
+            ),
+            zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          })),
+        ).toEqual({ language: "de-DE", month: "März", zone: timezoneId });
+        await expect(page.locator("[data-today]")).toHaveText(today);
+        expect(REAL.milestones.map((m) => m.target)).toContain(null);
+        for (const milestone of REAL.milestones) {
+          const shown = page.locator(`[data-milestone="${milestone.id}"]`);
+          await expect(shown.locator(".tabular-nums")).toHaveText(
+            milestone.target === null ? "Later" : REAL_LABELS[milestone.target],
+          );
+        }
+      });
     });
   });
 }

@@ -1,0 +1,140 @@
+{
+  "settings": {
+    "enabled": true,
+    "hiddenStatuses": []
+  },
+  "milestones": [
+    {
+      "id": "real-0000000000000000000000000000000",
+      "projectPath": "/Users/test/orbit",
+      "title": "Real row 0",
+      "note": "",
+      "status": "done",
+      "target": "2026-10-15",
+      "order": 0,
+      "createdBy": "user",
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    {
+      "id": "real-0000000000000000000000000000001",
+      "projectPath": "/Users/test/orbit",
+      "title": "Real row 1",
+      "note": "",
+      "status": "done",
+      "target": null,
+      "order": 1,
+      "createdBy": "user",
+      "createdAt": 1,
+      "updatedAt": 1
+    },
+    {
+      "id": "real-0000000000000000000000000000002",
+      "projectPath": "/Users/test/orbit",
+      "title": "Real row 2",
+      "note": "",
+      "status": "in_progress",
+      "target": "2026-10-18",
+      "order": 2,
+      "createdBy": "user",
+      "createdAt": 2,
+      "updatedAt": 2
+    },
+    {
+      "id": "real-0000000000000000000000000000003",
+      "projectPath": "/Users/test/orbit",
+      "title": "Real row 3",
+      "note": "",
+      "status": "in_progress",
+      "target": "2026-10-19",
+      "order": 3,
+      "createdBy": "user",
+      "createdAt": 3,
+      "updatedAt": 3
+    },
+    {
+      "id": "real-0000000000000000000000000000004",
+      "projectPath": "/Users/test/orbit",
+      "title": "Real row 4",
+      "note": "",
+      "status": "planned",
+      "target": "2026-12-12",
+      "order": 4,
+      "createdBy": "user",
+      "createdAt": 4,
+      "updatedAt": 4
+    },
+    {
+      "id": "real-0000000000000000000000000000005",
+      "projectPath": "/Users/test/orbit",
+      "title": "Real row 5",
+      "note": "",
+      "status": "planned",
+      "target": "2026-01-01",
+      "order": 5,
+      "createdBy": "user",
+      "createdAt": 5,
+      "updatedAt": 5
+    },
+    {
+      "id": "real-0000000000000000000000000000006",
+      "projectPath": "/Users/test/orbit",
+      "title": "Real row 6",
+      "note": "",
+      "status": "planned",
+      "target": null,
+      "order": 6,
+      "createdBy": "user",
+      "createdAt": 6,
+      "updatedAt": 6
+    },
+    {
+      "id": "real-0000000000000000000000000000007",
+      "projectPath": "/Users/test/orbit",
+      "title": "Real row 7",
+      "note": "",
+      "status": "planned",
+      "target": "2027-01-09",
+      "order": 7,
+      "createdBy": "user",
+      "createdAt": 7,
+      "updatedAt": 7
+    },
+    {
+      "id": "real-0000000000000000000000000000008",
+      "projectPath": "/Users/test/orbit",
+      "title": "Real row 8",
+      "note": "",
+      "status": "planned",
+      "target": "2025-01-05",
+      "order": 8,
+      "createdBy": "user",
+      "createdAt": 8,
+      "updatedAt": 8
+    },
+    {
+      "id": "real-0000000000000000000000000000009",
+      "projectPath": "/Users/test/orbit",
+      "title": "Real row 9",
+      "note": "",
+      "status": "idea",
+      "target": "2028-02-29",
+      "order": 9,
+      "createdBy": "user",
+      "createdAt": 9,
+      "updatedAt": 9
+    },
+    {
+      "id": "real-0000000000000000000000000000010",
+      "projectPath": "/Users/test/orbit",
+      "title": "Real row 10",
+      "note": "",
+      "status": "idea",
+      "target": "2026-12-31",
+      "order": 10,
+      "createdBy": "user",
+      "createdAt": 10,
+      "updatedAt": 10
+    }
+  ]
+}
