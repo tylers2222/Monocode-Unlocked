@@ -364,6 +364,7 @@ it.each([
   [{ outcome: "Failed", error: { code: "worker_scope", hint: "No" } }],
   [{ error: { code: "worker_scope", hint: "No" } }],
   [{ outcome: "allowed", leadSessionId: "not a session" }],
+  [{ outcome: "Allowed", leadSessionId: null }],
   [null],
 ])("runs nothing when the level check answers %j", async (reply) => {
   const { run, actions } = world("lead");
