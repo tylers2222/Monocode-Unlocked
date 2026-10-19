@@ -55,6 +55,7 @@ beforeEach(() => {
         milestones: rows,
       });
     if (command === "milestones_update") return SHIP;
+    if (command === "milestones_add") return { ...SHIP, id: "m-new" };
     throw new Error(`unexpected ${command}`);
   });
   container = document.createElement("div");
@@ -131,6 +132,132 @@ const update = (patch: object) => [
   "milestones_update",
   { projectPath: APP, id: "m-ship", patch, by: "user" },
 ];
+
+async function openAdd(milestones: Milestone[] = [SHIP]) {
+  rows = milestones;
+  await act(async () =>
+    root.render(
+      createElement(MilestonesView, {
+        cwd: APP,
+        recents: [{ path: APP, openedAt: 1 }],
+        sessions: [],
+        onClose: vi.fn(),
+      }),
+    ),
+  );
+  await click("Add milestone");
+}
+
+const added = (milestone: object) => [
+  "milestones_add",
+  { projectPath: APP, milestone: { ...milestone, createdBy: "user" } },
+];
+
+it("add sends the trimmed title, the note, the status and the date as user", async () => {
+  await openAdd();
+  expect(
+    container
+      .querySelector("[data-milestone-editor]")
+      ?.getAttribute("aria-label"),
+  ).toBe("New milestone");
+  await type("Title", "  Milestone list in the Mono overview  ");
+  await type("Note", "Shown when a Mono starts a turn");
+  await click("In progress");
+  await click("Date");
+  await type("Target date", "December 12, 2026");
+  await click("Add");
+
+  expect(writes()).toEqual([
+    added({
+      title: "Milestone list in the Mono overview",
+      note: "Shown when a Mono starts a turn",
+      status: "in_progress",
+      target: "2026-12-12",
+    }),
+  ]);
+  expect(container.querySelector("[data-milestone-editor]")).toBeNull();
+});
+
+it("a new milestone opens as Planned and Later, and Later is sent as null", async () => {
+  await openAdd([]);
+  await type("Title", "Someday");
+  await key(field("Title"), "Enter");
+
+  expect(writes()).toEqual([
+    added({ title: "Someday", note: "", status: "planned", target: null }),
+  ]);
+});
+
+it("an add with an empty title or a bad date is never sent", async () => {
+  await openAdd();
+  await type("Title", "   ");
+  await click("Add");
+  expect(container.textContent).toContain("Add a title");
+  await type("Title", "Dated");
+  await click("Date");
+  await type("Target date", "Feb 30, 2026");
+  await key(field("Target date"), "Enter", { metaKey: true });
+
+  expect(writes()).toEqual([]);
+  expect(field("Target date").getAttribute("aria-invalid")).toBe("true");
+});
+
+it("Escape closes the add card without sending anything", async () => {
+  await openAdd();
+  await type("Title", "Never mind");
+  await key(field("Title"), "Escape");
+
+  expect(writes()).toEqual([]);
+  expect(container.querySelector("[data-milestone-editor]")).toBeNull();
+});
+
+// Review n10: a save that settles after the user moved on must not close,
+// or show its error on, the editor now open on another row.
+it.each([
+  ["succeeds", "resolve"],
+  ["fails", "reject"],
+] as const)(
+  "a late save that %s leaves another row's open editor and its text alone",
+  async (_, settle) => {
+    const OTHER: Milestone = {
+      ...SHIP,
+      id: "m-other",
+      title: "Other",
+      order: 1,
+    };
+    rows = [SHIP, OTHER];
+    let finish = { resolve: (_: Milestone) => {}, reject: (_: string) => {} };
+    const saved = new Promise<Milestone>(
+      (resolve, reject) => (finish = { resolve, reject }),
+    );
+    invoke.mockImplementation(async (command: string) =>
+      command === "milestones_update"
+        ? saved
+        : { settings: { enabled: true, hiddenStatuses: [] }, milestones: rows },
+    );
+    await openShip();
+    await type("Note", "Saved late");
+    await key(field("Note"), "Enter", { metaKey: true });
+    await key(field("Note"), "Escape");
+    await act(async () => {
+      container
+        .querySelector('[data-milestone="m-other"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await type("Note", "B typed, unsaved");
+
+    await act(async () => {
+      if (settle === "resolve") finish.resolve(SHIP);
+      else finish.reject("invalid_input: title must be 1 to 200 characters");
+      await saved.catch(() => undefined);
+    });
+
+    const open = container.querySelector("[data-milestone-editor]");
+    expect(open?.getAttribute("aria-label")).toBe("Edit Other");
+    expect(field("Note").value).toBe("B typed, unsaved");
+    expect(open?.textContent).not.toContain("invalid_input");
+  },
+);
 
 it("Enter in the title saves", async () => {
   await openShip();

@@ -9,12 +9,13 @@ export type Draft = {
   target: { kind: "later" } | { kind: "date"; text: string };
 };
 
-export function draftOf(milestone: Milestone): Draft {
+/** A row's draft, or a new milestone's: Planned and Later, as frame M·5 opens. */
+export function draftOf(milestone: Milestone | null): Draft {
   return {
-    title: milestone.title,
-    note: milestone.note,
-    status: milestone.status,
-    target: milestone.target
+    title: milestone?.title ?? "",
+    note: milestone?.note ?? "",
+    status: milestone?.status ?? "planned",
+    target: milestone?.target
       ? { kind: "date", text: formatDay(milestone.target, true) }
       : { kind: "later" },
   };

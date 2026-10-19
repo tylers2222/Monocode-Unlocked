@@ -10,6 +10,7 @@ import {
   type Milestone,
   type MilestonePatch,
   type MilestoneSettings,
+  type NewMilestone,
 } from "../../../src/features/milestones/model/milestones";
 import {
   customMonoName,
@@ -130,8 +131,8 @@ export type SteerlessHarness = Exclude<HarnessId, "codex">;
 /** What a test can reach on `window.appBackend` through `page.evaluate`. */
 export type AppBackend = {
   store: FakeStore;
-  /** Every command the app sent, in call order. */
-  calls: { command: string; args: unknown }[];
+  /** Every command the app sent, in call order, with any non-null answer. */
+  calls: { command: string; args: unknown; reply?: unknown }[];
   emit: (event: string, payload?: unknown) => Promise<void>;
   /** Hands the store to the next page load, as Rust's database outlives a reload. */
   keepStore: () => void;
@@ -267,6 +268,33 @@ const upsertSession: Handler = (store, { session }) => {
   return row.worktreeRemoved ? answer : { ...answer, branch: BRANCH };
 };
 
+// milestones.rs check_title, check_note and check_target, with their refusals.
+function checkMilestone(
+  fields: Pick<Milestone, "title" | "note" | "status" | "target">,
+) {
+  const title = fields.title.trim();
+  if ([...title].length < 1 || [...title].length > 200)
+    throw "invalid_input: title must be 1 to 200 characters";
+  if ([...fields.note].length > 4000)
+    throw "invalid_input: note must be 4000 characters or fewer";
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(fields.target ?? "")
+    ? new Date(`${fields.target}T00:00:00Z`)
+    : null;
+  if (
+    fields.target !== null &&
+    (!day ||
+      Number.isNaN(day.getTime()) ||
+      day.toISOString().slice(0, 10) !== fields.target)
+  )
+    throw "invalid_input: target must be a real YYYY-MM-DD date";
+  return {
+    title,
+    note: fields.note,
+    status: fields.status,
+    target: fields.target,
+  };
+}
+
 const HANDLERS: Record<string, Handler> = {
   ...Object.fromEntries(IGNORED.map((command) => [command, none])),
   ...Object.fromEntries(
@@ -390,23 +418,34 @@ const HANDLERS: Record<string, Handler> = {
         milestone.id === id && milestone.projectPath === projectPath,
     );
     if (!row) throw "unknown_milestone";
-    const next = { ...row, ...(patch as MilestonePatch) };
-    const title = next.title.trim();
-    if ([...title].length < 1 || [...title].length > 200)
-      throw "invalid_input: title must be 1 to 200 characters";
-    if ([...next.note].length > 4000)
-      throw "invalid_input: note must be 4000 characters or fewer";
-    const day = /^\d{4}-\d{2}-\d{2}$/.test(next.target ?? "")
-      ? new Date(`${next.target}T00:00:00Z`)
-      : null;
-    if (
-      next.target !== null &&
-      (!day ||
-        Number.isNaN(day.getTime()) ||
-        day.toISOString().slice(0, 10) !== next.target)
-    )
-      throw "invalid_input: target must be a real YYYY-MM-DD date";
-    Object.assign(row, next, { title, updatedAt: Date.now() });
+    Object.assign(
+      row,
+      checkMilestone({ ...row, ...(patch as MilestonePatch) }),
+      {
+        updatedAt: Date.now(),
+      },
+    );
+    void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath });
+    return row;
+  },
+  // milestones.rs add: defaults, the same checks, the next order in the project.
+  milestones_add: (store, { projectPath, milestone }) => {
+    const input = milestone as NewMilestone & {
+      createdBy: Milestone["createdBy"];
+    };
+    const mine = store.milestones.filter(
+      (row) => row.projectPath === projectPath,
+    );
+    const row: Milestone = {
+      ...checkMilestone({ note: "", status: "idea", target: null, ...input }),
+      id: `00000000-0000-4000-8000-${String(store.milestones.length + 1).padStart(12, "0")}`,
+      projectPath: projectPath as string,
+      order: Math.max(-1, ...mine.map((other) => other.order)) + 1,
+      createdBy: input.createdBy,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    store.milestones.push(row);
     void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath });
     return row;
   },
@@ -633,7 +672,8 @@ export function installBackend(
   mockConvertFileSrc("macos");
   mockIPC(
     async (command, args) => {
-      backend.calls.push({ command, args });
+      const call: AppBackend["calls"][number] = { command, args };
+      backend.calls.push(call);
       const handler = handlers[command];
       if (!handler) {
         void window.appBackendReport({ command, problem: "no handler" });
@@ -641,9 +681,11 @@ export function installBackend(
       }
       try {
         // Real IPC sends JSON, so the app never holds a reference into the store.
-        return structuredClone(
+        const reply = structuredClone(
           await handler(store, (args ?? {}) as Record<string, unknown>),
         );
+        if (reply != null) call.reply = structuredClone(reply);
+        return reply;
       } catch (error) {
         if (typeof error !== "string")
           void window.appBackendReport({ command, problem: String(error) });

@@ -1,5 +1,48 @@
 [
   {
+    "command": "milestones_add",
+    "args": {
+      "projectPath": "/Users/test/orbit",
+      "milestone": {
+        "title": "Milestone list in the Mono overview",
+        "note": "Shown when a Mono starts a turn",
+        "status": "in_progress",
+        "target": "2026-12-12",
+        "createdBy": "user"
+      }
+    },
+    "reply": {
+      "id": "00000000-0000-4000-8000-000000000007"
+    }
+  },
+  {
+    "command": "milestones_add",
+    "args": {
+      "projectPath": "/Users/test/orbit",
+      "milestone": {
+        "title": "Someday",
+        "note": "",
+        "status": "planned",
+        "target": null,
+        "createdBy": "user"
+      }
+    },
+    "reply": {
+      "id": "00000000-0000-4000-8000-000000000008"
+    }
+  },
+  {
+    "command": "milestones_update",
+    "args": {
+      "projectPath": "/Users/test/orbit",
+      "id": "00000000-0000-4000-8000-000000000007",
+      "patch": {
+        "target": null
+      },
+      "by": "user"
+    }
+  },
+  {
     "command": "milestones_update",
     "args": {
       "projectPath": "/Users/test/orbit",
