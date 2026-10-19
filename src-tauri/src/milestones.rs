@@ -1103,6 +1103,7 @@ mod tests {
                     )
                     .unwrap();
                     assert_eq!(added.created_by, "user");
+                    // `ids` holds every row of the project so far, seeded and added.
                     assert_eq!(added.order, ids.len() as i64, "a new row goes last");
                     let page_id: String =
                         serde_json::from_value(call["reply"]["id"].clone()).unwrap();

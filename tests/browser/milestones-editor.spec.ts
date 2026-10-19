@@ -138,6 +138,11 @@ test("lane 2: add with every field, as frame M·5 shows; the stored row matches"
   await editor(page).getByRole("radio", { name: "In progress" }).click();
   await editor(page).getByRole("radio", { name: "Date" }).click();
   await editor(page).getByLabel("Target date").fill("Dec 12, 2026");
+  await expect(
+    page
+      .locator("[data-milestone-editor], [data-app-milestones] main h3")
+      .first(),
+  ).toHaveAttribute("data-milestone-editor");
   await shot(page, "add");
   await editor(page).getByLabel("Title").press("Enter");
   await expect(editor(page)).toHaveCount(0);

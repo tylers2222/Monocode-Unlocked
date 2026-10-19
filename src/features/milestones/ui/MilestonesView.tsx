@@ -228,7 +228,11 @@ function MilestonesContent({
   const addButton = (
     <button
       type="button"
-      onClick={() => setEditing(openEditor(null))}
+      onClick={() =>
+        setEditing((current) =>
+          current?.opened === null ? current : openEditor(null),
+        )
+      }
       className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-content/15 px-3 text-[12px] text-content/80 hover:border-content/30 hover:bg-content/10 hover:text-content"
     >
       <Plus className="size-3.5" />

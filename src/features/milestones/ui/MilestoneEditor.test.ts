@@ -211,40 +211,57 @@ it("Escape closes the add card without sending anything", async () => {
   expect(container.querySelector("[data-milestone-editor]")).toBeNull();
 });
 
-// Review n10: a save that settles after the user moved on must not close,
-// or show its error on, the editor now open on another row.
-it.each([
-  ["succeeds", "resolve"],
-  ["fails", "reject"],
-] as const)(
-  "a late save that %s leaves another row's open editor and its text alone",
-  async (_, settle) => {
-    const OTHER: Milestone = {
-      ...SHIP,
-      id: "m-other",
-      title: "Other",
-      order: 1,
-    };
-    rows = [SHIP, OTHER];
+// Review n10 and #98 m1: a save that settles after the user moved on must
+// not close, or show its error on, the editor open now. Each opening counts:
+// another row, the same row again, or a second add card.
+const REOPEN = {
+  "another row": { start: "m-ship", next: "m-other", label: "Edit Other" },
+  "the same row": { start: "m-ship", next: "m-ship", label: "Edit Ship it" },
+  "a second add card": { start: null, next: null, label: "New milestone" },
+} as const;
+it.each(
+  (Object.keys(REOPEN) as (keyof typeof REOPEN)[]).flatMap((reopen) =>
+    (["resolve", "reject"] as const).map((settle) => [reopen, settle] as const),
+  ),
+)(
+  "a late save leaves the editor then opened on %s alone (%s)",
+  async (reopen, settle) => {
+    const { start, next, label } = REOPEN[reopen];
+    rows = [SHIP, { ...SHIP, id: "m-other", title: "Other", order: 1 }];
     let finish = { resolve: (_: Milestone) => {}, reject: (_: string) => {} };
     const saved = new Promise<Milestone>(
       (resolve, reject) => (finish = { resolve, reject }),
     );
     invoke.mockImplementation(async (command: string) =>
-      command === "milestones_update"
+      command === "milestones_update" || command === "milestones_add"
         ? saved
         : { settings: { enabled: true, hiddenStatuses: [] }, milestones: rows },
     );
-    await openShip();
-    await type("Note", "Saved late");
-    await key(field("Note"), "Enter", { metaKey: true });
-    await key(field("Note"), "Escape");
-    await act(async () => {
-      container
-        .querySelector('[data-milestone="m-other"]')!
-        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await type("Note", "B typed, unsaved");
+    const open = async (id: string | null) => {
+      if (id === null) await click("Add milestone");
+      else
+        await act(async () => {
+          container
+            .querySelector(`[data-milestone="${id}"]`)!
+            .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+    };
+    await act(async () =>
+      root.render(
+        createElement(MilestonesView, {
+          cwd: APP,
+          recents: [{ path: APP, openedAt: 1 }],
+          sessions: [],
+          onClose: vi.fn(),
+        }),
+      ),
+    );
+    await open(start);
+    await type("Title", "Saved late");
+    await key(field("Title"), "Enter", { metaKey: true });
+    await key(field("Title"), "Escape");
+    await open(next);
+    await type("Note", "Typed, unsaved");
 
     await act(async () => {
       if (settle === "resolve") finish.resolve(SHIP);
@@ -252,12 +269,22 @@ it.each([
       await saved.catch(() => undefined);
     });
 
-    const open = container.querySelector("[data-milestone-editor]");
-    expect(open?.getAttribute("aria-label")).toBe("Edit Other");
-    expect(field("Note").value).toBe("B typed, unsaved");
-    expect(open?.textContent).not.toContain("invalid_input");
+    const card = container.querySelector("[data-milestone-editor]");
+    expect(card?.getAttribute("aria-label")).toBe(label);
+    expect(field("Note").value).toBe("Typed, unsaved");
+    expect(card?.textContent).not.toContain("invalid_input");
   },
 );
+
+// #98 m2: the header button stays visible while the add card is open.
+it("Add milestone while the add card is open keeps what was typed", async () => {
+  await openAdd();
+  await type("Title", "Half typed");
+  await click("Add milestone");
+
+  expect(field("Title").value).toBe("Half typed");
+  expect(writes()).toEqual([]);
+});
 
 it("Enter in the title saves", async () => {
   await openShip();

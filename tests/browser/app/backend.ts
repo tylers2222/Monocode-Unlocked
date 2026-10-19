@@ -438,7 +438,7 @@ const HANDLERS: Record<string, Handler> = {
     );
     const row: Milestone = {
       ...checkMilestone({ note: "", status: "idea", target: null, ...input }),
-      id: `00000000-0000-4000-8000-${String(store.milestones.length + 1).padStart(12, "0")}`,
+      id: `00000000-0000-4000-8000-${String(store.milestones.reduce((n, m) => Math.max(n, Number(m.id.slice(24)) || 0), 0) + 1).padStart(12, "0")}`,
       projectPath: projectPath as string,
       order: Math.max(-1, ...mine.map((other) => other.order)) + 1,
       createdBy: input.createdBy,
