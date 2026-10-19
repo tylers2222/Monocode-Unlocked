@@ -3113,7 +3113,7 @@ fn drop_steers_of_ended_turns(
 /// and drops a steer whose turn ended in between (design 16.12.3.3). The
 /// control lock is never held inside a store transaction (5.3).
 #[expect(clippy::too_many_arguments, reason = "baseline 2026-10")]
-fn submit_and_recheck(
+pub(crate) fn submit_and_recheck(
     store: &SessionStore,
     running: impl Fn() -> HashMap<String, String>,
     caller: &Caller,

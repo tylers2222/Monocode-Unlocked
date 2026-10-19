@@ -49,6 +49,8 @@ mod rate_limits;
 mod reminders;
 mod remote;
 mod remote_ssh;
+#[cfg(test)]
+mod scenario;
 mod search;
 mod session_store;
 mod skills;

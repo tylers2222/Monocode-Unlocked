@@ -35,6 +35,12 @@ pub struct SessionStore {
 
 impl SessionStore {
     pub fn open(path: PathBuf) -> Result<Self, String> {
+        Self::open_at(path, crate::mono_messages::now_ms())
+    }
+
+    /// `open` with `startup` run at wall time `now`, so a test controls the
+    /// time the app starts (the scenario harness).
+    pub(crate) fn open_at(path: PathBuf, now: i64) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
@@ -43,8 +49,7 @@ impl SessionStore {
             .map_err(|e| e.to_string())?;
         migrate(&conn).map_err(|e| e.to_string())?;
         crate::worktrees::reconcile_removals(&conn)?;
-        crate::mono_messages::startup(&conn, crate::mono_messages::now_ms())
-            .map_err(|e| e.to_string())?;
+        crate::mono_messages::startup(&conn, now).map_err(|e| e.to_string())?;
         let read_conn = Connection::open(&path).map_err(|e| e.to_string())?;
         read_conn
             .execute_batch("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;")
