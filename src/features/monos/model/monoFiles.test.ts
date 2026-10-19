@@ -303,6 +303,10 @@ it("tells only a Giga Mono how to create and update Monos", () => {
   ])
     expect(giga).toContain(`app ${action}`);
   expect(giga).not.toContain("monos.configure");
+  // Defect: a Giga is not told how to file an approval card, or a plain Mono
+  // is told of an action only a Giga may call.
+  expect(giga).toContain("app approvals.file");
+  expect(monoContext(look, files(), soul)).not.toContain("approvals.");
   // Rules go out with the soul, not on every turn.
   expect(
     monoContext({ ...look, giga: true }, files(), {
