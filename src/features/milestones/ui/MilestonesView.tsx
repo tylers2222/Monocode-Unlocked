@@ -32,6 +32,7 @@ import {
   add,
   list,
   remove,
+  reorder,
   subscribe,
   update,
   type Milestone,
@@ -42,7 +43,12 @@ import {
   openEditor,
   type EditorState,
 } from "./MilestoneEditor";
-import { MilestoneTimeline, type CreatorLook } from "./MilestoneTimeline";
+import { moveOf } from "../model/reorder";
+import {
+  MilestoneTimeline,
+  type CreatorLook,
+  type MoveEnd,
+} from "./MilestoneTimeline";
 import {
   STATUS_LABELS,
   TIMELINE_STATUSES,
@@ -61,6 +67,10 @@ type Props = {
   onClose: () => void;
   onToggleSidebar?: () => void;
 };
+
+/** Shown in the page's notice banner when a reorder meets a list that changed. */
+const STALE_NOTICE =
+  "The list changed while you moved that milestone, so it did not move. This is the latest order.";
 
 /** How long an agent's new row keeps its blue highlight. */
 const HIGHLIGHT_MS = 4000;
@@ -240,13 +250,42 @@ function MilestonesContent({
       Add milestone
     </button>
   );
-  // The editor's callbacks act only on the opening they came from, so a save
-  // that settles after Escape cannot close or fail the editor open now.
   /** A page write, then the list the card closes onto. */
   const reload = async (project: string, write: Promise<unknown>) => {
     await write;
     await load(project);
   };
+  /**
+   * A reorder sends the project's full id order. When the list changed under
+   * the move (here, or as Rust's stale_order), nothing moves: the page shows
+   * the latest list and says so in its own notice banner.
+   */
+  const move = async (
+    project: string,
+    rows: readonly Milestone[],
+    end: MoveEnd,
+  ) => {
+    let refused = end.kind === "changed" ? "stale_order" : null;
+    if (end.kind === "drop") {
+      const plan = moveOf(rows, end.drop);
+      if (!plan) return;
+      try {
+        await reorder(project, plan.ids, "user");
+        if (plan.status)
+          await update(project, end.drop.id, { status: plan.status }, "user");
+      } catch (reason) {
+        refused = String(reason);
+      }
+    }
+    await load(project);
+    if (refused)
+      setErrors((current) => ({
+        ...current,
+        [project]: refused === "stale_order" ? STALE_NOTICE : refused,
+      }));
+  };
+  // The editor's callbacks act only on the opening they came from, so a save
+  // that settles after Escape cannot close or fail the editor open now.
   const editor =
     editing && selected ? (
       <MilestoneEditor
@@ -354,6 +393,9 @@ function MilestonesContent({
                     ? { id: editing.opened?.id ?? null, editor }
                     : undefined
                 }
+                onMove={(end) => {
+                  if (selected) void move(selected, data.milestones, end);
+                }}
                 onOpen={(id) => {
                   const row = data.milestones.find((m) => m.id === id);
                   if (row) setEditing(openEditor(row));

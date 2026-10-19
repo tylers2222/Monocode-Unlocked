@@ -1061,6 +1061,9 @@ mod tests {
     // did not name, an add with the wrong writer). The calls are what
     // milestones-editor.spec.ts captured from the page; each goes through the
     // command's own argument types.
+    /// The agent row milestones-editor.spec.ts pushes unseen (its `AGENT_ROW`).
+    const AGENT: &str = "a9e47000-0000-4000-8000-000000000000";
+
     #[test]
     fn page_writes_replay_on_the_real_store() {
         let calls: Vec<serde_json::Value> = serde_json::from_str(include_str!(
@@ -1075,9 +1078,10 @@ mod tests {
         for order in 0..6 {
             let id = format!("{:0<36}", format!("orbit-{order}"));
             let (status, target) = match order {
+                0 | 1 => ("in_progress", None),
                 2 => ("planned", Some("2026-11-21")),
-                4 => ("idea", None),
-                _ => ("planned", None),
+                3 => ("planned", None),
+                _ => ("idea", None),
             };
             conn.execute(
                 &format!(
@@ -1091,6 +1095,8 @@ mod tests {
         }
         let mut history = Vec::new();
         let mut removed = Vec::new();
+        let mut refused = Vec::new();
+        let mut last_order = Vec::new();
         for call in &calls {
             let arg = |name: &str| call["args"][name].clone();
             let path: String = serde_json::from_value(arg("projectPath")).unwrap();
@@ -1129,6 +1135,48 @@ mod tests {
                     removed.push(page_id);
                     continue;
                 }
+                "milestones_reorder" => {
+                    let page_ids: Vec<String> = serde_json::from_value(arg("ids")).unwrap();
+                    let by: String = serde_json::from_value(arg("by")).unwrap();
+                    if call["refused"] == "stale_order" && !ids.contains_key(AGENT) {
+                        // The spec's agent row, which the page had not seen yet.
+                        let mut agent = new("Agent row the page has not seen");
+                        agent.created_by = "mono:general".into();
+                        add(&conn, &path, agent, 4).unwrap();
+                        conn.execute(
+                            "UPDATE milestones SET id = ?1 WHERE title = ?2",
+                            params![AGENT, "Agent row the page has not seen"],
+                        )
+                        .unwrap();
+                        ids.insert(AGENT.into(), AGENT.into());
+                    }
+                    let before: Vec<String> = super::list(&conn, &path)
+                        .unwrap()
+                        .into_iter()
+                        .map(|row| row.id)
+                        .collect();
+                    let real: Vec<String> = page_ids.iter().map(|id| ids[id].clone()).collect();
+                    match (reorder(&conn, &path, &real, &by), call["refused"].as_str()) {
+                        (Err(code), Some(expected)) => {
+                            assert_eq!(code, expected);
+                            let after: Vec<String> = super::list(&conn, &path)
+                                .unwrap()
+                                .into_iter()
+                                .map(|row| row.id)
+                                .collect();
+                            assert_eq!(after, before, "a refused reorder moves nothing");
+                            refused.push(code);
+                        }
+                        (Ok(listed), None) => {
+                            let listed: Vec<String> =
+                                listed.into_iter().map(|row| row.id).collect();
+                            assert_eq!(listed, real, "the store takes the page's order");
+                            last_order = real;
+                        }
+                        (result, expected) => panic!("reorder {result:?}, recorded {expected:?}"),
+                    }
+                    continue;
+                }
                 other => panic!("unexpected command {other}"),
             };
             history.push((row.title, row.note, row.status, row.target));
@@ -1147,7 +1195,7 @@ mod tests {
         );
         let (v2, allowlist) = ("Giga Mono harness (change H, v2)", "Tool allowlist only.");
         assert_eq!(
-            history,
+            history[..7],
             [
                 shown(list, turn, Status::InProgress, Some("2026-12-12")),
                 shown("Someday", "", Status::Planned, None),
@@ -1166,7 +1214,20 @@ mod tests {
             .into_iter()
             .map(|row| row.title)
             .collect();
-        assert_eq!(titles.len(), 7);
+        assert_eq!(titles.len(), 8, "7 page rows and the agent's");
         assert!(!titles.contains(&"Someday".to_string()));
+        // The page's reorders: one refused as stale_order, the rest stored,
+        // and a move past a group's edge also changed the row's status.
+        assert_eq!(refused, ["stale_order"]);
+        let rows = super::list(&conn, project).unwrap();
+        assert_eq!(
+            rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>(),
+            last_order
+        );
+        let voice = format!("{:0<36}", "orbit-4");
+        assert_eq!(
+            rows.iter().find(|row| row.id == voice).unwrap().status,
+            Status::Planned
+        );
     }
 }

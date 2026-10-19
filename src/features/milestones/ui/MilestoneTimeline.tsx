@@ -1,8 +1,18 @@
-import { useState, type ReactNode } from "react";
-import { Check, ChevronDown, Terminal } from "../../../shared/ui/icons";
+import {
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
+import {
+  Check,
+  ChevronDown,
+  GripVertical,
+  Terminal,
+} from "../../../shared/ui/icons";
 import { PixelMascot } from "../../projects/ui/PixelMascot";
 import { dayOf, formatDay } from "../model/day";
 import type { Milestone, MilestoneStatus } from "../model/milestones";
+import { dropBeside, orderKey, stepOf, type Drop } from "../model/reorder";
 import {
   STATUS_LABELS,
   agentCreator,
@@ -28,7 +38,52 @@ type Props = {
   open?: { id: string | null; editor: ReactNode };
   /** Opens the editor on a row, by click or by Enter or Space. */
   onOpen?: (id: string) => void;
+  /**
+   * A row dragged by its grip or moved with Alt+ArrowUp/Down; "changed" when
+   * the list changed under a drag, so nothing is moved.
+   */
+  onMove?: (move: MoveEnd) => void;
 };
+
+export type MoveEnd = { kind: "drop"; drop: Drop } | { kind: "changed" };
+
+type Over = { id: string; side: "before" | "after" };
+
+/** The one gesture under way: a row dragged by its grip, or a row moved by keys that keeps focus. */
+type Gesture =
+  | {
+      kind: "drag";
+      id: string;
+      from: string;
+      startY: number;
+      dy: number;
+      over: Over | null;
+    }
+  | { kind: "keyed"; id: string }
+  | null;
+
+/** The row nearest the pointer, and which half of it the pointer is on. */
+function overAt(event: ReactPointerEvent, id: string): Over | null {
+  const rows = event.currentTarget
+    .closest("[data-timeline]")!
+    .querySelectorAll<HTMLElement>("[data-milestone]");
+  let best: { over: Over; distance: number } | null = null;
+  for (const row of rows) {
+    if (row.dataset.milestone === id) continue;
+    const { top, height } = row.getBoundingClientRect();
+    const middle = top + height / 2;
+    const distance = Math.abs(event.clientY - middle);
+    if (!best || distance < best.distance)
+      best = {
+        over: {
+          id: row.dataset.milestone!,
+          side: event.clientY < middle ? "before" : "after",
+        },
+        distance,
+      };
+  }
+  return best?.over ?? null;
+}
 
 const GROUP_DOT: Record<MilestoneStatus, string> = {
   done: "grid place-items-center border border-emerald-400/60 bg-emerald-400/18 text-emerald-400",
@@ -54,9 +109,52 @@ export function MilestoneTimeline({
   today = new Date(),
   open,
   onOpen,
+  onMove,
 }: Props) {
   const [doneCollapsed, setDoneCollapsed] = useState(false);
+  const [gesture, setGesture] = useState<Gesture>(null);
   const groups = timelineGroups(milestones, hiddenStatuses);
+  const shown = groups.filter(
+    (group) => !(group.status === "done" && doneCollapsed),
+  );
+  const drag = gesture?.kind === "drag" ? gesture : null;
+  const grip = {
+    down: (id: string, event: ReactPointerEvent) => {
+      if (event.button !== 0) return;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setGesture({
+        kind: "drag",
+        id,
+        from: orderKey(milestones),
+        startY: event.clientY,
+        dy: 0,
+        over: null,
+      });
+    },
+    move: (event: ReactPointerEvent) => {
+      if (!drag) return;
+      setGesture({
+        ...drag,
+        dy: event.clientY - drag.startY,
+        over: overAt(event, drag.id),
+      });
+    },
+    up: () => {
+      setGesture(null);
+      if (!drag?.over) return;
+      if (orderKey(milestones) !== drag.from)
+        return onMove?.({ kind: "changed" });
+      const drop = dropBeside(shown, drag.id, drag.over);
+      if (drop) onMove?.({ kind: "drop", drop });
+    },
+    cancel: () => setGesture(null),
+  };
+  const step = (id: string, delta: -1 | 1) => {
+    const drop = stepOf(shown, id, delta);
+    if (!drop) return;
+    setGesture({ kind: "keyed", id });
+    onMove?.({ kind: "drop", drop });
+  };
   const todayLine = (
     <div
       data-today
@@ -69,7 +167,10 @@ export function MilestoneTimeline({
     </div>
   );
   return (
-    <div className="relative mx-auto w-full max-w-[780px] px-8 pt-1.5 pb-7 before:absolute before:top-[22px] before:bottom-[30px] before:left-[39px] before:w-px before:bg-content/16">
+    <div
+      data-timeline
+      className="relative mx-auto w-full max-w-[780px] px-8 pt-1.5 pb-7 before:absolute before:top-[22px] before:bottom-[30px] before:left-[39px] before:w-px before:bg-content/16"
+    >
       {open?.id === null ? (
         <div className="relative mt-4 ml-7">{open.editor}</div>
       ) : null}
@@ -120,6 +221,15 @@ export function MilestoneTimeline({
                       lookUpCreator={lookUpCreator}
                       today={today}
                       onOpen={onOpen}
+                      grip={grip}
+                      onStep={step}
+                      lifted={drag?.id === milestone.id ? drag.dy : null}
+                      dropLine={
+                        drag?.over?.id === milestone.id ? drag.over.side : null
+                      }
+                      refocus={
+                        gesture?.kind === "keyed" && gesture.id === milestone.id
+                      }
                     />
                   ),
                 )}
@@ -139,12 +249,29 @@ function MilestoneRow({
   lookUpCreator,
   today,
   onOpen,
+  grip,
+  onStep,
+  lifted,
+  dropLine,
+  refocus,
 }: {
   milestone: Milestone;
   highlighted: boolean;
   lookUpCreator: NonNullable<Props["lookUpCreator"]>;
   today: Date;
   onOpen: Props["onOpen"];
+  grip: {
+    down: (id: string, event: ReactPointerEvent) => void;
+    move: (event: ReactPointerEvent) => void;
+    up: () => void;
+    cancel: () => void;
+  };
+  onStep: (id: string, delta: -1 | 1) => void;
+  /** How far the row is dragged, or null when it is not. */
+  lifted: number | null;
+  dropLine: Over["side"] | null;
+  /** Focus moves with the row a key moved, though the move may remount it. */
+  refocus: boolean;
 }) {
   const done = milestone.status === "done";
   const creator = agentCreator(milestone.createdBy);
@@ -152,19 +279,57 @@ function MilestoneRow({
     <li
       tabIndex={0}
       data-milestone={milestone.id}
+      ref={
+        refocus
+          ? (row) => {
+              if (row && document.activeElement === document.body) row.focus();
+            }
+          : undefined
+      }
+      style={
+        lifted === null ? undefined : { transform: `translateY(${lifted}px)` }
+      }
       onClick={() => onOpen?.(milestone.id)}
       onKeyDown={(event) => {
         if (event.target !== event.currentTarget) return;
+        if (
+          event.altKey &&
+          (event.key === "ArrowUp" || event.key === "ArrowDown")
+        ) {
+          event.preventDefault();
+          onStep(milestone.id, event.key === "ArrowUp" ? -1 : 1);
+          return;
+        }
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         onOpen?.(milestone.id);
       }}
-      className={`relative grid grid-cols-[14px_1fr_auto] items-start gap-3.5 rounded-lg py-2 pr-2.5 outline-none focus-visible:ring-1 focus-visible:ring-accent/50 focus-visible:ring-inset ${
+      className={`group/row relative grid grid-cols-[14px_1fr_auto] items-start gap-3.5 rounded-lg py-2 pr-2.5 outline-none focus-visible:ring-1 focus-visible:ring-accent/50 focus-visible:ring-inset ${
         highlighted
           ? "bg-accent/8 inset-ring inset-ring-accent/30 motion-safe:animate-[approval-toast-in_220ms_cubic-bezier(0.22,1,0.36,1)]"
           : ""
-      }`}
+      } ${lifted === null ? "" : "z-10 bg-background-base pl-2.5 shadow-lg ring-1 ring-content/10"}`}
     >
+      <span
+        data-grip
+        aria-hidden
+        onPointerDown={(event) => grip.down(milestone.id, event)}
+        onPointerMove={grip.move}
+        onPointerUp={grip.up}
+        onPointerCancel={grip.cancel}
+        onClick={(event) => event.stopPropagation()}
+        className="absolute top-2 -left-6 grid h-5 w-4 cursor-grab touch-none place-items-center text-content/35 opacity-0 group-hover/row:opacity-100"
+      >
+        <GripVertical className="size-3.5" />
+      </span>
+      {dropLine ? (
+        <span
+          data-drop-line={dropLine}
+          className={`pointer-events-none absolute right-0 left-0 h-0.5 rounded-full bg-accent ${
+            dropLine === "before" ? "-top-px" : "-bottom-px"
+          }`}
+        />
+      ) : null}
       <span className="grid h-5 place-items-center">
         <i
           className={`block size-[7px] rounded-full ${ROW_DOT[milestone.status]}`}

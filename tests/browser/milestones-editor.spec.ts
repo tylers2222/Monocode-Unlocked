@@ -63,7 +63,12 @@ const ROWS = [
   }),
   milestone(5, "idea", "Share one Mono between two Macs"),
 ];
-const [TRACES, , HARNESS, PROMPTFOO, VOICE] = ROWS;
+const [TRACES, , HARNESS, PROMPTFOO, VOICE, SHARE] = ROWS;
+/** An agent's row the page has not seen; milestones.rs page_writes_replay uses this id too. */
+const AGENT_ROW = milestone(9, "idea", "Agent row the page has not seen", {
+  id: "a9e47000-0000-4000-8000-000000000000",
+  createdBy: "mono:general",
+});
 
 async function openPage(
   app: { mount: (seed: object) => Promise<void> },
@@ -89,9 +94,12 @@ const stored = (page: Page, id: string) =>
 const writes = (page: Page) =>
   page.evaluate(() =>
     window.appBackend!.calls.filter(({ command }) =>
-      ["milestones_add", "milestones_update", "milestones_remove"].includes(
-        command,
-      ),
+      [
+        "milestones_add",
+        "milestones_update",
+        "milestones_remove",
+        "milestones_reorder",
+      ].includes(command),
     ),
   );
 const shot = (page: Page, name: string) =>
@@ -596,10 +604,43 @@ test("the page's writes match the committed fixture that Rust replays", async ({
     .click();
   await expect(someday).toHaveCount(0);
 
-  const captured = (await writes(page)).map(({ command, args, reply }) =>
-    command === "milestones_add"
-      ? { command, args, reply: { id: (reply as Milestone).id } }
-      : { command, args },
+  // Reorders: one by keys; one an agent's unseen add makes stale_order; the
+  // retry; and one past a group's edge, which also changes the status.
+  const idea = page.getByRole("region", { name: "Idea", exact: true });
+  const moved = (id: string) => expect(row(page, id)).toBeFocused();
+  await row(page, SHARE.id).focus();
+  await page.keyboard.press("Alt+ArrowUp");
+  await moved(SHARE.id);
+  await page.evaluate((agentRow) => {
+    window.appBackend!.store.milestones.push(agentRow);
+  }, AGENT_ROW);
+  await page.keyboard.press("Alt+ArrowDown");
+  await expect(row(page, AGENT_ROW.id)).toBeVisible();
+  await row(page, SHARE.id).focus();
+  await page.keyboard.press("Alt+ArrowDown");
+  await expect(idea.locator("[data-milestone]").last()).toHaveAttribute(
+    "data-milestone",
+    AGENT_ROW.id,
+  );
+  await expect(idea.locator("[data-milestone]").nth(1)).toHaveAttribute(
+    "data-milestone",
+    SHARE.id,
+  );
+  await row(page, VOICE.id).focus();
+  await page.keyboard.press("Alt+ArrowUp");
+  await expect(
+    page
+      .getByRole("region", { name: "Planned", exact: true })
+      .locator(`[data-milestone="${VOICE.id}"]`),
+  ).toBeVisible();
+
+  const captured = (await writes(page)).map(
+    ({ command, args, reply, refused }) =>
+      command === "milestones_add"
+        ? { command, args, reply: { id: (reply as Milestone).id } }
+        : refused
+          ? { command, args, refused }
+          : { command, args },
   );
   if (process.env.RECORD_MILESTONE_WRITES)
     writeFileSync(FIXTURE, `${JSON.stringify(captured, null, 2)}\n`);
