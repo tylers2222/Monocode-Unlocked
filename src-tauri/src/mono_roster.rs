@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tauri::{AppHandle, Emitter, State};
 
+use crate::mono_messages::Notices;
 use crate::session_store::{now_millis, SessionStore};
 
 pub const CHANGED_EVENT: &str = "monos_changed";
@@ -350,7 +351,8 @@ fn merge_patch(target: &mut Value, patch: Value) {
 
 /// Applies every update in one transaction. An update to a Mono that is gone
 /// fails the whole batch with [`UNKNOWN_MONO`]; it never inserts.
-pub fn update_many(conn: &Connection, updates: &[ValidUpdate]) -> Result<(), String> {
+/// A Giga that moved to a new chat gets its decisions that no chat took.
+pub fn update_many(conn: &Connection, updates: &[ValidUpdate]) -> Result<Notices, String> {
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let now = now_millis();
     for update in updates {
@@ -392,7 +394,9 @@ pub fn update_many(conn: &Connection, updates: &[ValidUpdate]) -> Result<(), Str
         )
         .map_err(|e| e.to_string())?;
     }
-    tx.commit().map_err(|e| e.to_string())
+    let notices = crate::approvals::decide::requeue(&tx, now).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(notices)
 }
 
 /// Whether a Mono was deleted.
@@ -484,9 +488,13 @@ pub fn monos_update(
     updates: Vec<MonoUpdate>,
 ) -> Result<Roster, String> {
     let updates = validate_updates(updates)?;
-    write(&app, &store, |conn| {
-        update_many(conn, &updates).map(|()| !updates.is_empty())
-    })
+    let mut notices = Notices::default();
+    let roster = write(&app, &store, |conn| {
+        notices = update_many(conn, &updates)?;
+        Ok(!updates.is_empty())
+    })?;
+    notices.emit(&app);
+    Ok(roster)
 }
 
 #[tauri::command(async)]
@@ -565,6 +573,7 @@ mod tests {
     fn conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         ensure_tables(&conn).unwrap();
+        crate::mono_messages::ensure_tables(&conn).unwrap();
         conn
     }
 

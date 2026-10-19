@@ -12,7 +12,7 @@ const PICK: &str = r#"[{"label":"SQLite"},{"label":"Server"}]"#;
 fn giga_with_chat(conn: &Connection, id: &str, chat: &str) {
     giga(conn, id, &format!("Giga {id}"));
     conn.execute(
-        "UPDATE monos SET data_json = json_object('sessionId', ?2) WHERE id = ?1",
+        "UPDATE monos SET data_json = json_object('mascot', 'skull', 'sessionId', ?2) WHERE id = ?1",
         [id, chat],
     )
     .unwrap();
@@ -196,6 +196,7 @@ fn decide_closes_an_open_card_once() {
             decided_at: 5,
             note: Some("Add costs".into()),
             chosen: ticked,
+            not_sent: false,
         })
     );
     assert_eq!(
@@ -234,6 +235,68 @@ fn decide_closes_an_open_card_once() {
     );
 }
 
+fn clear(conn: &Connection, chat: &str, now: i64) -> Notices {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).unwrap();
+    let notices = mono_messages::clear_session(&tx, &SessionId::parse(chat).unwrap(), now);
+    tx.commit().unwrap();
+    notices.unwrap()
+}
+
+fn move_chat(conn: &Connection, giga: &str, chat: &str) -> Notices {
+    let update = json!({ "id": giga, "patch": { "sessionId": chat } });
+    let update = crate::mono_roster::validate_update(serde_json::from_value(update).unwrap());
+    crate::mono_roster::update_many(conn, &[update.unwrap()]).unwrap()
+}
+
+fn not_sent(conn: &Connection, card: &Approval) -> bool {
+    match get(conn, &card.id).unwrap().status {
+        Status::Decided(decision) => decision.not_sent,
+        status => panic!("{status:?}"),
+    }
+}
+
+// Defects: a decision whose chat is reset, deleted or archived before the
+// Giga takes it is lost; it goes to an ended chat or back to the chat it
+// was dropped from; or its card does not show that it was not sent.
+#[test]
+fn a_dropped_decision_follows_the_giga_to_its_next_chat_or_reads_not_sent() {
+    let store = SessionStore::open_in_memory().unwrap();
+    let conn = store.lock_conn().unwrap();
+    giga_with_chat(&conn, "giga-a", CHAT_A);
+    giga_with_chat(&conn, "giga-b", CHAT_B);
+    let a = filed(&conn, "giga-a", "Pick a store", "[]");
+    let b = filed(&conn, "giga-b", "Pick a host", "[]");
+    decide(&conn, &a.id, Verdict::Rejected, None, &[], 5).unwrap();
+    decide(&conn, &b.id, Verdict::Rejected, None, &[], 6).unwrap();
+    let row = |card: &Approval, chat: &str, at: i64| {
+        let body = said(card, "decision: rejected\nchosen_options: []");
+        decision_row(card, chat, at, &body)
+    };
+
+    assert_eq!(clear(&conn, CHAT_A, 7), Notices::default());
+    assert!(
+        not_sent(&conn, &a),
+        "the reset chat took the decision with it"
+    );
+    assert_eq!(move_chat(&conn, "giga-a", "chat-a2"), naming("chat-a2"));
+    assert_eq!(queued(&conn, "chat-a2"), [row(&a, "chat-a2", 5)]);
+    assert!(!not_sent(&conn, &a));
+
+    assert_eq!(move_chat(&conn, "giga-b", "chat-b2"), Notices::default());
+    assert_eq!(clear(&conn, CHAT_B, 8), naming("chat-b2"));
+    assert_eq!(queued(&conn, "chat-b2"), [row(&b, "chat-b2", 6)]);
+
+    move_chat(&conn, "giga-b", "chat-b3");
+    mono_messages::startup(&conn, 9).unwrap();
+    assert!(
+        not_sent(&conn, &a),
+        "chat-a2 is gone and giga-a has no other chat"
+    );
+    assert!(queued(&conn, "chat-a2").is_empty());
+    assert_eq!(queued(&conn, "chat-b3"), [row(&b, "chat-b3", 6)]);
+    assert!(!not_sent(&conn, &b));
+}
+
 // Defect: on the app's real tables the decision row breaks a mono_messages
 // CHECK, goes to a chat other than the Giga's current one, or moves the
 // rows already waiting there.
@@ -257,6 +320,9 @@ fn a_decision_queues_to_a_real_giga_on_a_copy_of_the_app_database() {
         )
         .unwrap();
     let waiting = queued(&conn, &chat);
+    let start = now_ms();
+    let seeded = filed(&conn, &giga, "Real-state seed", "[]");
+    decide(&conn, &seeded.id, Verdict::Rejected, None, &[], start).unwrap();
     let card = filed(&conn, &giga, "Real-state decision", PICK);
     let note = Some("Add costs".to_string());
     let ticked = chosen(&["SQLite"]);
@@ -266,13 +332,20 @@ fn a_decision_queues_to_a_real_giga_on_a_copy_of_the_app_database() {
         Verdict::ChangesRequested,
         note,
         &ticked,
-        20,
+        start + 1,
     )
     .unwrap();
     assert_eq!(told, naming(&chat));
+    let rejected = "decision: rejected\nchosen_options: []";
     let changes = "decision: changes_requested\nchosen_options: [\"SQLite\"]\ncomment: Add costs";
     let mut expected = waiting;
-    expected.push(decision_row(&card, &chat, 20, &said(&card, changes)));
+    expected.push(decision_row(
+        &seeded,
+        &chat,
+        start,
+        &said(&seeded, rejected),
+    ));
+    expected.push(decision_row(&card, &chat, start + 1, &said(&card, changes)));
     assert_eq!(queued(&conn, &chat), expected);
     let sent: i64 = conn
         .query_row(

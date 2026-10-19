@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use tauri::{AppHandle, Runtime, State};
 
-use super::{announce, check_text, get, to_json, Approval, Decision, Verdict, NOT_OPEN, TEXT_MAX};
+use super::{
+    announce, check_text, get, to_json, Approval, Decision, Status, Verdict, NOT_OPEN, TEXT_MAX,
+};
 use crate::milestones::require;
 use crate::mono::content_hash;
 use crate::mono_messages::{
@@ -12,9 +14,14 @@ use crate::mono_messages::{
 };
 use crate::session_store::SessionStore;
 
-pub(crate) const NO_CHAT: &str = "filer_has_no_chat";
+const NO_CHAT: &str = "filer_has_no_chat";
 
-pub(crate) const SENDER: &str = "approvals-board";
+const SENDER: &str = "approvals-board";
+
+/// `not_sent` of a card: its decision row was dropped before the Giga took it.
+pub(super) const NOT_SENT: &str = "EXISTS (SELECT 1 FROM mono_messages
+  WHERE from_session_id = 'approvals-board' AND request_id = approvals.id
+    AND status = 'dropped') AS not_sent";
 
 fn decision_text(approval: &Approval, decision: &Decision) -> String {
     let mut text = format!(
@@ -81,6 +88,33 @@ fn deliver(
     Ok(notices)
 }
 
+/// Moves each decision row that was dropped before its Giga took it (chat
+/// reset, deleted, archived, or gone at startup) to the Giga's current chat.
+/// A row stays dropped, so its card is `not_sent`, while that chat ended or
+/// is the one it was dropped from.
+pub(crate) fn requeue(conn: &Connection, now: i64) -> rusqlite::Result<Notices> {
+    let chats = conn
+        .prepare(
+            "UPDATE mono_messages SET status = 'delivered', handled_by_session = chat.id,
+               delivery = 'queue', turn_id = NULL, slot_window = NULL, handle = NULL,
+               closed_at = NULL, notified_at = NULL, updated_at = ?2
+             FROM (SELECT id AS mono, json_extract(data_json, '$.sessionId') AS id FROM monos) AS chat
+             WHERE chat.mono = mono_messages.to_mono_id AND chat.id IS NOT NULL
+               AND from_session_id = ?1 AND status = 'dropped' AND delivered_at IS NULL
+               AND chat.id IS NOT handled_by_session
+               AND chat.id NOT IN (SELECT session_id FROM mono_session_ends)
+             RETURNING handled_by_session",
+        )?
+        .query_map(params![SENDER, now], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut notices = Notices::default();
+    chats
+        .iter()
+        .filter_map(|chat| SessionId::parse(chat))
+        .for_each(|chat| notices.name(chat));
+    Ok(notices)
+}
+
 pub(crate) fn decide(
     conn: &Connection,
     id: &str,
@@ -92,6 +126,9 @@ pub(crate) fn decide(
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     let open = get(&tx, id)?;
+    if open.status != Status::Open {
+        return Err(NOT_OPEN.into());
+    }
     let labels: HashSet<&str> = open
         .card
         .options
@@ -114,24 +151,21 @@ pub(crate) fn decide(
             .map(|note| check_text("decision note", &note, TEXT_MAX))
             .transpose()?,
         chosen: chosen.to_vec(),
+        not_sent: false,
     };
-    let updated = tx
-        .execute(
-            "UPDATE approvals SET status = ?2, decided_at = ?3, decision_note = ?4,
-               chosen_options = ?5
-             WHERE id = ?1 AND status = 'open'",
-            params![
-                id,
-                verdict.as_str(),
-                now,
-                decision.note,
-                (!chosen.is_empty()).then(|| to_json(&chosen))
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-    if updated == 0 {
-        return Err(NOT_OPEN.into());
-    }
+    tx.execute(
+        "UPDATE approvals SET status = ?2, decided_at = ?3, decision_note = ?4,
+           chosen_options = ?5
+         WHERE id = ?1",
+        params![
+            id,
+            verdict.as_str(),
+            now,
+            decision.note,
+            (!chosen.is_empty()).then(|| to_json(&chosen))
+        ],
+    )
+    .map_err(|e| e.to_string())?;
     let notices = deliver(&tx, &open, &decision, now)?;
     let decided = get(&tx, id)?;
     tx.commit().map_err(|e| e.to_string())?;

@@ -2666,6 +2666,7 @@ pub fn startup(conn: &Connection, now: i64) -> rusqlite::Result<()> {
         ),
         [now],
     )?;
+    crate::approvals::decide::requeue(&tx, now)?;
     tx.commit()
 }
 
@@ -2745,6 +2746,7 @@ pub fn clear_session(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut notices = Notices::default();
     notices.name_senders(tx, &dropped)?;
+    notices.merge(crate::approvals::decide::requeue(tx, now)?);
     Ok(notices)
 }
 
