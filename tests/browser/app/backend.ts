@@ -131,8 +131,13 @@ export type SteerlessHarness = Exclude<HarnessId, "codex">;
 /** What a test can reach on `window.appBackend` through `page.evaluate`. */
 export type AppBackend = {
   store: FakeStore;
-  /** Every command the app sent, in call order, with any non-null answer. */
-  calls: { command: string; args: unknown; reply?: unknown }[];
+  /** Every command the app sent, in call order, with any non-null answer or Rust-style refusal. */
+  calls: {
+    command: string;
+    args: unknown;
+    reply?: unknown;
+    refused?: string;
+  }[];
   emit: (event: string, payload?: unknown) => Promise<void>;
   /** Hands the store to the next page load, as Rust's database outlives a reload. */
   keepStore: () => void;
@@ -428,6 +433,27 @@ const HANDLERS: Record<string, Handler> = {
     void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath });
     return row;
   },
+  // milestones.rs reorder: `ids` must be exactly the project's ids, else the
+  // bare code stale_order; then sort_order follows `ids`. Emits CHANGED.
+  milestones_reorder: (store, { projectPath, ids }) => {
+    const mine = store.milestones.filter(
+      (milestone) => milestone.projectPath === projectPath,
+    );
+    const wanted = [...(ids as string[])].sort().join();
+    if (
+      wanted !==
+      mine
+        .map((milestone) => milestone.id)
+        .sort()
+        .join()
+    )
+      throw "stale_order";
+    (ids as string[]).forEach((id, order) => {
+      mine.find((milestone) => milestone.id === id)!.order = order;
+    });
+    void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath });
+    return [...mine].sort((a, b) => a.order - b.order);
+  },
   // milestones.rs remove for the `user` writer; emits CHANGED as Rust does.
   milestones_remove: (store, { projectPath, id }) => {
     const at = store.milestones.findIndex(
@@ -698,8 +724,8 @@ export function installBackend(
         if (reply != null) call.reply = structuredClone(reply);
         return reply;
       } catch (error) {
-        if (typeof error !== "string")
-          void window.appBackendReport({ command, problem: String(error) });
+        if (typeof error === "string") call.refused = error;
+        else void window.appBackendReport({ command, problem: String(error) });
         throw error;
       }
     },

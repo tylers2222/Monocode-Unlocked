@@ -1,8 +1,19 @@
-import { useState, type ReactNode } from "react";
-import { Check, ChevronDown, Terminal } from "../../../shared/ui/icons";
+import {
+  Fragment,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
+import {
+  Check,
+  ChevronDown,
+  GripVertical,
+  Terminal,
+} from "../../../shared/ui/icons";
 import { PixelMascot } from "../../projects/ui/PixelMascot";
 import { dayOf, formatDay } from "../model/day";
 import type { Milestone, MilestoneStatus } from "../model/milestones";
+import { dropBeside, orderKey, stepOf, type Drop } from "../model/reorder";
 import {
   STATUS_LABELS,
   agentCreator,
@@ -28,7 +39,48 @@ type Props = {
   open?: { id: string | null; editor: ReactNode };
   /** Opens the editor on a row, by click or by Enter or Space. */
   onOpen?: (id: string) => void;
+  /**
+   * A row dragged by its grip or moved with Alt+ArrowUp/Down; "changed" when
+   * the list changed under a drag, so nothing is moved.
+   */
+  onMove?: (move: MoveEnd) => void;
 };
+
+export type MoveEnd = { kind: "drop"; drop: Drop } | { kind: "changed" };
+
+/** The row the pointer is over, and which half of it the pointer is on. */
+type Over = { id: string; side: "before" | "after" };
+
+/** A row dragged by its grip, and the list it was picked up from. */
+type Drag = { id: string; from: string; over: Over | null };
+
+/** The row nearest `y` in `timeline`, other than the dragged row `id`. */
+function overAt(timeline: HTMLElement, y: number, id: string): Over | null {
+  let best: { over: Over; distance: number } | null = null;
+  for (const row of timeline.querySelectorAll<HTMLElement>(
+    "[data-milestone]",
+  )) {
+    const rowId = row.dataset.milestone;
+    if (!rowId || rowId === id) continue;
+    const { top, height } = row.getBoundingClientRect();
+    const middle = top + height / 2;
+    const distance = Math.abs(y - middle);
+    if (!best || distance < best.distance)
+      best = {
+        over: { id: rowId, side: y < middle ? "before" : "after" },
+        distance,
+      };
+  }
+  return best?.over ?? null;
+}
+
+/**
+ * Focuses the row a key just moved when it mounts in its new group. A stable
+ * callback ref runs only on mount, as `autoFocus` does for form fields.
+ */
+function focusMoved(row: HTMLElement | null) {
+  row?.focus();
+}
 
 const GROUP_DOT: Record<MilestoneStatus, string> = {
   done: "grid place-items-center border border-emerald-400/60 bg-emerald-400/18 text-emerald-400",
@@ -54,9 +106,58 @@ export function MilestoneTimeline({
   today = new Date(),
   open,
   onOpen,
+  onMove,
 }: Props) {
   const [doneCollapsed, setDoneCollapsed] = useState(false);
+  const [drag, setDrag] = useState<Drag | null>(null);
+  /** The row Alt+Arrow moved: it keeps focus if the move remounts it; cleared on blur. */
+  const [moved, setMoved] = useState<string | null>(null);
   const groups = timelineGroups(milestones, hiddenStatuses);
+  const shown = groups.filter(
+    (group) => !(group.status === "done" && doneCollapsed),
+  );
+  // Gone when an agent removed the dragged row: nothing is lifted, and the
+  // release finds the list changed, as orderKey counts rows.
+  const dragged = drag && milestones.find((row) => row.id === drag.id);
+  const over = dragged ? drag.over : null;
+  const pointer = {
+    down: (event: ReactPointerEvent<HTMLElement>) => {
+      const grip =
+        event.target instanceof Element
+          ? event.target.closest<HTMLElement>("[data-grip]")
+          : null;
+      const id = grip?.dataset.grip;
+      if (!id || event.button !== 0) return;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setDrag({ id, from: orderKey(milestones), over: null });
+    },
+    move: (event: ReactPointerEvent<HTMLElement>) => {
+      if (!drag) return;
+      setDrag({
+        ...drag,
+        over: overAt(event.currentTarget, event.clientY, drag.id),
+      });
+    },
+    up: () => {
+      setDrag(null);
+      if (!drag?.over) return;
+      if (orderKey(milestones) !== drag.from)
+        return onMove?.({ kind: "changed" });
+      const drop = dropBeside(shown, drag.id, drag.over);
+      if (drop) onMove?.({ kind: "drop", drop });
+    },
+    cancel: () => setDrag(null),
+  };
+  const step = (id: string, delta: -1 | 1) => {
+    const drop = stepOf(shown, id, delta);
+    if (!drop) return;
+    setMoved(id);
+    onMove?.({ kind: "drop", drop });
+  };
+  const lifted = (side: Over["side"]) =>
+    dragged ? (
+      <LiftedCard milestone={dragged} side={side} today={today} />
+    ) : null;
   const todayLine = (
     <div
       data-today
@@ -69,7 +170,14 @@ export function MilestoneTimeline({
     </div>
   );
   return (
-    <div className="relative mx-auto w-full max-w-[780px] px-8 pt-1.5 pb-7 before:absolute before:top-[22px] before:bottom-[30px] before:left-[39px] before:w-px before:bg-content/16">
+    <div
+      data-timeline
+      onPointerDown={pointer.down}
+      onPointerMove={pointer.move}
+      onPointerUp={pointer.up}
+      onPointerCancel={pointer.cancel}
+      className="relative mx-auto w-full max-w-[780px] px-8 pt-1.5 pb-7 before:absolute before:top-[22px] before:bottom-[30px] before:left-[39px] before:w-px before:bg-content/16"
+    >
       {open?.id === null ? (
         <div className="relative mt-4 ml-7">{open.editor}</div>
       ) : null}
@@ -113,14 +221,25 @@ export function MilestoneTimeline({
                       {open.editor}
                     </li>
                   ) : (
-                    <MilestoneRow
-                      key={milestone.id}
-                      milestone={milestone}
-                      highlighted={highlightIds.has(milestone.id)}
-                      lookUpCreator={lookUpCreator}
-                      today={today}
-                      onOpen={onOpen}
-                    />
+                    <Fragment key={milestone.id}>
+                      {over?.id === milestone.id && over.side === "before"
+                        ? lifted("before")
+                        : null}
+                      <MilestoneRow
+                        milestone={milestone}
+                        highlighted={highlightIds.has(milestone.id)}
+                        lookUpCreator={lookUpCreator}
+                        today={today}
+                        onOpen={onOpen}
+                        onStep={step}
+                        ghost={dragged?.id === milestone.id}
+                        refocus={moved === milestone.id}
+                        onBlur={() => setMoved(null)}
+                      />
+                      {over?.id === milestone.id && over.side === "after"
+                        ? lifted("after")
+                        : null}
+                    </Fragment>
                   ),
                 )}
               </ol>
@@ -133,18 +252,62 @@ export function MilestoneTimeline({
   );
 }
 
+/**
+ * Frame M·6 mid-drag: the dragged row's card, lifted, takes its place in the
+ * list where it would drop, under the blue drop line.
+ */
+function LiftedCard({
+  milestone,
+  side,
+  today,
+}: {
+  milestone: Milestone;
+  side: Over["side"];
+  today: Date;
+}) {
+  return (
+    <li
+      aria-hidden
+      data-lifted={side}
+      className="pointer-events-none relative my-1 flex items-center gap-3 rounded-lg bg-background-base py-2 pr-2.5 pl-3 text-sm font-medium shadow-lg ring-1 ring-content/12"
+    >
+      <span
+        data-drop-line
+        className="absolute right-0 -left-[22px] -top-1.5 h-0.5 rounded-full bg-accent before:absolute before:-top-[3px] before:left-0 before:size-2 before:rounded-full before:border-2 before:border-accent before:bg-background-base"
+      />
+      <i
+        className={`block size-[7px] shrink-0 rounded-full ${ROW_DOT[milestone.status]}`}
+      />
+      <span className="min-w-0 flex-1 truncate">{milestone.title}</span>
+      <span className="text-xs font-normal text-content/55 tabular-nums">
+        {milestone.target ? formatTarget(milestone.target, today) : "Later"}
+      </span>
+    </li>
+  );
+}
+
 function MilestoneRow({
   milestone,
   highlighted,
   lookUpCreator,
   today,
   onOpen,
+  onStep,
+  ghost,
+  refocus,
+  onBlur,
 }: {
   milestone: Milestone;
   highlighted: boolean;
   lookUpCreator: NonNullable<Props["lookUpCreator"]>;
   today: Date;
   onOpen: Props["onOpen"];
+  onStep: (id: string, delta: -1 | 1) => void;
+  /** Dragged: the row stays as a faded ghost while its lifted card moves. */
+  ghost: boolean;
+  /** The row a key moved: focused again when the move remounts it. */
+  refocus: boolean;
+  onBlur: () => void;
 }) {
   const done = milestone.status === "done";
   const creator = agentCreator(milestone.createdBy);
@@ -152,19 +315,37 @@ function MilestoneRow({
     <li
       tabIndex={0}
       data-milestone={milestone.id}
+      ref={refocus ? focusMoved : undefined}
+      onBlur={onBlur}
       onClick={() => onOpen?.(milestone.id)}
       onKeyDown={(event) => {
         if (event.target !== event.currentTarget) return;
+        if (
+          event.altKey &&
+          (event.key === "ArrowUp" || event.key === "ArrowDown")
+        ) {
+          event.preventDefault();
+          onStep(milestone.id, event.key === "ArrowUp" ? -1 : 1);
+          return;
+        }
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         onOpen?.(milestone.id);
       }}
-      className={`relative grid grid-cols-[14px_1fr_auto] items-start gap-3.5 rounded-lg py-2 pr-2.5 outline-none focus-visible:ring-1 focus-visible:ring-accent/50 focus-visible:ring-inset ${
+      className={`group/row relative grid grid-cols-[14px_1fr_auto] items-start gap-3.5 rounded-lg py-2 pr-2.5 outline-none focus-visible:ring-1 focus-visible:ring-accent/50 focus-visible:ring-inset ${
         highlighted
           ? "bg-accent/8 inset-ring inset-ring-accent/30 motion-safe:animate-[approval-toast-in_220ms_cubic-bezier(0.22,1,0.36,1)]"
           : ""
-      }`}
+      } ${ghost ? "opacity-35" : ""}`}
     >
+      <span
+        data-grip={milestone.id}
+        aria-hidden
+        onClick={(event) => event.stopPropagation()}
+        className="absolute top-2 -left-6 grid h-5 w-4 cursor-grab touch-none place-items-center text-content/35 opacity-0 group-hover/row:opacity-100"
+      >
+        <GripVertical className="size-3.5" />
+      </span>
       <span className="grid h-5 place-items-center">
         <i
           className={`block size-[7px] rounded-full ${ROW_DOT[milestone.status]}`}

@@ -124,3 +124,63 @@ test("perf: an agent's add is visible", async ({ app, page }) => {
   console.log(`PERF agent-add ${ms.toFixed(1)}`);
   expect(ms).toBeLessThan(1000);
 });
+
+// M-9b: the longest gap between painted frames while a row is dragged
+// through 50 rows (one group), five drags. Browser-harness numbers.
+test("perf: dragging through 50 rows has no frame gap over 100 ms", async ({
+  app,
+  page,
+}) => {
+  const fifty = milestones
+    .slice(0, 50)
+    .map((row) => ({ ...row, status: "planned" as const }));
+  await app.mount({ projects: [PROJECT], milestones: fifty });
+  await page.getByRole("button", { name: "Milestones", exact: true }).click();
+  await expect(page.locator("[data-milestone]")).toHaveCount(50);
+  const worst: number[] = [];
+  for (let run = 0; run < 5; run++) {
+    const first = page.locator(`[data-milestone="${fifty[0].id}"]`);
+    await first.hover();
+    const grip = (await first.locator("[data-grip]").boundingBox())!;
+    const last = (await page
+      .locator(`[data-milestone="${fifty[49].id}"]`)
+      .boundingBox())!;
+    await page.evaluate(() => {
+      const gaps: number[] = [];
+      let previous = performance.now();
+      const tick = (now: number) => {
+        gaps.push(now - previous);
+        previous = now;
+        (
+          window as unknown as { dragFrames?: { gaps: number[]; id: number } }
+        ).dragFrames!.id = requestAnimationFrame(tick);
+      };
+      (
+        window as unknown as { dragFrames: { gaps: number[]; id: number } }
+      ).dragFrames = {
+        gaps,
+        id: requestAnimationFrame(tick),
+      };
+    });
+    await page.mouse.move(grip.x + 8, grip.y + 8);
+    await page.mouse.down();
+    await page.mouse.move(grip.x + 8, last.y + last.height - 4, { steps: 60 });
+    // The drag really ran: the row is lifted and a drop line is drawn.
+    await expect(page.locator("[data-drop-line]")).toHaveCount(1);
+    const gaps = await page.evaluate(() => {
+      const frames = (
+        window as unknown as { dragFrames: { gaps: number[]; id: number } }
+      ).dragFrames;
+      cancelAnimationFrame(frames.id);
+      return frames.gaps.slice(1);
+    });
+    await page.keyboard.press("Escape");
+    await page.mouse.move(grip.x + 8, grip.y + 8);
+    await page.mouse.up();
+    worst.push(Math.max(...gaps));
+  }
+  console.log(
+    `PERF drag-worst-frame ${worst.map((ms) => ms.toFixed(1)).join(" ")}`,
+  );
+  expect(Math.max(...worst)).toBeLessThan(100);
+});
