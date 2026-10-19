@@ -1,7 +1,14 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { ReactNode } from "react";
-import { GitPullRequest, Minus, Palette, Plus } from "../../../shared/ui/icons";
-import type { Approval } from "../model/approvals";
+import {
+  Check,
+  ChevronRight,
+  GitPullRequest,
+  Minus,
+  Palette,
+  Plus,
+} from "../../../shared/ui/icons";
+import { cursorRow, type Approval, type Picker } from "../model/approvals";
 import { GigaText } from "./GigaText";
 
 const LINK_ICON = { pr: GitPullRequest, doop: Palette };
@@ -72,7 +79,10 @@ function Tradeoffs({ card }: { card: Approval }) {
   );
 }
 
-function Options({ card }: { card: Approval }) {
+type Ticks = { picker: Picker; onTick: (label: string) => void };
+
+function Options({ card, picker, onTick }: { card: Approval } & Ticks) {
+  const cursorAt = cursorRow(picker, card.options);
   return (
     <Section
       title={
@@ -85,33 +95,53 @@ function Options({ card }: { card: Approval }) {
       }
     >
       <div className="divide-y divide-content/7 overflow-hidden rounded-lg border border-content/10">
-        {card.options.map((option, index) => (
-          <div
-            key={option.label}
-            className="grid grid-cols-[14px_16px_1fr] items-start gap-2.5 px-3 py-[9px]"
-          >
-            <span className="text-right font-mono text-[11px] leading-5 text-content/55">
-              {index + 1}
-            </span>
-            <span className="mt-0.5 size-4 rounded-[4px] border-[1.5px] border-content/50" />
-            <div>
-              <div className="flex items-center gap-2 text-[13px] leading-5 font-medium">
-                <GigaText text={option.label} />
-                {option.recommended ? (
-                  <span className="rounded bg-accent/12 px-1.5 text-[10px] leading-4 font-semibold whitespace-nowrap text-(--link-color) dark:bg-accent/16 dark:text-[#A9CFFB]">
-                    Recommended
-                  </span>
+        {card.options.map((option, index) => {
+          const cursor = index === cursorAt;
+          const on = picker.ticked.has(option.label);
+          return (
+            <div
+              key={option.label}
+              role="checkbox"
+              aria-checked={on}
+              onClick={() => onTick(option.label)}
+              className={`grid grid-cols-[14px_16px_1fr] items-start gap-2.5 px-3 py-[9px] ${
+                cursor ? "group-focus-within:bg-content/6" : ""
+              }`}
+            >
+              <span className="text-right font-mono text-[11px] leading-5 text-content/55">
+                <span className={cursor ? "group-focus-within:hidden" : ""}>
+                  {index + 1}
+                </span>
+                {cursor ? (
+                  <ChevronRight className="mt-1 ml-auto hidden size-3 text-accent group-focus-within:block" />
+                ) : null}
+              </span>
+              <span
+                className={`mt-0.5 grid size-4 place-items-center rounded-[4px] border-[1.5px] text-white ${
+                  on ? "border-accent bg-accent" : "border-content/50"
+                }`}
+              >
+                {on ? <Check className="size-3" strokeWidth={3} /> : null}
+              </span>
+              <div>
+                <div className="flex items-center gap-2 text-[13px] leading-5 font-medium">
+                  <GigaText text={option.label} />
+                  {option.recommended ? (
+                    <span className="rounded bg-accent/12 px-1.5 text-[10px] leading-4 font-semibold whitespace-nowrap text-(--link-color) dark:bg-accent/16 dark:text-[#A9CFFB]">
+                      Recommended
+                    </span>
+                  ) : null}
+                </div>
+                {option.description ? (
+                  <GigaText
+                    text={option.description}
+                    className="mt-px block text-xs leading-[18px] text-content/62"
+                  />
                 ) : null}
               </div>
-              {option.description ? (
-                <GigaText
-                  text={option.description}
-                  className="mt-px block text-xs leading-[18px] text-content/62"
-                />
-              ) : null}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </Section>
   );
@@ -151,11 +181,13 @@ function Links({ card }: { card: Approval }) {
   );
 }
 
-export function CardBody({ card }: { card: Approval }) {
+export function CardBody({ card, picker, onTick }: { card: Approval } & Ticks) {
   return (
     <>
       <Tradeoffs card={card} />
-      {card.options.length > 0 ? <Options card={card} /> : null}
+      {card.options.length > 0 ? (
+        <Options card={card} picker={picker} onTick={onTick} />
+      ) : null}
       {card.links.length > 0 ? <Links card={card} /> : null}
     </>
   );

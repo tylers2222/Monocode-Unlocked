@@ -276,3 +276,80 @@ export function ago(at: number, now: number): string {
 
 export const deliveryTime = (at: number, now: number) =>
   daysBefore(at, now) === 0 ? time(at) : stamp(at);
+
+export function decide(
+  card: Approval,
+  verdict: Verdict,
+  comment: string,
+  chosen: string[],
+): Promise<Approval> {
+  return invoke("approvals_decide", {
+    id: card.id,
+    verdict,
+    note: comment.trim() ? comment : null,
+    chosen,
+  });
+}
+
+export type ApproveButton = { enabled: boolean; label: string };
+
+export function approveButton(options: number, ticked: number): ApproveButton {
+  if (options === 0) return { enabled: true, label: "Approve" };
+  if (ticked === 0) return { enabled: false, label: "Approve" };
+  return {
+    enabled: true,
+    label: `Approve ${ticked} option${ticked === 1 ? "" : "s"}`,
+  };
+}
+
+/**
+ * Ticks and the cursor by option label: labels are unique per card and are
+ * its only option id, so a Giga update never moves a tick to another option.
+ */
+export type Picker = { cursor: string | null; ticked: ReadonlySet<string> };
+
+export const OPEN_PICKER: Picker = { cursor: null, ticked: new Set() };
+
+/** The ticked labels the card still has, in its order. */
+export function chosen(
+  picker: Picker,
+  options: readonly ApprovalOption[],
+): string[] {
+  return options
+    .map((option) => option.label)
+    .filter((label) => picker.ticked.has(label));
+}
+
+/** The cursor's row; before any key or tick, the Giga's recommended row. */
+export function cursorRow(
+  picker: Picker,
+  options: readonly ApprovalOption[],
+): number {
+  const at = options.findIndex((option) => option.label === picker.cursor);
+  if (at >= 0) return at;
+  return Math.max(
+    0,
+    options.findIndex((option) => option.recommended),
+  );
+}
+
+export function tick(picker: Picker, label: string): Picker {
+  const ticked = new Set(picker.ticked);
+  if (!ticked.delete(label)) ticked.add(label);
+  return { cursor: label, ticked };
+}
+
+export function pickerKey(
+  picker: Picker,
+  key: string,
+  options: readonly ApprovalOption[],
+): Picker | null {
+  if (options.length === 0) return null;
+  const row = cursorRow(picker, options);
+  const to = (at: number) => ({ ...picker, cursor: options[at].label });
+  if (key === "ArrowDown") return to(Math.min(options.length - 1, row + 1));
+  if (key === "ArrowUp") return to(Math.max(0, row - 1));
+  if (key === " ") return tick(picker, options[row].label);
+  const option = /^[1-9]$/.test(key) ? options[Number(key) - 1] : undefined;
+  return option ? tick(picker, option.label) : null;
+}
