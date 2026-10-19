@@ -344,6 +344,16 @@ export type AgentAppHost = {
   now?(): Date;
 };
 
+const APPROVAL_CARD_FIELDS = [
+  "heading",
+  "summary",
+  "tradeoffs",
+  "options",
+  "urgency",
+  "links",
+  "origin",
+];
+
 /** Every app action with the input fields it takes. */
 export const FIELDS = new Map<string, readonly string[]>([
   ["models.list", []],
@@ -422,6 +432,9 @@ export const FIELDS = new Map<string, readonly string[]>([
   ],
   ["milestones.remove", ["project", "id"]],
   ["milestones.reorder", ["project", "ids"]],
+  ["approvals.file", ["project", ...APPROVAL_CARD_FIELDS]],
+  ["approvals.update", ["id", ...APPROVAL_CARD_FIELDS]],
+  ["approvals.withdraw", ["id"]],
   ["workspace.status", []],
   ["chat.card", [...CARD_FIELDS]],
 ]);

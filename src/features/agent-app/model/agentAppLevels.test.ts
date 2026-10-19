@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { writeFileSync } from "node:fs";
 import { beforeEach, expect, it, vi } from "vitest";
 import { __monosTestReset, loadMonoRoster } from "../../monos/model/mono";
+import { markHabitRun } from "../../monos/model/monoHabits";
 import { levelGate, type ActionChecked } from "../../monos/model/monoCaller";
 import { setHarnessModels } from "../../sessions/model/models";
 import { newSession, type Session } from "../../sessions/model/session";
@@ -32,8 +33,13 @@ const WORLD = vi.hoisted(() => ({
     { id: "lead", cwd: "/code/app", leadSessionId: null, saved: true },
     { id: "worker", cwd: "/code/app", leadSessionId: "lead", saved: true },
     { id: "ghost", cwd: "/code/app", leadSessionId: "lead", saved: false },
+    { id: "g-chat", cwd: "/Users/me", leadSessionId: null, saved: true },
+    { id: "g-run", cwd: "/Users/me", leadSessionId: null, saved: true },
   ],
-  monos: [{ id: "mono-a", sessionId: "a-chat", projects: ["/code/app"] }],
+  monos: [
+    { id: "mono-a", role: "mono", sessionId: "a-chat", projects: ["/code/app"] },
+    { id: "giga-g", role: "giga", sessionId: "g-chat", projects: [] },
+  ],
 }));
 
 type Scenario = {
@@ -61,11 +67,15 @@ const SCENARIOS: Scenario[] = [
   { name: "A5: a Mono's send into a worker, padded id parsed once", caller: "a-chat", action: "sessions.send", input: { sessionId: " worker\n", prompt: "Stop" }, requestId: "a5-send", ran: null },
   { name: "A5: a Mono's draft into a worker", caller: "a-chat", action: "sessions.draft", input: { sessionId: "worker", prompt: "Draft this" }, requestId: "a5-draft", ran: null },
   { name: "A5: an unsaved worker counts by the window's lead copy", caller: "a-chat", action: "sessions.send", input: { sessionId: "ghost", prompt: "Hi" }, requestId: "a5-ghost", ran: null },
+  { name: "Giga row: a Giga's approvals.withdraw", caller: "g-chat", action: "approvals.withdraw", input: { id: "00000000-0000-4000-8000-000000000001" }, requestId: "g-withdraw", ran: null },
+  { name: "Giga row: a Giga habit run's approvals.withdraw", caller: "g-run", action: "approvals.withdraw", input: { id: "00000000-0000-4000-8000-000000000001" }, requestId: "g-run-withdraw", ran: null },
+  { name: "Giga row: a Mono's approvals.file", caller: "a-chat", action: "approvals.file", input: { project: PROJECT, heading: "Pick a store" }, requestId: "m-file", ran: null },
+  { name: "Giga row: a lead's approvals.withdraw", caller: "lead", action: "approvals.withdraw", input: { id: "00000000-0000-4000-8000-000000000001" }, requestId: "l-withdraw", ran: null },
   // A3 and A4: a worker's call of every action the gate checks.
   ...[...FIELDS]
     .filter(([action]) => !action.startsWith("messages."))
     .map(([action, fields]): Scenario => ({
-      name: `${action === "sessions.start" ? "A3" : "A4"}: a worker's ${action}`,
+      name: `${action.startsWith("approvals.") ? "Giga row" : action === "sessions.start" ? "A3" : "A4"}: a worker's ${action}`,
       caller: "worker",
       action,
       input:
@@ -103,7 +113,7 @@ vi.mock("@tauri-apps/api/core", () => ({
         revision: 1,
         monos: WORLD.monos.map((mono) => ({
           id: mono.id,
-          role: "mono",
+          role: mono.role,
           data: {
             sessionId: mono.sessionId,
             mascot: "crab",
@@ -135,6 +145,7 @@ beforeEach(async () => {
     { id: "codex:test", harness: "codex", name: "Test model" },
   ]);
   __monosTestReset();
+  markHabitRun("g-run", "giga-g");
   await loadMonoRoster();
   command.answer = (name) => ANSWERS[name as Call["command"]];
 });
@@ -186,10 +197,14 @@ function world(caller: string) {
     ),
     session: vi.fn(async (id: string) => sessions.get(id) ?? null),
     worktrees: vi.fn(async () => ({ worktrees: [], defaultRoot: "/tmp" })),
-    isMono: (id: string) => id === "a-chat",
-    isHabitRun: () => false,
+    isMono: (id: string) => id === "a-chat" || id === "g-chat",
+    isHabitRun: (id: string) => id === "g-run",
     monoOf: (id: string) =>
-      id === "a-chat" ? { id: "mono-a", projects: [PROJECT] } : undefined,
+      id === "a-chat"
+        ? { id: "mono-a", projects: [PROJECT] }
+        : id === "g-chat" || id === "g-run"
+          ? { id: "giga-g", projects: [], giga: true }
+          : undefined,
     messages: {
       getMonos: async () => ({ monos: [] }),
       send: actions.messageSend,
@@ -287,12 +302,12 @@ it.skipIf(WRITE)("holds every scenario and the world in the fixture", () => {
 
 // Design 6.6, 13.3 and 16.2, the Rust contract. Defect: an app action runs
 // with no level check, or with a check that names another action, target,
-// lead copy, launch id or input than Rust reads; Rust's refusal (A3-A5), its
-// replay (A1) or its request id refusal (A2) does not stop the action or
-// loses its code, hint, row id or duplicate flag; the web app decides the
-// new session's lead itself instead of taking Rust's answer; or a submitted
-// start writes no start row, sends another key or input than the check, or
-// answers another message_id than its row's.
+// lead copy, launch id or input than Rust reads; Rust's refusal (A3-A5 and
+// the Giga row), its replay (A1) or its request id refusal (A2) does not
+// stop the action or loses its code, hint, row id or duplicate flag; the
+// web app decides the new session's lead itself instead of taking Rust's
+// answer; or a submitted start writes no start row, sends another key or
+// input than the check, or answers another message_id than its row's.
 it.skipIf(WRITE).each(cases.map((entry) => [entry.name, entry] as const))(
   "%s: sends the fixture's calls and acts on their replies",
   async (_name, entry) => {
@@ -316,6 +331,7 @@ it.skipIf(WRITE).each(cases.map((entry) => [entry.name, entry] as const))(
         continue;
       }
       allowed += 1;
+      if (!entry.ran) continue;
       expect(
         (outcome as { value: { message_id?: string } }).value.message_id,
       ).toBe((record?.reply as { messageId?: string } | undefined)?.messageId);
