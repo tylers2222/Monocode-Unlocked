@@ -7,9 +7,11 @@
 #     rust-lint-attributes.mjs and counted net per (file, key), so moving one inside
 #     a file passes (a new #[expect(..., reason = "baseline ...")] marker counts);
 #   - a growing baseline: the "count" values in eslint-suppressions.json sum higher;
-#   - an edit to a gate file (workflows, gate scripts, lint and toolchain configs at
-#     any depth), or to a lint table or lint level in a Cargo.toml;
-#   - a JS/TS, Rust or Cargo.toml file that git diffs as binary;
+#   - an edit to a gate file (workflows, gate and setup scripts, lint and toolchain
+#     configs at any depth), to a lint table or lint level in a Cargo.toml, or to an
+#     install or prepare script in a package.json;
+#   - a JS/TS, Rust or Cargo.toml file that git diffs as binary, or a file name with
+#     an escape git does not document;
 #   - more than 500 changed non-test lines. Tests, fixtures, Rust #[cfg(test)] items,
 #     eslint-suppressions.json and package-lock.json do not count.
 # The diff is read line by line, so it is weaker than gate/lint: a lint added on its
@@ -37,30 +39,37 @@ exec perl -e '
   use strict;
   use warnings;
 
-  my ($base, $head) = @ARGV;
-  my $GATE_FILE = qr{^(\.github/(workflows|actions)/.*|scripts/gate/.*|\.github/rust-version|rust-toolchain(\.toml)?)$|(^|/)(eslint\.config\.[cm]?[jt]s|\.?clippy\.toml|\.jscpd\.json|\.cargo/config(\.toml)?)$};
+  my ($merge_base, $head) = @ARGV;
+  my $GATE_FILE = qr{^(\.github/(workflows|actions)/.*|scripts/gate/.*|scripts/install-linux-deps-[^/]*\.sh|\.github/rust-version|rust-toolchain(\.toml)?)$|(^|/)(eslint\.config\.[cm]?[jt]s|\.?clippy\.toml|\.jscpd\.json|\.cargo/config(\.toml)?)$};
   my $SIZE_EXEMPT = qr{(^|/)(tests?|__tests__|fixtures?)/|\.(test|spec|fixtures?)\.[^/]+$|(^|/)(eslint-suppressions\.json|package-lock\.json)$};
   my $JS = qr{\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$};
   my $SOURCE = qr{\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|rs)$|(^|/)Cargo\.toml$};
-  my $LINT_TOML = qr{^\s*\[(workspace\.)?lints|=\s*"(allow|warn|deny|forbid|expect|force-warn)"|\blevel\s*=|^\s*workspace\s*=\s*true};
+  # Changed lines in these files that can switch gate/lint off: Cargo lint tables and
+  # levels, and the npm lifecycle scripts that `npm ci` runs before ESLint and clippy.
+  my @GATE_SETTINGS = (
+    [qr{(^|/)Cargo\.toml$}, qr{^\s*\[(workspace\.)?lints|=\s*"(allow|warn|deny|forbid|expect|force-warn)"|\blevel\s*=|^\s*workspace\s*=\s*true}],
+    [qr{(^|/)package\.json$}, qr{"((pre|post)?install|prepare)"\s*:}],
+  );
   my $MAX_LINES = 500;
   my @DIFF = ("diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames");
 
-  my (@findings, %net, %first, %lint_toml, %cfg_test);
+  my (@findings, %net, %first, %setting, %cfg_test);
   my ($changed, $suppression_sum) = (0, 0);
 
-  sub finding { push @findings, "integrity: $_[0]" }
+  # Control characters are printed as \xNN, so a file name cannot start a workflow command.
+  sub finding { push @findings, "integrity: " . ($_[0] =~ s/([\x00-\x1f\x7f])/sprintf("\\x%02x", ord $1)/ger) }
 
   sub git {
     open(my $out, "-|", "git", @_) or die "git: $!";
     local $/;
     my $text = <$out> // "";
-    close $out;
+    close $out or die "integrity: git $_[0] failed\n";
     return $text;
   }
 
   # Lines (1-based) from a #[cfg(test)] attribute to the first later line at the same
-  # indent that is "}" or ends in ";", the item it applies to in rustfmt layout.
+  # indent that ends in "}", ";" or ",": the item it applies to in rustfmt layout,
+  # whether the item takes one line or many.
   sub cfg_test_lines {
     my @lines = split /\n/, git("show", "$_[0]:$_[1]");
     my %inside;
@@ -68,7 +77,7 @@ exec perl -e '
       next unless $lines[$i] =~ /^(\s*)#\[cfg\(test\)\]\s*$/;
       my ($indent, $j) = (length $1, $i + 1);
       $j++ until $j >= @lines
-        || ($lines[$j] =~ /^(\s*)(\S.*?)\s*$/ && length($1) == $indent && $2 !~ /^#/ && ($2 eq "}" || $2 =~ /;$/));
+        || ($lines[$j] =~ /^(\s*)(\S.*?)\s*$/ && length($1) == $indent && $2 !~ /^#/ && $2 =~ /[};,]$/);
       $inside{$_} = 1 for $i + 1 .. $j + 1;
       $i = $j;
     }
@@ -95,7 +104,7 @@ exec perl -e '
   }
 
   # Paths, renames and binary diffs, from NUL-separated output so any file name parses.
-  my @entries = split /\0/, git(@DIFF, "--numstat", "-z", $base, $head);
+  my @entries = split /\0/, git(@DIFF, "--numstat", "-z", $merge_base, $head);
   while (@entries) {
     my ($added, undef, $path) = split /\t/, shift(@entries), 3;
     my @paths = $path eq "" ? splice(@entries, 0, 2) : ($path);
@@ -104,16 +113,22 @@ exec perl -e '
     finding("$paths[-1]: diffs as binary, so its lines are not checked") if $added eq "-" && grep { $_ =~ $SOURCE } @paths;
   }
 
+  # A --- or +++ path. git C-quotes a name with control characters, so decode its
+  # escapes; an escape git does not document is a finding, not a guess.
+  my %UNESCAPE = (a => "\a", b => "\b", t => "\t", n => "\n", v => "\x0b", f => "\f", r => "\r", q{"} => q{"}, "\\" => "\\");
   sub diff_path {
     my ($name) = @_;
     $name =~ s/\t$//;
     return undef if $name eq "/dev/null";
-    ($name = $1) =~ s/\\(.)/$1/g if $name =~ /^"(.*)"$/;
+    if ($name =~ /^"(.*)"$/) {
+      $name = $1 =~ s{\\([0-7]{3}|.)}{length $1 == 3 ? chr oct $1 : $UNESCAPE{$1} // "\0"}ger;
+      finding("$name: file name has an escape git does not document") if $name =~ /\0/;
+    }
     return $name =~ s{^[ab]/}{}r;
   }
 
   my ($old, $path, $in_hunk, $old_line, $new_line);
-  open(my $diff, "-|", "git", "-c", "core.quotePath=false", @DIFF, "--unified=0", "--src-prefix=a/", "--dst-prefix=b/", $base, $head)
+  open(my $diff, "-|", "git", "-c", "core.quotePath=false", @DIFF, "--unified=0", "--src-prefix=a/", "--dst-prefix=b/", $merge_base, $head)
     or die "git: $!";
   while (<$diff>) {
     chomp;
@@ -128,10 +143,10 @@ exec perl -e '
       ($old_line, $new_line, $in_hunk) = ($1, $2, 1);
     } elsif ($in_hunk && /^([+-])(.*)$/) {
       my ($sign, $text) = ($1 eq "+" ? 1 : -1, $2);
-      my @at = $sign > 0 ? ($head, $path, $new_line) : ($base, $old, $old_line);
+      my @at = $sign > 0 ? ($head, $path, $new_line) : ($merge_base, $old, $old_line);
       $changed++ unless $path =~ $SIZE_EXEMPT || ($path =~ /\.rs$/ && in_cfg_test(@at));
       $suppression_sum += $sign * $1 if $path =~ m{(^|/)eslint-suppressions\.json$} && $text =~ /"count"\s*:\s*(\d+)/;
-      $lint_toml{$path} //= $new_line if $path =~ m{(^|/)Cargo\.toml$} && $text =~ $LINT_TOML;
+      for (@GATE_SETTINGS) { $setting{$path} //= $new_line if $path =~ $_->[0] && $text =~ $_->[1] }
       my @keys = $path =~ $JS ? $text =~ /(eslint-disable|\@ts-(?:ignore|nocheck|expect-error))/g
         : $path =~ /\.rs$/ ? rust_keys($text)
         : ();
@@ -141,7 +156,7 @@ exec perl -e '
   }
   close $diff or die "integrity: git diff failed\n";
 
-  finding("$_:$lint_toml{$_}: edits a lint table or lint level") for sort keys %lint_toml;
+  finding("$_:$setting{$_}: edits a lint or install setting that gate/lint depends on") for sort keys %setting;
   for my $entry (sort keys %net) {
     next if $net{$entry} <= 0;
     my ($file, $key) = split /\t/, $entry;
