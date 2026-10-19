@@ -56,6 +56,7 @@ beforeEach(() => {
       });
     if (command === "milestones_update") return SHIP;
     if (command === "milestones_add") return { ...SHIP, id: "m-new" };
+    if (command === "milestones_remove") return null;
     throw new Error(`unexpected ${command}`);
   });
   container = document.createElement("div");
@@ -69,7 +70,8 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function openShip() {
+/** The page on APP with `rows`, as the app mounts it. */
+async function mount() {
   await act(async () =>
     root.render(
       createElement(MilestonesView, {
@@ -80,11 +82,19 @@ async function openShip() {
       }),
     ),
   );
+}
+
+async function openRow(id: string) {
   await act(async () => {
     container
-      .querySelector('[data-milestone="m-ship"]')!
+      .querySelector(`[data-milestone="${id}"]`)!
       .dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
+}
+
+async function openShip() {
+  await mount();
+  await openRow("m-ship");
 }
 
 const writes = () =>
@@ -135,16 +145,7 @@ const update = (patch: object) => [
 
 async function openAdd(milestones: Milestone[] = [SHIP]) {
   rows = milestones;
-  await act(async () =>
-    root.render(
-      createElement(MilestonesView, {
-        cwd: APP,
-        recents: [{ path: APP, openedAt: 1 }],
-        sessions: [],
-        onClose: vi.fn(),
-      }),
-    ),
-  );
+  await mount();
   await click("Add milestone");
 }
 
@@ -237,25 +238,9 @@ it.each(
         ? saved
         : { settings: { enabled: true, hiddenStatuses: [] }, milestones: rows },
     );
-    const open = async (id: string | null) => {
-      if (id === null) await click("Add milestone");
-      else
-        await act(async () => {
-          container
-            .querySelector(`[data-milestone="${id}"]`)!
-            .dispatchEvent(new MouseEvent("click", { bubbles: true }));
-        });
-    };
-    await act(async () =>
-      root.render(
-        createElement(MilestonesView, {
-          cwd: APP,
-          recents: [{ path: APP, openedAt: 1 }],
-          sessions: [],
-          onClose: vi.fn(),
-        }),
-      ),
-    );
+    const open = (id: string | null) =>
+      id === null ? click("Add milestone") : openRow(id);
+    await mount();
     await open(start);
     await type("Title", "Saved late");
     await key(field("Title"), "Enter", { metaKey: true });
@@ -284,6 +269,80 @@ it("Add milestone while the add card is open keeps what was typed", async () => 
 
   expect(field("Title").value).toBe("Half typed");
   expect(writes()).toEqual([]);
+});
+
+const removed = [
+  "milestones_remove",
+  { projectPath: APP, id: "m-ship", by: "user" },
+];
+
+// Frame M·7: Delete sits in the edit card and asks once, inline.
+it("Delete asks once inline; Keep sends nothing and returns to the edit card", async () => {
+  await openShip();
+  await type("Note", "Typed before Delete");
+  await click("Delete");
+
+  expect(
+    container
+      .querySelector("[data-milestone-editor]")
+      ?.getAttribute("aria-label"),
+  ).toBe("Delete Ship it");
+  expect(container.textContent).toContain(
+    "Delete “Ship it”? This can’t be undone.",
+  );
+  expect(writes()).toEqual([]);
+  await click("Keep");
+
+  expect(writes()).toEqual([]);
+  expect(field("Note").value).toBe("Typed before Delete");
+});
+
+it("the confirm's Delete removes the row as user and closes the card", async () => {
+  await openShip();
+  await click("Delete");
+  await click("Delete");
+
+  expect(writes()).toEqual([removed]);
+  expect(container.querySelector("[data-milestone-editor]")).toBeNull();
+});
+
+it("Escape or ⌘↵ in the confirm deletes nothing", async () => {
+  await openShip();
+  await click("Delete");
+  const card = container.querySelector("[data-milestone-editor]")!;
+  await key(card, "Enter", { metaKey: true });
+  expect(writes()).toEqual([]);
+  await key(card, "Escape");
+
+  expect(writes()).toEqual([]);
+  expect(container.querySelector("[data-milestone-editor]")).toBeNull();
+});
+
+it("a refused delete keeps the confirm open with the reason, and the row stays", async () => {
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "milestones_remove") throw "unknown_milestone";
+    return {
+      settings: { enabled: true, hiddenStatuses: [] },
+      milestones: rows,
+    };
+  });
+  await openShip();
+  await click("Delete");
+  await click("Delete");
+
+  expect(writes()).toEqual([removed]);
+  const card = container.querySelector("[data-milestone-editor]");
+  expect(card?.getAttribute("aria-label")).toBe("Delete Ship it");
+  expect(card?.textContent).toContain("unknown_milestone");
+});
+
+it("the add card has no Delete", async () => {
+  await openAdd();
+  expect(
+    [...container.querySelectorAll("[data-milestone-editor] button")].map(
+      (button) => button.textContent?.trim(),
+    ),
+  ).not.toContain("Delete");
 });
 
 it("Enter in the title saves", async () => {
@@ -397,16 +456,7 @@ it("Escape closes the editor without saving", async () => {
 it.each(["Enter", " "])(
   "%j on a focused row opens its editor",
   async (name) => {
-    await act(async () =>
-      root.render(
-        createElement(MilestonesView, {
-          cwd: APP,
-          recents: [{ path: APP, openedAt: 1 }],
-          sessions: [],
-          onClose: vi.fn(),
-        }),
-      ),
-    );
+    await mount();
     await key(container.querySelector('[data-milestone="m-ship"]')!, name);
 
     expect(field("Title").value).toBe("Ship it");

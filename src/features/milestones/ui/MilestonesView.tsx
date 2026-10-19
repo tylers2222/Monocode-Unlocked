@@ -31,6 +31,7 @@ import {
 import {
   add,
   list,
+  remove,
   subscribe,
   update,
   type Milestone,
@@ -256,6 +257,10 @@ function MilestonesContent({
         }}
         onUpdate={async (id, patch) => {
           await update(selected, id, patch, "user");
+          await load(selected);
+        }}
+        onRemove={async (id) => {
+          await remove(selected, id, "user");
           await load(selected);
         }}
         onClose={() =>
