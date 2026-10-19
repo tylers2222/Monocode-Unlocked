@@ -4,7 +4,8 @@ use rusqlite::types::Value as Sql;
 use rusqlite::{params, Connection, OptionalExtension, Row, ToSql};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use serde_json::json;
+use tauri::{AppHandle, Emitter, Runtime, State};
 use uuid::Uuid;
 
 use crate::milestones::{check_project, require};
@@ -489,6 +490,20 @@ pub fn approvals_open_counts(store: State<'_, SessionStore>) -> Result<OpenCount
     open_counts(&*store.lock_conn()?)
 }
 
+/// Every window hears it after a write, so the board and the badge reload.
+pub(crate) const CHANGED: &str = "approvals-changed";
+
+/// Tells every window about a write that succeeded; a refusal changed nothing.
+fn announce<R: Runtime>(
+    app: &AppHandle<R>,
+    written: Result<Approval, String>,
+) -> Result<Approval, String> {
+    if let Ok(approval) = &written {
+        let _ = app.emit(CHANGED, json!({ "projectPath": approval.project_path }));
+    }
+    written
+}
+
 /// `by` is the calling Giga, which the web app takes from the caller and
 /// never from the agent's input.
 fn parse_by(by: &str) -> Result<MonoId, String> {
@@ -496,38 +511,44 @@ fn parse_by(by: &str) -> Result<MonoId, String> {
 }
 
 #[tauri::command(async)]
-pub fn approvals_file(
+pub fn approvals_file<R: Runtime>(
+    app: AppHandle<R>,
     store: State<'_, SessionStore>,
     project_path: String,
     by: String,
     card: Card,
 ) -> Result<Approval, String> {
-    file(
+    let written = file(
         &*store.lock_conn()?,
         &project_path,
         &parse_by(&by)?,
         card,
         now_ms(),
-    )
+    );
+    announce(&app, written)
 }
 
 #[tauri::command(async)]
-pub fn approvals_update(
+pub fn approvals_update<R: Runtime>(
+    app: AppHandle<R>,
     store: State<'_, SessionStore>,
     id: String,
     by: String,
     card: Card,
 ) -> Result<Approval, String> {
-    update(&*store.lock_conn()?, &id, &parse_by(&by)?, card)
+    let written = update(&*store.lock_conn()?, &id, &parse_by(&by)?, card);
+    announce(&app, written)
 }
 
 #[tauri::command(async)]
-pub fn approvals_withdraw(
+pub fn approvals_withdraw<R: Runtime>(
+    app: AppHandle<R>,
     store: State<'_, SessionStore>,
     id: String,
     by: String,
 ) -> Result<Approval, String> {
-    withdraw(&*store.lock_conn()?, &id, &parse_by(&by)?, now_ms())
+    let written = withdraw(&*store.lock_conn()?, &id, &parse_by(&by)?, now_ms());
+    announce(&app, written)
 }
 
 #[cfg(test)]

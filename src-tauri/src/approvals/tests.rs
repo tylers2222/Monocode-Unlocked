@@ -679,3 +679,111 @@ fn bad_input_is_invalid_input_and_writes_nothing() {
     assert!(error.starts_with("invalid_input"), "{error}");
     assert_eq!(list(&conn, PROJECT).unwrap(), []);
 }
+
+// Defect: a write the board must show sends no `approvals-changed`, sends it
+// twice or names another project, or a refused call sends one. The calls go
+// through Tauri's IPC, so a command argument the web app does not send fails
+// here too. Not on Windows: see `tauri` under
+// `[target.'cfg(not(windows))'.dev-dependencies]` in Cargo.toml.
+#[cfg(not(windows))]
+#[test]
+fn each_write_announces_its_project_once_and_a_refusal_announces_nothing() {
+    use tauri::Listener;
+
+    let store = SessionStore::open_in_memory().unwrap();
+    giga(&store.lock_conn().unwrap(), "giga-a", "Giga A");
+    giga(&store.lock_conn().unwrap(), "giga-b", "Giga B");
+    let app = tauri::test::mock_builder()
+        .manage(store)
+        .invoke_handler(tauri::generate_handler![
+            approvals_file,
+            approvals_update,
+            approvals_withdraw
+        ])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let (heard, events) = std::sync::mpsc::channel::<Value>();
+    app.listen_any(CHANGED, move |event| {
+        heard
+            .send(serde_json::from_str(event.payload()).unwrap())
+            .unwrap();
+    });
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+        .build()
+        .unwrap();
+    let invoke = |command: &str, args: Value| {
+        let answer = tauri::test::get_ipc_response(
+            &webview,
+            tauri::webview::InvokeRequest {
+                cmd: command.into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: "tauri://localhost".parse().unwrap(),
+                body: tauri::ipc::InvokeBody::Json(args),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.into(),
+            },
+        );
+        answer.map(|body| body.deserialize::<Value>().unwrap())
+    };
+    let sent = |heading: &str| serde_json::to_value(card(heading)).unwrap();
+    let file = |project: &str, by: &str, heading: &str| {
+        (
+            "approvals_file",
+            json!({"projectPath": project, "by": by, "card": sent(heading)}),
+        )
+    };
+    let (command, args) = file(PROJECT, "giga-a", "Ship it");
+    let id = invoke(command, args).unwrap()["id"].clone();
+    let steps = [
+        (file(PROJECT, "giga-a", "Ship it"), true),
+        (
+            (
+                "approvals_update",
+                json!({"id": id, "by": "giga-b", "card": sent("Taken")}),
+            ),
+            false,
+        ),
+        (file(PROJECT, "giga-b", "Ship it"), false),
+        (file(PROJECT, "giga-a", " "), false),
+        (
+            (
+                "approvals_update",
+                json!({"id": id, "by": "giga-a", "card": sent("Ship it now")}),
+            ),
+            true,
+        ),
+        (
+            ("approvals_withdraw", json!({"id": id, "by": "giga-a"})),
+            true,
+        ),
+        (
+            ("approvals_withdraw", json!({"id": id, "by": "giga-a"})),
+            false,
+        ),
+        (
+            (
+                "approvals_withdraw",
+                json!({"id": "missing", "by": "giga-a"}),
+            ),
+            false,
+        ),
+        (file(OTHER, "giga-b", "Ship it"), true),
+    ];
+    for ((command, args), writes) in steps {
+        let answer = invoke(command, args.clone());
+        assert_eq!(answer.is_ok(), writes, "{command} {args}: {answer:?}");
+    }
+    let project = |path: &str| json!({ "projectPath": path });
+    assert_eq!(
+        events.try_iter().collect::<Vec<_>>(),
+        [
+            project(PROJECT),
+            project(PROJECT),
+            project(PROJECT),
+            project(PROJECT),
+            project(OTHER)
+        ],
+        "one event per write: file, refile, update, withdraw, then the other project"
+    );
+}
