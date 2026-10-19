@@ -10221,7 +10221,9 @@ pub(crate) mod tests {
     // name. Defect: a command's parameter is renamed from `call` (or the web
     // app sends another key), so every app action or start record fails in
     // the app while every other test, which calls the Rust functions or
-    // mocks `invoke`, passes.
+    // mocks `invoke`, passes. Not on Windows: see `tauri` under
+    // `[target.'cfg(not(windows))'.dev-dependencies]` in Cargo.toml.
+    #[cfg(not(windows))]
     #[test]
     fn each_level_gate_command_binds_the_call_key_the_web_app_sends() {
         let fixture: Value = serde_json::from_str(include_str!(
