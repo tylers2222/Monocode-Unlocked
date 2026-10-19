@@ -456,7 +456,9 @@ mod tests {
 
     // Defects: the board mixes closed cards among open ones, puts a newer
     // not-blocking card above an older blocking one, sorts closed cards by
-    // filing time, counts closed cards, or reuses a deleted card's number.
+    // filing time, does not put the newer of two same-time cards first,
+    // counts closed cards, reuses a deleted card's number, or lists a path
+    // that is not normalized.
     #[test]
     fn list_orders_cards_as_the_board_does_and_open_counts_count_open_cards() {
         let store = SessionStore::open_in_memory().unwrap();
@@ -476,6 +478,7 @@ mod tests {
         let new_not_blocking = card(PROJECT, "not_blocking", 4, &[]);
         let withdrawn = card(PROJECT, "not_blocking", 1, &closed("withdrawn", 7));
         let new_blocking = card(PROJECT, "blocking", 3, &[]);
+        let same_time_later = card(PROJECT, "blocking", 3, &[]);
         let approved = card(PROJECT, "blocking", 4, &closed("approved", 5));
         let old_not_blocking = card(PROJECT, "not_blocking", 2, &[]);
         card(OTHER, "not_blocking", 1, &[]);
@@ -488,6 +491,7 @@ mod tests {
         assert_eq!(
             numbers,
             [
+                same_time_later,
                 new_blocking,
                 old_blocking,
                 new_not_blocking,
@@ -500,18 +504,21 @@ mod tests {
         assert_eq!(
             open_counts(&conn).unwrap(),
             OpenCounts {
-                total: 5,
-                by_project: BTreeMap::from([(PROJECT.into(), 4), (OTHER.into(), 1)]),
+                total: 6,
+                by_project: BTreeMap::from([(PROJECT.into(), 5), (OTHER.into(), 1)]),
             }
         );
         conn.execute("DELETE FROM approvals WHERE number = ?1", [last])
             .unwrap();
         assert_eq!(card(OTHER, "blocking", 3, &[]), last + 1);
+        let error = list(&conn, "/Users/test/orbit/").unwrap_err();
+        assert!(error.starts_with("invalid_input"), "{error}");
     }
 
     // Defects: a stored field does not reach the board, a key written by a
-    // newer build makes the row unreadable, or deleting the filing Giga
-    // deletes the card, is refused, or loses the Giga's name.
+    // newer build (in tradeoffs, options or links) makes the row unreadable,
+    // or deleting the filing Giga deletes the card, is refused, or loses the
+    // Giga's name.
     #[test]
     fn a_card_reads_back_whole_and_keeps_its_filer_name_when_the_giga_is_deleted() {
         let store = SessionStore::open_in_memory().unwrap();
@@ -524,6 +531,7 @@ mod tests {
             &[
                 ("id", text(decided_id)),
                 ("heading", text("Pick a store")),
+                ("tradeoffs", text(r#"{"pros":["Local"],"cons":["One machine"],"risks":[]}"#)),
                 ("options", text(r#"[{"label":"SQLite","description":"Local.","recommended":true,"icon":"db"},{"label":"Server"}]"#)),
                 ("links", text(r#"[{"kind":"pr","title":"PR #109 caller identity","url":"https://x.dev/109","pinned":true},{"kind":"linear","url":"https://x.dev/ADE-51"}]"#)),
                 ("origin", text("MonoCode Fork Orchestrator")),
@@ -662,15 +670,33 @@ mod tests {
                 [approved(), vec![options, ("chosen_options", text("[]"))]].concat(),
             ),
             ("options that are not a list", vec![("options", text("{}"))]),
+            ("links that are not a list", vec![("links", text("{}"))]),
             ("tradeoffs that are a list", vec![("tradeoffs", text("[]"))]),
             (
                 "tradeoffs with no cons",
                 vec![("tradeoffs", text(r#"{"pros":[]}"#))],
             ),
+            (
+                "tradeoffs with no pros",
+                vec![("tradeoffs", text(r#"{"cons":[]}"#))],
+            ),
             ("an unknown urgency", vec![("urgency", text("urgent"))]),
+            ("an untrimmed heading", vec![("heading", text(" Ship it"))]),
+            ("an untrimmed origin", vec![("origin", text(" General"))]),
+            (
+                "a project path ending in /",
+                vec![("project_path", text("/Users/test/orbit/"))],
+            ),
         ] {
             let error = insert(&conn, &changes).expect_err(case).to_string();
             assert!(error.contains("CHECK constraint failed"), "{case}: {error}");
         }
+        let error = insert(&conn, &[("requested_by_name", Sql::Null)])
+            .expect_err("a card with no filer name")
+            .to_string();
+        assert!(
+            error.contains("NOT NULL constraint failed: approvals.requested_by_name"),
+            "{error}"
+        );
     }
 }
