@@ -48,7 +48,10 @@ it("saves an active tab it also saves after a running worktree session opens, an
   // App.tsx onSelectHistorySession: a running session with no tab opens
   // beside the active tab, pinned to its own worktree. Every restored tab is
   // pinned to its project folder (restoredPins), and keepWorkspaceTab saves a
-  // tab only when its pin is that folder.
+  // tab only when its pin is that folder. Both live inside the App component,
+  // so this is a simplified copy that can drift from keepWorkspaceTab: it
+  // skips leaf pins and the workspaceTabWorktree fallback, which this fixture
+  // does not need.
   const opened = newTab(running.id);
   const tabs = insertTabBesideActive(window.tabs, opened, window.activeTabId);
   const sessions = [...window.sessions, running];
