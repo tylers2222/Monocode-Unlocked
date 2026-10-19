@@ -24,6 +24,9 @@ test("file preview decodes, plays and seeks a video, then pauses on tab change",
 
   await video.evaluate(async (element: HTMLVideoElement) => {
     element.muted = true;
+    // The clip is 3 s, shorter than a poll. Without a loop it ends by itself and
+    // reports paused, so the pause checks below would pass with no pause code.
+    element.loop = true;
     await element.play();
   });
   await expect

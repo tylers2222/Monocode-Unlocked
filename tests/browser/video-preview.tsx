@@ -10,9 +10,11 @@ import "../../src/styles/index.css";
 // Keep the real file pane and binary loader, replacing only native IPC.
 Object.assign(window, {
   __TAURI_INTERNALS__: {
-    invoke: async (command: string, args?: { path?: string }) => {
+    invoke: async (command: string, args: { path?: string } = {}) => {
       if (command === "read_binary_file") {
-        const fixture = args?.path?.endsWith(".png") ? "preview.png" : "preview.mp4";
+        const fixture = args.path?.endsWith(".png")
+          ? "preview.png"
+          : "preview.mp4";
         return fetch(`./fixtures/${fixture}`).then((response) =>
           response.arrayBuffer(),
         );
@@ -25,9 +27,8 @@ Object.assign(window, {
 
 const first = newFileTab("/repo/clip.mp4", "/repo");
 // The pane keeps every file tab mounted, so a second video would load beside
-// the first. Two video pipelines starting together in one Linux WebKit
-// (WPE, GStreamer) process sometimes hang it for good (ADE-49), so the other
-// tab is an image.
+// the first. Two video pipelines in one Linux WebKit (WPE, GStreamer) process
+// sometimes hang it for good (ADE-49), so the other tab is an image.
 const second = newFileTab("/repo/other.png", "/repo");
 const initialPane = { ...newEditorPane(first), files: [first, second] };
 const noop = () => {};
