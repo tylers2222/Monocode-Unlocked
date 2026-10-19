@@ -155,6 +155,13 @@ declare global {
 }
 
 const none: Handler = () => null;
+
+/** milestones.rs settings: no row means on, nothing hidden. */
+function settingsOf(store: FakeStore, project: string): MilestoneSettings {
+  return (
+    store.milestoneSettings[project] ?? { enabled: true, hiddenStatuses: [] }
+  );
+}
 const empty: Handler = () => [];
 const notInstalled: Handler = () => {
   throw "not found on PATH";
@@ -407,10 +414,7 @@ const HANDLERS: Record<string, Handler> = {
   mono_read: async () => ({ text: null, hash: await contentHash("") }),
   automations_list: (store) => store.automations,
   milestones_list: (store, { projectPath }) => ({
-    settings: store.milestoneSettings[projectPath as string] ?? {
-      enabled: true,
-      hiddenStatuses: [],
-    },
+    settings: settingsOf(store, projectPath as string),
     milestones: store.milestones
       .filter((milestone) => milestone.projectPath === projectPath)
       .sort((a, b) => a.order - b.order || a.createdAt - b.createdAt),
@@ -465,11 +469,44 @@ const HANDLERS: Record<string, Handler> = {
     void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath });
     return null;
   },
+  // milestones.rs set_settings: a partial patch; hidden statuses sorted, no
+  // duplicates. Emits CHANGED to every window.
+  milestone_settings_set: (store, { projectPath, patch }) => {
+    const current = settingsOf(store, projectPath as string);
+    const next = { ...current, ...(patch as Partial<MilestoneSettings>) };
+    next.hiddenStatuses = [...new Set(next.hiddenStatuses)].sort();
+    store.milestoneSettings[projectPath as string] = next;
+    void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath });
+    return next;
+  },
+  // session_store.rs rebase_project: sessions, milestones and settings move to
+  // the new path; CHANGED for both paths.
+  session_rebase_project: (store, { fromCwd, toCwd }) => {
+    const [from, to] = [fromCwd as string, toCwd as string];
+    for (const row of [...store.sessions, ...store.milestones]) {
+      if ("cwd" in row && row.cwd === from) row.cwd = to;
+      if ("projectPath" in row && row.projectPath === from)
+        row.projectPath = to;
+    }
+    if (store.milestoneSettings[from]) {
+      store.milestoneSettings[to] = store.milestoneSettings[from];
+      delete store.milestoneSettings[from];
+    }
+    void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath: from });
+    void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath: to });
+    return null;
+  },
   // milestones.rs add: defaults, the same checks, the next order in the project.
+  // An agent (not `user`) is refused with milestones_off while the project is off.
   milestones_add: (store, { projectPath, milestone }) => {
     const input = milestone as NewMilestone & {
       createdBy: Milestone["createdBy"];
     };
+    if (
+      input.createdBy !== "user" &&
+      !settingsOf(store, projectPath as string).enabled
+    )
+      throw "milestones_off";
     const mine = store.milestones.filter(
       (row) => row.projectPath === projectPath,
     );

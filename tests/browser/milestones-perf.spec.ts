@@ -184,3 +184,41 @@ test("perf: dragging through 50 rows has no frame gap over 100 ms", async ({
   );
   expect(Math.max(...worst)).toBeLessThan(100);
 });
+
+test("perf: a settings toggle repaints the timeline within 150 ms", async ({
+  app,
+  page,
+}) => {
+  await boot(app, page);
+  await page.getByRole("button", { name: "Milestones", exact: true }).click();
+  await expect(page.locator("[data-milestone]")).toHaveCount(200);
+  await page.getByRole("button", { name: "Milestone settings" }).click();
+  const timings: number[] = [];
+  for (let run = 0; run < 5; run++) {
+    for (const hide of [true, false]) {
+      // From the click on the Done box to the first frame painted after the
+      // Done group left (or came back to) the timeline.
+      const ms = await page.evaluate((hide) => {
+        const box = document.querySelector<HTMLInputElement>(
+          '[role="dialog"] input[aria-label="Done"]',
+        )!;
+        const done = () =>
+          document.querySelector('section[aria-label="Done"]') !== null;
+        const start = performance.now();
+        box.click();
+        return new Promise<number>((resolve) => {
+          const frame = () =>
+            done() === hide
+              ? requestAnimationFrame(frame)
+              : requestAnimationFrame(() => resolve(performance.now() - start));
+          requestAnimationFrame(frame);
+        });
+      }, hide);
+      if (hide) timings.push(ms);
+    }
+  }
+  console.log(
+    `PERF settings-toggle ${timings.map((ms) => ms.toFixed(1)).join(" ")}`,
+  );
+  expect(Math.max(...timings)).toBeLessThan(150);
+});

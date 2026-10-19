@@ -5,8 +5,14 @@ import type {
   MilestoneStatus,
 } from "../../src/features/milestones/model/milestones";
 import { expect, test } from "./app/fixture";
+import {
+  followRenamedFolder,
+  renameFolder,
+  sessionIn,
+} from "./app/projectRename";
 
 const ORBIT = "/Users/test/orbit";
+const RENAMED = "/Users/test/orbit-renamed";
 const CHANGED = "monocode:milestones-changed";
 /** The page's writes, replayed by milestones.rs `page_writes_replay_on_the_real_store`. */
 const FIXTURE = new URL(
@@ -99,6 +105,8 @@ const writes = (page: Page) =>
         "milestones_update",
         "milestones_remove",
         "milestones_reorder",
+        "milestone_settings_set",
+        "session_rebase_project",
       ].includes(command),
     ),
   );
@@ -552,13 +560,16 @@ test.describe("with locale de-DE", () => {
 });
 
 // Real-state proof: milestones.rs replays this capture through the real
-// add and update commands on a real SQLite store. RECORD_MILESTONE_WRITES=1
-// rewrites it.
+// commands on a real SQLite store. RECORD_MILESTONE_WRITES=1 rewrites it.
 test("the page's writes match the committed fixture that Rust replays", async ({
   app,
   page,
 }) => {
-  await openPage(app, page);
+  await app.mount(
+    { projects: [ORBIT], milestones: ROWS, sessions: sessionIn(ORBIT) },
+    { handlers: followRenamedFolder },
+  );
+  await page.getByRole("button", { name: "Milestones", exact: true }).click();
   const save = () => editor(page).getByRole("button", { name: "Save" }).click();
   await page.getByRole("button", { name: "Add milestone" }).click();
   await editor(page)
@@ -656,13 +667,37 @@ test("the page's writes match the committed fixture that Rust replays", async ({
       .first(),
   ).toHaveAttribute("data-milestone", VOICE.id);
 
+  // Settings: hide Done and turn the project off; the folder is renamed;
+  // then, at the new path, show Done, hide Idea and turn it on again.
+  const settings = page.getByRole("button", { name: "Milestone settings" });
+  const dialog = page.getByRole("dialog", { name: /^Milestones in / });
+  const box = (name: string) =>
+    dialog.getByRole("checkbox", { name, exact: true });
+  const onOff = dialog.getByRole("switch");
+  await settings.click();
+  await box("Done").click();
+  await expect(box("Done")).not.toBeChecked();
+  await onOff.click();
+  await expect(onOff).toHaveAttribute("aria-checked", "false");
+  await page.keyboard.press("Escape");
+  await renameFolder(page, ORBIT, RENAMED);
+  await settings.click();
+  await box("Done").click();
+  await expect(box("Done")).toBeChecked();
+  await box("Idea").click();
+  await expect(box("Idea")).not.toBeChecked();
+  await onOff.click();
+  await expect(onOff).toHaveAttribute("aria-checked", "true");
+
   const captured = (await writes(page)).map(
     ({ command, args, reply, refused }) =>
       command === "milestones_add"
         ? { command, args, reply: { id: (reply as Milestone).id } }
-        : refused
-          ? { command, args, refused }
-          : { command, args },
+        : command === "milestone_settings_set"
+          ? { command, args, reply }
+          : refused
+            ? { command, args, refused }
+            : { command, args },
   );
   if (process.env.RECORD_MILESTONE_WRITES)
     writeFileSync(FIXTURE, `${JSON.stringify(captured, null, 2)}\n`);

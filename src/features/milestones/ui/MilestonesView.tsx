@@ -9,6 +9,7 @@ import {
   LoaderCircle,
   Plus,
   Search,
+  SlidersHorizontal,
 } from "../../../shared/ui/icons";
 import { findMono, monoLook } from "../../monos/model/mono";
 import { useTabGroupLogos } from "../../projects/hooks/useTabGroupLogos";
@@ -33,9 +34,11 @@ import {
   list,
   remove,
   reorder,
+  setSettings,
   subscribe,
   update,
   type Milestone,
+  type MilestoneSettings as Settings,
   type ProjectMilestones,
 } from "../model/milestones";
 import {
@@ -44,6 +47,7 @@ import {
   type EditorState,
 } from "./MilestoneEditor";
 import { moveOf } from "../model/reorder";
+import { MilestoneSettings } from "./MilestoneSettings";
 import {
   MilestoneTimeline,
   type CreatorLook,
@@ -166,6 +170,8 @@ function MilestonesContent({
   const [errors, setErrors] = useState<Record<string, string>>({});
   /** The open editor: which row, and what the user typed so far. */
   const [editing, setEditing] = useState<EditorState | null>(null);
+  /** The settings button while its popover is open. */
+  const [settingsAt, setSettingsAt] = useState<HTMLElement | null>(null);
   const listsRef = useRef(lists);
   const requests = useRef(new Map<string, number>());
   const timers = useRef(new Set<number>());
@@ -284,6 +290,11 @@ function MilestonesContent({
         [project]: refused === "stale_order" ? STALE_NOTICE : refused,
       }));
   };
+  /** Rust's change event after the write brings the saved settings back through `load`. */
+  const saveSettings = (project: string, patch: Partial<Settings>) =>
+    setSettings(project, patch).catch((reason: unknown) =>
+      setErrors((current) => ({ ...current, [project]: String(reason) })),
+    );
   // The editor's callbacks act only on the opening they came from, so a save
   // that settles after Escape cannot close or fail the editor open now.
   const editor =
@@ -381,6 +392,35 @@ function MilestonesContent({
                 </p>
               </div>
               {data.milestones.length > 0 ? addButton : null}
+              <button
+                type="button"
+                data-milestone-settings
+                aria-label="Milestone settings"
+                aria-expanded={settingsAt !== null}
+                title="Milestone settings"
+                onClick={(event) => {
+                  const button = event.currentTarget;
+                  setSettingsAt((open) => (open ? null : button));
+                }}
+                className={`grid size-7 shrink-0 place-items-center rounded-md outline-none hover:bg-content/10 hover:text-content focus-visible:ring-1 focus-visible:ring-accent/50 ${
+                  settingsAt ? "bg-selection text-content" : "text-content/50"
+                }`}
+              >
+                <SlidersHorizontal className="size-3.5" strokeWidth={1.75} />
+              </button>
+              {settingsAt && selected ? (
+                <MilestoneSettings
+                  anchor={settingsAt}
+                  name={heading.name}
+                  settings={data.settings}
+                  milestones={data.milestones}
+                  onChange={(patch) => void saveSettings(selected, patch)}
+                  onDismiss={(reason) => {
+                    setSettingsAt(null);
+                    if (reason === "escape") settingsAt.focus();
+                  }}
+                />
+              ) : null}
             </header>
             {data.milestones.length > 0 || editing?.opened === null ? (
               <MilestoneTimeline

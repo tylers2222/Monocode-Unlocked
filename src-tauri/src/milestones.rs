@@ -1076,6 +1076,10 @@ mod tests {
         let project = "/Users/test/orbit";
         // The rows the spec seeds: ids "orbit-<order>" padded with 0 to 36.
         let mut ids = std::collections::HashMap::new();
+        assert_eq!(
+            settings(&conn, project).unwrap(),
+            MilestoneSettings::default()
+        );
         for order in 0..6 {
             let id = format!("{:0<36}", format!("orbit-{order}"));
             let (status, target) = match order {
@@ -1098,8 +1102,28 @@ mod tests {
         let mut removed = Vec::new();
         let mut refused = Vec::new();
         let mut last_order = Vec::new();
+        let mut renamed = None;
         for call in &calls {
             let arg = |name: &str| call["args"][name].clone();
+            if call["command"] == "session_rebase_project" {
+                // The app followed the renamed folder; settings must follow too.
+                let from: String = serde_json::from_value(arg("fromCwd")).unwrap();
+                let to: String = serde_json::from_value(arg("toCwd")).unwrap();
+                let before = settings(&conn, &from).unwrap();
+                crate::session_store::rebase_project(&conn, &from, &to).unwrap();
+                assert_eq!(
+                    settings(&conn, &to).unwrap(),
+                    before,
+                    "settings follow the path"
+                );
+                assert_eq!(
+                    settings(&conn, &from).unwrap(),
+                    MilestoneSettings::default()
+                );
+                assert!(super::list(&conn, &from).unwrap().is_empty());
+                renamed = Some(to);
+                continue;
+            }
             let path: String = serde_json::from_value(arg("projectPath")).unwrap();
             let row = match call["command"].as_str().unwrap() {
                 "milestones_add" => {
@@ -1178,6 +1202,17 @@ mod tests {
                     }
                     continue;
                 }
+                "milestone_settings_set" => {
+                    let patch: SettingsPatch = serde_json::from_value(arg("patch")).unwrap();
+                    let saved = set_settings(&conn, &path, patch, 5).unwrap();
+                    assert_eq!(
+                        serde_json::to_value(&saved).unwrap(),
+                        call["reply"],
+                        "the real store saves what the page then shows"
+                    );
+                    assert_eq!(settings(&conn, &path).unwrap(), saved);
+                    continue;
+                }
                 other => panic!("unexpected command {other}"),
             };
             history.push((row.title, row.note, row.status, row.target));
@@ -1210,6 +1245,16 @@ mod tests {
         // The page deleted the second row it added ("Someday"), and only it.
         let someday = calls[1]["reply"]["id"].as_str().unwrap();
         assert_eq!(removed, [someday]);
+        // The page renamed the project, then wrote its settings at the new path.
+        let renamed = renamed.expect("the capture follows a rename");
+        let project = renamed.as_str();
+        assert_eq!(
+            settings(&conn, project).unwrap(),
+            MilestoneSettings {
+                enabled: true,
+                hidden_statuses: vec![Status::Idea],
+            }
+        );
         let titles: Vec<String> = super::list(&conn, project)
             .unwrap()
             .into_iter()
