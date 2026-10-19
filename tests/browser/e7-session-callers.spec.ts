@@ -254,12 +254,14 @@ test("a lead's brief and its worker's report reach each other's turns named by t
     sessionId: "lead",
     turnId: "turn-1",
     access: "operator",
-    leadSessionId: null,
     cwd: PROJECT,
   });
-  expect(call.live).toContainEqual(
-    expect.objectContaining({ sessionId: "worker", leadSessionId: "lead" }),
+  // R4: the window sends no copy of any session's lead; Rust reads the row.
+  const worker = (call.live as Record<string, unknown>[]).find(
+    (entry) => entry.sessionId === "worker",
   );
+  expect(worker).toBeDefined();
+  expect(worker).not.toHaveProperty("leadSessionId");
   await expect
     .poll(() => prompts(page, "worker"))
     .toEqual([
@@ -315,8 +317,8 @@ test("a worker's send that the gate refuses answers worker_scope with the gate's
   expect(call.caller).toMatchObject({
     kind: "session",
     sessionId: "worker",
-    leadSessionId: "lead",
   });
+  expect(call.caller).not.toHaveProperty("leadSessionId");
 });
 
 /** A mono_messages.rs row as the fake hands it to the app. */

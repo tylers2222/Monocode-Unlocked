@@ -5099,6 +5099,21 @@ pub(crate) mod tests {
 
     /// `mono-a` works on `/p`, where the lead `lead` and its worker `worker`
     /// run.
+    /// Seeded lead `lead` sends `report` to Mono `mono-a`.
+    fn lead_reports(conn: &Connection) -> (Caller, MessageId) {
+        let lead = session_caller("lead", "/p");
+        let report = accepted_ids(&call(
+            conn,
+            &lead,
+            "report",
+            Tool::SendMessage,
+            hi("mono-a", false),
+            &[],
+        ))
+        .remove(0);
+        (lead, report)
+    }
+
     fn seed_levels(conn: &Connection) {
         conn.execute_batch(
             r#"UPDATE monos SET data_json = '{"sessionId":"a-chat","projects":["/p"]}'
@@ -5234,16 +5249,7 @@ pub(crate) mod tests {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         seed_levels(&conn);
-        let lead = session_caller("lead", "/p");
-        let report = accepted_ids(&call(
-            &conn,
-            &lead,
-            "report",
-            Tool::SendMessage,
-            hi("mono-a", false),
-            &[],
-        ))
-        .remove(0);
+        let (_, report) = lead_reports(&conn);
         let row = get(&conn, &report).unwrap().unwrap();
         assert_eq!(
             (row.from_mono_id, row.from_session_id),
@@ -5372,16 +5378,7 @@ pub(crate) mod tests {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         seed_levels(&conn);
-        let lead = session_caller("lead", "/p");
-        let report = accepted_ids(&call(
-            &conn,
-            &lead,
-            "report",
-            Tool::SendMessage,
-            hi("mono-a", false),
-            &[],
-        ))
-        .remove(0);
+        let (lead, report) = lead_reports(&conn);
         let read_back = found(read(&conn, &lead, report.as_str()));
         assert_eq!(read_back["message_id"], report.as_str());
         assert_eq!(read_back["from"], serde_json::json!({"session_id": "lead"}));
@@ -10257,27 +10254,8 @@ pub(crate) mod tests {
             .flat_map(|case| case["calls"].as_array().unwrap().clone())
             .collect();
         // R4: the caller is judged by its stored row, so it needs one.
-        let store = messaging_store();
-        for row in fixture["sessions"].as_array().unwrap() {
-            if row["saved"] == true {
-                store
-                    .lock_conn()
-                    .unwrap()
-                    .execute(
-                        "INSERT OR IGNORE INTO sessions (id, cwd, harness, model, runtime_mode,
-                           title, created_at, updated_at, lead_session_id)
-                         VALUES (?1, ?2, 'codex', 'm', 'default', 'S', 1, 1, ?3)",
-                        params![
-                            row["id"].as_str(),
-                            row["cwd"].as_str(),
-                            row["leadSessionId"].as_str()
-                        ],
-                    )
-                    .unwrap();
-            }
-        }
         let app = tauri::test::mock_builder()
-            .manage(store)
+            .manage(fixture_store(&fixture))
             .invoke_handler(tauri::generate_handler![
                 super::mono_app_action_check,
                 super::mono_message_record_start
@@ -10317,6 +10295,44 @@ pub(crate) mod tests {
         }
     }
 
+    /// A store with a `sessions` row for each `saved` session and a `monos`
+    /// row for each Mono of the fixture (`appActionCheck.fixtures.json`).
+    fn fixture_store(fixture: &Value) -> SessionStore {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        for row in fixture["sessions"].as_array().unwrap() {
+            if row["saved"] == true {
+                conn.execute(
+                    "INSERT OR IGNORE INTO sessions (id, cwd, harness, model, runtime_mode,
+                       title, created_at, updated_at, lead_session_id)
+                     VALUES (?1, ?2, 'codex', 'm', 'default', 'S', 1, 1, ?3)",
+                    params![
+                        row["id"].as_str(),
+                        row["cwd"].as_str(),
+                        row["leadSessionId"].as_str()
+                    ],
+                )
+                .unwrap();
+            }
+        }
+        for mono in fixture["monos"].as_array().unwrap() {
+            let data = serde_json::json!({
+                "sessionId": mono["sessionId"],
+                "projects": mono["projects"]
+            })
+            .to_string();
+            conn.execute(
+                "INSERT OR REPLACE INTO monos (id, name, role, data_json, sort_order,
+                   created_at, updated_at)
+                 VALUES (?1, ?1, ?2, ?3, 0, 1, 1)",
+                params![mono["id"].as_str(), mono["role"].as_str(), data],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        store
+    }
+
     // PR7-9b and PR7-10 real-state proof. `appActionCheck.fixtures.json`
     // holds the exact `mono_app_action_check` and `mono_message_record_start`
     // calls that the web app's real `levelGate` sends (agentAppLevels.test.ts
@@ -10329,7 +10345,6 @@ pub(crate) mod tests {
     // app does not expect, a repeated start writes a second row, or the Giga
     // row reads another role than the caller's `monos` row.
     #[test]
-    #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
     fn mono_app_action_check_answers_every_call_the_web_app_sends() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -10338,49 +10353,9 @@ pub(crate) mod tests {
         let write = std::env::var("WRITE_APP_ACTION_FIXTURE").as_deref() == Ok("1");
         let mut fixture: Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        let saved: Vec<Value> = fixture["sessions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|row| row["saved"] == true)
-            .cloned()
-            .collect();
-        let monos = fixture["monos"].as_array().unwrap().clone();
+        let world = serde_json::json!({ "sessions": fixture["sessions"], "monos": fixture["monos"] });
         for case in fixture["cases"].as_array_mut().unwrap() {
-            let store = messaging_store();
-            for row in &saved {
-                store
-                    .lock_conn()
-                    .unwrap()
-                    .execute(
-                        "INSERT OR IGNORE INTO sessions (id, cwd, harness, model, runtime_mode,
-                           title, created_at, updated_at, lead_session_id)
-                         VALUES (?1, ?2, 'codex', 'm', 'default', 'S', 1, 1, ?3)",
-                        params![
-                            row["id"].as_str(),
-                            row["cwd"].as_str(),
-                            row["leadSessionId"].as_str()
-                        ],
-                    )
-                    .unwrap();
-            }
-            for mono in &monos {
-                let data = serde_json::json!({
-                    "sessionId": mono["sessionId"],
-                    "projects": mono["projects"]
-                })
-                .to_string();
-                store
-                    .lock_conn()
-                    .unwrap()
-                    .execute(
-                        "INSERT OR REPLACE INTO monos (id, name, role, data_json, sort_order,
-                           created_at, updated_at)
-                         VALUES (?1, ?1, ?2, ?3, 0, 1, 1)",
-                        params![mono["id"].as_str(), mono["role"].as_str(), data],
-                    )
-                    .unwrap();
-            }
+            let store = fixture_store(&world);
             let name = case["name"].as_str().unwrap().to_string();
             // The ids the replies name, in the order they first appear; the
             // fixture writes the n-th as `m_` and the n-th letter 12 times.
