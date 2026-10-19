@@ -1,0 +1,161 @@
+{
+  "source": "Reduced from read-only copies of ship4-check/path2/ade12-out before-click.db and after-click.db (ADE-12 real click, 2026-10-19). snapshot: the saved workspace before the click (3 of its 13 tabs, active tab kept). records: session_get rows from after-click.db, mapped as session_store.rs get_session_record does. inFlight: after-click.db in_flight_sessions. Ids, titles, text and the home path are made up.",
+  "snapshot": {
+    "tabs": [
+      {
+        "editorPanes": [],
+        "focusedId": "app-mono-0001-request-0001",
+        "id": "tab-0001",
+        "kind": "session",
+        "layout": {
+          "id": "app-mono-0001-request-0001",
+          "type": "leaf"
+        },
+        "terminalPanes": []
+      },
+      {
+        "editorPanes": [],
+        "focusedId": "app-mono-0001-request-0002",
+        "id": "tab-0002",
+        "kind": "session",
+        "layout": {
+          "id": "app-mono-0001-request-0002",
+          "type": "leaf"
+        },
+        "terminalPanes": []
+      },
+      {
+        "editorPanes": [],
+        "focusedId": "home-0001",
+        "id": "tab-0004",
+        "kind": "session",
+        "layout": {
+          "id": "home-0001",
+          "type": "leaf"
+        },
+        "terminalPanes": []
+      }
+    ],
+    "sessions": [
+      {
+        "branch": "feat/e7-levels",
+        "cwd": "/Users/test/Desktop/monocode",
+        "harness": "omp",
+        "id": "app-mono-0001-request-0002",
+        "model": "omp:default",
+        "modelSettings": {},
+        "runtimeMode": "auto",
+        "title": "made-up stub title 1",
+        "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/feat-e7-levels"
+      },
+      {
+        "branch": "review/e7-r3",
+        "cwd": "/Users/test/Desktop/monocode",
+        "harness": "omp",
+        "id": "app-mono-0001-request-0001",
+        "model": "omp:default",
+        "modelSettings": {},
+        "runtimeMode": "auto",
+        "title": "made-up stub title 2",
+        "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/review-e7-r3"
+      },
+      {
+        "cwd": "/Users/test",
+        "harness": "omp",
+        "id": "home-0001",
+        "model": "omp:default",
+        "modelSettings": {},
+        "runtimeMode": "supervised",
+        "title": "made-up stub title 3"
+      }
+    ],
+    "activeTabId": "tab-0002",
+    "projectCwd": "/Users/test/Desktop/monocode",
+    "projectTerminals": []
+  },
+  "inFlight": [
+    {
+      "sessionId": "ade12000-0000-4000-8000-000000000001",
+      "cwd": "/Users/test/Desktop/monocode"
+    }
+  ],
+  "records": {
+    "app-mono-0001-request-0001": {
+      "sidebarHidden": false,
+      "id": "app-mono-0001-request-0001",
+      "cwd": "/Users/test/Desktop/monocode",
+      "harness": "omp",
+      "model": "omp:default",
+      "modelSettings": {},
+      "runtimeMode": "auto",
+      "title": "made-up title 1",
+      "blocks": [
+        {
+          "id": "block-1",
+          "role": "user",
+          "text": "made-up text 1"
+        }
+      ],
+      "queuedMessages": [],
+      "contextUsed": 117121,
+      "contextWindow": 1000000,
+      "branch": "review/e7-r3",
+      "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/review-e7-r3",
+      "worktreeRemoved": false,
+      "createdAt": 1792286269992,
+      "updatedAt": 1792286814954
+    },
+    "app-mono-0001-request-0002": {
+      "sidebarHidden": false,
+      "id": "app-mono-0001-request-0002",
+      "cwd": "/Users/test/Desktop/monocode",
+      "harness": "omp",
+      "model": "omp:default",
+      "modelSettings": {},
+      "runtimeMode": "auto",
+      "title": "made-up title 2",
+      "blocks": [
+        {
+          "id": "block-2",
+          "role": "user",
+          "text": "made-up text 2"
+        }
+      ],
+      "queuedMessages": [],
+      "contextUsed": 328352,
+      "contextWindow": 1000000,
+      "branch": "feat/e7-levels",
+      "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/feat-e7-levels",
+      "worktreeRemoved": false,
+      "createdAt": 1792242932354,
+      "updatedAt": 1792247919473
+    },
+    "ade12000-0000-4000-8000-000000000001": {
+      "sidebarHidden": false,
+      "id": "ade12000-0000-4000-8000-000000000001",
+      "cwd": "/Users/test/Desktop/monocode",
+      "harness": "claude",
+      "model": "claude:sonnet-5",
+      "modelSettings": {
+        "effort": "high"
+      },
+      "runtimeMode": "auto",
+      "title": "made-up title 3",
+      "blocks": [
+        {
+          "id": "block-3",
+          "role": "user",
+          "text": "made-up text 3"
+        }
+      ],
+      "queuedMessages": [],
+      "contextUsed": 44510,
+      "contextWindow": 1000000,
+      "branch": "design/ade-5",
+      "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/design-ade-5",
+      "worktreeRemoved": false,
+      "createdAt": 1792404454668,
+      "updatedAt": 1792404570582
+    }
+  }
+}

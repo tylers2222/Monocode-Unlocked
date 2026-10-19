@@ -744,4 +744,24 @@ describe("worktree tab cleanup", () => {
     expect(snapshot.tabs.map((tab) => tab.id)).toEqual(["tab-main"]);
     expect(snapshot.sessions.map((stub) => stub.id)).toEqual(["main"]);
   });
+
+  it("saves as active the nearest saved tab before an unsaved active tab, else after it", () => {
+    const tabs = ["w1", "a", "w2", "b"].map((id) => ({ ...newTab(id), id }));
+    const save = (activeTabId: string, keep: (id: string) => boolean) =>
+      collectWorkspaceSnapshot(
+        tabs,
+        [],
+        activeTabId,
+        "/repo",
+        new Map(),
+        [],
+        undefined,
+        (tab) => keep(tab.id),
+      ).activeTabId;
+    const keepMain = (id: string) => !id.startsWith("w");
+    expect(save("b", keepMain)).toBe("b");
+    expect(save("w2", keepMain)).toBe("a");
+    expect(save("w1", keepMain)).toBe("a");
+    expect(save("w1", () => false)).toBe("");
+  });
 });
