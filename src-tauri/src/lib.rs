@@ -2,6 +2,7 @@ use tauri::Manager;
 
 mod account_identity;
 mod approvals;
+mod active_clock;
 mod artifacts;
 mod automations;
 mod azure_devops;
@@ -291,6 +292,7 @@ pub fn run() {
             session_store::init(app.handle())?;
             control::init(app.handle())?;
             reminders::init(app.handle());
+            active_clock::init(app.handle())?;
             checkpoint::init(app.handle())?;
             menu::install(app.handle())?;
             #[cfg(target_os = "windows")]

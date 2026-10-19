@@ -1092,6 +1092,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::mono_messages::ensure_tables(conn)?;
     crate::milestones::ensure_tables(conn)?;
     crate::approvals::ensure_tables(conn)?;
+    crate::active_clock::ensure_tables(conn)?;
     Ok(())
 }
 

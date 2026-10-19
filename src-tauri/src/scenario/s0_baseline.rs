@@ -99,9 +99,7 @@ fn ask_survives_a_kill(world: &mut World, giga: &Mono, mono: &Mono) -> MessageId
     let [ask] = written(world.call(giga, "g1", "ask", Tool::SendMessage, input.clone(), mono))
         .try_into()
         .unwrap();
-    world.kill();
-    world.advance(30_000);
-    world.restart();
+    world.down(30_000);
     assert_eq!(
         row(world, &ask),
         waiting(mono),
@@ -123,9 +121,7 @@ fn ask_survives_a_kill(world: &mut World, giga: &Mono, mono: &Mono) -> MessageId
 fn mono_answers(world: &mut World, giga: &Mono, mono: &Mono, ask: &MessageId) -> MessageId {
     world.advance(1_000);
     assert_eq!(ids(&world.start_turn(&mono.chat, "m1")), [ask]);
-    world.kill();
-    world.advance(30_000);
-    world.restart();
+    world.down(30_000);
     assert_eq!(row(world, ask), waiting(mono), "an untaken ask waits again");
     world.advance(1_000);
     assert_eq!(ids(&world.start_turn(&mono.chat, "m2")), [ask]);
@@ -134,7 +130,7 @@ fn mono_answers(world: &mut World, giga: &Mono, mono: &Mono, ask: &MessageId) ->
     let [reply] = written(world.call(mono, "m2", "answer", Tool::Reply, answer, giga))
         .try_into()
         .unwrap();
-    let replied_at = world.now;
+    let replied_at = world.now();
     world.end_turn(&mono.chat, "m2", true);
     assert_eq!(
         row(world, ask),
@@ -155,9 +151,7 @@ fn mono_answers(world: &mut World, giga: &Mono, mono: &Mono, ask: &MessageId) ->
 fn reply_arrives_once(world: &mut World, giga: &Mono, reply: &MessageId) {
     world.advance(1_000);
     assert_eq!(ids(&world.start_turn(&giga.chat, "g3")), [reply]);
-    world.kill();
-    world.advance(60_000);
-    world.restart();
+    world.down(60_000);
     let reply_waiting = Row {
         status: "delivered".into(),
         handled_by: Some(giga.chat.as_str().into()),
@@ -172,11 +166,9 @@ fn reply_arrives_once(world: &mut World, giga: &Mono, reply: &MessageId) {
     );
     world.advance(1_000);
     assert_eq!(ids(&world.start_turn(&giga.chat, "g4")), [reply]);
-    let taken_at = world.now;
+    let taken_at = world.now();
     world.end_turn(&giga.chat, "g4", true);
-    world.kill();
-    world.advance(60_000);
-    world.restart();
+    world.down(60_000);
     assert_eq!(
         row(world, reply),
         Row {

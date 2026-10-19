@@ -1,9 +1,12 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::MutexGuard;
 
 use rusqlite::Connection;
 
+use crate::active_clock::{self, ActiveClock, Clock, Lease};
 use crate::mono_messages::{self, SessionId, Targeted};
 use crate::session_store::SessionStore;
 
@@ -15,18 +18,95 @@ pub(crate) const SCENARIO_DB: &str = "MONOCODE_SCENARIO_DB";
 /// like real ones next to a real database's rows.
 const START_MS: i64 = 1_760_000_000_000;
 
+/// The app's tick period (`active_clock`'s thread).
+const TICK_MS: i64 = 1_000;
+
+/// The computer's clocks as a World moves them. One value, shared by the
+/// World and the app's active clock.
+#[derive(Clone)]
+pub(crate) struct FakeClock(Rc<FakeTime>);
+
+struct FakeTime {
+    uptime_ns: Cell<u64>,
+    monotonic_ns: Cell<u64>,
+    wall_ms: Cell<i64>,
+    boot_wall_ms: Cell<i64>,
+}
+
+impl FakeClock {
+    fn new() -> Self {
+        Self(Rc::new(FakeTime {
+            uptime_ns: Cell::new(0),
+            monotonic_ns: Cell::new(0),
+            wall_ms: Cell::new(START_MS),
+            boot_wall_ms: Cell::new(START_MS),
+        }))
+    }
+
+    /// Awake time passes: every clock moves.
+    fn run(&self, ms: i64) {
+        self.slept(ms);
+        self.0.uptime_ns.set(self.0.uptime_ns.get() + ns(ms));
+    }
+
+    /// The computer sleeps: the wall and monotonic clocks move, uptime not.
+    fn slept(&self, ms: i64) {
+        self.0.monotonic_ns.set(self.0.monotonic_ns.get() + ns(ms));
+        self.jump_wall(ms);
+    }
+
+    fn jump_wall(&self, ms: i64) {
+        self.0.wall_ms.set(self.0.wall_ms.get() + ms);
+    }
+
+    fn boot(&self) {
+        self.0.uptime_ns.set(0);
+        self.0.monotonic_ns.set(0);
+        self.0.boot_wall_ms.set(self.0.wall_ms.get());
+    }
+}
+
+fn ns(ms: i64) -> u64 {
+    u64::try_from(ms).unwrap() * 1_000_000
+}
+
+impl Clock for FakeClock {
+    fn uptime_ns(&self) -> u64 {
+        self.0.uptime_ns.get()
+    }
+
+    fn monotonic_ns(&self) -> u64 {
+        self.0.monotonic_ns.get()
+    }
+
+    fn wall_ms(&self) -> i64 {
+        self.0.wall_ms.get()
+    }
+
+    fn boot_wall_ms(&self) -> i64 {
+        self.0.boot_wall_ms.get()
+    }
+}
+
+/// What dies with the app process: the store, the clock lease and the
+/// active clock it ticks.
+struct App {
+    store: SessionStore,
+    _lease: Lease,
+    active: ActiveClock<FakeClock>,
+}
+
 /// The window label every hand-off slot names; a World is one window.
 const WINDOW: &str = "main";
 
-/// The app on a file database at a fake wall time. `running` is the turn
+/// The app on a file database, on a [`FakeClock`]. `running` is the turn
 /// each session runs now, as `ControlHost` reports it to the store.
 pub(crate) struct World {
     dir: PathBuf,
     path: PathBuf,
-    store: Option<SessionStore>,
+    app: Option<App>,
     running: HashMap<String, String>,
-    /// The fake wall time every call is made at; only `advance` moves it.
-    pub(crate) now: i64,
+    clock: FakeClock,
 }
 
 impl World {
@@ -60,9 +140,9 @@ impl World {
         let mut world = Self {
             dir,
             path,
-            store: None,
+            app: None,
             running: HashMap::new(),
-            now: START_MS,
+            clock: FakeClock::new(),
         };
         world.restart();
         if let Ok(source) = std::env::var(SCENARIO_DB) {
@@ -75,26 +155,117 @@ impl World {
         world
     }
 
-    pub(crate) fn advance(&mut self, ms: i64) {
-        self.now += ms;
+    /// The wall time every call is made at.
+    pub(crate) fn now(&self) -> i64 {
+        self.clock.wall_ms()
     }
 
-    /// The app stops at once: the store is dropped and no app shutdown path
-    /// runs, so only what the store committed survives. No turn outlives it.
+    /// `ms` of awake time pass while the app runs; its clock thread ticks
+    /// every second.
+    pub(crate) fn advance(&mut self, ms: i64) {
+        let mut left = ms;
+        while left > 0 {
+            let step = left.min(TICK_MS);
+            self.clock.run(step);
+            self.tick();
+            left -= step;
+        }
+    }
+
+    /// `ms` of awake time pass with no tick (the thread stalled), then one.
+    pub(crate) fn stall(&mut self, ms: i64) {
+        self.clock.run(ms);
+        self.tick();
+    }
+
+    /// The computer sleeps `ms`; the app's first tick comes after the wake.
+    pub(crate) fn sleep(&mut self, ms: i64) {
+        self.clock.slept(ms);
+        self.tick();
+    }
+
+    /// The wall clock is set `ms` forward (or back, when negative) while the
+    /// app runs; the next tick sees it.
+    pub(crate) fn jump_wall(&mut self, ms: i64) {
+        self.clock.jump_wall(ms);
+        self.tick();
+    }
+
+    /// The app is down for `ms`: it is killed, only the wall clock moves,
+    /// and it starts again.
+    pub(crate) fn down(&mut self, ms: i64) {
+        self.kill();
+        self.clock.jump_wall(ms);
+        self.restart();
+    }
+
+    /// The app is down for `ms` across a reboot of the computer.
+    pub(crate) fn reboot(&mut self, ms: i64) {
+        self.kill();
+        self.clock.jump_wall(ms);
+        self.clock.boot();
+        self.restart();
+    }
+
+    fn tick(&mut self) {
+        let app = self.app.as_mut().expect("the app is not running");
+        app.active.tick(&app.store.lock_conn().unwrap()).unwrap();
+    }
+
+    /// The app's active clock now (what it holds, not what it stored).
+    pub(crate) fn active_ms(&self) -> i64 {
+        self.app
+            .as_ref()
+            .expect("the app is not running")
+            .active
+            .active_ms()
+    }
+
+    /// The app process stops at once: the store, the clock lease and the
+    /// active clock go with no app shutdown path, so only what the store
+    /// committed survives. No turn outlives it.
     pub(crate) fn kill(&mut self) {
-        assert!(self.store.take().is_some(), "the app is not running");
+        assert!(self.app.take().is_some(), "the app is not running");
         self.running.clear();
     }
 
     /// The app starts again on the same file, through the app's own open
-    /// path (migrate, then `startup` at the World's wall time).
+    /// path (migrate, then `startup` at the World's wall time), then takes
+    /// the clock lease and launches the active clock (`active_clock::start`).
     pub(crate) fn restart(&mut self) {
-        assert!(self.store.is_none(), "the app is already running");
-        self.store = Some(SessionStore::open_at(self.path.clone(), self.now).unwrap());
+        assert!(self.app.is_none(), "the app is already running");
+        let store = SessionStore::open_at(self.path.clone(), self.now()).unwrap();
+        let started = active_clock::start(
+            &self.lock_path(),
+            &store.lock_conn().unwrap(),
+            self.clock.clone(),
+        );
+        let (lease, active) = started.unwrap().expect("another process holds the lease");
+        self.app = Some(App {
+            store,
+            _lease: lease,
+            active,
+        });
+    }
+
+    /// A second app process on the same data folder: it opens the store
+    /// and tries to start the active clock. True when it got the lease.
+    pub(crate) fn second_launch(&self) -> bool {
+        let store = SessionStore::open_at(self.path.clone(), self.now()).unwrap();
+        let started = active_clock::start(
+            &self.lock_path(),
+            &store.lock_conn().unwrap(),
+            self.clock.clone(),
+        );
+        started.unwrap().is_some()
+    }
+
+    fn lock_path(&self) -> PathBuf {
+        self.dir.join("scheduler.lock")
     }
 
     pub(crate) fn store(&self) -> &SessionStore {
-        self.store.as_ref().expect("the app is not running")
+        &self.app.as_ref().expect("the app is not running").store
     }
 
     pub(crate) fn conn(&self) -> MutexGuard<'_, Connection> {
@@ -122,7 +293,7 @@ impl World {
                     turn,
                     WINDOW,
                     mono_messages::Delivery::Submit,
-                    self.now,
+                    self.now(),
                 )
                 .unwrap();
                 slotted
@@ -138,9 +309,9 @@ impl World {
     pub(crate) fn end_turn(&mut self, session: &SessionId, turn: &str, sent: bool) {
         self.running.remove(session.as_str());
         if sent {
-            mono_messages::confirm_openers(&self.conn(), session, turn, self.now).unwrap();
+            mono_messages::confirm_openers(&self.conn(), session, turn, self.now()).unwrap();
         }
-        mono_messages::turn_ended(&self.conn(), session, turn, self.now).unwrap();
+        mono_messages::turn_ended(&self.conn(), session, turn, self.now()).unwrap();
     }
 }
 
@@ -148,7 +319,7 @@ impl Drop for World {
     fn drop(&mut self) {
         // Close the database before its folder goes (Windows keeps open
         // files).
-        self.store = None;
+        self.app = None;
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

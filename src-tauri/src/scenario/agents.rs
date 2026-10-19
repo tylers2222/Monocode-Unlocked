@@ -78,7 +78,7 @@ impl World {
             mono_gate::parse(tool, &input),
             &live,
             &["codex".to_string()],
-            self.now,
+            self.now(),
         )
         .unwrap();
         submitted
