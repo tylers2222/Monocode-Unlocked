@@ -15,6 +15,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [lints]
 workspace = true
 
+[features]
+# GigaEval builds only (`scripts/giga-eval/instance.sh build`): the active
+# clock reads `fake-clock.json` in the data folder.
+fake-clock = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

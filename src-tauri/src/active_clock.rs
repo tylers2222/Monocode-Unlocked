@@ -20,6 +20,9 @@ use crate::session_store::SessionStore;
 /// sleeps and `monotonic_ns` does not; both restart at boot. `boot_wall_ms`
 /// is the wall time the computer booted.
 pub trait Clock {
+    /// Takes the reading the next calls answer from, once per launch and
+    /// tick. The system clock reads each value live.
+    fn sample(&mut self) {}
     fn uptime_ns(&self) -> u64;
     fn monotonic_ns(&self) -> u64;
     fn wall_ms(&self) -> i64;
@@ -71,7 +74,8 @@ impl<C: Clock> ActiveClock<C> {
     /// The app starts: the stored clock goes on from its row, the gap since
     /// the row's last write adds nothing and is logged as `reboot` (the
     /// computer booted after that write) or `app_down`.
-    fn launch(lease: Lease, conn: &Connection, clock: C) -> rusqlite::Result<Self> {
+    fn launch(lease: Lease, conn: &Connection, mut clock: C) -> rusqlite::Result<Self> {
+        clock.sample();
         let wall = clock.wall_ms();
         let boot = clock.boot_wall_ms();
         let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
@@ -120,6 +124,7 @@ impl<C: Clock> ActiveClock<C> {
     /// the monotonic clock moved further than uptime; writes the row every
     /// 5 s of active time and after a sleep.
     pub(crate) fn tick(&mut self, conn: &Connection) -> rusqlite::Result<()> {
+        self.clock.sample();
         let uptime = self.clock.uptime_ns();
         let monotonic = self.clock.monotonic_ns();
         let awake = uptime.saturating_sub(self.uptime_ns);
@@ -184,15 +189,18 @@ pub(crate) fn start<C: Clock>(
 
 /// Starts the 1 s clock thread, beside `reminders::init`.
 pub(crate) fn init(app: &AppHandle) -> Result<(), String> {
-    let lock = app
+    let data = app
         .path()
         .app_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("scheduler.lock");
+        .map_err(|error| error.to_string())?;
+    #[cfg(not(feature = "fake-clock"))]
+    let clock = SystemClock;
+    #[cfg(feature = "fake-clock")]
+    let clock = fake::FileClock::open(data.join("fake-clock.json"))?;
     let started = start(
-        &lock,
+        &data.join("scheduler.lock"),
         &*app.state::<SessionStore>().lock_conn()?,
-        SystemClock,
+        clock,
     )?;
     let Some(mut clock) = started else {
         eprintln!("Another MonoCode process runs the active clock for this data folder");
@@ -217,9 +225,10 @@ pub(crate) fn init(app: &AppHandle) -> Result<(), String> {
 /// does not count suspend and `CLOCK_BOOTTIME` does (`clock_gettime(2)`).
 /// Windows: `QueryUnbiasedInterruptTime` leaves out sleep and hibernation,
 /// and `GetTickCount64` counts them.
+#[cfg(not(feature = "fake-clock"))]
 pub(crate) struct SystemClock;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(feature = "fake-clock")))]
 mod system {
     extern "C" {
         // libSystem; the `libc` crate does not bind it.
@@ -259,7 +268,7 @@ mod system {
     }
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(target_os = "macos"), not(feature = "fake-clock")))]
 mod system {
     fn read(clock: libc::clockid_t) -> u64 {
         let mut now = libc::timespec {
@@ -284,7 +293,7 @@ mod system {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "fake-clock")))]
 mod system {
     #[link(name = "kernel32")]
     extern "system" {
@@ -308,6 +317,7 @@ mod system {
     }
 }
 
+#[cfg(not(feature = "fake-clock"))]
 impl Clock for SystemClock {
     fn uptime_ns(&self) -> u64 {
         system::uptime_ns()
@@ -323,5 +333,71 @@ impl Clock for SystemClock {
 
     fn boot_wall_ms(&self) -> i64 {
         system::boot_wall_ms()
+    }
+}
+
+/// GigaEval builds only (`instance.sh build`): the clocks come from
+/// `fake-clock.json` in the data folder, which `scripts/scenarios/app.sh`
+/// writes, so a run moves the active clock without waiting.
+#[cfg(feature = "fake-clock")]
+mod fake {
+    use std::path::PathBuf;
+
+    #[derive(serde::Deserialize)]
+    struct Reading {
+        uptime_ms: u64,
+        monotonic_ms: u64,
+        wall_ms: i64,
+        boot_wall_ms: i64,
+    }
+
+    pub(crate) struct FileClock {
+        path: PathBuf,
+        now: Reading,
+    }
+
+    impl FileClock {
+        /// Fails when the file cannot be read, so a run with no clock file
+        /// stops at launch instead of ticking on a default.
+        pub(crate) fn open(path: PathBuf) -> Result<Self, String> {
+            Ok(Self {
+                now: read(&path)?,
+                path,
+            })
+        }
+    }
+
+    fn read(path: &PathBuf) -> Result<Reading, String> {
+        std::fs::read(path)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
+            .map_err(|error| format!("fake clock {}: {error}", path.display()))
+    }
+
+    impl super::Clock for FileClock {
+        /// One read per tick: the driver may write the file between two
+        /// reads, and uptime and monotonic from two writes look like a sleep.
+        fn sample(&mut self) {
+            match read(&self.path) {
+                Ok(now) => self.now = now,
+                Err(error) => eprintln!("{error}"),
+            }
+        }
+
+        fn uptime_ns(&self) -> u64 {
+            self.now.uptime_ms * super::NS_PER_MS
+        }
+
+        fn monotonic_ns(&self) -> u64 {
+            self.now.monotonic_ms * super::NS_PER_MS
+        }
+
+        fn wall_ms(&self) -> i64 {
+            self.now.wall_ms
+        }
+
+        fn boot_wall_ms(&self) -> i64 {
+            self.now.boot_wall_ms
+        }
     }
 }
