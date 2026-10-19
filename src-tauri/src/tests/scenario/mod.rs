@@ -8,5 +8,6 @@
 //! `scripts/scenarios/repeat.sh <filter>` runs a scenario 20 times.
 
 mod agents;
+mod clock;
 mod s0_baseline;
 mod world;

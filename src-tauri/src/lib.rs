@@ -1,6 +1,7 @@
 use tauri::Manager;
 
 mod account_identity;
+mod active_clock;
 mod approvals;
 mod artifacts;
 mod automations;
@@ -51,6 +52,7 @@ mod reminders;
 mod remote;
 mod remote_ssh;
 #[cfg(test)]
+#[path = "tests/scenario/mod.rs"]
 mod scenario;
 mod search;
 mod session_store;
@@ -291,6 +293,7 @@ pub fn run() {
             session_store::init(app.handle())?;
             control::init(app.handle())?;
             reminders::init(app.handle());
+            active_clock::init(app.handle())?;
             checkpoint::init(app.handle())?;
             menu::install(app.handle())?;
             #[cfg(target_os = "windows")]
