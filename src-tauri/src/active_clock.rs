@@ -334,8 +334,9 @@ impl Clock for SystemClock {
 
 /// GigaEval builds only (`instance.sh build`): the clocks come from
 /// `fake-clock.json` in the data folder, which `scripts/scenarios/app.sh`
-/// writes, so a run moves the active clock without waiting.
-#[cfg(feature = "fake-clock")]
+/// writes, so a run moves the active clock without waiting. Test builds
+/// compile it too, so CI's default-feature runs check it.
+#[cfg(any(feature = "fake-clock", test))]
 mod fake {
     use std::path::PathBuf;
 
@@ -387,6 +388,54 @@ mod fake {
                 Err(error) => eprintln!("{error}"),
             }
             self.last
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::super::Clock;
+        use super::FileClock;
+
+        // Defect: the clock file is read in the wrong unit, a launch with no
+        // file ticks on a made-up reading, or a bad write mid-run stops the
+        // clock instead of keeping the last good reading.
+        #[test]
+        fn a_file_clock_reads_the_driver_file_and_keeps_the_last_good_reading() {
+            let dir = std::env::temp_dir().join(format!("file-clock-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("fake-clock.json");
+            let _ = std::fs::remove_file(&path);
+            assert!(FileClock::open(path.clone()).is_err(), "no file");
+            let write = |up: u64, wall: i64| {
+                std::fs::write(
+                    &path,
+                    format!(
+                        r#"{{"uptime_ms":{up},"monotonic_ms":{},"wall_ms":{wall},"boot_wall_ms":7}}"#,
+                        up + 1
+                    ),
+                )
+                .unwrap();
+            };
+            write(1_000, 50);
+            let mut clock = FileClock::open(path.clone()).unwrap();
+            write(2_500, 60);
+            let now = clock.now();
+            assert_eq!(
+                (
+                    now.uptime_ns,
+                    now.monotonic_ns,
+                    now.wall_ms,
+                    now.boot_wall_ms
+                ),
+                (2_500_000_000, 2_501_000_000, 60, 7)
+            );
+            std::fs::write(&path, "{").unwrap();
+            assert_eq!(
+                clock.now().wall_ms,
+                60,
+                "a bad write keeps the last reading"
+            );
+            std::fs::remove_dir_all(&dir).unwrap();
         }
     }
 }
