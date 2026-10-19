@@ -31,6 +31,7 @@ import {
 import {
   add,
   list,
+  remove,
   subscribe,
   update,
   type Milestone,
@@ -241,6 +242,11 @@ function MilestonesContent({
   );
   // The editor's callbacks act only on the opening they came from, so a save
   // that settles after Escape cannot close or fail the editor open now.
+  /** A page write, then the list the card closes onto. */
+  const reload = async (project: string, write: Promise<unknown>) => {
+    await write;
+    await load(project);
+  };
   const editor =
     editing && selected ? (
       <MilestoneEditor
@@ -250,14 +256,13 @@ function MilestonesContent({
             current?.session === editing.session ? change(current) : current,
           )
         }
-        onAdd={async (milestone) => {
-          await add(selected, milestone, "user");
-          await load(selected);
-        }}
-        onUpdate={async (id, patch) => {
-          await update(selected, id, patch, "user");
-          await load(selected);
-        }}
+        onAdd={(milestone) =>
+          reload(selected, add(selected, milestone, "user"))
+        }
+        onUpdate={(id, patch) =>
+          reload(selected, update(selected, id, patch, "user"))
+        }
+        onRemove={(id) => reload(selected, remove(selected, id, "user"))}
         onClose={() =>
           setEditing((current) =>
             current?.session === editing.session ? null : current,

@@ -89,7 +89,9 @@ const stored = (page: Page, id: string) =>
 const writes = (page: Page) =>
   page.evaluate(() =>
     window.appBackend!.calls.filter(({ command }) =>
-      ["milestones_add", "milestones_update"].includes(command),
+      ["milestones_add", "milestones_update", "milestones_remove"].includes(
+        command,
+      ),
     ),
   );
 const shot = (page: Page, name: string) =>
@@ -233,6 +235,85 @@ test("lane 4: a status change moves the row to its new group", async ({
   await expect(group(page, "Idea").locator("[data-milestone]")).toHaveCount(1);
   expect((await stored(page, VOICE.id))?.status).toBe("done");
   await shot(page, "status");
+});
+
+test("lane 6: delete asks once inline, then the row is gone from the page and the store", async ({
+  app,
+  page,
+}) => {
+  await openPage(app, page);
+  await row(page, VOICE.id).click();
+  await editor(page).getByRole("button", { name: "Delete" }).click();
+  await expect(editor(page)).toContainText(
+    "Delete “Voice notes into Inbox”? This can’t be undone.",
+  );
+  await expect(
+    editor(page).getByRole("button", { name: "Keep" }),
+  ).toBeFocused();
+  await shot(page, "delete");
+  await editor(page).getByRole("button", { name: "Keep" }).click();
+  await expect(editor(page).getByLabel("Title")).toHaveValue(VOICE.title);
+  expect(await writes(page)).toEqual([]);
+
+  await editor(page).getByRole("button", { name: "Delete" }).click();
+  await editor(page)
+    .getByRole("button", { name: "Delete", exact: true })
+    .click();
+  await expect(editor(page)).toHaveCount(0);
+  await expect(row(page, VOICE.id)).toHaveCount(0);
+  expect(await stored(page, VOICE.id)).toBeUndefined();
+  await expect(group(page, "Idea").locator("[data-milestone]")).toHaveCount(1);
+});
+
+/** Presses Tab (Alt+Tab in WebKit, whose Tab skips buttons) until `name` has focus. */
+async function tabTo(page: Page, browserName: string, name: string) {
+  const key = browserName === "webkit" ? "Alt+Tab" : "Tab";
+  for (let press = 0; press < 20; press++) {
+    await page.keyboard.press(key);
+    const focused = await page.evaluate(() =>
+      document.activeElement?.tagName === "BUTTON"
+        ? document.activeElement.textContent?.trim()
+        : null,
+    );
+    if (focused === name) return;
+  }
+  throw new Error(`${key} never reached the ${name} button`);
+}
+
+test("lane 6: keyboard only: open a row, tab to Delete, confirm, and the row is gone", async ({
+  app,
+  page,
+  browserName,
+}) => {
+  await openPage(app, page);
+  await row(page, VOICE.id).focus();
+  await page.keyboard.press("Enter");
+  await tabTo(page, browserName, "Delete");
+  await page.keyboard.press("Enter");
+  await expect(
+    editor(page).getByRole("button", { name: "Keep" }),
+  ).toBeFocused();
+  await tabTo(page, browserName, "Delete");
+  await page.keyboard.press("Enter");
+  await expect(editor(page)).toHaveCount(0);
+  await expect(row(page, VOICE.id)).toHaveCount(0);
+  expect(await stored(page, VOICE.id)).toBeUndefined();
+});
+
+test("lane 6: keyboard only: Escape in the confirm deletes nothing", async ({
+  app,
+  page,
+  browserName,
+}) => {
+  await openPage(app, page);
+  await row(page, VOICE.id).focus();
+  await page.keyboard.press("Enter");
+  await tabTo(page, browserName, "Delete");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Escape");
+  await expect(editor(page)).toHaveCount(0);
+  expect(await writes(page)).toEqual([]);
+  await expect(row(page, VOICE.id)).toBeVisible();
 });
 
 test("lane 7: an agent edits the row the editor has open; the page keeps the agent's value", async ({
@@ -507,6 +588,13 @@ test("the page's writes match the committed fixture that Rust replays", async ({
   await editor(page).getByLabel("Target date").fill(" 2025-01-05 ");
   await save();
   await expect(row(page, VOICE.id)).toContainText("Jan 5, 2025");
+  const someday = page.getByText("Someday", { exact: true });
+  await someday.click();
+  await editor(page).getByRole("button", { name: "Delete" }).click();
+  await editor(page)
+    .getByRole("button", { name: "Delete", exact: true })
+    .click();
+  await expect(someday).toHaveCount(0);
 
   const captured = (await writes(page)).map(({ command, args, reply }) =>
     command === "milestones_add"

@@ -1,5 +1,5 @@
 import type { KeyboardEvent, ReactNode } from "react";
-import { Calendar } from "../../../shared/ui/icons";
+import { Calendar, Trash2 } from "../../../shared/ui/icons";
 import { checkDraft, draftOf, patchOf, type Draft } from "../model/draft";
 import {
   MILESTONE_STATUSES,
@@ -27,6 +27,8 @@ export type EditorState = {
   tried: boolean;
   busy: boolean;
   failure: string | null;
+  /** Frame M·7: Delete asks once, inline, before it removes the row. */
+  confirmingDelete: boolean;
 };
 
 export function openEditor(milestone: Milestone | null): EditorState {
@@ -37,6 +39,7 @@ export function openEditor(milestone: Milestone | null): EditorState {
     tried: false,
     busy: false,
     failure: null,
+    confirmingDelete: false,
   };
 }
 
@@ -45,6 +48,7 @@ type Props = {
   setState: (update: (current: EditorState) => EditorState) => void;
   onAdd: (milestone: NewMilestone) => Promise<void>;
   onUpdate: (id: string, patch: MilestonePatch) => Promise<void>;
+  onRemove: (id: string) => Promise<void>;
   onClose: () => void;
 };
 
@@ -54,15 +58,23 @@ const SEGMENTS = "inline-flex rounded-md bg-content/5 p-0.5";
 const SEGMENT =
   "inline-flex h-6 items-center gap-1.5 rounded px-2 text-[12px] text-content/60 hover:text-content aria-checked:bg-content/12 aria-checked:text-content";
 
-/** The add card of approved frame M·5 and the edit-in-place card of M·6. */
+/** The add card of frame M·5, the edit-in-place card of M·6 and its M·7 delete. */
 export function MilestoneEditor({
   state,
   setState,
   onAdd,
   onUpdate,
+  onRemove,
   onClose,
 }: Props) {
-  const { opened: milestone, draft, tried, busy, failure } = state;
+  const {
+    opened: milestone,
+    draft,
+    tried,
+    busy,
+    failure,
+    confirmingDelete,
+  } = state;
   const checked = checkDraft(draft);
   const errors = tried && !checked.ok ? checked.errors : {};
   const edit = (change: Partial<Draft>) =>
@@ -71,17 +83,12 @@ export function MilestoneEditor({
       draft: { ...current.draft, ...change },
     }));
 
-  const save = async () => {
+  /** One write; the card closes only when it succeeds, else it shows why. */
+  const run = async (write: () => Promise<void>) => {
     if (busy) return;
-    if (!checked.ok) {
-      setState((current) => ({ ...current, tried: true }));
-      return;
-    }
     setState((current) => ({ ...current, busy: true, failure: null }));
     try {
-      await (milestone
-        ? onUpdate(milestone.id, patchOf(milestone, checked.value))
-        : onAdd(checked.value));
+      await write();
       onClose();
     } catch (reason) {
       setState((current) => ({
@@ -92,15 +99,48 @@ export function MilestoneEditor({
     }
   };
 
+  const save = () => {
+    if (!checked.ok) {
+      setState((current) => ({ ...current, tried: true }));
+      return;
+    }
+    const { value } = checked;
+    void run(() =>
+      milestone
+        ? onUpdate(milestone.id, patchOf(milestone, value))
+        : onAdd(value),
+    );
+  };
+
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key === "Escape") {
       event.preventDefault();
       onClose();
     } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
-      void save();
+      save();
     }
   };
+
+  const failureLine = failure ? (
+    <p role="alert" className="px-3.5 pb-2 text-[12px] text-red-400">
+      {failure}
+    </p>
+  ) : null;
+  const setConfirming = (confirmingDelete: boolean) =>
+    setState((current) => ({ ...current, confirmingDelete, failure: null }));
+
+  if (milestone && confirmingDelete)
+    return (
+      <DeleteConfirm
+        milestone={milestone}
+        busy={busy}
+        failureLine={failureLine}
+        onKeep={() => setConfirming(false)}
+        onDelete={() => void run(() => onRemove(milestone.id))}
+        onClose={onClose}
+      />
+    );
 
   return (
     <div
@@ -122,7 +162,7 @@ export function MilestoneEditor({
           onKeyDown={(event) => {
             if (event.key !== "Enter" || event.metaKey || event.ctrlKey) return;
             event.preventDefault();
-            void save();
+            save();
           }}
           className="w-full bg-transparent text-sm font-medium outline-none placeholder:text-content/35"
         />
@@ -202,13 +242,18 @@ export function MilestoneEditor({
           <FieldError id="milestone-date-error">{errors.date}</FieldError>
         ) : null}
       </div>
-      {failure ? (
-        <p role="alert" className="px-3.5 pb-2 text-[12px] text-red-400">
-          {failure}
-        </p>
-      ) : null}
+      {failureLine}
       <div className="flex items-center justify-end gap-1.5 px-3 pb-2.5">
-        {milestone ? null : (
+        {milestone ? (
+          <button
+            type="button"
+            onClick={() => setConfirming(true)}
+            className={`${ACTION} text-red-400 hover:bg-red-400/10`}
+          >
+            <Trash2 className="size-3.5" />
+            Delete
+          </button>
+        ) : (
           <kbd className="mr-1 font-sans text-[11px] text-content/35">⌘↵</kbd>
         )}
         <button
@@ -221,10 +266,73 @@ export function MilestoneEditor({
         <button
           type="button"
           disabled={busy}
-          onClick={() => void save()}
+          onClick={save}
           className={`${ACTION} bg-content font-medium text-background-base hover:bg-content/80`}
         >
           {milestone ? "Save" : "Add"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Frame M·7: the row as stored, and one inline question. Escape keeps the row. */
+function DeleteConfirm({
+  milestone,
+  busy,
+  failureLine,
+  onKeep,
+  onDelete,
+  onClose,
+}: {
+  milestone: Milestone;
+  busy: boolean;
+  failureLine: ReactNode;
+  onKeep: () => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={`Delete ${milestone.title}`}
+      data-milestone-editor
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        onClose();
+      }}
+      className="overflow-hidden rounded-[10px] border border-red-400/30 bg-content/3 shadow-sm"
+    >
+      <div className="px-3.5 pt-3 pb-3">
+        <div className="text-sm font-medium">{milestone.title}</div>
+        {milestone.note ? (
+          <p className="mt-1.5 text-xs leading-[18px] text-content/60">
+            {milestone.note}
+          </p>
+        ) : null}
+      </div>
+      {failureLine}
+      <div className="flex items-center gap-2 border-t border-red-400/20 bg-red-400/8 px-3 py-2 text-[12px] text-red-400">
+        <Trash2 className="size-3.5 shrink-0" />
+        <span className="min-w-0 flex-1">
+          Delete “{milestone.title}”? This can’t be undone.
+        </span>
+        <button
+          type="button"
+          autoFocus
+          onClick={onKeep}
+          className={`${ACTION} text-content/70 hover:bg-content/10 hover:text-content`}
+        >
+          Keep
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onDelete}
+          className={`${ACTION} bg-red-500 font-medium text-white hover:bg-red-500/85`}
+        >
+          Delete
         </button>
       </div>
     </div>

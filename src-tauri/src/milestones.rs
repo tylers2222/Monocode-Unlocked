@@ -1090,6 +1090,7 @@ mod tests {
             ids.insert(id.clone(), id);
         }
         let mut history = Vec::new();
+        let mut removed = Vec::new();
         for call in &calls {
             let arg = |name: &str| call["args"][name].clone();
             let path: String = serde_json::from_value(arg("projectPath")).unwrap();
@@ -1115,6 +1116,18 @@ mod tests {
                     let by: String = serde_json::from_value(arg("by")).unwrap();
                     let patch: MilestonePatch = serde_json::from_value(arg("patch")).unwrap();
                     update(&conn, &path, &ids[&page_id], patch, &by, 3).unwrap()
+                }
+                "milestones_remove" => {
+                    let page_id: String = serde_json::from_value(arg("id")).unwrap();
+                    let by: String = serde_json::from_value(arg("by")).unwrap();
+                    remove(&conn, &path, &ids[&page_id], &by).unwrap();
+                    let gone = super::list(&conn, &path).unwrap();
+                    assert!(
+                        gone.iter().all(|row| row.id != ids[&page_id]),
+                        "the row is gone"
+                    );
+                    removed.push(page_id);
+                    continue;
                 }
                 other => panic!("unexpected command {other}"),
             };
@@ -1145,5 +1158,15 @@ mod tests {
                 shown("Row 4", "Before", Status::Idea, Some("2025-01-05")),
             ]
         );
+        // The page deleted the second row it added ("Someday"), and only it.
+        let someday = calls[1]["reply"]["id"].as_str().unwrap();
+        assert_eq!(removed, [someday]);
+        let titles: Vec<String> = super::list(&conn, project)
+            .unwrap()
+            .into_iter()
+            .map(|row| row.title)
+            .collect();
+        assert_eq!(titles.len(), 7);
+        assert!(!titles.contains(&"Someday".to_string()));
     }
 }

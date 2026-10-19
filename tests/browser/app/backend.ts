@@ -428,6 +428,17 @@ const HANDLERS: Record<string, Handler> = {
     void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath });
     return row;
   },
+  // milestones.rs remove for the `user` writer; emits CHANGED as Rust does.
+  milestones_remove: (store, { projectPath, id }) => {
+    const at = store.milestones.findIndex(
+      (milestone) =>
+        milestone.id === id && milestone.projectPath === projectPath,
+    );
+    if (at < 0) throw "unknown_milestone";
+    store.milestones.splice(at, 1);
+    void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath });
+    return null;
+  },
   // milestones.rs add: defaults, the same checks, the next order in the project.
   milestones_add: (store, { projectPath, milestone }) => {
     const input = milestone as NewMilestone & {
