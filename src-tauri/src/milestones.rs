@@ -1064,6 +1064,81 @@ mod tests {
     /// The agent row milestones-editor.spec.ts pushes unseen (its `AGENT_ROW`).
     const AGENT: &str = "a9e47000-0000-4000-8000-000000000000";
 
+    fn ids_in(conn: &Connection, path: &str) -> Vec<String> {
+        super::list(conn, path)
+            .unwrap()
+            .into_iter()
+            .map(|row| row.id)
+            .collect()
+    }
+
+    /// The app followed a renamed folder: the settings must follow the path.
+    fn replay_rebase(conn: &Connection, call: &serde_json::Value) -> String {
+        let from: String = serde_json::from_value(call["args"]["fromCwd"].clone()).unwrap();
+        let to: String = serde_json::from_value(call["args"]["toCwd"].clone()).unwrap();
+        let before = settings(conn, &from).unwrap();
+        crate::session_store::rebase_project(conn, &from, &to).unwrap();
+        assert_eq!(
+            settings(conn, &to).unwrap(),
+            before,
+            "settings follow the path"
+        );
+        assert_eq!(settings(conn, &from).unwrap(), MilestoneSettings::default());
+        assert!(ids_in(conn, &from).is_empty());
+        to
+    }
+
+    /// The real store saves what the page then showed, in Rust's order.
+    fn replay_settings(conn: &Connection, path: &str, call: &serde_json::Value) {
+        let patch: SettingsPatch = serde_json::from_value(call["args"]["patch"].clone()).unwrap();
+        let saved = set_settings(conn, path, patch, 5).unwrap();
+        assert_eq!(serde_json::to_value(&saved).unwrap(), call["reply"]);
+        assert_eq!(settings(conn, path).unwrap(), saved);
+    }
+
+    /// The page's reorder on the real store: the stored order, or the code a
+    /// recorded refusal got (and then nothing moved).
+    fn replay_reorder(
+        conn: &Connection,
+        path: &str,
+        call: &serde_json::Value,
+        ids: &mut std::collections::HashMap<String, String>,
+    ) -> Result<Vec<String>, String> {
+        let page_ids: Vec<String> = serde_json::from_value(call["args"]["ids"].clone()).unwrap();
+        let by: String = serde_json::from_value(call["args"]["by"].clone()).unwrap();
+        if call["refused"] == "stale_order" && !ids.contains_key(AGENT) {
+            // The spec's agent row, which the page had not seen yet.
+            let mut agent = new("Agent row the page has not seen");
+            agent.created_by = "mono:general".into();
+            add(conn, path, agent, 4).unwrap();
+            conn.execute(
+                "UPDATE milestones SET id = ?1 WHERE title = ?2",
+                params![AGENT, "Agent row the page has not seen"],
+            )
+            .unwrap();
+            ids.insert(AGENT.into(), AGENT.into());
+        }
+        let before = ids_in(conn, path);
+        let real: Vec<String> = page_ids.iter().map(|id| ids[id].clone()).collect();
+        match (reorder(conn, path, &real, &by), call["refused"].as_str()) {
+            (Err(code), Some(expected)) => {
+                assert_eq!(code, expected);
+                assert_eq!(
+                    ids_in(conn, path),
+                    before,
+                    "a refused reorder moves nothing"
+                );
+                Err(code)
+            }
+            (Ok(listed), None) => {
+                let listed: Vec<String> = listed.into_iter().map(|row| row.id).collect();
+                assert_eq!(listed, real, "the store takes the page's order");
+                Ok(real)
+            }
+            (result, expected) => panic!("reorder {result:?}, recorded {expected:?}"),
+        }
+    }
+
     #[test]
     #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
     fn page_writes_replay_on_the_real_store() {
@@ -1106,22 +1181,7 @@ mod tests {
         for call in &calls {
             let arg = |name: &str| call["args"][name].clone();
             if call["command"] == "session_rebase_project" {
-                // The app followed the renamed folder; settings must follow too.
-                let from: String = serde_json::from_value(arg("fromCwd")).unwrap();
-                let to: String = serde_json::from_value(arg("toCwd")).unwrap();
-                let before = settings(&conn, &from).unwrap();
-                crate::session_store::rebase_project(&conn, &from, &to).unwrap();
-                assert_eq!(
-                    settings(&conn, &to).unwrap(),
-                    before,
-                    "settings follow the path"
-                );
-                assert_eq!(
-                    settings(&conn, &from).unwrap(),
-                    MilestoneSettings::default()
-                );
-                assert!(super::list(&conn, &from).unwrap().is_empty());
-                renamed = Some(to);
+                renamed = Some(replay_rebase(&conn, call));
                 continue;
             }
             let path: String = serde_json::from_value(arg("projectPath")).unwrap();
@@ -1161,56 +1221,14 @@ mod tests {
                     continue;
                 }
                 "milestones_reorder" => {
-                    let page_ids: Vec<String> = serde_json::from_value(arg("ids")).unwrap();
-                    let by: String = serde_json::from_value(arg("by")).unwrap();
-                    if call["refused"] == "stale_order" && !ids.contains_key(AGENT) {
-                        // The spec's agent row, which the page had not seen yet.
-                        let mut agent = new("Agent row the page has not seen");
-                        agent.created_by = "mono:general".into();
-                        add(&conn, &path, agent, 4).unwrap();
-                        conn.execute(
-                            "UPDATE milestones SET id = ?1 WHERE title = ?2",
-                            params![AGENT, "Agent row the page has not seen"],
-                        )
-                        .unwrap();
-                        ids.insert(AGENT.into(), AGENT.into());
-                    }
-                    let before: Vec<String> = super::list(&conn, &path)
-                        .unwrap()
-                        .into_iter()
-                        .map(|row| row.id)
-                        .collect();
-                    let real: Vec<String> = page_ids.iter().map(|id| ids[id].clone()).collect();
-                    match (reorder(&conn, &path, &real, &by), call["refused"].as_str()) {
-                        (Err(code), Some(expected)) => {
-                            assert_eq!(code, expected);
-                            let after: Vec<String> = super::list(&conn, &path)
-                                .unwrap()
-                                .into_iter()
-                                .map(|row| row.id)
-                                .collect();
-                            assert_eq!(after, before, "a refused reorder moves nothing");
-                            refused.push(code);
-                        }
-                        (Ok(listed), None) => {
-                            let listed: Vec<String> =
-                                listed.into_iter().map(|row| row.id).collect();
-                            assert_eq!(listed, real, "the store takes the page's order");
-                            last_order = real;
-                        }
-                        (result, expected) => panic!("reorder {result:?}, recorded {expected:?}"),
+                    match replay_reorder(&conn, &path, call, &mut ids) {
+                        Ok(order) => last_order = order,
+                        Err(code) => refused.push(code),
                     }
                     continue;
                 }
                 "milestone_settings_set" => {
-                    let patch: SettingsPatch = serde_json::from_value(arg("patch")).unwrap();
-                    let saved = set_settings(&conn, &path, patch, 5).unwrap();
-                    assert_eq!(
-                        serde_json::to_value(&saved).unwrap(),
-                        call["reply"],
-                        "the real store saves what the page then shows"
-                    );
-                    assert_eq!(settings(&conn, &path).unwrap(), saved);
+                    replay_settings(&conn, &path, call);
                     continue;
                 }
                 other => panic!("unexpected command {other}"),
