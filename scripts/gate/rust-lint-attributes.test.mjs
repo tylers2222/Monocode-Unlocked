@@ -30,11 +30,22 @@ fn f() {}`;
   ]);
 });
 
-test("an attribute forwarded through a macro counts as attr($name)", () => {
-  const outer = "macro_rules! m { ($a:meta) => { #[$a] fn f() {} } }";
-  const inner = "macro_rules! m { ($a:meta) => { mod n { #![$a] } } }";
-  assert.deepEqual(lints(outer), ["attr($a)"]);
-  assert.deepEqual(lints(inner), ["attr($a)"]);
+test("an attribute forwarded through a macro counts as attr(<body>)", () => {
+  const named = "macro_rules! m { ($a:meta) => { #[$a] fn f() {} } }";
+  const namedInner = "macro_rules! m { ($a:meta) => { mod n { #![$a] } } }";
+  const repeated = "macro_rules! m { ($($t:tt)*) => { #[$($t)*] fn f() {} } }";
+  const repeatedInner = "macro_rules! m { ($($t:tt)*) => { mod n { #![$($t)*] } } }";
+  const inCfgAttr = "macro_rules! m { ($a:meta) => { #[cfg_attr(all(), $a)] fn f() {} } }";
+  assert.deepEqual(lints(named), ["attr([$a])"]);
+  assert.deepEqual(lints(namedInner), ["attr([$a])"]);
+  assert.deepEqual(lints(repeated), ["attr([$($t)*])"]);
+  assert.deepEqual(lints(repeatedInner), ["attr([$($t)*])"]);
+  assert.deepEqual(lints(inCfgAttr), ["attr([cfg_attr(all(),$a)])"]);
+});
+
+test("allow( and expect( count only as whole names, not inside other names or method calls", () => {
+  const source = '#[disallow(dead_code)]\n#[my_expect(unused)]\n#[doc = x.expect(y)]\nfn f() {}';
+  assert.deepEqual(lints(source), []);
 });
 
 test("attribute text inside comments, strings and char literals does not count", () => {

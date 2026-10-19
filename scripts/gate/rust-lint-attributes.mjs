@@ -1,7 +1,7 @@
 // Finds the lint suppressions in Rust source: each lint named in an allow( or
 // expect( inside an attribute, outer or inner, spaced or not, cfg_attr included.
-// An attribute whose body is a macro metavariable (#[$meta]) forwards whatever the
-// caller passes, so it counts as attr($meta).
+// An attribute whose body holds a macro metavariable ($meta, $($t)*) forwards
+// whatever the caller passes, so it counts as attr(<body>), whitespace removed.
 
 const RAW_STRING = /r(#*)"/y;
 const LINE_COMMENT = /\/\/[^\n]*/y;
@@ -41,7 +41,7 @@ function noiseEnd(source, i) {
 }
 
 // The source with every comment, string and char literal replaced by a space.
-export function codeOnly(source) {
+function codeOnly(source) {
   const parts = [];
   let start = 0;
   for (let i = 0; i < source.length; i++) {
@@ -70,9 +70,8 @@ export function* lintAttributes(source) {
   for (const attribute of code.matchAll(/#\s*!?\s*\[/g)) {
     const open = attribute.index + attribute[0].length - 1;
     const body = code.slice(open, closing(code, open));
-    const forwarded = /^\[\s*\$(\w+)/.exec(body);
-    if (forwarded) {
-      yield `attr($${forwarded[1]})`;
+    if (body.includes("$")) {
+      yield `attr(${body.replace(/\s+/g, "")}])`;
       continue;
     }
     for (const call of body.matchAll(/(?<![\w.])(allow|expect)\s*\(/g)) {
