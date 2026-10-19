@@ -122,8 +122,9 @@ exec perl -e '
     $name =~ s/\t$//;
     return undef if $name eq "/dev/null";
     if ($name =~ /^"(.*)"$/) {
-      $name = $1 =~ s{\\([0-7]{3}|.)}{length $1 == 3 ? chr oct $1 : $UNESCAPE{$1} // "\0"}ger;
-      finding("$name: file name has an escape git does not document") if $name =~ /\0/;
+      my $unknown;
+      $name = $1 =~ s{\\([0-7]{3}|.)}{length $1 == 3 ? chr oct $1 : $UNESCAPE{$1} // ($unknown = "\\$1")}ger;
+      finding("$name: file name has an escape git does not document") if $unknown;
     }
     return $name =~ s{^[ab]/}{}r;
   }
@@ -151,7 +152,7 @@ exec perl -e '
       my @keys = $path =~ $JS ? $text =~ /(eslint-disable|\@ts-(?:ignore|nocheck|expect-error))/g
         : $path =~ /\.rs$/ ? rust_keys($text)
         : ();
-      for my $key (@keys) { $net{"$path\t$key"} += $sign; $first{"$path\t$key"} //= $new_line if $sign > 0 }
+      for my $key (@keys) { $net{"$path\0$key"} += $sign; $first{"$path\0$key"} //= $new_line if $sign > 0 }
       $sign > 0 ? $new_line++ : $old_line++;
     }
   }
@@ -160,7 +161,7 @@ exec perl -e '
   finding("$_:$setting{$_}: edits a lint or install setting that gate/lint depends on") for sort keys %setting;
   for my $entry (sort keys %net) {
     next if $net{$entry} <= 0;
-    my ($file, $key) = split /\t/, $entry;
+    my ($file, $key) = split /\0/, $entry;
     finding("$file:$first{$entry}: adds a suppression: $key (+$net{$entry})");
   }
   finding("eslint-suppressions.json: baseline counts grow by $suppression_sum") if $suppression_sum > 0;
