@@ -171,7 +171,8 @@ async function startFromChat(
     requestId: "r1",
     action: "sessions.start",
     input: { ...PI, prompt, project: "MonoCode" },
-    turnId: null,
+    // control.rs sends an app call only during the session's running turn.
+    turnId: "turn-1",
   });
   await expect
     .poll(() =>

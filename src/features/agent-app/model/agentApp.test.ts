@@ -114,6 +114,7 @@ function fixture() {
   const source = newSession("codex", "/tmp/project", "codex:test");
   source.id = "lead";
   const host: AgentAppHost = {
+    levels: { check: async () => ({ leadSessionId: null }) },
     start: vi.fn(async () => {}),
     sessions: vi.fn(async () => [
       {
@@ -194,25 +195,27 @@ describe("agent app commands", () => {
     );
   });
 
-  // Design 13.3. Defect: a session's start stores no lead, so its worker
-  // saves as a lead; or a Mono's start stores the Mono's chat as a lead.
+  // Design 13.3, 6.6 A6/A7. Defect: the web app decides the new session's
+  // lead itself instead of taking Rust's answer, so a Mono's start names the
+  // chat as a lead, or a lead's start saves a worker with no lead.
   it.each([
-    ["a session", "lead", false],
-    ["a Mono's chat", undefined, true],
-    ["a habit run", undefined, true],
+    ["a session", false, "lead", "lead"],
+    ["a session", false, null, undefined],
+    ["a Mono's chat", true, null, undefined],
+    ["a Mono's chat", true, "lead", "lead"],
   ] as const)(
-    "names %s that starts a session as its lead only when it is no Mono",
-    async (caller, lead, mono) => {
+    "starts %s's session with the lead id the level check answers (mono %s, %s)",
+    async (_caller, mono, answered, saved) => {
       const { source, host } = fixture();
-      if (caller === "a Mono's chat") host.isMono = () => true;
-      if (caller === "a habit run") host.isHabitRun = () => true;
+      host.isMono = () => mono;
       if (mono) host.monoOf = () => ({ id: "mono", projects: [source.cwd] });
+      host.levels.check = vi.fn(async () => ({ leadSessionId: answered }));
       await handleAgentApp(source, "worker", "sessions.start", {
         ...CHOICE,
         prompt: "Review the project",
         notifyOnComplete: false,
       }, host);
-      expect(vi.mocked(host.start).mock.calls[0][0].leadSessionId).toBe(lead);
+      expect(vi.mocked(host.start).mock.calls[0][0].leadSessionId).toBe(saved);
     },
   );
 

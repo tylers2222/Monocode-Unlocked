@@ -22,7 +22,10 @@ export type RequestId = Brand<string, "RequestId">;
 export type TurnId = Brand<string, "TurnId">;
 
 export type MonoRole = "giga" | "mono";
-export type Tool = "send_message" | "reply";
+export type MessageTool = "send_message" | "reply";
+/** Not a message (design 1.4, 16.2): a refused `sessions.start` or app action. Only a rejected row carries one. */
+export type RefusalTool = "start_session" | "app_action";
+export type Tool = MessageTool | RefusalTool;
 export type Delivery = "submit" | "queue" | "steer";
 export type IntentKind = "new" | "reply" | "steer" | "continue";
 /**
@@ -72,6 +75,15 @@ function isIntentKind(raw: unknown): raw is IntentKind {
   );
 }
 
+function isTool(raw: unknown): raw is Tool {
+  return (
+    raw === "send_message" ||
+    raw === "reply" ||
+    raw === "start_session" ||
+    raw === "app_action"
+  );
+}
+
 /** A row's intent columns, parsed: an accepted row has an `Intent`. */
 export type RowIntent =
   | { status: "accepted"; intent: Intent }
@@ -79,23 +91,31 @@ export type RowIntent =
 
 /**
  * The intent columns of a row from Rust. Undefined when they disagree: an
- * accepted row is `new` with no target, `reply` with `replyTo`, or `steer`
- * with exactly one of `replyTo` and `scope`.
+ * accepted row is a message that is `new` with no target, `reply` with
+ * `replyTo`, or `steer` with exactly one of `replyTo` and `scope`; a row of
+ * any tool may be rejected.
  */
 export function parseRowIntent(row: {
+  tool: unknown;
   status: unknown;
   intent: unknown;
   replyTo: unknown;
   scope: unknown;
 }): RowIntent | undefined {
-  const { intent } = row;
+  const { tool, intent } = row;
   const replyTo = row.replyTo === null ? null : parseMessageId(row.replyTo);
   const scope =
     row.scope === null || row.scope === "turn" ? row.scope : undefined;
-  if (replyTo === undefined || scope === undefined || !isIntentKind(intent))
+  if (
+    !isTool(tool) ||
+    replyTo === undefined ||
+    scope === undefined ||
+    !isIntentKind(intent)
+  )
     return undefined;
   if (row.status === "rejected")
     return { status: "rejected", asked: { intent, replyTo, scope } };
+  if (tool !== "send_message" && tool !== "reply") return undefined;
   if (intent === "new")
     return replyTo === null && scope === null
       ? { status: "accepted", intent: { intent, replyTo, scope } }
@@ -151,7 +171,7 @@ type MessageBase = {
   id: MessageId;
   requestId: RequestId;
   part: number;
-  tool: Tool;
+  tool: MessageTool;
   /** Null for a lead or worker session's row (design 13.5), or after the Mono was deleted. */
   fromMonoId: MonoId | null;
   fromSessionId: SessionId;
@@ -176,8 +196,10 @@ type PlainSlot = { turnId: TurnId; deliveredAt: number | null };
 type Delivered<S> = S & { deliveredAt: number };
 
 export type MonoMessage =
-  | (MessageBase &
+  | (Omit<MessageBase, "tool"> &
       AskedIntent & {
+        /** A refused `sessions.start` or app action keeps its own tool. */
+        tool: Tool;
         status: "rejected";
         gateResult: RejectCode;
         wantingReply: boolean;
@@ -233,6 +255,7 @@ export type RejectCode =
   | "unknown_handle"
   | "handle_closed"
   | "ambiguous_reply"
+  | "worker_cannot_spawn"
   | "worker_scope"
   | "steer_via_lead"
   | "session_cannot_wait"

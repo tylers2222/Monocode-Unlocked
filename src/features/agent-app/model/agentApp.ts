@@ -10,6 +10,7 @@ import {
   parseGetInput,
   parseReplyInput,
   parseSendInput,
+  parseSessionId,
   type GetInput,
   type ReplyInput,
   type SendInput,
@@ -287,6 +288,24 @@ export type AgentAppHost = {
     reply(requestId: string, input: ReplyInput): Promise<unknown>;
     get(input: GetInput): Promise<unknown>;
   };
+  /**
+   * Design 6.6: the level gate of this call's caller, Rust's
+   * `mono_app_action_check`. Required, so a host cannot run app actions with
+   * no level rule. Throws the refusal or rejection as an `AppActionError`;
+   * allowed, it answers the lead id `sessions.start` writes on the new
+   * session.
+   */
+  levels: {
+    check(
+      requestId: string,
+      call: {
+        action: string;
+        /** The session the action names: the parsed `input.sessionId`. */
+        target: string | null;
+        input: Record<string, unknown>;
+      },
+    ): Promise<{ leadSessionId: string | null }>;
+  };
   /** milestones.*: `milestones.ts`; Rust refuses agent writes while off. */
   milestones?: Pick<
     typeof milestonesModel,
@@ -310,7 +329,8 @@ export type AgentAppHost = {
   now?(): Date;
 };
 
-const FIELDS = new Map<string, readonly string[]>([
+/** Every app action with the input fields it takes. */
+export const FIELDS = new Map<string, readonly string[]>([
   ["models.list", []],
   ["sessions.list", ["project"]],
   ["sessions.read", ["sessionId", "before", "limit", "maxChars", "project"]],
@@ -433,6 +453,35 @@ function requiredString(value: unknown, name: string, max = 30_000): string {
       `${name} must be a non-empty string under ${max} characters`,
     );
   return value.trim();
+}
+
+/**
+ * An action's input with its `sessionId` parsed once (trimmed, then a
+ * session id of at most 256 characters), so the level check and the action
+ * read the same id. A prompt with U+0000 is refused here too, before the
+ * check: SQLite counts its text only up to that character, so its row could
+ * never be written.
+ */
+function boundaryInput(
+  action: string,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  if (typeof input.prompt === "string" && input.prompt.includes("\u0000"))
+    throw new AppActionError(
+      "invalid_input",
+      "prompt must not contain the character U+0000",
+    );
+  if (!FIELDS.get(action)?.includes("sessionId")) return input;
+  // Only a session card names a session.
+  if (action === "chat.card" && input.sessionId === undefined) return input;
+  const sessionId =
+    typeof input.sessionId === "string" ? input.sessionId.trim() : "";
+  if (sessionId.length > 256 || !parseSessionId(sessionId))
+    throw new AppActionError(
+      "invalid_input",
+      "sessionId must be a session id: 1 to 256 letters, digits, underscores or hyphens",
+    );
+  return { ...input, sessionId };
 }
 
 function agentPrompt(value: unknown): string {
@@ -1506,10 +1555,20 @@ export async function handleAgentApp(
   source: Session,
   requestId: string,
   action: string,
-  input: Record<string, unknown>,
+  rawInput: Record<string, unknown>,
   host: AgentAppHost,
 ): Promise<unknown> {
-  fields(action, input);
+  fields(action, rawInput);
+  const input = boundaryInput(action, rawInput);
+  // Design 6.6: Rust decides every app action once, before it runs.
+  // messages.* get their own gate in mono_message_submit.
+  const { leadSessionId } = action.startsWith("messages.")
+    ? { leadSessionId: null }
+    : await host.levels.check(requestId, {
+        action,
+        target: typeof input.sessionId === "string" ? input.sessionId : null,
+        input,
+      });
   if (action.startsWith("artifacts."))
     return handleArtifacts(source, requestId, action, input, host);
   if (action.startsWith("soul."))
@@ -1671,12 +1730,6 @@ export async function handleAgentApp(
         throw new Error(
           "request ID must use letters, digits, underscores or hyphens",
         );
-      // Design 13.3: a session that starts a session is its lead; a Mono's
-      // chat or habit run starts a lead.
-      const leadSessionId =
-        host.isMono(source.id) || host.isHabitRun?.(source.id)
-          ? null
-          : source.id;
       const { launch, listedWorktree } = startLaunch(
         source,
         input,

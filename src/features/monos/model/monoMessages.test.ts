@@ -89,7 +89,7 @@ it("reads an accepted row's intent only when it, replyTo and scope agree", () =>
     intent: unknown,
     replyTo: unknown,
     scope: unknown = null,
-  ) => parseRowIntent({ status, intent, replyTo, scope });
+  ) => parseRowIntent({ tool: "send_message", status, intent, replyTo, scope });
   const accepted = (
     status: string,
     intent: unknown,
@@ -142,6 +142,24 @@ it("reads an accepted row's intent only when it, replyTo and scope agree", () =>
     status: "rejected",
     asked: { intent: "steer", replyTo: null, scope: "turn" },
   });
+});
+
+// Design 1.4, 6.6, 13.5. Defect: the web app reads a refused sessions.start or
+// app action row as unreadable, reads an accepted row of a tool that is not
+// a message, or reads a row of an unknown tool.
+it("reads a tool that is not a message only on a rejected row", () => {
+  const row = (tool: unknown, status: string) =>
+    parseRowIntent({ tool, status, intent: "new", replyTo: null, scope: null });
+  for (const tool of ["start_session", "app_action", "send_message", "reply"])
+    expect(row(tool, "rejected")).toEqual({
+      status: "rejected",
+      asked: { intent: "new", replyTo: null, scope: null },
+    });
+  for (const tool of ["start_session", "app_action"])
+    expect(row(tool, "delivered")).toBeUndefined();
+  expect(row("send_message", "delivered")?.status).toBe("accepted");
+  for (const tool of ["sessions.start", null, undefined])
+    expect(row(tool, "rejected")).toBeUndefined();
 });
 
 // Design U10. Defects: the queue shows the escaped name ("Scout &#60;S&#62;"),

@@ -3186,38 +3186,53 @@ pub fn mono_message_get(
     get_message(&conn, &caller, mono_gate::parse_get(&input)).map_err(|error| error.to_string())
 }
 
-#[tauri::command(async)]
-pub fn mono_app_action_check(
-    store: State<'_, SessionStore>,
+/// The one argument of `mono_app_action_check`, as the web app's
+/// `levelGate` sends it: `invoke("mono_app_action_check", { call })`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppActionCall {
     caller: CallerArg,
     action: String,
     target: Option<String>,
     target_lead_session_id: Option<String>,
     request_id: String,
     input: Value,
+}
+
+impl AppActionCall {
+    fn check(self, store: &SessionStore, now: i64) -> Result<ActionChecked, String> {
+        let caller = self.caller.parse()?;
+        let target_copy = self
+            .target_lead_session_id
+            .as_deref()
+            .map(|lead| SessionId::parse(lead).ok_or("Invalid targetLeadSessionId"))
+            .transpose()?;
+        let Some(request_id) = RequestId::parse(&self.request_id) else {
+            return Ok(ActionChecked::Failed {
+                error: refusal(Refusal::InvalidInput, REQUEST_ID_RULE.into()),
+            });
+        };
+        let conn = store.lock_conn()?;
+        check_action(
+            &conn,
+            &caller,
+            &self.action,
+            self.target.as_deref(),
+            target_copy,
+            &request_id,
+            &self.input,
+            now,
+        )
+        .map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command(async)]
+pub fn mono_app_action_check(
+    store: State<'_, SessionStore>,
+    call: AppActionCall,
 ) -> Result<ActionChecked, String> {
-    let caller = caller.parse()?;
-    let target_copy = target_lead_session_id
-        .as_deref()
-        .map(|lead| SessionId::parse(lead).ok_or("Invalid targetLeadSessionId"))
-        .transpose()?;
-    let Some(request_id) = RequestId::parse(&request_id) else {
-        return Ok(ActionChecked::Failed {
-            error: refusal(Refusal::InvalidInput, REQUEST_ID_RULE.into()),
-        });
-    };
-    let conn = store.lock_conn()?;
-    check_action(
-        &conn,
-        &caller,
-        &action,
-        target.as_deref(),
-        target_copy,
-        &request_id,
-        &input,
-        now_ms(),
-    )
-    .map_err(|error| error.to_string())
+    call.check(&store, now_ms())
 }
 
 #[cfg(test)]
@@ -9395,5 +9410,70 @@ pub(crate) mod tests {
             "Mono chat with a sessions row"
         );
         assert_eq!(rows(&conn), 2);
+    }
+
+    // PR7-9b real-state proof. `appActionCheck.fixtures.json` holds the exact
+    // `mono_app_action_check` calls that the web app's real `levelGate` sends
+    // (agentAppLevels.test.ts records and checks them) and the replies it
+    // acts on. With WRITE_APP_ACTION_FIXTURE=1 this test writes each reply
+    // the command answers into the file instead of comparing. Defect: the
+    // command reads another argument name, shape or lead copy than the web
+    // app sends, or answers in a shape or with a code, hint or lead id the
+    // web app does not expect.
+    #[test]
+    fn mono_app_action_check_answers_every_call_the_web_app_sends() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/features/agent-app/model/appActionCheck.fixtures.json"
+        );
+        let write = std::env::var("WRITE_APP_ACTION_FIXTURE").as_deref() == Ok("1");
+        let mut fixture: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let saved: Vec<Value> = fixture["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["saved"] == true)
+            .cloned()
+            .collect();
+        for case in fixture["cases"].as_array_mut().unwrap() {
+            let store = messaging_store();
+            for row in &saved {
+                store
+                    .lock_conn()
+                    .unwrap()
+                    .execute(
+                        "INSERT OR IGNORE INTO sessions (id, cwd, harness, model, runtime_mode,
+                           title, created_at, updated_at, lead_session_id)
+                         VALUES (?1, ?2, 'codex', 'm', 'default', 'S', 1, 1, ?3)",
+                        params![
+                            row["id"].as_str(),
+                            row["cwd"].as_str(),
+                            row["leadSessionId"].as_str()
+                        ],
+                    )
+                    .unwrap();
+            }
+            let name = case["name"].as_str().unwrap().to_string();
+            // Tauri hands the command the `call` key of the invoke arguments.
+            let args = case["args"].as_object().unwrap();
+            assert_eq!(args.keys().collect::<Vec<_>>(), ["call"], "{name}");
+            let call: AppActionCall = serde_json::from_value(args["call"].clone()).unwrap();
+            let mut answer = serde_json::to_value(call.check(&store, 100).unwrap()).unwrap();
+            if let Some(id) = answer.pointer_mut("/error/message_id") {
+                let written = MessageId::parse(id.as_str().unwrap()).unwrap();
+                let conn = store.lock_conn().unwrap();
+                assert!(get(&conn, &written).unwrap().is_some(), "{name}");
+                *id = serde_json::json!("m_aaaaaaaaaaaa");
+            }
+            if write {
+                case["reply"] = answer;
+            } else {
+                assert_eq!(answer, case["reply"], "{name}");
+            }
+        }
+        if write {
+            std::fs::write(path, serde_json::to_string_pretty(&fixture).unwrap() + "\n").unwrap();
+        }
     }
 }

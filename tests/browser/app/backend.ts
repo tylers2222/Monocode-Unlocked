@@ -305,6 +305,9 @@ const HANDLERS: Record<string, Handler> = {
     if ((updates as MonoUpdate[]).length) store.rosterRevision += 1;
     return { revision: store.rosterRevision, monos: store.monos };
   },
+  // The level rules live in Rust (appActionCheck.fixtures.json pins them);
+  // every gated call the specs make is allowed and starts no worker.
+  mono_app_action_check: () => ({ outcome: "allowed", leadSessionId: null }),
   // mono_transcript.rs mono_session_get: the record and its only page.
   mono_session_get: (store, { sessionId }) => {
     const record = sessionRecord(store, sessionId);

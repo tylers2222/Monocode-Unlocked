@@ -27,7 +27,7 @@ import {
   type MonoQueueHost,
   type MonoRouteHost,
 } from "../features/monos/model/monoRoute";
-import { resolveCaller } from "../features/monos/model/monoCaller";
+import { levelGate, resolveCaller } from "../features/monos/model/monoCaller";
 import {
   newTurnId,
   parseMonoId,
@@ -11774,6 +11774,13 @@ function Workspace({
                 replyMessage(messaging, requestId, input),
               get: (input) => getMessage(messaging, input),
             },
+            levels: levelGate(
+              source,
+              payload.turnId,
+              (id) =>
+                sessionsRef.current.find((session) => session.id === id)
+                  ?.leadSessionId,
+            ),
             milestones,
             habits: { load: loadHabits, update: updateHabits },
             agentFiles: (monoId) => loadMonoFiles(monoId),

@@ -120,6 +120,7 @@ function fixture(
     );
   });
   const host = {
+    levels: { check: async () => ({ leadSessionId: null }) },
     isMono: (id: string) => kind === "mono" && id === source.id,
     isHabitRun: (id: string) => kind === "habit" && id === source.id,
     monoOf: (id: string) => {
