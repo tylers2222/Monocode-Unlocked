@@ -1,0 +1,35 @@
+name: gate-integrity
+
+# pull_request_target runs this file and scripts/gate/integrity.sh as they are on
+# the base branch, so a pull request cannot edit the check that judges it. That is
+# safe only while no step runs pull request code: the PR head is fetched as git
+# objects for `git diff` and never checked out, installed, built or sourced.
+on:
+  pull_request_target:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  integrity:
+    name: gate/integrity
+    runs-on: ubuntu-latest
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch the PR head as git objects only
+        run: git fetch --no-tags origin "$HEAD_SHA"
+
+      - name: Integrity check (base-branch script, diff only)
+        run: bash scripts/gate/integrity.sh "$BASE_SHA" "$HEAD_SHA"
