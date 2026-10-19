@@ -34,7 +34,7 @@ jobs:
 
       - name: Baselines only shrink
         if: ${{ !cancelled() }}
-        run: bash scripts/gate/baseline-growth.sh "$BASE"
+        run: node scripts/gate/baseline-growth.mjs "$BASE"
 
       - name: ESLint
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
