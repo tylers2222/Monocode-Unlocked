@@ -113,7 +113,7 @@ test("lane 5: a drag inside a group reorders, and the order holds after a restar
   await expect(
     row(page, HARNESS.id).locator("[data-drop-line]"),
   ).toHaveAttribute("data-drop-line", "before");
-  await page.screenshot({ path: test.info().outputPath("reorder.png") });
+  await expect(page.locator("[data-lifted]")).toContainText(PROMPTFOO.title);
   await page.mouse.up();
   await expect
     .poll(() => titlesIn(page, "Planned"))
@@ -145,6 +145,10 @@ test("a drag across a group header moves the row and changes its status", async 
 }) => {
   await openPage(app, page);
   await dragTo(page, VOICE.id, PROMPTFOO.id, "after");
+  await expect(
+    row(page, PROMPTFOO.id).locator("[data-drop-line]"),
+  ).toHaveAttribute("data-drop-line", "after");
+  await page.screenshot({ path: test.info().outputPath("reorder.png") });
   await page.mouse.up();
   await expect
     .poll(() => titlesIn(page, "Planned"))
@@ -153,7 +157,7 @@ test("a drag across a group header moves the row and changes its status", async 
     VOICE.id,
     "planned",
   ]);
-  await expect(row(page, VOICE.id)).not.toHaveCSS("transform", /matrix/);
+  await expect(page.locator("[data-lifted]")).toHaveCount(0);
 });
 
 test("keyboard: Alt+ArrowUp/Down moves the focused row, past group edges, and keeps focus", async ({
