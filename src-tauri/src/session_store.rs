@@ -1086,6 +1086,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // Mono messages reference `monos`, so they come after it.
     crate::mono_messages::ensure_tables(conn)?;
     crate::milestones::ensure_tables(conn)?;
+    crate::approvals::ensure_tables(conn)?;
     Ok(())
 }
 
