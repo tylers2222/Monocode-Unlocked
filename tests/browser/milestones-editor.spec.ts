@@ -605,7 +605,8 @@ test("the page's writes match the committed fixture that Rust replays", async ({
   await expect(someday).toHaveCount(0);
 
   // Reorders: one by keys; one an agent's unseen add makes stale_order; the
-  // retry; and one past a group's edge, which also changes the status.
+  // retry; one past a group's edge, which also changes the status; and one
+  // by dragging the grip.
   const idea = page.getByRole("region", { name: "Idea", exact: true });
   const moved = (id: string) => expect(row(page, id)).toBeFocused();
   await row(page, SHARE.id).focus();
@@ -633,6 +634,27 @@ test("the page's writes match the committed fixture that Rust replays", async ({
       .getByRole("region", { name: "Planned", exact: true })
       .locator(`[data-milestone="${VOICE.id}"]`),
   ).toBeVisible();
+  await row(page, VOICE.id).hover();
+  const grip = (await row(page, VOICE.id)
+    .locator("[data-grip]")
+    .boundingBox())!;
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await page.mouse.down();
+  const promptfoo = (await row(page, PROMPTFOO.id).boundingBox())!;
+  await page.mouse.move(grip.x, promptfoo.y + promptfoo.height / 4, {
+    steps: 8,
+  });
+  await expect(page.locator("[data-lifted]")).toHaveAttribute(
+    "data-lifted",
+    "before",
+  );
+  await page.mouse.up();
+  await expect(
+    page
+      .getByRole("region", { name: "Planned", exact: true })
+      .locator("[data-milestone]")
+      .first(),
+  ).toHaveAttribute("data-milestone", VOICE.id);
 
   const captured = (await writes(page)).map(
     ({ command, args, reply, refused }) =>

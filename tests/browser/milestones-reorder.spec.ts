@@ -88,20 +88,47 @@ const reorders = (page: Page) =>
   );
 const notice = (page: Page) => main(page).getByText(STALE);
 
-/** Presses the grip of `id`, moves to the upper or lower half of `target`, and stops before release. */
+const lifted = (page: Page) => page.locator("[data-lifted]");
+
+/**
+ * Presses the grip of `id` with `button`, moves to the upper or lower half of
+ * `target`, and stops before release. The lifted card takes space as it goes,
+ * so the last move aims at where `target` is then.
+ */
 async function dragTo(
   page: Page,
   id: string,
   target: string,
   side: "before" | "after",
+  button: "left" | "right" = "left",
 ) {
   await row(page, id).hover();
   const grip = (await row(page, id).locator("[data-grip]").boundingBox())!;
+  const x = grip.x + grip.width / 2;
+  const aim = async () => {
+    const over = (await row(page, target).boundingBox())!;
+    return over.y + over.height * (side === "before" ? 0.25 : 0.75);
+  };
+  await page.mouse.move(x, grip.y + grip.height / 2);
+  await page.mouse.down({ button });
+  await page.mouse.move(x, await aim(), { steps: 8 });
+  await page.mouse.move(x, await aim(), { steps: 2 });
+}
+
+/** The lifted card sits on `side` of `target`, with the drop line on its top edge, as frame M·6 draws. */
+async function expectLiftedBeside(
+  page: Page,
+  target: string,
+  side: "before" | "after",
+) {
+  await expect(lifted(page)).toHaveAttribute("data-lifted", side);
+  const card = (await lifted(page).boundingBox())!;
+  const line = (await lifted(page).locator("[data-drop-line]").boundingBox())!;
   const over = (await row(page, target).boundingBox())!;
-  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
-  await page.mouse.down();
-  const y = over.y + over.height * (side === "before" ? 0.25 : 0.75);
-  await page.mouse.move(grip.x + grip.width / 2, y, { steps: 8 });
+  expect(Math.abs(line.y - card.y)).toBeLessThan(8);
+  if (side === "after")
+    expect(card.y).toBeGreaterThanOrEqual(over.y + over.height);
+  else expect(card.y + card.height).toBeLessThanOrEqual(over.y);
 }
 
 test("lane 5: a drag inside a group reorders, and the order holds after a restart", async ({
@@ -110,11 +137,11 @@ test("lane 5: a drag inside a group reorders, and the order holds after a restar
 }) => {
   await openPage(app, page);
   await dragTo(page, PROMPTFOO.id, HARNESS.id, "before");
-  await expect(
-    row(page, HARNESS.id).locator("[data-drop-line]"),
-  ).toHaveAttribute("data-drop-line", "before");
-  await expect(page.locator("[data-lifted]")).toContainText(PROMPTFOO.title);
+  await expectLiftedBeside(page, HARNESS.id, "before");
+  await expect(lifted(page)).toContainText(PROMPTFOO.title);
+  await expect(row(page, PROMPTFOO.id)).toHaveCSS("opacity", "0.35");
   await page.mouse.up();
+  await expect(row(page, PROMPTFOO.id)).toHaveCSS("opacity", "1");
   await expect
     .poll(() => titlesIn(page, "Planned"))
     .toEqual([PROMPTFOO.id, HARNESS.id]);
@@ -145,9 +172,15 @@ test("a drag across a group header moves the row and changes its status", async 
 }) => {
   await openPage(app, page);
   await dragTo(page, VOICE.id, PROMPTFOO.id, "after");
-  await expect(
-    row(page, PROMPTFOO.id).locator("[data-drop-line]"),
-  ).toHaveAttribute("data-drop-line", "after");
+  await expectLiftedBeside(page, PROMPTFOO.id, "after");
+  // The next group's header stays visible under the lifted card.
+  const header = main(page)
+    .getByRole("region", { name: "Idea", exact: true })
+    .locator("h3");
+  const card = (await lifted(page).boundingBox())!;
+  expect((await header.boundingBox())!.y).toBeGreaterThanOrEqual(
+    card.y + card.height,
+  );
   await page.screenshot({ path: test.info().outputPath("reorder.png") });
   await page.mouse.up();
   await expect
@@ -157,7 +190,7 @@ test("a drag across a group header moves the row and changes its status", async 
     VOICE.id,
     "planned",
   ]);
-  await expect(page.locator("[data-lifted]")).toHaveCount(0);
+  await expect(lifted(page)).toHaveCount(0);
 });
 
 test("keyboard: Alt+ArrowUp/Down moves the focused row, past group edges, and keeps focus", async ({
@@ -165,10 +198,21 @@ test("keyboard: Alt+ArrowUp/Down moves the focused row, past group edges, and ke
   page,
 }) => {
   await openPage(app, page);
+  await page.evaluate(() => {
+    window.addEventListener("keydown", (event) => {
+      if (event.key.startsWith("Arrow"))
+        document.body.dataset.altKeyHandled = String(event.defaultPrevented);
+    });
+  });
   await row(page, SHARE.id).focus();
   await page.keyboard.press("Alt+ArrowUp");
   await expect.poll(() => titlesIn(page, "Idea")).toEqual([SHARE.id, VOICE.id]);
   await expect(row(page, SHARE.id)).toBeFocused();
+  // The page does not also scroll: the key's default action is stopped.
+  await expect(page.locator("body")).toHaveAttribute(
+    "data-alt-key-handled",
+    "true",
+  );
 
   await page.keyboard.press("Alt+ArrowUp");
   await expect
@@ -244,4 +288,92 @@ test("an agent reorder during a drag: the drop is refused, the list refreshes, a
   await expect
     .poll(() => titlesIn(page, "Planned"))
     .toEqual([HARNESS.id, PROMPTFOO.id]);
+});
+
+test("an agent deletes the row being dragged: no crash, no write, and the notice on release", async ({
+  app,
+  page,
+}) => {
+  await openPage(app, page);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await dragTo(page, PROMPTFOO.id, HARNESS.id, "before");
+  await expect(lifted(page)).toBeVisible();
+  await page.evaluate(
+    ({ id, event, project }) => {
+      const store = window.appBackend!.store;
+      store.milestones = store.milestones.filter((m) => m.id !== id);
+      return window.appBackend!.emit(event, { projectPath: project });
+    },
+    { id: PROMPTFOO.id, event: CHANGED, project: ORBIT },
+  );
+  await expect(row(page, PROMPTFOO.id)).toHaveCount(0);
+  await expect(row(page, HARNESS.id)).toBeVisible();
+  expect(errors).toEqual([]);
+  await expect(lifted(page)).toHaveCount(0);
+  await page.mouse.move(0, 10, { steps: 2 });
+  await page.mouse.up();
+
+  await expect(notice(page)).toBeVisible();
+  expect(errors).toEqual([]);
+  expect(await reorders(page)).toEqual([]);
+  expect(await titlesIn(page, "Planned")).toEqual([HARNESS.id]);
+});
+
+test("a right-button drag on the grip moves nothing", async ({ app, page }) => {
+  await openPage(app, page);
+  await dragTo(page, PROMPTFOO.id, HARNESS.id, "before", "right");
+  await expect(lifted(page)).toHaveCount(0);
+  await page.mouse.up({ button: "right" });
+  expect(await reorders(page)).toEqual([]);
+  expect(await titlesIn(page, "Planned")).toEqual([HARNESS.id, PROMPTFOO.id]);
+});
+
+test("a cancelled pointer ends the drag: the card and the line go, and nothing moves", async ({
+  app,
+  page,
+}) => {
+  await openPage(app, page);
+  await dragTo(page, PROMPTFOO.id, HARNESS.id, "before");
+  await expect(lifted(page)).toBeVisible();
+  await page.locator("[data-timeline]").dispatchEvent("pointercancel", {
+    pointerId: 1,
+    isPrimary: true,
+  });
+  await expect(lifted(page)).toHaveCount(0);
+  await expect(page.locator("[data-drop-line]")).toHaveCount(0);
+  await expect(row(page, PROMPTFOO.id)).toHaveCSS("opacity", "1");
+  await page.mouse.up();
+  expect(await reorders(page)).toEqual([]);
+});
+
+test("after a key move, focus left elsewhere does not jump back on later agent changes", async ({
+  app,
+  page,
+}) => {
+  await openPage(app, page);
+  await row(page, SHARE.id).focus();
+  await page.keyboard.press("Alt+ArrowUp");
+  await expect(row(page, SHARE.id)).toBeFocused();
+  await page.evaluate(() => (document.activeElement as HTMLElement).blur());
+  await expect(page.locator("body")).toBeFocused();
+  // An agent retitles another row, then moves the moved row to another group,
+  // which mounts it again.
+  const agent = (id: string, change: Partial<Milestone>) =>
+    page.evaluate(
+      ({ id, change, event, project }) => {
+        Object.assign(
+          window.appBackend!.store.milestones.find((m) => m.id === id)!,
+          change,
+        );
+        return window.appBackend!.emit(event, { projectPath: project });
+      },
+      { id, change, event: CHANGED, project: ORBIT },
+    );
+  await agent(HARNESS.id, { title: "Giga Mono harness (agent retitle)" });
+  await expect(row(page, HARNESS.id)).toContainText("agent retitle");
+  await expect(page.locator("body")).toBeFocused();
+  await agent(SHARE.id, { status: "planned" });
+  await expect.poll(() => titlesIn(page, "Planned")).toContain(SHARE.id);
+  await expect(page.locator("body")).toBeFocused();
 });

@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useState,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -47,43 +48,38 @@ type Props = {
 
 export type MoveEnd = { kind: "drop"; drop: Drop } | { kind: "changed" };
 
-/** The row the pointer is over, the half it is on, and where the drop line sits in the timeline. */
-type Over = { id: string; side: "before" | "after"; lineY: number };
+/** The row the pointer is over, and which half of it the pointer is on. */
+type Over = { id: string; side: "before" | "after" };
 
-/** The one gesture under way: a row dragged by its grip, or a row moved by keys that keeps focus. */
-type Gesture =
-  | {
-      kind: "drag";
-      id: string;
-      from: string;
-      over: Over | null;
-    }
-  | { kind: "keyed"; id: string }
-  | null;
+/** A row dragged by its grip, and the list it was picked up from. */
+type Drag = { id: string; from: string; over: Over | null };
 
-/** The row nearest the pointer, and which half of it the pointer is on. */
-function overAt(event: ReactPointerEvent, id: string): Over | null {
-  const timeline = event.currentTarget.closest("[data-timeline]")!;
-  const origin = timeline.getBoundingClientRect().top;
-  const rows = timeline.querySelectorAll<HTMLElement>("[data-milestone]");
+/** The row nearest `y` in `timeline`, other than the dragged row `id`. */
+function overAt(timeline: HTMLElement, y: number, id: string): Over | null {
   let best: { over: Over; distance: number } | null = null;
-  for (const row of rows) {
-    if (row.dataset.milestone === id) continue;
-    const { top, bottom, height } = row.getBoundingClientRect();
+  for (const row of timeline.querySelectorAll<HTMLElement>(
+    "[data-milestone]",
+  )) {
+    const rowId = row.dataset.milestone;
+    if (!rowId || rowId === id) continue;
+    const { top, height } = row.getBoundingClientRect();
     const middle = top + height / 2;
-    const distance = Math.abs(event.clientY - middle);
-    const before = event.clientY < middle;
+    const distance = Math.abs(y - middle);
     if (!best || distance < best.distance)
       best = {
-        over: {
-          id: row.dataset.milestone!,
-          side: before ? "before" : "after",
-          lineY: (before ? top : bottom) - origin,
-        },
+        over: { id: rowId, side: y < middle ? "before" : "after" },
         distance,
       };
   }
   return best?.over ?? null;
+}
+
+/**
+ * Focuses the row a key just moved when it mounts in its new group. A stable
+ * callback ref runs only on mount, as `autoFocus` does for form fields.
+ */
+function focusMoved(row: HTMLElement | null) {
+  row?.focus();
 }
 
 const GROUP_DOT: Record<MilestoneStatus, string> = {
@@ -113,46 +109,55 @@ export function MilestoneTimeline({
   onMove,
 }: Props) {
   const [doneCollapsed, setDoneCollapsed] = useState(false);
-  const [gesture, setGesture] = useState<Gesture>(null);
+  const [drag, setDrag] = useState<Drag | null>(null);
+  /** The row Alt+Arrow moved: it keeps focus if the move remounts it; cleared on blur. */
+  const [moved, setMoved] = useState<string | null>(null);
   const groups = timelineGroups(milestones, hiddenStatuses);
   const shown = groups.filter(
     (group) => !(group.status === "done" && doneCollapsed),
   );
-  const drag = gesture?.kind === "drag" ? gesture : null;
-  const grip = {
-    down: (id: string, event: ReactPointerEvent) => {
-      if (event.button !== 0) return;
+  // Gone when an agent removed the dragged row: nothing is lifted, and the
+  // release finds the list changed, as orderKey counts rows.
+  const dragged = drag && milestones.find((row) => row.id === drag.id);
+  const over = dragged ? drag.over : null;
+  const pointer = {
+    down: (event: ReactPointerEvent<HTMLElement>) => {
+      const grip =
+        event.target instanceof Element
+          ? event.target.closest<HTMLElement>("[data-grip]")
+          : null;
+      const id = grip?.dataset.grip;
+      if (!id || event.button !== 0) return;
       event.currentTarget.setPointerCapture(event.pointerId);
-      setGesture({
-        kind: "drag",
-        id,
-        from: orderKey(milestones),
-        over: null,
-      });
+      setDrag({ id, from: orderKey(milestones), over: null });
     },
-    move: (event: ReactPointerEvent) => {
+    move: (event: ReactPointerEvent<HTMLElement>) => {
       if (!drag) return;
-      setGesture({
+      setDrag({
         ...drag,
-        over: overAt(event, drag.id),
+        over: overAt(event.currentTarget, event.clientY, drag.id),
       });
     },
     up: () => {
-      setGesture(null);
+      setDrag(null);
       if (!drag?.over) return;
       if (orderKey(milestones) !== drag.from)
         return onMove?.({ kind: "changed" });
       const drop = dropBeside(shown, drag.id, drag.over);
       if (drop) onMove?.({ kind: "drop", drop });
     },
-    cancel: () => setGesture(null),
+    cancel: () => setDrag(null),
   };
   const step = (id: string, delta: -1 | 1) => {
     const drop = stepOf(shown, id, delta);
     if (!drop) return;
-    setGesture({ kind: "keyed", id });
+    setMoved(id);
     onMove?.({ kind: "drop", drop });
   };
+  const lifted = (side: Over["side"]) =>
+    dragged ? (
+      <LiftedCard milestone={dragged} side={side} today={today} />
+    ) : null;
   const todayLine = (
     <div
       data-today
@@ -167,6 +172,10 @@ export function MilestoneTimeline({
   return (
     <div
       data-timeline
+      onPointerDown={pointer.down}
+      onPointerMove={pointer.move}
+      onPointerUp={pointer.up}
+      onPointerCancel={pointer.cancel}
       className="relative mx-auto w-full max-w-[780px] px-8 pt-1.5 pb-7 before:absolute before:top-[22px] before:bottom-[30px] before:left-[39px] before:w-px before:bg-content/16"
     >
       {open?.id === null ? (
@@ -212,23 +221,25 @@ export function MilestoneTimeline({
                       {open.editor}
                     </li>
                   ) : (
-                    <MilestoneRow
-                      key={milestone.id}
-                      milestone={milestone}
-                      highlighted={highlightIds.has(milestone.id)}
-                      lookUpCreator={lookUpCreator}
-                      today={today}
-                      onOpen={onOpen}
-                      grip={grip}
-                      onStep={step}
-                      lifted={drag?.id === milestone.id}
-                      dropLine={
-                        drag?.over?.id === milestone.id ? drag.over.side : null
-                      }
-                      refocus={
-                        gesture?.kind === "keyed" && gesture.id === milestone.id
-                      }
-                    />
+                    <Fragment key={milestone.id}>
+                      {over?.id === milestone.id && over.side === "before"
+                        ? lifted("before")
+                        : null}
+                      <MilestoneRow
+                        milestone={milestone}
+                        highlighted={highlightIds.has(milestone.id)}
+                        lookUpCreator={lookUpCreator}
+                        today={today}
+                        onOpen={onOpen}
+                        onStep={step}
+                        ghost={dragged?.id === milestone.id}
+                        refocus={moved === milestone.id}
+                        onBlur={() => setMoved(null)}
+                      />
+                      {over?.id === milestone.id && over.side === "after"
+                        ? lifted("after")
+                        : null}
+                    </Fragment>
                   ),
                 )}
               </ol>
@@ -237,34 +248,33 @@ export function MilestoneTimeline({
           </section>
         );
       })}
-      {drag?.over ? (
-        <LiftedCard
-          milestone={milestones.find((row) => row.id === drag.id)!}
-          y={drag.over.lineY}
-          today={today}
-        />
-      ) : null}
     </div>
   );
 }
 
-/** Frame M·6 mid-drag: the dragged row's card, lifted, just under the drop line. */
+/**
+ * Frame M·6 mid-drag: the dragged row's card, lifted, takes its place in the
+ * list where it would drop, under the blue drop line.
+ */
 function LiftedCard({
   milestone,
-  y,
+  side,
   today,
 }: {
   milestone: Milestone;
-  y: number;
+  side: Over["side"];
   today: Date;
 }) {
   return (
-    <div
+    <li
       aria-hidden
-      data-lifted
-      style={{ top: y + 4 }}
-      className="pointer-events-none absolute right-6 left-[66px] z-20 flex items-center gap-3 rounded-lg bg-background-base py-2 pr-2.5 pl-3 text-sm font-medium shadow-lg ring-1 ring-content/12"
+      data-lifted={side}
+      className="pointer-events-none relative my-1 flex items-center gap-3 rounded-lg bg-background-base py-2 pr-2.5 pl-3 text-sm font-medium shadow-lg ring-1 ring-content/12"
     >
+      <span
+        data-drop-line
+        className="absolute right-0 -left-[22px] -top-1.5 h-0.5 rounded-full bg-accent before:absolute before:-top-[3px] before:left-0 before:size-2 before:rounded-full before:border-2 before:border-accent before:bg-background-base"
+      />
       <i
         className={`block size-[7px] shrink-0 rounded-full ${ROW_DOT[milestone.status]}`}
       />
@@ -272,7 +282,7 @@ function LiftedCard({
       <span className="text-xs font-normal text-content/55 tabular-nums">
         {milestone.target ? formatTarget(milestone.target, today) : "Later"}
       </span>
-    </div>
+    </li>
   );
 }
 
@@ -282,29 +292,22 @@ function MilestoneRow({
   lookUpCreator,
   today,
   onOpen,
-  grip,
   onStep,
-  lifted,
-  dropLine,
+  ghost,
   refocus,
+  onBlur,
 }: {
   milestone: Milestone;
   highlighted: boolean;
   lookUpCreator: NonNullable<Props["lookUpCreator"]>;
   today: Date;
   onOpen: Props["onOpen"];
-  grip: {
-    down: (id: string, event: ReactPointerEvent) => void;
-    move: (event: ReactPointerEvent) => void;
-    up: () => void;
-    cancel: () => void;
-  };
   onStep: (id: string, delta: -1 | 1) => void;
   /** Dragged: the row stays as a faded ghost while its lifted card moves. */
-  lifted: boolean;
-  dropLine: Over["side"] | null;
-  /** Focus moves with the row a key moved, though the move may remount it. */
+  ghost: boolean;
+  /** The row a key moved: focused again when the move remounts it. */
   refocus: boolean;
+  onBlur: () => void;
 }) {
   const done = milestone.status === "done";
   const creator = agentCreator(milestone.createdBy);
@@ -312,13 +315,8 @@ function MilestoneRow({
     <li
       tabIndex={0}
       data-milestone={milestone.id}
-      ref={
-        refocus
-          ? (row) => {
-              if (row && document.activeElement === document.body) row.focus();
-            }
-          : undefined
-      }
+      ref={refocus ? focusMoved : undefined}
+      onBlur={onBlur}
       onClick={() => onOpen?.(milestone.id)}
       onKeyDown={(event) => {
         if (event.target !== event.currentTarget) return;
@@ -338,28 +336,16 @@ function MilestoneRow({
         highlighted
           ? "bg-accent/8 inset-ring inset-ring-accent/30 motion-safe:animate-[approval-toast-in_220ms_cubic-bezier(0.22,1,0.36,1)]"
           : ""
-      } ${lifted ? "opacity-35" : ""}`}
+      } ${ghost ? "opacity-35" : ""}`}
     >
       <span
-        data-grip
+        data-grip={milestone.id}
         aria-hidden
-        onPointerDown={(event) => grip.down(milestone.id, event)}
-        onPointerMove={grip.move}
-        onPointerUp={grip.up}
-        onPointerCancel={grip.cancel}
         onClick={(event) => event.stopPropagation()}
         className="absolute top-2 -left-6 grid h-5 w-4 cursor-grab touch-none place-items-center text-content/35 opacity-0 group-hover/row:opacity-100"
       >
         <GripVertical className="size-3.5" />
       </span>
-      {dropLine ? (
-        <span
-          data-drop-line={dropLine}
-          className={`pointer-events-none absolute right-0 -left-[22px] z-30 h-0.5 rounded-full bg-accent before:absolute before:-top-[3px] before:left-0 before:size-2 before:rounded-full before:border-2 before:border-accent before:bg-background-base ${
-            dropLine === "before" ? "-top-px" : "-bottom-px"
-          }`}
-        />
-      ) : null}
       <span className="grid h-5 place-items-center">
         <i
           className={`block size-[7px] rounded-full ${ROW_DOT[milestone.status]}`}
