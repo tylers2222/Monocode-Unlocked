@@ -970,6 +970,9 @@ function sanitizeBlock(
     next.appRequestId = block.appRequestId;
     const appDelivery = sanitizeAppDelivery(block.appDelivery);
     if (appDelivery) next.appDelivery = appDelivery;
+    // An app launch stamps its caller beside its request id (design 13.4).
+    if (typeof block.startedBy === "string" && isPersistableId(block.startedBy))
+      next.startedBy = block.startedBy;
   }
   if (
     block.role === "user" &&

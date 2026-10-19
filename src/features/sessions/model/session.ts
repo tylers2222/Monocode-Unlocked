@@ -405,6 +405,8 @@ export type Block = {
   appRequestId?: string;
   /** Set when the CLI request in `appRequestId` steered or queued this turn. */
   appDelivery?: AppDelivery;
+  /** The session whose `sessions.start` wrote this first user block (design 13.4). */
+  startedBy?: string;
   /** Provider-reported token metrics for this user turn, when available. */
   turnMetrics?: TurnMetrics;
   tool?: {

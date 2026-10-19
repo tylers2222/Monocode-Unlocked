@@ -110,7 +110,10 @@ const handlers: MountOptions["handlers"] = {
   },
 };
 
-async function mountMonoCode(app: AppShell) {
+async function mountMonoCode(
+  app: AppShell,
+  extra: MountOptions["handlers"] = {},
+) {
   await app.mount(
     {
       projects: [MONOCODE],
@@ -147,7 +150,7 @@ async function mountMonoCode(app: AppShell) {
         },
       ],
     },
-    { handlers },
+    { handlers: { ...handlers, ...extra } },
   );
 }
 
@@ -385,4 +388,69 @@ test("after a restart a Giga session keeps its folder and its tab in the MonoCod
   await composer.fill("Now the timeline");
   await composer.press("Enter");
   await expect.poll(() => spawnCwds(page, id)).toEqual([ATLAS_FOLDER]);
+});
+
+// Design 13.4, PR7-12. The first user block of a session that a Mono's
+// sessions.start made keeps the Mono chat's id, which gives its later turns
+// app access after a reload. Defect: the window submits the first turn
+// without the startedBy stamp, so the saved session has no app access.
+test("a session a Mono starts saves its first turn stamped with the Mono chat and the request id", async ({
+  app,
+  page,
+}) => {
+  await mountMonoCode(app);
+  const id = await startFromChat(page, app, "Pip", "Write the plan");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (id) =>
+          window.appBackend!.store.blocks[id]?.find(
+            (block) => block.role === "user",
+          ),
+        id,
+      ),
+    )
+    .toMatchObject({
+      text: "Write the plan",
+      startedBy: MONO_CHAT,
+      appRequestId: id,
+    });
+});
+
+// Design 13.4 (decision 640), PR7-12 review r1 m5. The first turn of a
+// session a Mono started runs before its block is stamped, so only the
+// launch's startedBy gives it app access; it is the turn in which a started
+// lead starts its workers. Defect: the submit drops `options.startedBy`, so
+// that turn is authorized without app access. `isTauri` is on so the
+// window authorizes the turn as in the desktop app.
+test("the first turn of a session a Mono starts is authorized with app access", async ({
+  app,
+  page,
+}) => {
+  await page.addInitScript(() => Object.assign(globalThis, { isTauri: true }));
+  const none = () => null;
+  await mountMonoCode(app, {
+    control_authorize_turn: none,
+    control_turn_finished: none,
+    mono_message_confirm_openers: none,
+    mono_menu_bar_set_visible: none,
+    mono_chat_sync: none,
+    mono_chat_take: () => [],
+  });
+  const id = await startFromChat(page, app, "Pip", "Write the plan");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (id) =>
+          window
+            .appBackend!.calls.filter(
+              ({ command, args }) =>
+                command === "control_authorize_turn" &&
+                (args as { sessionId: string }).sessionId === id,
+            )
+            .map(({ args }) => (args as { appAccess: boolean }).appAccess),
+        id,
+      ),
+    )
+    .toEqual([true]);
 });

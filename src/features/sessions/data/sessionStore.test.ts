@@ -416,6 +416,20 @@ describe("sanitizeSessionForPersist", () => {
     });
   });
 
+  // Design 13.4. Defect: a reload drops the stamp, so a session that
+  // sessions.start made loses its app access.
+  it("persists the startedBy stamp of a first user block", () => {
+    const started = appendUser(newSession("codex", "/repo"), "Fix CI", [], {
+      appRequestId: "app-lead-r1",
+      startedBy: "lead",
+    });
+    expect(sanitizeSessionForPersist(started).blocks[0]).toMatchObject({
+      text: "Fix CI",
+      appRequestId: "app-lead-r1",
+      startedBy: "lead",
+    });
+  });
+
   // Design 13.2. Defect: the upsert sends no lead id, so Rust stores the
   // worker as a lead.
   it("sends a worker's lead id with the session", () => {

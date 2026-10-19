@@ -297,7 +297,11 @@ export function sendHarnessTurn(
     try {
       result = await adapter.sendTurn({
         ...input,
-        monoTools: await monoToolsFor(input.harness, input.sessionId),
+        monoTools: await monoToolsFor(
+          input.harness,
+          input.sessionId,
+          input.appAccess === true,
+        ),
         onAccepted: () => {
           input.onEvent({ type: "turn.ready" });
           input.onAccepted?.();
@@ -342,7 +346,11 @@ export function compactHarnessContext(
     try {
       await adapter.compactContext({
         ...input,
-        monoTools: await monoToolsFor(input.harness, input.sessionId),
+        monoTools: await monoToolsFor(
+          input.harness,
+          input.sessionId,
+          input.appAccess === true,
+        ),
       });
     } finally {
       scheduleIdlePark(input.harness, input.sessionId);
@@ -375,7 +383,11 @@ export function rewindHarnessLastTurn(
     try {
       return await adapter.rewindLastTurn({
         ...input,
-        monoTools: await monoToolsFor(input.harness, input.sessionId),
+        monoTools: await monoToolsFor(
+          input.harness,
+          input.sessionId,
+          input.appAccess === true,
+        ),
       });
     } finally {
       scheduleIdlePark(input.harness, input.sessionId);

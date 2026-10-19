@@ -27,18 +27,18 @@ import type { SubmissionAcceptance } from "./submissionAcceptance";
  * Whether the launch of session `id` with `launch` already happened: the one
  * repeat rule, which App's `host.start` asks before the launch and
  * `acceptQuickLaunch` again where it makes the session. A block stamped with
- * `appRequestId` is this id's launch; a repeat has its text and, for a
- * submitted launch, no draft. Every app launch (`app`) stamps its first user
- * block, so an app launch into a session that has a submitted turn, or was
- * accepted, with no stamp is no repeat: the user sent, wrote or removed that
- * turn. A floating-composer launch stamps only a draft, so its accepted
+ * `appRequestId` is this id's launch; a repeat has its text, its caller
+ * (`startedBy`: two callers' ids can join to one session id) and, for a
+ * submitted launch, no draft. Every app launch (`startedBy`) stamps its first
+ * user block, so an app launch into a session that has a submitted turn, or
+ * was accepted, with no stamp is no repeat: the user sent, wrote or removed
+ * that turn. A floating-composer launch stamps only a draft, so its accepted
  * session is a repeat. Throws on a conflict; false means launch it.
  */
 export function appLaunchRepeat(
   existing: Session | null | undefined,
   launch: QuickLaunch,
   id: string,
-  app: boolean,
 ): boolean {
   const reused = new AppActionError(
     "request_id_reused",
@@ -46,14 +46,18 @@ export function appLaunchRepeat(
   );
   const previous = existing?.blocks.find((block) => block.appRequestId === id);
   if (previous) {
-    if (previous.text !== launch.prompt || (!launch.draft && !!previous.draft))
+    if (
+      previous.text !== launch.prompt ||
+      previous.startedBy !== launch.startedBy ||
+      (!launch.draft && !!previous.draft)
+    )
       throw reused;
     return true;
   }
   const launched =
     !!existing?.quickLaunchAccepted ||
     !!existing?.blocks.some((block) => block.role === "user" && !block.draft);
-  if (!app) return launched;
+  if (!launch.startedBy) return launched;
   if (launched) throw reused;
   if (existing && sessionDraftBlock(existing))
     throw new Error("Session ID already has a different draft");
@@ -80,13 +84,18 @@ export async function acceptQuickLaunch(
       sessionId: string,
       text: string,
       attachments: Attachment[],
-      options?: { intent?: "plan" | "orchestrate"; appRequestId?: string },
+      options?: {
+        intent?: "plan" | "orchestrate";
+        appRequestId?: string;
+        startedBy?: string;
+      },
     ) => SubmissionAcceptance;
     saveDraft?: (
       sessionId: string,
       text: string,
       attachments: Attachment[],
       requestId: string,
+      startedBy?: string,
     ) => SubmissionAcceptance;
     /**
      * Saves a session that belongs in history now. False when that save
@@ -97,8 +106,6 @@ export async function acceptQuickLaunch(
   placement?: { direction: SplitDir; besideSessionId: string },
   /** Off for a session followed elsewhere, such as from the Mono that ran it. */
   openTab = true,
-  /** An app CLI launch, which stamps its first user block (`appLaunchRepeat`). */
-  app = false,
 ): Promise<void> {
   // Rehydrate image previews in this webview; the floating panel sends paths.
   const attachments = await prepareAttachments(launch.attachments ?? []);
@@ -106,7 +113,7 @@ export async function acceptQuickLaunch(
   const existing = workspace
     .getSessions()
     .find((session) => session.id === deliveryId);
-  if (appLaunchRepeat(existing, launch, deliveryId, app)) return;
+  if (appLaunchRepeat(existing, launch, deliveryId)) return;
   const session =
     existing ??
     applyQuickWorkspace(
@@ -148,6 +155,7 @@ export async function acceptQuickLaunch(
         launch.prompt,
         attachments,
         deliveryId,
+        ...(launch.startedBy ? [launch.startedBy] : []),
       ))
     ) {
       throw new Error("The workspace could not save the session draft yet.");
@@ -157,12 +165,14 @@ export async function acceptQuickLaunch(
       session.id,
       launch.prompt,
       attachments,
-      ...(launch.intent || app
+      ...(launch.intent || launch.startedBy
         ? [
             {
               ...(launch.intent ? { intent: launch.intent } : {}),
               // Every app launch stamps its first block (appLaunchRepeat).
-              ...(app ? { appRequestId: deliveryId } : {}),
+              ...(launch.startedBy
+                ? { appRequestId: deliveryId, startedBy: launch.startedBy }
+                : {}),
             },
           ]
         : []),

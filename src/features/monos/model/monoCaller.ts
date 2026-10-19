@@ -5,7 +5,7 @@ import {
   type AppErrorCode,
   type ToolErrorDetails,
 } from "../../agent-app/model/appActionError";
-import { operatorEnabledInThread } from "../../sessions/model/operatorCommand";
+import { appAccess } from "../../sessions/model/operatorCommand";
 import type { Session } from "../../sessions/model/session";
 import {
   findMono,
@@ -55,19 +55,21 @@ const TURN_INACTIVE = {
 
 /**
  * A Mono's chat or habit run, or (design 13.4) a lead or worker session
- * with /operator access. Undefined for any other session.
+ * with app access: /operator, or the `startedBy` stamp. Undefined for any
+ * other session.
  */
 function callerOf(session: CallingSession, turnId: TurnId): Caller | undefined {
   const sessionId = parseSessionId(session.id);
   if (!sessionId) return undefined;
   const mono = callerMono(sessionId);
   if (mono) return { ...mono, sessionId, turnId };
-  if (!operatorEnabledInThread(session.blocks)) return undefined;
+  const access = appAccess(session.blocks);
+  if (!access) return undefined;
   return {
     kind: "session",
     sessionId,
     turnId,
-    access: "operator",
+    access,
     leadSessionId: parseSessionId(session.leadSessionId) ?? null,
     cwd: session.cwd,
   };

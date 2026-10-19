@@ -560,3 +560,73 @@ it("refuses a session with no app access with turn_inactive and no check", async
   expect(refused).toMatchObject({ code: "turn_inactive" });
   expect(checks()).toEqual([]);
 });
+
+/** `world(caller)` with `caller` made by sessions.start in `runtimeMode`. */
+function startedWorld(caller: string, runtimeMode: Session["runtimeMode"]) {
+  const made = world(caller);
+  Object.assign(made.sessions.get(caller)!, {
+    runtimeMode,
+    blocks: [{ id: "u1", role: "user", text: "Fix CI", startedBy: "a-chat" }],
+  });
+  return made;
+}
+
+// Design 6.6 runtime ceiling. Defect: a started lead in supervised starts a
+// worker in full-access.
+it("refuses a full-access worker from a started lead in supervised", async () => {
+  const { run, actions } = startedWorld("lead", "supervised");
+  await expect(
+    run("sessions.start", {
+      ...CHOICE,
+      prompt: "Deploy",
+      runtimeMode: "full-access",
+    }),
+  ).rejects.toThrow(
+    "runtimeMode cannot be more permissive than this session's (supervised)",
+  );
+  expect(actions.start).not.toHaveBeenCalled();
+});
+
+// Design 6.6 runtime ceiling and 13.4. Defect: the ceiling refuses a mode
+// stricter than the lead's own, or the launch does not name its caller, so
+// the worker gets no app access.
+it("starts a supervised worker from a started lead in auto, stamped with its caller", async () => {
+  const { run, actions } = startedWorld("lead", "auto");
+  await run("sessions.start", {
+    ...CHOICE,
+    prompt: "Review",
+    runtimeMode: "supervised",
+  });
+  expect(actions.start).toHaveBeenCalledWith(
+    expect.objectContaining({ runtimeMode: "supervised", startedBy: "lead" }),
+    "app-lead-r1",
+  );
+});
+
+// Design 6.6: the ceiling binds only started access. Defect: an /operator
+// lead, whose access the user granted, cannot start a more permissive worker.
+it("lets an /operator lead in supervised start a full-access worker", async () => {
+  const { run, actions, sessions } = world("lead");
+  sessions.get("lead")!.runtimeMode = "supervised";
+  await run("sessions.start", {
+    ...CHOICE,
+    prompt: "Deploy",
+    runtimeMode: "full-access",
+  });
+  expect(actions.start).toHaveBeenCalledWith(
+    expect.objectContaining({ runtimeMode: "full-access" }),
+    "app-lead-r1",
+  );
+});
+
+// Design 6.6 runtime ceiling, its boundary. Defect: the ceiling refuses the
+// lead's own mode, so every plain sessions.start of a started lead (no
+// runtimeMode, which defaults to the lead's own) fails.
+it("starts a worker in a started lead's own mode, given or omitted", async () => {
+  const { run, actions } = startedWorld("lead", "auto");
+  await run("sessions.start", { ...CHOICE, prompt: "Review", runtimeMode: "auto" });
+  await run("sessions.start", { ...CHOICE, prompt: "Test" }, "r2");
+  expect(
+    actions.start.mock.calls.map(([launch]) => (launch as { runtimeMode: string }).runtimeMode),
+  ).toEqual(["auto", "auto"]);
+});

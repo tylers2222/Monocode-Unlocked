@@ -29,16 +29,18 @@ export const MONO_TOOL_TRANSPORT: Record<HarnessId, "mcp" | "host" | "cli"> = {
 let schemas: Promise<{ exe: string; tools: MonoTool[] }> | undefined;
 
 /**
- * The tools a session's harness registers at spawn: only for a Mono chat or
- * habit run (the same rule `resolveCaller` applies to each call), only on a
- * harness that carries them, and only in the desktop app.
+ * The tools a session's harness registers at spawn: for a Mono chat or habit
+ * run, or (design 15 C7) a session whose turn has app access, the callers
+ * `resolveCaller` accepts; only on a harness that carries them, and only in
+ * the desktop app.
  */
 export async function monoToolsFor(
   harness: HarnessId,
   sessionId: string,
+  appAccess: boolean,
 ): Promise<MonoTools | undefined> {
   if (MONO_TOOL_TRANSPORT[harness] === "cli") return undefined;
-  if (!isTauri() || !callerMono(sessionId)) return undefined;
+  if (!isTauri() || !(appAccess || callerMono(sessionId))) return undefined;
   schemas ??= Promise.all([
     invoke<string>("app_cli_path"),
     invoke<MonoTool[]>("app_tool_schemas"),

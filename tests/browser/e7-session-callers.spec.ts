@@ -554,6 +554,7 @@ test("a start repeated into its stored, unopened session answers that session an
         role: "user",
         text: "Write the tests",
         appRequestId: "app-lead-r1",
+        startedBy: "lead",
       },
     ];
   });
