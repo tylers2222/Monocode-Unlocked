@@ -78,6 +78,7 @@
     "streamdown": "^2.5.0"
   },
   "devDependencies": {
+    "@eslint-community/eslint-plugin-eslint-comments": "^4.8.1",
     "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4",
     "@tauri-apps/cli": "^2",
@@ -86,9 +87,12 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "esbuild": "0.28.2",
+    "eslint": "^10.13.0",
     "happy-dom": "20.14.0",
+    "jscpd": "^5.4.1",
     "tailwindcss": "^4",
     "typescript": "~5.8.3",
+    "typescript-eslint": "^8.71.2",
     "vite": "^7.0.4",
     "vitest": "^3.2.4"
   }
