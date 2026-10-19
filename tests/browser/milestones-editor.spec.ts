@@ -8,9 +8,9 @@ import { expect, test } from "./app/fixture";
 
 const ORBIT = "/Users/test/orbit";
 const CHANGED = "monocode:milestones-changed";
-/** The page's writes, replayed by milestones.rs `page_edits_replay_on_the_real_store`. */
+/** The page's writes, replayed by milestones.rs `page_writes_replay_on_the_real_store`. */
 const FIXTURE = new URL(
-  "./fixtures/milestones-page-edits.json",
+  "./fixtures/milestones-page-writes.json",
   import.meta.url,
 );
 
@@ -88,12 +88,108 @@ const stored = (page: Page, id: string) =>
   );
 const writes = (page: Page) =>
   page.evaluate(() =>
-    window.appBackend!.calls.filter(
-      ({ command }) => command === "milestones_update",
+    window.appBackend!.calls.filter(({ command }) =>
+      ["milestones_add", "milestones_update"].includes(command),
     ),
   );
 const shot = (page: Page, name: string) =>
   page.screenshot({ path: test.info().outputPath(`${name}.png`) });
+
+const newest = (page: Page) =>
+  page.evaluate(() => window.appBackend!.store.milestones.at(-1)!);
+
+test("lane 1: a milestone added on the page is stored with createdBy user", async ({
+  app,
+  page,
+}) => {
+  await openPage(app, page);
+  await page.getByRole("button", { name: "Add milestone" }).click();
+  await editor(page)
+    .getByLabel("Title")
+    .fill("Milestone list in the Mono overview");
+  await editor(page).getByRole("button", { name: "Add", exact: true }).click();
+  await expect(editor(page)).toHaveCount(0);
+  const added = await newest(page);
+  expect(added).toMatchObject({
+    projectPath: ORBIT,
+    title: "Milestone list in the Mono overview",
+    status: "planned",
+    target: null,
+    order: ROWS.length,
+    createdBy: "user",
+  });
+  await expect(
+    group(page, "Planned").locator(`[data-milestone="${added.id}"]`),
+  ).toContainText("Later");
+});
+
+test("lane 2: add with every field, as frame M·5 shows; the stored row matches", async ({
+  app,
+  page,
+}) => {
+  await openPage(app, page);
+  await page.getByRole("button", { name: "Add milestone" }).click();
+  await editor(page)
+    .getByLabel("Title")
+    .fill("Milestone list in the Mono overview");
+  await editor(page)
+    .getByLabel("Note")
+    .fill("So a Mono sees its project’s next goal when it starts a turn.");
+  await editor(page).getByRole("radio", { name: "In progress" }).click();
+  await editor(page).getByRole("radio", { name: "Date" }).click();
+  await editor(page).getByLabel("Target date").fill("Dec 12, 2026");
+  await expect(
+    page
+      .locator("[data-milestone-editor], [data-app-milestones] main h3")
+      .first(),
+  ).toHaveAttribute("data-milestone-editor");
+  await shot(page, "add");
+  await editor(page).getByLabel("Title").press("Enter");
+  await expect(editor(page)).toHaveCount(0);
+  const added = await newest(page);
+  expect(added).toMatchObject({
+    note: "So a Mono sees its project’s next goal when it starts a turn.",
+    status: "in_progress",
+    target: "2026-12-12",
+    createdBy: "user",
+  });
+  await expect(
+    group(page, "In progress").locator(`[data-milestone="${added.id}"]`),
+  ).toContainText("Dec 12");
+});
+
+test("an empty project's Add milestone button opens the add card", async ({
+  app,
+  page,
+}) => {
+  await app.mount({ projects: [ORBIT], milestones: [] });
+  await page.getByRole("button", { name: "Milestones", exact: true }).click();
+  await page.getByRole("button", { name: "Add milestone" }).click();
+  await editor(page).getByLabel("Title").fill("First goal");
+  await editor(page).getByRole("button", { name: "Add", exact: true }).click();
+  await expect(page.locator("[data-milestone]")).toHaveText(/First goal/);
+  await expect(page.getByText("1 milestone", { exact: true })).toBeVisible();
+});
+
+test("lane 10: keyboard only: open the add card, type, and add with ⌘↵", async ({
+  app,
+  page,
+}) => {
+  await openPage(app, page);
+  await page.getByRole("button", { name: "Add milestone" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(editor(page).getByLabel("Title")).toBeFocused();
+  await page.keyboard.type("Keyboard milestone");
+  await page.keyboard.press("Tab");
+  await page.keyboard.type("Typed without a pointer");
+  await page.keyboard.press("Meta+Enter");
+  await expect(editor(page)).toHaveCount(0);
+  expect(await newest(page)).toMatchObject({
+    title: "Keyboard milestone",
+    note: "Typed without a pointer",
+    createdBy: "user",
+  });
+});
 
 test("lane 3: edit title and note in place, as frame M·6 shows", async ({
   app,
@@ -367,13 +463,31 @@ test.describe("with locale de-DE", () => {
 });
 
 // Real-state proof: milestones.rs replays this capture through the real
-// update command on a real SQLite store. RECORD_MILESTONE_EDITS=1 rewrites it.
-test("the page's edits match the committed fixture that Rust replays", async ({
+// add and update commands on a real SQLite store. RECORD_MILESTONE_WRITES=1
+// rewrites it.
+test("the page's writes match the committed fixture that Rust replays", async ({
   app,
   page,
 }) => {
   await openPage(app, page);
   const save = () => editor(page).getByRole("button", { name: "Save" }).click();
+  await page.getByRole("button", { name: "Add milestone" }).click();
+  await editor(page)
+    .getByLabel("Title")
+    .fill("Milestone list in the Mono overview");
+  await editor(page).getByLabel("Note").fill("Shown when a Mono starts a turn");
+  await editor(page).getByRole("radio", { name: "In progress" }).click();
+  await editor(page).getByRole("radio", { name: "Date" }).click();
+  await editor(page).getByLabel("Target date").fill("Dec 12, 2026");
+  await editor(page).getByRole("button", { name: "Add", exact: true }).click();
+  await page.getByRole("button", { name: "Add milestone" }).click();
+  await editor(page).getByLabel("Title").fill("Someday");
+  await editor(page).getByLabel("Title").press("Enter");
+  await expect(editor(page)).toHaveCount(0);
+  const added = page.getByText("Milestone list in the Mono overview");
+  await added.click();
+  await editor(page).getByRole("radio", { name: "Later" }).click();
+  await save();
   await row(page, HARNESS.id).click();
   await editor(page)
     .getByLabel("Title")
@@ -394,11 +508,12 @@ test("the page's edits match the committed fixture that Rust replays", async ({
   await save();
   await expect(row(page, VOICE.id)).toContainText("Jan 5, 2025");
 
-  const captured = (await writes(page)).map(({ command, args }) => ({
-    command,
-    args,
-  }));
-  if (process.env.RECORD_MILESTONE_EDITS)
+  const captured = (await writes(page)).map(({ command, args, reply }) =>
+    command === "milestones_add"
+      ? { command, args, reply: { id: (reply as Milestone).id } }
+      : { command, args },
+  );
+  if (process.env.RECORD_MILESTONE_WRITES)
     writeFileSync(FIXTURE, `${JSON.stringify(captured, null, 2)}\n`);
   expect(captured).toEqual(JSON.parse(readFileSync(FIXTURE, "utf8")));
 });

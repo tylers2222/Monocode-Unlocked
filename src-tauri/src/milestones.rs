@@ -1056,22 +1056,29 @@ mod tests {
         assert_eq!(serde_json::to_value(&reply).unwrap(), committed);
     }
 
-    // Defect: the page sends an edit the real command refuses or misreads
+    // Defect: the page sends a write the real command refuses or misreads
     // ("" for Later, a field serde rejects, a patch that clears a field it
-    // did not name). The calls are what milestones-editor.spec.ts captured
-    // from the page; each goes through the command's own argument types.
+    // did not name, an add with the wrong writer). The calls are what
+    // milestones-editor.spec.ts captured from the page; each goes through the
+    // command's own argument types.
     #[test]
-    fn page_edits_replay_on_the_real_store() {
+    fn page_writes_replay_on_the_real_store() {
         let calls: Vec<serde_json::Value> = serde_json::from_str(include_str!(
-            "../../tests/browser/fixtures/milestones-page-edits.json"
+            "../../tests/browser/fixtures/milestones-page-writes.json"
         ))
         .unwrap();
         let store = store();
         let conn = store.lock_conn().unwrap();
         let project = "/Users/test/orbit";
         // The rows the spec seeds: ids "orbit-<order>" padded with 0 to 36.
-        for (order, status, target) in [(2, "planned", Some("2026-11-21")), (4, "idea", None)] {
+        let mut ids = std::collections::HashMap::new();
+        for order in 0..6 {
             let id = format!("{:0<36}", format!("orbit-{order}"));
+            let (status, target) = match order {
+                2 => ("planned", Some("2026-11-21")),
+                4 => ("idea", None),
+                _ => ("planned", None),
+            };
             conn.execute(
                 &format!(
                     "INSERT INTO milestones ({COLUMNS})
@@ -1080,18 +1087,37 @@ mod tests {
                 params![id, project, format!("Row {order}"), status, target, order],
             )
             .unwrap();
+            ids.insert(id.clone(), id);
         }
         let mut history = Vec::new();
         for call in &calls {
-            assert_eq!(call["command"], "milestones_update");
             let arg = |name: &str| call["args"][name].clone();
-            let patch: MilestonePatch = serde_json::from_value(arg("patch")).unwrap();
-            let (path, id, by): (String, String, String) = (
-                serde_json::from_value(arg("projectPath")).unwrap(),
-                serde_json::from_value(arg("id")).unwrap(),
-                serde_json::from_value(arg("by")).unwrap(),
-            );
-            let row = update(&conn, &path, &id, patch, &by, 2).unwrap();
+            let path: String = serde_json::from_value(arg("projectPath")).unwrap();
+            let row = match call["command"].as_str().unwrap() {
+                "milestones_add" => {
+                    let added = add(
+                        &conn,
+                        &path,
+                        serde_json::from_value(arg("milestone")).unwrap(),
+                        2,
+                    )
+                    .unwrap();
+                    assert_eq!(added.created_by, "user");
+                    // `ids` holds every row of the project so far, seeded and added.
+                    assert_eq!(added.order, ids.len() as i64, "a new row goes last");
+                    let page_id: String =
+                        serde_json::from_value(call["reply"]["id"].clone()).unwrap();
+                    ids.insert(page_id, added.id.clone());
+                    added
+                }
+                "milestones_update" => {
+                    let page_id: String = serde_json::from_value(arg("id")).unwrap();
+                    let by: String = serde_json::from_value(arg("by")).unwrap();
+                    let patch: MilestonePatch = serde_json::from_value(arg("patch")).unwrap();
+                    update(&conn, &path, &ids[&page_id], patch, &by, 3).unwrap()
+                }
+                other => panic!("unexpected command {other}"),
+            };
             history.push((row.title, row.note, row.status, row.target));
         }
         let shown = |title: &str, note: &str, status, target: Option<&str>| {
@@ -1102,10 +1128,17 @@ mod tests {
                 target.map(String::from),
             )
         };
+        let (list, turn) = (
+            "Milestone list in the Mono overview",
+            "Shown when a Mono starts a turn",
+        );
         let (v2, allowlist) = ("Giga Mono harness (change H, v2)", "Tool allowlist only.");
         assert_eq!(
             history,
             [
+                shown(list, turn, Status::InProgress, Some("2026-12-12")),
+                shown("Someday", "", Status::Planned, None),
+                shown(list, turn, Status::InProgress, None),
                 shown(v2, allowlist, Status::Planned, Some("2026-11-21")),
                 shown(v2, allowlist, Status::Planned, None),
                 shown(v2, allowlist, Status::Done, Some("2028-02-29")),

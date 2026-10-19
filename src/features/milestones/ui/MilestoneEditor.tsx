@@ -5,6 +5,7 @@ import {
   MILESTONE_STATUSES,
   type Milestone,
   type MilestonePatch,
+  type NewMilestone,
 } from "../model/milestones";
 import { ROW_DOT } from "./MilestoneTimeline";
 import { STATUS_LABELS } from "./timeline";
@@ -14,8 +15,13 @@ import { STATUS_LABELS } from "./timeline";
  * its row moves to another group or Done collapses, and the text must stay.
  */
 export type EditorState = {
-  /** The row as it opened, so a save sends only what the user changed. */
-  opened: Milestone;
+  /**
+   * The row as it opened, so a save sends only what the user changed; null
+   * for a new milestone.
+   */
+  opened: Milestone | null;
+  /** This opening: a save that settles late acts only on the editor it came from. */
+  session: symbol;
   draft: Draft;
   /** Errors show once a save was tried. */
   tried: boolean;
@@ -23,9 +29,10 @@ export type EditorState = {
   failure: string | null;
 };
 
-export function openEditor(milestone: Milestone): EditorState {
+export function openEditor(milestone: Milestone | null): EditorState {
   return {
     opened: milestone,
+    session: Symbol("milestone editor"),
     draft: draftOf(milestone),
     tried: false,
     busy: false,
@@ -36,6 +43,7 @@ export function openEditor(milestone: Milestone): EditorState {
 type Props = {
   state: EditorState;
   setState: (update: (current: EditorState) => EditorState) => void;
+  onAdd: (milestone: NewMilestone) => Promise<void>;
   onUpdate: (id: string, patch: MilestonePatch) => Promise<void>;
   onClose: () => void;
 };
@@ -46,8 +54,14 @@ const SEGMENTS = "inline-flex rounded-md bg-content/5 p-0.5";
 const SEGMENT =
   "inline-flex h-6 items-center gap-1.5 rounded px-2 text-[12px] text-content/60 hover:text-content aria-checked:bg-content/12 aria-checked:text-content";
 
-/** The edit-in-place card of approved frame M·6. */
-export function MilestoneEditor({ state, setState, onUpdate, onClose }: Props) {
+/** The add card of approved frame M·5 and the edit-in-place card of M·6. */
+export function MilestoneEditor({
+  state,
+  setState,
+  onAdd,
+  onUpdate,
+  onClose,
+}: Props) {
   const { opened: milestone, draft, tried, busy, failure } = state;
   const checked = checkDraft(draft);
   const errors = tried && !checked.ok ? checked.errors : {};
@@ -65,7 +79,9 @@ export function MilestoneEditor({ state, setState, onUpdate, onClose }: Props) {
     }
     setState((current) => ({ ...current, busy: true, failure: null }));
     try {
-      await onUpdate(milestone.id, patchOf(milestone, checked.value));
+      await (milestone
+        ? onUpdate(milestone.id, patchOf(milestone, checked.value))
+        : onAdd(checked.value));
       onClose();
     } catch (reason) {
       setState((current) => ({
@@ -89,7 +105,7 @@ export function MilestoneEditor({ state, setState, onUpdate, onClose }: Props) {
   return (
     <div
       role="group"
-      aria-label={`Edit ${milestone.title}`}
+      aria-label={milestone ? `Edit ${milestone.title}` : "New milestone"}
       data-milestone-editor
       onKeyDown={onKeyDown}
       className="overflow-hidden rounded-[10px] border border-content/14 bg-content/3 shadow-sm"
@@ -101,13 +117,14 @@ export function MilestoneEditor({ state, setState, onUpdate, onClose }: Props) {
           maxLength={200}
           aria-label="Title"
           aria-invalid={errors.title ? true : undefined}
+          placeholder="Milestone title"
           onChange={(event) => edit({ title: event.target.value })}
           onKeyDown={(event) => {
             if (event.key !== "Enter" || event.metaKey || event.ctrlKey) return;
             event.preventDefault();
             void save();
           }}
-          className="w-full bg-transparent text-sm font-medium outline-none"
+          className="w-full bg-transparent text-sm font-medium outline-none placeholder:text-content/35"
         />
         {errors.title ? <FieldError>{errors.title}</FieldError> : null}
         <textarea
@@ -191,6 +208,9 @@ export function MilestoneEditor({ state, setState, onUpdate, onClose }: Props) {
         </p>
       ) : null}
       <div className="flex items-center justify-end gap-1.5 px-3 pb-2.5">
+        {milestone ? null : (
+          <kbd className="mr-1 font-sans text-[11px] text-content/35">⌘↵</kbd>
+        )}
         <button
           type="button"
           onClick={onClose}
@@ -204,7 +224,7 @@ export function MilestoneEditor({ state, setState, onUpdate, onClose }: Props) {
           onClick={() => void save()}
           className={`${ACTION} bg-content font-medium text-background-base hover:bg-content/80`}
         >
-          Save
+          {milestone ? "Save" : "Add"}
         </button>
       </div>
     </div>

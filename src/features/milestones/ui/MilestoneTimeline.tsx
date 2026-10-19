@@ -24,8 +24,8 @@ type Props = {
   highlightIds?: ReadonlySet<string>;
   lookUpCreator?: (creator: AgentCreator) => CreatorLook | undefined;
   today?: Date;
-  /** The open editor, shown in place of row `id`. */
-  open?: { id: string; editor: ReactNode };
+  /** The open editor: in place of row `id`, or above the groups when null. */
+  open?: { id: string | null; editor: ReactNode };
   /** Opens the editor on a row, by click or by Enter or Space. */
   onOpen?: (id: string) => void;
 };
@@ -70,6 +70,9 @@ export function MilestoneTimeline({
   );
   return (
     <div className="relative mx-auto w-full max-w-[780px] px-8 pt-1.5 pb-7 before:absolute before:top-[22px] before:bottom-[30px] before:left-[39px] before:w-px before:bg-content/16">
+      {open?.id === null ? (
+        <div className="relative mt-4 ml-7">{open.editor}</div>
+      ) : null}
       {groups[0]?.status === "done" || hiddenStatuses.includes("done")
         ? null
         : todayLine}

@@ -7,6 +7,7 @@ import {
   AlertCircle,
   Flag,
   LoaderCircle,
+  Plus,
   Search,
 } from "../../../shared/ui/icons";
 import { findMono, monoLook } from "../../monos/model/mono";
@@ -28,6 +29,7 @@ import {
   resolveTabGroupMascot,
 } from "../../workspace/model/tabGroups";
 import {
+  add,
   list,
   subscribe,
   update,
@@ -223,6 +225,46 @@ function MilestonesContent({
   const data = selected ? lists[selected] : undefined;
   const heading = selected ? look(selected, "size-[18px]") : null;
   const error = selected ? errors[selected] : undefined;
+  const addButton = (
+    <button
+      type="button"
+      onClick={() =>
+        setEditing((current) =>
+          current?.opened === null ? current : openEditor(null),
+        )
+      }
+      className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-content/15 px-3 text-[12px] text-content/80 hover:border-content/30 hover:bg-content/10 hover:text-content"
+    >
+      <Plus className="size-3.5" />
+      Add milestone
+    </button>
+  );
+  // The editor's callbacks act only on the opening they came from, so a save
+  // that settles after Escape cannot close or fail the editor open now.
+  const editor =
+    editing && selected ? (
+      <MilestoneEditor
+        state={editing}
+        setState={(change) =>
+          setEditing((current) =>
+            current?.session === editing.session ? change(current) : current,
+          )
+        }
+        onAdd={async (milestone) => {
+          await add(selected, milestone, "user");
+          await load(selected);
+        }}
+        onUpdate={async (id, patch) => {
+          await update(selected, id, patch, "user");
+          await load(selected);
+        }}
+        onClose={() =>
+          setEditing((current) =>
+            current?.session === editing.session ? null : current,
+          )
+        }
+      />
+    ) : null;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 text-content">
@@ -284,41 +326,27 @@ function MilestonesContent({
         ) : null}
         {heading && data ? (
           <div className="flex min-h-full flex-col">
-            <header className="mx-auto w-full max-w-[780px] px-8 pt-[30px] pb-1.5">
-              <h2 className="flex items-center gap-2.5 text-xl leading-7 font-semibold">
-                {heading.icon}
-                <span className="min-w-0 truncate">{heading.name}</span>
-              </h2>
-              <p className="mt-0.5 text-xs text-content/45">
-                {projectSummary(data)}
-              </p>
+            <header className="mx-auto flex w-full max-w-[780px] items-start gap-3 px-8 pt-[30px] pb-1.5">
+              <div className="min-w-0 flex-1">
+                <h2 className="flex items-center gap-2.5 text-xl leading-7 font-semibold">
+                  {heading.icon}
+                  <span className="min-w-0 truncate">{heading.name}</span>
+                </h2>
+                <p className="mt-0.5 text-xs text-content/45">
+                  {projectSummary(data)}
+                </p>
+              </div>
+              {data.milestones.length > 0 ? addButton : null}
             </header>
-            {data.milestones.length > 0 ? (
+            {data.milestones.length > 0 || editing?.opened === null ? (
               <MilestoneTimeline
                 milestones={data.milestones}
                 hiddenStatuses={data.settings.hiddenStatuses}
                 highlightIds={highlightIds}
                 lookUpCreator={lookUpCreator}
                 open={
-                  editing && selected
-                    ? {
-                        id: editing.opened.id,
-                        editor: (
-                          <MilestoneEditor
-                            state={editing}
-                            setState={(change) =>
-                              setEditing(
-                                (current) => current && change(current),
-                              )
-                            }
-                            onUpdate={async (id, patch) => {
-                              await update(selected, id, patch, "user");
-                              await load(selected);
-                            }}
-                            onClose={() => setEditing(null)}
-                          />
-                        ),
-                      }
+                  editor && editing
+                    ? { id: editing.opened?.id ?? null, editor }
                     : undefined
                 }
                 onOpen={(id) => {
@@ -340,6 +368,7 @@ function MilestonesContent({
                     remember it. A Mono can add one too: “remember that we want
                     X later”.
                   </p>
+                  <div className="mt-4">{addButton}</div>
                 </div>
               </div>
             )}
