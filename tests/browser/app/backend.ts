@@ -1,9 +1,11 @@
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type { Automation } from "../../../src/features/automations/model/automations";
-import type {
-  Milestone,
-  MilestoneSettings,
+import {
+  MILESTONES_CHANGED,
+  type Milestone,
+  type MilestonePatch,
+  type MilestoneSettings,
 } from "../../../src/features/milestones/model/milestones";
 import {
   customMonoName,
@@ -364,6 +366,29 @@ const HANDLERS: Record<string, Handler> = {
       .filter((milestone) => milestone.projectPath === projectPath)
       .sort((a, b) => a.order - b.order || a.createdAt - b.createdAt),
   }),
+  // milestones.rs update for the `user` writer (never refused when off), with
+  // its checks and refusals; it emits CHANGED as Rust does after a write.
+  milestones_update: (store, { projectPath, id, patch }) => {
+    const row = store.milestones.find(
+      (milestone) =>
+        milestone.id === id && milestone.projectPath === projectPath,
+    );
+    if (!row) throw "unknown_milestone";
+    const next = { ...row, ...(patch as MilestonePatch) };
+    const title = next.title.trim();
+    if ([...title].length < 1 || [...title].length > 200)
+      throw "invalid_input: title must be 1 to 200 characters";
+    if ([...next.note].length > 4000)
+      throw "invalid_input: note must be 4000 characters or fewer";
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(next.target ?? "")
+      ? new Date(`${next.target}T00:00:00Z`)
+      : null;
+    if (next.target !== null && day?.toISOString().slice(0, 10) !== next.target)
+      throw "invalid_input: target must be a real YYYY-MM-DD date";
+    Object.assign(row, next, { title, updatedAt: Date.now() });
+    void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath });
+    return row;
+  },
   automation_runs_list: empty,
   control_load: none,
   control_owns_session: () => false,

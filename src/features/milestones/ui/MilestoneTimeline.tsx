@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Check, ChevronDown, Terminal } from "../../../shared/ui/icons";
 import { PixelMascot } from "../../projects/ui/PixelMascot";
 import { dayOf, formatDay } from "../model/day";
@@ -24,6 +24,10 @@ type Props = {
   highlightIds?: ReadonlySet<string>;
   lookUpCreator?: (creator: AgentCreator) => CreatorLook | undefined;
   today?: Date;
+  /** The open editor, shown in place of row `id`. */
+  open?: { id: string; editor: ReactNode };
+  /** Opens the editor on a row, by click or by Enter or Space. */
+  onOpen?: (id: string) => void;
 };
 
 const GROUP_DOT: Record<MilestoneStatus, string> = {
@@ -33,7 +37,7 @@ const GROUP_DOT: Record<MilestoneStatus, string> = {
   idea: "border-[1.5px] border-dashed border-content/45 bg-background-base",
 };
 
-const ROW_DOT: Record<MilestoneStatus, string> = {
+export const ROW_DOT: Record<MilestoneStatus, string> = {
   done: "bg-emerald-400 opacity-70",
   in_progress: "bg-accent",
   planned: "border-[1.5px] border-content/60 bg-background-base",
@@ -48,6 +52,8 @@ export function MilestoneTimeline({
   highlightIds = NO_HIGHLIGHTS,
   lookUpCreator = () => undefined,
   today = new Date(),
+  open,
+  onOpen,
 }: Props) {
   const [doneCollapsed, setDoneCollapsed] = useState(false);
   const groups = timelineGroups(milestones, hiddenStatuses);
@@ -98,15 +104,22 @@ export function MilestoneTimeline({
             </h3>
             {collapsed ? null : (
               <ol>
-                {milestones.map((milestone) => (
-                  <MilestoneRow
-                    key={milestone.id}
-                    milestone={milestone}
-                    highlighted={highlightIds.has(milestone.id)}
-                    lookUpCreator={lookUpCreator}
-                    today={today}
-                  />
-                ))}
+                {milestones.map((milestone) =>
+                  open?.id === milestone.id ? (
+                    <li key={milestone.id} className="ml-7 py-1">
+                      {open.editor}
+                    </li>
+                  ) : (
+                    <MilestoneRow
+                      key={milestone.id}
+                      milestone={milestone}
+                      highlighted={highlightIds.has(milestone.id)}
+                      lookUpCreator={lookUpCreator}
+                      today={today}
+                      onOpen={onOpen}
+                    />
+                  ),
+                )}
               </ol>
             )}
             {status === "done" ? todayLine : null}
@@ -122,11 +135,13 @@ function MilestoneRow({
   highlighted,
   lookUpCreator,
   today,
+  onOpen,
 }: {
   milestone: Milestone;
   highlighted: boolean;
   lookUpCreator: NonNullable<Props["lookUpCreator"]>;
   today: Date;
+  onOpen: Props["onOpen"];
 }) {
   const done = milestone.status === "done";
   const creator = agentCreator(milestone.createdBy);
@@ -134,6 +149,13 @@ function MilestoneRow({
     <li
       tabIndex={0}
       data-milestone={milestone.id}
+      onClick={() => onOpen?.(milestone.id)}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onOpen?.(milestone.id);
+      }}
       className={`relative grid grid-cols-[14px_1fr_auto] items-start gap-3.5 rounded-lg py-2 pr-2.5 outline-none focus-visible:ring-1 focus-visible:ring-accent/50 focus-visible:ring-inset ${
         highlighted
           ? "bg-accent/8 inset-ring inset-ring-accent/30 motion-safe:animate-[approval-toast-in_220ms_cubic-bezier(0.22,1,0.36,1)]"
