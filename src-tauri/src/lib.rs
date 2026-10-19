@@ -52,6 +52,7 @@ mod reminders;
 mod remote;
 mod remote_ssh;
 #[cfg(test)]
+#[path = "tests/scenario/mod.rs"]
 mod scenario;
 mod search;
 mod session_store;
