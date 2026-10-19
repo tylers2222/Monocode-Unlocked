@@ -15,10 +15,12 @@ import {
 } from "./mono";
 import { habitRunMono } from "./monoHabits";
 import {
+  parseMessageId,
   parseMonoId,
   parseSessionId,
   parseTurnId,
   type Caller,
+  type MessageId,
   type MonoId,
   type RejectCode,
   type ToolError,
@@ -107,6 +109,23 @@ export type ActionChecked =
       error: { code: RejectCode | AppErrorCode; hint: string } & ToolErrorDetails;
     };
 
+type Failed = Extract<ActionChecked, { outcome: "failed" }>;
+
+/** A `failed` reply's error, parsed; undefined for any other shape. */
+function parseFailed(error: unknown): Failed | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const { code, hint } = error as Record<string, unknown>;
+  if (typeof code !== "string" || typeof hint !== "string") return undefined;
+  return {
+    outcome: "failed",
+    error: {
+      ...(error as ToolErrorDetails),
+      code: code as RejectCode | AppErrorCode,
+      hint,
+    },
+  };
+}
+
 /** The reply of `mono_app_action_check`, parsed; undefined for any other shape. */
 function parseActionChecked(reply: unknown): ActionChecked | undefined {
   if (typeof reply !== "object" || reply === null) return undefined;
@@ -115,18 +134,38 @@ function parseActionChecked(reply: unknown): ActionChecked | undefined {
     const lead = leadSessionId === null ? null : parseSessionId(leadSessionId);
     return lead === undefined ? undefined : { outcome, leadSessionId: lead };
   }
-  if (outcome !== "failed" || typeof error !== "object" || error === null)
-    return undefined;
-  const { code, hint } = error as Record<string, unknown>;
-  if (typeof code !== "string" || typeof hint !== "string") return undefined;
-  return {
-    outcome,
-    error: {
-      ...(error as ToolErrorDetails),
-      code: code as RejectCode | AppErrorCode,
-      hint,
-    },
-  };
+  return outcome === "failed" ? parseFailed(error) : undefined;
+}
+
+/** The reply of `mono_message_record_start` (Rust `StartRecorded`), parsed. */
+function parseStartRecorded(
+  reply: unknown,
+): { outcome: "recorded"; messageId: MessageId } | Failed | undefined {
+  if (typeof reply !== "object" || reply === null) return undefined;
+  const { outcome, messageId, error } = reply as Record<string, unknown>;
+  if (outcome === "recorded") {
+    const id = parseMessageId(messageId);
+    return id && { outcome, messageId: id };
+  }
+  return outcome === "failed" ? parseFailed(error) : undefined;
+}
+
+/**
+ * A parsed answer of a level gate command. Throws its refusal, and throws
+ * for a reply this window cannot read, which never allows anything.
+ */
+function answered<T extends { outcome: "allowed" | "recorded" }>(
+  answer: T | Failed | undefined,
+): T {
+  if (!answer)
+    throw new Error(
+      "The level check answered in an unknown form, so the action did not run.",
+    );
+  if (answer.outcome === "failed") {
+    const { code, hint, ...details } = answer.error;
+    throw new AppActionError(code, hint, details);
+  }
+  return answer;
 }
 
 /**
@@ -140,35 +179,33 @@ export function levelGate(
   /** This window's copy of a session's lead; Rust reads it only for a session it has no row of. */
   leadOf: (sessionId: string) => string | undefined,
 ): AgentAppHost["levels"] {
+  const caller = (): Caller => {
+    const turn = parseTurnId(turnId);
+    const resolved = turn ? callerOf(session, turn) : undefined;
+    if (!resolved)
+      throw new AppActionError(TURN_INACTIVE.code, TURN_INACTIVE.hint);
+    return resolved;
+  };
   return {
     async check(requestId, { action, target, input }) {
-      const turn = parseTurnId(turnId);
-      const caller = turn ? callerOf(session, turn) : undefined;
-      if (!caller)
-        throw new AppActionError(TURN_INACTIVE.code, TURN_INACTIVE.hint);
-      const answer = parseActionChecked(
-        await invoke("mono_app_action_check", {
-          call: {
-            caller,
-            action,
-            target,
-            targetLeadSessionId:
-              target === null ? null : (leadOf(target) ?? null),
-            requestId,
-            input,
-          },
-        }),
+      const call = {
+        caller: caller(),
+        action,
+        target,
+        targetLeadSessionId: target === null ? null : (leadOf(target) ?? null),
+        requestId,
+        input,
+      };
+      const answer = answered(
+        parseActionChecked(await invoke("mono_app_action_check", { call })),
       );
-      // A reply this window cannot read never allows the action.
-      if (!answer)
-        throw new Error(
-          "The level check answered in an unknown form, so the action did not run.",
-        );
-      if (answer.outcome === "failed") {
-        const { code, hint, ...details } = answer.error;
-        throw new AppActionError(code, hint, details);
-      }
       return { leadSessionId: answer.leadSessionId };
+    },
+    async recordStart(requestId, sessionId, input) {
+      const call = { caller: caller(), sessionId, requestId, input };
+      return answered(
+        parseStartRecorded(await invoke("mono_message_record_start", { call })),
+      ).messageId;
     },
   };
 }

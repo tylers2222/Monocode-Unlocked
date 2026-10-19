@@ -27,7 +27,10 @@ function fixture(agent = true) {
     },
   );
   const host = {
-    levels: { check: async () => ({ leadSessionId: null }) },
+    levels: {
+      check: async () => ({ leadSessionId: null }),
+      recordStart: async () => "m_aaaaaaaaaaaa",
+    },
     isMono: (id: string) => agent && id === "agent",
     monoOf: (id: string) =>
       agent && id === "agent" ? { id: "mono-1", projects: [] } : undefined,
@@ -124,7 +127,10 @@ function habitsFixture(mono = true) {
   source.id = "agent";
   let stored: Habit[] = [];
   const host = {
-    levels: { check: async () => ({ leadSessionId: null }) },
+    levels: {
+      check: async () => ({ leadSessionId: null }),
+      recordStart: async () => "m_aaaaaaaaaaaa",
+    },
     isMono: (id: string) => mono && id === "agent",
     monoOf: (id: string) =>
       mono && id === "agent" ? { id: "mono-1", projects: [] } : undefined,
@@ -201,7 +207,10 @@ function projectFixture(projects: string[], cwd = "/Users/me") {
   source.id = "agent";
   const sessions = vi.fn(async (_cwd: string) => []);
   const host = {
-    levels: { check: async () => ({ leadSessionId: null }) },
+    levels: {
+      check: async () => ({ leadSessionId: null }),
+      recordStart: async () => "m_aaaaaaaaaaaa",
+    },
     isMono: (id: string) => id === "agent",
     monoOf: (id: string) =>
       id === "agent" ? { id: "mono-1", projects } : undefined,

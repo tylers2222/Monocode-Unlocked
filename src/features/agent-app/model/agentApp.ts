@@ -305,6 +305,16 @@ export type AgentAppHost = {
         input: Record<string, unknown>;
       },
     ): Promise<{ leadSessionId: string | null }>;
+    /**
+     * `mono_message_record_start`: the accepted start row of session
+     * `sessionId`, which this submitted start launched, as its message id.
+     * Throws its failure as an `AppActionError`.
+     */
+    recordStart(
+      requestId: string,
+      sessionId: string,
+      input: Record<string, unknown>,
+    ): Promise<string>;
   };
   /** milestones.*: `milestones.ts`; Rust refuses agent writes while off. */
   milestones?: Pick<
@@ -482,6 +492,20 @@ function boundaryInput(
       "sessionId must be a session id: 1 to 256 letters, digits, underscores or hyphens",
     );
   return { ...input, sessionId };
+}
+
+/**
+ * A start row that failed after `host.start` launched session `id`. The
+ * answer says so, since a hint like "use a new request id" alone would
+ * start the work a second time.
+ */
+function startedAnyway(error: unknown, id: string): Error {
+  const started = `Session ${id} was started anyway, so do not start it again; read or steer it by its id.`;
+  return error instanceof AppActionError
+    ? new AppActionError(error.code, `${error.hint} ${started}`, error.details)
+    : new Error(
+        `${error instanceof Error ? error.message : String(error)}. ${started}`,
+      );
 }
 
 function agentPrompt(value: unknown): string {
@@ -1774,6 +1798,16 @@ export async function handleAgentApp(
       const folder = host.monoOf?.(source.id)?.folder;
       if (folder && !launch.sidebarHidden)
         fileInMonoFolder(launch.cwd, id, folder);
+      // The start row names this work for steers (design 16.2). It takes
+      // the input as the caller gave it, the input the level check hashed.
+      // A draft runs no work, so it has none.
+      const messageId = launch.draft
+        ? undefined
+        : await host.levels
+            .recordStart(requestId, id, input)
+            .catch((error: unknown) => {
+              throw startedAnyway(error, id);
+            });
       return {
         id,
         cwd: launch.cwd,
@@ -1782,6 +1816,7 @@ export async function handleAgentApp(
         submitted: !launch.draft,
         draft: !!launch.draft,
         ...(notifyMonoId ? { notifyOnComplete: true } : {}),
+        ...(messageId ? { message_id: messageId } : {}),
       };
     }
     case "worktrees.list":

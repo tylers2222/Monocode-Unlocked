@@ -86,7 +86,10 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
     get: vi.fn(async () => ({ message: {} })),
   };
   const host = {
-    levels: { check: async () => ({ leadSessionId: null }) },
+    levels: {
+      check: async () => ({ leadSessionId: null }),
+      recordStart: async () => "m_aaaaaaaaaaaa",
+    },
     isMono: (id: string) => kind === "mono" && id === source.id,
     isHabitRun: (id: string) => kind === "habit" && id === source.id,
     monoOf: (id: string) =>

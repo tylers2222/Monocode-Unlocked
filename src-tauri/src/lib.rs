@@ -562,6 +562,7 @@ pub fn run() {
             mono_messages::mono_message_mark_notified,
             mono_messages::mono_message_drop,
             mono_messages::mono_app_action_check,
+            mono_messages::mono_message_record_start,
             session_store::session_delete,
             session_store::session_set_archived,
             session_store::session_set_pinned,

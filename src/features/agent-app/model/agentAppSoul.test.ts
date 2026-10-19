@@ -37,7 +37,10 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
     },
   );
   const host = {
-    levels: { check: async () => ({ leadSessionId: null }) },
+    levels: {
+      check: async () => ({ leadSessionId: null }),
+      recordStart: async () => "m_aaaaaaaaaaaa",
+    },
     isMono: (id: string) => kind === "mono" && id === source.id,
     monoOf: () =>
       kind === "session" ? undefined : { id: "mono-1", projects: [] },

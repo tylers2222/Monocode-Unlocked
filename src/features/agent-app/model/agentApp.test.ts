@@ -114,7 +114,10 @@ function fixture() {
   const source = newSession("codex", "/tmp/project", "codex:test");
   source.id = "lead";
   const host: AgentAppHost = {
-    levels: { check: async () => ({ leadSessionId: null }) },
+    levels: {
+      check: async () => ({ leadSessionId: null }),
+      recordStart: async () => "m_aaaaaaaaaaaa",
+    },
     start: vi.fn(async () => {}),
     sessions: vi.fn(async () => [
       {

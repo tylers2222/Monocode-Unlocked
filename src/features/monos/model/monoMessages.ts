@@ -23,7 +23,12 @@ export type TurnId = Brand<string, "TurnId">;
 
 export type MonoRole = "giga" | "mono";
 export type MessageTool = "send_message" | "reply";
-/** Not a message (design 1.4, 16.2): a refused `sessions.start` or app action. Only a rejected row carries one. */
+/**
+ * Not a message (design 1.4, 16.2): a refused `sessions.start` or app
+ * action, or the accepted record of the first prompt of a session that
+ * `sessions.start` made. Only a rejected row or a delivered start row
+ * carries one.
+ */
 export type RefusalTool = "start_session" | "app_action";
 export type Tool = MessageTool | RefusalTool;
 export type Delivery = "submit" | "queue" | "steer";
@@ -92,8 +97,9 @@ export type RowIntent =
 /**
  * The intent columns of a row from Rust. Undefined when they disagree: an
  * accepted row is a message that is `new` with no target, `reply` with
- * `replyTo`, or `steer` with exactly one of `replyTo` and `scope`; a row of
- * any tool may be rejected.
+ * `replyTo`, or `steer` with exactly one of `replyTo` and `scope`, or a
+ * delivered `new` start row (design 16.2); a row of any tool may be
+ * rejected.
  */
 export function parseRowIntent(row: {
   tool: unknown;
@@ -115,7 +121,10 @@ export function parseRowIntent(row: {
     return undefined;
   if (row.status === "rejected")
     return { status: "rejected", asked: { intent, replyTo, scope } };
-  if (tool !== "send_message" && tool !== "reply") return undefined;
+  const startRow =
+    tool === "start_session" && row.status === "delivered" && intent === "new";
+  if (tool !== "send_message" && tool !== "reply" && !startRow)
+    return undefined;
   if (intent === "new")
     return replyTo === null && scope === null
       ? { status: "accepted", intent: { intent, replyTo, scope } }
@@ -212,6 +221,16 @@ export type MonoMessage =
       Intent & { status: "delivered"; wantingReply: false } & Routed & {
         slot: PlainSlot | null;
       })
+  /**
+   * The first prompt of a session `sessions.start` made (design 16.2): a
+   * record and a steer target, never queued, so it never takes a slot.
+   */
+  | (Omit<MessageBase, "tool"> &
+      Extract<Intent, { intent: "new" }> & {
+        tool: "start_session";
+        status: "delivered";
+        wantingReply: false;
+      } & Routed & { slot: null })
   | (MessageBase &
       Intent & { status: "answered"; wantingReply: true } & Routed & {
         slot: WaitingSlot | null;
