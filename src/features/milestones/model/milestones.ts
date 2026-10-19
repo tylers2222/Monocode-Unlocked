@@ -27,7 +27,7 @@ export type Milestone = {
   title: string;
   note: string;
   status: MilestoneStatus;
-  /** `YYYY-MM-DD`, or null for "Later". */
+  /** `YYYY-MM-DD`, or null for "Later"; the page also shows `""` as Later. */
   target: string | null;
   order: number;
   createdBy: Writer;
