@@ -12,6 +12,8 @@ use crate::milestones::{check_project, require};
 use crate::mono_messages::{now_ms, MonoId};
 use crate::session_store::SessionStore;
 
+pub(crate) mod decide;
+
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS approvals (
@@ -122,7 +124,7 @@ pub struct Filer {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
     Approved,

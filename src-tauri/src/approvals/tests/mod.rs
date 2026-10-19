@@ -11,11 +11,11 @@ use super::*;
 const PROJECT: &str = "/Users/test/orbit";
 const OTHER: &str = "/Users/test/other";
 
-fn text(value: &str) -> Sql {
+pub(super) fn text(value: &str) -> Sql {
     Sql::Text(value.into())
 }
 
-fn giga(conn: &Connection, id: &str, name: &str) {
+pub(super) fn giga(conn: &Connection, id: &str, name: &str) {
     conn.execute(
         "INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
          VALUES (?1, ?2, 'giga', '{}', 0, 0, 0)",
@@ -25,7 +25,7 @@ fn giga(conn: &Connection, id: &str, name: &str) {
 }
 
 /// Inserts a valid open card with `changes` applied and returns its number.
-fn insert(conn: &Connection, changes: &[(&'static str, Sql)]) -> rusqlite::Result<i64> {
+pub(super) fn insert(conn: &Connection, changes: &[(&'static str, Sql)]) -> rusqlite::Result<i64> {
     let id = Uuid::new_v4().to_string();
     let mut row = vec![
         ("id", text(&id)),
@@ -61,7 +61,7 @@ fn insert(conn: &Connection, changes: &[(&'static str, Sql)]) -> rusqlite::Resul
     )
 }
 
-fn closed(status: &'static str, at: i64) -> Vec<(&'static str, Sql)> {
+pub(super) fn closed(status: &'static str, at: i64) -> Vec<(&'static str, Sql)> {
     let column = if status == "withdrawn" {
         "withdrawn_at"
     } else {
@@ -156,7 +156,7 @@ fn cards_survive_reopen_and_a_second_open_changes_nothing() {
     cards_survive_reopen(path);
 }
 
-fn app_database_copy() -> PathBuf {
+pub(super) fn app_database_copy() -> PathBuf {
     PathBuf::from(std::env::var("MONOCODE_DB_COPY").unwrap())
 }
 

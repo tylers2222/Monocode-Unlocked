@@ -386,6 +386,7 @@ pub fn run() {
             approvals::approvals_file,
             approvals::approvals_update,
             approvals::approvals_withdraw,
+            approvals::decide::approvals_decide,
             external_editor::list_external_editors,
             external_editor::open_in_external_editor,
             fs::resolve_project_location,

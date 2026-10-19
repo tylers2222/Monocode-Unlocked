@@ -1412,7 +1412,7 @@ fn route_groups(messages: &[MonoMessage], routes: Vec<Route>) -> Vec<RouteGroup>
 }
 
 /// `m_` and 12 random base32 characters.
-fn new_message_id() -> MessageId {
+pub(crate) fn new_message_id() -> MessageId {
     const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
     let bytes = *uuid::Uuid::new_v4().as_bytes();
     // Bytes 9 to 15 and the low half of byte 0 are random in a v4 uuid.
@@ -2490,7 +2490,7 @@ pub struct Notices {
 }
 
 impl Notices {
-    fn name(&mut self, session: SessionId) {
+    pub(crate) fn name(&mut self, session: SessionId) {
         if !self.sessions.contains(&session) {
             self.sessions.push(session);
         }
@@ -2526,7 +2526,7 @@ impl Notices {
     }
 
     /// To every window; nothing when no session is named.
-    pub fn emit(&self, app: &AppHandle) {
+    pub fn emit<R: tauri::Runtime>(&self, app: &AppHandle<R>) {
         if !self.sessions.is_empty() {
             let _ = app.emit("mono-message-notices", self);
         }
@@ -10227,6 +10227,28 @@ pub(crate) mod tests {
         assert_eq!(rows(&store.lock_conn().unwrap()), 0);
     }
 
+    /// `command`'s answer to `args` through Tauri's IPC, as the web app calls it.
+    #[cfg(not(windows))]
+    pub(crate) fn invoke_command(
+        webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+        command: &str,
+        args: &Value,
+    ) -> Result<Value, Value> {
+        tauri::test::get_ipc_response(
+            webview,
+            tauri::webview::InvokeRequest {
+                cmd: command.into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: "tauri://localhost".parse().unwrap(),
+                body: tauri::ipc::InvokeBody::Json(args.clone()),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.into(),
+            },
+        )
+        .map(|body| body.deserialize::<Value>().unwrap())
+    }
+
     // #91 N1 and #97 N4. Tauri binds each command argument by its parameter
     // name. Defect: a command's parameter is renamed from `call` (or the web
     // app sends another key), so every app action or start record fails in
@@ -10259,21 +10281,7 @@ pub(crate) mod tests {
         let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
             .build()
             .unwrap();
-        let invoke = |command: &str, args: &Value| {
-            tauri::test::get_ipc_response(
-                &webview,
-                tauri::webview::InvokeRequest {
-                    cmd: command.into(),
-                    callback: tauri::ipc::CallbackFn(0),
-                    error: tauri::ipc::CallbackFn(1),
-                    url: "tauri://localhost".parse().unwrap(),
-                    body: tauri::ipc::InvokeBody::Json(args.clone()),
-                    headers: Default::default(),
-                    invoke_key: tauri::test::INVOKE_KEY.into(),
-                },
-            )
-            .map(|body| body.deserialize::<Value>().unwrap())
-        };
+        let invoke = |command: &str, args: &Value| invoke_command(&webview, command, args);
         let commands: Vec<&str> = calls
             .iter()
             .map(|call| call["command"].as_str().unwrap())
