@@ -1531,8 +1531,10 @@ function Workspace({
   const projectWorktree = useWorktreeFocus(projectCwd);
   /** Tab or session id -> the workspace it was opened or moved in. A tab
    * belongs to the workspace it was opened in, whatever worktree it runs in:
-   * opening a session, or moving one from its composer, never switches the
-   * workspace. Unpinned tabs (restored ones) group by their own worktree. */
+   * opening an idle session, or moving one from its composer, never switches
+   * the workspace. A running session opened with no tab opens in its own
+   * worktree, which becomes the project's workspace (`onSelectHistorySession`).
+   * Unpinned tabs (restored ones) group by their own worktree. */
   // Only the default workspace's tabs were saved, so every restored tab
   // belongs to it, including one its composer moved to a worktree.
   const [restoredPins] = useState(

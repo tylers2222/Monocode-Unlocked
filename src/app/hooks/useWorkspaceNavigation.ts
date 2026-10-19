@@ -236,8 +236,10 @@ export function useWorkspaceNavigation(options: Options) {
     };
   }, []);
 
-  // A session opened directly joins the workspace on screen without changing
-  // the session's checkout. No navigation reason survives for a future open.
+  // An idle session opened directly joins the workspace on screen without
+  // changing the session's checkout. A running session opened with no tab
+  // asks for its project instead (App `onSelectHistorySession`), so `drain`
+  // above focuses its worktree. No navigation reason survives for a future open.
   const focusedId = options.tabs.find(
     (tab) => tab.id === options.activeTabId,
   )?.focusedId;
