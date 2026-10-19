@@ -34,9 +34,13 @@ const options = {
 
 function groupedMessage() {
   let message!: QueuedMessage;
-  const batches = new MonoSessionCompletionBatches((_, ready) => {
-    message = ready;
-  }, vi.fn());
+  const batches = new MonoSessionCompletionBatches(
+    (_, ready) => {
+      message = ready;
+    },
+    vi.fn(),
+    () => undefined,
+  );
   for (const [sessionId, status] of [
     ["stopped", "cancelled"],
     ["failed", "failed"],
@@ -44,15 +48,8 @@ function groupedMessage() {
   ] as const) {
     batches.watch(
       { monoId: "mono", turn: 1 },
-      sessionId,
-    )(
-      monoSessionCompletionResult({
-        ...options,
-        sessionId,
-        requestId: sessionId,
-        outcome: { status, text: `Result for ${sessionId}` },
-      }),
-    );
+      { ...options, sessionId, requestId: sessionId },
+    )({ status, text: `Result for ${sessionId}` });
   }
   batches.closeInactive(() => false);
   return message;

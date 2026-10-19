@@ -119,10 +119,21 @@ function completionMessage(
 }
 
 export type MonoCompletionOrigin = { monoId: string; turn: number };
+/** A Mono request that started or steered a session. */
+export type MonoCompletionRequest = Pick<
+  CompletionOptions,
+  "requestId" | "sessionId" | "project" | "prompt"
+>;
+/**
+ * A watched turn's report. `end` is that turn's outcome: the one object
+ * `submitSession` hands every watcher of the turn, and a new object for every
+ * other end.
+ */
+type Settled = { result: MonoSessionCompletionResult; end: ControlOutcome };
 type CompletionMember = {
   sessionId: string;
   accepted: boolean;
-  value?: MonoSessionCompletionResult;
+  settled?: Settled;
 };
 
 /**
@@ -144,34 +155,42 @@ type CompletionDelivery = {
 
 export const MONO_COMPLETION_HOLD_MS = 60_000;
 
+type ReadyMember = Settled & { requestId: string };
+
 /**
- * The results a group sends now: all of them once the whole group has
- * stopped, and after the hold whatever is ready without the running ones.
+ * What a group does now. `release` leaves the group: every member once the
+ * whole group has stopped, and after the hold whatever is ready without the
+ * running ones. `send` is the released members whose end the Mono has not
+ * been given. A steer joins the turn another request watches, so both settle
+ * with one end, and the Mono gets one report of it (ADE-47).
  */
 function releasableResults(
   results: ReadonlyMap<string, CompletionMember>,
   phase: CompletionPhase,
-): [string, MonoSessionCompletionResult][] {
-  if (phase === "turn") return [];
+  reported: Pick<WeakSet<ControlOutcome>, "has">,
+): { release: string[]; send: ReadyMember[] } {
   const ready = [...results].flatMap(
-    ([requestId, { accepted, value }]): [
-      string,
-      MonoSessionCompletionResult,
-    ][] => (accepted && value ? [[requestId, value]] : []),
+    ([requestId, { accepted, settled }]): ReadyMember[] =>
+      accepted && settled ? [{ requestId, ...settled }] : [],
   );
-  return phase === "open" || ready.length === results.size ? ready : [];
+  const releasing =
+    phase === "open" || (phase === "hold" && ready.length === results.size);
+  if (!releasing) return { release: [], send: [] };
+  const sent = new Set<ControlOutcome>();
+  const send = ready.filter(({ end }) => {
+    if (reported.has(end) || sent.has(end)) return false;
+    sent.add(end);
+    return true;
+  });
+  return { release: ready.map(({ requestId }) => requestId), send };
 }
 
 /** Group a Mono turn's monitored results and send each one exactly once. */
 export class MonoSessionCompletionBatches {
   private batches = new Map<string, CompletionBatch>();
   private deliveries = new Set<CompletionDelivery>();
-  /**
-   * Session ends that a request already reports, and to which Monos. A steer
-   * joins the turn another request watches, so both requests settle with one
-   * end, and the Mono gets one report of it (ADE-47).
-   */
-  private reportedEnds = new WeakMap<object, Set<string>>();
+  /** The session ends each Mono was given a report of. */
+  private reportedEnds = new Map<string, WeakSet<ControlOutcome>>();
 
   constructor(
     private onReady: (
@@ -180,14 +199,16 @@ export class MonoSessionCompletionBatches {
       current: () => QueuedMessage | undefined,
     ) => void | Promise<void>,
     private schedule: (run: () => void, ms: number) => void,
+    private session: (sessionId: string) => Session | undefined,
   ) {}
 
+  /** Returns the watcher of `request`'s turn, called with that turn's outcome. */
   watch(
     origin: MonoCompletionOrigin,
-    requestId: string,
-    sessionId = requestId,
+    request: MonoCompletionRequest,
     options: { awaitAcceptance?: boolean } = {},
   ) {
+    const { requestId, sessionId } = request;
     const key = `${origin.monoId}:${origin.turn}`;
     let batch = this.batches.get(key);
     if (!batch) {
@@ -197,25 +218,23 @@ export class MonoSessionCompletionBatches {
     let result = batch.results.get(requestId);
     // A rejected submission can be retried with the same receipt before this
     // launching turn ends. Wait for its new attempt, ignoring stale callbacks.
-    if (!result || result.value) {
+    if (!result || result.settled) {
       result = { sessionId, accepted: !options.awaitAcceptance };
       batch.results.set(requestId, result);
     }
     const entry = result;
     const group = batch;
     return Object.assign(
-      /** Watchers settled with the same `end` give each Mono one report. */
-      (value: MonoSessionCompletionResult, end: object = value) => {
-        if (entry.value || group.results.get(requestId) !== entry) return;
-        const monos = this.reportedEnds.get(end) ?? new Set<string>();
-        if (monos.has(origin.monoId)) {
-          // An earlier request of this Mono reports the same end.
-          group.results.delete(requestId);
-        } else {
-          this.reportedEnds.set(end, monos.add(origin.monoId));
-          entry.sessionId = value.sessionId;
-          entry.value = value;
-        }
+      (outcome: ControlOutcome) => {
+        if (entry.settled || group.results.get(requestId) !== entry) return;
+        entry.settled = {
+          result: monoSessionCompletionResult({
+            ...request,
+            outcome,
+            session: this.session(sessionId),
+          }),
+          end: outcome,
+        };
         this.release(key, group);
       },
       {
@@ -268,15 +287,23 @@ export class MonoSessionCompletionBatches {
 
   private release(key: string, group: CompletionBatch) {
     if (this.batches.get(key) !== group) return;
-    const results = new Map(releasableResults(group.results, group.phase));
+    const { monoId } = group.origin;
+    const reported = this.reportedEnds.get(monoId) ?? new WeakSet();
+    this.reportedEnds.set(monoId, reported);
+    const { release, send } = releasableResults(
+      group.results,
+      group.phase,
+      reported,
+    );
     // Removing before delivery prevents reentrant or repeated callbacks from replaying it.
-    for (const requestId of results.keys()) group.results.delete(requestId);
+    for (const requestId of release) group.results.delete(requestId);
     if (!group.results.size) this.batches.delete(key);
-    if (!results.size) return;
-    const delivery: CompletionDelivery = {
-      monoId: group.origin.monoId,
-      results,
-    };
+    if (!send.length) return;
+    for (const { end } of send) reported.add(end);
+    const results = new Map(
+      send.map(({ requestId, result }) => [requestId, result]),
+    );
+    const delivery: CompletionDelivery = { monoId, results };
     const id =
       results.size === 1
         ? `mono-completion-${[...results.keys()][0]}`

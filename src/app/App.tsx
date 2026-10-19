@@ -37,8 +37,8 @@ import {
 import {
   dismissQueuedMonoSessionCompletion,
   enqueueMonoSessionCompletion,
-  monoSessionCompletionResult,
   MonoSessionCompletionBatches,
+  type MonoCompletionRequest,
 } from "../features/monos/model/monoSessionCompletion";
 import {
   acceptQuickLaunch,
@@ -9041,6 +9041,8 @@ function Workspace({
       (monoId, message, current) =>
         queueMonoSessionCompletionRef.current(monoId, message, current),
       scheduleAfter,
+      (sessionId) =>
+        sessionsRef.current.find((session) => session.id === sessionId),
     );
   }
   useEffect(() => {
@@ -11247,37 +11249,13 @@ function Workspace({
         };
         const monitorCompletion = (
           monoId: string,
-          sessionId: string,
-          requestId: string,
-          project: string,
-          prompt: string,
-        ) => {
-          const settle = monoCompletionBatches.current!.watch(
+          request: MonoCompletionRequest,
+        ) =>
+          monoCompletionBatches.current!.watch(
             { monoId, turn: sourceTurn },
-            requestId,
-            sessionId,
+            request,
             { awaitAcceptance: true },
           );
-          return Object.assign(
-            // Every watcher of one turn end gets the same outcome, so it names
-            // the end: a steer and the start it joined report it once.
-            (outcome: ControlOutcome) =>
-              settle(
-                monoSessionCompletionResult({
-                  requestId,
-                  sessionId,
-                  project,
-                  prompt,
-                  outcome,
-                  session: sessionsRef.current.find(
-                    (session) => session.id === sessionId,
-                  ),
-                }),
-                outcome,
-              ),
-            { accept: settle.accept, discard: settle.discard },
-          );
-        };
         const dismissCompletion = (sessionId: string) => {
           if (!isMonoSession(source.id)) return;
           monoCompletionBatches.current!.dismissSession(source.id, sessionId);
@@ -11357,13 +11335,12 @@ function Workspace({
                 return;
               }
               const onSettled = notifyMonoId
-                ? monitorCompletion(
-                    notifyMonoId,
-                    id,
-                    id,
-                    launch.cwd,
-                    launch.prompt,
-                  )
+                ? monitorCompletion(notifyMonoId, {
+                    requestId: id,
+                    sessionId: id,
+                    project: launch.cwd,
+                    prompt: launch.prompt,
+                  })
                 : undefined;
               try {
                 // A Mono's sessions open from its chat, not as workspace
@@ -11488,13 +11465,12 @@ function Workspace({
                   "Session already has a draft; send or remove it first",
                 );
               const onSettled = notifyMonoId
-                ? monitorCompletion(
-                    notifyMonoId,
-                    id,
+                ? monitorCompletion(notifyMonoId, {
                     requestId,
-                    target.cwd,
+                    sessionId: id,
+                    project: target.cwd,
                     prompt,
-                  )
+                  })
                 : undefined;
               if (plan === "queue") {
                 const queuedMessageId = crypto.randomUUID();

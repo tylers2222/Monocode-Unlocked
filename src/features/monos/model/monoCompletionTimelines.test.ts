@@ -7,9 +7,7 @@ import {
 } from "../../sessions/model/session";
 import {
   enqueueMonoSessionCompletion,
-  monoSessionCompletionResult,
   MonoSessionCompletionBatches,
-  type MonoSessionCompletionResult,
 } from "./monoSessionCompletion";
 
 // Read from a .backup copy of the MonoCode 2 database (com.monocode.second):
@@ -161,12 +159,10 @@ function replay(events: Event[]) {
         notices.push([stamp(Date.now()), reportedSessions(added)]);
     },
     (run, ms) => setTimeout(run, ms),
+    () => undefined,
   );
   /** Every request that watches a session's running turn. */
-  const watchers = new Map<
-    string,
-    ((result: MonoSessionCompletionResult, end: ControlOutcome) => void)[]
-  >();
+  const watchers = new Map<string, ((outcome: ControlOutcome) => void)[]>();
   let turn = 1;
   let monoBusy = true;
   for (const event of events) {
@@ -174,8 +170,12 @@ function replay(events: Event[]) {
     if (event.kind === "start" || event.kind === "send") {
       const settle = batches.watch(
         { monoId: mono.id, turn },
-        `${event.kind}-${event.session}`,
-        event.session,
+        {
+          requestId: `${event.kind}-${event.session}`,
+          sessionId: event.session,
+          project: "/Users/me/monocode",
+          prompt: `Brief for ${event.session}`,
+        },
         { awaitAcceptance: true },
       );
       settle.accept();
@@ -194,17 +194,7 @@ function replay(events: Event[]) {
         status: "completed",
         text: `Done ${event.session}`,
       };
-      for (const settle of watchers.get(event.session)!)
-        settle(
-          monoSessionCompletionResult({
-            requestId: event.session,
-            sessionId: event.session,
-            project: "/Users/me/monocode",
-            prompt: `Brief for ${event.session}`,
-            outcome,
-          }),
-          outcome,
-        );
+      for (const settle of watchers.get(event.session)!) settle(outcome);
       watchers.delete(event.session);
     }
     // App.tsx runs closeInactive on every sessions change, with the same rule.
