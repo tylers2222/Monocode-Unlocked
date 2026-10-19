@@ -105,7 +105,32 @@ export function collectWorkspaceSnapshot(
       .filter((dock): dock is ProjectTerminalDock => dock != null),
     ...(isDockSide(lastDockSide) ? { lastDockSide } : {}),
   });
-  return withProjectReturnTargets(snapshot, memory);
+  return withProjectReturnTargets(
+    {
+      ...snapshot,
+      activeTabId: savedActiveTabId(tabs, snapshot.tabs, activeTabId),
+    },
+    memory,
+  );
+}
+
+/**
+ * The active tab if it is saved, else the nearest saved tab before it in the
+ * strip (a tab opens beside the one it was opened from), else the nearest
+ * after it, else none.
+ */
+function savedActiveTabId(
+  strip: WorkspaceTab[],
+  saved: WorkspaceTab[],
+  activeTabId: string,
+): string {
+  const savedIds = new Set(saved.map((tab) => tab.id));
+  const index = strip.findIndex((tab) => tab.id === activeTabId);
+  const nearestFirst = [
+    ...strip.slice(0, index + 1).reverse(),
+    ...strip.slice(index + 1),
+  ];
+  return nearestFirst.find((tab) => savedIds.has(tab.id))?.id ?? "";
 }
 
 function withProjectReturnTargets(
