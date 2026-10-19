@@ -23,7 +23,9 @@ afterEach(async () => {
 
 const TODAY = new Date(2026, 9, 18);
 
-function milestone(fields: Partial<Milestone> & Pick<Milestone, "id">): Milestone {
+function milestone(
+  fields: Partial<Milestone> & Pick<Milestone, "id">,
+): Milestone {
   return {
     projectPath: "/work/app",
     title: fields.id,
@@ -45,7 +47,9 @@ async function render(props: ComponentProps<typeof MilestoneTimeline>) {
 }
 
 function row(id: string): HTMLElement {
-  const found = container.querySelector<HTMLElement>(`[data-milestone="${id}"]`);
+  const found = container.querySelector<HTMLElement>(
+    `[data-milestone="${id}"]`,
+  );
   if (!found) throw new Error(`no row ${id}`);
   return found;
 }
@@ -56,11 +60,12 @@ function layout(): string[] {
     ...container.querySelectorAll<HTMLElement>(
       "section, [data-today], [data-milestone]",
     ),
-  ].map((element) =>
-    element.dataset.milestone ??
-    (element.dataset.today === undefined
-      ? `# ${element.getAttribute("aria-label")}`
-      : "today"),
+  ].map(
+    (element) =>
+      element.dataset.milestone ??
+      (element.dataset.today === undefined
+        ? `# ${element.getAttribute("aria-label")}`
+        : "today"),
   );
 }
 
@@ -100,7 +105,7 @@ it("leaves hidden statuses out and keeps the Today line above the future", async
   });
   expect(layout()).toEqual(["today", "# Planned", "planned"]);
   expect(container.querySelector("[data-today]")?.textContent).toBe(
-    `Today · ${TODAY.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`,
+    "Today · Oct 18",
   );
 });
 
@@ -115,7 +120,7 @@ it("draws no Today line while Done is hidden, as approved frame M·8 shows", asy
   expect(layout()).toEqual(["# Planned", "planned"]);
 });
 
-it("shows the local target date, with the year only when it is not this year, or Later", async () => {
+it("shows the English target date, with the year only when it is not this year, or Later", async () => {
   await render({
     milestones: [
       milestone({ id: "dated", target: "2026-11-07" }),
@@ -123,17 +128,13 @@ it("shows the local target date, with the year only when it is not this year, or
       milestone({ id: "undated", order: 2 }),
     ],
   });
-  const day = { month: "short", day: "numeric" } as const;
   // vitest.config.ts pins TZ west of UTC, where a UTC parse reads Nov 6.
   expect(row("dated").querySelector(".tabular-nums")?.textContent).toBe(
-    new Date(2026, 10, 7).toLocaleDateString(undefined, day),
+    "Nov 7",
   );
   expect(row("dated").textContent).not.toContain("Later");
   expect(row("next-year").querySelector(".tabular-nums")?.textContent).toBe(
-    new Date(2027, 0, 5).toLocaleDateString(undefined, {
-      ...day,
-      year: "numeric",
-    }),
+    "Jan 5, 2027",
   );
   expect(row("undated").textContent).toContain("Later");
 });

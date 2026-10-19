@@ -1,3 +1,4 @@
+import { formatDay } from "../model/day";
 import type { Milestone, MilestoneStatus } from "../model/milestones";
 
 /** Past at the top, future below; the Today line sits after `done`. */
@@ -40,30 +41,10 @@ export type AgentCreator = { kind: "mono" | "session"; id: string };
 /** The agent behind a row, or null for rows the user added. */
 export function agentCreator(createdBy: string): AgentCreator | null {
   const [kind, id] = createdBy.split(/:(.*)/s);
-  return (kind === "mono" || kind === "session") && id
-    ? { kind, id }
-    : null;
+  return (kind === "mono" || kind === "session") && id ? { kind, id } : null;
 }
 
-const dayMonth = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "numeric",
-});
-const dayMonthYear = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-});
-
-/** "Oct 15", with the year only when it is not this year. */
-export function formatDay(day: Date, today: Date): string {
-  return (
-    day.getFullYear() === today.getFullYear() ? dayMonth : dayMonthYear
-  ).format(day);
-}
-
-/** `new Date("YYYY-MM-DD")` reads UTC midnight, a day early west of UTC. */
+/** "Oct 15" in English, with the year only when it is not this year. */
 export function formatTarget(target: string, today: Date): string {
-  const [year, month, date] = target.split("-").map(Number);
-  return formatDay(new Date(year, month - 1, date), today);
+  return formatDay(target, Number(target.slice(0, 4)) !== today.getFullYear());
 }

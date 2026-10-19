@@ -1,10 +1,11 @@
-import { Check, Terminal } from "../../../shared/ui/icons";
+import { useState } from "react";
+import { Check, ChevronDown, Terminal } from "../../../shared/ui/icons";
 import { PixelMascot } from "../../projects/ui/PixelMascot";
+import { dayOf, formatDay } from "../model/day";
 import type { Milestone, MilestoneStatus } from "../model/milestones";
 import {
   STATUS_LABELS,
   agentCreator,
-  formatDay,
   formatTarget,
   timelineGroups,
   type AgentCreator,
@@ -48,6 +49,7 @@ export function MilestoneTimeline({
   lookUpCreator = () => undefined,
   today = new Date(),
 }: Props) {
+  const [doneCollapsed, setDoneCollapsed] = useState(false);
   const groups = timelineGroups(milestones, hiddenStatuses);
   const todayLine = (
     <div
@@ -56,7 +58,7 @@ export function MilestoneTimeline({
     >
       <span className="h-0.5 w-3.5 rounded-sm bg-accent" />
       <span className="flex items-center gap-2.5 text-[11px] font-medium text-(--link-color) after:flex-1 after:border-t after:border-dashed after:border-accent/35 dark:text-accent">
-        Today · {formatDay(today, today)}
+        Today · {formatDay(dayOf(today), false)}
       </span>
     </div>
   );
@@ -65,33 +67,52 @@ export function MilestoneTimeline({
       {groups[0]?.status === "done" || hiddenStatuses.includes("done")
         ? null
         : todayLine}
-      {groups.map(({ status, milestones }) => (
-        <section key={status} aria-label={STATUS_LABELS[status]}>
-          <h3 className="relative mt-4 grid h-[30px] grid-cols-[14px_1fr] items-center gap-3.5">
-            <span className={`size-3 rounded-full ${GROUP_DOT[status]}`}>
-              {status === "done" ? <Check size={8} strokeWidth={3} /> : null}
-            </span>
-            <span className="flex items-center gap-1.5 text-xs font-semibold text-content/75">
-              {STATUS_LABELS[status]}
-              <span className="font-normal text-content/35">
-                {milestones.length}
+      {groups.map(({ status, milestones }) => {
+        const collapsed = status === "done" && doneCollapsed;
+        return (
+          <section key={status} aria-label={STATUS_LABELS[status]}>
+            <h3 className="relative mt-4 grid h-[30px] grid-cols-[14px_1fr] items-center gap-3.5">
+              <span className={`size-3 rounded-full ${GROUP_DOT[status]}`}>
+                {status === "done" ? <Check size={8} strokeWidth={3} /> : null}
               </span>
-            </span>
-          </h3>
-          <ol>
-            {milestones.map((milestone) => (
-              <MilestoneRow
-                key={milestone.id}
-                milestone={milestone}
-                highlighted={highlightIds.has(milestone.id)}
-                lookUpCreator={lookUpCreator}
-                today={today}
-              />
-            ))}
-          </ol>
-          {status === "done" ? todayLine : null}
-        </section>
-      ))}
+              <span className="flex items-center gap-1.5 text-xs font-semibold text-content/75">
+                {STATUS_LABELS[status]}
+                <span className="font-normal text-content/35">
+                  {milestones.length}
+                </span>
+                {status === "done" ? (
+                  <button
+                    type="button"
+                    aria-expanded={!collapsed}
+                    aria-label={collapsed ? "Show Done" : "Hide Done"}
+                    onClick={() => setDoneCollapsed(!collapsed)}
+                    className="grid size-4 place-items-center rounded text-content/40 outline-none hover:bg-content/10 hover:text-content focus-visible:ring-1 focus-visible:ring-accent/50"
+                  >
+                    <ChevronDown
+                      size={11}
+                      className={collapsed ? "-rotate-90" : undefined}
+                    />
+                  </button>
+                ) : null}
+              </span>
+            </h3>
+            {collapsed ? null : (
+              <ol>
+                {milestones.map((milestone) => (
+                  <MilestoneRow
+                    key={milestone.id}
+                    milestone={milestone}
+                    highlighted={highlightIds.has(milestone.id)}
+                    lookUpCreator={lookUpCreator}
+                    today={today}
+                  />
+                ))}
+              </ol>
+            )}
+            {status === "done" ? todayLine : null}
+          </section>
+        );
+      })}
     </div>
   );
 }
@@ -120,7 +141,9 @@ function MilestoneRow({
       }`}
     >
       <span className="grid h-5 place-items-center">
-        <i className={`block size-[7px] rounded-full ${ROW_DOT[milestone.status]}`} />
+        <i
+          className={`block size-[7px] rounded-full ${ROW_DOT[milestone.status]}`}
+        />
       </span>
       <div className="min-w-0">
         <div
@@ -153,7 +176,7 @@ function MilestoneRow({
           done ? "text-content/35" : "text-content/55"
         }`}
       >
-        {milestone.target === null ? (
+        {!milestone.target ? (
           <span className="rounded border border-dashed border-content/20 px-1.5 py-px text-[11px] text-content/45">
             Later
           </span>

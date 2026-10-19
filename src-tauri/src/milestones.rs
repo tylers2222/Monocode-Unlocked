@@ -993,4 +993,66 @@ mod tests {
         assert_eq!(added.title, "ship");
         assert_eq!(list(&conn, "/").unwrap(), [added]);
     }
+
+    // M-9a1 real-state proof. Defect: the page is tested on rows the real
+    // store never sends (a target shape the schema refuses, another field
+    // name or order), so a display bug on real rows goes unseen. Every target
+    // shape the real schema accepts goes in by SQL, comes out through `list`
+    // and `settings` as `milestones_list` answers, and must equal the rows
+    // tests/browser/milestones-dates.spec.ts renders. RECORD_MILESTONE_LIST=1
+    // rewrites the file.
+    #[test]
+    fn list_reply_for_every_target_shape_matches_the_page_fixture() {
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        let project = "/Users/test/orbit";
+        let insert = |order: i64, status: &str, target: Option<&str>| {
+            conn.execute(
+                &format!(
+                    "INSERT INTO milestones ({COLUMNS})
+                     VALUES (printf('real-%031d', ?1), ?2, printf('Real row %d', ?1), '', ?3, ?4, ?1, 'user', ?1, ?1)"
+                ),
+                params![order, project, status, target],
+            )
+        };
+        for refused in ["", "2026-1-5", "12/11/2026"] {
+            let error = insert(99, "planned", Some(refused)).unwrap_err();
+            assert!(
+                error.to_string().contains("CHECK constraint failed"),
+                "{refused:?}: {error}"
+            );
+        }
+        let rows = [
+            ("done", Some("2026-10-15")),
+            ("done", None),
+            ("in_progress", Some("2026-10-18")),
+            ("in_progress", Some("2026-10-19")),
+            ("planned", Some("2026-12-12")),
+            ("planned", Some("2026-01-01")),
+            ("planned", None),
+            ("planned", Some("2027-01-09")),
+            ("planned", Some("2025-01-05")),
+            ("idea", Some("2028-02-29")),
+            ("idea", Some("2026-12-31")),
+        ];
+        for (order, (status, target)) in rows.into_iter().enumerate() {
+            insert(order as i64, status, target).unwrap();
+        }
+        let reply = ProjectMilestones {
+            settings: settings(&conn, project).unwrap(),
+            milestones: list(&conn, project).unwrap(),
+        };
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tests/browser/fixtures/milestones-real-list.json"
+        );
+        if std::env::var_os("RECORD_MILESTONE_LIST").is_some() {
+            let json = serde_json::to_string_pretty(&reply).unwrap();
+            std::fs::write(path, format!("{json}\n")).unwrap();
+        }
+        // Values, not text: a Windows checkout gives the file CRLF line ends.
+        let committed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(&reply).unwrap(), committed);
+    }
 }
