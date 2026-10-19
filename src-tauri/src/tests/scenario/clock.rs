@@ -17,13 +17,17 @@ fn stored(world: &World) -> i64 {
         .unwrap()
 }
 
-/// The downtime rows as `(cause, end - start)`, oldest first.
-fn downtime(world: &World) -> Vec<(String, i64)> {
+/// The downtime rows after row id `since`, as `(cause, end - start)`,
+/// oldest first.
+fn downtime(world: &World, since: i64) -> Vec<(String, i64)> {
     world
         .conn()
-        .prepare("SELECT cause, end_wall_ms - start_wall_ms FROM mono_downtime ORDER BY id")
+        .prepare(
+            "SELECT cause, end_wall_ms - start_wall_ms FROM mono_downtime
+              WHERE id > ?1 ORDER BY id",
+        )
         .unwrap()
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map([since], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap()
@@ -36,11 +40,18 @@ fn downtime(world: &World) -> Vec<(String, i64)> {
 #[test]
 fn clock_counts_only_awake_running_time() {
     let mut world = World::new("clock");
+    // A real database copy may hold a clock and downtime from earlier
+    // launches; the scenario counts from where its own launch left them.
     let base = world.active_ms();
-    assert!(
-        downtime(&world).is_empty(),
-        "a first launch logs no downtime"
-    );
+    let since: i64 = world
+        .conn()
+        .query_row(
+            "SELECT coalesce(max(id), 0) FROM mono_downtime",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let downtime = |world: &World| downtime(world, since);
 
     // A kill keeps what the store wrote: every 5 s of active time.
     world.advance(12_500);
@@ -78,15 +89,15 @@ fn clock_counts_only_awake_running_time() {
     assert_eq!(world.active_ms(), base + 15_000);
     assert_eq!(downtime(&world).len(), 3, "a wall jump is no sleep");
 
-    // A tick that stalls for 90 s adds at most 30 s.
+    // A tick that stalls for 90 s adds at most 30 s, and it is no sleep.
     world.stall(90 * SECOND);
     assert_eq!(world.active_ms(), base + 45_000);
+    assert_eq!(downtime(&world).len(), 3, "a stall is no sleep");
 
     // A second process on the same data folder gets no lease and writes
     // nothing; once the first is gone, a launch takes it.
-    let rows = downtime(&world).len();
     assert!(!world.second_launch(), "a second process ticks nothing");
-    assert_eq!(downtime(&world).len(), rows);
+    assert_eq!(downtime(&world).len(), 3);
     assert_eq!(stored(&world), base + 45_000);
     world.kill();
     world.restart();

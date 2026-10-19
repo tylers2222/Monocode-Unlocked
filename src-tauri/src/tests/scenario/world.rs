@@ -6,7 +6,7 @@ use std::sync::MutexGuard;
 
 use rusqlite::Connection;
 
-use crate::active_clock::{self, ActiveClock, Clock, Lease};
+use crate::active_clock::{self, ActiveClock, Clock};
 use crate::mono_messages::{self, SessionId, Targeted};
 use crate::session_store::SessionStore;
 
@@ -88,11 +88,10 @@ impl Clock for FakeClock {
     }
 }
 
-/// What dies with the app process: the store, the clock lease and the
-/// active clock it ticks.
+/// What dies with the app process: the store and the active clock, which
+/// holds the clock lease.
 struct App {
     store: SessionStore,
-    _lease: Lease,
     active: ActiveClock<FakeClock>,
 }
 
@@ -235,17 +234,27 @@ impl World {
     pub(crate) fn restart(&mut self) {
         assert!(self.app.is_none(), "the app is already running");
         let store = SessionStore::open_at(self.path.clone(), self.now()).unwrap();
-        let started = active_clock::start(
-            &self.lock_path(),
-            &store.lock_conn().unwrap(),
-            self.clock.clone(),
-        );
-        let (lease, active) = started.unwrap().expect("another process holds the lease");
-        self.app = Some(App {
-            store,
-            _lease: lease,
-            active,
-        });
+        // The lease is free once the killed app's file is closed, but a child
+        // that another test thread is spawning (s0 runs `git`) holds a copy of
+        // that file between its fork and exec. So a retake waits up to 2 s;
+        // the app itself takes the lease once and never retakes it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let active = loop {
+            let started = active_clock::start(
+                &self.lock_path(),
+                &store.lock_conn().unwrap(),
+                self.clock.clone(),
+            );
+            if let Some(active) = started.unwrap() {
+                break active;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "another process holds the lease"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        self.app = Some(App { store, active });
     }
 
     /// A second app process on the same data folder: it opens the store

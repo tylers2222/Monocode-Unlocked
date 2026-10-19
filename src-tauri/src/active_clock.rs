@@ -56,8 +56,10 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// The running active clock of the one process that holds the lease.
+/// The running active clock of the one process that holds the lease. The
+/// lease is part of it, so a clock that ticks always holds its lease.
 pub(crate) struct ActiveClock<C: Clock> {
+    _lease: Lease,
     clock: C,
     active_ns: u64,
     persisted_ns: u64,
@@ -69,7 +71,7 @@ impl<C: Clock> ActiveClock<C> {
     /// The app starts: the stored clock goes on from its row, the gap since
     /// the row's last write adds nothing and is logged as `reboot` (the
     /// computer booted after that write) or `app_down`.
-    pub(crate) fn launch(conn: &Connection, clock: C) -> rusqlite::Result<Self> {
+    fn launch(lease: Lease, conn: &Connection, clock: C) -> rusqlite::Result<Self> {
         let wall = clock.wall_ms();
         let boot = clock.boot_wall_ms();
         let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
@@ -105,6 +107,7 @@ impl<C: Clock> ActiveClock<C> {
         tx.commit()?;
         let active_ns = u64::try_from(active_ms).unwrap_or(0) * NS_PER_MS;
         Ok(Self {
+            _lease: lease,
             uptime_ns: clock.uptime_ns(),
             monotonic_ns: clock.monotonic_ns(),
             clock,
@@ -161,21 +164,22 @@ pub(crate) struct Lease {
     _file: File,
 }
 
-/// The lease and the launched clock, or `None` when another process holds
-/// the lease; that process ticks and this one writes nothing.
+/// The launched clock, holding the lease, or `None` when another process
+/// holds the lease; that process ticks and this one writes nothing.
 pub(crate) fn start<C: Clock>(
     lock: &Path,
     conn: &Connection,
     clock: C,
-) -> Result<Option<(Lease, ActiveClock<C>)>, String> {
+) -> Result<Option<ActiveClock<C>>, String> {
     let file = File::create(lock).map_err(|error| error.to_string())?;
     match file.try_lock() {
         Ok(()) => {}
         Err(TryLockError::WouldBlock) => return Ok(None),
         Err(TryLockError::Error(error)) => return Err(error.to_string()),
     }
-    let clock = ActiveClock::launch(conn, clock).map_err(|error| error.to_string())?;
-    Ok(Some((Lease { _file: file }, clock)))
+    ActiveClock::launch(Lease { _file: file }, conn, clock)
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 /// Starts the 1 s clock thread, beside `reminders::init`.
@@ -190,22 +194,19 @@ pub(crate) fn init(app: &AppHandle) -> Result<(), String> {
         &*app.state::<SessionStore>().lock_conn()?,
         SystemClock,
     )?;
-    let Some((lease, mut clock)) = started else {
+    let Some(mut clock) = started else {
         eprintln!("Another MonoCode process runs the active clock for this data folder");
         return Ok(());
     };
     let app = app.clone();
-    std::thread::spawn(move || {
-        let _lease = lease;
-        loop {
-            std::thread::sleep(TICK);
-            let ticked = app
-                .state::<SessionStore>()
-                .lock_conn()
-                .and_then(|conn| clock.tick(&conn).map_err(|error| error.to_string()));
-            if let Err(error) = ticked {
-                eprintln!("Could not tick the active clock: {error}");
-            }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(TICK);
+        let ticked = app
+            .state::<SessionStore>()
+            .lock_conn()
+            .and_then(|conn| clock.tick(&conn).map_err(|error| error.to_string()));
+        if let Err(error) = ticked {
+            eprintln!("Could not tick the active clock: {error}");
         }
     });
     Ok(())
