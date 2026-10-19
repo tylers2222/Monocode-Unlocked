@@ -616,3 +616,24 @@ test("refuses /operator in a session MonoCode never saves", async ({
   );
   expect(spawned).toBe(false);
 });
+
+// R4 review r2 m1. A worker that sessions.start launches has `started`
+// access. Defect: its first turn starts although saving its row failed, so
+// every call it makes gets unknown_caller while the lead is told it failed.
+test("a started worker whose save fails gets no prompt", async ({
+  page,
+  app,
+}) => {
+  await mountSessions(page, app, ["lead"], {
+    // Only the worker's write fails; the lead's save answers as Rust does.
+    session_upsert: (_store, { session }) => {
+      const { id } = session as { id: string };
+      if (id === "app-lead-r1") throw "disk full";
+      return session;
+    },
+  });
+  await page.getByText("Fix login").click();
+  const started = await startFromLead(page, app, "start-1");
+  expect(started).toMatchObject({ ok: false });
+  expect(await prompts(page, "app-lead-r1")).toEqual([]);
+});
