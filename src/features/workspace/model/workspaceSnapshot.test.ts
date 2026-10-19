@@ -18,6 +18,7 @@ import {
   newTab,
   newTerminalFile,
   splitPane,
+  type WorkspaceTab,
 } from "./layout";
 import { createProjectTerminal } from "../../projects/model/projectTerminal";
 import { newSession, type Session } from "../../sessions/model/session";
@@ -26,6 +27,7 @@ import {
   hydrateWorkspaceSnapshot,
   parseWorkspaceSnapshot,
 } from "./workspaceSnapshot";
+import { insertTabBesideActive } from "./tabGroups";
 
 function chat(id: string, cwd: string): Session {
   const session = newSession("cursor", cwd);
@@ -743,5 +745,112 @@ describe("worktree tab cleanup", () => {
     );
     expect(snapshot.tabs.map((tab) => tab.id)).toEqual(["tab-main"]);
     expect(snapshot.sessions.map((stub) => stub.id)).toEqual(["main"]);
+  });
+
+  it("saves as active the nearest saved tab before an unsaved active tab, else after it", () => {
+    const ids = ["w1", "a", "w2", "b"];
+    const tabs = ids.map((id) => ({ ...newTab(id), id }));
+    const save = (activeTabId: string, keep: (id: string) => boolean) =>
+      collectWorkspaceSnapshot(
+        tabs,
+        ids.map((id) => chat(id, "/repo")),
+        activeTabId,
+        "/repo",
+        new Map(),
+        [],
+        undefined,
+        (tab) => keep(tab.id),
+      ).activeTabId;
+    const keepMain = (id: string) => !id.startsWith("w");
+    expect(save("b", keepMain)).toBe("b");
+    expect(save("w2", keepMain)).toBe("a");
+    expect(save("w1", keepMain)).toBe("a");
+    expect(save("w1", () => false)).toBe("");
+  });
+
+  it("looks for the nearest saved tab in the saved project only", () => {
+    const sessions = [
+      chat("s1", "/p"),
+      chat("s2", "/q"),
+      chat("s3", "/p"),
+      chat("s4", "/p"),
+    ];
+    // onSelectHistorySession: the project switches to /p, then the running
+    // session's tab opens beside the still-active /q tab.
+    const tabs = insertTabBesideActive(
+      [
+        { ...newTab("s1"), id: "a" },
+        { ...newTab("s2"), id: "q1" },
+        { ...newTab("s4"), id: "b" },
+      ],
+      { ...newTab("s3"), id: "w1" },
+      "q1",
+    );
+    const snapshot = collectWorkspaceSnapshot(
+      tabs,
+      sessions,
+      "w1",
+      "/p",
+      new Map(),
+      [],
+      undefined,
+      (tab) => tab.id !== "w1",
+    );
+    expect(snapshot.activeTabId).toBe("a");
+  });
+
+  it("falls back to the next tab of the project, then to the first saved tab", () => {
+    const tab = (id: string) => ({ ...newTab(id), id });
+    const save = (tabs: WorkspaceTab[]) =>
+      collectWorkspaceSnapshot(
+        tabs,
+        [chat("q1", "/q"), chat("w1", "/p"), chat("b", "/p")],
+        "w1",
+        "/p",
+        new Map(),
+        [],
+        undefined,
+        (saved) => saved.id !== "w1",
+      ).activeTabId;
+    expect(save([tab("q1"), tab("w1"), tab("b")])).toBe("b");
+    expect(save([tab("q1"), tab("w1")])).toBe("q1");
+  });
+
+  it("keeps a saved active tab that belongs to no project", () => {
+    const snapshot = collectWorkspaceSnapshot(
+      [
+        { ...newTab("s1"), id: "a" },
+        { ...newTab("home"), id: "h" },
+      ],
+      [chat("s1", "/p"), chat("home", "~")],
+      "h",
+      "/p",
+      new Map(),
+    );
+    expect(snapshot.activeTabId).toBe("h");
+  });
+
+  it("saves the nearest saved tab when an agent-only active tab is dropped", () => {
+    const agent = newAgentTab("Audit the UI", "/repo", {
+      sessionId: "worker",
+      leadId: "s1",
+      harness: "codex",
+    });
+    const agentTab = {
+      ...newTab("s1"),
+      id: "g",
+      layout: leaf("e1"),
+      focusedId: "e1",
+      editorPanes: [{ id: "e1", files: [agent], activeFileId: agent.id }],
+    };
+    const snapshot = collectWorkspaceSnapshot(
+      [{ ...newTab("s1"), id: "a" }, agentTab, { ...newTab("s2"), id: "b" }],
+      [chat("s1", "/repo"), chat("s2", "/repo")],
+      "g",
+      "/repo",
+      new Map(),
+    );
+    expect(snapshot.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
+    expect(snapshot.activeTabId).toBe("a");
   });
 });
