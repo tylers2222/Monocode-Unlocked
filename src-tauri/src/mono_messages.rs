@@ -3186,6 +3186,47 @@ pub fn mono_message_get(
     get_message(&conn, &caller, mono_gate::parse_get(&input)).map_err(|error| error.to_string())
 }
 
+/// The arguments of `mono_app_action_check`, as the web app's `levelGate`
+/// sends them.
+#[cfg_attr(test, derive(Deserialize))]
+#[cfg_attr(test, serde(rename_all = "camelCase", deny_unknown_fields))]
+struct AppActionCall {
+    caller: CallerArg,
+    action: String,
+    target: Option<String>,
+    target_lead_session_id: Option<String>,
+    request_id: String,
+    input: Value,
+}
+
+impl AppActionCall {
+    fn check(self, store: &SessionStore, now: i64) -> Result<ActionChecked, String> {
+        let caller = self.caller.parse()?;
+        let target_copy = self
+            .target_lead_session_id
+            .as_deref()
+            .map(|lead| SessionId::parse(lead).ok_or("Invalid targetLeadSessionId"))
+            .transpose()?;
+        let Some(request_id) = RequestId::parse(&self.request_id) else {
+            return Ok(ActionChecked::Failed {
+                error: refusal(Refusal::InvalidInput, REQUEST_ID_RULE.into()),
+            });
+        };
+        let conn = store.lock_conn()?;
+        check_action(
+            &conn,
+            &caller,
+            &self.action,
+            self.target.as_deref(),
+            target_copy,
+            &request_id,
+            &self.input,
+            now,
+        )
+        .map_err(|error| error.to_string())
+    }
+}
+
 #[tauri::command(async)]
 pub fn mono_app_action_check(
     store: State<'_, SessionStore>,
@@ -3196,28 +3237,15 @@ pub fn mono_app_action_check(
     request_id: String,
     input: Value,
 ) -> Result<ActionChecked, String> {
-    let caller = caller.parse()?;
-    let target_copy = target_lead_session_id
-        .as_deref()
-        .map(|lead| SessionId::parse(lead).ok_or("Invalid targetLeadSessionId"))
-        .transpose()?;
-    let Some(request_id) = RequestId::parse(&request_id) else {
-        return Ok(ActionChecked::Failed {
-            error: refusal(Refusal::InvalidInput, REQUEST_ID_RULE.into()),
-        });
-    };
-    let conn = store.lock_conn()?;
-    check_action(
-        &conn,
-        &caller,
-        &action,
-        target.as_deref(),
-        target_copy,
-        &request_id,
-        &input,
-        now_ms(),
-    )
-    .map_err(|error| error.to_string())
+    AppActionCall {
+        caller,
+        action,
+        target,
+        target_lead_session_id,
+        request_id,
+        input,
+    }
+    .check(&store, now_ms())
 }
 
 #[cfg(test)]
@@ -9395,5 +9423,62 @@ pub(crate) mod tests {
             "Mono chat with a sessions row"
         );
         assert_eq!(rows(&conn), 2);
+    }
+
+    // PR7-9b real-state proof. `appActionCheck.fixtures.json` holds the exact
+    // `mono_app_action_check` calls that the web app's real `levelGate` sends
+    // (agentAppLevels.test.ts checks that) and the replies it acts on.
+    // Defect: the command reads another argument name, shape or lead copy
+    // than the web app sends, or answers in a shape or with a code, hint or
+    // lead id the web app does not expect.
+    #[test]
+    fn mono_app_action_check_answers_every_call_the_web_app_sends() {
+        #[derive(Deserialize)]
+        struct Fixture {
+            sessions: Vec<Saved>,
+            cases: Vec<Case>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Saved {
+            id: String,
+            cwd: String,
+            lead_session_id: Option<String>,
+            saved: bool,
+        }
+        #[derive(Deserialize)]
+        struct Case {
+            name: String,
+            args: Value,
+            reply: Value,
+        }
+        let fixture: Fixture = serde_json::from_str(include_str!(
+            "../../src/features/agent-app/model/appActionCheck.fixtures.json"
+        ))
+        .unwrap();
+        for case in fixture.cases {
+            let store = messaging_store();
+            for row in fixture.sessions.iter().filter(|row| row.saved) {
+                store
+                    .lock_conn()
+                    .unwrap()
+                    .execute(
+                        "INSERT OR IGNORE INTO sessions (id, cwd, harness, model, runtime_mode,
+                           title, created_at, updated_at, lead_session_id)
+                         VALUES (?1, ?2, 'codex', 'm', 'default', 'S', 1, 1, ?3)",
+                        params![row.id, row.cwd, row.lead_session_id],
+                    )
+                    .unwrap();
+            }
+            let call: AppActionCall = serde_json::from_value(case.args).unwrap();
+            let mut answer = serde_json::to_value(call.check(&store, 100).unwrap()).unwrap();
+            if let Some(id) = answer.pointer_mut("/error/message_id") {
+                let written = MessageId::parse(id.as_str().unwrap()).unwrap();
+                let conn = store.lock_conn().unwrap();
+                assert!(get(&conn, &written).unwrap().is_some(), "{}", case.name);
+                *id = serde_json::json!("m_aaaaaaaaaaaa");
+            }
+            assert_eq!(answer, case.reply, "{}", case.name);
+        }
     }
 }

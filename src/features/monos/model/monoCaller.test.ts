@@ -7,19 +7,21 @@ import {
   loadMonoRoster,
   saveMonoSessionId,
 } from "./mono";
-import { resolveCaller, type CallingSession } from "./monoCaller";
+import { levelGate, resolveCaller, type CallingSession } from "./monoCaller";
 import { clearHabitRun, markHabitRun } from "./monoHabits";
 import type { TurnId } from "./monoMessages";
 
 const db = vi.hoisted(() => ({
   update: undefined as Promise<unknown> | undefined,
   monos: [] as unknown[],
+  check: undefined as unknown,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string) => {
     if (command === "monos_list") return { revision: 1, monos: db.monos };
     if (command === "monos_update") return db.update;
+    if (command === "mono_app_action_check") return db.check;
     throw new Error(`unexpected ${command}`);
   }),
 }));
@@ -170,5 +172,59 @@ it("waits for queued roster writes before it answers", async () => {
   expect(await resolving).toMatchObject({
     ok: true,
     caller: { kind: "mono_chat", sessionId: "new-chat" },
+  });
+});
+
+// Design 6.6. Defect: the level check needs the persisted roster as
+// messaging does, so a Mono cannot steer, stop or start sessions while
+// roster_unavailable holds; or Rust misses the window's copy of an unsaved
+// target's lead.
+it("checks a Mono's app action without the roster", async () => {
+  const mono = createMono();
+  saveMonoSessionId(mono.id, "memory-chat");
+  db.check = { outcome: "allowed", leadSessionId: null };
+  const input = { sessionId: "worker", prompt: "Stop and rebase" };
+  const gate = levelGate(session("memory-chat"), turn, (id) =>
+    id === "worker" ? "lead" : undefined,
+  );
+  expect(
+    await gate.check("r1", { action: "sessions.send", target: "worker", input }),
+  ).toEqual({ leadSessionId: null });
+  expect(invoke).toHaveBeenCalledWith("mono_app_action_check", {
+    caller: {
+      kind: "mono_chat",
+      monoId: mono.id,
+      sessionId: "memory-chat",
+      turnId: "turn-1",
+    },
+    action: "sessions.send",
+    target: "worker",
+    targetLeadSessionId: "lead",
+    requestId: "r1",
+    input,
+  });
+});
+
+// Design 6.6. Defect: a refused app action runs anyway, or its answer loses
+// the code, hint or row id that the agent acts on.
+it("throws the level check's refusal with its code, hint and row id", async () => {
+  await loadMonoRoster();
+  const hint =
+    'A worker can message only its lead. Message your lead (lead): messages.send with send_to "lead".';
+  db.check = {
+    outcome: "failed",
+    error: { code: "worker_scope", hint, message_id: "m_aaaaaaaaaaaa" },
+  };
+  const worker = session("worker", { blocks: operator, leadSessionId: "lead" });
+  await expect(
+    levelGate(worker, turn, () => undefined).check("r1", {
+      action: "notes.list",
+      target: null,
+      input: {},
+    }),
+  ).rejects.toMatchObject({
+    code: "worker_scope",
+    hint,
+    details: { message_id: "m_aaaaaaaaaaaa" },
   });
 });
