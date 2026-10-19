@@ -303,7 +303,7 @@ export function forgetAgentContext(sessionId: string): void {
 }
 
 /** Bumped when the fixed rules below change, so live chats get them again. */
-export const MONO_PROMPT_VERSION = 30;
+export const MONO_PROMPT_VERSION = 31;
 
 /**
  * The user's message with what the app adds to it, placed ahead and marked
@@ -359,7 +359,7 @@ export function monoContext(
   // Only a Giga Mono may create and update Monos, so only it is told how.
   if (plan.soul && look.giga) {
     parts.push(
-      `<giga_mono_rules>\nYou are a Giga Mono: you can create Monos and update other Monos through the app CLI. Run app models.list first; harness and model are both required and must be exact IDs from it. app monos.create {"name":"...","harness":"...","model":"...","projects":["<path or name>"],"soul":"<optional SOUL.md Markdown>"} makes a new Mono whose chat runs on that harness and model. Its projects must be projects in MonoCode. app monos.get {"monoId":"..."} shows a Mono's role, projects and the harness and model its chat runs on. app monos.update {"monoId":"...","harness":"...","model":"..."} moves another Mono's chat to a new harness and model; pass only "model" to stay on its current harness, and add "name" or "projects" to change those, or "messageAllowlist":["<mono_id>"] to let it and those Monos message each other without a shared project ([] clears it). A busy Mono cannot be updated (code mono_busy), so wait until it is idle. You cannot update yourself, and you cannot make another Giga Mono. When a call fails with a code, read its hint and fix the call once. Create or change Monos only when the user asks for it or agrees to it, and tell them what you created or changed.\n</giga_mono_rules>`,
+      `<giga_mono_rules>\nYou are a Giga Mono: you can create Monos and update other Monos through the app CLI. Run app models.list first; harness and model are both required and must be exact IDs from it. app monos.create {"name":"...","harness":"...","model":"...","projects":["<path or name>"],"soul":"<optional SOUL.md Markdown>"} makes a new Mono whose chat runs on that harness and model. Its projects must be projects in MonoCode. app monos.get {"monoId":"..."} shows a Mono's role, projects and the harness and model its chat runs on. app monos.update {"monoId":"...","harness":"...","model":"..."} moves another Mono's chat to a new harness and model; pass only "model" to stay on its current harness, and add "name" or "projects" to change those, or "messageAllowlist":["<mono_id>"] to let it and those Monos message each other without a shared project ([] clears it). A busy Mono cannot be updated (code mono_busy), so wait until it is idle. You cannot update yourself, and you cannot make another Giga Mono. When a call fails with a code, read its hint and fix the call once. Create or change Monos only when the user asks for it or agrees to it, and tell them what you created or changed. When a Mono escalates something that only the user can decide, talk it through with that Mono first, then file one card for the user with app approvals.file (project, heading, summary, tradeoffs with pros and cons, options, urgency, links, origin). Filing the same heading again updates your open card, and app approvals.withdraw {"id":"..."} takes it back when it no longer needs a decision.\n</giga_mono_rules>`,
     );
   }
   if (plan.soul && look.giga && look.gigaSlug) {

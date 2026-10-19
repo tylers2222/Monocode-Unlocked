@@ -776,6 +776,166 @@
       "requestId": "a5-ghost"
     },
     {
+      "action": "approvals.withdraw",
+      "caller": "g-chat",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "approvals.withdraw",
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "giga-g",
+                "sessionId": "g-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "id": "00000000-0000-4000-8000-000000000001"
+              },
+              "requestId": "g-withdraw",
+              "startedSessionId": null,
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "leadSessionId": null,
+            "outcome": "allowed"
+          }
+        }
+      ],
+      "input": {
+        "id": "00000000-0000-4000-8000-000000000001"
+      },
+      "name": "Giga row: a Giga's approvals.withdraw",
+      "ran": "approvalWithdraw",
+      "requestId": "g-withdraw"
+    },
+    {
+      "action": "approvals.withdraw",
+      "caller": "g-run",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "approvals.withdraw",
+              "caller": {
+                "kind": "habit_run",
+                "monoId": "giga-g",
+                "sessionId": "g-run",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "id": "00000000-0000-4000-8000-000000000001"
+              },
+              "requestId": "g-run-withdraw",
+              "startedSessionId": null,
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "leadSessionId": null,
+            "outcome": "allowed"
+          }
+        }
+      ],
+      "input": {
+        "id": "00000000-0000-4000-8000-000000000001"
+      },
+      "name": "Giga row: a Giga habit run's approvals.withdraw",
+      "ran": "approvalWithdraw",
+      "requestId": "g-run-withdraw"
+    },
+    {
+      "action": "approvals.file",
+      "caller": "a-chat",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "approvals.file",
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "heading": "Pick a store",
+                "project": "/code/app"
+              },
+              "requestId": "m-file",
+              "startedSessionId": null,
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "not_a_giga",
+              "hint": "Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: a Mono messages its Giga with messages.send, and a lead or worker reports to its lead or Mono.",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
+      "input": {
+        "heading": "Pick a store",
+        "project": "/code/app"
+      },
+      "name": "Giga row: a Mono's approvals.file",
+      "ran": null,
+      "requestId": "m-file"
+    },
+    {
+      "action": "approvals.withdraw",
+      "caller": "lead",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "approvals.withdraw",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": null,
+                "sessionId": "lead",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "id": "00000000-0000-4000-8000-000000000001"
+              },
+              "requestId": "l-withdraw",
+              "startedSessionId": null,
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "not_a_giga",
+              "hint": "Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: a Mono messages its Giga with messages.send, and a lead or worker reports to its lead or Mono.",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
+      "input": {
+        "id": "00000000-0000-4000-8000-000000000001"
+      },
+      "name": "Giga row: a lead's approvals.withdraw",
+      "ran": null,
+      "requestId": "l-withdraw"
+    },
+    {
       "action": "models.list",
       "caller": "worker",
       "calls": [
@@ -2403,6 +2563,123 @@
       "requestId": "w-milestones-reorder"
     },
     {
+      "action": "approvals.file",
+      "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "approvals.file",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-approvals-file",
+              "startedSessionId": null,
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "not_a_giga",
+              "hint": "Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: message your lead (lead) with messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
+      "input": {},
+      "name": "Giga row: a worker's approvals.file",
+      "ran": null,
+      "requestId": "w-approvals-file"
+    },
+    {
+      "action": "approvals.update",
+      "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "approvals.update",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-approvals-update",
+              "startedSessionId": null,
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "not_a_giga",
+              "hint": "Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: message your lead (lead) with messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
+      "input": {},
+      "name": "Giga row: a worker's approvals.update",
+      "ran": null,
+      "requestId": "w-approvals-update"
+    },
+    {
+      "action": "approvals.withdraw",
+      "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "approvals.withdraw",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "leadSessionId": "lead",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {},
+              "requestId": "w-approvals-withdraw",
+              "startedSessionId": null,
+              "target": null,
+              "targetLeadSessionId": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "not_a_giga",
+              "hint": "Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: message your lead (lead) with messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
+      "input": {},
+      "name": "Giga row: a worker's approvals.withdraw",
+      "ran": null,
+      "requestId": "w-approvals-withdraw"
+    },
+    {
       "action": "workspace.status",
       "caller": "worker",
       "calls": [
@@ -2487,7 +2764,14 @@
       "projects": [
         "/code/app"
       ],
+      "role": "mono",
       "sessionId": "a-chat"
+    },
+    {
+      "id": "giga-g",
+      "projects": [],
+      "role": "giga",
+      "sessionId": "g-chat"
     }
   ],
   "sessions": [
@@ -2514,6 +2798,18 @@
       "id": "ghost",
       "leadSessionId": "lead",
       "saved": false
+    },
+    {
+      "cwd": "/Users/me",
+      "id": "g-chat",
+      "leadSessionId": null,
+      "saved": true
+    },
+    {
+      "cwd": "/Users/me",
+      "id": "g-run",
+      "leadSessionId": null,
+      "saved": true
     }
   ]
 }

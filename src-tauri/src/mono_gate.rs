@@ -824,6 +824,7 @@ impl RejectCode {
             RejectCode::SteerViaLead => "That session is a worker of a lead session. Message the lead; only its lead steers its workers.",
             RejectCode::SessionCannotWait => "A lead or worker session cannot wait for an answer. Send with wanting_reply false. The recipient answers with a new message if it needs to.",
             RejectCode::LeadScope => "A lead acts only on its own workers. Start workers with sessions.start, steer or stop only sessions you started, and report to your Mono with messages.send.",
+            RejectCode::NotAGiga => "Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: a Mono messages its Giga with messages.send, and a lead or worker reports to its lead or Mono.",
         }
     }
 
@@ -966,6 +967,9 @@ fn with_lead(code: RejectCode, lead: &SessionId) -> String {
         ),
         RejectCode::TargetGone => format!(
             "Your lead ({lead}) is archived or no longer exists. It cannot get messages until the user restores it. Use a new request id when you retry."
+        ),
+        RejectCode::NotAGiga => format!(
+            r#"Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: message your lead ({lead}) with messages.send with send_to "{lead}"."#
         ),
         _ => code.hint().into(),
     }
@@ -1512,6 +1516,9 @@ pub struct ActionFacts {
     /// A session caller's level (stored row wins); `None` for a Mono chat or
     /// habit run.
     pub caller_level: Option<SessionLevel>,
+    /// The caller Mono's `monos.role`; `None` for a session caller or a Mono
+    /// with no `monos` row.
+    pub caller_role: Option<MonoRole>,
     /// The level of the session the action's target names, when it names an
     /// existing session.
     pub target_level: Option<SessionLevel>,
@@ -1550,8 +1557,9 @@ pub enum ActionDecision {
 pub(crate) const START_ENDED: &str =
     "The session this request id started was archived or deleted. Use a new request id.";
 
-/// Design 6.6, rows A1, A2, A3, A4, A5, A8, A6, A7 in this order, for one
-/// app action other than `messages.*` whose `[action, input]` hashes to `hash`.
+/// Design 6.6, rows A1 and A2, then the Giga row for approvals.*, then A3,
+/// A4, A5, A8, A6, A7 in this order, for one app action other than
+/// `messages.*` whose `[action, input]` hashes to `hash`.
 pub fn decide_action(
     caller: &Caller,
     action: &str,
@@ -1587,6 +1595,13 @@ pub fn decide_action(
     }
     if facts.prior_start_ended {
         return refuse(START_ENDED);
+    }
+    if action.starts_with("approvals.") && facts.caller_role != Some(MonoRole::Giga) {
+        return ActionDecision::Reject {
+            code: RejectCode::NotAGiga,
+            hint: action_hint(RejectCode::NotAGiga, facts),
+            tool: Tool::AppAction,
+        };
     }
     let reject = |code: RejectCode, tool: Tool, lead: &SessionId| ActionDecision::Reject {
         code,
@@ -1644,13 +1659,13 @@ fn started_lead_may(action: &str, own_worker: bool) -> bool {
     }
 }
 
-/// The hint of a replayed A row, built again from its facts: a lead id only
-/// ever goes to NULL (design 13.2), so it names the same lead while the link
-/// stands.
+/// The hint of an A row from its facts, for the Giga row and again for a
+/// replay: a lead id only ever goes to NULL (design 13.2), so a replay names
+/// the same lead while the link stands.
 fn action_hint(code: RejectCode, facts: &ActionFacts) -> String {
     match (code, &facts.caller_level, &facts.target_level) {
         (
-            RejectCode::WorkerCannotSpawn | RejectCode::WorkerScope,
+            RejectCode::WorkerCannotSpawn | RejectCode::WorkerScope | RejectCode::NotAGiga,
             Some(SessionLevel::Worker { lead }),
             _,
         )
@@ -4605,6 +4620,7 @@ mod tests {
             &action_hash(action, &json!({})),
             &ActionFacts {
                 caller_level,
+                caller_role: None,
                 target_level,
                 prior: None,
                 prior_start_ended: false,
@@ -5043,6 +5059,7 @@ mod tests {
         };
         let facts = |level: SessionLevel, prior: MonoMessage, ended: bool| ActionFacts {
             caller_level: Some(level),
+            caller_role: None,
             target_level: None,
             prior: Some(prior),
             prior_start_ended: ended,
@@ -5118,6 +5135,7 @@ mod tests {
                 &steer_hash,
                 &ActionFacts {
                     caller_level: None,
+                    caller_role: None,
                     target_level: Some(worker_of("l1")),
                     prior: Some(steer.clone()),
                     prior_start_ended: false,
@@ -5140,6 +5158,7 @@ mod tests {
         let hash = action_hash("sessions.start", &json!({"prompt": "Build it"}));
         let facts = |prior: Option<MonoMessage>, ended: bool| ActionFacts {
             caller_level: None,
+            caller_role: None,
             target_level: None,
             prior,
             prior_start_ended: ended,

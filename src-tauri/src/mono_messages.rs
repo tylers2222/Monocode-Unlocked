@@ -447,6 +447,7 @@ text_enum!(all RejectCode {
     SteerViaLead = "steer_via_lead",
     SessionCannotWait = "session_cannot_wait",
     LeadScope = "lead_scope",
+    NotAGiga = "not_a_giga",
 });
 
 /// A text value the table stores as is, built only through `parse`.
@@ -2966,6 +2967,10 @@ pub fn check_action(
                 &caller.session_id,
                 lead_session_id.clone(),
             )?),
+        },
+        caller_role: match &caller.speaker {
+            Speaker::Mono { mono_id, .. } => mono_row(&tx, mono_id)?.map(|row| row.role),
+            Speaker::Session { .. } => None,
         },
         target_level: target_id
             .as_ref()
@@ -10328,7 +10333,8 @@ pub(crate) mod tests {
     // comparing, and drops the calls after a refusal. Defect: a command reads
     // another argument name, shape or lead copy than the web app sends,
     // answers in a shape or with a code, hint, lead id or message id the web
-    // app does not expect, or a repeated start writes a second row.
+    // app does not expect, a repeated start writes a second row, or the Giga
+    // row reads another role than the caller's `monos` row.
     #[test]
     #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
     fn mono_app_action_check_answers_every_call_the_web_app_sends() {
@@ -10346,6 +10352,7 @@ pub(crate) mod tests {
             .filter(|row| row["saved"] == true)
             .cloned()
             .collect();
+        let monos = fixture["monos"].as_array().unwrap().clone();
         for case in fixture["cases"].as_array_mut().unwrap() {
             let store = messaging_store();
             for row in &saved {
@@ -10361,6 +10368,23 @@ pub(crate) mod tests {
                             row["cwd"].as_str(),
                             row["leadSessionId"].as_str()
                         ],
+                    )
+                    .unwrap();
+            }
+            for mono in &monos {
+                let data = serde_json::json!({
+                    "sessionId": mono["sessionId"],
+                    "projects": mono["projects"]
+                })
+                .to_string();
+                store
+                    .lock_conn()
+                    .unwrap()
+                    .execute(
+                        "INSERT OR REPLACE INTO monos (id, name, role, data_json, sort_order,
+                           created_at, updated_at)
+                         VALUES (?1, ?1, ?2, ?3, 0, 1, 1)",
+                        params![mono["id"].as_str(), mono["role"].as_str(), data],
                     )
                     .unwrap();
             }
@@ -10445,5 +10469,56 @@ pub(crate) mod tests {
         if write {
             std::fs::write(path, serde_json::to_string_pretty(&fixture).unwrap() + "\n").unwrap();
         }
+    }
+
+    // Defect: the gate takes the role from anywhere but the caller's monos
+    // row, so it refuses the real Giga or lets a real Mono file without a
+    // rejected row.
+    #[test]
+    #[ignore = "needs MONOCODE_DB_COPY, a fresh copy of the app's monocode.db"]
+    fn gate_on_a_copy_of_the_app_database() {
+        let store = SessionStore::open(std::env::var("MONOCODE_DB_COPY").unwrap().into()).unwrap();
+        let run = uuid::Uuid::new_v4().simple().to_string();
+        let check = |role: &str| {
+            let (mono, data): (String, String) = store
+                .lock_conn()
+                .unwrap()
+                .query_row(
+                    "SELECT id, data_json FROM monos
+                     WHERE role = ?1 AND json_extract(data_json, '$.sessionId') IS NOT NULL
+                     ORDER BY sort_order, id LIMIT 1",
+                    [role],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            let data: Value = serde_json::from_str(&data).unwrap();
+            let call: AppActionCall = serde_json::from_value(serde_json::json!({
+                "caller": {"kind": "mono_chat", "monoId": mono, "sessionId": data["sessionId"], "turnId": "t"},
+                "action": "approvals.file",
+                "target": null,
+                "targetLeadSessionId": null,
+                "startedSessionId": null,
+                "requestId": format!("{run}-{role}"),
+                "input": {"heading": "Pick a store"}
+            }))
+            .unwrap();
+            serde_json::to_value(call.check(&store, now_ms()).unwrap()).unwrap()
+        };
+        assert_eq!(
+            check("giga"),
+            serde_json::json!({"outcome": "allowed", "leadSessionId": null})
+        );
+        let refused = check("mono");
+        assert_eq!(refused["error"]["code"], "not_a_giga", "{refused}");
+        let rows: Vec<(String, String)> = store
+            .lock_conn()
+            .unwrap()
+            .prepare("SELECT status, gate_result FROM mono_messages WHERE request_id LIKE ?1")
+            .unwrap()
+            .query_map([format!("{run}-%")], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, [("rejected".to_string(), "not_a_giga".to_string())]);
     }
 }
