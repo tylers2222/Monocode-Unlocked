@@ -1,11 +1,13 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
-use rusqlite::{Connection, Row};
+use rusqlite::types::Value as Sql;
+use rusqlite::{params, Connection, OptionalExtension, Row, ToSql};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tauri::State;
+use uuid::Uuid;
 
-use crate::milestones::check_project;
+use crate::milestones::{check_project, require};
 use crate::mono_messages::MonoId;
 use crate::session_store::SessionStore;
 
@@ -273,6 +275,205 @@ pub(crate) fn open_counts(conn: &Connection) -> Result<OpenCounts, String> {
         total: by_project.values().sum(),
         by_project,
     })
+}
+
+pub(crate) const UNKNOWN: &str = "unknown_approval";
+pub(crate) const NOT_YOURS: &str = "not_your_approval";
+pub(crate) const NOT_OPEN: &str = "approval_not_open";
+pub(crate) const HEADING_TAKEN: &str = "heading_taken";
+
+const HEADING_MAX: usize = 200;
+const TEXT_MAX: usize = 8000;
+const LABEL_MAX: usize = 200;
+
+fn check_text(field: &str, value: &str, max: usize) -> Result<String, String> {
+    let value = value.trim();
+    let length = value.chars().count();
+    require(
+        (1..=max).contains(&length),
+        &format!("{field} must be 1 to {max} characters"),
+    )?;
+    Ok(value.to_string())
+}
+
+fn check_optional(field: &str, value: Option<String>) -> Result<Option<String>, String> {
+    value
+        .map(|value| check_text(field, &value, LABEL_MAX))
+        .transpose()
+}
+
+fn check_each(field: &str, values: &[String]) -> Result<Vec<String>, String> {
+    values
+        .iter()
+        .map(|value| check_text(field, value, TEXT_MAX))
+        .collect()
+}
+
+fn to_json<T: Serialize>(value: &T) -> String {
+    serde_json::to_string(value).expect("plain data serializes")
+}
+
+type Named<'a> = Vec<(&'a str, &'a dyn ToSql)>;
+
+impl Card {
+    fn into_columns(self) -> Result<[(&'static str, Sql); 7], String> {
+        let options = self
+            .options
+            .into_iter()
+            .map(|option| {
+                Ok(ApprovalOption {
+                    label: check_text("option label", &option.label, LABEL_MAX)?,
+                    description: check_optional("option description", option.description)?,
+                    recommended: option.recommended,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let labels: HashSet<&str> = options.iter().map(|option| option.label.as_str()).collect();
+        require(labels.len() == options.len(), "option labels must differ")?;
+        let links = self
+            .links
+            .into_iter()
+            .map(|link| {
+                require(link.url.starts_with("https://"), "links must be https URLs")?;
+                Ok(Link {
+                    title: check_optional("link title", link.title)?,
+                    ..link
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let tradeoffs = Tradeoffs {
+            pros: check_each("pro", &self.tradeoffs.pros)?,
+            cons: check_each("con", &self.tradeoffs.cons)?,
+        };
+        require(
+            !(tradeoffs.pros.is_empty() && tradeoffs.cons.is_empty()),
+            "tradeoffs need at least one pro or con",
+        )?;
+        Ok([
+            (
+                ":heading",
+                check_text("heading", &self.heading, HEADING_MAX)?.into(),
+            ),
+            (
+                ":summary",
+                check_text("summary", &self.summary, TEXT_MAX)?.into(),
+            ),
+            (":tradeoffs", to_json(&tradeoffs).into()),
+            (":options", to_json(&options).into()),
+            (":urgency", self.urgency.as_str().to_string().into()),
+            (":links", to_json(&links).into()),
+            (":origin", check_optional("origin", self.origin)?.into()),
+        ])
+    }
+}
+
+fn named<'a>(columns: &'a [(&'static str, Sql)], more: Named<'a>) -> Named<'a> {
+    let card = columns
+        .iter()
+        .map(|(name, value)| (*name, value as &dyn ToSql));
+    more.into_iter().chain(card).collect()
+}
+
+pub(crate) fn get(conn: &Connection, id: &str) -> Result<Approval, String> {
+    conn.query_row(
+        &format!("SELECT {COLUMNS} FROM approvals WHERE id = ?1"),
+        [id],
+        row_to_approval,
+    )
+    .optional()
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| UNKNOWN.to_string())
+}
+
+/// Inserts a card, or rewrites the open card `by` filed with the same project
+/// and heading. Another Giga's open card with that heading is `heading_taken`.
+/// The card keeps a copy of the Giga's name for when the Giga is deleted.
+pub(crate) fn file(
+    conn: &Connection,
+    project: &str,
+    by: &MonoId,
+    card: Card,
+    now: i64,
+) -> Result<Approval, String> {
+    check_project(project)?;
+    let columns = card.into_columns()?;
+    let id = Uuid::new_v4().to_string();
+    let filed: Option<String> = conn
+        .query_row(
+            "INSERT INTO approvals (id, project_path, heading, summary, tradeoffs, options,
+               urgency, links, origin, requested_by, requested_by_name, created_at, status)
+             VALUES (:id, :project, :heading, :summary, :tradeoffs, :options,
+               :urgency, :links, :origin, :by, (SELECT name FROM monos WHERE id = :by),
+               :now, 'open')
+             ON CONFLICT (project_path, heading) WHERE status = 'open' DO UPDATE SET
+               summary = excluded.summary, tradeoffs = excluded.tradeoffs,
+               options = excluded.options, urgency = excluded.urgency,
+               links = excluded.links, origin = excluded.origin
+             WHERE approvals.requested_by = excluded.requested_by
+             RETURNING id",
+            &*named(
+                &columns,
+                vec![
+                    (":id", &id),
+                    (":project", &project),
+                    (":by", &by.as_str()),
+                    (":now", &now),
+                ],
+            ),
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    get(conn, &filed.ok_or(HEADING_TAKEN)?)
+}
+
+fn check_filed_by_and_open(conn: &Connection, id: &str, by: &MonoId) -> Result<(), String> {
+    let approval = get(conn, id)?;
+    if approval.requested_by.id.as_ref() != Some(by) {
+        return Err(NOT_YOURS.into());
+    }
+    if approval.status != Status::Open {
+        return Err(NOT_OPEN.into());
+    }
+    Ok(())
+}
+
+pub(crate) fn update(
+    conn: &Connection,
+    id: &str,
+    by: &MonoId,
+    card: Card,
+) -> Result<Approval, String> {
+    let columns = card.into_columns()?;
+    check_filed_by_and_open(conn, id, by)?;
+    conn.execute(
+        "UPDATE approvals SET heading = :heading, summary = :summary, tradeoffs = :tradeoffs,
+           options = :options, urgency = :urgency, links = :links, origin = :origin
+         WHERE id = :id",
+        &*named(&columns, vec![(":id", &id)]),
+    )
+    .map_err(|e| match e.sqlite_error() {
+        Some(error) if error.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE => {
+            HEADING_TAKEN.to_string()
+        }
+        _ => e.to_string(),
+    })?;
+    get(conn, id)
+}
+
+pub(crate) fn withdraw(
+    conn: &Connection,
+    id: &str,
+    by: &MonoId,
+    now: i64,
+) -> Result<Approval, String> {
+    check_filed_by_and_open(conn, id, by)?;
+    conn.execute(
+        "UPDATE approvals SET status = 'withdrawn', withdrawn_at = ?2 WHERE id = ?1",
+        params![id, now],
+    )
+    .map_err(|e| e.to_string())?;
+    get(conn, id)
 }
 
 #[tauri::command(async)]
@@ -698,5 +899,224 @@ mod tests {
             error.contains("NOT NULL constraint failed: approvals.requested_by_name"),
             "{error}"
         );
+    }
+
+    fn filer(conn: &Connection, id: &str) -> MonoId {
+        giga(conn, id, &format!("Giga {id}"));
+        MonoId::parse(id).unwrap()
+    }
+
+    fn card(heading: &str) -> Card {
+        Card {
+            heading: heading.into(),
+            summary: "Pick where approval cards live.".into(),
+            tradeoffs: Tradeoffs {
+                pros: vec!["Local and fast".into()],
+                cons: Vec::new(),
+            },
+            options: Vec::new(),
+            urgency: Urgency::Blocking,
+            links: Vec::new(),
+            origin: None,
+        }
+    }
+
+    fn with_options(heading: &str) -> Card {
+        let option = |label: &str, recommended| ApprovalOption {
+            label: label.into(),
+            description: Some(format!("Store cards in {label}.")),
+            recommended,
+        };
+        Card {
+            options: vec![option("SQLite", true), option("Server", false)],
+            urgency: Urgency::NotBlocking,
+            links: vec![Link {
+                kind: LinkKind::Pr,
+                title: Some("PR #1".into()),
+                url: "https://github.com/tylers2222/Monocode-Unlocked/pull/1".into(),
+            }],
+            origin: Some("MonoCode Fork Orchestrator".into()),
+            ..card(heading)
+        }
+    }
+
+    fn statuses(conn: &Connection, project: &str) -> Vec<(String, &'static str)> {
+        list(conn, project)
+            .unwrap()
+            .into_iter()
+            .map(|approval| {
+                let status = match approval.status {
+                    Status::Open => "open",
+                    Status::Withdrawn { .. } => "withdrawn",
+                    Status::Decided(decision) => decision.verdict.as_str(),
+                };
+                (approval.id, status)
+            })
+            .collect()
+    }
+
+    // Defects: a second filing makes a duplicate, keeps a field of the first
+    // filing, rewrites created_at, or reopens a withdrawn card; or
+    // the card does not keep the filing Giga's name.
+    #[test]
+    fn filing_an_open_heading_again_updates_that_card_and_a_closed_one_starts_anew() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let a = filer(&conn, "giga-a");
+        let first = file(&conn, PROJECT, &a, card("Ship it"), 1).unwrap();
+        assert_eq!(
+            first.requested_by,
+            Filer {
+                id: Some(a.clone()),
+                name: "Giga giga-a".into()
+            }
+        );
+        let resend = Card {
+            heading: "  Ship it ".into(),
+            summary: "Now with numbers.".into(),
+            tradeoffs: Tradeoffs {
+                pros: vec![" One store ".into()],
+                cons: vec!["Slower".into()],
+            },
+            ..with_options("unused")
+        };
+        let again = file(&conn, PROJECT, &a, resend, 2).unwrap();
+        assert_eq!(again.id, first.id, "the open card is updated");
+        assert_eq!(
+            again.card,
+            Card {
+                heading: "Ship it".into(),
+                summary: "Now with numbers.".into(),
+                tradeoffs: Tradeoffs {
+                    pros: vec!["One store".into()],
+                    cons: vec!["Slower".into()],
+                },
+                ..with_options("unused")
+            }
+        );
+        assert_eq!((again.number, again.created_at), (first.number, 1));
+        assert_eq!(list(&conn, PROJECT).unwrap(), vec![again]);
+        let elsewhere = file(&conn, OTHER, &a, card("Ship it"), 3).unwrap();
+        assert_ne!(elsewhere.id, first.id, "another project gets its own card");
+
+        withdraw(&conn, &first.id, &a, 4).unwrap();
+        let refiled = file(&conn, PROJECT, &a, card("Ship it"), 5).unwrap();
+        withdraw(&conn, &refiled.id, &a, 6).unwrap();
+        let after_withdraw = file(&conn, PROJECT, &a, card("Ship it"), 7).unwrap();
+        assert_eq!(
+            statuses(&conn, PROJECT),
+            [
+                (after_withdraw.id, "open"),
+                (refiled.id, "withdrawn"),
+                (first.id, "withdrawn")
+            ]
+        );
+    }
+
+    // Defects: another Giga's call changes, withdraws or takes over the card,
+    // the filer can still change it once it is closed, or a withdrawn card
+    // has no time.
+    #[test]
+    fn another_giga_cannot_update_withdraw_or_take_over_a_card() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let a = filer(&conn, "giga-a");
+        let b = filer(&conn, "giga-b");
+        let mine = file(&conn, PROJECT, &a, card("Ship it"), 1).unwrap();
+        let theirs = Card {
+            summary: "Taken over.".into(),
+            ..card("Ship it")
+        };
+        assert_eq!(
+            update(&conn, &mine.id, &b, theirs.clone()),
+            Err(NOT_YOURS.into())
+        );
+        assert_eq!(withdraw(&conn, &mine.id, &b, 2), Err(NOT_YOURS.into()));
+        assert_eq!(
+            file(&conn, PROJECT, &b, theirs, 2),
+            Err(HEADING_TAKEN.into())
+        );
+        assert_eq!(
+            list(&conn, PROJECT).unwrap(),
+            vec![mine.clone()],
+            "A's card is unchanged"
+        );
+
+        let other = file(&conn, PROJECT, &b, card("Ship that"), 3).unwrap();
+        assert_eq!(
+            update(&conn, &other.id, &b, card("Ship it")),
+            Err(HEADING_TAKEN.into()),
+            "a rename cannot take another open card's heading"
+        );
+        let renamed = update(&conn, &mine.id, &a, card("Ship it now")).unwrap();
+        assert_eq!(renamed.card.heading, "Ship it now");
+        assert_eq!(renamed.requested_by.id, Some(a.clone()));
+        assert_eq!(
+            withdraw(&conn, &mine.id, &a, 4).unwrap().status,
+            Status::Withdrawn { withdrawn_at: 4 }
+        );
+        assert_eq!(withdraw(&conn, &mine.id, &a, 5), Err(NOT_OPEN.into()));
+        assert_eq!(
+            update(&conn, &mine.id, &a, card("Again")),
+            Err(NOT_OPEN.into())
+        );
+    }
+
+    // Defects: a check in `Card::into_columns` is missing, so bad input is
+    // stored or fails as a raw CHECK error instead of `invalid_input`.
+    #[test]
+    fn bad_input_is_invalid_input_and_writes_nothing() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let a = filer(&conn, "giga-a");
+        let mut same_labels = with_options("Same labels");
+        same_labels.options[1].label = " SQLite ".into();
+        let mut blank_label = with_options("Blank label");
+        blank_label.options[0].label = " ".into();
+        let mut blank_description = with_options("Blank description");
+        blank_description.options[0].description = Some(" ".into());
+        let mut http = with_options("Plain http");
+        http.links[0].url = "http://example.com".into();
+        let mut blank_title = with_options("Blank title");
+        blank_title.links[0].title = Some(String::new());
+        let mut blank_pro = card("Blank pro");
+        blank_pro.tradeoffs.pros.push(" ".into());
+        let mut blank_con = card("Blank con");
+        blank_con.tradeoffs.cons.push(" ".into());
+        let mut no_tradeoffs = card("No tradeoffs");
+        no_tradeoffs.tradeoffs.pros.clear();
+        let cases = [
+            ("blank heading", card("  ")),
+            ("long heading", card(&"h".repeat(201))),
+            (
+                "blank summary",
+                Card {
+                    summary: "\n".into(),
+                    ..card("Blank summary")
+                },
+            ),
+            ("blank pro", blank_pro),
+            ("blank con", blank_con),
+            ("no pros or cons", no_tradeoffs),
+            (
+                "blank origin",
+                Card {
+                    origin: Some(" ".into()),
+                    ..card("Blank origin")
+                },
+            ),
+            ("same labels", same_labels),
+            ("blank label", blank_label),
+            ("blank description", blank_description),
+            ("http link", http),
+            ("blank link title", blank_title),
+        ];
+        for (case, bad) in cases {
+            let error = file(&conn, PROJECT, &a, bad, 1).unwrap_err();
+            assert!(error.starts_with("invalid_input"), "{case}: {error}");
+        }
+        let error = file(&conn, "/Users/test/orbit/", &a, card("Trailing slash"), 1).unwrap_err();
+        assert!(error.starts_with("invalid_input"), "{error}");
+        assert_eq!(list(&conn, PROJECT).unwrap(), []);
     }
 }
