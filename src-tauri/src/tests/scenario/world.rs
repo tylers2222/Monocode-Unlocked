@@ -6,7 +6,7 @@ use std::sync::MutexGuard;
 
 use rusqlite::Connection;
 
-use crate::active_clock::{self, ActiveClock, Clock};
+use crate::active_clock::{self, ActiveClock, Clock, Reading};
 use crate::mono_messages::{self, SessionId, Targeted};
 use crate::session_store::SessionStore;
 
@@ -71,20 +71,13 @@ fn ns(ms: i64) -> u64 {
 }
 
 impl Clock for FakeClock {
-    fn uptime_ns(&self) -> u64 {
-        self.0.uptime_ns.get()
-    }
-
-    fn monotonic_ns(&self) -> u64 {
-        self.0.monotonic_ns.get()
-    }
-
-    fn wall_ms(&self) -> i64 {
-        self.0.wall_ms.get()
-    }
-
-    fn boot_wall_ms(&self) -> i64 {
-        self.0.boot_wall_ms.get()
+    fn now(&mut self) -> Reading {
+        Reading {
+            uptime_ns: self.0.uptime_ns.get(),
+            monotonic_ns: self.0.monotonic_ns.get(),
+            wall_ms: self.0.wall_ms.get(),
+            boot_wall_ms: self.0.boot_wall_ms.get(),
+        }
     }
 }
 
@@ -156,7 +149,7 @@ impl World {
 
     /// The wall time every call is made at.
     pub(crate) fn now(&self) -> i64 {
-        self.clock.wall_ms()
+        self.clock.0.wall_ms.get()
     }
 
     /// `ms` of awake time pass while the app runs; its clock thread ticks

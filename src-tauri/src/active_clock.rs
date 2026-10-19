@@ -20,13 +20,18 @@ use crate::session_store::SessionStore;
 /// sleeps and `monotonic_ns` does not; both restart at boot. `boot_wall_ms`
 /// is the wall time the computer booted.
 pub trait Clock {
-    /// Takes the reading the next calls answer from, once per launch and
-    /// tick. The system clock reads each value live.
-    fn sample(&mut self) {}
-    fn uptime_ns(&self) -> u64;
-    fn monotonic_ns(&self) -> u64;
-    fn wall_ms(&self) -> i64;
-    fn boot_wall_ms(&self) -> i64;
+    /// All four clocks at one instant, so a launch or a tick never mixes
+    /// values from two readings.
+    fn now(&mut self) -> Reading;
+}
+
+/// One reading of the computer's clocks.
+#[derive(Debug, Clone, Copy)]
+pub struct Reading {
+    pub uptime_ns: u64,
+    pub monotonic_ns: u64,
+    pub wall_ms: i64,
+    pub boot_wall_ms: i64,
 }
 
 /// How often the app's thread ticks.
@@ -75,9 +80,8 @@ impl<C: Clock> ActiveClock<C> {
     /// the row's last write adds nothing and is logged as `reboot` (the
     /// computer booted after that write) or `app_down`.
     fn launch(lease: Lease, conn: &Connection, mut clock: C) -> rusqlite::Result<Self> {
-        clock.sample();
-        let wall = clock.wall_ms();
-        let boot = clock.boot_wall_ms();
+        let now = clock.now();
+        let (wall, boot) = (now.wall_ms, now.boot_wall_ms);
         let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
         let stored: Option<(i64, i64)> = tx
             .query_row(
@@ -112,8 +116,8 @@ impl<C: Clock> ActiveClock<C> {
         let active_ns = u64::try_from(active_ms).unwrap_or(0) * NS_PER_MS;
         Ok(Self {
             _lease: lease,
-            uptime_ns: clock.uptime_ns(),
-            monotonic_ns: clock.monotonic_ns(),
+            uptime_ns: now.uptime_ns,
+            monotonic_ns: now.monotonic_ns,
             clock,
             active_ns,
             persisted_ns: active_ns,
@@ -124,9 +128,8 @@ impl<C: Clock> ActiveClock<C> {
     /// the monotonic clock moved further than uptime; writes the row every
     /// 5 s of active time and after a sleep.
     pub(crate) fn tick(&mut self, conn: &Connection) -> rusqlite::Result<()> {
-        self.clock.sample();
-        let uptime = self.clock.uptime_ns();
-        let monotonic = self.clock.monotonic_ns();
+        let now = self.clock.now();
+        let (uptime, monotonic) = (now.uptime_ns, now.monotonic_ns);
         let awake = uptime.saturating_sub(self.uptime_ns);
         let slept = monotonic
             .saturating_sub(self.monotonic_ns)
@@ -135,7 +138,7 @@ impl<C: Clock> ActiveClock<C> {
         self.monotonic_ns = monotonic;
         self.active_ns += awake.min(MAX_STEP_NS);
         if slept >= SLEEP_MIN_NS {
-            let wall = self.clock.wall_ms();
+            let wall = now.wall_ms;
             conn.execute(
                 "INSERT INTO mono_downtime (start_wall_ms, end_wall_ms, cause, active_ms)
                  VALUES (?1, ?2, 'sleep', ?3)",
@@ -145,7 +148,7 @@ impl<C: Clock> ActiveClock<C> {
         if slept >= SLEEP_MIN_NS || self.active_ns - self.persisted_ns >= PERSIST_EVERY_NS {
             conn.execute(
                 "UPDATE mono_clock SET active_ms = ?1, last_wall_ms = ?2 WHERE id = 1",
-                params![self.active_ms(), self.clock.wall_ms()],
+                params![self.active_ms(), now.wall_ms],
             )?;
             self.persisted_ns = self.active_ns;
         }
@@ -319,20 +322,13 @@ mod system {
 
 #[cfg(not(feature = "fake-clock"))]
 impl Clock for SystemClock {
-    fn uptime_ns(&self) -> u64 {
-        system::uptime_ns()
-    }
-
-    fn monotonic_ns(&self) -> u64 {
-        system::monotonic_ns()
-    }
-
-    fn wall_ms(&self) -> i64 {
-        crate::mono_messages::now_ms()
-    }
-
-    fn boot_wall_ms(&self) -> i64 {
-        system::boot_wall_ms()
+    fn now(&mut self) -> Reading {
+        Reading {
+            uptime_ns: system::uptime_ns(),
+            monotonic_ns: system::monotonic_ns(),
+            wall_ms: crate::mono_messages::now_ms(),
+            boot_wall_ms: system::boot_wall_ms(),
+        }
     }
 }
 
@@ -343,8 +339,11 @@ impl Clock for SystemClock {
 mod fake {
     use std::path::PathBuf;
 
+    use super::{Reading, NS_PER_MS};
+
+    /// `fake-clock.json`, in ms as the driver writes it.
     #[derive(serde::Deserialize)]
-    struct Reading {
+    struct File {
         uptime_ms: u64,
         monotonic_ms: u64,
         wall_ms: i64,
@@ -353,7 +352,7 @@ mod fake {
 
     pub(crate) struct FileClock {
         path: PathBuf,
-        now: Reading,
+        last: Reading,
     }
 
     impl FileClock {
@@ -361,43 +360,33 @@ mod fake {
         /// stops at launch instead of ticking on a default.
         pub(crate) fn open(path: PathBuf) -> Result<Self, String> {
             Ok(Self {
-                now: read(&path)?,
+                last: read(&path)?,
                 path,
             })
         }
     }
 
     fn read(path: &PathBuf) -> Result<Reading, String> {
-        std::fs::read(path)
+        let file: File = std::fs::read(path)
             .map_err(|error| error.to_string())
             .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
-            .map_err(|error| format!("fake clock {}: {error}", path.display()))
+            .map_err(|error| format!("fake clock {}: {error}", path.display()))?;
+        Ok(Reading {
+            uptime_ns: file.uptime_ms * NS_PER_MS,
+            monotonic_ns: file.monotonic_ms * NS_PER_MS,
+            wall_ms: file.wall_ms,
+            boot_wall_ms: file.boot_wall_ms,
+        })
     }
 
     impl super::Clock for FileClock {
-        /// One read per tick: the driver may write the file between two
-        /// reads, and uptime and monotonic from two writes look like a sleep.
-        fn sample(&mut self) {
+        /// The file once; a bad read keeps the last good reading.
+        fn now(&mut self) -> Reading {
             match read(&self.path) {
-                Ok(now) => self.now = now,
+                Ok(now) => self.last = now,
                 Err(error) => eprintln!("{error}"),
             }
-        }
-
-        fn uptime_ns(&self) -> u64 {
-            self.now.uptime_ms * super::NS_PER_MS
-        }
-
-        fn monotonic_ns(&self) -> u64 {
-            self.now.monotonic_ms * super::NS_PER_MS
-        }
-
-        fn wall_ms(&self) -> i64 {
-            self.now.wall_ms
-        }
-
-        fn boot_wall_ms(&self) -> i64 {
-            self.now.boot_wall_ms
+            self.last
         }
     }
 }

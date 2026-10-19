@@ -10,6 +10,14 @@
 export GIGA_EVAL_OUT="${GIGA_EVAL_OUT:-/tmp/scenario-app}"
 export GIGA_EVAL_HOME="${GIGA_EVAL_HOME:-/tmp/scenario-app-home}"
 SCENARIOS="$(cd "$(dirname "$0")" && pwd)"
+# Before any write, lib.sh's mkdir too: every file this script makes lives
+# under these two.
+for dir in "$GIGA_EVAL_HOME" "$GIGA_EVAL_OUT"; do
+  case "$dir" in
+    /tmp/?*|/private/tmp/?*) ;;
+    *) echo "GIGA_EVAL_HOME and GIGA_EVAL_OUT must be under /tmp, got $dir" >&2; exit 2 ;;
+  esac
+done
 source "$SCENARIOS/../giga-eval/lib.sh"
 INSTANCE="$EVAL_DIR/instance.sh"
 APP_DATA="$EVAL_HOME/Library/Application Support/$EVAL_ID"
@@ -24,15 +32,20 @@ q() {
   sqlite3 "file:$DB?mode=ro" ".backup '$copy'" && sqlite3 "$copy" "$1"
 }
 
-# wait_for <seconds> <query>: until the query prints something other than 0.
-wait_for() {
-  local _
-  for _ in $(seq 1 "$1"); do
-    [[ "$(q "$2" 2>/dev/null || echo 0)" =~ ^(0|)$ ]] || return 0
+# wait_until <seconds> <what> <command...>: until the command succeeds, or
+# the run stops with "timed out".
+wait_until() {
+  local secs="$1" what="$2" _
+  shift 2
+  for _ in $(seq 1 "$secs"); do
+    "$@" && return 0
     sleep 1
   done
-  die "timed out after $1 s: $2"
+  die "timed out after $secs s: $what"
 }
+
+# A query on the DB copy that prints 1.
+holds() { [[ "$(q "$1" 2>/dev/null)" == 1 ]]; }
 
 # clock <uptime_ms> <wall_ms>: one atomic write; monotonic moves with uptime
 # (no sleep) and boot time stays.
@@ -104,6 +117,7 @@ install_puppet() {
 }
 
 prompts() { jq -s --arg rule "$1" '[.[] | select(.rule == $rule)] | length' "$PUPPET/log.jsonl"; }
+saw() { (($(prompts "$1") > 0)); }
 
 run_s0() {
   local run="$1"
@@ -117,14 +131,15 @@ run_s0() {
   install_puppet
   # The first launch only creates and migrates the DB.
   "$INSTANCE" start
-  wait_for 30 "SELECT count(*) FROM mono_clock"
+  wait_until 30 "the first launch writes mono_clock" holds "SELECT count(*) = 1 FROM mono_clock"
   "$INSTANCE" stop
   local giga_chat mono_chat
   giga_chat="$(uuidgen | tr '[:upper:]' '[:lower:]')"; mono_chat="$(uuidgen | tr '[:upper:]' '[:lower:]')"
   seed "$giga_chat" "$mono_chat"
   "$INSTANCE" start
-  wait_for 90 "SELECT count(*) FROM mono_messages WHERE from_mono_id = 's0-mono'"
-  sleep 5
+  wait_until 90 "the ask and the answer are delivered" \
+    holds "SELECT count(*) = 2 FROM mono_messages WHERE delivered_at IS NOT NULL"
+  wait_until 30 "the Giga's puppet gets the answer" saw S0-A
   echo "run $run readings:"
   expect "messages written" "$(q "SELECT count(*) FROM mono_messages")" 2
   local a0 a1 a2 a3
@@ -135,7 +150,7 @@ run_s0() {
   kill9
   WALL=$((WALL + 30000)); clock_write "$UPTIME" "$WALL"
   "$INSTANCE" start
-  sleep 3
+  wait_until 30 "the restart logs app_down" holds "SELECT count(*) = 2 FROM mono_downtime WHERE cause = 'app_down'"
   a2="$(active_ms)"
   expect "active clock after kill -9 and restart" "$a2" "$a1"
   expect "app_down rows" "$(q "SELECT count(*) FROM mono_downtime WHERE cause = 'app_down'")" 2
@@ -157,9 +172,11 @@ run_s0() {
 
 case "${1:-}" in
   build) "$INSTANCE" build "${2:-$SCENARIOS/../..}" scenario ;;
+  # One run per process: a run called in `||` would run with errexit off.
+  s0-run) run_s0 "$2" ;;
   s0)
     failed=0
-    for run in $(seq 1 "${2:-1}"); do run_s0 "$run" || failed=$((failed + 1)); done
+    for run in $(seq 1 "${2:-1}"); do "$0" s0-run "$run" || failed=$((failed + 1)); done
     log "S0: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
   *) sed -n '2,9p' "$0"; exit 2 ;;

@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 // A puppet agent for scripts/scenarios/app.sh. Installed as $HOME/.local/bin/fx,
-// the first place the app looks for fx. The app takes a file named fx that
-// contains the text "fx acp" (harness.rs `is_fx_agent`), runs it as `fx acp`
-// and talks ACP over stdio. It runs no model. For each prompt it logs the prompt, runs
+// the first place the app looks for fx. It runs no model. For each prompt it logs the prompt, runs
 // the first rule of $HOME/.puppet/script.json whose `match` the prompt
 // contains, and ends the turn.
 //
@@ -22,6 +20,12 @@ const args = process.argv.slice(2);
 
 if (args[0] === "--version") {
   console.log("fx 0.0.1 (puppet)");
+  process.exit(0);
+}
+// harness.rs `is_fx_agent` takes a file named fx whose `--help` names `acp`
+// with `ask` (`fx_help_mentions_acp`); the app then runs it as `fx acp`.
+if (args[0] === "--help") {
+  console.log("fx acp: ask over the Agent Client Protocol (puppet)");
   process.exit(0);
 }
 if (args[0] !== "acp") process.exit(1);

@@ -81,3 +81,8 @@ jobs:
       - name: Clippy
         if: ${{ !cancelled() && steps.linux-deps.outcome == 'success' }}
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # The GigaEval build's clock (`instance.sh build`); default builds leave it out.
+      - name: Clippy (fake-clock)
+        if: ${{ !cancelled() && steps.linux-deps.outcome == 'success' }}
+        run: cargo clippy --workspace --all-targets --features fake-clock -- -D warnings
