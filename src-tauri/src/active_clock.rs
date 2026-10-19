@@ -298,8 +298,8 @@ mod system {
     }
 
     pub(super) fn monotonic_ns() -> u64 {
-        unsafe { GetTickCount64() }
-        *1_000_000
+        let ms = unsafe { GetTickCount64() };
+        ms * 1_000_000
     }
 
     pub(super) fn boot_wall_ms() -> i64 {
