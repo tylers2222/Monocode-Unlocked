@@ -246,6 +246,15 @@ fn copy_into_new_table(conn: &Connection, copy: &str) -> rusqlite::Result<()> {
 
 /// A closed set of SQL text values, serialized as that text.
 macro_rules! text_enum {
+    // `all`: also `ALL`, every variant, so a test can hold each one to a
+    // rule (control_cli `app_help_names_every_level_code`).
+    (all $name:ident { $($variant:ident = $text:literal),+ $(,)? }) => {
+        text_enum!($name { $($variant = $text),+ });
+        impl $name {
+            #[cfg(test)]
+            pub(crate) const ALL: &[Self] = &[$($name::$variant),+];
+        }
+    };
     ($(#[$meta:meta])* $name:ident { $($variant:ident = $text:literal),+ $(,)? }) => {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,7 +418,7 @@ text_enum!(
         Steer = "steer",
     }
 );
-text_enum!(RejectCode {
+text_enum!(all RejectCode {
     TooLarge = "too_large",
     UnknownTarget = "unknown_target",
     SelfSend = "self_send",
