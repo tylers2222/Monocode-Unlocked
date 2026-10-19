@@ -171,6 +171,56 @@ test("lane 7: an agent edits the row the editor has open; the page keeps the age
   await expect(row(page, TRACES.id)).toContainText("Agent note");
 });
 
+test("lane 7: an agent moves the open row to another group; the typed text stays", async ({
+  app,
+  page,
+}) => {
+  await openPage(app, page);
+  await row(page, VOICE.id).click();
+  await editor(page).getByLabel("Title").fill("Voice notes (typed)");
+  await editor(page).getByLabel("Note").fill("My unsaved note");
+  await page.evaluate(
+    ({ id, event, project }) => {
+      window.appBackend!.store.milestones.find((m) => m.id === id)!.status =
+        "planned";
+      return window.appBackend!.emit(event, { projectPath: project });
+    },
+    { id: VOICE.id, event: CHANGED, project: ORBIT },
+  );
+  const moved = group(page, "Planned").locator("[data-milestone-editor]");
+  await expect(moved.getByLabel("Title")).toHaveValue("Voice notes (typed)");
+  await expect(moved.getByLabel("Note")).toHaveValue("My unsaved note");
+  await moved.getByRole("button", { name: "Save" }).click();
+  expect(await stored(page, VOICE.id)).toMatchObject({
+    title: "Voice notes (typed)",
+    note: "My unsaved note",
+    status: "planned",
+  });
+});
+
+test("lane 7: hiding and showing Done while a Done row is open keeps the typed text", async ({
+  app,
+  page,
+}) => {
+  await openPage(app, page);
+  await page.evaluate(
+    ({ id, event, project }) => {
+      window.appBackend!.store.milestones.find((m) => m.id === id)!.status =
+        "done";
+      return window.appBackend!.emit(event, { projectPath: project });
+    },
+    { id: TRACES.id, event: CHANGED, project: ORBIT },
+  );
+  await group(page, "Done").locator(`[data-milestone="${TRACES.id}"]`).click();
+  await editor(page).getByLabel("Note").fill("Typed then collapsed");
+  await page.getByRole("button", { name: "Hide Done" }).click();
+  await expect(editor(page)).toHaveCount(0);
+  await page.getByRole("button", { name: "Show Done" }).click();
+  await expect(editor(page).getByLabel("Note")).toHaveValue(
+    "Typed then collapsed",
+  );
+});
+
 test("lane 9: an invalid date is refused in the editor with an inline error and no write", async ({
   app,
   page,

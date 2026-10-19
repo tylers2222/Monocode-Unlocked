@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent, type ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { Calendar } from "../../../shared/ui/icons";
 import { checkDraft, draftOf, patchOf, type Draft } from "../model/draft";
 import {
@@ -9,13 +9,11 @@ import {
 import { ROW_DOT } from "./MilestoneTimeline";
 import { STATUS_LABELS } from "./timeline";
 
-type Props = {
-  milestone: Milestone;
-  onUpdate: (id: string, patch: MilestonePatch) => Promise<void>;
-  onClose: () => void;
-};
-
-type EditorState = {
+/**
+ * The open editor. The page holds it, not the card: the card remounts when
+ * its row moves to another group or Done collapses, and the text must stay.
+ */
+export type EditorState = {
   /** The row as it opened, so a save sends only what the user changed. */
   opened: Milestone;
   draft: Draft;
@@ -25,6 +23,23 @@ type EditorState = {
   failure: string | null;
 };
 
+export function openEditor(milestone: Milestone): EditorState {
+  return {
+    opened: milestone,
+    draft: draftOf(milestone),
+    tried: false,
+    busy: false,
+    failure: null,
+  };
+}
+
+type Props = {
+  state: EditorState;
+  setState: (update: (current: EditorState) => EditorState) => void;
+  onUpdate: (id: string, patch: MilestonePatch) => Promise<void>;
+  onClose: () => void;
+};
+
 const ACTION =
   "inline-flex h-6.5 items-center gap-1.5 rounded-md px-3 text-[12px] disabled:opacity-40";
 const SEGMENTS = "inline-flex rounded-md bg-content/5 p-0.5";
@@ -32,15 +47,8 @@ const SEGMENT =
   "inline-flex h-6 items-center gap-1.5 rounded px-2 text-[12px] text-content/60 hover:text-content aria-checked:bg-content/12 aria-checked:text-content";
 
 /** The edit-in-place card of approved frame M·6. */
-export function MilestoneEditor({ milestone, onUpdate, onClose }: Props) {
-  const [state, setState] = useState<EditorState>(() => ({
-    opened: milestone,
-    draft: draftOf(milestone),
-    tried: false,
-    busy: false,
-    failure: null,
-  }));
-  const { draft, tried, busy, failure } = state;
+export function MilestoneEditor({ state, setState, onUpdate, onClose }: Props) {
+  const { opened: milestone, draft, tried, busy, failure } = state;
   const checked = checkDraft(draft);
   const errors = tried && !checked.ok ? checked.errors : {};
   const edit = (change: Partial<Draft>) =>
@@ -57,7 +65,7 @@ export function MilestoneEditor({ milestone, onUpdate, onClose }: Props) {
     }
     setState((current) => ({ ...current, busy: true, failure: null }));
     try {
-      await onUpdate(milestone.id, patchOf(state.opened, checked.value));
+      await onUpdate(milestone.id, patchOf(milestone, checked.value));
       onClose();
     } catch (reason) {
       setState((current) => ({

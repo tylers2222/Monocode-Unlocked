@@ -20,23 +20,19 @@ export function draftOf(milestone: Milestone): Draft {
   };
 }
 
-/** A saveable milestone; `target` is `""` for Later. */
-export type Checked = {
-  title: string;
-  note: string;
-  status: MilestoneStatus;
-  target: string;
-};
+/** A saveable milestone; `target` is null for Later, as `Milestone` has it. */
+type Checked = Pick<Milestone, "title" | "note" | "status" | "target">;
 
-export type DraftErrors = { title?: string; date?: string };
+type DraftErrors = { title?: string; date?: string };
 
 export function checkDraft(
   draft: Draft,
 ): { ok: true; value: Checked } | { ok: false; errors: DraftErrors } {
   const title = draft.title.trim();
   const target =
-    draft.target.kind === "later" ? "" : parseDay(draft.target.text);
-  if (target !== null && title)
+    draft.target.kind === "later" ? null : parseDay(draft.target.text);
+  const badDate = draft.target.kind === "date" && target === null;
+  if (!badDate && title)
     return {
       ok: true,
       value: { title, note: draft.note.trim(), status: draft.status, target },
@@ -45,7 +41,7 @@ export function checkDraft(
     ok: false,
     errors: {
       ...(title ? {} : { title: "Add a title" }),
-      ...(target === null
+      ...(badDate
         ? { date: "Use a date like Dec 12, 2026 or 2026-12-12" }
         : {}),
     },

@@ -115,10 +115,14 @@ async function type(label: string, value: string) {
   });
 }
 
-async function key(element: Element, name: string) {
+async function key(
+  element: Element,
+  name: string,
+  init: KeyboardEventInit = {},
+) {
   await act(async () => {
     element.dispatchEvent(
-      new KeyboardEvent("keydown", { key: name, bubbles: true }),
+      new KeyboardEvent("keydown", { key: name, bubbles: true, ...init }),
     );
   });
 }
@@ -127,6 +131,32 @@ const update = (patch: object) => [
   "milestones_update",
   { projectPath: APP, id: "m-ship", patch, by: "user" },
 ];
+
+it("Enter in the title saves", async () => {
+  await openShip();
+  await type("Title", "Ship the harness");
+  await key(field("Title"), "Enter");
+
+  expect(writes()).toEqual([update({ title: "Ship the harness" })]);
+  expect(container.querySelector("[data-milestone-editor]")).toBeNull();
+});
+
+it("a second ⌘↵ while the save is in flight sends nothing more", async () => {
+  const pending = Promise.withResolvers<Milestone>();
+  invoke.mockImplementation(async (command: string) =>
+    command === "milestones_update"
+      ? pending.promise
+      : { settings: { enabled: true, hiddenStatuses: [] }, milestones: rows },
+  );
+  await openShip();
+  await type("Note", "Once");
+  await key(field("Note"), "Enter", { metaKey: true });
+  await key(field("Note"), "Enter", { metaKey: true });
+
+  expect(writes()).toEqual([update({ note: "Once" })]);
+  await act(async () => pending.resolve(SHIP));
+  expect(container.querySelector("[data-milestone-editor]")).toBeNull();
+});
 
 it("edit sends only the title and note the user changed, as user", async () => {
   await openShip();

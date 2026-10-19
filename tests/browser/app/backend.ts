@@ -383,7 +383,12 @@ const HANDLERS: Record<string, Handler> = {
     const day = /^\d{4}-\d{2}-\d{2}$/.test(next.target ?? "")
       ? new Date(`${next.target}T00:00:00Z`)
       : null;
-    if (next.target !== null && day?.toISOString().slice(0, 10) !== next.target)
+    if (
+      next.target !== null &&
+      (!day ||
+        Number.isNaN(day.getTime()) ||
+        day.toISOString().slice(0, 10) !== next.target)
+    )
       throw "invalid_input: target must be a real YYYY-MM-DD date";
     Object.assign(row, next, { title, updatedAt: Date.now() });
     void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath });

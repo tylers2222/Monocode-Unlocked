@@ -41,15 +41,15 @@ it("a bad date or a blank title is refused with an inline reason each", () => {
   expect(checkDraft(dated("12/11/2026"))).toMatchObject({ ok: false });
 });
 
-// Tyler edge 1: Later -> Date with an empty field is invalid; Later is "".
-it("Date with an empty field is invalid, and Later saves as an empty target", () => {
+// Tyler edge 1: Later -> Date with an empty field is invalid; Later is null.
+it("Date with an empty field is invalid, and Later saves as null", () => {
   expect(checkDraft(dated(""))).toEqual({
     ok: false,
     errors: { date: "Use a date like Dec 12, 2026 or 2026-12-12" },
   });
   expect(checkDraft({ ...dated(""), target: { kind: "later" } })).toEqual({
     ok: true,
-    value: { title: "Ship it", note: "Soon", status: "planned", target: "" },
+    value: { title: "Ship it", note: "Soon", status: "planned", target: null },
   });
 });
 
@@ -62,7 +62,7 @@ it("patchOf sends only the fields the user changed", () => {
     return patchOf(ROW, checked.value);
   };
   expect(save({ ...draftOf(ROW), target: { kind: "later" } })).toEqual({
-    target: "",
+    target: null,
   });
   expect(save({ ...draftOf(ROW), title: " New title " })).toEqual({
     title: "New title",

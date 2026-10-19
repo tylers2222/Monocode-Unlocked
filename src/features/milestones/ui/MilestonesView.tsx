@@ -34,7 +34,11 @@ import {
   type Milestone,
   type ProjectMilestones,
 } from "../model/milestones";
-import { MilestoneEditor } from "./MilestoneEditor";
+import {
+  MilestoneEditor,
+  openEditor,
+  type EditorState,
+} from "./MilestoneEditor";
 import { MilestoneTimeline, type CreatorLook } from "./MilestoneTimeline";
 import {
   STATUS_LABELS,
@@ -147,8 +151,8 @@ function MilestonesContent({
   );
   const [query, setQuery] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
-  /** The row whose editor is open. */
-  const [openId, setOpenId] = useState<string | null>(null);
+  /** The open editor: which row, and what the user typed so far. */
+  const [editing, setEditing] = useState<EditorState | null>(null);
   const listsRef = useRef(lists);
   const requests = useRef(new Map<string, number>());
   const timers = useRef(new Set<number>());
@@ -219,7 +223,6 @@ function MilestonesContent({
   const data = selected ? lists[selected] : undefined;
   const heading = selected ? look(selected, "size-[18px]") : null;
   const error = selected ? errors[selected] : undefined;
-  const opened = data?.milestones.find((row) => row.id === openId);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 text-content">
@@ -247,7 +250,7 @@ function MilestonesContent({
                   aria-current={path === selected ? "true" : undefined}
                   onClick={() => {
                     setSelected(path);
-                    setOpenId(null);
+                    setEditing(null);
                   }}
                   className={`flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] font-medium ${
                     path === selected
@@ -297,24 +300,31 @@ function MilestonesContent({
                 highlightIds={highlightIds}
                 lookUpCreator={lookUpCreator}
                 open={
-                  opened && selected
+                  editing && selected
                     ? {
-                        id: opened.id,
+                        id: editing.opened.id,
                         editor: (
                           <MilestoneEditor
-                            key={opened.id}
-                            milestone={opened}
+                            state={editing}
+                            setState={(change) =>
+                              setEditing(
+                                (current) => current && change(current),
+                              )
+                            }
                             onUpdate={async (id, patch) => {
                               await update(selected, id, patch, "user");
                               await load(selected);
                             }}
-                            onClose={() => setOpenId(null)}
+                            onClose={() => setEditing(null)}
                           />
                         ),
                       }
                     : undefined
                 }
-                onOpen={setOpenId}
+                onOpen={(id) => {
+                  const row = data.milestones.find((m) => m.id === id);
+                  if (row) setEditing(openEditor(row));
+                }}
               />
             ) : (
               <div className="grid flex-1 place-items-center px-8 pb-24">

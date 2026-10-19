@@ -53,7 +53,7 @@ export type NewMilestone = {
   target?: string | null;
 };
 
-/** Absent fields stay as they are; `target: ""` or null clears the date. */
+/** Absent fields stay as they are; `target: null` clears the date. */
 export type MilestonePatch = Partial<NewMilestone>;
 
 export function list(project: string): Promise<ProjectMilestones> {
@@ -82,8 +82,7 @@ export function update(
   return invoke("milestones_update", {
     projectPath: normalizeProjectPath(project),
     id,
-    // Rust stores Later as NULL only, so "" never reaches it.
-    patch: patch.target === "" ? { ...patch, target: null } : patch,
+    patch,
     by,
   });
 }
