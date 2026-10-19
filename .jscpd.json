@@ -1,0 +1,7 @@
+{
+  "format": ["typescript", "tsx", "rust"],
+  "minTokens": 70,
+  "minLines": 8,
+  "ignore": ["**/node_modules/**", "**/target/**", "**/dist/**", "**/vendor/**", "**/*.test.ts", "**/*.test.tsx", "tests/**"],
+  "noTips": true
+}
