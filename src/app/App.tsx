@@ -862,6 +862,7 @@ import {
 } from "../features/sessions/model/inFlight";
 import {
   isBlankSession,
+  runningTurnStart,
   reconcileProjectReturn,
   type ProjectReturnMemory,
 } from "../features/projects/model/projectReturn";
@@ -4540,11 +4541,12 @@ function Workspace({
     return true;
   }, []);
 
+  /** Puts the session in a blank pane of the active tab; the tab's id, if any. */
   const replaceBlankPaneWithSession = useCallback((session: Session) => {
     const tab =
       tabsRef.current.find((entry) => entry.id === activeTabIdRef.current) ??
       tabsRef.current[0];
-    if (!tab) return false;
+    if (!tab) return undefined;
 
     const paneId = isBlankSession(
       sessionsRef.current.find((entry) => entry.id === tab.focusedId),
@@ -4553,7 +4555,7 @@ function Workspace({
       : leafIds(tab.layout).find((id) =>
           isBlankSession(sessionsRef.current.find((entry) => entry.id === id)),
         );
-    if (!paneId || paneId === session.id) return false;
+    if (!paneId || paneId === session.id) return undefined;
 
     lastPersisted.current.delete(paneId);
     {
@@ -4579,7 +4581,7 @@ function Workspace({
     );
     setActiveTabId(tab.id);
     setComposerFocused(true);
-    return true;
+    return tab.id;
   }, []);
 
   const invalidateLoadedSession = useCallback((sessionId: string) => {
@@ -5076,14 +5078,21 @@ function Workspace({
         if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
         return;
       }
-      if (replaceBlankPaneWithSession(session)) {
-        if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
-        return;
+      let tabId = replaceBlankPaneWithSession(session);
+      if (!tabId) {
+        const tab = newTab(session.id);
+        appendTab(tab, session.cwd);
+        setActiveTabId(tab.id);
+        setComposerFocused(true);
+        tabId = tab.id;
       }
-      const tab = newTab(session.id);
-      appendTab(tab, session.cwd);
-      setActiveTabId(tab.id);
-      setComposerFocused(true);
+      // A running session that had no tab opens in its own worktree, and the
+      // project focuses that worktree, as when a project opens to a running
+      // session's tab (useWorkspaceNavigation `drain`).
+      if (runningTurnStart(session.id, sessionsRef.current) !== undefined) {
+        workspacePins.current.set(tabId, sessionWorkCwd(session));
+        workspaceNavigation.selectProject(session.cwd);
+      }
       if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
     },
     [
@@ -5093,6 +5102,7 @@ function Workspace({
       focusOpenSession,
       replaceBlankPaneWithSession,
       revealLinkedSessionUpdate,
+      workspaceNavigation.selectProject,
     ],
   );
 

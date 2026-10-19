@@ -90,6 +90,35 @@ const handlers: MountOptions["handlers"] = {
   // search.rs: no file in these projects matches.
   search_project: () => ({ matches: [], truncated: false }),
   cancel_project_search: () => null,
+  // worktrees.rs list: each project's checkout and the worktrees its saved
+  // sessions work in, as git lists them for the real repositories.
+  git_worktrees: (store, { cwd }) => {
+    const tree = (path: string, isMain: boolean) => ({
+      path,
+      branch: isMain ? "main" : path.split("/").pop(),
+      head: "0000000000000000000000000000000000000000",
+      isMain,
+      locked: false,
+      prunable: false,
+      missing: false,
+      dirty: false,
+      unpushed: 0,
+      sessionIds: store.sessions
+        .filter((session) => (session.worktreeCwd || session.cwd) === path)
+        .map((session) => session.id),
+    });
+    const worktrees = [
+      ...new Set(
+        store.sessions
+          .filter((session) => session.cwd === cwd && session.worktreeCwd)
+          .map((session) => session.worktreeCwd as string),
+      ),
+    ];
+    return {
+      worktrees: [tree(cwd as string, true), ...worktrees.sort().map((path) => tree(path, false))],
+      defaultRoot: `${cwd}-worktrees`,
+    };
+  },
 };
 
 function summary(record: Fixture["records"][string]): SessionSummary {
@@ -251,9 +280,16 @@ async function runningWithNoTab(
   app: AppShell,
   page: Page,
   withExcludedRunning = false,
+  acmeAfterMonoCode = false,
 ) {
   await mountRealDb(app, withExcludedRunning);
   await expect(page.getByText(`${running.length} working agents`)).toBeVisible();
+  if (acmeAfterMonoCode) {
+    // The Giga's resumed turn adds its MonoCode workspace to the projects;
+    // choosing acme while its sessions still have tabs puts acme after it.
+    await expect(railProject(page, "MonoCode")).toBeVisible();
+    await railProject(page, "acme").click();
+  }
   for (const title of runningIn(ACME)) await closeTab(page, title).click();
   await railProject(page, "notes").click();
   for (const title of runningIn(NOTES)) await closeTab(page, title).click();
@@ -277,9 +313,34 @@ async function onIdleAcmeTab(app: AppShell, page: Page) {
   await expect(page.getByRole("main").getByRole("button", { name: "Stop" })).toHaveCount(0);
 }
 
+/** An idle acme session in a worktree no running acme session uses. */
+const OTHER_WORKTREE_SESSION = records.find(
+  (record) =>
+    record.cwd === ACME &&
+    record.worktreeCwd &&
+    !realDb.inFlight.some(
+      (ref) => realDb.records[ref.sessionId].worktreeCwd === record.worktreeCwd,
+    ),
+)!.title;
+
+const sidebarRow = (page: Page, title: string) =>
+  page
+    .getByRole("complementary")
+    .getByRole("button", { name: new RegExp(`^(?!Archive ).* ${title}$`) });
+
+/**
+ * On a running acme session, and the project is narrowed to that session's
+ * worktree (ADE-12): the sidebar lists the session and no session of another
+ * worktree.
+ */
 async function expectOnRunningAcmeSession(page: Page) {
   await expect(page.getByRole("main").getByRole("button", { name: "Stop" })).toBeVisible();
-  await expect(banner(page).getByRole("button", { name: RUNNING_ACME })).toHaveCount(1);
+  const close = banner(page).getByRole("button", { name: RUNNING_ACME });
+  await expect(close).toHaveCount(1);
+  const title = (await close.getAttribute("aria-label"))!.slice("Close ".length);
+  await expect(sidebarRow(page, title)).toBeVisible();
+  await expect(sidebarRow(page, OTHER_WORKTREE_SESSION)).toHaveCount(0);
+  return records.find((record) => record.title === title)!.worktreeCwd!;
 }
 
 test("the Projects rail row opens the running session that has no tab", async ({
@@ -288,7 +349,11 @@ test("the Projects rail row opens the running session that has no tab", async ({
 }) => {
   await runningWithNoTab(app, page);
   await railProject(page, "acme").click();
-  await expectOnRunningAcmeSession(page);
+  const worktree = await expectOnRunningAcmeSession(page);
+  // The working copy shown is that worktree, not the project folder.
+  await expect(
+    page.getByRole("complementary").getByRole("button", { name: "Switch working copy" }),
+  ).toHaveAttribute("title", new RegExp(`\\n~${worktree.slice(HOME.length)}$`));
 });
 
 test("the rail row on an idle tab of the project opens its running session", async ({
@@ -332,6 +397,42 @@ test("the rail row does not open a running habit run or Mono chat of the project
     );
   await railProject(page, "acme").click();
   await expectOnRunningAcmeSession(page);
+});
+
+test("a sidebar session row opens a running session that has no tab in its worktree", async ({
+  app,
+  page,
+}) => {
+  await onIdleAcmeTab(app, page);
+  await sidebarRow(page, runningIn(ACME)[0]).click();
+  await expectOnRunningAcmeSession(page);
+});
+
+test("the rail row from a new session in another project opens the running session in its worktree", async ({
+  app,
+  page,
+}) => {
+  await runningWithNoTab(app, page);
+  // A blank session's tab takes the running session in place of its pane.
+  await page.getByRole("button", { name: "New session (⌘T)" }).click();
+  await expect(page.getByRole("heading", { name: "What should we work on in notes?" })).toBeVisible();
+  await railProject(page, "acme").click();
+  await expectOnRunningAcmeSession(page);
+});
+
+test("a sidebar session row opens an idle session that has no tab in the workspace on screen", async ({
+  app,
+  page,
+}) => {
+  await onIdleAcmeTab(app, page);
+  await closeTab(page, OTHER_WORKTREE_SESSION).click();
+  await expect(closeTab(page, OTHER_WORKTREE_SESSION)).toHaveCount(0);
+  await sidebarRow(page, OTHER_WORKTREE_SESSION).click();
+  const other = records.find((record) => record.title === OTHER_WORKTREE_SESSION)!;
+  const opener = other.blocks.find((block) => block.role === "user")!.text;
+  await expect(page.getByRole("main").getByText(opener, { exact: true })).toBeVisible();
+  // It joins the project folder's workspace: every worktree stays listed.
+  await expect(sidebarRow(page, runningIn(ACME)[0])).toBeVisible();
 });
 
 test("the compact rail's project picker opens the running session that has no tab", async ({
@@ -436,18 +537,15 @@ test("the previous-project shortcut opens the running session that has no tab", 
   await expectOnRunningAcmeSession(page);
 });
 
-// Archiving acme moves to the most recent project left, notes, whose
-// Giga-started session runs with no tab.
+// Archiving notes moves to the most recent project left, acme, whose
+// Mono-started sessions run in worktrees with no tab.
 test("archiving the current project moves to the next project's running session", async ({
   app,
   page,
 }) => {
-  await onIdleAcmeTab(app, page);
-  await archiveFromRail(page, "acme");
-  await expect(page.getByRole("main").getByRole("button", { name: "Stop" })).toBeVisible();
-  await expect(
-    closeTab(page, runningIn(NOTES)[0]),
-  ).toBeVisible();
+  await runningWithNoTab(app, page, false, true);
+  await archiveFromRail(page, "notes");
+  await expectOnRunningAcmeSession(page);
 });
 
 test("restoring an archived project in Settings opens its running session", async ({
@@ -490,3 +588,4 @@ test("Back and Forward return to the running session the project opened", async 
   await page.getByRole("button", { name: "Forward (⌘])" }).click();
   await expectOnRunningAcmeSession(page);
 });
+
