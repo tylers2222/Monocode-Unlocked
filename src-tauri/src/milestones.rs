@@ -1042,14 +1042,17 @@ mod tests {
             settings: settings(&conn, project).unwrap(),
             milestones: list(&conn, project).unwrap(),
         };
-        let json = format!("{}\n", serde_json::to_string_pretty(&reply).unwrap());
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../tests/browser/fixtures/milestones-real-list.json"
         );
         if std::env::var_os("RECORD_MILESTONE_LIST").is_some() {
-            std::fs::write(path, &json).unwrap();
+            let json = serde_json::to_string_pretty(&reply).unwrap();
+            std::fs::write(path, format!("{json}\n")).unwrap();
         }
-        assert_eq!(json, std::fs::read_to_string(path).unwrap());
+        // Values, not text: a Windows checkout gives the file CRLF line ends.
+        let committed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(&reply).unwrap(), committed);
     }
 }
