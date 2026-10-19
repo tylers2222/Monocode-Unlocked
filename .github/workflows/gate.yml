@@ -32,6 +32,10 @@ jobs:
       - id: deps
         run: npm ci
 
+      - name: Growth check parser tests
+        if: ${{ !cancelled() }}
+        run: node --test scripts/gate/rust-lint-attributes.test.mjs
+
       - name: Baselines only shrink
         if: ${{ !cancelled() }}
         run: node scripts/gate/baseline-growth.mjs "$BASE"
@@ -44,12 +48,17 @@ jobs:
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npx jscpd . --baseline-from-ref "$BASE" --fail-on-new-clones
 
-      # Pinned: a new clippy can change which baseline #[expect] markers fire.
-      # Bump it in its own PR.
+      # Clippy runs on the version in .github/rust-version, the same one the
+      # check job in ci.yml uses: a new clippy can change which baseline
+      # #[expect] markers fire. Bump that file in its own PR.
+      - id: rust-version
+        if: ${{ !cancelled() }}
+        run: echo "version=$(cat .github/rust-version)" >> "$GITHUB_OUTPUT"
+
       - uses: dtolnay/rust-toolchain@master
         if: ${{ !cancelled() }}
         with:
-          toolchain: 1.99.1
+          toolchain: ${{ steps.rust-version.outputs.version }}
           components: clippy
 
       - name: Install Linux system dependencies

@@ -82,8 +82,15 @@ jobs:
           node-version: 20
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Same pinned version as gate/lint: clippy here checks the same baseline
+      # #[expect] markers, three of them only on macOS or Windows.
+      - id: rust-version
+        shell: bash
+        run: echo "version=$(cat .github/rust-version)" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.rust-version.outputs.version }}
           components: rustfmt, clippy
 
       - run: npm ci
