@@ -862,6 +862,7 @@ import {
 } from "../features/sessions/model/inFlight";
 import {
   isBlankSession,
+  runningTurnStart,
   reconcileProjectReturn,
   type ProjectReturnMemory,
 } from "../features/projects/model/projectReturn";
@@ -1530,8 +1531,10 @@ function Workspace({
   const projectWorktree = useWorktreeFocus(projectCwd);
   /** Tab or session id -> the workspace it was opened or moved in. A tab
    * belongs to the workspace it was opened in, whatever worktree it runs in:
-   * opening a session, or moving one from its composer, never switches the
-   * workspace. Unpinned tabs (restored ones) group by their own worktree. */
+   * opening an idle session, or moving one from its composer, never switches
+   * the workspace. A running session opened with no tab opens in its own
+   * worktree, which becomes the project's workspace (`onSelectHistorySession`).
+   * Unpinned tabs (restored ones) group by their own worktree. */
   // Only the default workspace's tabs were saved, so every restored tab
   // belongs to it, including one its composer moved to a worktree.
   const [restoredPins] = useState(
@@ -4540,11 +4543,12 @@ function Workspace({
     return true;
   }, []);
 
+  /** Puts the session in a blank pane of the active tab; the tab's id, if any. */
   const replaceBlankPaneWithSession = useCallback((session: Session) => {
     const tab =
       tabsRef.current.find((entry) => entry.id === activeTabIdRef.current) ??
       tabsRef.current[0];
-    if (!tab) return false;
+    if (!tab) return undefined;
 
     const paneId = isBlankSession(
       sessionsRef.current.find((entry) => entry.id === tab.focusedId),
@@ -4553,7 +4557,7 @@ function Workspace({
       : leafIds(tab.layout).find((id) =>
           isBlankSession(sessionsRef.current.find((entry) => entry.id === id)),
         );
-    if (!paneId || paneId === session.id) return false;
+    if (!paneId || paneId === session.id) return undefined;
 
     lastPersisted.current.delete(paneId);
     {
@@ -4579,7 +4583,7 @@ function Workspace({
     );
     setActiveTabId(tab.id);
     setComposerFocused(true);
-    return true;
+    return tab.id;
   }, []);
 
   const invalidateLoadedSession = useCallback((sessionId: string) => {
@@ -5076,14 +5080,21 @@ function Workspace({
         if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
         return;
       }
-      if (replaceBlankPaneWithSession(session)) {
-        if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
-        return;
+      let tabId = replaceBlankPaneWithSession(session);
+      if (!tabId) {
+        const tab = newTab(session.id);
+        appendTab(tab, session.cwd);
+        setActiveTabId(tab.id);
+        setComposerFocused(true);
+        tabId = tab.id;
       }
-      const tab = newTab(session.id);
-      appendTab(tab, session.cwd);
-      setActiveTabId(tab.id);
-      setComposerFocused(true);
+      // A running session that had no tab opens in its own worktree, and the
+      // project focuses that worktree, as when a project opens to a running
+      // session's tab (useWorkspaceNavigation `drain`).
+      if (runningTurnStart(session.id, sessionsRef.current) !== undefined) {
+        workspacePins.current.set(tabId, sessionWorkCwd(session));
+        workspaceNavigation.selectProject(session.cwd);
+      }
       if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
     },
     [
@@ -5093,6 +5104,7 @@ function Workspace({
       focusOpenSession,
       replaceBlankPaneWithSession,
       revealLinkedSessionUpdate,
+      workspaceNavigation.selectProject,
     ],
   );
 
