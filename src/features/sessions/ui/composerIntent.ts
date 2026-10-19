@@ -7,11 +7,12 @@ import {
   type RunningItem,
 } from "../model/messageIntent";
 import { steersHeld, userTextHeld } from "../model/messageQueue";
-import type {
-  Block,
-  ComposerTurnOptions,
-  Session,
-  TargetLink,
+import {
+  turnOpener,
+  type Block,
+  type ComposerTurnOptions,
+  type Session,
+  type TargetLink,
 } from "../model/session";
 import type { TurnId } from "../../monos/model/monoMessages";
 
@@ -89,24 +90,15 @@ export function barSend(bar: ComposerBar, newWaits: boolean): BarSend | null {
 }
 
 /**
- * The running turn of `session`, read from its blocks: the turn id of the
- * user block that started last. The app's own record of it lives in one
- * window only, and the floating chat is another window. `undefined` while
- * idle, or when the opener carries no turn id.
+ * The running turn of `session`, read from its blocks: the turn id of its
+ * `turnOpener`. The app's own record of it lives in one window only, and the
+ * floating chat is another window. `undefined` while idle, or when the opener
+ * carries no turn id.
  */
 export function runningTurnOf(
   session: Pick<Session, "busy" | "blocks">,
 ): TurnId | undefined {
-  if (!session.busy) return undefined;
-  let opener: Block | undefined;
-  for (const block of session.blocks)
-    if (
-      block.role === "user" &&
-      block.startedAt != null &&
-      (!opener || block.startedAt >= opener.startedAt!)
-    )
-      opener = block;
-  return opener?.turnId;
+  return session.busy ? turnOpener(session.blocks)?.turnId : undefined;
 }
 
 type SteerSession = Pick<

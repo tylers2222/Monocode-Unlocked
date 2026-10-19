@@ -842,12 +842,24 @@ export function opensTurn(block: Block): boolean {
   return block.sentAt == null || block.startedAt != null;
 }
 
-/** The user message that opened the latest turn. */
+/**
+ * The user message that opened the latest turn: of the messages that opened a
+ * turn, the one that started last. A queued message keeps its place when its
+ * turn starts, so a notice added after it can have started before it. A
+ * message saved with no start time opened its turn at its place, after the
+ * messages before it.
+ */
 export function turnOpener(blocks: readonly Block[]): Block | undefined {
-  for (let index = blocks.length - 1; index >= 0; index -= 1) {
-    if (opensTurn(blocks[index])) return blocks[index];
+  let opener: Block | undefined;
+  for (const block of blocks) {
+    if (!opensTurn(block)) continue;
+    const later =
+      opener?.startedAt == null ||
+      block.startedAt == null ||
+      block.startedAt >= opener.startedAt;
+    if (later) opener = block;
   }
-  return undefined;
+  return opener;
 }
 
 /** Remove one saved draft without disturbing the conversation before it. */

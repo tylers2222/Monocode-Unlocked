@@ -555,4 +555,21 @@ describe("project selection with a running session", () => {
       activates("steered"),
     );
   });
+
+  // ADE-10: the real Fork Orchestrator rows. The queued message (sent at 23)
+  // started its turn at 45 in its old place, after two notices that ran first.
+  it("dates a queued message's turn when notices after it started first", () => {
+    const inverted: Session = {
+      ...turn("inverted", undefined, true),
+      blocks: [
+        { id: "queued", role: "user", text: "next", sentAt: 23, startedAt: 45 },
+        { id: "notice-1", role: "user", text: "done", startedAt: 26, durationMs: 4 },
+        { id: "steer", role: "user", text: "also", sentAt: 30 },
+        { id: "notice-2", role: "user", text: "done", startedAt: 31, durationMs: 1 },
+      ],
+    };
+    expect(plan([turn("between", 40, true), inverted])).toEqual(
+      activates("inverted"),
+    );
+  });
 });
