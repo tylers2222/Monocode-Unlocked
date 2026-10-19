@@ -133,6 +133,29 @@ it("resolves a lead and a worker with app access to session callers", async () =
   });
 });
 
+// Design 13.4 and 6.6 A8. Defect: a session that sessions.start made answers
+// not_a_mono, so it cannot report to its lead or Mono; or it reaches Rust as
+// an /operator caller and escapes the started lead's scope.
+it("resolves a session that sessions.start made to a started caller", async () => {
+  await loadMonoRoster();
+  const stamped = [
+    { id: "u1", role: "user" as const, text: "Fix CI", startedBy: "giga-chat" },
+  ];
+  expect(
+    await resolveCaller(session("app-giga-chat-r1", { blocks: stamped }), turn),
+  ).toEqual({
+    ok: true,
+    caller: {
+      kind: "session",
+      sessionId: "app-giga-chat-r1",
+      turnId: "turn-1",
+      access: "started",
+      leadSessionId: null,
+      cwd: "/code/app",
+    },
+  });
+});
+
 // Design 2 step 4. Defect: a call that no running turn authorized resolves a
 // caller anyway, so its reply is bound to some turn the window guesses.
 it("refuses a call that carries no turn with turn_inactive", async () => {

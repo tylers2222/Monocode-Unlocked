@@ -386,3 +386,30 @@ test("after a restart a Giga session keeps its folder and its tab in the MonoCod
   await composer.press("Enter");
   await expect.poll(() => spawnCwds(page, id)).toEqual([ATLAS_FOLDER]);
 });
+
+// Design 13.4, PR7-12. The first user block of a session that a Mono's
+// sessions.start made keeps the Mono chat's id, which gives its later turns
+// app access after a reload. Defect: the window submits the first turn
+// without the startedBy stamp, so the saved session has no app access.
+test("a session a Mono starts saves its first turn stamped with the Mono chat and the request id", async ({
+  app,
+  page,
+}) => {
+  await mountMonoCode(app);
+  const id = await startFromChat(page, app, "Pip", "Write the plan");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (id) =>
+          window.appBackend!.store.blocks[id]?.find(
+            (block) => block.role === "user",
+          ),
+        id,
+      ),
+    )
+    .toMatchObject({
+      text: "Write the plan",
+      startedBy: MONO_CHAT,
+      appRequestId: id,
+    });
+});

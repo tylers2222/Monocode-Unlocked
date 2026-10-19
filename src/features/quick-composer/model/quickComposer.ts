@@ -75,6 +75,8 @@ export type QuickLaunch = {
   reveal: boolean;
   /** The session whose `sessions.start` makes this launch's session (design 13.3). */
   leadSessionId?: string;
+  /** An app launch: the session whose `sessions.start` made it. Its first user block keeps it (design 13.4). */
+  startedBy?: string;
 };
 
 /** The panel exists on macOS only; elsewhere the shortcut is never claimed. */

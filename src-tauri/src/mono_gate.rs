@@ -1533,7 +1533,7 @@ pub enum ActionDecision {
         code: RejectCode,
         hint: String,
     },
-    /// A3, A4, A5: one rejected row with `tool` (`StartSession` or
+    /// A3, A4, A5, A8: one rejected row with `tool` (`StartSession` or
     /// `AppAction`).
     Reject {
         code: RejectCode,
@@ -1545,8 +1545,8 @@ pub enum ActionDecision {
 pub(crate) const START_ENDED: &str =
     "The session this request id started was archived or deleted. Use a new request id.";
 
-/// Design 6.6, rows A1, A2, A3, A4, A5, A6, A7 in this order, for one app
-/// action other than `messages.*` whose `[action, input]` hashes to `hash`.
+/// Design 6.6, rows A1, A2, A3, A4, A5, A8, A6, A7 in this order, for one
+/// app action other than `messages.*` whose `[action, input]` hashes to `hash`.
 pub fn decide_action(
     caller: &Caller,
     action: &str,
@@ -1601,9 +1601,41 @@ pub fn decide_action(
             return reject(RejectCode::SteerViaLead, Tool::AppAction, lead);
         }
     }
+    let lead = facts.caller_level == Some(SessionLevel::Lead);
+    let started = matches!(
+        caller.speaker,
+        Speaker::Session {
+            access: Access::Started,
+            ..
+        }
+    );
+    if lead && started {
+        let own_worker = matches!(
+            &facts.target_level,
+            Some(SessionLevel::Worker { lead }) if *lead == caller.session_id
+        );
+        if !started_lead_may(action, own_worker) {
+            return ActionDecision::Reject {
+                code: RejectCode::LeadScope,
+                hint: RejectCode::LeadScope.hint().into(),
+                tool: Tool::AppAction,
+            };
+        }
+    }
     ActionDecision::Allow {
-        lead_session_id: (starts && facts.caller_level == Some(SessionLevel::Lead))
-            .then(|| caller.session_id.clone()),
+        lead_session_id: (starts && lead).then(|| caller.session_id.clone()),
+    }
+}
+
+/// A8 (design 6.6): the addendum's powers of a lead whose access is only the
+/// `startedBy` stamp, plus the reads it needs to pick a model and a worktree.
+fn started_lead_may(action: &str, own_worker: bool) -> bool {
+    match action {
+        "models.list" | "sessions.list" | "sessions.start" | "worktrees.list"
+        | "worktrees.create" => true,
+        "sessions.read" | "sessions.send" | "sessions.draft" | "sessions.stop"
+        | "sessions.archive" | "sessions.delete" => own_worker,
+        _ => false,
     }
 }
 
@@ -4580,6 +4612,95 @@ mod tests {
             hint: hint.into(),
             tool,
         }
+    }
+
+    // A8 (design 6.6). Defect: an app-started lead gets every /operator
+    // action (all notes, a sibling's delete), or loses a power the addendum
+    // gives it (stop its worker, make a worktree); or an /operator lead is
+    // narrowed too.
+    #[test]
+    fn a8_a_lead_started_by_the_app_acts_only_on_its_own_workers() {
+        let started = session_caller("l1");
+        let user_lead = operator("l1");
+        let lead_scope = act_rejected(RejectCode::LeadScope, LEAD_SCOPE, Tool::AppAction);
+        for (case, who, action, target, expected) in [
+            (
+                "notes.list",
+                &started,
+                "notes.list",
+                None,
+                lead_scope.clone(),
+            ),
+            (
+                "delete a sibling",
+                &started,
+                "sessions.delete",
+                Some(SessionLevel::Lead),
+                lead_scope,
+            ),
+            (
+                "stop its worker",
+                &started,
+                "sessions.stop",
+                Some(worker_of("l1")),
+                ALLOWED,
+            ),
+            (
+                "create a worktree",
+                &started,
+                "worktrees.create",
+                None,
+                ALLOWED,
+            ),
+            (
+                "operator notes.list",
+                &user_lead,
+                "notes.list",
+                None,
+                ALLOWED,
+            ),
+        ] {
+            assert_eq!(
+                act(who, action, Some(SessionLevel::Lead), target),
+                expected,
+                "{case}"
+            );
+        }
+    }
+
+    // A8 (design 6.6). Defect: a started lead reads or archives a sibling
+    // lead, or cannot list models to pick a worker's.
+    #[test]
+    fn a8_a_started_lead_reads_and_archives_only_its_workers_and_lists_models() {
+        let started = session_caller("l1");
+        let lead_scope = act_rejected(RejectCode::LeadScope, LEAD_SCOPE, Tool::AppAction);
+        for action in ["sessions.read", "sessions.archive"] {
+            assert_eq!(
+                act(
+                    &started,
+                    action,
+                    Some(SessionLevel::Lead),
+                    Some(SessionLevel::Lead)
+                ),
+                lead_scope,
+                "{action} of a sibling"
+            );
+            assert_eq!(
+                act(
+                    &started,
+                    action,
+                    Some(SessionLevel::Lead),
+                    Some(worker_of("l1"))
+                ),
+                ALLOWED,
+                "{action} of its worker"
+            );
+        }
+        assert_eq!(
+            act(&started, "models.list", Some(SessionLevel::Lead), None),
+            ALLOWED,
+            "models.list"
+        );
     }
 
     const WORKER_CANNOT_SPAWN_L1: &str = r#"Only lead sessions can start sessions. Ask your lead (l1): messages.send with send_to "l1"."#;

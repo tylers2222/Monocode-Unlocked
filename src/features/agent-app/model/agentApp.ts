@@ -49,7 +49,10 @@ import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
 import type { Worktree, Worktrees } from "../../source-control/model/worktrees";
 import { knownHomeDir, pathKey, projectName } from "../../../shared/lib/paths";
 import type { SplitDir } from "../../workspace/model/layout";
-import { consumeOperatorCommand } from "../../sessions/model/operatorCommand";
+import {
+  appAccess,
+  consumeOperatorCommand,
+} from "../../sessions/model/operatorCommand";
 import {
   sessionConversationPage,
   type SessionReadOptions,
@@ -717,6 +720,21 @@ function fileInMonoFolder(
  * Giga's own folder (`workFolder`): the project and working copy stay
  * `~/MonoCode`, the work and its commits stay in `gigas/<slug>/`.
  */
+/**
+ * Design 6.6: a session that sessions.start made starts nothing more
+ * permissive than itself. A Mono and an /operator session choose freely.
+ */
+function runtimeCeiling(source: Session, runtimeMode: Session["runtimeMode"]) {
+  if (
+    appAccess(source.blocks) === "started" &&
+    RUNTIME_MODES.indexOf(runtimeMode) >
+      RUNTIME_MODES.indexOf(source.runtimeMode)
+  )
+    throw new Error(
+      `runtimeMode cannot be more permissive than this session's (${source.runtimeMode})`,
+    );
+}
+
 function startLaunch(
   source: Session,
   input: Record<string, unknown>,
@@ -761,6 +779,7 @@ function startLaunch(
   const runtimeMode = input.runtimeMode ?? source.runtimeMode;
   if (!RUNTIME_MODES.includes(runtimeMode as Session["runtimeMode"]))
     throw new Error(`runtimeMode must be one of: ${RUNTIME_MODES.join(", ")}`);
+  runtimeCeiling(source, runtimeMode as Session["runtimeMode"]);
   const reveal = input.reveal ?? false;
   if (typeof reveal !== "boolean") throw new Error("reveal must be a boolean");
   const workspaceMode = input.workspaceMode ?? "current";
@@ -816,6 +835,7 @@ function startLaunch(
       : {}),
     ...(workFolder ? { workFolder } : {}),
     ...(worktreeBase ? { worktreeBase } : {}),
+    startedBy: source.id,
     ...(leadSessionId ? { leadSessionId } : {}),
   };
   return { launch, listedWorktree };

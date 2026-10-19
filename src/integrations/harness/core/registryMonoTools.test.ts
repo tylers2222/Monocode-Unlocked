@@ -14,15 +14,16 @@ const registration: MonoTools = {
   call: async () => ({ ok: true }),
 };
 const monoToolsFor = vi.hoisted(() =>
-  vi.fn(async (_harness: string, sessionId: string) =>
-    sessionId === "mono-chat" ? registration : undefined,
+  vi.fn(async (_harness: string, sessionId: string, appAccess: boolean) =>
+    sessionId === "mono-chat" || appAccess ? registration : undefined,
   ),
 );
 vi.mock("../../../features/monos/model/monoTools", () => ({ monoToolsFor }));
 
 
 // Defect: a turn, a compaction or an edit spawns the session's harness
-// without its Mono tools, so the process lacks them for its whole life.
+// without its Mono tools, so the process lacks them for its whole life; or
+// (design 15 C7) a session whose turn has app access never gets them.
 it("hands every spawning operation the session's Mono tools", async () => {
   const seen: Array<HarnessSessionInput["monoTools"]> = [];
   const record = async (input: HarnessSessionInput) => {
@@ -54,7 +55,11 @@ it("hands every spawning operation the session's Mono tools", async () => {
   await sendHarnessTurn({ ...base, sessionId: "mono-chat", text: "hi" });
   await compactHarnessContext({ ...base, sessionId: "mono-chat" });
   await rewindHarnessLastTurn({ ...base, sessionId: "mono-chat" });
+  const lead = { ...base, sessionId: "lead", appAccess: true };
+  await sendHarnessTurn({ ...lead, text: "hi" });
+  await compactHarnessContext(lead);
+  await rewindHarnessLastTurn(lead);
   await sendHarnessTurn({ ...base, sessionId: "project", text: "hi" });
-  expect(seen).toEqual([registration, registration, registration, undefined]);
-  expect(monoToolsFor).toHaveBeenCalledWith("claude", "mono-chat");
+  expect(seen).toEqual([...Array(6).fill(registration), undefined]);
+  expect(monoToolsFor).toHaveBeenCalledWith("claude", "mono-chat", false);
 });

@@ -9864,6 +9864,33 @@ pub(crate) mod tests {
         assert_eq!(rows(&conn), 1);
     }
 
+    // Design 6.6 A8. Defect: the web app's `started` access reaches the gate
+    // as another access, so an app-started lead lists notes; or an
+    // /operator lead loses them.
+    #[test]
+    fn a_started_lead_from_the_web_app_gets_lead_scope_for_notes_list() {
+        let store = messaging_store();
+        seed_levels(&store.lock_conn().unwrap());
+        let check = |access: &str| {
+            serde_json::from_value::<AppActionCall>(serde_json::json!({
+                "caller": {"kind": "session", "sessionId": "lead", "turnId": "turn-1",
+                    "access": access, "cwd": "/p", "leadSessionId": null},
+                "action": "notes.list", "target": null, "targetLeadSessionId": null,
+                "startedSessionId": null, "requestId": format!("notes-{access}"), "input": {}
+            }))
+            .unwrap()
+            .check(&store, 100)
+            .unwrap()
+        };
+        assert_eq!(failed_check(check("started")).code, "lead_scope");
+        assert_eq!(
+            check("operator"),
+            ActionChecked::Allowed {
+                lead_session_id: None
+            }
+        );
+    }
+
     // #93 review r1 N3. Defect: a level gate command reads a call that names
     // an argument it does not know, so a renamed field on either side is
     // dropped (an `Option`) or defaulted instead of failing the call.

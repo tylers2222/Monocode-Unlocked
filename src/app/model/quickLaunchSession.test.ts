@@ -546,17 +546,15 @@ it.each([
 function launched(blocks: Session["blocks"], extra: Partial<Session> = {}) {
   return { ...newSession("codex", "/p"), id: "app-lead-r1", blocks, ...extra };
 }
-const APP_LAUNCH: QuickLaunch = {
-  cwd: "/p",
-  harness: "codex",
-  prompt: "Build",
-};
+const FLOATING: QuickLaunch = { cwd: "/p", harness: "codex", prompt: "Build" };
+const APP_LAUNCH: QuickLaunch = { ...FLOATING, startedBy: "lead" };
 const reused = { code: "request_id_reused" };
 
-// Design 9, the one repeat rule. Defect: a repeat with other text, or a
-// submitted retry of a draft launch, answers as the first launch did; or the
-// same launch again launches twice.
-it("repeats an app launch only with its own stamp and text", () => {
+// Design 9, the one repeat rule. Defect: a repeat with other text, from
+// another caller whose ids join to the same session id, or a submitted retry
+// of a draft launch answers as the first launch did; or the same launch
+// again launches twice.
+it("repeats an app launch only with its own stamp, caller and text", () => {
   const stamped = (draft: boolean) =>
     launched([
       {
@@ -564,30 +562,27 @@ it("repeats an app launch only with its own stamp and text", () => {
         role: "user",
         text: "Build",
         appRequestId: "app-lead-r1",
+        startedBy: "lead",
         ...(draft ? { draft } : {}),
       },
     ]);
-  expect(appLaunchRepeat(stamped(false), APP_LAUNCH, "app-lead-r1", true)).toBe(
-    true,
-  );
+  expect(appLaunchRepeat(stamped(false), APP_LAUNCH, "app-lead-r1")).toBe(true);
   expect(
     appLaunchRepeat(
       stamped(true),
       { ...APP_LAUNCH, draft: true },
       "app-lead-r1",
-      true,
     ),
   ).toBe(true);
+  for (const other of [
+    { ...APP_LAUNCH, prompt: "Test" },
+    { ...APP_LAUNCH, startedBy: "app-lead" },
+  ])
+    expect(() => appLaunchRepeat(stamped(false), other, "app-lead-r1")).toThrow(
+      expect.objectContaining(reused),
+    );
   expect(() =>
-    appLaunchRepeat(
-      stamped(false),
-      { ...APP_LAUNCH, prompt: "Test" },
-      "app-lead-r1",
-      true,
-    ),
-  ).toThrow(expect.objectContaining(reused));
-  expect(() =>
-    appLaunchRepeat(stamped(true), APP_LAUNCH, "app-lead-r1", true),
+    appLaunchRepeat(stamped(true), APP_LAUNCH, "app-lead-r1"),
   ).toThrow(expect.objectContaining(reused));
 });
 
@@ -600,12 +595,10 @@ it("refuses an app launch into a session the user worked in, and repeats a float
     launched([{ id: "u1", role: "user", text: "Build" }]),
     launched([], { quickLaunchAccepted: true }),
   ]) {
-    expect(() =>
-      appLaunchRepeat(existing, APP_LAUNCH, "app-lead-r1", true),
-    ).toThrow(expect.objectContaining(reused));
-    expect(appLaunchRepeat(existing, APP_LAUNCH, "app-lead-r1", false)).toBe(
-      true,
+    expect(() => appLaunchRepeat(existing, APP_LAUNCH, "app-lead-r1")).toThrow(
+      expect.objectContaining(reused),
     );
+    expect(appLaunchRepeat(existing, FLOATING, "app-lead-r1")).toBe(true);
   }
 });
 
@@ -615,37 +608,41 @@ it("refuses an app launch into another draft and launches a fresh id", () => {
   const draft = launched([
     { id: "d1", role: "user", text: "Mine", draft: true },
   ]);
-  expect(() => appLaunchRepeat(draft, APP_LAUNCH, "app-lead-r1", true)).toThrow(
+  expect(() => appLaunchRepeat(draft, APP_LAUNCH, "app-lead-r1")).toThrow(
     "Session ID already has a different draft",
   );
-  expect(appLaunchRepeat(undefined, APP_LAUNCH, "app-lead-r1", true)).toBe(
-    false,
-  );
-  expect(appLaunchRepeat(launched([]), APP_LAUNCH, "app-lead-r1", true)).toBe(
-    false,
-  );
+  expect(appLaunchRepeat(undefined, APP_LAUNCH, "app-lead-r1")).toBe(false);
+  expect(appLaunchRepeat(launched([]), APP_LAUNCH, "app-lead-r1")).toBe(false);
 });
 
-// Design 9: every app launch stamps its first block. Defect: a submitted app
-// launch is not stamped, so its repeat finds no stamp and is refused as the
-// user's work; or a floating launch is stamped as an app launch.
-it("stamps a submitted app launch with its request id and leaves a floating one unstamped", async () => {
+// Design 9 and 13.4: every app launch stamps its first block with its
+// request id and its caller. Defect: a submitted or drafted app launch is
+// not stamped, so its repeat is refused as the user's work or the session
+// gets no app access; or a floating launch is stamped as an app launch.
+it("stamps an app launch with its request id and caller, and leaves a floating one unstamped", async () => {
   const { request, workspace } = setup();
   await acceptQuickLaunch(
-    request,
+    { ...request, startedBy: "lead" },
     "app-lead-r1",
     workspace,
-    undefined,
-    true,
-    true,
   );
   expect(workspace.submit).toHaveBeenLastCalledWith(
     "app-lead-r1",
     request.prompt,
     [],
-    {
-      appRequestId: "app-lead-r1",
-    },
+    { appRequestId: "app-lead-r1", startedBy: "lead" },
+  );
+  await acceptQuickLaunch(
+    { ...request, draft: true, startedBy: "lead" },
+    "app-lead-r2",
+    workspace,
+  );
+  expect(workspace.saveDraft).toHaveBeenLastCalledWith(
+    "app-lead-r2",
+    request.prompt,
+    [],
+    "app-lead-r2",
+    "lead",
   );
   await acceptQuickLaunch(request, "quick-session", workspace);
   expect(workspace.submit).toHaveBeenLastCalledWith(

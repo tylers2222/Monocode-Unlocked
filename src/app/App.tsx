@@ -640,8 +640,10 @@ import {
 } from "../features/workspace/model/tabVisitHistory";
 import { preparePrompt } from "../features/sessions/model/promptPreparation";
 import {
+  appAccess,
   consumeOperatorCommand,
-  operatorEnabledInThread,
+  submitAccess,
+  turnAccess,
 } from "../features/sessions/model/operatorCommand";
 import {
   createMono,
@@ -960,6 +962,8 @@ type SubmitOptions = ComposerTurnOptions & {
   managed?: boolean;
   orchestrationRetry?: OrchestrationProposal;
   appRequestId?: string;
+  /** The session whose `sessions.start` made this first turn (design 13.4). */
+  startedBy?: string;
   monoSessionCompletion?: Block["monoSessionCompletion"];
   onSettled?: (outcome: ControlOutcome) => void;
   /**
@@ -1757,7 +1761,7 @@ function Workspace({
           !session ||
           isMonoSession(session.id) ||
           isHabitRun(session.id) ||
-          !operatorEnabledInThread(session.blocks)
+          appAccess(session.blocks) === null
         )
           return undefined;
         return {
@@ -6957,6 +6961,7 @@ function Workspace({
       text: string,
       attachments: Attachment[] = [],
       appRequestId?: string,
+      startedBy?: string,
     ) => {
       const current = sessionsRef.current.find(
         (session) => session.id === sessionId,
@@ -6996,6 +7001,7 @@ function Workspace({
                     ...(attachments.length > 0 ? { attachments } : {}),
                     draft: true,
                     ...(appRequestId ? { appRequestId } : {}),
+                    ...(startedBy ? { startedBy } : {}),
                   },
                 ],
               }
@@ -7244,10 +7250,11 @@ function Workspace({
               (message) => message.id === options.queuedMessageId,
             )
           : undefined;
-      const operatorAccess =
-        operatorCommand.matched ||
-        mono ||
-        operatorEnabledInThread(current.blocks);
+      const access = submitAccess(
+        current.blocks,
+        operatorCommand.matched,
+        options?.startedBy,
+      );
       const monoFirstTurn =
         mono &&
         !current.blocks.some((block) => block.role === "user" && !block.draft);
@@ -7715,6 +7722,7 @@ function Workspace({
         ...(options?.appRequestId
           ? { appRequestId: options.appRequestId }
           : queuedAppDelivery(queuedItem)),
+        ...(options?.startedBy ? { startedBy: options.startedBy } : {}),
         // The orchestrator writes these turns, not the user; hide them.
         ...(options?.managed || options?.monoSessionCompletion
           ? { internal: true }
@@ -8243,9 +8251,11 @@ function Workspace({
                 runtimeMode: current.runtimeMode,
                 ephemeral: current.ephemeral === true,
                 codexStore: mono ? "mono" : undefined,
-                controlsAgents:
-                  operatorAccess ||
+                ...turnAccess(
+                  access,
+                  mono,
                   orchestrator.run(sessionId)?.status === "active",
+                ),
                 ...(editedProviderTurnId
                   ? { providerTurnId: editedProviderTurnId }
                   : {}),
@@ -8298,12 +8308,11 @@ function Workspace({
               ephemeral: current.ephemeral === true,
               codexStore: mono ? "mono" : undefined,
               intent: intent === "orchestrate" ? "plan" : intent,
-              // A /operator user turn enables app access for this thread;
-              // orchestration leads retain their separate control access.
-              controlsAgents:
-                operatorAccess ||
+              ...turnAccess(
+                access,
+                mono,
                 orchestrator.run(sessionId)?.status === "active",
-              appAccess: operatorAccess,
+              ),
               text,
               turnId,
               attachments: turnAttachments,
@@ -9044,7 +9053,6 @@ function Workspace({
       placement?: AppSessionPlacement,
       onSettled?: (outcome: ControlOutcome) => void,
       openTab?: boolean,
-      app?: boolean,
     ) =>
       acceptQuickLaunch(
         launch,
@@ -9110,14 +9118,15 @@ function Workspace({
                   rejectionMessage: "The monitored session could not start.",
                 })
               : submitSession(id, text, attachments, options),
-          saveDraft: (id, prompt, attachments, requestId) =>
-            flushSync(() => onSaveDraft(id, prompt, attachments, requestId)),
+          saveDraft: (id, prompt, attachments, requestId, startedBy) =>
+            flushSync(() =>
+              onSaveDraft(id, prompt, attachments, requestId, startedBy),
+            ),
           saveSession: async (session) =>
             !shouldPersistSession(session) || !!(await upsertSession(session)),
         },
         placement,
         openTab,
-        app,
       ),
     [appendTab, submitSession, onSaveDraft],
   );
@@ -10547,10 +10556,11 @@ function Workspace({
             runtimeMode: current.runtimeMode,
             ephemeral: current.ephemeral === true,
             codexStore: isMonoSession(sessionId) ? "mono" : undefined,
-            controlsAgents:
-              isMonoSession(sessionId) ||
-              operatorEnabledInThread(current.blocks) ||
+            ...turnAccess(
+              appAccess(current.blocks),
+              isMonoSession(sessionId),
               orchestrator.run(sessionId)?.status === "active",
+            ),
             onEvent: (event) => {
               if (turnGen.current.get(sessionId) !== gen) return;
               enqueueHarnessEvent(sessionId, event);
@@ -11335,7 +11345,7 @@ function Workspace({
               );
               const stored = open ? null : await getSession(id);
               const existing = open ?? stored;
-              if (appLaunchRepeat(existing, launch, id, true)) {
+              if (appLaunchRepeat(existing, launch, id)) {
                 rememberLaunch();
                 return;
               }
@@ -11357,7 +11367,6 @@ function Workspace({
                   placement,
                   onSettled,
                   !isMonoSession(source.id) || !!placement,
-                  true,
                 );
                 rememberLaunch();
                 onSettled?.accept();

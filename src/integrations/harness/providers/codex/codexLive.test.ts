@@ -482,6 +482,9 @@ describe("codex live turn sequence", () => {
     expect(sent).toEqual([]);
   });
 
+  // Codex has no thread-level sandboxPolicy, so the turn carries the
+  // network. Defect: thread/resume sends a sandboxPolicy (codex ignores
+  // it), or the turn loses the network a changed controlsAgents gives it.
   it("reopens a thread when app access changes its network policy", async () => {
     const first = await startTurn("codex-live", { runtimeMode: "auto" });
     notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
@@ -495,7 +498,7 @@ describe("codex live turn sequence", () => {
     });
     expect(
       parse().find((message) => message.method === "thread/resume")?.params,
-    ).toMatchObject({ sandboxPolicy: { networkAccess: true } });
+    ).not.toHaveProperty("sandboxPolicy");
     expect(
       parse().find((message) => message.method === "turn/start")?.params,
     ).toMatchObject({ sandboxPolicy: { networkAccess: true } });
@@ -507,17 +510,13 @@ describe("codex live turn sequence", () => {
       runtimeMode: "auto",
       expectResume: true,
     });
-    expect(
-      parse().find((message) => message.method === "thread/resume")?.params,
-    ).toMatchObject({ sandboxPolicy: { type: "workspaceWrite" } });
-    expect(
-      (
-        parse().find((message) => message.method === "thread/resume")
-          ?.params as {
-          sandboxPolicy: Record<string, unknown>;
-        }
-      ).sandboxPolicy,
-    ).not.toHaveProperty("networkAccess");
+    const ordinaryStart = parse().find(
+      (message) => message.method === "turn/start",
+    )?.params;
+    expect(ordinaryStart).toMatchObject({
+      sandboxPolicy: { type: "workspaceWrite" },
+    });
+    expect(ordinaryStart).not.toHaveProperty("sandboxPolicy.networkAccess");
     notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
     await ordinaryTurn.turn;
   });
@@ -1820,6 +1819,58 @@ describe("codex live turn sequence", () => {
     expect(parse().find((message) => message.id === 91)?.result).toEqual({
       action: "accept",
       content: { approved: true },
+      _meta: null,
+    });
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+  });
+
+  // Defect: an allowed consent to MonoCode's own MCP server is not
+  // remembered, so outside full-access each report of a lead or a worker
+  // asks the user again; or another server's consent is kept.
+  it("remembers an allowed consent to MonoCode's MCP server for the session, and no other server's", async () => {
+    const { events, turn } = await startTurn("codex-live");
+    for (const [id, serverName] of [
+      [91, "monocode"],
+      [92, "example"],
+    ] as const) {
+      onLine!(
+        JSON.stringify({
+          id,
+          method: "mcpServer/elicitation/request",
+          params: {
+            serverName,
+            mode: "form",
+            _meta: {
+              codex_approval_kind: "mcp_tool_call",
+              persist: ["session", "always"],
+            },
+            message: `Allow the ${serverName} MCP server to run tool "get_monos"?`,
+            requestedSchema: { type: "object", properties: {} },
+          },
+        }),
+      );
+      await waitFor(
+        () =>
+          events.filter((event) => event.type === "approval.requested")
+            .length ===
+          id - 90,
+        "MCP approval UI",
+      );
+      const approval = events.findLast(
+        (event) => event.type === "approval.requested",
+      )!;
+      respondCodexApproval("codex-live", approval.requestId, "allow");
+      await waitFor(() => parse().some((m) => m.id === id), "MCP response");
+    }
+    expect(parse().find((m) => m.id === 91)?.result).toEqual({
+      action: "accept",
+      content: {},
+      _meta: { persist: "session" },
+    });
+    expect(parse().find((m) => m.id === 92)?.result).toEqual({
+      action: "accept",
+      content: {},
       _meta: null,
     });
     notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });

@@ -1,4 +1,5 @@
 import type { AppErrorCode } from "../../agent-app/model/appActionError";
+import type { AppAccess } from "../../sessions/model/operatorCommand";
 import {
   excerpt,
   intentLine,
@@ -167,7 +168,7 @@ export type Caller =
       kind: "session";
       sessionId: SessionId;
       turnId: TurnId;
-      access: "operator";
+      access: AppAccess;
       leadSessionId: SessionId | null;
       cwd: string;
     };
