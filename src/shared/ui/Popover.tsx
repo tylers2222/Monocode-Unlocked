@@ -294,9 +294,12 @@ function WebPopover({
     };
   }, [place]);
 
+  // The first pass is hidden while it is measured, and a hidden surface
+  // cannot take focus: focus it once it is placed.
+  const shown = position !== null;
   useEffect(() => {
-    if (autoFocus) surface.current?.focus();
-  }, [autoFocus]);
+    if (autoFocus && shown) surface.current?.focus();
+  }, [autoFocus, shown]);
 
   useEffect(() => {
     if (!onDismiss) return;
