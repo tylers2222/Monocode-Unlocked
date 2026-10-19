@@ -16,6 +16,7 @@ import {
   type SessionChangesSource,
   type WorkspaceTab,
 } from "./layout";
+import { filterTabsForProject } from "./workspaceTabGroups";
 import type { ReleaseNotesTabSource } from "../../../app/model/releaseNotes";
 import {
   clampDockSize,
@@ -108,29 +109,36 @@ export function collectWorkspaceSnapshot(
   return withProjectReturnTargets(
     {
       ...snapshot,
-      activeTabId: savedActiveTabId(tabs, snapshot.tabs, activeTabId),
+      activeTabId: savedActiveTabId(
+        filterTabsForProject(tabs, sessions, snapshot.projectCwd),
+        snapshot.tabs,
+        activeTabId,
+      ),
     },
     memory,
   );
 }
 
 /**
- * The active tab if it is saved, else the nearest saved tab before it in the
- * strip (a tab opens beside the one it was opened from), else the nearest
- * after it, else none.
+ * The active tab if it is saved. Else the nearest saved tab before it in the
+ * project's strip (a tab opens beside the one it was opened from), else the
+ * nearest after it. Else the first saved tab, else none.
  */
 function savedActiveTabId(
-  strip: WorkspaceTab[],
+  projectStrip: WorkspaceTab[],
   saved: WorkspaceTab[],
   activeTabId: string,
 ): string {
   const savedIds = new Set(saved.map((tab) => tab.id));
-  const index = strip.findIndex((tab) => tab.id === activeTabId);
+  if (savedIds.has(activeTabId)) return activeTabId;
+  const index = projectStrip.findIndex((tab) => tab.id === activeTabId);
   const nearestFirst = [
-    ...strip.slice(0, index + 1).reverse(),
-    ...strip.slice(index + 1),
+    ...projectStrip.slice(0, index + 1).reverse(),
+    ...projectStrip.slice(index + 1),
   ];
-  return nearestFirst.find((tab) => savedIds.has(tab.id))?.id ?? "";
+  return (
+    nearestFirst.find((tab) => savedIds.has(tab.id))?.id ?? saved[0]?.id ?? ""
+  );
 }
 
 function withProjectReturnTargets(
