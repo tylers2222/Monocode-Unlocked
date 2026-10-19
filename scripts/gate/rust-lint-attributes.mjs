@@ -1,9 +1,10 @@
 // Finds the lint suppressions in Rust source: each lint named in an allow( or
-// expect( anywhere in code (comments and strings stripped), so an attribute counts
-// however it is spelled or assembled, including through a macro that builds the
-// # and the [...] from separate tokens. An attribute whose body holds a macro
-// metavariable ($meta, $($t)*) forwards whatever the caller passes, so it also
-// counts as attr(<body>), whitespace removed.
+// expect( anywhere in code (comments and strings stripped), except in a fn
+// definition or a path call. An attribute whose body holds a macro metavariable
+// ($meta, $($t)*) forwards whatever the caller passes, so it also counts as
+// attr(<body>), whitespace removed. A text scan cannot follow macro expansion: a
+// macro that takes the word allow apart from its ( can still build an attribute
+// that this scan does not see.
 
 const RAW_STRING = /r(#*)"/y;
 const LINE_COMMENT = /\/\/[^\n]*/y;
@@ -74,7 +75,7 @@ export function* lintAttributes(source) {
     const body = code.slice(open, closing(code, open));
     if (body.includes("$")) yield `attr(${body.replace(/\s+/g, "")}])`;
   }
-  for (const call of code.matchAll(/(?<![\w.])(allow|expect)\s*\(/g)) {
+  for (const call of code.matchAll(/(?<![\w.:]|\bfn\s+)(allow|expect)\s*\(/g)) {
     const args = call.index + call[0].length - 1;
     for (const item of code.slice(args + 1, closing(code, args)).split(",")) {
       const lint = item.replace(/\s+/g, "");

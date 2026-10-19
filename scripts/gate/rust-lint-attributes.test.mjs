@@ -41,6 +41,7 @@ test("an attribute forwarded through a macro counts as attr(<body>)", () => {
   assert.deepEqual(lints(repeated), ["attr([$($t)*])"]);
   assert.deepEqual(lints(repeatedInner), ["attr([$($t)*])"]);
   assert.deepEqual(lints(inCfgAttr), ["attr([cfg_attr(all(),$a)])"]);
+  assert.deepEqual(lints("macro_rules! m { ($a:meta) => { # [ $a ] fn f() {} } }"), ["attr([$a])"]);
 });
 
 test("an allow built from separate # and [...] tokens in a macro counts", () => {
@@ -50,9 +51,11 @@ test("an allow built from separate # and [...] tokens in a macro counts", () => 
   assert.deepEqual(lints(bracketToken), ["allow(dead_code)"]);
 });
 
-test("allow( and expect( count only as whole names, not inside other names or method calls", () => {
+test("allow( and expect( count only as whole names, not in other names, method calls, fn definitions or path calls", () => {
   const source = '#[disallow(dead_code)]\n#[my_expect(unused)]\n#[doc = x.expect(y)]\nfn f() {}';
   assert.deepEqual(lints(source), []);
+  const definitions = 'impl P { fn allow(&self, t: &str) -> bool { P::allow(self, t) } fn expect(self) {} }';
+  assert.deepEqual(lints(definitions), []);
 });
 
 test("attribute text inside comments, strings and char literals does not count", () => {
