@@ -38,6 +38,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: node --test scripts/gate/rust-lint-attributes.test.mjs
 
+      - name: Integrity probe test
+        if: ${{ !cancelled() }}
+        run: bash scripts/gate/integrity.test.sh
+
       - name: Baselines only shrink
         if: ${{ !cancelled() }}
         run: node scripts/gate/baseline-growth.mjs "$BASE"
