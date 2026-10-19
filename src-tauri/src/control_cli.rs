@@ -287,9 +287,9 @@ Actions:
                   messageAllowlist (see monos.update); else
                   direction_forbidden. A regular Mono sends a Giga only
                   intent "new" or steers it with reply_to set to an
-                  unanswered message that Giga's chat sent it in the last
-                  24 hours (else upward_steer_forbidden), while the Giga's
-                  chat runs (else target_gone).
+                  unanswered message that Giga sent it in the last 24 hours
+                  (else upward_steer_forbidden), while the Giga chat that
+                  sent it runs (else target_gone).
                   wanting_reply and intent are required. wanting_reply is
                   true only when you need an answer. The answer arrives later
                   as a new message, so do not poll. A project session cannot
