@@ -4615,9 +4615,10 @@ mod tests {
     }
 
     // A8 (design 6.6). Defect: an app-started lead gets every /operator
-    // action (all notes, a sibling's delete), or loses a power the addendum
-    // gives it (stop its worker, make a worktree); or an /operator lead is
-    // narrowed too.
+    // action (all notes, a sibling's delete, steering or stopping a sibling
+    // lead, a user's session or another lead's worker), or loses a power the
+    // addendum gives it (stop its worker, make a worktree); or an /operator
+    // lead is narrowed too.
     #[test]
     fn a8_a_lead_started_by_the_app_acts_only_on_its_own_workers() {
         let started = session_caller("l1");
@@ -4636,7 +4637,35 @@ mod tests {
                 &started,
                 "sessions.delete",
                 Some(SessionLevel::Lead),
-                lead_scope,
+                lead_scope.clone(),
+            ),
+            (
+                "send a sibling lead",
+                &started,
+                "sessions.send",
+                Some(SessionLevel::Lead),
+                lead_scope.clone(),
+            ),
+            (
+                "draft into a user session",
+                &started,
+                "sessions.draft",
+                None,
+                lead_scope.clone(),
+            ),
+            (
+                "stop a sibling lead",
+                &started,
+                "sessions.stop",
+                Some(SessionLevel::Lead),
+                lead_scope.clone(),
+            ),
+            (
+                "stop another lead's worker",
+                &started,
+                "sessions.stop",
+                Some(worker_of("l2")),
+                lead_scope.clone(),
             ),
             (
                 "stop its worker",

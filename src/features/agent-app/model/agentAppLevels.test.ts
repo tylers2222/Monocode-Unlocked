@@ -618,3 +618,15 @@ it("lets an /operator lead in supervised start a full-access worker", async () =
     "app-lead-r1",
   );
 });
+
+// Design 6.6 runtime ceiling, its boundary. Defect: the ceiling refuses the
+// lead's own mode, so every plain sessions.start of a started lead (no
+// runtimeMode, which defaults to the lead's own) fails.
+it("starts a worker in a started lead's own mode, given or omitted", async () => {
+  const { run, actions } = startedWorld("lead", "auto");
+  await run("sessions.start", { ...CHOICE, prompt: "Review", runtimeMode: "auto" });
+  await run("sessions.start", { ...CHOICE, prompt: "Test" }, "r2");
+  expect(
+    actions.start.mock.calls.map(([launch]) => (launch as { runtimeMode: string }).runtimeMode),
+  ).toEqual(["auto", "auto"]);
+});

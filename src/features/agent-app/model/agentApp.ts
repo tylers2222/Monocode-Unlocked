@@ -715,12 +715,6 @@ function fileInMonoFolder(
 }
 
 /**
- * The launch, and the worktree the call named that must be a listed one. A
- * Giga's session started from its chat into the Giga workspace runs in the
- * Giga's own folder (`workFolder`): the project and working copy stay
- * `~/MonoCode`, the work and its commits stay in `gigas/<slug>/`.
- */
-/**
  * Design 6.6: a session that sessions.start made starts nothing more
  * permissive than itself. A Mono and an /operator session choose freely.
  */
@@ -735,6 +729,12 @@ function runtimeCeiling(source: Session, runtimeMode: Session["runtimeMode"]) {
     );
 }
 
+/**
+ * The launch, and the worktree the call named that must be a listed one. A
+ * Giga's session started from its chat into the Giga workspace runs in the
+ * Giga's own folder (`workFolder`): the project and working copy stay
+ * `~/MonoCode`, the work and its commits stay in `gigas/<slug>/`.
+ */
 function startLaunch(
   source: Session,
   input: Record<string, unknown>,
