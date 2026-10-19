@@ -2836,7 +2836,15 @@ pub fn record_start(
         .into_iter()
         .next()
     {
-        Some(prior) => prior,
+        // Only this start's own accepted row answers it: a refused row under
+        // the key names no session (review r1 m1).
+        Some(prior)
+            if prior.tool == Tool::StartSession
+                && matches!(prior.status, Status::Delivered { .. }) =>
+        {
+            Some(prior)
+        }
+        Some(_) => None,
         None => {
             let row = MonoMessage {
                 id: new_message_id(),
@@ -2864,21 +2872,20 @@ pub fn record_start(
                 },
             };
             insert(&tx, &row)?;
-            row
+            Some(row)
         }
     };
     tx.commit()?;
-    Ok(if stored.payload_hash == hash {
-        StartRecorded::Recorded {
+    Ok(match stored.filter(|stored| stored.payload_hash == hash) {
+        Some(stored) => StartRecorded::Recorded {
             message_id: stored.id,
-        }
-    } else {
-        StartRecorded::Failed {
+        },
+        None => StartRecorded::Failed {
             error: refusal(
                 Refusal::RequestIdReused,
                 mono_gate::REQUEST_ID_REUSED.into(),
             ),
-        }
+        },
     })
 }
 
@@ -9758,6 +9765,81 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(dump(&conn), before);
+    }
+
+    // #93 review r1 m1. Defect: a start the gate refused once, then allowed
+    // under the same request id, is recorded as the refused row: the web app
+    // hands the agent a message id whose row has no session, so a steer
+    // through it is target_gone.
+    #[test]
+    fn record_start_never_answers_a_refused_row_under_the_key() {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        seed_levels(&conn);
+        let key = RequestId::parse("spawn").unwrap();
+        let input = start_input("Build");
+        let check = |caller: &Caller| {
+            check_action(
+                &conn,
+                caller,
+                "sessions.start",
+                None,
+                None,
+                &key,
+                &input,
+                100,
+            )
+            .unwrap()
+        };
+        let refused = failed_check(check(&session_caller("fresh", "/p", Some("lead"))));
+        assert_eq!(refused.code, "worker_cannot_spawn");
+        let lead = session_caller("fresh", "/p", None);
+        assert_eq!(
+            check(&lead),
+            ActionChecked::Allowed {
+                lead_session_id: Some(session("fresh"))
+            }
+        );
+        assert_eq!(
+            record_start(&conn, &lead, &session("app-fresh-spawn"), &key, &input, 200).unwrap(),
+            StartRecorded::Failed {
+                error: refusal(
+                    Refusal::RequestIdReused,
+                    mono_gate::REQUEST_ID_REUSED.into()
+                )
+            }
+        );
+        assert_eq!(rows(&conn), 1);
+    }
+
+    // #93 review r1 N3. Defect: a level gate command reads a call that names
+    // an argument it does not know, so a renamed field on either side is
+    // dropped (an `Option`) or defaulted instead of failing the call.
+    #[test]
+    fn the_level_gate_commands_refuse_an_unknown_argument() {
+        let caller = serde_json::json!({
+            "kind": "mono_chat", "monoId": "mono-a", "sessionId": "a-chat", "turnId": "turn-1"
+        });
+        let check = serde_json::json!({
+            "caller": caller, "action": "sessions.list", "target": null,
+            "targetLeadSessionId": null, "requestId": "r1", "input": {}
+        });
+        let record = serde_json::json!({
+            "caller": caller, "sessionId": "lead", "requestId": "r1", "input": {}
+        });
+        assert!(serde_json::from_value::<AppActionCall>(check.clone()).is_ok());
+        assert!(serde_json::from_value::<RecordStartCall>(record.clone()).is_ok());
+        for (mut call, kind) in [(check, "check"), (record, "record")] {
+            call["leadCopy"] = serde_json::json!("lead");
+            let parsed = match kind {
+                "check" => serde_json::from_value::<AppActionCall>(call).err(),
+                _ => serde_json::from_value::<RecordStartCall>(call).err(),
+            };
+            assert!(
+                parsed.is_some_and(|error| error.to_string().contains("unknown field")),
+                "{kind}"
+            );
+        }
     }
 
     // Design 16.2 and 13.5. Defect: the start row stores the prompt's real

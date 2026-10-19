@@ -144,11 +144,10 @@ it("reads an accepted row's intent only when it, replyTo and scope agree", () =>
   });
 });
 
-// Design 1.4, 6.6, 13.5, 16.2. Defect: the web app reads a refused
-// sessions.start or app action row as unreadable, a start row (delivered and
-// new) as unreadable, an accepted row of another tool that is not a message,
-// or a row of an unknown tool.
-it("reads a tool that is not a message only on a rejected row or a delivered start row", () => {
+// Design 1.4, 6.6, 13.5. Defect: the web app reads a refused sessions.start or
+// app action row as unreadable, reads an accepted row of a tool that is not
+// a message, or reads a row of an unknown tool.
+it("reads a tool that is not a message only on a rejected row", () => {
   const row = (tool: unknown, status: string) =>
     parseRowIntent({ tool, status, intent: "new", replyTo: null, scope: null });
   for (const tool of ["start_session", "app_action", "send_message", "reply"])
@@ -156,21 +155,8 @@ it("reads a tool that is not a message only on a rejected row or a delivered sta
       status: "rejected",
       asked: { intent: "new", replyTo: null, scope: null },
     });
-  expect(row("start_session", "delivered")).toEqual({
-    status: "accepted",
-    intent: { intent: "new", replyTo: null, scope: null },
-  });
-  expect(row("app_action", "delivered")).toBeUndefined();
-  expect(row("start_session", "open")).toBeUndefined();
-  expect(
-    parseRowIntent({
-      tool: "start_session",
-      status: "delivered",
-      intent: "steer",
-      replyTo: "m_abcdefgh2345",
-      scope: null,
-    }),
-  ).toBeUndefined();
+  for (const tool of ["start_session", "app_action"])
+    expect(row(tool, "delivered")).toBeUndefined();
   expect(row("send_message", "delivered")?.status).toBe("accepted");
   for (const tool of ["sessions.start", null, undefined])
     expect(row(tool, "rejected")).toBeUndefined();

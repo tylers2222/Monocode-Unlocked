@@ -288,6 +288,6 @@ it("answers the start row's message id, and throws request_id_reused or an unkno
     db.record = reply;
     await expect(
       gate.recordStart("r1", "app-giga-chat-r1", input),
-    ).rejects.toThrow("The level check answered in an unknown form");
+    ).rejects.toThrow("The start row answered in an unknown form");
   }
 });

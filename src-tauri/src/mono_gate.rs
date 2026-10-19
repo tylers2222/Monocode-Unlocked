@@ -446,6 +446,10 @@ fn may_steer_turn(caller: &Level, recipient: &Recipient) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnPin {
     Turn(String),
+    /// M started no turn of its own, so the steer joins the turn its session
+    /// runs now, and the accepted row keeps it (`SteerTarget::Pinned`): rule
+    /// (b)'s late answer, or a start row (design 16.2).
+    Live(String),
     NotStarted,
 }
 
@@ -510,7 +514,7 @@ pub fn target_session(
                 chat: chat.map(|chat| chat.session.clone()),
                 pin: chat
                     .and_then(|chat| chat.turn.clone())
-                    .map_or(TurnPin::NotStarted, TurnPin::Turn),
+                    .map_or(TurnPin::NotStarted, TurnPin::Live),
             };
         }
     }
@@ -534,7 +538,7 @@ pub fn target_session(
                 // Design 16.2: a start row's work is its whole session, so a
                 // steer through it is pinned to the turn that session runs.
                 (None, Recipient::Session { target, .. }) if m.tool == Tool::StartSession => {
-                    target.turn.as_deref().map(turn)
+                    target.turn.clone().map(TurnPin::Live)
                 }
                 (None, _) => None,
             },
@@ -1149,14 +1153,14 @@ pub fn decide_send(
                     ..
                 }
             );
-        let (session, pin, late) =
+        let (session, pin) =
             match target_session(caller, &level, recipient, &referenced.message, now) {
-                TargetSession::Giga { chat, pin } => (chat, pin, true),
+                TargetSession::Giga { chat, pin } => (chat, pin),
                 _ if upward => return reject(RejectCode::UpwardSteerForbidden, to),
                 TargetSession::NotBetween => return reject(RejectCode::SteerTargetMismatch, to),
-                TargetSession::Receiver { session, pin } => (session, pin, false),
+                TargetSession::Receiver { session, pin } => (session, pin),
             };
-        Some((referenced, session, pin, late))
+        Some((referenced, session, pin))
     } else {
         None
     };
@@ -1172,13 +1176,13 @@ pub fn decide_send(
         }
         _ => {}
     }
-    let (hop, route, intent) = if let Some((referenced, session, pin, late)) = steered {
+    let (hop, route, intent) = if let Some((referenced, session, pin)) = steered {
         // S15: the work M started must run now, in the turn that runs it.
         let running = referenced.session.as_ref().filter(|target| {
             session.as_ref() == Some(&target.session)
                 && target.exists
                 && match &pin {
-                    TurnPin::Turn(turn) => target.turn.as_ref() == Some(turn),
+                    TurnPin::Turn(turn) | TurnPin::Live(turn) => target.turn.as_ref() == Some(turn),
                     TurnPin::NotStarted => false,
                 }
         });
@@ -1196,12 +1200,10 @@ pub fn decide_send(
                 session: target.session.clone(),
                 via: Via::Steer,
             },
-            Intent::Steer(
-                match (late || referenced.message.tool == Tool::StartSession, pin) {
-                    (true, TurnPin::Turn(turn_id)) => SteerTarget::Pinned { message, turn_id },
-                    _ => SteerTarget::Message(message),
-                },
-            ),
+            Intent::Steer(match pin {
+                TurnPin::Live(turn_id) => SteerTarget::Pinned { message, turn_id },
+                _ => SteerTarget::Message(message),
+            }),
         )
     } else if let Asked::WholeTurn = asked {
         // W3: the recipient's own session must run a turn. S17 then.

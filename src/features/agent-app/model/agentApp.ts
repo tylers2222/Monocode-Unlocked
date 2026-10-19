@@ -496,16 +496,20 @@ function boundaryInput(
 
 /**
  * A start row that failed after `host.start` launched session `id`. The
- * answer says so, since a hint like "use a new request id" alone would
- * start the work a second time.
+ * answer says so in the same sentence, since a hint like "use a new request
+ * id" alone would start the work a second time.
  */
 function startedAnyway(error: unknown, id: string): Error {
-  const started = `Session ${id} was started anyway, so do not start it again; read or steer it by its id.`;
+  const failure =
+    error instanceof AppActionError
+      ? error.hint
+      : error instanceof Error
+        ? error.message
+        : String(error);
+  const text = `${failure.replace(/[.\s]+$/, "")}; session ${id} was started anyway, so do not start it again; read or steer it by its id.`;
   return error instanceof AppActionError
-    ? new AppActionError(error.code, `${error.hint} ${started}`, error.details)
-    : new Error(
-        `${error instanceof Error ? error.message : String(error)}. ${started}`,
-      );
+    ? new AppActionError(error.code, text, error.details)
+    : new Error(text);
 }
 
 function agentPrompt(value: unknown): string {

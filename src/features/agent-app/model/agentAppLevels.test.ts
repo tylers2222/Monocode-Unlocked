@@ -455,8 +455,35 @@ it("answers a coded record failure after the launch with its code and the starte
     run("sessions.start", { ...CHOICE, prompt: "Fix the flaky test" }, "r9"),
   ).rejects.toMatchObject({
     code: "request_id_reused",
-    hint: "Use a new request id. Session app-lead-r9 was started anyway, so do not start it again; read or steer it by its id.",
+    hint: "Use a new request id; session app-lead-r9 was started anyway, so do not start it again; read or steer it by its id.",
   });
+  expect(actions.start).toHaveBeenCalledOnce();
+});
+
+// #93 review r1 m2. Defect: a record that fails with no code (a Rust Err
+// such as "database is locked", or a reply this window cannot read) drops
+// the started line, so the agent starts the work again; or its text says
+// the action did not run.
+it.each([
+  ["a Rust Err", "database is locked", "database is locked"],
+  ["an unknown reply", { outcome: "stored" }, "The start row answered in an unknown form"],
+])("answers %s from the record after the launch in one sentence with the started line", async (_case, reply, failure) => {
+  const { run, actions } = world("lead");
+  command.answer = (name) => {
+    if (name !== "mono_message_record_start")
+      return { outcome: "allowed", leadSessionId: "lead" };
+    if (typeof reply === "string") throw reply;
+    return reply;
+  };
+  const error = await run(
+    "sessions.start",
+    { ...CHOICE, prompt: "Fix the flaky test" },
+    "r10",
+  ).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toBe(
+    `${failure}; session app-lead-r10 was started anyway, so do not start it again; read or steer it by its id.`,
+  );
   expect(actions.start).toHaveBeenCalledOnce();
 });
 

@@ -152,15 +152,13 @@ function parseStartRecorded(
 
 /**
  * A parsed answer of a level gate command. Throws its refusal, and throws
- * for a reply this window cannot read, which never allows anything.
+ * `unknown` for a reply this window cannot read, which never allows anything.
  */
 function answered<T extends { outcome: "allowed" | "recorded" }>(
   answer: T | Failed | undefined,
+  unknown: string,
 ): T {
-  if (!answer)
-    throw new Error(
-      "The level check answered in an unknown form, so the action did not run.",
-    );
+  if (!answer) throw new Error(unknown);
   if (answer.outcome === "failed") {
     const { code, hint, ...details } = answer.error;
     throw new AppActionError(code, hint, details);
@@ -198,6 +196,7 @@ export function levelGate(
       };
       const answer = answered(
         parseActionChecked(await invoke("mono_app_action_check", { call })),
+        "The level check answered in an unknown form, so the action did not run.",
       );
       return { leadSessionId: answer.leadSessionId };
     },
@@ -205,6 +204,7 @@ export function levelGate(
       const call = { caller: caller(), sessionId, requestId, input };
       return answered(
         parseStartRecorded(await invoke("mono_message_record_start", { call })),
+        "The start row answered in an unknown form",
       ).messageId;
     },
   };

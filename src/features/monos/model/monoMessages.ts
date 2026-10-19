@@ -29,8 +29,8 @@ export type MessageTool = "send_message" | "reply";
  * `sessions.start` made. Only a rejected row or a delivered start row
  * carries one.
  */
-export type RefusalTool = "start_session" | "app_action";
-export type Tool = MessageTool | RefusalTool;
+export type NonMessageTool = "start_session" | "app_action";
+export type Tool = MessageTool | NonMessageTool;
 export type Delivery = "submit" | "queue" | "steer";
 export type IntentKind = "new" | "reply" | "steer" | "continue";
 /**
@@ -97,9 +97,8 @@ export type RowIntent =
 /**
  * The intent columns of a row from Rust. Undefined when they disagree: an
  * accepted row is a message that is `new` with no target, `reply` with
- * `replyTo`, or `steer` with exactly one of `replyTo` and `scope`, or a
- * delivered `new` start row (design 16.2); a row of any tool may be
- * rejected.
+ * `replyTo`, or `steer` with exactly one of `replyTo` and `scope`; a row of
+ * any tool may be rejected.
  */
 export function parseRowIntent(row: {
   tool: unknown;
@@ -121,10 +120,7 @@ export function parseRowIntent(row: {
     return undefined;
   if (row.status === "rejected")
     return { status: "rejected", asked: { intent, replyTo, scope } };
-  const startRow =
-    tool === "start_session" && row.status === "delivered" && intent === "new";
-  if (tool !== "send_message" && tool !== "reply" && !startRow)
-    return undefined;
+  if (tool !== "send_message" && tool !== "reply") return undefined;
   if (intent === "new")
     return replyTo === null && scope === null
       ? { status: "accepted", intent: { intent, replyTo, scope } }
