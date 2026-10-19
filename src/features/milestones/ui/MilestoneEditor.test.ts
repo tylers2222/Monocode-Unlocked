@@ -142,10 +142,12 @@ it("Enter in the title saves", async () => {
 });
 
 it("a second ⌘↵ while the save is in flight sends nothing more", async () => {
-  const pending = Promise.withResolvers<Milestone>();
+  // CI's Node has no Promise.withResolvers.
+  let resolve = (_: Milestone) => {};
+  const saved = new Promise<Milestone>((done) => (resolve = done));
   invoke.mockImplementation(async (command: string) =>
     command === "milestones_update"
-      ? pending.promise
+      ? saved
       : { settings: { enabled: true, hiddenStatuses: [] }, milestones: rows },
   );
   await openShip();
@@ -154,7 +156,7 @@ it("a second ⌘↵ while the save is in flight sends nothing more", async () =>
   await key(field("Note"), "Enter", { metaKey: true });
 
   expect(writes()).toEqual([update({ note: "Once" })]);
-  await act(async () => pending.resolve(SHIP));
+  await act(async () => resolve(SHIP));
   expect(container.querySelector("[data-milestone-editor]")).toBeNull();
 });
 
