@@ -1,0 +1,37 @@
+name: gate-integrity
+
+# GitHub runs a pull_request_target workflow from the default branch, and the
+# checkout below takes the default branch too, so a pull request cannot edit the
+# check that judges it. The branches filter keeps the job to pull requests into
+# tyler/main. That is safe only while no step runs pull request code: the PR head
+# is fetched as git objects for `git diff` and never checked out, installed, built
+# or sourced.
+on:
+  pull_request_target:
+    branches: [tyler/main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  integrity:
+    name: gate/integrity
+    runs-on: ubuntu-latest
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch the PR head as git objects only
+        run: git fetch --no-tags origin "$HEAD_SHA"
+
+      - name: Integrity check (default-branch script, diff only)
+        run: bash scripts/gate/integrity.sh "$BASE_SHA" "$HEAD_SHA"
