@@ -313,8 +313,8 @@ it("tells only a Giga Mono how to create and update Monos", () => {
 });
 
 // Design 6.2 and S8, S18, S19. Defect: a Mono is not told how it may reach
-// a Giga or another Mono, or the limits, so it learns them only from
-// refusals; a Giga is told the upward rule, which never binds it, or not
+// a Giga, another Mono, a lead or a worker, or the limits, so it learns them
+// only from refusals; a Giga is told the upward rule, which never binds it, or not
 // the peer rule, which does; or a Giga is never told the monos.update
 // field that sets an allowlist.
 it("tells a Mono the upward and peer rules, every Mono the limits, and a Giga the allowlist field", () => {
@@ -334,5 +334,11 @@ it("tells a Mono the upward and peer rules, every Mono the limits, and a Giga th
   expect(giga).not.toContain("24 h");
   expect(mono).toContain("Another regular Mono must share a project");
   expect(giga).toContain("Another Giga must share a project");
+  // Design 13.3 and W2 (review r1 m1): every Mono learns that only a
+  // worker's lead reaches it, and a regular Mono that it may steer a lead's
+  // whole turn.
+  expect(mono).toContain("Message a lead, never a worker");
+  expect(giga).toContain("Message a lead, never a worker");
+  expect(mono).toContain("a regular Mono steering a lead session");
   expect(rules(gigaContext, "giga_mono_rules")).toContain('"messageAllowlist"');
 });

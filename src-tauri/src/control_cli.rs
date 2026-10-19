@@ -149,12 +149,12 @@ session with app access (/operator, or started by sessions.start) may call
 messages.*. A worker may call only messages.*, and it messages only its lead:
 sessions.start gets worker_cannot_spawn and its other calls get
 worker_scope. A lead messages its own workers and the Monos that have its
-project; any other session gets lead_scope. A Mono messages a lead in one of
+project; another lead or a user session gets lead_scope. A Mono messages a lead in one of
 its projects and never a worker. Only a worker's lead may message it or use
 sessions.send or sessions.draft on it; other callers get steer_via_lead. A
 lead or worker always sends wanting_reply false (else session_cannot_wait)
-and sends only intent "new" to its lead or a Mono (else
-upward_steer_forbidden). Until /operator is typed in it, a session that
+and sends only intent "new" to its lead or a Mono (a steer with reply_to
+gets upward_steer_forbidden, one with scope steer_scope_not_allowed). Until /operator is typed in it, a session that
 sessions.start started cannot start a session with a more permissive
 runtimeMode, and as a lead it may only list models, sessions and worktrees,
 create worktrees, start workers, and read, send to, draft in, stop, archive
@@ -287,8 +287,9 @@ Actions:
                   messageAllowlist (see monos.update); else
                   direction_forbidden. A regular Mono sends a Giga only
                   intent "new" or steers it with reply_to set to an
-                  unanswered message that Giga sent it in the last 24 hours,
-                  while the Giga's chat runs (else upward_steer_forbidden).
+                  unanswered message that Giga sent it in the last 24 hours
+                  (else upward_steer_forbidden), while the Giga's chat runs
+                  (else target_gone).
                   wanting_reply and intent are required. wanting_reply is
                   true only when you need an answer. The answer arrives later
                   as a new message, so do not poll. A project session cannot
@@ -1429,7 +1430,18 @@ mod tests {
             .filter(|code| !help.contains(code))
             .collect();
         assert!(missing.is_empty(), "help omits {missing:?}");
+        // Review r1 N3: the limits the gate holds (RATE_LIMIT, MAX_HOP,
+        // Body::MAX_CHARS), as the help states them.
+        let words = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        for limit in [
+            "6 messages to one recipient in 10 minutes",
+            "4 deep (hop_limit)",
+            "8000 characters (too_large)",
+        ] {
+            assert!(words.contains(limit), "help omits {limit:?}");
+        }
     }
+
     #[test]
     fn monos_configure_is_renamed_to_monos_update_and_delete_is_never_an_action() {
         let help = app_help();
