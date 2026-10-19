@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::MutexGuard;
 
 use rusqlite::Connection;
@@ -44,13 +44,18 @@ impl World {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("monocode.db");
         if let Ok(source) = std::env::var(SCENARIO_DB) {
-            // Never the live database: `startup` would change it.
-            let source = Path::new(&source);
+            // Only a `sqlite3 .backup` copy is a consistent snapshot: a plain
+            // copy of the live database leaves out its `-wal` file, so it
+            // can miss recent commits. Resolved first, so a symlink or `..`
+            // cannot lead out of /tmp (macOS /tmp is /private/tmp).
+            let source = std::fs::canonicalize(&source)
+                .unwrap_or_else(|error| panic!("{SCENARIO_DB}={source}: {error}"));
             assert!(
                 source.starts_with("/tmp") || source.starts_with("/private/tmp"),
-                "{SCENARIO_DB} must name a `sqlite3 .backup` copy under /tmp"
+                "{SCENARIO_DB} must name a `sqlite3 .backup` copy under /tmp, not {}",
+                source.display()
             );
-            std::fs::copy(source, &path).unwrap();
+            std::fs::copy(&source, &path).unwrap();
         }
         let mut world = Self {
             dir,
@@ -103,7 +108,7 @@ impl World {
     /// What the window does when `session` is idle and a message waits for
     /// it: it starts turn `turn` with every unqueued row (`unqueued`, then
     /// `assign_slot` as a submit), and returns the rows it handed off. The
-    /// provider has not taken the text yet; see [`World::provider_took`].
+    /// provider has not taken the text yet; see [`World::end_turn`].
     pub(crate) fn start_turn(&mut self, session: &SessionId, turn: &str) -> Vec<Targeted> {
         self.running
             .insert(session.as_str().to_string(), turn.to_string());
@@ -125,15 +130,16 @@ impl World {
             .collect()
     }
 
-    /// The provider runs turn `turn` of `session`, so it took the text that
-    /// opened it (`mono_message_confirm_openers`).
-    pub(crate) fn provider_took(&self, session: &SessionId, turn: &str) {
-        mono_messages::confirm_openers(&self.conn(), session, turn, self.now).unwrap();
-    }
-
-    /// Turn `turn` of `session` ends (`turn_ended`).
-    pub(crate) fn end_turn(&mut self, session: &SessionId, turn: &str) {
+    /// Turn `turn` of `session` ends. As the window does when its send
+    /// resolves (`registry.ts`, `sendHarnessTurn`'s `finally`): when the
+    /// provider took the turn's text (`sent`) it confirms the openers
+    /// (`mono_message_confirm_openers`), then the turn ends (`turn_ended`).
+    /// A messaging call bound to the turn also confirms them (`submit`).
+    pub(crate) fn end_turn(&mut self, session: &SessionId, turn: &str, sent: bool) {
         self.running.remove(session.as_str());
+        if sent {
+            mono_messages::confirm_openers(&self.conn(), session, turn, self.now).unwrap();
+        }
         mono_messages::turn_ended(&self.conn(), session, turn, self.now).unwrap();
     }
 }

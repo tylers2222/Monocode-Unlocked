@@ -116,25 +116,32 @@ fn ask_survives_a_kill(world: &mut World, giga: &Mono, mono: &Mono) -> MessageId
     ask
 }
 
-/// The Mono's window opens a turn with the ask, and the Mono answers it.
+/// The Mono's window hands the ask to a turn and the app dies before the
+/// provider takes it, so after a restart the ask waits again. The next turn
+/// takes it and the Mono answers; the reply call confirms the turn's opener,
+/// so the ask is delivered and answered at the reply's time.
 fn mono_answers(world: &mut World, giga: &Mono, mono: &Mono, ask: &MessageId) -> MessageId {
     world.advance(1_000);
     assert_eq!(ids(&world.start_turn(&mono.chat, "m1")), [ask]);
-    world.provider_took(&mono.chat, "m1");
-    let taken_at = world.now;
+    world.kill();
+    world.advance(30_000);
+    world.restart();
+    assert_eq!(row(world, ask), waiting(mono), "an untaken ask waits again");
+    world.advance(1_000);
+    assert_eq!(ids(&world.start_turn(&mono.chat, "m2")), [ask]);
     world.advance(5_000);
     let answer = json!({"message": "Yes, CI is green."});
-    let [reply] = written(world.call(mono, "m1", "answer", Tool::Reply, answer, giga))
+    let [reply] = written(world.call(mono, "m2", "answer", Tool::Reply, answer, giga))
         .try_into()
         .unwrap();
     let replied_at = world.now;
-    world.end_turn(&mono.chat, "m1");
+    world.end_turn(&mono.chat, "m2", true);
     assert_eq!(
         row(world, ask),
         Row {
             status: "answered".into(),
-            turn: Some("m1".into()),
-            delivered_at: Some(taken_at),
+            turn: Some("m2".into()),
+            delivered_at: Some(replied_at),
             closed_at: Some(replied_at),
             ..waiting(mono)
         }
@@ -165,9 +172,8 @@ fn reply_arrives_once(world: &mut World, giga: &Mono, reply: &MessageId) {
     );
     world.advance(1_000);
     assert_eq!(ids(&world.start_turn(&giga.chat, "g4")), [reply]);
-    world.provider_took(&giga.chat, "g4");
     let taken_at = world.now;
-    world.end_turn(&giga.chat, "g4");
+    world.end_turn(&giga.chat, "g4", true);
     world.kill();
     world.advance(60_000);
     world.restart();

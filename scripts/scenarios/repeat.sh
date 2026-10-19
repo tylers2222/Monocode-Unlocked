@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Runs the scenario tests matching FILTER 20 times (Change R plan v2,
-# section 3) and fails unless all 20 pass. Each run holds the shared heavy
-# lock when HEAVY_LOCK names its script (heavy-lock.sh sets
-# CARGO_BUILD_JOBS=4). Set MONOCODE_SCENARIO_DB to run on a /tmp copy of a
-# real monocode.db.
+# section 3) and fails unless all 20 pass. Every cargo run holds the shared
+# heavy lock: HEAVY_LOCK names its script (heavy-lock.sh, which also sets
+# CARGO_BUILD_JOBS=4). Without HEAVY_LOCK it runs only on CI. Set
+# MONOCODE_SCENARIO_DB to run on a `sqlite3 .backup` copy of a real
+# monocode.db under /tmp.
 #
 # Usage: scripts/scenarios/repeat.sh FILTER [RUNS]
 set -euo pipefail
@@ -14,6 +15,9 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 lock=()
 if [[ -n "${HEAVY_LOCK:-}" ]]; then
   lock=("$HEAVY_LOCK")
+elif [[ -z "${CI:-}" ]]; then
+  echo "repeat.sh: set HEAVY_LOCK to heavy-lock.sh (or CI=1)" >&2
+  exit 2
 fi
 
 # Build once, so each run measures the scenario and not the compile.
