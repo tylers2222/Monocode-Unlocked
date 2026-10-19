@@ -180,6 +180,16 @@ export async function acceptQuickLaunch(
   ) {
     throw new Error("The workspace could not accept the queued session yet.");
   }
+  // R4: the caller gets its answer once the session's row exists, so its
+  // next call can name the session as a target with its level.
+  const accepted = workspace
+    .getSessions()
+    .find((item) => item.id === deliveryId);
+  if (
+    launch.startedBy &&
+    !(accepted && (await workspace.saveSession(accepted)))
+  )
+    throw new Error("The workspace could not save the session yet.");
   workspace.updateSessions((sessions) =>
     sessions.map((item) =>
       item.id === deliveryId ? { ...item, quickLaunchAccepted: true } : item,

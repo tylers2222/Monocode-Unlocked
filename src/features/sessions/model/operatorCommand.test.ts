@@ -143,14 +143,29 @@ describe("turnAccess", () => {
 // access, so its codex sandbox opens the network; or a typed /operator in
 // it stays started.
 it("gives a started session's first submit started access, and a typed /operator operator", () => {
-  expect(submitAccess([], false, "lead")).toBe("started");
-  expect(submitAccess([], true, "lead")).toBe("operator");
-  expect(submitAccess([], false, undefined)).toBeNull();
+  expect(submitAccess([], false, "lead", true)).toBe("started");
+  expect(submitAccess([], true, "lead", true)).toBe("operator");
+  expect(submitAccess([], false, undefined, true)).toBeNull();
   expect(
     submitAccess(
       [{ id: "op", role: "user", text: "x", monocode: true }],
       false,
       undefined,
+      true,
     ),
   ).toBe("operator");
+});
+
+// R4 review r1 M1. Rust reads a session caller's level from its saved row.
+// Defect: a session MonoCode never saves (`~`, a remote project) gets app
+// access, so every call it makes is refused unknown_caller; or a typed
+// /operator there runs as a turn with no access instead of being refused.
+it("gives a session MonoCode never saves no app access, and refuses a typed /operator", () => {
+  const operatorThread = [
+    { id: "op", role: "user" as const, text: "x", monocode: true },
+  ];
+  expect(submitAccess([], true, undefined, false)).toBe("unsaved");
+  expect(submitAccess(operatorThread, true, undefined, false)).toBe("unsaved");
+  expect(submitAccess(operatorThread, false, undefined, false)).toBeNull();
+  expect(submitAccess([], false, "lead", false)).toBeNull();
 });

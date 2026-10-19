@@ -32,7 +32,6 @@ const WORLD = vi.hoisted(() => ({
     { id: "a-chat", cwd: "/Users/me", leadSessionId: null, saved: true },
     { id: "lead", cwd: "/code/app", leadSessionId: null, saved: true },
     { id: "worker", cwd: "/code/app", leadSessionId: "lead", saved: true },
-    { id: "ghost", cwd: "/code/app", leadSessionId: "lead", saved: false },
     { id: "g-chat", cwd: "/Users/me", leadSessionId: null, saved: true },
     { id: "g-run", cwd: "/Users/me", leadSessionId: null, saved: true },
   ],
@@ -70,7 +69,6 @@ const SCENARIOS: Scenario[] = [
   { name: "Giga row: a Giga habit run's approvals.withdraw", caller: "g-run", action: "approvals.withdraw", input: { id: "00000000-0000-4000-8000-000000000001" }, requestId: "g-run-withdraw", ran: "approvalWithdraw" },
   { name: "Giga row: a Mono's approvals.file", caller: "a-chat", action: "approvals.file", input: { project: PROJECT, heading: "Pick a store" }, requestId: "m-file", ran: null },
   { name: "Giga row: a lead's approvals.withdraw", caller: "lead", action: "approvals.withdraw", input: { id: "00000000-0000-4000-8000-000000000001" }, requestId: "l-withdraw", ran: null },
-  { name: "R4: an unsaved session counts as a lead, whatever lead the window holds", caller: "a-chat", action: "sessions.send", input: { sessionId: "ghost", prompt: "Hi" }, requestId: "a5-ghost", ran: null },
   // A3 and A4: a worker's call of every action the gate checks.
   ...[...FIELDS]
     .filter(([action]) => !action.startsWith("messages."))
@@ -150,7 +148,7 @@ beforeEach(async () => {
   command.answer = (name) => ANSWERS[name as Call["command"]];
 });
 
-/** WORLD's sessions as this window has them; lead, worker and ghost have /operator access. */
+/** WORLD's sessions as this window has them; lead and worker have /operator access. */
 function world(caller: string) {
   const sessions = new Map<string, Session>(
     WORLD.sessions.map((entry) => [

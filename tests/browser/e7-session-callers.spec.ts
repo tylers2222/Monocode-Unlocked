@@ -565,3 +565,54 @@ test("a start repeated into its stored, unopened session answers that session an
   expect(again).toMatchObject({ ok: true, result: { id: "app-lead-r1" } });
   expect(await prompts(page, "app-lead-r1")).toEqual([]);
 });
+
+// R4 review r1 M1. Rust reads a session caller's level from its saved row.
+// Defect: a first turn with app access starts while its row is unsaved, or
+// after its save failed, so every call it makes is refused unknown_caller.
+test("a first /operator turn starts only once its session is saved", async ({
+  app,
+  page,
+}) => {
+  await app.mount(
+    {
+      projects: [PROJECT],
+      sessions: [session("fresh", "Fix the login redirect")],
+    },
+    {
+      handlers: {
+        ...handlers,
+        session_upsert: () => {
+          throw "disk full";
+        },
+      },
+    },
+  );
+  await page.getByText("Fix the login redirect").click();
+  const field = page.getByPlaceholder("Ask, build, / for commands");
+  await field.fill("/operator Report to me when tests pass");
+  await field.press("Enter");
+  await expect(page.getByText("disk full")).toBeVisible();
+  expect(await prompts(page, "fresh")).toEqual([]);
+});
+
+// R4 review r1 M1. Defect: /operator in a session MonoCode never saves (the
+// `~` tab) gives it app access that every call then fails with
+// unknown_caller, or runs the turn without saying why it has none.
+test("refuses /operator in a session MonoCode never saves", async ({
+  app,
+  page,
+}) => {
+  await app.mount({ projects: [], sessions: [] }, { handlers });
+  const field = page.getByPlaceholder("Ask, build, / for commands");
+  await field.fill("/operator Report to me when tests pass");
+  await field.press("Enter");
+  await expect(
+    page.getByText(
+      "Use /operator from a session in a project on this Mac. MonoCode does not save sessions outside a project.",
+    ),
+  ).toBeVisible();
+  const spawned = await page.evaluate(() =>
+    window.appBackend!.calls.some(({ command }) => command === "harness_spawn"),
+  );
+  expect(spawned).toBe(false);
+});

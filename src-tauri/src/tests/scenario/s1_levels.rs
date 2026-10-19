@@ -100,38 +100,45 @@ fn s1_levels_come_from_the_database_not_from_the_agent() {
     assert_eq!(refusal(again.unwrap()), ("worker_scope", true));
 
     // A session MonoCode has not saved is refused with no row, on the
-    // message path and the app action path.
+    // message path and the app action path, whether it got its access from
+    // a start or from a typed /operator (the `~` tab before review r1 M1).
     let ghost = SessionId::parse("s1-ghost").unwrap();
     let before = rows(&world);
-    let unsaved = world.session_call(
-        session_caller(&ghost, json!({})),
-        "ghost",
-        Tool::SendMessage,
-        report(&lead_a),
-        &live,
-    );
-    assert_eq!(refusal(unsaved.unwrap()), ("unknown_caller", false));
-    let caller =
-        serde_json::from_value::<mono_messages::CallerArg>(session_caller(&ghost, json!({})))
+    for access in ["started", "operator"] {
+        let unsaved = session_caller(&ghost, json!({"access": access, "cwd": "~"}));
+        let sent = world.session_call(
+            unsaved.clone(),
+            &format!("ghost-{access}"),
+            Tool::SendMessage,
+            report(&lead_a),
+            &live,
+        );
+        assert_eq!(
+            refusal(sent.unwrap()),
+            ("unknown_caller", false),
+            "{access}"
+        );
+        let caller = serde_json::from_value::<mono_messages::CallerArg>(unsaved)
             .unwrap()
             .parse()
             .unwrap();
-    let start = mono_messages::check_action(
-        &world.conn(),
-        &caller,
-        "sessions.start",
-        None,
-        None,
-        &RequestId::parse("ghost-start").unwrap(),
-        &json!({"prompt": "Help", "harness": "codex", "model": "codex:default"}),
-        world.now(),
-    )
-    .unwrap();
-    assert!(
-        matches!(&start, mono_messages::ActionChecked::Failed { error }
-            if error.code == "unknown_caller" && error.message_id.is_none()),
-        "{start:?}"
-    );
+        let start = mono_messages::check_action(
+            &world.conn(),
+            &caller,
+            "sessions.list",
+            None,
+            None,
+            &RequestId::parse(&format!("ghost-list-{access}")).unwrap(),
+            &json!({}),
+            world.now(),
+        )
+        .unwrap();
+        assert!(
+            matches!(&start, mono_messages::ActionChecked::Failed { error }
+                if error.code == "unknown_caller" && error.message_id.is_none()),
+            "{access}: {start:?}"
+        );
+    }
     assert_eq!(rows(&world), before, "an unknown caller writes no row");
 
     every_stored_session_has_the_level_its_row_says(&world);

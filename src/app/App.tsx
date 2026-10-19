@@ -590,6 +590,7 @@ import {
   setSessionArchived,
   setSessionLinkedWorkItem,
   setSessionPinned,
+  canPersistSession,
   shouldPersistSession,
   upsertSession,
   flushSessionWrites,
@@ -7234,33 +7235,36 @@ function Workspace({
       }
       const submittedText = intent === "build" ? "Build approved plan" : text;
       const operatorCommand = consumeOperatorCommand(submittedText);
-      if (
+      // The Mono has app access in every turn, without the command.
+      const mono = isMonoSession(sessionId);
+      const access = submitAccess(
+        current.blocks,
+        operatorCommand.matched,
+        options?.startedBy,
+        mono || canPersistSession(current),
+      );
+      const misplacedOperator =
         operatorCommand.matched &&
         (intent !== "default" ||
           current.orchestrationLeadId ||
           current.inboxAsk ||
-          orchestrator.run(sessionId))
-      ) {
+          orchestrator.run(sessionId));
+      if (misplacedOperator || access === "unsaved") {
         enqueueHarnessEvent(sessionId, {
           type: "status",
-          text: "Use /operator from a regular session turn, outside an orchestration run.",
+          text: misplacedOperator
+            ? "Use /operator from a regular session turn, outside an orchestration run."
+            : "Use /operator from a session in a project on this Mac. MonoCode does not save sessions outside a project.",
         });
         flushHarnessEvents();
         return false;
       }
-      // The Mono has app access in every turn, without the command.
-      const mono = isMonoSession(sessionId);
       const queuedMonoMessage =
         mono && options?.queuedMessageId
           ? current.queuedMessages?.find(
               (message) => message.id === options.queuedMessageId,
             )
           : undefined;
-      const access = submitAccess(
-        current.blocks,
-        operatorCommand.matched,
-        options?.startedBy,
-      );
       const monoFirstTurn =
         mono &&
         !current.blocks.some((block) => block.role === "user" && !block.draft);
@@ -8218,6 +8222,19 @@ function Workspace({
         }
         let buildSucceeded = false;
         try {
+          // R4: Rust reads a session caller's level from its saved row, so a
+          // turn with app access starts once the row is written.
+          const latest = sessionsRef.current.find(
+            (session) => session.id === sessionId,
+          );
+          if (
+            !mono &&
+            access !== null &&
+            !(latest && (await upsertSession(latest)))
+          )
+            throw new Error(
+              "MonoCode could not save this session, so the turn did not start.",
+            );
           const prepared = await prepareAttachments(attachments);
           const prompt =
             intent === "build" && approvedPlan

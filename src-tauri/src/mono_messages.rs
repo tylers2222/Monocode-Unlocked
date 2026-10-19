@@ -448,8 +448,6 @@ text_enum!(all RejectCode {
     SessionCannotWait = "session_cannot_wait",
     LeadScope = "lead_scope",
     NotAGiga = "not_a_giga",
-    // R4: a session caller with no `sessions` row; a refusal, no row.
-    UnknownCaller = "unknown_caller",
 });
 
 /// A text value the table stores as is, built only through `parse`.
@@ -1516,18 +1514,6 @@ pub(crate) fn session_level(
         .transpose()
 }
 
-/// R4: a session caller that `sessions` has no row for. Its level cannot be
-/// read, so its call is refused and writes no row.
-fn unknown_caller() -> ToolError {
-    ToolError {
-        code: RejectCode::UnknownCaller.as_str(),
-        hint: RejectCode::UnknownCaller.hint().into(),
-        message_id: None,
-        open_handles: None,
-        duplicate: false,
-    }
-}
-
 /// Design 7: `session` was reset, deleted or archived.
 fn session_ended(conn: &Connection, session: &SessionId) -> rusqlite::Result<bool> {
     Ok(conn
@@ -1617,8 +1603,10 @@ fn recipient(conn: &Connection, send_to: &str, live: &Live) -> rusqlite::Result<
         let own_project = listed.is_some_and(|entry| entry.own_project);
         let target = target(conn, session, live)?;
         if target.exists {
-            // A session the window lists but has not saved yet has no stored
-            // lead link, so it is a lead.
+            // R4: no row means no stored lead link. A worker always has one: its
+            // lead's `sessions.start` returns only once the worker's row is saved
+            // (`acceptQuickLaunch`). So a session the window lists with no row was
+            // never sent a message, or MonoCode never saves it: a lead.
             return Ok(Recipient::Session {
                 level: session_level(conn, &target.session)?.unwrap_or(SessionLevel::Lead),
                 target,
@@ -1760,12 +1748,7 @@ pub fn submit(
     let caller_row = match &caller.speaker {
         Speaker::Mono { mono_id, .. } => mono_row(&tx, mono_id)?.map(CallerFacts::Mono),
         Speaker::Session { cwd, .. } => {
-            let Some(level) = session_level(&tx, &caller.session_id)? else {
-                return Ok(Submitted::Failed {
-                    error: unknown_caller(),
-                });
-            };
-            Some(CallerFacts::Session {
+            session_level(&tx, &caller.session_id)?.map(|level| CallerFacts::Session {
                 level,
                 cwd: mono_gate::path_key(cwd),
             })
@@ -1812,6 +1795,7 @@ pub fn submit(
                 _ => Vec::new(),
             };
             mono_gate::decide_reply(
+                caller,
                 reply,
                 &hash,
                 &Facts {
@@ -2959,18 +2943,14 @@ pub fn check_action(
     let hash = mono_gate::action_hash(action, input);
     let caller_level = match &caller.speaker {
         Speaker::Mono { .. } => None,
-        Speaker::Session { .. } => match session_level(&tx, &caller.session_id)? {
-            Some(level) => Some(level),
-            None => {
-                return Ok(ActionChecked::Failed {
-                    error: unknown_caller(),
-                })
-            }
-        },
+        Speaker::Session { .. } => session_level(&tx, &caller.session_id)?,
     };
     let facts = ActionFacts {
         caller_level,
-        // A target with no `sessions` row has no stored lead link.
+        // R4: no row means no stored lead link. A worker always has one: its
+        // lead's `sessions.start` returns only once the worker's row is saved
+        // (`acceptQuickLaunch`). So a session the window lists with no row was
+        // never sent a message, or MonoCode never saves it: a lead.
         target_level: match &target_id {
             Some(target) => Some(session_level(&tx, target)?.unwrap_or(SessionLevel::Lead)),
             None => None,
@@ -10353,7 +10333,8 @@ pub(crate) mod tests {
         let write = std::env::var("WRITE_APP_ACTION_FIXTURE").as_deref() == Ok("1");
         let mut fixture: Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        let world = serde_json::json!({ "sessions": fixture["sessions"], "monos": fixture["monos"] });
+        let world =
+            serde_json::json!({ "sessions": fixture["sessions"], "monos": fixture["monos"] });
         for case in fixture["cases"].as_array_mut().unwrap() {
             let store = fixture_store(&world);
             let name = case["name"].as_str().unwrap().to_string();

@@ -400,8 +400,8 @@ pub enum Recipient {
         allowlist: Vec<MonoId>,
     },
     /// An existing session. `own_project` is false for Mono chats, habit runs
-    /// and sessions outside the caller's projects. `level` is its level
-    /// (design 13.1): the stored row wins over the live list.
+    /// and sessions outside the caller's projects. `level` comes from its
+    /// stored row (design 13.1, R4); with no row it is a lead.
     Session {
         target: Target,
         own_project: bool,
@@ -653,9 +653,8 @@ pub struct CallerMono {
 pub enum CallerFacts {
     /// A Mono caller's `monos` row.
     Mono(CallerMono),
-    /// Design 13.1: a session caller's level (the stored `lead_session_id`
-    /// wins over the web app's copy) and the `path_key` of its `cwd`, its one
-    /// project.
+    /// Design 13.1: a session caller's level, from its stored row (R4), and
+    /// the `path_key` of its `cwd`, its one project.
     Session { level: SessionLevel, cwd: String },
 }
 
@@ -722,14 +721,24 @@ pub enum Refusal {
     InvalidInput,
     RequestIdReused,
     NotAMono,
+    UnknownCaller,
 }
 
 impl Refusal {
+    #[cfg(test)]
+    pub const ALL: [Refusal; 4] = [
+        Refusal::InvalidInput,
+        Refusal::RequestIdReused,
+        Refusal::NotAMono,
+        Refusal::UnknownCaller,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Refusal::InvalidInput => "invalid_input",
             Refusal::RequestIdReused => "request_id_reused",
             Refusal::NotAMono => "not_a_mono",
+            Refusal::UnknownCaller => "unknown_caller",
         }
     }
 }
@@ -853,7 +862,6 @@ impl RejectCode {
             RejectCode::WorkerScope => "A worker can message only its lead. Message your lead: messages.send with send_to set to your lead's session id.",
             RejectCode::SteerViaLead => "That session is a worker of a lead session. Message the lead; only its lead steers its workers.",
             RejectCode::SessionCannotWait => "A lead or worker session cannot wait for an answer. Send with wanting_reply false. The recipient answers with a new message if it needs to.",
-            RejectCode::UnknownCaller => "MonoCode has no saved session for the calling session, so it cannot tell its level. Send a message in that session so MonoCode saves it, then retry with a new request id.",
             RejectCode::LeadScope => "A lead acts only on its own workers. Start workers with sessions.start, steer or stop only sessions you started, and report to your Mono with messages.send.",
             RejectCode::NotAGiga => "Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: a Mono messages its Giga with messages.send, and a lead or worker reports to its lead or Mono.",
         }
@@ -869,6 +877,7 @@ impl RejectCode {
 }
 
 const NOT_A_MONO: &str = "Only a Mono's chat or its habit runs can use Mono messaging.";
+pub(crate) const UNKNOWN_CALLER: &str = "MonoCode has not saved this session, so it cannot tell whether it is a lead or a worker. Only a saved session in a project on this Mac can use messages.* and app actions.";
 pub(crate) const REQUEST_ID_REUSED: &str =
     "This request id was already used with different input. Use a new request id.";
 
@@ -888,19 +897,17 @@ fn reject_at(code: RejectCode, to: Option<Party>, hop: u32) -> Decision {
 
 /// The rows every tool shares: the caller's facts, then S2/S3 (R2/R3).
 /// `again` builds the answer of a call that was rejected. `Ok` is what the
-/// gate knows of the caller when no row here decides the call. Only a Mono
-/// caller comes without facts (its `monos` row is gone), so a session caller
-/// never gets `not_a_mono`.
+/// gate knows of the caller when no row here decides the call. A caller
+/// comes without facts when its row is gone: a Mono's `monos` row
+/// (`not_a_mono`) or a session's `sessions` row (`unknown_caller`).
 fn prelude<'f, A>(
+    speaker: &Speaker,
     facts: &'f Facts<A>,
     hash: &PayloadHash,
     again: impl FnOnce(&CallerFacts, RejectCode) -> Rejection,
 ) -> Result<&'f CallerFacts, Decision> {
     let Some(caller) = &facts.caller else {
-        return Err(Decision::Refuse {
-            code: Refusal::NotAMono,
-            hint: NOT_A_MONO.into(),
-        });
+        return Err(no_row(speaker));
     };
     let Some(first) = facts.prior.first() else {
         return Ok(caller);
@@ -919,6 +926,18 @@ fn prelude<'f, A>(
             hint: REQUEST_ID_REUSED.into(),
         }
     })
+}
+
+/// The refusal of a caller whose row is gone.
+fn no_row(speaker: &Speaker) -> Decision {
+    let (code, hint) = match speaker {
+        Speaker::Mono { .. } => (Refusal::NotAMono, NOT_A_MONO),
+        Speaker::Session { .. } => (Refusal::UnknownCaller, UNKNOWN_CALLER),
+    };
+    Decision::Refuse {
+        code,
+        hint: hint.into(),
+    }
 }
 
 fn too_large(message: &str) -> bool {
@@ -1047,7 +1066,7 @@ pub fn decide_send(
         hint: send_hint(code, row, input, about, now),
         open_handles: Vec::new(),
     };
-    let row = match prelude(facts, hash, again) {
+    let row = match prelude(&caller.speaker, facts, hash, again) {
         Ok(row) => row,
         Err(decision) => return decision,
     };
@@ -1322,9 +1341,14 @@ fn preview(text: &str) -> String {
 }
 
 /// Design 6.4.
-pub fn decide_reply(input: &ReplyInput, hash: &PayloadHash, facts: &Facts<ReplyFacts>) -> Decision {
+pub fn decide_reply(
+    caller: &Caller,
+    input: &ReplyInput,
+    hash: &PayloadHash,
+    facts: &Facts<ReplyFacts>,
+) -> Decision {
     let to = input.to.as_deref();
-    if let Err(decision) = prelude(facts, hash, |_, code| {
+    if let Err(decision) = prelude(&caller.speaker, facts, hash, |_, code| {
         reply_again(code, to, &facts.about.then)
     }) {
         return decision;
@@ -1545,14 +1569,14 @@ pub fn action_hash(action: &str, input: &Value) -> PayloadHash {
 /// What the A rows read (design 6.6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionFacts {
-    /// A session caller's level (stored row wins); `None` for a Mono chat or
-    /// habit run.
+    /// A session caller's level, from its stored row; `None` for a Mono chat
+    /// or habit run, and for a session caller with no row (`unknown_caller`).
     pub caller_level: Option<SessionLevel>,
     /// The caller Mono's `monos.role`; `None` for a session caller or a Mono
     /// with no `monos` row.
     pub caller_role: Option<MonoRole>,
-    /// The level of the session the action's target names, when it names an
-    /// existing session.
+    /// The level of the session the action's target names, from its stored
+    /// row; a lead when it has no row; `None` when it names no session.
     pub target_level: Option<SessionLevel>,
     /// The row this caller session already wrote with this request id (part
     /// 0, any tool).
@@ -1598,6 +1622,12 @@ pub fn decide_action(
     hash: &PayloadHash,
     facts: &ActionFacts,
 ) -> ActionDecision {
+    if matches!(caller.speaker, Speaker::Session { .. }) && facts.caller_level.is_none() {
+        return ActionDecision::Refuse {
+            code: Refusal::UnknownCaller,
+            hint: UNKNOWN_CALLER.into(),
+        };
+    }
     let refuse = |hint: &str| ActionDecision::Refuse {
         code: Refusal::RequestIdReused,
         hint: hint.into(),
@@ -3237,7 +3267,7 @@ mod tests {
         let mut again = replies(vec![handled('a', 1, live("giga-chat", true, true))]);
         again.prior = prior.clone();
         assert_eq!(
-            decide_reply(&reply("Done"), &hash, &again),
+            decide_reply(&caller(CallerKind::MonoChat), &reply("Done"), &hash, &again),
             Decision::Duplicate {
                 prior: prior.clone(),
                 rejection: None
@@ -3245,6 +3275,7 @@ mod tests {
         );
         assert_eq!(
             decide_reply(
+                &caller(CallerKind::MonoChat),
                 &reply("Done twice"),
                 &Input::Reply(reply("Done twice")).payload_hash(),
                 &again
@@ -3272,7 +3303,12 @@ mod tests {
             ..row('b', Some("mono-a"), 1, open(1))
         }];
         let decide = |reply: ReplyInput| {
-            decide_reply(&reply, &Input::Reply(reply.clone()).payload_hash(), &again)
+            decide_reply(
+                &caller(CallerKind::MonoChat),
+                &reply,
+                &Input::Reply(reply.clone()).payload_hash(),
+                &again,
+            )
         };
         assert!(matches!(
             decide(reply_to(json!(["#1"]))),
@@ -3300,6 +3336,7 @@ mod tests {
     fn r4_a_reply_over_8000_characters_is_too_large() {
         assert_eq!(
             decide_reply(
+                &caller(CallerKind::MonoChat),
                 &reply(&"x".repeat(8001)),
                 &hash(),
                 &replies(vec![handled('a', 1, live("giga-chat", true, true))]),
@@ -3311,7 +3348,12 @@ mod tests {
     #[test]
     fn r5_a_reply_with_nothing_waiting_is_no_open_handle_with_an_empty_list() {
         assert_eq!(
-            decide_reply(&reply("Done"), &hash(), &replies(Vec::new())),
+            decide_reply(
+                &caller(CallerKind::MonoChat),
+                &reply("Done"),
+                &hash(),
+                &replies(Vec::new())
+            ),
             rejected(RejectCode::NoOpenHandle, None)
         );
     }
@@ -3319,6 +3361,7 @@ mod tests {
     #[test]
     fn r6_a_reply_with_two_waiting_is_ambiguous_and_lists_both() {
         let decision = decide_reply(
+            &caller(CallerKind::MonoChat),
             &reply("Done"),
             &hash(),
             &replies(vec![
@@ -3372,7 +3415,12 @@ mod tests {
                 message: row('a', Some("giga"), hop, open(1)),
                 ..handled('a', 1, sender)
             };
-            decide_reply(&reply("Done"), &hash(), &replies(vec![handled]))
+            decide_reply(
+                &caller(CallerKind::MonoChat),
+                &reply("Done"),
+                &hash(),
+                &replies(vec![handled]),
+            )
         };
         assert_eq!(
             at_hop(3, live("giga-chat", true, true)),
@@ -3403,6 +3451,7 @@ mod tests {
                 ..handled(id, handle, live("giga-chat", true, true))
             };
             decide_reply(
+                &caller(CallerKind::MonoChat),
                 &ReplyInput {
                     to: Some(vec![Handle::new(1).unwrap(), Handle::new(2).unwrap()]),
                     ..reply("Done")
@@ -3436,6 +3485,7 @@ mod tests {
         };
         assert_eq!(
             decide_reply(
+                &caller(CallerKind::MonoChat),
                 &reply("Done"),
                 &hash(),
                 &replies(vec![handled('a', 1, gone.clone())])
@@ -3447,7 +3497,12 @@ mod tests {
             ..handled('a', 1, live("giga-chat", true, true))
         };
         assert_eq!(
-            decide_reply(&reply("Done"), &hash(), &replies(vec![deleted_mono])),
+            decide_reply(
+                &caller(CallerKind::MonoChat),
+                &reply("Done"),
+                &hash(),
+                &replies(vec![deleted_mono])
+            ),
             gone_hint("The sender of #1 no longer exists (cleared or deleted).")
         );
         let both = ReplyInput {
@@ -3456,6 +3511,7 @@ mod tests {
         };
         assert_eq!(
             decide_reply(
+                &caller(CallerKind::MonoChat),
                 &both,
                 &hash(),
                 &replies(vec![
@@ -3473,6 +3529,7 @@ mod tests {
     fn r11_a_reply_answers_the_one_waiting_message_one_hop_deeper() {
         let decide = |sender| {
             decide_reply(
+                &caller(CallerKind::MonoChat),
                 &reply("Done"),
                 &hash(),
                 &replies(vec![handled('a', 1, sender)]),
@@ -4382,7 +4439,12 @@ mod tests {
             },
         };
         assert_eq!(
-            decide_reply(&reply("Done"), &hash(), &facts),
+            decide_reply(
+                &caller(CallerKind::MonoChat),
+                &reply("Done"),
+                &hash(),
+                &facts
+            ),
             send_rejected(
                 RejectCode::NoOpenHandle,
                 None,

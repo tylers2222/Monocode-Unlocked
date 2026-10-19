@@ -542,6 +542,39 @@ it.each([
   expect(workspace.submit).not.toHaveBeenCalled();
 });
 
+// R4 review r1 M1. Defect: an app launch answers its caller before the new
+// session's row exists, so the caller's next call can name it as a target
+// with no stored level, and its first CLI call can find no row; or a failed
+// save still answers that the session started.
+it("answers an app launch only once the new session is saved", async () => {
+  const { request, workspace } = setup();
+  let saved!: (ok: boolean) => void;
+  workspace.saveSession.mockImplementation(
+    () => new Promise<boolean>((resolve) => (saved = resolve)),
+  );
+  let answered = false;
+  const accepting = acceptQuickLaunch(
+    { ...request, startedBy: "lead" },
+    "worker",
+    workspace,
+  ).then(() => (answered = true));
+  await vi.waitFor(() =>
+    expect(workspace.saveSession).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        id: "worker",
+        blocks: [expect.objectContaining({ role: "user" })],
+      }),
+    ),
+  );
+  expect(answered).toBe(false);
+  saved(true);
+  await accepting;
+  workspace.saveSession.mockResolvedValue(false);
+  await expect(
+    acceptQuickLaunch({ ...request, startedBy: "lead" }, "worker-2", workspace),
+  ).rejects.toThrow("The workspace could not save the session yet.");
+});
+
 /** A session `app-lead-r1` holding `blocks`, as an app launch left it. */
 function launched(blocks: Session["blocks"], extra: Partial<Session> = {}) {
   return { ...newSession("codex", "/p"), id: "app-lead-r1", blocks, ...extra };

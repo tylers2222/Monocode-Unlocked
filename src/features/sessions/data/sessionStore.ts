@@ -145,11 +145,18 @@ type SessionUpsertPayload = {
  */
 export function shouldPersistSession(session: Session): boolean {
   return (
-    !session.ephemeral &&
-    !isRemoteProjectPath(session.cwd) &&
-    session.cwd !== "~" &&
+    canPersistSession(session) &&
     (session.blocks.some((block) => block.role === "user") ||
       isMonoSession(session.id))
+  );
+}
+
+/** Whether MonoCode ever saves this session: never in `~` or a remote project. */
+export function canPersistSession(session: Session): boolean {
+  return (
+    !session.ephemeral &&
+    !isRemoteProjectPath(session.cwd) &&
+    session.cwd !== "~"
   );
 }
 

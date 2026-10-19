@@ -711,44 +711,6 @@
       "requestId": "a5-draft"
     },
     {
-      "action": "sessions.send",
-      "caller": "a-chat",
-      "calls": [
-        {
-          "args": {
-            "call": {
-              "action": "sessions.send",
-              "caller": {
-                "kind": "mono_chat",
-                "monoId": "mono-a",
-                "sessionId": "a-chat",
-                "turnId": "turn-1"
-              },
-              "input": {
-                "prompt": "Hi",
-                "sessionId": "ghost"
-              },
-              "requestId": "a5-ghost",
-              "startedSessionId": null,
-              "target": "ghost"
-            }
-          },
-          "command": "mono_app_action_check",
-          "reply": {
-            "leadSessionId": null,
-            "outcome": "allowed"
-          }
-        }
-      ],
-      "input": {
-        "prompt": "Hi",
-        "sessionId": "ghost"
-      },
-      "name": "R4: an unsaved session counts as a lead, whatever lead the window holds",
-      "ran": null,
-      "requestId": "a5-ghost"
-    },
-    {
       "action": "approvals.withdraw",
       "caller": "g-chat",
       "calls": [
@@ -767,8 +729,7 @@
               },
               "requestId": "g-withdraw",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -804,8 +765,7 @@
               },
               "requestId": "g-run-withdraw",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -842,8 +802,7 @@
               },
               "requestId": "m-file",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -877,7 +836,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": null,
                 "sessionId": "lead",
                 "turnId": "turn-1"
               },
@@ -886,8 +844,7 @@
               },
               "requestId": "l-withdraw",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2465,15 +2422,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-approvals-file",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2504,15 +2459,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-approvals-update",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2543,15 +2496,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-approvals-withdraw",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2679,12 +2630,6 @@
       "id": "worker",
       "leadSessionId": "lead",
       "saved": true
-    },
-    {
-      "cwd": "/code/app",
-      "id": "ghost",
-      "leadSessionId": "lead",
-      "saved": false
     },
     {
       "cwd": "/Users/me",
