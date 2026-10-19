@@ -123,6 +123,24 @@ test("lane 3: a project with milestones in every status", async ({
     "orbit-site3",
     "orbit-review",
   ]);
+  const filter = page.getByRole("textbox", { name: "Filter projects" });
+  await filter.fill("site");
+  await expect(page.locator("[data-app-milestones] aside button")).toHaveText([
+    "orbit-site3",
+  ]);
+  await filter.fill("ORBIT");
+  await expect(page.locator("[data-app-milestones] aside button")).toHaveText([
+    "orbit8",
+    "orbit-site3",
+    "orbit-review",
+  ]);
+  await filter.fill("");
+  await expect(page.locator("[data-app-milestones] aside button")).toHaveCount(
+    3,
+  );
+  await expect(
+    page.locator("[data-app-milestones] aside button span[dir=auto]"),
+  ).toHaveText(["orbit", "orbit-site", "orbit-review"]);
   await expect(
     page.getByText("added by session · Execute plan M tasks"),
   ).toBeVisible();
