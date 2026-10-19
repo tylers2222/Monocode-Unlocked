@@ -9092,7 +9092,6 @@ function Workspace({
                   submit: (settle) =>
                     submitSession(id, text, attachments, {
                       ...options,
-                      appRequestId: deliveryId,
                       onSettled: settle,
                     }),
                   onSettled,

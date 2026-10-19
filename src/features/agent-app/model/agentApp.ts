@@ -1809,7 +1809,8 @@ export async function handleAgentApp(
           ? undefined
           : (optionalString(input.besideSessionId, "besideSessionId", 256) ??
             source.id);
-      const id = launchId!;
+      // The id the level check was sent (appLaunchId is pure).
+      const id = appLaunchId(source, requestId);
       if (besideSessionId)
         await host.start(
           launch,

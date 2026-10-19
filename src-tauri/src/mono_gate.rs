@@ -1569,13 +1569,14 @@ pub fn decide_action(
             },
             // `host.start` repeats a launch only while its session lives.
             _ if facts.prior_start_ended => refuse(START_ENDED),
-            // Only a start writes an accepted row: its retry goes on with
-            // the lead id the first call wrote.
+            // Only a start writes an accepted row. Its first outcome stands
+            // (A1), so A3 to A7 do not run again: a session caller is the
+            // new session's lead, as A6 made it the first time.
             _ => ActionDecision::Allow {
                 lead_session_id: caller
                     .mono_id()
                     .is_none()
-                    .then(|| prior.from_session_id.clone()),
+                    .then(|| caller.session_id.clone()),
             },
         };
     }
@@ -4939,6 +4940,39 @@ mod tests {
                 "{level:?}"
             );
         }
+        // m1: a Mono's refused steer of a worker (A5) again names the
+        // target's lead, not the generic hint.
+        let send = json!({"sessionId": "w1", "prompt": "Stop"});
+        let steer_hash = action_hash("sessions.send", &send);
+        let steer = MonoMessage {
+            payload_hash: steer_hash.clone(),
+            status: Status::Rejected {
+                gate_result: RejectCode::SteerViaLead,
+                wanting_reply: false,
+                intent: IntentKind::New,
+                reply_to: None,
+                scope: None,
+            },
+            ..row('s', Some("mono-a"), 0, open(1))
+        };
+        assert_eq!(
+            decide_action(
+                &mono_a_caller(),
+                "sessions.send",
+                &steer_hash,
+                &ActionFacts {
+                    caller_level: None,
+                    target_level: Some(worker_of("l1")),
+                    prior: Some(steer.clone()),
+                    prior_start_ended: false,
+                },
+            ),
+            ActionDecision::Replay {
+                prior: steer.id,
+                code: RejectCode::SteerViaLead,
+                hint: "That session is a worker of lead l1. Message the lead (l1); only its lead steers its workers.".into(),
+            }
+        );
     }
 
     // A2. Defect: a request id that another call already used (a send, or a

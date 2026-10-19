@@ -144,6 +144,7 @@ async function mountSessions(
   app: AppShell,
   withAccess: ("lead" | "worker")[],
   extra: MountOptions["handlers"] = {},
+  more: SessionSummary[] = [],
 ) {
   await app.mount(
     {
@@ -151,6 +152,7 @@ async function mountSessions(
       sessions: [
         session("lead", "Fix login"),
         session("worker", "Write the tests", { leadSessionId: "lead" }),
+        ...more,
       ],
     },
     { handlers: { ...handlers, ...extra } },
@@ -530,6 +532,33 @@ test("a lead's start repeated under its request id after a restart answers the s
   await app.restart();
   await page.getByText("Fix login").first().click();
   const again = await startFromLead(page, app, "start-2");
+  expect(again).toMatchObject({ ok: true, result: { id: "app-lead-r1" } });
+  expect(await prompts(page, "app-lead-r1")).toEqual([]);
+});
+
+// Design 9, PR7-11 review r1 m2. A launched session that is stored but not
+// open (a Mono's start opens no tab) is seen only by host.start's check,
+// which reads the stored session. Defect: that check is skipped or reads
+// only open sessions, so the agent's retry launches the session again.
+test("a start repeated into its stored, unopened session answers that session and launches nothing", async ({
+  page,
+  app,
+}) => {
+  await mountSessions(page, app, ["lead"], {}, [
+    session("app-lead-r1", "Write the tests", { leadSessionId: "lead" }),
+  ]);
+  await page.evaluate(() => {
+    window.appBackend!.store.blocks["app-lead-r1"] = [
+      {
+        id: "u1",
+        role: "user",
+        text: "Write the tests",
+        appRequestId: "app-lead-r1",
+      },
+    ];
+  });
+  await page.getByText("Fix login").click();
+  const again = await startFromLead(page, app, "start-1");
   expect(again).toMatchObject({ ok: true, result: { id: "app-lead-r1" } });
   expect(await prompts(page, "app-lead-r1")).toEqual([]);
 });
