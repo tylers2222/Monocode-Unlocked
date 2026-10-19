@@ -205,6 +205,33 @@ describe("turn duration", () => {
     ]);
   });
 
+  // ADE-10, the real Fork Orchestrator turn: the queued message keeps its place
+  // when its turn starts, after a notice that was added later and ran first.
+  it("stamps a queued message's turn when a notice after it started first", () => {
+    now = 1_000;
+    let session = appendUser(newSession("claude", "/tmp"), "first");
+    session = stopStreaming(session, 2_000);
+    now = 3_000;
+    const message = { id: "queued", text: "next", attachments: [] };
+    session = enqueueMonoMessage(session, message);
+    now = 4_000;
+    session = stopStreaming(appendUser(session, "notice"), 4_500);
+    now = 5_000;
+    session = acknowledgeMonoMessage(
+      session,
+      { ...message, blockId: "queued" },
+      { mode: "new-turn" },
+    );
+    session = stopStreaming(session, 9_000);
+    expect(
+      session.blocks.map((block) => [block.text, block.durationMs]),
+    ).toEqual([
+      ["first", 1_000],
+      ["next", 4_000],
+      ["notice", 500],
+    ]);
+  });
+
   it("stamps the turn's opener when a saved draft follows it", () => {
     now = 1_000;
     const session = appendUser(newSession("claude", "/tmp"), "go");

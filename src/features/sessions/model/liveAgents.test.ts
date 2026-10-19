@@ -252,6 +252,33 @@ describe("liveAgentsFromSessions", () => {
       expect(liveAgentsFromSessions([session])[0]?.startedAt).toBe(5_000);
     });
 
+    // ADE-10, the real Fork Orchestrator turn: a queued message waits while a
+    // notice is added after it and runs first, then the message's turn starts.
+    function queuedAfterNotice(): Session {
+      let session = finishedTurn("/tmp/inverted");
+      at(3_000);
+      const message: QueuedMessage = { id: "queued", text: "next", attachments: [] };
+      session = enqueueMonoMessage(session, message);
+      at(4_000);
+      session = stopStreaming(appendUser(session, "notice"), 4_500);
+      at(5_000);
+      return acknowledgeMonoMessage(
+        session,
+        { ...message, blockId: "queued" },
+        { mode: "new-turn" },
+      );
+    }
+
+    it("times a queued message's turn when a notice after it started first", () => {
+      const running = queuedAfterNotice();
+      expect(running.blocks.map((block) => block.id).at(-1)).not.toBe("queued");
+      expect(liveAgentsFromSessions([running])[0]?.startedAt).toBe(5_000);
+      const finished = stopStreaming(running, 9_000);
+      expect(
+        liveAgentsFromSessions([finished], new Set([finished.id]))[0],
+      ).toMatchObject({ startedAt: 5_000, durationMs: 4_000, done: true });
+    });
+
     it("does not take an older turn's start when the latest message has no time", () => {
       const finished = finishedTurn("/tmp/bare");
       const bare: Block = { id: "bare", role: "user", text: "saved untimed" };
