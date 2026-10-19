@@ -187,9 +187,6 @@ pub(crate) fn passwd_identity() -> Option<PasswdIdentity> {
     }
 }
 
-#[allow(dead_code)]
-fn gate_probe() {}
-
 #[tauri::command]
 #[cfg_attr(
     not(target_os = "macos"),
