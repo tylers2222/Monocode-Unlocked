@@ -8,8 +8,9 @@
 #     a file passes (a new #[expect(..., reason = "baseline ...")] marker counts);
 #   - a growing baseline: the "count" values in eslint-suppressions.json sum higher;
 #   - an edit to a gate file (workflows, gate and setup scripts, lint and toolchain
-#     configs at any depth), to a lint table or lint level in a Cargo.toml, or to an
-#     install or prepare script in a package.json;
+#     configs and .npmrc at any depth), to a lint table or lint level in a Cargo.toml,
+#     or to a package.json lifecycle script that npm ci runs (dependencies,
+#     preinstall, install, postinstall, prepublish, preprepare, prepare, postprepare);
 #   - a JS/TS, Rust or Cargo.toml file that git diffs as binary, or a file name with
 #     an escape git does not document;
 #   - more than 500 changed non-test lines. Tests, fixtures, Rust #[cfg(test)] items,
@@ -40,7 +41,7 @@ exec perl -e '
   use warnings;
 
   my ($merge_base, $head) = @ARGV;
-  my $GATE_FILE = qr{^(\.github/(workflows|actions)/.*|scripts/gate/.*|scripts/install-linux-deps-[^/]*\.sh|\.github/rust-version|rust-toolchain(\.toml)?)$|(^|/)(eslint\.config\.[cm]?[jt]s|\.?clippy\.toml|\.jscpd\.json|\.cargo/config(\.toml)?)$};
+  my $GATE_FILE = qr{^(\.github/(workflows|actions)/.*|scripts/gate/.*|scripts/install-linux-deps-[^/]*\.sh|\.github/rust-version|rust-toolchain(\.toml)?)$|(^|/)(eslint\.config\.[cm]?[jt]s|\.?clippy\.toml|\.jscpd\.json|\.cargo/config(\.toml)?|\.npmrc)$};
   my $SIZE_EXEMPT = qr{(^|/)(tests?|__tests__|fixtures?)/|\.(test|spec|fixtures?)\.[^/]+$|(^|/)(eslint-suppressions\.json|package-lock\.json)$};
   my $JS = qr{\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$};
   my $SOURCE = qr{\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|rs)$|(^|/)Cargo\.toml$};
@@ -48,7 +49,7 @@ exec perl -e '
   # levels, and the npm lifecycle scripts that `npm ci` runs before ESLint and clippy.
   my @GATE_SETTINGS = (
     [qr{(^|/)Cargo\.toml$}, qr{^\s*\[(workspace\.)?lints|=\s*"(allow|warn|deny|forbid|expect|force-warn)"|\blevel\s*=|^\s*workspace\s*=\s*true}],
-    [qr{(^|/)package\.json$}, qr{"((pre|post)?install|prepare)"\s*:}],
+    [qr{(^|/)package\.json$}, qr{"((pre|post)?(install|prepare)|prepublish|dependencies)"\s*:\s*"}],
   );
   my $MAX_LINES = 500;
   my @DIFF = ("diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames");
