@@ -96,6 +96,7 @@ const decision = planProjectReturn({
     ? sessions.map((session) => ({ ...session, busy: false }))
     : sessions,
   activeTabId: tabIdBySession.get("elsewhere")!,
+  excludedIds: new Set(),
   projectPath: project,
 });
 const landing =

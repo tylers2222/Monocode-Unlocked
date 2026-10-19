@@ -14,7 +14,11 @@ import {
 import { revealPath } from "../../../platform/tauri/fs";
 import { useProjectWorktrees } from "../hooks/useProjectWorktrees";
 import { isEqualOrInside, pathKey, prettyCwd, projectName } from "../../../shared/lib/paths";
-import { loadArchivedProjects, type RecentProject } from "../../projects/model/recents";
+import {
+  loadArchivedProjects,
+  sameProjectPath,
+  type RecentProject,
+} from "../../projects/model/recents";
 import type { Session } from "../../sessions/model/session";
 import {
   checkWorktreeRemoval,
@@ -77,6 +81,7 @@ export function WorktreesPage({
           className="w-fit max-w-full shrink-0"
           buttonClassName="h-7.5 max-w-full gap-2 bg-content/5 px-2.5 text-[13px] hover:bg-content/12 active:scale-[0.98]"
           onSelectProject={(path) => {
+            if (sameProjectPath(path, project)) return;
             setProject(path);
             setError(undefined);
             setDeleting(undefined);

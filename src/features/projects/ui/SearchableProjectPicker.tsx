@@ -298,9 +298,11 @@ export function ProjectPickerPopover({
     return () => window.cancelAnimationFrame(frame);
   }, []);
 
+  // The current project is a choice too: opening it can move to a session of
+  // it that runs.
   const pickProject = (path: string) => {
     onDismiss();
-    if (!isCurrent(path)) onSelectProject(path);
+    onSelectProject(path);
   };
 
   const pickMono = (monoId: string) => {

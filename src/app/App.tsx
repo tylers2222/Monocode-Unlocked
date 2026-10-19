@@ -597,7 +597,10 @@ import {
   TranscriptPoolOutlet,
 } from "../features/sessions/ui/TranscriptPool";
 import { syncDockBadge } from "../features/notifications/model/dockBadge";
-import { liveAgentsFromSessions } from "../features/sessions/model/liveAgents";
+import {
+  liveAgentExclusions,
+  liveAgentsFromSessions,
+} from "../features/sessions/model/liveAgents";
 import { hiddenApprovalNotices } from "../features/notifications/model/approvalToast";
 import { useSessionReminders } from "../features/notifications/hooks/useSessionReminders";
 import { ReminderNotices } from "../features/sessions/ui/ReminderNotices";
@@ -2340,21 +2343,27 @@ function Workspace({
     busySessionIds,
     activeSessionId,
   );
+  // What the live-agents rail never lists, for the rail and the project rule.
+  // Identity moves only when the set does, not with every streamed batch.
+  const liveAgentExcludedIdsNow = useMemo(
+    () => liveAgentExclusions(sessions, monoSessionIds, isHabitRun),
+    [sessions, monoSessionIds],
+  );
+  const liveAgentExcludedIds = useStableValue(
+    liveAgentExcludedIdsNow,
+    setsEqual,
+  );
 
   const liveAgentRows = useMemo(
     () =>
       liveAgentsEnabled
         ? liveAgentsFromSessions(
-            promptableSessions,
+            sessions,
             unseenFinishedIds,
-            new Set(
-              listMonos().flatMap((mono) =>
-                mono.sessionId ? [mono.sessionId] : [],
-              ),
-            ),
+            liveAgentExcludedIds,
           )
         : [],
-    [liveAgentsEnabled, promptableSessions, unseenFinishedIds, monosSnap],
+    [liveAgentsEnabled, sessions, unseenFinishedIds, liveAgentExcludedIds],
   );
   // Rebuilt for every streamed batch; identity only moves when a row does.
   const liveAgents = useStableValue(liveAgentRows);
@@ -6314,6 +6323,7 @@ function Workspace({
         tabs: tabsRef.current,
         sessions: sessionsRef.current,
         activeTabId: activeTabIdRef.current,
+        excludedIds: liveAgentExcludedIds,
         paths,
       });
       const last = steps[steps.length - 1];
@@ -6368,6 +6378,11 @@ function Workspace({
           setProjectCwd(last.path);
           activateTab(last.tabId, last.paneId);
           break;
+        case "open-session":
+          // A running session with no tab opens the way its sidebar row
+          // does, which selects the project of the session it opens.
+          void onSelectHistorySession(last.sessionId);
+          break;
         case "keep":
           setProjectCwd(last.path);
           break;
@@ -6378,7 +6393,14 @@ function Workspace({
       // Every project opened is remembered, the one chosen last most recently.
       for (const step of steps) setRecents(rememberProject(step.path));
     },
-    [activateTab, insertBeside, onCwdChange, readProjectReturnMemory],
+    [
+      activateTab,
+      insertBeside,
+      liveAgentExcludedIds,
+      onCwdChange,
+      onSelectHistorySession,
+      readProjectReturnMemory,
+    ],
   );
 
   const onSelectProject = useCallback(

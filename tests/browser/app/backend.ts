@@ -1,5 +1,9 @@
 import { emit } from "@tauri-apps/api/event";
-import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import {
+  mockConvertFileSrc,
+  mockIPC,
+  mockWindows,
+} from "@tauri-apps/api/mocks";
 import type { Automation } from "../../../src/features/automations/model/automations";
 import type {
   Milestone,
@@ -82,6 +86,8 @@ export type FakeStore = {
   milestoneSettings: Record<string, MilestoneSettings>;
   /** sessionStore.ts `saveWorkspaceSnapshot`: the open tabs, as last saved. */
   workspace: unknown;
+  /** session_store.rs `in_flight_sessions`: what the last window had running. */
+  inFlight: { sessionId: string; cwd: string }[];
 };
 
 /** What a test seeds. `installBackend` fills in what Rust would add. */
@@ -93,6 +99,11 @@ export type FakeSeed = Partial<{
   automations: Automation[];
   milestones: Milestone[];
   milestoneSettings: Record<string, MilestoneSettings>;
+  /** Saved state a real database already holds when the app starts. */
+  blocks: Record<string, Block[]>;
+  workFolders: Record<string, string>;
+  workspace: unknown;
+  inFlight: { sessionId: string; cwd: string }[];
 }>;
 
 /**
@@ -267,7 +278,7 @@ const HANDLERS: Record<string, Handler> = {
     store.workspace = snapshot;
     return null;
   },
-  session_list_in_flight: empty,
+  session_list_in_flight: (store) => store.inFlight,
   // session_store.rs list_by_project: ORDER BY updated_at DESC, id ASC, and
   // `branch` is the stored one, else the repo's, unless the worktree is gone.
   session_list_by_project: (store, { cwd }) =>
@@ -546,12 +557,13 @@ function storeFrom(seed: FakeSeed): FakeStore {
     sessions: (seed.sessions ?? []).map(sessionRow),
     monos: (seed.monos ?? []).map(monoRow),
     rosterRevision: 1,
-    blocks: {},
-    workFolders: {},
+    blocks: seed.blocks ?? {},
+    workFolders: seed.workFolders ?? {},
     automations: seed.automations ?? [],
     milestones: seed.milestones ?? [],
     milestoneSettings: seed.milestoneSettings ?? {},
-    workspace: null,
+    workspace: seed.workspace ?? null,
+    inFlight: seed.inFlight ?? [],
   };
 }
 
@@ -582,6 +594,8 @@ export function installBackend(
     keepStore: () => sessionStorage.setItem(KEPT_STORE, JSON.stringify(store)),
   };
   mockWindows("main");
+  // Project logos and image previews load through the asset protocol.
+  mockConvertFileSrc("macos");
   mockIPC(
     async (command, args) => {
       backend.calls.push({ command, args });

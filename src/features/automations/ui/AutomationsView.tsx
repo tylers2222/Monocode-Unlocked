@@ -93,7 +93,11 @@ import { JIRA_CHANGE_EVENT, jiraConnected } from "../../inbox/model/jira";
 import { defaultSessionChoice, firstEnabledHarness, modelsFor, preferredModelId, resolveModel } from "../../sessions/model/models";
 import { projectKey, projectName } from "../../../shared/lib/paths";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { looksLikeProject, type RecentProject } from "../../projects/model/recents";
+import {
+  looksLikeProject,
+  sameProjectPath,
+  type RecentProject,
+} from "../../projects/model/recents";
 import {
   loadSessionFolders,
   subscribeSessionFolders,
@@ -1034,9 +1038,10 @@ function AutomationEditor({
               <SearchableProjectPicker
                 cwd={draft.cwd}
                 recents={recents}
-                onSelectProject={(cwd) =>
-                  onChange({ ...draft, cwd, sessionFolderId: "" })
-                }
+                onSelectProject={(cwd) => {
+                  if (sameProjectPath(cwd, draft.cwd)) return;
+                  onChange({ ...draft, cwd, sessionFolderId: "" });
+                }}
               />
               {onDelete ? (
                 <>

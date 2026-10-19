@@ -33,6 +33,7 @@ function workspace(
   }));
   return {
     memory: new Map<string, string>(),
+    excludedIds: new Set<string>(),
     sessions,
     tabs,
     activeTabId: tabs[tabs.length - 1].id,
@@ -155,6 +156,7 @@ describe("planning a run of folders", () => {
       const steps = planProjectOpenRun({
         ...restored,
         memory: restored.projectReturnMemory,
+        excludedIds: new Set<string>(),
         paths: [local],
       });
       expect(steps).toHaveLength(1);

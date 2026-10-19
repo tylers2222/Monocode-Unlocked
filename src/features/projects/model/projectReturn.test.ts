@@ -34,6 +34,7 @@ function workspace() {
     tabs,
     activeTabId: "tab-b2",
     memory: new Map<string, string>(),
+    excludedIds: new Set<string>(),
   };
 }
 
@@ -139,7 +140,12 @@ describe("project return memory", () => {
     });
     const next = reconcileProjectReturn({ ...removed, memory });
     expect(
-      planProjectReturn({ ...removed, memory: next, projectPath: "/alpha" }),
+      planProjectReturn({
+        ...removed,
+        memory: next,
+        excludedIds: state.excludedIds,
+        projectPath: "/alpha",
+      }),
     ).toEqual({ action: "activate", tabId: "tab-a1", paneId: "a1" });
     const activeRemoved = removeSessionFromWorkspace({
       ...state,
@@ -178,6 +184,7 @@ describe("project return memory", () => {
     });
     const decision = planProjectReturn({
       ...placed,
+      excludedIds: state.excludedIds,
       memory: beta,
       activeTabId: "tab-b2",
       projectPath: "/alpha",
@@ -352,16 +359,22 @@ describe("project selection with a running session", () => {
     sessions: Session[],
     memory = new Map<string, string>(),
     activeTabId = "tab-other",
+    tabless: readonly string[] = [],
+    excluded: readonly string[] = [],
   ) {
     const all = [...sessions, turn("other", 0, false, "/other")];
     const tabs = all
-      .filter((session) => !session.orchestrationLeadId)
+      .filter(
+        (session) =>
+          !session.orchestrationLeadId && !tabless.includes(session.id),
+      )
       .map((session) => ({ ...newTab(session.id), id: `tab-${session.id}` }));
     return planProjectReturn({
       memory,
       tabs,
       sessions: all,
       activeTabId,
+      excludedIds: new Set(excluded),
       projectPath: "/mono",
     });
   }
@@ -411,10 +424,98 @@ describe("project selection with a running session", () => {
     );
   });
 
-  it("stays on the project's focused idle session while another runs", () => {
+  it("leaves the project's focused idle session for one that runs", () => {
     expect(
       plan([turn("idle", 1), turn("running", 2, true)], new Map(), "tab-idle"),
+    ).toEqual(activates("running"));
+  });
+
+  it("stays on the project's focused session while it runs", () => {
+    expect(
+      plan(
+        [turn("focused", 1, true), turn("newer", 2, true)],
+        new Map(),
+        "tab-focused",
+      ),
     ).toEqual({ action: "keep" });
+  });
+
+  it("opens a running session that has no tab", () => {
+    expect(
+      plan(
+        [turn("idle", 1), turn("started", 2, true)],
+        new Map([["/mono", "idle"]]),
+        "tab-other",
+        ["started"],
+      ),
+    ).toEqual({ action: "open-session", sessionId: "started" });
+  });
+
+  it("leaves the focused idle session for a running one with no tab", () => {
+    expect(
+      plan(
+        [turn("idle", 1), turn("started", 2, true)],
+        new Map(),
+        "tab-idle",
+        ["started"],
+      ),
+    ).toEqual({ action: "open-session", sessionId: "started" });
+  });
+
+  it("ranks running sessions with and without a tab by turn start", () => {
+    const sessions = [turn("tabbed", 2, true), turn("started", 3, true)];
+    expect(plan(sessions, new Map(), "tab-other", ["started"])).toEqual({
+      action: "open-session",
+      sessionId: "started",
+    });
+    sessions[0] = turn("tabbed", 4, true);
+    expect(plan(sessions, new Map(), "tab-other", ["started"])).toEqual(
+      activates("tabbed"),
+    );
+  });
+
+  it("opens the lead with no tab of a running worker", () => {
+    const worker = { ...turn("worker", 3, true), orchestrationLeadId: "lead" };
+    expect(
+      plan([turn("idle", 1), turn("lead", 2), worker], new Map(), "tab-other", [
+        "lead",
+      ]),
+    ).toEqual({ action: "open-session", sessionId: "lead" });
+  });
+
+  it.each([
+    ["an Inbox Ask", { inboxAsk: { kind: "pr" } }, []],
+    ["a session whose worktree was removed", { worktreeRemoved: true }, []],
+    ["an excluded session (Mono chat, habit run, ephemeral)", {}, ["started"]],
+  ])("does not open %s that runs with no tab", (_, fields, excluded) => {
+    const running = { ...turn("started", 2, true), ...fields } as Session;
+    expect(
+      plan([turn("first", 1), running], new Map(), "tab-other", ["started"], excluded),
+    ).toEqual(activates("first"));
+  });
+
+  it.each([
+    ["an Inbox Ask", { inboxAsk: { kind: "pr" } }, []],
+    ["excluded", {}, ["lead"]],
+  ])("does not open a running worker's lead that is %s", (_, fields, excluded) => {
+    const lead = { ...turn("lead", 1), ...fields } as Session;
+    const worker = { ...turn("worker", 3, true), orchestrationLeadId: "lead" };
+    expect(
+      plan([turn("first", 1), lead, worker], new Map(), "tab-other", ["lead"], excluded),
+    ).toEqual(activates("first"));
+  });
+
+  it("does not open a running worker whose lead is not loaded", () => {
+    const worker = { ...turn("worker", 3, true), orchestrationLeadId: "gone" };
+    expect(plan([turn("first", 1), worker])).toEqual(activates("first"));
+  });
+
+  it("opens a running session whose turn has no start time", () => {
+    expect(
+      plan([turn("first", 1), turn("started", undefined, true)], new Map(), "tab-other", [
+        "started",
+      ]),
+    ).toEqual({ action: "open-session", sessionId: "started" });
   });
 
   it("opens a lead whose worker is running", () => {

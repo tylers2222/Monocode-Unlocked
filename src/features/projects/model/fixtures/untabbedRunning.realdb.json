@@ -1,0 +1,1063 @@
+{
+ "source": "Reduced from a read-only copy of com.monocode.second/monocode.db on 2026-10-19, read through session_store.rs get_workspace_snapshot, list_in_flight and get_session. Ids, titles, text and paths are made up; keys, value types, block order, turn timestamps, tab layout and the running-with-no-tab pattern are real.",
+ "snapshot": {
+  "activeTabId": "tab-0003",
+  "projectCwd": "/Users/test/acme",
+  "projectReturnTargets": [
+   {
+    "projectPath": "/Users/test/acme",
+    "tabId": "app-mono-chat-0001-request-0005"
+   },
+   {
+    "projectPath": "/Users/test/notes",
+    "tabId": "app-giga-chat-0001-request-0008"
+   }
+  ],
+  "projectTerminals": [],
+  "sessions": [
+   {
+    "cwd": "/Users/test",
+    "harness": "omp",
+    "id": "mono-chat-0001",
+    "model": "omp:default",
+    "modelSettings": {},
+    "providerSessionId": "provider-196",
+    "runtimeMode": "auto",
+    "title": "made-up title 195"
+   },
+   {
+    "branch": "review/e7-r3",
+    "cwd": "/Users/test/acme",
+    "harness": "omp",
+    "id": "app-mono-chat-0001-request-0001",
+    "model": "omp:default",
+    "modelSettings": {},
+    "providerSessionId": "provider-198",
+    "runtimeMode": "auto",
+    "title": "made-up title 197",
+    "worktreeCwd": "/Users/test/acme-worktrees/tree-05"
+   },
+   {
+    "branch": "feat/m7-timeline",
+    "cwd": "/Users/test/acme",
+    "harness": "omp",
+    "id": "app-mono-chat-0001-request-0006",
+    "model": "omp:default",
+    "modelSettings": {},
+    "providerSessionId": "provider-200",
+    "runtimeMode": "auto",
+    "title": "made-up title 199",
+    "worktreeCwd": "/Users/test/acme-worktrees/tree-03"
+   },
+   {
+    "branch": "main",
+    "cwd": "/Users/test/notes",
+    "harness": "omp",
+    "id": "app-giga-chat-0001-request-0008",
+    "model": "omp:default",
+    "modelSettings": {},
+    "providerSessionId": "provider-202",
+    "runtimeMode": "auto",
+    "title": "made-up title 201"
+   },
+   {
+    "branch": "feat/e7-9a-action-gate-rust",
+    "cwd": "/Users/test/acme",
+    "harness": "omp",
+    "id": "app-mono-chat-0001-request-0005",
+    "model": "omp:default",
+    "modelSettings": {},
+    "providerSessionId": "provider-204",
+    "runtimeMode": "auto",
+    "title": "made-up title 203",
+    "worktreeCwd": "/Users/test/acme-worktrees/tree-02"
+   },
+   {
+    "cwd": "/Users/test/acme",
+    "harness": "omp",
+    "id": "app-mono-chat-0001-request-0002",
+    "model": "omp:anthropic/claude-opus-5-5",
+    "modelSettings": {},
+    "providerSessionId": "provider-206",
+    "runtimeMode": "auto",
+    "title": "made-up title 205",
+    "worktreeCwd": "/Users/test/acme-worktrees/tree-06"
+   },
+   {
+    "branch": "feat/m9-milestones-editor",
+    "cwd": "/Users/test/acme",
+    "harness": "omp",
+    "id": "app-mono-chat-0001-request-0004",
+    "model": "omp:default",
+    "modelSettings": {},
+    "providerSessionId": "provider-208",
+    "runtimeMode": "auto",
+    "title": "made-up title 207",
+    "worktreeCwd": "/Users/test/acme-worktrees/tree-01"
+   },
+   {
+    "cwd": "/Users/test/acme",
+    "harness": "omp",
+    "id": "app-mono-chat-0001-request-0003",
+    "model": "omp:anthropic/claude-opus-5-5",
+    "modelSettings": {},
+    "providerSessionId": "provider-210",
+    "runtimeMode": "auto",
+    "title": "made-up title 209",
+    "worktreeCwd": "/Users/test/acme-worktrees/tree-04"
+   },
+   {
+    "cwd": "/Users/test/notes",
+    "harness": "omp",
+    "id": "app-giga-chat-0001-request-0007",
+    "model": "omp:anthropic/claude-opus-5-5",
+    "modelSettings": {},
+    "providerSessionId": "provider-212",
+    "runtimeMode": "auto",
+    "title": "made-up title 211"
+   }
+  ],
+  "tabs": [
+   {
+    "editorPanes": [],
+    "focusedId": "app-mono-chat-0001-request-0001",
+    "id": "tab-0001",
+    "kind": "session",
+    "layout": {
+     "id": "app-mono-chat-0001-request-0001",
+     "type": "leaf"
+    },
+    "terminalPanes": []
+   },
+   {
+    "editorPanes": [],
+    "focusedId": "app-mono-chat-0001-request-0006",
+    "id": "tab-0002",
+    "kind": "session",
+    "layout": {
+     "id": "app-mono-chat-0001-request-0006",
+     "type": "leaf"
+    },
+    "terminalPanes": []
+   },
+   {
+    "editorPanes": [],
+    "focusedId": "app-mono-chat-0001-request-0005",
+    "id": "tab-0003",
+    "kind": "session",
+    "layout": {
+     "id": "app-mono-chat-0001-request-0005",
+     "type": "leaf"
+    },
+    "terminalPanes": []
+   },
+   {
+    "editorPanes": [],
+    "focusedId": "app-giga-chat-0001-request-0008",
+    "id": "tab-0004",
+    "kind": "session",
+    "layout": {
+     "id": "app-giga-chat-0001-request-0008",
+     "type": "leaf"
+    },
+    "terminalPanes": []
+   }
+  ]
+ },
+ "inFlight": [
+  {
+   "sessionId": "app-mono-chat-0001-request-0002",
+   "cwd": "/Users/test/acme"
+  },
+  {
+   "sessionId": "app-mono-chat-0001-request-0004",
+   "cwd": "/Users/test/acme"
+  },
+  {
+   "sessionId": "app-mono-chat-0001-request-0003",
+   "cwd": "/Users/test/acme"
+  },
+  {
+   "sessionId": "app-giga-chat-0001-request-0007",
+   "cwd": "/Users/test/notes"
+  }
+ ],
+ "records": {
+  "app-mono-chat-0001-request-0004": {
+   "blocks": [
+    {
+     "id": "id-0001",
+     "role": "tool",
+     "text": "made-up text 2",
+     "tool": {
+      "callId": "made-up callId 3",
+      "detail": "made-up detail 4",
+      "kind": "edit",
+      "preview": {
+       "contentOnly": true,
+       "fileName": "made-up fileName 5",
+       "kind": "write",
+       "lines": [
+        {
+         "kind": "context",
+         "number": 1,
+         "text": "made-up text 6"
+        },
+        {
+         "kind": "context",
+         "number": 2,
+         "text": "made-up text 7"
+        },
+        {
+         "kind": "context",
+         "number": 3,
+         "text": "made-up text 8"
+        },
+        {
+         "kind": "context",
+         "number": 4,
+         "text": "made-up text 9"
+        },
+        {
+         "kind": "context",
+         "number": 5,
+         "text": "made-up text 10"
+        },
+        {
+         "kind": "context",
+         "number": 6,
+         "text": "made-up text 11"
+        }
+       ],
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 12"
+      },
+      "status": "completed",
+      "title": "made-up title 13"
+     }
+    },
+    {
+     "id": "id-0002",
+     "role": "assistant",
+     "text": "made-up text 14"
+    },
+    {
+     "appRequestId": "appRequestId-0003",
+     "id": "id-0004",
+     "role": "user",
+     "startedAt": 1792359637376,
+     "text": "made-up text 15",
+     "turnId": "turnId-0005",
+     "turnMetrics": {
+      "cacheHitPercent": 98.01048949047475,
+      "cacheReadTokens": 10786910,
+      "cacheWriteTokens": 218867,
+      "inputTokens": 96,
+      "outputTokens": 17661
+     },
+     "turnModel": {
+      "harness": "omp",
+      "id": "id-0006",
+      "name": "made-up name 16"
+     }
+    },
+    {
+     "id": "id-0007",
+     "role": "tool",
+     "text": "made-up text 17",
+     "tool": {
+      "callId": "made-up callId 18",
+      "detail": "made-up detail 19",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 20",
+       "kind": "read",
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 21"
+      },
+      "status": "completed",
+      "title": "made-up title 22"
+     }
+    },
+    {
+     "id": "id-0008",
+     "role": "reasoning",
+     "text": "made-up text 23"
+    },
+    {
+     "id": "id-0009",
+     "role": "tool",
+     "text": "made-up text 24",
+     "tool": {
+      "callId": "made-up callId 25",
+      "detail": "made-up detail 26",
+      "kind": "search",
+      "preview": {
+       "kind": "search",
+       "query": "made-up query 27",
+       "title": "made-up title 28"
+      },
+      "status": "completed",
+      "title": "made-up title 29"
+     }
+    },
+    {
+     "id": "id-0010",
+     "role": "reasoning",
+     "text": "made-up text 30"
+    }
+   ],
+   "branch": "main",
+   "contextUsed": 277724,
+   "contextWindow": 1000000,
+   "createdAt": 1792357028777,
+   "cwd": "/Users/test/acme",
+   "harness": "omp",
+   "id": "app-mono-chat-0001-request-0004",
+   "model": "omp:default",
+   "modelSettings": {},
+   "providerSessionId": "provider-31",
+   "queuedMessages": [],
+   "runtimeMode": "auto",
+   "sidebarHidden": false,
+   "title": "made-up title 1",
+   "updatedAt": 1792360442570,
+   "worktreeCwd": "/Users/test/acme-worktrees/tree-01",
+   "worktreeRemoved": false
+  },
+  "app-mono-chat-0001-request-0005": {
+   "blocks": [
+    {
+     "appRequestId": "appRequestId-0011",
+     "durationMs": 2269316,
+     "id": "id-0012",
+     "role": "user",
+     "startedAt": 1792354972789,
+     "text": "made-up text 33",
+     "turnId": "turnId-0013",
+     "turnMetrics": {
+      "cacheHitPercent": 98.64790023511654,
+      "cacheReadTokens": 17295524,
+      "cacheWriteTokens": 236856,
+      "inputTokens": 202,
+      "outputTokens": 51839
+     },
+     "turnModel": {
+      "harness": "omp",
+      "id": "id-0006",
+      "name": "made-up name 34"
+     }
+    },
+    {
+     "id": "id-0014",
+     "role": "reasoning",
+     "text": "made-up text 35"
+    },
+    {
+     "id": "id-0015",
+     "role": "tool",
+     "text": "made-up text 36",
+     "tool": {
+      "callId": "made-up callId 37",
+      "detail": "made-up detail 38",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 39",
+       "kind": "read",
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 40"
+      },
+      "status": "completed",
+      "title": "made-up title 41"
+     }
+    },
+    {
+     "id": "id-0016",
+     "role": "tool",
+     "text": "made-up text 42",
+     "tool": {
+      "callId": "made-up callId 43",
+      "detail": "made-up detail 44",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 45",
+       "kind": "read",
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 46"
+      },
+      "status": "completed",
+      "title": "made-up title 47"
+     }
+    },
+    {
+     "id": "id-0017",
+     "role": "tool",
+     "text": "made-up text 48",
+     "tool": {
+      "callId": "made-up callId 49",
+      "detail": "made-up detail 50",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 51",
+       "kind": "read",
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 52"
+      },
+      "status": "completed",
+      "title": "made-up title 53"
+     }
+    }
+   ],
+   "branch": "main",
+   "contextUsed": 242905,
+   "contextWindow": 1000000,
+   "createdAt": 1792354972795,
+   "cwd": "/Users/test/acme",
+   "harness": "omp",
+   "id": "app-mono-chat-0001-request-0005",
+   "linkedWorkItem": {
+    "kind": "pr",
+    "number": 7,
+    "repo": "example/acme",
+    "url": "https://github.com/example/acme/pull/7"
+   },
+   "model": "omp:default",
+   "modelSettings": {},
+   "providerSessionId": "provider-54",
+   "queuedMessages": [],
+   "runtimeMode": "auto",
+   "sidebarHidden": false,
+   "title": "made-up title 32",
+   "updatedAt": 1792357250799,
+   "worktreeCwd": "/Users/test/acme-worktrees/tree-02",
+   "worktreeRemoved": false
+  },
+  "mono-chat-0001": {
+   "blocks": [],
+   "contextUsed": 730223,
+   "contextWindow": 1000000,
+   "createdAt": 1792200952000,
+   "cwd": "/Users/test",
+   "harness": "omp",
+   "id": "mono-chat-0001",
+   "model": "omp:default",
+   "modelSettings": {},
+   "providerSessionId": "provider-56",
+   "queuedMessages": [],
+   "runtimeMode": "auto",
+   "sidebarHidden": false,
+   "title": "made-up title 55",
+   "updatedAt": 1792360350655,
+   "worktreeRemoved": false
+  },
+  "app-mono-chat-0001-request-0006": {
+   "blocks": [
+    {
+     "appRequestId": "appRequestId-0018",
+     "durationMs": 1845793,
+     "id": "id-0019",
+     "role": "user",
+     "startedAt": 1792311122380,
+     "text": "made-up text 58",
+     "turnId": "turnId-0020",
+     "turnMetrics": {
+      "cacheHitPercent": 98.50157603468476,
+      "cacheReadTokens": 13149921,
+      "cacheWriteTokens": 199873,
+      "inputTokens": 166,
+      "outputTokens": 39276
+     },
+     "turnModel": {
+      "harness": "omp",
+      "id": "id-0006",
+      "name": "made-up name 59"
+     }
+    },
+    {
+     "id": "id-0021",
+     "role": "reasoning",
+     "text": "made-up text 60"
+    },
+    {
+     "id": "id-0022",
+     "role": "tool",
+     "text": "made-up text 61",
+     "tool": {
+      "callId": "made-up callId 62",
+      "detail": "made-up detail 63",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 64",
+       "kind": "read",
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 65"
+      },
+      "status": "completed",
+      "title": "made-up title 66"
+     }
+    },
+    {
+     "id": "id-0023",
+     "role": "tool",
+     "text": "made-up text 67",
+     "tool": {
+      "callId": "made-up callId 68",
+      "detail": "made-up detail 69",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 70",
+       "kind": "read",
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 71"
+      },
+      "status": "completed",
+      "title": "made-up title 72"
+     }
+    },
+    {
+     "id": "id-0024",
+     "role": "tool",
+     "text": "made-up text 73",
+     "tool": {
+      "callId": "made-up callId 74",
+      "detail": "made-up detail 75",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 76",
+       "kind": "read",
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 77"
+      },
+      "status": "completed",
+      "title": "made-up title 78"
+     }
+    }
+   ],
+   "branch": "main",
+   "contextUsed": 207264,
+   "contextWindow": 1000000,
+   "createdAt": 1792311122383,
+   "cwd": "/Users/test/acme",
+   "harness": "omp",
+   "id": "app-mono-chat-0001-request-0006",
+   "model": "omp:default",
+   "modelSettings": {},
+   "providerSessionId": "provider-79",
+   "queuedMessages": [],
+   "runtimeMode": "auto",
+   "sidebarHidden": false,
+   "title": "made-up title 57",
+   "updatedAt": 1792312969917,
+   "worktreeCwd": "/Users/test/acme-worktrees/tree-03",
+   "worktreeRemoved": false
+  },
+  "app-mono-chat-0001-request-0003": {
+   "blocks": [
+    {
+     "appRequestId": "appRequestId-0025",
+     "id": "id-0026",
+     "role": "user",
+     "startedAt": 1792360319663,
+     "text": "made-up text 81",
+     "turnId": "turnId-0027",
+     "turnMetrics": {
+      "cacheHitPercent": 94.69822236837116,
+      "cacheReadTokens": 1822919,
+      "cacheWriteTokens": 102010,
+      "inputTokens": 48,
+      "outputTokens": 6938
+     },
+     "turnModel": {
+      "harness": "omp",
+      "id": "id-0028",
+      "name": "made-up name 82"
+     }
+    },
+    {
+     "id": "id-0029",
+     "role": "reasoning",
+     "text": "made-up text 83"
+    },
+    {
+     "id": "id-0030",
+     "role": "tool",
+     "text": "made-up text 84",
+     "tool": {
+      "callId": "made-up callId 85",
+      "detail": "made-up detail 86",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 87",
+       "kind": "read",
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 88"
+      },
+      "status": "completed",
+      "title": "made-up title 89"
+     }
+    },
+    {
+     "id": "id-0031",
+     "role": "tool",
+     "text": "made-up text 90",
+     "tool": {
+      "callId": "made-up callId 91",
+      "detail": "made-up detail 92",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 93",
+       "kind": "read",
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 94"
+      },
+      "status": "completed",
+      "title": "made-up title 95"
+     }
+    },
+    {
+     "id": "id-0032",
+     "role": "tool",
+     "text": "made-up text 96",
+     "tool": {
+      "callId": "made-up callId 97",
+      "detail": "made-up detail 98",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 99",
+       "kind": "read",
+       "path": "made-up path 100",
+       "title": "made-up title 101"
+      },
+      "status": "completed",
+      "title": "made-up title 102"
+     }
+    }
+   ],
+   "branch": "main",
+   "contextUsed": 103658,
+   "contextWindow": 1000000,
+   "createdAt": 1792360319667,
+   "cwd": "/Users/test/acme",
+   "harness": "omp",
+   "id": "app-mono-chat-0001-request-0003",
+   "model": "omp:anthropic/claude-opus-5-5",
+   "modelSettings": {},
+   "providerSessionId": "provider-103",
+   "queuedMessages": [],
+   "runtimeMode": "auto",
+   "sidebarHidden": false,
+   "title": "made-up title 80",
+   "updatedAt": 1792360450572,
+   "worktreeCwd": "/Users/test/acme-worktrees/tree-04",
+   "worktreeRemoved": false
+  },
+  "app-giga-chat-0001-request-0008": {
+   "blocks": [
+    {
+     "id": "id-0033",
+     "role": "reasoning",
+     "text": "made-up text 105"
+    },
+    {
+     "id": "id-0034",
+     "role": "tool",
+     "text": "made-up text 106",
+     "tool": {
+      "callId": "made-up callId 107",
+      "detail": "made-up detail 108",
+      "kind": "search",
+      "preview": {
+       "kind": "search",
+       "query": "made-up query 109",
+       "title": "made-up title 110"
+      },
+      "status": "completed",
+      "title": "made-up title 111"
+     }
+    },
+    {
+     "appRequestId": "appRequestId-0035",
+     "durationMs": 116785,
+     "id": "id-0036",
+     "role": "user",
+     "startedAt": 1792313889683,
+     "text": "made-up text 112",
+     "turnId": "turnId-0037",
+     "turnMetrics": {
+      "cacheHitPercent": 96.12193982557072,
+      "cacheReadTokens": 1232513,
+      "cacheWriteTokens": 49688,
+      "inputTokens": 38,
+      "outputTokens": 4699
+     },
+     "turnModel": {
+      "harness": "omp",
+      "id": "id-0006",
+      "name": "made-up name 113"
+     }
+    },
+    {
+     "id": "id-0038",
+     "role": "reasoning",
+     "text": "made-up text 114"
+    },
+    {
+     "id": "id-0039",
+     "role": "tool",
+     "text": "made-up text 115",
+     "tool": {
+      "callId": "made-up callId 116",
+      "detail": "made-up detail 117",
+      "kind": "eval",
+      "status": "failed",
+      "title": "made-up title 118"
+     }
+    },
+    {
+     "id": "id-0040",
+     "role": "reasoning",
+     "text": "made-up text 119"
+    },
+    {
+     "id": "id-0041",
+     "role": "tool",
+     "text": "made-up text 120",
+     "tool": {
+      "callId": "made-up callId 121",
+      "detail": "made-up detail 122",
+      "kind": "eval",
+      "status": "completed",
+      "title": "made-up title 123"
+     }
+    }
+   ],
+   "branch": "main",
+   "contextUsed": 78289,
+   "contextWindow": 1000000,
+   "createdAt": 1792313590525,
+   "cwd": "/Users/test/notes",
+   "harness": "omp",
+   "id": "app-giga-chat-0001-request-0008",
+   "model": "omp:default",
+   "modelSettings": {},
+   "providerSessionId": "provider-124",
+   "queuedMessages": [],
+   "runtimeMode": "auto",
+   "sidebarHidden": false,
+   "title": "made-up title 104",
+   "updatedAt": 1792314060890,
+   "worktreeRemoved": false
+  },
+  "app-giga-chat-0001-request-0007": {
+   "blocks": [
+    {
+     "appRequestId": "appRequestId-0042",
+     "id": "id-0043",
+     "role": "user",
+     "startedAt": 1792360419318,
+     "text": "made-up text 126",
+     "turnId": "turnId-0044",
+     "turnMetrics": {
+      "cacheHitPercent": 80.77454217952567,
+      "cacheReadTokens": 269060,
+      "cacheWriteTokens": 64026,
+      "inputTokens": 14,
+      "outputTokens": 1345
+     },
+     "turnModel": {
+      "harness": "omp",
+      "id": "id-0028",
+      "name": "made-up name 127"
+     }
+    },
+    {
+     "id": "id-0045",
+     "role": "reasoning",
+     "text": "made-up text 128"
+    },
+    {
+     "id": "id-0046",
+     "role": "tool",
+     "text": "made-up text 129",
+     "tool": {
+      "callId": "made-up callId 130",
+      "detail": "made-up detail 131",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 132",
+       "kind": "read",
+       "path": "made-up path 133",
+       "title": "made-up title 134"
+      },
+      "status": "completed",
+      "title": "made-up title 135"
+     }
+    },
+    {
+     "id": "id-0047",
+     "role": "tool",
+     "text": "made-up text 136",
+     "tool": {
+      "callId": "made-up callId 137",
+      "detail": "made-up detail 138",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 139",
+       "kind": "read",
+       "path": "made-up path 140",
+       "title": "made-up title 141"
+      },
+      "status": "completed",
+      "title": "made-up title 142"
+     }
+    },
+    {
+     "id": "id-0048",
+     "role": "tool",
+     "text": "made-up text 143",
+     "tool": {
+      "callId": "made-up callId 144",
+      "detail": "made-up detail 145",
+      "kind": "read",
+      "preview": {
+       "kind": "read",
+       "title": "made-up title 146"
+      },
+      "status": "completed",
+      "title": "made-up title 147"
+     }
+    }
+   ],
+   "branch": "main",
+   "contextUsed": 64143,
+   "contextWindow": 1000000,
+   "createdAt": 1792360419331,
+   "cwd": "/Users/test/notes",
+   "harness": "omp",
+   "id": "app-giga-chat-0001-request-0007",
+   "model": "omp:anthropic/claude-opus-5-5",
+   "modelSettings": {},
+   "providerSessionId": "provider-148",
+   "queuedMessages": [],
+   "runtimeMode": "auto",
+   "sidebarHidden": false,
+   "title": "made-up title 125",
+   "updatedAt": 1792360452188,
+   "workFolder": "/Users/test/notes/gigas/giga-one",
+   "worktreeRemoved": false
+  },
+  "app-mono-chat-0001-request-0001": {
+   "blocks": [
+    {
+     "appRequestId": "appRequestId-0049",
+     "durationMs": 543323,
+     "id": "id-0050",
+     "role": "user",
+     "startedAt": 1792286269987,
+     "text": "made-up text 150",
+     "turnId": "turnId-0051",
+     "turnMetrics": {
+      "cacheHitPercent": 95.42501589527976,
+      "cacheReadTokens": 1937583,
+      "cacheWriteTokens": 92848,
+      "inputTokens": 46,
+      "outputTokens": 17100
+     },
+     "turnModel": {
+      "harness": "omp",
+      "id": "id-0006",
+      "name": "made-up name 151"
+     }
+    },
+    {
+     "id": "id-0052",
+     "role": "tool",
+     "text": "made-up text 152",
+     "tool": {
+      "callId": "made-up callId 153",
+      "detail": "made-up detail 154",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 155",
+       "kind": "read",
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 156"
+      },
+      "status": "completed",
+      "title": "made-up title 157"
+     }
+    },
+    {
+     "id": "id-0053",
+     "role": "tool",
+     "text": "made-up text 158",
+     "tool": {
+      "callId": "made-up callId 159",
+      "detail": "made-up detail 160",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 161",
+       "kind": "read",
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 162"
+      },
+      "status": "completed",
+      "title": "made-up title 163"
+     }
+    },
+    {
+     "id": "id-0054",
+     "role": "tool",
+     "text": "made-up text 164",
+     "tool": {
+      "callId": "made-up callId 165",
+      "detail": "made-up detail 166",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 167",
+       "kind": "read",
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 168"
+      },
+      "status": "completed",
+      "title": "made-up title 169"
+     }
+    },
+    {
+     "id": "id-0055",
+     "role": "tool",
+     "text": "made-up text 170",
+     "tool": {
+      "callId": "made-up callId 171",
+      "detail": "made-up detail 172",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 173",
+       "kind": "read",
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 174"
+      },
+      "status": "completed",
+      "title": "made-up title 175"
+     }
+    }
+   ],
+   "branch": "main",
+   "contextUsed": 117121,
+   "contextWindow": 1000000,
+   "createdAt": 1792286269992,
+   "cwd": "/Users/test/acme",
+   "harness": "omp",
+   "id": "app-mono-chat-0001-request-0001",
+   "linkedWorkItem": {
+    "kind": "pr",
+    "number": 7,
+    "repo": "example/acme",
+    "url": "https://github.com/example/acme/pull/7"
+   },
+   "model": "omp:default",
+   "modelSettings": {},
+   "providerSessionId": "provider-176",
+   "queuedMessages": [],
+   "runtimeMode": "auto",
+   "sidebarHidden": false,
+   "title": "made-up title 149",
+   "updatedAt": 1792286814954,
+   "worktreeCwd": "/Users/test/acme-worktrees/tree-05",
+   "worktreeRemoved": false
+  },
+  "app-mono-chat-0001-request-0002": {
+   "blocks": [
+    {
+     "appRequestId": "appRequestId-0056",
+     "id": "id-0057",
+     "role": "user",
+     "startedAt": 1792359529007,
+     "text": "made-up text 178",
+     "turnId": "turnId-0058",
+     "turnMetrics": {
+      "cacheHitPercent": 97.81691891916586,
+      "cacheReadTokens": 8992863,
+      "cacheWriteTokens": 200573,
+      "inputTokens": 130,
+      "outputTokens": 38993
+     },
+     "turnModel": {
+      "harness": "omp",
+      "id": "id-0028",
+      "name": "made-up name 179"
+     }
+    },
+    {
+     "id": "id-0059",
+     "role": "reasoning",
+     "text": "made-up text 180"
+    },
+    {
+     "id": "id-0060",
+     "role": "tool",
+     "text": "made-up text 181",
+     "tool": {
+      "callId": "made-up callId 182",
+      "detail": "made-up detail 183",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 184",
+       "kind": "read",
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 185"
+      },
+      "status": "completed",
+      "title": "made-up title 186"
+     }
+    },
+    {
+     "id": "id-0061",
+     "role": "tool",
+     "text": "made-up text 187",
+     "tool": {
+      "callId": "made-up callId 188",
+      "detail": "made-up detail 189",
+      "kind": "read",
+      "preview": {
+       "fileName": "made-up fileName 190",
+       "kind": "read",
+       "path": "/Users/test/acme/file.txt",
+       "title": "made-up title 191"
+      },
+      "status": "completed",
+      "title": "made-up title 192"
+     }
+    },
+    {
+     "id": "id-0062",
+     "role": "reasoning",
+     "text": "made-up text 193"
+    }
+   ],
+   "branch": "main",
+   "contextUsed": 212312,
+   "contextWindow": 1000000,
+   "createdAt": 1792359529013,
+   "cwd": "/Users/test/acme",
+   "harness": "omp",
+   "id": "app-mono-chat-0001-request-0002",
+   "linkedWorkItem": {
+    "kind": "pr",
+    "number": 7,
+    "repo": "example/acme",
+    "url": "https://github.com/example/acme/pull/7"
+   },
+   "model": "omp:anthropic/claude-opus-5-5",
+   "modelSettings": {},
+   "providerSessionId": "provider-194",
+   "queuedMessages": [],
+   "runtimeMode": "auto",
+   "sidebarHidden": false,
+   "title": "made-up title 177",
+   "updatedAt": 1792360450329,
+   "worktreeCwd": "/Users/test/acme-worktrees/tree-06",
+   "worktreeRemoved": false
+  }
+ }
+}

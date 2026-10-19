@@ -42,7 +42,11 @@ import {
 } from "../noteImages";
 import { projectKey, projectName } from "../../../shared/lib/paths";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { looksLikeProject, type RecentProject } from "../../projects/model/recents";
+import {
+  looksLikeProject,
+  sameProjectPath,
+  type RecentProject,
+} from "../../projects/model/recents";
 import {
   loadTabGroupColors,
   loadTabGroupCustomColors,
@@ -843,6 +847,7 @@ function NoteEditor({
               railCwd={activeCwd}
               buttonClassName="px-1.5"
               onSelectProject={(path) => {
+                if (sourceCwd && sameProjectPath(path, sourceCwd)) return;
                 const change = { path };
                 projectChangeRef.current = change;
                 setProjectChange(change);

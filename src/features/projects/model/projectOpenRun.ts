@@ -9,6 +9,7 @@ import { planProjectReturn, type ProjectReturnMemory } from "./projectReturn";
 export type ProjectOpenStep =
   | { action: "keep"; path: string }
   | { action: "activate"; path: string; tabId: string; paneId?: string }
+  | { action: "open-session"; path: string; sessionId: string }
   | { action: "reuse-blank"; path: string; sessionId: string }
   | {
       action: "create";
@@ -34,12 +35,14 @@ export function planProjectOpenRun({
   tabs,
   sessions,
   activeTabId,
+  excludedIds,
   paths,
 }: {
   memory: ProjectReturnMemory;
   tabs: WorkspaceTab[];
   sessions: Session[];
   activeTabId: string;
+  excludedIds: ReadonlySet<string>;
   paths: readonly string[];
 }): ProjectOpenStep[] {
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
@@ -62,6 +65,7 @@ export function planProjectOpenRun({
       tabs: openTabs,
       sessions: openSessions,
       activeTabId,
+      excludedIds,
       projectPath: normalized,
     });
     if (decision.action === "keep") {
@@ -74,6 +78,14 @@ export function planProjectOpenRun({
         path: normalized,
         tabId: decision.tabId,
         paneId: decision.paneId,
+      });
+      continue;
+    }
+    if (decision.action === "open-session") {
+      steps.push({
+        action: "open-session",
+        path: normalized,
+        sessionId: decision.sessionId,
       });
       continue;
     }
