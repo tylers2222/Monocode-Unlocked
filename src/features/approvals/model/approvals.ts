@@ -34,19 +34,21 @@ export type Approval = ApprovalCard & {
   requestedBy: { id: string | null; name: string };
   /** Unix milliseconds, as are the status times. */
   createdAt: number;
-  status:
-    | { state: "open" }
-    | { state: "withdrawn"; withdrawnAt: number }
-    | {
-        state: "decided";
-        verdict: "approved" | "rejected" | "changes_requested";
-        decidedAt: number;
-        note: string | null;
-        chosen: string[];
-        /** Dropped: sent again to the Giga's next chat, or removed by the user. */
-        undelivered: "waiting" | "removed" | null;
-      };
+  status: ApprovalStatus;
 };
+
+export type ApprovalStatus =
+  | { state: "open" }
+  | { state: "withdrawn"; withdrawnAt: number }
+  | {
+      state: "decided";
+      verdict: "approved" | "rejected" | "changes_requested";
+      decidedAt: number;
+      note: string | null;
+      chosen: string[];
+      /** Dropped: sent again to the Giga's next chat, or removed by the user. */
+      undelivered: "waiting" | "removed" | null;
+    };
 
 export const CARD_FIELDS = [
   "heading",
@@ -91,7 +93,11 @@ function cardList<T>(
 }
 
 function approvalOption(value: unknown, name: string): ApprovalOption {
-  const option = onlyFields(value, name, ["label", "description", "recommended"]);
+  const option = onlyFields(value, name, [
+    "label",
+    "description",
+    "recommended",
+  ]);
   const { recommended = false } = option;
   if (typeof recommended !== "boolean")
     throw new Error(`${name}.recommended must be a boolean`);
@@ -174,8 +180,40 @@ export function openCounts(): Promise<OpenCounts> {
   return invoke("approvals_open_counts");
 }
 
+export function listApprovals(projectPath: string): Promise<Approval[]> {
+  return invoke("approvals_list", { projectPath });
+}
+
 export function approvalsBadge(open: number): ApprovalsBadge {
   return open > 0
     ? { label: `Approvals, ${open} open`, pill: countBadge(open) }
     : { label: "Approvals" };
+}
+
+export type Board = { open: Approval[]; summary: string };
+
+/** `approvals_list` sends open cards first (blocking, then newest) and the rest after; the board keeps that order. */
+export function board(cards: readonly Approval[]): Board {
+  const open = cards.filter((card) => card.status.state === "open");
+  const blocking = open.filter((card) => card.urgency === "blocking").length;
+  const summary = `${open.length} open · ${blocking} blocking · ${cards.length - open.length} decided`;
+  return { open, summary };
+}
+
+const date = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+});
+
+function daysBefore(at: number, now: number): number {
+  const midnight = (ms: number) => new Date(ms).setHours(0, 0, 0, 0);
+  return Math.round((midnight(now) - midnight(at)) / 86_400_000);
+}
+
+export function ago(at: number, now: number): string {
+  const minutes = Math.floor((now - at) / 60_000);
+  if (minutes < 60) return `${Math.max(1, minutes)}m ago`;
+  const days = daysBefore(at, now);
+  if (days === 0) return `${Math.floor(minutes / 60)}h ago`;
+  return days === 1 ? "yesterday" : date.format(at);
 }

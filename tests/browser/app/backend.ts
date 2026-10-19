@@ -4,6 +4,7 @@ import {
   mockIPC,
   mockWindows,
 } from "@tauri-apps/api/mocks";
+import type { Approval } from "../../../src/features/approvals/model/approvals";
 import type { Automation } from "../../../src/features/automations/model/automations";
 import {
   MILESTONES_CHANGED,
@@ -67,12 +68,6 @@ type SessionUpsert = SessionSummary & {
   workFolder?: string;
 };
 
-export type ApprovalRow = {
-  number: number;
-  projectPath: string;
-  status: "open" | "approved" | "rejected" | "changes_requested" | "withdrawn";
-};
-
 /** Everything the fake backend knows, in the shapes Rust sends. */
 export type FakeStore = {
   home: string;
@@ -94,7 +89,7 @@ export type FakeStore = {
   milestones: Milestone[];
   /** milestone_settings rows by project path; no row means on, nothing hidden. */
   milestoneSettings: Record<string, MilestoneSettings>;
-  approvals: ApprovalRow[];
+  approvals: Approval[];
   /** sessionStore.ts `saveWorkspaceSnapshot`: the open tabs, as last saved. */
   workspace: unknown;
   /** session_store.rs `in_flight_sessions`: what the last window had running. */
@@ -110,7 +105,7 @@ export type FakeSeed = Partial<{
   automations: Automation[];
   milestones: Milestone[];
   milestoneSettings: Record<string, MilestoneSettings>;
-  approvals: ApprovalRow[];
+  approvals: Approval[];
   /** Saved state a real database already holds when the app starts. */
   blocks: Record<string, Block[]>;
   workFolders: Record<string, string>;
@@ -544,12 +539,32 @@ const HANDLERS: Record<string, Handler> = {
   approvals_open_counts: (store) => {
     const byProject: Record<string, number> = {};
     for (const { projectPath, status } of store.approvals)
-      if (status === "open")
+      if (status.state === "open")
         byProject[projectPath] = (byProject[projectPath] ?? 0) + 1;
     return {
       total: Object.values(byProject).reduce((sum, open) => sum + open, 0),
       byProject,
     };
+  },
+  // approvals.rs `list`: ORDER BY status <> 'open', open and not blocking,
+  // coalesce(decided_at, withdrawn_at, created_at) DESC, number DESC.
+  approvals_list: (store, { projectPath }) => {
+    const rank = ({ status, urgency, createdAt, number }: Approval) => [
+      Number(status.state !== "open"),
+      Number(status.state === "open" && urgency !== "blocking"),
+      -(status.state === "decided"
+        ? status.decidedAt
+        : status.state === "withdrawn"
+          ? status.withdrawnAt
+          : createdAt),
+      -number,
+    ];
+    return store.approvals
+      .filter((card) => card.projectPath === projectPath)
+      .sort((a, b) => {
+        const [x, y] = [rank(a), rank(b)];
+        return x.map((key, index) => key - y[index]).find(Boolean) ?? 0;
+      });
   },
   automation_runs_list: empty,
   control_load: none,
