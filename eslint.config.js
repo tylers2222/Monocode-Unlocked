@@ -38,7 +38,7 @@ export default defineConfig(
     },
   },
   {
-    files: ["**/*.test.*", "tests/**"],
+    files: ["**/*.test.{ts,tsx,js,jsx,mjs,cjs,mts,cts}", "tests/**"],
     rules: { "max-lines": "off", "max-lines-per-function": "off" },
   },
 );
