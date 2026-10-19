@@ -51,7 +51,7 @@ holds() { [[ "$(q "$1" 2>/dev/null)" == 1 ]]; }
 # (no sleep) and boot time stays.
 clock_write() {
   jq -n --argjson up "$1" --argjson wall "$2" --argjson boot "$BOOT_MS" \
-    '{uptime_ms: $up, monotonic_ms: $up, wall_ms: $wall, boot_wall_ms: $boot}' >"$CLOCK.tmp"
+    '{uptime_ns: ($up * 1000000), monotonic_ns: ($up * 1000000), wall_ms: $wall, boot_wall_ms: $boot}' >"$CLOCK.tmp"
   mv "$CLOCK.tmp" "$CLOCK"
 }
 

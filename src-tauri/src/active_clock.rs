@@ -26,7 +26,9 @@ pub trait Clock {
 }
 
 /// One reading of the computer's clocks.
+/// `fake-clock.json` is one reading as JSON.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(any(feature = "fake-clock", test), derive(serde::Deserialize))]
 pub struct Reading {
     pub uptime_ns: u64,
     pub monotonic_ns: u64,
@@ -340,16 +342,7 @@ impl Clock for SystemClock {
 mod fake {
     use std::path::PathBuf;
 
-    use super::{Reading, NS_PER_MS};
-
-    /// `fake-clock.json`, in ms as the driver writes it.
-    #[derive(serde::Deserialize)]
-    struct File {
-        uptime_ms: u64,
-        monotonic_ms: u64,
-        wall_ms: i64,
-        boot_wall_ms: i64,
-    }
+    use super::Reading;
 
     pub(crate) struct FileClock {
         path: PathBuf,
@@ -368,16 +361,10 @@ mod fake {
     }
 
     fn read(path: &PathBuf) -> Result<Reading, String> {
-        let file: File = std::fs::read(path)
+        std::fs::read(path)
             .map_err(|error| error.to_string())
             .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
-            .map_err(|error| format!("fake clock {}: {error}", path.display()))?;
-        Ok(Reading {
-            uptime_ns: file.uptime_ms * NS_PER_MS,
-            monotonic_ns: file.monotonic_ms * NS_PER_MS,
-            wall_ms: file.wall_ms,
-            boot_wall_ms: file.boot_wall_ms,
-        })
+            .map_err(|error| format!("fake clock {}: {error}", path.display()))
     }
 
     impl super::Clock for FileClock {
@@ -410,15 +397,15 @@ mod fake {
                 std::fs::write(
                     &path,
                     format!(
-                        r#"{{"uptime_ms":{up},"monotonic_ms":{},"wall_ms":{wall},"boot_wall_ms":7}}"#,
-                        up + 1
+                        r#"{{"uptime_ns":{up},"monotonic_ns":{},"wall_ms":{wall},"boot_wall_ms":7}}"#,
+                        up + 1_000_000
                     ),
                 )
                 .unwrap();
             };
-            write(1_000, 50);
+            write(1_000_000_000, 50);
             let mut clock = FileClock::open(path.clone()).unwrap();
-            write(2_500, 60);
+            write(2_500_000_000, 60);
             let now = clock.now();
             assert_eq!(
                 (

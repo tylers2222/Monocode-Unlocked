@@ -86,7 +86,7 @@ cmd_start() {
   # A fake-clock build stops at launch without its clock file. This one holds
   # still; scripts/scenarios/app.sh writes its own and moves it.
   local clock="$APP_DATA/fake-clock.json" now; now="$(date +%s)000"
-  [[ -f "$clock" ]] || { mkdir -p "$APP_DATA"; printf '{"uptime_ms":0,"monotonic_ms":0,"wall_ms":%s,"boot_wall_ms":%s}\n' "$now" "$now" >"$clock"; }
+  [[ -f "$clock" ]] || { mkdir -p "$APP_DATA"; printf '{"uptime_ns":0,"monotonic_ns":0,"wall_ms":%s,"boot_wall_ms":%s}\n' "$now" "$now" >"$clock"; }
   # The launch cwd becomes a MonoCode project; case 4 uses it as the scratch project.
   local scratch="$EVAL_HOME/$SCRATCH_NAME"
   if [[ ! -d "$scratch/.git" ]]; then
