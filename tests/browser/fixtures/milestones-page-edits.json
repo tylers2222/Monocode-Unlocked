@@ -1,0 +1,48 @@
+[
+  {
+    "command": "milestones_update",
+    "args": {
+      "projectPath": "/Users/test/orbit",
+      "id": "orbit-200000000000000000000000000000",
+      "patch": {
+        "title": "Giga Mono harness (change H, v2)",
+        "note": "Tool allowlist only."
+      },
+      "by": "user"
+    }
+  },
+  {
+    "command": "milestones_update",
+    "args": {
+      "projectPath": "/Users/test/orbit",
+      "id": "orbit-200000000000000000000000000000",
+      "patch": {
+        "target": null
+      },
+      "by": "user"
+    }
+  },
+  {
+    "command": "milestones_update",
+    "args": {
+      "projectPath": "/Users/test/orbit",
+      "id": "orbit-200000000000000000000000000000",
+      "patch": {
+        "status": "done",
+        "target": "2028-02-29"
+      },
+      "by": "user"
+    }
+  },
+  {
+    "command": "milestones_update",
+    "args": {
+      "projectPath": "/Users/test/orbit",
+      "id": "orbit-400000000000000000000000000000",
+      "patch": {
+        "target": "2025-01-05"
+      },
+      "by": "user"
+    }
+  }
+]

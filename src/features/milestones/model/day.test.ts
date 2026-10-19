@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { formatTarget } from "../ui/timeline";
-import { dayOf, formatDay } from "./day";
+import { dayOf, formatDay, parseDay } from "./day";
 
 const pinned = process.env.TZ;
 afterAll(() => {
@@ -22,6 +22,51 @@ for (const zone of ["Australia/Sydney", "America/Los_Angeles"]) {
       expect(formatTarget("2026-01-01", new Date(2026, 9, 18))).toBe("Jan 1");
       expect(dayOf(new Date(2026, 11, 12, 0, 30))).toBe("2026-12-12");
       expect(dayOf(new Date(2026, 11, 12, 23, 30))).toBe("2026-12-12");
+    });
+
+    // Tyler edge 3: the three accepted forms, trimmed, month names in any case.
+    it.each([
+      ["Dec 12, 2026", "2026-12-12"],
+      ["December 12, 2026", "2026-12-12"],
+      ["2026-12-12", "2026-12-12"],
+      ["  dec 12, 2026  ", "2026-12-12"],
+      ["DECEMBER 12, 2026", "2026-12-12"],
+      ["dEc 12 2026", "2026-12-12"],
+      ["Feb 29, 2028", "2028-02-29"],
+      ["Jan 1, 2020", "2020-01-01"],
+    ])("parseDay reads %j as %s", (text, day) => {
+      process.env.TZ = zone;
+      expect(parseDay(text)).toBe(day);
+    });
+
+    // Tyler edge 3: impossible days, a 13th month, short years and forms
+    // whose day/month order is a guess are refused, not repaired.
+    it.each([
+      "Feb 30, 2026",
+      "Apr 31, 2026",
+      "Feb 29, 2027",
+      "2026-13-01",
+      "2026-00-10",
+      "Dec 0, 2026",
+      "Dec 12, 26",
+      "26-12-12",
+      "Dec 12, 20260",
+      "12/11/2026",
+      "11/12/2026",
+      "12.11.2026",
+      "Decem 12, 2026",
+      "Dezember 12, 2026",
+      "",
+    ])("parseDay refuses %j", (text) => {
+      process.env.TZ = zone;
+      expect(parseDay(text)).toBeNull();
+    });
+
+    // Tyler edge 1: an entered day is the stored day, read back unchanged.
+    it("an entered day round-trips through its label", () => {
+      process.env.TZ = zone;
+      expect(parseDay(formatDay("2026-12-12", true))).toBe("2026-12-12");
+      expect(parseDay(formatDay("2028-02-29", true))).toBe("2028-02-29");
     });
   });
 }

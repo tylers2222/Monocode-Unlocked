@@ -1055,4 +1055,62 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(serde_json::to_value(&reply).unwrap(), committed);
     }
+
+    // Defect: the page sends an edit the real command refuses or misreads
+    // ("" for Later, a field serde rejects, a patch that clears a field it
+    // did not name). The calls are what milestones-editor.spec.ts captured
+    // from the page; each goes through the command's own argument types.
+    #[test]
+    fn page_edits_replay_on_the_real_store() {
+        let calls: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../tests/browser/fixtures/milestones-page-edits.json"
+        ))
+        .unwrap();
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        let project = "/Users/test/orbit";
+        // The rows the spec seeds: ids "orbit-<order>" padded with 0 to 36.
+        for (order, status, target) in [(2, "planned", Some("2026-11-21")), (4, "idea", None)] {
+            let id = format!("{:0<36}", format!("orbit-{order}"));
+            conn.execute(
+                &format!(
+                    "INSERT INTO milestones ({COLUMNS})
+                     VALUES (?1, ?2, ?3, 'Before', ?4, ?5, ?6, 'user', 1, 1)"
+                ),
+                params![id, project, format!("Row {order}"), status, target, order],
+            )
+            .unwrap();
+        }
+        let mut history = Vec::new();
+        for call in &calls {
+            assert_eq!(call["command"], "milestones_update");
+            let arg = |name: &str| call["args"][name].clone();
+            let patch: MilestonePatch = serde_json::from_value(arg("patch")).unwrap();
+            let (path, id, by): (String, String, String) = (
+                serde_json::from_value(arg("projectPath")).unwrap(),
+                serde_json::from_value(arg("id")).unwrap(),
+                serde_json::from_value(arg("by")).unwrap(),
+            );
+            let row = update(&conn, &path, &id, patch, &by, 2).unwrap();
+            history.push((row.title, row.note, row.status, row.target));
+        }
+        let shown = |title: &str, note: &str, status, target: Option<&str>| {
+            (
+                title.to_string(),
+                note.to_string(),
+                status,
+                target.map(String::from),
+            )
+        };
+        let (v2, allowlist) = ("Giga Mono harness (change H, v2)", "Tool allowlist only.");
+        assert_eq!(
+            history,
+            [
+                shown(v2, allowlist, Status::Planned, Some("2026-11-21")),
+                shown(v2, allowlist, Status::Planned, None),
+                shown(v2, allowlist, Status::Done, Some("2028-02-29")),
+                shown("Row 4", "Before", Status::Idea, Some("2025-01-05")),
+            ]
+        );
+    }
 }
