@@ -1371,6 +1371,8 @@ function Workspace({
     useState<InboxSessionPortal | null>(null);
   const openingInboxSessions = useRef(new Map<string, Promise<string>>());
   const [notesViewOpen, setNotesViewOpen] = useState(false);
+  // Milestones and Approvals are pages of the Automations area: one flag
+  // closes any of them.
   const [automationsViewOpen, setAutomationsViewOpen] = useState(false);
   const [automationsPage, setAutomationsPage] = useState<
     "automations" | "milestones" | "approvals"

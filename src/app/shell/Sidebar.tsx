@@ -56,7 +56,7 @@ import {
   saveSidebarTabOrder,
   type SidebarTabId,
 } from "../../features/settings/model/appearance";
-import { formatInteger } from "../../shared/lib/numbers";
+import { countBadge, formatInteger } from "../../shared/lib/numbers";
 import {
   type GitFileDiffKind,
   type GitHistoryCommit,
@@ -195,7 +195,6 @@ import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
 import { useRailMonosPinned } from "../../features/settings/model/displayPrefs";
 import type { PickerMonos } from "../../features/projects/ui/SearchableProjectPicker";
 import {
-  unreadBadge,
   unreadLabel,
   type MonoRailProps,
 } from "./MonoRailSection";
@@ -2955,7 +2954,7 @@ function CompactRailMono({
           data-mono-unread={unseen}
           className="absolute -right-0.5 -top-0.5 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-background-base px-0.5 text-[9px] font-medium tabular-nums leading-none text-content/80 ring-1 ring-content/15"
         >
-          {unreadBadge(unseen)}
+          {countBadge(unseen)}
         </span>
       ) : null}
     </button>

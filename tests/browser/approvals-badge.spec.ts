@@ -57,6 +57,14 @@ const openInStore = (page: Page) =>
         .length,
   );
 
+const countLoads = (page: Page) =>
+  page.evaluate(
+    () =>
+      window.appBackend!.calls.filter(
+        (call) => call.command === "approvals_open_counts",
+      ).length,
+  );
+
 const button = (page: Page, name: string) =>
   page.getByRole("button", { name, exact: true });
 
@@ -153,6 +161,19 @@ test("the Approvals row counts the open cards of a copy of the app database", as
 
   await setCards(page, CLOSED, "focus");
   await expectNoPill(page);
+
+  for (let toggle = 0; toggle < 6; toggle++)
+    await page
+      .getByRole("button", { name: /^(Toggle Projects|Expand projects)$/ })
+      .first()
+      .click();
+  await expectNoPill(page);
+  const loads = await countLoads(page);
+  await setCards(page, [...CLOSED, ...OPEN.slice(0, 2)], "changed");
+  await expectPill(page, 2, "2");
+  expect(await countLoads(page), "one load per approvals-changed").toBe(
+    loads + 1,
+  );
 });
 
 for (const mode of ["compact", "hidden"] as const) {

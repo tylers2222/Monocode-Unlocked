@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { normalizeProjectPath } from "../../projects/model/recents";
-import { unreadBadge } from "../../../app/shell/MonoRailSection";
+import { countBadge } from "../../../shared/lib/numbers";
 
 export type Urgency = "blocking" | "not_blocking";
 
@@ -176,6 +176,6 @@ export function openCounts(): Promise<OpenCounts> {
 
 export function approvalsBadge(open: number): ApprovalsBadge {
   return open > 0
-    ? { label: `Approvals, ${open} open`, pill: unreadBadge(open) }
+    ? { label: `Approvals, ${open} open`, pill: countBadge(open) }
     : { label: "Approvals" };
 }

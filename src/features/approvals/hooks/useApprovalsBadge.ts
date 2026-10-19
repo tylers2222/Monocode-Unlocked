@@ -10,10 +10,14 @@ import {
 let openInEveryProject = 0;
 const listeners = new Set<() => void>();
 let changed: Promise<UnlistenFn | undefined> | undefined;
+let latestRequest = 0;
 
 async function load() {
+  const request = ++latestRequest;
   try {
-    openInEveryProject = (await openCounts()).total;
+    const { total } = await openCounts();
+    if (request !== latestRequest) return;
+    openInEveryProject = total;
     for (const listener of listeners) listener();
   } catch (error) {
     console.error("monocode: could not count open approvals", error);
