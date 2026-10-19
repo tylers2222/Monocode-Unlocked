@@ -35,12 +35,14 @@ export function planProjectOpenRun({
   tabs,
   sessions,
   activeTabId,
+  excludedIds,
   paths,
 }: {
   memory: ProjectReturnMemory;
   tabs: WorkspaceTab[];
   sessions: Session[];
   activeTabId: string;
+  excludedIds: ReadonlySet<string>;
   paths: readonly string[];
 }): ProjectOpenStep[] {
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
@@ -63,6 +65,7 @@ export function planProjectOpenRun({
       tabs: openTabs,
       sessions: openSessions,
       activeTabId,
+      excludedIds,
       projectPath: normalized,
     });
     if (decision.action === "keep") {

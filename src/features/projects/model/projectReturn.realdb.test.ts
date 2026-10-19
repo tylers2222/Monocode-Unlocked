@@ -20,6 +20,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { loadResumedWorkspace } from "../../../app/model/appLifecycle";
 import { getSession } from "../../sessions/data/sessionStore";
+import { liveAgentExclusions } from "../../sessions/model/liveAgents";
 import type { Session } from "../../sessions/model/session";
 import { leafIds } from "../../workspace/model/layout";
 import {
@@ -35,6 +36,8 @@ const IDLE_ACME_TAB = "tab-0003";
 const NEWEST_ACME_RUN = "app-mono-chat-0001-request-0003";
 const NOTES_RUN = "app-giga-chat-0001-request-0007";
 const running = new Set(realDb.inFlight.map((ref) => ref.sessionId));
+/** The two Mono chats that started the running sessions, as App reads them from the roster. */
+const MONO_CHATS = new Set(["mono-chat-0001", "giga-chat-0001"]);
 
 /**
  * The window as it ran: every session it held, loaded by the app's own
@@ -51,12 +54,14 @@ async function liveWindow() {
   }
   const workspace = hydrateWorkspaceSnapshot(snapshot, loaded);
   if (!workspace) throw new Error("the saved snapshot does not hydrate");
+  const sessions = workspace.sessions.map((session) =>
+    running.has(session.id) ? { ...session, busy: true } : session,
+  );
   return {
     tabs: workspace.tabs,
     memory: workspace.projectReturnMemory ?? new Map<string, string>(),
-    sessions: workspace.sessions.map((session) =>
-      running.has(session.id) ? { ...session, busy: true } : session,
-    ),
+    sessions,
+    excludedIds: liveAgentExclusions(sessions, MONO_CHATS, () => false),
   };
 }
 
@@ -117,6 +122,7 @@ describe("opening a project on a real saved workspace", () => {
       tabs: restored.tabs,
       sessions,
       activeTabId: NOTES_TAB,
+      excludedIds: liveAgentExclusions(sessions, MONO_CHATS, () => false),
       paths: [ACME],
     });
     const tab = restored.tabs.find((entry) =>

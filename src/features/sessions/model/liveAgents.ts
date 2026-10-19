@@ -29,6 +29,46 @@ export function isLiveAgentSession(
   return !session.inboxAsk && !session.orchestrationLeadId;
 }
 
+/**
+ * Sessions the live-agents rail never lists, besides Inbox asks and workers:
+ * Mono chats, habit runs and ephemeral sessions.
+ */
+export function liveAgentExclusions(
+  sessions: readonly Session[],
+  monoSessionIds: ReadonlySet<string>,
+  isHabitRun: (sessionId: string) => boolean,
+): Set<string> {
+  const ids = new Set(monoSessionIds);
+  for (const session of sessions) {
+    if (session.ephemeral || isHabitRun(session.id)) ids.add(session.id);
+  }
+  return ids;
+}
+
+function isListedLiveAgent(
+  session: Session,
+  excludedIds: ReadonlySet<string>,
+): boolean {
+  return !excludedIds.has(session.id) && isLiveAgentSession(session);
+}
+
+/**
+ * The session that answers for `session`'s live turn: the session itself, or
+ * the lead of a worker. Undefined when the turn is not live or the rail would
+ * not list the session that answers (an Inbox Ask, an excluded or missing one).
+ */
+export function liveAgentFor(
+  session: Session,
+  sessions: readonly Session[],
+  excludedIds: ReadonlySet<string>,
+): Session | undefined {
+  if (!isInFlightSession(session)) return undefined;
+  const shown = session.orchestrationLeadId
+    ? sessions.find((entry) => entry.id === session.orchestrationLeadId)
+    : session;
+  return shown && isListedLiveAgent(shown, excludedIds) ? shown : undefined;
+}
+
 export function liveAgentsFromSessions(
   sessions: Session[],
   unseenFinishedIds: ReadonlySet<string> = new Set(),
@@ -37,9 +77,9 @@ export function liveAgentsFromSessions(
   return sessions
     .filter(
       (session) =>
-        !excludedIds.has(session.id) &&
-        isLiveAgentSession(session) &&
-        (isInFlightSession(session) || unseenFinishedIds.has(session.id)),
+        liveAgentFor(session, sessions, excludedIds) === session ||
+        (unseenFinishedIds.has(session.id) &&
+          isListedLiveAgent(session, excludedIds)),
     )
     .map((session) =>
       toLiveAgent(session, unseenFinishedIds.has(session.id)),

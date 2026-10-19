@@ -3730,9 +3730,8 @@ mod tests {
 
     // ADE-5. The project-open rule finds a running session with no tab only
     // through these reads: the session keeps its project as `cwd` while it
-    // works in a worktree, its opening user block keeps `startedAt`, the
-    // in-flight list names it with that project, and the snapshot keeps its
-    // stub although no tab shows it.
+    // works in a worktree, its opening user block keeps `startedAt`, and the
+    // in-flight list names it with that project.
     #[test]
     fn rows_loaded_at_start_carry_a_running_session_with_no_tab() {
         let store = SessionStore::open_in_memory().unwrap();
@@ -3755,16 +3754,6 @@ mod tests {
             }],
         )
         .unwrap();
-        let snapshot = json!({
-            "activeTabId": "tab-finished",
-            "projectCwd": "/repo",
-            "sessions": [
-                { "id": "finished", "cwd": "/repo" },
-                { "id": id, "cwd": "/repo" }
-            ],
-            "tabs": [{ "id": "tab-finished", "focusedId": "finished", "layout": { "id": "finished", "type": "leaf" } }]
-        });
-        set_workspace_snapshot(&conn, &snapshot.to_string()).unwrap();
 
         let record = json!(get_session(&conn, id).unwrap().unwrap());
         assert_eq!(record["cwd"], "/repo");
@@ -3778,10 +3767,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(id, "/repo")]
         );
-        let saved: Value =
-            serde_json::from_str(&get_workspace_snapshot(&conn).unwrap().unwrap()).unwrap();
-        assert_eq!(saved["sessions"][1]["id"], id);
-        assert_eq!(saved["tabs"].as_array().unwrap().len(), 1);
     }
 
     #[test]

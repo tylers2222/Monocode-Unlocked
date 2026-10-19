@@ -597,7 +597,10 @@ import {
   TranscriptPoolOutlet,
 } from "../features/sessions/ui/TranscriptPool";
 import { syncDockBadge } from "../features/notifications/model/dockBadge";
-import { liveAgentsFromSessions } from "../features/sessions/model/liveAgents";
+import {
+  liveAgentExclusions,
+  liveAgentsFromSessions,
+} from "../features/sessions/model/liveAgents";
 import { hiddenApprovalNotices } from "../features/notifications/model/approvalToast";
 import { useSessionReminders } from "../features/notifications/hooks/useSessionReminders";
 import { ReminderNotices } from "../features/sessions/ui/ReminderNotices";
@@ -2345,16 +2348,12 @@ function Workspace({
     () =>
       liveAgentsEnabled
         ? liveAgentsFromSessions(
-            promptableSessions,
+            sessions,
             unseenFinishedIds,
-            new Set(
-              listMonos().flatMap((mono) =>
-                mono.sessionId ? [mono.sessionId] : [],
-              ),
-            ),
+            liveAgentExclusions(sessions, monoSessionIds, isHabitRun),
           )
         : [],
-    [liveAgentsEnabled, promptableSessions, unseenFinishedIds, monosSnap],
+    [liveAgentsEnabled, sessions, unseenFinishedIds, monoSessionIds],
   );
   // Rebuilt for every streamed batch; identity only moves when a row does.
   const liveAgents = useStableValue(liveAgentRows);
@@ -6314,6 +6313,11 @@ function Workspace({
         tabs: tabsRef.current,
         sessions: sessionsRef.current,
         activeTabId: activeTabIdRef.current,
+        excludedIds: liveAgentExclusions(
+          sessionsRef.current,
+          monoSessionIds,
+          isHabitRun,
+        ),
         paths,
       });
       const last = steps[steps.length - 1];
@@ -6370,7 +6374,7 @@ function Workspace({
           break;
         case "open-session":
           // A running session with no tab opens the way its sidebar row
-          // does, which also selects its project.
+          // does, which selects the project of the session it opens.
           void onSelectHistorySession(last.sessionId);
           break;
         case "keep":
@@ -6386,6 +6390,7 @@ function Workspace({
     [
       activateTab,
       insertBeside,
+      monoSessionIds,
       onCwdChange,
       onSelectHistorySession,
       readProjectReturnMemory,

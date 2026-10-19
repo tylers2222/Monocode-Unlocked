@@ -1,24 +1,18 @@
 import { leafIds, type WorkspaceTab } from "../../workspace/model/layout";
 import { turnOpener, type Session } from "../../sessions/model/session";
+import { liveAgentFor } from "../../sessions/model/liveAgents";
 import { pathKey } from "../../../shared/lib/paths";
-import { isMonoSession } from "../../monos/model/mono";
-import { isHabitRun } from "../../monos/model/monoHabits";
 import { isRemoteProjectPath, sameProjectPath } from "./recents";
 
 export type ProjectReturnMemory = ReadonlyMap<string, string>;
-
-/**
- * Opening the project you are on leaves an idle pane for a session of that
- * project that is running. Product default from General 2 (m_fvchmlt6jhh3),
- * pending Tyler's answer; `false` always stays on the focused pane.
- */
-const RUNNING_SESSION_BEATS_IDLE_FOCUS = true;
 
 type ProjectReturnContext = {
   memory: ProjectReturnMemory;
   tabs: WorkspaceTab[];
   sessions: Session[];
   activeTabId: string;
+  /** Sessions the live-agents rail never lists: Mono chats, habit runs, ephemeral ones. */
+  excludedIds: ReadonlySet<string>;
 };
 
 type PaneProject = Map<string, string>;
@@ -130,52 +124,30 @@ export function runningTurnStart(
 }
 
 /**
- * The project's newest running turn, wherever it shows. A session pane in a
- * tab activates. A running session with no tab opens: a Mono starts its
- * sessions without one, and closing a tab leaves its turn running. Workers
- * count through their lead, and only sessions the live-agents rail lists
- * count. Equal or missing start times keep tab order, then session order, so
- * a session that has a tab is activated rather than opened again.
+ * The project's newest running turn, as the live-agents rail shows it: a
+ * worker's turn opens its lead. It activates the session's tab pane, or opens
+ * the session when no tab shows it.
  */
 function runningSessionForProject(
   tabs: readonly WorkspaceTab[],
   sessions: readonly Session[],
+  excludedIds: ReadonlySet<string>,
   target: string,
-  paneById: PaneProject,
 ): ProjectReturnDecision | undefined {
-  const candidates: { decision: ProjectReturnDecision; start?: number }[] = [];
-  for (const tab of tabs) {
-    for (const paneId of leafIds(tab.layout)) {
-      if (!paneBelongsToProject(paneId, target, paneById)) continue;
-      candidates.push({
-        decision: { action: "activate", tabId: tab.id, paneId },
-        start: runningTurnStart(paneId, sessions),
-      });
-    }
-  }
+  let best: { id: string; start: number } | undefined;
   for (const session of sessions) {
-    const id = session.orchestrationLeadId ?? session.id;
-    if (
-      !session.busy ||
-      session.inboxAsk ||
-      session.ephemeral ||
-      isHabitRun(session.id) ||
-      isMonoSession(id) ||
-      !sameProjectPath(session.cwd, target)
-    )
-      continue;
-    candidates.push({
-      decision: { action: "open-session", sessionId: id },
-      start: runningTurnStart(id, sessions),
-    });
-  }
-
-  let best: { decision: ProjectReturnDecision; start: number } | undefined;
-  for (const { decision, start } of candidates) {
+    const shown = liveAgentFor(session, sessions, excludedIds);
+    if (!shown || !sameProjectPath(shown.cwd, target)) continue;
+    const start = runningTurnStart(shown.id, sessions);
     if (start === undefined || (best && start <= best.start)) continue;
-    best = { decision, start };
+    best = { id: shown.id, start };
   }
-  return best?.decision;
+  if (!best) return undefined;
+  const id = best.id;
+  const tab = tabs.find((entry) => leafIds(entry.layout).includes(id));
+  return tab
+    ? { action: "activate", tabId: tab.id, paneId: id }
+    : { action: "open-session", sessionId: id };
 }
 
 export function reconcileProjectReturn({
@@ -183,7 +155,7 @@ export function reconcileProjectReturn({
   tabs,
   sessions,
   activeTabId,
-}: Omit<ProjectReturnContext, "sessions"> & {
+}: Omit<ProjectReturnContext, "sessions" | "excludedIds"> & {
   sessions: readonly Pick<Session, "id" | "cwd">[];
 }): ProjectReturnMemory {
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
@@ -222,19 +194,20 @@ export function planProjectReturn({
   tabs,
   sessions,
   activeTabId,
+  excludedIds,
   projectPath,
 }: ProjectReturnContext & { projectPath: string }): ProjectReturnDecision {
   const target = pathKey(projectPath);
   const byPane = paneProjects(tabs, sessions);
   const active = tabs.find((tab) => tab.id === activeTabId);
-  const running = runningSessionForProject(tabs, sessions, target, byPane);
+  const running = runningSessionForProject(tabs, sessions, excludedIds, target);
 
+  // Opening the project you are on still moves from an idle pane to a session
+  // of the project that runs.
   if (
     active?.focusedId &&
     paneBelongsToProject(active.focusedId, target, byPane) &&
-    (!running ||
-      !RUNNING_SESSION_BEATS_IDLE_FOCUS ||
-      runningTurnStart(active.focusedId, sessions) !== undefined)
+    (!running || runningTurnStart(active.focusedId, sessions) !== undefined)
   ) {
     return { action: "keep" };
   }

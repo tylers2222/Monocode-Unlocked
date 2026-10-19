@@ -10,6 +10,8 @@ import {
 } from "../../monos/model/monoMessaging";
 import {
   formatLiveElapsed,
+  liveAgentExclusions,
+  liveAgentFor,
   liveAgentsFromSessions,
 } from "./liveAgents";
 import {
@@ -69,6 +71,25 @@ describe("liveAgentsFromSessions", () => {
     const lead = chat("/repo", { id: "lead", busy: true });
     const worker = chat("/repo", { id: "worker", busy: true, orchestrationLeadId: "lead" });
     expect(liveAgentsFromSessions([lead, worker]).map((agent) => agent.id)).toEqual(["lead"]);
+  });
+
+  it("answers for a running worker's turn with its lead", () => {
+    const lead = chat("/repo", { id: "lead" });
+    const worker = chat("/repo", { id: "worker", busy: true, orchestrationLeadId: "lead" });
+    expect(liveAgentFor(worker, [lead, worker], new Set())).toBe(lead);
+    expect(liveAgentFor(worker, [lead, worker], new Set(["lead"]))).toBeUndefined();
+    expect(liveAgentFor(lead, [lead, worker], new Set())).toBeUndefined();
+  });
+
+  it("excludes Mono chats, habit runs and ephemeral sessions", () => {
+    const sessions = [
+      chat("/repo", { id: "plain" }),
+      chat("/repo", { id: "ephemeral", ephemeral: true }),
+      chat("/repo", { id: "habit" }),
+    ];
+    expect(
+      [...liveAgentExclusions(sessions, new Set(["mono"]), (id) => id === "habit")].sort(),
+    ).toEqual(["ephemeral", "habit", "mono"]);
   });
   it("skips idle sessions", () => {
     expect(liveAgentsFromSessions([chat("/tmp/a")])).toEqual([]);

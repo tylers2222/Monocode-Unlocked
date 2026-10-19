@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { newFileTab, newTab, placePane, type WorkspaceTab } from "../../workspace/model/layout";
 import { newSession, type Session } from "../../sessions/model/session";
 import { planProjectReturn, reconcileProjectReturn } from "./projectReturn";
@@ -9,13 +9,6 @@ import {
 } from "../../workspace/model/tabVisitHistory";
 import { removeSessionFromWorkspace } from "../../sessions/model/sessionWorkspaceLifecycle";
 import { applyPlaceSessionOnPane } from "../../workspace/model/workspaceTabGroups";
-import { clearHabitRun, markHabitRun } from "../../monos/model/monoHabits";
-import type * as MonoModel from "../../monos/model/mono";
-
-vi.mock("../../monos/model/mono", async (original) => ({
-  ...(await original<typeof MonoModel>()),
-  isMonoSession: (id: string) => id === "mono-chat",
-}));
 
 function chat(id: string, cwd: string): Session {
   return {
@@ -41,6 +34,7 @@ function workspace() {
     tabs,
     activeTabId: "tab-b2",
     memory: new Map<string, string>(),
+    excludedIds: new Set<string>(),
   };
 }
 
@@ -146,7 +140,12 @@ describe("project return memory", () => {
     });
     const next = reconcileProjectReturn({ ...removed, memory });
     expect(
-      planProjectReturn({ ...removed, memory: next, projectPath: "/alpha" }),
+      planProjectReturn({
+        ...removed,
+        memory: next,
+        excludedIds: state.excludedIds,
+        projectPath: "/alpha",
+      }),
     ).toEqual({ action: "activate", tabId: "tab-a1", paneId: "a1" });
     const activeRemoved = removeSessionFromWorkspace({
       ...state,
@@ -185,6 +184,7 @@ describe("project return memory", () => {
     });
     const decision = planProjectReturn({
       ...placed,
+      excludedIds: state.excludedIds,
       memory: beta,
       activeTabId: "tab-b2",
       projectPath: "/alpha",
@@ -360,6 +360,7 @@ describe("project selection with a running session", () => {
     memory = new Map<string, string>(),
     activeTabId = "tab-other",
     tabless: readonly string[] = [],
+    excluded: readonly string[] = [],
   ) {
     const all = [...sessions, turn("other", 0, false, "/other")];
     const tabs = all
@@ -373,6 +374,7 @@ describe("project selection with a running session", () => {
       tabs,
       sessions: all,
       activeTabId,
+      excludedIds: new Set(excluded),
       projectPath: "/mono",
     });
   }
@@ -482,30 +484,38 @@ describe("project selection with a running session", () => {
   });
 
   it.each([
-    ["an Inbox Ask", { inboxAsk: { kind: "pr" } }],
-    ["an ephemeral session", { ephemeral: true }],
-    ["a Mono's chat", { id: "mono-chat" }],
-  ])("does not open %s that runs with no tab", (_, fields) => {
+    ["an Inbox Ask", { inboxAsk: { kind: "pr" } }, []],
+    ["a session whose worktree was removed", { worktreeRemoved: true }, []],
+    ["an excluded session (Mono chat, habit run, ephemeral)", {}, ["started"]],
+  ])("does not open %s that runs with no tab", (_, fields, excluded) => {
     const running = { ...turn("started", 2, true), ...fields } as Session;
     expect(
-      plan([turn("first", 1), running], new Map(), "tab-other", [running.id]),
+      plan([turn("first", 1), running], new Map(), "tab-other", ["started"], excluded),
     ).toEqual(activates("first"));
   });
 
-  it("does not open a habit run that runs with no tab", () => {
-    markHabitRun("habit-run", "mono");
-    try {
-      expect(
-        plan(
-          [turn("first", 1), { ...turn("habit-run", 2, true) }],
-          new Map(),
-          "tab-other",
-          ["habit-run"],
-        ),
-      ).toEqual(activates("first"));
-    } finally {
-      clearHabitRun("habit-run");
-    }
+  it.each([
+    ["an Inbox Ask", { inboxAsk: { kind: "pr" } }, []],
+    ["excluded", {}, ["lead"]],
+  ])("does not open a running worker's lead that is %s", (_, fields, excluded) => {
+    const lead = { ...turn("lead", 1), ...fields } as Session;
+    const worker = { ...turn("worker", 3, true), orchestrationLeadId: "lead" };
+    expect(
+      plan([turn("first", 1), lead, worker], new Map(), "tab-other", ["lead"], excluded),
+    ).toEqual(activates("first"));
+  });
+
+  it("does not open a running worker whose lead is not loaded", () => {
+    const worker = { ...turn("worker", 3, true), orchestrationLeadId: "gone" };
+    expect(plan([turn("first", 1), worker])).toEqual(activates("first"));
+  });
+
+  it("opens a running session whose turn has no start time", () => {
+    expect(
+      plan([turn("first", 1), turn("started", undefined, true)], new Map(), "tab-other", [
+        "started",
+      ]),
+    ).toEqual({ action: "open-session", sessionId: "started" });
   });
 
   it("opens a lead whose worker is running", () => {

@@ -60,7 +60,7 @@ describe("focusedWorkspaceTabCwd", () => {
       expect(workspaceTabCwd(worktreeTab, [])).toBe("/repo");
       expect(focusedWorkspaceTabCwd(worktreeTab, [])).toBe("/repo");
       expect(planProjectReturn({
-        tabs: [worktreeTab], sessions: [], memory: new Map(),
+        tabs: [worktreeTab], sessions: [], memory: new Map(), excludedIds: new Set(),
         activeTabId: "elsewhere", projectPath: "/repo",
       })).toMatchObject({ action: "activate", tabId: "tree-tab" });
     },
@@ -85,6 +85,7 @@ describe("focusedWorkspaceTabCwd", () => {
         tabs: [mixed],
         sessions,
         memory: new Map([["/beta", pane.id]]),
+        excludedIds: new Set(),
         activeTabId: mixed.id,
         projectPath: "/beta",
       });
