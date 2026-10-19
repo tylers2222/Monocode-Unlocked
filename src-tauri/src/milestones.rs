@@ -993,4 +993,115 @@ mod tests {
         assert_eq!(added.title, "ship");
         assert_eq!(list(&conn, "/").unwrap(), [added]);
     }
+
+    fn arg<T: serde::de::DeserializeOwned>(args: &serde_json::Value, name: &str) -> T {
+        serde_json::from_value(args[name].clone()).unwrap_or_else(|e| panic!("{name}: {e}"))
+    }
+
+    // M-9a real-state proof. Defect: the page sends a write the real
+    // commands refuse or misread (a field serde rejects, "" for Later, a
+    // patch that clears what it did not touch), or reads a reply shape
+    // Rust does not send. The calls are what the Playwright lane captured
+    // from the page code; each argument goes through its command's own type.
+    #[test]
+    fn page_writes_replay_on_the_real_store() {
+        let calls: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../tests/browser/fixtures/milestones-page-writes.json"
+        ))
+        .unwrap();
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        let mut ids = std::collections::HashMap::new();
+        let mut replies = Vec::new();
+        for call in &calls {
+            let args = &call["args"];
+            let project: String = arg(args, "projectPath");
+            let real = |ids: &std::collections::HashMap<String, String>| {
+                ids[args["id"].as_str().unwrap()].clone()
+            };
+            match call["command"].as_str().unwrap() {
+                "milestones_add" => {
+                    let added = add(&conn, &project, arg(args, "milestone"), 1).unwrap();
+                    let fake: String = arg(&call["reply"], "id");
+                    ids.insert(fake, added.id.clone());
+                    replies.push(added);
+                }
+                "milestones_update" => {
+                    let by: String = arg(args, "by");
+                    let patch = arg(args, "patch");
+                    replies.push(update(&conn, &project, &real(&ids), patch, &by, 2).unwrap());
+                }
+                "milestones_remove" => {
+                    let by: String = arg(args, "by");
+                    remove(&conn, &project, &real(&ids), &by).unwrap();
+                }
+                other => panic!("unexpected command {other}"),
+            }
+        }
+        let commands: Vec<&str> = calls
+            .iter()
+            .map(|call| call["command"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            commands,
+            [
+                "milestones_add",
+                "milestones_add",
+                "milestones_update",
+                "milestones_update",
+                "milestones_remove"
+            ]
+        );
+        let page_reads = [
+            "createdAt",
+            "createdBy",
+            "id",
+            "note",
+            "order",
+            "projectPath",
+            "status",
+            "target",
+            "title",
+            "updatedAt",
+        ];
+        for reply in &replies {
+            let json = serde_json::to_value(reply).unwrap();
+            let mut keys: Vec<&str> = json
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(keys, page_reads);
+        }
+        let first = |row: &Milestone| (row.status, row.target.clone());
+        let history: Vec<_> = replies
+            .iter()
+            .filter(|row| row.id == replies[0].id)
+            .map(first)
+            .collect();
+        assert_eq!(
+            history,
+            [
+                (Status::Planned, Some("2026-12-12".to_string())),
+                (Status::Planned, None),
+                (Status::Done, Some("2027-01-15".to_string())),
+            ]
+        );
+        let rows = list(&conn, "/Users/test/orbit").unwrap();
+        assert_eq!(rows.len(), 1, "the second add was removed");
+        assert_eq!(
+            (
+                rows[0].title.as_str(),
+                rows[0].note.as_str(),
+                rows[0].created_by.as_str()
+            ),
+            (
+                "Milestone list in the Mono overview",
+                "Shown when a Mono starts a turn",
+                "user"
+            )
+        );
+    }
 }

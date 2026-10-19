@@ -1,9 +1,12 @@
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type { Automation } from "../../../src/features/automations/model/automations";
-import type {
-  Milestone,
-  MilestoneSettings,
+import {
+  MILESTONES_CHANGED,
+  type Milestone,
+  type MilestonePatch,
+  type MilestoneSettings,
+  type NewMilestone,
 } from "../../../src/features/milestones/model/milestones";
 import {
   customMonoName,
@@ -117,8 +120,8 @@ export type SteerlessHarness = Exclude<HarnessId, "codex">;
 /** What a test can reach on `window.appBackend` through `page.evaluate`. */
 export type AppBackend = {
   store: FakeStore;
-  /** Every command the app sent, in call order. */
-  calls: { command: string; args: unknown }[];
+  /** Every command the app sent, in call order, with any non-null answer. */
+  calls: { command: string; args: unknown; reply?: unknown }[];
   emit: (event: string, payload?: unknown) => Promise<void>;
   /** Hands the store to the next page load, as Rust's database outlives a reload. */
   keepStore: () => void;
@@ -254,6 +257,31 @@ const upsertSession: Handler = (store, { session }) => {
   return row.worktreeRemoved ? answer : { ...answer, branch: BRANCH };
 };
 
+// milestones.rs check_title, check_note and check_target, with their refusals.
+function checkMilestone(
+  fields: Pick<Milestone, "title" | "note" | "status" | "target">,
+) {
+  const title = fields.title.trim();
+  if ([...title].length < 1 || [...title].length > 200)
+    throw "invalid_input: title must be 1 to 200 characters";
+  if ([...fields.note].length > 4000)
+    throw "invalid_input: note must be 4000 characters or fewer";
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(fields.target ?? "")
+    ? new Date(`${fields.target}T00:00:00Z`)
+    : null;
+  if (
+    fields.target !== null &&
+    day?.toISOString().slice(0, 10) !== fields.target
+  )
+    throw "invalid_input: target must be a real YYYY-MM-DD date";
+  return {
+    title,
+    note: fields.note,
+    status: fields.status,
+    target: fields.target,
+  };
+}
+
 const HANDLERS: Record<string, Handler> = {
   ...Object.fromEntries(IGNORED.map((command) => [command, none])),
   ...Object.fromEntries(
@@ -361,6 +389,59 @@ const HANDLERS: Record<string, Handler> = {
       .filter((milestone) => milestone.projectPath === projectPath)
       .sort((a, b) => a.order - b.order || a.createdAt - b.createdAt),
   }),
+  // milestones.rs add/update/remove with the `user` writer, which Rust never
+  // refuses for a project that is off; each write emits CHANGED as Rust does.
+  milestones_add: (store, { projectPath, milestone }) => {
+    const input = milestone as NewMilestone & {
+      createdBy: Milestone["createdBy"];
+    };
+    const project = projectPath as string;
+    const fields = checkMilestone({
+      note: "",
+      status: "idea",
+      target: null,
+      ...input,
+    });
+    const mine = store.milestones.filter((row) => row.projectPath === project);
+    const row: Milestone = {
+      ...fields,
+      id: `00000000-0000-4000-8000-${String(store.milestones.length + 1).padStart(12, "0")}`,
+      projectPath: project,
+      order: Math.max(-1, ...mine.map((row) => row.order)) + 1,
+      createdBy: input.createdBy,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    store.milestones.push(row);
+    void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath: project });
+    return row;
+  },
+  milestones_update: (store, { projectPath, id, patch }) => {
+    const row = store.milestones.find(
+      (milestone) =>
+        milestone.id === id && milestone.projectPath === projectPath,
+    );
+    if (!row) throw "unknown_milestone";
+    Object.assign(
+      row,
+      checkMilestone({ ...row, ...(patch as MilestonePatch) }),
+      {
+        updatedAt: Date.now(),
+      },
+    );
+    void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath });
+    return row;
+  },
+  milestones_remove: (store, { projectPath, id }) => {
+    const at = store.milestones.findIndex(
+      (milestone) =>
+        milestone.id === id && milestone.projectPath === projectPath,
+    );
+    if (at < 0) throw "unknown_milestone";
+    store.milestones.splice(at, 1);
+    void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath });
+    return null;
+  },
   automation_runs_list: empty,
   control_load: none,
   control_owns_session: () => false,
@@ -581,7 +662,8 @@ export function installBackend(
   mockWindows("main");
   mockIPC(
     async (command, args) => {
-      backend.calls.push({ command, args });
+      const call: AppBackend["calls"][number] = { command, args };
+      backend.calls.push(call);
       const handler = handlers[command];
       if (!handler) {
         void window.appBackendReport({ command, problem: "no handler" });
@@ -589,9 +671,11 @@ export function installBackend(
       }
       try {
         // Real IPC sends JSON, so the app never holds a reference into the store.
-        return structuredClone(
+        const reply = structuredClone(
           await handler(store, (args ?? {}) as Record<string, unknown>),
         );
+        if (reply != null) call.reply = structuredClone(reply);
+        return reply;
       } catch (error) {
         if (typeof error !== "string")
           void window.appBackendReport({ command, problem: String(error) });

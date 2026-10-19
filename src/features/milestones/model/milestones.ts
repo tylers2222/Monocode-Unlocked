@@ -46,6 +46,7 @@ export type ProjectMilestones = {
   milestones: Milestone[];
 };
 
+/** `target` is a `YYYY-MM-DD` date, or `""` or null for Later. */
 export type NewMilestone = {
   title: string;
   note?: string;
@@ -53,7 +54,7 @@ export type NewMilestone = {
   target?: string | null;
 };
 
-/** Absent fields stay as they are; `target: null` clears the date. */
+/** Absent fields stay as they are; `target: ""` or null clears the date. */
 export type MilestonePatch = Partial<NewMilestone>;
 
 export function list(project: string): Promise<ProjectMilestones> {
@@ -69,7 +70,12 @@ export function add(
 ): Promise<Milestone> {
   return invoke("milestones_add", {
     projectPath: normalizeProjectPath(project),
-    milestone: { ...milestone, createdBy: by },
+    // Rust stores Later as NULL only, so "" never reaches the database.
+    milestone: {
+      ...milestone,
+      target: milestone.target || null,
+      createdBy: by,
+    },
   });
 }
 
@@ -82,7 +88,7 @@ export function update(
   return invoke("milestones_update", {
     projectPath: normalizeProjectPath(project),
     id,
-    patch,
+    patch: patch.target === "" ? { ...patch, target: null } : patch,
     by,
   });
 }
