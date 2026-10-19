@@ -1065,6 +1065,7 @@ mod tests {
     const AGENT: &str = "a9e47000-0000-4000-8000-000000000000";
 
     #[test]
+    #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
     fn page_writes_replay_on_the_real_store() {
         let calls: Vec<serde_json::Value> = serde_json::from_str(include_str!(
             "../../tests/browser/fixtures/milestones-page-writes.json"

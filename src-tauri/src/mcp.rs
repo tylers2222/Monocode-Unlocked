@@ -181,6 +181,7 @@ fn opencode_config_path(
         .unwrap_or_else(|| directory.join("opencode.json"))
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 fn normalize_opencode_server(server: Value, major: u32) -> Result<Value, String> {
     let mut object = server
         .as_object()
@@ -451,6 +452,7 @@ pub async fn mcp_discover(cwd: String) -> Result<Vec<McpConnection>, String> {
     .map_err(|e| e.to_string())?
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 fn discover(
     home: &Path,
     project: &Path,

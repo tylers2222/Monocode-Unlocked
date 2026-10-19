@@ -394,6 +394,7 @@ fn supported_remote_method(method: &str) -> bool {
     )
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 fn start_ssh_job(
     app: AppHandle,
     target: SshTarget,

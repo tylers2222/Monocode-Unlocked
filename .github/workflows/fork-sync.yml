@@ -86,9 +86,16 @@ jobs:
           node-version: 20
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Same pinned version as check and gate/lint: npm run check runs clippy on
+      # the same baseline #[expect] markers.
+      - id: rust-version
+        if: steps.rebase.outputs.changed == 'true'
+        run: echo "version=$(cat .github/rust-version)" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
         if: steps.rebase.outputs.changed == 'true'
         with:
+          toolchain: ${{ steps.rust-version.outputs.version }}
           components: rustfmt, clippy
 
       - name: npm run check

@@ -1036,7 +1036,7 @@ pub fn control_host_call(
     .unwrap_or_else(Failure::response)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "baseline 2026-10")]
 fn host_call(
     inner: &Mutex<Inner>,
     window: &str,

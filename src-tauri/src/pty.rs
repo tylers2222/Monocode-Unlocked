@@ -242,6 +242,7 @@ pub fn pty_kill_all(host: State<'_, PtyHost>) -> Result<(), String> {
 }
 
 #[cfg(unix)]
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 fn spawn_unix(
     app: AppHandle,
     host: State<PtyHost>,

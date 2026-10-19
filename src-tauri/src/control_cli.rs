@@ -635,6 +635,7 @@ fn send_to(
 /// The Mono tools, as MCP (`app-mcp`) and omp host tools both expose them
 /// (design 3 and 4). `action` is the app action each one calls. No
 /// milestone schema takes `createdBy` or `by`: the app sets the writer.
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 pub fn app_tools() -> Value {
     let project = json!({"type": "string", "minLength": 1, "description": "Path or name of one of your projects. May be left out when you have a single project."});
     let id = json!({"type": "string", "minLength": 1, "maxLength": 128});

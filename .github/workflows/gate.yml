@@ -1,0 +1,74 @@
+name: gate
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    # Old debt is baselined; only problems the PR adds fail. Every check runs
+    # even when an earlier one fails, so one run lists every new problem.
+    name: gate/lint
+    runs-on: ubuntu-latest
+    env:
+      BASE: origin/${{ github.base_ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - id: deps
+        run: npm ci
+
+      - name: Growth check parser tests
+        if: ${{ !cancelled() }}
+        run: node --test scripts/gate/rust-lint-attributes.test.mjs
+
+      - name: Baselines only shrink
+        if: ${{ !cancelled() }}
+        run: node scripts/gate/baseline-growth.mjs "$BASE"
+
+      - name: ESLint
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx eslint --max-warnings 0 .
+
+      - name: jscpd (new clones only)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jscpd . --baseline-from-ref "$BASE" --fail-on-new-clones
+
+      # Clippy runs on the version in .github/rust-version, the same one the
+      # check job in ci.yml uses: a new clippy can change which baseline
+      # #[expect] markers fire. Bump that file in its own PR.
+      - id: rust-version
+        if: ${{ !cancelled() }}
+        run: echo "version=$(cat .github/rust-version)" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        if: ${{ !cancelled() }}
+        with:
+          toolchain: ${{ steps.rust-version.outputs.version }}
+          components: clippy
+
+      - name: Install Linux system dependencies
+        id: linux-deps
+        if: ${{ !cancelled() }}
+        run: bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
+
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ !cancelled() }}
+
+      - name: Clippy
+        if: ${{ !cancelled() && steps.linux-deps.outcome == 'success' }}
+        run: cargo clippy --workspace --all-targets -- -D warnings

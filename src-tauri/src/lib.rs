@@ -188,37 +188,41 @@ pub(crate) fn passwd_identity() -> Option<PasswdIdentity> {
 }
 
 #[tauri::command]
-fn set_traffic_lights_visible(
-    #[allow(unused_variables)] window: tauri::WebviewWindow,
-    #[allow(unused_variables)] visible: bool,
-) {
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(unused_variables, reason = "used only on macOS")
+)]
+fn set_traffic_lights_visible(window: tauri::WebviewWindow, visible: bool) {
     #[cfg(target_os = "macos")]
     macos::set_visible(&window, visible);
 }
 
 #[tauri::command]
-fn set_window_background_blur(
-    #[allow(unused_variables)] window: tauri::WebviewWindow,
-    #[allow(unused_variables)] radius: u8,
-) {
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(unused_variables, reason = "used only on macOS")
+)]
+fn set_window_background_blur(window: tauri::WebviewWindow, radius: u8) {
     #[cfg(target_os = "macos")]
     macos::set_background_blur_radius(&window, radius);
 }
 
 #[tauri::command]
-fn set_dock_badge(
-    #[allow(unused_variables)] window: tauri::WebviewWindow,
-    #[allow(unused_variables)] count: u32,
-) {
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(unused_variables, reason = "used only on macOS")
+)]
+fn set_dock_badge(window: tauri::WebviewWindow, count: u32) {
     #[cfg(target_os = "macos")]
     macos::set_window_badge(&window, count);
 }
 
 #[tauri::command]
-fn set_trackpad_zoom_enabled(
-    #[allow(unused_variables)] window: tauri::WebviewWindow,
-    #[allow(unused_variables)] enabled: bool,
-) {
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(unused_variables, reason = "used only on macOS")
+)]
+fn set_trackpad_zoom_enabled(window: tauri::WebviewWindow, enabled: bool) {
     #[cfg(target_os = "macos")]
     trackpad_zoom::set_enabled(&window, enabled);
 }
@@ -235,6 +239,7 @@ fn should_request_quit(code: Option<i32>) -> bool {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 pub fn run() {
     let context = tauri::generate_context!();
     #[cfg(all(debug_assertions, target_os = "macos"))]

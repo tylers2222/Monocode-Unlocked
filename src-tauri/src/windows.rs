@@ -171,8 +171,11 @@ mod tests {
     }
 
     #[test]
-    // This subprocess deliberately dies before it can wait; the parent verifies cleanup.
-    #[allow(clippy::zombie_processes)]
+    #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
+    #[expect(
+        clippy::zombie_processes,
+        reason = "the child dies before it can wait; the parent verifies cleanup"
+    )]
     fn abrupt_exit_kills_children() {
         const MARKER: &str = "MONOCODE_JOB_TEST_CHILD";
         const PID_FILE: &str = "MONOCODE_JOB_TEST_DESCENDANT_FILE";
