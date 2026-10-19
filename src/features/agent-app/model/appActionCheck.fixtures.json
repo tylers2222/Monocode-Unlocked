@@ -3,24 +3,26 @@
     {
       "action": "sessions.start",
       "args": {
-        "action": "sessions.start",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": null,
-          "sessionId": "lead",
-          "turnId": "turn-1"
-        },
-        "input": {
-          "harness": "codex",
-          "model": "codex:test",
-          "notifyOnComplete": false,
-          "prompt": "Fix the flaky test"
-        },
-        "requestId": "a6-start",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "sessions.start",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": null,
+            "sessionId": "lead",
+            "turnId": "turn-1"
+          },
+          "input": {
+            "harness": "codex",
+            "model": "codex:test",
+            "notifyOnComplete": false,
+            "prompt": "Fix the flaky test"
+          },
+          "requestId": "a6-start",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "lead",
       "input": {
@@ -40,22 +42,24 @@
     {
       "action": "sessions.start",
       "args": {
-        "action": "sessions.start",
-        "caller": {
-          "kind": "mono_chat",
-          "monoId": "mono-a",
-          "sessionId": "a-chat",
-          "turnId": "turn-1"
-        },
-        "input": {
-          "harness": "codex",
-          "model": "codex:test",
-          "notifyOnComplete": false,
-          "prompt": "Fix the flaky test"
-        },
-        "requestId": "a7-start",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "sessions.start",
+          "caller": {
+            "kind": "mono_chat",
+            "monoId": "mono-a",
+            "sessionId": "a-chat",
+            "turnId": "turn-1"
+          },
+          "input": {
+            "harness": "codex",
+            "model": "codex:test",
+            "notifyOnComplete": false,
+            "prompt": "Fix the flaky test"
+          },
+          "requestId": "a7-start",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "a-chat",
       "input": {
@@ -75,22 +79,24 @@
     {
       "action": "sessions.send",
       "args": {
-        "action": "sessions.send",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": null,
-          "sessionId": "lead",
-          "turnId": "turn-1"
-        },
-        "input": {
-          "prompt": "Rebase first",
-          "sessionId": "worker"
-        },
-        "requestId": "a5-own",
-        "target": "worker",
-        "targetLeadSessionId": "lead"
+        "call": {
+          "action": "sessions.send",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": null,
+            "sessionId": "lead",
+            "turnId": "turn-1"
+          },
+          "input": {
+            "prompt": "Rebase first",
+            "sessionId": "worker"
+          },
+          "requestId": "a5-own",
+          "target": "worker",
+          "targetLeadSessionId": "lead"
+        }
       },
       "caller": "lead",
       "input": {
@@ -108,19 +114,21 @@
     {
       "action": "sessions.stop",
       "args": {
-        "action": "sessions.stop",
-        "caller": {
-          "kind": "mono_chat",
-          "monoId": "mono-a",
-          "sessionId": "a-chat",
-          "turnId": "turn-1"
-        },
-        "input": {
-          "sessionId": "worker"
-        },
-        "requestId": "a5-stop",
-        "target": "worker",
-        "targetLeadSessionId": "lead"
+        "call": {
+          "action": "sessions.stop",
+          "caller": {
+            "kind": "mono_chat",
+            "monoId": "mono-a",
+            "sessionId": "a-chat",
+            "turnId": "turn-1"
+          },
+          "input": {
+            "sessionId": "worker"
+          },
+          "requestId": "a5-stop",
+          "target": "worker",
+          "targetLeadSessionId": "lead"
+        }
       },
       "caller": "a-chat",
       "input": {
@@ -137,20 +145,22 @@
     {
       "action": "sessions.send",
       "args": {
-        "action": "sessions.send",
-        "caller": {
-          "kind": "mono_chat",
-          "monoId": "mono-a",
-          "sessionId": "a-chat",
-          "turnId": "turn-1"
-        },
-        "input": {
-          "prompt": "Stop",
-          "sessionId": "worker"
-        },
-        "requestId": "a5-send",
-        "target": "worker",
-        "targetLeadSessionId": "lead"
+        "call": {
+          "action": "sessions.send",
+          "caller": {
+            "kind": "mono_chat",
+            "monoId": "mono-a",
+            "sessionId": "a-chat",
+            "turnId": "turn-1"
+          },
+          "input": {
+            "prompt": "Stop",
+            "sessionId": "worker"
+          },
+          "requestId": "a5-send",
+          "target": "worker",
+          "targetLeadSessionId": "lead"
+        }
       },
       "caller": "a-chat",
       "input": {
@@ -172,20 +182,22 @@
     {
       "action": "sessions.draft",
       "args": {
-        "action": "sessions.draft",
-        "caller": {
-          "kind": "mono_chat",
-          "monoId": "mono-a",
-          "sessionId": "a-chat",
-          "turnId": "turn-1"
-        },
-        "input": {
-          "prompt": "Draft this",
-          "sessionId": "worker"
-        },
-        "requestId": "a5-draft",
-        "target": "worker",
-        "targetLeadSessionId": "lead"
+        "call": {
+          "action": "sessions.draft",
+          "caller": {
+            "kind": "mono_chat",
+            "monoId": "mono-a",
+            "sessionId": "a-chat",
+            "turnId": "turn-1"
+          },
+          "input": {
+            "prompt": "Draft this",
+            "sessionId": "worker"
+          },
+          "requestId": "a5-draft",
+          "target": "worker",
+          "targetLeadSessionId": "lead"
+        }
       },
       "caller": "a-chat",
       "input": {
@@ -207,20 +219,22 @@
     {
       "action": "sessions.send",
       "args": {
-        "action": "sessions.send",
-        "caller": {
-          "kind": "mono_chat",
-          "monoId": "mono-a",
-          "sessionId": "a-chat",
-          "turnId": "turn-1"
-        },
-        "input": {
-          "prompt": "Hi",
-          "sessionId": "ghost"
-        },
-        "requestId": "a5-ghost",
-        "target": "ghost",
-        "targetLeadSessionId": "lead"
+        "call": {
+          "action": "sessions.send",
+          "caller": {
+            "kind": "mono_chat",
+            "monoId": "mono-a",
+            "sessionId": "a-chat",
+            "turnId": "turn-1"
+          },
+          "input": {
+            "prompt": "Hi",
+            "sessionId": "ghost"
+          },
+          "requestId": "a5-ghost",
+          "target": "ghost",
+          "targetLeadSessionId": "lead"
+        }
       },
       "caller": "a-chat",
       "input": {
@@ -242,19 +256,21 @@
     {
       "action": "models.list",
       "args": {
-        "action": "models.list",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-models-list",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "models.list",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-models-list",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -273,19 +289,21 @@
     {
       "action": "sessions.list",
       "args": {
-        "action": "sessions.list",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-sessions-list",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "sessions.list",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-sessions-list",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -304,21 +322,23 @@
     {
       "action": "sessions.read",
       "args": {
-        "action": "sessions.read",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {
-          "sessionId": "lead"
-        },
-        "requestId": "w-sessions-read",
-        "target": "lead",
-        "targetLeadSessionId": null
+        "call": {
+          "action": "sessions.read",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {
+            "sessionId": "lead"
+          },
+          "requestId": "w-sessions-read",
+          "target": "lead",
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {
@@ -339,21 +359,23 @@
     {
       "action": "sessions.send",
       "args": {
-        "action": "sessions.send",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {
-          "sessionId": "lead"
-        },
-        "requestId": "w-sessions-send",
-        "target": "lead",
-        "targetLeadSessionId": null
+        "call": {
+          "action": "sessions.send",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {
+            "sessionId": "lead"
+          },
+          "requestId": "w-sessions-send",
+          "target": "lead",
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {
@@ -374,21 +396,23 @@
     {
       "action": "sessions.draft",
       "args": {
-        "action": "sessions.draft",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {
-          "sessionId": "lead"
-        },
-        "requestId": "w-sessions-draft",
-        "target": "lead",
-        "targetLeadSessionId": null
+        "call": {
+          "action": "sessions.draft",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {
+            "sessionId": "lead"
+          },
+          "requestId": "w-sessions-draft",
+          "target": "lead",
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {
@@ -409,21 +433,23 @@
     {
       "action": "sessions.stop",
       "args": {
-        "action": "sessions.stop",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {
-          "sessionId": "lead"
-        },
-        "requestId": "w-sessions-stop",
-        "target": "lead",
-        "targetLeadSessionId": null
+        "call": {
+          "action": "sessions.stop",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {
+            "sessionId": "lead"
+          },
+          "requestId": "w-sessions-stop",
+          "target": "lead",
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {
@@ -444,21 +470,23 @@
     {
       "action": "sessions.archive",
       "args": {
-        "action": "sessions.archive",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {
-          "sessionId": "lead"
-        },
-        "requestId": "w-sessions-archive",
-        "target": "lead",
-        "targetLeadSessionId": null
+        "call": {
+          "action": "sessions.archive",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {
+            "sessionId": "lead"
+          },
+          "requestId": "w-sessions-archive",
+          "target": "lead",
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {
@@ -479,21 +507,23 @@
     {
       "action": "sessions.delete",
       "args": {
-        "action": "sessions.delete",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {
-          "sessionId": "lead"
-        },
-        "requestId": "w-sessions-delete",
-        "target": "lead",
-        "targetLeadSessionId": null
+        "call": {
+          "action": "sessions.delete",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {
+            "sessionId": "lead"
+          },
+          "requestId": "w-sessions-delete",
+          "target": "lead",
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {
@@ -514,19 +544,21 @@
     {
       "action": "sessions.start",
       "args": {
-        "action": "sessions.start",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-sessions-start",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "sessions.start",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-sessions-start",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -545,19 +577,21 @@
     {
       "action": "worktrees.list",
       "args": {
-        "action": "worktrees.list",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-worktrees-list",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "worktrees.list",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-worktrees-list",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -576,19 +610,21 @@
     {
       "action": "worktrees.create",
       "args": {
-        "action": "worktrees.create",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-worktrees-create",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "worktrees.create",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-worktrees-create",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -607,19 +643,21 @@
     {
       "action": "folders.list",
       "args": {
-        "action": "folders.list",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-folders-list",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "folders.list",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-folders-list",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -638,21 +676,23 @@
     {
       "action": "folders.move",
       "args": {
-        "action": "folders.move",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {
-          "sessionId": "lead"
-        },
-        "requestId": "w-folders-move",
-        "target": "lead",
-        "targetLeadSessionId": null
+        "call": {
+          "action": "folders.move",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {
+            "sessionId": "lead"
+          },
+          "requestId": "w-folders-move",
+          "target": "lead",
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {
@@ -673,19 +713,21 @@
     {
       "action": "notes.list",
       "args": {
-        "action": "notes.list",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-notes-list",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "notes.list",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-notes-list",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -704,19 +746,21 @@
     {
       "action": "notes.read",
       "args": {
-        "action": "notes.read",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-notes-read",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "notes.read",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-notes-read",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -735,19 +779,21 @@
     {
       "action": "notes.write",
       "args": {
-        "action": "notes.write",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-notes-write",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "notes.write",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-notes-write",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -766,19 +812,21 @@
     {
       "action": "artifacts.list",
       "args": {
-        "action": "artifacts.list",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-artifacts-list",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "artifacts.list",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-artifacts-list",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -797,19 +845,21 @@
     {
       "action": "artifacts.read",
       "args": {
-        "action": "artifacts.read",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-artifacts-read",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "artifacts.read",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-artifacts-read",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -828,19 +878,21 @@
     {
       "action": "artifacts.write",
       "args": {
-        "action": "artifacts.write",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-artifacts-write",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "artifacts.write",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-artifacts-write",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -859,19 +911,21 @@
     {
       "action": "soul.read",
       "args": {
-        "action": "soul.read",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-soul-read",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "soul.read",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-soul-read",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -890,19 +944,21 @@
     {
       "action": "soul.update",
       "args": {
-        "action": "soul.update",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-soul-update",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "soul.update",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-soul-update",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -921,19 +977,21 @@
     {
       "action": "memory.read",
       "args": {
-        "action": "memory.read",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-memory-read",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "memory.read",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-memory-read",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -952,19 +1010,21 @@
     {
       "action": "memory.search",
       "args": {
-        "action": "memory.search",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-memory-search",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "memory.search",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-memory-search",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -983,19 +1043,21 @@
     {
       "action": "memory.add",
       "args": {
-        "action": "memory.add",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-memory-add",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "memory.add",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-memory-add",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1014,19 +1076,21 @@
     {
       "action": "memory.replace",
       "args": {
-        "action": "memory.replace",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-memory-replace",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "memory.replace",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-memory-replace",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1045,19 +1109,21 @@
     {
       "action": "memory.remove",
       "args": {
-        "action": "memory.remove",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-memory-remove",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "memory.remove",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-memory-remove",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1076,19 +1142,21 @@
     {
       "action": "habits.list",
       "args": {
-        "action": "habits.list",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-habits-list",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "habits.list",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-habits-list",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1107,19 +1175,21 @@
     {
       "action": "habits.add",
       "args": {
-        "action": "habits.add",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-habits-add",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "habits.add",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-habits-add",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1138,19 +1208,21 @@
     {
       "action": "habits.update",
       "args": {
-        "action": "habits.update",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-habits-update",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "habits.update",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-habits-update",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1169,19 +1241,21 @@
     {
       "action": "habits.run",
       "args": {
-        "action": "habits.run",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-habits-run",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "habits.run",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-habits-run",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1200,19 +1274,21 @@
     {
       "action": "habits.remove",
       "args": {
-        "action": "habits.remove",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-habits-remove",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "habits.remove",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-habits-remove",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1231,19 +1307,21 @@
     {
       "action": "monos.list",
       "args": {
-        "action": "monos.list",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-monos-list",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "monos.list",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-monos-list",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1262,19 +1340,21 @@
     {
       "action": "monos.get",
       "args": {
-        "action": "monos.get",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-monos-get",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "monos.get",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-monos-get",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1293,19 +1373,21 @@
     {
       "action": "monos.read",
       "args": {
-        "action": "monos.read",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-monos-read",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "monos.read",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-monos-read",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1324,19 +1406,21 @@
     {
       "action": "monos.create",
       "args": {
-        "action": "monos.create",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-monos-create",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "monos.create",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-monos-create",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1355,19 +1439,21 @@
     {
       "action": "monos.update",
       "args": {
-        "action": "monos.update",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-monos-update",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "monos.update",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-monos-update",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1386,19 +1472,21 @@
     {
       "action": "milestones.list",
       "args": {
-        "action": "milestones.list",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-milestones-list",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "milestones.list",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-milestones-list",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1417,19 +1505,21 @@
     {
       "action": "milestones.add",
       "args": {
-        "action": "milestones.add",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-milestones-add",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "milestones.add",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-milestones-add",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1448,19 +1538,21 @@
     {
       "action": "milestones.update",
       "args": {
-        "action": "milestones.update",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-milestones-update",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "milestones.update",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-milestones-update",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1479,19 +1571,21 @@
     {
       "action": "milestones.remove",
       "args": {
-        "action": "milestones.remove",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-milestones-remove",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "milestones.remove",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-milestones-remove",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1510,19 +1604,21 @@
     {
       "action": "milestones.reorder",
       "args": {
-        "action": "milestones.reorder",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-milestones-reorder",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "milestones.reorder",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-milestones-reorder",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1541,19 +1637,21 @@
     {
       "action": "workspace.status",
       "args": {
-        "action": "workspace.status",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-workspace-status",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "workspace.status",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-workspace-status",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},
@@ -1572,19 +1670,21 @@
     {
       "action": "chat.card",
       "args": {
-        "action": "chat.card",
-        "caller": {
-          "access": "operator",
-          "cwd": "/code/app",
-          "kind": "session",
-          "leadSessionId": "lead",
-          "sessionId": "worker",
-          "turnId": "turn-1"
-        },
-        "input": {},
-        "requestId": "w-chat-card",
-        "target": null,
-        "targetLeadSessionId": null
+        "call": {
+          "action": "chat.card",
+          "caller": {
+            "access": "operator",
+            "cwd": "/code/app",
+            "kind": "session",
+            "leadSessionId": "lead",
+            "sessionId": "worker",
+            "turnId": "turn-1"
+          },
+          "input": {},
+          "requestId": "w-chat-card",
+          "target": null,
+          "targetLeadSessionId": null
+        }
       },
       "caller": "worker",
       "input": {},

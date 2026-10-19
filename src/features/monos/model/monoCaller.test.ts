@@ -191,18 +191,38 @@ it("checks a Mono's app action without the roster", async () => {
     await gate.check("r1", { action: "sessions.send", target: "worker", input }),
   ).toEqual({ leadSessionId: null });
   expect(invoke).toHaveBeenCalledWith("mono_app_action_check", {
-    caller: {
-      kind: "mono_chat",
-      monoId: mono.id,
-      sessionId: "memory-chat",
-      turnId: "turn-1",
+    call: {
+      caller: {
+        kind: "mono_chat",
+        monoId: mono.id,
+        sessionId: "memory-chat",
+        turnId: "turn-1",
+      },
+      action: "sessions.send",
+      target: "worker",
+      targetLeadSessionId: "lead",
+      requestId: "r1",
+      input,
     },
-    action: "sessions.send",
-    target: "worker",
-    targetLeadSessionId: "lead",
-    requestId: "r1",
-    input,
   });
+});
+
+// Design 2 step 4, #87 review r1 n3. Defect: a call with no turn reaches
+// Rust as a caller bound to a made-up turn instead of turn_inactive.
+it("refuses a check with no turn as turn_inactive and calls nothing", async () => {
+  await loadMonoRoster();
+  vi.mocked(invoke).mockClear();
+  await expect(
+    levelGate(session("giga-chat"), null, () => undefined).check("r1", {
+      action: "sessions.list",
+      target: null,
+      input: {},
+    }),
+  ).rejects.toMatchObject({ code: "turn_inactive" });
+  expect(invoke).not.toHaveBeenCalledWith(
+    "mono_app_action_check",
+    expect.anything(),
+  );
 });
 
 // Design 6.6. Defect: a refused app action runs anyway, or its answer loses

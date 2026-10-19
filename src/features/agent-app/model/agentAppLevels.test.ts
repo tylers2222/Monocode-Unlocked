@@ -71,15 +71,17 @@ const SCENARIOS: Scenario[] = [
     })),
 ];
 
-type Case = Scenario & { args: { requestId: string }; reply: unknown };
+type Case = Scenario & { args: { call: { requestId: string } }; reply: unknown };
 const cases = fixture.cases as Case[];
 
 const command = vi.hoisted(() => ({
-  answer: undefined as ((args: { requestId: string }) => unknown) | undefined,
+  answer: undefined as
+    | ((args: { call: { requestId: string } }) => unknown)
+    | undefined,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (name: string, args: { requestId: string }) => {
+  invoke: vi.fn(async (name: string, args: { call: { requestId: string } }) => {
     if (name === "monos_list")
       return {
         revision: 1,
@@ -118,7 +120,8 @@ beforeEach(async () => {
   __monosTestReset();
   await loadMonoRoster();
   command.answer = (args) =>
-    cases.find((entry) => entry.args.requestId === args.requestId)?.reply ??
+    cases.find((entry) => entry.args.call.requestId === args.call.requestId)
+      ?.reply ??
     ALLOWED;
 });
 
@@ -296,7 +299,9 @@ it("sends to a padded id whose trimmed form is 256 characters", async () => {
   expect(await run("sessions.send", { sessionId: ` ${id}`, prompt: "Hi" })).toMatchObject(
     { sessionId: id, submitted: true },
   );
-  expect(checks()).toMatchObject([{ target: id, input: { sessionId: id } }]);
+  expect(checks()).toMatchObject([
+    { call: { target: id, input: { sessionId: id } } },
+  ]);
   expect(vi.mocked(actions.send).mock.calls[0]?.[0]).toBe(id);
 });
 
@@ -321,7 +326,9 @@ it("posts a Mono's cards with and without a sessionId", async () => {
       posted: card.type,
     });
   expect(actions.postCard).toHaveBeenCalledTimes(cards.length);
-  expect(checks().map((args) => (args as { target: unknown }).target)).toEqual([
+  expect(
+    checks().map((args) => (args as { call: { target: unknown } }).call.target),
+  ).toEqual([
     null,
     null,
     null,
@@ -329,18 +336,45 @@ it("posts a Mono's cards with and without a sessionId", async () => {
   ]);
 });
 
-// Design 13.5. Defect: a prompt with U+0000 reaches Rust, whose row of it
-// fails the length CHECK, so the refusal is an SQLite error.
-it("refuses a prompt with U+0000 as invalid_input before the level check", async () => {
-  const { run, actions } = world("worker");
+// Design 13.5, #87 review r1 n2. Defect: a prompt with U+0000 reaches Rust,
+// whose row of it (A3 keeps a start's prompt, A5 a send's or draft's) fails
+// the length CHECK, so the refusal is an SQLite error.
+it.each([
+  ["sessions.start", "worker", { harness: "codex", model: "codex:test" }],
+  ["sessions.send", "a-chat", { sessionId: "worker" }],
+  ["sessions.draft", "a-chat", { sessionId: "worker" }],
+] as const)(
+  "refuses a %s prompt with U+0000 as invalid_input before the level check",
+  async (action, caller, input) => {
+    const { run, actions } = world(caller);
+    await expect(
+      run(action, { ...input, prompt: "Fix\u0000it" }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    expect(checks()).toEqual([]);
+    expect(actions.start).not.toHaveBeenCalled();
+    expect(actions.send).not.toHaveBeenCalled();
+    expect(actions.draft).not.toHaveBeenCalled();
+  },
+);
+
+// #87 review r1 m2. Defect: a reply that is neither Rust's allowed nor its
+// failed shape (a renamed tag, a bare error, a lead id that is no session id)
+// reads as allowed, so the gate fails open.
+it.each([
+  [{ outcome: "Failed", error: { code: "worker_scope", hint: "No" } }],
+  [{ error: { code: "worker_scope", hint: "No" } }],
+  [{ outcome: "allowed", leadSessionId: "not a session" }],
+  [null],
+])("runs nothing when the level check answers %j", async (reply) => {
+  const { run, actions } = world("lead");
+  command.answer = () => reply;
   await expect(
     run("sessions.start", {
       harness: "codex",
       model: "codex:test",
-      prompt: "Fix\u0000it",
+      prompt: "Fix the flaky test",
     }),
-  ).rejects.toMatchObject({ code: "invalid_input" });
-  expect(checks()).toEqual([]);
+  ).rejects.toThrow("The level check answered in an unknown form");
   expect(actions.start).not.toHaveBeenCalled();
 });
 

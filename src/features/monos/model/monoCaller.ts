@@ -107,6 +107,28 @@ export type ActionChecked =
       error: { code: RejectCode | AppErrorCode; hint: string } & ToolErrorDetails;
     };
 
+/** The reply of `mono_app_action_check`, parsed; undefined for any other shape. */
+function parseActionChecked(reply: unknown): ActionChecked | undefined {
+  if (typeof reply !== "object" || reply === null) return undefined;
+  const { outcome, leadSessionId, error } = reply as Record<string, unknown>;
+  if (outcome === "allowed") {
+    const lead = leadSessionId === null ? null : parseSessionId(leadSessionId);
+    return lead === undefined ? undefined : { outcome, leadSessionId: lead };
+  }
+  if (outcome !== "failed" || typeof error !== "object" || error === null)
+    return undefined;
+  const { code, hint } = error as Record<string, unknown>;
+  if (typeof code !== "string" || typeof hint !== "string") return undefined;
+  return {
+    outcome,
+    error: {
+      ...(error as ToolErrorDetails),
+      code: code as RejectCode | AppErrorCode,
+      hint,
+    },
+  };
+}
+
 /**
  * Design 6.6: the level gate for the app calls of `session` in turn
  * `turnId`. Unlike `resolveCaller` it needs no persisted roster: Rust reads
@@ -124,14 +146,24 @@ export function levelGate(
       const caller = turn ? callerOf(session, turn) : undefined;
       if (!caller)
         throw new AppActionError(TURN_INACTIVE.code, TURN_INACTIVE.hint);
-      const answer = await invoke<ActionChecked>("mono_app_action_check", {
-        caller,
-        action,
-        target,
-        targetLeadSessionId: target === null ? null : (leadOf(target) ?? null),
-        requestId,
-        input,
-      });
+      const answer = parseActionChecked(
+        await invoke("mono_app_action_check", {
+          call: {
+            caller,
+            action,
+            target,
+            targetLeadSessionId:
+              target === null ? null : (leadOf(target) ?? null),
+            requestId,
+            input,
+          },
+        }),
+      );
+      // A reply this window cannot read never allows the action.
+      if (!answer)
+        throw new Error(
+          "The level check answered in an unknown form, so the action did not run.",
+        );
       if (answer.outcome === "failed") {
         const { code, hint, ...details } = answer.error;
         throw new AppActionError(code, hint, details);

@@ -3186,11 +3186,11 @@ pub fn mono_message_get(
     get_message(&conn, &caller, mono_gate::parse_get(&input)).map_err(|error| error.to_string())
 }
 
-/// The arguments of `mono_app_action_check`, as the web app's `levelGate`
-/// sends them.
-#[cfg_attr(test, derive(Deserialize))]
-#[cfg_attr(test, serde(rename_all = "camelCase", deny_unknown_fields))]
-struct AppActionCall {
+/// The one argument of `mono_app_action_check`, as the web app's
+/// `levelGate` sends it: `invoke("mono_app_action_check", { call })`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppActionCall {
     caller: CallerArg,
     action: String,
     target: Option<String>,
@@ -3230,22 +3230,9 @@ impl AppActionCall {
 #[tauri::command(async)]
 pub fn mono_app_action_check(
     store: State<'_, SessionStore>,
-    caller: CallerArg,
-    action: String,
-    target: Option<String>,
-    target_lead_session_id: Option<String>,
-    request_id: String,
-    input: Value,
+    call: AppActionCall,
 ) -> Result<ActionChecked, String> {
-    AppActionCall {
-        caller,
-        action,
-        target,
-        target_lead_session_id,
-        request_id,
-        input,
-    }
-    .check(&store, now_ms())
+    call.check(&store, now_ms())
 }
 
 #[cfg(test)]
@@ -9468,7 +9455,10 @@ pub(crate) mod tests {
                     .unwrap();
             }
             let name = case["name"].as_str().unwrap().to_string();
-            let call: AppActionCall = serde_json::from_value(case["args"].clone()).unwrap();
+            // Tauri hands the command the `call` key of the invoke arguments.
+            let args = case["args"].as_object().unwrap();
+            assert_eq!(args.keys().collect::<Vec<_>>(), ["call"], "{name}");
+            let call: AppActionCall = serde_json::from_value(args["call"].clone()).unwrap();
             let mut answer = serde_json::to_value(call.check(&store, 100).unwrap()).unwrap();
             if let Some(id) = answer.pointer_mut("/error/message_id") {
                 let written = MessageId::parse(id.as_str().unwrap()).unwrap();
