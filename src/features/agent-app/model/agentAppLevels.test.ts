@@ -1,18 +1,78 @@
 // @vitest-environment happy-dom
 import { invoke } from "@tauri-apps/api/core";
+import { writeFileSync } from "node:fs";
 import { beforeEach, expect, it, vi } from "vitest";
 import { __monosTestReset, loadMonoRoster } from "../../monos/model/mono";
 import { levelGate, type ActionChecked } from "../../monos/model/monoCaller";
 import { setHarnessModels } from "../../sessions/model/models";
 import { newSession, type Session } from "../../sessions/model/session";
 import fixture from "./appActionCheck.fixtures.json";
-import { handleAgentApp, type AgentAppHost } from "./agentApp";
+import { FIELDS, handleAgentApp, type AgentAppHost } from "./agentApp";
 import { AppActionError } from "./appActionError";
 
-// The calls and replies of `fixture` are the contract with Rust: this file
-// checks that the real `levelGate` sends exactly `args` and acts on `reply`,
-// and mono_messages.rs replays every `args` through the real
-// `mono_app_action_check` and checks that it answers `reply`.
+// appActionCheck.fixtures.json is the contract with Rust, and it is
+// generated, never edited by hand:
+//   1. WRITE_APP_ACTION_FIXTURE=1 npx vitest run <this file> writes WORLD,
+//      SCENARIOS and the `args` the real handleAgentApp and levelGate send
+//      for each scenario (a new scenario gets an allowed `reply`).
+//   2. WRITE_APP_ACTION_FIXTURE=1 cargo test --lib
+//      mono_app_action_check_answers_every_call_the_web_app_sends writes
+//      the `reply` the real mono_app_action_check answers to each `args`.
+// Without the variable both tests compare instead: this file fails when the
+// scenarios or the real calls differ from the file, Rust when its answers do.
+
+const WRITE = process.env.WRITE_APP_ACTION_FIXTURE === "1";
+const PROJECT = "/code/app";
+const ALLOWED = { outcome: "allowed", leadSessionId: null };
+
+/** The sessions and Monos both sides set up: `saved` ones have a `sessions` row in Rust. */
+const WORLD = vi.hoisted(() => ({
+  sessions: [
+    { id: "a-chat", cwd: "/Users/me", leadSessionId: null, saved: true },
+    { id: "lead", cwd: "/code/app", leadSessionId: null, saved: true },
+    { id: "worker", cwd: "/code/app", leadSessionId: "lead", saved: true },
+    { id: "ghost", cwd: "/code/app", leadSessionId: "lead", saved: false },
+  ],
+  monos: [{ id: "mono-a", sessionId: "a-chat", projects: ["/code/app"] }],
+}));
+
+type Scenario = {
+  name: string;
+  caller: string;
+  action: string;
+  input: Record<string, unknown>;
+  requestId: string;
+  /** The host method an allowed call reaches. */
+  ran: "start" | "send" | "stop" | null;
+};
+
+const CHOICE = { harness: "codex", model: "codex:test", notifyOnComplete: false };
+const SCENARIOS: Scenario[] = [
+  { name: "A6: a lead's start makes a worker of it", caller: "lead", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" }, requestId: "a6-start", ran: "start" },
+  { name: "A7: a Mono's start makes a lead", caller: "a-chat", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" }, requestId: "a7-start", ran: "start" },
+  { name: "A5: a lead sends into its own worker", caller: "lead", action: "sessions.send", input: { sessionId: "worker", prompt: "Rebase first" }, requestId: "a5-own", ran: "send" },
+  { name: "A5: a Mono may stop a worker", caller: "a-chat", action: "sessions.stop", input: { sessionId: "worker" }, requestId: "a5-stop", ran: "stop" },
+  { name: "A5: a Mono's send into a worker, padded id parsed once", caller: "a-chat", action: "sessions.send", input: { sessionId: " worker\n", prompt: "Stop" }, requestId: "a5-send", ran: null },
+  { name: "A5: a Mono's draft into a worker", caller: "a-chat", action: "sessions.draft", input: { sessionId: "worker", prompt: "Draft this" }, requestId: "a5-draft", ran: null },
+  { name: "A5: an unsaved worker counts by the window's lead copy", caller: "a-chat", action: "sessions.send", input: { sessionId: "ghost", prompt: "Hi" }, requestId: "a5-ghost", ran: null },
+  // A3 and A4: a worker's call of every action the gate checks.
+  ...[...FIELDS]
+    .filter(([action]) => !action.startsWith("messages."))
+    .map(([action, fields]): Scenario => ({
+      name: `${action === "sessions.start" ? "A3" : "A4"}: a worker's ${action}`,
+      caller: "worker",
+      action,
+      input:
+        fields.includes("sessionId") && action !== "chat.card"
+          ? { sessionId: "lead" }
+          : {},
+      requestId: `w-${action.replace(".", "-")}`,
+      ran: null,
+    })),
+];
+
+type Case = Scenario & { args: { requestId: string }; reply: unknown };
+const cases = fixture.cases as Case[];
 
 const command = vi.hoisted(() => ({
   answer: undefined as ((args: { requestId: string }) => unknown) | undefined,
@@ -23,7 +83,7 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (name === "monos_list")
       return {
         revision: 1,
-        monos: fixture.monos.map((mono) => ({
+        monos: WORLD.monos.map((mono) => ({
           id: mono.id,
           role: "mono",
           data: {
@@ -45,9 +105,6 @@ vi.mock("../../../integrations/harness/core/availability", () => ({
   isHarnessAvailable: (id: string) => id === "codex",
 }));
 
-const PROJECT = "/code/app";
-const ALLOWED = { outcome: "allowed", leadSessionId: null };
-
 beforeEach(async () => {
   vi.mocked(invoke).mockClear();
   vi.stubGlobal("localStorage", {
@@ -61,14 +118,14 @@ beforeEach(async () => {
   __monosTestReset();
   await loadMonoRoster();
   command.answer = (args) =>
-    fixture.cases.find((entry) => entry.args.requestId === args.requestId)
-      ?.reply ?? ALLOWED;
+    cases.find((entry) => entry.args.requestId === args.requestId)?.reply ??
+    ALLOWED;
 });
 
-/** The fixture's sessions as this window has them; lead, worker and ghost have /operator access. */
+/** WORLD's sessions as this window has them; lead, worker and ghost have /operator access. */
 function world(caller: string) {
   const sessions = new Map<string, Session>(
-    fixture.sessions.map((entry) => [
+    WORLD.sessions.map((entry) => [
       entry.id,
       {
         ...newSession("codex", entry.cwd, "codex:test"),
@@ -135,17 +192,66 @@ const checks = () =>
     .mock.calls.filter(([name]) => name === "mono_app_action_check")
     .map(([, args]) => args);
 
+/** JSON with sorted keys, as serde_json writes it, so both writers agree byte for byte. */
+function sortedJson(value: unknown): string {
+  const sort = (node: unknown): unknown =>
+    Array.isArray(node)
+      ? node.map(sort)
+      : node && typeof node === "object"
+        ? Object.fromEntries(
+            Object.keys(node)
+              .sort()
+              .map((key) => [key, sort((node as Record<string, unknown>)[key])]),
+          )
+        : node;
+  return `${JSON.stringify(sort(value), null, 2)}\n`;
+}
+
+it.runIf(WRITE)("writes the fixture from the real calls", async () => {
+  const written: Case[] = [];
+  for (const scenario of SCENARIOS) {
+    vi.mocked(invoke).mockClear();
+    const { run } = world(scenario.caller);
+    await run(scenario.action, scenario.input, scenario.requestId).catch(
+      () => undefined,
+    );
+    const [args] = checks() as Case["args"][];
+    const kept = cases.find((entry) => entry.name === scenario.name);
+    written.push({ ...scenario, args, reply: kept?.reply ?? ALLOWED });
+  }
+  writeFileSync(
+    `${process.cwd()}/src/features/agent-app/model/appActionCheck.fixtures.json`,
+    sortedJson({ ...WORLD, cases: written }),
+  );
+});
+
+// Drift guard. Defect: a scenario, a world session or a gated action (a new
+// FIELDS entry) is missing from the fixture, so Rust never replays it.
+it.skipIf(WRITE)("holds every scenario and the world in the fixture", () => {
+  expect({ sessions: fixture.sessions, monos: fixture.monos }).toEqual(WORLD);
+  expect(
+    cases.map(({ name, caller, action, input, requestId, ran }) => ({
+      name,
+      caller,
+      action,
+      input,
+      requestId,
+      ran,
+    })),
+  ).toEqual(SCENARIOS);
+});
+
 // Design 6.6 and 13.3, the Rust contract. Defect: an app action runs with no
 // level check, or with a check that names another action, target, lead copy
 // or input than Rust reads; Rust's refusal does not stop the action or loses
 // its code, hint or row id; or the web app decides the new session's lead
 // itself instead of taking Rust's answer.
-it.each(fixture.cases.map((entry) => [entry.name, entry] as const))(
+it.skipIf(WRITE).each(cases.map((entry) => [entry.name, entry] as const))(
   "%s: sends the fixture's check and acts on its reply",
   async (_name, entry) => {
     const { run, host, actions } = world(entry.caller);
     const reply = entry.reply as ActionChecked;
-    const answer = run(entry.action, entry.input, entry.args.requestId);
+    const answer = run(entry.action, entry.input, entry.requestId);
     if (reply.outcome === "failed") {
       await expect(answer).rejects.toMatchObject({
         code: reply.error.code,
@@ -156,8 +262,7 @@ it.each(fixture.cases.map((entry) => [entry.name, entry] as const))(
         expect(action).not.toHaveBeenCalled();
     } else {
       await answer;
-      if (entry.ran)
-        expect(actions[entry.ran as keyof typeof actions]).toHaveBeenCalledOnce();
+      if (entry.ran) expect(actions[entry.ran]).toHaveBeenCalledOnce();
     }
     expect(checks()).toEqual([entry.args]);
     if (entry.action === "sessions.start" && reply.outcome === "allowed")

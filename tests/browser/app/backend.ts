@@ -305,6 +305,42 @@ const HANDLERS: Record<string, Handler> = {
     if ((updates as MonoUpdate[]).length) store.rosterRevision += 1;
     return { revision: store.rosterRevision, monos: store.monos };
   },
+  // mono_messages.rs check_action, mono_gate.rs decide_action rows A3-A7: a
+  // stored session's lead wins over the window's copy. The fake writes no
+  // rejected row, so a refusal has no message_id.
+  mono_app_action_check: (store, { caller, action, target, targetLeadSessionId }) => {
+    const leadOf = (id: string, copy: unknown) => {
+      const row = store.sessions.find((session) => session.id === id);
+      return row ? (row.leadSessionId ?? null) : ((copy as string | null) ?? null);
+    };
+    const { kind, sessionId, leadSessionId } = caller as {
+      kind: string;
+      sessionId: string;
+      leadSessionId?: string | null;
+    };
+    const lead = kind === "session" ? leadOf(sessionId, leadSessionId) : null;
+    const failed = (code: string, hint: string) => ({
+      outcome: "failed",
+      error: { code, hint },
+    });
+    if (lead)
+      return action === "sessions.start"
+        ? failed("worker_cannot_spawn", `Only lead sessions can start sessions. Ask your lead (${lead}): messages.send with send_to "${lead}".`)
+        : failed("worker_scope", `A worker can message only its lead. Message your lead (${lead}): messages.send with send_to "${lead}".`);
+    const targetLead =
+      typeof target === "string" ? leadOf(target, targetLeadSessionId) : null;
+    if (
+      (action === "sessions.send" || action === "sessions.draft") &&
+      targetLead &&
+      targetLead !== sessionId
+    )
+      return failed("steer_via_lead", `That session is a worker of lead ${targetLead}. Message the lead (${targetLead}); only its lead steers its workers.`);
+    return {
+      outcome: "allowed",
+      leadSessionId:
+        action === "sessions.start" && kind === "session" ? sessionId : null,
+    };
+  },
   // mono_transcript.rs mono_session_get: the record and its only page.
   mono_session_get: (store, { sessionId }) => {
     const record = sessionRecord(store, sessionId);

@@ -9427,38 +9427,31 @@ pub(crate) mod tests {
 
     // PR7-9b real-state proof. `appActionCheck.fixtures.json` holds the exact
     // `mono_app_action_check` calls that the web app's real `levelGate` sends
-    // (agentAppLevels.test.ts checks that) and the replies it acts on.
-    // Defect: the command reads another argument name, shape or lead copy
-    // than the web app sends, or answers in a shape or with a code, hint or
-    // lead id the web app does not expect.
+    // (agentAppLevels.test.ts records and checks them) and the replies it
+    // acts on. With WRITE_APP_ACTION_FIXTURE=1 this test writes each reply
+    // the command answers into the file instead of comparing. Defect: the
+    // command reads another argument name, shape or lead copy than the web
+    // app sends, or answers in a shape or with a code, hint or lead id the
+    // web app does not expect.
     #[test]
     fn mono_app_action_check_answers_every_call_the_web_app_sends() {
-        #[derive(Deserialize)]
-        struct Fixture {
-            sessions: Vec<Saved>,
-            cases: Vec<Case>,
-        }
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Saved {
-            id: String,
-            cwd: String,
-            lead_session_id: Option<String>,
-            saved: bool,
-        }
-        #[derive(Deserialize)]
-        struct Case {
-            name: String,
-            args: Value,
-            reply: Value,
-        }
-        let fixture: Fixture = serde_json::from_str(include_str!(
-            "../../src/features/agent-app/model/appActionCheck.fixtures.json"
-        ))
-        .unwrap();
-        for case in fixture.cases {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/features/agent-app/model/appActionCheck.fixtures.json"
+        );
+        let write = std::env::var("WRITE_APP_ACTION_FIXTURE").as_deref() == Ok("1");
+        let mut fixture: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let saved: Vec<Value> = fixture["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["saved"] == true)
+            .cloned()
+            .collect();
+        for case in fixture["cases"].as_array_mut().unwrap() {
             let store = messaging_store();
-            for row in fixture.sessions.iter().filter(|row| row.saved) {
+            for row in &saved {
                 store
                     .lock_conn()
                     .unwrap()
@@ -9466,19 +9459,31 @@ pub(crate) mod tests {
                         "INSERT OR IGNORE INTO sessions (id, cwd, harness, model, runtime_mode,
                            title, created_at, updated_at, lead_session_id)
                          VALUES (?1, ?2, 'codex', 'm', 'default', 'S', 1, 1, ?3)",
-                        params![row.id, row.cwd, row.lead_session_id],
+                        params![
+                            row["id"].as_str(),
+                            row["cwd"].as_str(),
+                            row["leadSessionId"].as_str()
+                        ],
                     )
                     .unwrap();
             }
-            let call: AppActionCall = serde_json::from_value(case.args).unwrap();
+            let name = case["name"].as_str().unwrap().to_string();
+            let call: AppActionCall = serde_json::from_value(case["args"].clone()).unwrap();
             let mut answer = serde_json::to_value(call.check(&store, 100).unwrap()).unwrap();
             if let Some(id) = answer.pointer_mut("/error/message_id") {
                 let written = MessageId::parse(id.as_str().unwrap()).unwrap();
                 let conn = store.lock_conn().unwrap();
-                assert!(get(&conn, &written).unwrap().is_some(), "{}", case.name);
+                assert!(get(&conn, &written).unwrap().is_some(), "{name}");
                 *id = serde_json::json!("m_aaaaaaaaaaaa");
             }
-            assert_eq!(answer, case.reply, "{}", case.name);
+            if write {
+                case["reply"] = answer;
+            } else {
+                assert_eq!(answer, case["reply"], "{name}");
+            }
+        }
+        if write {
+            std::fs::write(path, serde_json::to_string_pretty(&fixture).unwrap() + "\n").unwrap();
         }
     }
 }

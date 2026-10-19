@@ -329,7 +329,8 @@ export type AgentAppHost = {
   now?(): Date;
 };
 
-const FIELDS = new Map<string, readonly string[]>([
+/** Every app action with the input fields it takes. */
+export const FIELDS = new Map<string, readonly string[]>([
   ["models.list", []],
   ["sessions.list", ["project"]],
   ["sessions.read", ["sessionId", "before", "limit", "maxChars", "project"]],
