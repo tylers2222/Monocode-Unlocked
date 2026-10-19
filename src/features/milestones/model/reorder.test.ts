@@ -40,6 +40,12 @@ it("moveOf sends every id of the project, the row placed before its target", () 
   });
 });
 
+it("moveOf reads the saved order, not the order the list arrives in", () => {
+  expect(
+    moveOf([...ROWS].reverse(), { id: "p4", status: "planned", before: "p1" }),
+  ).toEqual({ ids: ["a0", "p4", "p1", "p2", "i3"], status: null });
+});
+
 it("moveOf puts a row last in its group after that group's last row, not at the end", () => {
   expect(moveOf(ROWS, { id: "a0", status: "planned", before: null })).toEqual({
     ids: ["p1", "p2", "i3", "p4", "a0"],
