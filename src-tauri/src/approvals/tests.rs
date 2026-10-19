@@ -156,7 +156,6 @@ fn cards_survive_reopen_and_a_second_open_changes_nothing() {
     cards_survive_reopen(path);
 }
 
-/// `MONOCODE_DB_COPY`: a fresh copy of the app's monocode.db.
 fn app_database_copy() -> PathBuf {
     PathBuf::from(std::env::var("MONOCODE_DB_COPY").unwrap())
 }
@@ -167,7 +166,6 @@ fn cards_survive_reopen_on_a_copy_of_the_app_database() {
     cards_survive_reopen(app_database_copy());
 }
 
-/// The first Mono with a chat of `role` in the copy: id, name, data.
 fn real_mono(store: &SessionStore, role: &str) -> (String, String, Value) {
     let (id, name, data): (String, String, String) = store
         .lock_conn()
@@ -183,7 +181,6 @@ fn real_mono(store: &SessionStore, role: &str) -> (String, String, Value) {
     (id, name, serde_json::from_str(&data).unwrap())
 }
 
-// ADE-51 real-state proof on the app's own Giga and a real project.
 // Defects: the card loses the real Giga's name, or filing the same
 // heading again makes a second card.
 #[test]
