@@ -265,19 +265,53 @@ test("lane 6: delete asks once inline, then the row is gone from the page and th
   await expect(group(page, "Idea").locator("[data-milestone]")).toHaveCount(1);
 });
 
-test("lane 6: keyboard only: Enter opens the row, Delete then Delete removes it", async ({
+/** Presses Tab (Alt+Tab in WebKit, whose Tab skips buttons) until `name` has focus. */
+async function tabTo(page: Page, browserName: string, name: string) {
+  const key = browserName === "webkit" ? "Alt+Tab" : "Tab";
+  for (let press = 0; press < 20; press++) {
+    await page.keyboard.press(key);
+    const focused = await page.evaluate(() =>
+      document.activeElement?.tagName === "BUTTON"
+        ? document.activeElement.textContent?.trim()
+        : null,
+    );
+    if (focused === name) return;
+  }
+  throw new Error(`${key} never reached the ${name} button`);
+}
+
+test("lane 6: keyboard only: open a row, tab to Delete, confirm, and the row is gone", async ({
   app,
   page,
+  browserName,
 }) => {
   await openPage(app, page);
   await row(page, VOICE.id).focus();
   await page.keyboard.press("Enter");
-  await editor(page).getByRole("button", { name: "Delete" }).focus();
+  await tabTo(page, browserName, "Delete");
   await page.keyboard.press("Enter");
   await expect(
     editor(page).getByRole("button", { name: "Keep" }),
   ).toBeFocused();
+  await tabTo(page, browserName, "Delete");
+  await page.keyboard.press("Enter");
+  await expect(editor(page)).toHaveCount(0);
+  await expect(row(page, VOICE.id)).toHaveCount(0);
+  expect(await stored(page, VOICE.id)).toBeUndefined();
+});
+
+test("lane 6: keyboard only: Escape in the confirm deletes nothing", async ({
+  app,
+  page,
+  browserName,
+}) => {
+  await openPage(app, page);
+  await row(page, VOICE.id).focus();
+  await page.keyboard.press("Enter");
+  await tabTo(page, browserName, "Delete");
+  await page.keyboard.press("Enter");
   await page.keyboard.press("Escape");
+  await expect(editor(page)).toHaveCount(0);
   expect(await writes(page)).toEqual([]);
   await expect(row(page, VOICE.id)).toBeVisible();
 });

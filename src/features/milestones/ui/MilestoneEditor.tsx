@@ -118,7 +118,7 @@ export function MilestoneEditor({
       onClose();
     } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
-      if (!confirmingDelete) save();
+      save();
     }
   };
 
@@ -127,50 +127,19 @@ export function MilestoneEditor({
       {failure}
     </p>
   ) : null;
-  const confirm = (confirmingDelete: boolean) =>
+  const setConfirming = (confirmingDelete: boolean) =>
     setState((current) => ({ ...current, confirmingDelete, failure: null }));
 
   if (milestone && confirmingDelete)
     return (
-      <div
-        role="group"
-        aria-label={`Delete ${milestone.title}`}
-        data-milestone-editor
-        onKeyDown={onKeyDown}
-        className="overflow-hidden rounded-[10px] border border-red-400/30 bg-content/3 shadow-sm"
-      >
-        <div className="px-3.5 pt-3 pb-3">
-          <div className="text-sm font-medium">{milestone.title}</div>
-          {milestone.note ? (
-            <p className="mt-1.5 text-xs leading-[18px] text-content/60">
-              {milestone.note}
-            </p>
-          ) : null}
-        </div>
-        {failureLine}
-        <div className="flex items-center gap-2 border-t border-red-400/20 bg-red-400/8 px-3 py-2 text-[12px] text-red-400">
-          <Trash2 className="size-3.5 shrink-0" />
-          <span className="min-w-0 flex-1">
-            Delete “{milestone.title}”? This can’t be undone.
-          </span>
-          <button
-            type="button"
-            autoFocus
-            onClick={() => confirm(false)}
-            className={`${ACTION} text-content/70 hover:bg-content/10 hover:text-content`}
-          >
-            Keep
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void run(() => onRemove(milestone.id))}
-            className={`${ACTION} bg-red-500 font-medium text-white hover:bg-red-500/85`}
-          >
-            Delete
-          </button>
-        </div>
-      </div>
+      <DeleteConfirm
+        milestone={milestone}
+        busy={busy}
+        failureLine={failureLine}
+        onKeep={() => setConfirming(false)}
+        onDelete={() => void run(() => onRemove(milestone.id))}
+        onClose={onClose}
+      />
     );
 
   return (
@@ -278,7 +247,7 @@ export function MilestoneEditor({
         {milestone ? (
           <button
             type="button"
-            onClick={() => confirm(true)}
+            onClick={() => setConfirming(true)}
             className={`${ACTION} text-red-400 hover:bg-red-400/10`}
           >
             <Trash2 className="size-3.5" />
@@ -301,6 +270,69 @@ export function MilestoneEditor({
           className={`${ACTION} bg-content font-medium text-background-base hover:bg-content/80`}
         >
           {milestone ? "Save" : "Add"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Frame M·7: the row as stored, and one inline question. Escape keeps the row. */
+function DeleteConfirm({
+  milestone,
+  busy,
+  failureLine,
+  onKeep,
+  onDelete,
+  onClose,
+}: {
+  milestone: Milestone;
+  busy: boolean;
+  failureLine: ReactNode;
+  onKeep: () => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={`Delete ${milestone.title}`}
+      data-milestone-editor
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        onClose();
+      }}
+      className="overflow-hidden rounded-[10px] border border-red-400/30 bg-content/3 shadow-sm"
+    >
+      <div className="px-3.5 pt-3 pb-3">
+        <div className="text-sm font-medium">{milestone.title}</div>
+        {milestone.note ? (
+          <p className="mt-1.5 text-xs leading-[18px] text-content/60">
+            {milestone.note}
+          </p>
+        ) : null}
+      </div>
+      {failureLine}
+      <div className="flex items-center gap-2 border-t border-red-400/20 bg-red-400/8 px-3 py-2 text-[12px] text-red-400">
+        <Trash2 className="size-3.5 shrink-0" />
+        <span className="min-w-0 flex-1">
+          Delete “{milestone.title}”? This can’t be undone.
+        </span>
+        <button
+          type="button"
+          autoFocus
+          onClick={onKeep}
+          className={`${ACTION} text-content/70 hover:bg-content/10 hover:text-content`}
+        >
+          Keep
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onDelete}
+          className={`${ACTION} bg-red-500 font-medium text-white hover:bg-red-500/85`}
+        >
+          Delete
         </button>
       </div>
     </div>

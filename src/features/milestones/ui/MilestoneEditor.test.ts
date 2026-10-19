@@ -318,7 +318,7 @@ it("Escape or ⌘↵ in the confirm deletes nothing", async () => {
   expect(container.querySelector("[data-milestone-editor]")).toBeNull();
 });
 
-it("a refused delete keeps the confirm open with the reason, and the row stays", async () => {
+it("a refused delete keeps the confirm open with the reason", async () => {
   invoke.mockImplementation(async (command: string) => {
     if (command === "milestones_remove") throw "unknown_milestone";
     return {
