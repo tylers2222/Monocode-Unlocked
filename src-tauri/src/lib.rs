@@ -1,8 +1,8 @@
 use tauri::Manager;
 
 mod account_identity;
-mod approvals;
 mod active_clock;
+mod approvals;
 mod artifacts;
 mod automations;
 mod azure_devops;
