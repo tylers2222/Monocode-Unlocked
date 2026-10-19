@@ -1,6 +1,7 @@
 use tauri::Manager;
 
 mod account_identity;
+mod approvals;
 mod artifacts;
 mod automations;
 mod azure_devops;
@@ -377,6 +378,8 @@ pub fn run() {
             milestones::milestones_remove_project,
             milestones::milestone_settings_get,
             milestones::milestone_settings_set,
+            approvals::approvals_list,
+            approvals::approvals_open_counts,
             external_editor::list_external_editors,
             external_editor::open_in_external_editor,
             fs::resolve_project_location,

@@ -154,7 +154,7 @@ fn require(ok: bool, reason: &str) -> Result<(), String> {
 }
 
 /// Paths arrive normalized by `normalizeProjectPath` (recents.ts), as sessions do.
-fn check_project(path: &str) -> Result<(), String> {
+pub(crate) fn check_project(path: &str) -> Result<(), String> {
     let trimmed = path == "/" || (!path.is_empty() && !path.ends_with('/'));
     require(
         trimmed && !path.contains('\\'),
