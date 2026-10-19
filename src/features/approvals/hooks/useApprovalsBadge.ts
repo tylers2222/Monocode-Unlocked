@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
+  APPROVALS_CHANGED,
   approvalsBadge,
   openCounts,
   type ApprovalsBadge,
@@ -7,6 +9,7 @@ import {
 
 let openInEveryProject = 0;
 const listeners = new Set<() => void>();
+let changed: Promise<UnlistenFn | undefined> | undefined;
 
 async function load() {
   try {
@@ -27,12 +30,16 @@ function subscribe(listener: () => void) {
     void load();
     window.addEventListener("focus", reloadOnReturn);
     document.addEventListener("visibilitychange", reloadOnReturn);
+    changed = listen(APPROVALS_CHANGED, () => void load()).catch(
+      () => undefined,
+    );
   }
   return () => {
     listeners.delete(listener);
     if (listeners.size > 0) return;
     window.removeEventListener("focus", reloadOnReturn);
     document.removeEventListener("visibilitychange", reloadOnReturn);
+    void changed?.then((stop) => stop?.());
   };
 }
 

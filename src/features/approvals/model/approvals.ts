@@ -163,6 +163,9 @@ export function withdraw(id: string, by: string): Promise<Approval> {
   return invoke("approvals_withdraw", { id, by });
 }
 
+/** Rust emits it after every card write: file, update, withdraw (ADE-51) and decide (ADE-52). */
+export const APPROVALS_CHANGED = "approvals-changed";
+
 export type OpenCounts = { total: number; byProject: Record<string, number> };
 
 export type ApprovalsBadge = { label: string; pill?: string };

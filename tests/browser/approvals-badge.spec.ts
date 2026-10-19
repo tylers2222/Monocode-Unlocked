@@ -36,13 +36,15 @@ test.beforeEach(async ({ page }) => {
 async function setCards(
   page: Page,
   rows: ApprovalRow[],
-  trigger: "focus" | "visible",
+  trigger: "focus" | "visible" | "changed",
 ) {
   await page.evaluate(
     ({ rows, trigger }) => {
       window.appBackend!.store.approvals = rows;
       if (trigger === "focus") window.dispatchEvent(new Event("focus"));
-      else document.dispatchEvent(new Event("visibilitychange"));
+      else if (trigger === "visible")
+        document.dispatchEvent(new Event("visibilitychange"));
+      else return window.appBackend!.emit("approvals-changed");
     },
     { rows, trigger },
   );
@@ -126,6 +128,9 @@ test("the Approvals row counts the open cards of a copy of the app database", as
   await expectPill(page, 12, "12");
   await shot(page, "badge-12");
 
+  await setCards(page, [...CLOSED, ...OPEN.slice(0, 13)], "changed");
+  await expectPill(page, 13, "13");
+
   await setCards(page, REAL_DB.approvals, "focus");
   await expectPill(page, 130, "99+");
   await shot(page, "badge-99");
@@ -134,7 +139,7 @@ test("the Approvals row counts the open cards of a copy of the app database", as
     ...card,
     status: CLOSING[index % CLOSING.length],
   }));
-  await setCards(page, [...CLOSED, ...decided, ...OPEN.slice(0, 3)], "focus");
+  await setCards(page, [...CLOSED, ...decided, ...OPEN.slice(0, 3)], "changed");
   const three = await expectPill(page, 3, "3");
 
   await three.click();
