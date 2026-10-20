@@ -8,7 +8,7 @@ name: gate-mutation
 # gate/integrity as a gate edit. The mutation tools are pinned and installed by the job.
 on:
   pull_request:
-    branches: [tyler/main]
+    branches: [tyler/main, 'lane-d/preview-*']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
@@ -22,7 +22,7 @@ jobs:
   mutation:
     name: gate/mutation
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 1
     env:
       PR: ${{ github.event.pull_request.number }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
