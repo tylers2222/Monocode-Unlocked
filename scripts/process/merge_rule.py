@@ -4,12 +4,13 @@
 The reviewer posts its verdict as the commit status review/agent on the commit it read
 (scripts/gate/review-status.sh), so a push leaves the new head without a verdict. A
 minors-only verdict on an older commit carries to the head when a fixer-proof comment
-line covers each minor finding (m1 to mK), the commits since the verdict add no file,
-stay inside the reviewed files and change at most 60 lines, and the other checks on the
-head pass. T2 and T3 carry only a round 1 verdict. Any other head needs a new review
-verdict.
+line by a collaborator covers each minor finding (m1 to mK), the PR's own change since
+the verdict adds no file, stays inside the reviewed files and changes at most 60 lines,
+and the other checks on the head pass. T2 and T3 carry only a round 1 verdict, and T3
+also needs this run's gate/mutation green. Only verdicts posted for this PR count. Any
+other head needs a new review verdict.
 
-Usage: python3 scripts/process/merge_rule.py <pr> <T1|T2|T3> [--post-carry]
+Usage: python3 scripts/process/merge_rule.py <pr> <T1|T2|T3> [--mutation <result>] [--post-carry]
 Prints "merge-rule: <reason>" and exits 0 when the head may merge, 1 when it may not and
 2 when gh fails. Only --post-carry writes to GitHub: it posts a carry as review/agent
 success on the head. GATE_REPO overrides the repository (default
@@ -22,6 +23,7 @@ import re
 import shlex
 import subprocess
 import sys
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -33,6 +35,7 @@ NEW_FILE = frozenset({"added", "renamed", "copied"})
 PASSING = frozenset({"success", "skipped", "neutral"})
 # The review verdict is what this script decides on, so it is not a check to wait for.
 REVIEW_CONTEXT = "review/agent"
+TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 VERDICT = re.compile(r"^r(\d+) (clean|changes needed)\b(?::\s*(\d+)B/(\d+)M/(\d+)m)?")
 _TEST = r"[^\s|](?:[^|]*[^\s|])?"
@@ -93,9 +96,13 @@ def parse_verdict(sha: str, description: str, at: datetime) -> Verdict | None:
 
 
 def parse_proofs(comments: Iterable[Mapping[str, str]]) -> tuple[list[Proof], list[str]]:
+    """Proof lines from comments by the repository's owner, members or collaborators; the
+    repository is public, so anyone else's comment is ignored."""
     proofs: list[Proof] = []
     errors: list[str] = []
     for comment in comments:
+        if comment.get("authorAssociation") not in TRUSTED:
+            continue
         at = parse_time(comment["createdAt"])
         for line in comment["body"].splitlines():
             if not line.startswith("fixer-proof:"):
@@ -106,6 +113,18 @@ def parse_proofs(comments: Iterable[Mapping[str, str]]) -> tuple[list[Proof], li
             else:
                 proofs.append(Proof(match["finding"], match["test"], match["killed"] or match["mutant"], at))
     return proofs, errors
+
+
+def collect_verdicts(statuses_by_sha: Mapping[str, Iterable[Mapping[str, str]]], pr_url: str) -> list[Verdict]:
+    """Verdicts from the review/agent statuses of the PR's commits. A status belongs to a
+    commit, not a PR, so one posted for another PR (its target_url) is not this PR's verdict."""
+    return [
+        verdict
+        for sha, statuses in statuses_by_sha.items()
+        for status in statuses
+        if status["state"] != "pending" and status.get("target_url") == pr_url
+        if (verdict := parse_verdict(sha, status["description"] or "", parse_time(status["created_at"])))
+    ]
 
 
 def latest(verdicts: Iterable[Verdict]) -> Verdict | None:
@@ -134,9 +153,11 @@ def decide(
     checks_failed: Sequence[str],
     checks_pending: Sequence[str],
     review_in_progress: bool = False,
+    mutation: str | None = None,
 ) -> Decision:
     """Decides on the latest verdict. reviewed_files is the PR diff at the verdict's commit;
-    since_review is the diff from that commit to the head."""
+    since_review is the PR's own change since then. mutation is the gate/mutation result
+    of this run (None when there is no such job)."""
     verdict = latest(verdicts)
     if verdict is None:
         return refuse("no review verdict yet")
@@ -168,6 +189,8 @@ def decide(
         return refuse(f"{since} touches files outside the reviewed diff ({', '.join(outside)}); it needs a new review verdict")
     if since_review.changed > MAX_FIX_LINES:
         return refuse(f"{since} changes {since_review.changed} lines, more than {MAX_FIX_LINES}; it needs a new review verdict")
+    if tier == "T3" and mutation != "success":
+        return refuse(f"T3 carries only with a green gate/mutation (it is {mutation or 'missing'})")
     if checks_failed:
         return refuse(f"failed checks: {', '.join(checks_failed)}")
     if checks_pending:
@@ -193,13 +216,27 @@ def classify_checks(
     return sorted(failed), sorted(pending)
 
 
-def diff_stat(files: Iterable[Mapping[str, str | int]]) -> DiffStat:
-    """Builds a DiffStat from the files of a GitHub compare response."""
-    files = list(files)
-    return DiffStat(
-        {file["filename"]: file["status"] for file in files},
-        sum(file["additions"] + file["deletions"] for file in files),
-    )
+def pr_change_since(then: Iterable[Mapping[str, str | None]], now: Iterable[Mapping[str, str | None]]) -> DiffStat:
+    """The PR's own change between two of its versions, from the GitHub compare files of
+    base...reviewed (then) and base...head (now). Each side is measured from its own merge
+    base, so merging the base branch in ("Update branch") adds nothing. A file counts the
+    +/- patch lines that differ between the two sides; a file whose content differs but
+    has no patch (binary, too large) counts as more than the limit."""
+    before = {file["filename"]: file for file in then}
+    after = {file["filename"]: file for file in now}
+    files, changed = {}, 0
+    for path in sorted(before.keys() | after.keys()):
+        old, new = before.get(path), after.get(path)
+        if old and new and (old["sha"], old["status"]) == (new["sha"], new["status"]):
+            continue
+        files[path] = "modified" if old and new else new["status"] if new else "reverted"
+        sides = [file for file in (old, new) if file and file["status"] != "removed"]
+        if any(file.get("patch") is None for file in sides):
+            changed += MAX_FIX_LINES + 1
+            continue
+        a, b = (Counter(l for l in (file or {}).get("patch", "").splitlines() if l[:1] in "+-") for file in (old, new))
+        changed += sum(((a - b) + (b - a)).values())
+    return DiffStat(files, changed)
 
 
 def gh(*args: str) -> str:
@@ -227,26 +264,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="merge_rule.py", description="Decides if a PR head may merge on its review/agent verdict.")
     parser.add_argument("pr", type=int)
     parser.add_argument("tier", choices=TIERS)
+    parser.add_argument("--mutation", help="this run's gate/mutation result; a T3 carry needs success")
     parser.add_argument("--post-carry", action="store_true", help="post a carry as review/agent success on the head (writes to GitHub)")
     args = parser.parse_args(argv)
 
     view = json.loads(gh("pr", "view", str(args.pr), "-R", REPO, "--json", "headRefOid,baseRefName"))
-    head = view["headRefOid"]
-    verdicts = []
-    review_statuses = '.[] | select(.context == "review/agent" and .state != "pending") | {description, created_at}'
-    for sha in api(f"repos/{REPO}/pulls/{args.pr}/commits", ".[].sha"):
-        for status in api(f"repos/{REPO}/commits/{sha}/statuses", review_statuses):
-            verdict = parse_verdict(sha, status["description"] or "", parse_time(status["created_at"]))
-            if verdict is not None:
-                verdicts.append(verdict)
-    proofs, errors = parse_proofs(api(f"repos/{REPO}/issues/{args.pr}/comments", ".[] | {body, createdAt: .created_at}"))
+    head, base = view["headRefOid"], view["baseRefName"]
+    review_statuses = f'.[] | select(.context == "{REVIEW_CONTEXT}") | {{state, description, created_at, target_url}}'
+    statuses_by_sha = {sha: api(f"repos/{REPO}/commits/{sha}/statuses", review_statuses)
+                       for sha in api(f"repos/{REPO}/pulls/{args.pr}/commits", ".[].sha")}
+    verdicts = collect_verdicts(statuses_by_sha, f"https://github.com/{REPO}/pull/{args.pr}")
+    comments = ".[] | {body, createdAt: .created_at, authorAssociation: .author_association}"
+    proofs, errors = parse_proofs(api(f"repos/{REPO}/issues/{args.pr}/comments", comments))
     reviewed = latest(verdicts)
     if reviewed is None or reviewed.sha == head:
         reviewed_files = since_review = DiffStat({}, 0)
     else:
-        files = ".files[] | {filename, status, additions, deletions}"
-        reviewed_files = diff_stat(api(f"repos/{REPO}/compare/{view['baseRefName']}...{reviewed.sha}", files, paginate=False))
-        since_review = diff_stat(api(f"repos/{REPO}/compare/{reviewed.sha}...{head}", files, paginate=False))
+        files = ".files[] | {filename, status, sha, patch}"
+        then = api(f"repos/{REPO}/compare/{base}...{reviewed.sha}", files, paginate=False)
+        reviewed_files = DiffStat({file["filename"]: file["status"] for file in then}, 0)
+        since_review = pr_change_since(then, api(f"repos/{REPO}/compare/{base}...{head}", files, paginate=False))
     head_statuses = api(f"repos/{REPO}/commits/{head}/status", ".statuses[] | {context, state, description}")
     head_review = next((s for s in head_statuses if s["context"] == REVIEW_CONTEXT), None)
     checks_failed, checks_pending = classify_checks(
@@ -256,7 +293,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     decision = decide(args.tier, head, verdicts, proofs, reviewed_files, since_review, checks_failed, checks_pending,
-                      review_in_progress=bool(head_review and head_review["state"] == "pending"))
+                      review_in_progress=bool(head_review and head_review["state"] == "pending"), mutation=args.mutation)
     for line in [*errors, decision.reason]:
         print(f"merge-rule: {line}")
     already = head_review and head_review["state"] == "success" and head_review["description"] == decision.reason

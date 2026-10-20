@@ -1,19 +1,23 @@
 import sys
 import unittest
+import unittest.mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from merge_rule import (  # noqa: E402
+import merge_rule
+from merge_rule import (
     Decision,
     DiffStat,
     Proof,
     Verdict,
     classify_checks,
+    collect_verdicts,
     decide,
     parse_proofs,
     parse_verdict,
+    pr_change_since,
 )
 
 # PR 160: r1 read head 7ce96f5 at AT and found one minor. FIX is a later push with the fix
@@ -59,6 +63,7 @@ def decide_fix(**changes):
         "since_review": DiffStat({SPEC: "modified"}, 3),
         "checks_failed": [],
         "checks_pending": [],
+        "mutation": "success",
     }
     return decide(**{**inputs, **changes})
 
@@ -91,7 +96,7 @@ class ParseProofsTest(unittest.TestCase):
         )
         at = datetime(2026, 10, 20, 12, 30, tzinfo=timezone.utc)
         self.assertEqual(
-            parse_proofs([{"body": body, "createdAt": "2026-10-20T12:30:00Z"}]),
+            parse_proofs([{"body": body, "createdAt": "2026-10-20T12:30:00Z", "authorAssociation": "OWNER"}]),
             ([Proof("m1", TEST, None, at), Proof("m2", None, "M2", at), Proof("m3", TEST, "M4", at)], []),
         )
 
@@ -104,11 +109,31 @@ class ParseProofsTest(unittest.TestCase):
             "fixer-proof: m1 mutant=M2 | test=x",
         ]
         body = "\n".join(["> fixer-proof: m9 test=a quote, not a proof", *malformed, "fixer-proof: m2 mutant=M2"])
-        proofs, errors = parse_proofs([{"body": body, "createdAt": "2026-10-20T12:30:00Z"}])
+        proofs, errors = parse_proofs([{"body": body, "createdAt": "2026-10-20T12:30:00Z", "authorAssociation": "OWNER"}])
         self.assertEqual([proof.finding for proof in proofs], ["m2"])
         self.assertEqual(len(errors), len(malformed))
         for line, error in zip(malformed, errors):
             self.assertIn(f'"{line}"', error)
+
+    def test_only_collaborators_prove(self):
+        comment = {"body": f"fixer-proof: m1 test={TEST}", "createdAt": "2026-10-20T12:30:00Z"}
+        self.assertEqual(parse_proofs([{**comment, "authorAssociation": "NONE"}]), ([], []))
+        self.assertEqual(len(parse_proofs([{**comment, "authorAssociation": "COLLABORATOR"}])[0]), 1)
+
+
+PR_URL = "https://github.com/tylers2222/Monocode-Unlocked/pull/160"
+
+
+class CollectVerdictsTest(unittest.TestCase):
+    def status(self, description, state="failure", url=PR_URL):
+        return {"state": state, "description": description, "created_at": "2026-10-20T11:01:08Z", "target_url": url}
+
+    def test_only_this_prs_non_pending_verdicts(self):
+        statuses = {
+            REVIEWED: [self.status(MINOR), self.status("r1 in review", "pending")],
+            EARLIER: [self.status(MINOR, url="https://github.com/tylers2222/Monocode-Unlocked/pull/159")],
+        }
+        self.assertEqual(collect_verdicts(statuses, PR_URL), [Verdict(REVIEWED, 1, False, 0, 0, 1, AT)])
 
 
 class DecideTest(unittest.TestCase):
@@ -200,6 +225,12 @@ class DecideTest(unittest.TestCase):
     def test_review_in_progress_on_head_blocks_carry(self):
         self.assertRefused(decide_fix(review_in_progress=True), "in progress")
 
+    def test_t3_carry_needs_green_mutation(self):
+        for result in (None, "failure", "cancelled", "skipped"):
+            with self.subTest(result=result):
+                self.assertRefused(decide_fix(mutation=result), "gate/mutation")
+        self.assertTrue(decide_fix(tier="T2", mutation=None).carry, "T2 needs no mutation run")
+
     def test_small_proven_fix_carries_verdict(self):
         self.assertEqual(decide_fix(), Decision(True, True, "carried from 7ce96f5: minors-only + fixer proof (T3)"))
 
@@ -228,6 +259,77 @@ class ClassifyChecksTest(unittest.TestCase):
             classify_checks(runs, statuses, "77"),
             (["check (macos-latest)", "ci/audit", "gate/lint"], ["browser", "ci/deploy"]),
         )
+
+
+
+def compare_file(path, status="modified", sha="s1", patch="@@ -1 +1 @@\n-a\n+b"):
+    return {"filename": path, "status": status, "sha": sha, "patch": patch}
+
+
+class PrChangeSinceTest(unittest.TestCase):
+    def test_base_merged_in_adds_nothing(self):
+        # "Update branch": the file's blob changed (base edits) but the PR's own patch did not.
+        then = [compare_file(SPEC)]
+        self.assertEqual(pr_change_since(then, [compare_file(SPEC, sha="s2")]), DiffStat({SPEC: "modified"}, 0))
+
+    def test_changed_patch_lines_are_counted(self):
+        now = [compare_file(SPEC, sha="s2", patch="@@ -1 +1,2 @@\n-a\n+b\n+c")]
+        self.assertEqual(pr_change_since([compare_file(SPEC)], now), DiffStat({SPEC: "modified"}, 1))
+
+    def test_a_new_path_keeps_its_status(self):
+        now = [compare_file(SPEC), compare_file("src/new.ts", "added", "s3", "@@ -0,0 +1 @@\n+x")]
+        self.assertEqual(pr_change_since([compare_file(SPEC)], now), DiffStat({"src/new.ts": "added"}, 1))
+
+    def test_a_file_without_a_patch_is_over_the_limit(self):
+        now = [compare_file(SPEC, sha="s2", patch=None)]
+        self.assertGreater(pr_change_since([compare_file(SPEC)], now).changed, 60)
+
+
+class MainTest(unittest.TestCase):
+    """main() on recorded-shape API answers: a minors-only r1 on REVIEWED, a 1-line fix on FIX."""
+
+    def run_main(self, statuses, comments, head_review=None, argv=("160", "T2", "--post-carry")):
+        posted = []
+        answers = {
+            "repos/tylers2222/Monocode-Unlocked/pulls/160/commits": [REVIEWED, FIX],
+            f"repos/tylers2222/Monocode-Unlocked/commits/{REVIEWED}/statuses": statuses,
+            f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/statuses": [],
+            "repos/tylers2222/Monocode-Unlocked/issues/160/comments": comments,
+            f"repos/tylers2222/Monocode-Unlocked/compare/tyler/main...{REVIEWED}": [compare_file(SPEC)],
+            f"repos/tylers2222/Monocode-Unlocked/compare/tyler/main...{FIX}": [compare_file(SPEC, sha="s2", patch="@@ -1 +1 @@\n-a\n+c")],
+            f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/status": [head_review] if head_review else [],
+            f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/check-runs": [],
+        }
+        def gh(*args):
+            if args[:2] == ("pr", "view"):
+                return f'{{"headRefOid": "{FIX}", "baseRefName": "tyler/main"}}'
+            posted.append(args)
+            return ""
+        with unittest.mock.patch.object(merge_rule, "api", lambda path, jq, paginate=True: answers[path]), \
+                unittest.mock.patch.object(merge_rule, "gh", gh), unittest.mock.patch("builtins.print"):
+            code = merge_rule.main(list(argv))
+        return code, posted
+
+    STATUS = {"state": "failure", "description": MINOR, "created_at": "2026-10-20T11:01:08Z", "target_url": PR_URL}
+    PROOF = {"body": f"fixer-proof: m1 test={TEST}", "createdAt": "2026-10-20T12:30:00Z", "authorAssociation": "OWNER"}
+
+    def test_carry_is_posted_once(self):
+        code, posted = self.run_main([self.STATUS], [self.PROOF])
+        self.assertEqual((code, len(posted)), (0, 1))
+        self.assertIn(f"repos/tylers2222/Monocode-Unlocked/statuses/{FIX}", posted[0])
+        already = {"context": "review/agent", "state": "success", "description": "carried from 7ce96f5: minors-only + fixer proof (T2)"}
+        self.assertEqual(self.run_main([self.STATUS], [self.PROOF], already), (0, []))
+
+    def test_no_post_without_the_flag(self):
+        self.assertEqual(self.run_main([self.STATUS], [self.PROOF], argv=("160", "T2")), (0, []))
+
+    def test_another_prs_verdict_is_not_carried(self):
+        foreign = {**self.STATUS, "target_url": "https://github.com/tylers2222/Monocode-Unlocked/pull/159"}
+        self.assertEqual(self.run_main([foreign], [self.PROOF]), (1, []))
+
+    def test_review_in_progress_blocks(self):
+        pending = {"context": "review/agent", "state": "pending", "description": "r2 in review"}
+        self.assertEqual(self.run_main([self.STATUS], [self.PROOF], pending), (1, []))
 
 
 if __name__ == "__main__":
