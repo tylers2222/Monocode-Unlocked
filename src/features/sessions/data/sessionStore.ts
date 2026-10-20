@@ -1634,3 +1634,4 @@ function asRuntimeMode(value: string): RuntimeMode {
 }
 
 export const throwawayOne = 1;
+export const throwawayTwo = 1;
