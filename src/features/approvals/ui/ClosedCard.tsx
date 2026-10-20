@@ -1,7 +1,9 @@
 import {
   Check,
   ChevronRight,
+  Clock,
   PenLine,
+  Trash2,
   Undo2,
   UserRemove,
   X,
@@ -23,6 +25,7 @@ import {
 } from "../model/approvals";
 import { CardHead, PILL } from "./ApprovalCard";
 import { GigaText } from "./GigaText";
+import { OpenGiga } from "./OpenGiga";
 
 const CLOSED: Record<
   Closed,
@@ -135,7 +138,15 @@ function Decision({ card }: { card: ClosedApproval }) {
   );
 }
 
-function DeliveryLine({ card, now }: { card: ClosedApproval; now: number }) {
+function DeliveryLine({
+  card,
+  now,
+  onOpenMono,
+}: {
+  card: ClosedApproval;
+  now: number;
+  onOpenMono: (monoId: string) => void;
+}) {
   const { status } = card;
   const sent = delivery(card);
   if (sent === "sent" && status.state === "decided")
@@ -155,8 +166,32 @@ function DeliveryLine({ card, now }: { card: ClosedApproval; now: number }) {
         withdrawn card.
       </div>
     );
-  // The next part draws waiting (A·5b) and unqueued (A·5c).
-  if (sent === "waiting" || sent === "unqueued") return null;
+  if (sent === "waiting")
+    return (
+      <div className="mt-2.5 flex items-center gap-2 text-[11.5px] text-content/72">
+        <Clock className="size-3 shrink-0" />
+        <span className="min-w-0 flex-1">
+          Waiting to send: <GigaText text={card.requestedBy.name} /> has no chat
+          to receive it yet.
+        </span>
+        <OpenGiga
+          card={card}
+          onOpenMono={onOpenMono}
+          className="h-6 px-[9px] text-[11.5px]"
+        />
+      </div>
+    );
+  if (sent === "unqueued")
+    return (
+      <div className="mt-2.5 flex items-center gap-2 text-[11.5px] text-content/72">
+        <Trash2 className="size-3 shrink-0" />
+        <span>
+          Not sent: you removed it from{" "}
+          <GigaText text={card.requestedBy.name} />
+          ’s queue.
+        </span>
+      </div>
+    );
   return (
     <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] text-amber-400">
       <UserRemove className="size-3" />
@@ -169,10 +204,12 @@ export function ClosedCard({
   card,
   look,
   now,
+  onOpenMono,
 }: {
   card: ClosedApproval;
   look: ProjectLook;
   now: number;
+  onOpenMono: (monoId: string) => void;
 }) {
   return (
     <article
@@ -194,7 +231,7 @@ export function ClosedCard({
         className="mt-3 block truncate text-[13px] leading-5 text-content/82"
       />
       <Decision card={card} />
-      <DeliveryLine card={card} now={now} />
+      <DeliveryLine card={card} now={now} onOpenMono={onOpenMono} />
     </article>
   );
 }
@@ -231,7 +268,21 @@ export function ClosedRow({
         {sent === "filer_removed" ? (
           <span className="text-amber-400"> not sent</span>
         ) : null}{" "}
-        · {ago(closedAt(card.status), now)}
+        ·{" "}
+        {sent === "waiting" || sent === "unqueued" ? (
+          <>
+            <span className="inline-flex items-center gap-1 align-[-2px] font-medium text-content/82">
+              {sent === "waiting" ? (
+                <Clock className="size-3" />
+              ) : (
+                <Trash2 className="size-3" />
+              )}
+              {sent === "waiting" ? "waiting to send" : "not sent"}
+            </span>{" "}
+            ·{" "}
+          </>
+        ) : null}
+        {ago(closedAt(card.status), now)}
       </span>
       <ChevronRight className="size-3.5 text-content/55" />
     </button>

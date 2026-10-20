@@ -103,9 +103,9 @@ test("the board shows each card state of a copy of the app database", async ({
   ]);
   await expect(board(page).getByText(/^Decided\s*4$/)).toBeVisible();
   await expect(rows(page), "decided rows, newest decision first").toHaveText([
-    /^ApprovedUse a fake clock in the E2E suiteMonocode General · 2h ago$/,
+    /^ApprovedUse a fake clock in the E2E suiteMonocode General · waiting to send · 2h ago$/,
     /^Changes requestedIndex approvals on \(project_id, status\) onlyMonocode General · yesterday$/,
-    /^RejectedStore the Giga and Mono discussion on the cardMonocode General · yesterday$/,
+    /^RejectedStore the Giga and Mono discussion on the cardMonocode General · not sent · yesterday$/,
     /^WithdrawnBump Playwright to 1.49Monocode General · Oct 17$/,
   ]);
 
@@ -206,8 +206,18 @@ test("the board shows each card state of a copy of the app database", async ({
   await expect(rejected).toContainText(
     "“No. The Giga has the context; the board stays small.”",
   );
-  // Removed from the Giga's queue by the user: never sent, so never "Sent to".
+  // Removed from the Giga's queue by the user: never sent (A·5c), grey, no action.
   await expect(rejected).not.toContainText("Sent to");
+  const unqueued = rejected.getByText(
+    "Not sent: you removed it from Monocode General’s queue.",
+  );
+  await expect(unqueued).toBeVisible();
+  await expect(
+    unqueued.locator("xpath=..").locator("xpath=./*[local-name()='svg']"),
+    "the queue's remove icon",
+  ).toHaveCount(1);
+  await expect(rejected.getByRole("button", { name: /^Open / })).toHaveCount(0);
+  await expect(rejected.locator(".text-amber-400")).toHaveCount(0);
 
   await row(page, "Bump Playwright").click();
   const withdrawn = card(page, "Bump Playwright to 1.49");
@@ -224,6 +234,12 @@ test("the board shows each card state of a copy of the app database", async ({
   const waiting = card(page, "Use a fake clock in the E2E suite");
   await expect(waiting).toContainText("decided 8:54 pm");
   await expect(waiting).toContainText("Approved by you · Oct 19, 8:54 pm");
+  await expect(waiting).toContainText(
+    "Waiting to send: Monocode General has no chat to receive it yet.",
+  );
+  await expect(
+    waiting.getByRole("button", { name: "Open Monocode General" }),
+  ).toBeVisible();
   // The Giga still exists: none of A·5's removed-Giga marks (strike, "removed", amber).
   await expect(waiting.getByRole("deletion")).toHaveCount(0);
   await expect(waiting).not.toContainText("removed");
@@ -544,6 +560,11 @@ test("a closed card isolates its filer's name and strikes it once the Giga is go
         requestedBy: { ...row.requestedBy, name },
         status: { ...row.status, decidedAt: REAL_DB.now - 30 * MINUTE },
       };
+    if (
+      row.heading.startsWith("Use a fake clock") ||
+      row.heading.startsWith("Store the Giga")
+    )
+      return { ...row, requestedBy: { ...row.requestedBy, name } };
     return row;
   });
   await app.mount(
@@ -568,15 +589,106 @@ test("a closed card isolates its filer's name and strikes it once the Giga is go
     card(page, "Index approvals on (project_id, status) only"),
   ).toContainText(`Sent to ${shown} as a queued follow-up · 10:24 pm`);
 
+  await row(page, "Use a fake clock").click();
+  const waiting = card(page, "Use a fake clock in the E2E suite");
+  await expect(waiting).toContainText(
+    `Waiting to send: ${shown} has no chat to receive it yet.`,
+  );
+  await expect(
+    waiting.getByRole("button", { name: `Open ${shown}`, exact: true }),
+  ).toBeVisible();
+
+  await row(page, "Store the Giga").click();
+  await expect(
+    card(page, "Store the Giga and Mono discussion on the card"),
+  ).toContainText(`Not sent: you removed it from ${shown}’s queue.`);
+
   const names = board(page).locator("main").getByText(shown, { exact: true });
   await expect(
     names,
-    "two cards: filed by, and Withdrawn by or Sent to",
-  ).toHaveCount(4);
+    "four cards: filed by, Withdrawn by, Sent to, the waiting line and its Open button, and the removed-from-queue line",
+  ).toHaveCount(9);
   for (const text of await names.all())
     await expect(text).toHaveAttribute("dir", "auto");
   expect(
     await board(page).evaluate((node) => node.textContent?.includes("\u202E")),
     "bidi controls dropped",
   ).toBe(false);
+});
+
+test("a decision waiting for the Giga's chat offers the Giga, then turns Sent once delivered", async ({
+  app,
+  page,
+}) => {
+  // The Giga has no chat, so its dropped decision waits (A·5b).
+  const monos = REAL_DB.monos.map((mono) =>
+    mono.role === "giga"
+      ? { ...mono, data: { ...mono.data, sessionId: undefined } }
+      : mono,
+  );
+  await app.mount(
+    { ...REAL_DB, monos },
+    {
+      handlers: {
+        ...allowReservedNameDialog,
+        session_checkpoint_keep: () => null,
+      },
+    },
+  );
+  await openBoard(page, 4);
+  await pickProject(page, /^monocode/);
+  const waitingRow = row(page, "Use a fake clock");
+  await expect(
+    waitingRow.getByText("waiting to send", { exact: true }).locator("svg"),
+    "the clock",
+  ).toHaveCount(1);
+  await expect(waitingRow.getByRole("deletion")).toHaveCount(0);
+  await expect(waitingRow.locator(".text-amber-400")).toHaveCount(0);
+  await waitingRow.click();
+  const fakeClock = card(page, "Use a fake clock in the E2E suite");
+  await expect(
+    fakeClock
+      .getByText(/^Waiting to send: /)
+      .locator("xpath=..")
+      .locator("xpath=./*[local-name()='svg']"),
+    "the waiting line's clock",
+  ).toHaveCount(1);
+  await shot(page, "board-waiting");
+
+  // Open gives the Giga a chat (monos_update), and the fake's requeue sends
+  // the decision there, as #125's does.
+  await fakeClock
+    .getByRole("button", { name: "Open Monocode General" })
+    .click();
+  await expect(
+    page.getByRole("textbox", { name: "Message Monocode General" }),
+  ).toBeVisible();
+  await openBoard(page, 4);
+  await pickProject(page, /^monocode/);
+  await expect(row(page, "Use a fake clock")).toHaveText(
+    /^ApprovedUse a fake clock in the E2E suiteMonocode General · 2h ago$/,
+  );
+  await row(page, "Use a fake clock").click();
+  await expect(fakeClock).toContainText(
+    "Sent to Monocode General as a queued follow-up · 8:54 pm",
+  );
+  await expect(fakeClock.getByRole("button", { name: /^Open / })).toHaveCount(
+    0,
+  );
+
+  // With the board open, the user removes that decision from the Giga's queue
+  // in another window: #125 emits approvals-changed and the card redraws.
+  await page.evaluate(() => {
+    const backend = window.appBackend!;
+    const card = backend.store.approvals.find((row) =>
+      row.heading.startsWith("Use a fake clock"),
+    )!;
+    if (card.status.state === "decided")
+      card.status = { ...card.status, undelivered: "removed" };
+    return backend.emit("approvals-changed", null);
+  });
+  await expect(fakeClock).toContainText(
+    "Not sent: you removed it from Monocode General’s queue.",
+  );
+  await expect(fakeClock).not.toContainText("Sent to");
 });

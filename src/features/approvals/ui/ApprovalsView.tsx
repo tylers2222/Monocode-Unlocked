@@ -29,9 +29,10 @@ type Props = {
   recents: readonly RecentProject[];
   onClose: () => void;
   onToggleSidebar?: () => void;
+  onOpenMono: (monoId: string) => void;
 };
 
-export function ApprovalsView({ cwd, recents, ...page }: Props) {
+export function ApprovalsView({ cwd, recents, onOpenMono, ...page }: Props) {
   return (
     <PageFrame
       label="Approvals"
@@ -39,12 +40,16 @@ export function ApprovalsView({ cwd, recents, ...page }: Props) {
       data-app-approvals
       {...page}
     >
-      <ApprovalsContent cwd={cwd} recents={recents} />
+      <ApprovalsContent cwd={cwd} recents={recents} onOpenMono={onOpenMono} />
     </PageFrame>
   );
 }
 
-function ApprovalsContent({ cwd, recents }: Pick<Props, "cwd" | "recents">) {
+function ApprovalsContent({
+  cwd,
+  recents,
+  onOpenMono,
+}: Pick<Props, "cwd" | "recents" | "onOpenMono">) {
   const counts = useOpenCounts();
   const paths = useMemo(
     () => [
@@ -79,7 +84,12 @@ function ApprovalsContent({ cwd, recents }: Pick<Props, "cwd" | "recents">) {
       />
       <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
         {selected ? (
-          <Board key={selected} project={selected} look={look} />
+          <Board
+            key={selected}
+            project={selected}
+            look={look}
+            onOpenMono={onOpenMono}
+          />
         ) : null}
       </main>
     </div>
@@ -94,7 +104,15 @@ function Group({ title, count }: { title: string; count: number }) {
   );
 }
 
-function Board({ project, look }: { project: string; look: ProjectLook }) {
+function Board({
+  project,
+  look,
+  onOpenMono,
+}: {
+  project: string;
+  look: ProjectLook;
+  onOpenMono: (monoId: string) => void;
+}) {
   const list = useApprovalList(project);
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
   if (!list)
@@ -130,7 +148,13 @@ function Board({ project, look }: { project: string; look: ProjectLook }) {
         ) : null}
         {closed.map((card) =>
           opened.has(card.id) ? (
-            <ClosedCard key={card.id} card={card} look={look} now={now} />
+            <ClosedCard
+              key={card.id}
+              card={card}
+              look={look}
+              now={now}
+              onOpenMono={onOpenMono}
+            />
           ) : (
             <ClosedRow
               key={card.id}

@@ -367,6 +367,21 @@ const HANDLERS: Record<string, Handler> = {
       if (update.sortOrder !== undefined) mono.sortOrder = update.sortOrder;
     }
     if ((updates as MonoUpdate[]).length) store.rosterRevision += 1;
+    // decide.rs requeue (#125 r6): a waiting decision goes to the Giga's new
+    // chat, and the board hears approvals-changed once.
+    let requeued = false;
+    for (const card of store.approvals) {
+      const giga = store.monos.find((mono) => mono.id === card.requestedBy.id);
+      if (
+        card.status.state === "decided" &&
+        card.status.undelivered === "waiting" &&
+        giga?.data.sessionId
+      ) {
+        card.status = { ...card.status, undelivered: null };
+        requeued = true;
+      }
+    }
+    if (requeued) void window.appBackend!.emit("approvals-changed", null);
     return { revision: store.rosterRevision, monos: store.monos };
   },
   // The level rules and start rows live in Rust (appActionCheck.fixtures.json
