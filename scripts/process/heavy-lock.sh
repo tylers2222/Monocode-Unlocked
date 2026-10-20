@@ -43,6 +43,37 @@ instance() {
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*" >> "$WAITLOG"; }
 
+# --long (General 2, 2026-10-21): a single command that really needs more than 20 min
+# may ask for 40 min; it is logged with long=1.
+HOLD_LIMIT=1200; long=0
+if [ "${1:-}" = --long ]; then HOLD_LIMIT=2400; long=1; shift; fi
+# One command per hold (General 2, 2026-10-21): refuse a shell wrapper (bash/sh/zsh/dash
+# -c, also after env/nohup/time/nice/command/exec and VAR=value) and a command word that
+# holds && ; or |. A script that runs many steps cannot be told apart here; the 20 min
+# hold limit below bounds it.
+shell_wrapper() {
+  local a shell=0
+  for a in "$@"; do
+    if [ "$shell" = 1 ]; then
+      case "$a" in -c|-[!-]*c*) return 0 ;; -*) continue ;; *) return 1 ;; esac
+    fi
+    case "$a" in
+      *'&&'*|*';'*|*'|'*) return 0 ;;
+      env|nohup|time|nice|command|exec|*=*) continue ;;
+      bash|sh|zsh|dash|*/bash|*/sh|*/zsh|*/dash) shell=1 ;;
+      *) return 1 ;;
+    esac
+  done
+  return 1
+}
+if shell_wrapper "$@"; then
+  echo "heavy-lock: one command per hold: wrap each command in heavy-lock.sh (refused: $*)" >&2
+  printf '%s refused=1 reason=shell-wrapper waiter=[%s cmd=%s]\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "${HEAVY_LOCK_WHO:-$(instance)} session=${MONOCODE_SESSION_ID:-${PWD##*/}} cwd=$PWD" "$*" >> "$WAITLOG"
+  exit 2
+fi
+# Not in the live block; for heavy-lock.test.sh only: a hold limit in seconds (--long doubles it).
+if [ -n "${HEAVY_LOCK_HOLD_LIMIT:-}" ]; then HOLD_LIMIT=$((HEAVY_LOCK_HOLD_LIMIT * (long + 1))); fi
+
 # Light-job exemption (General 2, 2026-10-20/21): run WITHOUT the lock only
 # `python3 -m unittest|pytest` whose every path argument is under scripts/process/
 # or scripts/gate/, relative, without .., and TRACKED by git at HEAD in the cwd
@@ -150,14 +181,30 @@ release() {
   mv "$LOCK" "$LOCK.done.$$" && rm -rf "$LOCK.done.$$"
 }
 
+# A holder that gets INT, TERM or HUP passes the same signal to its command (the perl layer
+# passes it on to the command's process group and kills the group after 5 s), waits for it,
+# then sweeps the group with KILL. A waiter logs its give-up and exits.
 on_signal() {
+  local pg
   if [ -n "$child" ]; then
-    kill -TERM "$child" 2>/dev/null
+    signal=1
+    pg=$(pgrep -P "$child" | head -1)
+    kill -"$2" "$child" 2>/dev/null
+    [ -n "$pg" ] && kill -"$2" -- "-$pg" 2>/dev/null
     wait "$child"
+    [ -n "$pg" ] && kill -KILL -- "-$pg" 2>/dev/null
   else
     log "waiter=[$who cmd=$cmd] waited=$(( $(date +%s) - started ))s gave up on a signal; holder=[${holder:-pid ? none}]"
   fi
   exit "$1"
+}
+
+# The one exit path: a holder writes exactly one end line, then releases the lock.
+on_exit() {
+  rm -f "$ticket"
+  [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] || return
+  log "end=1 rc=$1 signal=$signal holder=[pid $$ $who cmd=$cmd]"
+  release
 }
 
 main() {
@@ -166,17 +213,17 @@ main() {
     run_light_job "$@"
   fi
   cmd="$*"
-  child=
+  child='' signal=0
   holder=
   started=$(date +%s)
   mkdir -p "$QUEUE"
   ticket="$QUEUE/$(perl -MTime::HiRes=time -e 'printf "%017.6f", time').$$"
-  trap 'rm -f "$ticket"; release' EXIT
-  trap 'on_signal 130' INT
-  trap 'on_signal 143' TERM
-  trap 'on_signal 129' HUP
+  trap 'on_exit $?' EXIT
+  trap 'on_signal 130 INT' INT
+  trap 'on_signal 143 TERM' TERM
+  trap 'on_signal 129 HUP' HUP
 
-  local waited report=0 waiting='' ahead hpid
+  local waited report=0 waiting='' ahead hpid rc
   while :; do
     [ -e "$ticket" ] || : > "$ticket"
     if [ "$(first_live_ticket)" = "$ticket" ]; then
@@ -198,10 +245,28 @@ main() {
   echo "$who cmd=$cmd since=$(date '+%H:%M:%S')" > "$LOCK/holder"
   [ -n "$waiting" ] && log "waiter=[$who cmd=$cmd] waited=$(( $(date +%s) - started ))s holder=[${holder:-pid ? none}]"
 
-  "$@" <&0 &
+[ "$long" = 1 ] && printf '%s long=1 holder=[pid %s %s cmd=%s]\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$$" "$who" "$*" >> "$WAITLOG"
+HOLD_LIMIT=$HOLD_LIMIT perl -MPOSIX=:sys_wait_h -e '
+  my $pid = fork; die "fork: $!" unless defined $pid;
+  if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
+  sub stop_group { my ($sig, $code) = @_; kill $sig, -$pid;
+    for (1 .. 20) { exit $code if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.25) }
+    kill "KILL", -$pid; waitpid($pid, 0); exit $code }
+  $SIG{TERM} = sub { stop_group("TERM", 143) };
+  $SIG{INT}  = sub { stop_group("INT", 130) };
+  $SIG{HUP}  = sub { stop_group("HUP", 129) };
+  $SIG{ALRM} = sub { stop_group("TERM", 124) };
+  alarm $ENV{HOLD_LIMIT}; waitpid($pid, 0);
+  exit($? & 127 ? 128 + ($? & 127) : $? >> 8);' -- "$@" <&0 &
   child=$!
   echo "$child" > "$LOCK/child"
   wait "$child"
+  rc=$?
+if [ "$rc" = 124 ]; then
+  printf '%s timeout=1 limit=%ss holder=[pid %s %s cmd=%s]\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$HOLD_LIMIT" "$$" "$who" "$*" >> "$WAITLOG"
+  echo "heavy-lock: hold limit ${HOLD_LIMIT}s reached; command killed: $*" >&2
+fi
+  exit "$rc"
 }
 
 # Bash reads a script as it runs. main is parsed whole before it starts, so an edit to

@@ -56,6 +56,18 @@ no_tickets() { [ "$(tickets)" = 0 ]; }
 has_ticket() { set -- "$HEAVY_LOCK_QUEUE"/*."$1"; [ -e "$1" ]; }
 logged() { grep -q -- "$1" "$HEAVY_LOCK_WAITLOG" 2>/dev/null; }
 hold() { "$lock_sh" sleep "$1" 2>/dev/null & holder=$!; within 5 exists "$HEAVY_LOCK/pid"; }
+# The lock refuses `sh -c`, so multi-step test commands are small scripts.
+bin=$root/bin
+mkdir -p "$bin"
+printf '#!/bin/sh\necho "$2" >> "$1"\nsleep "${3:-0}"\n' > "$bin/append"
+printf '#!/bin/sh\necho held > "$1"\nread -r _ < "$2"\n' > "$bin/fifo-hold"
+printf '#!/bin/sh\nmkdir "$1/inside" 2>/dev/null || echo overlap >> "$1/overlaps"\necho run >> "$1/runs"\nsleep 0.1\nrmdir "$1/inside" 2>/dev/null\n' > "$bin/crit"
+printf '#!/bin/sh\ncut -d" " -f1 "$HEAVY_LOCK/holder"\n' > "$bin/holder-label"
+printf '#!/bin/sh\nsleep "$1" &\nsleep "$1"\nwait\n' > "$bin/spawn"
+chmod +x "$bin"/*
+# The pid of the command itself: the holder runs a perl layer ($LOCK/child) that runs it.
+command_of() { pgrep -P "$(cat "$HEAVY_LOCK/child" 2>/dev/null)" 2>/dev/null | head -1; }
+end_lines() { grep -c "end=1 .*holder=\[pid $1 " "$HEAVY_LOCK_WAITLOG" 2>/dev/null; }
 # perl resets INT to its default first: a suite started with INT ignored (a background job
 # of a non-interactive shell) would pass the ignore on, and bash cannot trap an ignored signal.
 mark_when_run() { perl -e '$SIG{INT} = "DEFAULT"; exec @ARGV or exit 127' "$lock_sh" touch "$1" 2>/dev/null & waiter=$!; }
@@ -92,10 +104,10 @@ slow=$!
 # between the loop's release and its next lock.
 reset
 order=$root/case/order
-( for _ in $(seq 15); do "$lock_sh" sh -c "echo L >> '$order'; sleep 3" 2>/dev/null; done ) &
+( for _ in $(seq 15); do "$lock_sh" "$bin/append" "$order" L 3 2>/dev/null; done ) &
 within 5 exists "$order"
 echo queued >> "$order"
-HEAVY_LOCK_POLL=1 "$lock_sh" sh -c "echo W >> '$order'" 2>/dev/null
+HEAVY_LOCK_POLL=1 "$lock_sh" "$bin/append" "$order" W 2>/dev/null
 passed=$(sed -n '/^queued$/,/^W$/p' "$order" | grep -c '^L$')
 check "fifo: the relocking loop passes the waiter at most once (passed $passed)" [ "$passed" -le 1 ]
 
@@ -105,7 +117,7 @@ reset
 mkfifo "$root/case/ready" "$root/case/gate" "$root/case/wait"
 logged_runs=0
 for i in $(seq 20); do
-  "$lock_sh" sh -c 'echo held > "$1"; read -r _ < "$2"' _ "$root/case/ready" "$root/case/gate" 2>/dev/null &
+  "$lock_sh" "$bin/fifo-hold" "$root/case/ready" "$root/case/gate" 2>/dev/null &
   holder=$!
   read -r _ < "$root/case/ready"
   "$lock_sh" true "run$i" 2> "$root/case/wait" &
@@ -156,7 +168,8 @@ for sig in TERM KILL; do
   reset
   hold 30
   command_pid=
-  within 5 eval 'command_pid=$(pgrep -P "$holder" sleep)'
+  within 5 eval 'command_pid=$(command_of)'
+  child_pid=$(cat "$HEAVY_LOCK/child")
   mark_when_run "$root/case/ran"
   sleep 1
   check "killed holder ($sig): the waiter waits while the holder lives" [ ! -e "$root/case/ran" ]
@@ -169,14 +182,29 @@ for sig in TERM KILL; do
   check "killed holder ($sig): the waiter runs" within 3 exists "$root/case/ran"
   check "killed holder ($sig): its command stopped" dead "$command_pid"
 done
-check "killed holder (KILL): the clear names the command pid" logged "and command pid $command_pid dead"
+check "killed holder (KILL): the clear names the command pid" logged "and command pid $child_pid dead"
+
+# TERM to the holder's pid only (not its group): the command and its children stop, exactly
+# one end line says signal=1, and the waiter runs.
+reset
+"$lock_sh" "$bin/spawn" 43.$$ 2>/dev/null &
+holder=$!
+within 5 eval '[ "$(pgrep -f "sleep 43[.]$$\$" | wc -l | tr -d " ")" = 2 ]'
+mark_when_run "$root/case/ran"
+within 5 has_ticket "$waiter"
+kill -TERM "$holder"
+check "TERM to the holder only: the holder exits" within 8 dead "$holder"
+check "TERM to the holder only: no process of the command is left" eval '! pgrep -f "sleep 43[.]$$\$" >/dev/null'
+check "TERM to the holder only: exactly one end line (got $(end_lines "$holder"))" [ "$(end_lines "$holder")" = 1 ]
+check "TERM to the holder only: the end line says rc=143 signal=1" logged "end=1 rc=143 signal=1 holder=\[pid $holder test session=.* cwd=.* cmd=$bin/spawn 43.$$\]"
+check "TERM to the holder only: the waiter runs" within 5 exists "$root/case/ran"
+check "TERM to the holder only: the waiter's end line says signal=0" logged "end=1 rc=0 signal=0 holder=\[pid $waiter "
 
 # 4 callers x 25 runs: the critical section never has two runs inside it.
 reset
-crit='mkdir "$1/inside" 2>/dev/null || echo overlap >> "$1/overlaps"; echo run >> "$1/runs"; sleep 0.1; rmdir "$1/inside" 2>/dev/null'
 callers=()
 for _ in 1 2 3 4; do
-  ( for _ in $(seq 25); do "$lock_sh" sh -c "$crit" _ "$root/case" 2>/dev/null; done ) &
+  ( for _ in $(seq 25); do "$lock_sh" "$bin/crit" "$root/case" 2>/dev/null; done ) &
   callers+=($!)
 done
 wait "${callers[@]}"
@@ -196,7 +224,7 @@ label_of() {
   local run='"$LOCK_SH" "$@"'
   [ "$2" = bash-c ] && run='/bin/bash -c "$LOCK_SCRIPT" heavy-lock.sh "$@"'
   env -u HEAVY_LOCK_WHO /bin/bash -c "$run; :" "/fake/$1/Contents/MacOS/monocode" \
-    sh -c 'cut -d" " -f1 "$HEAVY_LOCK/holder"' 2>/dev/null
+    "$bin/holder-label" 2>/dev/null
 }
 for app in MonoCode.app:instance-1 "MonoCode 2.app:instance-2"; do
   for form in direct bash-c; do
@@ -235,7 +263,7 @@ lookalikes=("python3 scripts/process/test_mark.py" "python3 -m timeit scripts/pr
   "python3 -m unittest scripts/process/test_scratch.py" "python3 -m unittest discover -s scripts/gate -p 'x/test_*.py'"
   "python3 -m unittest discover -s scripts/process" "python3 -m unittest scripts/process/test_staged.py"
   "python3 -m unittest scripts/process/test_modified.py" "python3 -m unittest scripts/process/test..dots.py"
-  "bash -c 'python3 -m unittest scripts/process/test_mark.py'" "cargo --version")
+  "cargo --version")
 pids=()
 for form in "${lookalikes[@]}"; do
   start_in_exempt "$form"
@@ -254,6 +282,45 @@ unshimmed=$!
 sleep 2
 check "shims: with the shim dir unwritable and npm missing, a light job waits in the queue" has_ticket "$unshimmed"
 chmod 755 "$HEAVY_LOCK_SHIMS"
+
+# One command per hold: a shell wrapper or a command word with && ; | is refused with rc 2
+# at once, even while another caller holds the lock, and takes no ticket.
+reset
+hold 30
+refused=("bash -c true" "sh -lc true" "env bash -ec true" "'cargo build&&cargo test'"
+  "bash -c 'python3 -m unittest scripts/process/test_mark.py'")
+for form in "${refused[@]}"; do
+  eval "set -- $form"
+  "$lock_sh" "$@" 2>/dev/null
+  rc=$?
+  check "refused: '$form' exits rc=2 at once (got $rc)" [ "$rc" = 2 ]
+  check "refused: '$form' is logged" logged "refused=1 reason=shell-wrapper .*cmd=$*\]"
+done
+check "refused: no refused command took a ticket" no_tickets
+kill "$holder"
+wait "$holder"
+printf 'touch "$1"\n' > "$root/case/step.sh"
+"$lock_sh" bash "$root/case/step.sh" "$root/case/script-ran" 2>/dev/null
+check "allowed: 'bash script.sh' runs under the lock" exists "$root/case/script-ran"
+
+# Hold limit (2 s here; HEAVY_LOCK_HOLD_LIMIT is for tests only): the command's group is
+# killed with rc 124, the kill is logged timeout=1, and the next waiter runs. --long doubles it.
+reset
+(HEAVY_LOCK_HOLD_LIMIT=2 exec "$lock_sh" "$bin/spawn" 44.$$ 2>/dev/null) &
+holder=$!
+within 5 exists "$HEAVY_LOCK/pid"
+mark_when_run "$root/case/ran"
+wait "$holder"
+rc=$?
+check "hold limit: the holder exits rc=124 (got $rc)" [ "$rc" = 124 ]
+check "hold limit: the kill is logged timeout=1" logged "timeout=1 limit=2s holder=\[pid $holder .*cmd=$bin/spawn 44.$$\]"
+check "hold limit: one end line, rc=124 signal=0" eval '[ "$(end_lines "$holder")" = 1 ] && logged "end=1 rc=124 signal=0 holder=\[pid $holder "'
+check "hold limit: no process of the command is left" eval '! pgrep -f "sleep 44[.]$$\$" >/dev/null'
+check "hold limit: the next waiter runs" within 5 exists "$root/case/ran"
+HEAVY_LOCK_HOLD_LIMIT=2 "$lock_sh" --long "$bin/spawn" 3 2>/dev/null
+rc=$?
+check "--long: a 3 s command under a 2 s limit finishes with --long (rc $rc)" [ "$rc" = 0 ]
+check "--long: the hold is logged long=1" logged "long=1 holder=\[pid [0-9]* .*cmd=$bin/spawn 3\]"
 
 check "exempt: a test that sleeps 61 s is stopped at the 60 s limit" within 80 dead "$slow"
 check "exempt: the stop is logged" grep -q "exempt=1 timeout=1 rc=124 .*cmd=python3 -m unittest scripts/process/test_slow.py" "$root/slow.log"
