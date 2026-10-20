@@ -11,7 +11,9 @@ use serde_json::{json, Value};
 
 use crate::ask_gate::{self, Party};
 use crate::mono_gate::{self, Caller, Input, Level, Refusal, SessionLevel, Speaker};
-use crate::mono_messages::{self, Live, MonoId, RequestId, SessionId, Submitted, Tool, ToolError};
+use crate::mono_messages::{
+    self, Live, MessageId, MonoId, RequestId, SessionId, Status, Submitted, Tool, ToolError,
+};
 use crate::mono_roster::MonoRole;
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
@@ -99,9 +101,14 @@ pub fn ask(
     live: &Live,
     now: i64,
 ) -> rusqlite::Result<Submitted> {
+    let range = ask_gate::DUE_MINUTES;
     let (carrier, input) = match input.and_then(|input| {
-        if !ask_gate::DUE_MINUTES.contains(&input.due_minutes.unwrap_or(10)) {
-            return Err("due_minutes is 10 to 480.".into());
+        if input.due_minutes.is_some_and(|due| !range.contains(&due)) {
+            return Err(format!(
+                "due_minutes is {} to {}.",
+                range.start(),
+                range.end()
+            ));
         }
         Ok((carrier(&input.send_to, &input.message)?, input))
     }) {
@@ -109,32 +116,51 @@ pub fn ask(
         Err(hint) => return Ok(failed(Refusal::InvalidInput.as_str(), hint)),
     };
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    // A repeat (same request id) answers the first outcome through `submit_in`.
+    let prior = mono_messages::get_by_request(&tx, &caller.session_id, request_id)?;
     let mut new = None;
-    if mono_messages::get_by_request(&tx, &caller.session_id, request_id)?.is_empty() {
-        let (parent, child) = (
-            caller_party(&tx, caller)?,
-            addressed_party(&tx, &input.send_to)?,
-        );
-        let started = match (caller.mono_id(), &child) {
-            (Some(mono), Some(child)) => started_by(&tx, mono, &child.session)?,
-            _ => false,
-        };
-        let due = input.due_minutes;
-        match ask_gate::decide_ask(
-            parent.as_ref(),
-            child.as_ref(),
-            started,
-            due,
-            active_ms(&tx)?,
-        ) {
-            Ok(ask) => new = parent.zip(child).map(|parties| (ask, parties)),
-            Err(refused) => return Ok(failed(refused.code(), refused.hint())),
+    match prior.first() {
+        // A repeat answers the first outcome through `submit_in`, but only
+        // a repeat of an ask: a plain send under this request id with the
+        // same fields has the carrier's hash, and is no ask.
+        Some(first) if !matches!(first.status, Status::Rejected { .. }) => {
+            if !is_ask(&tx, &first.id)? {
+                return Ok(failed(
+                    Refusal::RequestIdReused.as_str(),
+                    mono_gate::REQUEST_ID_REUSED,
+                ));
+            }
+        }
+        Some(_) => {}
+        None => {
+            let parent = caller_party(&tx, caller)?;
+            let child = addressed_party(&tx, &input.send_to)?;
+            // A party with no saved row: the send gate below answers it.
+            if let (Some(parent), Some(child)) = (parent, child) {
+                let started = match caller.mono_id() {
+                    Some(mono) => started_by(&tx, mono, &child.session)?,
+                    None => false,
+                };
+                let due = input.due_minutes;
+                match ask_gate::decide_ask(&parent, &child, started, due, active_ms(&tx)?) {
+                    Ok(due) => new = Some((due, parent, child)),
+                    Err(refused) => return Ok(failed(refused.code(), refused.hint())),
+                }
+            }
         }
     }
     let submitted = mono_messages::submit_in(&tx, caller, request_id, carrier, live, now)?;
-    if let (Some((ask, (parent, child))), Submitted::Accepted { messages, .. }) = (new, &submitted)
+    if let Submitted::Accepted {
+        messages,
+        duplicate: false,
+        ..
+    } = &submitted
     {
+        // The gate let through a party with no saved row (a session the
+        // window lists): no child of the caller. Dropping `tx` undoes the row.
+        let Some((due, parent, child)) = new else {
+            let refused = ask_gate::AskRefused::NotDirectChild;
+            return Ok(failed(refused.code(), refused.hint()));
+        };
         tx.execute(
             "INSERT INTO mono_asks (id, parent_session, child_session, parent_level,
                child_level, state, due_active_ms, created_wall_ms)
@@ -143,9 +169,9 @@ pub fn ask(
                 messages[0].message.id.as_str(),
                 parent.session.as_str(),
                 child.session.as_str(),
-                ask.parent_level,
-                ask.child_level,
-                ask.due_active_ms,
+                parent.level.rank(),
+                child.level.rank(),
+                due,
                 now
             ],
         )?;
@@ -206,6 +232,15 @@ fn addressed_party(conn: &Connection, send_to: &str) -> rusqlite::Result<Option<
         return Ok(Some(party));
     }
     SessionId::parse(send_to).map_or(Ok(None), |session| session_party(conn, &session))
+}
+
+/// Whether `mono_messages` row `id` carried an ask.
+fn is_ask(conn: &Connection, id: &MessageId) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM mono_asks WHERE id = ?1)",
+        [id.as_str()],
+        |row| row.get(0),
+    )
 }
 
 /// Whether Mono `mono` started `session`: its accepted `start_session` row.
