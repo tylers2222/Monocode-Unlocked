@@ -1,0 +1,12 @@
+# SPOOF PROBE (orchestrator, 2026-10-20): checks whether the tyler/main ruleset can be satisfied by a
+# PR-added job named gate/integrity. Never merge. The PR is closed and this branch deleted after the probe.
+name: spoof-probe
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  spoof:
+    name: gate/integrity
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "spoof job that always passes"
