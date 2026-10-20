@@ -10459,7 +10459,6 @@ pub(crate) mod tests {
                 "caller": {"kind": "mono_chat", "monoId": mono, "sessionId": data["sessionId"], "turnId": "t"},
                 "action": "approvals.file",
                 "target": null,
-                "targetLeadSessionId": null,
                 "startedSessionId": null,
                 "requestId": format!("{run}-{role}"),
                 "input": {"heading": "Pick a store"}
