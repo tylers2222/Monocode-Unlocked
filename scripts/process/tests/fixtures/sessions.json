@@ -7,18 +7,27 @@
     "busy": true,
     "harness": "omp",
     "hasDraft": false,
-    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-c3420887-0800-486d-9808-d12698b7c167",
+    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-63310c9f-53d6-4605-8792-71d0d27034f1",
     "model": "omp:anthropic/claude-opus-5-5",
-    "title": "omp \u00b7 Process fixes, lane a. Read /Users/tylerstewart/MonoCode/gigas/monocode\u2026"
+    "title": "omp \u00b7 Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/pro\u2026"
    },
    {
     "archived": false,
     "busy": true,
     "harness": "omp",
     "hasDraft": false,
-    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-3644793d-c0fa-437f-bb1f-fac5ff02e38f",
+    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-4a203717-4c75-471c-92d9-f273a38f841f",
     "model": "omp:anthropic/claude-opus-5-5",
-    "title": "omp \u00b7 Process fixes, lane c. Read /Users/tylerstewart/MonoCode/gigas/monocode\u2026"
+    "title": "omp \u00b7 Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/pro\u2026"
+   },
+   {
+    "archived": false,
+    "busy": true,
+    "harness": "omp",
+    "hasDraft": false,
+    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-c3420887-0800-486d-9808-d12698b7c167",
+    "model": "omp:anthropic/claude-opus-5-5",
+    "title": "omp \u00b7 Process fixes, lane a. Read /Users/tylerstewart/MonoCode/gigas/monocode\u2026"
    },
    {
     "archived": false,
@@ -34,16 +43,34 @@
     "busy": true,
     "harness": "omp",
     "hasDraft": false,
-    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-2c24f0c3-b5f8-496f-8b47-48a831440f92",
+    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-3644793d-c0fa-437f-bb1f-fac5ff02e38f",
     "model": "omp:anthropic/claude-opus-5-5",
-    "title": "omp \u00b7 Process fixes, lane b. Read /Users/tylerstewart/MonoCode/gigas/monocode\u2026"
+    "title": "omp \u00b7 Process fixes, lane c. Read /Users/tylerstewart/MonoCode/gigas/monocode\u2026"
    },
    {
     "archived": false,
     "busy": true,
     "harness": "omp",
     "hasDraft": false,
-    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-f41c9333-7db3-40b4-9507-047f08ebafff",
+    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-a321bbe3-243f-45be-99ec-b7426f58fe95",
+    "model": "omp:anthropic/claude-opus-5-5",
+    "title": "omp \u00b7 Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/cha\u2026"
+   },
+   {
+    "archived": false,
+    "busy": true,
+    "harness": "omp",
+    "hasDraft": false,
+    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-00a6d557-a572-4203-bb6e-424d3073f10b",
+    "model": "omp:anthropic/claude-opus-5-5",
+    "title": "omp \u00b7 Linear ADE-46 builder. Read /Users/tylerstewart/MonoCode/gigas/monocode\u2026"
+   },
+   {
+    "archived": false,
+    "busy": true,
+    "harness": "omp",
+    "hasDraft": false,
+    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-8f43adf2-405b-4b17-9fbf-3ccd4a69bae7",
     "model": "omp:anthropic/claude-opus-5-5",
     "title": "omp \u00b7 Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/pro\u2026"
    },
@@ -52,9 +79,9 @@
     "busy": true,
     "harness": "omp",
     "hasDraft": false,
-    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-4b23e858-d4f7-43f8-82be-a97c61099859",
+    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-b62b2344-00b6-4182-9853-1199ab9b0836",
     "model": "omp:anthropic/claude-opus-5-5",
-    "title": "omp \u00b7 Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/cha\u2026"
+    "title": "omp \u00b7 Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/pro\u2026"
    },
    {
     "archived": false,
@@ -64,6 +91,15 @@
     "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-27522563-01ba-4381-bada-ae3b30f5be8b",
     "model": "omp:anthropic/claude-opus-5-5",
     "title": "omp \u00b7 Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/rev\u2026"
+   },
+   {
+    "archived": false,
+    "busy": true,
+    "harness": "omp",
+    "hasDraft": false,
+    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-4b23e858-d4f7-43f8-82be-a97c61099859",
+    "model": "omp:anthropic/claude-opus-5-5",
+    "title": "omp \u00b7 Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/cha\u2026"
    },
    {
     "archived": false,
@@ -97,27 +133,27 @@
     "busy": false,
     "harness": "omp",
     "hasDraft": false,
-    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-1f23f6ae-b145-40d6-8957-f0250304d86e",
+    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-ac03f5ac-aea9-44e3-ac88-665e6a739c62",
     "model": "omp:anthropic/claude-opus-5-5",
-    "title": "omp \u00b7 Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/cha\u2026"
+    "title": "omp \u00b7 Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/pro\u2026"
    },
    {
     "archived": false,
     "busy": false,
     "harness": "omp",
     "hasDraft": false,
-    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-3f10ad52-f2c3-45d1-b14e-26068e642add",
+    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-b9d4e5bd-67f7-4926-b727-57ba5c30bef5",
     "model": "omp:anthropic/claude-opus-5-5",
-    "title": "omp \u00b7 Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/cha\u2026"
+    "title": "omp \u00b7 Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/pro\u2026"
    },
    {
     "archived": false,
     "busy": false,
     "harness": "omp",
     "hasDraft": false,
-    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-55788d65-1a61-4b2d-8a96-f382d1aed2d3",
+    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-a4f63cda-9e27-4744-8b86-47bdb24cbe1d",
     "model": "omp:anthropic/claude-opus-5-5",
-    "title": "omp \u00b7 Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/cha\u2026"
+    "title": "omp \u00b7 Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/pro\u2026"
    }
   ]
  }
