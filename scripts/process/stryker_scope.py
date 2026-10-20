@@ -121,7 +121,7 @@ def main(argv):
             continue
         report = Path(os.environ.get('RUNNER_TEMP', '/tmp')) / f'stryker-report-{n}.json'
         run = stryker(stryker_js, stryker_config(mutate, str(report)), f'run-{n}', capture=False)
-        found = report_problems(json.loads(report.read_text()), path) if report.exists() else [f'{path}: Stryker wrote no report']
+        found = report_problems(json.loads(report.read_text()), path) if report.exists() else [f'{path}: Stryker wrote no report (no test runs it, or Stryker failed; see its log)']
         problems += found or ([f'{path}: Stryker exited {run.returncode}'] if run.returncode else [])
     for problem in problems:
         print(f'::error::{problem}')
