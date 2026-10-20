@@ -213,6 +213,28 @@ fn an_ask_reusing_a_sends_request_id_is_refused() {
     assert_eq!(count(&world, "SELECT count(*) FROM mono_asks"), 0);
 }
 
+/// Review r2 m1. Defect: a retried ask that was rejected (here an unknown
+/// target) is told `request_id_reused` instead of its first refusal, as if
+/// its input had changed.
+#[test]
+fn a_retried_rejected_ask_gets_its_first_refusal() {
+    let world = World::new("r5-rejected-retry");
+    let tree = tree(&world);
+    let lead = session_caller(&tree.lead, P);
+    let input = json!({"message": "Do x", "send_to": "r5-nobody"});
+    let answer = |submitted| match submitted {
+        Submitted::Failed { error } => (error.code, error.duplicate),
+        other => panic!("not refused: {other:?}"),
+    };
+    let first = answer(world.tool(&lead, "lost", "ask", input.clone(), &tree.live()));
+    let again = answer(world.tool(&lead, "lost", "ask", input, &tree.live()));
+    assert_eq!(
+        (first, again),
+        (("unknown_target", false), ("unknown_target", true))
+    );
+    assert_eq!(count(&world, "SELECT count(*) FROM mono_asks"), 0);
+}
+
 /// Review r1 m3. Defect: a caller or target with no saved row is told
 /// `not_direct_child` instead of what the send gate answers it.
 #[test]
