@@ -14,10 +14,14 @@ makes a fresh one of the MonoCode 2 database in a temporary folder.
 
 Exit 0: every notice came within 10 minutes. Exit 1: a notice came later than
 that (LATE), or a turn whose notice was asked for ended more than 10 minutes
-ago with none (MISSING). `sessions.start` asks by default. A turn whose
-`sessions.send` calls (found by the prompt they quote) all leave out
-`notifyOnComplete` is `not-asked`. The app keeps only the first line of a
-multi-line command, so a turn with no readable send stays MISSING.
+ago with none (MISSING). Whether a turn was asked for:
+- the session's first turn (`sessions.start`) is asked;
+- the app's own continue (no prompt with an `appRequestId`) is `not-asked`;
+- the `sessions.send` calls that quote one of the turn's prompts decide by
+  `notifyOnComplete`;
+- a requested turn that no readable send quotes is asked, except a queued
+  follow-up: that is asked only when a send names the session with its prompt
+  cut off (the app keeps a command's first line only).
 """
 
 from __future__ import annotations
@@ -85,6 +89,8 @@ class TurnEnd:
     # Some prompt of the turn came from an app request (sessions.start or .send). The
     # app's own continue after a relaunch or a usage limit has none, and no watcher.
     requested: bool
+    # The turn opened from the session's queue (a sessions.send whenBusy followUp).
+    queued: bool
 
 
 @dataclass(frozen=True)
@@ -160,6 +166,7 @@ def turn_ends(session: str, blocks: list[dict]) -> list[TurnEnd]:
                 index == prompts_at[0],
                 tuple(b.get("text", "") for b in prompts),
                 any("appRequestId" in b for b in prompts),
+                (block.get("appDelivery") or {}).get("via") == "queued",
             )
         )
     return ends
@@ -264,9 +271,10 @@ def asked(end: TurnEnd, sends: list[Send], session_prompts: tuple[str, ...]) -> 
     """Whether the Orchestrator asked to be told when this turn ends.
 
     A sessions.start asks by default. The app's own continue never asks. Otherwise
-    the sends that quote one of the turn's prompts decide. With none, the turn is
-    asked only when a send names the session but quotes no prompt of any of its
-    turns: the app keeps a command's first line only, so its prompt was cut off.
+    the sends that quote one of the turn's prompts decide. With none, a direct turn
+    is asked: its send may name the session on a line the app did not keep. A queued
+    follow-up is asked only when a send names the session but quotes no prompt of
+    any of its turns, so that send's prompt was cut off.
     """
     if end.first:
         return True
@@ -276,6 +284,8 @@ def asked(end: TurnEnd, sends: list[Send], session_prompts: tuple[str, ...]) -> 
     made = [send.notify for send in named if quotes(send.command, end.prompts)]
     if made:
         return any(made)
+    if not end.queued:
+        return True
     return any(not quotes(send.command, session_prompts) for send in named)
 
 

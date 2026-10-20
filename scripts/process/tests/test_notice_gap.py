@@ -46,8 +46,10 @@ LANE_B = "app-86984142-5f1a-4018-af62-ddb105cb6cb4-2c24f0c3-b5f8-496f-8b47-48a83
 LANE_D = "app-86984142-5f1a-4018-af62-ddb105cb6cb4-a9e910e7-6f7f-4a2e-8eae-f46866931919"
 
 
-def end(session: str, at: datetime, report: str = "", first: bool = False, prompt: str = "Brief"):
-    return notice_gap.TurnEnd(session, at - timedelta(minutes=5), at, report, first, (prompt,), True)
+def end(
+    session: str, at: datetime, report: str = "", first: bool = False, prompt: str = "Brief", queued: bool = False
+):
+    return notice_gap.TurnEnd(session, at - timedelta(minutes=5), at, report, first, (prompt,), True, queued)
 
 
 class NoticeGap(unittest.TestCase):
@@ -229,19 +231,56 @@ class NoticeGap(unittest.TestCase):
 
     def test_a_queued_follow_up_no_orchestrator_send_quotes_is_not_asked(self):
         # Lane C 10-21 01:41:33: a queued follow-up with an appRequestId whose prompt
-        # no Orchestrator send quotes; the earlier sends to lane C quote their own turns.
+        # no Orchestrator send quotes; the earlier send to lane C quotes its own turn.
         go = "Go. Do it now: the wrapper and the switch."
-        earlier = end(LANE_B, AT("01:30:00"), prompt=go)
-        follow_up = end(LANE_B, AT("01:42:52"), prompt="One more for M1, from the reviewer: no silent fallback.")
+        earlier = end(LANE_B, AT("01:30:00"), first=True, prompt=go)
+        follow_up = end(LANE_B, AT("01:42:52"), prompt="One more for M1, from the reviewer: no silent fallback.", queued=True)
         send = notice_gap.Send(AT("01:23:59"), f'sessions.send {LANE_B[-36:]} "prompt":"{go}"', False)
-        session_prompts = earlier.prompts + follow_up.prompts
-        self.assertEqual(notice_gap.verdict(follow_up, None, [send], session_prompts, AT("02:21:00")), "not-asked")
-        self.assertEqual(notice_gap.verdict(follow_up, None, [], session_prompts, AT("02:21:00")), "not-asked")
+        notice = notice_gap.Notice(AT("01:30:10"), frozenset({(LANE_B, go)}))
+        rows = notice_gap.gaps([], [earlier, follow_up], [notice], [send], AT("01:00:00"), AT("02:21:00"))
+        self.assertEqual([(gap.end, gap.verdict) for gap in rows], [(earlier, "ok"), (follow_up, "not-asked")])
 
-    def test_a_send_whose_prompt_the_first_line_cut_off_keeps_the_turn_asked(self):
-        follow_up = end(LANE_B, AT("01:42:52"), prompt="One more for M1, from the reviewer: no silent fallback.")
+    def test_a_send_whose_prompt_the_first_line_cut_off_keeps_a_queued_follow_up_asked(self):
+        follow_up = end(LANE_B, AT("01:42:52"), prompt="One more for M1, from the reviewer: no silent fallback.", queued=True)
         cut = notice_gap.Send(AT("01:40:00"), f'S={LANE_B}; "$M" app sessions.send --json "$(jq -nc --arg p "$P"', False)
         self.assertEqual(notice_gap.verdict(follow_up, None, [cut], follow_up.prompts, AT("02:21:00")), "MISSING")
+
+    def test_a_direct_turn_that_no_send_names_is_asked(self):
+        # 41d66203 10-19 06:42:26 and 16 more: direct sends that name the session on a
+        # line the database does not keep. A lost notice there must stay MISSING.
+        direct = end(LANE_B, AT("06:42:26"), prompt="Review round 1 of #79 found 3 minors. Read the brief.")
+        self.assertEqual(notice_gap.verdict(direct, None, [], direct.prompts, AT("07:20:00")), "MISSING")
+
+    def test_a_quiet_send_after_the_turn_ended_does_not_decide_it(self):
+        direct = end(LANE_B, AT("06:42:26"), prompt="Review round 1 of #79 found 3 minors. Read the brief.")
+        later = notice_gap.Send(
+            AT("06:50:00"), f'sessions.send {LANE_B[-36:]} "prompt":"Review round 1 of #79 found 3 minors. Read the brief."', False
+        )
+        self.assertEqual(notice_gap.verdict(direct, None, [later], direct.prompts, AT("07:20:00")), "MISSING")
+
+    def test_a_short_plain_prefix_quotes_nothing(self):
+        # "It's done" quotes as "It", which any command contains.
+        direct = end(LANE_B, AT("06:42:26"), prompt="It's done? Then open the PR.")
+        quiet = notice_gap.Send(AT("06:30:00"), f'sessions.send {LANE_B[-36:]} "prompt":"Item two first"', False)
+        self.assertEqual(notice_gap.verdict(direct, None, [quiet], direct.prompts, AT("07:20:00")), "MISSING")
+
+    def test_a_requested_steer_makes_the_apps_own_continue_requested(self):
+        opened = int(AT("17:19:36").timestamp() * 1000)
+        _, turn = notice_gap.turn_ends(LANE_B, [
+            {"role": "user", "startedAt": opened - 60_000, "durationMs": 1_000, "text": "Brief", "appRequestId": "a"},
+            {"role": "user", "startedAt": opened, "durationMs": 2_295_000, "text": "Continue from where you left off."},
+            {"role": "user", "appDelivery": {"via": "steered"}, "text": "Also run the 20-run check", "appRequestId": "c"},
+        ])
+        self.assertEqual(notice_gap.verdict(turn, None, [], turn.prompts, AT("18:30:00")), "MISSING")
+
+    def test_the_queue_flag_comes_from_the_opening_block(self):
+        opened = int(AT("01:41:33").timestamp() * 1000)
+        first, follow_up = notice_gap.turn_ends(LANE_B, [
+            {"role": "user", "startedAt": opened - 600_000, "durationMs": 1_000, "text": "Go.", "appRequestId": "a"},
+            {"role": "user", "startedAt": opened, "durationMs": 79_000, "text": "One more for M1",
+             "appRequestId": "b", "appDelivery": {"queuedMessageId": "q", "via": "queued"}},
+        ])
+        self.assertEqual((first.queued, follow_up.queued), (False, True))
 
     def test_reads_every_time_format_in_finished_log(self):
         entries = notice_gap.parse_log(
