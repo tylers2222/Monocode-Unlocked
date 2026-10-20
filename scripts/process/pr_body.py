@@ -17,15 +17,18 @@ import subprocess
 import sys
 
 TINY_NT = 100
+ADE_TITLE = re.compile(r"ADE-\d+")
+TICKET_PART = re.compile(r"Ticket-part: (\d+)/(\d+)")
 SIZE_COUNTS = re.compile(r"\+\s?\d+\s*/?\s*[-\u2212]\s?\d+")
 HINTS = {
     "size": 'add a line like "Size: +120/-30 in 4 files, 90 non-test lines"',
     "self-pass": 'add a line like "Self-pass: I ran thermo-nuclear and deslop on this diff"',
     "file-caps": 'add a line like "File caps: MilestoneTimeline.tsx 451 lines (cap 600); new files 264 and 122"',
+    "ticket-part": 'an ADE ticket PR needs the exact line "Ticket-part: <n>/<N>" (this PR is part n of N, 1 <= n <= N)',
 }
 
 
-def lint_body(body: str) -> list[str]:
+def lint_body(body: str, title: str = "") -> list[str]:
     """Names of the missing items, in the order size, self-pass, file-caps. Matching ignores case.
     A format lint: it checks that each item is stated, not that it is true.
 
@@ -33,6 +36,8 @@ def lint_body(body: str) -> list[str]:
     where its section (to the next heading, for a heading) or that line and the next 3
     non-empty lines (for any other line) hold a +N/-N and "non-test". self-pass: one line
     names deslop and thermo-nuclear (or thermonuclear). file-caps: one line holds "file caps".
+    ticket-part: only for a title that starts with ADE-<digits>, the exact line
+    "Ticket-part: <n>/<N>" with integers 1 <= n <= N.
     """
     lower = body.lower()
     lines = lower.splitlines()
@@ -43,7 +48,14 @@ def lint_body(body: str) -> list[str]:
         ),
         "file-caps": "file caps" in lower,
     }
+    if ADE_TITLE.match(title):
+        present["ticket-part"] = any(_ticket_part_ok(line) for line in body.splitlines())
     return [item for item, ok in present.items() if not ok]
+
+
+def _ticket_part_ok(line: str) -> bool:
+    match = TICKET_PART.fullmatch(line.strip())
+    return bool(match) and 1 <= int(match[1]) <= int(match[2])
 
 
 def _states_size(lines: list[str]) -> bool:
@@ -94,9 +106,11 @@ def _command_text(text: str) -> str:
     return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
-def decide(body: str, files: set[str], open_prs: list[dict] | None, nt: int | None, number: int) -> tuple[list[str], int]:
+def decide(
+    body: str, files: set[str], open_prs: list[dict] | None, nt: int | None, number: int, title: str = ""
+) -> tuple[list[str], int]:
     """The output lines and the exit code. Only a missing item fails; the overlap warning never does."""
-    missing = lint_body(body)
+    missing = lint_body(body, title)
     lines = [f"pr-body: missing {item}: {HINTS[item]}" for item in missing] or ["pr-body: ok"]
     if nt is not None and open_prs is not None:
         for other, paths in tiny_overlaps(nt, files, open_prs, number):
@@ -118,7 +132,7 @@ def main() -> int:
     args = parser.parse_args()
     repo = os.environ.get("GATE_REPO") or "tylers2222/Monocode-Unlocked"
     try:
-        pr = _gh_json("pr", "view", str(args.number), "-R", repo, "--json", "body,files")
+        pr = _gh_json("pr", "view", str(args.number), "-R", repo, "--json", "body,files,title")
         open_prs = None
         if args.nt is not None and args.nt < TINY_NT:
             fields = "number,files,baseRefName,headRefName"
@@ -126,7 +140,8 @@ def main() -> int:
     except subprocess.CalledProcessError as err:
         print(f"pr-body: {' '.join(err.cmd)} exited {err.returncode}", file=sys.stderr)
         return 2
-    lines, code = decide(pr["body"] or "", {f["path"] for f in pr["files"]}, open_prs, args.nt, args.number)
+    files = {f["path"] for f in pr["files"]}
+    lines, code = decide(pr["body"] or "", files, open_prs, args.nt, args.number, pr.get("title", ""))
     print("\n".join(lines))
     return code
 
