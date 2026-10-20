@@ -145,9 +145,9 @@ fn decide_delivers_nothing_to_a_deleted_giga_and_refuses_what_it_cannot_deliver(
     let conn = store.lock_conn().unwrap();
     giga_with_chat(&conn, "giga-a", CHAT_A);
     giga(&conn, "giga-b", "Giga B");
-    let long = filed(&conn, "giga-a", "Long", "[]");
-    let exact = filed(&conn, "giga-a", "Exact", "[]");
-    let over = filed(&conn, "giga-a", "Over", "[]");
+    let long = filed(&conn, "giga-a", "Long é", "[]");
+    let exact = filed(&conn, "giga-a", "Exact é", "[]");
+    let over = filed(&conn, "giga-a", "Over é", "[]");
     let chatless = filed(&conn, "giga-b", "No chat", "[]");
     let orphan = filed(&conn, "giga-a", "Orphan", "[]");
     let orphan_long = filed(&conn, "giga-a", "Orphan long", "[]");
@@ -165,7 +165,7 @@ fn decide_delivers_nothing_to_a_deleted_giga_and_refuses_what_it_cannot_deliver(
         decide(&conn, &card.id, Verdict::Rejected, Some(note), &[], 2)
     };
     let fill =
-        |card: &Approval, extra: usize| "x".repeat(Body::MAX_CHARS - delivered(card, "") + extra);
+        |card: &Approval, extra: usize| "é".repeat(Body::MAX_CHARS - delivered(card, "") + extra);
 
     let too_long = |card: &Approval, note: &str| {
         Err(format!(
@@ -174,7 +174,7 @@ fn decide_delivers_nothing_to_a_deleted_giga_and_refuses_what_it_cannot_deliver(
             Body::MAX_CHARS
         ))
     };
-    let note = "x".repeat(Body::MAX_CHARS + 1);
+    let note = "é".repeat(Body::MAX_CHARS + 1);
     assert_eq!(
         reject(&long, note.clone()).map(drop),
         too_long(&long, &note)

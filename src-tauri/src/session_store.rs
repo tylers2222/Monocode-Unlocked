@@ -600,9 +600,10 @@ pub fn session_set_archived(
     archived: bool,
 ) -> Result<(), String> {
     validate_id(&session_id, "session")?;
-    let archive = |conn: &Connection| set_archived(conn, &session_id, archived);
     if archived {
-        crate::control::end_session(&app, &session_id, archive)
+        crate::control::end_session(&app, &session_id, |conn| {
+            set_archived(conn, &session_id, true)
+        })
     } else {
         unarchive(&app, &store, &session_id)
     }
