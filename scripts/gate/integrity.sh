@@ -9,7 +9,7 @@
 #   - a growing baseline: the "count" values in eslint-suppressions.json sum higher;
 #   - an edit to a gate file (workflows, gate scripts and the scripts/process/ rules
 #     they run, setup scripts, lint and toolchain
-#     configs and .npmrc at any depth), to a lint table or lint level in a Cargo.toml,
+#     configs, .npmrc, .cargo/, mutants.toml and Stryker configs at any depth), to a lint table or lint level in a Cargo.toml,
 #     or to a package.json lifecycle script that npm ci runs (dependencies,
 #     preinstall, install, postinstall, prepublish, preprepare, prepare, postprepare);
 #   - a JS/TS, Rust or Cargo.toml file that git diffs as binary, or a file name with
@@ -42,7 +42,7 @@ exec perl -e '
   use warnings;
 
   my ($merge_base, $head) = @ARGV;
-  my $GATE_FILE = qr{^(\.github/(workflows|actions)/.*|scripts/gate/.*|scripts/process/.*|scripts/install-linux-deps-[^/]*\.sh|\.github/rust-version|rust-toolchain(\.toml)?)$|(^|/)(eslint\.config\.[cm]?[jt]s|\.?clippy\.toml|\.jscpd\.json|\.cargo/config(\.toml)?|\.npmrc)$};
+  my $GATE_FILE = qr{^(\.github/(workflows|actions)/.*|scripts/gate/.*|scripts/process/.*|scripts/install-linux-deps-[^/]*\.sh|\.github/rust-version|rust-toolchain(\.toml)?)$|(^|/)(eslint\.config\.[cm]?[jt]s|\.?clippy\.toml|\.jscpd\.json|\.cargo/.*|\.npmrc|mutants\.toml|stryker\.(conf|config)\.[cm]?[jt]s(on)?)$};
   my $SIZE_EXEMPT = qr{(^|/)(tests?|__tests__|fixtures?)/|\.(test|spec|fixtures?)\.[^/]+$|(^|/)(eslint-suppressions\.json|package-lock\.json)$|(^|/)tests\.rs$};
   my $JS = qr{\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$};
   my $SOURCE = qr{\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|rs)$|(^|/)Cargo\.toml$};

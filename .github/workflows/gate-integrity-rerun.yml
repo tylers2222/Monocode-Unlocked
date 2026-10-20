@@ -13,7 +13,7 @@ on:
   # Every workflow whose checks land on the PR head; tests/test_rerun_integrity.py fails
   # when one is missing.
   workflow_run:
-    workflows: [CI, gate]
+    workflows: [CI, gate, gate-mutation]
     types: [completed]
 
 permissions:
