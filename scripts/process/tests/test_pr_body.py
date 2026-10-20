@@ -1,11 +1,14 @@
+import os
 import re
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pr_body import lint_body, tiny_overlaps
+from pr_body import HINTS, decide, lint_body, tiny_overlaps
 
 # Excerpts of PR bodies recorded on 2026-10-20. Each keeps every line of its PR
 # that the rules read, so it gives the same result as the whole body.
@@ -122,10 +125,17 @@ class LintBodyTest(unittest.TestCase):
         )
         self.assertIn("size", lint_body(body))
 
-    def test_size_reads_its_line_and_the_next_three_non_empty_lines(self):
+    def test_size_line_reads_itself_and_the_next_three_non_empty_lines(self):
         counts = "+20/-171 in 7 files, 191 non-test lines"
-        self.assertNotIn("size", lint_body(f"## Size\n\nOne.\n\nTwo.\n\n{counts}\n"))
-        self.assertIn("size", lint_body(f"## Size\nOne.\nTwo.\nThree.\n{counts}\n"))
+        self.assertNotIn("size", lint_body(f"Size:\n\nOne.\n\nTwo.\n\n{counts}\n"))
+        self.assertIn("size", lint_body(f"Size:\nOne.\nTwo.\nThree.\n{counts}\n"))
+
+    def test_size_heading_reads_its_whole_section(self):
+        # PR 150: the counts sit under "## Size and split", after a table.
+        body = ("## Size and split\n\nR5 as one PR was 576 non-test lines, over the 500 cap.\n\n| a | b |\n|---|---|\n"
+                "| 1/2 | x |\n| 2/2 | y |\n\nPart 1: +829/-48 in 8 files against `a363d977`. Non-test: `asks.rs` 255.\n")
+        self.assertNotIn("size", lint_body(body))
+        self.assertIn("size", lint_body("## Size\n\nNon-test: `asks.rs` 255.\n\n## Next\n\nPart 1: +829/-48 in 8 files\n"))
 
     def test_size_needs_both_counts_and_non_test(self):
         for body in ("Size: +31/-20 in 3 files.", "- Size: 62 non-test lines (cap about 400)."):
@@ -140,8 +150,8 @@ class LintBodyTest(unittest.TestCase):
         self.assertNotIn("self-pass", lint_body("- **Self-pass.** I ran Thermonuclear and Deslop on the diff."))
 
 
-def open_pr(number: int, *paths: str) -> dict:
-    return {"number": number, "files": [{"path": path} for path in paths]}
+def open_pr(number: int, *paths: str, base: str = "tyler/main") -> dict:
+    return {"number": number, "files": [{"path": path} for path in paths], "baseRefName": base, "headRefName": f"b{number}"}
 
 
 # PR 160 (10 non-test lines) and PR 161 both changed src/app/App.tsx.
@@ -197,6 +207,48 @@ class TinyOverlapsTest(unittest.TestCase):
                 ),
             ],
         )
+
+
+class StackTest(unittest.TestCase):
+    def test_own_stack_is_not_an_overlap(self):
+        parent = open_pr(171, "a.yml")
+        me = open_pr(174, "a.yml", base="b171")
+        child = open_pr(195, "a.yml", base="b174")
+        other = open_pr(200, "a.yml")
+        self.assertEqual(tiny_overlaps(10, {"a.yml"}, [parent, me, child, other], 174), [(200, ["a.yml"])])
+
+
+class DecideTest(unittest.TestCase):
+    COMPLETE = PR_142
+
+    def test_overlap_warns_and_still_passes(self):
+        lines, code = decide(self.COMPLETE, {"src/app/App.tsx"}, [open_pr(161, "src/app/App.tsx")], 10, 160)
+        self.assertEqual(code, 0)
+        self.assertTrue(lines[-1].startswith("::warning::tiny PR (10 non-test lines)"))
+
+    def test_missing_item_fails(self):
+        self.assertEqual(decide("No body items.", set(), [], 10, 160)[1], 1)
+
+    def test_without_nt_the_body_is_still_checked(self):
+        self.assertEqual(decide("No body items.", set(), None, None, 160),
+                         ([f"pr-body: missing {i}: {HINTS[i]}" for i in ("size", "self-pass", "file-caps")], 1))
+
+    def test_paths_cannot_end_the_warning_line(self):
+        lines, _ = decide(self.COMPLETE, {"a\nb%"}, [open_pr(161, "a\nb%")], 10, 160)
+        self.assertNotIn("\n", lines[-1])
+        self.assertIn("a%0Ab%25", lines[-1])
+
+
+class GhBoundaryTest(unittest.TestCase):
+    def test_gh_failure_exits_2(self):
+        with tempfile.TemporaryDirectory() as bin_dir:
+            fake = Path(bin_dir) / "gh"
+            fake.write_text("#!/bin/sh\nexit 1\n")
+            fake.chmod(0o755)
+            script = Path(__file__).resolve().parents[1] / "pr_body.py"
+            env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+            run = subprocess.run([sys.executable, str(script), "160", "--nt", "10"], env=env, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 2)
 
 
 if __name__ == "__main__":
