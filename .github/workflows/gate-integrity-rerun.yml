@@ -1,19 +1,18 @@
 name: gate-integrity-rerun
 
-# gate/integrity reads review verdicts and fixer-proof comments, and neither starts a
-# pull_request_target run. This re-runs the gate/integrity job of the head's latest run
-# when one of them changes, or when a workflow whose checks land on the head finishes,
-# so the required context follows. It runs default-branch code only and never checks out
+# gate/integrity reads review verdicts, fixer-proof comments and the head's gate/mutation
+# run, and none of them starts a pull_request_target run. This re-runs the gate/integrity
+# job of the head's latest run when one of them changes, so the required context follows. It runs default-branch code only and never checks out
 # a pull request. Statuses the gate posts itself use GITHUB_TOKEN, which starts
 # no workflow, so this cannot loop.
 on:
   issue_comment:
     types: [created, edited]
   status:
-  # Every workflow whose checks land on the PR head; tests/test_rerun_integrity.py fails
-  # when one is missing.
+  # Only the workflow whose check merge_rule.py reads; tests/test_rerun_integrity.py
+  # fails when the list differs.
   workflow_run:
-    workflows: [CI, gate]
+    workflows: [gate-mutation]
     types: [completed]
 
 permissions:

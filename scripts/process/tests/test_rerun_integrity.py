@@ -8,50 +8,24 @@ import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import merge_rule
 import rerun_integrity
 from rerun_integrity import event_target, pick, resolve_pr, stale
-from workflow_on import on_events
 
 WORKFLOWS = Path(__file__).resolve().parents[3] / ".github" / "workflows"
-OWN = "gate-integrity.yml"
 
 
 class RerunListTest(unittest.TestCase):
-    def test_rerun_follows_every_workflow_whose_checks_land_on_the_head(self):
-        """gate-integrity-rerun.yml re-runs gate/integrity when any pull_request or
-        pull_request_target workflow (other than gate-integrity itself) finishes, so the gate
-        re-reads the head when a check on it changes. A workflow whose on: cannot be read
-        fails."""
-        on_head, unreadable = set(), []
-        for path in sorted(WORKFLOWS.glob("*.y*ml")):
-            text = path.read_text()
-            events = on_events(text)
-            if events is None:
-                unreadable.append(path.name)
-            elif path.name != OWN and events & {"pull_request", "pull_request_target"}:
-                on_head.add(re.search(r"(?m)^name: (.+)$", text).group(1).strip())
-        self.assertEqual(unreadable, [])
+    def test_rerun_follows_exactly_the_workflows_merge_rule_reads(self):
+        """merge_rule.py reads one check that a pull_request workflow posts: gate/mutation
+        from .github/workflows/gate-mutation.yml. gate-integrity-rerun.yml re-runs
+        gate/integrity when that workflow finishes, and for no other workflow."""
         rerun = (WORKFLOWS / "gate-integrity-rerun.yml").read_text()
         listed = re.search(r"(?m)^    workflows: \[(.*)\]$", rerun).group(1)
-        self.assertEqual({name.strip() for name in listed.split(",")}, on_head)
-
-
-class OnEventsTest(unittest.TestCase):
-    def test_every_form_of_on(self):
-        forms = {
-            "on: pull_request\n": {"pull_request"},
-            "on: [push, pull_request]\n": {"push", "pull_request"},
-            "on: {pull_request: {branches: [x]}, push: {}}\n": None,
-            "on: {pull_request: null, push: null}\n": {"pull_request", "push"},
-            "on:\n  - push\n  - pull_request_target\n": {"push", "pull_request_target"},
-            "on:\n  pull_request:\n    branches: [tyler/main]\n  push:\n\njobs: {}\n": {"pull_request", "push"},
-            '"on":\n  pull_request_target:  # comment\n': {"pull_request_target"},
-            "name: x\njobs: {}\n": None,
-            "on:\n  pull_request:\n  - push\n": None,
-        }
-        for text, events in forms.items():
-            with self.subTest(text=text):
-                self.assertEqual(on_events(text), events)
+        self.assertEqual({name.strip() for name in listed.split(",")}, {Path(merge_rule.MUTATION_WORKFLOW).stem})
+        workflow = Path(__file__).resolve().parents[3] / merge_rule.MUTATION_WORKFLOW
+        if workflow.exists():  # it lands with #196; workflows: matches a workflow's name
+            self.assertEqual(re.search(r"(?m)^name: (.+)$", workflow.read_text()).group(1).strip(), Path(workflow).stem)
 
 
 class RerunRulesTest(unittest.TestCase):
