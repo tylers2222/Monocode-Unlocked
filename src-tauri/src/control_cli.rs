@@ -162,7 +162,11 @@ upward_steer_forbidden, one with scope steer_scope_not_allowed). Until
 a session with a more permissive runtimeMode, and as a lead it may only list
 models, sessions and worktrees, create worktrees, start workers, and read,
 send to, draft in, stop, archive or delete its own workers; its other
-actions, except messages.*, get lead_scope.
+actions, except messages.*, get lead_scope. A session's level comes only
+from MonoCode's saved session, never from the call. MonoCode saves a session
+before its first turn with app access, so only a session it never saves
+(outside a project on this Mac) could call with none: it gets unknown_caller.
+A Mono chat or habit run whose Mono is gone gets not_a_mono.
 
 Actions:
   models.list    {}  Available providers, models, settings and permission modes.
@@ -1535,6 +1539,11 @@ mod tests {
         let missing: Vec<&str> = crate::mono_messages::RejectCode::ALL
             .iter()
             .map(|code| code.as_str())
+            .chain(
+                crate::mono_gate::Refusal::ALL
+                    .iter()
+                    .map(|code| code.as_str()),
+            )
             .filter(|code| !help.contains(code))
             .collect();
         assert!(missing.is_empty(), "help omits {missing:?}");

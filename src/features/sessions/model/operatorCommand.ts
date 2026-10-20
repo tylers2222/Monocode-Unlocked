@@ -67,12 +67,16 @@ export function appAccess(blocks: Block[]): AppAccess | null {
  * The access of the turn a submit starts: `operator` for a typed /operator,
  * else the thread's, else `started` when this submit is the first turn of a
  * session that `sessions.start` (`startedBy`) made, whose block it stamps.
+ * A session MonoCode never `saved` gets none: Rust reads a caller's level
+ * from its saved row (R4). A typed /operator there is `unsaved`, refused.
  */
 export function submitAccess(
   blocks: Block[],
   typedOperator: boolean,
   startedBy: string | undefined,
-): AppAccess | null {
+  saved: boolean,
+): AppAccess | "unsaved" | null {
+  if (!saved) return typedOperator ? "unsaved" : null;
   if (typedOperator) return "operator";
   return appAccess(blocks) ?? (startedBy ? "started" : null);
 }

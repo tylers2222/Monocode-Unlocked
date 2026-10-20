@@ -28,10 +28,7 @@ import {
 } from "./monoMessages";
 
 /** What a caller needs from the session a call comes from. */
-export type CallingSession = Pick<
-  Session,
-  "id" | "blocks" | "cwd" | "leadSessionId"
->;
+export type CallingSession = Pick<Session, "id" | "blocks" | "cwd">;
 
 /**
  * The Mono a session speaks for: its chat, or one of its habit runs. This
@@ -70,7 +67,6 @@ function callerOf(session: CallingSession, turnId: TurnId): Caller | undefined {
     sessionId,
     turnId,
     access,
-    leadSessionId: parseSessionId(session.leadSessionId) ?? null,
     cwd: session.cwd,
   };
 }
@@ -171,13 +167,12 @@ function answered<T extends { outcome: "allowed" | "recorded" }>(
 /**
  * Design 6.6: the level gate for the app calls of `session` in turn
  * `turnId`. Unlike `resolveCaller` it needs no persisted roster: Rust reads
- * only lead ids, and writes a Mono caller's id through a subselect.
+ * levels from the stored sessions (R4), and writes a Mono caller's id
+ * through a subselect.
  */
 export function levelGate(
   session: CallingSession,
   turnId: string | null,
-  /** This window's copy of a session's lead; Rust reads it only for a session it has no row of. */
-  leadOf: (sessionId: string) => string | undefined,
 ): AgentAppHost["levels"] {
   const caller = (): Caller => {
     const turn = parseTurnId(turnId);
@@ -192,7 +187,6 @@ export function levelGate(
         caller: caller(),
         action,
         target,
-        targetLeadSessionId: target === null ? null : (leadOf(target) ?? null),
         startedSessionId,
         requestId,
         input,

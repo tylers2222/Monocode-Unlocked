@@ -111,13 +111,12 @@ it("resolves a lead and a worker with app access to session callers", async () =
       sessionId: "lead",
       turnId: "turn-1",
       access: "operator",
-      leadSessionId: null,
       cwd: "/code/app",
     },
   });
   expect(
     await resolveCaller(
-      session("worker", { blocks: operator, leadSessionId: "lead" }),
+      session("worker", { blocks: operator }),
       turn,
     ),
   ).toEqual({
@@ -127,7 +126,6 @@ it("resolves a lead and a worker with app access to session callers", async () =
       sessionId: "worker",
       turnId: "turn-1",
       access: "operator",
-      leadSessionId: "lead",
       cwd: "/code/app",
     },
   });
@@ -150,7 +148,6 @@ it("resolves a session that sessions.start made to a started caller", async () =
       sessionId: "app-giga-chat-r1",
       turnId: "turn-1",
       access: "started",
-      leadSessionId: null,
       cwd: "/code/app",
     },
   });
@@ -202,17 +199,15 @@ it("waits for queued roster writes before it answers", async () => {
 
 // Design 6.6 and 9. Defect: the level check needs the persisted roster as
 // messaging does, so a Mono cannot steer, stop or start sessions while
-// roster_unavailable holds; Rust misses the window's copy of an unsaved
-// target's lead; or Rust misses the session id a start would launch, so a
+// roster_unavailable holds; the window sends its copy of a target's lead,
+// which Rust must not read (R4); or Rust misses the session id a start would launch, so a
 // retry after that session ended launches again.
 it("checks a Mono's app action without the roster", async () => {
   const mono = createMono();
   saveMonoSessionId(mono.id, "memory-chat");
   db.check = { outcome: "allowed", leadSessionId: null };
   const input = { sessionId: "worker", prompt: "Stop and rebase" };
-  const gate = levelGate(session("memory-chat"), turn, (id) =>
-    id === "worker" ? "lead" : undefined,
-  );
+  const gate = levelGate(session("memory-chat"), turn);
   expect(
     await gate.check("r1", {
       action: "sessions.send",
@@ -231,7 +226,6 @@ it("checks a Mono's app action without the roster", async () => {
       },
       action: "sessions.send",
       target: "worker",
-      targetLeadSessionId: "lead",
       startedSessionId: null,
       requestId: "r1",
       input,
@@ -259,7 +253,7 @@ it("refuses a check with no turn as turn_inactive and calls nothing", async () =
   await loadMonoRoster();
   vi.mocked(invoke).mockClear();
   await expect(
-    levelGate(session("giga-chat"), null, () => undefined).check("r1", {
+    levelGate(session("giga-chat"), null).check("r1", {
       action: "sessions.list",
       target: null,
       startedSessionId: null,
@@ -282,9 +276,9 @@ it("throws the level check's refusal with its code, hint and row id", async () =
     outcome: "failed",
     error: { code: "worker_scope", hint, message_id: "m_aaaaaaaaaaaa" },
   };
-  const worker = session("worker", { blocks: operator, leadSessionId: "lead" });
+  const worker = session("worker", { blocks: operator });
   await expect(
-    levelGate(worker, turn, () => undefined).check("r1", {
+    levelGate(worker, turn).check("r1", {
       action: "notes.list",
       target: null,
       startedSessionId: null,
@@ -302,7 +296,7 @@ it("throws the level check's refusal with its code, hint and row id", async () =
 // cannot read gives an id that names no row.
 it("answers the start row's message id, and throws request_id_reused or an unknown reply", async () => {
   await loadMonoRoster();
-  const gate = levelGate(session("giga-chat"), turn, () => undefined);
+  const gate = levelGate(session("giga-chat"), turn);
   const input = { prompt: "Build" };
   db.record = { outcome: "recorded", messageId: "m_bbbbbbbbbbbb" };
   expect(await gate.recordStart("r1", "app-giga-chat-r1", input)).toBe(

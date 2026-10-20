@@ -1197,14 +1197,10 @@ pub struct LiveSession {
     /// A session in one of the caller's projects that is not a Mono chat,
     /// habit run or orchestration session.
     pub own_project: bool,
-    /// The web app's copy of the session's lead (design 13.1, the Change E
-    /// level link). It counts only when `sessions` has no row for it.
-    #[serde(default)]
-    pub lead_session_id: Option<String>,
 }
 
 /// The caller as the web app sends it: `kind` `mono_chat` or `habit_run`
-/// with `monoId`, or `session` with `access`, `leadSessionId` and `cwd`.
+/// with `monoId`, or `session` with `access` and `cwd`.
 /// [`CallerArg::parse`] refuses any other combination.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1216,8 +1212,6 @@ pub struct CallerArg {
     turn_id: String,
     #[serde(default)]
     access: Option<String>,
-    #[serde(default)]
-    lead_session_id: Option<String>,
     #[serde(default)]
     cwd: Option<String>,
 }
@@ -1235,12 +1229,11 @@ pub struct Live<'a> {
 }
 
 impl CallerArg {
-    fn parse(self) -> Result<Caller, String> {
-        let session_fields =
-            self.access.is_some() || self.lead_session_id.is_some() || self.cwd.is_some();
+    pub(crate) fn parse(self) -> Result<Caller, String> {
+        let session_fields = self.access.is_some() || self.cwd.is_some();
         let mono = |kind| -> Result<Speaker, String> {
             if session_fields {
-                return Err("A Mono caller has no access, leadSessionId or cwd".into());
+                return Err("A Mono caller has no access or cwd".into());
             }
             Ok(Speaker::Mono {
                 kind,
@@ -1269,11 +1262,6 @@ impl CallerArg {
                         .clone()
                         .filter(|cwd| !cwd.is_empty())
                         .ok_or("Invalid caller cwd")?,
-                    lead_session_id: self
-                        .lead_session_id
-                        .as_deref()
-                        .map(|lead| SessionId::parse(lead).ok_or("Invalid caller leadSessionId"))
-                        .transpose()?,
                 }
             }
             _ => return Err("Invalid caller kind".into()),
@@ -1500,15 +1488,13 @@ fn mono_of_chat(conn: &Connection, chat: &SessionId) -> rusqlite::Result<Option<
         .and_then(|(id, _)| MonoId::parse(&id)))
 }
 
-/// Design 13.1: the level of `session`. Its stored `lead_session_id` wins;
-/// `copy`, the web app's, counts only when `sessions` has no row for it. A
-/// lead's delete clears the stored link at once, while a loaded copy can
-/// still name the deleted lead.
-fn session_level(
+/// Design 13.1, R4: the level of `session`, only from its stored
+/// `lead_session_id`; `None` when `sessions` has no row for it. No copy the
+/// web app or an agent sends counts.
+pub(crate) fn session_level(
     conn: &Connection,
     session: &SessionId,
-    copy: Option<SessionId>,
-) -> rusqlite::Result<SessionLevel> {
+) -> rusqlite::Result<Option<SessionLevel>> {
     let stored: Option<Option<String>> = conn
         .query_row(
             "SELECT lead_session_id FROM sessions WHERE id = ?1",
@@ -1516,16 +1502,16 @@ fn session_level(
             |row| row.get(0),
         )
         .optional()?;
-    let lead = match stored {
-        Some(lead) => lead
-            .map(|lead| required(SessionId::parse(&lead), "sessions.lead_session_id"))
-            .transpose()?,
-        None => copy,
-    };
-    Ok(match lead {
-        Some(lead) => SessionLevel::Worker { lead },
-        None => SessionLevel::Lead,
-    })
+    stored
+        .map(|lead| {
+            Ok(match lead {
+                Some(lead) => SessionLevel::Worker {
+                    lead: required(SessionId::parse(&lead), "sessions.lead_session_id")?,
+                },
+                None => SessionLevel::Lead,
+            })
+        })
+        .transpose()
 }
 
 /// Design 7: `session` was reset, deleted or archived.
@@ -1617,11 +1603,12 @@ fn recipient(conn: &Connection, send_to: &str, live: &Live) -> rusqlite::Result<
         let own_project = listed.is_some_and(|entry| entry.own_project);
         let target = target(conn, session, live)?;
         if target.exists {
-            let copy = listed
-                .and_then(|entry| entry.lead_session_id.as_deref())
-                .and_then(SessionId::parse);
+            // R4: no row means no stored lead link. A worker always has one: its
+            // lead's `sessions.start` returns only once the worker's row is saved
+            // (`acceptQuickLaunch`). So a session the window lists with no row was
+            // never sent a message, or MonoCode never saves it: a lead.
             return Ok(Recipient::Session {
-                level: session_level(conn, &target.session, copy)?,
+                level: session_level(conn, &target.session)?.unwrap_or(SessionLevel::Lead),
                 target,
                 own_project,
             });
@@ -1760,14 +1747,12 @@ pub fn submit(
     confirm_openers(&tx, &caller.session_id, &caller.turn_id, now)?;
     let caller_row = match &caller.speaker {
         Speaker::Mono { mono_id, .. } => mono_row(&tx, mono_id)?.map(CallerFacts::Mono),
-        Speaker::Session {
-            cwd,
-            lead_session_id,
-            ..
-        } => Some(CallerFacts::Session {
-            level: session_level(&tx, &caller.session_id, lead_session_id.clone())?,
-            cwd: mono_gate::path_key(cwd),
-        }),
+        Speaker::Session { cwd, .. } => {
+            session_level(&tx, &caller.session_id)?.map(|level| CallerFacts::Session {
+                level,
+                cwd: mono_gate::path_key(cwd),
+            })
+        }
     };
     let prior = get_by_request(&tx, &caller.session_id, request_id)?;
     let mut referenced_id = None;
@@ -1810,6 +1795,7 @@ pub fn submit(
                 _ => Vec::new(),
             };
             mono_gate::decide_reply(
+                caller,
                 reply,
                 &hash,
                 &Facts {
@@ -2910,9 +2896,8 @@ pub fn record_start(
 
 /// Design 6.6: the A rows for one app action of `caller`, and the one
 /// rejected row they may write, in one `BEGIN IMMEDIATE` transaction, as
-/// `submit` does. `target` is the session id the action names; `target_copy`
-/// is the web app's `leadSessionId` of that session; `started` is the id a
-/// `sessions.start` launches.
+/// `submit` does. `target` is the session id the action names; `started` is
+/// the id a `sessions.start` launches. Both levels come from stored rows.
 #[expect(clippy::too_many_arguments, reason = "baseline 2026-10")]
 #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 pub fn check_action(
@@ -2920,7 +2905,6 @@ pub fn check_action(
     caller: &Caller,
     action: &str,
     target: Option<&str>,
-    target_copy: Option<SessionId>,
     started: Option<&SessionId>,
     request_id: &RequestId,
     input: &Value,
@@ -2957,25 +2941,24 @@ pub fn check_action(
         (None, None) => false,
     };
     let hash = mono_gate::action_hash(action, input);
+    let caller_level = match &caller.speaker {
+        Speaker::Mono { .. } => None,
+        Speaker::Session { .. } => session_level(&tx, &caller.session_id)?,
+    };
     let facts = ActionFacts {
-        caller_level: match &caller.speaker {
-            Speaker::Mono { .. } => None,
-            Speaker::Session {
-                lead_session_id, ..
-            } => Some(session_level(
-                &tx,
-                &caller.session_id,
-                lead_session_id.clone(),
-            )?),
+        caller_level,
+        // R4: no row means no stored lead link. A worker always has one: its
+        // lead's `sessions.start` returns only once the worker's row is saved
+        // (`acceptQuickLaunch`). So a session the window lists with no row was
+        // never sent a message, or MonoCode never saves it: a lead.
+        target_level: match &target_id {
+            Some(target) => Some(session_level(&tx, target)?.unwrap_or(SessionLevel::Lead)),
+            None => None,
         },
         caller_role: match &caller.speaker {
             Speaker::Mono { mono_id, .. } => mono_row(&tx, mono_id)?.map(|row| row.role),
             Speaker::Session { .. } => None,
         },
-        target_level: target_id
-            .as_ref()
-            .map(|target| session_level(&tx, target, target_copy))
-            .transpose()?,
         prior,
         prior_start_ended,
     };
@@ -3359,7 +3342,6 @@ pub struct AppActionCall {
     caller: CallerArg,
     action: String,
     target: Option<String>,
-    target_lead_session_id: Option<String>,
     started_session_id: Option<String>,
     request_id: String,
     input: Value,
@@ -3368,11 +3350,6 @@ pub struct AppActionCall {
 impl AppActionCall {
     fn check(self, store: &SessionStore, now: i64) -> Result<ActionChecked, String> {
         let caller = self.caller.parse()?;
-        let target_copy = self
-            .target_lead_session_id
-            .as_deref()
-            .map(|lead| SessionId::parse(lead).ok_or("Invalid targetLeadSessionId"))
-            .transpose()?;
         let started = self
             .started_session_id
             .as_deref()
@@ -3389,7 +3366,6 @@ impl AppActionCall {
             &caller,
             &self.action,
             self.target.as_deref(),
-            target_copy,
             started.as_ref(),
             &request_id,
             &self.input,
@@ -5064,7 +5040,6 @@ pub(crate) mod tests {
             session_id: id.into(),
             steerable,
             own_project,
-            lead_session_id: None,
         }
     }
 
@@ -5090,13 +5065,12 @@ pub(crate) mod tests {
     }
 
     /// A session caller with `started` access in `cwd`, bound to turn
-    /// `turn-1`. `lead` is the web app's copy of its lead.
-    fn session_caller(session_id: &str, cwd: &str, lead: Option<&str>) -> Caller {
+    /// `turn-1`. Its level comes from its `sessions` row.
+    fn session_caller(session_id: &str, cwd: &str) -> Caller {
         Caller {
             speaker: Speaker::Session {
                 access: Access::Started,
                 cwd: cwd.into(),
-                lead_session_id: lead.map(session),
             },
             session_id: session(session_id),
             turn_id: "turn-1".into(),
@@ -5105,6 +5079,21 @@ pub(crate) mod tests {
 
     /// `mono-a` works on `/p`, where the lead `lead` and its worker `worker`
     /// run.
+    /// Seeded lead `lead` sends `report` to Mono `mono-a`.
+    fn lead_reports(conn: &Connection) -> (Caller, MessageId) {
+        let lead = session_caller("lead", "/p");
+        let report = accepted_ids(&call(
+            conn,
+            &lead,
+            "report",
+            Tool::SendMessage,
+            hi("mono-a", false),
+            &[],
+        ))
+        .remove(0);
+        (lead, report)
+    }
+
     fn seed_levels(conn: &Connection) {
         conn.execute_batch(
             r#"UPDATE monos SET data_json = '{"sessionId":"a-chat","projects":["/p"]}'
@@ -5135,7 +5124,7 @@ pub(crate) mod tests {
                 }),
             ),
             (
-                session_caller("worker", "/p", Some("lead")),
+                session_caller("worker", "/p"),
                 Tool::SendMessage,
                 serde_json::json!({
                     "message": "Ship\u{0}it", "send_to": "lead", "wanting_reply": false, "intent": "new"
@@ -5158,7 +5147,8 @@ pub(crate) mod tests {
     // `access` "started" parses as Operator, so A8 never binds an
     // app-started lead; a session caller with no or an unknown `access`
     // parses (as Operator it fails open from PR 9 on), or with no or an
-    // empty `cwd`, or its invalid `leadSessionId` is dropped and it reads as
+    // empty `cwd`; R4: a caller that names a lead (`leadSessionId`) parses,
+    // so an agent's claim could reach the gate; or it reads as
     // a lead; or a Mono caller with session fields (any of them, review r2
     // n1) or a session caller with a Mono parses.
     #[test]
@@ -5169,14 +5159,13 @@ pub(crate) mod tests {
             assert_eq!(
                 parse(serde_json::json!({
                     "kind": "session", "sessionId": "lead", "turnId": "turn-1",
-                    "access": access, "cwd": "/p", "leadSessionId": "boss"
+                    "access": access, "cwd": "/p"
                 }))
                 .unwrap(),
                 Caller {
                     speaker: Speaker::Session {
                         access: parsed,
                         cwd: "/p".into(),
-                        lead_session_id: Some(session("boss"))
                     },
                     session_id: session("lead"),
                     turn_id: "turn-1".into(),
@@ -5193,22 +5182,10 @@ pub(crate) mod tests {
             ),
             ("no cwd", "cwd", None, "Invalid caller cwd"),
             ("empty cwd", "cwd", Some(""), "Invalid caller cwd"),
-            (
-                "empty leadSessionId",
-                "leadSessionId",
-                Some(""),
-                "Invalid caller leadSessionId",
-            ),
-            (
-                "invalid leadSessionId",
-                "leadSessionId",
-                Some("not a session id"),
-                "Invalid caller leadSessionId",
-            ),
         ] {
             let mut arg = serde_json::json!({
                 "kind": "session", "sessionId": "lead", "turnId": "turn-1",
-                "access": "started", "cwd": "/p", "leadSessionId": "boss"
+                "access": "started", "cwd": "/p"
             });
             match value {
                 Some(value) => arg[field] = serde_json::json!(value),
@@ -5218,11 +5195,7 @@ pub(crate) mod tests {
             }
             assert_eq!(parse(arg), Err(error.into()), "session caller with {case}");
         }
-        for (field, value) in [
-            ("cwd", "/p"),
-            ("access", "started"),
-            ("leadSessionId", "boss"),
-        ] {
+        for (field, value) in [("cwd", "/p"), ("access", "started")] {
             let mut arg = serde_json::json!({
                 "kind": "mono_chat", "monoId": "giga", "sessionId": "giga-chat",
                 "turnId": "turn-1"
@@ -5230,6 +5203,14 @@ pub(crate) mod tests {
             arg[field] = serde_json::json!(value);
             assert!(parse(arg).is_err(), "Mono caller with {field}");
         }
+        assert!(
+            serde_json::from_value::<CallerArg>(serde_json::json!({
+                "kind": "session", "sessionId": "worker", "turnId": "turn-1",
+                "access": "started", "cwd": "/p", "leadSessionId": "other"
+            }))
+            .is_err(),
+            "a caller that names its own lead"
+        );
         assert!(
             parse(serde_json::json!({
                 "kind": "session", "monoId": "giga", "sessionId": "lead",
@@ -5248,16 +5229,7 @@ pub(crate) mod tests {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         seed_levels(&conn);
-        let lead = session_caller("lead", "/p", None);
-        let report = accepted_ids(&call(
-            &conn,
-            &lead,
-            "report",
-            Tool::SendMessage,
-            hi("mono-a", false),
-            &[],
-        ))
-        .remove(0);
+        let (_, report) = lead_reports(&conn);
         let row = get(&conn, &report).unwrap().unwrap();
         assert_eq!(
             (row.from_mono_id, row.from_session_id),
@@ -5284,7 +5256,7 @@ pub(crate) mod tests {
         seed_levels(&conn);
         accepted_ids(&call(
             &conn,
-            &session_caller("lead", "/p/", None),
+            &session_caller("lead", "/p/"),
             "slash-cwd",
             Tool::SendMessage,
             hi("mono-a", false),
@@ -5298,7 +5270,7 @@ pub(crate) mod tests {
         .unwrap();
         accepted_ids(&call(
             &conn,
-            &session_caller("lead", "/p", None),
+            &session_caller("lead", "/p"),
             "slash-project",
             Tool::SendMessage,
             hi("mono-a", false),
@@ -5386,16 +5358,7 @@ pub(crate) mod tests {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         seed_levels(&conn);
-        let lead = session_caller("lead", "/p", None);
-        let report = accepted_ids(&call(
-            &conn,
-            &lead,
-            "report",
-            Tool::SendMessage,
-            hi("mono-a", false),
-            &[],
-        ))
-        .remove(0);
+        let (lead, report) = lead_reports(&conn);
         let read_back = found(read(&conn, &lead, report.as_str()));
         assert_eq!(read_back["message_id"], report.as_str());
         assert_eq!(read_back["from"], serde_json::json!({"session_id": "lead"}));
@@ -5421,29 +5384,20 @@ pub(crate) mod tests {
             &[listed("lead", true, true)],
         ))
         .remove(0);
-        let read_back = found(read(
-            &conn,
-            &session_caller("lead", "/p", None),
-            brief.as_str(),
-        ));
+        let read_back = found(read(&conn, &session_caller("lead", "/p"), brief.as_str()));
         assert_eq!(
             read_back["from"],
             serde_json::json!({"mono_id": "mono-a", "mono_name": "A"})
         );
-        let other = read_error(read(
-            &conn,
-            &session_caller("worker", "/p", None),
-            brief.as_str(),
-        ));
+        let other = read_error(read(&conn, &session_caller("worker", "/p"), brief.as_str()));
         assert_eq!(other.code, "unknown_message");
     }
 
-    // Design 13.1. Defect: the gate takes a session caller's own copy of its
-    // lead over the stored row, so a worker whose lead was deleted (which
-    // cleared its stored link) is still refused as a worker; or the copy is
-    // ignored for a caller that `sessions` lacks.
+    // Design 13.1, R4. Defect: a worker whose lead was deleted (which cleared
+    // its stored link) is still refused as a worker; or a caller that
+    // `sessions` lacks gets a level anyway (a lead's, or one it claims).
     #[test]
-    fn a_session_callers_stored_lead_wins_over_its_copy() {
+    fn a_session_caller_is_judged_by_its_stored_row_and_refused_without_one() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         seed_levels(&conn);
@@ -5459,49 +5413,51 @@ pub(crate) mod tests {
                 &[],
             )
         };
-        accepted_ids(&report(&session_caller("worker", "/p", Some("lead"))));
-        let unpersisted = failed(report(&session_caller("remote", "/p", Some("lead"))));
-        assert_eq!(unpersisted.code, "worker_scope");
+        let before = rows(&conn);
+        accepted_ids(&report(&session_caller("worker", "/p")));
+        let unpersisted = failed(report(&session_caller("remote", "/p")));
+        assert_eq!(
+            (unpersisted.code, unpersisted.message_id),
+            ("unknown_caller", None)
+        );
+        assert_eq!(rows(&conn), before + 1, "the refusal writes no row");
     }
 
-    // Design 13.1. Defect: a recipient's level comes from the live list over
-    // the stored row, or the live copy is ignored for a session that
-    // `sessions` lacks, so a Mono messages a worker past its lead.
+    // Design 13.1, R4. Defect: a recipient's level comes from anything but
+    // its stored row, so a Mono messages a worker past its lead, or a session
+    // with no row is judged by a lead it never stored.
     #[test]
-    fn a_recipients_stored_lead_wins_and_the_live_copy_counts_without_a_row() {
+    fn a_recipients_level_comes_only_from_its_stored_row() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         seed_levels(&conn);
         let giga = caller_in("giga", "giga-chat");
-        let live = |session_id: &str, lead: Option<&str>| LiveSession {
-            lead_session_id: lead.map(String::from),
-            ..listed(session_id, true, true)
-        };
+        let live = |session_id: &str| listed(session_id, true, true);
         let to_worker = failed(call(
             &conn,
             &giga,
             "worker",
             Tool::SendMessage,
             hi("worker", false),
-            &[live("worker", None)],
+            &[live("worker")],
         ));
         assert_eq!(to_worker.code, "steer_via_lead");
-        let to_remote = failed(call(
+        // A listed session with no row has no stored lead link: a lead.
+        accepted_ids(&call(
             &conn,
             &giga,
             "remote",
             Tool::SendMessage,
             hi("remote", false),
-            &[live("remote", Some("lead"))],
+            &[live("remote")],
         ));
-        assert_eq!(to_remote.code, "steer_via_lead");
         accepted_ids(&call(
             &conn,
             &giga,
             "lead",
             Tool::SendMessage,
             hi("lead", false),
-            &[live("lead", Some("worker"))],
+            &[live("lead")],
         ));
     }
 
@@ -5513,7 +5469,7 @@ pub(crate) mod tests {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         seed_levels(&conn);
-        let worker = session_caller("worker", "/p", None);
+        let worker = session_caller("worker", "/p");
         let report = |request_id: &str| {
             call(
                 &conn,
@@ -5548,11 +5504,18 @@ pub(crate) mod tests {
                 &[listed("lead", true, true)],
             )
         };
-        let worker = session_caller("worker", "/p", None);
+        let worker = session_caller("worker", "/p");
         for request_id in ["r1", "r2", "r3", "r4", "r5", "r6"] {
             accepted_ids(&report(&worker, request_id));
         }
-        accepted_ids(&report(&session_caller("remote", "/p", Some("lead")), "r1"));
+        conn.execute(
+            "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at,
+                                   updated_at, lead_session_id)
+             VALUES ('remote', '/p', 'codex', 'm', 'default', 'R', 1, 1, 'lead')",
+            [],
+        )
+        .unwrap();
+        accepted_ids(&report(&session_caller("remote", "/p"), "r1"));
         assert_eq!(failed(report(&worker, "r7")).code, "rate_limited");
     }
 
@@ -5623,13 +5586,11 @@ pub(crate) mod tests {
                 session_id: "project".into(),
                 steerable: true,
                 own_project: true,
-                lead_session_id: None,
             },
             LiveSession {
                 session_id: "a-chat".into(),
                 steerable: true,
                 own_project: false,
-                lead_session_id: None,
             },
         ];
         let giga = caller_in("giga", "giga-chat");
@@ -5717,7 +5678,6 @@ pub(crate) mod tests {
                 session_id: "giga-chat".into(),
                 steerable: true,
                 own_project: false,
-                lead_session_id: None,
             }],
         );
         let Submitted::Accepted {
@@ -9237,9 +9197,8 @@ pub(crate) mod tests {
         let error = failed_check(
             check_action(
                 &conn,
-                &session_caller("worker", "/p", None),
+                &session_caller("worker", "/p"),
                 "sessions.start",
-                None,
                 None,
                 None,
                 &RequestId::parse("spawn").unwrap(),
@@ -9296,7 +9255,6 @@ pub(crate) mod tests {
                 &caller_in("mono-a", "a-chat"),
                 "sessions.send",
                 Some("worker"),
-                None,
                 None,
                 &RequestId::parse("nudge").unwrap(),
                 &serde_json::json!({"sessionId": "worker", "prompt": "Stop"}),
@@ -9398,7 +9356,6 @@ pub(crate) mod tests {
                 speaker: Speaker::Session {
                     access: Access::Operator,
                     cwd: "/p".into(),
-                    lead_session_id: None,
                 },
                 session_id: session("lead"),
                 turn_id: "turn-1".into(),
@@ -9425,7 +9382,6 @@ pub(crate) mod tests {
                         "sessions.send",
                         Some(target),
                         None,
-                        None,
                         &RequestId::parse("send").unwrap(),
                         &input,
                         100,
@@ -9451,7 +9407,7 @@ pub(crate) mod tests {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         seed_levels(&conn);
-        let lead = session_caller("lead", "/p", None);
+        let lead = session_caller("lead", "/p");
         let mono = caller_in("mono-a", "a-chat");
         clear(&conn, "lead", 200);
         clear(&conn, "a-chat", 200);
@@ -9460,7 +9416,6 @@ pub(crate) mod tests {
                 &conn,
                 &lead,
                 "sessions.start",
-                None,
                 None,
                 None,
                 &RequestId::parse("start").unwrap(),
@@ -9472,7 +9427,6 @@ pub(crate) mod tests {
                 &mono,
                 "sessions.send",
                 Some("worker"),
-                None,
                 None,
                 &RequestId::parse("send").unwrap(),
                 &serde_json::json!({"sessionId": "worker", "prompt": "Rebase first"}),
@@ -9510,9 +9464,8 @@ pub(crate) mod tests {
         let error = failed_check(
             check_action(
                 &conn,
-                &session_caller("worker", "/p", None),
+                &session_caller("worker", "/p"),
                 "sessions.start",
-                None,
                 None,
                 None,
                 &RequestId::parse("spawn").unwrap(),
@@ -9540,10 +9493,9 @@ pub(crate) mod tests {
         let error = failed_check(
             check_action(
                 &conn,
-                &session_caller("worker", "/p", None),
+                &session_caller("worker", "/p"),
                 "sessions.read",
                 Some("lead"),
-                None,
                 None,
                 &RequestId::parse("peek").unwrap(),
                 &serde_json::json!({"sessionId": "lead", "prompt": "Show me"}),
@@ -9566,13 +9518,12 @@ pub(crate) mod tests {
         );
     }
 
-    // Design 13.1 and 6.6 (PR7-9a review r1 m1). Defect: `check_action`
-    // drops the web app's lead copy of an unsaved target or caller, so a Mono
-    // steers a new worker around its lead and a new worker starts sessions;
-    // or it gives a Mono chat its session's level, so a Mono's start makes a
-    // worker of the chat.
+    // Design 13.1 and 6.6, R4. Defect: `check_action` gives a target or a
+    // caller with no `sessions` row a level from anything but a stored row,
+    // or lets an unsaved caller act; or it gives a Mono chat its session's
+    // level, so a Mono's start makes a worker of the chat.
     #[test]
-    fn check_action_reads_the_lead_copies_of_unsaved_sessions_and_no_level_for_a_mono() {
+    fn check_action_reads_levels_only_from_stored_rows_and_none_for_a_mono() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         seed_levels(&conn);
@@ -9585,37 +9536,29 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(chat_rows, 1, "the Mono chat has a sessions row");
         let mono = caller_in("mono-a", "a-chat");
-        let steer = failed_check(
+        // An unsaved target has no stored lead link: a lead, so A5 lets it.
+        assert_eq!(
             check_action(
                 &conn,
                 &mono,
                 "sessions.send",
                 Some("ghost"),
-                Some(session("lead")),
                 None,
                 &RequestId::parse("nudge").unwrap(),
                 &serde_json::json!({"sessionId": "ghost", "prompt": "Stop"}),
                 100,
             )
             .unwrap(),
-        );
-        assert_eq!(steer.code, "steer_via_lead", "unsaved target");
-        assert_columns(
-            &conn,
-            steer.message_id.as_ref().expect("a row"),
-            &[
-                ("tool", text("app_action")),
-                ("from_mono_id", text("mono-a")),
-                ("to_session_id", text("ghost")),
-                ("body", text("Stop")),
-            ],
+            ActionChecked::Allowed {
+                lead_session_id: None
+            },
+            "unsaved target"
         );
         let spawn = failed_check(
             check_action(
                 &conn,
-                &session_caller("ghost-w", "/p", Some("lead")),
+                &session_caller("ghost-w", "/p"),
                 "sessions.start",
-                None,
                 None,
                 None,
                 &RequestId::parse("spawn").unwrap(),
@@ -9624,13 +9567,16 @@ pub(crate) mod tests {
             )
             .unwrap(),
         );
-        assert_eq!(spawn.code, "worker_cannot_spawn", "unsaved caller");
+        assert_eq!(
+            (spawn.code, spawn.message_id),
+            ("unknown_caller", None),
+            "unsaved caller"
+        );
         assert_eq!(
             check_action(
                 &conn,
                 &mono,
                 "sessions.start",
-                None,
                 None,
                 None,
                 &RequestId::parse("start").unwrap(),
@@ -9643,7 +9589,7 @@ pub(crate) mod tests {
             },
             "Mono chat with a sessions row"
         );
-        assert_eq!(rows(&conn), 2);
+        assert_eq!(rows(&conn), 0);
     }
 
     /// The start row `record_start` writes when `caller`'s `sessions.start`
@@ -9855,16 +9801,28 @@ pub(crate) mod tests {
                 "sessions.start",
                 None,
                 None,
-                None,
                 &key,
                 &input,
                 100,
             )
             .unwrap()
         };
-        let refused = failed_check(check(&session_caller("fresh", "/p", Some("lead"))));
+        conn.execute(
+            "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at,
+                                   updated_at, lead_session_id)
+             VALUES ('fresh', '/p', 'codex', 'm', 'default', 'F', 1, 1, 'lead')",
+            [],
+        )
+        .unwrap();
+        let lead = session_caller("fresh", "/p");
+        let refused = failed_check(check(&lead));
         assert_eq!(refused.code, "worker_cannot_spawn");
-        let lead = session_caller("fresh", "/p", None);
+        // Its lead is deleted, which clears the link: now a lead.
+        conn.execute(
+            "UPDATE sessions SET lead_session_id = NULL WHERE id = 'fresh'",
+            [],
+        )
+        .unwrap();
         // PR 11's A1 answers the refusal again before any launch.
         let replayed = failed_check(check(&lead));
         assert_eq!(
@@ -9893,8 +9851,8 @@ pub(crate) mod tests {
         let check = |access: &str| {
             serde_json::from_value::<AppActionCall>(serde_json::json!({
                 "caller": {"kind": "session", "sessionId": "lead", "turnId": "turn-1",
-                    "access": access, "cwd": "/p", "leadSessionId": null},
-                "action": "notes.list", "target": null, "targetLeadSessionId": null,
+                    "access": access, "cwd": "/p"},
+                "action": "notes.list", "target": null,
                 "startedSessionId": null, "requestId": format!("notes-{access}"), "input": {}
             }))
             .unwrap()
@@ -9920,7 +9878,7 @@ pub(crate) mod tests {
         });
         let check = serde_json::json!({
             "caller": caller, "action": "sessions.list", "target": null,
-            "targetLeadSessionId": null, "requestId": "r1", "input": {}
+            "requestId": "r1", "input": {}
         });
         let record = serde_json::json!({
             "caller": caller, "sessionId": "lead", "requestId": "r1", "input": {}
@@ -9989,13 +9947,7 @@ pub(crate) mod tests {
                 ("created_at", Sql::Integer(100)),
             ],
         );
-        let worker = start_row(
-            &conn,
-            &session_caller("lead", "/p", None),
-            "worker",
-            "start",
-            "",
-        );
+        let worker = start_row(&conn, &session_caller("lead", "/p"), "worker", "start", "");
         assert_columns(
             &conn,
             &worker,
@@ -10141,14 +10093,13 @@ pub(crate) mod tests {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         seed_levels(&conn);
-        let lead = session_caller("lead", "/p", None);
+        let lead = session_caller("lead", "/p");
         let key = RequestId::parse("spawn").unwrap();
         let check = |input: &serde_json::Value| {
             check_action(
                 &conn,
                 &lead,
                 "sessions.start",
-                None,
                 None,
                 Some(&launch(&lead, &key)),
                 &key,
@@ -10190,7 +10141,7 @@ pub(crate) mod tests {
         let ended = refusal(Refusal::RequestIdReused, mono_gate::START_ENDED.into());
         for (caller, key) in [
             (caller_in("mono-a", "a-chat"), "start"),
-            (session_caller("lead", "/p", None), "spawn"),
+            (session_caller("lead", "/p"), "spawn"),
         ] {
             let key = RequestId::parse(key).unwrap();
             let started = launch(&caller, &key);
@@ -10202,7 +10153,6 @@ pub(crate) mod tests {
                         &conn,
                         &caller,
                         "sessions.start",
-                        None,
                         None,
                         Some(&started),
                         &key,
@@ -10235,7 +10185,7 @@ pub(crate) mod tests {
                 "app-a-chat-r1",
             ),
             (
-                serde_json::json!({"kind": "session", "access": "started", "cwd": "/p", "leadSessionId": null, "sessionId": "lead", "turnId": "turn-1"}),
+                serde_json::json!({"kind": "session", "access": "started", "cwd": "/p", "sessionId": "lead", "turnId": "turn-1"}),
                 Some(session("lead")),
                 "app-lead-r1",
             ),
@@ -10244,7 +10194,7 @@ pub(crate) mod tests {
             let check = || {
                 serde_json::from_value::<AppActionCall>(serde_json::json!({
                     "caller": caller, "action": "sessions.start", "target": null,
-                    "targetLeadSessionId": null, "startedSessionId": started,
+                    "startedSessionId": started,
                     "requestId": "r1", "input": start_input("Fix CI")
                 }))
                 .unwrap()
@@ -10283,8 +10233,9 @@ pub(crate) mod tests {
             .filter(|case| case["name"].as_str().unwrap().starts_with("A6"))
             .flat_map(|case| case["calls"].as_array().unwrap().clone())
             .collect();
+        // R4: the caller is judged by its stored row, so it needs one.
         let app = tauri::test::mock_builder()
-            .manage(messaging_store())
+            .manage(fixture_store(&fixture))
             .invoke_handler(tauri::generate_handler![
                 super::mono_app_action_check,
                 super::mono_message_record_start
@@ -10324,6 +10275,44 @@ pub(crate) mod tests {
         }
     }
 
+    /// A store with a `sessions` row for each `saved` session and a `monos`
+    /// row for each Mono of the fixture (`appActionCheck.fixtures.json`).
+    fn fixture_store(fixture: &Value) -> SessionStore {
+        let store = messaging_store();
+        let conn = store.lock_conn().unwrap();
+        for row in fixture["sessions"].as_array().unwrap() {
+            if row["saved"] == true {
+                conn.execute(
+                    "INSERT OR IGNORE INTO sessions (id, cwd, harness, model, runtime_mode,
+                       title, created_at, updated_at, lead_session_id)
+                     VALUES (?1, ?2, 'codex', 'm', 'default', 'S', 1, 1, ?3)",
+                    params![
+                        row["id"].as_str(),
+                        row["cwd"].as_str(),
+                        row["leadSessionId"].as_str()
+                    ],
+                )
+                .unwrap();
+            }
+        }
+        for mono in fixture["monos"].as_array().unwrap() {
+            let data = serde_json::json!({
+                "sessionId": mono["sessionId"],
+                "projects": mono["projects"]
+            })
+            .to_string();
+            conn.execute(
+                "INSERT OR REPLACE INTO monos (id, name, role, data_json, sort_order,
+                   created_at, updated_at)
+                 VALUES (?1, ?1, ?2, ?3, 0, 1, 1)",
+                params![mono["id"].as_str(), mono["role"].as_str(), data],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        store
+    }
+
     // PR7-9b and PR7-10 real-state proof. `appActionCheck.fixtures.json`
     // holds the exact `mono_app_action_check` and `mono_message_record_start`
     // calls that the web app's real `levelGate` sends (agentAppLevels.test.ts
@@ -10336,7 +10325,6 @@ pub(crate) mod tests {
     // app does not expect, a repeated start writes a second row, or the Giga
     // row reads another role than the caller's `monos` row.
     #[test]
-    #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
     fn mono_app_action_check_answers_every_call_the_web_app_sends() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -10345,49 +10333,10 @@ pub(crate) mod tests {
         let write = std::env::var("WRITE_APP_ACTION_FIXTURE").as_deref() == Ok("1");
         let mut fixture: Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        let saved: Vec<Value> = fixture["sessions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|row| row["saved"] == true)
-            .cloned()
-            .collect();
-        let monos = fixture["monos"].as_array().unwrap().clone();
+        let world =
+            serde_json::json!({ "sessions": fixture["sessions"], "monos": fixture["monos"] });
         for case in fixture["cases"].as_array_mut().unwrap() {
-            let store = messaging_store();
-            for row in &saved {
-                store
-                    .lock_conn()
-                    .unwrap()
-                    .execute(
-                        "INSERT OR IGNORE INTO sessions (id, cwd, harness, model, runtime_mode,
-                           title, created_at, updated_at, lead_session_id)
-                         VALUES (?1, ?2, 'codex', 'm', 'default', 'S', 1, 1, ?3)",
-                        params![
-                            row["id"].as_str(),
-                            row["cwd"].as_str(),
-                            row["leadSessionId"].as_str()
-                        ],
-                    )
-                    .unwrap();
-            }
-            for mono in &monos {
-                let data = serde_json::json!({
-                    "sessionId": mono["sessionId"],
-                    "projects": mono["projects"]
-                })
-                .to_string();
-                store
-                    .lock_conn()
-                    .unwrap()
-                    .execute(
-                        "INSERT OR REPLACE INTO monos (id, name, role, data_json, sort_order,
-                           created_at, updated_at)
-                         VALUES (?1, ?1, ?2, ?3, 0, 1, 1)",
-                        params![mono["id"].as_str(), mono["role"].as_str(), data],
-                    )
-                    .unwrap();
-            }
+            let store = fixture_store(&world);
             let name = case["name"].as_str().unwrap().to_string();
             // The ids the replies name, in the order they first appear; the
             // fixture writes the n-th as `m_` and the n-th letter 12 times.

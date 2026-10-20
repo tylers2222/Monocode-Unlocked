@@ -12,7 +12,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": null,
                 "sessionId": "lead",
                 "turnId": "turn-1"
               },
@@ -24,8 +23,7 @@
               },
               "requestId": "a6-start",
               "startedSessionId": "app-lead-a6-start",
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -41,7 +39,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": null,
                 "sessionId": "lead",
                 "turnId": "turn-1"
               },
@@ -94,8 +91,7 @@
               },
               "requestId": "a7-start",
               "startedSessionId": "app-a-chat-a7-start",
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -162,8 +158,7 @@
               },
               "requestId": "a7-again",
               "startedSessionId": "app-a-chat-a7-again",
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -215,8 +210,7 @@
               },
               "requestId": "a7-again",
               "startedSessionId": "app-a-chat-a7-again",
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -284,7 +278,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
@@ -296,8 +289,7 @@
               },
               "requestId": "a1-refused",
               "startedSessionId": "app-worker-a1-refused",
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -318,7 +310,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
@@ -330,8 +321,7 @@
               },
               "requestId": "a1-refused",
               "startedSessionId": "app-worker-a1-refused",
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -379,7 +369,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": null,
                 "sessionId": "lead",
                 "turnId": "turn-1"
               },
@@ -391,8 +380,7 @@
               },
               "requestId": "a2-other",
               "startedSessionId": "app-lead-a2-other",
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -408,7 +396,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": null,
                 "sessionId": "lead",
                 "turnId": "turn-1"
               },
@@ -436,7 +423,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": null,
                 "sessionId": "lead",
                 "turnId": "turn-1"
               },
@@ -448,8 +434,7 @@
               },
               "requestId": "a2-other",
               "startedSessionId": "app-lead-a2-other",
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -503,8 +488,7 @@
               },
               "requestId": "a2-send",
               "startedSessionId": null,
-              "target": "worker",
-              "targetLeadSessionId": "lead"
+              "target": "worker"
             }
           },
           "command": "mono_app_action_check",
@@ -535,8 +519,7 @@
               },
               "requestId": "a2-send",
               "startedSessionId": "app-a-chat-a2-send",
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -580,7 +563,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": null,
                 "sessionId": "lead",
                 "turnId": "turn-1"
               },
@@ -590,8 +572,7 @@
               },
               "requestId": "a5-own",
               "startedSessionId": null,
-              "target": "worker",
-              "targetLeadSessionId": "lead"
+              "target": "worker"
             }
           },
           "command": "mono_app_action_check",
@@ -628,8 +609,7 @@
               },
               "requestId": "a5-stop",
               "startedSessionId": null,
-              "target": "worker",
-              "targetLeadSessionId": "lead"
+              "target": "worker"
             }
           },
           "command": "mono_app_action_check",
@@ -666,8 +646,7 @@
               },
               "requestId": "a5-send",
               "startedSessionId": null,
-              "target": "worker",
-              "targetLeadSessionId": "lead"
+              "target": "worker"
             }
           },
           "command": "mono_app_action_check",
@@ -709,8 +688,7 @@
               },
               "requestId": "a5-draft",
               "startedSessionId": null,
-              "target": "worker",
-              "targetLeadSessionId": "lead"
+              "target": "worker"
             }
           },
           "command": "mono_app_action_check",
@@ -733,49 +711,6 @@
       "requestId": "a5-draft"
     },
     {
-      "action": "sessions.send",
-      "caller": "a-chat",
-      "calls": [
-        {
-          "args": {
-            "call": {
-              "action": "sessions.send",
-              "caller": {
-                "kind": "mono_chat",
-                "monoId": "mono-a",
-                "sessionId": "a-chat",
-                "turnId": "turn-1"
-              },
-              "input": {
-                "prompt": "Hi",
-                "sessionId": "ghost"
-              },
-              "requestId": "a5-ghost",
-              "startedSessionId": null,
-              "target": "ghost",
-              "targetLeadSessionId": "lead"
-            }
-          },
-          "command": "mono_app_action_check",
-          "reply": {
-            "error": {
-              "code": "steer_via_lead",
-              "hint": "That session is a worker of lead lead. Message the lead (lead); only its lead steers its workers.",
-              "message_id": "m_aaaaaaaaaaaa"
-            },
-            "outcome": "failed"
-          }
-        }
-      ],
-      "input": {
-        "prompt": "Hi",
-        "sessionId": "ghost"
-      },
-      "name": "A5: an unsaved worker counts by the window's lead copy",
-      "ran": null,
-      "requestId": "a5-ghost"
-    },
-    {
       "action": "approvals.withdraw",
       "caller": "g-chat",
       "calls": [
@@ -794,8 +729,7 @@
               },
               "requestId": "g-withdraw",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -831,8 +765,7 @@
               },
               "requestId": "g-run-withdraw",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -869,8 +802,7 @@
               },
               "requestId": "m-file",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -904,7 +836,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": null,
                 "sessionId": "lead",
                 "turnId": "turn-1"
               },
@@ -913,8 +844,7 @@
               },
               "requestId": "l-withdraw",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -947,15 +877,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-models-list",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -986,15 +914,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-sessions-list",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1025,7 +951,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
@@ -1034,8 +959,7 @@
               },
               "requestId": "w-sessions-read",
               "startedSessionId": null,
-              "target": "lead",
-              "targetLeadSessionId": null
+              "target": "lead"
             }
           },
           "command": "mono_app_action_check",
@@ -1068,7 +992,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
@@ -1077,8 +1000,7 @@
               },
               "requestId": "w-sessions-send",
               "startedSessionId": null,
-              "target": "lead",
-              "targetLeadSessionId": null
+              "target": "lead"
             }
           },
           "command": "mono_app_action_check",
@@ -1111,7 +1033,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
@@ -1120,8 +1041,7 @@
               },
               "requestId": "w-sessions-draft",
               "startedSessionId": null,
-              "target": "lead",
-              "targetLeadSessionId": null
+              "target": "lead"
             }
           },
           "command": "mono_app_action_check",
@@ -1154,7 +1074,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
@@ -1163,8 +1082,7 @@
               },
               "requestId": "w-sessions-stop",
               "startedSessionId": null,
-              "target": "lead",
-              "targetLeadSessionId": null
+              "target": "lead"
             }
           },
           "command": "mono_app_action_check",
@@ -1197,7 +1115,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
@@ -1206,8 +1123,7 @@
               },
               "requestId": "w-sessions-archive",
               "startedSessionId": null,
-              "target": "lead",
-              "targetLeadSessionId": null
+              "target": "lead"
             }
           },
           "command": "mono_app_action_check",
@@ -1240,7 +1156,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
@@ -1249,8 +1164,7 @@
               },
               "requestId": "w-sessions-delete",
               "startedSessionId": null,
-              "target": "lead",
-              "targetLeadSessionId": null
+              "target": "lead"
             }
           },
           "command": "mono_app_action_check",
@@ -1283,15 +1197,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-sessions-start",
               "startedSessionId": "app-worker-w-sessions-start",
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1322,15 +1234,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-worktrees-list",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1361,15 +1271,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-worktrees-create",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1400,15 +1308,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-folders-list",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1439,7 +1345,6 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
@@ -1448,8 +1353,7 @@
               },
               "requestId": "w-folders-move",
               "startedSessionId": null,
-              "target": "lead",
-              "targetLeadSessionId": null
+              "target": "lead"
             }
           },
           "command": "mono_app_action_check",
@@ -1482,15 +1386,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-notes-list",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1521,15 +1423,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-notes-read",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1560,15 +1460,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-notes-write",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1599,15 +1497,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-artifacts-list",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1638,15 +1534,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-artifacts-read",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1677,15 +1571,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-artifacts-write",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1716,15 +1608,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-soul-read",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1755,15 +1645,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-soul-update",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1794,15 +1682,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-memory-read",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1833,15 +1719,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-memory-search",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1872,15 +1756,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-memory-add",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1911,15 +1793,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-memory-replace",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1950,15 +1830,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-memory-remove",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -1989,15 +1867,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-habits-list",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2028,15 +1904,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-habits-add",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2067,15 +1941,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-habits-update",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2106,15 +1978,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-habits-run",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2145,15 +2015,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-habits-remove",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2184,15 +2052,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-monos-list",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2223,15 +2089,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-monos-get",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2262,15 +2126,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-monos-read",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2301,15 +2163,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-monos-create",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2340,15 +2200,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-monos-update",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2379,15 +2237,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-milestones-list",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2418,15 +2274,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-milestones-add",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2457,15 +2311,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-milestones-update",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2496,15 +2348,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-milestones-remove",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2535,15 +2385,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-milestones-reorder",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2574,15 +2422,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-approvals-file",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2613,15 +2459,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-approvals-update",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2652,15 +2496,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-approvals-withdraw",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2691,15 +2533,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-workspace-status",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2730,15 +2570,13 @@
                 "access": "operator",
                 "cwd": "/code/app",
                 "kind": "session",
-                "leadSessionId": "lead",
                 "sessionId": "worker",
                 "turnId": "turn-1"
               },
               "input": {},
               "requestId": "w-chat-card",
               "startedSessionId": null,
-              "target": null,
-              "targetLeadSessionId": null
+              "target": null
             }
           },
           "command": "mono_app_action_check",
@@ -2792,12 +2630,6 @@
       "id": "worker",
       "leadSessionId": "lead",
       "saved": true
-    },
-    {
-      "cwd": "/code/app",
-      "id": "ghost",
-      "leadSessionId": "lead",
-      "saved": false
     },
     {
       "cwd": "/Users/me",

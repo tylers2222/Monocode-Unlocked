@@ -254,12 +254,14 @@ test("a lead's brief and its worker's report reach each other's turns named by t
     sessionId: "lead",
     turnId: "turn-1",
     access: "operator",
-    leadSessionId: null,
     cwd: PROJECT,
   });
-  expect(call.live).toContainEqual(
-    expect.objectContaining({ sessionId: "worker", leadSessionId: "lead" }),
+  // R4: the window sends no copy of any session's lead; Rust reads the row.
+  const worker = (call.live as Record<string, unknown>[]).find(
+    (entry) => entry.sessionId === "worker",
   );
+  expect(worker).toBeDefined();
+  expect(worker).not.toHaveProperty("leadSessionId");
   await expect
     .poll(() => prompts(page, "worker"))
     .toEqual([
@@ -315,8 +317,8 @@ test("a worker's send that the gate refuses answers worker_scope with the gate's
   expect(call.caller).toMatchObject({
     kind: "session",
     sessionId: "worker",
-    leadSessionId: "lead",
   });
+  expect(call.caller).not.toHaveProperty("leadSessionId");
 });
 
 /** A mono_messages.rs row as the fake hands it to the app. */
@@ -561,5 +563,77 @@ test("a start repeated into its stored, unopened session answers that session an
   await page.getByText("Fix login").click();
   const again = await startFromLead(page, app, "start-1");
   expect(again).toMatchObject({ ok: true, result: { id: "app-lead-r1" } });
+  expect(await prompts(page, "app-lead-r1")).toEqual([]);
+});
+
+// R4 review r1 M1. Rust reads a session caller's level from its saved row.
+// Defect: a first turn with app access starts while its row is unsaved, or
+// after its save failed, so every call it makes is refused unknown_caller.
+test("a first /operator turn starts only once its session is saved", async ({
+  app,
+  page,
+}) => {
+  await app.mount(
+    {
+      projects: [PROJECT],
+      sessions: [session("fresh", "Fix the login redirect")],
+    },
+    {
+      handlers: {
+        ...handlers,
+        session_upsert: () => {
+          throw "disk full";
+        },
+      },
+    },
+  );
+  await page.getByText("Fix the login redirect").click();
+  const field = page.getByPlaceholder("Ask, build, / for commands");
+  await field.fill("/operator Report to me when tests pass");
+  await field.press("Enter");
+  await expect(page.getByText("disk full")).toBeVisible();
+  expect(await prompts(page, "fresh")).toEqual([]);
+});
+
+// R4 review r1 M1. Defect: /operator in a session MonoCode never saves (the
+// `~` tab) gives it app access that every call then fails with
+// unknown_caller, or runs the turn without saying why it has none.
+test("refuses /operator in a session MonoCode never saves", async ({
+  app,
+  page,
+}) => {
+  await app.mount({ projects: [], sessions: [] }, { handlers });
+  const field = page.getByPlaceholder("Ask, build, / for commands");
+  await field.fill("/operator Report to me when tests pass");
+  await field.press("Enter");
+  await expect(
+    page.getByText(
+      "Use /operator from a session in a project on this Mac. MonoCode does not save sessions outside a project.",
+    ),
+  ).toBeVisible();
+  const spawned = await page.evaluate(() =>
+    window.appBackend!.calls.some(({ command }) => command === "harness_spawn"),
+  );
+  expect(spawned).toBe(false);
+});
+
+// R4 review r2 m1. A worker that sessions.start launches has `started`
+// access. Defect: its first turn starts although saving its row failed, so
+// every call it makes gets unknown_caller while the lead is told it failed.
+test("a started worker whose save fails gets no prompt", async ({
+  page,
+  app,
+}) => {
+  await mountSessions(page, app, ["lead"], {
+    // Only the worker's write fails; the lead's save answers as Rust does.
+    session_upsert: (_store, { session }) => {
+      const { id } = session as { id: string };
+      if (id === "app-lead-r1") throw "disk full";
+      return session;
+    },
+  });
+  await page.getByText("Fix login").click();
+  const started = await startFromLead(page, app, "start-1");
+  expect(started).toMatchObject({ ok: false });
   expect(await prompts(page, "app-lead-r1")).toEqual([]);
 });
