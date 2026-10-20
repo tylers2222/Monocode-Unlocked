@@ -8747,7 +8747,7 @@ function Workspace({
         });
       }),
     stop: async (id) => {
-      await stopSessionForRemoval(id);
+      await onStop(id);
     },
     post: (monoId, habit, text, name, artifacts, launches) =>
       appendToMono(
