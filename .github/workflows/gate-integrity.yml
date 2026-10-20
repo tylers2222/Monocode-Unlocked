@@ -54,6 +54,8 @@ jobs:
       contents: read
       pull-requests: read
       checks: read
+      # The workflow file of the head's gate/mutation run (merge_rule.py trusts only one).
+      actions: read
       # Only for the carry post below.
       statuses: write
     env:

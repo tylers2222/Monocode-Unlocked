@@ -7,16 +7,17 @@ minors-only verdict on an older commit carries to the head when a fixer-proof co
 line by a collaborator covers each minor finding (m1 to mK), the PR's own change since
 the verdict adds no file, stays inside the reviewed files and changes at most 60 lines,
 and the other checks on the head pass. T2 and T3 carry only a round 1 verdict, and T3
-also needs this run's gate/mutation green. Only verdicts posted for this PR count. Any
-other head needs a new review verdict.
+also needs a green gate/mutation check run on the head from the gate-mutation workflow.
+Only verdicts posted for this PR count. Any other head needs a new review verdict.
 
-Usage: python3 scripts/process/merge_rule.py <pr> <T1|T2|T3> [--mutation <result>] [--post-carry]
+Usage: python3 scripts/process/merge_rule.py <pr> <T1|T2|T3> [--post-carry]
 Prints "merge-rule: <reason>" and exits 0 when the head may merge, 1 when it may not and
 2 when gh fails. Only --post-carry writes to GitHub: it posts a carry as review/agent
 success on the head. GATE_REPO overrides the repository (default
 tylers2222/Monocode-Unlocked).
 """
 import argparse
+import difflib
 import json
 import os
 import re
@@ -27,15 +28,17 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import quote
 
 REPO = os.environ.get("GATE_REPO") or "tylers2222/Monocode-Unlocked"
 TIERS = ("T1", "T2", "T3")
 MAX_FIX_LINES = 60
-NEW_FILE = frozenset({"added", "renamed", "copied"})
 PASSING = frozenset({"success", "skipped", "neutral"})
 # The review verdict is what this script decides on, so it is not a check to wait for.
 REVIEW_CONTEXT = "review/agent"
 TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+# gate/mutation counts only from this check name, app (GitHub Actions) and workflow file.
+MUTATION_CHECK, MUTATION_APP, MUTATION_WORKFLOW = "gate/mutation", 15368, ".github/workflows/gate-mutation.yml"
 
 VERDICT = re.compile(r"^r(\d+) (clean|changes needed)\b(?::\s*(\d+)B/(\d+)M/(\d+)m)?")
 _TEST = r"[^\s|](?:[^|]*[^\s|])?"
@@ -156,8 +159,8 @@ def decide(
     mutation: str | None = None,
 ) -> Decision:
     """Decides on the latest verdict. reviewed_files is the PR diff at the verdict's commit;
-    since_review is the PR's own change since then. mutation is the gate/mutation result
-    of this run (None when there is no such job)."""
+    since_review is the PR's own change since then. mutation is mutation_result() for the
+    head: a conclusion, "pending", or None when there is no trusted gate/mutation run."""
     verdict = latest(verdicts)
     if verdict is None:
         return refuse("no review verdict yet")
@@ -181,7 +184,7 @@ def decide(
     if missing:
         return refuse(f"no fixer-proof after r{verdict.round} ({sha7}) for {', '.join(missing)}")
     since = f"since r{verdict.round} ({sha7}) the head"
-    added = sorted(path for path, status in since_review.files.items() if status in NEW_FILE)
+    added = sorted(path for path, status in since_review.files.items() if status == "added")
     if added:
         return refuse(f"{since} adds a new file ({', '.join(added)}); it needs a new review verdict")
     outside = sorted(path for path in since_review.files if path not in reviewed_files.files)
@@ -190,7 +193,7 @@ def decide(
     if since_review.changed > MAX_FIX_LINES:
         return refuse(f"{since} changes {since_review.changed} lines, more than {MAX_FIX_LINES}; it needs a new review verdict")
     if tier == "T3" and mutation != "success":
-        return refuse(f"T3 carries only with a green gate/mutation (it is {mutation or 'missing'})")
+        return refuse(f"T3 carries only with a green gate/mutation on the head (it is {mutation or 'missing'})")
     if checks_failed:
         return refuse(f"failed checks: {', '.join(checks_failed)}")
     if checks_pending:
@@ -201,13 +204,17 @@ def decide(
 
 
 def classify_checks(
-    check_runs: Iterable[Mapping[str, str | None]], statuses: Iterable[Mapping[str, str]], own_run: str
+    check_runs: Iterable[Mapping[str, str | int | None]], statuses: Iterable[Mapping[str, str]], own_run: str
 ) -> tuple[list[str], list[str]]:
-    """Returns the failed and the pending names among the head's latest check runs and
-    commit statuses. The jobs of this script's own workflow run (own_run) are skipped,
-    so the gate does not wait for itself."""
+    """Returns the failed and the pending names among the head's check runs and commit
+    statuses. Only the newest check run of each name counts (a cancelled duplicate of a
+    re-run is not a failure). The jobs of this script's own workflow run (own_run) are
+    skipped, so the gate does not wait for itself."""
     own = f"/actions/runs/{own_run}/"
-    results = [(run["name"], run["status"] == "completed", run["conclusion"]) for run in check_runs
+    newest = {}
+    for run in sorted(check_runs, key=lambda run: run["id"]):
+        newest[run["name"]] = run
+    results = [(run["name"], run["status"] == "completed", run["conclusion"]) for run in newest.values()
                if own not in (run["details_url"] or "")]
     results += [(status["context"], status["state"] != "pending", status["state"]) for status in statuses
                 if status["context"] != REVIEW_CONTEXT]
@@ -216,29 +223,46 @@ def classify_checks(
     return sorted(failed), sorted(pending)
 
 
-def pr_change_since(then: Iterable[Mapping[str, str | None]], now: Iterable[Mapping[str, str | None]]) -> DiffStat:
-    """The PR's own change between two of its versions, from the GitHub compare files of
-    base...reviewed (then) and base...head (now). Each side is measured from its own merge
-    base, so merging the base branch in ("Update branch") adds nothing. A file counts the
-    +/- patch lines that differ between the two sides; a file whose content differs but
-    has no patch (binary, too large) counts as more than the limit."""
-    before = {file["filename"]: file for file in then}
-    after = {file["filename"]: file for file in now}
+def mutation_result(check_runs: Iterable[Mapping], head: str, workflow_paths: Mapping[int, str]) -> str | None:
+    """The head's gate/mutation result: the newest check run named gate/mutation, from
+    GitHub Actions, for exactly this head, whose workflow (workflow_paths, by check run id)
+    is the gate-mutation workflow. Its conclusion, "pending" while it runs, or None."""
+    runs = [run for run in check_runs if run["name"] == MUTATION_CHECK and run["app_id"] == MUTATION_APP
+            and run["head_sha"] == head and workflow_paths.get(run["id"]) == MUTATION_WORKFLOW]
+    if not runs:
+        return None
+    run = max(runs, key=lambda run: run["id"])
+    return run["conclusion"] if run["status"] == "completed" else "pending"
+
+
+def changed_lines(old: str | None, new: str | None) -> Counter:
+    """The -/+ lines of the line diff from old to new (None is a missing file)."""
+    a, b = (old or "").splitlines(), (new or "").splitlines()
+    out = Counter()
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op != "equal":
+            out.update(("-", line) for line in a[i1:i2])
+            out.update(("+", line) for line in b[j1:j2])
+    return out
+
+
+def own_change(versions: Mapping[str, tuple[str | None, ...]], unreadable: Iterable[str] = ()) -> DiffStat:
+    """The PR's own change since the reviewed commit. versions: per path, its text at the
+    reviewed commit's merge base, the reviewed commit, the head's merge base and the head
+    (None where the file does not exist). The line diff from reviewed to head counts,
+    less the lines the base branch changed between the two merge bases, so merging the
+    base in ("Update branch") adds nothing, while a moved block or an edit made inside
+    the merge counts. A file GitHub could not return counts as more than the limit."""
     files, changed = {}, 0
-    for path in sorted(before.keys() | after.keys()):
-        old, new = before.get(path), after.get(path)
-        if old and new and (old["sha"], old["status"]) == (new["sha"], new["status"]):
-            continue
-        sides = [file for file in (old, new) if file and file["status"] != "removed"]
-        if any(file.get("patch") is None for file in sides):
-            lines = MAX_FIX_LINES + 1
-        else:
-            a, b = (Counter(l for l in (file or {}).get("patch", "").splitlines() if l[:1] in "+-") for file in (old, new))
-            lines = sum(((a - b) + (b - a)).values())
-        if lines == 0 and old and new and old["status"] == new["status"]:
-            continue  # only the base moved under this file (Update branch)
-        files[path] = "modified" if old and new else new["status"] if new else "reverted"
-        changed += lines
+    for path, (base_then, then, base_now, now) in sorted(versions.items()):
+        own = changed_lines(then, now) - changed_lines(base_then, base_now)
+        lines = sum(own.values())
+        if lines:
+            files[path] = "added" if then is None and now is not None else "modified"
+            changed += lines
+    for path in unreadable:
+        files[path] = "modified"
+        changed += MAX_FIX_LINES + 1
     return DiffStat(files, changed)
 
 
@@ -250,6 +274,29 @@ def api(path: str, jq: str, paginate: bool = True) -> list:
     """Reads a GitHub API path; jq picks the values, one JSON value per line."""
     args = ["api", path, "--jq", f"{jq} | tojson", *(["--paginate"] if paginate else [])]
     return [json.loads(line) for line in gh(*args).splitlines()]
+
+
+UNREADABLE = "\0unreadable"
+
+
+def compare(base: str, sha: str) -> tuple[dict[str, str], str]:
+    """The PR's files (path to status) of GitHub's base...sha compare, and its merge base."""
+    answer = json.loads(gh("api", f"repos/{REPO}/compare/{base}...{sha}", "--jq",
+                           "{merge_base: .merge_base_commit.sha, files: [.files[] | {filename, status}]}"))
+    return {file["filename"]: file["status"] for file in answer["files"]}, answer["merge_base"]
+
+
+def read(path: str, ref: str) -> str | None:
+    """The file at ref: None when it does not exist there, UNREADABLE when GitHub fails."""
+    run = subprocess.run(["gh", "api", "-H", "Accept: application/vnd.github.raw",
+                          f"repos/{REPO}/contents/{quote(path)}?ref={ref}"], capture_output=True, text=True)
+    return run.stdout if run.returncode == 0 else None if "HTTP 404" in run.stderr else UNREADABLE
+
+
+def workflow_path(details_url: str | None) -> str | None:
+    """The workflow file of a GitHub Actions check run, from its run id."""
+    match = re.search(r"/actions/runs/(\d+)/", details_url or "")
+    return json.loads(gh("api", f"repos/{REPO}/actions/runs/{match[1]}", "--jq", ".path | tojson")) if match else None
 
 
 def post_carry(head: str, pr: int, reason: str) -> None:
@@ -267,7 +314,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="merge_rule.py", description="Decides if a PR head may merge on its review/agent verdict.")
     parser.add_argument("pr", type=int)
     parser.add_argument("tier", choices=TIERS)
-    parser.add_argument("--mutation", help="this run's gate/mutation result; a T3 carry needs success")
     parser.add_argument("--post-carry", action="store_true", help="post a carry as review/agent success on the head (writes to GitHub)")
     args = parser.parse_args(argv)
 
@@ -283,20 +329,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     if reviewed is None or reviewed.sha == head:
         reviewed_files = since_review = DiffStat({}, 0)
     else:
-        files = ".files[] | {filename, status, sha, patch}"
-        then = api(f"repos/{REPO}/compare/{base}...{reviewed.sha}", files, paginate=False)
-        reviewed_files = DiffStat({file["filename"]: file["status"] for file in then}, 0)
-        since_review = pr_change_since(then, api(f"repos/{REPO}/compare/{base}...{head}", files, paginate=False))
+        then, base_then = compare(base, reviewed.sha)
+        now, base_now = compare(base, head)
+        reviewed_files = DiffStat(then, 0)
+        refs = (base_then, reviewed.sha, base_now, head)
+        texts = {path: tuple(read(path, ref) for ref in refs) for path in then.keys() | now.keys()}
+        unreadable = [path for path, versions in texts.items() if UNREADABLE in versions]
+        since_review = own_change({p: v for p, v in texts.items() if p not in unreadable}, unreadable)
     head_statuses = api(f"repos/{REPO}/commits/{head}/status", ".statuses[] | {context, state, description}")
     head_review = next((s for s in head_statuses if s["context"] == REVIEW_CONTEXT), None)
-    checks_failed, checks_pending = classify_checks(
-        api(f"repos/{REPO}/commits/{head}/check-runs", ".check_runs[] | {name, status, conclusion, details_url}"),
-        head_statuses,
-        os.environ.get("GITHUB_RUN_ID", ""),
-    )
+    runs = api(f"repos/{REPO}/commits/{head}/check-runs",
+               ".check_runs[] | {id, name, status, conclusion, details_url, head_sha, app_id: .app.id}")
+    checks_failed, checks_pending = classify_checks(runs, head_statuses, os.environ.get("GITHUB_RUN_ID", ""))
+    workflow_paths = {run["id"]: workflow_path(run["details_url"]) for run in runs if run["name"] == MUTATION_CHECK}
 
     decision = decide(args.tier, head, verdicts, proofs, reviewed_files, since_review, checks_failed, checks_pending,
-                      review_in_progress=bool(head_review and head_review["state"] == "pending"), mutation=args.mutation)
+                      review_in_progress=bool(head_review and head_review["state"] == "pending"),
+                      mutation=mutation_result(runs, head, workflow_paths))
     for line in [*errors, decision.reason]:
         print(f"merge-rule: {line}")
     already = head_review and head_review["state"] == "success" and head_review["description"] == decision.reason

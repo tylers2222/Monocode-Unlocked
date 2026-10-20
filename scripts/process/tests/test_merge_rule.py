@@ -21,7 +21,8 @@ from merge_rule import (
     decide,
     parse_proofs,
     parse_verdict,
-    pr_change_since,
+    mutation_result,
+    own_change,
 )
 
 # PR 160: r1 read head 7ce96f5 at AT and found one minor. FIX is a later push with the fix
@@ -139,6 +140,9 @@ class CollectVerdictsTest(unittest.TestCase):
         }
         self.assertEqual(collect_verdicts(statuses, PR_URL), [Verdict(REVIEWED, 1, False, 0, 0, 1, AT)])
 
+    def test_a_pending_status_is_not_a_verdict_even_when_it_reads_as_one(self):
+        self.assertEqual(collect_verdicts({REVIEWED: [self.status(CLEAN_R1, "pending")]}, PR_URL), [])
+
 
 class DecideTest(unittest.TestCase):
     def assertRefused(self, decision, *words):
@@ -205,12 +209,11 @@ class DecideTest(unittest.TestCase):
 
     def test_proof_posted_before_verdict_does_not_count(self):
         self.assertRefused(decide_fix(proofs=proven("m1", at=AT - timedelta(minutes=5))), "m1")
+        self.assertRefused(decide_fix(proofs=proven("m1", at=AT)), "m1")
 
     def test_fix_that_adds_file_needs_new_verdict(self):
-        for status in ("added", "renamed"):
-            with self.subTest(status=status):
-                since = DiffStat({SPEC: "modified", "tests/browser/ade60-steer.spec.ts": status}, 20)
-                self.assertRefused(decide_fix(since_review=since), "new file", "tests/browser/ade60-steer.spec.ts")
+        since = DiffStat({SPEC: "modified", "tests/browser/ade60-steer.spec.ts": "added"}, 20)
+        self.assertRefused(decide_fix(since_review=since), "new file", "tests/browser/ade60-steer.spec.ts")
 
     def test_fix_outside_reviewed_files_needs_new_verdict(self):
         since = DiffStat({SPEC: "modified", "src/app/inFlight.ts": "modified"}, 8)
@@ -244,15 +247,15 @@ class ClassifyChecksTest(unittest.TestCase):
         own = "https://github.com/o/r/actions/runs/77/job/"
         other = "https://github.com/o/r/actions/runs/76/job/"
         runs = [
-            {"name": "gate/lint", "status": "completed", "conclusion": "failure", "details_url": other + "1"},
-            {"name": "check (macos-latest)", "status": "completed", "conclusion": "cancelled", "details_url": other + "2"},
-            {"name": "browser", "status": "in_progress", "conclusion": None, "details_url": other + "3"},
-            {"name": "Clean rpm install", "status": "completed", "conclusion": "skipped", "details_url": other + "4"},
-            {"name": "host (macos-latest)", "status": "completed", "conclusion": "neutral", "details_url": None},
-            {"name": "check (ubuntu-latest)", "status": "completed", "conclusion": "success", "details_url": other + "5"},
-            {"name": "gate/integrity", "status": "in_progress", "conclusion": None, "details_url": own + "6"},
-            {"name": "gate/tier", "status": "completed", "conclusion": "failure", "details_url": own + "7"},
-            {"name": "gate/mutation", "status": "queued", "conclusion": None, "details_url": own + "8"},
+            {"id": 1, "name": "gate/lint", "status": "completed", "conclusion": "failure", "details_url": other + "1"},
+            {"id": 2, "name": "check (macos-latest)", "status": "completed", "conclusion": "cancelled", "details_url": other + "2"},
+            {"id": 3, "name": "browser", "status": "in_progress", "conclusion": None, "details_url": other + "3"},
+            {"id": 4, "name": "Clean rpm install", "status": "completed", "conclusion": "skipped", "details_url": other + "4"},
+            {"id": 5, "name": "host (macos-latest)", "status": "completed", "conclusion": "neutral", "details_url": None},
+            {"id": 6, "name": "check (ubuntu-latest)", "status": "completed", "conclusion": "success", "details_url": other + "5"},
+            {"id": 7, "name": "gate/integrity", "status": "in_progress", "conclusion": None, "details_url": own + "6"},
+            {"id": 8, "name": "gate/tier", "status": "completed", "conclusion": "failure", "details_url": own + "7"},
+            {"id": 9, "name": "gate/mutation", "status": "queued", "conclusion": None, "details_url": own + "8"},
         ]
         statuses = [
             {"context": "review/agent", "state": "failure"},
@@ -264,52 +267,92 @@ class ClassifyChecksTest(unittest.TestCase):
             (["check (macos-latest)", "ci/audit", "gate/lint"], ["browser", "ci/deploy"]),
         )
 
+    def test_only_the_newest_run_of_a_name_counts(self):
+        url = "https://github.com/o/r/actions/runs/{}/job/1"
+        runs = [
+            {"id": 1, "name": "gate/lint", "status": "completed", "conclusion": "cancelled", "details_url": url.format(10)},
+            {"id": 2, "name": "gate/lint", "status": "completed", "conclusion": "success", "details_url": url.format(11)},
+            {"id": 3, "name": "check", "status": "completed", "conclusion": "success", "details_url": url.format(10)},
+            {"id": 4, "name": "check", "status": "completed", "conclusion": "failure", "details_url": url.format(11)},
+        ]
+        self.assertEqual(classify_checks(runs, [], "99"), (["check"], []))
 
 
-def compare_file(path, status="modified", sha="s1", patch="@@ -1 +1 @@\n-a\n+b"):
-    return {"filename": path, "status": status, "sha": sha, "patch": patch}
+GATE = """def gate(user):
+    if not user.allowed:
+        return deny()
+    return allow()
+"""
 
 
-class PrChangeSinceTest(unittest.TestCase):
+class OwnChangeTest(unittest.TestCase):
+    """own_change on file texts: (reviewed merge base, reviewed, head merge base, head)."""
+
     def test_base_merged_in_adds_nothing(self):
-        # "Update branch": the file's blob changed (base edits) but the PR's own patch did not.
-        then = [compare_file(SPEC)]
-        self.assertEqual(pr_change_since(then, [compare_file(SPEC, sha="s2")]), DiffStat({}, 0))
+        base, base2 = "a\nb\n", "top\na\nb\n"
+        self.assertEqual(own_change({SPEC: (base, base + "pr\n", base2, base2 + "pr\n")}), DiffStat({}, 0))
 
-    def test_changed_patch_lines_are_counted(self):
-        now = [compare_file(SPEC, sha="s2", patch="@@ -1 +1,2 @@\n-a\n+b\n+c")]
-        self.assertEqual(pr_change_since([compare_file(SPEC)], now), DiffStat({SPEC: "modified"}, 1))
+    def test_reordered_lines_count(self):
+        reordered = GATE.replace("        return deny()\n    return allow()", "        return allow()\n    return deny()")
+        since = own_change({"src/a.py": ("", GATE, "", reordered)})
+        self.assertGreaterEqual(since.changed, 2)
 
-    def test_a_new_path_keeps_its_status(self):
-        now = [compare_file(SPEC), compare_file("src/new.ts", "added", "s3", "@@ -0,0 +1 @@\n+x")]
-        self.assertEqual(pr_change_since([compare_file(SPEC)], now), DiffStat({"src/new.ts": "added"}, 1))
+    def test_a_moved_block_counts_its_lines(self):
+        # Swapping a 71-line big() with 40 lines of other code: the smallest line diff moves the 40 lines.
+        big = "def big():\n" + "".join(f"    x{n} = {n}\n" for n in range(70))
+        rest = "".join(f"y{n} = {n}\n" for n in range(40))
+        self.assertEqual(own_change({"src/a.py": ("", rest + big, "", big + rest)}).changed, 80)
 
-    def test_a_file_without_a_patch_is_over_the_limit(self):
-        now = [compare_file(SPEC, sha="s2", patch=None)]
-        self.assertGreater(pr_change_since([compare_file(SPEC)], now).changed, 60)
+    def test_a_new_path_is_added_and_a_base_file_is_not(self):
+        self.assertEqual(own_change({"src/new.ts": (None, None, None, "x\n")}), DiffStat({"src/new.ts": "added"}, 1))
+        self.assertEqual(own_change({"src/b.ts": (None, None, "y\n", "y\n")}), DiffStat({}, 0))
+
+    def test_an_unreadable_file_is_over_the_limit(self):
+        self.assertGreater(own_change({}, ["src/a.ts"]).changed, 60)
+
+
+class MutationResultTest(unittest.TestCase):
+    WORKFLOW = ".github/workflows/gate-mutation.yml"
+
+    def run_(self, id_, **changes):
+        return {"id": id_, "name": "gate/mutation", "app_id": 15368, "head_sha": FIX, "status": "completed",
+                "conclusion": "success", **changes}
+
+    def test_only_a_trusted_run_on_the_head_counts(self):
+        paths = {1: self.WORKFLOW, 2: ".github/workflows/other.yml", 3: self.WORKFLOW, 4: self.WORKFLOW}
+        untrusted = [self.run_(2), self.run_(3, app_id=1), self.run_(4, head_sha=REVIEWED)]
+        self.assertIsNone(mutation_result(untrusted, FIX, paths), "another workflow, another app, an older head")
+        self.assertEqual(mutation_result([self.run_(1), *untrusted], FIX, paths), "success")
+
+    def test_the_newest_run_decides_and_a_running_one_is_pending(self):
+        paths = {1: self.WORKFLOW, 2: self.WORKFLOW}
+        self.assertEqual(mutation_result([self.run_(1), self.run_(2, conclusion="cancelled")], FIX, paths), "cancelled")
+        self.assertEqual(mutation_result([self.run_(1), self.run_(2, status="in_progress", conclusion=None)], FIX, paths), "pending")
 
 
 class MainTest(unittest.TestCase):
     """main() on recorded-shape API answers: a minors-only r1 on REVIEWED, a 1-line fix on FIX."""
 
-    def run_main(self, statuses, comments, head_review=None, argv=("160", "T2", "--post-carry")):
+    def run_main(self, statuses, comments, head_review=None, argv=("160", "T2", "--post-carry"), check_runs=()):
         posted = []
         answers = {
             "repos/tylers2222/Monocode-Unlocked/pulls/160/commits": [REVIEWED, FIX],
             f"repos/tylers2222/Monocode-Unlocked/commits/{REVIEWED}/statuses": statuses,
             f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/statuses": [],
             "repos/tylers2222/Monocode-Unlocked/issues/160/comments": comments,
-            f"repos/tylers2222/Monocode-Unlocked/compare/tyler/main...{REVIEWED}": [compare_file(SPEC)],
-            f"repos/tylers2222/Monocode-Unlocked/compare/tyler/main...{FIX}": [compare_file(SPEC, sha="s2", patch="@@ -1 +1 @@\n-a\n+c")],
             f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/status": [head_review] if head_review else [],
-            f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/check-runs": [],
+            f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/check-runs": list(check_runs),
         }
+        texts = {("MB", REVIEWED): "a\n", ("MB", "MB"): "", ("MB2", "MB2"): "", (FIX, FIX): "c\n"}
         def gh(*args):
             if args[:2] == ("pr", "view"):
                 return f'{{"headRefOid": "{FIX}", "baseRefName": "tyler/main"}}'
             posted.append(args)
             return ""
         with unittest.mock.patch.object(merge_rule, "api", lambda path, jq, paginate=True: answers[path]), \
+                unittest.mock.patch.object(merge_rule, "compare", lambda base, sha: ({SPEC: "modified"}, "MB" if sha == REVIEWED else "MB2")), \
+                unittest.mock.patch.object(merge_rule, "read", lambda path, ref: {"MB": "", REVIEWED: "a\n", "MB2": "", FIX: "c\n"}[ref]), \
+                unittest.mock.patch.object(merge_rule, "workflow_path", lambda url: url), \
                 unittest.mock.patch.object(merge_rule, "gh", gh), unittest.mock.patch("builtins.print"):
             code = merge_rule.main(list(argv))
         return code, posted
@@ -330,6 +373,19 @@ class MainTest(unittest.TestCase):
     def test_another_prs_verdict_is_not_carried(self):
         foreign = {**self.STATUS, "target_url": "https://github.com/tylers2222/Monocode-Unlocked/pull/159"}
         self.assertEqual(self.run_main([foreign], [self.PROOF]), (1, []))
+
+    def test_t3_carries_only_on_a_trusted_gate_mutation_run(self):
+        run = {"id": 5, "name": "gate/mutation", "status": "completed", "conclusion": "success", "head_sha": FIX,
+               "app_id": 15368, "details_url": ".github/workflows/gate-mutation.yml"}
+        self.assertEqual(self.run_main([self.STATUS], [self.PROOF], argv=("160", "T3"), check_runs=[run]), (0, []))
+        self.assertEqual(self.run_main([self.STATUS], [self.PROOF], argv=("160", "T3")), (1, []), "no run: refused")
+        other = {**run, "details_url": ".github/workflows/ci.yml"}
+        self.assertEqual(self.run_main([self.STATUS], [self.PROOF], argv=("160", "T3"), check_runs=[other]), (1, []))
+
+    def test_a_clean_verdict_on_the_head_posts_nothing(self):
+        clean = {**self.STATUS, "state": "success", "description": "r2 clean: fixed"}
+        with unittest.mock.patch.object(merge_rule, "collect_verdicts", lambda statuses, url: [verdict("r2 clean: fixed", sha=FIX)]):
+            self.assertEqual(self.run_main([clean], []), (0, []))
 
     def test_review_in_progress_blocks(self):
         pending = {"context": "review/agent", "state": "pending", "description": "r2 in review"}
@@ -361,8 +417,8 @@ class RerunListTest(unittest.TestCase):
 
 
 class UpdateBranchMergeTest(unittest.TestCase):
-    """pr_change_since on real git objects: GitHub's compare A...B is the diff from
-    merge-base(A, B) to B, and this builds the same file list from a temporary repo."""
+    """own_change on real git objects: GitHub's compare A...B is the diff from
+    merge-base(A, B) to B, and this reads the same four versions from a temporary repo."""
 
     def git(self, *args):
         return subprocess.run(["git", "-C", self.repo, *args], check=True, capture_output=True, text=True).stdout
@@ -375,17 +431,14 @@ class UpdateBranchMergeTest(unittest.TestCase):
         self.git("commit", "-qm", message)
         return self.git("rev-parse", "HEAD").strip()
 
-    def compare(self, base, head):
-        merge_base = self.git("merge-base", base, head).strip()
-        files = []
-        for row in self.git("diff", "--name-status", "--no-renames", merge_base, head).splitlines():
-            code, path = row.split("\t")
-            status = {"A": "added", "D": "removed"}.get(code, "modified")
-            patch = self.git("diff", merge_base, head, "--", path)
-            patch = patch[patch.index("@@"):] if "@@" in patch else None
-            sha = self.git("rev-parse", f"{head}:{path}").strip() if status != "removed" else None
-            files.append({"filename": path, "status": status, "sha": sha, "patch": patch})
-        return files
+    def show(self, ref, path):
+        run = subprocess.run(["git", "-C", self.repo, "show", f"{ref}:{path}"], capture_output=True, text=True)
+        return run.stdout if run.returncode == 0 else None
+
+    def versions(self, base, reviewed, head):
+        base_then, base_now = (self.git("merge-base", base, sha).strip() for sha in (reviewed, head))
+        paths = set(self.git("diff", "--name-only", base_then, reviewed).split()) | set(self.git("diff", "--name-only", base_now, head).split())
+        return {path: tuple(self.show(ref, path) for ref in (base_then, reviewed, base_now, head)) for path in paths}
 
     def setUp(self):
         self.repo = tempfile.mkdtemp()
@@ -414,8 +467,8 @@ class UpdateBranchMergeTest(unittest.TestCase):
         return self.commit("Merge branch 'main' into pr")
 
     def change_since_review(self, head):
-        then = self.compare(self.main, self.reviewed)
-        return then, pr_change_since(then, self.compare(self.main, head))
+        reviewed_files = DiffStat({path: "modified" for path in self.git("diff", "--name-only", "main~1", self.reviewed).split()}, 0)
+        return reviewed_files, own_change(self.versions(self.main, self.reviewed, head))
 
     def test_clean_update_branch_adds_nothing(self):
         _, since = self.change_since_review(self.merge_main())
@@ -431,12 +484,18 @@ class UpdateBranchMergeTest(unittest.TestCase):
         def hidden():
             path = Path(self.repo) / "a.ts"
             path.write_text(path.read_text() + "".join(f"merge line {n}\n" for n in range(61)))
-        then, since = self.change_since_review(self.merge_main(hidden))
+        reviewed_files, since = self.change_since_review(self.merge_main(hidden))
         self.assertEqual(since.changed, 61)
-        reviewed_files = DiffStat({file["filename"]: file["status"] for file in then}, 0)
         decision = decide_fix(tier="T2", reviewed_files=reviewed_files, since_review=since)
         self.assertFalse(decision.ok)
         self.assertIn("61 lines", decision.reason)
+
+    def test_a_block_moved_after_the_review_counts(self):
+        path = Path(self.repo) / "a.ts"
+        lines = path.read_text().splitlines()
+        path.write_text("\n".join(lines[60:] + lines[:60]) + "\n")
+        _, since = self.change_since_review(self.commit("fix: move the first 60 lines to the end"))
+        self.assertGreater(since.changed, 60)
 
     def test_new_file_added_in_the_merge_blocks_the_carry(self):
         _, since = self.change_since_review(self.merge_main(lambda: self.write("c.ts", ["new in the merge"])))
