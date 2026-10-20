@@ -91,6 +91,7 @@ import { Shimmer } from "../../../shared/ui/Shimmer";
 import {
   hasPendingApproval,
   HARNESS_TITLE,
+  turnOpener,
   type AgentStep,
   type Block,
   type HarnessId,
@@ -1072,10 +1073,9 @@ function AgentTranscriptComponent({
           const userBlock = inlineWork
             ? monoTurnUserBlock(runs[0], messageDeliveries)
             : turnUserBlock(turn, managed);
-          const lastRun =
-            runs.length > 1
-              ? monoTurnUserBlock(runs[runs.length - 1], messageDeliveries)
-              : userBlock;
+          // The run that started last ends the message. A queued message
+          // can start after a notice that sits below it (ADE-59).
+          const latestRun = runs.length > 1 ? turnOpener(turn) : undefined;
           const habit = turn[0].monoHabit;
           // Older saved reports may have lost their habit tag. A Mono's
           // standalone reply still needs its identity and response actions.
@@ -1612,8 +1612,8 @@ function AgentTranscriptComponent({
                   modelName={turnModelName}
                   completedAt={
                     habit?.at ??
-                    (runs.length > 1 && lastRun?.startedAt != null
-                      ? lastRun.startedAt + (lastRun.durationMs ?? 0)
+                    (latestRun?.startedAt != null
+                      ? latestRun.startedAt + (latestRun.durationMs ?? 0)
                       : startedAt != null
                         ? startedAt + (durationMs ?? 0)
                         : undefined)
