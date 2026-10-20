@@ -167,7 +167,7 @@ type ReadyMember = Settled & { requestId: string };
 function releasableResults(
   results: ReadonlyMap<string, CompletionMember>,
   phase: CompletionPhase,
-  reported: Pick<WeakSet<ControlOutcome>, "has">,
+  reported: Pick<WeakSet<ControlOutcome>, "has"> | undefined,
 ): { release: string[]; send: ReadyMember[] } {
   const ready = [...results].flatMap(
     ([requestId, { accepted, settled }]): ReadyMember[] =>
@@ -178,7 +178,7 @@ function releasableResults(
   if (!releasing) return { release: [], send: [] };
   const sent = new Set<ControlOutcome>();
   const send = ready.filter(({ end }) => {
-    if (reported.has(end) || sent.has(end)) return false;
+    if (reported?.has(end) || sent.has(end)) return false;
     sent.add(end);
     return true;
   });
@@ -288,17 +288,17 @@ export class MonoSessionCompletionBatches {
   private release(key: string, group: CompletionBatch) {
     if (this.batches.get(key) !== group) return;
     const { monoId } = group.origin;
-    const reported = this.reportedEnds.get(monoId) ?? new WeakSet();
-    this.reportedEnds.set(monoId, reported);
     const { release, send } = releasableResults(
       group.results,
       group.phase,
-      reported,
+      this.reportedEnds.get(monoId),
     );
     // Removing before delivery prevents reentrant or repeated callbacks from replaying it.
     for (const requestId of release) group.results.delete(requestId);
     if (!group.results.size) this.batches.delete(key);
     if (!send.length) return;
+    const reported = this.reportedEnds.get(monoId) ?? new WeakSet();
+    this.reportedEnds.set(monoId, reported);
     for (const { end } of send) reported.add(end);
     const results = new Map(
       send.map(({ requestId, result }) => [requestId, result]),

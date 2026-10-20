@@ -605,6 +605,42 @@ describe("Mono completion batches", () => {
       ]);
     });
 
+    it("reports the steered turn's final answer from the open session", async () => {
+      const s: Session = {
+        ...newSession("codex", "/code/project"),
+        id: "s",
+        blocks: [
+          { id: "u", role: "user", text: "Open the PR", startedAt: 1 },
+          { id: "early", role: "assistant", text: "Now open the PR." },
+          {
+            id: "steer",
+            role: "user",
+            text: "Also state the size",
+            appRequestId: "send-s",
+            sentAt: 2,
+          },
+          { id: "final", role: "assistant", text: "PR #103 is open." },
+          { id: "next", role: "user", text: "New task", startedAt: 3 },
+          { id: "later", role: "assistant", text: "Unrelated answer" },
+        ],
+      };
+      const results: string[] = [];
+      const batches = new MonoSessionCompletionBatches(
+        (_, message) => {
+          const payload = JSON.parse(message.text.split("\n\n")[1]);
+          results.push(payload.result);
+        },
+        schedule,
+        (sessionId) => (sessionId === s.id ? s : undefined),
+      );
+      const turnWatchers = createTurnWatchers();
+      // The steer's receipt `send-s` is not its session id `s`.
+      await steer(batches, turnWatchers, origin, "send-s");
+      batches.closeInactive(() => false);
+      turnWatchers.settle("s", 1, { status: "completed", text: "control" });
+      expect(results).toEqual(["PR #103 is open."]);
+    });
+
     it.each([true, false])(
       "reports two in-flight steers of one end once (first steer fails: %s)",
       async (firstFails) => {
