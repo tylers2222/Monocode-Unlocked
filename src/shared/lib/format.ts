@@ -74,3 +74,5 @@ async function pluginsFor(parser: ParserName): Promise<Plugin[]> {
       return [await import("prettier/plugins/markdown")];
   }
 }
+
+export const throwawayTiny = 1;
