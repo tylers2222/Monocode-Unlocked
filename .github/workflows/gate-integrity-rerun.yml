@@ -10,6 +10,7 @@ on:
   issue_comment:
     types: [created, edited]
   status:
+  # Every pull_request workflow whose checks merge_rule.py waits for. A new one goes here too.
   workflow_run:
     workflows: [CI, gate]
     types: [completed]
@@ -26,7 +27,8 @@ jobs:
   rerun:
     # Only events gate/integrity reads; every other status or comment costs no runner.
     if: >-
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, 'fixer-proof:'))
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, 'fixer-proof:')
+        && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
       || (github.event_name == 'status' && github.event.context == 'review/agent' && github.event.state != 'pending')
       || (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request')
     runs-on: ubuntu-latest
