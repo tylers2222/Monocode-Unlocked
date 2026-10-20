@@ -119,16 +119,14 @@ async function watchRun(
   while (!settled) {
     await Promise.race([turn, new Promise((r) => setTimeout(r, POLL_MS))]);
     if (settled) break;
+    const run = host.sessions().find((session) => session.id === runId);
     const pending =
-      host
-        .sessions()
-        .find((session) => session.id === runId)
-        ?.blocks.filter((block) => block.approval && !block.approval.decided) ??
+      run?.blocks.filter((block) => block.approval && !block.approval.decided) ??
       [];
     for (const block of pending)
       if (!isRelayed(runId, block.approval!.requestId))
         host.askApproval(monoId, habit, runId, block);
-    if (pending.length) waiting += POLL_MS;
+    if (pending.length || run?.pendingQuestion) waiting += POLL_MS;
     else working += POLL_MS;
     if (working >= HABIT_RUN_TIMEOUT_MS || waiting >= HABIT_APPROVAL_WAIT_MS)
       return {
