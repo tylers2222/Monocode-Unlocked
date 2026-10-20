@@ -27,3 +27,4 @@ read -r pr_state head < <(gh pr view "$pr" -R "$repo" --json state,headRefOid -q
 gh api -X POST "repos/$repo/statuses/$sha" -f state="$state" -f context=review/agent -f description="$summary" \
   -f target_url="https://github.com/$repo/pull/$pr" > /dev/null || fail "GitHub refused the status for $sha"
 echo "review-status: posted review/agent $state on $sha (PR #$pr)"
+# throwaway
