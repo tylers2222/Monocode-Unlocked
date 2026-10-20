@@ -1,3 +1,4 @@
+import itertools
 import json
 import os
 import re
@@ -127,6 +128,21 @@ class MainTest(unittest.TestCase):
     def test_a_commit_that_is_no_open_prs_head_posts_nothing(self):
         code, posts, _ = self.run_main("status", {"sha": "H9"}, ["H1"], prs=self.STACK)
         self.assertEqual((code, posts), (0, []))
+
+    def test_a_head_with_no_gate_integrity_run_posts_nothing(self):
+        code, posts, _ = self.run_main("status", {"sha": "H1"}, ["H1"], polls=([],), prs=self.STACK)
+        self.assertEqual((code, posts), (0, []), "a stacked PR's base is not tyler/main, so gate-integrity never ran")
+
+    def test_a_run_whose_other_jobs_failed_is_re_run_whole(self):
+        self.JOBS = {7: [{"id": 70, "name": "gate/tier", "conclusion": "failure"}, {"id": 71, "name": "gate/integrity", "conclusion": "failure"}]}
+        code, posts, _ = self.run_main("status", {"sha": "H1"}, ["H1"], prs=self.STACK)
+        self.assertEqual((code, posts), (0, ["repos/o/r/actions/runs/7/rerun"]))
+
+    def test_a_run_still_running_after_the_wait_fails_and_posts_nothing(self):
+        clock = itertools.count(0, rerun_integrity.WAIT_SECONDS + 1)
+        with unittest.mock.patch.object(rerun_integrity.time, "monotonic", lambda: next(clock)):
+            code, posts, _ = self.run_main("status", {"sha": "H1"}, ["H1"], polls=([(7, "in_progress")], [(7, "completed")]), prs=self.STACK)
+        self.assertEqual((code, posts), (1, []), "the run completes only after the deadline has passed")
 
 
 if __name__ == "__main__":
