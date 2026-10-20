@@ -1,37 +1,78 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { isAbsolute, relative, sep } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+
+/** Login dirs a harness reads from its env, besides `HOME`. */
+const LOGIN_VARS = [
+  "PI_CODING_AGENT_DIR",
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
+  "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+];
 
 /**
- * Env vars that point a harness at a login: its credentials, sessions and
- * settings. A rig whose harness reads a real one can run real models and
- * write into the user's sessions.
+ * Each dir the harness would read a login from, resolved as the harness does:
+ * by text against the child's `cwd` (`path.resolve`, as omp does). omp keeps
+ * its config at `HOME` joined with `PI_CONFIG_DIR` (default `.omp`).
  */
-const LOGIN_DIR_VARS = ["PI_CODING_AGENT_DIR", "CLAUDE_CONFIG_DIR", "CODEX_HOME"];
+function loginDirs(env: NodeJS.ProcessEnv, cwd: string): [string, string][] {
+  const home = env.HOME ? resolve(cwd, env.HOME) : homedir();
+  return [
+    ["HOME", home],
+    ["PI_CONFIG_DIR", join(home, env.PI_CONFIG_DIR || ".omp")],
+    ...LOGIN_VARS.flatMap((name): [string, string][] => {
+      const dir = env[name];
+      return dir ? [[name, resolve(cwd, dir)]] : [];
+    }),
+  ];
+}
 
-function isInside(dir: string, ownDir: string): boolean {
-  const path = relative(realpathSync(ownDir), realpathSync(dir));
-  return path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+const within = (path: string, root: string) => {
+  const rest = relative(root, path);
+  return rest !== ".." && !rest.startsWith(`..${sep}`) && !isAbsolute(rest);
+};
+
+/**
+ * True when `path` is inside `ownDir` by text, and its nearest existing
+ * ancestor (itself when it exists) is inside it once links are followed.
+ * A path that does not exist yet is judged by where it would be made.
+ */
+function inside(path: string, ownDir: string): boolean {
+  const own = realpathSync(ownDir);
+  if (!within(path, resolve(ownDir)) && !within(path, own)) return false;
+  let existing = path;
+  while (!existsSync(existing)) existing = dirname(existing);
+  return within(realpathSync(existing), own);
 }
 
 /**
- * Spawns a real harness for a test rig. It refuses, before anything starts,
- * when `env` would give the harness an existing login dir outside `ownDir`,
- * the test's temp dir, where the rig keeps the harness's own login.
+ * Spawns a real harness for a test rig. The child's env is built here, not
+ * taken from the caller: `PATH`, `HOME` and the harness login dirs inside
+ * `ownDir` (the test's temp dir), then `env`, which holds only what the rig
+ * adds. Before anything starts, it refuses when any dir the harness would read
+ * a login from resolves outside `ownDir`.
  */
 export function spawnRealHarness(
   command: string,
   args: string[],
-  { cwd, env, ownDir }: { cwd: string; env: NodeJS.ProcessEnv; ownDir: string },
+  { cwd, ownDir, env = {} }: { cwd: string; ownDir: string; env?: NodeJS.ProcessEnv },
 ): ChildProcess {
-  const real = LOGIN_DIR_VARS.flatMap((name) => {
-    const dir = env[name];
-    return dir && existsSync(dir) && !isInside(dir, ownDir) ? [`${name}=${dir}`] : [];
-  });
-  if (real.length)
+  const childEnv: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    HOME: ownDir,
+    PI_CODING_AGENT_DIR: join(ownDir, ".omp", "agent"),
+    CLAUDE_CONFIG_DIR: join(ownDir, ".claude"),
+    CODEX_HOME: join(ownDir, ".codex"),
+    ...env,
+  };
+  const outside = loginDirs(childEnv, cwd)
+    .filter(([, dir]) => !inside(dir, ownDir))
+    .map(([name, dir]) => `${name}=${dir}`);
+  if (outside.length)
     throw new Error(
-      `Refusing to start ${command}. These env vars name a real login dir: ` +
-        `${real.join(", ")}. A test rig gives the harness its own login dir inside ${ownDir}.`,
+      `Refusing to start ${command}. It would read a login outside the test's temp dir: ` +
+        `${outside.join(", ")}. A test rig keeps the harness's login inside ${ownDir}.`,
     );
-  return spawn(command, args, { cwd, env });
+  return spawn(command, args, { cwd, env: childEnv });
 }

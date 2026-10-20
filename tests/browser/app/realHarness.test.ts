@@ -1,7 +1,14 @@
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { spawnRealHarness } from "./realHarness";
 
@@ -15,55 +22,137 @@ afterEach(() => {
   for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** Runs `touch <marker>` through the guard; the marker shows it started. */
-function start(env: NodeJS.ProcessEnv, ownDir: string) {
+/** A dir outside the test's own that holds a harness login, like ~/.omp-2. */
+function realLogin() {
+  const dir = tempDir();
+  mkdirSync(join(dir, ".omp", "agent"), { recursive: true });
+  return dir;
+}
+
+type Seen = { home: string; omp: string; claude: string; codex: string; cwd: string };
+
+/** Starts `node`, which writes the env it got to a file; reads that file back. */
+async function startAndRead(ownDir: string, cwd: string, env?: NodeJS.ProcessEnv) {
+  const out = join(ownDir, "seen.json");
+  const script = `require("fs").writeFileSync(process.argv[1], JSON.stringify({
+    home: process.env.HOME, omp: process.env.PI_CODING_AGENT_DIR,
+    claude: process.env.CLAUDE_CONFIG_DIR, codex: process.env.CODEX_HOME, cwd: process.cwd() }))`;
+  const child = spawnRealHarness(process.execPath, ["-e", script, out], { cwd, ownDir, env });
+  await once(child, "exit");
+  return JSON.parse(readFileSync(out, "utf8")) as Seen;
+}
+
+/** Throws when the guard refuses; `marker` exists only if the harness started. */
+function tryStart(ownDir: string, env: NodeJS.ProcessEnv, cwd = ownDir) {
   const marker = join(ownDir, "started");
   return {
     marker,
-    child: () =>
-      spawnRealHarness("touch", [marker], {
-        cwd: ownDir,
-        env: { PATH: process.env.PATH, ...env },
-        ownDir,
-      }),
+    start: () => spawnRealHarness("touch", [marker], { cwd, ownDir, env }),
   };
 }
 
 describe("spawnRealHarness", () => {
-  it.each(["PI_CODING_AGENT_DIR", "CLAUDE_CONFIG_DIR", "CODEX_HOME"])(
-    "refuses %s set to a real login dir, before the harness starts",
-    (name) => {
-      const login = tempDir();
-      const own = tempDir();
-      const { marker, child } = start({ [name]: login }, own);
-      expect(child).toThrow(`real login dir: ${name}=${login}.`);
-      expect(existsSync(marker)).toBe(false);
-    },
-  );
-
-  it("starts the harness with its login dirs inside the test's temp dir", async () => {
+  it("gives the harness HOME and its login dirs inside the test's temp dir", async () => {
     const own = tempDir();
-    mkdirSync(join(own, "agent"));
-    // tmpdir() is /var/... on macOS, which resolves to /private/var/....
-    const { marker, child } = start(
-      {
-        PI_CODING_AGENT_DIR: join(own, "agent"),
-        CLAUDE_CONFIG_DIR: own,
-        CODEX_HOME: join(own, "missing"),
-      },
-      own,
-    );
-    await once(child(), "exit");
-    expect(existsSync(marker)).toBe(true);
+    const seen = await startAndRead(own, own);
+    for (const dir of [seen.home, seen.omp, seen.claude, seen.codex])
+      expect(dir.startsWith(own)).toBe(true);
+    expect(seen.home).toBe(own);
   });
 
-  it("refuses a login dir beside the temp dir that shares its name prefix", () => {
+  it("refuses unset login vars when HOME holds a real login", () => {
+    const own = tempDir();
+    const home = realLogin();
+    const { marker, start } = tryStart(own, {
+      HOME: home,
+      PI_CODING_AGENT_DIR: undefined,
+      CLAUDE_CONFIG_DIR: undefined,
+      CODEX_HOME: undefined,
+    });
+    expect(start).toThrow(`PI_CONFIG_DIR=${join(home, ".omp")}`);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("refuses a real HOME even with every login var inside the temp dir", () => {
+    const own = tempDir();
+    const home = realLogin();
+    expect(tryStart(own, { HOME: home }).start).toThrow(`HOME=${home}`);
+  });
+
+  it.each([
+    "PI_CODING_AGENT_DIR",
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
+    "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+  ])("refuses %s set to a real login dir, before the harness starts", (name) => {
+    const own = tempDir();
+    const login = realLogin();
+    const { marker, start } = tryStart(own, { [name]: login });
+    expect(start).toThrow(`${name}=${login}`);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("refuses a PI_CONFIG_DIR that climbs out of HOME", () => {
+    const own = tempDir();
+    const login = realLogin();
+    expect(tryStart(own, { PI_CONFIG_DIR: `../${basename(login)}` }).start).toThrow(
+      `PI_CONFIG_DIR=${login}`,
+    );
+  });
+
+  it("resolves .. by text, the way the harness does, through a link like /var", () => {
+    const own = tempDir();
+    const login = realLogin();
+    // own/a/link -> own/b/c/d, as /var -> /private/var. By text,
+    // own/a/link/../../.. is own's parent, so the path names `login`. Through
+    // the link it names own/<login's name>, which does not exist.
+    mkdirSync(join(own, "a"));
+    mkdirSync(join(own, "b", "c", "d"), { recursive: true });
+    symlinkSync(join(own, "b", "c", "d"), join(own, "a", "link"));
+    const dir = join(own, "a", "link") + `/../../../${basename(login)}`;
+    expect(tryStart(own, { PI_CODING_AGENT_DIR: dir }).start).toThrow(
+      `PI_CODING_AGENT_DIR=${login}`,
+    );
+  });
+
+  it("resolves a relative path against the harness's cwd, not the test's", async () => {
+    const own = tempDir();
+    mkdirSync(join(own, "work"));
+    const seen = await startAndRead(own, join(own, "work"), {
+      PI_CODING_AGENT_DIR: "../agent",
+    });
+    expect(seen.omp).toBe("../agent");
+
+    const login = realLogin();
+    expect(
+      tryStart(own, { PI_CODING_AGENT_DIR: ".omp/agent" }, login).start,
+    ).toThrow(`PI_CODING_AGENT_DIR=${join(login, ".omp", "agent")}`);
+  });
+
+  it("refuses a login dir outside the temp dir that does not exist yet", () => {
+    const own = tempDir();
+    const missing = join(realLogin(), "nope", "agent");
+    expect(tryStart(own, { PI_CODING_AGENT_DIR: missing }).start).toThrow(
+      `PI_CODING_AGENT_DIR=${missing}`,
+    );
+  });
+
+  it("refuses a link inside the temp dir that leads to a real login", () => {
+    const own = tempDir();
+    const login = realLogin();
+    symlinkSync(login, join(own, "linked"));
+    expect(
+      tryStart(own, { CODEX_HOME: join(own, "linked", "not-yet") }).start,
+    ).toThrow(`CODEX_HOME=${join(own, "linked", "not-yet")}`);
+  });
+
+  it("refuses a dir beside the temp dir that shares its name prefix", () => {
     const own = tempDir();
     const sibling = `${own}-login`;
     mkdirSync(sibling);
     made.push(sibling);
-    expect(start({ CODEX_HOME: sibling }, own).child).toThrow(
-      `real login dir: CODEX_HOME=${sibling}.`,
+    expect(tryStart(own, { CODEX_HOME: sibling }).start).toThrow(
+      `CODEX_HOME=${sibling}`,
     );
   });
 });
