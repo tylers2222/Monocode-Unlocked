@@ -240,15 +240,23 @@ class DecideTest(unittest.TestCase):
 
 
 class GhBoundaryTest(unittest.TestCase):
-    def test_gh_failure_exits_2(self):
+    def run_with_fake_gh(self, gh_script, *args):
         with tempfile.TemporaryDirectory() as bin_dir:
             fake = Path(bin_dir) / "gh"
-            fake.write_text("#!/bin/sh\nexit 1\n")
+            fake.write_text(gh_script)
             fake.chmod(0o755)
             script = Path(__file__).resolve().parents[1] / "pr_body.py"
             env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
-            run = subprocess.run([sys.executable, str(script), "160", "--nt", "10"], env=env, capture_output=True, text=True)
-        self.assertEqual(run.returncode, 2)
+            return subprocess.run([sys.executable, str(script), *args], env=env, capture_output=True, text=True)
+
+    def test_gh_failure_exits_2(self):
+        self.assertEqual(self.run_with_fake_gh("#!/bin/sh\nexit 1\n", "160", "--nt", "10").returncode, 2)
+
+    def test_without_nt_the_cli_still_lints(self):
+        # gate/tier failed, so the step passes no --nt; the body must still be checked.
+        run = self.run_with_fake_gh("#!/bin/sh\necho '{\"body\": \"\", \"files\": []}'\n", "160")
+        self.assertEqual(run.returncode, 1)
+        self.assertEqual(run.stdout.splitlines(), [f"pr-body: missing {i}: {HINTS[i]}" for i in ("size", "self-pass", "file-caps")])
 
 
 if __name__ == "__main__":

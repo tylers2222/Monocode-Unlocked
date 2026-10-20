@@ -77,29 +77,29 @@ jobs:
           NT: ${{ needs.tier.outputs.nt }}
         run: python3 scripts/process/pr_body.py "$PR" ${NT:+--nt "$NT"}
 
-      # The two label checks come from #164. Until it is on the default branch the
-      # check is not enforced, and the step says so in a warning on every run.
+      # The two label checks come from #164, which merges first. A missing script fails
+      # the step, so a check can never be skipped without a red gate/integrity.
       - name: waits-tyler label category
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -f scripts/process/waits-tyler.py ]; then
-            python3 scripts/process/waits-tyler.py --pr "$PR" --repo "$GATE_REPO"
-          else
-            echo "::warning::waits-tyler label check is not on the default branch yet (#164), so it is NOT enforced"
+          if [ ! -f scripts/process/waits-tyler.py ]; then
+            echo "::error::scripts/process/waits-tyler.py is missing on the default branch; #164 must merge first"
+            exit 1
           fi
+          python3 scripts/process/waits-tyler.py --pr "$PR" --repo "$GATE_REPO"
 
       - name: Exactly one instance label
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -f scripts/process/instance-label.py ]; then
-            python3 scripts/process/instance-label.py --pr "$PR" --repo "$GATE_REPO"
-          else
-            echo "::warning::instance label check is not on the default branch yet (#164), so it is NOT enforced"
+          if [ ! -f scripts/process/instance-label.py ]; then
+            echo "::error::scripts/process/instance-label.py is missing on the default branch; #164 must merge first"
+            exit 1
           fi
+          python3 scripts/process/instance-label.py --pr "$PR" --repo "$GATE_REPO"
 
       - name: Fail when gate/tier failed
         if: ${{ !cancelled() && needs.tier.result != 'success' }}
