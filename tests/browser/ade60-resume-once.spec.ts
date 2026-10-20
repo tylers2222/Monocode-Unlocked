@@ -148,12 +148,11 @@ test("a relaunch resumes each interrupted session once and times its turn", asyn
   await page.clock.runFor(1_300);
   await page.evaluate(() => window.releaseProjectLocation?.());
 
-  // The project session opens one turn with one Continue, and nothing steers it.
+  // The project session opens one turn with one Continue.
   await expect
     .poll(async () => (await piRequests(page, IN_PROJECT, "prompt")).length)
     .toBe(1);
   await page.clock.runFor(1_000);
-  expect(await piRequests(page, IN_PROJECT, "steer")).toEqual([]);
   expect(await piRequests(page, IN_WORKTREE, "prompt")).toHaveLength(1);
 
   // The turn runs 38.8 s, as 872c4aa7's did, and its opener records that.

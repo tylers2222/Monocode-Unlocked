@@ -10507,7 +10507,7 @@ function Workspace({
         // A Continue opens the turn the quit cut short, or nothing. This
         // effect runs again whenever another session resumes, so a Continue
         // still waiting on its project's location check is asked for twice;
-        // the second must not steer into the turn the first opened (ADE-60).
+        // the second must not steer into the turn the first opened.
         onSubmit(id, CONTINUE_PROMPT, [], { turnId: newTurnId() });
       }
     }, 0);
