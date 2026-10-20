@@ -209,6 +209,25 @@ class TinyOverlapsTest(unittest.TestCase):
         )
 
 
+class TicketPartTest(unittest.TestCase):
+    ADE = "ADE-53: approvals board"
+
+    def test_good_line_on_an_ade_pr(self):
+        self.assertNotIn("ticket-part", lint_body(PR_142 + "\nTicket-part: 2/3\n", self.ADE))
+
+    def test_missing_line_on_an_ade_pr(self):
+        self.assertIn("ticket-part", lint_body(PR_142, self.ADE))
+
+    def test_part_above_total_or_zero_fails(self):
+        for line in ("Ticket-part: 4/3", "Ticket-part: 0/3", "Ticket-part: 1/3 (draft)", "ticket-part: 1/3"):
+            with self.subTest(line=line):
+                self.assertIn("ticket-part", lint_body(PR_142 + f"\n{line}\n", self.ADE))
+
+    def test_non_ade_pr_needs_no_line(self):
+        self.assertEqual(lint_body(PR_142, "Process fixes D2: body lint"), [])
+        self.assertEqual(lint_body(PR_142, "Fix ADE-53 follow-up"), [], "only a title that starts with ADE-<digits>")
+
+
 class StackTest(unittest.TestCase):
     def test_own_stack_is_not_an_overlap(self):
         parent = open_pr(171, "a.yml")
