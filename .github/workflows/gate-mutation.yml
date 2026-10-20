@@ -2,7 +2,7 @@ name: gate-mutation
 
 # gate/mutation: for a T3 PR, mutates only the lines the PR changed and fails when a
 # mutant survives; for T1 and T2 it passes at once. It runs the PR's own code on
-# pull_request, with a read-only token and no secrets. gate/integrity trusts its result
+# pull_request, with no token permissions and no secrets. gate/integrity trusts its result
 # only from this file, on the exact head (scripts/process/merge_rule.py
 # mutation_result), and a PR that edits this file or scripts/process/ fails
 # gate/integrity as a gate edit. The mutation tools are pinned and installed by the job.
@@ -14,9 +14,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
-  pull-requests: read
+# The repository is public: the checkout and tier.py's read of the PR's files need no
+# token scope. Only the Tier step gets the token; no step that runs PR code has it.
+permissions: {}
 
 jobs:
   mutation:
@@ -27,7 +27,6 @@ jobs:
       PR: ${{ github.event.pull_request.number }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      GH_TOKEN: ${{ github.token }}
       GATE_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +37,8 @@ jobs:
 
       - name: Tier
         id: tier
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 scripts/process/tier.py "$PR"
 
       - name: Changed lines to mutate
