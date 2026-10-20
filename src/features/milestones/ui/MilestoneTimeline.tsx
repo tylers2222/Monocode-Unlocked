@@ -254,7 +254,8 @@ export function MilestoneTimeline({
 
 /**
  * Frame M·6 mid-drag: the dragged row's card, lifted, takes its place in the
- * list where it would drop, under the blue drop line.
+ * list where it would drop, under the blue drop line. It shows the row's
+ * title, note and target as the row does, with its grip.
  */
 function LiftedCard({
   milestone,
@@ -269,19 +270,31 @@ function LiftedCard({
     <li
       aria-hidden
       data-lifted={side}
-      className="pointer-events-none relative my-1 flex items-center gap-3 rounded-lg bg-background-base py-2 pr-2.5 pl-3 text-sm font-medium shadow-lg ring-1 ring-content/12"
+      className="pointer-events-none relative my-1 grid grid-cols-[7px_1fr_auto] items-start gap-3 rounded-lg bg-background-base py-2 pr-2.5 pl-3 shadow-lg ring-1 ring-content/12"
     >
       <span
         data-drop-line
         className="absolute right-0 -left-[22px] -top-1.5 h-0.5 rounded-full bg-accent before:absolute before:-top-[3px] before:left-0 before:size-2 before:rounded-full before:border-2 before:border-accent before:bg-background-base"
       />
-      <i
-        className={`block size-[7px] shrink-0 rounded-full ${ROW_DOT[milestone.status]}`}
-      />
-      <span className="min-w-0 flex-1 truncate">{milestone.title}</span>
-      <span className="text-xs font-normal text-content/55 tabular-nums">
-        {milestone.target ? formatTarget(milestone.target, today) : "Later"}
+      <span className="absolute top-2 -left-6 grid h-5 w-4 place-items-center text-content/35">
+        <GripVertical className="size-3.5" />
       </span>
+      <span className="grid h-5 place-items-center">
+        <i
+          className={`block size-[7px] rounded-full ${ROW_DOT[milestone.status]}`}
+        />
+      </span>
+      <div className="min-w-0">
+        <div className="truncate text-sm leading-5 font-medium">
+          {milestone.title}
+        </div>
+        {milestone.note ? (
+          <div className="mt-px truncate text-xs leading-[18px] text-content/45">
+            {milestone.note}
+          </div>
+        ) : null}
+      </div>
+      <Target milestone={milestone} today={today} />
     </li>
   );
 }
@@ -377,20 +390,27 @@ function MilestoneRow({
           </div>
         ) : null}
       </div>
-      <span
-        className={`min-w-16 text-right text-xs leading-5 whitespace-nowrap tabular-nums ${
-          done ? "text-content/35" : "text-content/55"
-        }`}
-      >
-        {!milestone.target ? (
-          <span className="rounded border border-dashed border-content/20 px-1.5 py-px text-[11px] text-content/45">
-            Later
-          </span>
-        ) : (
-          formatTarget(milestone.target, today)
-        )}
-      </span>
+      <Target milestone={milestone} today={today} />
     </li>
+  );
+}
+
+/** A row's target date, or "Later" in a dashed box (frames M·4 and M·6). */
+function Target({ milestone, today }: { milestone: Milestone; today: Date }) {
+  return (
+    <span
+      className={`min-w-16 text-right text-xs leading-5 whitespace-nowrap tabular-nums ${
+        milestone.status === "done" ? "text-content/35" : "text-content/55"
+      }`}
+    >
+      {!milestone.target ? (
+        <span className="rounded border border-dashed border-content/20 px-1.5 py-px text-[11px] text-content/45">
+          Later
+        </span>
+      ) : (
+        formatTarget(milestone.target, today)
+      )}
+    </span>
   );
 }
 
