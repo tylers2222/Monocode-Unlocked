@@ -1,7 +1,4 @@
-import {
-  markTurnInterrupted,
-  type ResumedWorkspace,
-} from "../../sessions/model/inFlight";
+import { markTurnInterrupted } from "../../sessions/model/inFlight";
 import {
   closeLeaf,
   isAgentTab,
@@ -16,7 +13,11 @@ import {
   type SessionChangesSource,
   type WorkspaceTab,
 } from "./layout";
-import { filterTabsForProject } from "./workspaceTabGroups";
+import {
+  filterTabsForProject,
+  tabWorkspace,
+  workspaceTabCwd,
+} from "./workspaceTabGroups";
 import type { ReleaseNotesTabSource } from "../../../app/model/releaseNotes";
 import {
   clampDockSize,
@@ -24,7 +25,11 @@ import {
   type DockSide,
   type ProjectTerminalDock,
 } from "../../projects/model/projectTerminal";
-import { normalizeProjectPath } from "../../projects/model/recents";
+import {
+  isRemoteProjectPath,
+  normalizeProjectPath,
+  sameProjectPath,
+} from "../../projects/model/recents";
 import { pathKey } from "../../../shared/lib/paths";
 import { parseRemotePath, remotePath } from "../../connections/model/remoteProjects";
 import {
@@ -36,6 +41,7 @@ import {
   HARNESSES,
   RUNTIME_MODES,
   newSession,
+  sessionWorkCwd,
   type HarnessId,
   type RuntimeMode,
   type Session,
@@ -57,6 +63,21 @@ export type WorkspaceSessionStub = {
   worktreeRemoved?: boolean;
 };
 
+/** One window's open workspace, as every save path sees it. */
+export type WindowWorkspace = {
+  tabs: WorkspaceTab[];
+  sessions: Session[];
+  activeTabId: string;
+  projectCwd: string;
+  projectReturnMemory: ProjectReturnMemory;
+  projectTerminals: ProjectTerminalDock[];
+  lastDockSide?: DockSide;
+  /** Tab or session id -> the workspace it was opened or moved in. */
+  pins: ReadonlyMap<string, string>;
+};
+
+type TabWorkspace = { tabId: string; path: string };
+
 export type WorkspaceSnapshot = {
   tabs: WorkspaceTab[];
   sessions: WorkspaceSessionStub[];
@@ -69,8 +90,15 @@ export type WorkspaceSnapshot = {
     paneId?: string;
   }[];
   lastDockSide?: DockSide;
+  /** Tabs saved in a workspace other than their project folder. */
+  tabWorkspaces?: TabWorkspace[];
 };
 
+/**
+ * Today's save: only the tabs `keepTab` keeps reopen, and so do only the
+ * sessions they show. ADE-57 (2/2) moves every save path to
+ * `workspaceSnapshot` and deletes this.
+ */
 export function collectWorkspaceSnapshot(
   tabs: WorkspaceTab[],
   sessions: Session[],
@@ -81,8 +109,6 @@ export function collectWorkspaceSnapshot(
   lastDockSide?: DockSide,
   keepTab?: (tab: WorkspaceTab) => boolean,
 ): WorkspaceSnapshot {
-  // Tabs left out (another worktree's, say) do not reopen, and neither do
-  // sessions that only they showed.
   const kept = keepTab ? tabs.filter(keepTab) : tabs;
   const keptIds = new Set(kept.flatMap((tab) => leafIds(tab.layout)));
   const droppedIds = new Set(
@@ -91,21 +117,14 @@ export function collectWorkspaceSnapshot(
       .flatMap((tab) => leafIds(tab.layout))
       .filter((id) => !keptIds.has(id)),
   );
-  const snapshot = withoutInboxSessions({
-    tabs: withoutAgentTabs(kept)
-      .map(sanitizeTab)
-      .filter((tab): tab is WorkspaceTab => tab != null),
-    sessions: sessions
-      .filter((session) => !droppedIds.has(session.id))
-      .map(sessionStub)
-      .filter((stub): stub is WorkspaceSessionStub => stub != null),
+  const snapshot = savedFields(
+    kept,
+    sessions.filter((session) => !droppedIds.has(session.id)),
     activeTabId,
-    projectCwd: projectCwd.trim() || "~",
-    projectTerminals: projectTerminals
-      .map(sanitizeProjectTerminal)
-      .filter((dock): dock is ProjectTerminalDock => dock != null),
-    ...(isDockSide(lastDockSide) ? { lastDockSide } : {}),
-  });
+    projectCwd,
+    projectTerminals,
+    lastDockSide,
+  );
   return withProjectReturnTargets(
     {
       ...snapshot,
@@ -119,10 +138,118 @@ export function collectWorkspaceSnapshot(
   );
 }
 
+/** The window's fields in their saved form; agent and Inbox tabs left out. */
+function savedFields(
+  tabs: WorkspaceTab[],
+  sessions: readonly Session[],
+  activeTabId: string,
+  projectCwd: string,
+  projectTerminals: ProjectTerminalDock[],
+  lastDockSide: DockSide | undefined,
+): WorkspaceSnapshot {
+  return withoutInboxSessions({
+    tabs: withoutAgentTabs(tabs)
+      .map(sanitizeTab)
+      .filter((tab): tab is WorkspaceTab => tab != null),
+    sessions: sessions
+      .map(sessionStub)
+      .filter((stub): stub is WorkspaceSessionStub => stub != null),
+    activeTabId,
+    projectCwd: projectCwd.trim() || "~",
+    projectTerminals: projectTerminals
+      .map(sanitizeProjectTerminal)
+      .filter((dock): dock is ProjectTerminalDock => dock != null),
+    ...(isDockSide(lastDockSide) ? { lastDockSide } : {}),
+  });
+}
+
+/** What is saved. Every save path calls it with its own window. */
+export function workspaceSnapshot([
+  {
+    tabs,
+    sessions,
+    activeTabId,
+    projectCwd,
+    projectReturnMemory: memory,
+    projectTerminals,
+    lastDockSide,
+    pins,
+  },
+]: readonly [WindowWorkspace]): WorkspaceSnapshot {
+  const snapshot = savedFields(
+    tabs,
+    sessions,
+    activeTabId,
+    projectCwd,
+    projectTerminals,
+    lastDockSide,
+  );
+  const tabWorkspaces = savedTabWorkspaces(snapshot.tabs, sessions, pins);
+  // The app opens each project on its default workspace, so the active tab
+  // and the project return targets come from that workspace only.
+  const inDefault = snapshot.tabs.filter(
+    (tab) => !tabWorkspaces.some((entry) => entry.tabId === tab.id),
+  );
+  return withProjectReturnTargets(
+    {
+      ...snapshot,
+      activeTabId: savedActiveTabId(
+        filterTabsForProject(tabs, sessions, snapshot.projectCwd),
+        inDefault,
+        activeTabId,
+      ),
+      ...(tabWorkspaces.length > 0 ? { tabWorkspaces } : {}),
+    },
+    memory,
+    inDefault,
+  );
+}
+
+function savedTabWorkspaces(
+  tabs: readonly WorkspaceTab[],
+  sessions: readonly Session[],
+  pins: ReadonlyMap<string, string>,
+): TabWorkspace[] {
+  return tabs.flatMap((tab) => {
+    const project = workspaceTabCwd(tab, sessions);
+    const path = tabWorkspace(tab, sessions, pins);
+    if (!project || !path || isRemoteProjectPath(project)) return [];
+    return sameProjectPath(path, project) ? [] : [{ tabId: tab.id, path }];
+  });
+}
+
+/** Where each restored tab belongs: its saved workspace while one of its
+ * sessions still works there, else its project folder. A tab pinned to a
+ * removed worktree would be hidden, because the switcher cannot list it. */
+export function restoreWorkspacePins(
+  tabs: readonly WorkspaceTab[],
+  sessions: readonly Session[],
+  saved: readonly TabWorkspace[] = [],
+): Map<string, string> {
+  const pins = new Map<string, string>();
+  for (const tab of tabs) {
+    const path = saved.find((entry) => entry.tabId === tab.id)?.path;
+    const live =
+      !!path &&
+      leafIds(tab.layout).some((id) => {
+        const session = sessions.find((entry) => entry.id === id);
+        return (
+          !!session &&
+          !session.worktreeRemoved &&
+          sameProjectPath(sessionWorkCwd(session), path)
+        );
+      });
+    const project = live ? path : workspaceTabCwd(tab, sessions);
+    if (project && !isRemoteProjectPath(project)) pins.set(tab.id, project);
+  }
+  return pins;
+}
+
 /**
- * The active tab if it is saved. Else the nearest saved tab before it in the
- * project's strip (a tab opens beside the one it was opened from), else the
- * nearest after it. Else the first saved tab, else none.
+ * The active tab if it is saved in the default workspace. Else the nearest
+ * such tab before it in the project's strip (a tab opens beside the one it
+ * was opened from), else the nearest after it. Else the first such tab, else
+ * none.
  */
 function savedActiveTabId(
   projectStrip: WorkspaceTab[],
@@ -144,9 +271,11 @@ function savedActiveTabId(
 function withProjectReturnTargets(
   snapshot: WorkspaceSnapshot,
   memory: ProjectReturnMemory,
+  tabs = snapshot.tabs,
 ): WorkspaceSnapshot {
   const valid = reconcileProjectReturn({
     ...snapshot,
+    tabs,
     memory,
     activeTabId: "",
   });
@@ -243,6 +372,7 @@ export function parseWorkspaceSnapshot(raw: unknown): WorkspaceSnapshot | null {
     projectTerminals?: unknown;
     projectReturnTargets?: unknown;
     lastDockSide?: unknown;
+    tabWorkspaces?: unknown;
   };
   if (!Array.isArray(value.tabs) || typeof value.activeTabId !== "string") {
     return null;
@@ -278,6 +408,7 @@ export function parseWorkspaceSnapshot(raw: unknown): WorkspaceSnapshot | null {
     projectCwd,
     projectTerminals,
     lastDockSide,
+    ...parseTabWorkspaces(value.tabWorkspaces, tabs),
   });
   return snapshot.tabs.length > 0
     ? withProjectReturnTargets(
@@ -285,6 +416,21 @@ export function parseWorkspaceSnapshot(raw: unknown): WorkspaceSnapshot | null {
         parseProjectReturnTargets(value.projectReturnTargets),
       )
     : null;
+}
+
+function parseTabWorkspaces(
+  raw: unknown,
+  tabs: readonly WorkspaceTab[],
+): Pick<WorkspaceSnapshot, "tabWorkspaces"> {
+  if (!Array.isArray(raw)) return {};
+  const tabWorkspaces = raw.flatMap((entry) => {
+    const { tabId, path } = (entry ?? {}) as { tabId?: unknown; path?: unknown };
+    if (!tabs.some((tab) => tab.id === tabId)) return [];
+    return typeof tabId === "string" && typeof path === "string" && path.trim()
+      ? [{ tabId, path: path.trim() }]
+      : [];
+  });
+  return tabWorkspaces.length > 0 ? { tabWorkspaces } : {};
 }
 
 export function workspaceSnapshotKey(snapshot: WorkspaceSnapshot): string {
@@ -299,7 +445,7 @@ export function hydrateWorkspaceSnapshot(
   snapshot: WorkspaceSnapshot,
   loaded: Map<string, Session>,
   interruptedIds: ReadonlySet<string> = new Set(),
-): ResumedWorkspace | null {
+): WindowWorkspace | null {
   const parsed = parseWorkspaceSnapshot(snapshot);
   if (!parsed) return null;
 
@@ -378,6 +524,7 @@ export function hydrateWorkspaceSnapshot(
       activeTabId,
     }),
     lastDockSide: parsed.lastDockSide,
+    pins: restoreWorkspacePins(tabs, [...sessions.values()], parsed.tabWorkspaces),
   };
 }
 

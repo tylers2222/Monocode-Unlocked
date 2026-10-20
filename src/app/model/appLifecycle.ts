@@ -41,6 +41,8 @@ import {
   collectWorkspaceSnapshot,
   hydrateWorkspaceSnapshot,
   parseWorkspaceSnapshot,
+  restoreWorkspacePins,
+  type WindowWorkspace,
 } from "../../features/workspace/model/workspaceSnapshot";
 import { lastProjectPath, normalizeProjectPath, sameProjectPath } from "../../features/projects/model/recents";
 import type { ProjectReturnMemory } from "../../features/projects/model/projectReturn";
@@ -49,13 +51,13 @@ export type { ResumedWorkspace };
 export { hasInFlightSessions };
 
 export type BootWorkspace = {
-  resumed: ResumedWorkspace | null;
+  resumed: WindowWorkspace | null;
   /** Sidebar rows listed before first paint, so the rail is not empty. */
   history: SessionSummary[];
   historyCwd: string | null;
 };
 
-let resumedPromise: Promise<ResumedWorkspace | null> | null = null;
+let resumedPromise: Promise<WindowWorkspace | null> | null = null;
 let bootPromise: Promise<BootWorkspace> | null = null;
 let quitting = false;
 let quitDialogOpen = false;
@@ -206,7 +208,7 @@ export async function closeBusyWindow(): Promise<void> {
   );
 }
 
-export function loadResumedWorkspace(): Promise<ResumedWorkspace | null> {
+export function loadResumedWorkspace(): Promise<WindowWorkspace | null> {
   if (!resumedPromise) resumedPromise = loadResumedWorkspaceOnce();
   return resumedPromise;
 }
@@ -248,7 +250,7 @@ async function listProjectHistory(
   }
 }
 
-async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
+async function loadResumedWorkspaceOnce(): Promise<WindowWorkspace | null> {
   const [snapshotRaw, refs] = await Promise.all([
     loadWorkspaceSnapshot().catch(() => null),
     listInFlightSessions().catch(() => []),
@@ -283,7 +285,13 @@ async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
       if (!record) continue;
       sessions.push(markTurnInterrupted(record));
     }
-    workspace = workspaceFromResumed(sessions);
+    const resumed = workspaceFromResumed(sessions);
+    workspace = resumed && {
+      ...resumed,
+      projectTerminals: [],
+      projectReturnMemory: new Map(),
+      pins: restoreWorkspacePins(resumed.tabs, resumed.sessions),
+    };
   }
 
   bootingResumed = workspace;
