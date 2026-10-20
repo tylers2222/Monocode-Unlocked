@@ -190,5 +190,126 @@
       ],
       "by": "user"
     }
+  },
+  {
+    "command": "milestone_settings_set",
+    "args": {
+      "projectPath": "/Users/test/orbit",
+      "patch": {
+        "hiddenStatuses": [
+          "done"
+        ]
+      }
+    },
+    "reply": {
+      "enabled": true,
+      "hiddenStatuses": [
+        "done"
+      ]
+    }
+  },
+  {
+    "command": "milestone_settings_set",
+    "args": {
+      "projectPath": "/Users/test/orbit",
+      "patch": {
+        "hiddenStatuses": [
+          "done",
+          "in_progress"
+        ]
+      }
+    },
+    "reply": {
+      "enabled": true,
+      "hiddenStatuses": [
+        "in_progress",
+        "done"
+      ]
+    }
+  },
+  {
+    "command": "milestone_settings_set",
+    "args": {
+      "projectPath": "/Users/test/orbit",
+      "patch": {
+        "enabled": false
+      }
+    },
+    "reply": {
+      "enabled": false,
+      "hiddenStatuses": [
+        "in_progress",
+        "done"
+      ]
+    }
+  },
+  {
+    "command": "session_rebase_project",
+    "args": {
+      "fromCwd": "/Users/test/orbit",
+      "toCwd": "/Users/test/orbit-renamed"
+    }
+  },
+  {
+    "command": "milestone_settings_set",
+    "args": {
+      "projectPath": "/Users/test/orbit-renamed",
+      "patch": {
+        "hiddenStatuses": [
+          "done"
+        ]
+      }
+    },
+    "reply": {
+      "enabled": false,
+      "hiddenStatuses": [
+        "done"
+      ]
+    }
+  },
+  {
+    "command": "milestone_settings_set",
+    "args": {
+      "projectPath": "/Users/test/orbit-renamed",
+      "patch": {
+        "hiddenStatuses": []
+      }
+    },
+    "reply": {
+      "enabled": false,
+      "hiddenStatuses": []
+    }
+  },
+  {
+    "command": "milestone_settings_set",
+    "args": {
+      "projectPath": "/Users/test/orbit-renamed",
+      "patch": {
+        "hiddenStatuses": [
+          "idea"
+        ]
+      }
+    },
+    "reply": {
+      "enabled": false,
+      "hiddenStatuses": [
+        "idea"
+      ]
+    }
+  },
+  {
+    "command": "milestone_settings_set",
+    "args": {
+      "projectPath": "/Users/test/orbit-renamed",
+      "patch": {
+        "enabled": true
+      }
+    },
+    "reply": {
+      "enabled": true,
+      "hiddenStatuses": [
+        "idea"
+      ]
+    }
   }
 ]

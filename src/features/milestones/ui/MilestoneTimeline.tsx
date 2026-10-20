@@ -82,7 +82,7 @@ function focusMoved(row: HTMLElement | null) {
   row?.focus();
 }
 
-const GROUP_DOT: Record<MilestoneStatus, string> = {
+export const GROUP_DOT: Record<MilestoneStatus, string> = {
   done: "grid place-items-center border border-emerald-400/60 bg-emerald-400/18 text-emerald-400",
   in_progress: "bg-accent ring-3 ring-accent/25",
   planned: "border-[1.5px] border-content/70 bg-background-base",

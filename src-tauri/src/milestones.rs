@@ -1064,6 +1064,81 @@ mod tests {
     /// The agent row milestones-editor.spec.ts pushes unseen (its `AGENT_ROW`).
     const AGENT: &str = "a9e47000-0000-4000-8000-000000000000";
 
+    fn ids_in(conn: &Connection, path: &str) -> Vec<String> {
+        super::list(conn, path)
+            .unwrap()
+            .into_iter()
+            .map(|row| row.id)
+            .collect()
+    }
+
+    /// The app followed a renamed folder: the settings must follow the path.
+    fn replay_rebase(conn: &Connection, call: &serde_json::Value) -> String {
+        let from: String = serde_json::from_value(call["args"]["fromCwd"].clone()).unwrap();
+        let to: String = serde_json::from_value(call["args"]["toCwd"].clone()).unwrap();
+        let before = settings(conn, &from).unwrap();
+        crate::session_store::rebase_project(conn, &from, &to).unwrap();
+        assert_eq!(
+            settings(conn, &to).unwrap(),
+            before,
+            "settings follow the path"
+        );
+        assert_eq!(settings(conn, &from).unwrap(), MilestoneSettings::default());
+        assert!(ids_in(conn, &from).is_empty());
+        to
+    }
+
+    /// The real store saves what the page then showed, in Rust's order.
+    fn replay_settings(conn: &Connection, path: &str, call: &serde_json::Value) {
+        let patch: SettingsPatch = serde_json::from_value(call["args"]["patch"].clone()).unwrap();
+        let saved = set_settings(conn, path, patch, 5).unwrap();
+        assert_eq!(serde_json::to_value(&saved).unwrap(), call["reply"]);
+        assert_eq!(settings(conn, path).unwrap(), saved);
+    }
+
+    /// The page's reorder on the real store: the stored order, or the code a
+    /// recorded refusal got (and then nothing moved).
+    fn replay_reorder(
+        conn: &Connection,
+        path: &str,
+        call: &serde_json::Value,
+        ids: &mut std::collections::HashMap<String, String>,
+    ) -> Result<Vec<String>, String> {
+        let page_ids: Vec<String> = serde_json::from_value(call["args"]["ids"].clone()).unwrap();
+        let by: String = serde_json::from_value(call["args"]["by"].clone()).unwrap();
+        if call["refused"] == "stale_order" && !ids.contains_key(AGENT) {
+            // The spec's agent row, which the page had not seen yet.
+            let mut agent = new("Agent row the page has not seen");
+            agent.created_by = "mono:general".into();
+            add(conn, path, agent, 4).unwrap();
+            conn.execute(
+                "UPDATE milestones SET id = ?1 WHERE title = ?2",
+                params![AGENT, "Agent row the page has not seen"],
+            )
+            .unwrap();
+            ids.insert(AGENT.into(), AGENT.into());
+        }
+        let before = ids_in(conn, path);
+        let real: Vec<String> = page_ids.iter().map(|id| ids[id].clone()).collect();
+        match (reorder(conn, path, &real, &by), call["refused"].as_str()) {
+            (Err(code), Some(expected)) => {
+                assert_eq!(code, expected);
+                assert_eq!(
+                    ids_in(conn, path),
+                    before,
+                    "a refused reorder moves nothing"
+                );
+                Err(code)
+            }
+            (Ok(listed), None) => {
+                let listed: Vec<String> = listed.into_iter().map(|row| row.id).collect();
+                assert_eq!(listed, real, "the store takes the page's order");
+                Ok(real)
+            }
+            (result, expected) => panic!("reorder {result:?}, recorded {expected:?}"),
+        }
+    }
+
     #[test]
     #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
     fn page_writes_replay_on_the_real_store() {
@@ -1076,6 +1151,10 @@ mod tests {
         let project = "/Users/test/orbit";
         // The rows the spec seeds: ids "orbit-<order>" padded with 0 to 36.
         let mut ids = std::collections::HashMap::new();
+        assert_eq!(
+            settings(&conn, project).unwrap(),
+            MilestoneSettings::default()
+        );
         for order in 0..6 {
             let id = format!("{:0<36}", format!("orbit-{order}"));
             let (status, target) = match order {
@@ -1098,8 +1177,13 @@ mod tests {
         let mut removed = Vec::new();
         let mut refused = Vec::new();
         let mut last_order = Vec::new();
+        let mut renamed = None;
         for call in &calls {
             let arg = |name: &str| call["args"][name].clone();
+            if call["command"] == "session_rebase_project" {
+                renamed = Some(replay_rebase(&conn, call));
+                continue;
+            }
             let path: String = serde_json::from_value(arg("projectPath")).unwrap();
             let row = match call["command"].as_str().unwrap() {
                 "milestones_add" => {
@@ -1137,45 +1221,14 @@ mod tests {
                     continue;
                 }
                 "milestones_reorder" => {
-                    let page_ids: Vec<String> = serde_json::from_value(arg("ids")).unwrap();
-                    let by: String = serde_json::from_value(arg("by")).unwrap();
-                    if call["refused"] == "stale_order" && !ids.contains_key(AGENT) {
-                        // The spec's agent row, which the page had not seen yet.
-                        let mut agent = new("Agent row the page has not seen");
-                        agent.created_by = "mono:general".into();
-                        add(&conn, &path, agent, 4).unwrap();
-                        conn.execute(
-                            "UPDATE milestones SET id = ?1 WHERE title = ?2",
-                            params![AGENT, "Agent row the page has not seen"],
-                        )
-                        .unwrap();
-                        ids.insert(AGENT.into(), AGENT.into());
+                    match replay_reorder(&conn, &path, call, &mut ids) {
+                        Ok(order) => last_order = order,
+                        Err(code) => refused.push(code),
                     }
-                    let before: Vec<String> = super::list(&conn, &path)
-                        .unwrap()
-                        .into_iter()
-                        .map(|row| row.id)
-                        .collect();
-                    let real: Vec<String> = page_ids.iter().map(|id| ids[id].clone()).collect();
-                    match (reorder(&conn, &path, &real, &by), call["refused"].as_str()) {
-                        (Err(code), Some(expected)) => {
-                            assert_eq!(code, expected);
-                            let after: Vec<String> = super::list(&conn, &path)
-                                .unwrap()
-                                .into_iter()
-                                .map(|row| row.id)
-                                .collect();
-                            assert_eq!(after, before, "a refused reorder moves nothing");
-                            refused.push(code);
-                        }
-                        (Ok(listed), None) => {
-                            let listed: Vec<String> =
-                                listed.into_iter().map(|row| row.id).collect();
-                            assert_eq!(listed, real, "the store takes the page's order");
-                            last_order = real;
-                        }
-                        (result, expected) => panic!("reorder {result:?}, recorded {expected:?}"),
-                    }
+                    continue;
+                }
+                "milestone_settings_set" => {
+                    replay_settings(&conn, &path, call);
                     continue;
                 }
                 other => panic!("unexpected command {other}"),
@@ -1210,6 +1263,16 @@ mod tests {
         // The page deleted the second row it added ("Someday"), and only it.
         let someday = calls[1]["reply"]["id"].as_str().unwrap();
         assert_eq!(removed, [someday]);
+        // The page renamed the project, then wrote its settings at the new path.
+        let renamed = renamed.expect("the capture follows a rename");
+        let project = renamed.as_str();
+        assert_eq!(
+            settings(&conn, project).unwrap(),
+            MilestoneSettings {
+                enabled: true,
+                hidden_statuses: vec![Status::Idea],
+            }
+        );
         let titles: Vec<String> = super::list(&conn, project)
             .unwrap()
             .into_iter()

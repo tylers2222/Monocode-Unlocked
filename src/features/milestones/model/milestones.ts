@@ -108,6 +108,17 @@ export function reorder(
   });
 }
 
+/** Absent fields keep their value; Rust stores `hiddenStatuses` sorted, without duplicates. */
+export function setSettings(
+  project: string,
+  patch: Partial<MilestoneSettings>,
+): Promise<MilestoneSettings> {
+  return invoke("milestone_settings_set", {
+    projectPath: normalizeProjectPath(project),
+    patch,
+  });
+}
+
 /** Deletes the project's milestones and settings, for project removal only. */
 export function removeProject(project: string): Promise<void> {
   return invoke("milestones_remove_project", {

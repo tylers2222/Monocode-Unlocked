@@ -317,7 +317,11 @@ pub fn session_rebase_project(
 }
 
 /// One transaction, so a failed move never leaves sessions and milestones apart.
-fn rebase_project(conn: &Connection, from_cwd: &str, to_cwd: &str) -> rusqlite::Result<()> {
+pub(crate) fn rebase_project(
+    conn: &Connection,
+    from_cwd: &str,
+    to_cwd: &str,
+) -> rusqlite::Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "UPDATE sessions SET cwd = ?2 WHERE cwd = ?1",
