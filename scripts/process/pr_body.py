@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 TINY_NT = 100
-ADE_TITLE = re.compile(r"ADE-\d+")
+ADE_TITLE = re.compile(r"ADE-\d+\b")
 TICKET_PART = re.compile(r"Ticket-part: (\d+)/(\d+)")
 SIZE_COUNTS = re.compile(r"\+\s?\d+\s*/?\s*[-\u2212]\s?\d+")
 HINTS = {
@@ -29,7 +29,8 @@ HINTS = {
 
 
 def lint_body(body: str, title: str = "") -> list[str]:
-    """Names of the missing items, in the order size, self-pass, file-caps. Matching ignores case.
+    """Names of the missing items, in the order size, self-pass, file-caps, ticket-part.
+    Size, self-pass and file-caps ignore case; ticket-part is exact.
     A format lint: it checks that each item is stated, not that it is true.
 
     size: a line that starts with "Size" once leading #, -, * and spaces are removed,
@@ -107,7 +108,7 @@ def _command_text(text: str) -> str:
 
 
 def decide(
-    body: str, files: set[str], open_prs: list[dict] | None, nt: int | None, number: int, title: str = ""
+    body: str, title: str, files: set[str], open_prs: list[dict] | None, nt: int | None, number: int
 ) -> tuple[list[str], int]:
     """The output lines and the exit code. Only a missing item fails; the overlap warning never does."""
     missing = lint_body(body, title)
@@ -141,7 +142,7 @@ def main() -> int:
         print(f"pr-body: {' '.join(err.cmd)} exited {err.returncode}", file=sys.stderr)
         return 2
     files = {f["path"] for f in pr["files"]}
-    lines, code = decide(pr["body"] or "", files, open_prs, args.nt, args.number, pr.get("title", ""))
+    lines, code = decide(pr["body"] or "", pr["title"], files, open_prs, args.nt, args.number)
     print("\n".join(lines))
     return code
 
