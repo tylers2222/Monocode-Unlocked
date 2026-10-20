@@ -237,6 +237,11 @@ class DecideTest(unittest.TestCase):
                 self.assertRefused(decide_fix(mutation=result), "gate/mutation")
         self.assertTrue(decide_fix(tier="T2", mutation=None).carry, "T2 needs no mutation run")
 
+    def test_t3_needs_green_mutation_even_with_a_clean_verdict_on_the_head(self):
+        clean = [verdict(CLEAN_R1, sha=FIX)]
+        self.assertRefused(decide_fix(verdicts=clean, mutation="timed_out"), "gate/mutation", "timed_out")
+        self.assertTrue(decide_fix(verdicts=clean, mutation="success").ok)
+
     def test_small_proven_fix_carries_verdict(self):
         self.assertEqual(decide_fix(), Decision(True, True, "carried from 7ce96f5: minors-only + fixer proof (T3)"))
 

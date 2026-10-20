@@ -12,7 +12,7 @@ on:
   status:
   # Every pull_request workflow whose checks merge_rule.py waits for. A new one goes here too.
   workflow_run:
-    workflows: [CI, gate]
+    workflows: [CI, gate, gate-mutation]
     types: [completed]
 
 permissions:
