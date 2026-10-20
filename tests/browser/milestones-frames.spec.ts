@@ -160,9 +160,14 @@ test("M·6: a row click edits it in place; hover shows the grip; mid-drag shows 
   await page.mouse.move(x, grip.y + grip.height / 2);
   await page.mouse.down();
   await page.mouse.move(x, above.y + above.height * 0.25, { steps: 8 });
-  await expect(page.locator("[data-lifted]")).toContainText(
-    "Same suite style as change E",
+  const lifted = page.locator("[data-lifted]");
+  await expect(lifted).toContainText("Same suite style as change E");
+  await expect(lifted.getByText("Later", { exact: true })).toHaveCSS(
+    "border-top-style",
+    "dashed",
   );
+  // The card's one icon is its grip.
+  await expect(lifted.locator("svg")).toHaveCount(1);
   await frame(page, "M6-reorder-mid-drag");
   await page.mouse.move(x, grip.y + grip.height / 2, { steps: 4 });
   await page.mouse.up();
@@ -179,6 +184,8 @@ test("M·7: Delete asks once inline in the edit card", async ({ app, page }) => 
   await expect(
     editor(page).getByRole("button", { name: "Keep" }),
   ).toBeFocused();
+  // The Delete click left the mouse over a row; the frame shows no hover grip.
+  await page.mouse.move(1430, 890);
   await frame(page, "M7-delete");
 });
 

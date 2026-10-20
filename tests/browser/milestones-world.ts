@@ -10,11 +10,11 @@ import type { FakeSeed } from "./app/fixture";
  * M-11 frame screenshots.
  */
 export const ORBIT = "/Users/test/orbit";
-export const SITE = "/Users/test/orbit-site";
+const SITE = "/Users/test/orbit-site";
 export const REVIEW = "/Users/test/orbit-review";
 export const CHANGED = "monocode:milestones-changed";
 
-export function milestone(
+function milestone(
   projectPath: string,
   order: number,
   status: MilestoneStatus,

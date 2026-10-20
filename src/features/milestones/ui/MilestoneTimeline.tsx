@@ -254,8 +254,7 @@ export function MilestoneTimeline({
 
 /**
  * Frame M·6 mid-drag: the dragged row's card, lifted, takes its place in the
- * list where it would drop, under the blue drop line. It shows the row's
- * title, note and target as the row does, with its grip.
+ * list where it would drop, under the blue drop line.
  */
 function LiftedCard({
   milestone,
@@ -279,22 +278,7 @@ function LiftedCard({
       <span className="absolute top-2 -left-6 grid h-5 w-4 place-items-center text-content/35">
         <GripVertical className="size-3.5" />
       </span>
-      <span className="grid h-5 place-items-center">
-        <i
-          className={`block size-[7px] rounded-full ${ROW_DOT[milestone.status]}`}
-        />
-      </span>
-      <div className="min-w-0">
-        <div className="truncate text-sm leading-5 font-medium">
-          {milestone.title}
-        </div>
-        {milestone.note ? (
-          <div className="mt-px truncate text-xs leading-[18px] text-content/45">
-            {milestone.note}
-          </div>
-        ) : null}
-      </div>
-      <Target milestone={milestone} today={today} />
+      <RowBody milestone={milestone} today={today} />
     </li>
   );
 }
@@ -322,7 +306,6 @@ function MilestoneRow({
   refocus: boolean;
   onBlur: () => void;
 }) {
-  const done = milestone.status === "done";
   const creator = agentCreator(milestone.createdBy);
   return (
     <li
@@ -359,6 +342,40 @@ function MilestoneRow({
       >
         <GripVertical className="size-3.5" />
       </span>
+      <RowBody milestone={milestone} today={today}>
+        {creator ? (
+          <AddedBy
+            creator={creator}
+            look={lookUpCreator(creator)}
+            highlighted={highlighted}
+          />
+        ) : null}
+        {highlighted ? (
+          <span className="rounded bg-accent px-[5px] text-[10px] leading-4 font-semibold text-white">
+            New
+          </span>
+        ) : null}
+      </RowBody>
+    </li>
+  );
+}
+
+/**
+ * What a row and its lifted card both show: the status dot, the title with
+ * `children` after it, the note, and the target date or a dashed "Later".
+ */
+function RowBody({
+  milestone,
+  today,
+  children,
+}: {
+  milestone: Milestone;
+  today: Date;
+  children?: ReactNode;
+}) {
+  const done = milestone.status === "done";
+  return (
+    <>
       <span className="grid h-5 place-items-center">
         <i
           className={`block size-[7px] rounded-full ${ROW_DOT[milestone.status]}`}
@@ -371,18 +388,7 @@ function MilestoneRow({
           }`}
         >
           <span className="min-w-0 truncate">{milestone.title}</span>
-          {creator ? (
-            <AddedBy
-              creator={creator}
-              look={lookUpCreator(creator)}
-              highlighted={highlighted}
-            />
-          ) : null}
-          {highlighted ? (
-            <span className="rounded bg-accent px-[5px] text-[10px] leading-4 font-semibold text-white">
-              New
-            </span>
-          ) : null}
+          {children}
         </div>
         {milestone.note ? (
           <div className="mt-px truncate text-xs leading-[18px] text-content/45">
@@ -390,27 +396,20 @@ function MilestoneRow({
           </div>
         ) : null}
       </div>
-      <Target milestone={milestone} today={today} />
-    </li>
-  );
-}
-
-/** A row's target date, or "Later" in a dashed box (frames M·4 and M·6). */
-function Target({ milestone, today }: { milestone: Milestone; today: Date }) {
-  return (
-    <span
-      className={`min-w-16 text-right text-xs leading-5 whitespace-nowrap tabular-nums ${
-        milestone.status === "done" ? "text-content/35" : "text-content/55"
-      }`}
-    >
-      {!milestone.target ? (
-        <span className="rounded border border-dashed border-content/20 px-1.5 py-px text-[11px] text-content/45">
-          Later
-        </span>
-      ) : (
-        formatTarget(milestone.target, today)
-      )}
-    </span>
+      <span
+        className={`min-w-16 text-right text-xs leading-5 whitespace-nowrap tabular-nums ${
+          done ? "text-content/35" : "text-content/55"
+        }`}
+      >
+        {!milestone.target ? (
+          <span className="rounded border border-dashed border-content/20 px-1.5 py-px text-[11px] text-content/45">
+            Later
+          </span>
+        ) : (
+          formatTarget(milestone.target, today)
+        )}
+      </span>
+    </>
   );
 }
 
