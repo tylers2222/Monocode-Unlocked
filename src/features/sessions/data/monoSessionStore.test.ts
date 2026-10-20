@@ -10,7 +10,6 @@ import { newSession, type Session } from "../model/session";
 import type { TurnId } from "../../monos/model/monoMessages";
 import {
   monoSessionCompletionMessage,
-  monoSessionCompletionResult,
   MonoSessionCompletionBatches,
 } from "../../monos/model/monoSessionCompletion";
 import { steerableQueuedMessage } from "../model/messageQueue";
@@ -118,22 +117,23 @@ describe("Mono database pagination and writes", () => {
   });
   it("preserves all results and the session count in a combined report across queue and transcript saves", async () => {
     const session = await load();
-    const batches = new MonoSessionCompletionBatches((_, message) => {
-      session.queuedMessages = [message];
-    }, vi.fn());
+    const batches = new MonoSessionCompletionBatches(
+      (_, message) => {
+        session.queuedMessages = [message];
+      },
+      vi.fn(),
+      () => undefined,
+    );
     for (const id of ["first", "second"]) {
       batches.watch(
         { monoId: session.id, turn: 1 },
-        id,
-      )(
-        monoSessionCompletionResult({
+        {
           requestId: id,
           sessionId: id,
           project: "/tmp",
           prompt: `Check ${id}`,
-          outcome: { status: "completed", text: `Finished ${id}` },
-        }),
-      );
+        },
+      )({ status: "completed", text: `Finished ${id}` });
     }
     batches.closeInactive(() => false);
     const notification = session.queuedMessages![0];

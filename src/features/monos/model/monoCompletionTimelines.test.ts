@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ControlOutcome } from "../../orchestration/model/orchestration";
 import {
   newSession,
   type QueuedMessage,
@@ -6,9 +7,7 @@ import {
 } from "../../sessions/model/session";
 import {
   enqueueMonoSessionCompletion,
-  monoSessionCompletionResult,
   MonoSessionCompletionBatches,
-  type MonoSessionCompletionResult,
 } from "./monoSessionCompletion";
 
 // Read from a .backup copy of the MonoCode 2 database (com.monocode.second):
@@ -115,13 +114,13 @@ const TIMELINES: Timeline[] = [
       { at: "10-19 19:43:26", kind: "end", session: "7a1eab69" },
       { at: "10-19 19:52:39", kind: "end", session: "4d93f1f2" },
     ],
-    // 30f5be8b reports once per request, as on tyler/main (seq 1892 and 1914).
+    // Both requests watch 30f5be8b's one turn end. tyler/main reported it to
+    // each (seq 1892 and 1914); the Mono now gets it once (ADE-47).
     notices: [
       ["10-19 18:38:56", ["960dacc8"]],
       ["10-19 18:43:24", ["281d65ca"]],
       ["10-19 18:43:50", ["8b05c54b"]],
       ["10-19 18:46:11", ["ef8f4c9c"]],
-      ["10-19 19:27:31", ["30f5be8b"]],
       ["10-19 19:27:31", ["30f5be8b"]],
       ["10-19 19:43:26", ["7a1eab69"]],
       ["10-19 19:52:39", ["4d93f1f2"]],
@@ -160,12 +159,10 @@ function replay(events: Event[]) {
         notices.push([stamp(Date.now()), reportedSessions(added)]);
     },
     (run, ms) => setTimeout(run, ms),
+    () => undefined,
   );
   /** Every request that watches a session's running turn. */
-  const watchers = new Map<
-    string,
-    ((result: MonoSessionCompletionResult) => void)[]
-  >();
+  const watchers = new Map<string, ((outcome: ControlOutcome) => void)[]>();
   let turn = 1;
   let monoBusy = true;
   for (const event of events) {
@@ -173,8 +170,12 @@ function replay(events: Event[]) {
     if (event.kind === "start" || event.kind === "send") {
       const settle = batches.watch(
         { monoId: mono.id, turn },
-        `${event.kind}-${event.session}`,
-        event.session,
+        {
+          requestId: `${event.kind}-${event.session}`,
+          sessionId: event.session,
+          project: "/Users/me/monocode",
+          prompt: `Brief for ${event.session}`,
+        },
         { awaitAcceptance: true },
       );
       settle.accept();
@@ -188,16 +189,12 @@ function replay(events: Event[]) {
     } else if (event.kind === "monoIdle") {
       monoBusy = false;
     } else {
-      for (const settle of watchers.get(event.session)!)
-        settle(
-          monoSessionCompletionResult({
-            requestId: event.session,
-            sessionId: event.session,
-            project: "/Users/me/monocode",
-            prompt: `Brief for ${event.session}`,
-            outcome: { status: "completed", text: `Done ${event.session}` },
-          }),
-        );
+      // The turn's one outcome reaches every watcher, as in `submitSession`.
+      const outcome: ControlOutcome = {
+        status: "completed",
+        text: `Done ${event.session}`,
+      };
+      for (const settle of watchers.get(event.session)!) settle(outcome);
       watchers.delete(event.session);
     }
     // App.tsx runs closeInactive on every sessions change, with the same rule.
