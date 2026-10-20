@@ -292,7 +292,14 @@ test("a result the Mono was told of before the quit is not reported again", asyn
   await endTurn(app, S.id, "Paused at a safe point.");
   await endTurn(app, CHAT, "Warned.");
   await expect.poll(() => notices(page)).toEqual([[at(S.id)]]);
+  // A quit while the Mono's turn still runs pauses its queue, which would
+  // hold the later notice; the case is about the groups, so quit idle.
+  const busy = page.getByRole("button", {
+    name: new RegExp(`^${MONO}, (Thinking|Working),`),
+  });
+  await expect(busy).toBeVisible();
   await endTurn(app, CHAT, "Noted.");
+  await expect(busy).toHaveCount(0);
 
   await app.restart();
   await expect
