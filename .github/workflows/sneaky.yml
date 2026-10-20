@@ -1,0 +1,8 @@
+name: sneaky
+on:
+  pull_request_target:
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
