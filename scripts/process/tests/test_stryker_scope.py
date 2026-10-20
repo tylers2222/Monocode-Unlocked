@@ -44,8 +44,9 @@ class StrykerScopeProblems(unittest.TestCase):
                   if path.startswith('node_modules/@stryker-mutator/') and path.count('/') == 2}
         self.assertEqual(pinned, {name: PIN for name in S.STRYKER_PACKAGES})
         repo = json.loads(REPO_LOCK.read_text())['packages']
-        self.assertEqual(packages['node_modules/vitest']['version'], repo['node_modules/vitest']['version'],
-                         'the job runs the vitest the repo locks; the PR cannot pick another')
+        for name in ('vitest', 'happy-dom'):
+            self.assertEqual(packages[f'node_modules/{name}']['version'], repo[f'node_modules/{name}']['version'],
+                             f'the job runs the {name} the repo locks; the PR cannot pick another')
         self.assertTrue(all(entry['resolved'].startswith('https://registry.npmjs.org/') and entry.get('integrity')
                             for path, entry in packages.items() if path))
 
