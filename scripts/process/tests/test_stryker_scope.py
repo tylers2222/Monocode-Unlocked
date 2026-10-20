@@ -52,6 +52,8 @@ class StrykerConfig(unittest.TestCase):
         self.assertEqual(config['commandRunner']['command'], "node_modules/.bin/vitest related --run src/a.ts 'src/b c'\"'\"'.ts'")
         self.assertEqual(config['mutate'], ['src/a.ts:1-3', 'src/a.ts:9-9', "src/b c'.ts:2-2"])
         self.assertEqual(config['thresholds']['break'], 100, 'one surviving mutant fails the run')
+        self.assertEqual((config['concurrency'], config['timeoutFactor']), (1, 3),
+                         'a timed-out mutant counts as killed; #231 timed out 4 of 5 with two runs at once')
 
     def test_cli_prints_the_config(self):
         run = subprocess.run([sys.executable, str(SCRIPT), 'config', 'src/a.ts:1-1'], capture_output=True, text=True)

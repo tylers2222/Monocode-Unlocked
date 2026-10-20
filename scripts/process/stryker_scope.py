@@ -35,11 +35,13 @@ def stryker_scope_problems(entries, pinned):
 def stryker_config(specs):
     """Mutates only the changed lines. The command runner runs the tests that import a
     changed file (vitest related) as a child process in Stryker's sandbox, so Stryker loads
-    no test-runner plugin and no PR module. A surviving mutant fails the run."""
+    no test-runner plugin and no PR module. A surviving mutant fails the run. Stryker
+    counts a timed-out mutant as killed, so one run at a time and a 3x timeout keep a slow
+    run (two vitest processes on one runner) from passing as a kill."""
     mutate = specs.split(',')
     files = list(dict.fromkeys(re.sub(r':\d+-\d+$', '', spec) for spec in mutate))
     return {'testRunner': 'command', 'commandRunner': {'command': shlex.join(['node_modules/.bin/vitest', 'related', '--run', *files])},
-            'plugins': [], 'mutate': mutate, 'thresholds': {'high': 100, 'low': 100, 'break': 100}, 'concurrency': 2,
+            'plugins': [], 'mutate': mutate, 'thresholds': {'high': 100, 'low': 100, 'break': 100}, 'concurrency': 1, 'timeoutFactor': 3,
             'coverageAnalysis': 'off', 'reporters': ['clear-text', 'progress']}
 
 
