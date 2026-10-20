@@ -13,6 +13,10 @@ set -m
 lock_sh=$(cd "$(dirname "$0")" && pwd)/heavy-lock.sh
 root=$(mktemp -d)
 export HEAVY_LOCK=$root/lock HEAVY_LOCK_QUEUE=$root/queue HEAVY_LOCK_WAITLOG=$root/waits.log HEAVY_LOCK_POLL=0.1 HEAVY_LOCK_WHO=test
+export HEAVY_LOCK_SHIMS=$root/shims
+# A __pycache__ dir is untracked, so it would make a test dir count as changed and take the
+# lock; the repo does not ignore __pycache__.
+export PYTHONDONTWRITEBYTECODE=1
 failed=0
 
 # Kills every background job but the 60 s exempt run, which runs across the other cases.
@@ -57,18 +61,24 @@ hold() { "$lock_sh" sleep "$1" 2>/dev/null & holder=$!; within 5 exists "$HEAVY_
 mark_when_run() { perl -e '$SIG{INT} = "DEFAULT"; exec @ARGV or exit 127' "$lock_sh" touch "$1" 2>/dev/null & waiter=$!; }
 
 # A git repo for the exemption cases: committed tests under scripts/process and scripts/gate,
-# a committed test outside them (src), and an untracked scratch test.
+# a committed test outside them (src), and in scripts/process an untracked scratch test, a
+# staged-only test and a modified committed test.
 exempt_dir=$root/exempt
 mkdir -p "$exempt_dir/scripts/process" "$exempt_dir/scripts/gate" "$exempt_dir/src"
 printf 'import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        pass\n' > "$exempt_dir/scripts/process/test_mark.py"
 cp "$exempt_dir/scripts/process/test_mark.py" "$exempt_dir/scripts/gate/test_mark.py"
 cp "$exempt_dir/scripts/process/test_mark.py" "$exempt_dir/src/test_heavy.py"
 printf 'import subprocess, unittest\nclass T(unittest.TestCase):\n    def test_cargo(self):\n        subprocess.run(["cargo", "--version"], check=True)\n' > "$exempt_dir/scripts/process/test_cargo.py"
+cp "$exempt_dir/scripts/process/test_mark.py" "$exempt_dir/scripts/process/test_modified.py"
+cp "$exempt_dir/scripts/process/test_mark.py" "$exempt_dir/scripts/process/test..dots.py"
 printf 'import os, time, unittest\nclass T(unittest.TestCase):\n    def test_slow(self):\n        open("slow.pid", "w").write(str(os.getpid()))\n        time.sleep(61)\n' > "$exempt_dir/scripts/process/test_slow.py"
 git -C "$exempt_dir" init -q 2>/dev/null
 git -C "$exempt_dir" add scripts src
 git -C "$exempt_dir" -c user.name=t -c user.email=t@example.com commit -qm tracked
 printf 'import subprocess\nsubprocess.run(["cargo", "build"])\n' > "$exempt_dir/scripts/process/test_scratch.py"
+cp "$exempt_dir/scripts/process/test_scratch.py" "$exempt_dir/scripts/process/test_staged.py"
+git -C "$exempt_dir" add scripts/process/test_staged.py
+cat "$exempt_dir/scripts/process/test_scratch.py" >> "$exempt_dir/scripts/process/test_modified.py"
 # Starts "heavy-lock.sh <form>" in the exempt repo; the form is shell words, quotes allowed.
 start_in_exempt() { eval "set -- $1"; started_cmd=$*; (cd "$exempt_dir" && exec "$lock_sh" "$@") >/dev/null 2>&1 & }
 exempt_line() { grep -F -- "cmd=$1]" "$HEAVY_LOCK_WAITLOG" 2>/dev/null | grep "exempt=1"; }
@@ -82,13 +92,13 @@ slow=$!
 # between the loop's release and its next lock.
 reset
 order=$root/case/order
-( for _ in $(seq 15); do "$lock_sh" sh -c "echo L >> '$order'; sleep 1" 2>/dev/null; done ) &
+( for _ in $(seq 15); do "$lock_sh" sh -c "echo L >> '$order'; sleep 3" 2>/dev/null; done ) &
 within 5 exists "$order"
 echo queued >> "$order"
 HEAVY_LOCK_POLL=1 "$lock_sh" sh -c "echo W >> '$order'" 2>/dev/null
 passed=$(sed -n '/^queued$/,/^W$/p' "$order" | grep -c '^L$')
 check "fifo: the relocking loop passes the waiter at most once (passed $passed)" [ "$passed" -le 1 ]
-check "fifo: the wait is logged with the holder pid" logged "cmd=sh -c echo W .* waited=.*s holder=\[pid [0-9?]"
+check "fifo: the wait is logged with the holder pid" logged "cmd=sh -c echo W .* waited=.*s holder=\[pid [0-9][0-9]* .*sleep 3"
 
 # A lock whose holder pid is dead is cleared by the next caller.
 reset
@@ -157,13 +167,32 @@ check "exclusion: 100 runs finished (got $runs)" [ "$runs" = 100 ]
 check "exclusion: overlap counter is 0 (got $overlaps)" [ "$overlaps" = 0 ]
 check "exclusion: no ticket or lock left" eval '[ "$(tickets)" = 0 ] && [ ! -e "$HEAVY_LOCK" ]'
 
+# The holder line's instance label comes from the caller's ancestors, never from the lock's
+# own command line. Run as `bash -c "$script"`, that command line holds both app names.
+reset
+export LOCK_SH=$lock_sh LOCK_SCRIPT
+LOCK_SCRIPT=$(cat "$lock_sh")
+# The fake parent's command line names the app; the lock runs as a file or as bash -c.
+label_of() {
+  local run='"$LOCK_SH" "$@"'
+  [ "$2" = bash-c ] && run='/bin/bash -c "$LOCK_SCRIPT" heavy-lock.sh "$@"'
+  env -u HEAVY_LOCK_WHO /bin/bash -c "$run; :" "/fake/$1/Contents/MacOS/monocode" \
+    sh -c 'cut -d" " -f1 "$HEAVY_LOCK/holder"' 2>/dev/null
+}
+for app in MonoCode.app:instance-1 "MonoCode 2.app:instance-2"; do
+  for form in direct bash-c; do
+    label=$(label_of "${app%%:*}" "$form")
+    check "instance: a caller under ${app%%:*} ($form) is labelled ${app#*:} (got $label)" [ "$label" = "${app#*:}" ]
+  done
+done
+
 # Exemption: python3 -m unittest|pytest on tracked paths under scripts/process or
 # scripts/gate runs while another caller holds the lock; each lookalike waits.
 reset
 hold 30
 for form in "python3 -m unittest scripts/process/test_mark.py" \
   "python3 -m unittest discover -s scripts/gate" \
-  "python3 -m unittest discover -s scripts/process -p 'test_m*.py'" \
+  "python3 -m unittest discover -s scripts/gate -p 'test_m*.py'" \
   "python3 -m unittest scripts.process.test_mark" \
   "python3 -m pytest -q ./scripts/process/test_mark.py"; do
   start_in_exempt "$form"
@@ -175,10 +204,18 @@ cargo_rc=$?
 check "exempt: a tracked test that calls cargo fails (rc $cargo_rc)" [ "$cargo_rc" = 1 ]
 check "exempt: it fails with the shim message" grep -q "heavy tool inside an exempt run: use the lock" "$root/cargo.out"
 check "exempt: it is logged with rc=1" eval 'exempt_line "python3 -m unittest scripts/process/test_cargo.py" | grep -q " rc=1 "'
+rm -rf "$HEAVY_LOCK_SHIMS"
+(cd "$exempt_dir" && exec "$lock_sh" python3 -m unittest scripts/process/test_cargo.py) > "$root/cargo.out" 2>&1
+cargo_rc=$?
+check "shims: a deleted shim dir is rebuilt and cargo still fails (rc $cargo_rc)" [ "$cargo_rc" = 1 ]
+check "shims: the rebuilt shim prints its message" grep -q "heavy tool inside an exempt run: use the lock" "$root/cargo.out"
+check "shims: all 10 heavy tools are shimmed again" [ "$(find "$HEAVY_LOCK_SHIMS" -type f -perm -u+x ! -name '.*' | wc -l | tr -d ' ')" = 10 ]
 exempt_lines=$(grep -c 'exempt=1' "$HEAVY_LOCK_WAITLOG")
 lookalikes=("python3 scripts/process/test_mark.py" "python3 -m timeit scripts/process/test_mark.py" "python3 -m pytest src"
   "python3 -m pytest ../src" "python3 -m pytest scripts/process/../../src/test_heavy.py"
-  "python3 -m unittest scripts/process/test_scratch.py" "python3 -m unittest discover -s scripts/process -p 'x/test_*.py'"
+  "python3 -m unittest scripts/process/test_scratch.py" "python3 -m unittest discover -s scripts/gate -p 'x/test_*.py'"
+  "python3 -m unittest discover -s scripts/process" "python3 -m unittest scripts/process/test_staged.py"
+  "python3 -m unittest scripts/process/test_modified.py" "python3 -m unittest scripts/process/test..dots.py"
   "bash -c 'python3 -m unittest scripts/process/test_mark.py'" "cargo --version")
 pids=()
 for form in "${lookalikes[@]}"; do
@@ -191,6 +228,13 @@ for i in "${!lookalikes[@]}"; do
 done
 check "lookalike: each waiter holds a ticket" [ "$(tickets)" = "${#lookalikes[@]}" ]
 check "lookalike: none is logged as exempt" [ "$(grep -c 'exempt=1' "$HEAVY_LOCK_WAITLOG")" = "$exempt_lines" ]
+rm -f "$HEAVY_LOCK_SHIMS/npm"
+chmod 555 "$HEAVY_LOCK_SHIMS"
+start_in_exempt "python3 -m unittest scripts/process/test_mark.py"
+unshimmed=$!
+sleep 2
+check "shims: with the shim dir unwritable and npm missing, a light job waits in the queue" has_ticket "$unshimmed"
+chmod 755 "$HEAVY_LOCK_SHIMS"
 
 check "exempt: a test that sleeps 61 s is stopped at the 60 s limit" within 80 dead "$slow"
 check "exempt: the stop is logged" grep -q "exempt=1 timeout=1 rc=124 .*cmd=python3 -m unittest scripts/process/test_slow.py" "$root/slow.log"

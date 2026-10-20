@@ -25,8 +25,10 @@ POLL=${HEAVY_LOCK_POLL:-2}
 STALE_SECONDS=10
 export CARGO_BUILD_JOBS=4
 
+# The walk starts at the caller, not at this shell: run as `bash -c "$script"`, this
+# shell's own command line is the script text, which contains both app names below.
 instance() {
-  local p=$$ cmd
+  local p=$PPID cmd
   for _ in $(seq 1 40); do
     cmd=$(ps -o command= -p "$p" 2>/dev/null) || break
     case "$cmd" in
@@ -46,10 +48,15 @@ log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*" >> "$WAITLOG"; }
 # or scripts/gate/, relative, without .., and TRACKED by git at HEAD in the cwd
 # (at least one path). Exempt runs get a PATH whose first dir shims the heavy tools
 # (they exit 1), and a 60 s limit (the whole process group is killed). Each exempt
-# run logs one line with exempt=1. Everything else takes the lock.
+# run logs one line with exempt=1. Everything else takes the lock below.
 tracked() {
-  git ls-files --error-unmatch -- "$1" >/dev/null 2>&1 && return 0
-  [ -n "$(git ls-files -- "$1" 2>/dev/null | head -1)" ]
+  # Exempt only what is COMMITTED at HEAD: a file in HEAD's tree, or a directory
+  # whose working copy has no untracked, staged or modified file (so discover -s
+  # cannot pick up a scratch test).
+  local p=${1%/}
+  [ "$(git cat-file -t "HEAD:$p" 2>/dev/null)" = blob ] && [ -z "$(git status --porcelain -- "$p" 2>/dev/null)" ] && return 0
+  [ "$(git cat-file -t "HEAD:$p" 2>/dev/null)" = tree ] || return 1
+  [ -z "$(git status --porcelain --untracked-files=all -- "$p" 2>/dev/null)" ]
 }
 light_job() {
   [ "$1" = python3 ] && [ "$2" = -m ] || return 1
@@ -79,17 +86,25 @@ light_job() {
   done
   [ "$paths" -ge 1 ]
 }
+HEAVY_TOOLS="cargo rustc npx npm pnpm node bun playwright tauri stryker"
+SHIMS=/tmp/monocode-heavy-shims
+# Fail closed: (re)build any missing shim, then check all of them. If any is not
+# there and executable, the run is not exempt and takes the lock below.
+shims_ready() {
+  local tool tmp
+  mkdir -p "$SHIMS" 2>/dev/null || return 1
+  for tool in $HEAVY_TOOLS; do
+    [ -x "$SHIMS/$tool" ] && continue
+    tmp=$(mktemp "$SHIMS/.$tool.XXXXXX") || return 1
+    printf '#!/bin/sh\necho "heavy tool inside an exempt run: use the lock ($0)" >&2\nexit 1\n' > "$tmp" && chmod 755 "$tmp" && mv -f "$tmp" "$SHIMS/$tool" || { rm -f "$tmp"; return 1; }
+  done
+  for tool in $HEAVY_TOOLS; do [ -x "$SHIMS/$tool" ] || return 1; done
+}
+# Not in the live block: tests point the shim dir at a temporary path.
+SHIMS=${HEAVY_LOCK_SHIMS:-$SHIMS}
 run_light_job() {
-  local shims tmp tool rc extra
-  shims=/tmp/monocode-heavy-shims
-  if [ ! -x "$shims/cargo" ]; then
-    tmp=$(mktemp -d /tmp/monocode-heavy-shims.XXXXXX)
-    for tool in cargo rustc npx npm pnpm node bun playwright tauri stryker; do
-      printf '#!/bin/sh\necho "heavy tool inside an exempt run: use the lock ($0)" >&2\nexit 1\n' > "$tmp/$tool"
-      chmod 755 "$tmp/$tool"
-    done
-    mv "$tmp" "$shims" 2>/dev/null || rm -rf "$tmp"
-  fi
+  local shims rc extra
+  shims=$SHIMS
   PATH="$shims:$PATH" perl -e '
     my $pid = fork; die "fork: $!" unless defined $pid;
     if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
@@ -145,7 +160,9 @@ on_signal() {
 
 main() {
   who="${HEAVY_LOCK_WHO:-$(instance)} session=${MONOCODE_SESSION_ID:-${PWD##*/}} cwd=$PWD"
-  light_job "$@" && run_light_job "$@"
+  if light_job "$@" && shims_ready; then
+    run_light_job "$@"
+  fi
   cmd="$*"
   child=
   holder=
