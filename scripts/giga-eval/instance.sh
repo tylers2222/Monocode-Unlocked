@@ -13,8 +13,9 @@
 #   instance.sh guard [db]                 fail when a sandboxed start would refuse <db>
 #   instance.sh denied <since>             what the sandbox refused since a `log show` date
 #
-# GIGA_EVAL_SANDBOX=1: `home` links no real logins, and `start` refuses an
-# unsafe database, runs the app under sandbox.sh's profile and watches its
+# GIGA_EVAL_SANDBOX=1 (see sandbox.sh): `home` links no real logins, and
+# `start` needs a fresh home, refuses an unsafe database, starts the app from
+# `env -i` under sandbox.sh's profile after a preflight, and watches its
 # process tree (GIGA_EVAL_WATCH_NOTIFY: a pid to get USR1 on a stray).
 source "$(dirname "$0")/lib.sh"
 source "$(dirname "$0")/sandbox.sh"
@@ -63,6 +64,8 @@ cmd_home() {
   if [[ "${1:-}" == "--fresh" ]]; then
     [[ -z "$(target_pid instance)" ]] || die "stop the instance before --fresh"
     rm -rf "$EVAL_HOME"   # rm -rf removes symlinks, never their targets
+    mkdir -p "$EVAL_HOME"
+    [[ "${GIGA_EVAL_SANDBOX:-}" != 1 ]] || { touch "$SANDBOX_HOME_MARK"; : >"$EVAL_OUT/preflight.pids"; }
   fi
   mkdir -p "$EVAL_HOME/Library"
   local rel
@@ -84,8 +87,22 @@ cmd_start() {
   local app; app="$(cat "$EVAL_OUT/instance.app" 2>/dev/null)" || die "build first"
   local bin="$app/Contents/MacOS/monocode" jail=()
   if [[ "${GIGA_EVAL_SANDBOX:-}" == 1 ]]; then
-    [[ ! -f "$APP_DATA/monocode.db" ]] || sandbox_guard "$APP_DATA/monocode.db" || exit 1
-    jail=(env -u SSH_AUTH_SOCK -u GH_TOKEN -u GITHUB_TOKEN sandbox-exec -f "$(sandbox_profile "$bin")")
+    sandbox_home_ok || exit 1
+    if [[ -f "$APP_DATA/monocode.db" ]]; then
+      sandbox_checkpoint "$APP_DATA/monocode.db"
+      sandbox_guard "$APP_DATA/monocode.db" || exit 1
+    fi
+    local jailtmp envs profile="$EVAL_OUT/instance.sb" vars
+    jailtmp="$(cat "$EVAL_OUT/instance.jailtmp" 2>/dev/null || true)"
+    [[ "$jailtmp" != /private/tmp/giga-eval-jail.* ]] || rm -rf "$jailtmp"
+    jailtmp="$(mktemp -d /private/tmp/giga-eval-jail.XXXXXX)"
+    echo "$jailtmp" >"$EVAL_OUT/instance.jailtmp"
+    envs="$(sandbox_env "$jailtmp")"
+    sandbox_env_ok "$envs" || exit 1
+    sandbox_profile "$bin" "$jailtmp" "$profile"
+    sandbox_preflight "$profile" "$envs" "$bin" "$jailtmp" || exit 1
+    IFS=$'\n' read -r -d '' -a vars <<<"$envs" || true
+    jail=(env -i "${vars[@]}" sandbox-exec -f "$profile")
   fi
   touch "$EVAL_OUT/instance.marker"
   # A fake-clock build stops at launch without its clock file. This one holds
@@ -173,6 +190,8 @@ cmd_stop() {
   sleep 1
   for k in $kids; do kill -KILL "$k" 2>/dev/null || true; done
   rm -f "$EVAL_OUT/instance.pid"
+  local jailtmp; jailtmp="$(cat "$EVAL_OUT/instance.jailtmp" 2>/dev/null || true)"
+  [[ "$jailtmp" != /private/tmp/giga-eval-jail.* ]] || rm -rf "$jailtmp"
   log "stopped pid $pid and $(echo "$kids" | grep -c . || true) descendants"
 }
 
@@ -193,5 +212,5 @@ case "${1:-}" in
   scrub) sandbox_scrub "$APP_DATA/monocode.db" "${2:?usage: instance.sh scrub <model>}" ;;
   guard) sandbox_guard "${2:-$APP_DATA/monocode.db}" && log "safe: ${2:-$APP_DATA/monocode.db}" ;;
   denied) sandbox_denied "${2:?usage: instance.sh denied <since>}" ;;
-  *) sed -n '2,18p' "$0"; exit 2 ;;
+  *) sed -n '2,19p' "$0"; exit 2 ;;
 esac
