@@ -194,8 +194,13 @@ const TONES = {
   },
 };
 
+/** WebKit prints more digits than Chromium; three places name the colour. */
 const color = (locator: Locator) =>
-  locator.evaluate((element) => getComputedStyle(element).color);
+  locator.evaluate((element) =>
+    getComputedStyle(element).color.replace(/\d+\.\d+/g, (number) =>
+      String(Number(Number(number).toFixed(3))),
+    ),
+  );
 
 /** The decision's verdict, card id and heading, as the queue row and the line say it. */
 function headline(approval: Approval) {
