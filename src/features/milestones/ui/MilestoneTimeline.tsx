@@ -269,19 +269,16 @@ function LiftedCard({
     <li
       aria-hidden
       data-lifted={side}
-      className="pointer-events-none relative my-1 flex items-center gap-3 rounded-lg bg-background-base py-2 pr-2.5 pl-3 text-sm font-medium shadow-lg ring-1 ring-content/12"
+      className="pointer-events-none relative my-1 grid grid-cols-[7px_1fr_auto] items-start gap-3 rounded-lg bg-background-base py-2 pr-2.5 pl-3 shadow-lg ring-1 ring-content/12"
     >
       <span
         data-drop-line
         className="absolute right-0 -left-[22px] -top-1.5 h-0.5 rounded-full bg-accent before:absolute before:-top-[3px] before:left-0 before:size-2 before:rounded-full before:border-2 before:border-accent before:bg-background-base"
       />
-      <i
-        className={`block size-[7px] shrink-0 rounded-full ${ROW_DOT[milestone.status]}`}
-      />
-      <span className="min-w-0 flex-1 truncate">{milestone.title}</span>
-      <span className="text-xs font-normal text-content/55 tabular-nums">
-        {milestone.target ? formatTarget(milestone.target, today) : "Later"}
+      <span className="absolute top-2 -left-6 grid h-5 w-4 place-items-center text-content/35">
+        <GripVertical className="size-3.5" />
       </span>
+      <RowBody milestone={milestone} today={today} />
     </li>
   );
 }
@@ -309,7 +306,6 @@ function MilestoneRow({
   refocus: boolean;
   onBlur: () => void;
 }) {
-  const done = milestone.status === "done";
   const creator = agentCreator(milestone.createdBy);
   return (
     <li
@@ -346,6 +342,40 @@ function MilestoneRow({
       >
         <GripVertical className="size-3.5" />
       </span>
+      <RowBody milestone={milestone} today={today}>
+        {creator ? (
+          <AddedBy
+            creator={creator}
+            look={lookUpCreator(creator)}
+            highlighted={highlighted}
+          />
+        ) : null}
+        {highlighted ? (
+          <span className="rounded bg-accent px-[5px] text-[10px] leading-4 font-semibold text-white">
+            New
+          </span>
+        ) : null}
+      </RowBody>
+    </li>
+  );
+}
+
+/**
+ * What a row and its lifted card both show: the status dot, the title with
+ * `children` after it, the note, and the target date or a dashed "Later".
+ */
+function RowBody({
+  milestone,
+  today,
+  children,
+}: {
+  milestone: Milestone;
+  today: Date;
+  children?: ReactNode;
+}) {
+  const done = milestone.status === "done";
+  return (
+    <>
       <span className="grid h-5 place-items-center">
         <i
           className={`block size-[7px] rounded-full ${ROW_DOT[milestone.status]}`}
@@ -358,18 +388,7 @@ function MilestoneRow({
           }`}
         >
           <span className="min-w-0 truncate">{milestone.title}</span>
-          {creator ? (
-            <AddedBy
-              creator={creator}
-              look={lookUpCreator(creator)}
-              highlighted={highlighted}
-            />
-          ) : null}
-          {highlighted ? (
-            <span className="rounded bg-accent px-[5px] text-[10px] leading-4 font-semibold text-white">
-              New
-            </span>
-          ) : null}
+          {children}
         </div>
         {milestone.note ? (
           <div className="mt-px truncate text-xs leading-[18px] text-content/45">
@@ -390,7 +409,7 @@ function MilestoneRow({
           formatTarget(milestone.target, today)
         )}
       </span>
-    </li>
+    </>
   );
 }
 
