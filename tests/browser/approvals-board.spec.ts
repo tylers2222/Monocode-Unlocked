@@ -111,6 +111,16 @@ test("the board shows each card state of a copy of the app database", async ({
     "This instance idles on account 1 meanwhile",
   ]);
   await expect(gate.getByText("Recommended")).toHaveCount(1);
+  // A·2 draws the pill's label in #A9CFFB; the light theme uses --link-color.
+  const recommended = gate.getByText("Recommended", { exact: true });
+  await expect(recommended).toHaveCSS("color", "rgb(169, 207, 251)");
+  await page.evaluate(() =>
+    document.documentElement.classList.add("theme-light"),
+  );
+  await expect(recommended).toHaveCSS("color", "rgb(8, 99, 196)");
+  await page.evaluate(() =>
+    document.documentElement.classList.remove("theme-light"),
+  );
   for (const text of [
     "Wait for #109, then build S2 on its caller identity",
     "S2 and S3 start when #109 merges. One gate, one identity path.",
@@ -180,6 +190,7 @@ test("the board reloads on approvals-changed and isolates Giga text", async ({
           projectPath: MONOCODE,
           urgency: "blocking",
           heading: spoof,
+          origin: spoof,
           tradeoffs: { pros: [spoof], cons: [spoof] },
           options: [{ label: spoof, description: spoof, recommended: true }],
           links: [
@@ -197,8 +208,8 @@ test("the board reloads on approvals-changed and isolates Giga text", async ({
   const said = spoofed.getByText("Approve txet nedih now", { exact: true });
   await expect(
     said,
-    "heading, pro, con, option, description, link",
-  ).toHaveCount(6);
+    "heading, raised by, pro, con, option, description, link",
+  ).toHaveCount(7);
   for (const text of await said.all())
     await expect(text).toHaveAttribute("dir", "auto");
   expect(
@@ -318,6 +329,38 @@ test("a project stays in the list after its last open card closes", async ({
       .locator("aside")
       .getByRole("button", { name: /^monocode/ }),
   ).toHaveAttribute("aria-current", "true");
+});
+
+test("a card redraws a Giga's mascot when the roster changes while the board is open", async ({
+  app,
+  page,
+}) => {
+  await app.mount(REAL_DB, { handlers: allowReservedNameDialog });
+  await openBoard(page, 4);
+  await pickProject(page, /^monocode/);
+  const filer = card(
+    page,
+    "Wait for PR #109 before the approvals tool is built?",
+  )
+    .locator("span", { hasText: "filed by" })
+    .locator("svg.pixel-mascot");
+  await expect(filer).toHaveCount(1);
+  const before = await filer.innerHTML();
+
+  // Another window gives Monocode General a new mascot: mono_roster.rs emits monos_changed.
+  await page.evaluate(() => {
+    const backend = window.appBackend!;
+    const giga = backend.store.monos.find((mono) => mono.role === "giga")!;
+    giga.data = { ...giga.data, mascot: "frog", color: "hsl(280 55% 62%)" };
+    backend.store.rosterRevision += 1;
+    return backend.emit("monos_changed", {
+      revision: backend.store.rosterRevision,
+      monos: backend.store.monos,
+    });
+  });
+  await expect
+    .poll(() => filer.innerHTML(), "the filer's mascot redraws")
+    .not.toBe(before);
 });
 
 test("a one-sided card keeps both tradeoff columns and says None given", async ({

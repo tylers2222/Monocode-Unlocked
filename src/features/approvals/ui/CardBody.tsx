@@ -98,7 +98,7 @@ function Options({ card }: { card: Approval }) {
               <div className="flex items-center gap-2 text-[13px] leading-5 font-medium">
                 <GigaText text={option.label} />
                 {option.recommended ? (
-                  <span className="rounded bg-accent/12 px-1.5 text-[10px] leading-4 font-semibold whitespace-nowrap text-(--link-color) dark:bg-accent/16 dark:text-accent">
+                  <span className="rounded bg-accent/12 px-1.5 text-[10px] leading-4 font-semibold whitespace-nowrap text-(--link-color) dark:bg-accent/16 dark:text-[#A9CFFB]">
                     Recommended
                   </span>
                 ) : null}
