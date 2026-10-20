@@ -538,6 +538,7 @@ fn writes_the_chat_line_fixture_from_a_copy_of_the_app_database() {
         &INDEX,
         start,
     );
+    let quiet = filed("Bump Vite to 7", &[], start);
     let bump = filed("Bump Playwright to 1.49", &[], start);
     withdraw(&conn, &bump.id, &by, start + 1).unwrap();
     let orphan = filed_by_removed_giga(&conn, &project, start);
@@ -560,19 +561,12 @@ fn writes_the_chat_line_fixture_from_a_copy_of_the_app_database() {
             Some("Take option 2 as well, then file it again with the query plan."),
             &INDEX[1..],
         ),
+        (&quiet, Verdict::Approved, None, &[][..]),
         (&orphan, Verdict::Approved, None, &[][..]),
     ];
     for (offset, (card, verdict, note, ticked)) in (2..).zip(decisions) {
-        let note = note.map(str::to_string);
-        decide(
-            &conn,
-            &card.id,
-            verdict,
-            note,
-            &chosen(ticked),
-            start + offset,
-        )
-        .unwrap();
+        let (note, ticked) = (note.map(str::to_string), chosen(ticked));
+        decide(&conn, &card.id, verdict, note, &ticked, start + offset).unwrap();
     }
 
     let rows = mono_messages::unqueued(&conn, &SessionId::parse(&chat).unwrap()).unwrap();
@@ -581,18 +575,19 @@ fn writes_the_chat_line_fixture_from_a_copy_of_the_app_database() {
         .iter()
         .map(|row| row.message.request_id.as_str())
         .collect();
-    let delivered = [&wait, &store_talk, &index_card].map(|card| card.id.as_str());
-    assert_eq!(named, delivered, "one row per delivered decision");
-    let cards: serde_json::Map<String, serde_json::Value> =
-        [&wait, &store_talk, &index_card, &bump, &orphan]
-            .into_iter()
-            .map(|card| {
-                (
-                    card.id.clone(),
-                    serde_json::to_value(get(&conn, &card.id).unwrap()).unwrap(),
-                )
-            })
-            .collect();
+    let delivered = [&wait, &store_talk, &index_card, &quiet];
+    let delivered_ids = delivered.map(|card| card.id.as_str());
+    assert_eq!(named, delivered_ids, "one row per delivered decision");
+    let cards: serde_json::Map<String, serde_json::Value> = delivered
+        .into_iter()
+        .chain([&bump, &orphan])
+        .map(|card| {
+            (
+                card.id.clone(),
+                serde_json::to_value(get(&conn, &card.id).unwrap()).unwrap(),
+            )
+        })
+        .collect();
     let fixture = json!({
         "giga": filer, "chat": chat, "project": project, "monos": monos_json(&conn),
         "rows": rows, "cards": cards, "withdrawn": bump.id, "removedGiga": orphan.id,

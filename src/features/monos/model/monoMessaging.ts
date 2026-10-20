@@ -155,12 +155,14 @@ export type QueuedDecision = {
  * and its bubble stays hidden until it is sent.
  */
 export function monoQueueDecisions(session: Session): QueuedDecision[] {
+  const queued = session.queuedMessages ?? [];
+  if (queued.length === 0) return [];
   const decisions = new Map(
     session.blocks.flatMap((block) =>
       block.boardDecision ? [[block.id, block.boardDecision] as const] : [],
     ),
   );
-  return (session.queuedMessages ?? []).flatMap(({ id, blockId, error }) => {
+  return queued.flatMap(({ id, blockId, error }) => {
     const decision = blockId && decisions.get(blockId);
     return decision ? [{ id, decision, ...(error ? { error } : {}) }] : [];
   });

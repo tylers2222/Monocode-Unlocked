@@ -52,6 +52,8 @@ declare global {
     chatLine?: { cards: Record<string, Approval>; rows: Row[] };
     /** What mono_messages_unqueued answers once. */
     unqueued?: Row[];
+    /** mono_message_assign_slot refuses while set, as a locked store does. */
+    refuseSlots?: boolean;
   }
 }
 
@@ -82,6 +84,7 @@ const handlers: MountOptions["handlers"] = {
   },
   mono_messages_pending_notices: () => [],
   mono_message_assign_slot: (_store, { id, turnId, kind }) => {
+    if (window.refuseSlots) throw "database is locked";
     const row = window.chatLine!.rows.find((row) => row.message.id === id)!;
     return {
       message: {
@@ -93,6 +96,14 @@ const handlers: MountOptions["handlers"] = {
     };
   },
   mono_message_mark_delivery: () => null,
+  // mono_messages.rs drop_message on a waiting row: the user removed it, so
+  // its card reads undelivered "removed" (decide.rs UNDELIVERED).
+  mono_message_drop: (_store, { id }) => {
+    const row = window.chatLine!.rows.find((row) => row.message.id === id)!;
+    const status = window.chatLine!.cards[row.message.requestId].status;
+    if (status.state === "decided") status.undelivered = "removed";
+    return "dropped";
+  },
   approvals_get: (_store, { id }) => {
     const found = window.chatLine!.cards[id as string];
     if (!found) throw "unknown";
@@ -100,12 +111,12 @@ const handlers: MountOptions["handlers"] = {
   },
 };
 
-async function mountGiga(page: Page, app: AppShell) {
+async function mountGiga(page: Page, app: AppShell, cards = CARDS) {
   await page.addInitScript(
     (chatLine) => {
       window.chatLine = chatLine;
     },
-    { cards: CARDS, rows: [...ROWS, ORDINARY] },
+    { cards, rows: [...ROWS, ORDINARY] },
   );
   const chat: SessionSummary = {
     id: fixture.chat,
@@ -250,6 +261,7 @@ test("a decision waits in the busy Giga's queue, then shows once as its sent lin
     { state: "decided", verdict: "approved" },
     { state: "decided", verdict: "rejected" },
     { state: "decided", verdict: "changes_requested" },
+    { state: "decided", verdict: "approved", note: null, chosen: [] },
   ]);
   await mountGiga(page, app);
   const composer = page.getByPlaceholder(`Message ${NAME}`);
@@ -265,7 +277,7 @@ test("a decision waits in the busy Giga's queue, then shows once as its sent lin
   );
   await app.emit("mono-message-notices", { sessions: [fixture.chat] });
 
-  await expect(queueRows(page)).toHaveCount(3);
+  await expect(queueRows(page)).toHaveCount(ROWS.length);
   for (const [index, row] of ROWS.entries()) {
     const queued = queueRows(page).nth(index);
     await expect(queued).toHaveText(
@@ -291,7 +303,7 @@ test("a decision waits in the busy Giga's queue, then shows once as its sent lin
   await endTurn(app, "The S1 migration tests pass.");
   for (const [index, row] of ROWS.entries()) {
     await acceptPrompt(page, app, index + 2);
-    await expect(queueRows(page)).toHaveCount(2 - index);
+    await expect(queueRows(page)).toHaveCount(ROWS.length - 1 - index);
     await expect(lines(page)).toHaveCount(index + 1);
     const prompt = (await prompts(page)).at(-1)!.message!;
     expect(prompt).toContain(row.message.body);
@@ -330,8 +342,155 @@ test("a decision waits in the busy Giga's queue, then shows once as its sent lin
 
   await app.restart();
   await page.getByRole("button", { name: new RegExp(`^${NAME}, `) }).click();
-  await expect(lines(page)).toHaveCount(3);
+  await expect(lines(page)).toHaveCount(ROWS.length);
   await expect(queueRows(page)).toHaveCount(0);
   for (const row of ROWS)
-    await expect(page.getByText(`“${card(row).heading}”`)).toHaveCount(1);
+    await expect(
+      lines(page).filter({ hasText: `“${card(row).heading}”` }),
+    ).toHaveCount(1);
+  await expect(
+    page
+      .locator(".user-message-bubble")
+      .filter({ hasText: 'via="approvals board"' }),
+  ).toHaveCount(0);
+});
+
+const FIRST = ROWS[0];
+const UNDELIVERABLE = "Delivery is unavailable. Retry when the agent is ready.";
+
+/** The idle Giga's chat gets the first decision row; its hand-off starts at once. */
+async function firstDecisionArrives(page: Page, app: AppShell) {
+  await page.evaluate((row) => {
+    window.unqueued = [row];
+  }, FIRST);
+  await app.emit("mono-message-notices", { sessions: [fixture.chat] });
+}
+
+// Frame A·7b, review r1 M1. Defects: a decision whose send failed loses its
+// queue row or shows the failure twice, or with another element, colour or
+// size than the queue's own failure line; Retry does not send it.
+test("a decision whose send failed shows the queue's failure line once, then sends on Retry", async ({
+  page,
+  app,
+}) => {
+  await mountGiga(page, app);
+  await page.evaluate(() => {
+    window.refuseSlots = true;
+  });
+  await firstDecisionArrives(page, app);
+  const failed = queueRows(page).getByRole("alert");
+  await expect(failed).toHaveText(UNDELIVERABLE);
+  await expect(page.getByText(UNDELIVERABLE)).toHaveCount(1);
+  expect(
+    await failed.evaluate((element) => ({
+      tag: element.tagName,
+      className: element.className,
+      color: getComputedStyle(element).color,
+      size: getComputedStyle(element).fontSize,
+    })),
+  ).toEqual({
+    tag: "P",
+    className: "text-red-400",
+    color: "oklch(0.704 0.191 22.216)",
+    size: "12px",
+  });
+  await expect(queueRows(page)).toHaveCount(1);
+  await expect(lines(page)).toHaveCount(0);
+  await page.screenshot({ path: test.info().outputPath("a7b-failed.png") });
+
+  await page.evaluate(() => {
+    window.refuseSlots = false;
+  });
+  await page.getByRole("button", { name: "Retry" }).click();
+  await acceptPrompt(page, app, 1);
+  await expect(lines(page)).toHaveCount(1);
+  await expect(queueRows(page)).toHaveCount(0);
+  await expect(page.getByText(UNDELIVERABLE)).toHaveCount(0);
+});
+
+// Review r1 m1. Defect: a bidi control in Giga text reorders the rest of the
+// line, so " · chose …" reads before the heading, or the control itself is
+// kept in Tyler's record.
+test("a bidi override in a heading cannot reorder the decision line", async ({
+  page,
+  app,
+}) => {
+  const heading = "עדכון הלוח";
+  const decided = card(FIRST);
+  if (decided.status.state !== "decided") throw new Error("not decided");
+  await mountGiga(page, app, {
+    ...CARDS,
+    [decided.id]: {
+      ...decided,
+      heading: `\u202e${heading}`,
+      status: { ...decided.status, chosen: ["Ship it"], note: null },
+    },
+  });
+  await firstDecisionArrives(page, app);
+  await acceptPrompt(page, app, 1);
+  await expect(lines(page)).toHaveCount(1);
+  const shown = lines(page).getByText(heading, { exact: true });
+  const chose = lines(page).getByText("Ship it", { exact: true });
+  expect(await shown.textContent()).toBe(heading);
+  expect(
+    await shown.evaluate((element) => getComputedStyle(element).direction),
+  ).toBe("rtl");
+  const [headingBox, choseBox] = [
+    await shown.boundingBox(),
+    await chose.boundingBox(),
+  ];
+  expect(Math.abs(choseBox!.y - headingBox!.y)).toBeLessThan(2);
+  expect(choseBox!.x).toBeGreaterThanOrEqual(headingBox!.x + headingBox!.width);
+  await expect(lines(page).locator("p")).toHaveText(
+    `${TONES.approved.label} · APR-${decided.number} “${heading}” · chose “Ship it”`,
+  );
+});
+
+// Frame A·7b, lead finding on review r1. Defects: a waiting decision has no
+// remove control, or Remove skips the drop or drops twice; the removed
+// decision keeps its row, gets a line that says it was sent, reaches the
+// Giga at the turn end, or comes back after a restart.
+test("Remove on a waiting decision drops it once, and no line says it was sent", async ({
+  page,
+  app,
+}) => {
+  await mountGiga(page, app);
+  const composer = page.getByPlaceholder(`Message ${NAME}`);
+  await composer.fill("Run the S1 migration tests");
+  await composer.press("Enter");
+  await acceptPrompt(page, app, 1);
+  await firstDecisionArrives(page, app);
+  await expect(queueRows(page)).toHaveCount(1);
+
+  await queueRows(page)
+    .getByRole("button", { name: "Remove queued message" })
+    .click();
+  await expect(queueRows(page)).toHaveCount(0);
+  expect(
+    await page.evaluate(() =>
+      window
+        .appBackend!.calls.filter(
+          ({ command }) => command === "mono_message_drop",
+        )
+        .map(({ args }) => args),
+    ),
+  ).toEqual([{ id: FIRST.message.id }]);
+  expect(
+    await page.evaluate(
+      (id) => window.__TAURI_INTERNALS__.invoke("approvals_get", { id }),
+      FIRST.message.requestId,
+    ),
+  ).toMatchObject({ status: { state: "decided", undelivered: "removed" } });
+  await expect(lines(page)).toHaveCount(0);
+
+  await endTurn(app, "The S1 migration tests pass.");
+  await expect(page.getByText("The S1 migration tests pass.")).toBeVisible();
+  expect(await prompts(page)).toHaveLength(1);
+  await expect(lines(page)).toHaveCount(0);
+
+  await app.restart();
+  await page.getByRole("button", { name: new RegExp(`^${NAME}, `) }).click();
+  await expect(page.getByText("The S1 migration tests pass.")).toBeVisible();
+  await expect(lines(page)).toHaveCount(0);
+  await expect(queueRows(page)).toHaveCount(0);
 });

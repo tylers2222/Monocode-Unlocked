@@ -1,4 +1,6 @@
+import { Fragment } from "react";
 import { CheckCircle, ListEnd } from "../../../shared/ui/icons";
+import { quoteText } from "../../sessions/ui/composerIntent";
 import { SentNotice } from "../../sessions/ui/SentNotice";
 import type { BoardDecision, Verdict } from "../model/boardDecision";
 
@@ -8,7 +10,17 @@ const VERDICT: Record<Verdict, { label: string; tone: string }> = {
   changes_requested: { label: "Changes requested", tone: "text-amber-400" },
 };
 
-const quoted = (text: string) => `“${text}”`;
+/**
+ * Text a Giga or the user wrote, in quotes. Bidi controls are dropped and
+ * the text keeps its own direction, so it cannot reorder the line around it.
+ */
+function Quoted({ text }: { text: string }) {
+  return (
+    <>
+      “<span dir="auto">{quoteText(text)}</span>”
+    </>
+  );
+}
 
 function Headline({ decision }: { decision: BoardDecision }) {
   const verdict = VERDICT[decision.verdict];
@@ -18,7 +30,7 @@ function Headline({ decision }: { decision: BoardDecision }) {
       <span className="font-mono text-[11.5px] text-content/65">
         APR-{decision.number}
       </span>{" "}
-      {quoted(decision.heading)}
+      <Quoted text={decision.heading} />
     </>
   );
 }
@@ -48,12 +60,16 @@ export function SentDecision({
       embedded={embedded}
     >
       <Headline decision={decision} />
-      {decision.chosen.length > 0
-        ? ` · chose ${decision.chosen.map(quoted).join(", ")}`
-        : null}
+      {decision.chosen.length > 0 ? " · chose " : null}
+      {decision.chosen.map((label, index) => (
+        <Fragment key={label}>
+          {index > 0 ? ", " : null}
+          <Quoted text={label} />
+        </Fragment>
+      ))}
       {decision.note ? (
         <span className="mt-0.5 block text-content/75">
-          Your comment: {quoted(decision.note)}
+          Your comment: <Quoted text={decision.note} />
         </span>
       ) : null}
     </SentNotice>
@@ -61,13 +77,7 @@ export function SentDecision({
 }
 
 /** Frame A·7: a board decision that waits for its Giga's turn to end. */
-export function QueuedDecisionRow({
-  decision,
-  error,
-}: {
-  decision: BoardDecision;
-  error?: string;
-}) {
+export function QueuedDecisionRow({ decision }: { decision: BoardDecision }) {
   return (
     <div data-queued-decision className="flex gap-2 py-1.5">
       <ListEnd className="mt-px size-3.5 shrink-0 text-content/60" />
@@ -78,11 +88,6 @@ export function QueuedDecisionRow({
         <p className="mt-px text-[12.5px] leading-[18px] text-content/85">
           <Headline decision={decision} />
         </p>
-        {error ? (
-          <p role="alert" className="text-[12px] text-red-400">
-            {error}
-          </p>
-        ) : null}
       </div>
     </div>
   );

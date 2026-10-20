@@ -133,8 +133,8 @@ export function MessageQueue({
           </>
         ) : null}
         <div className="divide-y divide-stroke empty:hidden [.divide-y+&]:border-t [.divide-y+&]:border-stroke">
-          {decisions.map(({ id, decision, error }) => (
-            <QueuedDecisionRow key={id} decision={decision} error={error} />
+          {decisions.map(({ id, decision }) => (
+            <QueuedDecisionRow key={id} decision={decision} />
           ))}
         </div>
         {statusLine ? (
