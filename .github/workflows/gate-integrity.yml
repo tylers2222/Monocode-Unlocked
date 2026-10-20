@@ -52,6 +52,9 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      checks: read
+      # Only for the carry post below.
+      statuses: write
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -85,6 +88,17 @@ jobs:
       - name: Exactly one instance label
         if: ${{ !cancelled() && hashFiles('scripts/process/instance-label.py') != '' }}
         run: python3 scripts/process/instance-label.py --pr "$PR" --repo "$GATE_REPO"
+
+      # Fails until the head may merge under the tier rule: a review verdict on the head,
+      # or a minors-only verdict carried by fixer proof. --post-carry posts the carried
+      # verdict as review/agent on the head; delete the flag and `statuses: write` to keep
+      # review/agent reviewer-only. gate-integrity-rerun.yml re-runs this job when a
+      # verdict, a fixer-proof comment or another check changes.
+      - name: Merge rule (review verdict and fixer proof)
+        if: ${{ !cancelled() }}
+        env:
+          TIER: ${{ needs.tier.outputs.tier }}
+        run: python3 scripts/process/merge_rule.py "$PR" "$TIER" --post-carry
 
       - name: gate/tier passed
         if: ${{ !cancelled() && needs.tier.result != 'success' }}
