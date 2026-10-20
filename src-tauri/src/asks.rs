@@ -194,12 +194,12 @@ pub fn ask(
 }
 
 /// `ack` from `caller` (design R5): spends the key of ask `ask_id`, which
-/// must be open and sent to the caller, and tells its parent. The row to the
-/// parent goes first; only once the send gate accepts it does one guarded
-/// `UPDATE` decide the ack, in one `BEGIN IMMEDIATE` with the event, so of
-/// two acks of one ask exactly one gets through. A refused row is kept with
-/// the ask untouched, so a repeat (same request id) answers the first
-/// outcome, as it does for every tool.
+/// must be open and sent to the caller, and tells its parent. `decide_ack`
+/// runs before the row to the parent; only once the send gate accepts that
+/// row does one guarded `UPDATE` spend the key, in one `BEGIN IMMEDIATE`
+/// with the event, so of two acks of one ask exactly one gets through. A
+/// row the gate refuses is kept with the ask untouched, so a repeat (same
+/// request id) answers the first outcome, as it does for every tool.
 pub fn ack(
     conn: &Connection,
     caller: &Caller,
@@ -229,6 +229,16 @@ pub fn ack(
         Err(hint) => return Ok(failed(Refusal::InvalidInput.as_str(), hint)),
     };
     let me = caller_party(&tx, caller)?.map(|party| party.session);
+    // Decided before the send, as `ask` is: an ack that is not this caller's
+    // to give never reaches the send gate. A repeat or a retried refusal
+    // (a row under this request id) answers its first outcome instead.
+    if prior.is_empty() {
+        if let Some(me) = &me {
+            if let Err(reason) = ask_gate::decide_ack(&ask, me) {
+                return refused(reason);
+            }
+        }
+    }
     let submitted = mono_messages::submit_in(&tx, caller, request_id, carrier, live, now)?;
     if let Submitted::Accepted {
         messages,
@@ -247,8 +257,7 @@ pub fn ack(
             params![ask_id.as_str(), me.as_str()],
         )?;
         if changed == 0 {
-            // `Ok` here would be an ask that turned open between the read and
-            // the update, which the write lock rules out.
+            // Decided above under the write lock; this guards the invariant.
             let reason = ask_gate::decide_ack(&ask, &me).err();
             return refused(reason.unwrap_or(AckRefused::NoOpenAsk));
         }

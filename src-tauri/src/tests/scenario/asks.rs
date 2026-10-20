@@ -699,6 +699,76 @@ fn a_refused_ack_keeps_its_row_and_a_retry_gets_its_first_refusal() {
     assert_eq!(count(&world, "SELECT count(*) FROM mono_ask_events"), 0);
 }
 
+/// Review r2 m1. Defect: an ack that is not the caller's to give is sent
+/// first, so the send gate answers it (a parent acking its own ask is told
+/// `self_send`) and its refused row is kept under the request id.
+#[test]
+fn a_parent_that_acks_its_own_ask_is_told_not_yours_and_writes_no_row() {
+    let world = World::new("r5-ack-own");
+    let tree = tree(&world);
+    let lead = session_caller(&tree.lead, P);
+    let id = written(ask(
+        &world,
+        &tree,
+        &lead,
+        "l-ask",
+        tree.worker.as_str(),
+        None,
+    ));
+    assert_eq!(
+        refusal(ack(&world, &tree, &lead, "l-own", &id)),
+        ack_refused(AckRefused::NotYours)
+    );
+    assert_eq!(
+        count(
+            &world,
+            "SELECT count(*) FROM mono_messages WHERE request_id = 'l-own'"
+        ),
+        0
+    );
+    assert_eq!(ask_row(&world, &id).0, "open");
+}
+
+/// Review r2 m1. Defect: a rate-limited child that acks an ask it already
+/// acked is told `rate_limited` by the send gate instead of `ack_refused`
+/// "already acked".
+#[test]
+fn a_rate_limited_ack_of_an_acked_ask_is_told_already_acked() {
+    let world = World::new("r5-ack-acked-limited");
+    let tree = tree(&world);
+    let worker = session_caller(&tree.worker, P);
+    let id = written(ask(
+        &world,
+        &tree,
+        &session_caller(&tree.lead, P),
+        "l-ask",
+        tree.worker.as_str(),
+        None,
+    ));
+    written(ack(&world, &tree, &worker, "w-ack", &id));
+    for n in 0..5 {
+        let input = json!({"message": "Update", "send_to": tree.lead.as_str(), "wanting_reply": false, "intent": "new"});
+        written(world.tool(
+            &worker,
+            &format!("note-{n}"),
+            "send_message",
+            input,
+            &tree.live(),
+        ));
+    }
+    assert_eq!(
+        refusal(ack(&world, &tree, &worker, "w-ack-2", &id)),
+        ack_refused(AckRefused::AlreadyAcked)
+    );
+    assert_eq!(
+        count(
+            &world,
+            "SELECT count(*) FROM mono_messages WHERE request_id = 'w-ack-2'"
+        ),
+        0
+    );
+}
+
 /// Review r1 m4. Defect: the event is written apart from the guarded
 /// `UPDATE` and the row to the parent, so a failed event insert leaves an
 /// acked ask and a delivered ack with no event.
