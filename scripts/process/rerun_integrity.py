@@ -1,7 +1,7 @@
-"""Re-runs the gate/integrity job of a PR head when something it reads changes
-without a pull_request_target event: a fixer-proof comment, a review/agent verdict,
-or a finished CI or gate workflow. A re-run of that one job keeps the run's
-gate/tier and gate/mutation results and updates the required context on the head.
+"""Re-runs the gate/integrity job of a PR's current head when something it reads
+changes without a pull_request_target event: a fixer-proof comment, a review/agent
+verdict, or a finished pull_request workflow. Re-running that one job keeps the
+run's gate/tier result and updates the required context on the head.
 
 Usage: rerun_integrity.py  (reads GITHUB_EVENT_NAME and GITHUB_EVENT_PATH)
 GATE_REPO, GATE_WORKFLOW (default gate-integrity.yml), GATE_EVENT (default
@@ -16,14 +16,33 @@ import time
 WAIT_SECONDS, POLL_SECONDS = 20 * 60, 20
 
 
-def head_of(name, event):
-    """('pr', number) or ('sha', sha) for the PR head the event concerns. The workflow's
-    `if:` lets through only the events gate/integrity reads."""
+def event_target(name, event):
+    """(PR number or None, the commit the event is about or None). A comment names its
+    PR; a status and a workflow run name a commit (and a run its PRs)."""
     if name == 'issue_comment':
-        return 'pr', event['issue']['number']
+        return event['issue']['number'], None
     if name == 'status':
-        return 'sha', event['sha']
-    return 'sha', event['workflow_run']['head_sha']
+        return None, event['sha']
+    run = event['workflow_run']
+    return next((pr['number'] for pr in run.get('pull_requests') or []), None), run['head_sha']
+
+
+def stale(event_sha, head):
+    """True when the event is about a commit that is no longer the PR's head."""
+    return event_sha is not None and event_sha != head
+
+
+def pick(runs, jobs_by_run, job_name):
+    """What to re-run once every run of the head has completed: ('job', job id, run id)
+    in the newest run (by id) that has the job and whose other jobs all succeeded, else
+    ('run', run id) for the newest run whole. Runs started in the same second (an open
+    and a label) can be cancelled in either order, so the newest is not always usable."""
+    for run in sorted(runs, key=lambda run: -run['id']):
+        jobs = jobs_by_run[run['id']]
+        job = next((j for j in jobs if j['name'] == job_name), None)
+        if job and all(j['conclusion'] == 'success' for j in jobs if j is not job):
+            return 'job', job['id'], run['id']
+    return 'run', max(run['id'] for run in runs)
 
 
 def gh(*args):
@@ -36,34 +55,43 @@ def main():
     trigger = os.environ.get('GATE_EVENT', 'pull_request_target')
     job_name = os.environ.get('GATE_JOB', 'gate/integrity')
     with open(os.environ['GITHUB_EVENT_PATH']) as f:
-        kind, value = head_of(os.environ['GITHUB_EVENT_NAME'], json.load(f))
-    sha = gh('api', f'repos/{repo}/pulls/{value}', '--jq', '.head.sha').strip() if kind == 'pr' else value
+        pr, event_sha = event_target(os.environ['GITHUB_EVENT_NAME'], json.load(f))
+    if pr is None:
+        prs = json.loads(gh('api', f'repos/{repo}/commits/{event_sha}/pulls', '--jq', '[.[] | select(.state == "open") | .number]'))
+        if not prs:
+            print(f'rerun: {event_sha} is not the commit of an open PR')
+            return 0
+        pr = prs[0]
     deadline = time.monotonic() + WAIT_SECONDS
     while True:
-        runs = json.loads(gh('api', f'repos/{repo}/actions/workflows/{workflow}/runs?head_sha={sha}&event={trigger}&per_page=20',
+        head = gh('api', f'repos/{repo}/pulls/{pr}', '--jq', '.head.sha').strip()
+        if stale(event_sha, head):
+            print(f'rerun: {event_sha} is not the head of #{pr} ({head}); nothing to re-run')
+            return 0
+        runs = json.loads(gh('api', f'repos/{repo}/actions/workflows/{workflow}/runs?head_sha={head}&event={trigger}&per_page=20',
                              '--jq', '[.workflow_runs[] | {id, status}]'))
         if not runs:
-            print(f'rerun: no {workflow} run for {sha}')
+            print(f'rerun: no {workflow} run for {head}')
             return 0
         if all(run['status'] == 'completed' for run in runs):
             break
         if time.monotonic() > deadline:
-            print(f'rerun: a {workflow} run for {sha} is still running after {WAIT_SECONDS}s')
+            print(f'rerun: a {workflow} run for {head} is still running after {WAIT_SECONDS}s')
             return 1
         time.sleep(POLL_SECONDS)
-    # Runs started in the same second (an open and a label) can be cancelled in either
-    # order. Re-run the job in the newest run whose other jobs (gate/tier) succeeded;
-    # if there is none, re-run the newest run whole.
-    for run in sorted(runs, key=lambda run: -run['id']):
-        jobs = json.loads(gh('api', f'repos/{repo}/actions/runs/{run["id"]}/jobs', '--jq', '[.jobs[] | {id, name, conclusion}]'))
-        job = next((j for j in jobs if j['name'] == job_name), None)
-        if job and all(j['conclusion'] == 'success' for j in jobs if j is not job):
-            gh('api', '-X', 'POST', f'repos/{repo}/actions/jobs/{job["id"]}/rerun')
-            print(f'rerun: re-ran {job_name} (job {job["id"]}) of run {run["id"]} for {sha}')
-            return 0
-    newest = max(runs, key=lambda run: run['id'])
-    gh('api', '-X', 'POST', f'repos/{repo}/actions/runs/{newest["id"]}/rerun')
-    print(f'rerun: re-ran run {newest["id"]} whole for {sha} (no run had its other jobs succeed)')
+    # The head may move while this waited; read it once more right before re-running.
+    if gh('api', f'repos/{repo}/pulls/{pr}', '--jq', '.head.sha').strip() != head:
+        print(f'rerun: #{pr} moved past {head} while waiting; nothing to re-run')
+        return 0
+    jobs_by_run = {run['id']: json.loads(gh('api', f'repos/{repo}/actions/runs/{run["id"]}/jobs',
+                                            '--jq', '[.jobs[] | {id, name, conclusion}]')) for run in runs}
+    choice = pick(runs, jobs_by_run, job_name)
+    if choice[0] == 'job':
+        gh('api', '-X', 'POST', f'repos/{repo}/actions/jobs/{choice[1]}/rerun')
+        print(f'rerun: re-ran {job_name} (job {choice[1]}) of run {choice[2]} for {head}')
+    else:
+        gh('api', '-X', 'POST', f'repos/{repo}/actions/runs/{choice[1]}/rerun')
+        print(f'rerun: re-ran run {choice[1]} whole for {head} (no run had its other jobs succeed)')
     return 0
 
 
