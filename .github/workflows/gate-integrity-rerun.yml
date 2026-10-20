@@ -10,7 +10,8 @@ on:
   issue_comment:
     types: [created, edited]
   status:
-  # Every pull_request workflow whose checks merge_rule.py waits for. A new one goes here too.
+  # Every workflow whose checks land on the PR head (merge_rule.py waits for all of them);
+  # tests/test_rerun_integrity.py fails when one is missing.
   workflow_run:
     workflows: [CI, gate]
     types: [completed]
@@ -30,7 +31,8 @@ jobs:
       (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, 'fixer-proof:')
         && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
       || (github.event_name == 'status' && github.event.context == 'review/agent' && github.event.state != 'pending')
-      || (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request')
+      || (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request'
+        && github.event.workflow_run.conclusion != 'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
