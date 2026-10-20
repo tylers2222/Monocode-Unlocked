@@ -4,16 +4,22 @@
 // the first rule of $HOME/.puppet/script.json whose `match` the prompt
 // contains, and ends the turn.
 //
-// script.json: {"app": "<monocode binary>", "rules": [{"match": "...",
+// script.json: {"app": "<monocode binary>", "whoami": false, "rules": [{"match": "...",
 //   "calls": [{"tool": "send_message", "arguments": {...}}], "reply": "..."}]}
-// Each call goes through `<app> app-mcp`, the app's MCP server, with the app
-// token this process got from the app. log.jsonl gets one line per prompt
-// ({"prompt", "rule", "steer"}) and per call ({"tool", "input", "result"}).
-import { spawn } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+// Each tool call goes through `<app> app-mcp`, the app's MCP server, and each
+// `{"action": "sessions.start", "arguments": {...}}` call through the CLI
+// `<app> app <action>`, both with the app token this process got from the
+// app. A string argument "$card:<heading>" is the id of the card that an
+// earlier logged call filed or updated under that heading. log.jsonl gets
+// one line per prompt ({"prompt", "rule", "steer"}, plus "who", the Mono
+// that get_monos marks `you`, when `whoami` is set) and per call ({"tool"
+// or "action", "input", "result"}).
+import { execFile, spawn } from "node:child_process";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { promisify } from "node:util";
 
 const dir = join(homedir(), ".puppet");
 const args = process.argv.slice(2);
@@ -71,17 +77,68 @@ function mcp(app) {
   };
 }
 
+/** What a call answered: the app's `{ok, result}` envelope opened. */
+const payload = (result) => result?.result ?? result;
+
+/** Each card id an earlier call answered, by the card's heading. */
+function cardIds() {
+  const path = join(dir, "log.jsonl");
+  const ids = new Map();
+  if (!existsSync(path)) return ids;
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const card = line ? payload(JSON.parse(line).result) : undefined;
+    if (card?.id && card.heading) ids.set(card.heading, card.id);
+  }
+  return ids;
+}
+
+function withCardIds(input) {
+  const ids = cardIds();
+  return JSON.parse(JSON.stringify(input ?? {}), (_key, value) =>
+    typeof value === "string" && value.startsWith("$card:")
+      ? (ids.get(value.slice(6)) ?? value)
+      : value,
+  );
+}
+
+/** The mono_id that get_monos marks as this caller, or null. */
+function you(value) {
+  if (Array.isArray(value)) return value.map(you).find(Boolean) ?? null;
+  if (value && typeof value === "object")
+    return value.you === true ? value.mono_id : you(Object.values(value));
+  return null;
+}
+
+async function cli(app, action, input, requestId) {
+  try {
+    const { stdout } = await promisify(execFile)(app, [
+      "app", action, "--json", JSON.stringify(input),
+      ...(requestId ? ["--request-id", requestId] : []),
+    ]);
+    return JSON.parse(stdout);
+  } catch (error) {
+    return error.stdout ? JSON.parse(error.stdout) : { ok: false, error: String(error) };
+  }
+}
+
 async function runTurn(text, steer) {
   const script = JSON.parse(readFileSync(join(dir, "script.json"), "utf8"));
   const rule = script.rules.find((candidate) => text.includes(candidate.match));
-  log({ prompt: text, rule: rule?.match ?? null, steer });
-  if (!rule) return "";
+  if (!rule && !script.whoami) {
+    log({ prompt: text, rule: null, steer });
+    return "";
+  }
   const server = mcp(script.app);
-  for (const { tool, arguments: input } of rule.calls ?? []) {
-    log({ tool, input, result: await server.call(tool, input) });
+  const who = script.whoami ? { who: you(await server.call("get_monos", {})) } : {};
+  log({ prompt: text, rule: rule?.match ?? null, steer, ...who });
+  for (const call of rule?.calls ?? []) {
+    const input = withCardIds(call.arguments);
+    if (call.action)
+      log({ action: call.action, input, result: await cli(script.app, call.action, input, call.request_id) });
+    else log({ tool: call.tool, input, result: await server.call(call.tool, input) });
   }
   server.close();
-  return rule.reply ?? "";
+  return rule?.reply ?? "";
 }
 
 let turns = 0;
