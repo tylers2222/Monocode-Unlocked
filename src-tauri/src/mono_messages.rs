@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
+use crate::asks::{self, Call};
 use crate::control::ControlHost;
 use crate::mono_gate::{
     self, Access, ActionDecision, ActionFacts, Caller, CallerFacts, CallerKind, CallerMono,
@@ -1429,7 +1430,10 @@ fn new_message_id() -> MessageId {
 /// A Mono's `monos` row (design 16.12, 6.1): `None` when it is gone, else
 /// its current chat, its role, the `path_key` of each of its projects and
 /// its `messageAllowlist` (missing is empty).
-fn mono_row(conn: &Connection, mono_id: &MonoId) -> rusqlite::Result<Option<CallerMono>> {
+pub(crate) fn mono_row(
+    conn: &Connection,
+    mono_id: &MonoId,
+) -> rusqlite::Result<Option<CallerMono>> {
     let row: Option<(String, String)> = conn
         .query_row(
             "SELECT role, data_json FROM monos WHERE id = ?1",
@@ -1732,45 +1736,60 @@ pub fn submit(
         Ok(input) => input,
         Err(hint) => return Ok(refused(Refusal::InvalidInput, hint)),
     };
-    let hash = input.payload_hash();
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let submitted = submit_in(&tx, caller, request_id, input, live, now)?;
+    tx.commit()?;
+    Ok(submitted)
+}
+
+/// `submit` inside a transaction the caller holds: an ask or ack (R5)
+/// writes its row this way, in its own `BEGIN IMMEDIATE`.
+pub(crate) fn submit_in(
+    tx: &Connection,
+    caller: &Caller,
+    request_id: &RequestId,
+    input: Input,
+    live: &Live,
+    now: i64,
+) -> rusqlite::Result<Submitted> {
+    let hash = input.payload_hash();
     // Design 7 (PR 6 review r1 m1): the control host let this call through
     // before the clear forgot its session, and it reaches here after the clear
     // committed. A row written now would never be dropped.
-    if session_ended(&tx, &caller.session_id)? {
+    if session_ended(tx, &caller.session_id)? {
         return Ok(Submitted::Failed {
             error: caller_ended(),
         });
     }
     // Design 5.4 (2): a call bound to the turn shows that its provider runs
     // it, so it took the text that opened it.
-    confirm_openers(&tx, &caller.session_id, &caller.turn_id, now)?;
+    confirm_openers(tx, &caller.session_id, &caller.turn_id, now)?;
     let caller_row = match &caller.speaker {
-        Speaker::Mono { mono_id, .. } => mono_row(&tx, mono_id)?.map(CallerFacts::Mono),
+        Speaker::Mono { mono_id, .. } => mono_row(tx, mono_id)?.map(CallerFacts::Mono),
         Speaker::Session { cwd, .. } => {
-            session_level(&tx, &caller.session_id)?.map(|level| CallerFacts::Session {
+            session_level(tx, &caller.session_id)?.map(|level| CallerFacts::Session {
                 level,
                 cwd: mono_gate::path_key(cwd),
             })
         }
     };
-    let prior = get_by_request(&tx, &caller.session_id, request_id)?;
+    let prior = get_by_request(tx, &caller.session_id, request_id)?;
     let mut referenced_id = None;
     let decision = match &input {
         Input::Send(send) => {
-            let recipient = recipient(&tx, &send.send_to, live)?;
+            let recipient = recipient(tx, &send.send_to, live)?;
             // Without its `monos` row a Mono caller has no level to resolve
             // `reply_to` with; the gate refuses it with `not_a_mono` first.
             let reply_to = match (send.reply_to(), &caller_row) {
-                (Some(id), Some(row)) => resolve_ref(&tx, id)?
+                (Some(id), Some(row)) => resolve_ref(tx, id)?
                     .map(|message| {
-                        referenced(&tx, caller, &row.level(), &recipient, message, live, now)
+                        referenced(tx, caller, &row.level(), &recipient, message, live, now)
                     })
                     .transpose()?,
                 _ => None,
             };
             referenced_id = reply_to.as_ref().map(|found| found.message.id.clone());
-            let pair = pair_count(&tx, caller, &recipient, now)?;
+            let pair = pair_count(tx, caller, &recipient, now)?;
             mono_gate::decide_send(
                 caller,
                 send,
@@ -1790,7 +1809,7 @@ pub fn submit(
         Input::Reply(reply) => {
             let then = match prior.first() {
                 Some(first) if matches!(first.status, Status::Rejected { .. }) => {
-                    handled_at(&tx, caller, first.created_at, live)?
+                    handled_at(tx, caller, first.created_at, live)?
                 }
                 _ => Vec::new(),
             };
@@ -1802,15 +1821,15 @@ pub fn submit(
                     caller: caller_row,
                     prior,
                     about: ReplyFacts {
-                        handled: handled_in_turn(&tx, caller, live)?,
+                        handled: handled_in_turn(tx, caller, live)?,
                         then,
                     },
                 },
             )
         }
     };
-    let submitted = record(
-        &tx,
+    record(
+        tx,
         caller,
         request_id,
         &input,
@@ -1818,9 +1837,7 @@ pub fn submit(
         decision,
         referenced_id,
         now,
-    )?;
-    tx.commit()?;
-    Ok(submitted)
+    )
 }
 
 /// Design 16.6: the accepted row `id` names. A steer's `reply_to` is a
@@ -3106,7 +3123,7 @@ pub(crate) fn submit_and_recheck(
     running: impl Fn() -> HashMap<String, String>,
     caller: &Caller,
     request_id: &RequestId,
-    input: Result<Input, String>,
+    input: impl Into<Call>,
     live: &[LiveSession],
     steerable_harnesses: &[String],
     now: i64,
@@ -3114,18 +3131,15 @@ pub(crate) fn submit_and_recheck(
     let first = running();
     let mut submitted = {
         let conn = store.lock_conn()?;
-        submit(
-            &conn,
-            caller,
-            request_id,
-            input,
-            &Live {
-                sessions: live,
-                running: &first,
-                steerable_harnesses,
-            },
-            now,
-        )
+        let live = Live {
+            sessions: live,
+            running: &first,
+            steerable_harnesses,
+        };
+        match input.into() {
+            Call::Message(input) => submit(&conn, caller, request_id, input, &live, now),
+            Call::Ask(input) => asks::ask(&conn, caller, request_id, input, &live, now),
+        }
         .map_err(|error| error.to_string())?
     };
     let again = running();
@@ -3160,7 +3174,7 @@ pub fn mono_message_submit(
     steerable_harnesses: Vec<String>,
 ) -> Result<Submitted, String> {
     let caller = caller.parse()?;
-    let tool = Tool::parse(&tool).ok_or("Unknown messaging tool")?;
+    let call = asks::call(&tool, &input).ok_or("Unknown messaging tool")?;
     let Some(request_id) = RequestId::parse(&request_id) else {
         return Ok(refused(Refusal::InvalidInput, REQUEST_ID_RULE.into()));
     };
@@ -3169,7 +3183,7 @@ pub fn mono_message_submit(
         || control.running_sessions(),
         &caller,
         &request_id,
-        mono_gate::parse(tool, &input),
+        call,
         &live,
         &steerable_harnesses,
         now_ms(),

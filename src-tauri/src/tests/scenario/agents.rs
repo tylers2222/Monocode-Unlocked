@@ -1,7 +1,8 @@
 use serde_json::{json, Value};
 
 use super::world::World;
-use crate::mono_gate::{self, Caller, CallerKind, Speaker};
+use crate::asks::{self, Call};
+use crate::mono_gate::{self, Access, Caller, CallerKind, Speaker};
 use crate::mono_messages::{
     self, CallerArg, LiveSession, MonoId, RequestId, SessionId, Submitted, Tool,
 };
@@ -18,12 +19,17 @@ pub(crate) struct Mono {
 impl World {
     /// Adds a Mono (or a Giga, by `role`) with chat `<id>-chat`.
     pub(crate) fn add_mono(&self, id: &str, role: MonoRole) -> Mono {
+        self.add_mono_in(id, role, &[])
+    }
+
+    /// `add_mono` with the Mono's `projects`.
+    pub(crate) fn add_mono_in(&self, id: &str, role: MonoRole, projects: &[&str]) -> Mono {
         let chat = format!("{id}-chat");
         let conn = self.conn();
         let mono: MonoCreate = serde_json::from_value(json!({
             "id": id,
             "role": role,
-            "data": {"name": id, "sessionId": chat, "projects": []},
+            "data": {"name": id, "sessionId": chat, "projects": projects},
             "sortOrder": 0,
         }))
         .unwrap();
@@ -65,6 +71,35 @@ impl World {
         SessionId::parse(id).unwrap()
     }
 
+    /// `mono` starts lead `id` in `cwd`: its `start_session` row, written by
+    /// `record_start` as `mono_message_record_start` does, then the lead's row.
+    pub(crate) fn start_lead(&self, mono: &Mono, id: &str, cwd: &str) -> SessionId {
+        let lead = SessionId::parse(id).unwrap();
+        mono_messages::record_start(
+            &self.conn(),
+            &mono_caller(mono, "start"),
+            &lead,
+            &RequestId::parse(&format!("start-{id}")).unwrap(),
+            &json!({"prompt": "Lead this", "harness": "codex", "model": "codex:default"}),
+            self.now(),
+        )
+        .unwrap();
+        self.add_session(id, cwd, None)
+    }
+
+    /// Tool `tool` (`ask`, `ack` or a message tool) from `caller`, through
+    /// the command's own dispatch (`asks::call`) and `submit_and_recheck`.
+    pub(crate) fn tool(
+        &self,
+        caller: &Caller,
+        request_id: &str,
+        tool: &str,
+        input: Value,
+        live: &[&SessionId],
+    ) -> Submitted {
+        self.submit(caller, request_id, asks::call(tool, &input).unwrap(), live)
+    }
+
     /// `messages.send` or `messages.reply` from `from`'s chat in turn `turn`,
     /// through `submit_and_recheck`, the path `mono_message_submit` takes.
     /// `to` is the chat the window lists as live (steerable codex).
@@ -77,15 +112,8 @@ impl World {
         input: Value,
         to: &Mono,
     ) -> Submitted {
-        let caller = Caller {
-            speaker: Speaker::Mono {
-                kind: CallerKind::MonoChat,
-                mono_id: from.id.clone(),
-            },
-            session_id: from.chat.clone(),
-            turn_id: turn.into(),
-        };
-        self.submit(&caller, request_id, tool, input, &[&to.chat])
+        let input = mono_gate::parse(tool, &input).into();
+        self.submit(&mono_caller(from, turn), request_id, input, &[&to.chat])
     }
 
     /// A call from a session, with `caller` as the web app sends it
@@ -102,15 +130,15 @@ impl World {
         let caller = serde_json::from_value::<CallerArg>(caller)
             .map_err(|error| error.to_string())?
             .parse()?;
-        Ok(self.submit(&caller, request_id, tool, input, live))
+        let input = mono_gate::parse(tool, &input).into();
+        Ok(self.submit(&caller, request_id, input, live))
     }
 
     fn submit(
         &self,
         caller: &Caller,
         request_id: &str,
-        tool: Tool,
-        input: Value,
+        input: Call,
         live: &[&SessionId],
     ) -> Submitted {
         let live: Vec<LiveSession> = live
@@ -126,12 +154,36 @@ impl World {
             || self.running(),
             caller,
             &RequestId::parse(request_id).unwrap(),
-            mono_gate::parse(tool, &input),
+            input,
             &live,
             &["codex".to_string()],
             self.now(),
         )
         .unwrap();
         submitted
+    }
+}
+
+/// `mono`'s chat calling in turn `turn`.
+pub(crate) fn mono_caller(mono: &Mono, turn: &str) -> Caller {
+    Caller {
+        speaker: Speaker::Mono {
+            kind: CallerKind::MonoChat,
+            mono_id: mono.id.clone(),
+        },
+        session_id: mono.chat.clone(),
+        turn_id: turn.into(),
+    }
+}
+
+/// Session `session` in `cwd`, which `sessions.start` started, calling.
+pub(crate) fn session_caller(session: &SessionId, cwd: &str) -> Caller {
+    Caller {
+        speaker: Speaker::Session {
+            access: Access::Started,
+            cwd: cwd.into(),
+        },
+        session_id: session.clone(),
+        turn_id: "t1".into(),
     }
 }
