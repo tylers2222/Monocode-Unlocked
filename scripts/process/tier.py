@@ -7,9 +7,10 @@ at least and never T1 (PR #116). The rules come from the 2026-10-20 process revi
 section 4b.
 
 Usage: tier.py <pr-number> [--apply]
-Prints the tier and its reasons. With GITHUB_OUTPUT set, writes `tier` and `nt`
-(non-test lines added). --apply sets the label tier:T<n> and removes any other
-tier label. GATE_REPO overrides the repository.
+Prints the tier and its reasons. With GITHUB_OUTPUT set, writes `tier`, `nt`
+(non-test lines added) and `interrogate`. --apply sets the label tier:T<n>, removes
+any other tier label, and sets or removes needs-interrogate. GATE_REPO overrides
+the repository.
 """
 import collections
 import json
@@ -32,6 +33,10 @@ T3_CODE = re.compile(r'\b(useState|useEffect|useLayoutEffect|useReducer|useRef|u
                      r'|Mutex|RwLock|tokio::spawn|thread::spawn|AtomicU|setTimeout|setInterval|flock|clock_gettime')
 RAW_OPEN = re.compile(r'(?<!\w)b?r(#+)"')
 TIER_LABEL = re.compile(r'^tier:T[123]$')
+INTERROGATE_LABEL = 'needs-interrogate'
+INTERROGATE_LINES = 300
+# A T3 reason that names a concurrency primitive or a lock or scheduler file.
+CONCURRENCY = re.compile(r'Mutex|RwLock|tokio::spawn|thread::spawn|AtomicU|flock|(?<![Cc]argo\.)(?<!-)lock\.|scheduler')
 
 Line = collections.namedtuple('Line', 'kind text raw')  # kind: '+', '-', ' ' or '@'
 
@@ -118,6 +123,11 @@ def non_test_lines(files):
     return sum(f['additions'] for f in files if not TEST.search(f['path']) and not DOC.search(f['path']))
 
 
+def needs_interrogate(t, nt, why):
+    """Interrogate before review round 1: T3 with 300+ non-test lines, or T3 for a gate or concurrency file."""
+    return t == 'T3' and (nt >= INTERROGATE_LINES or any(w.startswith('gate:') or CONCURRENCY.search(w) for w in why))
+
+
 def gh(*args, check=True):
     run = subprocess.run(['gh', *args], capture_output=True, text=True)
     if check and run.returncode:
@@ -135,13 +145,14 @@ def raw_sets(repo, pr, files):
             for f in files if f['path'].endswith('.rs')}
 
 
-def apply_label(repo, pr, t):
+def apply_labels(repo, pr, wanted):
+    """Makes the PR's tier and interrogate labels exactly `wanted`; other labels stay."""
     labels = gh('api', f'repos/{repo}/issues/{pr}/labels', '--jq', '.[].name').splitlines()
     for old in labels:
-        if TIER_LABEL.match(old) and old != f'tier:{t}':
+        if (TIER_LABEL.match(old) or old == INTERROGATE_LABEL) and old not in wanted:
             gh('api', '-X', 'DELETE', f'repos/{repo}/issues/{pr}/labels/{quote(old)}')
-    if f'tier:{t}' not in labels:
-        gh('api', '-X', 'POST', f'repos/{repo}/issues/{pr}/labels', '-f', f'labels[]=tier:{t}')
+    for new in sorted(wanted - set(labels)):
+        gh('api', '-X', 'POST', f'repos/{repo}/issues/{pr}/labels', '-f', f'labels[]={new}')
 
 
 def main(argv):
@@ -152,14 +163,15 @@ def main(argv):
                                         '--jq', '.[] | {path: .filename, additions}').splitlines()]
     t, why = tier(files, gh('pr', 'diff', pr, '-R', repo), raw_sets(repo, pr, files))
     nt = non_test_lines(files)
-    print(f'tier: {t}, {nt} non-test lines added')
+    interrogate = needs_interrogate(t, nt, why)
+    print(f'tier: {t}, {nt} non-test lines added' + (', needs interrogate before round 1' if interrogate else ''))
     for w in why:
         print(f'tier:   {w}')
     if os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-            out.write(f'tier={t}\nnt={nt}\n')
+            out.write(f'tier={t}\nnt={nt}\ninterrogate={"yes" if interrogate else "no"}\n')
     if '--apply' in argv:
-        apply_label(repo, pr, t)
+        apply_labels(repo, pr, {f'tier:{t}'} | ({INTERROGATE_LABEL} if interrogate else set()))
 
 
 if __name__ == '__main__':

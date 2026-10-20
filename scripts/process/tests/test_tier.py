@@ -58,3 +58,25 @@ class RawStrings(unittest.TestCase):
         files = [{'path': path, 'additions': 1}]
         diff = one_file_diff(path, 5, ['-Old help.', '+New help.'])
         self.assertEqual(T.tier(files, diff, {path: ({5}, {5})})[0], 'T3')
+
+
+class Interrogate(unittest.TestCase):
+    def test_review_outliers_need_interrogate(self):
+        for rec in recorded():
+            if rec['n'] in (18, 103):
+                tier, why = run(rec)
+                self.assertTrue(T.needs_interrogate(tier, T.non_test_lines(rec['files']), why), rec['n'])
+
+    def test_t3_from_300_non_test_lines(self):
+        why = ['path:src/features/sessions/data/sessionStore.ts']
+        self.assertFalse(T.needs_interrogate('T3', 299, why))
+        self.assertTrue(T.needs_interrogate('T3', 300, why))
+
+    def test_t3_gate_or_concurrency_file_at_any_size(self):
+        self.assertTrue(T.needs_interrogate('T3', 5, ['gate:scripts/gate/integrity.sh']))
+        self.assertTrue(T.needs_interrogate('T3', 5, ['code:src-tauri/src/x.rs:Mutex']))
+        self.assertTrue(T.needs_interrogate('T3', 5, ['path:src-tauri/src/heavy_lock.rs']))
+        self.assertFalse(T.needs_interrogate('T3', 5, ['code:src/app/App.tsx:useState']))
+
+    def test_only_t3(self):
+        self.assertFalse(T.needs_interrogate('T2', 900, ['app logic: src/a.ts']))
