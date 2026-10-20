@@ -170,6 +170,14 @@ class Main(unittest.TestCase):
         diff = one_file_diff(path, 3, ['-  return 1;', '+  return 2;'])
         self.assertTrue(self.run_main(diff, {path})[0].startswith('tier: T2'))
 
+    def test_main_without_a_diff_decides_interrogate_from_paths_and_size(self):
+        path = 'src/features/monos/model/monoHabits.ts'
+        files = '\n'.join(json.dumps(f) for f in [{'path': path, 'additions': 400}])
+        answers = lambda *args, check=True: files if args[0] == 'api' else ''
+        with mock.patch.object(T, 'gh', answers), mock.patch('builtins.print') as out:
+            T.main(['tier.py', '26'])
+        self.assertEqual(out.call_args_list[0].args[0], 'tier: T3, 400 non-test lines added, needs interrogate before round 1')
+
     def test_main_without_a_diff_is_t3(self):
         self.assertEqual(self.run_main('', set()), ['tier: T3, 1 non-test lines added', 'tier:   no diff from GitHub'])
 
@@ -224,6 +232,8 @@ class Interrogate(unittest.TestCase):
         self.assertTrue(T.gate_or_concurrency(*one('src-tauri/src/heavy_lock.rs', '+let a = 1;')))
         self.assertFalse(T.gate_or_concurrency(*one('src/app/App.tsx', '+const [a, b] = useState(0);')))
         self.assertFalse(T.gate_or_concurrency(*one('src/a.test.ts', '+new Mutex();')), 'test files do not count')
+        self.assertFalse(T.gate_or_concurrency(*one('src/features/x/ui/Panel.tsx', '+const [s] = useState(scheduler.next());')),
+                         'a lock or scheduler name in code is not a lock file')
 
 if __name__ == '__main__':
     unittest.main()

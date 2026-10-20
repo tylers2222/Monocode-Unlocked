@@ -35,7 +35,6 @@ NOT_CODE_LINE = re.compile(r'^\s*(//|/\*|\*|#|"|\'|`|$)')
 T3_CODE = re.compile(r'\b(useState|useEffect|useLayoutEffect|useReducer|useRef|useSyncExternalStore|useCallback|useMemo)\b'
                      r'|\binvoke\(|\blisten\(|#\[tauri::command\]|rusqlite|\.execute\(|CREATE TABLE|ALTER TABLE|BEGIN IMMEDIATE'
                      r'|' + CONCURRENCY_CODE + r'|setTimeout|setInterval|clock_gettime')
-CONCURRENCY = re.compile(LOCK_PATH + '|' + CONCURRENCY_CODE)
 # A source file that can hold a multi-line string: a JS/TS file with a backtick anywhere
 # (a template literal), a Rust file with any string (a plain Rust string can span lines too).
 # Any changed line in such a file may be prompt text; no scan decides which, so this can
@@ -81,7 +80,7 @@ def tier(files, diff_text, string_files=frozenset()):
         return 'T3', ['no diff from GitHub']
     lines = parse_diff(diff_text)
     changed = lambda p: [l for l in lines.get(p, []) if l.kind in '+-']
-    prod = [f['path'] for f in files if not TEST.search(f['path']) and not DOC.search(f['path'])]
+    prod = prod_paths(files)
     why = []
     for p in prod:
         if CONFIG.search(p) and not GATE_PATH.search(p):
@@ -109,17 +108,22 @@ def tier(files, diff_text, string_files=frozenset()):
     return 'T2', ['app logic: ' + ', '.join(code[:3])]
 
 
+def prod_paths(files):
+    """The paths that count: every file but tests and docs."""
+    return [f['path'] for f in files if not TEST.search(f['path']) and not DOC.search(f['path'])]
+
+
 def non_test_lines(files):
-    return sum(f['additions'] for f in files if not TEST.search(f['path']) and not DOC.search(f['path']))
+    prod = set(prod_paths(files))
+    return sum(f['additions'] for f in files if f['path'] in prod)
 
 
 def gate_or_concurrency(files, diff_text):
     """Whether a non-test file is a gate, lock or scheduler file, or its changed lines (with
     git's context, as T3_CODE reads them) use a concurrency primitive."""
     lines = parse_diff(diff_text)
-    prod = [f['path'] for f in files if not TEST.search(f['path']) and not DOC.search(f['path'])]
     return any(GATE_PATH.search(p) or re.search(LOCK_PATH, p)
-               or CONCURRENCY.search('\n'.join(l.text for l in lines.get(p, []))) for p in prod)
+               or re.search(CONCURRENCY_CODE, '\n'.join(l.text for l in lines.get(p, []))) for p in prod_paths(files))
 
 
 def needs_interrogate(t, nt, gate_or_concurrency_file):

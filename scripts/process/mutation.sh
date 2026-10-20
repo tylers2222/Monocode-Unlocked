@@ -29,11 +29,22 @@ case ${1-} in
     # tests import; the config is written here, outside the checkout.
     npm install --no-save --ignore-scripts --registry=https://registry.npmjs.org/ \
       "@stryker-mutator/core@$STRYKER" "@stryker-mutator/vitest-runner@$STRYKER"
+    # Only the job's pinned Stryker packages may be there: a PR dependency in the
+    # @stryker-mutator scope (a folder or a file: link) could run inside Stryker.
+    for dir in node_modules/@stryker-mutator/*; do
+      name=${dir##*/}
+      version=$(node -p "require('./$dir/package.json').version")
+      case " api core instrumenter util vitest-runner " in *" $name "*) ;; *) version=unexpected ;; esac
+      if [ -L "$dir" ] || [ "$version" != "$STRYKER" ]; then
+        echo "::error::@stryker-mutator/$name ($version) is not the job's Stryker $STRYKER; the PR must not add Stryker packages"
+        exit 1
+      fi
+    done
     config=$RUNNER_TEMP/stryker.config.json
     SPECS=$2 node -e '
       const mutate = process.env.SPECS.split(",");
       const thresholds = { high: 100, low: 100, break: 100 };
-      console.log(JSON.stringify({ testRunner: "vitest", mutate, thresholds, concurrency: 2,
+      console.log(JSON.stringify({ testRunner: "vitest", plugins: ["@stryker-mutator/vitest-runner"], mutate, thresholds, concurrency: 2,
         coverageAnalysis: "perTest", ignoreStatic: true, reporters: ["clear-text", "progress"] }));
     ' > "$config"
     node "$PWD/node_modules/@stryker-mutator/core/bin/stryker.js" run "$config"
