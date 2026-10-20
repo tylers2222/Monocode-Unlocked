@@ -974,8 +974,8 @@ type SubmitOptions = ComposerTurnOptions & {
   providerTook?: (accepted: boolean) => void;
   /**
    * The id of the turn this submit opens; set by the Mono hand-off that
-   * took the slot for it (design 5.2). A busy session opens none, so it
-   * refuses the submit.
+   * took the slot for it (design 5.2), and by the Continue after a relaunch.
+   * A busy session opens none, so it refuses the submit.
    */
   turnId?: TurnId;
   /** What the agent reads instead of `text`, which the transcript shows. */
@@ -10479,7 +10479,11 @@ function Workspace({
         ) {
           continue;
         }
-        onSubmit(id, CONTINUE_PROMPT);
+        // A Continue opens the turn the quit cut short, or nothing. This
+        // effect runs again whenever another session resumes, so a Continue
+        // still waiting on its project's location check is asked for twice;
+        // the second must not steer into the turn the first opened.
+        onSubmit(id, CONTINUE_PROMPT, [], { turnId: newTurnId() });
       }
     }, 0);
     return () => window.clearTimeout(timer);
