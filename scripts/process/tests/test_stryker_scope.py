@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -99,17 +100,60 @@ class ReportProblems(unittest.TestCase):
         self.assertEqual(S.report_problems(report({'src/add.ts': [mutant('Killed')]}), 'src/b.ts'), ['src/b.ts: not in the Stryker report'])
 
 
+# Stands in for stryker.js: a count config prints FAKE_COUNT mutants; a run config logs the
+# file it mutates and writes FAKE_REPORT as the JSON report.
+FAKE_STRYKER = """
+const fs = require('fs');
+const config = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+if (config.dryRunOnly) {
+  console.log(`Instrumented 1 source file(s) with ${process.env.FAKE_COUNT} mutant(s)`);
+} else {
+  fs.appendFileSync(process.env.FAKE_RUNS, config.mutate.join(',') + '\\n');
+  fs.writeFileSync(config.jsonReporter.fileName, process.env.FAKE_REPORT);
+}
+"""
+
+
 class Cli(unittest.TestCase):
-    def test_a_bad_job_tree_fails_before_any_run(self):
+    """main() on a real job tree with a fake stryker.js."""
+
+    def run_cli(self, specs, count=2, files=None, extra=()):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root)
-        for name in sorted(S.STRYKER_PACKAGES | {'forge'}):
+        for name in sorted(S.STRYKER_PACKAGES | set(extra)):
             (root / '@stryker-mutator' / name).mkdir(parents=True)
             (root / '@stryker-mutator' / name / 'package.json').write_text(json.dumps({'version': PIN}))
-        run = subprocess.run([sys.executable, str(SCRIPT), str(root), 'src/a.ts:1-1'], capture_output=True, text=True)
-        self.assertEqual(run.returncode, 1)
-        self.assertIn('::error::@stryker-mutator/forge is not a package the job installs', run.stdout)
-        self.assertNotIn('mutant(s)', run.stdout, 'no Stryker run on a bad tree')
+        (root / '@stryker-mutator' / 'core' / 'bin').mkdir()
+        (root / '@stryker-mutator' / 'core' / 'bin' / 'stryker.js').write_text(FAKE_STRYKER)
+        runs = root / 'runs.log'
+        runs.touch()
+        env = {**os.environ, 'RUNNER_TEMP': str(root), 'FAKE_COUNT': str(count), 'FAKE_RUNS': str(runs),
+               'FAKE_REPORT': json.dumps(report(files or {}))}
+        run = subprocess.run([sys.executable, str(SCRIPT), str(root), specs], capture_output=True, text=True, env=env)
+        return run.returncode, run.stdout, runs.read_text().split()
+
+    def test_each_changed_file_gets_its_own_run_and_a_clean_report_passes(self):
+        files = {'src/a.ts': [mutant('Killed')], 'src/b.ts': [mutant('Timeout')]}
+        code, out, runs = self.run_cli('src/a.ts:1-1,src/b.ts:2-2,src/a.ts:5-5', files=files)
+        self.assertEqual((code, runs), (0, ['src/a.ts:1-1,src/a.ts:5-5', 'src/b.ts:2-2']), out)
+
+    def test_r5_probe_faked_kills_with_an_untested_file_fail(self):
+        files = {'src/add.ts': [mutant('Killed')], 'src/lonely.ts': [mutant('Killed', covered=())]}
+        code, out, _ = self.run_cli('src/add.ts:1-1,src/lonely.ts:1-1', files=files)
+        self.assertEqual(code, 1)
+        self.assertIn('::error::src/lonely.ts: no test covers it', out)
+
+    def test_above_the_cap_fails_before_any_run(self):
+        code, out, runs = self.run_cli('src/a.ts:1-1,src/b.ts:1-1', count=18)
+        self.assertEqual((code, runs), (1, []))
+        self.assertIn('36 TypeScript mutants, more than 35', out)
+        self.assertIn('split the PR', out)
+
+    def test_a_bad_job_tree_fails_before_any_run(self):
+        code, out, runs = self.run_cli('src/a.ts:1-1', extra=['forge'])
+        self.assertEqual((code, runs), (1, []))
+        self.assertIn('::error::@stryker-mutator/forge is not a package the job installs', out)
+        self.assertNotIn('mutant(s)', out)
 
 
 if __name__ == '__main__':
