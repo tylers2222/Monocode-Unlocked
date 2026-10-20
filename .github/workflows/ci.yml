@@ -38,6 +38,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium webkit
+      # Real-harness specs (tests/browser/ade67-question-card.spec.ts) drive a
+      # real omp and skip when it is missing. omp runs on Bun; both are pinned.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - run: bun install -g @oh-my-pi/pi-coding-agent@18.2.11
+      - run: omp --version
       - run: npm run test:browser
       - name: Upload browser screenshots and failure traces
         if: always()
