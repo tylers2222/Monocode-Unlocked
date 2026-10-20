@@ -49,9 +49,15 @@ jobs:
     # gate/tier fails, and its last step fails it.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      GH_TOKEN: ${{ github.token }}
+      GATE_REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,6 +69,22 @@ jobs:
 
       - name: Integrity check (default-branch script, diff only)
         run: bash scripts/gate/integrity.sh "$BASE_SHA" "$HEAD_SHA"
+
+      # Each check below reads the PR live, so a re-run sees the current body and labels.
+      - name: PR description (size, self-pass, file caps) and tiny-PR overlap warning
+        if: ${{ !cancelled() }}
+        env:
+          NT: ${{ needs.tier.outputs.nt }}
+        run: python3 scripts/process/pr_body.py "$PR" --nt "$NT"
+
+      # The two label checks come from PR #164; they run once it is on the default branch.
+      - name: waits-tyler label category
+        if: ${{ !cancelled() && hashFiles('scripts/process/waits-tyler.py') != '' }}
+        run: python3 scripts/process/waits-tyler.py --pr "$PR" --repo "$GATE_REPO"
+
+      - name: Exactly one instance label
+        if: ${{ !cancelled() && hashFiles('scripts/process/instance-label.py') != '' }}
+        run: python3 scripts/process/instance-label.py --pr "$PR" --repo "$GATE_REPO"
 
       - name: gate/tier passed
         if: ${{ !cancelled() && needs.tier.result != 'success' }}
