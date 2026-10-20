@@ -136,7 +136,7 @@ async function watchRun(
         text: "",
         error:
           waiting >= HABIT_USER_WAIT_MS
-            ? "Nobody answered its approval request."
+            ? "Nobody answered it."
             : "It took too long and was stopped.",
       };
   }

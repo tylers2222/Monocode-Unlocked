@@ -349,4 +349,10 @@ test("a habit run stopped while it waits leaves no question card", async ({
     page.getByRole("main").getByRole("button", { name: "Stop" }),
     "the stopped run is no longer running",
   ).toHaveCount(0);
+  await expect
+    .poll(
+      () => page.evaluate(() => JSON.parse(window.habitsText ?? "[]")[0]?.lastError),
+      "the habit says why its run stopped (ADE-70)",
+    )
+    .toBe("Nobody answered it.");
 });
