@@ -170,7 +170,7 @@ def main(argv):
         print(f'tier:   {w}')
     if os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-            out.write(f'nt={nt}\n')
+            out.write(f'tier={t}\nnt={nt}\n')
     if '--apply' in argv:
         remove, add = label_changes(gh('api', f'repos/{repo}/issues/{pr}/labels', '--jq', '.[].name').splitlines(), t)
         for old in remove:
