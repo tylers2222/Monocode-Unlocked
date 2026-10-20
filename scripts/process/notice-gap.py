@@ -22,6 +22,10 @@ ago with none (MISSING). Whether a turn was asked for:
 - a requested turn that no readable send quotes is asked, except a queued
   follow-up: that is asked only when a send names the session with its prompt
   cut off (the app keeps a command's first line only).
+
+Rows come from turns that ended. A send that the app accepted but never ran as
+a turn, such as a queued follow-up (`sessions.send` with `whenBusy` `followUp`)
+that was dropped (ADE-73), has no row, so the script cannot report it.
 """
 
 from __future__ import annotations
