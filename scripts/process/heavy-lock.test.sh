@@ -12,7 +12,7 @@ set -m
 
 lock_sh=$(cd "$(dirname "$0")" && pwd)/heavy-lock.sh
 root=$(mktemp -d)
-export HEAVY_LOCK=$root/lock HEAVY_LOCK_QUEUE=$root/queue HEAVY_LOCK_WAITLOG=$root/waits.log HEAVY_LOCK_POLL=0.1
+export HEAVY_LOCK=$root/lock HEAVY_LOCK_QUEUE=$root/queue HEAVY_LOCK_WAITLOG=$root/waits.log HEAVY_LOCK_POLL=0.1 HEAVY_LOCK_WHO=test
 failed=0
 
 kill_jobs() {
@@ -45,6 +45,7 @@ dead() { [ -n "$1" ] && ! kill -0 "$1" 2>/dev/null; }
 exists() { [ -e "$1" ]; }
 tickets() { ls "$HEAVY_LOCK_QUEUE" 2>/dev/null | wc -l | tr -d ' '; }
 no_tickets() { [ "$(tickets)" = 0 ]; }
+has_ticket() { set -- "$HEAVY_LOCK_QUEUE"/*."$1"; [ -e "$1" ]; }
 logged() { grep -q -- "$1" "$HEAVY_LOCK_WAITLOG" 2>/dev/null; }
 hold() { "$lock_sh" sleep "$1" 2>/dev/null & holder=$!; within 5 exists "$HEAVY_LOCK/pid"; }
 mark_when_run() { "$lock_sh" touch "$1" 2>/dev/null & waiter=$!; }
@@ -54,13 +55,13 @@ mark_when_run() { "$lock_sh" touch "$1" 2>/dev/null & waiter=$!; }
 # between the loop's release and its next lock.
 reset
 order=$root/case/order
-( for _ in $(seq 30); do "$lock_sh" sh -c "echo L >> '$order'; sleep 0.5" 2>/dev/null; done ) &
+( for _ in $(seq 15); do "$lock_sh" sh -c "echo L >> '$order'; sleep 1" 2>/dev/null; done ) &
 within 5 exists "$order"
 echo queued >> "$order"
 HEAVY_LOCK_POLL=1 "$lock_sh" sh -c "echo W >> '$order'" 2>/dev/null
 passed=$(sed -n '/^queued$/,/^W$/p' "$order" | grep -c '^L$')
 check "fifo: the relocking loop passes the waiter at most once (passed $passed)" [ "$passed" -le 1 ]
-check "fifo: the wait is logged when the waiter gets the lock" logged "cmd=sh -c echo W .* waited=.*s holder=\[.*sleep 0.5"
+check "fifo: the wait is logged when the waiter gets the lock" logged "cmd=sh -c echo W .* waited=.*s holder=\[.*sleep 1"
 
 # A lock whose holder pid is dead is cleared by the next caller.
 reset
@@ -85,7 +86,7 @@ for sig in INT TERM HUP; do
   reset
   hold 30
   mark_when_run "$root/case/ran"
-  within 5 [ "$(tickets)" = 1 ]
+  within 5 has_ticket "$waiter"
   kill "-$sig" "$waiter"
   check "killed waiter ($sig): exits" within 3 dead "$waiter"
   check "killed waiter ($sig): leaves no ticket" no_tickets
@@ -97,7 +98,8 @@ done
 for sig in TERM KILL; do
   reset
   hold 30
-  command_pid=$(pgrep -P "$holder" sleep)
+  command_pid=
+  within 5 eval 'command_pid=$(pgrep -P "$holder" sleep)'
   mark_when_run "$root/case/ran"
   sleep 1
   check "killed holder ($sig): the waiter waits while the holder lives" [ ! -e "$root/case/ran" ]
@@ -119,5 +121,37 @@ overlaps=$(cat "$root/case/overlaps" 2>/dev/null | wc -l | tr -d ' ')
 check "exclusion: 100 runs finished (got $runs)" [ "$runs" = 100 ]
 check "exclusion: overlap counter is 0 (got $overlaps)" [ "$overlaps" = 0 ]
 check "exclusion: no ticket or lock left" eval '[ "$(tickets)" = 0 ] && [ ! -e "$HEAVY_LOCK" ]'
+
+# Exemption: only python3 -m unittest|pytest on paths under scripts/process or scripts/gate
+# runs while another caller holds the lock; each lookalike waits.
+reset
+hold 30
+mkdir -p "$root/case/scripts/process" "$root/case/scripts/gate"
+printf 'import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        pass\n' > "$root/case/scripts/process/test_mark.py"
+cp "$root/case/scripts/process/test_mark.py" "$root/case/scripts/gate/test_mark.py"
+# Starts "heavy-lock.sh <form>" in the case dir; the form is shell words, quotes allowed.
+start_in_case() { eval "set -- $1"; (cd "$root/case" && exec "$lock_sh" "$@") >/dev/null 2>&1 & }
+for form in "python3 -m unittest scripts/process/test_mark.py" \
+  "python3 -m unittest discover -s scripts/gate" \
+  "python3 -m pytest -q ./scripts/process/test_mark.py"; do
+  start_in_case "$form"
+  check "exempt: '$form' runs while the lock is held" within 5 dead $!
+  check "exempt: '$form' is logged" logged "exempt=1 cwd=.* cmd=$form\$"
+done
+lookalikes=("python3 scripts/process/test_mark.py" "python3 -m timeit scripts/process/test_mark.py" "python3 -m pytest src"
+  "python3 -m pytest ../src"
+  "python3 -m pytest scripts/process/../../src" "python3 -m unittest discover -s../src scripts/process"
+  "bash -c 'python3 -m unittest scripts/process/test_mark.py'" "cargo --version")
+pids=()
+for form in "${lookalikes[@]}"; do
+  start_in_case "$form"
+  pids+=($!)
+done
+sleep 2
+for i in "${!lookalikes[@]}"; do
+  check "lookalike: '${lookalikes[$i]}' waits" kill -0 "${pids[$i]}"
+done
+check "lookalike: each waiter holds a ticket" [ "$(tickets)" = "${#lookalikes[@]}" ]
+check "lookalike: none is logged as exempt" [ "$(grep -c 'exempt=1' "$HEAVY_LOCK_WAITLOG")" = 3 ]
 
 exit "$failed"

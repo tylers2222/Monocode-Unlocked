@@ -13,6 +13,9 @@
 #
 # A ticket or lock is removed only when its pid is dead; a lock directory with no pid file
 # counts as stale once it is 10 s old. Every wait writes one line to $HEAVY_LOCK_WAITLOG.
+#
+# One fixed exemption runs without the lock (see exempt): python3 -m unittest|pytest
+# where every path argument is under scripts/process/ or scripts/gate/.
 LOCK=${HEAVY_LOCK:-/tmp/monocode-heavy.lock}
 QUEUE=${HEAVY_LOCK_QUEUE:-/tmp/monocode-heavy.queue}
 WAITLOG=${HEAVY_LOCK_WAITLOG:-/tmp/monocode-heavy.waits.log}
@@ -35,6 +38,33 @@ instance() {
 }
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*" >> "$WAITLOG"; }
+
+# True only for python3 -m unittest|pytest with at least one path argument and every path
+# argument relative, without "..", and under scripts/process or scripts/gate. Every
+# argument that is not a bare flag counts as a path: an option value (--opt=value, the
+# token after --opt or -s, or the rest of -sVALUE) too. So any doubt keeps the lock.
+exempt() {
+  [ "$1" = python3 ] && [ "$2" = -m ] || return 1
+  case "$3" in unittest | pytest) ;; *) return 1 ;; esac
+  local module=$3 arg path paths=0
+  shift 3
+  [ "$module ${1-}" = "unittest discover" ] && shift
+  for arg in "$@"; do
+    case "$arg" in
+      --*=*) path=${arg#*=} ;;
+      --* | -?) continue ;;
+      -*) path=${arg#-?} ;;
+      *) path=$arg ;;
+    esac
+    path=${path#./}
+    case "/$path/" in */../*) return 1 ;; esac
+    case "$path" in
+      scripts/process | scripts/process/* | scripts/gate | scripts/gate/*) paths=$((paths + 1)) ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "$paths" -gt 0 ]
+}
 
 first_live_ticket() {
   local t
@@ -76,6 +106,10 @@ on_signal() {
 }
 
 main() {
+  if exempt "$@"; then
+    log "exempt=1 cwd=$PWD cmd=$*"
+    exec "$@"
+  fi
   who="${HEAVY_LOCK_WHO:-$(instance)} session=${MONOCODE_SESSION_ID:-${PWD##*/}} cwd=$PWD"
   cmd="$*"
   child=
@@ -105,9 +139,9 @@ main() {
     fi
     sleep "$POLL"
   done
+  rm -f "$ticket"
   echo $$ > "$LOCK/pid"
   echo "$who cmd=$cmd since=$(date '+%H:%M:%S')" > "$LOCK/holder"
-  rm -f "$ticket"
   [ -n "$waiting" ] && log "waiter=[$who cmd=$cmd] waited=$(( $(date +%s) - started ))s holder=[${holder:-none}]"
 
   "$@" <&0 &
