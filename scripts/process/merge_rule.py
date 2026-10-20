@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""merge-rule: decides if a PR head may merge on its review/agent verdict.
+"""merge-rule: blocks a PR head that has no clean review verdict on it.
 
 The reviewer posts its verdict as the commit status review/agent on the commit it read
-(scripts/gate/review-status.sh), so a push leaves the new head without a verdict. A
-minors-only verdict on an older commit carries to the head when a fixer-proof comment
-line by a collaborator covers each minor finding (m1 to mK), the PR's own change since
-the verdict adds no file, stays inside the reviewed files and changes at most 60 lines,
-and the other checks on the head pass. T2 and T3 carry only a round 1 verdict, and T3
-also needs a green gate/mutation check run on the head from the gate-mutation workflow.
-Only verdicts posted for this PR count. Any other head needs a new review verdict.
+(scripts/gate/review-status.sh), so a push leaves the new head without a verdict. The
+head may merge only when the latest verdict posted for this PR is clean and on the
+head; a T3 head also needs a green gate/mutation check run on it from the
+gate-mutation workflow. For a minors-only verdict the reason names each minor (m1 to
+mK) that has no fixer-proof comment line by a collaborator yet; with every proof in, the
+head still needs a re-review verdict. A verdict is never carried to a newer head.
 
-Usage: python3 scripts/process/merge_rule.py <pr> <T1|T2|T3> [--post-carry]
+Usage: python3 scripts/process/merge_rule.py <pr> <T1|T2|T3>
 Prints "merge-rule: <reason>" and exits 0 when the head may merge, 1 when it may not and
-2 when gh fails. Only --post-carry writes to GitHub: it posts a carry as review/agent
-success on the head. GATE_REPO overrides the repository (default
+2 when gh fails. It only reads GitHub. GATE_REPO overrides the repository (default
 tylers2222/Monocode-Unlocked).
 """
 import argparse
@@ -29,9 +27,6 @@ from datetime import datetime
 
 REPO = os.environ.get("GATE_REPO") or "tylers2222/Monocode-Unlocked"
 TIERS = ("T1", "T2", "T3")
-MAX_FIX_LINES = 60
-PASSING = frozenset({"success", "skipped", "neutral"})
-# The review verdict is what this script decides on, so it is not a check to wait for.
 REVIEW_CONTEXT = "review/agent"
 TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 # gate/mutation counts only from this check name, app (GitHub Actions) and workflow file.
@@ -67,16 +62,8 @@ class Proof:
 
 
 @dataclass(frozen=True)
-class DiffStat:
-    files: dict[str, str]  # path to "added" or "modified"
-    changed: int  # additions plus deletions
-    problem: str = ""  # why the change cannot be measured; it then never carries
-
-
-@dataclass(frozen=True)
 class Decision:
     ok: bool
-    carry: bool
     reason: str
 
 
@@ -141,86 +128,30 @@ def describe(verdict: Verdict) -> str:
 
 
 def refuse(reason: str) -> Decision:
-    return Decision(False, False, reason)
+    return Decision(False, reason)
 
 
-def decide(
-    tier: str,
-    head: str,
-    verdicts: Sequence[Verdict],
-    proofs: Iterable[Proof],
-    reviewed_files: DiffStat,
-    since_review: DiffStat,
-    checks_failed: Sequence[str],
-    checks_pending: Sequence[str],
-    review_in_progress: bool = False,
-    mutation: str | None = None,
-) -> Decision:
-    """Decides on the latest verdict. reviewed_files is the PR diff at the verdict's commit;
-    since_review is the PR's own change since then. mutation is mutation_result() for the
-    head: a conclusion, "pending", or None when there is no trusted gate/mutation run."""
+def decide(tier: str, head: str, verdicts: Sequence[Verdict], proofs: Iterable[Proof], mutation: str | None = None) -> Decision:
+    """Decides on the latest verdict. mutation is mutation_result() for the head: a
+    conclusion, "pending", or None when there is no trusted gate/mutation run."""
     verdict = latest(verdicts)
     if verdict is None:
         return refuse("no review verdict yet")
     name, sha7, head7 = describe(verdict), verdict.sha[:7], head[:7]
-    if verdict.sha == head:
-        if verdict.clean:
-            return Decision(True, False, f"{name} on head {head7}")
-        if verdict.blockers == 0 and verdict.majors == 0 and verdict.minors:
-            return refuse(f"{name} on head {head7}: push the minor fixes, then post a fixer-proof line for each")
-        return refuse(f"{name} on head {head7}: fix the findings, then get a new review verdict")
-    if verdict.minors is None or verdict.blockers or verdict.majors:
-        return refuse(f"{name} on {sha7}: a blocker or major needs a new review verdict on the head {head7}")
+    where = f"on head {head7}" if verdict.sha == head else f"on {sha7}, not the head {head7}"
+    if verdict.clean and verdict.sha == head:
+        if tier == "T3" and mutation != "success":
+            return refuse(f"T3 needs a green gate/mutation on the head (it is {mutation or 'missing'})")
+        return Decision(True, f"{name} on head {head7}")
     if verdict.clean:
-        return refuse(f"{name} on {sha7}, but the head {head7} has new commits after the clean verdict; it needs a new review verdict")
-    if not verdict.minors:
-        return refuse(f"{name} on {sha7} names no minor to prove, so the head {head7} needs a new review verdict")
-    if tier != "T1" and verdict.round != 1:
-        return refuse(f"{name} on {sha7}: {tier} carries only a round 1 verdict, so the head {head7} needs a new review verdict")
+        return refuse(f"{name} {where}: the head has new commits; it needs a new review verdict")
+    if verdict.minors is None or verdict.blockers or verdict.majors or not verdict.minors:
+        return refuse(f"{name} {where}: fix the findings, then get a new review verdict on the head")
     proven = {proof.finding for proof in proofs if proof.at > verdict.at}
     missing = [f"m{n}" for n in range(1, verdict.minors + 1) if f"m{n}" not in proven]
     if missing:
         return refuse(f"no fixer-proof after r{verdict.round} ({sha7}) for {', '.join(missing)}")
-    since = f"since r{verdict.round} ({sha7}) the head"
-    if since_review.problem:
-        return refuse(f"{since} {since_review.problem}; it needs a new review verdict")
-    added = sorted(path for path, status in since_review.files.items() if status == "added")
-    if added:
-        return refuse(f"{since} adds a new file ({', '.join(added)}); it needs a new review verdict")
-    outside = sorted(path for path in since_review.files if path not in reviewed_files.files)
-    if outside:
-        return refuse(f"{since} touches files outside the reviewed diff ({', '.join(outside)}); it needs a new review verdict")
-    if since_review.changed > MAX_FIX_LINES:
-        return refuse(f"{since} changes {since_review.changed} lines, more than {MAX_FIX_LINES}; it needs a new review verdict")
-    if tier == "T3" and mutation != "success":
-        return refuse(f"T3 carries only with a green gate/mutation on the head (it is {mutation or 'missing'})")
-    if checks_failed:
-        return refuse(f"failed checks: {', '.join(checks_failed)}")
-    if checks_pending:
-        return refuse(f"waiting for checks: {', '.join(checks_pending)}")
-    if review_in_progress:
-        return refuse(f"a review of the head {head7} is in progress; wait for its verdict")
-    return Decision(True, True, f"carried from {sha7}: minors-only + fixer proof ({tier})")
-
-
-def classify_checks(
-    check_runs: Iterable[Mapping[str, str | int | None]], statuses: Iterable[Mapping[str, str]], own_run: str
-) -> tuple[list[str], list[str]]:
-    """Returns the failed and the pending names among the head's check runs and commit
-    statuses. Only the newest check run of each name counts (a cancelled duplicate of a
-    re-run is not a failure). The jobs of this script's own workflow run (own_run) are
-    skipped, so the gate does not wait for itself."""
-    own = f"/actions/runs/{own_run}/"
-    newest = {}
-    for run in sorted(check_runs, key=lambda run: run["id"]):
-        newest[run["name"]] = run
-    results = [(run["name"], run["status"] == "completed", run["conclusion"]) for run in newest.values()
-               if own not in (run["details_url"] or "")]
-    results += [(status["context"], status["state"] != "pending", status["state"]) for status in statuses
-                if status["context"] != REVIEW_CONTEXT]
-    failed = {name for name, done, outcome in results if done and outcome not in PASSING}
-    pending = {name for name, done, _ in results if not done}
-    return sorted(failed), sorted(pending)
+    return refuse(f"{name} {where}: each minor has a fixer proof; the head needs a re-review verdict")
 
 
 def mutation_result(check_runs: Iterable[Mapping], head: str, workflow_paths: Mapping[int, str]) -> str | None:
@@ -233,46 +164,6 @@ def mutation_result(check_runs: Iterable[Mapping], head: str, workflow_paths: Ma
         return None
     run = max(runs, key=lambda run: run["id"])
     return run["conclusion"] if run["status"] == "completed" else "pending"
-
-
-def git(*args: str, allowed: tuple[int, ...] = (0,)) -> subprocess.CompletedProcess:
-    run = subprocess.run(["git", *args], capture_output=True, text=True)
-    if run.returncode not in allowed:
-        raise subprocess.CalledProcessError(run.returncode, ["git", *args], run.stdout, run.stderr)
-    return run
-
-
-def own_change(reviewed: str, head: str) -> DiffStat:
-    """The PR's own change since the reviewed commit, from git objects. It walks the
-    first-parent chain from the reviewed commit to the head. A plain commit counts its
-    whole diff. A merge (Update branch) is replayed cleanly with git merge-tree, and the
-    diff from that clean result to the real merge commit counts in full: a hidden edit, a
-    moved or reverted base line, a kept side. A merge with a conflict, a merge of more
-    than two parents, a head that does not descend from the reviewed commit, or a binary
-    change cannot be measured, so it never carries."""
-    if git("merge-base", "--is-ancestor", reviewed, head, allowed=(0, 1)).returncode:
-        return DiffStat({}, 0, "does not descend from the reviewed commit")
-    files, changed = {}, 0
-    for commit in git("rev-list", "--first-parent", "--reverse", f"{reviewed}..{head}").stdout.split():
-        parents = git("rev-list", "--parents", "-n", "1", commit).stdout.split()[1:]
-        if len(parents) == 1:
-            before = parents[0]
-        elif len(parents) == 2:
-            replay = git("merge-tree", "--write-tree", *parents, allowed=(0, 1))
-            if replay.returncode:
-                return DiffStat(files, changed, f"has a merge with a conflict ({commit[:7]})")
-            before = replay.stdout.split()[0]
-        else:
-            return DiffStat(files, changed, f"has a merge of {len(parents)} parents ({commit[:7]})")
-        added = {row.split("\t")[1] for row in git("diff", "--name-status", "--no-renames", before, commit).stdout.splitlines()
-                 if row.startswith("A")}
-        for row in git("diff", "--numstat", "--no-renames", before, commit).stdout.splitlines():
-            plus, minus, path = row.split("\t", 2)
-            if plus == "-":
-                return DiffStat(files, changed, f"changes the binary file {path} ({commit[:7]})")
-            files[path] = "added" if path in added or files.get(path) == "added" else "modified"
-            changed += int(plus) + int(minus)
-    return DiffStat(files, changed)
 
 
 def gh(*args: str) -> str:
@@ -291,57 +182,25 @@ def workflow_path(details_url: str | None) -> str | None:
     return json.loads(gh("api", f"repos/{REPO}/actions/runs/{match[1]}", "--jq", ".path | tojson")) if match else None
 
 
-def post_carry(head: str, pr: int, reason: str) -> None:
-    gh(
-        "api", "-X", "POST", f"repos/{REPO}/statuses/{head}",
-        "-f", "state=success",
-        "-f", "context=review/agent",
-        "-f", f"description={reason}",
-        "-f", f"target_url=https://github.com/{REPO}/pull/{pr}",
-    )
-    print(f"merge-rule: posted review/agent success on {head}")
-
-
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="merge_rule.py", description="Decides if a PR head may merge on its review/agent verdict.")
+    parser = argparse.ArgumentParser(prog="merge_rule.py", description="Blocks a PR head that has no clean review verdict on it.")
     parser.add_argument("pr", type=int)
     parser.add_argument("tier", choices=TIERS)
-    parser.add_argument("--post-carry", action="store_true", help="post a carry as review/agent success on the head (writes to GitHub)")
     args = parser.parse_args(argv)
 
-    view = json.loads(gh("pr", "view", str(args.pr), "-R", REPO, "--json", "headRefOid,baseRefName"))
-    head = view["headRefOid"]
-    # Run inside a checkout that holds the PR head and the base (gate/integrity fetches both).
-    base = os.environ.get("BASE_SHA") or f"origin/{view['baseRefName']}"
+    head = json.loads(gh("pr", "view", str(args.pr), "-R", REPO, "--json", "headRefOid"))["headRefOid"]
     review_statuses = f'.[] | select(.context == "{REVIEW_CONTEXT}") | {{state, description, created_at, target_url}}'
     statuses_by_sha = {sha: api(f"repos/{REPO}/commits/{sha}/statuses", review_statuses)
                        for sha in api(f"repos/{REPO}/pulls/{args.pr}/commits", ".[].sha")}
     verdicts = collect_verdicts(statuses_by_sha, f"https://github.com/{REPO}/pull/{args.pr}")
     comments = ".[] | {body, createdAt: .created_at, authorAssociation: .author_association}"
     proofs, errors = parse_proofs(api(f"repos/{REPO}/issues/{args.pr}/comments", comments))
-    reviewed = latest(verdicts)
-    if reviewed is None or reviewed.sha == head:
-        reviewed_files = since_review = DiffStat({}, 0)
-    else:
-        merge_base = git("merge-base", base, reviewed.sha).stdout.strip()
-        reviewed_paths = git("diff", "--name-only", "--no-renames", merge_base, reviewed.sha).stdout.split()
-        reviewed_files = DiffStat({path: "modified" for path in reviewed_paths}, 0)
-        since_review = own_change(reviewed.sha, head)
-    head_statuses = api(f"repos/{REPO}/commits/{head}/status", ".statuses[] | {context, state, description}")
-    head_review = next((s for s in head_statuses if s["context"] == REVIEW_CONTEXT), None)
-    runs = api(f"repos/{REPO}/commits/{head}/check-runs",
-               ".check_runs[] | {id, name, status, conclusion, details_url, head_sha, app_id: .app.id}")
-    checks_failed, checks_pending = classify_checks(runs, head_statuses, os.environ.get("GITHUB_RUN_ID", ""))
+    runs = api(f"repos/{REPO}/commits/{head}/check-runs", ".check_runs[] | {id, name, status, conclusion, details_url, head_sha, app_id: .app.id}")
     workflow_paths = {run["id"]: workflow_path(run["details_url"]) for run in runs if run["name"] == MUTATION_CHECK}
 
-    decision = decide(args.tier, head, verdicts, proofs, reviewed_files, since_review, checks_failed, checks_pending,
-                      review_in_progress=bool(head_review and head_review["state"] == "pending"),
-                      mutation=mutation_result(runs, head, workflow_paths))
+    decision = decide(args.tier, head, verdicts, proofs, mutation_result(runs, head, workflow_paths))
     for line in [*errors, decision.reason]:
         print(f"merge-rule: {line}")
-    already = head_review and head_review["state"] == "success" and head_review["description"] == decision.reason
-    if args.post_carry and decision.carry and not already:
-        post_carry(head, args.pr, decision.reason)
     return 0 if decision.ok else 1
 
 

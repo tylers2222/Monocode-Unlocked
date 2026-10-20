@@ -1,7 +1,3 @@
-import os
-import shutil
-import subprocess
-import tempfile
 import sys
 import unittest
 import unittest.mock
@@ -13,16 +9,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import merge_rule
 from merge_rule import (
     Decision,
-    DiffStat,
     Proof,
     Verdict,
-    classify_checks,
     collect_verdicts,
     decide,
     parse_proofs,
     parse_verdict,
     mutation_result,
-    own_change,
 )
 
 # PR 160: r1 read head 7ce96f5 at AT and found one minor. FIX is a later push with the fix
@@ -31,9 +24,7 @@ REVIEWED = "7ce96f5bd1067a557120bd87ca6565aa07307242"
 FIX = "5d0c1b2a3948576677889900aabbccddeeff0011"
 EARLIER = "4a1b9c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b"
 AT = datetime(2026, 10, 20, 11, 1, 8, tzinfo=timezone.utc)
-SPEC = "tests/browser/ade60-resume-once.spec.ts"
 TEST = "a relaunch resumes each interrupted session once and times its turn"
-REVIEWED_FILES = DiffStat({"src/app/App.tsx": "modified", SPEC: "added"}, 199)
 
 # Real review/agent descriptions, by PR.
 MINOR = "r1 changes needed: 0B/0M/1m (vacuous steer assertion, spec:156)"  # 160
@@ -58,18 +49,9 @@ def proven(*findings, at=AT + timedelta(hours=1)):
 
 
 def decide_fix(**changes):
-    """decide() for a 3-line fix of PR 160's minor with proof for m1. A test changes one input."""
-    inputs = {
-        "tier": "T3",
-        "head": FIX,
-        "verdicts": [verdict(MINOR)],
-        "proofs": proven("m1"),
-        "reviewed_files": REVIEWED_FILES,
-        "since_review": DiffStat({SPEC: "modified"}, 3),
-        "checks_failed": [],
-        "checks_pending": [],
-        "mutation": "success",
-    }
+    """decide() for PR 160 at the head FIX after its minors-only r1, with proof for m1. A
+    test changes one input."""
+    inputs = {"tier": "T2", "head": FIX, "verdicts": [verdict(MINOR)], "proofs": proven("m1"), "mutation": None}
     return decide(**{**inputs, **changes})
 
 
@@ -82,7 +64,6 @@ class ParseVerdictTest(unittest.TestCase):
             CLEAN_R2: Verdict(REVIEWED, 2, True, 0, 0, 0, AT),
             CLEAN_R5: Verdict(REVIEWED, 5, True, 0, 0, 0, AT),
             NO_COUNTS: Verdict(REVIEWED, 1, False, None, None, None, AT),
-            "carried from 7ce96f5: minors-only + fixer proof (T3)": None,
         }
         for description, want in expected.items():
             with self.subTest(description=description):
@@ -147,135 +128,54 @@ class CollectVerdictsTest(unittest.TestCase):
 class DecideTest(unittest.TestCase):
     def assertRefused(self, decision, *words):
         self.assertFalse(decision.ok, decision.reason)
-        self.assertFalse(decision.carry, decision.reason)
         for word in words:
             self.assertIn(word, decision.reason)
 
     def test_no_verdict_fails(self):
-        self.assertEqual(decide_fix(verdicts=[]), Decision(False, False, "no review verdict yet"))
+        self.assertEqual(decide_fix(verdicts=[]), Decision(False, "no review verdict yet"))
+
+    def test_clean_verdict_on_head_passes(self):
+        for tier in ("T1", "T2"):
+            with self.subTest(tier=tier):
+                self.assertEqual(decide_fix(tier=tier, verdicts=[verdict(CLEAN_R2, sha=FIX)]), Decision(True, f"r2 clean on head {FIX[:7]}"))
 
     def test_latest_verdict_decides(self):
         older = verdict(MAJOR, sha=EARLIER, at=AT - timedelta(hours=2))
-        newer = verdict(MINOR_R2)
+        newer = verdict(CLEAN_R2, sha=FIX)
         for verdicts in ([older, newer], [newer, older]):
             with self.subTest(first=verdicts[0].round):
-                self.assertTrue(decide_fix(tier="T1", verdicts=verdicts).carry)
+                self.assertTrue(decide_fix(verdicts=verdicts).ok)
+        self.assertRefused(decide_fix(verdicts=[verdict(CLEAN_R1, sha=FIX, at=AT - timedelta(hours=2)), verdict(MAJOR, sha=FIX)]), "fix the findings")
 
-    def test_clean_verdict_on_head_passes_without_carry(self):
-        decision = decide_fix(verdicts=[verdict(CLEAN_R2, sha=FIX)])
-        self.assertTrue(decision.ok, decision.reason)
-        self.assertFalse(decision.carry)
+    def test_t3_needs_a_green_gate_mutation_on_the_head(self):
+        clean = [verdict(CLEAN_R1, sha=FIX)]
+        for result in (None, "pending", "failure", "cancelled", "timed_out", "skipped"):
+            with self.subTest(result=result):
+                self.assertRefused(decide_fix(tier="T3", verdicts=clean, mutation=result), "gate/mutation", result or "missing")
+        self.assertTrue(decide_fix(tier="T3", verdicts=clean, mutation="success").ok)
 
-    def test_blocker_or_major_on_head_fails(self):
-        for description in (MAJOR, BLOCKER):
-            with self.subTest(description=description):
-                decision = decide_fix(verdicts=[verdict(description, sha=FIX)], proofs=proven("m1", "m2", "m3", "m4", "m5", "m6"))
-                self.assertRefused(decision, f"on head {FIX[:7]}", "new review verdict")
+    def test_a_minors_only_verdict_with_every_proof_still_needs_a_re_review(self):
+        for tier in ("T1", "T2", "T3"):
+            with self.subTest(tier=tier):
+                self.assertRefused(decide_fix(tier=tier, mutation="success"), "each minor has a fixer proof", "re-review")
 
-    def test_minors_only_on_head_fails(self):
-        self.assertRefused(decide_fix(verdicts=[verdict(MINOR, sha=FIX)]), f"on head {FIX[:7]}", "fixer-proof")
-
-    def test_blocker_or_major_on_older_commit_needs_new_verdict(self):
-        for description in (MAJOR, BLOCKER):
-            with self.subTest(description=description):
-                decision = decide_fix(verdicts=[verdict(description)], proofs=proven("m1", "m2", "m3", "m4", "m5", "m6"))
-                self.assertRefused(decision, "blocker or major", "new review verdict")
-
-    def test_unknown_counts_need_new_verdict(self):
-        self.assertRefused(decide_fix(verdicts=[verdict(NO_COUNTS)]), "blocker or major", "new review verdict")
+    def test_blocker_or_major_needs_a_new_verdict(self):
+        for sha in (REVIEWED, FIX):
+            for description in (MAJOR, BLOCKER, NO_COUNTS, "r1 changes needed: 0B/0M/0m (nits only)"):
+                with self.subTest(sha=sha, description=description):
+                    decision = decide_fix(verdicts=[verdict(description, sha=sha)], proofs=proven("m1", "m2", "m3", "m4", "m5", "m6"))
+                    self.assertRefused(decision, "fix the findings")
 
     def test_clean_verdict_on_older_commit_fails(self):
         self.assertRefused(decide_fix(verdicts=[verdict(CLEAN_R1)]), "new commits")
 
-    def test_changes_needed_without_minor_does_not_carry(self):
-        self.assertRefused(decide_fix(verdicts=[verdict("r1 changes needed: 0B/0M/0m (nits only)")]), "new review verdict")
-
-    def test_t2_and_t3_carry_only_round_1(self):
-        for tier in ("T2", "T3"):
-            with self.subTest(tier=tier):
-                self.assertRefused(decide_fix(tier=tier, verdicts=[verdict(MINOR_R2)]), "round 1")
-
-    def test_t1_carries_later_round(self):
-        self.assertEqual(
-            decide_fix(tier="T1", verdicts=[verdict(MINOR_R2)]),
-            Decision(True, True, "carried from 7ce96f5: minors-only + fixer proof (T1)"),
-        )
-
     def test_each_minor_needs_proof(self):
         decision = decide_fix(verdicts=[verdict(THREE_MINORS)], proofs=proven("m1", "m3"))
-        self.assertRefused(decision, "m2")
-        self.assertNotIn("m1", decision.reason)
-        self.assertNotIn("m3", decision.reason)
+        self.assertEqual(decision, Decision(False, "no fixer-proof after r1 (7ce96f5) for m2"))
 
     def test_proof_posted_before_verdict_does_not_count(self):
-        self.assertRefused(decide_fix(proofs=proven("m1", at=AT - timedelta(minutes=5))), "m1")
-        self.assertRefused(decide_fix(proofs=proven("m1", at=AT)), "m1")
-
-    def test_fix_that_adds_file_needs_new_verdict(self):
-        since = DiffStat({SPEC: "modified", "tests/browser/ade60-steer.spec.ts": "added"}, 20)
-        self.assertRefused(decide_fix(since_review=since), "new file", "tests/browser/ade60-steer.spec.ts")
-
-    def test_fix_outside_reviewed_files_needs_new_verdict(self):
-        since = DiffStat({SPEC: "modified", "src/app/inFlight.ts": "modified"}, 8)
-        self.assertRefused(decide_fix(since_review=since), "outside the reviewed diff", "src/app/inFlight.ts")
-
-    def test_fix_may_change_at_most_60_lines(self):
-        self.assertTrue(decide_fix(since_review=DiffStat({SPEC: "modified"}, 60)).carry)
-        self.assertRefused(decide_fix(since_review=DiffStat({SPEC: "modified"}, 61)), "61 lines")
-
-    def test_failed_check_blocks_carry(self):
-        self.assertRefused(decide_fix(checks_failed=["gate/lint"], checks_pending=["browser"]), "gate/lint")
-
-    def test_pending_check_blocks_carry(self):
-        self.assertRefused(decide_fix(checks_pending=["browser", "check (macos-latest)"]), "waiting for checks: browser")
-
-    def test_review_in_progress_on_head_blocks_carry(self):
-        self.assertRefused(decide_fix(review_in_progress=True), "in progress")
-
-    def test_t3_carry_needs_green_mutation(self):
-        for result in (None, "failure", "cancelled", "skipped"):
-            with self.subTest(result=result):
-                self.assertRefused(decide_fix(mutation=result), "gate/mutation")
-        self.assertTrue(decide_fix(tier="T2", mutation=None).carry, "T2 needs no mutation run")
-
-    def test_small_proven_fix_carries_verdict(self):
-        self.assertEqual(decide_fix(), Decision(True, True, "carried from 7ce96f5: minors-only + fixer proof (T3)"))
-
-
-class ClassifyChecksTest(unittest.TestCase):
-    def test_failed_and_pending_skip_own_run_and_review(self):
-        own = "https://github.com/o/r/actions/runs/77/job/"
-        other = "https://github.com/o/r/actions/runs/76/job/"
-        runs = [
-            {"id": 1, "name": "gate/lint", "status": "completed", "conclusion": "failure", "details_url": other + "1"},
-            {"id": 2, "name": "check (macos-latest)", "status": "completed", "conclusion": "cancelled", "details_url": other + "2"},
-            {"id": 3, "name": "browser", "status": "in_progress", "conclusion": None, "details_url": other + "3"},
-            {"id": 4, "name": "Clean rpm install", "status": "completed", "conclusion": "skipped", "details_url": other + "4"},
-            {"id": 5, "name": "host (macos-latest)", "status": "completed", "conclusion": "neutral", "details_url": None},
-            {"id": 6, "name": "check (ubuntu-latest)", "status": "completed", "conclusion": "success", "details_url": other + "5"},
-            {"id": 7, "name": "gate/integrity", "status": "in_progress", "conclusion": None, "details_url": own + "6"},
-            {"id": 8, "name": "gate/tier", "status": "completed", "conclusion": "failure", "details_url": own + "7"},
-            {"id": 9, "name": "gate/mutation", "status": "queued", "conclusion": None, "details_url": own + "8"},
-        ]
-        statuses = [
-            {"context": "review/agent", "state": "failure"},
-            {"context": "ci/deploy", "state": "pending"},
-            {"context": "ci/audit", "state": "error"},
-        ]
-        self.assertEqual(
-            classify_checks(runs, statuses, "77"),
-            (["check (macos-latest)", "ci/audit", "gate/lint"], ["browser", "ci/deploy"]),
-        )
-
-    def test_only_the_newest_run_of_a_name_counts(self):
-        url = "https://github.com/o/r/actions/runs/{}/job/1"
-        runs = [
-            {"id": 1, "name": "gate/lint", "status": "completed", "conclusion": "cancelled", "details_url": url.format(10)},
-            {"id": 2, "name": "gate/lint", "status": "completed", "conclusion": "success", "details_url": url.format(11)},
-            {"id": 3, "name": "check", "status": "completed", "conclusion": "success", "details_url": url.format(10)},
-            {"id": 4, "name": "check", "status": "completed", "conclusion": "failure", "details_url": url.format(11)},
-        ]
-        self.assertEqual(classify_checks(runs, [], "99"), (["check"], []))
+        self.assertRefused(decide_fix(proofs=proven("m1", at=AT - timedelta(minutes=5))), "no fixer-proof", "m1")
+        self.assertRefused(decide_fix(proofs=proven("m1", at=AT)), "no fixer-proof", "m1")
 
 
 class MutationResultTest(unittest.TestCase):
@@ -298,173 +198,46 @@ class MutationResultTest(unittest.TestCase):
 
 
 class MainTest(unittest.TestCase):
-    """main() on recorded-shape API answers: a minors-only r1 on REVIEWED, a 1-line fix on FIX."""
+    """main() on recorded-shape API answers for PR 160: REVIEWED, then the head FIX. gh
+    may only read the PR; any other gh call is a write and fails the test."""
 
-    def run_main(self, statuses, comments, head_review=None, argv=("160", "T2", "--post-carry"), check_runs=()):
-        posted = []
+    def run_main(self, statuses, comments=(), tier="T2", check_runs=()):
         answers = {
             "repos/tylers2222/Monocode-Unlocked/pulls/160/commits": [REVIEWED, FIX],
-            f"repos/tylers2222/Monocode-Unlocked/commits/{REVIEWED}/statuses": statuses,
-            f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/statuses": [],
-            "repos/tylers2222/Monocode-Unlocked/issues/160/comments": comments,
-            f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/status": [head_review] if head_review else [],
+            f"repos/tylers2222/Monocode-Unlocked/commits/{REVIEWED}/statuses": statuses.get(REVIEWED, []),
+            f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/statuses": statuses.get(FIX, []),
+            "repos/tylers2222/Monocode-Unlocked/issues/160/comments": list(comments),
             f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/check-runs": list(check_runs),
         }
         def gh(*args):
-            if args[:2] == ("pr", "view"):
-                return f'{{"headRefOid": "{FIX}", "baseRefName": "tyler/main"}}'
-            posted.append(args)
-            return ""
+            self.assertEqual(args[:2], ("pr", "view"), "merge_rule.py only reads")
+            return f'{{"headRefOid": "{FIX}"}}'
         with unittest.mock.patch.object(merge_rule, "api", lambda path, jq, paginate=True: answers[path]), \
-                unittest.mock.patch.object(merge_rule, "git", lambda *args, allowed=(0,): subprocess.CompletedProcess(args, 0, SPEC + "\n", "")), \
-                unittest.mock.patch.object(merge_rule, "own_change", lambda reviewed, head: DiffStat({SPEC: "modified"}, 2)), \
                 unittest.mock.patch.object(merge_rule, "workflow_path", lambda url: url), \
                 unittest.mock.patch.object(merge_rule, "gh", gh), unittest.mock.patch("builtins.print"):
-            code = merge_rule.main(list(argv))
-        return code, posted
+            return merge_rule.main(["160", tier])
 
-    STATUS = {"state": "failure", "description": MINOR, "created_at": "2026-10-20T11:01:08Z", "target_url": PR_URL}
+    MINOR_STATUS = {"state": "failure", "description": MINOR, "created_at": "2026-10-20T11:01:08Z", "target_url": PR_URL}
+    CLEAN_STATUS = {"state": "success", "description": "r2 clean: fixed", "created_at": "2026-10-20T13:00:00Z", "target_url": PR_URL}
     PROOF = {"body": f"fixer-proof: m1 test={TEST}", "createdAt": "2026-10-20T12:30:00Z", "authorAssociation": "OWNER"}
 
-    def test_carry_is_posted_once(self):
-        code, posted = self.run_main([self.STATUS], [self.PROOF])
-        self.assertEqual((code, len(posted)), (0, 1))
-        self.assertIn(f"repos/tylers2222/Monocode-Unlocked/statuses/{FIX}", posted[0])
-        already = {"context": "review/agent", "state": "success", "description": "carried from 7ce96f5: minors-only + fixer proof (T2)"}
-        self.assertEqual(self.run_main([self.STATUS], [self.PROOF], already), (0, []))
+    def test_a_proven_minors_only_verdict_on_an_older_commit_fails_and_posts_nothing(self):
+        self.assertEqual(self.run_main({REVIEWED: [self.MINOR_STATUS]}, [self.PROOF]), 1)
 
-    def test_no_post_without_the_flag(self):
-        self.assertEqual(self.run_main([self.STATUS], [self.PROOF], argv=("160", "T2")), (0, []))
+    def test_a_clean_verdict_on_the_head_passes(self):
+        self.assertEqual(self.run_main({REVIEWED: [self.MINOR_STATUS], FIX: [self.CLEAN_STATUS]}), 0)
 
-    def test_another_prs_verdict_is_not_carried(self):
-        foreign = {**self.STATUS, "target_url": "https://github.com/tylers2222/Monocode-Unlocked/pull/159"}
-        self.assertEqual(self.run_main([foreign], [self.PROOF]), (1, []))
+    def test_another_prs_verdict_does_not_count(self):
+        foreign = {**self.CLEAN_STATUS, "target_url": "https://github.com/tylers2222/Monocode-Unlocked/pull/159"}
+        self.assertEqual(self.run_main({FIX: [foreign]}), 1)
 
-    def test_t3_carries_only_on_a_trusted_gate_mutation_run(self):
+    def test_t3_passes_only_on_a_trusted_gate_mutation_run(self):
+        statuses = {FIX: [self.CLEAN_STATUS]}
         run = {"id": 5, "name": "gate/mutation", "status": "completed", "conclusion": "success", "head_sha": FIX,
                "app_id": 15368, "details_url": ".github/workflows/gate-mutation.yml"}
-        self.assertEqual(self.run_main([self.STATUS], [self.PROOF], argv=("160", "T3"), check_runs=[run]), (0, []))
-        self.assertEqual(self.run_main([self.STATUS], [self.PROOF], argv=("160", "T3")), (1, []), "no run: refused")
-        other = {**run, "details_url": ".github/workflows/ci.yml"}
-        self.assertEqual(self.run_main([self.STATUS], [self.PROOF], argv=("160", "T3"), check_runs=[other]), (1, []))
-
-    def test_a_clean_verdict_on_the_head_posts_nothing(self):
-        clean = {**self.STATUS, "state": "success", "description": "r2 clean: fixed"}
-        with unittest.mock.patch.object(merge_rule, "collect_verdicts", lambda statuses, url: [verdict("r2 clean: fixed", sha=FIX)]):
-            self.assertEqual(self.run_main([clean], []), (0, []))
-
-    def test_review_in_progress_blocks(self):
-        pending = {"context": "review/agent", "state": "pending", "description": "r2 in review"}
-        self.assertEqual(self.run_main([self.STATUS], [self.PROOF], pending), (1, []))
-
-
-
-class UpdateBranchMergeTest(unittest.TestCase):
-    """own_change on real git objects: a PR reviewed at one commit, then fixed or merged
-    with main ("Update branch"); each merge is replayed with git merge-tree."""
-
-    def git(self, *args):
-        return subprocess.run(["git", "-C", self.repo, *args], check=True, capture_output=True, text=True).stdout
-
-    def write(self, path, lines):
-        (Path(self.repo) / path).write_text("".join(f"{line}\n" for line in lines))
-
-    def read(self, path):
-        return (Path(self.repo) / path).read_text().splitlines()
-
-    def commit(self, message):
-        self.git("add", "-A")
-        self.git("commit", "-qm", message)
-        return self.git("rev-parse", "HEAD").strip()
-
-    def setUp(self):
-        self.repo = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.repo)
-        cwd = os.getcwd()
-        os.chdir(self.repo)
-        self.addCleanup(os.chdir, cwd)
-        self.git("init", "-q", "-b", "main")
-        self.git("config", "user.email", "t@example.com")
-        self.git("config", "user.name", "t")
-        self.body = [f"line {n}" for n in range(1, 101)]
-        self.write("a.ts", self.body)
-        self.write("b.ts", ["other"])
-        self.commit("base")
-        self.git("checkout", "-qb", "pr")
-        self.write("a.ts", self.body[:50] + ["pr change"] + self.body[50:])
-        self.reviewed = self.commit("pr: reviewed")
-        self.git("checkout", "-q", "main")
-        self.audit = [f"audit_{n}()" for n in range(61)]
-        self.write("a.ts", ["main change at the top"] + self.body + ["function other() {"] + self.audit + ["}"])
-        self.write("b.ts", ["other, changed on main"])
-        self.main = self.commit("main moves")
-        self.git("checkout", "-q", "pr")
-        self.reviewed_files = DiffStat({"a.ts": "modified"}, 0)
-
-    def merge_main(self, edit=None):
-        """Update branch: merge main into the PR, with an edit made inside the merge commit."""
-        self.git("merge", "-q", "--no-commit", "--no-ff", "main")
-        if edit:
-            edit()
-        return self.commit("Merge branch 'main' into pr")
-
-    def decision(self, head):
-        return decide_fix(tier="T2", reviewed_files=self.reviewed_files, since_review=own_change(self.reviewed, head))
-
-    def test_clean_update_branch_adds_nothing(self):
-        self.assertEqual(own_change(self.reviewed, self.merge_main()), DiffStat({}, 0))
-        self.assertTrue(self.decision(self.git("rev-parse", "HEAD").strip()).carry)
-
-    def test_one_line_edited_inside_the_merge_counts(self):
-        edit = lambda: self.write("a.ts", [l.replace("line 80", "line 80, edited in the merge") for l in self.read("a.ts")])
-        self.assertEqual(own_change(self.reviewed, self.merge_main(edit)), DiffStat({"a.ts": "modified"}, 2))
-
-    def test_merge_that_moves_mains_lines_into_reviewed_code_blocks(self):
-        def edit():
-            lines = [l for l in self.read("a.ts") if l not in self.audit]
-            at = lines.index("pr change") + 1
-            self.write("a.ts", lines[:at] + self.audit + lines[at:])
-        since = own_change(self.reviewed, self.merge_main(edit))
-        self.assertGreater(since.changed, 60, "git's smallest diff of the move")
-        self.assertIn(f"{since.changed} lines", self.decision(self.git("rev-parse", "HEAD").strip()).reason)
-
-    def test_merge_that_keeps_the_prs_side_blocks(self):
-        since = own_change(self.reviewed, self.merge_main(lambda: self.git("checkout", self.reviewed, "--", "a.ts")))
-        self.assertGreater(since.changed, 60, "keeping the PR's a.ts reverts main's 64 lines")
-        self.assertFalse(self.decision(self.git("rev-parse", "HEAD").strip()).ok)
-
-    def test_merge_that_moves_reviewed_lines_blocks(self):
-        def edit():
-            lines = self.read("a.ts")
-            self.write("a.ts", lines[60:] + lines[:60])
-        self.assertGreater(own_change(self.reviewed, self.merge_main(edit)).changed, 60)
-
-    def test_new_file_added_in_the_merge_blocks(self):
-        since = own_change(self.reviewed, self.merge_main(lambda: self.write("c.ts", ["new in the merge"])))
-        self.assertEqual(since, DiffStat({"c.ts": "added"}, 1))
-        self.assertIn("adds a new file (c.ts)", self.decision(self.git("rev-parse", "HEAD").strip()).reason)
-
-    def test_a_merge_with_a_conflict_never_carries(self):
-        self.git("checkout", "-q", "main")
-        self.write("a.ts", self.read("a.ts")[:51] + ["main edits next to the pr change"] + self.read("a.ts")[52:])
-        self.commit("main edits the same place")
-        self.git("checkout", "-q", "pr")
-        subprocess.run(["git", "-C", self.repo, "merge", "--no-commit", "--no-ff", "main"], capture_output=True)  # conflicts
-        self.write("a.ts", [l for l in self.read("a.ts") if not l.startswith(("<<<<<<<", "=======", ">>>>>>>"))])
-        head = self.commit("Merge branch 'main' into pr (one line resolved)")
-        self.assertIn("conflict", own_change(self.reviewed, head).problem)
-        self.assertIn("has a merge with a conflict", self.decision(head).reason)
-
-    def test_a_fix_commit_counts_in_full(self):
-        lines = self.read("a.ts")
-        self.write("a.ts", lines[60:] + lines[:60])
-        self.assertGreater(own_change(self.reviewed, self.commit("fix: move a block")).changed, 60)
-
-    def test_a_rebased_head_never_carries(self):
-        self.git("checkout", "-q", "-b", "rebased", "main")
-        self.write("a.ts", self.read("a.ts") + ["pr change"])
-        head = self.commit("pr, rebased")
-        self.assertEqual(own_change(self.reviewed, head).problem, "does not descend from the reviewed commit")
+        self.assertEqual(self.run_main(statuses, tier="T3", check_runs=[run]), 0)
+        self.assertEqual(self.run_main(statuses, tier="T3"), 1, "no run")
+        self.assertEqual(self.run_main(statuses, tier="T3", check_runs=[{**run, "details_url": ".github/workflows/ci.yml"}]), 1)
 
 
 if __name__ == "__main__":
