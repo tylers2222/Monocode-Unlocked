@@ -48,8 +48,10 @@ MATCH_BEFORE = timedelta(minutes=1)
 MATCH_AFTER = timedelta(minutes=5)
 # The turn end is rounded from start + duration; its notice can start a moment before.
 NOTICE_SLACK = timedelta(seconds=2)
-# A send names its prompt; 40 characters before any quoting tell the briefs apart.
-PLAIN = re.compile(r"[^'\"\\$`\n]{0,40}")
+# A send quotes its prompt up to the first character that a shell or jq escapes.
+# Briefs share long openings ("Read /Users/tylerstewart/MonoCode/gigas/..."), so
+# the whole plain prefix is compared.
+PLAIN = re.compile(r"[^'\"\\$`\n]*")
 MIN_QUOTE = 12
 
 LOG_TIME = re.compile(
@@ -80,6 +82,9 @@ class TurnEnd:
     first: bool
     # The opening prompt and every steer that joined the turn; a notice names one.
     prompts: tuple[str, ...]
+    # Some prompt of the turn came from an app request (sessions.start or .send). The
+    # app's own continue after a relaunch or a usage limit has none, and no watcher.
+    requested: bool
 
 
 @dataclass(frozen=True)
@@ -143,10 +148,20 @@ def turn_ends(session: str, blocks: list[dict]) -> list[TurnEnd]:
             continue
         turn = blocks[index:next_prompt]
         report = "\n".join(b.get("text", "") for b in turn if b.get("role") == "assistant")
-        prompts = tuple(b.get("text", "") for b in turn if b.get("role") == "user")
+        prompts = [b for b in turn if b.get("role") == "user"]
         start = ms(block["startedAt"])
         at = start + timedelta(milliseconds=block["durationMs"])
-        ends.append(TurnEnd(session, start, at, report, index == prompts_at[0], prompts))
+        ends.append(
+            TurnEnd(
+                session,
+                start,
+                at,
+                report,
+                index == prompts_at[0],
+                tuple(b.get("text", "") for b in prompts),
+                any("appRequestId" in b for b in prompts),
+            )
+        )
     return ends
 
 
@@ -237,15 +252,17 @@ def notice_for(end: TurnEnd, notices: list[Notice]) -> Notice | None:
 
 
 def quoted(prompt: str) -> str:
-    """The prompt's opening text up to its first character a shell or jq would escape."""
+    """The prompt's text up to its first character that a shell or jq would escape."""
     return PLAIN.match(prompt).group(0)
 
 
 def asked(end: TurnEnd, sends: list[Send]) -> bool:
-    """False only when every readable send of one of the turn's prompts (its opening
-    prompt or a steer) left notifyOnComplete out."""
+    """False for the app's own continue, and when every readable send of one of the
+    turn's prompts (its opening prompt or a steer) left notifyOnComplete out."""
     if end.first:
         return True
+    if not end.requested:
+        return False
     openings = [quoted(prompt) for prompt in end.prompts]
     made = [
         send.notify

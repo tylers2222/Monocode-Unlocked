@@ -47,7 +47,7 @@ LANE_D = "app-86984142-5f1a-4018-af62-ddb105cb6cb4-a9e910e7-6f7f-4a2e-8eae-f4686
 
 
 def end(session: str, at: datetime, report: str = "", first: bool = False, prompt: str = "Brief"):
-    return notice_gap.TurnEnd(session, at - timedelta(minutes=5), at, report, first, (prompt,))
+    return notice_gap.TurnEnd(session, at - timedelta(minutes=5), at, report, first, (prompt,), True)
 
 
 class NoticeGap(unittest.TestCase):
@@ -79,16 +79,21 @@ class NoticeGap(unittest.TestCase):
                 ("77083e1b", "10-20 05:42:54"): ("79.1m", "LATE"),
                 ("89a0543f", "10-20 07:36:51"): ("115.2m", "LATE"),
                 ("5c2bdca3", "10-20 15:12:47"): ("13.2m", "LATE"),
-                # The relaunch at 17:19:47 dropped these. The 18:20:15 notice
-                # reports 7a1eab69's next turn, so it does not count for 17:57:51.
+                # The relaunch at 17:19:47 dropped these groups from memory.
                 ("30f5be8b", "10-20 16:36:09"): ("-", "MISSING"),
                 ("7a1eab69", "10-20 17:19:35"): ("-", "MISSING"),
                 ("872c4aa7", "10-20 17:19:35"): ("-", "MISSING"),
-                ("872c4aa7", "10-20 17:19:37"): ("-", "MISSING"),
-                ("7a1eab69", "10-20 17:57:51"): ("-", "MISSING"),
             },
         )
-        self.assertIn("9 late or missing notices", run.stdout)
+        found = rows(run.stdout)
+        # The app's own "Continue from where you left off." turns: no request, no watcher.
+        self.assertEqual(found[("872c4aa7", "10-20 17:19:37")], ("-", "not-asked"))
+        self.assertEqual(found[("7a1eab69", "10-20 17:57:51")], ("-", "not-asked"))
+        self.assertIn(
+            "48 monitored turn ends (42 with a finished.log line), 12 log lines unmatched, "
+            "7 late or missing notices (more than 10 min)",
+            run.stdout,
+        )
 
     def test_a_send_without_notify_on_complete_is_not_asked(self):
         run = self.run_script("2026-10-19T23:30:00+11:00", "--hours", "0.5")
@@ -159,13 +164,13 @@ class NoticeGap(unittest.TestCase):
         # another prompt (queued for a later turn) does not make this turn asked.
         opened = int(AT("17:19:36").timestamp() * 1000)
         _, turn = notice_gap.turn_ends(LANE_B, [
-            {"role": "user", "startedAt": opened - 60_000, "durationMs": 1_000, "text": "Brief"},
-            {"role": "user", "startedAt": opened, "durationMs": 2_295_000, "text": "Continue from where you left off."},
-            {"role": "user", "appDelivery": {"via": "steered"}, "text": "Also run the 20-run check"},
+            {"role": "user", "startedAt": opened - 60_000, "durationMs": 1_000, "text": "Brief", "appRequestId": "a"},
+            {"role": "user", "startedAt": opened, "durationMs": 2_295_000, "text": "Run the check again.", "appRequestId": "b"},
+            {"role": "user", "appDelivery": {"via": "steered"}, "text": "Also run the 20-run check", "appRequestId": "c"},
             {"role": "assistant", "text": "Done"},
         ])
         quiet = notice_gap.Send(
-            AT("17:19:00"), f'sessions.send {LANE_B[-36:]} "prompt":"Continue from where you left off."', False
+            AT("17:19:00"), f'sessions.send {LANE_B[-36:]} "prompt":"Run the check again."', False
         )
         steer = notice_gap.Send(
             AT("17:30:00"),
@@ -180,6 +185,40 @@ class NoticeGap(unittest.TestCase):
         self.assertEqual(notice_gap.verdict(turn, None, [quiet, steer], AT("18:30:00")), "MISSING")
         notice = notice_gap.Notice(AT("17:58:00"), frozenset({(LANE_B, "Also run the 20-run check")}))
         self.assertEqual(notice_gap.notice_for(turn, [notice]), notice)
+
+    def test_the_apps_own_continue_is_not_asked(self):
+        # After a relaunch the app resumes an interrupted session with "Continue from
+        # where you left off." by itself: the prompt block has no appRequestId.
+        opened = int(AT("17:19:36").timestamp() * 1000)
+        blocks = lambda **request: [
+            {"role": "user", "startedAt": opened - 60_000, "durationMs": 1_000, "text": "Brief", "appRequestId": "a"},
+            {"role": "user", "startedAt": opened, "durationMs": 2_295_000, "text": "Continue from where you left off.", **request},
+        ]
+        _, resumed = notice_gap.turn_ends(LANE_B, blocks())
+        _, requested = notice_gap.turn_ends(LANE_B, blocks(appRequestId="b"))
+        self.assertEqual(notice_gap.verdict(resumed, None, [], AT("18:30:00")), "not-asked")
+        self.assertEqual(notice_gap.verdict(requested, None, [], AT("18:30:00")), "MISSING")
+
+    def test_a_notice_before_a_turn_ends_reports_an_earlier_turn_with_the_same_prompt(self):
+        earlier = end(LANE_B, AT("10:00:00"), prompt="Continue from where you left off.")
+        later = end(LANE_B, AT("11:00:00"), prompt="Continue from where you left off.")
+        notice = notice_gap.Notice(AT("10:30:00"), frozenset({(LANE_B, "Continue from where you left off.")}))
+        self.assertEqual(notice_gap.notice_for(earlier, [notice]), notice)
+        self.assertIsNone(notice_gap.notice_for(later, [notice]))
+
+    def test_a_started_session_is_asked_even_if_a_later_quiet_send_repeats_its_prompt(self):
+        first = end(LANE_B, AT("10:00:00"), first=True, prompt="Read the brief and do all of it.")
+        quiet = notice_gap.Send(
+            AT("09:58:00"), f'sessions.send {LANE_B[-36:]} "prompt":"Read the brief and do all of it."', False
+        )
+        self.assertEqual(notice_gap.verdict(first, None, [quiet], AT("10:30:00")), "MISSING")
+
+    def test_a_notify_send_of_another_brief_with_the_same_opening_does_not_count(self):
+        brief = "Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/process-fixes/briefs/"
+        turn = end(LANE_B, AT("10:00:00"), prompt=f"{brief}fix-r2.md and do all of it.")
+        other = notice_gap.Send(AT("08:00:00"), f'sessions.send {LANE_B[-36:]} "notifyOnComplete":true,"prompt":"{brief}fix-r1.md"', True)
+        quiet = notice_gap.Send(AT("09:50:00"), f'sessions.send {LANE_B[-36:]} "prompt":"{brief}fix-r2.md and do all of it."', False)
+        self.assertEqual(notice_gap.verdict(turn, None, [other, quiet], AT("10:30:00")), "not-asked")
 
     def test_reads_every_time_format_in_finished_log(self):
         entries = notice_gap.parse_log(
