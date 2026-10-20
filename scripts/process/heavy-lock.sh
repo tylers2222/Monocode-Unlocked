@@ -100,7 +100,9 @@ shims_ready() {
   done
   for tool in $HEAVY_TOOLS; do [ -x "$SHIMS/$tool" ] || return 1; done
 }
-# Not in the live block: tests point the shim dir at a temporary path.
+# Not in the live block; kept only for heavy-lock.test.sh. Its shims cases delete the shim
+# dir, remove a shim and make the dir read-only, which must not touch the live dir that
+# running exempt jobs use. Unset, this line changes nothing.
 SHIMS=${HEAVY_LOCK_SHIMS:-$SHIMS}
 run_light_job() {
   local shims rc extra

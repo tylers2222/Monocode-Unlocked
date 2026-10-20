@@ -98,7 +98,26 @@ echo queued >> "$order"
 HEAVY_LOCK_POLL=1 "$lock_sh" sh -c "echo W >> '$order'" 2>/dev/null
 passed=$(sed -n '/^queued$/,/^W$/p' "$order" | grep -c '^L$')
 check "fifo: the relocking loop passes the waiter at most once (passed $passed)" [ "$passed" -le 1 ]
-check "fifo: the wait is logged with the holder pid" logged "cmd=sh -c echo W .* waited=.*s holder=\[pid [0-9][0-9]* .*sleep 3"
+
+# The wait line names the holder's pid. No sleeps: the holder blocks on a FIFO, and the
+# test releases it only after the waiter has printed its first "waiting" line. 20 runs.
+reset
+mkfifo "$root/case/ready" "$root/case/gate" "$root/case/wait"
+logged_runs=0
+for i in $(seq 20); do
+  "$lock_sh" sh -c 'echo held > "$1"; read -r _ < "$2"' _ "$root/case/ready" "$root/case/gate" 2>/dev/null &
+  holder=$!
+  read -r _ < "$root/case/ready"
+  "$lock_sh" true "run$i" 2> "$root/case/wait" &
+  waiter=$!
+  exec 7< "$root/case/wait"
+  read -r _ <&7
+  echo go > "$root/case/gate"
+  wait "$waiter" "$holder"
+  exec 7<&-
+  logged "cmd=true run$i\] waited=[0-9]*s holder=\[pid $holder " && logged_runs=$((logged_runs + 1))
+done
+check "fifo: the wait is logged with the holder pid ($logged_runs of 20 runs)" [ "$logged_runs" = 20 ]
 
 # A lock whose holder pid is dead is cleared by the next caller.
 reset
