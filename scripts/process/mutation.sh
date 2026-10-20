@@ -16,7 +16,7 @@ case ${1-} in
   rust)
     # The pinned binary the job installed (CARGO_MUTANTS, an absolute path), not the
     # `cargo mutants` subcommand a PR could alias; --no-config ignores its mutants.toml.
-    "${CARGO_MUTANTS:?set by the workflow}" --version
+    "${CARGO_MUTANTS:?set by the workflow}" mutants --version
     count=$("$CARGO_MUTANTS" mutants --no-config --in-diff "$2" --list | grep -c . || true)
     if [ "$count" -gt "$MAX_MUTANTS" ]; then
       echo "::error::$count Rust mutants, more than $MAX_MUTANTS; split the PR so each part mutates fewer"
