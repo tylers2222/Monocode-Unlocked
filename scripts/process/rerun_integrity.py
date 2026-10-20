@@ -40,25 +40,30 @@ def main():
     sha = gh('api', f'repos/{repo}/pulls/{value}', '--jq', '.head.sha').strip() if kind == 'pr' else value
     deadline = time.monotonic() + WAIT_SECONDS
     while True:
-        # Runs created in the same second come back in any order, and a run cancelled
-        # before its jobs started has no job to re-run, so take the newest run (by id)
-        # that has the job.
-        runs = sorted(json.loads(gh('api', f'repos/{repo}/actions/workflows/{workflow}/runs?head_sha={sha}&event={trigger}&per_page=20',
-                                    '--jq', '[.workflow_runs[] | {id, status}]')), key=lambda run: -run['id'])
-        with_job = [(run, job) for run in runs for job in json.loads(gh(
-            'api', f'repos/{repo}/actions/runs/{run["id"]}/jobs', '--jq', '[.jobs[] | {id, name}]')) if job['name'] == job_name]
-        if not with_job:
-            print(f'rerun: no {workflow} run with job {job_name} for {sha}')
+        runs = json.loads(gh('api', f'repos/{repo}/actions/workflows/{workflow}/runs?head_sha={sha}&event={trigger}&per_page=20',
+                             '--jq', '[.workflow_runs[] | {id, status}]'))
+        if not runs:
+            print(f'rerun: no {workflow} run for {sha}')
             return 0
-        run, job = with_job[0]
-        if run['status'] == 'completed':
+        if all(run['status'] == 'completed' for run in runs):
             break
         if time.monotonic() > deadline:
-            print(f'rerun: run {run["id"]} still {run["status"]} after {WAIT_SECONDS}s')
+            print(f'rerun: a {workflow} run for {sha} is still running after {WAIT_SECONDS}s')
             return 1
         time.sleep(POLL_SECONDS)
-    gh('api', '-X', 'POST', f'repos/{repo}/actions/jobs/{job["id"]}/rerun')
-    print(f'rerun: re-ran {job_name} (job {job["id"]}) of run {run["id"]} for {sha}')
+    # Runs started in the same second (an open and a label) can be cancelled in either
+    # order. Re-run the job in the newest run whose other jobs (gate/tier) succeeded;
+    # if there is none, re-run the newest run whole.
+    for run in sorted(runs, key=lambda run: -run['id']):
+        jobs = json.loads(gh('api', f'repos/{repo}/actions/runs/{run["id"]}/jobs', '--jq', '[.jobs[] | {id, name, conclusion}]'))
+        job = next((j for j in jobs if j['name'] == job_name), None)
+        if job and all(j['conclusion'] == 'success' for j in jobs if j is not job):
+            gh('api', '-X', 'POST', f'repos/{repo}/actions/jobs/{job["id"]}/rerun')
+            print(f'rerun: re-ran {job_name} (job {job["id"]}) of run {run["id"]} for {sha}')
+            return 0
+    newest = max(runs, key=lambda run: run['id'])
+    gh('api', '-X', 'POST', f'repos/{repo}/actions/runs/{newest["id"]}/rerun')
+    print(f'rerun: re-ran run {newest["id"]} whole for {sha} (no run had its other jobs succeed)')
     return 0
 
 
