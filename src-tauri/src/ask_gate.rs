@@ -1,5 +1,5 @@
-//! The ask rules (Change R plan v2, R5), with no IO. `asks.rs` loads the
-//! facts from saved rows and writes what these decide. R5 (2/2) adds ack.
+//! The ask and ack rules (Change R plan v2, R5), with no IO. `asks.rs` loads
+//! the facts from saved rows and writes what these decide.
 
 use crate::mono_gate::Level;
 use crate::mono_messages::SessionId;
@@ -59,6 +59,55 @@ pub fn decide_ask(
     }
     let minutes = i64::from(due_minutes.unwrap_or(DEFAULT_DUE_MINUTES));
     Ok((parent.level != Level::Giga).then_some(active_ms + minutes * 60_000))
+}
+
+/// `mono_asks.state`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum State {
+    Open,
+    Acked,
+    Dropped,
+}
+
+/// An ask as `ack` reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskState {
+    pub state: State,
+    pub child_session: SessionId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AckRefused {
+    NoOpenAsk,
+    AlreadyAcked,
+    NotYours,
+}
+
+impl AckRefused {
+    pub fn hint(self) -> &'static str {
+        match self {
+            AckRefused::NoOpenAsk => "No open ask has this id.",
+            AckRefused::AlreadyAcked => {
+                "This ask was already acked. A new ask from your parent has a new id."
+            }
+            AckRefused::NotYours => {
+                "This ask is not yours: only the session it was sent to can ack it."
+            }
+        }
+    }
+}
+
+/// Why the guarded ack `UPDATE` changed no row, from the ask as it stands
+/// and the acking session. `Ok` is an ask this caller may ack.
+pub fn decide_ack(ask: &AskState, caller: &SessionId) -> Result<(), AckRefused> {
+    if &ask.child_session != caller {
+        return Err(AckRefused::NotYours);
+    }
+    match ask.state {
+        State::Open => Ok(()),
+        State::Acked => Err(AckRefused::AlreadyAcked),
+        State::Dropped => Err(AckRefused::NoOpenAsk),
+    }
 }
 
 #[cfg(test)]
@@ -124,5 +173,30 @@ mod tests {
             decide_ask(&lead, &worker, false, Some(10), 7),
             Ok(Some(7 + 10 * 60_000))
         );
+    }
+
+    // Defect: an ack of another session's ask, of an acked ask or of a
+    // dropped ask is told the wrong reason.
+    #[test]
+    fn an_ack_that_changes_no_row_names_why() {
+        let me = SessionId::parse("worker").unwrap();
+        let open = |child: &str| AskState {
+            state: State::Open,
+            child_session: SessionId::parse(child).unwrap(),
+        };
+        assert_eq!(decide_ack(&open("w2"), &me), Err(AckRefused::NotYours));
+        let with = |state| AskState {
+            state,
+            ..open("worker")
+        };
+        assert_eq!(
+            decide_ack(&with(State::Acked), &me),
+            Err(AckRefused::AlreadyAcked)
+        );
+        assert_eq!(
+            decide_ack(&with(State::Dropped), &me),
+            Err(AckRefused::NoOpenAsk)
+        );
+        assert_eq!(decide_ack(&open("worker"), &me), Ok(()));
     }
 }

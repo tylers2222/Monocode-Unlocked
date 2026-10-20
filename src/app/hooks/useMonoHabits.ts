@@ -3,6 +3,7 @@ import { gigaCwd } from "../../features/monos/model/gigaWorkspaceRuntime";
 import type { ControlOutcome } from "../../features/orchestration/model/orchestration";
 import {
   newSession,
+  sessionNeedsInput,
   type Block,
   type MonoSpawnedSession,
   type Session,
@@ -22,8 +23,8 @@ import {
   claimHabit,
   clearHabitRun,
   dueHabits,
-  HABIT_APPROVAL_WAIT_MS,
   HABIT_RUN_TIMEOUT_MS,
+  HABIT_USER_WAIT_MS,
   habitReport,
   habitRunCwd,
   habitRunLaunches,
@@ -95,7 +96,8 @@ function finalReply(session: Session | undefined): string {
 /**
  * Sends the run's turn and waits for it, relaying any approval it asks for to
  * the Mono's chat. Only time spent working counts toward the timeout; time
- * waiting on the user has its own, much longer limit.
+ * waiting on the user for an approval or a question has its own, much longer
+ * limit.
  */
 async function watchRun(
   host: MonoHabitHost,
@@ -119,24 +121,22 @@ async function watchRun(
   while (!settled) {
     await Promise.race([turn, new Promise((r) => setTimeout(r, POLL_MS))]);
     if (settled) break;
+    const run = host.sessions().find((session) => session.id === runId);
     const pending =
-      host
-        .sessions()
-        .find((session) => session.id === runId)
-        ?.blocks.filter((block) => block.approval && !block.approval.decided) ??
+      run?.blocks.filter((block) => block.approval && !block.approval.decided) ??
       [];
     for (const block of pending)
       if (!isRelayed(runId, block.approval!.requestId))
         host.askApproval(monoId, habit, runId, block);
-    if (pending.length) waiting += POLL_MS;
+    if (run && sessionNeedsInput(run)) waiting += POLL_MS;
     else working += POLL_MS;
-    if (working >= HABIT_RUN_TIMEOUT_MS || waiting >= HABIT_APPROVAL_WAIT_MS)
+    if (working >= HABIT_RUN_TIMEOUT_MS || waiting >= HABIT_USER_WAIT_MS)
       return {
         status: "failed",
         text: "",
         error:
-          waiting >= HABIT_APPROVAL_WAIT_MS
-            ? "Nobody answered its approval request."
+          waiting >= HABIT_USER_WAIT_MS
+            ? "Nobody answered it."
             : "It took too long and was stopped.",
       };
   }
