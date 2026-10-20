@@ -4,7 +4,7 @@ T3: gates (including scripts/process/, the gate's own logic), state paths (store
 DB, IPC, hooks) or concurrency code. T1: docs, config and tests only, or pure
 model/script code with tests. T2: everything else. Agent rules, prompts and help
 text are behaviour, so a change in a pure-folder source file that can hold a
-multi-line string (a JS/TS backtick, a Rust raw string), or a changed line of string
+multi-line string (a JS/TS backtick, any Rust string), or a changed line of string
 text, is T2 at least and never T1 (PR #116). The rules come from the 2026-10-20 process review, section 4b.
 
 Usage: tier.py <pr-number> [--apply]
@@ -31,9 +31,10 @@ T3_CODE = re.compile(r'\b(useState|useEffect|useLayoutEffect|useReducer|useRef|u
                      r'|\binvoke\(|\blisten\(|#\[tauri::command\]|rusqlite|\.execute\(|CREATE TABLE|ALTER TABLE|BEGIN IMMEDIATE'
                      r'|Mutex|RwLock|tokio::spawn|thread::spawn|AtomicU|setTimeout|setInterval|flock|clock_gettime')
 # A source file that can hold a multi-line string: a JS/TS file with a backtick anywhere
-# (a template literal), a Rust file with a raw string r"..." or r#"..."#. Any changed line
-# in such a file may be prompt text; no scan decides which, so this can only raise the tier.
-STRING_OPENER = {'.rs': re.compile(r'(?<!\w)b?r#*"'), '.ts': re.compile(r'`')}
+# (a template literal), a Rust file with any string (a plain Rust string can span lines too).
+# Any changed line in such a file may be prompt text; no scan decides which, so this can
+# only raise the tier.
+STRING_OPENER = {'.rs': re.compile(r'"'), '.ts': re.compile(r'`')}
 STRING_FILE = re.compile(r'\.(rs|[cm]?[jt]sx?)$')
 # A changed line that is string text: it starts with a quote, holds a raw string, or
 # holds a literal of 40+ characters, the length of a sentence of prose.
@@ -116,10 +117,14 @@ def string_files(repo, pr, files):
     multi-line string: only there can string text change the tier."""
     head, base = gh('api', f'repos/{repo}/pulls/{pr}', '--jq', '.head.sha + " " + .base.sha').split()
     merge_base = gh('api', f'repos/{repo}/compare/{base}...{head}', '--jq', '.merge_base_commit.sha').strip()
-    show = lambda path, ref: gh('api', '-H', 'Accept: application/vnd.github.raw',
-                                f'repos/{repo}/contents/{quote(path)}?ref={ref}', check=False)
+    def show(path, ref):
+        # '' when the file does not exist at ref; None when GitHub could not answer.
+        run = subprocess.run(['gh', 'api', '-H', 'Accept: application/vnd.github.raw',
+                              f'repos/{repo}/contents/{quote(path)}?ref={ref}'], capture_output=True, text=True)
+        return run.stdout if run.returncode == 0 else '' if 'HTTP 404' in run.stderr else None
+
     return {p for p in (f['path'] for f in files) if PURE_DIR.search(p) and STRING_FILE.search(p)
-            and any(can_hold_multi_line_string(show(p, ref), p) for ref in (merge_base, head))}
+            and any(text is None or can_hold_multi_line_string(text, p) for text in (show(p, merge_base), show(p, head)))}
 
 
 def label_changes(labels, t):

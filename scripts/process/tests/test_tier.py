@@ -1,5 +1,6 @@
 import gzip
 import json
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -97,7 +98,8 @@ class StringText(unittest.TestCase):
         self.assertFalse(T.can_hold_multi_line_string('const a = "x";', 'a.ts'))
         self.assertTrue(T.can_hold_multi_line_string('const A: &str = r#"x"#;', 'a.rs'))
         self.assertTrue(T.can_hold_multi_line_string('let a = r"x";', 'a.rs'))
-        self.assertFalse(T.can_hold_multi_line_string('let a = "x"; let for_ = 1;', 'a.rs'))
+        self.assertTrue(T.can_hold_multi_line_string('let a = "x";', 'a.rs'), 'a plain Rust string can span lines')
+        self.assertFalse(T.can_hold_multi_line_string('let a = 1;', 'a.rs'))
 
 
 class Rules(unittest.TestCase):
@@ -115,6 +117,34 @@ class Rules(unittest.TestCase):
         diff = one_file_diff(PLAN, 9, ['-  return 1;', '+  return 2;'])
         self.assertEqual(T.tier([{'path': PLAN, 'additions': 1}], diff, set())[0], 'T2')
         self.assertEqual(T.tier(with_test(PLAN), diff, set())[0], 'T1')
+
+
+class StringFilesFetch(unittest.TestCase):
+    """The real string_files with GitHub's answers mocked: the merge base and the head both count."""
+    PATH = 'src/features/sessions/model/plan.ts'
+
+    def string_files(self, contents):
+        def gh(*args, check=True):
+            return 'HEAD BASE' if args[1].endswith('/pulls/7') else 'MB\n'
+
+        def run(cmd, **kwargs):
+            ref = cmd[-1].rsplit('?ref=', 1)[1]
+            code, out, err = contents[ref]
+            return subprocess.CompletedProcess(cmd, code, out, err)
+
+        with mock.patch.object(T, 'gh', gh), mock.patch.object(T.subprocess, 'run', run):
+            return T.string_files('o/r', '7', [{'path': self.PATH, 'additions': 1}])
+
+    def test_a_template_at_either_side_counts(self):
+        template, plain = (0, 'const p = `You are the reviewer.`;\n', ''), (0, 'export const n = 1;\n', '')
+        self.assertEqual(self.string_files({'MB': template, 'HEAD': plain}), {self.PATH}, 'a PR that deletes a prompt template')
+        self.assertEqual(self.string_files({'MB': plain, 'HEAD': template}), {self.PATH})
+        self.assertEqual(self.string_files({'MB': plain, 'HEAD': plain}), set())
+
+    def test_a_failed_fetch_counts_and_a_missing_file_does_not(self):
+        missing, failed, plain = (1, '', 'gh: Not Found (HTTP 404)'), (1, '', 'gh: Server Error (HTTP 502)'), (0, 'x = 1;\n', '')
+        self.assertEqual(self.string_files({'MB': missing, 'HEAD': plain}), set(), 'a new file has no merge-base version')
+        self.assertEqual(self.string_files({'MB': failed, 'HEAD': plain}), {self.PATH}, 'no answer is not "no backtick"')
 
 
 class Main(unittest.TestCase):
