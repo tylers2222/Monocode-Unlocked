@@ -311,7 +311,6 @@ import {
   removeTabFromGroup,
   tabGroupProject,
 } from "../features/workspace/model/tabGroups";
-import { type WindowTransferPayload } from "./model/windowTransfer";
 import {
   confirmCloseTerminal,
   confirmCloseTerminals,
@@ -1164,7 +1163,6 @@ function titleTabsEqual(a: TitleTab[], b: TitleTab[]): boolean {
 registerBuiltinHarnesses();
 
 type AppProps = {
-  windowTransfer?: WindowTransferPayload | null;
   resumed?: ResumedWorkspace | null;
   installedUpdate?: InstalledUpdate | null;
   history?: SessionSummary[];
@@ -1190,18 +1188,13 @@ export default function App(props: AppProps) {
 }
 
 function Workspace({
-  windowTransfer = null,
   resumed = null,
   installedUpdate = null,
   history: bootHistory = [],
   historyCwd: bootHistoryCwd = null,
 }: AppProps) {
   const [projectCwd, setProjectCwd] = useState(
-    () =>
-      windowTransfer?.projectCwd ??
-      resumed?.projectCwd ??
-      lastProjectPath() ??
-      "~",
+    () => resumed?.projectCwd ?? lastProjectPath() ?? "~",
   );
   const [recents, setRecents] = useState(() =>
     resumed?.projectCwd && looksLikeProject(resumed.projectCwd)
@@ -1215,7 +1208,7 @@ function Workspace({
     return { session, tab };
   });
   const [sessions, setSessions] = useState<Session[]>(
-    () => windowTransfer?.sessions ?? resumed?.sessions ?? [seed.session],
+    () => resumed?.sessions ?? [seed.session],
   );
   const [sessionDeleteDialog, setSessionDeleteDialog] = useState<{
     title: string;
@@ -1226,10 +1219,10 @@ function Workspace({
   const removingWorktreePaths = useRef(new Set<string>());
   const deleteConfirmationPending = useRef(false);
   const [tabs, setTabs] = useState<WorkspaceTab[]>(
-    () => windowTransfer?.tabs ?? resumed?.tabs ?? [seed.tab],
+    () => resumed?.tabs ?? [seed.tab],
   );
   const [projectTerminals, setProjectTerminals] = useState<ProjectTerminal[]>(
-    () => windowTransfer?.projectTerminals ?? resumed?.projectTerminals ?? [],
+    () => resumed?.projectTerminals ?? [],
   );
   /** Dock side a brand-new project's terminal starts with, persisted in the workspace snapshot. */
   const [lastDockSide, setLastDockSide] = useState<DockSide | null>(
@@ -1239,7 +1232,7 @@ function Workspace({
   lastDockSideRef.current = lastDockSide;
   const [projectTerminalFocused, setProjectTerminalFocused] = useState(false);
   const [activeTabId, setActiveTabIdState] = useState(
-    () => windowTransfer?.activeTabId ?? resumed?.activeTabId ?? seed.tab.id,
+    () => resumed?.activeTabId ?? seed.tab.id,
   );
   const [monoViewId, setMonoViewId] = useState<string | null>(null);
   // A Mono opens with its overview beside the chat until it is hidden.
@@ -1334,7 +1327,6 @@ function Workspace({
     setMonoActivity(null);
   }, []);
   const [composerFocused, setComposerFocused] = useState(() => {
-    if (windowTransfer) return true;
     if (!resumed) return false;
     const tab =
       resumed.tabs.find((entry) => entry.id === resumed.activeTabId) ??
@@ -1464,11 +1456,7 @@ function Workspace({
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [filePickerInitialQuery, setFilePickerInitialQuery] = useState("");
   const [filePickerResetToken, setFilePickerResetToken] = useState(0);
-  const [dirtyFiles, setDirtyFiles] = useState<Set<string>>(
-    () => new Set(windowTransfer?.dirtyFileIds ?? []),
-  );
-  // Not carried across a window transfer the way dirty state is: the editor
-  // re-lints whatever it mounts, so the counts rebuild themselves.
+  const [dirtyFiles, setDirtyFiles] = useState<Set<string>>(() => new Set());
   const [fileErrorCounts, setFileErrorCounts] = useState<Map<string, number>>(
     () => new Map(),
   );
@@ -1871,7 +1859,7 @@ function Workspace({
 
   useEffect(() => {
     if (importedSessionsApplied.current) return;
-    const imported = windowTransfer?.sessions ?? resumed?.sessions;
+    const imported = resumed?.sessions;
     if (!imported?.length) return;
     importedSessionsApplied.current = true;
     for (const session of imported) {
@@ -1883,7 +1871,7 @@ function Workspace({
         lastBoundProvider.current.set(session.id, session.providerSessionId);
       }
     }
-  }, [windowTransfer, resumed]);
+  }, [resumed]);
 
   const flushHarnessEvents = harnessEvents.flush;
   const flushForegroundHarnessEvents = harnessEvents.flushForeground;
@@ -2699,7 +2687,6 @@ function Workspace({
   }, [sessions, tabs]);
 
   useEffect(() => {
-    if (windowTransfer) return;
     const save = workspaceSave.current;
     const snapshot = collectWorkspaceSnapshot(
       tabs,
@@ -2734,7 +2721,6 @@ function Workspace({
     projectCwd,
     projectTerminals,
     lastDockSide,
-    windowTransfer,
     keepWorkspaceTab,
     projectWorktree?.path,
     workspaceNavigation.revision,
@@ -4963,17 +4949,16 @@ function Workspace({
     [ensureOpenSession, workspaceNavigation.cancel],
   );
 
-  // A Mono open when the app last closed opens again; a moved window keeps
-  // what it carried.
+  // A Mono open when the app last closed opens again.
   const reopenedMono = useRef(false);
   useEffect(() => {
     if (reopenedMono.current) return;
     reopenedMono.current = true;
-    if (windowTransfer || !monosEnabled) return;
+    if (!monosEnabled) return;
     const monoId = loadOpenMono();
     if (monoId && findMono(monoId)) void onOpenMono(monoId);
     else if (monoId) saveOpenMono(undefined);
-  }, [monosEnabled, onOpenMono, windowTransfer]);
+  }, [monosEnabled, onOpenMono]);
 
   /** The shortcut opens the last Mono, or the first on the rail. */
   const onToggleMono = useCallback(() => {

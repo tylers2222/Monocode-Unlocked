@@ -9,9 +9,6 @@ import { loadResumedWorkspace } from "./appLifecycle";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn() }));
-vi.mock("./windowTransferBootstrap", () => ({
-  loadWindowTransfer: vi.fn().mockResolvedValue(null),
-}));
 vi.mock("../../integrations/harness/core/registry", () => ({
   bindHarnessSession: vi.fn(),
   isLiveHarness: vi.fn(),

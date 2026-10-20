@@ -323,7 +323,6 @@ const HANDLERS: Record<string, Handler> = {
   ),
   home_dir: (store) => store.home,
   default_cwd: (store) => store.home,
-  take_window_transfer: none,
   workspace_get_snapshot: (store) => store.workspace,
   workspace_set_snapshot: (store, { snapshot }) => {
     store.workspace = snapshot;

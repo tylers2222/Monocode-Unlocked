@@ -33,9 +33,6 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   ask: vi.fn().mockResolvedValue(true),
 }));
-vi.mock("./windowTransferBootstrap", () => ({
-  loadWindowTransfer: vi.fn().mockResolvedValue(null),
-}));
 vi.mock("../../features/sessions/data/sessionStore", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../features/sessions/data/sessionStore")>();
   return {
