@@ -19,11 +19,15 @@ updatedAt. An issue is ready since its last blocker unblocked, or, with no
 blockers, since it entered Todo (history, else createdAt).
 
 Builders. A session builds ticket ADE-<id> when it is busy, not archived, and
-the branch the app recorded for it matches `(^|/)ade-<id>(-|$)` (any case).
-Branches come read-only from both app databases. Busy means listed busy by
-this instance's CLI (MONOCODE_CLI, else its app bundle) or, for the other
-instance, in its in_flight_sessions table. Titles are never matched. Busy
-sessions on `main` or with no branch are listed as "unattributed".
+the branch the app recorded for it matches `(^|/)ade-<id>(-|$)` (any case,
+the exact id with no leading zero). Both app databases are read the same way,
+read-only: a session is busy when its id is in that app's in_flight_sessions
+table. The app CLI is not used, because it answers for whichever instance the
+environment points at. Titles are never matched. Busy sessions on `main` or
+with no branch are listed as "unattributed".
+
+--dry-run prints `would label ADE-<n>` for each code-complete label it would
+add, and writes nothing.
 
 The Linear key is LINEAR_API_KEY, else the Linear MCP header in
 ~/.omp/agent/mcp.json. Exit 0: nothing to do. Exit 1: an issue has been ready
@@ -38,6 +42,7 @@ import sqlite3
 import subprocess
 import sys
 import urllib.request
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -46,15 +51,12 @@ REPO = "tylers2222/Monocode-Unlocked"
 MAX_WAIT = timedelta(minutes=60)
 CLOSED = ("completed", "canceled", "duplicate")
 CODE_COMPLETE = "code-complete"
-INSTANCE_CLIS = {
-    "1": "/Applications/MonoCode.app/Contents/MacOS/monocode",
-    "2": "/Applications/MonoCode 2.app/Contents/MacOS/monocode",
-}
+INSTANCES = ("1", "2")
 APP_DBS = {
     "1": Path.home() / "Library/Application Support/com.monocode.desktop/monocode.db",
     "2": Path.home() / "Library/Application Support/com.monocode.second/monocode.db",
 }
-BRANCH_TICKET = re.compile(r"(?:^|/)ade-(\d+)(?=-|$)", re.IGNORECASE)
+BRANCH_TICKET = re.compile(r"(?:^|/)ade-([1-9]\d*)(?=-|$)", re.IGNORECASE)
 TITLE_TICKET = re.compile(r"ADE-(\d+)\b")
 TICKET_PART = re.compile(r"^Ticket-part: (\d+)/(\d+)\r?$", re.MULTILINE)
 ISSUES_QUERY = """
@@ -105,7 +107,7 @@ def final_parts(prs):
     finals = {}
     for pr in prs:
         title, part = TITLE_TICKET.match(pr["title"]), TICKET_PART.search(pr["body"] or "")
-        if title and part and int(part[1]) == int(part[2]):
+        if title and part and 1 <= int(part[1]) == int(part[2]):
             final = FinalPart(pr["number"], parse_time(pr["mergedAt"]))
             ticket = f"ADE-{int(title[1])}"
             finals[ticket] = max(finals.get(ticket, final), final, key=lambda f: f.merged_at)
@@ -136,7 +138,7 @@ def busy(sessions):
 
 
 def builder_tickets(sessions):
-    return {f"ADE-{int(n)}" for session in busy(sessions) for n in BRANCH_TICKET.findall(session["branch"] or "")}
+    return {f"ADE-{n}" for session in busy(sessions) for n in BRANCH_TICKET.findall(session["branch"] or "")}
 
 
 def unattributed(sessions):
@@ -249,44 +251,40 @@ def merged_prs():
     ).stdout)
 
 
-def cli_busy_ids(instance):
-    cli = os.environ.get("MONOCODE_CLI") or INSTANCE_CLIS[instance]
-    answer = json.loads(subprocess.run([cli, "app", "sessions.list", "--json", "{}"], capture_output=True, text=True).stdout)
-    if not answer.get("ok"):
-        raise RuntimeError(f"monocode app sessions.list: {answer.get('error')}")
-    return {session["id"] for session in answer["result"]["sessions"] if session["busy"]}
+def connect_ro(path):
+    return sqlite3.connect(f"{Path(path).as_uri()}?mode=ro", uri=True)
 
 
 def read_db(path):
     """(session rows, in-flight session ids) of one app database, opened read-only."""
-    with sqlite3.connect(f"{Path(path).as_uri()}?mode=ro", uri=True) as db:
+    with closing(connect_ro(path)) as db:
         db.row_factory = sqlite3.Row
         rows = [dict(row) for row in db.execute("SELECT id, title, branch, worktree_cwd, archived FROM sessions")]
         in_flight = {row[0] for row in db.execute("SELECT session_id FROM in_flight_sessions")}
     return rows, in_flight
 
 
-def app_sessions(instance, dbs, own_busy_ids):
-    """Sessions of both instances. Busy: the CLI for this instance, in_flight_sessions for the other."""
+def app_sessions(dbs):
+    """Sessions of both instances; busy when the app lists the id in its own in_flight_sessions."""
     sessions = []
     for name, path in dbs.items():
         rows, in_flight = read_db(path)
-        busy_ids = own_busy_ids if name == instance else in_flight
-        sessions += [{**row, "instance": name, "busy": row["id"] in busy_ids} for row in rows]
+        sessions += [{**row, "instance": name, "busy": row["id"] in in_flight} for row in rows]
     return sessions
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--instance", required=True, choices=sorted(INSTANCE_CLIS))
+    parser.add_argument("--instance", required=True, choices=INSTANCES)
+    parser.add_argument("--dry-run", action="store_true", help="print the labels it would add; write nothing")
     args = parser.parse_args()
     try:
-        sessions = app_sessions(args.instance, APP_DBS, cli_busy_ids(args.instance))
+        sessions = app_sessions(APP_DBS)
         key = linear_key()
         issues = open_issues_and_blockers(key)
         finals = final_parts(merged_prs())
         labelled = to_label(issues, finals)
-        if labelled:
+        if labelled and not args.dry_run:
             add_code_complete(key, labelled)
         ready, unlabelled = ready_issues(issues, sessions, finals, args.instance)
         lines, code = report(ready, unlabelled, unattributed(sessions), datetime.now(timezone.utc))
@@ -294,8 +292,10 @@ def main():
         print(f"ready-issues: {type(err).__name__}: {err}", file=sys.stderr)
         return 2
     for issue in labelled:
-        final = finals[issue["identifier"]]
-        print(f"{issue['identifier']}  labelled {CODE_COMPLETE} (PR #{final.pr} is its last part)")
+        if args.dry_run:
+            print(f"would label {issue['identifier']} {CODE_COMPLETE}")
+        else:
+            print(f"{issue['identifier']}  labelled {CODE_COMPLETE} (PR #{finals[issue['identifier']].pr} is its last part)")
     print("\n".join(lines))
     return code
 
