@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
 import type { SessionSummary } from "../../src/features/sessions/data/sessionStore";
 import type { Block } from "../../src/features/sessions/model/session";
+import type { WorkspaceSnapshot } from "../../src/features/workspace/model/workspaceSnapshot";
 import { type AppShell, expect, type MountOptions, test } from "./app/fixture";
 
 // ADE-57. Each case opens the app on the reduced real database
@@ -156,14 +157,21 @@ async function openInWorktree(page: Page) {
   await expect.poll(() => strip(page)).toEqual([`monocode · ${OPENED.title}`]);
 }
 
-/** The worktree entries of the saved workspace, once a save wrote them. */
-const savedWorktreeTabs = (page: Page) =>
-  page.evaluate(() => {
-    const saved = window.appBackend!.store.workspace;
-    return saved && typeof saved === "object" && "tabWorkspaces" in saved
-      ? saved.tabWorkspaces
-      : undefined;
-  });
+/**
+ * The saved workspace holds OPENED's tab in its worktree. Picking an empty
+ * worktree first opens a blank tab there, which a save can catch before
+ * OPENED replaces it, so any worktree entry is not enough.
+ */
+const savedInWorktree = (page: Page) =>
+  page.evaluate((id) => {
+    // The fake store keeps what saveWorkspaceSnapshot wrote.
+    const saved = window.appBackend!.store
+      .workspace as WorkspaceSnapshot | null;
+    const tab = saved?.tabs.find((entry) => entry.focusedId === id);
+    return (
+      !!tab && !!saved?.tabWorkspaces?.some(({ tabId }) => tabId === tab.id)
+    );
+  }, OPENED.id);
 
 async function booted(page: Page) {
   await expect(page.getByRole("button", { name: "Automations" })).toBeVisible({
@@ -177,12 +185,12 @@ async function booted(page: Page) {
  * waits for it to write the worktree tab back. Then reopens on that store.
  */
 async function saveAloneAndReopen(page: Page, save: () => Promise<unknown>) {
-  await expect.poll(() => savedWorktreeTabs(page)).toBeTruthy();
+  await expect.poll(() => savedInWorktree(page)).toBe(true);
   await page.evaluate(() => {
     window.appBackend!.store.workspace = null;
   });
   await save();
-  await expect.poll(() => savedWorktreeTabs(page)).toBeTruthy();
+  await expect.poll(() => savedInWorktree(page)).toBe(true);
   await page.evaluate(() => window.appBackend!.keepStore());
   await page.reload();
   await booted(page);
@@ -194,7 +202,7 @@ async function saveAloneAndReopen(page: Page, save: () => Promise<unknown>) {
  * the reload runs cannot add to it.
  */
 async function crashAndReopen(page: Page) {
-  await expect.poll(() => savedWorktreeTabs(page)).toBeTruthy();
+  await expect.poll(() => savedInWorktree(page)).toBe(true);
   const store = await page.evaluate(() =>
     JSON.stringify(window.appBackend!.store),
   );
