@@ -1632,3 +1632,5 @@ function asRuntimeMode(value: string): RuntimeMode {
     ? (value as RuntimeMode)
     : "supervised";
 }
+
+export const throwawayOne = 1;
