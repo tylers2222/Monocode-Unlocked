@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import tempfile
@@ -277,39 +278,6 @@ class ClassifyChecksTest(unittest.TestCase):
         self.assertEqual(classify_checks(runs, [], "99"), (["check"], []))
 
 
-GATE = """def gate(user):
-    if not user.allowed:
-        return deny()
-    return allow()
-"""
-
-
-class OwnChangeTest(unittest.TestCase):
-    """own_change on file texts: (reviewed merge base, reviewed, head merge base, head)."""
-
-    def test_base_merged_in_adds_nothing(self):
-        base, base2 = "a\nb\n", "top\na\nb\n"
-        self.assertEqual(own_change({SPEC: (base, base + "pr\n", base2, base2 + "pr\n")}), DiffStat({}, 0))
-
-    def test_reordered_lines_count(self):
-        reordered = GATE.replace("        return deny()\n    return allow()", "        return allow()\n    return deny()")
-        since = own_change({"src/a.py": ("", GATE, "", reordered)})
-        self.assertGreaterEqual(since.changed, 2)
-
-    def test_a_moved_block_counts_its_lines(self):
-        # Swapping a 71-line big() with 40 lines of other code: the smallest line diff moves the 40 lines.
-        big = "def big():\n" + "".join(f"    x{n} = {n}\n" for n in range(70))
-        rest = "".join(f"y{n} = {n}\n" for n in range(40))
-        self.assertEqual(own_change({"src/a.py": ("", rest + big, "", big + rest)}).changed, 80)
-
-    def test_a_new_path_is_added_and_a_base_file_is_not(self):
-        self.assertEqual(own_change({"src/new.ts": (None, None, None, "x\n")}), DiffStat({"src/new.ts": "added"}, 1))
-        self.assertEqual(own_change({"src/b.ts": (None, None, "y\n", "y\n")}), DiffStat({}, 0))
-
-    def test_an_unreadable_file_is_over_the_limit(self):
-        self.assertGreater(own_change({}, ["src/a.ts"]).changed, 60)
-
-
 class MutationResultTest(unittest.TestCase):
     WORKFLOW = ".github/workflows/gate-mutation.yml"
 
@@ -342,15 +310,14 @@ class MainTest(unittest.TestCase):
             f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/status": [head_review] if head_review else [],
             f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/check-runs": list(check_runs),
         }
-        texts = {("MB", REVIEWED): "a\n", ("MB", "MB"): "", ("MB2", "MB2"): "", (FIX, FIX): "c\n"}
         def gh(*args):
             if args[:2] == ("pr", "view"):
                 return f'{{"headRefOid": "{FIX}", "baseRefName": "tyler/main"}}'
             posted.append(args)
             return ""
         with unittest.mock.patch.object(merge_rule, "api", lambda path, jq, paginate=True: answers[path]), \
-                unittest.mock.patch.object(merge_rule, "compare", lambda base, sha: ({SPEC: "modified"}, "MB" if sha == REVIEWED else "MB2")), \
-                unittest.mock.patch.object(merge_rule, "read", lambda path, ref: {"MB": "", REVIEWED: "a\n", "MB2": "", FIX: "c\n"}[ref]), \
+                unittest.mock.patch.object(merge_rule, "git", lambda *args, allowed=(0,): subprocess.CompletedProcess(args, 0, SPEC + "\n", "")), \
+                unittest.mock.patch.object(merge_rule, "own_change", lambda reviewed, head: DiffStat({SPEC: "modified"}, 2)), \
                 unittest.mock.patch.object(merge_rule, "workflow_path", lambda url: url), \
                 unittest.mock.patch.object(merge_rule, "gh", gh), unittest.mock.patch("builtins.print"):
             code = merge_rule.main(list(argv))
@@ -393,8 +360,8 @@ class MainTest(unittest.TestCase):
 
 
 class UpdateBranchMergeTest(unittest.TestCase):
-    """own_change on real git objects: GitHub's compare A...B is the diff from
-    merge-base(A, B) to B, and this reads the same four versions from a temporary repo."""
+    """own_change on real git objects: a PR reviewed at one commit, then fixed or merged
+    with main ("Update branch"); each merge is replayed with git merge-tree."""
 
     def git(self, *args):
         return subprocess.run(["git", "-C", self.repo, *args], check=True, capture_output=True, text=True).stdout
@@ -402,23 +369,20 @@ class UpdateBranchMergeTest(unittest.TestCase):
     def write(self, path, lines):
         (Path(self.repo) / path).write_text("".join(f"{line}\n" for line in lines))
 
+    def read(self, path):
+        return (Path(self.repo) / path).read_text().splitlines()
+
     def commit(self, message):
         self.git("add", "-A")
         self.git("commit", "-qm", message)
         return self.git("rev-parse", "HEAD").strip()
 
-    def show(self, ref, path):
-        run = subprocess.run(["git", "-C", self.repo, "show", f"{ref}:{path}"], capture_output=True, text=True)
-        return run.stdout if run.returncode == 0 else None
-
-    def versions(self, base, reviewed, head):
-        base_then, base_now = (self.git("merge-base", base, sha).strip() for sha in (reviewed, head))
-        paths = set(self.git("diff", "--name-only", base_then, reviewed).split()) | set(self.git("diff", "--name-only", base_now, head).split())
-        return {path: tuple(self.show(ref, path) for ref in (base_then, reviewed, base_now, head)) for path in paths}
-
     def setUp(self):
         self.repo = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.repo)
+        cwd = os.getcwd()
+        os.chdir(self.repo)
+        self.addCleanup(os.chdir, cwd)
         self.git("init", "-q", "-b", "main")
         self.git("config", "user.email", "t@example.com")
         self.git("config", "user.name", "t")
@@ -430,55 +394,77 @@ class UpdateBranchMergeTest(unittest.TestCase):
         self.write("a.ts", self.body[:50] + ["pr change"] + self.body[50:])
         self.reviewed = self.commit("pr: reviewed")
         self.git("checkout", "-q", "main")
-        self.write("a.ts", ["main change at the top"] + self.body)
+        self.audit = [f"audit_{n}()" for n in range(61)]
+        self.write("a.ts", ["main change at the top"] + self.body + ["function other() {"] + self.audit + ["}"])
         self.write("b.ts", ["other, changed on main"])
         self.main = self.commit("main moves")
         self.git("checkout", "-q", "pr")
+        self.reviewed_files = DiffStat({"a.ts": "modified"}, 0)
 
     def merge_main(self, edit=None):
-        """Update branch: merge main into the PR, with an extra edit hidden in the merge commit."""
+        """Update branch: merge main into the PR, with an edit made inside the merge commit."""
         self.git("merge", "-q", "--no-commit", "--no-ff", "main")
         if edit:
             edit()
         return self.commit("Merge branch 'main' into pr")
 
-    def change_since_review(self, head):
-        reviewed_files = DiffStat({path: "modified" for path in self.git("diff", "--name-only", "main~1", self.reviewed).split()}, 0)
-        return reviewed_files, own_change(self.versions(self.main, self.reviewed, head))
+    def decision(self, head):
+        return decide_fix(tier="T2", reviewed_files=self.reviewed_files, since_review=own_change(self.reviewed, head))
 
     def test_clean_update_branch_adds_nothing(self):
-        _, since = self.change_since_review(self.merge_main())
-        self.assertEqual(since, DiffStat({}, 0), "main's own edits to a.ts and b.ts are not the PR's change")
+        self.assertEqual(own_change(self.reviewed, self.merge_main()), DiffStat({}, 0))
+        self.assertTrue(self.decision(self.git("rev-parse", "HEAD").strip()).carry)
 
-    def test_edit_hidden_in_the_merge_counts(self):
-        lines = (Path(self.repo) / "a.ts").read_text
-        hidden = lambda: (Path(self.repo) / "a.ts").write_text(lines().replace("line 80\n", "line 80, edited in the merge\n"))
-        _, since = self.change_since_review(self.merge_main(hidden))
-        self.assertEqual(since, DiffStat({"a.ts": "modified"}, 2), "one changed line: its - and + lines")
+    def test_one_line_edited_inside_the_merge_counts(self):
+        edit = lambda: self.write("a.ts", [l.replace("line 80", "line 80, edited in the merge") for l in self.read("a.ts")])
+        self.assertEqual(own_change(self.reviewed, self.merge_main(edit)), DiffStat({"a.ts": "modified"}, 2))
 
-    def test_61_lines_hidden_in_the_merge_block_the_carry(self):
-        def hidden():
-            path = Path(self.repo) / "a.ts"
-            path.write_text(path.read_text() + "".join(f"merge line {n}\n" for n in range(61)))
-        reviewed_files, since = self.change_since_review(self.merge_main(hidden))
-        self.assertEqual(since.changed, 61)
-        decision = decide_fix(tier="T2", reviewed_files=reviewed_files, since_review=since)
-        self.assertFalse(decision.ok)
-        self.assertIn("61 lines", decision.reason)
+    def test_merge_that_moves_mains_lines_into_reviewed_code_blocks(self):
+        def edit():
+            lines = [l for l in self.read("a.ts") if l not in self.audit]
+            at = lines.index("pr change") + 1
+            self.write("a.ts", lines[:at] + self.audit + lines[at:])
+        since = own_change(self.reviewed, self.merge_main(edit))
+        self.assertGreater(since.changed, 60, "git's smallest diff of the move")
+        self.assertIn(f"{since.changed} lines", self.decision(self.git("rev-parse", "HEAD").strip()).reason)
 
-    def test_a_block_moved_after_the_review_counts(self):
-        path = Path(self.repo) / "a.ts"
-        lines = path.read_text().splitlines()
-        path.write_text("\n".join(lines[60:] + lines[:60]) + "\n")
-        _, since = self.change_since_review(self.commit("fix: move the first 60 lines to the end"))
-        self.assertGreater(since.changed, 60)
+    def test_merge_that_keeps_the_prs_side_blocks(self):
+        since = own_change(self.reviewed, self.merge_main(lambda: self.git("checkout", self.reviewed, "--", "a.ts")))
+        self.assertGreater(since.changed, 60, "keeping the PR's a.ts reverts main's 64 lines")
+        self.assertFalse(self.decision(self.git("rev-parse", "HEAD").strip()).ok)
 
-    def test_new_file_added_in_the_merge_blocks_the_carry(self):
-        _, since = self.change_since_review(self.merge_main(lambda: self.write("c.ts", ["new in the merge"])))
-        self.assertEqual(since.files, {"c.ts": "added"})
-        decision = decide_fix(tier="T2", reviewed_files=DiffStat({"a.ts": "modified"}, 0), since_review=since)
-        self.assertFalse(decision.ok)
-        self.assertIn("adds a new file (c.ts)", decision.reason)
+    def test_merge_that_moves_reviewed_lines_blocks(self):
+        def edit():
+            lines = self.read("a.ts")
+            self.write("a.ts", lines[60:] + lines[:60])
+        self.assertGreater(own_change(self.reviewed, self.merge_main(edit)).changed, 60)
+
+    def test_new_file_added_in_the_merge_blocks(self):
+        since = own_change(self.reviewed, self.merge_main(lambda: self.write("c.ts", ["new in the merge"])))
+        self.assertEqual(since, DiffStat({"c.ts": "added"}, 1))
+        self.assertIn("adds a new file (c.ts)", self.decision(self.git("rev-parse", "HEAD").strip()).reason)
+
+    def test_a_merge_with_a_conflict_never_carries(self):
+        self.git("checkout", "-q", "main")
+        self.write("a.ts", self.read("a.ts")[:51] + ["main edits next to the pr change"] + self.read("a.ts")[52:])
+        self.commit("main edits the same place")
+        self.git("checkout", "-q", "pr")
+        subprocess.run(["git", "-C", self.repo, "merge", "--no-commit", "--no-ff", "main"], capture_output=True)  # conflicts
+        self.write("a.ts", [l for l in self.read("a.ts") if not l.startswith(("<<<<<<<", "=======", ">>>>>>>"))])
+        head = self.commit("Merge branch 'main' into pr (one line resolved)")
+        self.assertIn("conflict", own_change(self.reviewed, head).problem)
+        self.assertIn("has a merge with a conflict", self.decision(head).reason)
+
+    def test_a_fix_commit_counts_in_full(self):
+        lines = self.read("a.ts")
+        self.write("a.ts", lines[60:] + lines[:60])
+        self.assertGreater(own_change(self.reviewed, self.commit("fix: move a block")).changed, 60)
+
+    def test_a_rebased_head_never_carries(self):
+        self.git("checkout", "-q", "-b", "rebased", "main")
+        self.write("a.ts", self.read("a.ts") + ["pr change"])
+        head = self.commit("pr, rebased")
+        self.assertEqual(own_change(self.reviewed, head).problem, "does not descend from the reviewed commit")
 
 
 if __name__ == "__main__":

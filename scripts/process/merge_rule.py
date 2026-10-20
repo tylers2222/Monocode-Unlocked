@@ -17,18 +17,15 @@ success on the head. GATE_REPO overrides the repository (default
 tylers2222/Monocode-Unlocked).
 """
 import argparse
-import difflib
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
-from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from urllib.parse import quote
 
 REPO = os.environ.get("GATE_REPO") or "tylers2222/Monocode-Unlocked"
 TIERS = ("T1", "T2", "T3")
@@ -71,8 +68,9 @@ class Proof:
 
 @dataclass(frozen=True)
 class DiffStat:
-    files: dict[str, str]  # path to GitHub compare status: added, modified, removed, renamed
+    files: dict[str, str]  # path to "added" or "modified"
     changed: int  # additions plus deletions
+    problem: str = ""  # why the change cannot be measured; it then never carries
 
 
 @dataclass(frozen=True)
@@ -184,6 +182,8 @@ def decide(
     if missing:
         return refuse(f"no fixer-proof after r{verdict.round} ({sha7}) for {', '.join(missing)}")
     since = f"since r{verdict.round} ({sha7}) the head"
+    if since_review.problem:
+        return refuse(f"{since} {since_review.problem}; it needs a new review verdict")
     added = sorted(path for path, status in since_review.files.items() if status == "added")
     if added:
         return refuse(f"{since} adds a new file ({', '.join(added)}); it needs a new review verdict")
@@ -235,34 +235,43 @@ def mutation_result(check_runs: Iterable[Mapping], head: str, workflow_paths: Ma
     return run["conclusion"] if run["status"] == "completed" else "pending"
 
 
-def changed_lines(old: str | None, new: str | None) -> Counter:
-    """The -/+ lines of the line diff from old to new (None is a missing file)."""
-    a, b = (old or "").splitlines(), (new or "").splitlines()
-    out = Counter()
-    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
-        if op != "equal":
-            out.update(("-", line) for line in a[i1:i2])
-            out.update(("+", line) for line in b[j1:j2])
-    return out
+def git(*args: str, allowed: tuple[int, ...] = (0,)) -> subprocess.CompletedProcess:
+    run = subprocess.run(["git", *args], capture_output=True, text=True)
+    if run.returncode not in allowed:
+        raise subprocess.CalledProcessError(run.returncode, ["git", *args], run.stdout, run.stderr)
+    return run
 
 
-def own_change(versions: Mapping[str, tuple[str | None, ...]], unreadable: Iterable[str] = ()) -> DiffStat:
-    """The PR's own change since the reviewed commit. versions: per path, its text at the
-    reviewed commit's merge base, the reviewed commit, the head's merge base and the head
-    (None where the file does not exist). The line diff from reviewed to head counts,
-    less the lines the base branch changed between the two merge bases, so merging the
-    base in ("Update branch") adds nothing, while a moved block or an edit made inside
-    the merge counts. A file GitHub could not return counts as more than the limit."""
+def own_change(reviewed: str, head: str) -> DiffStat:
+    """The PR's own change since the reviewed commit, from git objects. It walks the
+    first-parent chain from the reviewed commit to the head. A plain commit counts its
+    whole diff. A merge (Update branch) is replayed cleanly with git merge-tree, and the
+    diff from that clean result to the real merge commit counts in full: a hidden edit, a
+    moved or reverted base line, a kept side. A merge with a conflict, a merge of more
+    than two parents, a head that does not descend from the reviewed commit, or a binary
+    change cannot be measured, so it never carries."""
+    if git("merge-base", "--is-ancestor", reviewed, head, allowed=(0, 1)).returncode:
+        return DiffStat({}, 0, "does not descend from the reviewed commit")
     files, changed = {}, 0
-    for path, (base_then, then, base_now, now) in sorted(versions.items()):
-        own = changed_lines(then, now) - changed_lines(base_then, base_now)
-        lines = sum(own.values())
-        if lines:
-            files[path] = "added" if then is None and now is not None else "modified"
-            changed += lines
-    for path in unreadable:
-        files[path] = "modified"
-        changed += MAX_FIX_LINES + 1
+    for commit in git("rev-list", "--first-parent", "--reverse", f"{reviewed}..{head}").stdout.split():
+        parents = git("rev-list", "--parents", "-n", "1", commit).stdout.split()[1:]
+        if len(parents) == 1:
+            before = parents[0]
+        elif len(parents) == 2:
+            replay = git("merge-tree", "--write-tree", *parents, allowed=(0, 1))
+            if replay.returncode:
+                return DiffStat(files, changed, f"has a merge with a conflict ({commit[:7]})")
+            before = replay.stdout.split()[0]
+        else:
+            return DiffStat(files, changed, f"has a merge of {len(parents)} parents ({commit[:7]})")
+        added = {row.split("\t")[1] for row in git("diff", "--name-status", "--no-renames", before, commit).stdout.splitlines()
+                 if row.startswith("A")}
+        for row in git("diff", "--numstat", "--no-renames", before, commit).stdout.splitlines():
+            plus, minus, path = row.split("\t", 2)
+            if plus == "-":
+                return DiffStat(files, changed, f"changes the binary file {path} ({commit[:7]})")
+            files[path] = "added" if path in added or files.get(path) == "added" else "modified"
+            changed += int(plus) + int(minus)
     return DiffStat(files, changed)
 
 
@@ -274,23 +283,6 @@ def api(path: str, jq: str, paginate: bool = True) -> list:
     """Reads a GitHub API path; jq picks the values, one JSON value per line."""
     args = ["api", path, "--jq", f"{jq} | tojson", *(["--paginate"] if paginate else [])]
     return [json.loads(line) for line in gh(*args).splitlines()]
-
-
-UNREADABLE = "\0unreadable"
-
-
-def compare(base: str, sha: str) -> tuple[dict[str, str], str]:
-    """The PR's files (path to status) of GitHub's base...sha compare, and its merge base."""
-    answer = json.loads(gh("api", f"repos/{REPO}/compare/{base}...{sha}", "--jq",
-                           "{merge_base: .merge_base_commit.sha, files: [.files[] | {filename, status}]}"))
-    return {file["filename"]: file["status"] for file in answer["files"]}, answer["merge_base"]
-
-
-def read(path: str, ref: str) -> str | None:
-    """The file at ref: None when it does not exist there, UNREADABLE when GitHub fails."""
-    run = subprocess.run(["gh", "api", "-H", "Accept: application/vnd.github.raw",
-                          f"repos/{REPO}/contents/{quote(path)}?ref={ref}"], capture_output=True, text=True)
-    return run.stdout if run.returncode == 0 else None if "HTTP 404" in run.stderr else UNREADABLE
 
 
 def workflow_path(details_url: str | None) -> str | None:
@@ -318,7 +310,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     view = json.loads(gh("pr", "view", str(args.pr), "-R", REPO, "--json", "headRefOid,baseRefName"))
-    head, base = view["headRefOid"], view["baseRefName"]
+    head = view["headRefOid"]
+    # Run inside a checkout that holds the PR head and the base (gate/integrity fetches both).
+    base = os.environ.get("BASE_SHA") or f"origin/{view['baseRefName']}"
     review_statuses = f'.[] | select(.context == "{REVIEW_CONTEXT}") | {{state, description, created_at, target_url}}'
     statuses_by_sha = {sha: api(f"repos/{REPO}/commits/{sha}/statuses", review_statuses)
                        for sha in api(f"repos/{REPO}/pulls/{args.pr}/commits", ".[].sha")}
@@ -329,13 +323,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if reviewed is None or reviewed.sha == head:
         reviewed_files = since_review = DiffStat({}, 0)
     else:
-        then, base_then = compare(base, reviewed.sha)
-        now, base_now = compare(base, head)
-        reviewed_files = DiffStat(then, 0)
-        refs = (base_then, reviewed.sha, base_now, head)
-        texts = {path: tuple(read(path, ref) for ref in refs) for path in then.keys() | now.keys()}
-        unreadable = [path for path, versions in texts.items() if UNREADABLE in versions]
-        since_review = own_change({p: v for p, v in texts.items() if p not in unreadable}, unreadable)
+        merge_base = git("merge-base", base, reviewed.sha).stdout.strip()
+        reviewed_paths = git("diff", "--name-only", "--no-renames", merge_base, reviewed.sha).stdout.split()
+        reviewed_files = DiffStat({path: "modified" for path in reviewed_paths}, 0)
+        since_review = own_change(reviewed.sha, head)
     head_statuses = api(f"repos/{REPO}/commits/{head}/status", ".statuses[] | {context, state, description}")
     head_review = next((s for s in head_statuses if s["context"] == REVIEW_CONTEXT), None)
     runs = api(f"repos/{REPO}/commits/{head}/check-runs",
