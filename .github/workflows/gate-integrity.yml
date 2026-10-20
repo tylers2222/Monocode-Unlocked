@@ -110,7 +110,8 @@ jobs:
       # Fails until the head may merge under the tier rule: a review verdict on the head,
       # or a minors-only verdict carried by fixer proof. --post-carry posts the carried
       # verdict as review/agent on the head; delete the flag and `statuses: write` to keep
-      # review/agent reviewer-only.
+      # review/agent reviewer-only. gate-integrity-rerun.yml re-runs this job when a
+      # verdict, a fixer-proof comment or another check changes.
       - name: Merge rule (review verdict and fixer proof)
         if: ${{ !cancelled() }}
         env:
