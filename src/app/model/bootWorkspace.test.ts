@@ -91,3 +91,32 @@ it("ends what a reload of the window left before it loads any session", async ()
   expect(order[0]).toBe("control_window_booted");
   expect(order).toContain("session_get");
 });
+
+// With no saved workspace, the chats that were running come back one tab each.
+// Boot opens the default workspace, so each tab is pinned to its project
+// folder, including one whose chat works in a worktree.
+it("pins each tab of an in-flight-only restore to its project folder", async () => {
+  const sessions = [
+    { ...newSession("codex", "/repo"), id: "main" },
+    {
+      ...newSession("codex", "/repo"),
+      id: "tree",
+      worktreeCwd: "/repo-trees/a",
+    },
+  ];
+  store.loadWorkspaceSnapshot.mockResolvedValue(null);
+  store.listInFlightSessions.mockResolvedValue(
+    sessions.map((session) => ({ sessionId: session.id, cwd: "/repo" })),
+  );
+  store.getSession.mockImplementation(
+    async (id: string) => sessions.find((session) => session.id === id) ?? null,
+  );
+  const { loadResumedWorkspace } = await import("./appLifecycle");
+  const restored = await loadResumedWorkspace();
+  expect(
+    restored?.tabs.map((tab) => [tab.focusedId, restored.pins.get(tab.id)]),
+  ).toEqual([
+    ["main", "/repo"],
+    ["tree", "/repo"],
+  ]);
+});
