@@ -23,10 +23,12 @@ import {
   approveButton,
   chosen,
   decide,
+  decideFailure,
   filerRemoved,
   pickerKey,
   tick,
   type Approval,
+  type DecideFailure,
 } from "../model/approvals";
 import type { Verdict } from "../model/boardDecision";
 import { CardBody } from "./CardBody";
@@ -145,20 +147,35 @@ export function OpenCard({
   card,
   look,
   now,
+  onNotSaved,
+  onOpenMono,
 }: {
   card: Approval;
   look: ProjectLook;
   now: number;
+  /** Someone else closed the card first (A·8): its row says the decision was not saved. */
+  onNotSaved: (id: string) => void;
+  onOpenMono: (monoId: string) => void;
 }) {
   const [picker, setPicker] = useState(OPEN_PICKER);
   const [comment, setComment] = useState("");
+  const [failure, setFailure] = useState<DecideFailure | null>(null);
+  // A second decide while one is in flight would be refused approval_not_open
+  // and say "Already decided" under the user's own decision.
+  const [pending, setPending] = useState(false);
   const ticked = chosen(picker, card.options);
   const approve = approveButton(card.options.length, ticked.length);
   const send = (verdict: Verdict) => {
-    if (verdict === "approved" && !approve.enabled) return;
-    decide(card, verdict, comment, ticked).catch((error: unknown) =>
-      console.error("monocode: could not decide the approval", error),
-    );
+    if (pending || (verdict === "approved" && !approve.enabled)) return;
+    setFailure(null);
+    setPending(true);
+    decide(card, verdict, comment, ticked).catch((error: unknown) => {
+      setPending(false);
+      const refused = decideFailure(error);
+      if (refused?.code === "approval_not_open") onNotSaved(card.id);
+      else if (refused) setFailure(refused);
+      else console.error("monocode: could not decide the approval", error);
+    });
   };
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -200,6 +217,8 @@ export function OpenCard({
         onComment={setComment}
         approve={approve}
         onDecide={send}
+        failure={failure}
+        onOpenMono={onOpenMono}
       />
     </article>
   );

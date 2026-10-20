@@ -27,13 +27,16 @@ async function load(project: string) {
   for (const listener of watchers.get(project) ?? []) listener();
 }
 
-function reload() {
+/** Reloads every list a board shows; a refused decide means the list is stale. */
+export function reloadApprovalLists() {
   for (const project of watchers.keys()) void load(project);
 }
 
 function watch(project: string, listener: () => void) {
   if (watchers.size === 0)
-    changed = listen(APPROVALS_CHANGED, reload).catch(() => undefined);
+    changed = listen(APPROVALS_CHANGED, reloadApprovalLists).catch(
+      () => undefined,
+    );
   const mine = watchers.get(project) ?? new Set();
   watchers.set(project, mine.add(listener));
   void load(project);

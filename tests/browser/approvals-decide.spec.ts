@@ -347,3 +347,216 @@ test("the key hints count only the options a number can tick", async ({
     twelve.getByRole("checkbox", { name: "Worker count 9" }),
   ).toBeChecked();
 });
+
+test("a decide refused for a Giga with no chat keeps the card open and offers the Giga", async ({
+  app,
+  page,
+}) => {
+  const monos = REAL_DB.monos.map((mono) =>
+    mono.role === "giga"
+      ? { ...mono, data: { ...mono.data, sessionId: undefined } }
+      : mono,
+  );
+  await mountOn(
+    page,
+    () =>
+      app.mount({ ...REAL_DB, monos }, { handlers: allowReservedNameDialog }),
+    /^monocode/,
+  );
+  const gate = card(page, GATE);
+  await gate.getByRole("checkbox", { name: WAIT }).click();
+  const comment = gate.getByRole("textbox", { name: "Comment" });
+  await comment.fill("Fine. Ask MonoCode 2 to put #109 first in its queue.");
+  await gate.getByRole("button", { name: "Approve 1 option" }).click();
+
+  await expect(gate.getByRole("alert")).toHaveText(
+    "Not decided: Monocode General, the Giga that filed this, has no chat to send it to. The card stays open. Open the Giga, or decide again later.",
+  );
+  expect((await decisions(page)).map(({ refused }) => refused)).toEqual([
+    "filer_has_no_chat",
+  ]);
+  await expect(gate.getByRole("checkbox", { name: WAIT })).toBeChecked();
+  await expect(comment).toHaveValue(
+    "Fine. Ask MonoCode 2 to put #109 first in its queue.",
+  );
+  await expect(
+    gate.getByRole("button", { name: "Approve 1 option" }),
+  ).toBeEnabled();
+  await expect(gate.getByText(/· tick by number|tick by number/)).toHaveCount(
+    0,
+  );
+  await shot(page, "no-chat");
+
+  await gate.getByRole("button", { name: "Open Monocode General" }).click();
+  await expect(board(page)).toHaveCount(0);
+  await expect(
+    page.getByRole("textbox", { name: "Message Monocode General" }),
+  ).toBeVisible();
+});
+
+test("a decide refused because the card closed first says so under its row", async ({
+  app,
+  page,
+}) => {
+  await mountOn(
+    page,
+    () => app.mount(REAL_DB, { handlers: allowReservedNameDialog }),
+    /^monocode/,
+  );
+  const ci = card(page, "Keep Playwright at one worker in CI?");
+  await ci.getByRole("textbox", { name: "Comment" }).fill("Two workers.");
+  await page.evaluate(() => {
+    const card = window.appBackend!.store.approvals.find((row) =>
+      row.heading.startsWith("Keep Playwright"),
+    )!;
+    card.status = { state: "withdrawn", withdrawnAt: Date.now() };
+  });
+  await ci.getByRole("button", { name: "Reject" }).click();
+
+  await expect(ci).toHaveCount(0);
+  const row = board(page)
+    .locator("main")
+    .getByRole("button", { name: /^Withdrawn Keep Playwright/ });
+  await expect(row).toBeVisible();
+  await expect(row.locator("xpath=following-sibling::*[1]")).toHaveText(
+    "Already decided. Your decision was not saved.",
+  );
+  await expect(board(page).getByRole("alert")).toHaveCount(1);
+  expect((await decisions(page)).map(({ refused }) => refused)).toEqual([
+    "approval_not_open",
+  ]);
+  await shot(page, "not-open");
+});
+
+test("a decide refused as too long keeps the card open and says how much to cut", async ({
+  app,
+  page,
+}) => {
+  await mountOn(
+    page,
+    () =>
+      app.mount(REAL_DB, {
+        handlers: {
+          ...allowReservedNameDialog,
+          approvals_decide: () => {
+            throw String((globalThis as { refusal?: string }).refusal);
+          },
+        },
+      }),
+    /^monocode/,
+  );
+  const refuse = (refusal: string) =>
+    page.evaluate((refusal) => {
+      (globalThis as { refusal?: string }).refusal = refusal;
+    }, refusal);
+  const hide = card(page, "Show decided cards for 30 days, then hide them?");
+  const comment = hide.getByRole("textbox", { name: "Comment" });
+  await hide.getByRole("checkbox", { name: "Hide after 30 days" }).click();
+  await comment.fill("Yes, 30 days. Here is everything that would hide today.");
+  await expect(comment).not.toHaveClass(/border-red-400/);
+
+  await refuse("decision_too_long:8218:8000");
+  await hide.getByRole("button", { name: "Approve 1 option" }).click();
+  await expect(hide.getByRole("alert")).toHaveText(
+    "Not decided: this decision is 8,218 characters, and at most 8,000 can be sent to the Giga. Shorten the comment by 218 or more and decide again.",
+  );
+  await expect(comment).toHaveValue(
+    "Yes, 30 days. Here is everything that would hide today.",
+  );
+  await expect(comment, "the part the user can shorten").toHaveClass(
+    /border-red-400/,
+  );
+  await expect(
+    hide.getByRole("checkbox", { name: "Hide after 30 days" }),
+  ).toBeChecked();
+  await expect(
+    hide.getByRole("button", { name: "Approve 1 option" }),
+  ).toBeEnabled();
+  await shot(page, "too-long");
+
+  await hide.getByRole("checkbox", { name: "Keep them all" }).click();
+  await refuse("decision_too_long:12345:8000");
+  await hide.getByRole("button", { name: "Approve 2 options" }).click();
+  await expect(hide.getByRole("alert")).toHaveText(
+    "Not decided: this decision is 12,345 characters, and at most 8,000 can be sent to the Giga. Shorten the comment by 4,345 or more and decide again.",
+  );
+
+  await refuse("filer_has_no_chat");
+  await hide.getByRole("button", { name: "Reject" }).click();
+  await expect(hide.getByRole("alert")).toContainText("has no chat");
+  await expect(comment).not.toHaveClass(/border-red-400/);
+  expect((await decisions(page)).map(({ refused }) => refused)).toEqual([
+    "decision_too_long:8218:8000",
+    "decision_too_long:12345:8000",
+    "filer_has_no_chat",
+  ]);
+});
+
+test("a comment over 8,000 characters is refused as too long, not as invalid input", async ({
+  app,
+  page,
+}) => {
+  await mountOn(
+    page,
+    () => app.mount(REAL_DB, { handlers: allowReservedNameDialog }),
+    /^monocode/,
+  );
+  const hide = card(page, "Show decided cards for 30 days, then hide them?");
+  const comment = hide.getByRole("textbox", { name: "Comment" });
+  await hide.getByRole("checkbox", { name: "Hide after 30 days" }).click();
+  await comment.fill("Keep 30 days. ".repeat(600));
+  await hide.getByRole("button", { name: "Approve 1 option" }).click();
+
+  await expect(hide.getByRole("alert")).toHaveCount(1);
+  const [{ refused }] = await decisions(page);
+  const [, chars, max] = /^decision_too_long:(\d+):(\d+)$/.exec(refused ?? "")!;
+  expect(Number(chars)).toBeGreaterThan(8000);
+  const count = new Intl.NumberFormat("en-US");
+  await expect(hide.getByRole("alert")).toHaveText(
+    `Not decided: this decision is ${count.format(Number(chars))} characters, and at most ${count.format(Number(max))} can be sent to the Giga. Shorten the comment by ${count.format(Number(chars) - Number(max))} or more and decide again.`,
+  );
+  await expect(comment).toHaveClass(/border-red-400/);
+});
+
+test("a second decide while the first is in flight is not sent", async ({
+  app,
+  page,
+}) => {
+  // Rust answers after a while, so the second click lands while the first call is pending.
+  await mountOn(
+    page,
+    () =>
+      app.mount(REAL_DB, {
+        handlers: {
+          ...allowReservedNameDialog,
+          approvals_decide: async (store, { id, verdict }) => {
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            const card = store.approvals.find((row) => row.id === id)!;
+            if (card.status.state !== "open") throw "approval_not_open";
+            card.status = {
+              state: "decided",
+              verdict: verdict as "approved",
+              decidedAt: Date.now(),
+              note: null,
+              chosen: [],
+              undelivered: null,
+            };
+            void window.appBackend!.emit("approvals-changed", null);
+            return card;
+          },
+        },
+      }),
+    /^monocode/,
+  );
+  const ci = card(page, "Keep Playwright at one worker in CI?");
+  await ci.getByRole("button", { name: "Approve" }).dblclick();
+  await expect(
+    board(page)
+      .locator("main")
+      .getByRole("button", { name: /^Approved Keep Playwright/ }),
+  ).toBeVisible();
+  expect((await decisions(page)).map(({ refused }) => refused ?? "ok")).toEqual(
+    ["ok"],
+  );
+  await expect(board(page).getByRole("alert")).toHaveCount(0);
+});

@@ -291,6 +291,28 @@ export function decide(
   });
 }
 
+/** The decide refusals the board answers on screen (frame A·8). */
+export type DecideFailure =
+  | { code: "filer_has_no_chat" }
+  | { code: "approval_not_open" }
+  | { code: "decision_too_long"; chars: number; max: number };
+
+/** Rust counts the delivered body (decide.rs `decision_text`); the board only reads its numbers. */
+const TOO_LONG = /^decision_too_long:(\d+):(\d+)$/;
+
+export function decideFailure(error: unknown): DecideFailure | null {
+  if (error === "filer_has_no_chat" || error === "approval_not_open")
+    return { code: error };
+  const tooLong = typeof error === "string" ? TOO_LONG.exec(error) : null;
+  return tooLong
+    ? {
+        code: "decision_too_long",
+        chars: Number(tooLong[1]),
+        max: Number(tooLong[2]),
+      }
+    : null;
+}
+
 export type ApproveButton = { enabled: boolean; label: string };
 
 export function approveButton(options: number, ticked: number): ApproveButton {
