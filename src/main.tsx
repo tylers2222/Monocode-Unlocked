@@ -106,16 +106,15 @@ void Promise.all([
     ,
     ,
     ,
-    { windowTransfer, resumed, history, historyCwd },
+    { resumed, history, historyCwd },
     { default: App },
   ]) => {
     performance.mark("monocode:workspace-ready");
-    const installedUpdate = windowTransfer ? null : consumeInstalledUpdate();
+    const installedUpdate = consumeInstalledUpdate();
     ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <React.StrictMode>
         <BootGate>
           <App
-            windowTransfer={windowTransfer}
             resumed={resumed}
             installedUpdate={installedUpdate}
             history={history}

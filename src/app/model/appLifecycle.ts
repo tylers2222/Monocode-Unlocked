@@ -42,8 +42,6 @@ import {
   hydrateWorkspaceSnapshot,
   parseWorkspaceSnapshot,
 } from "../../features/workspace/model/workspaceSnapshot";
-import { loadWindowTransfer } from "./windowTransferBootstrap";
-import type { WindowTransferPayload } from "./windowTransfer";
 import { lastProjectPath, normalizeProjectPath, sameProjectPath } from "../../features/projects/model/recents";
 import type { ProjectReturnMemory } from "../../features/projects/model/projectReturn";
 
@@ -51,7 +49,6 @@ export type { ResumedWorkspace };
 export { hasInFlightSessions };
 
 export type BootWorkspace = {
-  windowTransfer: WindowTransferPayload | null;
   resumed: ResumedWorkspace | null;
   /** Sidebar rows listed before first paint, so the rail is not empty. */
   history: SessionSummary[];
@@ -214,7 +211,7 @@ export function loadResumedWorkspace(): Promise<ResumedWorkspace | null> {
   return resumedPromise;
 }
 
-/** Transfer and restore run once; callers share the same promise. */
+/** Restore runs once; callers share the same promise. */
 export function loadBootWorkspace(): Promise<BootWorkspace> {
   if (!bootPromise) {
     bootPromise = (async () => {
@@ -223,31 +220,13 @@ export function loadBootWorkspace(): Promise<BootWorkspace> {
       // Design 2: end the turns and hand-offs a reload of this window left
       // behind, before any session it loads can start a turn.
       await invoke("control_window_booted").catch(console.error);
-      const windowTransfer = await loadWindowTransfer();
-      if (windowTransfer) {
-        const listed = await historyForCwd(
-          windowTransfer.projectCwd,
-          hintedCwd,
-          historyHint,
-        );
-        return {
-          windowTransfer,
-          resumed: null,
-          history: listed?.rows ?? [],
-          historyCwd: listed?.cwd ?? null,
-        };
-      }
-      const [resumed, hinted] = await Promise.all([
-        loadResumedWorkspace(),
-        historyHint,
-      ]);
+      const resumed = await loadResumedWorkspace();
       const listed = await historyForCwd(
         resumed?.projectCwd ?? hintedCwd,
         hintedCwd,
-        Promise.resolve(hinted),
+        historyHint,
       );
       return {
-        windowTransfer: null,
         resumed,
         history: listed?.rows ?? [],
         historyCwd: listed?.cwd ?? null,
