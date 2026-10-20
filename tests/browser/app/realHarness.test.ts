@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawnRealHarness } from "./realHarness";
 
 const made: string[] = [];
@@ -20,6 +20,7 @@ const tempDir = () => {
 };
 afterEach(() => {
   for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
+  vi.unstubAllEnvs();
 });
 
 /** A dir outside the test's own that holds a harness login, like ~/.omp-2. */
@@ -29,17 +30,13 @@ function realLogin() {
   return dir;
 }
 
-type Seen = { home: string; omp: string; claude: string; codex: string; cwd: string };
-
 /** Starts `node`, which writes the env it got to a file; reads that file back. */
 async function startAndRead(ownDir: string, cwd: string, env?: NodeJS.ProcessEnv) {
   const out = join(ownDir, "seen.json");
-  const script = `require("fs").writeFileSync(process.argv[1], JSON.stringify({
-    home: process.env.HOME, omp: process.env.PI_CODING_AGENT_DIR,
-    claude: process.env.CLAUDE_CONFIG_DIR, codex: process.env.CODEX_HOME, cwd: process.cwd() }))`;
+  const script = `require("fs").writeFileSync(process.argv[1], JSON.stringify(process.env))`;
   const child = spawnRealHarness(process.execPath, ["-e", script, out], { cwd, ownDir, env });
   await once(child, "exit");
-  return JSON.parse(readFileSync(out, "utf8")) as Seen;
+  return JSON.parse(readFileSync(out, "utf8")) as Record<string, string>;
 }
 
 /** Throws when the guard refuses; `marker` exists only if the harness started. */
@@ -52,12 +49,21 @@ function tryStart(ownDir: string, env: NodeJS.ProcessEnv, cwd = ownDir) {
 }
 
 describe("spawnRealHarness", () => {
-  it("gives the harness HOME and its login dirs inside the test's temp dir", async () => {
+  it("builds the harness env itself: PATH, and HOME and login dirs in the temp dir, nothing else from the parent", async () => {
+    // The agent shell that runs these tests holds a live app token like this.
+    vi.stubEnv("MONOCODE_APP_TOKEN", "sentinel-from-the-test-process");
     const own = tempDir();
     const seen = await startAndRead(own, own);
-    for (const dir of [seen.home, seen.omp, seen.claude, seen.codex])
-      expect(dir.startsWith(own)).toBe(true);
-    expect(seen.home).toBe(own);
+    expect(seen.MONOCODE_APP_TOKEN, "the parent's env does not reach the harness").toBeUndefined();
+    // macOS sets this one in every new process; the helper does not pass it.
+    delete seen.__CF_USER_TEXT_ENCODING;
+    expect(seen).toEqual({
+      PATH: process.env.PATH,
+      HOME: own,
+      PI_CODING_AGENT_DIR: join(own, ".omp", "agent"),
+      CLAUDE_CONFIG_DIR: join(own, ".claude"),
+      CODEX_HOME: join(own, ".codex"),
+    });
   });
 
   it("refuses unset login vars when HOME holds a real login", () => {
@@ -121,7 +127,7 @@ describe("spawnRealHarness", () => {
     const seen = await startAndRead(own, join(own, "work"), {
       PI_CODING_AGENT_DIR: "../agent",
     });
-    expect(seen.omp).toBe("../agent");
+    expect(seen.PI_CODING_AGENT_DIR).toBe("../agent");
 
     const login = realLogin();
     expect(
