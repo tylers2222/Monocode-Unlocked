@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
+use crate::approvals::decide;
 use crate::asks::{self, Call};
 use crate::control::ControlHost;
 use crate::mono_gate::{
@@ -1412,7 +1413,7 @@ fn route_groups(messages: &[MonoMessage], routes: Vec<Route>) -> Vec<RouteGroup>
 }
 
 /// `m_` and 12 random base32 characters.
-fn new_message_id() -> MessageId {
+pub(crate) fn new_message_id() -> MessageId {
     const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
     let bytes = *uuid::Uuid::new_v4().as_bytes();
     // Bytes 9 to 15 and the low half of byte 0 are random in a v4 uuid.
@@ -2487,16 +2488,20 @@ const PENDING_NOTICE: &str = "status IN ('unanswered', 'dropped') AND notified_a
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct Notices {
     sessions: Vec<SessionId>,
+    /// A decision row was dropped or requeued: the board reloads once.
+    #[serde(skip)]
+    pub(crate) approvals: bool,
 }
 
 impl Notices {
-    fn name(&mut self, session: SessionId) {
+    pub(crate) fn name(&mut self, session: SessionId) {
         if !self.sessions.contains(&session) {
             self.sessions.push(session);
         }
     }
 
     pub fn merge(&mut self, other: Notices) {
+        self.approvals |= other.approvals;
         for session in other.sessions {
             self.name(session);
         }
@@ -2525,10 +2530,13 @@ impl Notices {
         Ok(())
     }
 
-    /// To every window; nothing when no session is named.
-    pub fn emit(&self, app: &AppHandle) {
+    /// To every window; nothing when nothing changed.
+    pub fn emit<R: tauri::Runtime>(&self, app: &AppHandle<R>) {
         if !self.sessions.is_empty() {
             let _ = app.emit("mono-message-notices", self);
+        }
+        if self.approvals {
+            let _ = app.emit(crate::approvals::CHANGED, ());
         }
     }
 }
@@ -2655,17 +2663,23 @@ pub fn startup(conn: &Connection, now: i64) -> rusqlite::Result<()> {
           WHERE intent = 'steer' AND status IN ('open', 'delivered') AND delivered_at IS NULL",
         [now],
     )?;
-    tx.execute(
-        &format!(
-            "UPDATE mono_messages SET status = 'dropped', closed_at = ?1, updated_at = ?1
-              WHERE (status = 'open' OR (status = 'delivered' AND delivered_at IS NULL))
-                AND {MESSAGE_TOOLS}
-                AND NOT EXISTS (SELECT 1 FROM sessions
-                                 WHERE sessions.id = mono_messages.handled_by_session
-                                   AND worktree_removed = 0)"
-        ),
-        [now],
-    )?;
+    let drop_gone = || {
+        tx.execute(
+            &format!(
+                "UPDATE mono_messages SET status = 'dropped', closed_at = ?1, updated_at = ?1
+                  WHERE (status = 'open' OR (status = 'delivered' AND delivered_at IS NULL))
+                    AND {MESSAGE_TOOLS}
+                    AND NOT EXISTS (SELECT 1 FROM sessions
+                                     WHERE sessions.id = mono_messages.handled_by_session
+                                       AND worktree_removed = 0)"
+            ),
+            [now],
+        )
+    };
+    drop_gone()?;
+    // A decision moved to a chat that is gone too is dropped again there.
+    crate::approvals::decide::requeue(&tx, now)?;
+    drop_gone()?;
     tx.commit()
 }
 
@@ -2745,16 +2759,19 @@ pub fn clear_session(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut notices = Notices::default();
     notices.name_senders(tx, &dropped)?;
+    notices.merge(decide::dropped(tx, &dropped)?);
+    notices.merge(crate::approvals::decide::requeue(tx, now)?);
     Ok(notices)
 }
 
-/// Design 7: an archived session was unarchived, so it can receive again.
-pub(crate) fn session_reopened(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
+/// Design 7: an archived session was unarchived, so it can receive again,
+/// starting with the decisions its archive dropped.
+pub(crate) fn session_reopened(conn: &Connection, session_id: &str) -> rusqlite::Result<Notices> {
     conn.execute(
         "DELETE FROM mono_session_ends WHERE session_id = ?1",
         [session_id],
     )?;
-    Ok(())
+    crate::approvals::decide::requeue(conn, now_ms())
 }
 
 /// Design 5.5 rule 8: what the user's Remove of a queued Mono row did.
@@ -2791,12 +2808,16 @@ pub fn drop_message(
     };
     let mut notices = Notices::default();
     if answer == DropAnswer::Dropped {
+        // A row with no sender Mono owes no notice. Its `notified_at` marks
+        // a drop the user chose, which `requeue` never undoes.
         tx.execute(
-            "UPDATE mono_messages SET status = 'dropped', closed_at = ?2, updated_at = ?2
+            "UPDATE mono_messages SET status = 'dropped', closed_at = ?2, updated_at = ?2,
+               notified_at = CASE WHEN from_mono_id IS NULL THEN ?2 END
               WHERE id = ?1",
             params![id.as_str(), now],
         )?;
         notices.name_senders(&tx, std::slice::from_ref(id))?;
+        notices.merge(decide::dropped(&tx, std::slice::from_ref(id))?);
     }
     tx.commit()?;
     Ok((answer, notices))
@@ -10227,6 +10248,28 @@ pub(crate) mod tests {
         assert_eq!(rows(&store.lock_conn().unwrap()), 0);
     }
 
+    /// `command`'s answer to `args` through Tauri's IPC, as the web app calls it.
+    #[cfg(not(windows))]
+    pub(crate) fn invoke_command(
+        webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+        command: &str,
+        args: &Value,
+    ) -> Result<Value, Value> {
+        tauri::test::get_ipc_response(
+            webview,
+            tauri::webview::InvokeRequest {
+                cmd: command.into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: "tauri://localhost".parse().unwrap(),
+                body: tauri::ipc::InvokeBody::Json(args.clone()),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.into(),
+            },
+        )
+        .map(|body| body.deserialize::<Value>().unwrap())
+    }
+
     // #91 N1 and #97 N4. Tauri binds each command argument by its parameter
     // name. Defect: a command's parameter is renamed from `call` (or the web
     // app sends another key), so every app action or start record fails in
@@ -10259,21 +10302,7 @@ pub(crate) mod tests {
         let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
             .build()
             .unwrap();
-        let invoke = |command: &str, args: &Value| {
-            tauri::test::get_ipc_response(
-                &webview,
-                tauri::webview::InvokeRequest {
-                    cmd: command.into(),
-                    callback: tauri::ipc::CallbackFn(0),
-                    error: tauri::ipc::CallbackFn(1),
-                    url: "tauri://localhost".parse().unwrap(),
-                    body: tauri::ipc::InvokeBody::Json(args.clone()),
-                    headers: Default::default(),
-                    invoke_key: tauri::test::INVOKE_KEY.into(),
-                },
-            )
-            .map(|body| body.deserialize::<Value>().unwrap())
-        };
+        let invoke = |command: &str, args: &Value| invoke_command(&webview, command, args);
         let commands: Vec<&str> = calls
             .iter()
             .map(|call| call["command"].as_str().unwrap())
