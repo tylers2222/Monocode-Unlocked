@@ -4317,3 +4317,7 @@ mod tests {
         assert!(!result.truncated);
     }
 }
+
+pub fn throwaway_is_positive(n: i64) -> bool {
+    n > 0
+}
