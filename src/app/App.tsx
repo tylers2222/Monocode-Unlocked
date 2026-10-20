@@ -999,6 +999,11 @@ type Submit = (
   options?: SubmitOptions,
 ) => SubmissionAcceptance;
 
+/** The window continues this session's quit turn by itself after a relaunch. */
+function continuesAfterQuit(session: Session): boolean {
+  return canAutoContinue(session) && isLiveHarness(session.harness);
+}
+
 function withPlanStatus(
   session: Session,
   blockId: string,
@@ -1922,6 +1927,8 @@ function Workspace({
         "unload",
         projectTerminalsRef.current,
         lastDockSideRef.current ?? undefined,
+        undefined,
+        monoCompletionBatches.current!.undelivered(),
       ).finally(() => {
         void reapWindowRuntime(
           sessionsRef.current,
@@ -2468,6 +2475,7 @@ function Workspace({
       flushHarnessEvents,
       () => lastDockSideRef.current,
       keepWorkspaceTab,
+      () => monoCompletionBatches.current!.undelivered(),
     );
     void getCurrentWindow()
       .onCloseRequested(async (event) => {
@@ -2505,6 +2513,7 @@ function Workspace({
           projectTerminalsRef.current,
           lastDockSideRef.current ?? undefined,
           keepWorkspaceTab,
+          monoCompletionBatches.current!.undelivered(),
         ).finally(() => {
           void (toTray ? hideCurrentWindow() : closeCurrentWindow());
         });
@@ -9046,6 +9055,14 @@ function Workspace({
       (sessionId) =>
         sessionsRef.current.find((session) => session.id === sessionId),
     );
+    monoCompletionBatches.current.restore(
+      resumed?.monoCompletions ?? [],
+      (sessionId) =>
+        sessionsRef.current.some(
+          (session) =>
+            session.id === sessionId && continuesAfterQuit(session),
+        ),
+    );
   }
   useEffect(() => {
     monoCompletionBatches.current!.closeInactive(({ monoId, turn }) => {
@@ -10483,9 +10500,7 @@ function Workspace({
   );
 
   const autoContinueKey = sessions
-    .filter(
-      (session) => canAutoContinue(session) && isLiveHarness(session.harness),
-    )
+    .filter(continuesAfterQuit)
     .map((session) => session.id)
     .join("\n");
 
@@ -10497,18 +10512,18 @@ function Workspace({
     const timer = window.setTimeout(() => {
       for (const id of ids) {
         const session = sessionsRef.current.find((entry) => entry.id === id);
-        if (
-          !session ||
-          !canAutoContinue(session) ||
-          !isLiveHarness(session.harness)
-        ) {
-          continue;
-        }
+        if (!session || !continuesAfterQuit(session)) continue;
         // A Continue opens the turn the quit cut short, or nothing. This
         // effect runs again whenever another session resumes, so a Continue
         // still waiting on its project's location check is asked for twice;
         // the second must not steer into the turn the first opened.
-        onSubmit(id, CONTINUE_PROMPT, [], { turnId: newTurnId() });
+        const turnId = newTurnId();
+        void submitWithSettlement({
+          submit: (onSettled) =>
+            onSubmit(id, CONTINUE_PROMPT, [], { turnId, onSettled }),
+          onSettled: monoCompletionBatches.current!.resume(id),
+          rejectionMessage: "The interrupted turn could not continue.",
+        });
       }
     }, 0);
     return () => window.clearTimeout(timer);

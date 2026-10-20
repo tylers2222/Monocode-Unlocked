@@ -3,6 +3,7 @@ import type { DockSide, ProjectTerminalDock } from "../../projects/model/project
 import { sessionNeedsInput, type Session } from "./session";
 import { stopStreaming } from "../../../integrations/harness/core/apply";
 import type { ProjectReturnMemory } from "../../projects/model/projectReturn";
+import type { SavedMonoCompletion } from "../../monos/model/monoSessionCompletion";
 
 export const INTERRUPT_MESSAGE =
   "Turn interrupted when MonoCode quit.";
@@ -22,6 +23,8 @@ export type ResumedWorkspace = {
   projectTerminals?: ProjectTerminalDock[];
   projectReturnMemory?: ProjectReturnMemory;
   lastDockSide?: DockSide;
+  /** The Mono notices a quit kept, from the saved snapshot (ADE-46). */
+  monoCompletions?: SavedMonoCompletion[];
 };
 
 /** A turn or approval that would be lost if this webview died. */

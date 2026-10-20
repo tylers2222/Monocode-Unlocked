@@ -44,6 +44,10 @@ import {
 } from "../../features/workspace/model/workspaceSnapshot";
 import { lastProjectPath, normalizeProjectPath, sameProjectPath } from "../../features/projects/model/recents";
 import type { ProjectReturnMemory } from "../../features/projects/model/projectReturn";
+import {
+  savedMonoCompletions,
+  type SavedMonoCompletion,
+} from "../../features/monos/model/monoSessionCompletion";
 
 export type { ResumedWorkspace };
 export { hasInFlightSessions };
@@ -69,6 +73,7 @@ let liveWorkspace: {
   projectReturnMemory: () => ProjectReturnMemory;
   lastDockSide: () => DockSide | null;
   keepTab?: (tab: WorkspaceTab) => boolean;
+  monoCompletions: () => SavedMonoCompletion[];
   flush: () => void;
 } | null = null;
 
@@ -86,6 +91,7 @@ export function setQuitWorkspace(
   flush: () => void,
   lastDockSide: () => DockSide | null = () => null,
   keepTab?: (tab: WorkspaceTab) => boolean,
+  monoCompletions: () => SavedMonoCompletion[] = () => [],
 ): () => void {
   liveWorkspace = {
     sessions,
@@ -96,6 +102,7 @@ export function setQuitWorkspace(
     projectReturnMemory,
     lastDockSide,
     keepTab,
+    monoCompletions,
     flush,
   };
   bootingResumed = null;
@@ -123,6 +130,7 @@ export async function handleQuitRequested(): Promise<boolean> {
         liveWorkspace.projectTerminals(),
         liveWorkspace.lastDockSide() ?? undefined,
         liveWorkspace.keepTab,
+        liveWorkspace.monoCompletions(),
       );
       return true;
     } catch {
@@ -285,6 +293,9 @@ async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
     }
     workspace = workspaceFromResumed(sessions);
   }
+  const monoCompletions = savedMonoCompletions(snapshotRaw);
+  if (workspace && monoCompletions.length)
+    workspace = { ...workspace, monoCompletions };
 
   bootingResumed = workspace;
   if (workspace) {
@@ -363,6 +374,7 @@ export async function persistQuitState(
   projectTerminals: ProjectTerminalDock[] = [],
   lastDockSide?: DockSide,
   keepTab?: (tab: WorkspaceTab) => boolean,
+  monoCompletions: SavedMonoCompletion[] = [],
 ): Promise<void> {
   const refs = inFlightRefs(sessions, tabs);
   const interrupted = new Set(refs.map((ref) => ref.sessionId));
@@ -382,8 +394,8 @@ export async function persistQuitState(
     }),
   );
   await write(
-    saveWorkspaceSnapshot(
-      collectWorkspaceSnapshot(
+    saveWorkspaceSnapshot({
+      ...collectWorkspaceSnapshot(
         tabs,
         sessions,
         activeTabId,
@@ -393,7 +405,8 @@ export async function persistQuitState(
         lastDockSide,
         keepTab,
       ),
-    ),
+      monoCompletions,
+    }),
   );
   // Vite/webview reload must not wipe a restored snapshot: those chats are idle
   // in this process until Continue runs.
@@ -408,8 +421,8 @@ async function persistBootingResume(workspace: ResumedWorkspace): Promise<void> 
       .filter(shouldPersistSession)
       .map((session) => upsertSession(session).catch(() => null)),
   );
-  await saveWorkspaceSnapshot(
-    collectWorkspaceSnapshot(
+  await saveWorkspaceSnapshot({
+    ...collectWorkspaceSnapshot(
       workspace.tabs,
       workspace.sessions,
       workspace.activeTabId,
@@ -418,7 +431,8 @@ async function persistBootingResume(workspace: ResumedWorkspace): Promise<void> 
       workspace.projectTerminals ?? [],
       workspace.lastDockSide,
     ),
-  ).catch(() => undefined);
+    monoCompletions: workspace.monoCompletions ?? [],
+  }).catch(() => undefined);
   await replaceInFlightSessions(
     workspace.sessions
       .filter(wasTurnInterrupted)
