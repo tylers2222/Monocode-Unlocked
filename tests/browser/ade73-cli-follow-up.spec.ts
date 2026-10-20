@@ -45,6 +45,7 @@ declare global {
   interface Window {
     controlReplies?: { id: string; response: ControlResponse }[];
     savedBuilder?: unknown;
+    monoRow?: Record<string, unknown>;
   }
 }
 
@@ -244,6 +245,96 @@ test("a follow-up queued before a rate-limited turn runs after the next turn", a
       "Your turn stopped; go on",
       "new turn",
       "Also cover the empty input",
+    ]);
+});
+
+/**
+ * mono_messages.rs for one accepted send: it writes the row and routes it to
+ * the recipient's queue. The gate is tested in mono_gate.rs.
+ */
+const monoRoute: Record<string, Handler> = {
+  mono_message_submit: (_, { requestId, input }) => {
+    const send = input as { message: string; send_to: string };
+    const row = {
+      id: "m_aaaaaaaaaaaa",
+      requestId,
+      part: 0,
+      tool: "send_message",
+      fromMonoId: null,
+      fromSessionId: "orchestrator",
+      to: { kind: "session", sessionId: send.send_to },
+      addressed: send.send_to,
+      body: send.message,
+      bodyChars: send.message.length,
+      hop: 0,
+      createdAt: 1,
+      status: "delivered",
+      wantingReply: false,
+      intent: "new",
+      replyTo: null,
+      scope: null,
+      handledBySession: send.send_to,
+      delivery: "queue",
+      slot: null,
+    };
+    window.monoRow = row;
+    return {
+      outcome: "accepted",
+      messages: [{ message: row, target: null }],
+      answered: [],
+      duplicate: false,
+      routes: [{ sessionId: send.send_to, via: "queue", messageIds: [row.id] }],
+    };
+  },
+  mono_message_assign_slot: (_, { turnId, kind }) => ({
+    message: {
+      ...window.monoRow,
+      delivery: kind,
+      slot: { turnId, deliveredAt: null },
+    },
+    target: null,
+  }),
+  mono_message_mark_delivery: () => null,
+};
+
+test("a Mono message queued behind a rate-limited turn runs after the next turn too", async ({
+  app,
+  page,
+}) => {
+  await mount(page, app, undefined, monoRoute);
+  await send(page, app, "r1", "Fix the parser");
+  await send(page, app, "r2", "Also cover the empty input", "followUp");
+  await endTurn(app, RATE_LIMIT);
+
+  await request(app, "r3", "messages.send", {
+    message: "Then run the tests",
+    send_to: "builder",
+    wanting_reply: false,
+    intent: "new",
+  });
+  expect(await reply(page, "r3")).toMatchObject({ ok: true });
+  expect(await send(page, app, "r4", "Your turn stopped; go on")).toEqual(
+    delivered("sent"),
+  );
+  await expect
+    .poll(() => turns(page), "the resume prompt opens a turn")
+    .toHaveLength(4);
+
+  await endTurn(app);
+  await expect
+    .poll(() => turns(page), "the CLI follow-up runs after that turn")
+    .toHaveLength(6);
+  await endTurn(app);
+  await expect
+    .poll(
+      async () => (await turns(page)).slice(4),
+      "then the Mono message, in queue order",
+    )
+    .toEqual([
+      "new turn",
+      "Also cover the empty input",
+      "new turn",
+      expect.stringContaining("Then run the tests"),
     ]);
 });
 

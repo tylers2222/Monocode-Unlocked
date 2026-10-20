@@ -273,29 +273,24 @@ export function pauseQueue(session: Session, reason?: "error"): Session {
   return {
     ...session,
     queueStatus: "paused",
-    queuedMessages: reason
-      ? session.queuedMessages.map((message) => ({
-          ...message,
-          pausedBy: reason,
-        }))
-      : withoutPauseReason(session.queuedMessages),
+    queuePause: reason,
+    queuedMessages: withoutPauseReason(session.queuedMessages),
   };
 }
 
 /**
  * A new turn ends the pause a failed turn put on the queue: the provider
  * takes turns again, so the queue sends after this turn, as Resume does.
+ * The reason is the queue's, so items queued after the failure resume too.
  * A pause the user or a quit made still waits for Resume.
  */
 export function resumeAfterFailedTurn(session: Session): Session {
-  if (
-    session.queueStatus !== "paused" ||
-    !session.queuedMessages?.every((message) => message.pausedBy === "error")
-  )
+  if (session.queueStatus !== "paused" || session.queuePause !== "error")
     return session;
   return {
     ...session,
     queueStatus: "resuming",
+    queuePause: undefined,
     queuedMessages: withoutPauseReason(session.queuedMessages),
   };
 }

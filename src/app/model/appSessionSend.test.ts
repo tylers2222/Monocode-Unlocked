@@ -513,7 +513,6 @@ describe("queueAppFollowUp", () => {
   it.each([
     [undefined, "active"],
     ["resuming", "active"],
-    ["paused", "paused"],
   ] as const)(
     "adds one follow-up behind earlier items (queue %s becomes %s)",
     (queueStatus, expected) => {

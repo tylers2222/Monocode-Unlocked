@@ -99,7 +99,7 @@ export function planAppSend(input: {
   if (input.whenBusy === "followUp") {
     if (input.queueStatus === "paused")
       throw new Error(
-        "The session's queue is paused, so a follow-up would not run; send it when the session is idle",
+        "The session's queue is paused, so a follow-up would not run; ask the user to resume it, or send without whenBusy when the session is idle",
       );
     return "queue";
   }
@@ -160,7 +160,7 @@ export function queueAppFollowUp(
         appRequestId: item.requestId,
       },
     ],
-    queueStatus: session.queueStatus === "paused" ? "paused" : "active",
+    queueStatus: "active",
   };
 }
 

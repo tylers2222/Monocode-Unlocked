@@ -340,11 +340,8 @@ export type QueuedMessage = {
   link?: TargetLink;
   /** Delivery failed; the message remains available to retry or edit. */
   error?: string;
-  /**
-   * Why the queue holds this message: MonoCode quit, or the turn it waited
-   * for failed. Cleared when the queue resumes.
-   */
-  pausedBy?: "quit" | "error";
+  /** MonoCode quit while this message waited; cleared when the queue resumes. */
+  pausedBy?: "quit";
 };
 
 export type MessageQueueStatus = "active" | "paused" | "resuming";
@@ -548,6 +545,13 @@ export type Session = {
   queuedMessages?: QueuedMessage[];
   /** Paused after user stops current turn; resuming waits for continued turn. */
   queueStatus?: MessageQueueStatus;
+  /**
+   * A failed turn paused the queue, so the next turn that starts resumes it
+   * (`resumeAfterFailedTurn`). Read only while `queueStatus` is paused; every
+   * pause of a live session (`pauseQueue`, `detachSessionWorktree`) sets it.
+   * In-memory only.
+   */
+  queuePause?: "error";
   /** Prevent auto-dispatch while this queued row is being edited. In-memory only. */
   editingQueuedMessageId?: string;
   /** Pending delivery locks this row against edits and deletion. Not persisted. */
