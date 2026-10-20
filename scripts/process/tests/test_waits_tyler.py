@@ -93,7 +93,7 @@ class InstanceLabel(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_missing_extra_or_unknown_instance_fails(self):
-        for labels in [("bug",), (), ("instance:1", "instance:2"), ("instance:3",), ("Instance:2", "instance:2")]:
+        for labels in [("bug",), (), ("instance:1", "instance:2"), ("instance:3",), ("Instance:2",), ("Instance:2", "instance:2")]:
             with self.subTest(labels=labels):
                 self.assertEqual(check_event("instance-label.py", event_with(*labels)).returncode, 1)
 
