@@ -164,9 +164,13 @@ def main(argv):
                                         '--jq', '.[] | {path: .filename, additions}').splitlines()]
     diff = gh('pr', 'diff', pr, '-R', repo, check=False) or None
     t, why = tier(files, diff, multi_line_sets(repo, pr, files) if diff else {})
-    print(f'tier: {t}, {non_test_lines(files)} non-test lines added')
+    nt = non_test_lines(files)
+    print(f'tier: {t}, {nt} non-test lines added')
     for w in why:
         print(f'tier:   {w}')
+    if os.environ.get('GITHUB_OUTPUT'):
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+            out.write(f'nt={nt}\n')
     if '--apply' in argv:
         remove, add = label_changes(gh('api', f'repos/{repo}/issues/{pr}/labels', '--jq', '.[].name').splitlines(), t)
         for old in remove:
