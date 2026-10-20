@@ -220,7 +220,7 @@ check "TERM to the holder only: the waiter's end line says signal=0" logged "end
 # ignored: the holder waits out the grace (still alive 3 s after the second signal, 4 s into
 # the grace), then writes one end line for the first signal, releases the lock itself (no
 # stale clear), the waiter runs, and nothing is left.
-for pair in TERM:TERM TERM:HUP HUP:HUP INT:INT; do
+for pair in TERM:TERM TERM:HUP TERM:INT HUP:HUP INT:INT; do
   sig1=${pair%:*} sig2=${pair#*:}
   case "$sig1" in TERM) rc1=143 ;; HUP) rc1=129 ;; INT) rc1=130 ;; esac
   reset
