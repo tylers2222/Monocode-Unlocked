@@ -418,12 +418,7 @@ fn a_removed_decision_stays_removed_and_an_unarchived_chat_gets_its_decision_bac
 #[test]
 #[ignore = "needs MONOCODE_DB_COPY, a fresh copy of the app's monocode.db"]
 fn a_decision_queues_to_a_real_giga_on_a_copy_of_the_app_database() {
-    let own_copy = std::env::temp_dir().join(format!("monocode-decide-{}.db", Uuid::new_v4()));
-    Connection::open(app_database_copy())
-        .unwrap()
-        .execute("VACUUM INTO ?1", [own_copy.to_str().unwrap()])
-        .unwrap();
-    let store = SessionStore::open(own_copy).unwrap();
+    let store = own_app_database_copy();
     let conn = store.lock_conn().unwrap();
     let (giga, chat): (String, String) = conn
         .query_row(
@@ -494,6 +489,15 @@ fn board_card(heading: &str, options: &[&str]) -> crate::approvals::Card {
     }
 }
 
+const GATE: [&str; 2] = [
+    "Wait for #109, then build S2 on its caller identity",
+    "Build S2 on tyler/main now",
+];
+const INDEX: [&str; 2] = [
+    "Index (project_id, status) only",
+    "Also index (requested_by, status)",
+];
+
 // Writes the A·7 Playwright fixture (tests/browser/approvals-chat-line.realdb.json)
 // from what the real `file`, `withdraw` and `decide` leave on a copy of the
 // app database: the copy's Monos, the decision rows queued to its first Giga's
@@ -505,12 +509,7 @@ fn writes_the_chat_line_fixture_from_a_copy_of_the_app_database() {
     use crate::approvals::{file, withdraw};
     use crate::mono_messages::MonoId;
 
-    let own_copy = std::env::temp_dir().join(format!("monocode-line-{}.db", Uuid::new_v4()));
-    Connection::open(app_database_copy())
-        .unwrap()
-        .execute("VACUUM INTO ?1", [own_copy.to_str().unwrap()])
-        .unwrap();
-    let store = SessionStore::open(own_copy).unwrap();
+    let store = own_app_database_copy();
     let conn = store.lock_conn().unwrap();
     let (filer, chat, project): (String, String, String) = conn
         .query_row(
@@ -528,44 +527,26 @@ fn writes_the_chat_line_fixture_from_a_copy_of_the_app_database() {
     let filed = |heading: &str, options: &[&str], at: i64| {
         file(&conn, &project, &by, board_card(heading, options), at).unwrap()
     };
-    let gate = [
-        "Wait for #109, then build S2 on its caller identity",
-        "Build S2 on tyler/main now",
-    ];
     let wait = filed(
         "Wait for PR #109 before the approvals tool is built?",
-        &gate,
+        &GATE,
         start,
     );
     let store_talk = filed("Store the Giga and Mono discussion on the card", &[], start);
-    let index = [
-        "Index (project_id, status) only",
-        "Also index (requested_by, status)",
-    ];
     let index_card = filed(
         "Index approvals on (project_id, status) only",
-        &index,
+        &INDEX,
         start,
     );
     let bump = filed("Bump Playwright to 1.49", &[], start);
     withdraw(&conn, &bump.id, &by, start + 1).unwrap();
-    let gone = "removed-giga";
-    giga(&conn, gone, "Modelist General");
-    let orphan = file(
-        &conn,
-        &project,
-        &MonoId::parse(gone).unwrap(),
-        board_card("Keep CSV export in v1", &[]),
-        start,
-    )
-    .unwrap();
-    assert!(crate::mono_roster::delete(&conn, gone).unwrap());
+    let orphan = filed_by_removed_giga(&conn, &project, start);
     let decisions = [
         (
             &wait,
             Verdict::Approved,
             Some("Fine. Ask MonoCode 2 to put #109 first in its queue."),
-            &gate[..1],
+            &GATE[..1],
         ),
         (
             &store_talk,
@@ -577,7 +558,7 @@ fn writes_the_chat_line_fixture_from_a_copy_of_the_app_database() {
             &index_card,
             Verdict::ChangesRequested,
             Some("Take option 2 as well, then file it again with the query plan."),
-            &index[1..],
+            &INDEX[1..],
         ),
         (&orphan, Verdict::Approved, None, &[][..]),
     ];
@@ -612,8 +593,45 @@ fn writes_the_chat_line_fixture_from_a_copy_of_the_app_database() {
                 )
             })
             .collect();
-    let monos: Vec<serde_json::Value> = conn
-        .prepare("SELECT id, role, data_json FROM monos ORDER BY sort_order, id")
+    let fixture = json!({
+        "giga": filer, "chat": chat, "project": project, "monos": monos_json(&conn),
+        "rows": rows, "cards": cards, "withdrawn": bump.id, "removedGiga": orphan.id,
+    });
+    let home = std::env::var("HOME").unwrap();
+    let text = serde_json::to_string_pretty(&fixture)
+        .unwrap()
+        .replace(&home, "/Users/test");
+    std::fs::write(std::env::var("CHAT_LINE_FIXTURE").unwrap(), text + "\n").unwrap();
+}
+
+/// A store on this test's own copy of `MONOCODE_DB_COPY`.
+fn own_app_database_copy() -> SessionStore {
+    let own_copy = std::env::temp_dir().join(format!("monocode-decide-{}.db", Uuid::new_v4()));
+    Connection::open(app_database_copy())
+        .unwrap()
+        .execute("VACUUM INTO ?1", [own_copy.to_str().unwrap()])
+        .unwrap();
+    SessionStore::open(own_copy).unwrap()
+}
+
+/// A card filed by a Giga that is then removed, so `requested_by` is null.
+fn filed_by_removed_giga(conn: &Connection, project: &str, at: i64) -> Approval {
+    let gone = "removed-giga";
+    giga(conn, gone, "Modelist General");
+    let by = crate::mono_messages::MonoId::parse(gone).unwrap();
+    let card = crate::approvals::file(
+        conn,
+        project,
+        &by,
+        board_card("Keep CSV export in v1", &[]),
+        at,
+    );
+    assert!(crate::mono_roster::delete(conn, gone).unwrap());
+    card.unwrap()
+}
+
+fn monos_json(conn: &Connection) -> Vec<serde_json::Value> {
+    conn.prepare("SELECT id, role, data_json FROM monos ORDER BY sort_order, id")
         .unwrap()
         .query_map([], |row| {
             let data: String = row.get(2)?;
@@ -625,16 +643,7 @@ fn writes_the_chat_line_fixture_from_a_copy_of_the_app_database() {
         })
         .unwrap()
         .collect::<rusqlite::Result<_>>()
-        .unwrap();
-    let fixture = json!({
-        "giga": filer, "chat": chat, "project": project, "monos": monos, "rows": rows,
-        "cards": cards, "withdrawn": bump.id, "removedGiga": orphan.id,
-    });
-    let home = std::env::var("HOME").unwrap();
-    let text = serde_json::to_string_pretty(&fixture)
         .unwrap()
-        .replace(&home, "/Users/test");
-    std::fs::write(std::env::var("CHAT_LINE_FIXTURE").unwrap(), text + "\n").unwrap();
 }
 
 // Defects: the command binds other argument names than the board sends,
