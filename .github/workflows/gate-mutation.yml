@@ -80,10 +80,14 @@ jobs:
           bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
           bash scripts/process/mutation.sh rust "$RUNNER_TEMP/pr.diff"
 
-      # TypeScript mutation testing (Stryker) lands with "Process fixes D4b". Until then a
-      # T3 change to TypeScript fails here, so it can never pass untested.
-      - name: TypeScript mutation (lands with D4b)
+      - uses: actions/setup-node@v4
         if: ${{ steps.targets.outputs.stryker != '' }}
-        run: |
-          echo "::error::changed TypeScript lines need Stryker, which lands with Process fixes D4b; gate/mutation fails until then"
-          exit 1
+        with:
+          node-version: 24
+
+      - name: Stryker on the changed TypeScript lines
+        if: ${{ steps.targets.outputs.stryker != '' }}
+        timeout-minutes: 55
+        env:
+          SPECS: ${{ steps.targets.outputs.stryker }}
+        run: bash scripts/process/mutation.sh ts "$SPECS"
