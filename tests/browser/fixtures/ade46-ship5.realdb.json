@@ -1,0 +1,95 @@
+{
+ "source": "ade46-fixture.py on a .backup copy of com.monocode.second/monocode.db taken 2026-10-20 23:55. Real ids, request ids, request order, notifyOnComplete as the Orchestrator's CLI calls passed it, and continued-turn ends; prompts cut to their first line; transcripts left out.",
+ "mono": {
+  "id": "bf5b3c41-a4b3-480e-a4db-0a36d5105810",
+  "data": {
+   "color": "hsl(330 70% 62%)",
+   "mascot": "skull",
+   "name": "MonoCode Fork Orchestrator",
+   "projects": [
+    "/Users/tylerstewart/Desktop/monocode"
+   ],
+   "showStartedSessionsInSidebar": true,
+   "sessionId": "86984142-5f1a-4018-af62-ddb105cb6cb4"
+  }
+ },
+ "monoChat": {
+  "id": "86984142-5f1a-4018-af62-ddb105cb6cb4",
+  "cwd": "/Users/tylerstewart",
+  "harness": "omp",
+  "model": "omp:default",
+  "runtimeMode": "auto",
+  "title": "MonoCode Fork Orchestrator",
+  "providerSessionId": "01a15862-dc00-75fe-b0ef-4f3813f501af"
+ },
+ "sessions": [
+  {
+   "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-3e217e0f-f3fe-4289-aee1-dbee872c4aa7",
+   "cwd": "/Users/tylerstewart/Desktop/monocode",
+   "harness": "omp",
+   "model": "omp:anthropic/claude-opus-5-5",
+   "runtimeMode": "auto",
+   "title": "omp · Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/cha…",
+   "providerSessionId": "01a157db-70af-7034-b5f4-6987dc84801c",
+   "branch": "main"
+  },
+  {
+   "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-b4677bea-0d5c-4efe-b570-6a3d7a1eab69",
+   "cwd": "/Users/tylerstewart/Desktop/monocode",
+   "harness": "omp",
+   "model": "omp:default",
+   "runtimeMode": "auto",
+   "title": "omp · Rust action gate for PR E7-9a",
+   "providerSessionId": "01a150ae-76be-70f9-b591-2ebb000c950c",
+   "worktreeCwd": "/Users/tylerstewart/Desktop/monocode-worktrees/feat-e7-9a-action-gate-rust",
+   "branch": "feat/e7-13-rules-docs"
+  }
+ ],
+ "requests": [
+  {
+   "at": "10-20 16:18:01",
+   "sessionId": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-b4677bea-0d5c-4efe-b570-6a3d7a1eab69",
+   "requestId": "67d95a77-8e8f-4266-b40d-3a4dc786027f",
+   "prompt": "#153 is MERGED as b87d4cac. While R waits on Tyler: a reproduce-only job. Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/change-linear/briefs/repro-ade58.md and do all of it. Work in poteto-mode. Skip project-wide formatters.",
+   "notifyOnComplete": true
+  },
+  {
+   "at": "10-20 16:46:40",
+   "sessionId": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-b4677bea-0d5c-4efe-b570-6a3d7a1eab69",
+   "requestId": "05492a69-c7ca-47c7-8aae-a2d2b506a879",
+   "prompt": "Orchestrator, priority change: Tyler approved the R4 strings and #139 is MERGED as a363d977. Pause the ADE-58 repro at a safe point (let any running CI job finish on its own; no git stash). Then: rebase #150 (feat/ade-23-ask-ack-ledger, 9fe5dbfd) onto tyler/main a363d977. Expect no code change beyon",
+   "notifyOnComplete": false
+  },
+  {
+   "at": "10-20 16:49:20",
+   "sessionId": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-3e217e0f-f3fe-4289-aee1-dbee872c4aa7",
+   "requestId": "3e217e0f-f3fe-4289-aee1-dbee872c4aa7",
+   "prompt": "Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/change-m/briefs/fix-m10-wording.md and do all of it. Work in poteto-mode. Skip project-wide formatters.",
+   "notifyOnComplete": true
+  },
+  {
+   "at": "10-20 17:18:57",
+   "sessionId": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-3e217e0f-f3fe-4289-aee1-dbee872c4aa7",
+   "requestId": "2d97dd67-d336-45d6-a9eb-6ec55c655c34",
+   "prompt": "Orchestrator: SHIP 5 swap in about 1 minute. Both MonoCode apps will quit and relaunch, which ends your turn. Right now: commit any work in progress to your branch (no git stash), do not start a new heavy run, and append one line to /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/shar",
+   "notifyOnComplete": false
+  },
+  {
+   "at": "10-20 17:18:57",
+   "sessionId": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-b4677bea-0d5c-4efe-b570-6a3d7a1eab69",
+   "requestId": "1e40e774-e80b-45ce-82d6-0f5e6326527e",
+   "prompt": "Orchestrator: SHIP 5 swap in about 1 minute. Both MonoCode apps will quit and relaunch, which ends your turn. Right now: commit any work in progress to your branch (no git stash), do not start a new heavy run, and append one line to /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/shar",
+   "notifyOnComplete": false
+  }
+ ],
+ "ends": [
+  {
+   "at": "10-20 17:19:37",
+   "sessionId": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-3e217e0f-f3fe-4289-aee1-dbee872c4aa7"
+  },
+  {
+   "at": "10-20 17:57:51",
+   "sessionId": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-b4677bea-0d5c-4efe-b570-6a3d7a1eab69"
+  }
+ ]
+}
