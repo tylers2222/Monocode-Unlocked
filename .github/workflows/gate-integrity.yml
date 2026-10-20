@@ -5,10 +5,12 @@ name: gate-integrity
 # check that judges it. The branches filter keeps the job to pull requests into
 # tyler/main. That is safe only while no step runs pull request code: the PR head
 # is fetched as git objects for `git diff` and never checked out, installed, built
-# or sourced.
+# or sourced. The scripts it runs come from the default-branch checkout too.
+# A label change re-runs the gate, so a hand-set tier label is put back.
 on:
   pull_request_target:
     branches: [tyler/main]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
@@ -18,13 +20,47 @@ permissions:
   contents: read
 
 jobs:
+  tier:
+    name: gate/tier
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      tier: ${{ steps.tier.outputs.tier }}
+      nt: ${{ steps.tier.outputs.nt }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Tier the PR and set its tier label
+        id: tier
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: python3 scripts/process/tier.py "$PR" --apply
+
   integrity:
     name: gate/integrity
+    needs: tier
+    # A skipped required check counts as passed, so this job runs even when
+    # gate/tier fails, and its first step fails it.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
+      - name: gate/tier passed
+        if: ${{ needs.tier.result != 'success' }}
+        env:
+          RESULT: ${{ needs.tier.result }}
+        run: |
+          echo "integrity: gate/tier ended $RESULT"
+          exit 1
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0

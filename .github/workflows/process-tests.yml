@@ -1,0 +1,21 @@
+name: process-tests
+
+# Unit tests of the scripts/process/ rules that gate/integrity runs. They run the
+# PR's own copy, which gate/integrity (default-branch code) never does.
+on:
+  pull_request:
+    paths: [scripts/process/**]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: process/tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - run: python3 -m unittest discover -s scripts/process/tests
