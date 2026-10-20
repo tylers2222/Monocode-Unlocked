@@ -3,9 +3,9 @@
 The repository's Actions policy allows that event for that file only, and a
 pull_request_target workflow that checks out or runs PR code is the "pwn request"
 pattern. For each other workflow file the PR changes, its head version fails when:
-its on: names pull_request_target (read by workflow_on.on_events); its on: cannot be
-read; its on: block holds a backslash, a quoted key, an alias, an anchor or a tag (YAML
-can spell or pull in the event that way); or its text names the event outside a comment.
+its on: cannot be read (workflow_on.on_events returns None); its on: block holds a
+backslash, a quoted key, an alias, an anchor or a tag (YAML can spell or pull in the
+event that way); or its text names the event outside a comment.
 
 Usage: workflow_events.py <base-rev> <head-rev>
 Reads git objects only. Prints one ::error:: line per file and exits 1, or prints
@@ -38,13 +38,12 @@ def on_block(text):
 
 def problem(text):
     """Why a workflow other than gate-integrity.yml fails, or None."""
-    events = on_events(text)
-    if events is None:
+    if on_events(text) is None:
         return 'its on: is in a form the gate cannot read'
     block = on_block(text)
     if '\\' in block or QUOTED_KEY.search(block) or NODE_PROPERTY.search(QUOTED.sub('', block)):
         return 'its on: has an escape, a quoted key, an alias, an anchor or a tag'
-    if 'pull_request_target' in events or EVENT.search(COMMENT.sub('', text)):
+    if EVENT.search(COMMENT.sub('', text)):
         return 'it uses pull_request_target'
     return None
 
