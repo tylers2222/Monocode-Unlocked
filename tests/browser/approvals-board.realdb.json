@@ -183,7 +183,7 @@
         "decidedAt": 1792345860000,
         "note": "No. The Giga has the context; the board stays small.",
         "chosen": [],
-        "notSent": false
+        "undelivered": "removed"
       }
     },
     {
@@ -228,7 +228,7 @@
         "chosen": [
           "Also index (requested_by, status)"
         ],
-        "notSent": false
+        "undelivered": null
       }
     },
     {
@@ -260,7 +260,7 @@
         "decidedAt": 1792443240000,
         "note": null,
         "chosen": [],
-        "notSent": true
+        "undelivered": "waiting"
       }
     },
     {
@@ -445,7 +445,7 @@
         "chosen": [
           "Keep it"
         ],
-        "notSent": false
+        "undelivered": null
       }
     },
     {

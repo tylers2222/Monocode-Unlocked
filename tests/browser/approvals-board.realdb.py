@@ -13,9 +13,9 @@ OUT = ROOT / "tests/browser/approvals-board.realdb.json"
 NOW = int(datetime(2026, 10, 19, 22, 54, tzinfo=timezone.utc).timestamp() * 1000)
 MIN = 60_000
 SENDER = "approvals-board"
-DECIDE_RS_NOT_SENT = f"""EXISTS (SELECT 1 FROM mono_messages
-  WHERE from_session_id = '{SENDER}' AND request_id = approvals.id
-    AND status = 'dropped') AS not_sent"""
+# decide.rs UNDELIVERED: null with no dropped row, 0 when requeue resends it, 1 when the user removed it.
+DECIDE_RS_UNDELIVERED = f"""(SELECT notified_at IS NOT NULL FROM mono_messages
+  WHERE from_session_id = '{SENDER}' AND request_id = approvals.id AND status = 'dropped') AS removed"""
 
 rust = (ROOT / "src-tauri/src/approvals.rs").read_text()
 ddl = re.search(r'execute_batch\(\s*"(CREATE TABLE IF NOT EXISTS approvals.*?)",\s*\)', rust, re.S).group(1)
@@ -100,7 +100,7 @@ file_card(MONOCODE, "Bump Playwright to 1.49",
           "The 1.49 release fixes the WebKit focus bug two specs work around.",
           ["Two workarounds go"], ["A new browser download in CI"], "not_blocking", at(17, 9, 0),
           origin="MonoCode Fork Orchestrator", closed=("withdrawn", at(17, 16, 12), None, None))
-file_card(MONOCODE, "Store the Giga and Mono discussion on the card",
+unqueued = file_card(MONOCODE, "Store the Giga and Mono discussion on the card",
           "Keep the full back-and-forth between the Giga and the Mono on the card, so the board shows why it was filed.",
           ["The board explains itself"], ["The card grows without limit"], "not_blocking", at(18, 9, 30),
           origin="MonoCode Fork Orchestrator",
@@ -164,13 +164,22 @@ db.execute(
                'dropped', 'ok', ?, 'queue', ?, ?, ?)""",
     (not_sent, "0" * 64, SENDER, giga_id, giga_id, str(uuid.uuid4()), NOW - 100 * MIN, NOW - 120 * MIN, NOW - 100 * MIN),
 )
+# The user removed this decision from the Giga's queue (mono_messages drop_message sets notified_at).
+db.execute(
+    """INSERT INTO mono_messages (id, request_id, part, payload_hash, tool, from_session_id, to_mono_id,
+         addressed, body, body_chars, wanting_reply, intent, hop, status, gate_result, handled_by_session, delivery,
+         closed_at, notified_at, created_at, updated_at)
+       VALUES ('m_mnopqrstuvwx', ?, 0, ?, 'send_message', ?, ?, ?, 'The user decided approval card.', 31, 0, 'new', 0,
+               'dropped', 'ok', ?, 'queue', ?, ?, ?, ?)""",
+    (unqueued, "1" * 64, SENDER, giga_id, giga_id, str(uuid.uuid4()), at(18, 18, 0), at(18, 18, 0), at(18, 17, 51), at(18, 18, 0)),
+)
 db.commit()
 assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 assert db.execute("PRAGMA foreign_key_check").fetchall() == []
 
 db.row_factory = sqlite3.Row
 cards = []
-for row in db.execute(f"SELECT *, {DECIDE_RS_NOT_SENT} FROM approvals ORDER BY number"):
+for row in db.execute(f"SELECT *, {DECIDE_RS_UNDELIVERED} FROM approvals ORDER BY number"):
     if row["status"] == "open":
         status = {"state": "open"}
     elif row["status"] == "withdrawn":
@@ -178,7 +187,7 @@ for row in db.execute(f"SELECT *, {DECIDE_RS_NOT_SENT} FROM approvals ORDER BY n
     else:
         status = {"state": "decided", "verdict": row["status"], "decidedAt": row["decided_at"],
                   "note": row["decision_note"], "chosen": json.loads(row["chosen_options"] or "[]"),
-                  "notSent": bool(row["not_sent"])}
+                  "undelivered": None if row["removed"] is None else ("removed" if row["removed"] else "waiting")}
     cards.append({
         "id": row["id"], "number": row["number"], "projectPath": row["project_path"],
         "heading": row["heading"], "summary": row["summary"], "tradeoffs": json.loads(row["tradeoffs"]),
@@ -210,5 +219,6 @@ fixture = anonymize({"now": NOW, "monos": monos, "projects": projects, "approval
 OUT.write_text(json.dumps(fixture, indent=2, ensure_ascii=False) + "\n")
 print(f"monos {len(monos)}, projects {len(projects)}, cards {len(cards)}, "
       f"open {sum(c['status']['state'] == 'open' for c in cards)}, "
-      f"not sent {sum(c['status'].get('notSent', False) for c in cards)}, "
+      f"waiting {sum(c['status'].get('undelivered') == 'waiting' for c in cards)}, "
+      f"removed from the queue {sum(c['status'].get('undelivered') == 'removed' for c in cards)}, "
       f"filer removed {sum(c['requestedBy']['id'] is None for c in cards)}")
