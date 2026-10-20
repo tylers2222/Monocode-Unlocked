@@ -4,11 +4,11 @@
 #   mutation.sh rust <diff-file>   cargo mutants --in-diff on the changed Rust lines;
 #                                  more than MAX_MUTANTS fails at once (split the PR)
 #   mutation.sh ts <specs>         Stryker on the changed TypeScript lines; specs are
-#                                  mutation_targets.py's comma-separated path:start-end
+#                                  mutation_targets.py's comma-separated path:start-end;
+#                                  stryker_scope.py decides (one run per file)
 # The workflow's 55-minute step timeouts are the last bound: a timed-out step fails.
 set -euo pipefail
 MAX_MUTANTS=150
-STRYKER=9.6.1
 here=$(cd "$(dirname "$0")" && pwd)
 
 case ${1-} in
@@ -24,23 +24,19 @@ case ${1-} in
     "$CARGO_MUTANTS" mutants --no-config --in-diff "$2" --jobs 2 --timeout-multiplier 3
     ;;
   ts)
-    # The PR's tree, for its tests.
+    # The PR's tree, for its tests and source imports.
     npm ci --ignore-scripts
-    # Stryker in a tree the job owns, from the committed lockfile, so the PR's package.json
-    # (overrides, extra packages) cannot reach it. The command runner runs the PR's tests
-    # as a child process (vitest related: the tests that import a changed file), so no PR
-    # module ever loads in Stryker's own process.
+    # Stryker, its vitest runner and vitest in a tree the job owns, from the committed
+    # lockfile. The PR's node_modules/vitest then points at the job's vitest, so the PR's
+    # overrides and lockfile cannot change anything Stryker or vitest load.
     tools=$RUNNER_TEMP/stryker
     mkdir -p "$tools"
     cp "$here/stryker/package.json" "$here/stryker/package-lock.json" "$tools/"
     npm ci --prefix "$tools" --ignore-scripts --registry=https://registry.npmjs.org/
-    python3 "$here/stryker_scope.py" check "$tools/node_modules" "$STRYKER"
-    stryker=$tools/node_modules/@stryker-mutator/core/bin/stryker.js
-    echo "stryker $(node "$stryker" --version)"
-    config=$RUNNER_TEMP/stryker.config.json
-    python3 "$here/stryker_scope.py" config "$2" > "$config"
-    cat "$config"
-    node "$stryker" run "$config"
+    rm -rf node_modules/vitest
+    ln -s "$tools/node_modules/vitest" node_modules/vitest
+    echo "stryker $(node "$tools/node_modules/@stryker-mutator/core/bin/stryker.js" --version), vitest $(node "$tools/node_modules/vitest/vitest.mjs" --version)"
+    python3 "$here/stryker_scope.py" "$tools/node_modules" "$2"
     ;;
   *)
     echo "usage: mutation.sh rust <diff-file> | ts <specs>" >&2

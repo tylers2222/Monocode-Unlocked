@@ -1,9 +1,11 @@
 {
   "name": "gate-mutation-stryker",
   "private": true,
-  "description": "Stryker for gate/mutation, installed by the job from this lockfile outside the PR's package tree. It runs the PR's tests only as a child process (the command runner), so no PR module loads in Stryker's process. typescript is the version the repo locks; Stryker core imports it to rewrite tsconfig.json in its sandbox.",
+  "description": "Stryker and vitest for gate/mutation, installed by the job from this lockfile outside the PR's package tree. The job points the PR's node_modules/vitest at this vitest, so the PR's overrides and lockfile cannot change vitest, its runner plugin or anything they load. Versions are the ones the repo locks; Stryker core imports typescript to rewrite tsconfig.json in its sandbox.",
   "dependencies": {
     "@stryker-mutator/core": "9.6.1",
-    "typescript": "5.8.3"
+    "@stryker-mutator/vitest-runner": "9.6.1",
+    "typescript": "5.8.3",
+    "vitest": "3.2.7"
   }
 }
