@@ -49,6 +49,22 @@ export function workspaceTabWorktree(
   return cwd && cwd !== "~" ? cwd : null;
 }
 
+/** Where a tab belongs: its pin, else a leaf's pin, else its worktree. Pins
+ * map a tab or session id to the workspace it was opened or moved in. */
+export function tabWorkspace(
+  tab: WorkspaceTab,
+  sessions: readonly Pick<Session, "id" | "cwd" | "worktreeCwd">[],
+  pins: ReadonlyMap<string, string>,
+): string | null {
+  const pinnedTab = pins.get(tab.id);
+  if (pinnedTab) return pinnedTab;
+  for (const id of leafIds(tab.layout)) {
+    const pinned = pins.get(id);
+    if (pinned) return pinned;
+  }
+  return workspaceTabWorktree(tab, sessions);
+}
+
 /** Tabs without a working copy show in every worktree. */
 export function tabInWorktree(
   tab: WorkspaceTab,
