@@ -43,10 +43,14 @@ Line = collections.namedtuple('Line', 'kind text text_line')  # kind: '+', '-', 
 def multi_line_string_lines(source, path):
     """1-based numbers of the lines of a source file that are text of a multi-line Rust
     raw string or JS/TS template literal: they start inside one, or open one that ends
-    on a later line."""
+    on a later line. The scan does not parse comments, plain strings or regex literals,
+    so a stray backtick in one of them can swap inside and outside. A scan that ends
+    inside a string is such a case, and then every line counts, so a mistake can only
+    raise the tier."""
     opener = STRING_OPEN['.rs' if path.endswith('.rs') else '.ts']
     inside, closer = set(), None
-    for no, line in enumerate(source.splitlines(), 1):
+    lines = source.splitlines()
+    for no, line in enumerate(lines, 1):
         if closer:
             inside.add(no)
         pos = 0
@@ -62,7 +66,7 @@ def multi_line_string_lines(source, path):
             closer, pos = None, end.end()
         if closer:
             inside.add(no)
-    return inside
+    return set(range(1, len(lines) + 1)) if closer else inside
 
 
 def parse_diff(text, multi_line):
@@ -89,9 +93,12 @@ def parse_diff(text, multi_line):
 
 
 def tier(files, diff_text, multi_line=None):
-    """files: [{'path', 'additions'}] as the GitHub API lists them. multi_line: per
+    """files: [{'path', 'additions'}] as the GitHub API lists them. diff_text: the PR
+    diff, or None when GitHub gives none (then the strictest tier). multi_line: per
     source path, (old, new) multi_line_string_lines of its two versions, for the files
     that could be T1 (pure folders). Returns (tier, reasons)."""
+    if diff_text is None:
+        return 'T3', ['no diff from GitHub']
     lines = parse_diff(diff_text, multi_line or {})
     changed = lambda p: [l for l in lines.get(p, []) if l.kind in '+-']
     prod = [f['path'] for f in files if not TEST.search(f['path']) and not DOC.search(f['path'])]
@@ -155,11 +162,8 @@ def main(argv):
     pr, repo = argv[1], os.environ.get('GATE_REPO', 'tylers2222/Monocode-Unlocked')
     files = [json.loads(l) for l in gh('api', '--paginate', f'repos/{repo}/pulls/{pr}/files',
                                         '--jq', '.[] | {path: .filename, additions}').splitlines()]
-    diff = gh('pr', 'diff', pr, '-R', repo, check=False)
-    if files and not diff:
-        t, why = 'T3', ['GitHub gives no diff for this PR (over 20 000 lines or 300 files), so it gets the strictest tier']
-    else:
-        t, why = tier(files, diff, multi_line_sets(repo, pr, files))
+    diff = gh('pr', 'diff', pr, '-R', repo, check=False) or None
+    t, why = tier(files, diff, multi_line_sets(repo, pr, files) if diff else {})
     print(f'tier: {t}, {non_test_lines(files)} non-test lines added')
     for w in why:
         print(f'tier:   {w}')

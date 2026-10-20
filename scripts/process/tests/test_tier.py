@@ -2,6 +2,7 @@ import gzip
 import json
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -64,9 +65,37 @@ class StringText(unittest.TestCase):
         diff = one_file_diff(path, 2, ['-const R: &str = "x";', '+const R: &str = r#"Never merge without a review."#;'])
         self.assertEqual(T.tier(with_test(path), diff, {})[0], 'T2')
 
+    def test_mid_line_literal_of_40_characters_is_t2(self):
+        # handoff.ts:430 shape: the template starts mid-line, so only the 40+ branch sees it.
+        path = 'src/features/sessions/model/handoff.ts'
+        diff = one_file_diff(path, 430, ['-  const lead = `You are continuing a conversation from ${a}.`;',
+                                         '+  const lead = `You are continuing an existing conversation from ${a}.`;'])
+        self.assertEqual(T.tier(with_test(path), diff, {})[0], 'T2')
+
+    def test_quote_first_short_literal_is_t2(self):
+        diff = one_file_diff(PLAN, 252, ['-    "Never merge.",', '+    "Never merge alone.",'])
+        self.assertEqual(T.tier(with_test(PLAN), diff, {})[0], 'T2')
+
     def test_short_literal_in_code_stays_t1(self):
         diff = one_file_diff(PLAN, 9, ['-  return kind === "a";', '+  return kind === "b";'])
         self.assertEqual(T.tier(with_test(PLAN), diff, {})[0], 'T1')
+
+    def test_stray_backtick_fails_closed(self):
+        # monoHabits.ts:420 shape: a backtick in a regex, then a prompt template.
+        path = 'src/features/monos/model/rules.ts'
+        src = 'const quiet = /[`*.]/g;\nconst prompt = `You are the reviewer.\nNever merge.\n`;\nexport const n = 1;\n'
+        lines = T.multi_line_string_lines(src, path)
+        self.assertEqual(lines, {1, 2, 3, 4, 5}, 'a scan that ends inside a string marks the whole file')
+        diff = one_file_diff(path, 3, ['-Never merge.', '+Never merge without review.'])
+        self.assertEqual(T.tier(with_test(path), diff, {path: (lines, lines)})[0], 'T2')
+
+    def test_balanced_file_keeps_its_logic_t1(self):
+        path = 'src/features/monos/model/habits.ts'
+        src = 'const prompt = `Habit:\nrun it.\n`;\nexport function next(n: number) {\n  return n + 1;\n}\n'
+        lines = T.multi_line_string_lines(src, path)
+        self.assertEqual(lines, {1, 2, 3})
+        diff = one_file_diff(path, 5, ['-  return n + 1;', '+  return n + 2;'])
+        self.assertEqual(T.tier(with_test(path), diff, {path: (lines, lines)})[0], 'T1')
 
     def test_multi_line_string_lines(self):
         rust = 'const A: &str = r##"first\nsecond "quoted"\n"##;\nlet b = r#"one line"#;\nfn c() {}\n'
@@ -82,10 +111,26 @@ class Rules(unittest.TestCase):
         diff = one_file_diff(path, 25, ['-X = 1', '+X = 2'])
         self.assertEqual(T.tier(files, diff, {}), ('T3', ['gate:' + path]))
 
+    def test_no_diff_is_t3(self):
+        self.assertEqual(T.tier(with_test(PLAN), None, {}), ('T3', ['no diff from GitHub']))
+
     def test_pure_code_without_a_test_is_t2(self):
         diff = one_file_diff(PLAN, 9, ['-  return 1;', '+  return 2;'])
         self.assertEqual(T.tier([{'path': PLAN, 'additions': 1}], diff, {})[0], 'T2')
         self.assertEqual(T.tier(with_test(PLAN), diff, {})[0], 'T1')
+
+
+class Main(unittest.TestCase):
+    def test_main_reads_the_multi_line_sets(self):
+        path = 'src/features/monos/model/monoHabits.ts'
+        files = '\n'.join(json.dumps(f) for f in with_test(path))
+        diff = one_file_diff(path, 3, ['-Habit: run it.', '+Habit: run it now.'])
+        answers = lambda *args, check=True: files if args[0] == 'api' else diff
+        with mock.patch.object(T, 'gh', answers), \
+                mock.patch.object(T, 'multi_line_sets', lambda repo, pr, f: {path: ({3}, {3})}), \
+                mock.patch('builtins.print') as out:
+            T.main(['tier.py', '26'])
+        self.assertTrue(out.call_args_list[0].args[0].startswith('tier: T2'))
 
 
 class Labels(unittest.TestCase):
