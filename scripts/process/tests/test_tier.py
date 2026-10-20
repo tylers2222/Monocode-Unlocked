@@ -135,16 +135,42 @@ class Main(unittest.TestCase):
 
 class Labels(unittest.TestCase):
     def test_old_tier_label_is_replaced(self):
-        self.assertEqual(T.label_changes(['tier:T1', 'instance:2'], 'T3'), (['tier:T1'], ['tier:T3']))
+        self.assertEqual(T.label_changes(['tier:T1', 'instance:2'], 'T3', False), (['tier:T1'], ['tier:T3']))
 
     def test_current_label_needs_no_call(self):
-        self.assertEqual(T.label_changes(['tier:T3', 'process-fix'], 'T3'), ([], []))
+        self.assertEqual(T.label_changes(['tier:T3', 'process-fix'], 'T3', False), ([], []))
 
     def test_extra_tier_label_is_removed(self):
-        self.assertEqual(T.label_changes(['tier:T2', 'tier:T3'], 'T3'), (['tier:T2'], []))
+        self.assertEqual(T.label_changes(['tier:T2', 'tier:T3'], 'T3', False), (['tier:T2'], []))
 
     def test_t3_label_is_a_tier_label(self):
-        self.assertEqual(T.label_changes(['tier:T3'], 'T1'), (['tier:T3'], ['tier:T1']))
+        self.assertEqual(T.label_changes(['tier:T3'], 'T1', False), (['tier:T3'], ['tier:T1']))
+
+    def test_interrogate_label_follows_the_rule(self):
+        self.assertEqual(T.label_changes(['tier:T3'], 'T3', True), ([], ['needs-interrogate']))
+        self.assertEqual(T.label_changes(['tier:T3', 'needs-interrogate'], 'T3', False), (['needs-interrogate'], []))
+
+
+class Interrogate(unittest.TestCase):
+    def test_review_outliers_need_interrogate(self):
+        for rec in recorded():
+            if rec['n'] in (18, 103):
+                tier, why = run(rec)
+                self.assertTrue(T.needs_interrogate(tier, T.non_test_lines(rec['files']), why), rec['n'])
+
+    def test_t3_from_300_non_test_lines(self):
+        why = ['path:src/features/sessions/data/sessionStore.ts']
+        self.assertFalse(T.needs_interrogate('T3', 299, why))
+        self.assertTrue(T.needs_interrogate('T3', 300, why))
+
+    def test_t3_gate_or_concurrency_file_at_any_size(self):
+        self.assertTrue(T.needs_interrogate('T3', 5, ['gate:scripts/gate/integrity.sh']))
+        self.assertTrue(T.needs_interrogate('T3', 5, ['code:src-tauri/src/x.rs:Mutex']))
+        self.assertTrue(T.needs_interrogate('T3', 5, ['path:src-tauri/src/heavy_lock.rs']))
+        self.assertFalse(T.needs_interrogate('T3', 5, ['code:src/app/App.tsx:useState']))
+
+    def test_only_t3(self):
+        self.assertFalse(T.needs_interrogate('T2', 900, ['app logic: src/a.ts']))
 
 
 if __name__ == '__main__':

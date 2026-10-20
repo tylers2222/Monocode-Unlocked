@@ -7,8 +7,8 @@ text are behaviour, so a change to string text in a pure folder is T2 at least a
 never T1 (PR #116). The rules come from the 2026-10-20 process review, section 4b.
 
 Usage: tier.py <pr-number> [--apply]
-Prints the tier and its reasons. --apply makes tier:T<n> the PR's only tier label.
-GATE_REPO overrides the repository.
+Prints the tier and its reasons. --apply makes tier:T<n> the PR's only tier label and
+sets or removes needs-interrogate. GATE_REPO overrides the repository.
 """
 import collections
 import json
@@ -36,6 +36,10 @@ STRING_FILE = re.compile(r'\.(rs|[cm]?[jt]sx?)$')
 # holds a literal of 40+ characters, the length of a sentence of prose.
 STRING_LINE = re.compile(r'^\s*(["\'`]|b?r#+")|(?<!\w)b?r#+"|"[^"]{40,}"|\'[^\']{40,}\'|`[^`]{40,}`')
 TIER_LABEL = re.compile(r'^tier:T[123]$')
+INTERROGATE_LABEL = 'needs-interrogate'
+INTERROGATE_LINES = 300
+# A T3 reason that names a concurrency primitive or a lock or scheduler file.
+CONCURRENCY = re.compile(r'Mutex|RwLock|tokio::spawn|thread::spawn|AtomicU|flock|(?<![Cc]argo\.)(?<!-)lock\.|scheduler')
 
 Line = collections.namedtuple('Line', 'kind text text_line')  # kind: '+', '-', ' ' or '@'
 
@@ -132,6 +136,11 @@ def non_test_lines(files):
     return sum(f['additions'] for f in files if not TEST.search(f['path']) and not DOC.search(f['path']))
 
 
+def needs_interrogate(t, nt, why):
+    """Interrogate before review round 1: T3 with 300+ non-test lines, or T3 for a gate or concurrency file."""
+    return t == 'T3' and (nt >= INTERROGATE_LINES or any(w.startswith('gate:') or CONCURRENCY.search(w) for w in why))
+
+
 def gh(*args, check=True):
     run = subprocess.run(['gh', *args], capture_output=True, text=True)
     if check and run.returncode:
@@ -150,10 +159,12 @@ def multi_line_sets(repo, pr, files):
             for p in (f['path'] for f in files) if PURE_DIR.search(p) and STRING_FILE.search(p)}
 
 
-def label_changes(labels, t):
-    """(tier labels to remove, labels to add) so that tier:<t> is the PR's only tier label."""
-    want = f'tier:{t}'
-    return [l for l in labels if TIER_LABEL.match(l) and l != want], [] if want in labels else [want]
+def label_changes(labels, t, interrogate):
+    """(labels to remove, labels to add) so that tier:<t> is the PR's only tier label and
+    needs-interrogate is there exactly when interrogate is true."""
+    want = {f'tier:{t}'} | ({INTERROGATE_LABEL} if interrogate else set())
+    managed = [l for l in labels if TIER_LABEL.match(l) or l == INTERROGATE_LABEL]
+    return [l for l in managed if l not in want], sorted(want - set(labels))
 
 
 def main(argv):
@@ -165,14 +176,15 @@ def main(argv):
     diff = gh('pr', 'diff', pr, '-R', repo, check=False) or None
     t, why = tier(files, diff, multi_line_sets(repo, pr, files) if diff else {})
     nt = non_test_lines(files)
-    print(f'tier: {t}, {nt} non-test lines added')
+    interrogate = needs_interrogate(t, nt, why)
+    print(f'tier: {t}, {nt} non-test lines added' + (', needs interrogate before round 1' if interrogate else ''))
     for w in why:
         print(f'tier:   {w}')
     if os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
             out.write(f'tier={t}\nnt={nt}\n')
     if '--apply' in argv:
-        remove, add = label_changes(gh('api', f'repos/{repo}/issues/{pr}/labels', '--jq', '.[].name').splitlines(), t)
+        remove, add = label_changes(gh('api', f'repos/{repo}/issues/{pr}/labels', '--jq', '.[].name').splitlines(), t, interrogate)
         for old in remove:
             gh('api', '-X', 'DELETE', f'repos/{repo}/issues/{pr}/labels/{quote(old)}')
         for new in add:
