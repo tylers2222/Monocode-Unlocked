@@ -221,11 +221,11 @@ export function loadBootWorkspace(): Promise<BootWorkspace> {
       // behind, before any session it loads can start a turn.
       await invoke("control_window_booted").catch(console.error);
       const resumed = await loadResumedWorkspace();
-      const listed = await historyForCwd(
-        resumed?.projectCwd ?? hintedCwd,
-        hintedCwd,
-        historyHint,
-      );
+      const cwd = resumed?.projectCwd ?? hintedCwd;
+      const listed =
+        cwd && hintedCwd && sameProjectPath(cwd, hintedCwd)
+          ? await historyHint
+          : await listProjectHistory(cwd);
       return {
         resumed,
         history: listed?.rows ?? [],
@@ -246,16 +246,6 @@ async function listProjectHistory(
   } catch {
     return null;
   }
-}
-
-async function historyForCwd(
-  cwd: string | null | undefined,
-  hintedCwd: string | null | undefined,
-  hinted: Promise<{ cwd: string; rows: SessionSummary[] } | null>,
-): Promise<{ cwd: string; rows: SessionSummary[] } | null> {
-  if (!cwd || cwd === "~") return null;
-  if (hintedCwd && sameProjectPath(cwd, hintedCwd)) return hinted;
-  return listProjectHistory(cwd);
 }
 
 async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
