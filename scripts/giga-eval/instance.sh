@@ -92,7 +92,7 @@ cmd_start() {
       sandbox_checkpoint "$APP_DATA/monocode.db"
       sandbox_guard "$APP_DATA/monocode.db" || exit 1
     fi
-    local jailtmp envs profile="$EVAL_OUT/instance.sb" vars
+    local jailtmp envs profile="$EVAL_OUT/instance.sb"
     jailtmp="$(cat "$EVAL_OUT/instance.jailtmp" 2>/dev/null || true)"
     [[ "$jailtmp" != /private/tmp/giga-eval-jail.* ]] || rm -rf "$jailtmp"
     jailtmp="$(mktemp -d /private/tmp/giga-eval-jail.XXXXXX)"
@@ -100,9 +100,9 @@ cmd_start() {
     envs="$(sandbox_env "$jailtmp")"
     sandbox_env_ok "$envs" || exit 1
     sandbox_profile "$bin" "$jailtmp" "$profile"
-    sandbox_preflight "$profile" "$envs" "$bin" "$jailtmp" || exit 1
-    IFS=$'\n' read -r -d '' -a vars <<<"$envs" || true
-    jail=(env -i "${vars[@]}" sandbox-exec -f "$profile")
+    sandbox_launch "$profile" "$envs"
+    sandbox_preflight "$bin" "$jailtmp" || exit 1
+    jail=("${SANDBOX_LAUNCH[@]}")
   fi
   touch "$EVAL_OUT/instance.marker"
   # A fake-clock build stops at launch without its clock file. This one holds

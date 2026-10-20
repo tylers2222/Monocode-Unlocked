@@ -9,17 +9,24 @@
 # refuses to start the app on any database where a session is not on the
 # puppet, an automation is enabled, a -wal holds unread changes, or fx would
 # not resolve to the puppet. Then, around the app process:
-#   sandbox_env      the app starts from `env -i` with an allowlist; no
-#                    MONOCODE_*, token or SSH_AUTH_SOCK reaches it, so it
-#                    cannot drive the user's running MonoCode over localhost;
+#   sandbox_launch   the one prefix every sandboxed process starts with:
+#                    `env -i`, the allowlist from sandbox_env (fixed PATH; no
+#                    MONOCODE_*, token or SSH_AUTH_SOCK, so the app cannot
+#                    drive the user's running MonoCode over localhost), then
+#                    sandbox-exec with the profile;
 #   sandbox_home_ok  the temp HOME was made fresh in sandbox mode and links
 #                    nothing outside /tmp (no real login);
 #   sandbox_profile  sandbox-exec rules for the app and the processes it
 #                    execs: exec only of the app, node, the puppet,
-#                    /usr/bin/env and git; network only to localhost (no
-#                    DNS); writes only to the temp HOME, a fresh jail TMPDIR
-#                    and /dev, and never to the app bundle or the puppet's
-#                    dir. They do not cover work that launchd runs for the
+#                    /usr/bin/env and git; network only to localhost TCP and
+#                    to unix sockets under the temp HOME and the jail dir. The
+#                    app needs no other: in the approvals scenario it tries
+#                    only /private/var/run/mDNSResponder (DNS) and
+#                    /private/var/run/syslog, and passes with both refused.
+#                    Writes only to the temp HOME, a
+#                    fresh jail TMPDIR and /dev, and never to the app bundle,
+#                    the puppet's dir, or a parent of it that could be
+#                    renamed away. They do not cover work that launchd runs for the
 #                    app: WebKit's network process and apps opened through
 #                    NSWorkspace run outside the sandbox;
 #   sandbox_preflight  before every start, probes run inside the same env and
@@ -52,13 +59,16 @@ sandbox_checkpoint() {
   [[ ! -s "$1-wal" ]] || sqlite3 "$1" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null
 }
 
-# Where the app looks for fx (harness.rs `resolve_fx`), in its order. The app
-# takes the first that answers `--help` with acp; the puppet must be first.
+# The first executable where the app looks for fx (harness.rs `resolve_fx`),
+# in its order, by path only: nothing runs. It must be the puppet. (The app
+# also skips a candidate whose `--help` does not name acp; one after the
+# puppet could only run if the puppet failed, and the profile refuses its
+# exec.)
 sandbox_fx_first() {
   local h="$EVAL_HOME" c
   for c in "$h/.local/bin/fx" "$h/.fx/bin/fx" "$h/.npm-global/bin/fx" "$h/.cargo/bin/fx" "$h/n/bin/fx" \
     /opt/homebrew/bin/fx /usr/local/bin/fx /usr/bin/fx /snap/bin/fx; do
-    [[ -x "$c" ]] && "$c" --help 2>/dev/null | grep -q acp && { echo "$c"; return; }
+    [[ -f "$c" && -x "$c" ]] && { echo "$c"; return; }
   done
 }
 
@@ -93,10 +103,23 @@ sandbox_home_ok() {
   [[ -z "$bad" ]] || { log "temp HOME links outside /tmp:$bad"; return 1; }
 }
 
-# One NAME=value per line: the whole environment the sandboxed app gets.
+# One NAME=value per line: the whole environment the sandboxed app gets. PATH
+# is the puppet's dir, a dir holding only a `node` link (for the puppet's
+# `#!/usr/bin/env node`; node's own dir also holds real CLIs such as codex),
+# and /usr/bin:/bin, which has git. Never the caller's. Both dirs are outside
+# every path the profile lets the sandbox write.
 sandbox_env() {
+  mkdir -p "$EVAL_OUT/bin" && ln -sf "$(realpath "$(command -v node)")" "$EVAL_OUT/bin/node"
+  local path="$(dirname "$PUPPET_BIN"):$EVAL_OUT/bin:/usr/bin:/bin"
   printf '%s\n' "HOME=$EVAL_HOME" "CFFIXED_USER_HOME=$EVAL_HOME" "USER=$(id -un)" "LOGNAME=$(id -un)" \
-    "SHELL=/bin/zsh" "PATH=$PATH" "TMPDIR=$1/" "LANG=${LANG:-en_US.UTF-8}"
+    "SHELL=/bin/zsh" "PATH=$path" "TMPDIR=$1/" "LANG=${LANG:-en_US.UTF-8}"
+}
+
+# sandbox_launch <profile> <env lines>: sets SANDBOX_LAUNCH, the command
+# prefix of the preflight and of the app.
+sandbox_launch() {
+  local vars; IFS=$'\n' read -r -d '' -a vars <<<"$2" || true
+  SANDBOX_LAUNCH=(env -i "${vars[@]}" sandbox-exec -f "$1")
 }
 
 sandbox_env_ok() {
@@ -108,7 +131,8 @@ sandbox_git() { xcrun --find git 2>/dev/null || echo /usr/bin/git; }
 
 # sandbox_profile <app binary> <jail tmp> <out>: one rule per line.
 sandbox_profile() {
-  local app home bin; app="$(realpath "$1")"; home="$(realpath "$EVAL_HOME")"; bin="$home/.local/bin"
+  local app home bin jail; app="$(realpath "$1")"; home="$(realpath "$EVAL_HOME")"; bin="$home/.local/bin"
+  jail="$(realpath "$2")"
   cat >"$3" <<SB
 (version 1)
 (allow default)
@@ -116,47 +140,59 @@ sandbox_profile() {
 (allow process-exec (literal "$app") (literal "$(realpath "$(command -v node)")") (literal "$bin/fx") (literal "/usr/bin/env") (literal "/usr/bin/git") (literal "$(sandbox_git)"))
 (deny network-outbound)
 (allow network-outbound (remote ip "localhost:*"))
-(allow network-outbound (remote unix-socket))
-(deny network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))
+(allow network-outbound (remote unix-socket (subpath "$home")) (remote unix-socket (subpath "$jail")))
 (deny file-write*)
-(allow file-write* (subpath "$home") (subpath "$(realpath "$2")") (subpath "/dev"))
-(deny file-write* (subpath "$bin") (subpath "${app%/Contents/MacOS/*}"))
+(allow file-write* (subpath "$home") (subpath "$jail") (subpath "/dev"))
+(deny file-write* (subpath "$bin") (literal "$home/.local") (literal "$home") (subpath "${app%/Contents/MacOS/*}"))
 SB
 }
 
-# sandbox_preflight <profile> <env lines> <app binary> <jail tmp>: each probe
-# runs in the app's sandbox and env; any rule that does not hold fails the
-# start.
+# sandbox_preflight <app binary> <jail tmp>: each probe runs under
+# SANDBOX_LAUNCH; any rule that does not hold fails the start. The unix socket
+# it must not reach is a test listener outside the jail, not a real one.
 sandbox_preflight() {
-  local node want got missing envs; node="$(realpath "$(command -v node)")"
-  IFS=$'\n' read -r -d '' -a envs <<<"$2" || true
-  want="env= home=$EVAL_HOME connect=EPERM dns=fail real_home=EPERM tmp=EPERM user_tmp=EPERM puppet=EPERM app=EPERM
-zsh=EPERM jail=ok write_home=ok exec_node=ok"
-  got="$(env -i "${envs[@]}" sandbox-exec -f "$1" "$node" -e '
-    const [real, utmp, puppet, app, jail] = process.argv.slice(1);
-    const fs = require("fs"), net = require("net"), dns = require("dns"), cp = require("child_process");
+  local node want got missing sockdir listener i; node="$(realpath "$(command -v node)")"
+  sockdir="$(mktemp -d /private/tmp/giga-eval-sock.XXXXXX)"
+  "$node" -e 'require("net").createServer((c) => c.end()).listen(process.argv[1])' "$sockdir/s" &
+  listener=$!
+  for i in $(seq 1 40); do [[ -S "$sockdir/s" ]] && break; sleep 0.05; done
+  want="env= home=$EVAL_HOME connect=EPERM sock=EPERM sock_jail=ok real_home=EPERM tmp=EPERM user_tmp=EPERM
+puppet=EPERM app=EPERM rename_local=EPERM zsh=EPERM jail=ok write_home=ok exec_node=ok"
+  got="$("${SANDBOX_LAUNCH[@]}" "$node" -e '
+    const [real, utmp, puppet, app, jail, sock] = process.argv.slice(1);
+    const fs = require("fs"), net = require("net"), cp = require("child_process");
+    const home = process.env.HOME;
     const out = (k, v) => console.log(`${k}=${v}`);
     const write = (p, keep) => { try { fs.appendFileSync(p, ""); if (!keep) fs.unlinkSync(p); return "ok"; } catch (e) { return e.code; } };
+    const rename = (p) => { try { fs.renameSync(p, `${p}.moved`); fs.renameSync(`${p}.moved`, p); return "ok"; } catch (e) { return e.code; } };
     out("env", Object.keys(process.env).filter((k) => /^(MONOCODE_|SSH_AUTH_SOCK$)|TOKEN|SECRET|API_KEY|PASSWORD/.test(k)).join(","));
-    out("home", process.env.HOME);
+    out("home", home);
     out("real_home", write(`${real}/.giga-eval-preflight-${process.pid}`));
     out("tmp", write(`/private/tmp/giga-eval-preflight-${process.pid}`));
     out("user_tmp", write(`${utmp}/giga-eval-preflight-${process.pid}`));
     out("puppet", write(puppet, true));
     out("app", write(app, true));
+    out("rename_local", rename(`${home}/.local`));
     out("jail", write(`${jail}/preflight`));
-    out("write_home", write(`${process.env.HOME}/.giga-eval-preflight`));
+    out("write_home", write(`${home}/.giga-eval-preflight`));
     const pids = [process.pid];
     const run = (f, a) => { const r = cp.spawnSync(f, a); pids.push(r.pid); return r.error ? r.error.code : "ok"; };
     out("zsh", run("/bin/zsh", ["-c", "true"]));
     out("exec_node", run(process.execPath, ["-e", "0"]));
     out("pids", pids.filter(Boolean).join(","));
-    dns.lookup("example.com", (e) => out("dns", e ? "fail" : "ok"));
-    const s = net.connect({ host: "192.0.2.1", port: 9 });
-    const t = setTimeout(() => { out("connect", "timeout"); s.destroy(); }, 1500);
-    s.on("connect", () => { clearTimeout(t); out("connect", "ok"); s.destroy(); });
-    s.on("error", (e) => { clearTimeout(t); out("connect", e.code); });
-  ' "$REAL_HOME" "$(getconf DARWIN_USER_TEMP_DIR)" "$PUPPET_BIN" "$3" "$4" 2>&1 | sort)"
+    const connect = (k, to) => new Promise((done) => {
+      const s = net.connect(to);
+      const t = setTimeout(() => { out(k, "timeout"); s.destroy(); done(); }, 1500);
+      s.on("connect", () => { clearTimeout(t); out(k, "ok"); s.destroy(); done(); });
+      s.on("error", (e) => { clearTimeout(t); out(k, e.code); done(); });
+    });
+    const own = net.createServer((c) => c.end()).listen(`${jail}/preflight.sock`, async () => {
+      await Promise.all([connect("connect", { host: "192.0.2.1", port: 9 }), connect("sock", sock),
+        connect("sock_jail", `${jail}/preflight.sock`)]);
+      own.close();
+    });
+  ' "$REAL_HOME" "$(getconf DARWIN_USER_TEMP_DIR)" "$PUPPET_BIN" "$1" "$2" "$sockdir/s" 2>&1 | sort)"
+  kill "$listener" 2>/dev/null; wait "$listener" 2>/dev/null; rm -rf "$sockdir"
   grep '^pids=' <<<"$got" | cut -d= -f2 | tr , '\n' >>"$EVAL_OUT/preflight.pids"
   missing="$(comm -23 <(tr ' ' '\n' <<<"$want" | sort) <(echo "$got"))"
   [[ -z "$missing" ]] || { log "sandbox preflight failed: wanted $(paste -sd' ' - <<<"$missing"); got $(paste -sd' ' - <<<"$got")"; return 1; }
