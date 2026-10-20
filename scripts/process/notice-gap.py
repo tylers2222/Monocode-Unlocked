@@ -32,7 +32,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Iterable, Literal
 from zoneinfo import ZoneInfo
 
 SYDNEY = ZoneInfo("Australia/Sydney")
@@ -256,28 +256,35 @@ def quoted(prompt: str) -> str:
     return PLAIN.match(prompt).group(0)
 
 
-def asked(end: TurnEnd, sends: list[Send]) -> bool:
-    """False for the app's own continue, and when every readable send of one of the
-    turn's prompts (its opening prompt or a steer) left notifyOnComplete out."""
+def quotes(command: str, prompts: Iterable[str]) -> bool:
+    return any(len(opening) >= MIN_QUOTE and opening in command for opening in map(quoted, prompts))
+
+
+def asked(end: TurnEnd, sends: list[Send], session_prompts: tuple[str, ...]) -> bool:
+    """Whether the Orchestrator asked to be told when this turn ends.
+
+    A sessions.start asks by default. The app's own continue never asks. Otherwise
+    the sends that quote one of the turn's prompts decide. With none, the turn is
+    asked only when a send names the session but quotes no prompt of any of its
+    turns: the app keeps a command's first line only, so its prompt was cut off.
+    """
     if end.first:
         return True
     if not end.requested:
         return False
-    openings = [quoted(prompt) for prompt in end.prompts]
-    made = [
-        send.notify
-        for send in sends
-        if send.start <= end.at
-        and names(send.command, end.session)
-        and any(len(opening) >= MIN_QUOTE and opening in send.command for opening in openings)
-    ]
-    return not made or any(made)
+    named = [send for send in sends if send.start <= end.at and names(send.command, end.session)]
+    made = [send.notify for send in named if quotes(send.command, end.prompts)]
+    if made:
+        return any(made)
+    return any(not quotes(send.command, session_prompts) for send in named)
 
 
-def verdict(end: TurnEnd, notice: Notice | None, sends: list[Send], now: datetime) -> Verdict:
+def verdict(
+    end: TurnEnd, notice: Notice | None, sends: list[Send], session_prompts: tuple[str, ...], now: datetime
+) -> Verdict:
     if notice:
         return "LATE" if notice.at - end.at > LATE else "ok"
-    if not asked(end, sends):
+    if not asked(end, sends, session_prompts):
         return "not-asked"
     return "MISSING" if now - end.at > LATE else "pending"
 
@@ -298,12 +305,17 @@ def gaps(
             lines.setdefault(end, []).append(entry)
         else:
             unmatched.append(Gap(None, (entry,), None, "unmatched"))
+    prompts: dict[str, tuple[str, ...]] = {}
+    for end in ends:
+        prompts[end.session] = prompts.get(end.session, ()) + end.prompts
     rows = []
     for end in ends:
         if end.at < since and end not in lines:
             continue
         notice = notice_for(end, notices)
-        rows.append(Gap(end, tuple(lines.get(end, ())), notice, verdict(end, notice, sends, now)))
+        rows.append(
+            Gap(end, tuple(lines.get(end, ())), notice, verdict(end, notice, sends, prompts[end.session], now))
+        )
     return sorted(
         rows + unmatched,
         key=lambda gap: gap.end.at if gap.end else gap.lines[0].at,

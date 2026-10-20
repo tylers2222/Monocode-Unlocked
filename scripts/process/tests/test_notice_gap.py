@@ -127,7 +127,7 @@ class NoticeGap(unittest.TestCase):
         self.assertIs(notice_gap.match_end(entry, [other, named]), named)
 
     def test_each_turn_gets_one_row_whatever_the_number_of_lines(self):
-        turn = end(LANE_B, AT("10:00:00"), "head 1234567")
+        turn = end(LANE_B, AT("10:00:00"), "head 1234567", first=True)
         lines = notice_gap.parse_log(
             "2026-10-20 09:59 head 1234567 done\n2026-10-20 10:00 addendum for 1234567\n"
         )
@@ -137,14 +137,14 @@ class NoticeGap(unittest.TestCase):
     def test_late_means_more_than_ten_minutes(self):
         turn = end(LANE_B, AT("10:00:00"), first=True)
         notice = lambda after: notice_gap.Notice(turn.at + after, frozenset({(LANE_B, "Brief")}))
-        verdict = lambda after: notice_gap.verdict(turn, notice(after), [], AT("12:00:00"))
+        verdict = lambda after: notice_gap.verdict(turn, notice(after), [], turn.prompts, AT("12:00:00"))
         self.assertEqual(verdict(timedelta(minutes=10)), "ok")
         self.assertEqual(verdict(timedelta(minutes=10.01)), "LATE")
 
     def test_missing_means_no_notice_for_more_than_ten_minutes(self):
         turn = end(LANE_B, AT("10:00:00"), first=True)
-        self.assertEqual(notice_gap.verdict(turn, None, [], AT("10:10:00")), "pending")
-        self.assertEqual(notice_gap.verdict(turn, None, [], AT("10:10:00.600")), "MISSING")
+        self.assertEqual(notice_gap.verdict(turn, None, [], turn.prompts, AT("10:10:00")), "pending")
+        self.assertEqual(notice_gap.verdict(turn, None, [], turn.prompts, AT("10:10:00.600")), "MISSING")
 
     def test_a_notice_counts_for_the_turn_whose_prompt_it_quotes(self):
         # Lane A, 10-20: a queued follow-up started as the first turn ended, and
@@ -180,9 +180,9 @@ class NoticeGap(unittest.TestCase):
         unrelated = notice_gap.Send(
             AT("17:31:00"), f'sessions.send {LANE_B[-36:]} "notifyOnComplete":true,"prompt":"Queued for later"', True
         )
-        self.assertEqual(notice_gap.verdict(turn, None, [quiet, unrelated], AT("18:30:00")), "not-asked")
-        self.assertEqual(notice_gap.verdict(turn, None, [quiet], AT("18:30:00")), "not-asked")
-        self.assertEqual(notice_gap.verdict(turn, None, [quiet, steer], AT("18:30:00")), "MISSING")
+        self.assertEqual(notice_gap.verdict(turn, None, [quiet, unrelated], turn.prompts, AT("18:30:00")), "not-asked")
+        self.assertEqual(notice_gap.verdict(turn, None, [quiet], turn.prompts, AT("18:30:00")), "not-asked")
+        self.assertEqual(notice_gap.verdict(turn, None, [quiet, steer], turn.prompts, AT("18:30:00")), "MISSING")
         notice = notice_gap.Notice(AT("17:58:00"), frozenset({(LANE_B, "Also run the 20-run check")}))
         self.assertEqual(notice_gap.notice_for(turn, [notice]), notice)
 
@@ -196,8 +196,15 @@ class NoticeGap(unittest.TestCase):
         ]
         _, resumed = notice_gap.turn_ends(LANE_B, blocks())
         _, requested = notice_gap.turn_ends(LANE_B, blocks(appRequestId="b"))
-        self.assertEqual(notice_gap.verdict(resumed, None, [], AT("18:30:00")), "not-asked")
-        self.assertEqual(notice_gap.verdict(requested, None, [], AT("18:30:00")), "MISSING")
+        # Even with a send whose prompt the first line cut off, which keeps a requested turn asked.
+        cut = notice_gap.Send(AT("17:19:00"), f'S={LANE_B}; "$M" app sessions.send --json "$(jq -nc --arg p "$P"', False)
+        self.assertEqual(notice_gap.verdict(resumed, None, [cut], resumed.prompts, AT("18:30:00")), "not-asked")
+        asking = notice_gap.Send(
+            AT("17:19:00"),
+            f'sessions.send {LANE_B[-36:]} "notifyOnComplete":true,"prompt":"Continue from where you left off."',
+            True,
+        )
+        self.assertEqual(notice_gap.verdict(requested, None, [asking], requested.prompts, AT("18:30:00")), "MISSING")
 
     def test_a_notice_before_a_turn_ends_reports_an_earlier_turn_with_the_same_prompt(self):
         earlier = end(LANE_B, AT("10:00:00"), prompt="Continue from where you left off.")
@@ -211,14 +218,30 @@ class NoticeGap(unittest.TestCase):
         quiet = notice_gap.Send(
             AT("09:58:00"), f'sessions.send {LANE_B[-36:]} "prompt":"Read the brief and do all of it."', False
         )
-        self.assertEqual(notice_gap.verdict(first, None, [quiet], AT("10:30:00")), "MISSING")
+        self.assertEqual(notice_gap.verdict(first, None, [quiet], first.prompts, AT("10:30:00")), "MISSING")
 
     def test_a_notify_send_of_another_brief_with_the_same_opening_does_not_count(self):
         brief = "Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/process-fixes/briefs/"
         turn = end(LANE_B, AT("10:00:00"), prompt=f"{brief}fix-r2.md and do all of it.")
         other = notice_gap.Send(AT("08:00:00"), f'sessions.send {LANE_B[-36:]} "notifyOnComplete":true,"prompt":"{brief}fix-r1.md"', True)
         quiet = notice_gap.Send(AT("09:50:00"), f'sessions.send {LANE_B[-36:]} "prompt":"{brief}fix-r2.md and do all of it."', False)
-        self.assertEqual(notice_gap.verdict(turn, None, [other, quiet], AT("10:30:00")), "not-asked")
+        self.assertEqual(notice_gap.verdict(turn, None, [other, quiet], turn.prompts, AT("10:30:00")), "not-asked")
+
+    def test_a_queued_follow_up_no_orchestrator_send_quotes_is_not_asked(self):
+        # Lane C 10-21 01:41:33: a queued follow-up with an appRequestId whose prompt
+        # no Orchestrator send quotes; the earlier sends to lane C quote their own turns.
+        go = "Go. Do it now: the wrapper and the switch."
+        earlier = end(LANE_B, AT("01:30:00"), prompt=go)
+        follow_up = end(LANE_B, AT("01:42:52"), prompt="One more for M1, from the reviewer: no silent fallback.")
+        send = notice_gap.Send(AT("01:23:59"), f'sessions.send {LANE_B[-36:]} "prompt":"{go}"', False)
+        session_prompts = earlier.prompts + follow_up.prompts
+        self.assertEqual(notice_gap.verdict(follow_up, None, [send], session_prompts, AT("02:21:00")), "not-asked")
+        self.assertEqual(notice_gap.verdict(follow_up, None, [], session_prompts, AT("02:21:00")), "not-asked")
+
+    def test_a_send_whose_prompt_the_first_line_cut_off_keeps_the_turn_asked(self):
+        follow_up = end(LANE_B, AT("01:42:52"), prompt="One more for M1, from the reviewer: no silent fallback.")
+        cut = notice_gap.Send(AT("01:40:00"), f'S={LANE_B}; "$M" app sessions.send --json "$(jq -nc --arg p "$P"', False)
+        self.assertEqual(notice_gap.verdict(follow_up, None, [cut], follow_up.prompts, AT("02:21:00")), "MISSING")
 
     def test_reads_every_time_format_in_finished_log(self):
         entries = notice_gap.parse_log(
