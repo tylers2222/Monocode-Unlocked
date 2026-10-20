@@ -84,10 +84,14 @@ def report_problems(report, path):
     if entry is None:
         return [f'{path}: not in the Stryker report']
     mutants = entry['mutants']
-    if mutants and not any(mutant.get('coveredBy') for mutant in mutants):
-        return [f'{path}: no test covers it; add a test that runs the changed lines']
-    return [f"{path}:{mutant['location']['start']['line']} {mutant['mutatorName']} mutant is {mutant['status']}"
-            for mutant in mutants if mutant['status'] not in PASSING]
+    where = lambda mutant: f"{path}:{mutant['location']['start']['line']} {mutant['mutatorName']} mutant is {mutant['status']}"
+    # A `// Stryker disable` comment makes a mutant Ignored. The job never passes on a
+    # sample, so an equivalent mutant has to be rewritten away, not disabled.
+    ignored = [f'{where(mutant)} (Stryker disable is not accepted)' for mutant in mutants if mutant['status'] == 'Ignored']
+    tested = [mutant for mutant in mutants if mutant['status'] != 'Ignored']
+    if tested and not any(mutant.get('coveredBy') for mutant in tested):
+        return ignored + [f'{path}: no test covers it; add a test that runs the changed lines']
+    return ignored + [where(mutant) for mutant in tested if mutant['status'] not in PASSING]
 
 
 def stryker(stryker_js, config, name, capture):

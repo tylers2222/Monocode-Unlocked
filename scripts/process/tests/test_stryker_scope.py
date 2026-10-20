@@ -84,10 +84,22 @@ class ReportProblems(unittest.TestCase):
         self.assertEqual(S.report_problems(report({'src/add.ts': [mutant('Killed'), mutant('Timeout', 2)]}), 'src/add.ts'), [])
 
     def test_any_other_status_fails(self):
-        for status in ('Survived', 'NoCoverage', 'Ignored', 'RuntimeError', 'CompileError', 'Pending'):
+        for status in ('Survived', 'NoCoverage', 'RuntimeError', 'CompileError', 'Pending'):
             with self.subTest(status=status):
                 self.assertEqual(S.report_problems(report({'src/add.ts': [mutant('Killed'), mutant(status, 7)]}), 'src/add.ts'),
                                  [f'src/add.ts:7 ArithmeticOperator mutant is {status}'])
+
+    def test_a_stryker_disable_comment_is_not_accepted(self):
+        """The reviewer's probe pd: both mutants Ignored by `// Stryker disable`, covered or not.
+        Each fails as Ignored, not as an untested file."""
+        disabled = [mutant('Ignored', covered=()), mutant('Ignored', 2, covered=())]
+        expected = ['src/add.ts:1 ArithmeticOperator mutant is Ignored (Stryker disable is not accepted)',
+                    'src/add.ts:2 ArithmeticOperator mutant is Ignored (Stryker disable is not accepted)']
+        self.assertEqual(S.report_problems(report({'src/add.ts': disabled}), 'src/add.ts'), expected)
+        self.assertEqual(S.report_problems(report({'src/add.ts': [mutant('Killed'), mutant('Ignored', 2, covered=())]}), 'src/add.ts'),
+                         expected[1:], 'an uncovered Ignored mutant does not make a tested file read as untested')
+        self.assertEqual(S.report_problems(report({'src/add.ts': [mutant('NoCoverage', covered=()), mutant('Ignored', 2, covered=())]}), 'src/add.ts'),
+                         [expected[1], 'src/add.ts: no test covers it; add a test that runs the changed lines'])
 
     def test_r5_probe_an_override_that_fakes_every_kill_still_fails_on_the_untested_file(self):
         """Round 5's probe: PR code exits 1 whenever a mutant is active, so every mutant it
@@ -102,15 +114,21 @@ class ReportProblems(unittest.TestCase):
 
 
 # Stands in for stryker.js: a count config prints FAKE_COUNT mutants; a run config logs the
-# file it mutates and writes FAKE_REPORT as the JSON report.
+# file it mutates, writes FAKE_REPORT as the JSON report (none for FAKE_NO_REPORT) and exits
+# FAKE_EXIT. A count exits FAKE_COUNT_EXIT.
 FAKE_STRYKER = """
 const fs = require('fs');
 const config = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
 if (config.dryRunOnly) {
   console.log(`Instrumented 1 source file(s) with ${process.env.FAKE_COUNT} mutant(s)`);
+  process.exitCode = Number(process.env.FAKE_COUNT_EXIT);
 } else {
   fs.appendFileSync(process.env.FAKE_RUNS, config.mutate.join(',') + '\\n');
-  fs.writeFileSync(config.jsonReporter.fileName, process.env.FAKE_REPORT);
+  // Real Stryker writes no report for a file no test runs ("No tests were executed").
+  if (!config.mutate.some((spec) => spec.startsWith(process.env.FAKE_NO_REPORT + ':'))) {
+    fs.writeFileSync(config.jsonReporter.fileName, process.env.FAKE_REPORT);
+  }
+  process.exitCode = Number(process.env.FAKE_EXIT);
 }
 """
 
@@ -118,7 +136,7 @@ if (config.dryRunOnly) {
 class Cli(unittest.TestCase):
     """main() on a real job tree with a fake stryker.js."""
 
-    def run_cli(self, specs, count=2, files=None, extra=()):
+    def run_cli(self, specs, count=2, files=None, extra=(), no_report='', exit_code=0, count_exit=0):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root)
         for name in sorted(S.STRYKER_PACKAGES | set(extra)):
@@ -129,7 +147,8 @@ class Cli(unittest.TestCase):
         runs = root / 'runs.log'
         runs.touch()
         env = {**os.environ, 'RUNNER_TEMP': str(root), 'FAKE_COUNT': str(count), 'FAKE_RUNS': str(runs),
-               'FAKE_REPORT': json.dumps(report(files or {}))}
+               'FAKE_REPORT': json.dumps(report(files or {})), 'FAKE_NO_REPORT': no_report, 'FAKE_EXIT': str(exit_code),
+               'FAKE_COUNT_EXIT': str(count_exit)}
         run = subprocess.run([sys.executable, str(SCRIPT), str(root), specs], capture_output=True, text=True, env=env)
         return run.returncode, run.stdout, runs.read_text().split()
 
@@ -143,6 +162,24 @@ class Cli(unittest.TestCase):
         code, out, _ = self.run_cli('src/add.ts:1-1,src/lonely.ts:1-1', files=files)
         self.assertEqual(code, 1)
         self.assertIn('::error::src/lonely.ts: no test covers it', out)
+
+    def test_an_untested_file_with_no_report_fails_whatever_stryker_exits(self):
+        """Probes 1 and 3: real Stryker stops on an untested file with no report."""
+        for exit_code in (1, 0):
+            with self.subTest(exit_code=exit_code):
+                code, out, runs = self.run_cli('src/lonely.ts:1-1', no_report='src/lonely.ts', exit_code=exit_code)
+                self.assertEqual((code, runs), (1, ['src/lonely.ts:1-1']))
+                self.assertIn('::error::src/lonely.ts: Stryker wrote no report', out)
+
+    def test_a_clean_report_with_a_failed_stryker_exit_fails(self):
+        code, out, _ = self.run_cli('src/a.ts:1-1', files={'src/a.ts': [mutant('Killed')]}, exit_code=1)
+        self.assertEqual(code, 1)
+        self.assertIn('::error::src/a.ts: Stryker exited 1', out)
+
+    def test_a_failed_count_fails_before_any_run(self):
+        code, out, runs = self.run_cli('src/a.ts:1-1', count_exit=1)
+        self.assertEqual((code, runs), (1, []))
+        self.assertIn('::error::src/a.ts: the mutant count failed (exit 1)', out)
 
     def test_above_the_cap_fails_before_any_run(self):
         code, out, runs = self.run_cli('src/a.ts:1-1,src/b.ts:1-1', count=18)
