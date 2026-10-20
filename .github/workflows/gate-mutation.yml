@@ -1,0 +1,89 @@
+name: gate-mutation
+
+# gate/mutation: for a T3 PR, mutates only the lines the PR changed and fails when a
+# mutant survives; for T1 and T2 it passes at once. It runs the PR's own code on
+# pull_request, with no token permissions and no secrets. gate/integrity trusts its result
+# only from this file, on the exact head (scripts/process/merge_rule.py
+# mutation_result), and a PR that edits this file or scripts/process/ fails
+# gate/integrity as a gate edit. The mutation tools are pinned and installed by the job.
+on:
+  pull_request:
+    branches: [tyler/main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# The repository is public: the checkout and tier.py's read of the PR's files need no
+# token scope. Only the Tier step gets the token; no step that runs PR code has it.
+permissions: {}
+
+jobs:
+  mutation:
+    name: gate/mutation
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PR: ${{ github.event.pull_request.number }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      GATE_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Tier
+        id: tier
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/process/tier.py "$PR"
+
+      - name: Changed lines to mutate
+        id: targets
+        if: ${{ steps.tier.outputs.tier == 'T3' }}
+        run: |
+          merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          git diff "$merge_base" "$HEAD_SHA" > "$RUNNER_TEMP/pr.diff"
+          git diff --unified=0 "$merge_base" "$HEAD_SHA" | python3 scripts/process/mutation_targets.py | tee -a "$GITHUB_OUTPUT"
+
+      - id: rust-version
+        if: ${{ steps.targets.outputs.rust == 'yes' }}
+        run: echo "version=$(cat .github/rust-version)" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        if: ${{ steps.targets.outputs.rust == 'yes' }}
+        with:
+          toolchain: ${{ steps.rust-version.outputs.version }}
+
+      # A job-owned CARGO_HOME with a config the job writes, and a pinned cargo-mutants
+      # built from crates.io into a job-owned directory, called by its absolute path.
+      - name: Install cargo-mutants 27.1.0
+        if: ${{ steps.targets.outputs.rust == 'yes' }}
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo-home
+        run: |
+          mkdir -p "$CARGO_HOME"
+          printf '[net]\nretry = 5\n' > "$CARGO_HOME/config.toml"
+          cargo install cargo-mutants --version 27.1.0 --locked --root "$RUNNER_TEMP/tools"
+
+      # Step timeouts fail the step; gate/integrity reads any result but success as a failure.
+      - name: cargo mutants on the changed Rust lines
+        if: ${{ steps.targets.outputs.rust == 'yes' }}
+        timeout-minutes: 55
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo-home
+          CARGO_MUTANTS: ${{ runner.temp }}/tools/bin/cargo-mutants
+        run: |
+          bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
+          bash scripts/process/mutation.sh rust "$RUNNER_TEMP/pr.diff"
+
+      # TypeScript mutation testing (Stryker) lands with "Process fixes D4b". Until then a
+      # T3 change to TypeScript fails here, so it can never pass untested.
+      - name: TypeScript mutation (lands with D4b)
+        if: ${{ steps.targets.outputs.stryker != '' }}
+        run: |
+          echo "::error::changed TypeScript lines need Stryker, which lands with Process fixes D4b; gate/mutation fails until then"
+          exit 1

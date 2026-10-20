@@ -113,6 +113,13 @@ class Rules(unittest.TestCase):
         for diff in (None, ''):
             self.assertEqual(T.tier(with_test(PLAN), diff, set()), ('T3', ['no diff from GitHub']))
 
+    def test_mutation_tool_configs_are_gate_code(self):
+        for path in ('.cargo/config.toml', 'src-tauri/.cargo/mutants.toml', 'mutants.toml', 'stryker.config.mjs', 'stryker.conf.json'):
+            with self.subTest(path=path):
+                diff = one_file_diff(path, 1, ['-a = 1', '+a = 2'])
+                self.assertEqual(T.tier([{'path': path, 'additions': 1}], diff, set()), ('T3', ['gate:' + path]))
+        self.assertFalse(T.GATE_PATH.search('src/features/cargo/model/mutants.ts'), 'only the config files')
+
     def test_pure_code_without_a_test_is_t2(self):
         diff = one_file_diff(PLAN, 9, ['-  return 1;', '+  return 2;'])
         self.assertEqual(T.tier([{'path': PLAN, 'additions': 1}], diff, set())[0], 'T2')
@@ -163,23 +170,70 @@ class Main(unittest.TestCase):
         diff = one_file_diff(path, 3, ['-  return 1;', '+  return 2;'])
         self.assertTrue(self.run_main(diff, {path})[0].startswith('tier: T2'))
 
+    def test_main_without_a_diff_decides_interrogate_from_paths_and_size(self):
+        path = 'src/features/monos/model/monoHabits.ts'
+        files = '\n'.join(json.dumps(f) for f in [{'path': path, 'additions': 400}])
+        answers = lambda *args, check=True: files if args[0] == 'api' else ''
+        with mock.patch.object(T, 'gh', answers), mock.patch('builtins.print') as out:
+            T.main(['tier.py', '26'])
+        self.assertEqual(out.call_args_list[0].args[0], 'tier: T3, 400 non-test lines added, needs interrogate before round 1')
+
     def test_main_without_a_diff_is_t3(self):
         self.assertEqual(self.run_main('', set()), ['tier: T3, 1 non-test lines added', 'tier:   no diff from GitHub'])
 
 
 class Labels(unittest.TestCase):
     def test_old_tier_label_is_replaced(self):
-        self.assertEqual(T.label_changes(['tier:T1', 'instance:2'], 'T3'), (['tier:T1'], ['tier:T3']))
+        self.assertEqual(T.label_changes(['tier:T1', 'instance:2'], 'T3', False), (['tier:T1'], ['tier:T3']))
 
     def test_current_label_needs_no_call(self):
-        self.assertEqual(T.label_changes(['tier:T3', 'process-fix'], 'T3'), ([], []))
+        self.assertEqual(T.label_changes(['tier:T3', 'process-fix'], 'T3', False), ([], []))
 
     def test_extra_tier_label_is_removed(self):
-        self.assertEqual(T.label_changes(['tier:T2', 'tier:T3'], 'T3'), (['tier:T2'], []))
+        self.assertEqual(T.label_changes(['tier:T2', 'tier:T3'], 'T3', False), (['tier:T2'], []))
 
     def test_t3_label_is_a_tier_label(self):
-        self.assertEqual(T.label_changes(['tier:T3'], 'T1'), (['tier:T3'], ['tier:T1']))
+        self.assertEqual(T.label_changes(['tier:T3'], 'T1', False), (['tier:T3'], ['tier:T1']))
 
+    def test_interrogate_label_follows_the_rule(self):
+        self.assertEqual(T.label_changes(['tier:T3'], 'T3', True), ([], ['needs-interrogate']))
+        self.assertEqual(T.label_changes(['tier:T3', 'needs-interrogate'], 'T3', False), (['needs-interrogate'], []))
+
+
+class Interrogate(unittest.TestCase):
+    def test_review_outliers_need_interrogate(self):
+        for rec in recorded():
+            if rec['n'] in (18, 103):
+                tier, _ = run(rec)
+                busy = T.gate_or_concurrency(rec['files'], rec['diff'])
+                self.assertTrue(T.needs_interrogate(tier, T.non_test_lines(rec['files']), busy), rec['n'])
+
+    def test_t3_from_300_non_test_lines(self):
+        self.assertFalse(T.needs_interrogate('T3', 299, False))
+        self.assertTrue(T.needs_interrogate('T3', 300, False))
+        self.assertTrue(T.needs_interrogate('T3', 5, True))
+        self.assertFalse(T.needs_interrogate('T2', 900, True))
+
+    def test_concurrency_behind_another_t3_token(self):
+        # The first T3 token of each file is not a concurrency one, so the reasons do not show it.
+        cases = {
+            'src-tauri/src/commands/workers.rs': ['+#[tauri::command]', '+fn start(s: State<Mutex<Pool>>) {', '+    tokio::spawn(run());', '+}'],
+            'src-tauri/src/a.rs': ['+let db = rusqlite::Connection::open(p)?;', '+let shared = Arc::new(Mutex::new(db));'],
+        }
+        for path, lines in cases.items():
+            with self.subTest(path=path):
+                files, diff = [{'path': path, 'additions': len(lines)}], one_file_diff(path, 1, lines)
+                self.assertNotIn('Mutex', ' '.join(T.tier(files, diff, {})[1]))
+                self.assertTrue(T.gate_or_concurrency(files, diff))
+
+    def test_gate_and_lock_files_and_plain_code(self):
+        one = lambda path, line: ([{'path': path, 'additions': 1}], one_file_diff(path, 1, [line]))
+        self.assertTrue(T.gate_or_concurrency(*one('scripts/gate/integrity.sh', '+# x')))
+        self.assertTrue(T.gate_or_concurrency(*one('src-tauri/src/heavy_lock.rs', '+let a = 1;')))
+        self.assertFalse(T.gate_or_concurrency(*one('src/app/App.tsx', '+const [a, b] = useState(0);')))
+        self.assertFalse(T.gate_or_concurrency(*one('src/a.test.ts', '+new Mutex();')), 'test files do not count')
+        self.assertFalse(T.gate_or_concurrency(*one('src/features/x/ui/Panel.tsx', '+const [s] = useState(scheduler.next());')),
+                         'a lock or scheduler name in code is not a lock file')
 
 if __name__ == '__main__':
     unittest.main()

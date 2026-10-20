@@ -54,7 +54,8 @@ jobs:
       contents: read
       pull-requests: read
       checks: read
-      # The workflow file of the head's gate/mutation run (merge_rule.py trusts only one).
+      # The workflow file of the head's gate/mutation run: merge_rule.py trusts only
+      # .github/workflows/gate-mutation.yml, and a T3 head fails until that run succeeds.
       actions: read
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -72,6 +73,12 @@ jobs:
 
       - name: Integrity check (default-branch script, diff only)
         run: bash scripts/gate/integrity.sh "$BASE_SHA" "$HEAD_SHA"
+
+      # The Actions policy allows pull_request_target only for this file, and any other
+      # workflow with it could run PR code with a write token.
+      - name: Only gate-integrity.yml uses pull_request_target
+        if: ${{ !cancelled() }}
+        run: python3 scripts/process/workflow_events.py "$BASE_SHA" "$HEAD_SHA"
 
       # Each check below reads the PR live, so a re-run sees the current body and labels.
       - name: PR description (size, self-pass, file caps) and tiny-PR overlap warning
