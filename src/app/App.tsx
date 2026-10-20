@@ -11440,6 +11440,7 @@ function Workspace({
                   canSteerHarness(latest.harness),
                 steerBlocked: steerBlockReason(latest, prompt),
                 mono: isMonoSession(id),
+                queueStatus: latest.queueStatus,
               });
               if (plan === "send" && sessionDraftBlock(target))
                 throw new Error(

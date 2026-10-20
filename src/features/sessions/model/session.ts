@@ -340,8 +340,11 @@ export type QueuedMessage = {
   link?: TargetLink;
   /** Delivery failed; the message remains available to retry or edit. */
   error?: string;
-  /** MonoCode quit while this message waited; cleared when the queue resumes. */
-  pausedBy?: "quit";
+  /**
+   * Why the queue holds this message: MonoCode quit, or the turn it waited
+   * for failed. Cleared when the queue resumes.
+   */
+  pausedBy?: "quit" | "error";
 };
 
 export type MessageQueueStatus = "active" | "paused" | "resuming";

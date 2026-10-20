@@ -264,12 +264,38 @@ export function withoutPauseReason(
 
 export const QUIT_PAUSE_NOTICE = "Paused when MonoCode quit";
 
-/** Hold what is left of the queue. A new pause replaces the reason for an old one. */
-export function pauseQueue(session: Session): Session {
+/**
+ * Hold what is left of the queue. A new pause replaces the reason for an old
+ * one; `reason` marks a pause that lifts on its own (`resumeAfterFailedTurn`).
+ */
+export function pauseQueue(session: Session, reason?: "error"): Session {
   if (!session.queuedMessages?.length) return session;
   return {
     ...session,
     queueStatus: "paused",
+    queuedMessages: reason
+      ? session.queuedMessages.map((message) => ({
+          ...message,
+          pausedBy: reason,
+        }))
+      : withoutPauseReason(session.queuedMessages),
+  };
+}
+
+/**
+ * A new turn ends the pause a failed turn put on the queue: the provider
+ * takes turns again, so the queue sends after this turn, as Resume does.
+ * A pause the user or a quit made still waits for Resume.
+ */
+export function resumeAfterFailedTurn(session: Session): Session {
+  if (
+    session.queueStatus !== "paused" ||
+    !session.queuedMessages?.every((message) => message.pausedBy === "error")
+  )
+    return session;
+  return {
+    ...session,
+    queueStatus: "resuming",
     queuedMessages: withoutPauseReason(session.queuedMessages),
   };
 }
