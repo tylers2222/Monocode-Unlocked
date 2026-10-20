@@ -2,6 +2,7 @@
 # Build, launch, check and stop an isolated "MonoCode GigaEval" release instance.
 #
 #   instance.sh build <checkout> [label]   copy the checkout's working tree, build a release .app
+#                                          with cargo features $GIGA_EVAL_FEATURES (default fake-clock)
 #   instance.sh home [--fresh]             create the temp HOME (symlinks to real logins, no copies)
 #   instance.sh start [--fresh-home]       launch the last built .app under the temp HOME
 #   instance.sh lsof-check                 prove no open file under the real app data or ~/MonoCode
@@ -41,8 +42,10 @@ cmd_build() {
     (cd "$src" && npm ci --no-audit --no-fund) >"$logf" 2>&1 || die "npm ci failed, see $logf"
     echo "$lock_hash" >"$src/node_modules/.giga-eval-lock"
   fi
-  log "tauri build ($logf)"
-  (cd "$src" && CARGO_TARGET_DIR="$TARGET_DIR" npx tauri build --bundles app --config tauri.gigaeval.json) >>"$logf" 2>&1 \
+  local features="${GIGA_EVAL_FEATURES-fake-clock}"
+  log "tauri build, features '$features' ($logf)"
+  (cd "$src" && CARGO_TARGET_DIR="$TARGET_DIR" npx tauri build --bundles app --config tauri.gigaeval.json \
+    ${features:+--features "$features"}) >>"$logf" 2>&1 \
     || die "tauri build failed, see $logf"
   local built="$TARGET_DIR/release/bundle/macos/$EVAL_PRODUCT.app" dest="$EVAL_OUT/apps/$label/$EVAL_PRODUCT.app"
   [[ -d "$built" ]] || die "no bundle at $built"
@@ -80,6 +83,10 @@ cmd_start() {
   local app; app="$(cat "$EVAL_OUT/instance.app" 2>/dev/null)" || die "build first"
   local bin="$app/Contents/MacOS/monocode"
   touch "$EVAL_OUT/instance.marker"
+  # A fake-clock build stops at launch without its clock file. This one holds
+  # still; scripts/scenarios/app.sh writes its own and moves it.
+  local clock="$APP_DATA/fake-clock.json" now; now="$(date +%s)000"
+  [[ -f "$clock" ]] || { mkdir -p "$APP_DATA"; printf '{"uptime_ns":0,"monotonic_ns":0,"wall_ms":%s,"boot_wall_ms":%s}\n' "$now" "$now" >"$clock"; }
   # The launch cwd becomes a MonoCode project; case 4 uses it as the scratch project.
   local scratch="$EVAL_HOME/$SCRATCH_NAME"
   if [[ ! -d "$scratch/.git" ]]; then

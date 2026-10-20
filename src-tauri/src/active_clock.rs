@@ -20,10 +20,20 @@ use crate::session_store::SessionStore;
 /// sleeps and `monotonic_ns` does not; both restart at boot. `boot_wall_ms`
 /// is the wall time the computer booted.
 pub trait Clock {
-    fn uptime_ns(&self) -> u64;
-    fn monotonic_ns(&self) -> u64;
-    fn wall_ms(&self) -> i64;
-    fn boot_wall_ms(&self) -> i64;
+    /// All four clocks at one instant, so a launch or a tick never mixes
+    /// values from two readings.
+    fn now(&mut self) -> Reading;
+}
+
+/// One reading of the computer's clocks.
+/// `fake-clock.json` is one reading as JSON.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(any(feature = "fake-clock", test), derive(serde::Deserialize))]
+pub struct Reading {
+    pub uptime_ns: u64,
+    pub monotonic_ns: u64,
+    pub wall_ms: i64,
+    pub boot_wall_ms: i64,
 }
 
 /// How often the app's thread ticks.
@@ -71,9 +81,9 @@ impl<C: Clock> ActiveClock<C> {
     /// The app starts: the stored clock goes on from its row, the gap since
     /// the row's last write adds nothing and is logged as `reboot` (the
     /// computer booted after that write) or `app_down`.
-    fn launch(lease: Lease, conn: &Connection, clock: C) -> rusqlite::Result<Self> {
-        let wall = clock.wall_ms();
-        let boot = clock.boot_wall_ms();
+    fn launch(lease: Lease, conn: &Connection, mut clock: C) -> rusqlite::Result<Self> {
+        let now = clock.now();
+        let (wall, boot) = (now.wall_ms, now.boot_wall_ms);
         let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
         let stored: Option<(i64, i64)> = tx
             .query_row(
@@ -108,8 +118,8 @@ impl<C: Clock> ActiveClock<C> {
         let active_ns = u64::try_from(active_ms).unwrap_or(0) * NS_PER_MS;
         Ok(Self {
             _lease: lease,
-            uptime_ns: clock.uptime_ns(),
-            monotonic_ns: clock.monotonic_ns(),
+            uptime_ns: now.uptime_ns,
+            monotonic_ns: now.monotonic_ns,
             clock,
             active_ns,
             persisted_ns: active_ns,
@@ -120,8 +130,8 @@ impl<C: Clock> ActiveClock<C> {
     /// the monotonic clock moved further than uptime; writes the row every
     /// 5 s of active time and after a sleep.
     pub(crate) fn tick(&mut self, conn: &Connection) -> rusqlite::Result<()> {
-        let uptime = self.clock.uptime_ns();
-        let monotonic = self.clock.monotonic_ns();
+        let now = self.clock.now();
+        let (uptime, monotonic) = (now.uptime_ns, now.monotonic_ns);
         let awake = uptime.saturating_sub(self.uptime_ns);
         let slept = monotonic
             .saturating_sub(self.monotonic_ns)
@@ -130,7 +140,7 @@ impl<C: Clock> ActiveClock<C> {
         self.monotonic_ns = monotonic;
         self.active_ns += awake.min(MAX_STEP_NS);
         if slept >= SLEEP_MIN_NS {
-            let wall = self.clock.wall_ms();
+            let wall = now.wall_ms;
             conn.execute(
                 "INSERT INTO mono_downtime (start_wall_ms, end_wall_ms, cause, active_ms)
                  VALUES (?1, ?2, 'sleep', ?3)",
@@ -140,7 +150,7 @@ impl<C: Clock> ActiveClock<C> {
         if slept >= SLEEP_MIN_NS || self.active_ns - self.persisted_ns >= PERSIST_EVERY_NS {
             conn.execute(
                 "UPDATE mono_clock SET active_ms = ?1, last_wall_ms = ?2 WHERE id = 1",
-                params![self.active_ms(), self.clock.wall_ms()],
+                params![self.active_ms(), now.wall_ms],
             )?;
             self.persisted_ns = self.active_ns;
         }
@@ -184,15 +194,18 @@ pub(crate) fn start<C: Clock>(
 
 /// Starts the 1 s clock thread, beside `reminders::init`.
 pub(crate) fn init(app: &AppHandle) -> Result<(), String> {
-    let lock = app
+    let data = app
         .path()
         .app_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("scheduler.lock");
+        .map_err(|error| error.to_string())?;
+    #[cfg(not(feature = "fake-clock"))]
+    let clock = SystemClock;
+    #[cfg(feature = "fake-clock")]
+    let clock = fake::FileClock::open(data.join("fake-clock.json"))?;
     let started = start(
-        &lock,
+        &data.join("scheduler.lock"),
         &*app.state::<SessionStore>().lock_conn()?,
-        SystemClock,
+        clock,
     )?;
     let Some(mut clock) = started else {
         eprintln!("Another MonoCode process runs the active clock for this data folder");
@@ -217,9 +230,10 @@ pub(crate) fn init(app: &AppHandle) -> Result<(), String> {
 /// does not count suspend and `CLOCK_BOOTTIME` does (`clock_gettime(2)`).
 /// Windows: `QueryUnbiasedInterruptTime` leaves out sleep and hibernation,
 /// and `GetTickCount64` counts them.
+#[cfg(not(feature = "fake-clock"))]
 pub(crate) struct SystemClock;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(feature = "fake-clock")))]
 mod system {
     extern "C" {
         // libSystem; the `libc` crate does not bind it.
@@ -259,7 +273,7 @@ mod system {
     }
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(target_os = "macos"), not(feature = "fake-clock")))]
 mod system {
     fn read(clock: libc::clockid_t) -> u64 {
         let mut now = libc::timespec {
@@ -284,7 +298,7 @@ mod system {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "fake-clock")))]
 mod system {
     #[link(name = "kernel32")]
     extern "system" {
@@ -308,20 +322,107 @@ mod system {
     }
 }
 
+#[cfg(not(feature = "fake-clock"))]
 impl Clock for SystemClock {
-    fn uptime_ns(&self) -> u64 {
-        system::uptime_ns()
+    fn now(&mut self) -> Reading {
+        Reading {
+            uptime_ns: system::uptime_ns(),
+            monotonic_ns: system::monotonic_ns(),
+            wall_ms: crate::mono_messages::now_ms(),
+            boot_wall_ms: system::boot_wall_ms(),
+        }
+    }
+}
+
+/// GigaEval builds only (`instance.sh build`): the clocks come from
+/// `fake-clock.json` in the data folder, which `scripts/scenarios/app.sh`
+/// writes, so a run moves the active clock without waiting. Test builds
+/// compile it too, so CI's default-feature runs check it.
+#[cfg(any(feature = "fake-clock", test))]
+mod fake {
+    use std::path::PathBuf;
+
+    use super::Reading;
+
+    pub(crate) struct FileClock {
+        path: PathBuf,
+        last: Reading,
     }
 
-    fn monotonic_ns(&self) -> u64 {
-        system::monotonic_ns()
+    impl FileClock {
+        /// Fails when the file cannot be read, so a run with no clock file
+        /// stops at launch instead of ticking on a default.
+        pub(crate) fn open(path: PathBuf) -> Result<Self, String> {
+            Ok(Self {
+                last: read(&path)?,
+                path,
+            })
+        }
     }
 
-    fn wall_ms(&self) -> i64 {
-        crate::mono_messages::now_ms()
+    fn read(path: &PathBuf) -> Result<Reading, String> {
+        std::fs::read(path)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
+            .map_err(|error| format!("fake clock {}: {error}", path.display()))
     }
 
-    fn boot_wall_ms(&self) -> i64 {
-        system::boot_wall_ms()
+    impl super::Clock for FileClock {
+        /// The file once; a bad read keeps the last good reading.
+        fn now(&mut self) -> Reading {
+            match read(&self.path) {
+                Ok(now) => self.last = now,
+                Err(error) => eprintln!("{error}"),
+            }
+            self.last
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::super::Clock;
+        use super::FileClock;
+
+        // Defect: the clock file is read in the wrong unit, a launch with no
+        // file ticks on a made-up reading, or a bad write mid-run stops the
+        // clock instead of keeping the last good reading.
+        #[test]
+        fn a_file_clock_reads_the_driver_file_and_keeps_the_last_good_reading() {
+            let dir = std::env::temp_dir().join(format!("file-clock-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("fake-clock.json");
+            let _ = std::fs::remove_file(&path);
+            assert!(FileClock::open(path.clone()).is_err(), "no file");
+            let write = |up: u64, wall: i64| {
+                std::fs::write(
+                    &path,
+                    format!(
+                        r#"{{"uptime_ns":{up},"monotonic_ns":{},"wall_ms":{wall},"boot_wall_ms":7}}"#,
+                        up + 1_000_000
+                    ),
+                )
+                .unwrap();
+            };
+            write(1_000_000_000, 50);
+            let mut clock = FileClock::open(path.clone()).unwrap();
+            write(2_500_000_000, 60);
+            let now = clock.now();
+            assert_eq!(
+                (
+                    now.uptime_ns,
+                    now.monotonic_ns,
+                    now.wall_ms,
+                    now.boot_wall_ms
+                ),
+                (2_500_000_000, 2_501_000_000, 60, 7)
+            );
+            std::fs::write(&path, "{").unwrap();
+            assert_eq!(
+                clock.now().wall_ms,
+                60,
+                "a bad write keeps the last reading"
+            );
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
     }
 }
