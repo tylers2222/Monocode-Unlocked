@@ -8,7 +8,7 @@ name: gate-mutation
 # gate/integrity as a gate edit. The mutation tools are pinned and installed by the job.
 on:
   pull_request:
-    branches: [tyler/main]
+    branches: [tyler/main, 'lane-d/preview-*']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
