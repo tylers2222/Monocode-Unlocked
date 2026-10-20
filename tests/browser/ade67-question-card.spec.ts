@@ -291,7 +291,10 @@ for (const choice of ["No", "Skip"] as const) {
   }) => {
     const omp = await bridgeOmp(page, app);
     await startHabitRun(page, app);
-    // Tyler answered about 95 minutes after the run asked.
+    // Tyler answered about 95 minutes after the run asked. 61 minutes is
+    // enough: it is past the run's 60-minute work limit (HABIT_RUN_TIMEOUT_MS),
+    // where tyler/main stopped the run and skipped the question, and the next
+    // limit is the 12-hour wait on the user.
     await runChecks(page, 61 * MINUTE);
     await expect(
       card(page),
