@@ -3,8 +3,9 @@
 T3: gates (including scripts/process/, the gate's own logic), state paths (store,
 DB, IPC, hooks) or concurrency code. T1: docs, config and tests only, or pure
 model/script code with tests. T2: everything else. Agent rules, prompts and help
-text are behaviour, so a change to string text in a pure folder is T2 at least and
-never T1 (PR #116). The rules come from the 2026-10-20 process review, section 4b.
+text are behaviour, so a change in a pure-folder source file that can hold a
+multi-line string (a JS/TS backtick, a Rust raw string), or a changed line of string
+text, is T2 at least and never T1 (PR #116). The rules come from the 2026-10-20 process review, section 4b.
 
 Usage: tier.py <pr-number> [--apply]
 Prints the tier and its reasons. --apply makes tier:T<n> the PR's only tier label.
@@ -29,50 +30,26 @@ NOT_CODE_LINE = re.compile(r'^\s*(//|/\*|\*|#|"|\'|`|$)')
 T3_CODE = re.compile(r'\b(useState|useEffect|useLayoutEffect|useReducer|useRef|useSyncExternalStore|useCallback|useMemo)\b'
                      r'|\binvoke\(|\blisten\(|#\[tauri::command\]|rusqlite|\.execute\(|CREATE TABLE|ALTER TABLE|BEGIN IMMEDIATE'
                      r'|Mutex|RwLock|tokio::spawn|thread::spawn|AtomicU|setTimeout|setInterval|flock|clock_gettime')
-# Multi-line string openers: a Rust raw string r#"..."# and a JS/TS template literal.
-STRING_OPEN = {'.rs': re.compile(r'(?<!\w)b?r(#+)"'), '.ts': re.compile(r'(?<!\\)`()')}
+# A source file that can hold a multi-line string: a JS/TS file with a backtick anywhere
+# (a template literal), a Rust file with a raw string r"..." or r#"..."#. Any changed line
+# in such a file may be prompt text; no scan decides which, so this can only raise the tier.
+STRING_OPENER = {'.rs': re.compile(r'(?<!\w)b?r#*"'), '.ts': re.compile(r'`')}
 STRING_FILE = re.compile(r'\.(rs|[cm]?[jt]sx?)$')
 # A changed line that is string text: it starts with a quote, holds a raw string, or
 # holds a literal of 40+ characters, the length of a sentence of prose.
 STRING_LINE = re.compile(r'^\s*(["\'`]|b?r#+")|(?<!\w)b?r#+"|"[^"]{40,}"|\'[^\']{40,}\'|`[^`]{40,}`')
 TIER_LABEL = re.compile(r'^tier:T[123]$')
 
-Line = collections.namedtuple('Line', 'kind text text_line')  # kind: '+', '-', ' ' or '@'
+Line = collections.namedtuple('Line', 'kind text')  # kind: '+', '-', ' ' or '@'
 
 
-def multi_line_string_lines(source, path):
-    """1-based numbers of the lines of a source file that are text of a multi-line Rust
-    raw string or JS/TS template literal: they start inside one, or open one that ends
-    on a later line. The scan does not parse comments, plain strings or regex literals,
-    so a stray backtick in one of them can swap inside and outside. A scan that ends
-    inside a string is such a case, and then every line counts, so a mistake can only
-    raise the tier."""
-    opener = STRING_OPEN['.rs' if path.endswith('.rs') else '.ts']
-    inside, closer = set(), None
-    lines = source.splitlines()
-    for no, line in enumerate(lines, 1):
-        if closer:
-            inside.add(no)
-        pos = 0
-        while True:
-            if closer is None:
-                opened = opener.search(line, pos)
-                if not opened:
-                    break
-                closer, pos = re.compile(r'(?<!\\)' + re.escape(opened.group(0)[-1] + opened.group(1))), opened.end()
-            end = closer.search(line, pos)
-            if not end:
-                break
-            closer, pos = None, end.end()
-        if closer:
-            inside.add(no)
-    return set(range(1, len(lines) + 1)) if closer else inside
+def can_hold_multi_line_string(source, path):
+    return bool(STRING_OPENER['.rs' if path.endswith('.rs') else '.ts'].search(source))
 
 
-def parse_diff(text, multi_line):
-    """Per file, the hunk lines in order, each flagged when it is string text.
-    multi_line maps a path to the multi_line_string_lines of its old and new versions."""
-    files, cur, old_no, new_no = collections.defaultdict(list), None, 0, 0
+def parse_diff(text):
+    """Per file, the hunk lines in order."""
+    files, cur = collections.defaultdict(list), None
     for ln in text.splitlines():
         if ln.startswith('+++ '):
             cur = ln[6:] if ln.startswith('+++ b/') else None
@@ -80,26 +57,20 @@ def parse_diff(text, multi_line):
             continue
         elif ln.startswith('@@'):
             if cur:
-                old_no, new_no = (int(n) for n in re.match(r'@@ -(\d+)(?:,\d+)? \+(\d+)', ln).groups())
-                files[cur].append(Line('@', ln.split('@@')[-1], False))  # enclosing function name git prints
+                files[cur].append(Line('@', ln.split('@@')[-1]))  # enclosing function name git prints
         elif cur and ln[:1] in '+- ':
-            old_text, new_text = multi_line.get(cur, (set(), set()))
-            kind = ln[:1]
-            inside = old_no in old_text if kind == '-' else new_no in new_text
-            files[cur].append(Line(kind, ln[1:], inside or bool(STRING_LINE.search(ln[1:]))))
-            old_no += kind != '+'
-            new_no += kind != '-'
+            files[cur].append(Line(ln[:1], ln[1:]))
     return files
 
 
-def tier(files, diff_text, multi_line=None):
+def tier(files, diff_text, string_files=frozenset()):
     """files: [{'path', 'additions'}] as the GitHub API lists them. diff_text: the PR
-    diff, or None when GitHub gives none (then the strictest tier). multi_line: per
-    source path, (old, new) multi_line_string_lines of its two versions, for the files
-    that could be T1 (pure folders). Returns (tier, reasons)."""
-    if diff_text is None:
+    diff; empty or None when GitHub gives none (then the strictest tier). string_files:
+    the pure-folder source paths whose merge-base or head version can hold a multi-line
+    string (can_hold_multi_line_string). Returns (tier, reasons)."""
+    if not diff_text:
         return 'T3', ['no diff from GitHub']
-    lines = parse_diff(diff_text, multi_line or {})
+    lines = parse_diff(diff_text)
     changed = lambda p: [l for l in lines.get(p, []) if l.kind in '+-']
     prod = [f['path'] for f in files if not TEST.search(f['path']) and not DOC.search(f['path'])]
     why = []
@@ -117,7 +88,8 @@ def tier(files, diff_text, multi_line=None):
     if why:
         return 'T3', why
     code = [p for p in prod if not CONFIG.search(p)]
-    rules_text = [p for p in code if PURE_DIR.search(p) and STRING_FILE.search(p) and any(l.text_line for l in changed(p))]
+    rules_text = [p for p in code if PURE_DIR.search(p) and STRING_FILE.search(p) and changed(p)
+                  and (p in string_files or any(STRING_LINE.search(l.text) for l in changed(p)))]
     if rules_text:
         return 'T2', ['string text (agent rules, prompts, help) in: ' + ', '.join(rules_text[:3])]
     tests_touched = any(TEST.search(f['path']) for f in files)
@@ -139,15 +111,15 @@ def gh(*args, check=True):
     return run.stdout if run.returncode == 0 else ''
 
 
-def multi_line_sets(repo, pr, files):
-    """multi_line_string_lines at the merge base and the head, for the source files in
-    pure folders: only there can string text change the tier."""
+def string_files(repo, pr, files):
+    """The pure-folder source files whose merge-base or head version can hold a
+    multi-line string: only there can string text change the tier."""
     head, base = gh('api', f'repos/{repo}/pulls/{pr}', '--jq', '.head.sha + " " + .base.sha').split()
     merge_base = gh('api', f'repos/{repo}/compare/{base}...{head}', '--jq', '.merge_base_commit.sha').strip()
     show = lambda path, ref: gh('api', '-H', 'Accept: application/vnd.github.raw',
                                 f'repos/{repo}/contents/{quote(path)}?ref={ref}', check=False)
-    return {p: (multi_line_string_lines(show(p, merge_base), p), multi_line_string_lines(show(p, head), p))
-            for p in (f['path'] for f in files) if PURE_DIR.search(p) and STRING_FILE.search(p)}
+    return {p for p in (f['path'] for f in files) if PURE_DIR.search(p) and STRING_FILE.search(p)
+            and any(can_hold_multi_line_string(show(p, ref), p) for ref in (merge_base, head))}
 
 
 def label_changes(labels, t):
@@ -162,8 +134,8 @@ def main(argv):
     pr, repo = argv[1], os.environ.get('GATE_REPO', 'tylers2222/Monocode-Unlocked')
     files = [json.loads(l) for l in gh('api', '--paginate', f'repos/{repo}/pulls/{pr}/files',
                                         '--jq', '.[] | {path: .filename, additions}').splitlines()]
-    diff = gh('pr', 'diff', pr, '-R', repo, check=False) or None
-    t, why = tier(files, diff, multi_line_sets(repo, pr, files) if diff else {})
+    diff = gh('pr', 'diff', pr, '-R', repo, check=False)
+    t, why = tier(files, diff, string_files(repo, pr, files) if diff else frozenset())
     print(f'tier: {t}, {non_test_lines(files)} non-test lines added')
     for w in why:
         print(f'tier:   {w}')
