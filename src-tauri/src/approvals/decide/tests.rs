@@ -473,4 +473,12 @@ fn approvals_decide_emits_the_chat_notice_and_approvals_changed_once_per_decisio
         ("mono-message-notices", json!({ "sessions": ["chat-a2"] })),
         "the Giga's new chat is told about the decision it now holds"
     );
+    let store = app.state::<SessionStore>();
+    crate::session_store::set_archived(&store.lock_conn().unwrap(), "chat-a2", true).unwrap();
+    crate::session_store::unarchive(app.handle(), store.inner(), "chat-a2").unwrap();
+    assert_eq!(
+        heard.lock().unwrap()[3..],
+        [("mono-message-notices", json!({ "sessions": ["chat-a2"] }))],
+        "an unarchived chat is told about the decision it got back"
+    );
 }

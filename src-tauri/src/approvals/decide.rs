@@ -106,7 +106,7 @@ pub(crate) fn requeue(conn: &Connection, now: i64) -> rusqlite::Result<Notices> 
         .prepare(
             "UPDATE mono_messages SET status = 'delivered', handled_by_session = chat.id,
                delivery = 'queue', turn_id = NULL, slot_window = NULL, handle = NULL,
-               closed_at = NULL, notified_at = NULL, updated_at = ?2
+               closed_at = NULL, updated_at = ?2
              FROM (SELECT id AS mono, json_extract(data_json, '$.sessionId') AS id FROM monos) AS chat
              WHERE chat.mono = mono_messages.to_mono_id AND chat.id IS NOT NULL
                AND from_session_id = ?1 AND status = 'dropped' AND delivered_at IS NULL

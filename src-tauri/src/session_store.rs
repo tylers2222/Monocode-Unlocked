@@ -604,10 +604,21 @@ pub fn session_set_archived(
     if archived {
         crate::control::end_session(&app, &session_id, archive)
     } else {
-        archive(&*store.lock_conn()?)
-            .map(drop)
-            .map_err(|e| e.to_string())
+        unarchive(&app, &store, &session_id)
     }
+}
+
+/// The chat gets back the decisions its archive dropped, so a window that
+/// has it loaded is told to queue them.
+pub(crate) fn unarchive<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    store: &SessionStore,
+    session_id: &str,
+) -> Result<(), String> {
+    let notices =
+        set_archived(&*store.lock_conn()?, session_id, false).map_err(|e| e.to_string())?;
+    notices.emit(app);
+    Ok(())
 }
 
 #[tauri::command(async)]
