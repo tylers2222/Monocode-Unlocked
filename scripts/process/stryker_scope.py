@@ -1,20 +1,22 @@
-"""gate/mutation: checks the two package trees Stryker runs with.
+"""gate/mutation: checks the package tree Stryker runs from, and writes its config.
 
-Stryker and its vitest runner come from the job's own tree, installed from the
-committed scripts/process/stryker/package-lock.json, so a PR's package.json
-(overrides, extra @stryker-mutator packages) cannot touch them. The one package the
-job takes from the PR's tree is vitest, because the runner must load the same vitest
-instance the PR's tests import; it must be a published vitest from the npm registry.
+Stryker core comes from the job's own tree, installed from the committed
+scripts/process/stryker/package-lock.json, so a PR's package.json (overrides, extra
+@stryker-mutator packages) cannot touch it. Core runs the PR's tests only as a child
+process (the command runner), so no PR module loads in its process.
 
-Usage: stryker_scope.py <job node_modules> <PR node_modules> <pinned Stryker version>
-Prints one ::error:: line per problem and exits 1, or prints "stryker-scope: ok".
+Usage: stryker_scope.py check <job node_modules> <pinned Stryker version>
+         prints one ::error:: line per problem and exits 1, or prints "stryker-scope: ok"
+       stryker_scope.py config <specs>
+         prints the Stryker config for mutation_targets.py's comma-separated path:start-end
 """
 import json
+import re
+import shlex
 import sys
 from pathlib import Path
 
-STRYKER_PACKAGES = frozenset({'api', 'core', 'instrumenter', 'util', 'vitest-runner'})
-REGISTRY = 'https://registry.npmjs.org/'
+STRYKER_PACKAGES = frozenset({'api', 'core', 'instrumenter', 'util'})
 
 
 def stryker_scope_problems(entries, pinned):
@@ -30,25 +32,27 @@ def stryker_scope_problems(entries, pinned):
     return problems
 
 
-def vitest_problems(lock_entry, is_link):
-    """lock_entry: the PR tree's node_modules/.package-lock.json entry for vitest."""
-    if is_link or lock_entry is None or lock_entry.get('link'):
-        return ['the PR tree has no installed vitest, or it is a link']
-    if not str(lock_entry.get('resolved', '')).startswith(REGISTRY) or not lock_entry.get('integrity'):
-        return [f'the PR tree\'s vitest does not come from {REGISTRY} ({lock_entry.get("resolved")})']
-    return []
+def stryker_config(specs):
+    """Mutates only the changed lines. The command runner runs the tests that import a
+    changed file (vitest related) as a child process in Stryker's sandbox, so Stryker loads
+    no test-runner plugin and no PR module. A surviving mutant fails the run."""
+    mutate = specs.split(',')
+    files = list(dict.fromkeys(re.sub(r':\d+-\d+$', '', spec) for spec in mutate))
+    return {'testRunner': 'command', 'commandRunner': {'command': shlex.join(['node_modules/.bin/vitest', 'related', '--run', *files])},
+            'plugins': [], 'mutate': mutate, 'thresholds': {'high': 100, 'low': 100, 'break': 100}, 'concurrency': 2,
+            'coverageAnalysis': 'off', 'reporters': ['clear-text', 'progress']}
 
 
 def main(argv):
-    if len(argv) != 4:
-        sys.exit('usage: stryker_scope.py <job node_modules> <PR node_modules> <pinned version>')
-    job, pr, pinned = Path(argv[1]), Path(argv[2]), argv[3]
-    scope = job / '@stryker-mutator'
+    if argv[1:2] == ['config'] and len(argv) == 3:
+        print(json.dumps(stryker_config(argv[2])))
+        return 0
+    if argv[1:2] != ['check'] or len(argv) != 4:
+        sys.exit('usage: stryker_scope.py check <job node_modules> <pinned version> | config <specs>')
+    scope, pinned = Path(argv[2]) / '@stryker-mutator', argv[3]
     entries = [(d.name, json.loads((d / 'package.json').read_text()).get('version') if (d / 'package.json').exists() else None,
                 d.is_symlink()) for d in sorted(scope.iterdir())] if scope.is_dir() else []
-    lock = pr / '.package-lock.json'
-    packages = json.loads(lock.read_text()).get('packages', {}) if lock.exists() else {}
-    problems = stryker_scope_problems(entries, pinned) + vitest_problems(packages.get('node_modules/vitest'), (pr / 'vitest').is_symlink())
+    problems = stryker_scope_problems(entries, pinned)
     for problem in problems:
         print(f'::error::{problem}')
     print('stryker-scope: ' + (f'{len(problems)} problem(s)' if problems else 'ok'))

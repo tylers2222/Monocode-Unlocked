@@ -13,7 +13,6 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'stryker_scope.py'
 LOCK = Path(__file__).resolve().parents[1] / 'stryker' / 'package-lock.json'
 PIN = '9.6.1'
 CLEAN = [(name, PIN, False) for name in sorted(S.STRYKER_PACKAGES)]
-VITEST = {'version': '3.2.4', 'resolved': 'https://registry.npmjs.org/vitest/-/vitest-3.2.4.tgz', 'integrity': 'sha512-x'}
 
 
 class StrykerScopeProblems(unittest.TestCase):
@@ -33,53 +32,53 @@ class StrykerScopeProblems(unittest.TestCase):
         self.assertEqual(S.stryker_scope_problems(entries, PIN), ['@stryker-mutator/core is 9.0.0, not 9.6.1'])
 
     def test_a_missing_package_fails(self):
-        entries = [e for e in CLEAN if e[0] != 'vitest-runner']
-        self.assertEqual(S.stryker_scope_problems(entries, PIN), ['@stryker-mutator/vitest-runner is missing'])
+        entries = [e for e in CLEAN if e[0] != 'instrumenter']
+        self.assertEqual(S.stryker_scope_problems(entries, PIN), ['@stryker-mutator/instrumenter is missing'])
 
     def test_the_committed_lockfile_pins_the_same_set(self):
         packages = json.loads(LOCK.read_text())['packages']
         pinned = {path.split('/')[-1]: entry['version'] for path, entry in packages.items()
                   if path.startswith('node_modules/@stryker-mutator/') and path.count('/') == 2}
         self.assertEqual(pinned, {name: PIN for name in S.STRYKER_PACKAGES})
-        self.assertTrue(all(entry['resolved'].startswith(S.REGISTRY) and entry.get('integrity')
+        self.assertTrue(all(entry['resolved'].startswith('https://registry.npmjs.org/') and entry.get('integrity')
                             for path, entry in packages.items() if path))
-        self.assertNotIn('node_modules/vitest', packages, 'vitest comes from the PR tree, linked in by mutation.sh')
+        self.assertFalse([path for path in packages if 'vitest' in path], 'the PR\'s vitest runs only in a child process')
 
 
-class VitestProblems(unittest.TestCase):
-    def test_a_registry_vitest_passes(self):
-        self.assertEqual(S.vitest_problems(VITEST, False), [])
+class StrykerConfig(unittest.TestCase):
+    def test_the_command_runner_runs_the_related_tests_in_a_child_process(self):
+        config = S.stryker_config("src/a.ts:1-3,src/a.ts:9-9,src/b c'.ts:2-2")
+        self.assertEqual((config['testRunner'], config['plugins']), ('command', []), 'no plugin and no PR module in Stryker core')
+        self.assertEqual(config['commandRunner']['command'], "node_modules/.bin/vitest related --run src/a.ts 'src/b c'\"'\"'.ts'")
+        self.assertEqual(config['mutate'], ['src/a.ts:1-3', 'src/a.ts:9-9', "src/b c'.ts:2-2"])
+        self.assertEqual(config['thresholds']['break'], 100, 'one surviving mutant fails the run')
 
-    def test_a_missing_linked_or_non_registry_vitest_fails(self):
-        for entry, link in ((None, False), (VITEST, True), ({**VITEST, 'link': True}, False),
-                            ({**VITEST, 'resolved': 'file:evil'}, False), ({**VITEST, 'integrity': ''}, False)):
-            with self.subTest(entry=entry, link=link):
-                self.assertEqual(len(S.vitest_problems(entry, link)), 1)
+    def test_cli_prints_the_config(self):
+        run = subprocess.run([sys.executable, str(SCRIPT), 'config', 'src/a.ts:1-1'], capture_output=True, text=True)
+        self.assertEqual(json.loads(run.stdout), S.stryker_config('src/a.ts:1-1'))
 
 
 class Cli(unittest.TestCase):
-    """main() on real folders: the job tree's @stryker-mutator scope and the PR tree's lock."""
+    """main() on a real job tree's @stryker-mutator scope."""
 
     def tree(self, extra=None):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root)
-        job, pr = root / 'job', root / 'pr'
+        job = root / 'job'
         for name in sorted(S.STRYKER_PACKAGES | ({extra} if extra else set())):
             (job / '@stryker-mutator' / name).mkdir(parents=True)
             (job / '@stryker-mutator' / name / 'package.json').write_text(json.dumps({'version': PIN}))
-        (pr / 'vitest').mkdir(parents=True)
-        (pr / '.package-lock.json').write_text(json.dumps({'packages': {'node_modules/vitest': VITEST}}))
-        return job, pr
+        return job
 
-    def run_cli(self, job, pr):
-        return subprocess.run([sys.executable, str(SCRIPT), str(job), str(pr), PIN], capture_output=True, text=True)
+    def run_cli(self, job):
+        return subprocess.run([sys.executable, str(SCRIPT), 'check', str(job), PIN], capture_output=True, text=True)
 
     def test_clean_trees_pass(self):
-        run = self.run_cli(*self.tree())
+        run = self.run_cli(self.tree())
         self.assertEqual((run.returncode, run.stdout.strip()), (0, 'stryker-scope: ok'))
 
     def test_an_extra_package_in_the_job_tree_fails(self):
-        run = self.run_cli(*self.tree(extra='forge'))
+        run = self.run_cli(self.tree(extra='forge'))
         self.assertEqual(run.returncode, 1)
         self.assertIn('::error::@stryker-mutator/forge is not a package the job installs', run.stdout)
 

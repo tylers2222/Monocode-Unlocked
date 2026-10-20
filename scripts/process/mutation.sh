@@ -4,8 +4,7 @@
 #   mutation.sh rust <diff-file>   cargo mutants --in-diff on the changed Rust lines;
 #                                  more than MAX_MUTANTS fails at once (split the PR)
 #   mutation.sh ts <specs>         Stryker on the changed TypeScript lines; specs are
-#                                  mutation_targets.py's comma-separated path:start-end;
-#                                  static mutants are skipped (ignoreStatic)
+#                                  mutation_targets.py's comma-separated path:start-end
 # The workflow's 55-minute step timeouts are the last bound: a timed-out step fails.
 set -euo pipefail
 MAX_MUTANTS=150
@@ -25,26 +24,22 @@ case ${1-} in
     "$CARGO_MUTANTS" mutants --no-config --in-diff "$2" --jobs 2 --timeout-multiplier 3
     ;;
   ts)
-    # The PR's tree, for its tests and its vitest.
+    # The PR's tree, for its tests.
     npm ci --ignore-scripts
-    # Stryker and its vitest runner in a tree the job owns, from the committed lockfile,
-    # so the PR's package.json (overrides, extra packages) cannot reach them. The runner
-    # loads the PR's vitest through a link, so it and the PR's tests share one instance.
+    # Stryker in a tree the job owns, from the committed lockfile, so the PR's package.json
+    # (overrides, extra packages) cannot reach it. The command runner runs the PR's tests
+    # as a child process (vitest related: the tests that import a changed file), so no PR
+    # module ever loads in Stryker's own process.
     tools=$RUNNER_TEMP/stryker
     mkdir -p "$tools"
     cp "$here/stryker/package.json" "$here/stryker/package-lock.json" "$tools/"
-    npm ci --prefix "$tools" --ignore-scripts --legacy-peer-deps --registry=https://registry.npmjs.org/
-    python3 "$here/stryker_scope.py" "$tools/node_modules" "$PWD/node_modules" "$STRYKER"
-    ln -s "$PWD/node_modules/vitest" "$tools/node_modules/vitest"
+    npm ci --prefix "$tools" --ignore-scripts --registry=https://registry.npmjs.org/
+    python3 "$here/stryker_scope.py" check "$tools/node_modules" "$STRYKER"
     stryker=$tools/node_modules/@stryker-mutator/core/bin/stryker.js
     echo "stryker $(node "$stryker" --version)"
     config=$RUNNER_TEMP/stryker.config.json
-    SPECS=$2 node -e '
-      const mutate = process.env.SPECS.split(",");
-      const thresholds = { high: 100, low: 100, break: 100 };
-      console.log(JSON.stringify({ testRunner: "vitest", plugins: ["@stryker-mutator/vitest-runner"], mutate, thresholds,
-        concurrency: 2, coverageAnalysis: "perTest", ignoreStatic: true, reporters: ["clear-text", "progress"] }));
-    ' > "$config"
+    python3 "$here/stryker_scope.py" config "$2" > "$config"
+    cat "$config"
     node "$stryker" run "$config"
     ;;
   *)
