@@ -16,6 +16,8 @@ use crate::session_store::SessionStore;
 
 const NO_CHAT: &str = "filer_has_no_chat";
 
+const TOO_LONG: &str = "decision_too_long";
+
 macro_rules! sender {
     () => {
         "approvals-board"
@@ -62,10 +64,10 @@ fn deliver(
         .and_then(|row| row.chat)
         .ok_or(NO_CHAT)?;
     let body = decision_text(approval, decision);
-    require(
-        body.chars().count() <= Body::MAX_CHARS,
-        "the decision is too long to deliver; shorten the comment",
-    )?;
+    let chars = body.chars().count();
+    if chars > Body::MAX_CHARS {
+        return Err(format!("{TOO_LONG}:{chars}:{}", Body::MAX_CHARS));
+    }
     let message = MonoMessage {
         id: mono_messages::new_message_id(),
         request_id: RequestId::parse(&approval.id).ok_or("the card id is not a request id")?,

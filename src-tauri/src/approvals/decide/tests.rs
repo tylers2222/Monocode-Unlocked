@@ -135,7 +135,8 @@ fn each_decision_queues_once_to_the_chat_of_the_giga_that_filed_it() {
 
 // Defects: a card whose Giga was deleted cannot close, loses its manual
 // handling state or writes a message; or a decision that cannot reach
-// the Giga (no chat, too long for one message) closes the card anyway.
+// the Giga (no chat, too long for one message) closes the card anyway, or
+// a refused body does not report its length and the limit.
 #[test]
 fn decide_delivers_nothing_to_a_deleted_giga_and_refuses_what_it_cannot_deliver() {
     let store = SessionStore::open_in_memory().unwrap();
@@ -143,12 +144,45 @@ fn decide_delivers_nothing_to_a_deleted_giga_and_refuses_what_it_cannot_deliver(
     giga_with_chat(&conn, "giga-a", CHAT_A);
     giga(&conn, "giga-b", "Giga B");
     let long = filed(&conn, "giga-a", "Long", "[]");
+    let exact = filed(&conn, "giga-a", "Exact", "[]");
+    let over = filed(&conn, "giga-a", "Over", "[]");
     let chatless = filed(&conn, "giga-b", "No chat", "[]");
     let orphan = filed(&conn, "giga-a", "Orphan", "[]");
+    let delivered = |card: &Approval, note: &str| {
+        let decision = Decision {
+            verdict: Verdict::Rejected,
+            decided_at: 2,
+            note: Some(note.into()),
+            chosen: Vec::new(),
+            not_sent: false,
+        };
+        decision_text(card, &decision).chars().count()
+    };
+    let reject = |card: &Approval, note: String| {
+        decide(&conn, &card.id, Verdict::Rejected, Some(note), &[], 2)
+    };
+    let fill =
+        |card: &Approval, extra: usize| "x".repeat(Body::MAX_CHARS - delivered(card, "") + extra);
 
-    let note = Some("x".repeat(TEXT_MAX));
-    let error = decide(&conn, &long.id, Verdict::Rejected, note, &[], 2).unwrap_err();
-    assert!(error.starts_with("invalid_input"), "{error}");
+    let note = "x".repeat(TEXT_MAX);
+    assert_eq!(
+        reject(&long, note.clone()).map(drop),
+        Err(format!(
+            "decision_too_long:{}:{}",
+            delivered(&long, &note),
+            Body::MAX_CHARS
+        ))
+    );
+    assert_eq!(reject(&exact, fill(&exact, 0)).unwrap().1, naming(CHAT_A));
+    assert_eq!(
+        reject(&over, fill(&over, 1)).map(drop),
+        Err(format!(
+            "decision_too_long:{}:{}",
+            Body::MAX_CHARS + 1,
+            Body::MAX_CHARS
+        ))
+    );
+    assert_eq!(get(&conn, &over.id).unwrap(), over);
     assert_eq!(
         decide(&conn, &chatless.id, Verdict::Rejected, None, &[], 2),
         Err(NO_CHAT.into())
@@ -168,7 +202,7 @@ fn decide_delivers_nothing_to_a_deleted_giga_and_refuses_what_it_cannot_deliver(
     );
     assert!(matches!(closed.status, Status::Decided(_)));
     assert_eq!(told, Notices::default());
-    assert_eq!(messages(&conn), 0);
+    assert_eq!(messages(&conn), 1, "only the decision of exactly MAX_CHARS");
 }
 
 // Defects: a second decide overwrites the first, a withdrawn card can be
