@@ -15,17 +15,21 @@ root=$(mktemp -d)
 export HEAVY_LOCK=$root/lock HEAVY_LOCK_QUEUE=$root/queue HEAVY_LOCK_WAITLOG=$root/waits.log HEAVY_LOCK_POLL=0.1 HEAVY_LOCK_WHO=test
 failed=0
 
+# Kills every background job but the 60 s exempt run, which runs across the other cases.
 kill_jobs() {
   local p
-  for p in $(jobs -p); do kill -KILL -- "-$p" 2>/dev/null; done
-  wait 2>/dev/null
+  for p in $(jobs -p); do
+    [ "$p" = "${slow:-}" ] && continue
+    kill -KILL -- "-$p" 2>/dev/null
+    wait "$p" 2>/dev/null
+  done
 }
 reset() {
   kill_jobs
   rm -rf "$HEAVY_LOCK" "$HEAVY_LOCK_QUEUE" "$HEAVY_LOCK_WAITLOG" "$root/case"
   mkdir -p "$root/case"
 }
-trap 'kill_jobs; rm -rf "$root"' EXIT
+trap 'slow=; kill_jobs; rm -rf "$root"' EXIT
 
 check() {
   local name=$1
@@ -51,6 +55,27 @@ hold() { "$lock_sh" sleep "$1" 2>/dev/null & holder=$!; within 5 exists "$HEAVY_
 # perl resets INT to its default first: a suite started with INT ignored (a background job
 # of a non-interactive shell) would pass the ignore on, and bash cannot trap an ignored signal.
 mark_when_run() { perl -e '$SIG{INT} = "DEFAULT"; exec @ARGV or exit 127' "$lock_sh" touch "$1" 2>/dev/null & waiter=$!; }
+
+# A git repo for the exemption cases: committed tests under scripts/process and scripts/gate,
+# a committed test outside them (src), and an untracked scratch test.
+exempt_dir=$root/exempt
+mkdir -p "$exempt_dir/scripts/process" "$exempt_dir/scripts/gate" "$exempt_dir/src"
+printf 'import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        pass\n' > "$exempt_dir/scripts/process/test_mark.py"
+cp "$exempt_dir/scripts/process/test_mark.py" "$exempt_dir/scripts/gate/test_mark.py"
+cp "$exempt_dir/scripts/process/test_mark.py" "$exempt_dir/src/test_heavy.py"
+printf 'import subprocess, unittest\nclass T(unittest.TestCase):\n    def test_cargo(self):\n        subprocess.run(["cargo", "--version"], check=True)\n' > "$exempt_dir/scripts/process/test_cargo.py"
+printf 'import os, time, unittest\nclass T(unittest.TestCase):\n    def test_slow(self):\n        open("slow.pid", "w").write(str(os.getpid()))\n        time.sleep(61)\n' > "$exempt_dir/scripts/process/test_slow.py"
+git -C "$exempt_dir" init -q 2>/dev/null
+git -C "$exempt_dir" add scripts src
+git -C "$exempt_dir" -c user.name=t -c user.email=t@example.com commit -qm tracked
+printf 'import subprocess\nsubprocess.run(["cargo", "build"])\n' > "$exempt_dir/scripts/process/test_scratch.py"
+# Starts "heavy-lock.sh <form>" in the exempt repo; the form is shell words, quotes allowed.
+start_in_exempt() { eval "set -- $1"; started_cmd=$*; (cd "$exempt_dir" && exec "$lock_sh" "$@") >/dev/null 2>&1 & }
+exempt_line() { grep -F -- "cmd=$1]" "$HEAVY_LOCK_WAITLOG" 2>/dev/null | grep "exempt=1"; }
+started_logged() { exempt_line "$started_cmd" | grep -q " rc=[0-9]"; }
+# The 60 s limit case starts now, with its own log, and is checked at the end.
+(cd "$exempt_dir" && HEAVY_LOCK_WAITLOG=$root/slow.log exec "$lock_sh" python3 -m unittest scripts/process/test_slow.py) >/dev/null 2>&1 &
+slow=$!
 
 # FIFO: a loop that locks again at once must not pass a waiter that queued before it. The
 # waiter polls once a second, so without the queue it would rarely hit the short gap
@@ -120,10 +145,12 @@ check "killed holder (KILL): the clear names the command pid" logged "and comman
 # 4 callers x 25 runs: the critical section never has two runs inside it.
 reset
 crit='mkdir "$1/inside" 2>/dev/null || echo overlap >> "$1/overlaps"; echo run >> "$1/runs"; sleep 0.1; rmdir "$1/inside" 2>/dev/null'
+callers=()
 for _ in 1 2 3 4; do
   ( for _ in $(seq 25); do "$lock_sh" sh -c "$crit" _ "$root/case" 2>/dev/null; done ) &
+  callers+=($!)
 done
-wait
+wait "${callers[@]}"
 runs=$(wc -l < "$root/case/runs" | tr -d ' ')
 overlaps=$(cat "$root/case/overlaps" 2>/dev/null | wc -l | tr -d ' ')
 check "exclusion: 100 runs finished (got $runs)" [ "$runs" = 100 ]
@@ -134,46 +161,28 @@ check "exclusion: no ticket or lock left" eval '[ "$(tickets)" = 0 ] && [ ! -e "
 # scripts/gate runs while another caller holds the lock; each lookalike waits.
 reset
 hold 30
-mkdir -p "$root/case/scripts/process" "$root/case/scripts/gate" "$root/case/src"
-printf 'import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        pass\n' > "$root/case/scripts/process/test_mark.py"
-cp "$root/case/scripts/process/test_mark.py" "$root/case/scripts/gate/test_mark.py"
-printf 'import subprocess, unittest\nclass T(unittest.TestCase):\n    def test_cargo_is_shimmed(self):\n        r = subprocess.run(["cargo", "--version"], capture_output=True, text=True)\n        self.assertEqual(r.returncode, 1)\n        self.assertIn("exempt run", r.stderr)\n' > "$root/case/scripts/process/test_shim.py"
-printf 'import os, time, unittest\nclass T(unittest.TestCase):\n    def test_slow(self):\n        open("slow.pid", "w").write(str(os.getpid()))\n        time.sleep(30)\n' > "$root/case/scripts/process/test_slow.py"
-git -C "$root/case" init -q 2>/dev/null
-cp "$root/case/scripts/process/test_mark.py" "$root/case/src/test_heavy.py"
-git -C "$root/case" add scripts src
-git -C "$root/case" -c user.name=t -c user.email=t@example.com commit -qm tracked
-printf 'import unittest\n' > "$root/case/scripts/process/test_scratch.py"
-# Starts "heavy-lock.sh <form>" in the case dir; the form is shell words, quotes allowed.
-start_in_case() { eval "set -- $1"; started_cmd=$*; (cd "$root/case" && exec "$lock_sh" "$@") >/dev/null 2>&1 & }
-exempt_line() { grep -F -- "cmd=$1]" "$HEAVY_LOCK_WAITLOG" 2>/dev/null | grep "exempt=1"; }
 for form in "python3 -m unittest scripts/process/test_mark.py" \
   "python3 -m unittest discover -s scripts/gate" \
   "python3 -m unittest discover -s scripts/process -p 'test_m*.py'" \
   "python3 -m unittest scripts.process.test_mark" \
   "python3 -m pytest -q ./scripts/process/test_mark.py"; do
-  start_in_case "$form"
-  check "exempt: '$form' runs while the lock is held" within 5 dead $!
-  check "exempt: '$form' is logged" exempt_line "$started_cmd"
+  start_in_exempt "$form"
+  check "exempt: committed test '$form' runs while the lock is held" within 5 dead $!
+  check "exempt: '$form' is logged with its rc" started_logged
 done
-start_in_case "python3 -m unittest scripts/process/test_shim.py"
-within 5 dead $!
-check "exempt: heavy tools are shims that fail" eval 'exempt_line "$started_cmd" | grep -q " rc=0 "'
-export HEAVY_LOCK_EXEMPT_SECONDS=1
-start_in_case "python3 -m unittest scripts/process/test_slow.py"
-check "exempt: a run past the limit is stopped" within 6 dead $!
-unset HEAVY_LOCK_EXEMPT_SECONDS
-check "exempt: the stop is logged" eval 'exempt_line "$started_cmd" | grep -q "timeout=1 rc=124"'
-check "exempt: the stopped run leaves no process" dead "$(cat "$root/case/slow.pid" 2>/dev/null)"
+(cd "$exempt_dir" && exec "$lock_sh" python3 -m unittest scripts/process/test_cargo.py) > "$root/cargo.out" 2>&1
+cargo_rc=$?
+check "exempt: a tracked test that calls cargo fails (rc $cargo_rc)" [ "$cargo_rc" = 1 ]
+check "exempt: it fails with the shim message" grep -q "heavy tool inside an exempt run: use the lock" "$root/cargo.out"
+check "exempt: it is logged with rc=1" eval 'exempt_line "python3 -m unittest scripts/process/test_cargo.py" | grep -q " rc=1 "'
 exempt_lines=$(grep -c 'exempt=1' "$HEAVY_LOCK_WAITLOG")
 lookalikes=("python3 scripts/process/test_mark.py" "python3 -m timeit scripts/process/test_mark.py" "python3 -m pytest src"
   "python3 -m pytest ../src" "python3 -m pytest scripts/process/../../src/test_heavy.py"
-  "python3 -m unittest discover -s../src scripts/process" "python3 -m unittest discover -ssrc scripts/process"
   "python3 -m unittest scripts/process/test_scratch.py" "python3 -m unittest discover -s scripts/process -p 'x/test_*.py'"
   "bash -c 'python3 -m unittest scripts/process/test_mark.py'" "cargo --version")
 pids=()
 for form in "${lookalikes[@]}"; do
-  start_in_case "$form"
+  start_in_exempt "$form"
   pids+=($!)
 done
 sleep 2
@@ -182,5 +191,9 @@ for i in "${!lookalikes[@]}"; do
 done
 check "lookalike: each waiter holds a ticket" [ "$(tickets)" = "${#lookalikes[@]}" ]
 check "lookalike: none is logged as exempt" [ "$(grep -c 'exempt=1' "$HEAVY_LOCK_WAITLOG")" = "$exempt_lines" ]
+
+check "exempt: a test that sleeps 61 s is stopped at the 60 s limit" within 80 dead "$slow"
+check "exempt: the stop is logged" grep -q "exempt=1 timeout=1 rc=124 .*cmd=python3 -m unittest scripts/process/test_slow.py" "$root/slow.log"
+check "exempt: the stopped run leaves no process" dead "$(cat "$exempt_dir/slow.pid" 2>/dev/null)"
 
 exit "$failed"

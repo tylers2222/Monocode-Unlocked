@@ -16,15 +16,13 @@
 # when its pid is dead; a lock directory with no pid file counts as stale once it is 10 s
 # old. Every wait writes one line to $HEAVY_LOCK_WAITLOG.
 #
-# One fixed exemption runs without the lock (see exempt): light python3 -m unittest|pytest
-# runs on tracked files under scripts/process/ or scripts/gate/.
+# One fixed exemption runs without the lock (see light_job). Its code is the same as the
+# exemption block of the live projects/shared/briefs/heavy-lock.sh (General 2, binding).
 LOCK=${HEAVY_LOCK:-/tmp/monocode-heavy.lock}
 QUEUE=${HEAVY_LOCK_QUEUE:-/tmp/monocode-heavy.queue}
 WAITLOG=${HEAVY_LOCK_WAITLOG:-/tmp/monocode-heavy.waits.log}
 POLL=${HEAVY_LOCK_POLL:-2}
 STALE_SECONDS=10
-EXEMPT_SECONDS=${HEAVY_LOCK_EXEMPT_SECONDS:-60}
-SHIMS=${LOCK%.lock}-shims
 export CARGO_BUILD_JOBS=4
 
 instance() {
@@ -43,77 +41,64 @@ instance() {
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*" >> "$WAITLOG"; }
 
-tracked() { git ls-files --error-unmatch -- "$1" >/dev/null 2>&1; }
-
-# A path for the exemption: relative, scripts/process or scripts/gate or under them (as a
-# path, a pytest node id or a dotted module), and tracked by git in the cwd.
-light_path() {
-  local p=${1#./}
-  case "$p" in
-    scripts.process | scripts.process.* | scripts.gate | scripts.gate.*)
-      p=$(printf '%s' "$p" | tr . /)
-      tracked "$p" || tracked "$p.py" ;;
-    scripts/process | scripts/process/* | scripts/gate | scripts/gate/*) tracked "${p%%::*}" ;;
-    *) return 1 ;;
-  esac
+# Light-job exemption (General 2, 2026-10-20/21): run WITHOUT the lock only
+# `python3 -m unittest|pytest` whose every path argument is under scripts/process/
+# or scripts/gate/, relative, without .., and TRACKED by git at HEAD in the cwd
+# (at least one path). Exempt runs get a PATH whose first dir shims the heavy tools
+# (they exit 1), and a 60 s limit (the whole process group is killed). Each exempt
+# run logs one line with exempt=1. Everything else takes the lock.
+tracked() {
+  git ls-files --error-unmatch -- "$1" >/dev/null 2>&1 && return 0
+  [ -n "$(git ls-files -- "$1" 2>/dev/null | head -1)" ]
 }
-
-# True only for python3 -m unittest|pytest with at least one path, every path a light_path
-# and no argument containing "..". Flags and "discover" are skipped. The value of -p, -k or
-# --pattern must not contain "/". An attached start or top dir (-sDIR, -tDIR,
-# --start-directory=DIR, --top-level-directory=DIR) counts as a path.
-exempt() {
+light_job() {
   [ "$1" = python3 ] && [ "$2" = -m ] || return 1
-  case "$3" in unittest | pytest) ;; *) return 1 ;; esac
+  case "$3" in unittest|pytest) ;; *) return 1 ;; esac
   shift 3
-  local arg value kind next='' paths=0
+  local arg path paths=0 pattern_next=0
   for arg in "$@"; do
-    case "$arg" in *..*) return 1 ;; esac
-    kind=path value=$arg
-    if [ -n "$next" ]; then
-      next=''
-      kind=pattern
-    else
-      case "$arg" in
-        -p | -k | --pattern) next=1; continue ;;
-        -[pk]?* | --pattern=*) kind=pattern value=${arg#-?} value=${value#*=} ;;
-        -[st]?*) value=${arg#-?} ;;
-        --start-directory=* | --top-level-directory=*) value=${arg#*=} ;;
-        -* | discover) continue ;;
-      esac
+    if [ "$pattern_next" = 1 ]; then
+      pattern_next=0
+      case "$arg" in */*|*..*) return 1 ;; *) continue ;; esac
     fi
-    if [ "$kind" = pattern ]; then
-      case "$value" in */*) return 1 ;; esac
-    else
-      light_path "$value" || return 1
-      paths=$((paths + 1))
-    fi
+    case "$arg" in
+      -p|-k|--pattern) pattern_next=1; continue ;;
+      -*|discover) continue ;;
+    esac
+    case "$arg" in *..*|/*) return 1 ;; esac
+    path=${arg#./}
+    case "$path" in
+      scripts.process|scripts.process.*|scripts.gate|scripts.gate.*)
+        path=$(printf '%s' "$path" | tr . /)
+        tracked "$path" || tracked "$path.py" || return 1 ;;
+      scripts/process|scripts/process/*|scripts/gate|scripts/gate/*)
+        tracked "${path%%::*}" || return 1 ;;
+      *) return 1 ;;
+    esac
+    paths=$((paths + 1))
   done
-  [ "$paths" -gt 0 ]
+  [ "$paths" -ge 1 ]
 }
-
-# An exempt run: heavy tools on PATH are shims that fail, and the whole process group is
-# killed after $EXEMPT_SECONDS. One line with exempt=1 goes to the wait log.
-run_exempt() {
-  local tmp tool rc
-  if [ ! -x "$SHIMS/cargo" ]; then
-    tmp=$(mktemp -d "$SHIMS.XXXXXX")
+run_light_job() {
+  local shims tmp tool rc extra
+  shims=/tmp/monocode-heavy-shims
+  if [ ! -x "$shims/cargo" ]; then
+    tmp=$(mktemp -d /tmp/monocode-heavy-shims.XXXXXX)
     for tool in cargo rustc npx npm pnpm node bun playwright tauri stryker; do
       printf '#!/bin/sh\necho "heavy tool inside an exempt run: use the lock ($0)" >&2\nexit 1\n' > "$tmp/$tool"
       chmod 755 "$tmp/$tool"
     done
-    mv "$tmp" "$SHIMS" 2>/dev/null || rm -rf "$tmp"
+    mv "$tmp" "$shims" 2>/dev/null || rm -rf "$tmp"
   fi
-  PATH="$SHIMS:$PATH" perl -e '
-    my $limit = shift;
-    my $pid = fork // die "fork: $!";
+  PATH="$shims:$PATH" perl -e '
+    my $pid = fork; die "fork: $!" unless defined $pid;
     if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
     $SIG{ALRM} = sub { kill "TERM", -$pid; sleep 2; kill "KILL", -$pid; waitpid($pid, 0); exit 124 };
-    alarm $limit;
-    waitpid($pid, 0);
-    exit($? & 127 ? 128 + ($? & 127) : $? >> 8);' "$EXEMPT_SECONDS" "$@"
+    alarm 60; waitpid($pid, 0);
+    exit($? & 127 ? 128 + ($? & 127) : $? >> 8);' -- "$@"
   rc=$?
-  log "exempt=1$([ "$rc" = 124 ] && echo ' timeout=1') rc=$rc waiter=[$who cmd=$*]"
+  extra=""; [ "$rc" = 124 ] && extra=" timeout=1"
+  printf '%s exempt=1%s rc=%s waiter=[%s cmd=%s]\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$extra" "$rc" "$who" "$*" >> "$WAITLOG"
   exit "$rc"
 }
 
@@ -160,7 +145,7 @@ on_signal() {
 
 main() {
   who="${HEAVY_LOCK_WHO:-$(instance)} session=${MONOCODE_SESSION_ID:-${PWD##*/}} cwd=$PWD"
-  exempt "$@" && run_exempt "$@"
+  light_job "$@" && run_light_job "$@"
   cmd="$*"
   child=
   holder=
