@@ -1,114 +1,9 @@
 {
   "cards": {
-    "2a5bb0da-d956-4595-a4e0-48a8a88bbb1c": {
-      "createdAt": 1792493703147,
-      "heading": "Index approvals on (project_id, status) only",
-      "id": "2a5bb0da-d956-4595-a4e0-48a8a88bbb1c",
-      "links": [],
-      "number": 3,
-      "options": [
-        {
-          "description": null,
-          "label": "Index (project_id, status) only",
-          "recommended": false
-        },
-        {
-          "description": null,
-          "label": "Also index (requested_by, status)",
-          "recommended": false
-        }
-      ],
-      "origin": null,
-      "projectPath": "/Users/test/MonoCode",
-      "requestedBy": {
-        "id": "d79d140b-66e7-4844-900d-5719c2663344",
-        "name": "Monocode General"
-      },
-      "status": {
-        "chosen": [
-          "Also index (requested_by, status)"
-        ],
-        "decidedAt": 1792493703151,
-        "notSent": false,
-        "note": "Take option 2 as well, then file it again with the query plan.",
-        "state": "decided",
-        "verdict": "changes_requested"
-      },
-      "summary": "Index approvals on (project_id, status) only Filed for the A·7 chat line.",
-      "tradeoffs": {
-        "cons": [
-          "One more page"
-        ],
-        "pros": [
-          "One place to decide"
-        ]
-      },
-      "urgency": "not_blocking"
-    },
-    "57cab540-1218-4451-9ee3-2afdd5d02521": {
-      "createdAt": 1792493703147,
-      "heading": "Bump Playwright to 1.49",
-      "id": "57cab540-1218-4451-9ee3-2afdd5d02521",
-      "links": [],
-      "number": 4,
-      "options": [],
-      "origin": null,
-      "projectPath": "/Users/test/MonoCode",
-      "requestedBy": {
-        "id": "d79d140b-66e7-4844-900d-5719c2663344",
-        "name": "Monocode General"
-      },
-      "status": {
-        "state": "withdrawn",
-        "withdrawnAt": 1792493703148
-      },
-      "summary": "Bump Playwright to 1.49 Filed for the A·7 chat line.",
-      "tradeoffs": {
-        "cons": [
-          "One more page"
-        ],
-        "pros": [
-          "One place to decide"
-        ]
-      },
-      "urgency": "not_blocking"
-    },
-    "8b810e74-b5b8-456d-bbca-63d3ddfc60fa": {
-      "createdAt": 1792493703147,
-      "heading": "Keep CSV export in v1",
-      "id": "8b810e74-b5b8-456d-bbca-63d3ddfc60fa",
-      "links": [],
-      "number": 5,
-      "options": [],
-      "origin": null,
-      "projectPath": "/Users/test/MonoCode",
-      "requestedBy": {
-        "id": null,
-        "name": "Modelist General"
-      },
-      "status": {
-        "chosen": [],
-        "decidedAt": 1792493703152,
-        "notSent": false,
-        "note": null,
-        "state": "decided",
-        "verdict": "approved"
-      },
-      "summary": "Keep CSV export in v1 Filed for the A·7 chat line.",
-      "tradeoffs": {
-        "cons": [
-          "One more page"
-        ],
-        "pros": [
-          "One place to decide"
-        ]
-      },
-      "urgency": "not_blocking"
-    },
-    "d9ce5eec-f045-4960-9739-72d9ac4000be": {
-      "createdAt": 1792493703147,
+    "46ad24cf-4318-4916-8845-3798cf058b22": {
+      "createdAt": 1792520252164,
       "heading": "Wait for PR #109 before the approvals tool is built?",
-      "id": "d9ce5eec-f045-4960-9739-72d9ac4000be",
+      "id": "46ad24cf-4318-4916-8845-3798cf058b22",
       "links": [],
       "number": 1,
       "options": [
@@ -133,10 +28,10 @@
         "chosen": [
           "Wait for #109, then build S2 on its caller identity"
         ],
-        "decidedAt": 1792493703149,
-        "notSent": false,
+        "decidedAt": 1792520252166,
         "note": "Fine. Ask MonoCode 2 to put #109 first in its queue.",
         "state": "decided",
+        "undelivered": null,
         "verdict": "approved"
       },
       "summary": "Wait for PR #109 before the approvals tool is built? Filed for the A·7 chat line.",
@@ -150,10 +45,42 @@
       },
       "urgency": "not_blocking"
     },
-    "facd18d2-093f-42ea-a7f6-cc720cabf06f": {
-      "createdAt": 1792493703147,
+    "761c5d2d-bd36-41db-9bf2-2b85f163bd9c": {
+      "createdAt": 1792520252164,
+      "heading": "Keep CSV export in v1",
+      "id": "761c5d2d-bd36-41db-9bf2-2b85f163bd9c",
+      "links": [],
+      "number": 5,
+      "options": [],
+      "origin": null,
+      "projectPath": "/Users/test/MonoCode",
+      "requestedBy": {
+        "id": null,
+        "name": "Modelist General"
+      },
+      "status": {
+        "chosen": [],
+        "decidedAt": 1792520252169,
+        "note": null,
+        "state": "decided",
+        "undelivered": null,
+        "verdict": "approved"
+      },
+      "summary": "Keep CSV export in v1 Filed for the A·7 chat line.",
+      "tradeoffs": {
+        "cons": [
+          "One more page"
+        ],
+        "pros": [
+          "One place to decide"
+        ]
+      },
+      "urgency": "not_blocking"
+    },
+    "9cce1427-72da-49fa-a2d1-742beafd890d": {
+      "createdAt": 1792520252164,
       "heading": "Store the Giga and Mono discussion on the card",
-      "id": "facd18d2-093f-42ea-a7f6-cc720cabf06f",
+      "id": "9cce1427-72da-49fa-a2d1-742beafd890d",
       "links": [],
       "number": 2,
       "options": [],
@@ -165,13 +92,86 @@
       },
       "status": {
         "chosen": [],
-        "decidedAt": 1792493703150,
-        "notSent": false,
+        "decidedAt": 1792520252167,
         "note": "No. The Giga has the context; the board stays small.",
         "state": "decided",
+        "undelivered": null,
         "verdict": "rejected"
       },
       "summary": "Store the Giga and Mono discussion on the card Filed for the A·7 chat line.",
+      "tradeoffs": {
+        "cons": [
+          "One more page"
+        ],
+        "pros": [
+          "One place to decide"
+        ]
+      },
+      "urgency": "not_blocking"
+    },
+    "ccdf3155-b086-4a47-be7e-2647331e1409": {
+      "createdAt": 1792520252164,
+      "heading": "Index approvals on (project_id, status) only",
+      "id": "ccdf3155-b086-4a47-be7e-2647331e1409",
+      "links": [],
+      "number": 3,
+      "options": [
+        {
+          "description": null,
+          "label": "Index (project_id, status) only",
+          "recommended": false
+        },
+        {
+          "description": null,
+          "label": "Also index (requested_by, status)",
+          "recommended": false
+        }
+      ],
+      "origin": null,
+      "projectPath": "/Users/test/MonoCode",
+      "requestedBy": {
+        "id": "d79d140b-66e7-4844-900d-5719c2663344",
+        "name": "Monocode General"
+      },
+      "status": {
+        "chosen": [
+          "Also index (requested_by, status)"
+        ],
+        "decidedAt": 1792520252168,
+        "note": "Take option 2 as well, then file it again with the query plan.",
+        "state": "decided",
+        "undelivered": null,
+        "verdict": "changes_requested"
+      },
+      "summary": "Index approvals on (project_id, status) only Filed for the A·7 chat line.",
+      "tradeoffs": {
+        "cons": [
+          "One more page"
+        ],
+        "pros": [
+          "One place to decide"
+        ]
+      },
+      "urgency": "not_blocking"
+    },
+    "e4f0dd36-ac88-4fba-89da-5f6dc1f8209f": {
+      "createdAt": 1792520252164,
+      "heading": "Bump Playwright to 1.49",
+      "id": "e4f0dd36-ac88-4fba-89da-5f6dc1f8209f",
+      "links": [],
+      "number": 4,
+      "options": [],
+      "origin": null,
+      "projectPath": "/Users/test/MonoCode",
+      "requestedBy": {
+        "id": "d79d140b-66e7-4844-900d-5719c2663344",
+        "name": "Monocode General"
+      },
+      "status": {
+        "state": "withdrawn",
+        "withdrawnAt": 1792520252165
+      },
+      "summary": "Bump Playwright to 1.49 Filed for the A·7 chat line.",
       "tradeoffs": {
         "cons": [
           "One more page"
@@ -302,24 +302,24 @@
     }
   ],
   "project": "/Users/test/MonoCode",
-  "removedGiga": "8b810e74-b5b8-456d-bbca-63d3ddfc60fa",
+  "removedGiga": "761c5d2d-bd36-41db-9bf2-2b85f163bd9c",
   "rows": [
     {
       "message": {
         "addressed": "d79d140b-66e7-4844-900d-5719c2663344",
-        "body": "The user decided approval card APR-1 \"Wait for PR #109 before the approvals tool is built?\".\ncard_id: d9ce5eec-f045-4960-9739-72d9ac4000be\ndecision: approved\nchosen_options: [\"Wait for #109, then build S2 on its caller identity\"]\ncomment: Fine. Ask MonoCode 2 to put #109 first in its queue.",
+        "body": "The user decided approval card APR-1 \"Wait for PR #109 before the approvals tool is built?\".\ncard_id: 46ad24cf-4318-4916-8845-3798cf058b22\ndecision: approved\nchosen_options: [\"Wait for #109, then build S2 on its caller identity\"]\ncomment: Fine. Ask MonoCode 2 to put #109 first in its queue.",
         "bodyChars": 291,
-        "createdAt": 1792493703149,
+        "createdAt": 1792520252166,
         "delivery": "queue",
         "fromMonoId": null,
         "fromSessionId": "approvals-board",
         "handledBySession": "f91c6b52-8120-44dd-8845-24385da17370",
         "hop": 0,
-        "id": "m_jw4wydivbaz2",
+        "id": "m_i3zv7bnfdvyx",
         "intent": "new",
         "part": 0,
         "replyTo": null,
-        "requestId": "d9ce5eec-f045-4960-9739-72d9ac4000be",
+        "requestId": "46ad24cf-4318-4916-8845-3798cf058b22",
         "scope": null,
         "slot": null,
         "status": "delivered",
@@ -335,19 +335,19 @@
     {
       "message": {
         "addressed": "d79d140b-66e7-4844-900d-5719c2663344",
-        "body": "The user decided approval card APR-2 \"Store the Giga and Mono discussion on the card\".\ncard_id: facd18d2-093f-42ea-a7f6-cc720cabf06f\ndecision: rejected\nchosen_options: []\ncomment: No. The Giga has the context; the board stays small.",
+        "body": "The user decided approval card APR-2 \"Store the Giga and Mono discussion on the card\".\ncard_id: 9cce1427-72da-49fa-a2d1-742beafd890d\ndecision: rejected\nchosen_options: []\ncomment: No. The Giga has the context; the board stays small.",
         "bodyChars": 232,
-        "createdAt": 1792493703150,
+        "createdAt": 1792520252167,
         "delivery": "queue",
         "fromMonoId": null,
         "fromSessionId": "approvals-board",
         "handledBySession": "f91c6b52-8120-44dd-8845-24385da17370",
         "hop": 0,
-        "id": "m_5vm6vuo4sz2w",
+        "id": "m_mdvw6gm5xd7a",
         "intent": "new",
         "part": 0,
         "replyTo": null,
-        "requestId": "facd18d2-093f-42ea-a7f6-cc720cabf06f",
+        "requestId": "9cce1427-72da-49fa-a2d1-742beafd890d",
         "scope": null,
         "slot": null,
         "status": "delivered",
@@ -363,19 +363,19 @@
     {
       "message": {
         "addressed": "d79d140b-66e7-4844-900d-5719c2663344",
-        "body": "The user decided approval card APR-3 \"Index approvals on (project_id, status) only\".\ncard_id: 2a5bb0da-d956-4595-a4e0-48a8a88bbb1c\ndecision: changes_requested\nchosen_options: [\"Also index (requested_by, status)\"]\ncomment: Take option 2 as well, then file it again with the query plan.",
+        "body": "The user decided approval card APR-3 \"Index approvals on (project_id, status) only\".\ncard_id: ccdf3155-b086-4a47-be7e-2647331e1409\ndecision: changes_requested\nchosen_options: [\"Also index (requested_by, status)\"]\ncomment: Take option 2 as well, then file it again with the query plan.",
         "bodyChars": 284,
-        "createdAt": 1792493703151,
+        "createdAt": 1792520252168,
         "delivery": "queue",
         "fromMonoId": null,
         "fromSessionId": "approvals-board",
         "handledBySession": "f91c6b52-8120-44dd-8845-24385da17370",
         "hop": 0,
-        "id": "m_4da26uab3eel",
+        "id": "m_r6e3ll2b5sdi",
         "intent": "new",
         "part": 0,
         "replyTo": null,
-        "requestId": "2a5bb0da-d956-4595-a4e0-48a8a88bbb1c",
+        "requestId": "ccdf3155-b086-4a47-be7e-2647331e1409",
         "scope": null,
         "slot": null,
         "status": "delivered",
@@ -389,5 +389,5 @@
       "target": null
     }
   ],
-  "withdrawn": "57cab540-1218-4451-9ee3-2afdd5d02521"
+  "withdrawn": "e4f0dd36-ac88-4fba-89da-5f6dc1f8209f"
 }
