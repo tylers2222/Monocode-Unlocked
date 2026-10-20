@@ -336,7 +336,7 @@ fn a_card_reads_back_whole_and_keeps_its_filer_name_when_the_giga_is_deleted() {
             "createdAt": 10,
             "status": {
                 "state": "decided", "verdict": "changes_requested", "decidedAt": 12,
-                "note": "Add costs", "chosen": ["Server"], "notSent": false
+                "note": "Add costs", "chosen": ["Server"], "undelivered": null
             }
         },
         {

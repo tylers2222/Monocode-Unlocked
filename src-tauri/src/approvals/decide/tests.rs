@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use super::*;
 use crate::approvals::tests::{app_database_copy, closed, giga, insert, text};
-use crate::approvals::{Filer, Status, UNKNOWN};
+use crate::approvals::{Filer, Status, Undelivered, UNKNOWN};
 
 const CHAT_A: &str = "chat-a";
 const CHAT_B: &str = "chat-b";
@@ -157,7 +157,7 @@ fn decide_delivers_nothing_to_a_deleted_giga_and_refuses_what_it_cannot_deliver(
             decided_at: 2,
             note: Some(note.into()),
             chosen: Vec::new(),
-            not_sent: false,
+            undelivered: None,
         };
         decision_text(card, &decision).chars().count()
     };
@@ -244,7 +244,7 @@ fn decide_closes_an_open_card_once() {
             decided_at: 5,
             note: Some("Add costs".into()),
             chosen: ticked,
-            not_sent: false,
+            undelivered: None,
         })
     );
     assert_eq!(
@@ -296,11 +296,17 @@ fn move_chat(conn: &Connection, giga: &str, chat: &str) -> Notices {
     crate::mono_roster::update_many(conn, &[update.unwrap()]).unwrap()
 }
 
-fn not_sent(conn: &Connection, card: &Approval) -> bool {
+fn undelivered(conn: &Connection, card: &Approval) -> Option<Undelivered> {
     match get(conn, &card.id).unwrap().status {
-        Status::Decided(decision) => decision.not_sent,
+        Status::Decided(decision) => decision.undelivered,
         status => panic!("{status:?}"),
     }
+}
+
+/// `notices`, and the board told that a decision row changed.
+fn and_board(mut notices: Notices) -> Notices {
+    notices.approvals = true;
+    notices
 }
 
 /// Giga A's card rejected at 5 into chat-a, Giga B's at 6 into chat-b.
@@ -321,26 +327,30 @@ fn rejected_row(card: &Approval, chat: &str, at: i64) -> serde_json::Value {
 
 // Defects: a decision whose chat is reset, deleted or archived before the
 // Giga takes it is lost; it goes to an ended chat or back to the chat it
-// was dropped from; or its card does not show that it was not sent.
+// was dropped from; its card does not show that it waits to be sent; or
+// the board is not told when the row is dropped or sent again.
 #[test]
-fn a_dropped_decision_follows_the_giga_to_its_next_chat_or_reads_not_sent() {
+fn a_dropped_decision_follows_the_giga_to_its_next_chat_or_reads_waiting() {
     let store = SessionStore::open_in_memory().unwrap();
     let conn = store.lock_conn().unwrap();
     let (a, b) = rejected_by_two_gigas(&conn);
 
-    assert_eq!(clear(&conn, CHAT_A, 7), Notices::default());
-    assert!(
-        not_sent(&conn, &a),
+    assert_eq!(clear(&conn, CHAT_A, 7), and_board(Notices::default()));
+    assert_eq!(
+        undelivered(&conn, &a),
+        Some(Undelivered::Waiting),
         "the reset chat took the decision with it"
     );
-    assert_eq!(move_chat(&conn, "giga-a", "chat-a2"), naming("chat-a2"));
+    assert_eq!(
+        move_chat(&conn, "giga-a", "chat-a2"),
+        and_board(naming("chat-a2"))
+    );
     assert_eq!(queued(&conn, "chat-a2"), [rejected_row(&a, "chat-a2", 5)]);
-    assert!(!not_sent(&conn, &a));
+    assert_eq!(undelivered(&conn, &a), None);
 
     assert_eq!(move_chat(&conn, "giga-b", "chat-b2"), Notices::default());
-    assert_eq!(clear(&conn, CHAT_B, 8), naming("chat-b2"));
+    assert_eq!(clear(&conn, CHAT_B, 8), and_board(naming("chat-b2")));
     assert_eq!(queued(&conn, "chat-b2"), [rejected_row(&b, "chat-b2", 6)]);
-
     move_chat(&conn, "giga-b", "chat-b3");
     conn.execute(
         "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
@@ -350,20 +360,26 @@ fn a_dropped_decision_follows_the_giga_to_its_next_chat_or_reads_not_sent() {
     .unwrap();
     move_chat(&conn, "giga-a", "chat-a3");
     mono_messages::startup(&conn, 9).unwrap();
-    assert!(not_sent(&conn, &a), "chat-a3 is not a session either");
+    assert_eq!(
+        undelivered(&conn, &a),
+        Some(Undelivered::Waiting),
+        "chat-a3 is not a session either"
+    );
     assert!(queued(&conn, "chat-a3").is_empty());
     assert_eq!(queued(&conn, "chat-b3"), [rejected_row(&b, "chat-b3", 6)]);
-    assert!(!not_sent(&conn, &b));
+    assert_eq!(undelivered(&conn, &b), None);
     move_chat(&conn, "giga-b", "chat-b3");
-    assert!(
-        not_sent(&conn, &a),
+    assert_eq!(
+        undelivered(&conn, &a),
+        Some(Undelivered::Waiting),
         "a later roster write keeps it out of gone chat-a3"
     );
 }
 
 // Defects: a decision the user removed from the Giga's queue comes back
-// when the Giga moves to a new chat, or one an archive dropped stays unsent
-// after the chat is unarchived.
+// when the Giga moves to a new chat or reads as waiting to be sent, one an
+// archive dropped stays unsent after the chat is unarchived, or the board
+// is not told of the remove, the archive or the unarchive.
 #[test]
 fn a_removed_decision_stays_removed_and_an_unarchived_chat_gets_its_decision_back() {
     let store = SessionStore::open_in_memory().unwrap();
@@ -378,17 +394,22 @@ fn a_removed_decision_stays_removed_and_an_unarchived_chat_gets_its_decision_bac
         )
         .unwrap();
     let removed = mono_messages::MessageId::parse(&removed).unwrap();
-    mono_messages::drop_message(&conn, &removed, 7).unwrap();
+    let (_, told) = mono_messages::drop_message(&conn, &removed, 7).unwrap();
+    assert_eq!(told, and_board(Notices::default()));
     assert_eq!(move_chat(&conn, "giga-a", "chat-a2"), Notices::default());
     assert!(queued(&conn, "chat-a2").is_empty());
-    assert!(not_sent(&conn, &a), "the user removed it");
+    assert_eq!(
+        undelivered(&conn, &a),
+        Some(Undelivered::Removed),
+        "the user removed it"
+    );
 
     let archive = |archived| crate::session_store::set_archived(&conn, CHAT_B, archived).unwrap();
-    assert_eq!(archive(true), Notices::default());
-    assert!(not_sent(&conn, &b));
-    assert_eq!(archive(false), naming(CHAT_B));
+    assert_eq!(archive(true), and_board(Notices::default()));
+    assert_eq!(undelivered(&conn, &b), Some(Undelivered::Waiting));
+    assert_eq!(archive(false), and_board(naming(CHAT_B)));
     assert_eq!(queued(&conn, CHAT_B), [rejected_row(&b, CHAT_B, 6)]);
-    assert!(!not_sent(&conn, &b));
+    assert_eq!(undelivered(&conn, &b), None);
 }
 
 // Defect: on the app's real tables the decision row breaks a mono_messages
@@ -453,8 +474,10 @@ fn a_decision_queues_to_a_real_giga_on_a_copy_of_the_app_database() {
 
 // Defects: the command binds other argument names than the board sends,
 // leaves out the approvals-changed event or the chat's notice, or emits
-// either one for a refused decide. Not on Windows: see `tauri` under
-// `[target.'cfg(not(windows))'.dev-dependencies]` in Cargo.toml.
+// either one for a refused decide; or a requeue or an unarchive of a
+// decision does not tell the board exactly once. Not on Windows: see
+// `tauri` under `[target.'cfg(not(windows))'.dev-dependencies]` in
+// Cargo.toml.
 #[cfg(not(windows))]
 #[test]
 fn approvals_decide_emits_the_chat_notice_and_approvals_changed_once_per_decision() {
@@ -516,17 +539,24 @@ fn approvals_decide_emits_the_chat_notice_and_approvals_changed_once_per_decisio
     );
     let moved = json!({ "updates": [{ "id": "giga-a", "patch": { "sessionId": "chat-a2" } }] });
     invoke_command(&webview, "monos_update", &moved).unwrap();
+    let board = (CHANGED, Value::Null);
     assert_eq!(
-        heard.lock().unwrap()[2],
-        ("mono-message-notices", json!({ "sessions": ["chat-a2"] })),
+        heard.lock().unwrap()[2..],
+        [
+            ("mono-message-notices", json!({ "sessions": ["chat-a2"] })),
+            board.clone()
+        ],
         "the Giga's new chat is told about the decision it now holds"
     );
     let store = app.state::<SessionStore>();
     crate::session_store::set_archived(&store.lock_conn().unwrap(), "chat-a2", true).unwrap();
     crate::session_store::unarchive(app.handle(), store.inner(), "chat-a2").unwrap();
     assert_eq!(
-        heard.lock().unwrap()[3..],
-        [("mono-message-notices", json!({ "sessions": ["chat-a2"] }))],
+        heard.lock().unwrap()[4..],
+        [
+            ("mono-message-notices", json!({ "sessions": ["chat-a2"] })),
+            board
+        ],
         "an unarchived chat is told about the decision it got back"
     );
 }

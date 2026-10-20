@@ -14,7 +14,7 @@ use crate::session_store::SessionStore;
 
 pub(crate) mod decide;
 
-use decide::NOT_SENT;
+use decide::UNDELIVERED;
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -157,8 +157,15 @@ pub struct Decision {
     pub decided_at: i64,
     pub note: Option<String>,
     pub chosen: Vec<String>,
-    /// The Giga never got it: show "Not sent".
-    pub not_sent: bool,
+    /// Dropped before the Giga took it: sent again to its next chat, or removed by the user.
+    pub undelivered: Option<Undelivered>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Undelivered {
+    Waiting,
+    Removed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -224,7 +231,11 @@ fn row_to_approval(row: &Row<'_>) -> rusqlite::Result<Approval> {
                 .map(|chosen| json("chosen_options", &chosen))
                 .transpose()?
                 .unwrap_or_default(),
-            not_sent: row.get("not_sent")?,
+            undelivered: match row.get("removed")? {
+                None => None,
+                Some(false) => Some(Undelivered::Waiting),
+                Some(true) => Some(Undelivered::Removed),
+            },
         }),
         (status, _) => return Err(invalid("status", status)),
     };
@@ -259,7 +270,7 @@ fn row_to_approval(row: &Row<'_>) -> rusqlite::Result<Approval> {
 pub(crate) fn list(conn: &Connection, project: &str) -> Result<Vec<Approval>, String> {
     check_project(project)?;
     conn.prepare(&format!(
-        "SELECT {COLUMNS}, {NOT_SENT} FROM approvals WHERE project_path = ?1
+        "SELECT {COLUMNS}, {UNDELIVERED} FROM approvals WHERE project_path = ?1
          ORDER BY status <> 'open', status = 'open' AND urgency <> 'blocking',
            coalesce(decided_at, withdrawn_at, created_at) DESC, number DESC"
     ))
@@ -384,7 +395,7 @@ fn named<'a>(columns: &'a [(&'static str, Sql)], more: Named<'a>) -> Named<'a> {
 
 pub(crate) fn get(conn: &Connection, id: &str) -> Result<Approval, String> {
     conn.query_row(
-        &format!("SELECT {COLUMNS}, {NOT_SENT} FROM approvals WHERE id = ?1"),
+        &format!("SELECT {COLUMNS}, {UNDELIVERED} FROM approvals WHERE id = ?1"),
         [id],
         row_to_approval,
     )

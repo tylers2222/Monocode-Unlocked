@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
+use crate::approvals::decide;
 use crate::asks::{self, Call};
 use crate::control::ControlHost;
 use crate::mono_gate::{
@@ -2487,6 +2488,9 @@ const PENDING_NOTICE: &str = "status IN ('unanswered', 'dropped') AND notified_a
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct Notices {
     sessions: Vec<SessionId>,
+    /// A decision row was dropped or requeued: the board reloads once.
+    #[serde(skip)]
+    pub(crate) approvals: bool,
 }
 
 impl Notices {
@@ -2497,6 +2501,7 @@ impl Notices {
     }
 
     pub fn merge(&mut self, other: Notices) {
+        self.approvals |= other.approvals;
         for session in other.sessions {
             self.name(session);
         }
@@ -2525,10 +2530,13 @@ impl Notices {
         Ok(())
     }
 
-    /// To every window; nothing when no session is named.
+    /// To every window; nothing when nothing changed.
     pub fn emit<R: tauri::Runtime>(&self, app: &AppHandle<R>) {
         if !self.sessions.is_empty() {
             let _ = app.emit("mono-message-notices", self);
+        }
+        if self.approvals {
+            let _ = app.emit(crate::approvals::CHANGED, ());
         }
     }
 }
@@ -2751,6 +2759,7 @@ pub fn clear_session(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut notices = Notices::default();
     notices.name_senders(tx, &dropped)?;
+    notices.merge(decide::dropped(tx, &dropped)?);
     notices.merge(crate::approvals::decide::requeue(tx, now)?);
     Ok(notices)
 }
@@ -2808,6 +2817,7 @@ pub fn drop_message(
             params![id.as_str(), now],
         )?;
         notices.name_senders(&tx, std::slice::from_ref(id))?;
+        notices.merge(decide::dropped(&tx, std::slice::from_ref(id))?);
     }
     tx.commit()?;
     Ok((answer, notices))

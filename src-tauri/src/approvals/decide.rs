@@ -24,11 +24,11 @@ macro_rules! sender {
 
 const SENDER: &str = sender!();
 
-/// `not_sent` of a card: its decision row was dropped before the Giga took it.
-pub(super) const NOT_SENT: &str = concat!(
-    "EXISTS (SELECT 1 FROM mono_messages WHERE from_session_id = '",
+/// `removed` of a card: null unless its decision row is dropped, true when the user removed it.
+pub(super) const UNDELIVERED: &str = concat!(
+    "(SELECT notified_at IS NOT NULL FROM mono_messages WHERE from_session_id = '",
     sender!(),
-    "' AND request_id = approvals.id AND status = 'dropped') AS not_sent"
+    "' AND request_id = approvals.id AND status = 'dropped') AS removed"
 );
 
 fn decision_text(approval: &Approval, decision: &Decision) -> String {
@@ -90,7 +90,7 @@ fn deliver(tx: &Connection, approval: &Approval, body: &str, now: i64) -> Result
 /// gone at startup, dropped before its Giga took it to the Giga's current
 /// chat. A row the user removed from the queue (`notified_at`) stays dropped,
 /// and so does one while that chat ended or, after startup, is still the
-/// chat it was dropped from. A dropped row's card is `not_sent`.
+/// chat it was dropped from. A dropped row's card is `undelivered`.
 pub(crate) fn requeue(conn: &Connection, now: i64) -> rusqlite::Result<Notices> {
     let chats = conn
         .prepare(
@@ -108,10 +108,25 @@ pub(crate) fn requeue(conn: &Connection, now: i64) -> rusqlite::Result<Notices> 
         .query_map(params![SENDER, now], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut notices = Notices::default();
+    notices.approvals = !chats.is_empty();
     chats
         .iter()
         .filter_map(|chat| SessionId::parse(chat))
         .for_each(|chat| notices.name(chat));
+    Ok(notices)
+}
+
+/// The board shows each decision's delivery, so dropping one changes it.
+pub(crate) fn dropped(
+    tx: &Connection,
+    ids: &[mono_messages::MessageId],
+) -> rusqlite::Result<Notices> {
+    let mut is_decision =
+        tx.prepare("SELECT 1 FROM mono_messages WHERE id = ?1 AND from_session_id = ?2")?;
+    let mut notices = Notices::default();
+    for id in ids {
+        notices.approvals |= is_decision.exists(params![id.as_str(), SENDER])?;
+    }
     Ok(notices)
 }
 
@@ -154,7 +169,7 @@ pub(crate) fn decide(
         decided_at: now,
         note,
         chosen: chosen.to_vec(),
-        not_sent: false,
+        undelivered: None,
     };
     let body = decision_text(&open, &decision);
     let chars = body.chars().count();
