@@ -5,9 +5,12 @@
 #   app.sh build [checkout]   build the instance (under heavy-lock.sh)
 #   app.sh s0 [runs]          S0 through the real app, `runs` times (default 1)
 #   app.sh d1                 D1: the agent sandbox on, off, and on without srt
+#   app.sh approvals [runs]   ADE-55 approvals board on a copy of the real
+#                             app database, `runs` times (default 1)
 #
 # GIGA_EVAL_OUT and GIGA_EVAL_HOME default to their own /tmp folders, apart
-# from other GigaEval runs. The installed apps and their data are never used.
+# from other GigaEval runs. The installed apps are never used; `approvals`
+# reads the real app database once, read-only, through `sqlite3 .backup`.
 export GIGA_EVAL_OUT="${GIGA_EVAL_OUT:-/tmp/scenario-app}"
 export GIGA_EVAL_HOME="${GIGA_EVAL_HOME:-/tmp/scenario-app-home}"
 SCENARIOS="$(cd "$(dirname "$0")" && pwd)"
@@ -287,6 +290,8 @@ run_d1() {
   return "$FAILED"
 }
 
+source "$SCENARIOS/approvals.sh"
+
 case "${1:-}" in
   build) "$INSTANCE" build "${2:-$SCENARIOS/../..}" scenario ;;
   # One run per process: a run called in `||` would run with errexit off.
@@ -297,5 +302,14 @@ case "${1:-}" in
     for run in $(seq 1 "${2:-1}"); do "$0" s0-run "$run" || failed=$((failed + 1)); done
     log "S0: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
-  *) sed -n '2,10p' "$0"; exit 2 ;;
+  approvals-run) run_approvals "$2" ;;
+  approvals)
+    APPROVALS_USER_BIN="${APPROVALS_USER_BIN:-$(user_bin)}"
+    [[ -x "$APPROVALS_USER_BIN" ]] || die "no test binary for the user tool"
+    export APPROVALS_USER_BIN
+    failed=0
+    for run in $(seq 1 "${2:-1}"); do "$0" approvals-run "$run" || failed=$((failed + 1)); done
+    log "approvals: $(( ${2:-1} - failed ))/${2:-1} passed"
+    ((failed == 0)) ;;
+  *) sed -n '2,13p' "$0"; exit 2 ;;
 esac
