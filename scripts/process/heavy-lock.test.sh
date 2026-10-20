@@ -64,7 +64,20 @@ printf '#!/bin/sh\necho held > "$1"\nread -r _ < "$2"\n' > "$bin/fifo-hold"
 printf '#!/bin/sh\nmkdir "$1/inside" 2>/dev/null || echo overlap >> "$1/overlaps"\necho run >> "$1/runs"\nsleep 0.1\nrmdir "$1/inside" 2>/dev/null\n' > "$bin/crit"
 printf '#!/bin/sh\ncut -d" " -f1 "$HEAVY_LOCK/holder"\n' > "$bin/holder-label"
 printf '#!/bin/sh\nsleep "$1" &\nsleep "$1"\nwait\n' > "$bin/spawn"
+cat > "$bin/leaky" <<'EOF'
+#!/bin/sh
+perl -e '$SIG{TERM} = "IGNORE"; sleep $ARGV[0]' "$1" &
+sleep "$1"
+wait
+EOF
+cat > "$bin/stubborn" <<'EOF'
+#!/bin/sh
+exec perl -e '$SIG{TERM} = $SIG{HUP} = $SIG{INT} = "IGNORE"; sleep $ARGV[0]' "$1"
+EOF
 chmod +x "$bin"/*
+# Runs a command with INT at its default, even when this suite started with INT ignored. An
+# array, not a function: a function run with & is a subshell, so $! would not be the command.
+int_default=(perl -e '$SIG{INT} = "DEFAULT"; exec @ARGV or exit 127')
 # The pid of the command itself: the holder runs a perl layer ($LOCK/child) that runs it.
 command_of() { pgrep -P "$(cat "$HEAVY_LOCK/child" 2>/dev/null)" 2>/dev/null | head -1; }
 end_lines() { grep -c "end=1 .*holder=\[pid $1 " "$HEAVY_LOCK_WAITLOG" 2>/dev/null; }
@@ -184,21 +197,70 @@ for sig in TERM KILL; do
 done
 check "killed holder (KILL): the clear names the command pid" logged "and command pid $child_pid dead"
 
-# TERM to the holder's pid only (not its group): the command and its children stop, exactly
-# one end line says signal=1, and the waiter runs.
+# TERM to the holder's pid only (not its group): the command and its children stop (one of
+# them ignores TERM, so only the holder's group KILL sweep stops it), exactly one end line
+# says signal=1, and the waiter runs.
 reset
-"$lock_sh" "$bin/spawn" 43.$$ 2>/dev/null &
+"$lock_sh" "$bin/leaky" 43.$$ 2>/dev/null &
 holder=$!
-within 5 eval '[ "$(pgrep -f "sleep 43[.]$$\$" | wc -l | tr -d " ")" = 2 ]'
+within 5 eval '[ "$(pgrep -f "(sleep|IGNORE.*) 43[.]$$\$" | wc -l | tr -d " ")" = 2 ]'
 mark_when_run "$root/case/ran"
 within 5 has_ticket "$waiter"
 kill -TERM "$holder"
 check "TERM to the holder only: the holder exits" within 8 dead "$holder"
-check "TERM to the holder only: no process of the command is left" eval '! pgrep -f "sleep 43[.]$$\$" >/dev/null'
+check "TERM to the holder only: no process of the command is left, also one that ignores TERM" eval '! pgrep -f "(sleep|IGNORE.*) 43[.]$$\$" >/dev/null'
 check "TERM to the holder only: exactly one end line (got $(end_lines "$holder"))" [ "$(end_lines "$holder")" = 1 ]
-check "TERM to the holder only: the end line says rc=143 signal=1" logged "end=1 rc=143 signal=1 holder=\[pid $holder test session=.* cwd=.* cmd=$bin/spawn 43.$$\]"
+check "TERM to the holder only: the end line says rc=143 signal=1" logged "end=1 rc=143 signal=1 holder=\[pid $holder test session=.* cwd=.* cmd=$bin/leaky 43.$$\]"
 check "TERM to the holder only: the waiter runs" within 5 exists "$root/case/ran"
+within 5 dead "$waiter"
 check "TERM to the holder only: the waiter's end line says signal=0" logged "end=1 rc=0 signal=0 holder=\[pid $waiter "
+
+# A second TERM or HUP during the 5 s grace (the command ignores both) only escalates to
+# KILL: one end line, the holder releases the lock itself (no stale clear), the waiter runs,
+# nothing is left.
+for sig2 in TERM HUP; do
+  reset
+  "$lock_sh" "$bin/stubborn" 45.$$ 2>/dev/null &
+  holder=$!
+  within 5 eval 'pgrep -f "IGNORE.* 45[.]$$\$" >/dev/null'
+  mark_when_run "$root/case/ran"
+  within 5 has_ticket "$waiter"
+  kill -TERM "$holder"
+  sleep 1
+  kill "-$sig2" "$holder"
+  check "TERM then $sig2 in the grace: the holder exits" within 8 dead "$holder"
+  check "TERM then $sig2 in the grace: exactly one end line (got $(end_lines "$holder"))" [ "$(end_lines "$holder")" = 1 ]
+  check "TERM then $sig2 in the grace: the end line says rc=143 signal=1" logged "end=1 rc=143 signal=1 holder=\[pid $holder "
+  check "TERM then $sig2 in the grace: the holder released the lock (no stale clear)" eval '! logged "cleared a stale lock"'
+  check "TERM then $sig2 in the grace: the waiter runs" within 5 exists "$root/case/ran"
+  check "TERM then $sig2 in the grace: no process of the command is left" eval '! pgrep -f "IGNORE.* 45[.]$$\$" >/dev/null'
+done
+
+# INT to the holder reaches the command: the command starts with INT at its default, so it
+# stops at once, not by KILL after the 5 s grace.
+reset
+"${int_default[@]}" "$lock_sh" "$bin/spawn" 46.$$ 2>/dev/null &
+holder=$!
+within 5 eval '[ "$(pgrep -f "sleep 46[.]$$\$" | wc -l | tr -d " ")" = 2 ]'
+kill -INT "$holder"
+check "INT to the holder: the command stops before the 5 s grace ends" within 3 dead "$holder"
+check "INT to the holder: one end line rc=130 signal=1" eval '[ "$(end_lines "$holder")" = 1 ] && logged "end=1 rc=130 signal=1 holder=\[pid $holder "'
+check "INT to the holder: no process of the command is left" within 3 eval '! pgrep -f "sleep 46[.]$$\$" >/dev/null'
+
+# The end line comes before the release: with the log a FIFO that nobody reads yet, the
+# holder blocks in its end-line write and must still hold the lock at that moment.
+reset
+mkfifo "$root/case/log"
+HEAVY_LOCK_WAITLOG=$root/case/log "$lock_sh" true 2>/dev/null &
+holder=$!
+child_pid=
+within 5 eval 'child_pid=$(cat "$HEAVY_LOCK/child" 2>/dev/null)'
+within 5 dead "$child_pid"
+sleep 1
+check "end before release: the lock is still held while the end line is written" eval '[ "$(cat "$HEAVY_LOCK/pid" 2>/dev/null)" = "$holder" ]'
+read -r end_line < "$root/case/log"
+check "end before release: the end line is the holder's" grep -q "end=1 rc=0 signal=0 holder=\[pid $holder " <<< "$end_line"
+check "end before release: then the lock is released" within 5 eval '[ ! -e "$HEAVY_LOCK" ]'
 
 # 4 callers x 25 runs: the critical section never has two runs inside it.
 reset

@@ -183,23 +183,34 @@ release() {
 
 # A holder that gets INT, TERM or HUP passes the same signal to its command (the perl layer
 # passes it on to the command's process group and kills the group after 5 s), waits for it,
-# then sweeps the group with KILL. A waiter logs its give-up and exits.
+# then sweeps the group with KILL and exits, so the EXIT handler writes the end line. The
+# handler runs once: a later signal during the wait only escalates to KILL and returns,
+# because bash 3.2 skips the EXIT trap when a nested handler exits. A waiter logs its
+# give-up and exits.
 on_signal() {
-  local pg
+  if [ -n "$stopping" ]; then
+    [ -n "$stop_pg" ] && kill -KILL -- "-$stop_pg" 2>/dev/null
+    [ -n "$child" ] && kill -KILL "$child" 2>/dev/null
+    return
+  fi
+  stopping=1
   if [ -n "$child" ]; then
     signal=1
-    pg=$(pgrep -P "$child" | head -1)
+    stop_pg=$(pgrep -P "$child" | head -1)
     kill -"$2" "$child" 2>/dev/null
-    [ -n "$pg" ] && kill -"$2" -- "-$pg" 2>/dev/null
-    wait "$child"
-    [ -n "$pg" ] && kill -KILL -- "-$pg" 2>/dev/null
+    [ -n "$stop_pg" ] && kill -"$2" -- "-$stop_pg" 2>/dev/null
+    while kill -0 "$child" 2>/dev/null; do wait "$child"; done
+    [ -n "$stop_pg" ] && kill -KILL -- "-$stop_pg" 2>/dev/null
   else
     log "waiter=[$who cmd=$cmd] waited=$(( $(date +%s) - started ))s gave up on a signal; holder=[${holder:-pid ? none}]"
   fi
   exit "$1"
 }
 
-# The one exit path: a holder writes exactly one end line, then releases the lock.
+# The one exit path: a holder writes exactly one end line, then releases the lock. KILL to
+# the holder cannot be trapped: no end line is written, the lock stays held while the
+# command runs (its pid is $LOCK/child), and once the command ends the next head clears the
+# lock and logs "cleared a stale lock (holder pid P and command pid C dead)".
 on_exit() {
   rm -f "$ticket"
   [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] || return
@@ -213,7 +224,7 @@ main() {
     run_light_job "$@"
   fi
   cmd="$*"
-  child='' signal=0
+  child='' signal=0 stopping='' stop_pg=''
   holder=
   started=$(date +%s)
   mkdir -p "$QUEUE"
@@ -248,7 +259,7 @@ main() {
 [ "$long" = 1 ] && printf '%s long=1 holder=[pid %s %s cmd=%s]\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$$" "$who" "$*" >> "$WAITLOG"
 HOLD_LIMIT=$HOLD_LIMIT perl -MPOSIX=:sys_wait_h -e '
   my $pid = fork; die "fork: $!" unless defined $pid;
-  if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
+  if (!$pid) { setpgrp(0, 0); $SIG{INT} = "DEFAULT"; exec @ARGV or exit 127 }
   sub stop_group { my ($sig, $code) = @_; kill $sig, -$pid;
     for (1 .. 20) { exit $code if waitpid($pid, WNOHANG) > 0; select(undef, undef, undef, 0.25) }
     kill "KILL", -$pid; waitpid($pid, 0); exit $code }
