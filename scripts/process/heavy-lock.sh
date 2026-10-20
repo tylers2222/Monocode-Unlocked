@@ -184,23 +184,19 @@ release() {
 # A holder that gets INT, TERM or HUP passes the same signal to its command (the perl layer
 # passes it on to the command's process group and kills the group after 5 s), waits for it,
 # then sweeps the group with KILL and exits, so the EXIT handler writes the end line. The
-# handler runs once: a later signal during the wait only escalates to KILL and returns,
-# because bash 3.2 skips the EXIT trap when a nested handler exits. A waiter logs its
-# give-up and exits.
+# handler ignores INT, TERM and HUP from its first line on: under bash 3.2 an exit from a
+# nested handler skips the EXIT trap. So a second signal of any kind waits out the 5 s grace,
+# and there is always one end line and the release. A waiter logs its give-up and exits.
 on_signal() {
-  if [ -n "$stopping" ]; then
-    [ -n "$stop_pg" ] && kill -KILL -- "-$stop_pg" 2>/dev/null
-    [ -n "$child" ] && kill -KILL "$child" 2>/dev/null
-    return
-  fi
-  stopping=1
+  trap '' INT TERM HUP
+  local pg
   if [ -n "$child" ]; then
     signal=1
-    stop_pg=$(pgrep -P "$child" | head -1)
+    pg=$(pgrep -P "$child" | head -1)
     kill -"$2" "$child" 2>/dev/null
-    [ -n "$stop_pg" ] && kill -"$2" -- "-$stop_pg" 2>/dev/null
+    [ -n "$pg" ] && kill -"$2" -- "-$pg" 2>/dev/null
     while kill -0 "$child" 2>/dev/null; do wait "$child"; done
-    [ -n "$stop_pg" ] && kill -KILL -- "-$stop_pg" 2>/dev/null
+    [ -n "$pg" ] && kill -KILL -- "-$pg" 2>/dev/null
   else
     log "waiter=[$who cmd=$cmd] waited=$(( $(date +%s) - started ))s gave up on a signal; holder=[${holder:-pid ? none}]"
   fi
@@ -224,7 +220,7 @@ main() {
     run_light_job "$@"
   fi
   cmd="$*"
-  child='' signal=0 stopping='' stop_pg=''
+  child='' signal=0
   holder=
   started=$(date +%s)
   mkdir -p "$QUEUE"

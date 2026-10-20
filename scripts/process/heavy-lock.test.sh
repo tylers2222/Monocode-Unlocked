@@ -49,6 +49,7 @@ within() {
     sleep 0.1
   done
 }
+alive() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }
 dead() { [ -n "$1" ] && ! kill -0 "$1" 2>/dev/null; }
 exists() { [ -e "$1" ]; }
 tickets() { ls "$HEAVY_LOCK_QUEUE" 2>/dev/null | wc -l | tr -d ' '; }
@@ -215,25 +216,30 @@ check "TERM to the holder only: the waiter runs" within 5 exists "$root/case/ran
 within 5 dead "$waiter"
 check "TERM to the holder only: the waiter's end line says signal=0" logged "end=1 rc=0 signal=0 holder=\[pid $waiter "
 
-# A second TERM or HUP during the 5 s grace (the command ignores both) only escalates to
-# KILL: one end line, the holder releases the lock itself (no stale clear), the waiter runs,
-# nothing is left.
-for sig2 in TERM HUP; do
+# A second signal of any kind during the 5 s grace (the command ignores TERM, HUP and INT) is
+# ignored: the holder waits out the grace (still alive 3 s after the second signal, 4 s into
+# the grace), then writes one end line for the first signal, releases the lock itself (no
+# stale clear), the waiter runs, and nothing is left.
+for pair in TERM:TERM TERM:HUP HUP:HUP INT:INT; do
+  sig1=${pair%:*} sig2=${pair#*:}
+  case "$sig1" in TERM) rc1=143 ;; HUP) rc1=129 ;; INT) rc1=130 ;; esac
   reset
-  "$lock_sh" "$bin/stubborn" 45.$$ 2>/dev/null &
+  "${int_default[@]}" "$lock_sh" "$bin/stubborn" 45.$$ 2>/dev/null &
   holder=$!
   within 5 eval 'pgrep -f "IGNORE.* 45[.]$$\$" >/dev/null'
   mark_when_run "$root/case/ran"
   within 5 has_ticket "$waiter"
-  kill -TERM "$holder"
+  kill "-$sig1" "$holder"
   sleep 1
   kill "-$sig2" "$holder"
-  check "TERM then $sig2 in the grace: the holder exits" within 8 dead "$holder"
-  check "TERM then $sig2 in the grace: exactly one end line (got $(end_lines "$holder"))" [ "$(end_lines "$holder")" = 1 ]
-  check "TERM then $sig2 in the grace: the end line says rc=143 signal=1" logged "end=1 rc=143 signal=1 holder=\[pid $holder "
-  check "TERM then $sig2 in the grace: the holder released the lock (no stale clear)" eval '! logged "cleared a stale lock"'
-  check "TERM then $sig2 in the grace: the waiter runs" within 5 exists "$root/case/ran"
-  check "TERM then $sig2 in the grace: no process of the command is left" eval '! pgrep -f "IGNORE.* 45[.]$$\$" >/dev/null'
+  sleep 3
+  check "$sig1 then $sig2 in the grace: the holder waits out the grace" alive "$holder"
+  check "$sig1 then $sig2 in the grace: the holder exits after it" within 5 dead "$holder"
+  check "$sig1 then $sig2 in the grace: exactly one end line (got $(end_lines "$holder"))" [ "$(end_lines "$holder")" = 1 ]
+  check "$sig1 then $sig2 in the grace: the end line says rc=$rc1 signal=1" logged "end=1 rc=$rc1 signal=1 holder=\[pid $holder "
+  check "$sig1 then $sig2 in the grace: the holder released the lock (no stale clear)" eval '! logged "cleared a stale lock"'
+  check "$sig1 then $sig2 in the grace: the waiter runs" within 5 exists "$root/case/ran"
+  check "$sig1 then $sig2 in the grace: no process of the command is left" eval '! pgrep -f "IGNORE.* 45[.]$$\$" >/dev/null'
 done
 
 # INT to the holder reaches the command: the command starts with INT at its default, so it
