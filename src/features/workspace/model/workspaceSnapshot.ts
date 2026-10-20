@@ -96,8 +96,7 @@ export type WorkspaceSnapshot = {
 
 /**
  * Today's save: only the tabs `keepTab` keeps reopen, and so do only the
- * sessions they show. ADE-57 (2/2) moves every save path to
- * `workspaceSnapshot` and deletes this.
+ * sessions they show.
  */
 export function collectWorkspaceSnapshot(
   tabs: WorkspaceTab[],
@@ -184,27 +183,34 @@ export function workspaceSnapshot([
     projectTerminals,
     lastDockSide,
   );
-  const tabWorkspaces = savedTabWorkspaces(snapshot.tabs, sessions, pins);
-  // The app opens each project on its default workspace, so the active tab
-  // and the project return targets come from that workspace only.
-  const inDefault = snapshot.tabs.filter(
-    (tab) => !tabWorkspaces.some((entry) => entry.tabId === tab.id),
+  const strip = filterTabsForProject(tabs, sessions, snapshot.projectCwd);
+  const worktreeTabs = savedTabWorkspaces(snapshot.tabs, sessions, pins);
+  const candidates = snapshot.tabs.filter(
+    (tab) => !worktreeTabs.some((entry) => entry.tabId === tab.id),
   );
+  // Boot opens each project on its default workspace and pins the active tab
+  // there. So the active tab is a default-workspace tab, and with none, the
+  // active tab itself is saved in the default workspace.
+  const active = savedActiveTabId(
+    strip,
+    candidates.length > 0 ? candidates : snapshot.tabs,
+    activeTabId,
+  );
+  const tabWorkspaces = worktreeTabs.filter((entry) => entry.tabId !== active);
   return withProjectReturnTargets(
     {
       ...snapshot,
-      activeTabId: savedActiveTabId(
-        filterTabsForProject(tabs, sessions, snapshot.projectCwd),
-        inDefault,
-        activeTabId,
-      ),
+      activeTabId: active,
       ...(tabWorkspaces.length > 0 ? { tabWorkspaces } : {}),
     },
     memory,
-    inDefault,
+    snapshot.tabs.filter(
+      (tab) => !tabWorkspaces.some((entry) => entry.tabId === tab.id),
+    ),
   );
 }
 
+/** A tab is saved in a worktree only when it will restore there. */
 function savedTabWorkspaces(
   tabs: readonly WorkspaceTab[],
   sessions: readonly Session[],
@@ -214,13 +220,32 @@ function savedTabWorkspaces(
     const project = workspaceTabCwd(tab, sessions);
     const path = tabWorkspace(tab, sessions, pins);
     if (!project || !path || isRemoteProjectPath(project)) return [];
-    return sameProjectPath(path, project) ? [] : [{ tabId: tab.id, path }];
+    return !sameProjectPath(path, project) && worksIn(tab, sessions, path)
+      ? [{ tabId: tab.id, path }]
+      : [];
   });
 }
 
-/** Where each restored tab belongs: its saved workspace while one of its
- * sessions still works there, else its project folder. A tab pinned to a
- * removed worktree would be hidden, because the switcher cannot list it. */
+/** One of the tab's sessions works in `path`, and its worktree still exists.
+ * A tab pinned to a removed worktree would be hidden, because the switcher
+ * cannot list it. */
+function worksIn(
+  tab: WorkspaceTab,
+  sessions: readonly Session[],
+  path: string,
+): boolean {
+  return leafIds(tab.layout).some((id) => {
+    const session = sessions.find((entry) => entry.id === id);
+    return (
+      !!session &&
+      !session.worktreeRemoved &&
+      sameProjectPath(sessionWorkCwd(session), path)
+    );
+  });
+}
+
+/** Where each restored tab belongs: its saved workspace while it still works
+ * there, else its project folder. */
 export function restoreWorkspacePins(
   tabs: readonly WorkspaceTab[],
   sessions: readonly Session[],
@@ -229,27 +254,19 @@ export function restoreWorkspacePins(
   const pins = new Map<string, string>();
   for (const tab of tabs) {
     const path = saved.find((entry) => entry.tabId === tab.id)?.path;
-    const live =
-      !!path &&
-      leafIds(tab.layout).some((id) => {
-        const session = sessions.find((entry) => entry.id === id);
-        return (
-          !!session &&
-          !session.worktreeRemoved &&
-          sameProjectPath(sessionWorkCwd(session), path)
-        );
-      });
-    const project = live ? path : workspaceTabCwd(tab, sessions);
+    const project =
+      path && worksIn(tab, sessions, path)
+        ? path
+        : workspaceTabCwd(tab, sessions);
     if (project && !isRemoteProjectPath(project)) pins.set(tab.id, project);
   }
   return pins;
 }
 
 /**
- * The active tab if it is saved in the default workspace. Else the nearest
- * such tab before it in the project's strip (a tab opens beside the one it
- * was opened from), else the nearest after it. Else the first such tab, else
- * none.
+ * The active tab if it is one of `saved`. Else the nearest such tab before it
+ * in the project's strip (a tab opens beside the one it was opened from),
+ * else the nearest after it. Else the first such tab, else none.
  */
 function savedActiveTabId(
   projectStrip: WorkspaceTab[],

@@ -27,7 +27,9 @@ import {
   hydrateWorkspaceSnapshot,
   parseWorkspaceSnapshot,
   workspaceSnapshot,
+  type WorkspaceSnapshot,
 } from "./workspaceSnapshot";
+import { remotePath } from "../../connections/model/remoteProjects";
 import { insertTabBesideActive } from "./tabGroups";
 
 function chat(id: string, cwd: string): Session {
@@ -873,10 +875,21 @@ describe("workspaceSnapshot: worktree tabs", () => {
     projectTerminals: [],
     pins: new Map(pins),
   });
+  const inTree = (id: string, cwd: string, tree: string) => ({
+    ...chat(id, cwd),
+    worktreeCwd: tree,
+  });
+  const restoredPins = (snapshot: WorkspaceSnapshot, loaded: Session[] = []) =>
+    Object.fromEntries(
+      hydrateWorkspaceSnapshot(
+        snapshot,
+        new Map(loaded.map((session) => [session.id, session])),
+      )!.pins,
+    );
 
   it("saves a tab pinned to a worktree with that worktree, and restore pins it back while its session works there", () => {
     const main = chat("main", "/repo");
-    const feature = { ...chat("feature", "/repo"), worktreeCwd: "/trees/a" };
+    const feature = inTree("feature", "/repo", "/trees/a");
     const idle = chat("idle", "/repo");
     const tabs = [
       { ...newTab("main"), id: "tab-main" },
@@ -887,7 +900,8 @@ describe("workspaceSnapshot: worktree tabs", () => {
       window(tabs, [main, feature, idle], "tab-feature", "/repo", [
         ["tab-main", "/repo"],
         ["tab-feature", "/trees/a"],
-        // Opened while /trees/a was shown, but it works in the checkout.
+        // Opened while /trees/a was shown, but it works in the checkout, so
+        // it would restore in the default workspace and is saved there.
         ["tab-idle", "/trees/a"],
       ]),
     ]);
@@ -898,26 +912,117 @@ describe("workspaceSnapshot: worktree tabs", () => {
     ]);
     expect(snapshot.tabWorkspaces).toEqual([
       { tabId: "tab-feature", path: "/trees/a" },
-      { tabId: "tab-idle", path: "/trees/a" },
     ]);
     expect(snapshot.activeTabId).toBe("tab-main");
-
-    const pins = (loaded: Session[]) =>
-      Object.fromEntries(
-        hydrateWorkspaceSnapshot(
-          snapshot,
-          new Map(loaded.map((session) => [session.id, session])),
-        )!.pins,
-      );
-    expect(pins([])).toEqual({
+    expect(restoredPins(snapshot)).toEqual({
       "tab-main": "/repo",
       "tab-feature": "/trees/a",
       "tab-idle": "/repo",
     });
-    expect(pins([{ ...feature, worktreeRemoved: true }])).toEqual({
+    expect(
+      restoredPins(snapshot, [{ ...feature, worktreeRemoved: true }]),
+    ).toEqual({
       "tab-main": "/repo",
       "tab-feature": "/repo",
       "tab-idle": "/repo",
+    });
+  });
+
+  it("saves a tab pinned to a removed worktree in the default workspace, where it restores, so it can stay active and a return target", () => {
+    const tabs = [
+      { ...newTab("main"), id: "tab-main" },
+      { ...newTab("gone"), id: "tab-gone" },
+    ];
+    const gone = {
+      ...inTree("gone", "/repo", "/trees/a"),
+      worktreeRemoved: true,
+    };
+    const snapshot = workspaceSnapshot([
+      window(
+        tabs,
+        [chat("main", "/repo"), gone],
+        "tab-gone",
+        "/repo",
+        [
+          ["tab-main", "/repo"],
+          ["tab-gone", "/trees/a"],
+        ],
+        new Map([["/repo", "gone"]]),
+      ),
+    ]);
+    expect({
+      tabWorkspaces: snapshot.tabWorkspaces,
+      active: snapshot.activeTabId,
+      targets: snapshot.projectReturnTargets,
+      pins: restoredPins(snapshot, [gone]),
+    }).toEqual({
+      tabWorkspaces: undefined,
+      active: "tab-gone",
+      targets: [{ projectPath: "/repo", tabId: "gone" }],
+      pins: { "tab-main": "/repo", "tab-gone": "/repo" },
+    });
+  });
+
+  it("with no default-workspace tab, saves the active tab in the default workspace and boot restores it there, active", () => {
+    const tabs = [
+      { ...newTab("w"), id: "tab-w" },
+      { ...newTab("x"), id: "tab-x" },
+    ];
+    const snapshot = workspaceSnapshot([
+      window(
+        tabs,
+        [inTree("w", "/repo", "/trees/a"), inTree("x", "/repo", "/trees/b")],
+        "tab-w",
+        "/repo",
+        [
+          ["tab-w", "/trees/a"],
+          ["tab-x", "/trees/b"],
+        ],
+      ),
+    ]);
+    const restored = hydrateWorkspaceSnapshot(snapshot, new Map())!;
+    expect({
+      active: restored.activeTabId,
+      pins: Object.fromEntries(restored.pins),
+    }).toEqual({
+      active: "tab-w",
+      pins: { "tab-w": "/repo", "tab-x": "/trees/b" },
+    });
+  });
+
+  it("saves the window's project, dock and dock side, and never saves or restores a remote tab in a worktree", () => {
+    const host = remotePath("env-1", "/srv/app");
+    const hostTree = remotePath("env-1", "/srv/app-worktrees/x");
+    const term = newTerminalFile("/repo", "zsh");
+    const tabs = [
+      { ...newTab("main"), id: "tab-main" },
+      { ...newTab("remote"), id: "tab-remote" },
+    ];
+    const snapshot = workspaceSnapshot([
+      {
+        ...window(
+          tabs,
+          [chat("main", "/repo"), inTree("remote", host, hostTree)],
+          "tab-main",
+          "/repo",
+          [["tab-remote", hostTree]],
+        ),
+        projectTerminals: [createProjectTerminal("/repo", term)],
+        lastDockSide: "left",
+      },
+    ]);
+    expect({
+      projectCwd: snapshot.projectCwd,
+      lastDockSide: snapshot.lastDockSide,
+      dock: snapshot.projectTerminals.map((dock) => dock.pane.files[0]?.id),
+      tabWorkspaces: snapshot.tabWorkspaces,
+      pins: restoredPins(snapshot),
+    }).toEqual({
+      projectCwd: "/repo",
+      lastDockSide: "left",
+      dock: [term.id],
+      tabWorkspaces: undefined,
+      pins: { "tab-main": "/repo" },
     });
   });
 
@@ -928,7 +1033,11 @@ describe("workspaceSnapshot: worktree tabs", () => {
       workspaceSnapshot([
         window(
           tabs,
-          ids.map((id) => chat(id, "/repo")),
+          ids.map((id) =>
+            inWorktree.includes(id)
+              ? inTree(id, "/repo", `/trees/${id}`)
+              : chat(id, "/repo"),
+          ),
           activeTabId,
           "/repo",
           inWorktree.map((id) => [id, `/trees/${id}`]),
@@ -937,14 +1046,13 @@ describe("workspaceSnapshot: worktree tabs", () => {
     expect(save("b", ["w1", "w2"])).toBe("b");
     expect(save("w2", ["w1", "w2"])).toBe("a");
     expect(save("w1", ["w1", "w2"])).toBe("a");
-    expect(save("w1", ids)).toBe("");
   });
 
   it("looks for the nearest default-workspace tab in the saved project only", () => {
     const sessions = [
       chat("s1", "/p"),
       chat("s2", "/q"),
-      chat("s3", "/p"),
+      inTree("s3", "/p", "/p-trees/w1"),
       chat("s4", "/p"),
     ];
     // onSelectHistorySession: the project switches to /p, then the running
@@ -970,7 +1078,11 @@ describe("workspaceSnapshot: worktree tabs", () => {
       workspaceSnapshot([
         window(
           tabs,
-          [chat("q1", "/q"), chat("w1", "/p"), chat("b", "/p")],
+          [
+            chat("q1", "/q"),
+            inTree("w1", "/p", "/p-trees/w1"),
+            chat("b", "/p"),
+          ],
           "w1",
           "/p",
           [["w1", "/p-trees/w1"]],
@@ -985,13 +1097,25 @@ describe("workspaceSnapshot: worktree tabs", () => {
       { ...newTab("main"), id: "tab-main" },
       { ...newTab("feature"), id: "tab-feature" },
     ];
-    const sessions = [chat("main", "/repo"), chat("feature", "/repo")];
+    const sessions = [
+      chat("main", "/repo"),
+      inTree("feature", "/repo", "/trees/a"),
+    ];
     const memory = new Map([["/repo", "feature"]]);
-    const targets = (pins: [string, string][]) =>
+    const targets = (pin: string) =>
       workspaceSnapshot([
-        window(tabs, sessions, "tab-main", "/repo", pins, memory),
+        window(
+          tabs,
+          sessions,
+          "tab-main",
+          "/repo",
+          [["tab-feature", pin]],
+          memory,
+        ),
       ]).projectReturnTargets;
-    expect(targets([])).toEqual([{ projectPath: "/repo", tabId: "feature" }]);
-    expect(targets([["tab-feature", "/trees/a"]])).toEqual([]);
+    expect(targets("/repo")).toEqual([
+      { projectPath: "/repo", tabId: "feature" },
+    ]);
+    expect(targets("/trees/a")).toEqual([]);
   });
 });

@@ -14,7 +14,6 @@ import {
   quitWhileBusyMessage,
   wasTurnInterrupted,
   workspaceFromResumed,
-  type ResumedWorkspace,
 } from "../../features/sessions/model/inFlight";
 import { leafIds, type WorkspaceTab } from "../../features/workspace/model/layout";
 import { killPty } from "../../platform/tauri/pty";
@@ -47,7 +46,6 @@ import {
 import { lastProjectPath, normalizeProjectPath, sameProjectPath } from "../../features/projects/model/recents";
 import type { ProjectReturnMemory } from "../../features/projects/model/projectReturn";
 
-export type { ResumedWorkspace };
 export { hasInFlightSessions };
 
 export type BootWorkspace = {
@@ -61,7 +59,7 @@ let resumedPromise: Promise<WindowWorkspace | null> | null = null;
 let bootPromise: Promise<BootWorkspace> | null = null;
 let quitting = false;
 let quitDialogOpen = false;
-let bootingResumed: ResumedWorkspace | null = null;
+let bootingResumed: WindowWorkspace | null = null;
 let liveWorkspace: {
   sessions: () => Session[];
   tabs: () => WorkspaceTab[];
@@ -410,7 +408,7 @@ export async function persistQuitState(
   }
 }
 
-async function persistBootingResume(workspace: ResumedWorkspace): Promise<void> {
+async function persistBootingResume(workspace: WindowWorkspace): Promise<void> {
   await Promise.all(
     workspace.sessions
       .filter(shouldPersistSession)
