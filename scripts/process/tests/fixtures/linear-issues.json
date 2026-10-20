@@ -1,17 +1,31 @@
 [
  {
+  "id": "4fe6201e-2464-4ba4-abce-bd941f11816e",
   "identifier": "ADE-68",
   "title": "Notice reaches the Orchestrator slowly in 4 cases after the ADE-15 fix",
   "createdAt": "2026-10-20T11:15:29.894Z",
-  "updatedAt": "2026-10-20T12:05:20.107Z",
+  "updatedAt": "2026-10-20T13:04:54.470Z",
   "state": {
    "type": "started"
   },
   "labels": {
-   "nodes": []
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
   },
   "history": {
    "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:54.442Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
     {
      "createdAt": "2026-10-20T11:44:43.581Z",
      "toState": {
@@ -33,90 +47,164 @@
   }
  },
  {
+  "id": "daef2cf8-bd1f-4cad-954e-2323a33d2768",
   "identifier": "ADE-67",
   "title": "Question card in a session doesn't respond: options and Continue can't be clicked",
   "createdAt": "2026-10-20T10:51:02.004Z",
-  "updatedAt": "2026-10-20T12:17:52.519Z",
+  "updatedAt": "2026-10-20T13:04:52.246Z",
   "state": {
    "type": "started"
   },
   "labels": {
-   "nodes": []
-  },
-  "history": {
-   "nodes": []
-  },
-  "inverseRelations": {
-   "nodes": []
-  }
- },
- {
-  "identifier": "ADE-66",
-  "title": "Dead menu item: 'Move group to new window' in TabGroupMenu can never appear",
-  "createdAt": "2026-10-20T10:38:36.976Z",
-  "updatedAt": "2026-10-20T10:38:36.976Z",
-  "state": {
-   "type": "unstarted"
-  },
-  "labels": {
-   "nodes": []
-  },
-  "history": {
-   "nodes": []
-  },
-  "inverseRelations": {
-   "nodes": []
-  }
- },
- {
-  "identifier": "ADE-65",
-  "title": "Flaky CI: macOS Rust lib tests abort with 'Rust cannot catch foreign exceptions' after the pasteboard tests",
-  "createdAt": "2026-10-20T10:22:18.520Z",
-  "updatedAt": "2026-10-20T10:22:18.520Z",
-  "state": {
-   "type": "unstarted"
-  },
-  "labels": {
-   "nodes": []
-  },
-  "history": {
-   "nodes": []
-  },
-  "inverseRelations": {
-   "nodes": []
-  }
- },
- {
-  "identifier": "ADE-64",
-  "title": "A steer that misses the start of a turn ends the app's turn record while the provider's turn keeps running",
-  "createdAt": "2026-10-20T10:22:16.506Z",
-  "updatedAt": "2026-10-20T10:22:16.506Z",
-  "state": {
-   "type": "unstarted"
-  },
-  "labels": {
-   "nodes": []
-  },
-  "history": {
-   "nodes": []
-  },
-  "inverseRelations": {
-   "nodes": []
-  }
- },
- {
-  "identifier": "ADE-63",
-  "title": "R5c: Ask parties are actors (mono:<id> or session:<id>)",
-  "createdAt": "2026-10-20T08:07:26.813Z",
-  "updatedAt": "2026-10-20T12:52:48.388Z",
-  "state": {
-   "type": "unstarted"
-  },
-  "labels": {
-   "nodes": []
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
   },
   "history": {
    "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:52.225Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "1d93a404-4f23-4699-91d5-f4d0fb4bf01c",
+  "identifier": "ADE-66",
+  "title": "Dead menu item: 'Move group to new window' in TabGroupMenu can never appear",
+  "createdAt": "2026-10-20T10:38:36.976Z",
+  "updatedAt": "2026-10-20T13:04:49.977Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:49.952Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "3823e14a-000e-4413-af47-ae31744630e6",
+  "identifier": "ADE-65",
+  "title": "Flaky CI: macOS Rust lib tests abort with 'Rust cannot catch foreign exceptions' after the pasteboard tests",
+  "createdAt": "2026-10-20T10:22:18.520Z",
+  "updatedAt": "2026-10-20T13:04:47.122Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:47.094Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "2fc3a83a-9cac-48fe-bd32-c61b51b65e2b",
+  "identifier": "ADE-64",
+  "title": "A steer that misses the start of a turn ends the app's turn record while the provider's turn keeps running",
+  "createdAt": "2026-10-20T10:22:16.506Z",
+  "updatedAt": "2026-10-20T13:04:44.820Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:44.798Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "65575faa-fba5-442c-9079-ec2ce2715377",
+  "identifier": "ADE-63",
+  "title": "R5c: Ask parties are actors (mono:<id> or session:<id>)",
+  "createdAt": "2026-10-20T08:07:26.813Z",
+  "updatedAt": "2026-10-20T13:04:42.576Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:42.553Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
     {
      "createdAt": "2026-10-20T12:52:48.388Z",
      "toState": null,
@@ -141,18 +229,32 @@
   }
  },
  {
+  "id": "868f1072-aa14-4260-80de-30615d7ddd65",
   "identifier": "ADE-62",
   "title": "in_flight_sessions is one list for all windows; each window replaces it whole",
   "createdAt": "2026-10-20T07:50:52.315Z",
-  "updatedAt": "2026-10-20T12:52:45.724Z",
+  "updatedAt": "2026-10-20T13:04:40.395Z",
   "state": {
    "type": "unstarted"
   },
   "labels": {
-   "nodes": []
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
   },
   "history": {
    "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:40.362Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
     {
      "createdAt": "2026-10-20T12:52:45.724Z",
      "toState": null,
@@ -172,28 +274,44 @@
   }
  },
  {
+  "id": "8f95b10e-5ace-4054-b4fc-50103298dba8",
   "identifier": "ADE-61",
   "title": "New Window boot marks the other window's running chats as interrupted",
   "createdAt": "2026-10-20T07:50:50.271Z",
-  "updatedAt": "2026-10-20T07:50:50.271Z",
+  "updatedAt": "2026-10-20T13:04:38.040Z",
   "state": {
    "type": "unstarted"
   },
   "labels": {
-   "nodes": []
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
   },
   "history": {
-   "nodes": []
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:38.022Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    }
+   ]
   },
   "inverseRelations": {
    "nodes": []
   }
  },
  {
+  "id": "c540b06d-b161-4e36-ac42-23a3cbcecd85",
   "identifier": "ADE-60",
   "title": "Relaunch resume sends \"Continue\" twice; the turn's durationMs is stamped at 14 ms",
   "createdAt": "2026-10-20T07:32:51.693Z",
-  "updatedAt": "2026-10-20T08:18:22.624Z",
+  "updatedAt": "2026-10-20T13:04:35.812Z",
   "state": {
    "type": "started"
   },
@@ -201,11 +319,23 @@
    "nodes": [
     {
      "name": "In Review"
+    },
+    {
+     "name": "instance:2"
     }
    ]
   },
   "history": {
    "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:35.789Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
     {
      "createdAt": "2026-10-20T08:18:24.118Z",
      "toState": null,
@@ -234,18 +364,38 @@
   }
  },
  {
+  "id": "c77d6a89-f012-4a88-8d4b-7ac38b936dc4",
   "identifier": "ADE-59",
   "title": "Mono message footer shows a notice's end time on inverted turns",
   "createdAt": "2026-10-19T18:39:51.633Z",
-  "updatedAt": "2026-10-20T08:19:39.019Z",
+  "updatedAt": "2026-10-20T13:04:33.546Z",
   "state": {
    "type": "started"
   },
   "labels": {
-   "nodes": []
+   "nodes": [
+    {
+     "name": "code-complete"
+    },
+    {
+     "name": "instance:2"
+    }
+   ]
   },
   "history": {
    "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:33.523Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "code-complete"
+      },
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
     {
      "createdAt": "2026-10-20T07:47:07.708Z",
      "toState": null,
@@ -274,18 +424,32 @@
   }
  },
  {
+  "id": "db49c818-ba99-46a8-8a20-02bd2964f396",
   "identifier": "ADE-57",
   "title": "ADE-48 part 2: keep worktree-pinned tabs in the saved workspace across restart",
   "createdAt": "2026-10-19T14:16:58.966Z",
-  "updatedAt": "2026-10-20T12:52:42.325Z",
+  "updatedAt": "2026-10-20T13:04:31.323Z",
   "state": {
    "type": "started"
   },
   "labels": {
-   "nodes": []
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
   },
   "history": {
    "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:31.302Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
     {
      "createdAt": "2026-10-20T12:52:42.325Z",
      "toState": null,
@@ -312,18 +476,32 @@
   }
  },
  {
+  "id": "8e297074-c11a-42f6-8b7a-8125da46250d",
   "identifier": "ADE-56",
   "title": "ADE-14 follow-up: approvals write rules in SQL, and limits on options and links",
   "createdAt": "2026-10-19T13:04:58.709Z",
-  "updatedAt": "2026-10-20T12:52:39.501Z",
+  "updatedAt": "2026-10-20T13:58:12.964Z",
   "state": {
    "type": "backlog"
   },
   "labels": {
-   "nodes": []
+   "nodes": [
+    {
+     "name": "instance:1"
+    }
+   ]
   },
   "history": {
    "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:29.075Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:1"
+      }
+     ]
+    },
     {
      "createdAt": "2026-10-20T12:52:39.501Z",
      "toState": null,
@@ -368,18 +546,32 @@
   }
  },
  {
+  "id": "2d0195e1-5230-4fac-a5c5-c9346d90c60a",
   "identifier": "ADE-55",
   "title": "ADE-14 S6: E2E suite on real app state for every Definition of done item",
   "createdAt": "2026-10-19T11:17:14.398Z",
-  "updatedAt": "2026-10-20T12:52:36.494Z",
+  "updatedAt": "2026-10-20T13:04:26.925Z",
   "state": {
    "type": "unstarted"
   },
   "labels": {
-   "nodes": []
+   "nodes": [
+    {
+     "name": "instance:1"
+    }
+   ]
   },
   "history": {
    "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:26.898Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:1"
+      }
+     ]
+    },
     {
      "createdAt": "2026-10-20T12:52:36.494Z",
      "toState": null,
@@ -443,6 +635,7 @@
   }
  },
  {
+  "id": "1f3b7fdd-8f4c-4698-aa0c-3d4c57a30680",
   "identifier": "ADE-54",
   "title": "ADE-14 S5 (UI): open-cards sidebar badge and decision line in the Giga chat",
   "createdAt": "2026-10-19T11:17:10.988Z",
@@ -522,6 +715,7 @@
   }
  },
  {
+  "id": "712f6930-35a1-4ac4-986e-1182ce358cdb",
   "identifier": "ADE-53",
   "title": "ADE-14 S4 (UI): approvals board page and decide actions",
   "createdAt": "2026-10-19T11:17:08.645Z",
@@ -631,6 +825,7 @@
   }
  },
  {
+  "id": "229a3d06-790f-47c1-a891-c65879e7c7e6",
   "identifier": "ADE-52",
   "title": "ADE-14 S3: deliver a decision to the filing Giga, queued",
   "createdAt": "2026-10-19T11:17:06.318Z",
@@ -709,6 +904,7 @@
   }
  },
  {
+  "id": "4cf4b3c9-7bef-4909-8a34-448fd158905a",
   "identifier": "ADE-51",
   "title": "ADE-14 S2: approvals_board tool for Gigas (CLI, MCP, omp)",
   "createdAt": "2026-10-19T11:17:04.015Z",
@@ -792,6 +988,7 @@
   }
  },
  {
+  "id": "e515e976-6caf-475a-a69e-06550169c6af",
   "identifier": "ADE-50",
   "title": "ADE-14 S1: approvals table in monocode.db and its store",
   "createdAt": "2026-10-19T11:17:01.669Z",
@@ -875,56 +1072,7 @@
   }
  },
  {
-  "identifier": "ADE-47",
-  "title": "A session watched by two Mono requests is reported twice when it ends",
-  "createdAt": "2026-10-19T09:24:15.224Z",
-  "updatedAt": "2026-10-20T13:04:13.907Z",
-  "state": {
-   "type": "started"
-  },
-  "labels": {
-   "nodes": [
-    {
-     "name": "code-complete"
-    },
-    {
-     "name": "instance:2"
-    }
-   ]
-  },
-  "history": {
-   "nodes": [
-    {
-     "createdAt": "2026-10-20T13:04:13.879Z",
-     "toState": null,
-     "addedLabels": [
-      {
-       "name": "code-complete"
-      },
-      {
-       "name": "instance:2"
-      }
-     ]
-    },
-    {
-     "createdAt": "2026-10-19T19:46:08.202Z",
-     "toState": {
-      "type": "started"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T09:24:15.938Z",
-     "toState": null,
-     "addedLabels": null
-    }
-   ]
-  },
-  "inverseRelations": {
-   "nodes": []
-  }
- },
- {
+  "id": "b71b41fc-8a84-492d-ba95-f6ce967ad2b1",
   "identifier": "ADE-46",
   "title": "Completion groups are lost when the app relaunches while a group waits",
   "createdAt": "2026-10-19T08:38:24.429Z",
@@ -986,6 +1134,7 @@
   }
  },
  {
+  "id": "2b195755-dffe-411d-bcfa-0aeb709b6605",
   "identifier": "ADE-45",
   "title": "F1: Finish-gate run and real-data runs",
   "createdAt": "2026-10-19T08:23:23.148Z",
@@ -1118,6 +1267,7 @@
   }
  },
  {
+  "id": "19c47285-f57c-4559-abef-6461baa26cd8",
   "identifier": "ADE-44",
   "title": "D4: Claude Code deny rules on the app data folder",
   "createdAt": "2026-10-19T08:23:20.882Z",
@@ -1167,6 +1317,7 @@
   }
  },
  {
+  "id": "a3219e53-149e-4c1e-b015-87cf7210e748",
   "identifier": "ADE-43",
   "title": "D3: Migrate the plaintext database on launch",
   "createdAt": "2026-10-19T08:23:18.741Z",
@@ -1216,6 +1367,7 @@
   }
  },
  {
+  "id": "1c0b61ea-0d44-4538-a221-dde8763cd43e",
   "identifier": "ADE-42",
   "title": "D2: SQLCipher with the key in the login keychain",
   "createdAt": "2026-10-19T08:23:16.523Z",
@@ -1265,6 +1417,7 @@
   }
  },
  {
+  "id": "c735c7ef-04ef-4c85-a472-bf20ca775956",
   "identifier": "ADE-41",
   "title": "D1: Sandbox every spawned agent",
   "createdAt": "2026-10-19T08:23:14.285Z",
@@ -1319,6 +1472,7 @@
   }
  },
  {
+  "id": "a226cc72-a157-40c8-ae3c-848b0a00405e",
   "identifier": "ADE-40",
   "title": "E2: Eval baseline runs V1 to V4",
   "createdAt": "2026-10-19T08:23:12.095Z",
@@ -1368,6 +1522,7 @@
   }
  },
  {
+  "id": "409ff223-c15b-459b-8882-9d2d1e27266b",
   "identifier": "ADE-39",
   "title": "E1: Eval harness for V1 to V4",
   "createdAt": "2026-10-19T08:23:09.878Z",
@@ -1428,6 +1583,7 @@
   }
  },
  {
+  "id": "db335b13-fe6c-4fb7-9b37-4399234a98d1",
   "identifier": "ADE-38",
   "title": "R20: Approvals board hookup (waits on ADE-14)",
   "createdAt": "2026-10-19T08:23:07.689Z",
@@ -1488,6 +1644,7 @@
   }
  },
  {
+  "id": "a0fbc336-061d-4114-8c82-5d4f77cfedec",
   "identifier": "ADE-37",
   "title": "R19: A question reaches the Giga with its ask id",
   "createdAt": "2026-10-19T08:23:04.799Z",
@@ -1537,6 +1694,7 @@
   }
  },
  {
+  "id": "0645ecef-060e-4a2b-aeef-60be34a8178d",
   "identifier": "ADE-36",
   "title": "R18: Retire reply, handles and wanting_reply",
   "createdAt": "2026-10-19T08:23:02.612Z",
@@ -1586,6 +1744,7 @@
   }
  },
  {
+  "id": "41b4a96c-8b90-48d3-9dbf-cdd5ec30563f",
   "identifier": "ADE-35",
   "title": "R17: Upward speech needs an open ask",
   "createdAt": "2026-10-19T08:23:00.475Z",
@@ -1651,6 +1810,7 @@
   }
  },
  {
+  "id": "65f1be44-8a73-4870-a47c-a70a6d534b30",
   "identifier": "ADE-34",
   "title": "R16: Interrupted agents are woken to resume",
   "createdAt": "2026-10-19T08:22:58.265Z",
@@ -1700,6 +1860,7 @@
   }
  },
  {
+  "id": "7d53cef5-721a-4d14-857b-23290a0e9b8a",
   "identifier": "ADE-33",
   "title": "R15: Blocked path reaches the parent at once",
   "createdAt": "2026-10-19T08:22:55.963Z",
@@ -1760,6 +1921,7 @@
   }
  },
  {
+  "id": "a6b263f3-311a-4b06-b821-4eb78ba58c49",
   "identifier": "ADE-32",
   "title": "R14: Question, answer and one update",
   "createdAt": "2026-10-19T08:22:53.783Z",
@@ -1819,6 +1981,7 @@
   }
  },
  {
+  "id": "96088f36-b7e3-40d4-9a2f-9405e03f7f15",
   "identifier": "ADE-31",
   "title": "R13: Catch-up reminders are spaced out",
   "createdAt": "2026-10-19T08:22:51.357Z",
@@ -1868,6 +2031,7 @@
   }
  },
  {
+  "id": "e6c96a6b-59bc-428b-beb6-163a54cf5f5c",
   "identifier": "ADE-30",
   "title": "R12: Miss report",
   "createdAt": "2026-10-19T08:22:49.251Z",
@@ -1917,6 +2081,7 @@
   }
  },
  {
+  "id": "86fb7a9e-6ceb-4633-9b79-252b8a564115",
   "identifier": "ADE-29",
   "title": "R11: Deadline reminder, parent asks why, miss with reason",
   "createdAt": "2026-10-19T08:22:47.029Z",
@@ -1976,6 +2141,7 @@
   }
  },
  {
+  "id": "16614ae1-4a60-4214-b425-513caf81067c",
   "identifier": "ADE-28",
   "title": "R10: The 5-minute reminder offers one extension",
   "createdAt": "2026-10-19T08:22:16.204Z",
@@ -2025,6 +2191,7 @@
   }
  },
  {
+  "id": "34aeea84-95e9-4441-8729-9f7f1d3c64c5",
   "identifier": "ADE-27",
   "title": "R9: Reminder delivery, steer if busy, wake if idle",
   "createdAt": "2026-10-19T08:22:13.999Z",
@@ -2095,6 +2262,7 @@
   }
  },
  {
+  "id": "84ef7695-e683-48b9-a045-6ccdd3e36e65",
   "identifier": "ADE-26",
   "title": "R8: Scheduler and reminder outbox",
   "createdAt": "2026-10-19T08:22:11.854Z",
@@ -2155,6 +2323,7 @@
   }
  },
  {
+  "id": "4741c714-6356-42d4-821c-f2d8f2b52551",
   "identifier": "ADE-25",
   "title": "R7: A start is an ask",
   "createdAt": "2026-10-19T08:22:09.600Z",
@@ -2204,6 +2373,7 @@
   }
  },
  {
+  "id": "64240db9-a9e0-4032-8afc-5750156b4edf",
   "identifier": "ADE-24",
   "title": "R6: Agents can ask and ack",
   "createdAt": "2026-10-19T08:22:07.364Z",
@@ -2264,6 +2434,7 @@
   }
  },
  {
+  "id": "9d5ecf14-a9c1-416a-9332-39aebdb42057",
   "identifier": "ADE-23",
   "title": "R5: Ask and ack ledger",
   "createdAt": "2026-10-19T08:22:05.010Z",
@@ -2283,6 +2454,11 @@
   },
   "history": {
    "nodes": [
+    {
+     "createdAt": "2026-10-20T13:53:02.275Z",
+     "toState": null,
+     "addedLabels": null
+    },
     {
      "createdAt": "2026-10-20T13:03:18.946Z",
      "toState": null,
@@ -2363,101 +2539,7 @@
   }
  },
  {
-  "identifier": "ADE-22",
-  "title": "R4: Levels come only from the database",
-  "createdAt": "2026-10-19T08:22:02.738Z",
-  "updatedAt": "2026-10-20T13:03:16.775Z",
-  "state": {
-   "type": "started"
-  },
-  "labels": {
-   "nodes": [
-    {
-     "name": "code-complete"
-    },
-    {
-     "name": "instance:2"
-    }
-   ]
-  },
-  "history": {
-   "nodes": [
-    {
-     "createdAt": "2026-10-20T13:03:16.756Z",
-     "toState": null,
-     "addedLabels": [
-      {
-       "name": "code-complete"
-      },
-      {
-       "name": "instance:2"
-      }
-     ]
-    },
-    {
-     "createdAt": "2026-10-20T12:50:38.985Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-20T12:50:36.006Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-20T07:18:28.923Z",
-     "toState": {
-      "type": "started"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-20T07:17:52.773Z",
-     "toState": {
-      "type": "completed"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-20T05:46:44.112Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T20:02:51.655Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T20:02:49.616Z",
-     "toState": null,
-     "addedLabels": [
-      {
-       "name": "In Review"
-      }
-     ]
-    },
-    {
-     "createdAt": "2026-10-19T18:32:24.727Z",
-     "toState": {
-      "type": "started"
-     },
-     "addedLabels": null
-    }
-   ]
-  },
-  "inverseRelations": {
-   "nodes": [
-    {
-     "type": "blocks",
-     "issue": {
-      "identifier": "ADE-19"
-     }
-    }
-   ]
-  }
- },
- {
+  "id": "77a89a5e-5d46-47c4-aa49-172586adb221",
   "identifier": "ADE-14",
   "title": "Approvals board: Gigas file approval cards, Tyler decides, the decision queues back to the filing Giga",
   "createdAt": "2026-10-19T01:26:10.626Z",
@@ -2502,6 +2584,7 @@
   }
  },
  {
+  "id": "74ec69ab-738d-4584-a63e-c63b093f81c2",
   "identifier": "ADE-13",
   "title": "First launch starts with one Giga Mono, one Mono and the MonoCode project",
   "createdAt": "2026-10-19T00:53:46.927Z",
@@ -2534,6 +2617,7 @@
   }
  },
  {
+  "id": "f1f1d649-5a05-485c-95f4-f0bde1bfc400",
   "identifier": "ADE-11",
   "title": "Tabs in a second window are never saved",
   "createdAt": "2026-10-18T22:20:28.943Z",
@@ -2616,411 +2700,7 @@
   }
  },
  {
-  "identifier": "ADE-10",
-  "title": "Turn start and duration wrong when a queued Mono message runs after a notice that came in later",
-  "createdAt": "2026-10-18T22:20:26.198Z",
-  "updatedAt": "2026-10-20T13:03:07.423Z",
-  "state": {
-   "type": "started"
-  },
-  "labels": {
-   "nodes": [
-    {
-     "name": "code-complete"
-    },
-    {
-     "name": "instance:2"
-    }
-   ]
-  },
-  "history": {
-   "nodes": [
-    {
-     "createdAt": "2026-10-20T13:03:07.405Z",
-     "toState": null,
-     "addedLabels": [
-      {
-       "name": "code-complete"
-      },
-      {
-       "name": "instance:2"
-      }
-     ]
-    },
-    {
-     "createdAt": "2026-10-19T18:19:13.067Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T18:19:11.280Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T18:19:11.118Z",
-     "toState": {
-      "type": "started"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T18:17:58.317Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T18:17:58.098Z",
-     "toState": {
-      "type": "completed"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T17:48:54.392Z",
-     "toState": null,
-     "addedLabels": [
-      {
-       "name": "In Review"
-      }
-     ]
-    },
-    {
-     "createdAt": "2026-10-19T17:00:35.953Z",
-     "toState": {
-      "type": "started"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T09:59:37.142Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T00:16:49.604Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T00:16:49.596Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T00:16:49.572Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T00:16:48.655Z",
-     "toState": {
-      "type": "unstarted"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T22:20:27.451Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T22:20:26.847Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T22:20:26.826Z",
-     "toState": null,
-     "addedLabels": null
-    }
-   ]
-  },
-  "inverseRelations": {
-   "nodes": [
-    {
-     "type": "blocks",
-     "issue": {
-      "identifier": "ADE-5"
-     }
-    }
-   ]
-  }
- },
- {
-  "identifier": "ADE-8",
-  "title": "Mono turn duration missing when a queued message started the turn or a draft follows it",
-  "createdAt": "2026-10-18T11:46:38.245Z",
-  "updatedAt": "2026-10-20T13:03:05.129Z",
-  "state": {
-   "type": "started"
-  },
-  "labels": {
-   "nodes": [
-    {
-     "name": "code-complete"
-    },
-    {
-     "name": "instance:2"
-    }
-   ]
-  },
-  "history": {
-   "nodes": [
-    {
-     "createdAt": "2026-10-20T13:03:05.112Z",
-     "toState": null,
-     "addedLabels": [
-      {
-       "name": "code-complete"
-      },
-      {
-       "name": "instance:2"
-      }
-     ]
-    },
-    {
-     "createdAt": "2026-10-19T18:19:19.578Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T18:19:18.643Z",
-     "toState": {
-      "type": "started"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T18:19:11.333Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T18:18:05.362Z",
-     "toState": {
-      "type": "completed"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T18:17:58.354Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T00:16:49.596Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T00:16:45.116Z",
-     "toState": {
-      "type": "unstarted"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T23:31:07.410Z",
-     "toState": {
-      "type": "started"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T22:20:26.826Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T13:18:10.415Z",
-     "toState": {
-      "type": "completed"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T12:17:00.983Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T12:16:59.587Z",
-     "toState": null,
-     "addedLabels": [
-      {
-       "name": "In Review"
-      }
-     ]
-    },
-    {
-     "createdAt": "2026-10-18T12:09:43.153Z",
-     "toState": {
-      "type": "started"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T11:46:38.815Z",
-     "toState": null,
-     "addedLabels": null
-    }
-   ]
-  },
-  "inverseRelations": {
-   "nodes": [
-    {
-     "type": "blocks",
-     "issue": {
-      "identifier": "ADE-10"
-     }
-    }
-   ]
-  }
- },
- {
-  "identifier": "ADE-7",
-  "title": "liveAgents turnStartedAt loses a session's turn start after a steer",
-  "createdAt": "2026-10-18T09:58:36.141Z",
-  "updatedAt": "2026-10-20T13:03:02.275Z",
-  "state": {
-   "type": "started"
-  },
-  "labels": {
-   "nodes": [
-    {
-     "name": "code-complete"
-    },
-    {
-     "name": "instance:2"
-    }
-   ]
-  },
-  "history": {
-   "nodes": [
-    {
-     "createdAt": "2026-10-20T13:03:02.252Z",
-     "toState": null,
-     "addedLabels": [
-      {
-       "name": "code-complete"
-      },
-      {
-       "name": "instance:2"
-      }
-     ]
-    },
-    {
-     "createdAt": "2026-10-19T18:19:16.016Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T18:19:15.056Z",
-     "toState": {
-      "type": "started"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T18:19:11.280Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T18:18:01.792Z",
-     "toState": {
-      "type": "completed"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T18:17:58.317Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T00:16:49.572Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T00:16:42.126Z",
-     "toState": {
-      "type": "unstarted"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T23:31:04.547Z",
-     "toState": {
-      "type": "started"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T22:20:27.451Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T12:09:08.821Z",
-     "toState": {
-      "type": "completed"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T11:46:38.815Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T11:37:34.116Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T11:37:32.610Z",
-     "toState": null,
-     "addedLabels": [
-      {
-       "name": "In Review"
-      }
-     ]
-    },
-    {
-     "createdAt": "2026-10-18T11:11:24.202Z",
-     "toState": {
-      "type": "started"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T09:58:36.739Z",
-     "toState": null,
-     "addedLabels": null
-    }
-   ]
-  },
-  "inverseRelations": {
-   "nodes": [
-    {
-     "type": "blocks",
-     "issue": {
-      "identifier": "ADE-10"
-     }
-    },
-    {
-     "type": "related",
-     "issue": {
-      "identifier": "ADE-8"
-     }
-    }
-   ]
-  }
- },
- {
+  "id": "d2cbb905-f5df-4293-b21b-f346a0056a67",
   "identifier": "ADE-48",
   "title": "Tabs pinned to a worktree are dropped from the saved workspace and lost on restart",
   "createdAt": "2026-10-19T10:23:43.431Z",
@@ -3086,6 +2766,112 @@
   }
  },
  {
+  "id": "7ba9590c-27ef-484f-8bad-b7f56b97d60e",
+  "identifier": "ADE-22",
+  "title": "R4: Levels come only from the database",
+  "createdAt": "2026-10-19T08:22:02.738Z",
+  "updatedAt": "2026-10-20T13:53:02.166Z",
+  "state": {
+   "type": "completed"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:53:02.275Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:53:02.131Z",
+     "toState": {
+      "type": "completed"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:03:16.756Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "code-complete"
+      },
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:50:38.985Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:36.006Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T07:18:28.923Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T07:17:52.773Z",
+     "toState": {
+      "type": "completed"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T05:46:44.112Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T20:02:51.655Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T20:02:49.616Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "In Review"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-19T18:32:24.727Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-19"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "1347fe11-d1ef-4cc6-87e6-737078881ac5",
   "identifier": "ADE-21",
   "title": "R3: Real-app harness with a puppet agent",
   "createdAt": "2026-10-19T08:22:00.448Z",
@@ -3143,6 +2929,7 @@
   }
  },
  {
+  "id": "7fc4509e-8448-47c3-b34e-9bdc51613e4b",
   "identifier": "ADE-20",
   "title": "R2: Active clock from CLOCK_UPTIME_RAW",
   "createdAt": "2026-10-19T08:21:57.534Z",
@@ -3190,53 +2977,7 @@
   }
  },
  {
-  "identifier": "ADE-19",
-  "title": "R1: Scenario harness with a fake clock",
-  "createdAt": "2026-10-19T08:21:55.257Z",
-  "updatedAt": "2026-10-19T16:30:23.364Z",
-  "state": {
-   "type": "completed"
-  },
-  "labels": {
-   "nodes": []
-  },
-  "history": {
-   "nodes": [
-    {
-     "createdAt": "2026-10-20T12:50:36.006Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T16:30:23.333Z",
-     "toState": {
-      "type": "completed"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T16:16:47.158Z",
-     "toState": null,
-     "addedLabels": [
-      {
-       "name": "In Review"
-      }
-     ]
-    },
-    {
-     "createdAt": "2026-10-19T14:29:32.546Z",
-     "toState": {
-      "type": "started"
-     },
-     "addedLabels": null
-    }
-   ]
-  },
-  "inverseRelations": {
-   "nodes": []
-  }
- },
- {
+  "id": "62c5c480-50d2-4d26-8cf5-b16fe67a86f6",
   "identifier": "ADE-18",
   "title": "G3: Agent review verdict as a commit status",
   "createdAt": "2026-10-19T08:21:52.948Z",
@@ -3289,6 +3030,7 @@
   }
  },
  {
+  "id": "6a58d8fe-a088-4710-948b-5fa3ff3f2707",
   "identifier": "ADE-15",
   "title": "Completion notices from Mono-started sessions sometimes never reach the Mono",
   "createdAt": "2026-10-19T04:17:41.226Z",
@@ -3338,100 +3080,6 @@
      "type": "related",
      "issue": {
       "identifier": "ADE-47"
-     }
-    }
-   ]
-  }
- },
- {
-  "identifier": "ADE-5",
-  "title": "Open project to running session",
-  "createdAt": "2026-10-18T08:59:48.149Z",
-  "updatedAt": "2026-10-19T09:59:37.020Z",
-  "state": {
-   "type": "completed"
-  },
-  "labels": {
-   "nodes": []
-  },
-  "history": {
-   "nodes": [
-    {
-     "createdAt": "2026-10-19T09:59:37.142Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T09:59:36.988Z",
-     "toState": {
-      "type": "completed"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-19T00:43:57.399Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T23:30:03.913Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T22:20:26.847Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T21:50:11.491Z",
-     "toState": {
-      "type": "started"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T09:58:51.806Z",
-     "toState": {
-      "type": "completed"
-     },
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T09:58:50.377Z",
-     "toState": null,
-     "addedLabels": [
-      {
-       "name": "In Review"
-      }
-     ]
-    },
-    {
-     "createdAt": "2026-10-18T09:58:36.739Z",
-     "toState": null,
-     "addedLabels": null
-    },
-    {
-     "createdAt": "2026-10-18T09:13:09.901Z",
-     "toState": {
-      "type": "started"
-     },
-     "addedLabels": null
-    }
-   ]
-  },
-  "inverseRelations": {
-   "nodes": [
-    {
-     "type": "related",
-     "issue": {
-      "identifier": "ADE-12"
-     }
-    },
-    {
-     "type": "related",
-     "issue": {
-      "identifier": "ADE-7"
      }
     }
    ]

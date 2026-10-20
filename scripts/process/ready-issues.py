@@ -5,29 +5,36 @@
 
 An issue belongs to the instance its Linear label `instance:<n>` names. A Todo
 issue without exactly one instance label is listed under "unlabelled".
-A blocker (a Linear blockedBy relation) unblocks when its state is Done,
-Canceled or Duplicate, or when it has the label `code-complete`, which the
-Orchestrator sets when the last planned PR of a ticket merges. It unblocked at
-the history entry that put it in that state or added that label (the earlier
-of the two), else at its updatedAt. A blocker that has a builder never
-unblocks, whatever its state or labels.
-An issue is ready when every blocker has unblocked. It is ready since the last
-of those times, or, with no blockers, since it entered Todo (history, else
-createdAt). A session builds an issue only when it is busy, not archived, and
-its title starts with "omp · Linear ADE-<n>", read from `app sessions.list` of
-the instance's CLI (MONOCODE_CLI, else the instance's app bundle). Busy
-sessions whose title names no ticket are listed as "unattributed", so a
-builder with a bad title is visible; they do not change the exit code.
+
+Code complete. A ticket PR body has the line `Ticket-part: <n>/<N>`. When a PR
+merged into tyler/main has a title that starts with `ADE-<id>` and a body line
+with n == N, the script adds the Linear label `code-complete` to that ticket.
+Adding the label again changes nothing, and other labels stay.
+
+Blockers. A blocker (a Linear blockedBy relation) unblocks when its state is
+Done, Canceled or Duplicate, or it has `code-complete`, and no builder works on
+it. It unblocked at the earliest of: the history entry of its closed state, the
+merge of its last part, the history entry that added `code-complete`, else its
+updatedAt. An issue is ready since its last blocker unblocked, or, with no
+blockers, since it entered Todo (history, else createdAt).
+
+Builders. A session builds ticket ADE-<id> when it is busy, not archived, and
+the branch the app recorded for it matches `(^|/)ade-<id>(-|$)` (any case).
+Branches come read-only from both app databases. Busy means listed busy by
+this instance's CLI (MONOCODE_CLI, else its app bundle) or, for the other
+instance, in its in_flight_sessions table. Titles are never matched. Busy
+sessions on `main` or with no branch are listed as "unattributed".
+
 The Linear key is LINEAR_API_KEY, else the Linear MCP header in
-~/.omp/agent/mcp.json.
-Exit 0: nothing to do. Exit 1: an issue has been ready for more than 60
-minutes with no builder, or a Todo issue is unlabelled. Exit 2: a source failed
-or answered something unexpected.
+~/.omp/agent/mcp.json. Exit 0: nothing to do. Exit 1: an issue has been ready
+for more than 60 minutes with no builder, or a Todo issue is unlabelled.
+Exit 2: a source failed or answered something unexpected.
 """
 import argparse
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import urllib.request
@@ -35,6 +42,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+REPO = "tylers2222/Monocode-Unlocked"
 MAX_WAIT = timedelta(minutes=60)
 CLOSED = ("completed", "canceled", "duplicate")
 CODE_COMPLETE = "code-complete"
@@ -42,14 +50,19 @@ INSTANCE_CLIS = {
     "1": "/Applications/MonoCode.app/Contents/MacOS/monocode",
     "2": "/Applications/MonoCode 2.app/Contents/MacOS/monocode",
 }
-BUILDER = re.compile(r"omp · Linear (ADE-\d+)\b")
-TICKET = re.compile(r"\bADE-\d+\b", re.IGNORECASE)
+APP_DBS = {
+    "1": Path.home() / "Library/Application Support/com.monocode.desktop/monocode.db",
+    "2": Path.home() / "Library/Application Support/com.monocode.second/monocode.db",
+}
+BRANCH_TICKET = re.compile(r"(?:^|/)ade-(\d+)(?=-|$)", re.IGNORECASE)
+TITLE_TICKET = re.compile(r"ADE-(\d+)\b")
+TICKET_PART = re.compile(r"^Ticket-part: (\d+)/(\d+)\r?$", re.MULTILINE)
 ISSUES_QUERY = """
 query($filter: IssueFilter, $after: String) {
   issues(first: 50, after: $after, filter: $filter) {
     pageInfo { hasNextPage endCursor }
     nodes {
-      identifier title createdAt updatedAt state { type } labels { nodes { name } }
+      id identifier title createdAt updatedAt state { type } labels { nodes { name } }
       history(first: 100) { nodes { createdAt toState { type } addedLabels { name } } }
       inverseRelations { nodes { type issue { identifier } } }
     }
@@ -62,6 +75,12 @@ class Ready:
     id: str
     title: str
     since: datetime
+
+
+@dataclass(frozen=True)
+class FinalPart:
+    pr: int
+    merged_at: datetime
 
 
 def parse_time(text):
@@ -81,11 +100,30 @@ def entered_state(issue):
     return last_event(issue, lambda event: (event["toState"] or {}).get("type") == issue["state"]["type"])
 
 
-def unblocked_at(blocker):
+def final_parts(prs):
+    """Ticket id -> the last merged PR whose title starts with the ticket id and whose body says part N of N."""
+    finals = {}
+    for pr in prs:
+        title, part = TITLE_TICKET.match(pr["title"]), TICKET_PART.search(pr["body"] or "")
+        if title and part and int(part[1]) == int(part[2]):
+            final = FinalPart(pr["number"], parse_time(pr["mergedAt"]))
+            ticket = f"ADE-{int(title[1])}"
+            finals[ticket] = max(finals.get(ticket, final), final, key=lambda f: f.merged_at)
+    return finals
+
+
+def to_label(issues, finals):
+    """The fetched issues that have a final part merged but no code-complete label yet."""
+    return [issue for issue in issues if issue["identifier"] in finals and CODE_COMPLETE not in label_names(issue)]
+
+
+def unblocked_at(blocker, final):
     """When a blocker stopped blocking, or None while it still blocks."""
     times = []
     if blocker["state"]["type"] in CLOSED:
         times.append(entered_state(blocker))
+    if final:
+        times.append(final.merged_at)
     if CODE_COMPLETE in label_names(blocker):
         times.append(last_event(blocker, lambda event: CODE_COMPLETE in {l["name"] for l in event["addedLabels"] or []}))
     if not times:
@@ -98,15 +136,15 @@ def busy(sessions):
 
 
 def builder_tickets(sessions):
-    return {match[1] for session in busy(sessions) if (match := BUILDER.match(session["title"]))}
+    return {f"ADE-{int(n)}" for session in busy(sessions) for n in BRANCH_TICKET.findall(session["branch"] or "")}
 
 
 def unattributed(sessions):
-    """Busy sessions whose title names no ticket."""
-    return [session for session in busy(sessions) if not TICKET.search(session["title"])]
+    """Busy sessions on main or with no branch."""
+    return [session for session in busy(sessions) if (session["branch"] or "main") == "main"]
 
 
-def ready_issues(issues, sessions, instance):
+def ready_issues(issues, sessions, finals, instance):
     """(ready issues of the instance with no builder, Todo issues without exactly one instance label)."""
     by_id = {issue["identifier"]: issue for issue in issues}
     building = builder_tickets(sessions)
@@ -121,7 +159,7 @@ def ready_issues(issues, sessions, instance):
         if instances != {f"instance:{instance}"} or issue["identifier"] in building:
             continue
         blockers = [r["issue"]["identifier"] for r in issue["inverseRelations"]["nodes"] if r["type"] == "blocks"]
-        times = [None if blocker in building else unblocked_at(by_id[blocker]) for blocker in blockers]
+        times = [None if b in building else unblocked_at(by_id[b], finals.get(b)) for b in blockers]
         if None in times:
             continue
         since = max(times) if times else entered_state(issue) or parse_time(issue["createdAt"])
@@ -141,8 +179,9 @@ def report(ready, unlabelled, unattributed_sessions, now):
         lines.append("unlabelled (a Todo issue needs exactly one of instance:1, instance:2):")
         lines += [f"{issue['identifier']}  {issue['title']}" for issue in unlabelled]
     if unattributed_sessions:
-        lines.append("unattributed (busy, the title names no ticket; a builder must start \"Linear ADE-<n>\"):")
-        lines += [f"{session['id'][-8:]}  {session['title']}" for session in unattributed_sessions]
+        lines.append("unattributed (busy on main or no branch; a builder works on a branch named ade-<n>):")
+        lines += [f"instance {s['instance']}  {s['id'][-8:]}  {s['branch'] or '<no branch>'}  {s['title']}"
+                  for s in unattributed_sessions]
     lines.append(f"ready-issues: {len(ready)} ready with no builder, {late} waiting more than 60 min, "
                  f"{len(unlabelled)} unlabelled, {len(unattributed_sessions)} unattributed.")
     return lines, 1 if late or unlabelled else 0
@@ -157,28 +196,32 @@ def linear_key():
     return key if key.startswith("lin_api_") else f"Bearer {key}"
 
 
+def linear(key, query, variables):
+    request = urllib.request.Request(
+        "https://api.linear.app/graphql",
+        data=json.dumps({"query": query, "variables": variables}).encode(),
+        headers={"Authorization": key, "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        body = json.load(response)
+    if "errors" in body:
+        raise RuntimeError(f"Linear: {body['errors'][0]['message']}")
+    return body["data"]
+
+
 def linear_issues(key, issue_filter):
     issues, after = [], None
     while True:
-        request = urllib.request.Request(
-            "https://api.linear.app/graphql",
-            data=json.dumps({"query": ISSUES_QUERY, "variables": {"filter": issue_filter, "after": after}}).encode(),
-            headers={"Authorization": key, "Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            body = json.load(response)
-        if "errors" in body:
-            raise RuntimeError(f"Linear: {body['errors'][0]['message']}")
-        page = body["data"]["issues"]
+        page = linear(key, ISSUES_QUERY, {"filter": issue_filter, "after": after})["issues"]
         issues += page["nodes"]
         if not page["pageInfo"]["hasNextPage"]:
             return issues
         after = page["pageInfo"]["endCursor"]
 
 
-def open_issues_and_blockers():
+def open_issues_and_blockers(key):
     """The open ADE issues, plus the closed issues that block one of them."""
-    key, team = linear_key(), {"key": {"eq": "ADE"}}
+    team = {"key": {"eq": "ADE"}}
     issues = linear_issues(key, {"team": team, "state": {"type": {"nin": list(CLOSED)}}})
     known = {issue["identifier"] for issue in issues}
     missing = sorted({int(r["issue"]["identifier"].split("-")[1]) for issue in issues
@@ -187,12 +230,50 @@ def open_issues_and_blockers():
     return issues + (linear_issues(key, {"team": team, "number": {"in": missing}}) if missing else [])
 
 
-def sessions_of(instance):
+def add_code_complete(key, issues):
+    label = linear(key, '{ issueLabels(filter: {name: {eq: "code-complete"}, team: {key: {eq: "ADE"}}}) { nodes { id } } }', {})
+    label_id = label["issueLabels"]["nodes"][0]["id"]
+    for issue in issues:
+        result = linear(key, "mutation($id: String!, $label: String!) { issueAddLabel(id: $id, labelId: $label) { success } }",
+                        {"id": issue["id"], "label": label_id})
+        if not result["issueAddLabel"]["success"]:
+            raise RuntimeError(f"Linear: could not label {issue['identifier']} {CODE_COMPLETE}")
+        issue["labels"]["nodes"].append({"name": CODE_COMPLETE})
+
+
+def merged_prs():
+    return json.loads(subprocess.run(
+        ["gh", "pr", "list", "-R", REPO, "--base", "tyler/main", "--state", "merged", "--limit", "1000",
+         "--json", "number,title,body,mergedAt"],
+        check=True, capture_output=True, text=True,
+    ).stdout)
+
+
+def cli_busy_ids(instance):
     cli = os.environ.get("MONOCODE_CLI") or INSTANCE_CLIS[instance]
     answer = json.loads(subprocess.run([cli, "app", "sessions.list", "--json", "{}"], capture_output=True, text=True).stdout)
     if not answer.get("ok"):
         raise RuntimeError(f"monocode app sessions.list: {answer.get('error')}")
-    return answer["result"]["sessions"]
+    return {session["id"] for session in answer["result"]["sessions"] if session["busy"]}
+
+
+def read_db(path):
+    """(session rows, in-flight session ids) of one app database, opened read-only."""
+    with sqlite3.connect(f"{Path(path).as_uri()}?mode=ro", uri=True) as db:
+        db.row_factory = sqlite3.Row
+        rows = [dict(row) for row in db.execute("SELECT id, title, branch, worktree_cwd, archived FROM sessions")]
+        in_flight = {row[0] for row in db.execute("SELECT session_id FROM in_flight_sessions")}
+    return rows, in_flight
+
+
+def app_sessions(instance, dbs, own_busy_ids):
+    """Sessions of both instances. Busy: the CLI for this instance, in_flight_sessions for the other."""
+    sessions = []
+    for name, path in dbs.items():
+        rows, in_flight = read_db(path)
+        busy_ids = own_busy_ids if name == instance else in_flight
+        sessions += [{**row, "instance": name, "busy": row["id"] in busy_ids} for row in rows]
+    return sessions
 
 
 def main():
@@ -200,13 +281,21 @@ def main():
     parser.add_argument("--instance", required=True, choices=sorted(INSTANCE_CLIS))
     args = parser.parse_args()
     try:
-        sessions = sessions_of(args.instance)
-        issues = open_issues_and_blockers()
-        ready, unlabelled = ready_issues(issues, sessions, args.instance)
+        sessions = app_sessions(args.instance, APP_DBS, cli_busy_ids(args.instance))
+        key = linear_key()
+        issues = open_issues_and_blockers(key)
+        finals = final_parts(merged_prs())
+        labelled = to_label(issues, finals)
+        if labelled:
+            add_code_complete(key, labelled)
+        ready, unlabelled = ready_issues(issues, sessions, finals, args.instance)
         lines, code = report(ready, unlabelled, unattributed(sessions), datetime.now(timezone.utc))
     except Exception as err:
         print(f"ready-issues: {type(err).__name__}: {err}", file=sys.stderr)
         return 2
+    for issue in labelled:
+        final = finals[issue["identifier"]]
+        print(f"{issue['identifier']}  labelled {CODE_COMPLETE} (PR #{final.pr} is its last part)")
     print("\n".join(lines))
     return code
 
