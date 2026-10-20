@@ -14,7 +14,7 @@
 #   - a JS/TS, Rust or Cargo.toml file that git diffs as binary, or a file name with
 #     an escape git does not document;
 #   - more than 500 changed non-test lines. Tests, fixtures, Rust #[cfg(test)] items,
-#     eslint-suppressions.json and package-lock.json do not count.
+#     Rust tests.rs modules, eslint-suppressions.json and package-lock.json do not count.
 # The diff is read line by line, so it is weaker than gate/lint: a lint added on its
 # own line inside an existing multi-line attribute, or text in a block comment or a
 # multi-line string, is not seen.
@@ -42,7 +42,7 @@ exec perl -e '
 
   my ($merge_base, $head) = @ARGV;
   my $GATE_FILE = qr{^(\.github/(workflows|actions)/.*|scripts/gate/.*|scripts/install-linux-deps-[^/]*\.sh|\.github/rust-version|rust-toolchain(\.toml)?)$|(^|/)(eslint\.config\.[cm]?[jt]s|\.?clippy\.toml|\.jscpd\.json|\.cargo/config(\.toml)?|\.npmrc)$};
-  my $SIZE_EXEMPT = qr{(^|/)(tests?|__tests__|fixtures?)/|\.(test|spec|fixtures?)\.[^/]+$|(^|/)(eslint-suppressions\.json|package-lock\.json)$};
+  my $SIZE_EXEMPT = qr{(^|/)(tests?|__tests__|fixtures?)/|\.(test|spec|fixtures?)\.[^/]+$|(^|/)(eslint-suppressions\.json|package-lock\.json)$|(^|/)tests\.rs$};
   my $JS = qr{\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$};
   my $SOURCE = qr{\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|rs)$|(^|/)Cargo\.toml$};
   # Changed lines in these files that can switch gate/lint off: Cargo lint tables and
