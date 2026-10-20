@@ -90,15 +90,13 @@ export function MilestoneSettings({
   );
 }
 
-/** The project's on/off switch, with the frame's text. */
 function EnabledRow({ on, onToggle }: { on: boolean; onToggle: () => void }) {
   return (
     <div className="flex items-center gap-2.5 px-3.5 pt-1 pb-3">
       <div className="min-w-0 flex-1">
         <p className="text-[13px]">Milestones for this project</p>
         <p className="text-[11px] text-content/40">
-          Off hides the project here. Agents get “Milestones are off for this
-          project”.
+          Off stops agents from changing milestones here.
         </p>
       </div>
       <button
