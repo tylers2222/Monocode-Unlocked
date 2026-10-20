@@ -187,7 +187,7 @@ def main(argv):
     diff = gh('pr', 'diff', pr, '-R', repo, check=False) or None
     t, why = tier(files, diff, multi_line_sets(repo, pr, files) if diff else {})
     nt = non_test_lines(files)
-    interrogate = needs_interrogate(t, nt, gate_or_concurrency(files, diff))
+    interrogate = needs_interrogate(t, nt, gate_or_concurrency(files, diff or ""))
     print(f'tier: {t}, {nt} non-test lines added' + (', needs interrogate before round 1' if interrogate else ''))
     for w in why:
         print(f'tier:   {w}')
