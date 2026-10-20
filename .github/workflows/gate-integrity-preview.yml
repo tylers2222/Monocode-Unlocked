@@ -1,0 +1,215 @@
+name: preview-gate-integrity
+
+# GitHub runs a pull_request_target workflow from the default branch, and the
+# checkout below takes the default branch too, so a pull request cannot edit the
+# check that judges it. The branches filter keeps the jobs to pull requests into
+# tyler/main. The tier and integrity jobs run no pull request code: the PR head is
+# fetched as git objects for `git diff` and never checked out, installed, built or
+# sourced, and the scripts they run come from the default-branch checkout. The
+# mutation job does build and test the PR head; its comment says what keeps that safe.
+# A label or body change re-runs the gate: a hand-set tier label is put back, and the
+# body and label checks see the new state.
+on:
+  pull_request:
+    branches: ['lane-d/preview-*']
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tier:
+    name: preview/tier
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      tier: ${{ steps.tier.outputs.tier }}
+      nt: ${{ steps.tier.outputs.nt }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Tier the PR and set its tier label
+        id: tier
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: python3 scripts/process/tier.py "$PR" --apply
+
+  # Runs only for tier:T3 and passes at once for T1 and T2. It builds and tests the PR's
+  # code, so it has no token permissions, reads no secrets, writes no cache, and runs
+  # only for branches of this repository (only collaborators can push them). What it
+  # mutates and the pass rule come from the default-branch checkout in gate/.
+  mutation:
+    name: preview/mutation
+    needs: tier
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions: {}
+    env:
+      TIER: ${{ needs.tier.outputs.tier }}
+      SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Not T3, no mutation run
+        if: ${{ env.TIER != 'T3' }}
+        run: 'echo "mutation: tier $TIER, no mutation run"'
+
+      - name: T3 from a fork
+        if: ${{ env.TIER == 'T3' && env.SAME_REPO != 'true' }}
+        run: |
+          echo "mutation: a T3 PR from a fork cannot run its code here; push the branch to this repository"
+          exit 1
+
+      - uses: actions/checkout@v4
+        if: ${{ env.TIER == 'T3' && env.SAME_REPO == 'true' }}
+        with:
+          path: gate
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        if: ${{ env.TIER == 'T3' && env.SAME_REPO == 'true' }}
+        with:
+          path: head
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Changed lines to mutate
+        id: targets
+        if: ${{ env.TIER == 'T3' && env.SAME_REPO == 'true' }}
+        working-directory: head
+        run: |
+          merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          git diff "$merge_base" "$HEAD_SHA" > "$RUNNER_TEMP/pr.diff"
+          git diff --unified=0 "$merge_base" "$HEAD_SHA" | python3 ../gate/scripts/process/mutation_targets.py | tee -a "$GITHUB_OUTPUT"
+
+      - id: rust-version
+        if: ${{ steps.targets.outputs.rust == 'yes' }}
+        run: echo "version=$(cat gate/.github/rust-version)" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        if: ${{ steps.targets.outputs.rust == 'yes' }}
+        with:
+          toolchain: ${{ steps.rust-version.outputs.version }}
+
+      - uses: taiki-e/install-action@v2
+        if: ${{ steps.targets.outputs.rust == 'yes' }}
+        with:
+          tool: cargo-mutants
+
+      # Step timeouts fail the step (a job timeout would cancel it), so gate/integrity
+      # sees a failure, never a skip.
+      - name: cargo mutants on the changed Rust lines
+        if: ${{ steps.targets.outputs.rust == 'yes' }}
+        timeout-minutes: 55
+        working-directory: head
+        run: |
+          bash ../gate/scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
+          bash ../gate/scripts/process/mutation.sh rust "$RUNNER_TEMP/pr.diff"
+
+      - uses: actions/setup-node@v4
+        if: ${{ steps.targets.outputs.stryker != '' }}
+        with:
+          node-version: 24
+
+      - name: Stryker on the changed TypeScript lines
+        if: ${{ steps.targets.outputs.stryker != '' }}
+        timeout-minutes: 55
+        working-directory: head
+        env:
+          SPECS: ${{ steps.targets.outputs.stryker }}
+        run: bash ../gate/scripts/process/mutation.sh ts "$SPECS"
+
+  integrity:
+    name: preview/integrity
+    needs: [tier, mutation]
+    # A skipped required check counts as passed, so this job always runs, and its last
+    # step fails it unless gate/tier and gate/mutation succeeded.
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      # Only for the carry post below.
+      statuses: write
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      GATE_REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch the PR head as git objects only
+        run: git fetch --no-tags origin "$HEAD_SHA"
+
+      - name: Integrity check (default-branch script, diff only)
+        run: bash scripts/gate/integrity.sh "$BASE_SHA" "$HEAD_SHA"
+
+      # Each check below reads the PR live, so a re-run sees the current body and labels.
+      - name: PR description (size, self-pass, file caps) and tiny-PR overlap warning
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NT: ${{ needs.tier.outputs.nt }}
+        run: python3 scripts/process/pr_body.py "$PR" ${NT:+--nt "$NT"}
+
+      # The two label checks come from #164. Until it is on the default branch the
+      # check is not enforced, and the step says so in a warning on every run.
+      - name: waits-tyler label category
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f scripts/process/waits-tyler.py ]; then
+            python3 scripts/process/waits-tyler.py --pr "$PR" --repo "$GATE_REPO"
+          else
+            echo "::warning::waits-tyler label check is not on the default branch yet (#164), so it is NOT enforced"
+          fi
+
+      - name: Exactly one instance label
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f scripts/process/instance-label.py ]; then
+            python3 scripts/process/instance-label.py --pr "$PR" --repo "$GATE_REPO"
+          else
+            echo "::warning::instance label check is not on the default branch yet (#164), so it is NOT enforced"
+          fi
+
+      # Fails until the head may merge under the tier rule: a review verdict on the head,
+      # or a minors-only verdict carried by fixer proof. --post-carry posts the carried
+      # verdict as review/agent on the head; delete the flag and `statuses: write` to keep
+      # review/agent reviewer-only. gate-integrity-rerun.yml re-runs this job when a
+      # verdict, a fixer-proof comment or another check changes.
+      - name: Merge rule (review verdict and fixer proof)
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TIER: ${{ needs.tier.outputs.tier }}
+          MUTATION: ${{ needs.mutation.result }}
+        run: python3 scripts/process/merge_rule.py "$PR" "$TIER" --mutation "$MUTATION" --post-carry
+
+      - name: Fail when gate/tier or gate/mutation failed
+        if: ${{ always() && (needs.tier.result != 'success' || needs.mutation.result != 'success') }}
+        env:
+          TIER_RESULT: ${{ needs.tier.result }}
+          MUTATION_RESULT: ${{ needs.mutation.result }}
+        run: |
+          echo "integrity: gate/tier ended $TIER_RESULT, gate/mutation ended $MUTATION_RESULT"
+          exit 1
