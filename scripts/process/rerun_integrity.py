@@ -1,7 +1,8 @@
 """Re-runs the gate/integrity job of a PR's current head when something it reads
 changes without a pull_request_target event: a fixer-proof comment, a review/agent
-verdict, or a finished pull_request workflow. Re-running that one job keeps the
-run's gate/tier result and updates the required context on the head.
+verdict, or a finished pull_request workflow. It re-runs that one job, or the whole
+run when no run had its other jobs succeed, and so updates the required context on the
+head.
 
 Usage: rerun_integrity.py  (reads GITHUB_EVENT_NAME and GITHUB_EVENT_PATH)
 GATE_REPO, GATE_WORKFLOW (default gate-integrity.yml), GATE_EVENT (default
@@ -32,6 +33,13 @@ def stale(event_sha, head):
     return event_sha is not None and event_sha != head
 
 
+def resolve_pr(prs, sha):
+    """prs: {number, state, head} for each PR that holds the commit (commits/{sha}/pulls).
+    The open PR whose head is the commit, or None. In a stack every child PR holds its
+    base PR's head too, so the first PR listed is not always the one."""
+    return next((pr['number'] for pr in prs if pr['state'] == 'open' and pr['head'] == sha), None)
+
+
 def pick(runs, jobs_by_run, job_name):
     """What to re-run once every run of the head has completed: ('job', job id, run id)
     in the newest run (by id) that has the job and whose other jobs all succeeded, else
@@ -57,14 +65,16 @@ def main():
     with open(os.environ['GITHUB_EVENT_PATH']) as f:
         pr, event_sha = event_target(os.environ['GITHUB_EVENT_NAME'], json.load(f))
     if pr is None:
-        prs = json.loads(gh('api', f'repos/{repo}/commits/{event_sha}/pulls', '--jq', '[.[] | select(.state == "open") | .number]'))
-        if not prs:
-            print(f'rerun: {event_sha} is not the commit of an open PR')
+        pr = resolve_pr(json.loads(gh('api', f'repos/{repo}/commits/{event_sha}/pulls', '--jq', '[.[] | {number, state, head: .head.sha}]')), event_sha)
+        if pr is None:
+            print(f'rerun: {event_sha} is not the head of an open PR')
             return 0
-        pr = prs[0]
     deadline = time.monotonic() + WAIT_SECONDS
     while True:
         head = gh('api', f'repos/{repo}/pulls/{pr}', '--jq', '.head.sha').strip()
+        # A comment names no commit: pin the head it found first, so a push during the
+        # wait does not re-run the new head (that push starts its own run).
+        event_sha = event_sha or head
         if stale(event_sha, head):
             print(f'rerun: {event_sha} is not the head of #{pr} ({head}); nothing to re-run')
             return 0
