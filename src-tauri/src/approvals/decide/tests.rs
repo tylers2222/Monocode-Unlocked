@@ -136,7 +136,9 @@ fn each_decision_queues_once_to_the_chat_of_the_giga_that_filed_it() {
 // Defects: a card whose Giga was deleted cannot close, loses its manual
 // handling state or writes a message; or a decision that cannot reach
 // the Giga (no chat, too long for one message) closes the card anyway, or
-// a refused body does not report its length and the limit.
+// a refused body does not report its length and the limit, or a note
+// over the note limit is refused as anything but decision_too_long, with
+// or without a Giga.
 #[test]
 fn decide_delivers_nothing_to_a_deleted_giga_and_refuses_what_it_cannot_deliver() {
     let store = SessionStore::open_in_memory().unwrap();
@@ -148,6 +150,7 @@ fn decide_delivers_nothing_to_a_deleted_giga_and_refuses_what_it_cannot_deliver(
     let over = filed(&conn, "giga-a", "Over", "[]");
     let chatless = filed(&conn, "giga-b", "No chat", "[]");
     let orphan = filed(&conn, "giga-a", "Orphan", "[]");
+    let orphan_long = filed(&conn, "giga-a", "Orphan long", "[]");
     let delivered = |card: &Approval, note: &str| {
         let decision = Decision {
             verdict: Verdict::Rejected,
@@ -164,14 +167,17 @@ fn decide_delivers_nothing_to_a_deleted_giga_and_refuses_what_it_cannot_deliver(
     let fill =
         |card: &Approval, extra: usize| "x".repeat(Body::MAX_CHARS - delivered(card, "") + extra);
 
-    let note = "x".repeat(TEXT_MAX);
-    assert_eq!(
-        reject(&long, note.clone()).map(drop),
+    let too_long = |card: &Approval, note: &str| {
         Err(format!(
             "decision_too_long:{}:{}",
-            delivered(&long, &note),
+            delivered(card, note),
             Body::MAX_CHARS
         ))
+    };
+    let note = "x".repeat(Body::MAX_CHARS + 1);
+    assert_eq!(
+        reject(&long, note.clone()).map(drop),
+        too_long(&long, &note)
     );
     assert_eq!(reject(&exact, fill(&exact, 0)).unwrap().1, naming(CHAT_A));
     assert_eq!(
@@ -191,6 +197,12 @@ fn decide_delivers_nothing_to_a_deleted_giga_and_refuses_what_it_cannot_deliver(
     assert_eq!(get(&conn, &chatless.id).unwrap(), chatless);
 
     assert!(crate::mono_roster::delete(&conn, "giga-a").unwrap());
+    let orphan_long = get(&conn, &orphan_long.id).unwrap();
+    assert_eq!(
+        reject(&orphan_long, note.clone()).map(drop),
+        too_long(&orphan_long, &note)
+    );
+    assert_eq!(get(&conn, &orphan_long.id).unwrap(), orphan_long);
     let (closed, told) = decide(&conn, &orphan.id, Verdict::Approved, None, &[], 3).unwrap();
     assert_eq!(
         closed.requested_by,
@@ -218,6 +230,8 @@ fn decide_closes_an_open_card_once() {
         let error = decide(&conn, &id, Verdict::Approved, None, &chosen(&ticked), 2).unwrap_err();
         assert!(error.starts_with("invalid_input"), "{ticked:?}: {error}");
     }
+    let blank = decide(&conn, &id, Verdict::Rejected, Some(" \n ".into()), &[], 2).unwrap_err();
+    assert!(blank.starts_with("invalid_input"), "{blank}");
     assert_eq!(get(&conn, &id).unwrap().status, Status::Open);
 
     let ticked = chosen(&["Server", "SQLite"]);

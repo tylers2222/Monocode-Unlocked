@@ -3,9 +3,7 @@ use std::collections::HashSet;
 use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use tauri::{AppHandle, Runtime, State};
 
-use super::{
-    announce, check_text, get, to_json, Approval, Decision, Status, Verdict, NOT_OPEN, TEXT_MAX,
-};
+use super::{announce, get, to_json, Approval, Decision, Status, Verdict, NOT_OPEN};
 use crate::milestones::require;
 use crate::mono::content_hash;
 use crate::mono_messages::{
@@ -49,12 +47,7 @@ fn decision_text(approval: &Approval, decision: &Decision) -> String {
     text
 }
 
-fn deliver(
-    tx: &Connection,
-    approval: &Approval,
-    decision: &Decision,
-    now: i64,
-) -> Result<Notices, String> {
+fn deliver(tx: &Connection, approval: &Approval, body: &str, now: i64) -> Result<Notices, String> {
     let mut notices = Notices::default();
     let Some(giga) = &approval.requested_by.id else {
         return Ok(notices);
@@ -63,16 +56,11 @@ fn deliver(
         .map_err(|e| e.to_string())?
         .and_then(|row| row.chat)
         .ok_or(NO_CHAT)?;
-    let body = decision_text(approval, decision);
-    let chars = body.chars().count();
-    if chars > Body::MAX_CHARS {
-        return Err(format!("{TOO_LONG}:{chars}:{}", Body::MAX_CHARS));
-    }
     let message = MonoMessage {
         id: mono_messages::new_message_id(),
         request_id: RequestId::parse(&approval.id).ok_or("the card id is not a request id")?,
         part: Part::FIRST,
-        payload_hash: PayloadHash::parse(&content_hash(&body)).expect("sha256 hex"),
+        payload_hash: PayloadHash::parse(&content_hash(body)).expect("sha256 hex"),
         tool: Tool::SendMessage,
         from_mono_id: None,
         from_session_id: SessionId::parse(SENDER).expect("a session id"),
@@ -80,7 +68,7 @@ fn deliver(
             mono_id: giga.clone(),
         }),
         addressed: giga.as_str().into(),
-        body: Body::new(&body),
+        body: Body::new(body),
         hop: 0,
         created_at: now,
         status: mono_messages::Status::Delivered {
@@ -156,15 +144,23 @@ pub(crate) fn decide(
         verdict != Verdict::Approved || labels.is_empty() || !chosen.is_empty(),
         "approving a card with options needs at least one chosen option",
     )?;
+    let note = note.map(|note| note.trim().to_owned());
+    require(
+        note.as_deref() != Some(""),
+        "decision note must not be blank",
+    )?;
     let decision = Decision {
         verdict,
         decided_at: now,
-        note: note
-            .map(|note| check_text("decision note", &note, TEXT_MAX))
-            .transpose()?,
+        note,
         chosen: chosen.to_vec(),
         not_sent: false,
     };
+    let body = decision_text(&open, &decision);
+    let chars = body.chars().count();
+    if chars > Body::MAX_CHARS {
+        return Err(format!("{TOO_LONG}:{chars}:{}", Body::MAX_CHARS));
+    }
     tx.execute(
         "UPDATE approvals SET status = ?2, decided_at = ?3, decision_note = ?4,
            chosen_options = ?5
@@ -178,7 +174,7 @@ pub(crate) fn decide(
         ],
     )
     .map_err(|e| e.to_string())?;
-    let notices = deliver(&tx, &open, &decision, now)?;
+    let notices = deliver(&tx, &open, &body, now)?;
     let decided = get(&tx, id)?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok((decided, notices))
