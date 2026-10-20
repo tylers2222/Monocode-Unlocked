@@ -9,12 +9,15 @@ A blocker (a Linear blockedBy relation) unblocks when its state is Done,
 Canceled or Duplicate, or when it has the label `code-complete`, which the
 Orchestrator sets when the last planned PR of a ticket merges. It unblocked at
 the history entry that put it in that state or added that label (the earlier
-of the two), else at its updatedAt.
+of the two), else at its updatedAt. A blocker that has a builder never
+unblocks, whatever its state or labels.
 An issue is ready when every blocker has unblocked. It is ready since the last
 of those times, or, with no blockers, since it entered Todo (history, else
 createdAt). A session builds an issue only when it is busy, not archived, and
 its title starts with "omp · Linear ADE-<n>", read from `app sessions.list` of
-the instance's CLI (MONOCODE_CLI, else the instance's app bundle).
+the instance's CLI (MONOCODE_CLI, else the instance's app bundle). Busy
+sessions whose title names no ticket are listed as "unattributed", so a
+builder with a bad title is visible; they do not change the exit code.
 The Linear key is LINEAR_API_KEY, else the Linear MCP header in
 ~/.omp/agent/mcp.json.
 Exit 0: nothing to do. Exit 1: an issue has been ready for more than 60
@@ -40,6 +43,7 @@ INSTANCE_CLIS = {
     "2": "/Applications/MonoCode 2.app/Contents/MacOS/monocode",
 }
 BUILDER = re.compile(r"omp · Linear (ADE-\d+)\b")
+TICKET = re.compile(r"\bADE-\d+\b", re.IGNORECASE)
 ISSUES_QUERY = """
 query($filter: IssueFilter, $after: String) {
   issues(first: 50, after: $after, filter: $filter) {
@@ -89,9 +93,17 @@ def unblocked_at(blocker):
     return min(filter(None, times), default=parse_time(blocker["updatedAt"]))
 
 
+def busy(sessions):
+    return [session for session in sessions if session["busy"] and not session["archived"]]
+
+
 def builder_tickets(sessions):
-    return {match[1] for session in sessions
-            if session["busy"] and not session["archived"] and (match := BUILDER.match(session["title"]))}
+    return {match[1] for session in busy(sessions) if (match := BUILDER.match(session["title"]))}
+
+
+def unattributed(sessions):
+    """Busy sessions whose title names no ticket."""
+    return [session for session in busy(sessions) if not TICKET.search(session["title"])]
 
 
 def ready_issues(issues, sessions, instance):
@@ -109,7 +121,7 @@ def ready_issues(issues, sessions, instance):
         if instances != {f"instance:{instance}"} or issue["identifier"] in building:
             continue
         blockers = [r["issue"]["identifier"] for r in issue["inverseRelations"]["nodes"] if r["type"] == "blocks"]
-        times = [unblocked_at(by_id[blocker]) for blocker in blockers]
+        times = [None if blocker in building else unblocked_at(by_id[blocker]) for blocker in blockers]
         if None in times:
             continue
         since = max(times) if times else entered_state(issue) or parse_time(issue["createdAt"])
@@ -117,7 +129,7 @@ def ready_issues(issues, sessions, instance):
     return sorted(ready, key=lambda r: (r.since, r.id)), unlabelled
 
 
-def report(ready, unlabelled, now):
+def report(ready, unlabelled, unattributed_sessions, now):
     """Output lines and the exit code."""
     lines, late = [], 0
     for issue in ready:
@@ -128,8 +140,11 @@ def report(ready, unlabelled, now):
     if unlabelled:
         lines.append("unlabelled (a Todo issue needs exactly one of instance:1, instance:2):")
         lines += [f"{issue['identifier']}  {issue['title']}" for issue in unlabelled]
+    if unattributed_sessions:
+        lines.append("unattributed (busy, the title names no ticket; a builder must start \"Linear ADE-<n>\"):")
+        lines += [f"{session['id'][-8:]}  {session['title']}" for session in unattributed_sessions]
     lines.append(f"ready-issues: {len(ready)} ready with no builder, {late} waiting more than 60 min, "
-                 f"{len(unlabelled)} unlabelled.")
+                 f"{len(unlabelled)} unlabelled, {len(unattributed_sessions)} unattributed.")
     return lines, 1 if late or unlabelled else 0
 
 
@@ -187,7 +202,8 @@ def main():
     try:
         sessions = sessions_of(args.instance)
         issues = open_issues_and_blockers()
-        lines, code = report(*ready_issues(issues, sessions, args.instance), datetime.now(timezone.utc))
+        ready, unlabelled = ready_issues(issues, sessions, args.instance)
+        lines, code = report(ready, unlabelled, unattributed(sessions), datetime.now(timezone.utc))
     except Exception as err:
         print(f"ready-issues: {type(err).__name__}: {err}", file=sys.stderr)
         return 2

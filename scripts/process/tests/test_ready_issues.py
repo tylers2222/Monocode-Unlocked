@@ -5,7 +5,9 @@
 fixtures/linear-issues.json is the script's two Linear queries (the open ADE
 issues, then the closed issues that block one), taken while the Orchestrator
 was adding the instance labels. fixtures/sessions.json is instance 2's
-`app sessions.list`, cut to the busy sessions and three idle ones.
+`app sessions.list`, cut to the busy sessions and three idle ones. Most tests
+unblock ADE-11, so setUp leaves out its recorded builder; the builder tests
+put it back.
 """
 import copy
 import importlib.util
@@ -27,6 +29,7 @@ _spec.loader.exec_module(ri)
 RECORDED_AT = datetime(2026, 10, 20, 13, 4, tzinfo=timezone.utc)
 ISSUES = json.loads((HERE / "fixtures/linear-issues.json").read_text())
 SESSIONS = json.loads((HERE / "fixtures/sessions.json").read_text())["result"]["sessions"]
+ADE_11_BUILDER = "omp · Linear ADE-11, PR 1"
 
 
 def at(text):
@@ -36,7 +39,7 @@ def at(text):
 class ReadyIssues(unittest.TestCase):
     def setUp(self):
         self.issues = copy.deepcopy(ISSUES)
-        self.sessions = copy.deepcopy(SESSIONS)
+        self.sessions = [s for s in copy.deepcopy(SESSIONS) if not s["title"].startswith(ADE_11_BUILDER)]
 
     def run_instance(self, instance="2"):
         return ri.ready_issues(self.issues, self.sessions, instance)
@@ -62,9 +65,9 @@ class ReadyIssues(unittest.TestCase):
         ready, unlabelled = self.run_instance()
         self.assertEqual(ready, [], "every labelled Todo issue waits on an open blocker")
         self.assertEqual([i["identifier"] for i in unlabelled], ["ADE-66", "ADE-65", "ADE-64", "ADE-63", "ADE-62", "ADE-61", "ADE-55"])
-        lines, code = ri.report(ready, unlabelled, RECORDED_AT)
+        lines, code = ri.report(ready, unlabelled, [], RECORDED_AT)
         self.assertEqual(code, 1, "unlabelled issues keep the labels complete")
-        self.assertIn("ready-issues: 0 ready with no builder, 0 waiting more than 60 min, 7 unlabelled.", lines)
+        self.assertIn("ready-issues: 0 ready with no builder, 0 waiting more than 60 min, 7 unlabelled, 0 unattributed.", lines)
 
     def test_in_progress_blocker_blocks_until_code_complete(self):
         self.label("ADE-62", "instance:2")
@@ -122,8 +125,8 @@ class ReadyIssues(unittest.TestCase):
         self.event("ADE-64", "2026-10-20T12:00:00", state="unstarted")
         ready = self.ready()["ADE-64"]
         self.assertEqual(ready.since, at("2026-10-20T12:00:00"))
-        self.assertEqual(ri.report([ready], [], ready.since + timedelta(minutes=60))[1], 0)
-        self.assertEqual(ri.report([ready], [], ready.since + timedelta(minutes=61))[1], 1)
+        self.assertEqual(ri.report([ready], [], [], ready.since + timedelta(minutes=60))[1], 0)
+        self.assertEqual(ri.report([ready], [], [], ready.since + timedelta(minutes=61))[1], 1)
 
     def test_builder_is_a_busy_linear_session_for_the_exact_ticket(self):
         self.label("ADE-61", "instance:2")
@@ -161,7 +164,28 @@ class ReadyIssues(unittest.TestCase):
         self.assertIn("ADE-61", [i["identifier"] for i in unlabelled])
         self.assertNotIn("ADE-64", [i["identifier"] for i in unlabelled])
         self.assertNotIn("ADE-56", [i["identifier"] for i in unlabelled], "Backlog is not judged")
-        self.assertEqual(ri.report([r for r in ready if r.id == "ADE-64"], unlabelled, ready[0].since)[1], 1)
+        self.assertEqual(ri.report([r for r in ready if r.id == "ADE-64"], unlabelled, [], ready[0].since)[1], 1)
+
+
+    def test_blocker_with_a_builder_never_unblocks(self):
+        self.label("ADE-62", "instance:2")
+        self.label("ADE-11", "code-complete")
+        self.event("ADE-11", "2026-10-20T12:30:00", added=["code-complete"])
+        self.set_state("ADE-11", "completed", "2026-10-20T13:00:00")
+        self.sessions[:] = copy.deepcopy(SESSIONS)
+        self.assertNotIn("ADE-62", self.ready(), "'omp · Linear ADE-11, PR 1' is still busy")
+        self.sessions[:] = [s for s in self.sessions if not s["title"].startswith(ADE_11_BUILDER)]
+        self.assertIn("ADE-62", self.ready())
+
+    def test_busy_sessions_naming_no_ticket_are_unattributed(self):
+        sessions = [*SESSIONS, {**SESSIONS[0], "id": "app-x-1a2b3c4d", "title": "omp · Review ADE-61 change brief"}]
+        found = ri.unattributed(sessions)
+        self.assertEqual(len(found), 11, "14 busy, 3 of them Linear builders; idle ones and the reviewer naming ADE-61 are left out")
+        self.assertTrue(all(s["busy"] and "ADE-" not in s["title"] for s in found))
+        lines, code = ri.report([], [], found, RECORDED_AT)
+        self.assertEqual(code, 0, "informational only")
+        self.assertIn(f"{found[0]['id'][-8:]}  {found[0]['title']}", lines)
+        self.assertIn("ready-issues: 0 ready with no builder, 0 waiting more than 60 min, 0 unlabelled, 11 unattributed.", lines)
 
 
 class CommandLine(unittest.TestCase):
