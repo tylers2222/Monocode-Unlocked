@@ -16,14 +16,6 @@ APP_DATA="$EVAL_HOME/Library/Application Support/$EVAL_ID"
 # Logins the harnesses read. Symlinked, never copied.
 LINKS=(.omp .claude .claude.json .codex .config .gitconfig .ssh Library/Keychains)
 
-guard_home() {
-  case "$EVAL_HOME" in
-    /tmp/?*|/private/tmp/?*) ;;
-    *) die "GIGA_EVAL_HOME must be under /tmp, got $EVAL_HOME" ;;
-  esac
-  [[ "$EVAL_HOME" != "$REAL_HOME" ]] || die "temp HOME equals the real HOME"
-}
-
 cmd_build() {
   local checkout="${1:?checkout path}" label="${2:-$(basename "$1")}"
   checkout="$(cd "$checkout" && pwd)"
@@ -59,7 +51,6 @@ cmd_build() {
 }
 
 cmd_home() {
-  guard_home
   if [[ "${1:-}" == "--fresh" ]]; then
     [[ -z "$(target_pid instance)" ]] || die "stop the instance before --fresh"
     rm -rf "$EVAL_HOME"   # rm -rf removes symlinks, never their targets

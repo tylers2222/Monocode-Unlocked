@@ -11,6 +11,30 @@ INSTALLED_APP="/Applications/MonoCode.app"
 REAL_APP_DATA="$REAL_HOME/Library/Application Support/com.monocode.desktop"
 SCRATCH_NAME="giga-eval-scratch"
 
+# Prints `path` as the OS resolves it when that is under /tmp, else fails:
+# its deepest existing folder through `cd -P` (symlinks and `..`), plus the
+# part not made yet, which may hold no `..` because `cd -P` cannot see it.
+# A relative path fails: the scripts `cd` before they use it.
+under_tmp() {
+  local path="$1" tail=""
+  [[ "$path" == /* ]] || return 1
+  while [[ ! -d "$path" ]]; do
+    tail="/$(basename "$path")$tail"
+    path="$(dirname "$path")"
+  done
+  [[ "$tail/" != *"/../"* ]] || return 1
+  path="$(cd -P "$path" && pwd)$tail"
+  case "$path" in
+    /tmp/?*|/private/tmp/?*) printf '%s\n' "$path" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Before any write: every GigaEval script writes only under these two.
+for dir in "$EVAL_OUT" "$EVAL_HOME"; do
+  under_tmp "$dir" >/dev/null \
+    || { echo "GIGA_EVAL_OUT and GIGA_EVAL_HOME must be absolute paths that resolve under /tmp, got $dir" >&2; exit 2; }
+done
 mkdir -p "$EVAL_OUT"
 
 log() { printf '[giga-eval %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
