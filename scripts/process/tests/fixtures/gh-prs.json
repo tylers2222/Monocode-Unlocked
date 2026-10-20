@@ -1,0 +1,632 @@
+[
+ {
+  "headRefName": "process/waits-tyler-label",
+  "mergedAt": null,
+  "number": 164,
+  "state": "OPEN",
+  "title": "Process: waits-tyler label check and PR cap script"
+ },
+ {
+  "headRefName": "feat/ade-55-e2e",
+  "mergedAt": null,
+  "number": 163,
+  "state": "OPEN",
+  "title": "ADE-55: E2E suite on real app state for every ADE-14 done item"
+ },
+ {
+  "headRefName": "fix/ade-11-dead-window-transfer",
+  "mergedAt": "2026-10-20T11:02:16Z",
+  "number": 161,
+  "state": "MERGED",
+  "title": "ADE-11: remove the dead window-transfer path"
+ },
+ {
+  "headRefName": "fix/ade-60-resume-once",
+  "mergedAt": null,
+  "number": 160,
+  "state": "OPEN",
+  "title": "ADE-60: resume an interrupted turn once after a relaunch"
+ },
+ {
+  "headRefName": "test/m11-screens-vs-frames",
+  "mergedAt": null,
+  "number": 159,
+  "state": "OPEN",
+  "title": "M-11: Playwright screenshots of every Milestones state next to its approved frame"
+ },
+ {
+  "headRefName": "fix/ade-59-footer-end",
+  "mergedAt": "2026-10-20T08:19:27Z",
+  "number": 156,
+  "state": "MERGED",
+  "title": "ADE-59: Mono turn footer shows the turn's real end"
+ },
+ {
+  "headRefName": "feat/ade-23-ack",
+  "mergedAt": null,
+  "number": 155,
+  "state": "OPEN",
+  "title": "ADE-23 R5 part 2: ack ledger"
+ },
+ {
+  "headRefName": "probe/spoof-gate-integrity",
+  "mergedAt": null,
+  "number": 154,
+  "state": "CLOSED",
+  "title": "PROBE (never merge): spoof gate/integrity check"
+ },
+ {
+  "headRefName": "fix/ade-21-harness-nits",
+  "mergedAt": "2026-10-20T05:05:11Z",
+  "number": 153,
+  "state": "MERGED",
+  "title": "ADE-21: real-app harness waits on the clock, resolved /tmp guard (nits n7, n8 from #149)"
+ },
+ {
+  "headRefName": "feat/ade-23-ask-ack-ledger",
+  "mergedAt": "2026-10-20T07:22:06Z",
+  "number": 150,
+  "state": "MERGED",
+  "title": "ADE-23 R5 (1/2): ask ledger"
+ },
+ {
+  "headRefName": "feat/ade-21-real-app-harness",
+  "mergedAt": "2026-10-20T00:23:24Z",
+  "number": 142,
+  "state": "MERGED",
+  "title": "ADE-21 R3: real-app harness with a puppet agent"
+ },
+ {
+  "headRefName": "fix/ade-47-one-report",
+  "mergedAt": "2026-10-20T00:25:20Z",
+  "number": 141,
+  "state": "MERGED",
+  "title": "ADE-47: one completion report per Mono when several requests watch a session"
+ },
+ {
+  "headRefName": "feat/ade-22-levels-from-db",
+  "mergedAt": "2026-10-20T05:46:17Z",
+  "number": 139,
+  "state": "MERGED",
+  "title": "ADE-22 R4: levels come only from the database"
+ },
+ {
+  "headRefName": "fix/ade-49-webkit-video",
+  "mergedAt": "2026-10-19T19:45:23Z",
+  "number": 138,
+  "state": "MERGED",
+  "title": "ADE-49: fix the flaky webkit video-preview test"
+ },
+ {
+  "headRefName": "fix/ade-14-gate-tests-rs",
+  "mergedAt": "2026-10-20T05:44:36Z",
+  "number": 136,
+  "state": "MERGED",
+  "title": "ADE-14: Count Rust tests.rs modules as test code in the size gate"
+ },
+ {
+  "headRefName": "fix/ade-10-turn-opener",
+  "mergedAt": "2026-10-19T18:17:37Z",
+  "number": 134,
+  "state": "MERGED",
+  "title": "ADE-10: pick the turn opener by start time, not position"
+ },
+ {
+  "headRefName": "feat/ade-20-active-clock",
+  "mergedAt": "2026-10-19T19:17:44Z",
+  "number": 132,
+  "state": "MERGED",
+  "title": "ADE-20 R2: active clock from CLOCK_UPTIME_RAW"
+ },
+ {
+  "headRefName": "feat/ade-51-approvals-tool",
+  "mergedAt": "2026-10-19T20:23:48Z",
+  "number": 131,
+  "state": "MERGED",
+  "title": "ADE-51: Let a Giga file, update and withdraw approval cards through the CLI, MCP and omp (2/2)"
+ },
+ {
+  "headRefName": "feat/ade-51-approvals-store",
+  "mergedAt": "2026-10-19T20:06:48Z",
+  "number": 130,
+  "state": "MERGED",
+  "title": "ADE-51: Store and Tauri commands to file, update and withdraw approval cards (1/2)"
+ },
+ {
+  "headRefName": "feat/ade-54-approvals-badge",
+  "mergedAt": null,
+  "number": 128,
+  "state": "OPEN",
+  "title": "ADE-54: Show open approval cards on an Approvals row in the Automations nav"
+ },
+ {
+  "headRefName": "ci/ade-18-review-status",
+  "mergedAt": "2026-10-19T16:59:30Z",
+  "number": 127,
+  "state": "MERGED",
+  "title": "ADE-18 CI: review/agent status script, ruleset JSON, npm ci --ignore-scripts"
+ },
+ {
+  "headRefName": "feat/ade-19-scenario-harness",
+  "mergedAt": "2026-10-19T16:29:39Z",
+  "number": 126,
+  "state": "MERGED",
+  "title": "ADE-19 R1: scenario harness with a fake clock"
+ },
+ {
+  "headRefName": "feat/ade-52-approvals-decide",
+  "mergedAt": null,
+  "number": 125,
+  "state": "OPEN",
+  "title": "ADE-52: Queue each approval decision to the Giga that filed it"
+ },
+ {
+  "headRefName": "fix/popover-autofocus",
+  "mergedAt": "2026-10-19T13:33:55Z",
+  "number": 120,
+  "state": "MERGED",
+  "title": "Popover: autoFocus focuses once placed"
+ },
+ {
+  "headRefName": "ci/ade-17-gate-integrity",
+  "mergedAt": "2026-10-19T14:51:38Z",
+  "number": 119,
+  "state": "MERGED",
+  "title": "ADE-17 CI: gate/integrity (diff-only, runs no PR code)"
+ },
+ {
+  "headRefName": "feat/m10-milestone-settings",
+  "mergedAt": "2026-10-20T07:44:57Z",
+  "number": 117,
+  "state": "MERGED",
+  "title": "M-10: Per-project milestone settings on the page"
+ },
+ {
+  "headRefName": "feat/e7-13-rules-docs",
+  "mergedAt": "2026-10-19T14:28:43Z",
+  "number": 116,
+  "state": "MERGED",
+  "title": "PR7-13: Rules text and docs"
+ },
+ {
+  "headRefName": "feat/ade-50-approvals-table",
+  "mergedAt": "2026-10-19T16:48:17Z",
+  "number": 115,
+  "state": "MERGED",
+  "title": "ADE-50: Store approval cards in monocode.db and read them for the board"
+ },
+ {
+  "headRefName": "fix/ade-48-saved-active-tab",
+  "mergedAt": "2026-10-19T11:54:00Z",
+  "number": 111,
+  "state": "MERGED",
+  "title": "ADE-48: Saved active tab is always one of the saved tabs"
+ },
+ {
+  "headRefName": "feat/e7-12-started-access",
+  "mergedAt": "2026-10-19T11:51:37Z",
+  "number": 109,
+  "state": "MERGED",
+  "title": "PR7-12: Started sessions get app access"
+ },
+ {
+  "headRefName": "feat/m9b-reorder",
+  "mergedAt": "2026-10-19T11:34:34Z",
+  "number": 108,
+  "state": "MERGED",
+  "title": "M-9b: Reorder milestones by drag and keyboard"
+ },
+ {
+  "headRefName": "fix/ade-15-release-ready-results",
+  "mergedAt": "2026-10-19T10:00:17Z",
+  "number": 105,
+  "state": "MERGED",
+  "title": "ADE-15: Send ready completion results once the launching turn ends"
+ },
+ {
+  "headRefName": "ci/gate-lint",
+  "mergedAt": "2026-10-19T12:20:12Z",
+  "number": 103,
+  "state": "MERGED",
+  "title": "CI: gate/lint (ESLint, clippy, jscpd; new problems only)"
+ },
+ {
+  "headRefName": "feat/m9a4-delete-milestone",
+  "mergedAt": "2026-10-19T09:14:27Z",
+  "number": 102,
+  "state": "MERGED",
+  "title": "M-9a4: Delete a milestone from its edit card, with one inline confirm"
+ },
+ {
+  "headRefName": "feat/e7-11-request-id-reuse",
+  "mergedAt": "2026-10-19T09:14:21Z",
+  "number": 99,
+  "state": "MERGED",
+  "title": "PR7-11: Refuse request-id reuse before launch"
+ },
+ {
+  "headRefName": "feat/m9a3-add-milestone",
+  "mergedAt": "2026-10-19T06:10:56Z",
+  "number": 98,
+  "state": "MERGED",
+  "title": "M-9a3: Add a milestone on the page, and keep late saves to their own editor"
+ },
+ {
+  "headRefName": "fix/ade-12-tabless-worktree-focus",
+  "mergedAt": "2026-10-19T06:20:23Z",
+  "number": 95,
+  "state": "MERGED",
+  "title": "ADE-12: Opening a tabless running session focuses its worktree"
+ },
+ {
+  "headRefName": "feat/e7-10-start-session-rows",
+  "mergedAt": "2026-10-19T04:39:46Z",
+  "number": 93,
+  "state": "MERGED",
+  "title": "PR7-10: Accepted start_session rows"
+ },
+ {
+  "headRefName": "feat/m9a2-edit-in-place",
+  "mergedAt": "2026-10-19T04:35:21Z",
+  "number": 92,
+  "state": "MERGED",
+  "title": "M-9a2: Edit a milestone in place, with the text date field"
+ },
+ {
+  "headRefName": "feat/m9a1-english-dates",
+  "mergedAt": "2026-10-19T02:13:41Z",
+  "number": 88,
+  "state": "MERGED",
+  "title": "M-9a1: Show milestone dates in English, empty targets as Later, and a Done arrow"
+ },
+ {
+  "headRefName": "feat/e7-9b-action-gate-web",
+  "mergedAt": "2026-10-19T02:14:20Z",
+  "number": 87,
+  "state": "MERGED",
+  "title": "PR7-9b: App-action gate in the web app"
+ },
+ {
+  "headRefName": "fix/ade-5-untabbed-running",
+  "mergedAt": "2026-10-19T03:44:26Z",
+  "number": 84,
+  "state": "MERGED",
+  "title": "ADE-5: Open a running session that has no tab"
+ },
+ {
+  "headRefName": "feat/m9-r1-empty-target-later",
+  "mergedAt": "2026-10-18T23:43:03Z",
+  "number": 83,
+  "state": "MERGED",
+  "title": "M-9 R1: Agents can send target \"\" for Later"
+ },
+ {
+  "headRefName": "feat/e7-9a-action-gate-rust",
+  "mergedAt": "2026-10-18T23:48:44Z",
+  "number": 81,
+  "state": "MERGED",
+  "title": "PR7-9a: App-action gate in Rust"
+ },
+ {
+  "headRefName": "feat/e7-8-upward-steers",
+  "mergedAt": "2026-10-18T20:22:16Z",
+  "number": 79,
+  "state": "MERGED",
+  "title": "PR7-8: Upward steers and late answers"
+ },
+ {
+  "headRefName": "feat/m8-milestones-page",
+  "mergedAt": "2026-10-18T20:56:19Z",
+  "number": 77,
+  "state": "MERGED",
+  "title": "M-8: Milestones page under Automations"
+ },
+ {
+  "headRefName": "feat/e7-7-peer-rule",
+  "mergedAt": "2026-10-18T18:09:54Z",
+  "number": 76,
+  "state": "MERGED",
+  "title": "PR7-7: Peer rule S8 and shared path keys"
+ },
+ {
+  "headRefName": "feat/e7-6-session-callers-web",
+  "mergedAt": "2026-10-18T16:33:04Z",
+  "number": 72,
+  "state": "MERGED",
+  "title": "PR7-6: Session callers in the web app"
+ },
+ {
+  "headRefName": "feat/m5-milestones-e2e",
+  "mergedAt": "2026-10-18T17:03:44Z",
+  "number": 71,
+  "state": "MERGED",
+  "title": "M-5: Backend milestones E2E script"
+ },
+ {
+  "headRefName": "feat/m6-milestones-evals",
+  "mergedAt": "2026-10-18T17:03:50Z",
+  "number": 70,
+  "state": "MERGED",
+  "title": "M-6: Milestones promptfoo evals"
+ },
+ {
+  "headRefName": "fix/ade-9-snapshot-save",
+  "mergedAt": "2026-10-18T14:34:36Z",
+  "number": 66,
+  "state": "MERGED",
+  "title": "ADE-9: Save open tabs after they change, not only on quit"
+ },
+ {
+  "headRefName": "feat/e7-5-levels",
+  "mergedAt": "2026-10-18T15:02:59Z",
+  "number": 65,
+  "state": "MERGED",
+  "title": "PR7-5b: Session callers in the message gate (L1-L3, L5-L7)"
+ },
+ {
+  "headRefName": "feat/m4-milestones-tools",
+  "mergedAt": "2026-10-18T14:27:34Z",
+  "number": 62,
+  "state": "MERGED",
+  "title": "M-4: Milestones MCP and host tools"
+ },
+ {
+  "headRefName": "test/g2-giga-folder",
+  "mergedAt": "2026-10-18T13:41:57Z",
+  "number": 60,
+  "state": "MERGED",
+  "title": "G-2: Playwright test of Giga sessions in their own folder"
+ },
+ {
+  "headRefName": "feat/e7-5a-level-data",
+  "mergedAt": "2026-10-18T13:49:23Z",
+  "number": 58,
+  "state": "MERGED",
+  "title": "PR7-5a: Only a worker's lead may message it (L4)"
+ },
+ {
+  "headRefName": "fix/ade-8-turn-duration-opener",
+  "mergedAt": "2026-10-18T13:17:57Z",
+  "number": 54,
+  "state": "MERGED",
+  "title": "ADE-8: Stamp a turn's duration on the message that opened it"
+ },
+ {
+  "headRefName": "feat/m3-milestones-actions",
+  "mergedAt": "2026-10-18T12:43:18Z",
+  "number": 51,
+  "state": "MERGED",
+  "title": "M-3: Milestones app actions and CLI help"
+ },
+ {
+  "headRefName": "feat/e7-4-rate-limit",
+  "mergedAt": "2026-10-18T12:25:53Z",
+  "number": 50,
+  "state": "MERGED",
+  "title": "PR7-4: Refuse a 7th send to one recipient in 10 minutes"
+ },
+ {
+  "headRefName": "fix/ade-7-turn-start-after-steer",
+  "mergedAt": "2026-10-18T12:08:56Z",
+  "number": 49,
+  "state": "MERGED",
+  "title": "ADE-7: Keep a turn's start time after a steer"
+ },
+ {
+  "headRefName": "test/g3-turn-guard-wiring",
+  "mergedAt": "2026-10-18T12:26:55Z",
+  "number": 46,
+  "state": "MERGED",
+  "title": "G-3 #34: Playwright test of the Giga turn-guard wiring"
+ },
+ {
+  "headRefName": "feat/e7-3-hop-limit",
+  "mergedAt": "2026-10-18T11:02:38Z",
+  "number": 42,
+  "state": "MERGED",
+  "title": "PR7-3: Refuse a steer or reply past hop 4"
+ },
+ {
+  "headRefName": "fix/ade-6-steer-clears-on-turn-end",
+  "mergedAt": "2026-10-18T11:10:36Z",
+  "number": 41,
+  "state": "MERGED",
+  "title": "ADE-6: Clear Steering when the agent's turn ends"
+ },
+ {
+  "headRefName": "fix/ade-5-open-running-session",
+  "mergedAt": "2026-10-18T10:43:02Z",
+  "number": 40,
+  "state": "MERGED",
+  "title": "ADE-5: Open project to the running session"
+ },
+ {
+  "headRefName": "feat/e7-2-u0000",
+  "mergedAt": "2026-10-18T09:51:37Z",
+  "number": 39,
+  "state": "MERGED",
+  "title": "PR7-2: Refuse U+0000 in message bodies"
+ },
+ {
+  "headRefName": "feat/m2-milestone-settings",
+  "mergedAt": "2026-10-18T10:20:35Z",
+  "number": 35,
+  "state": "MERGED",
+  "title": "Store per-project milestone settings and refuse agent writes when off"
+ },
+ {
+  "headRefName": "feat/pw-app-harness",
+  "mergedAt": "2026-10-18T10:23:36Z",
+  "number": 31,
+  "state": "MERGED",
+  "title": "Add a Playwright harness that boots the whole app on a mocked Tauri backend"
+ },
+ {
+  "headRefName": "feat/m7-timeline",
+  "mergedAt": "2026-10-18T09:24:36Z",
+  "number": 30,
+  "state": "MERGED",
+  "title": "Add the milestone timeline component"
+ },
+ {
+  "headRefName": "feat/m1-milestones-table",
+  "mergedAt": "2026-10-18T09:07:15Z",
+  "number": 29,
+  "state": "MERGED",
+  "title": "Store project milestones in monocode.db"
+ },
+ {
+  "headRefName": "feat/g3-turn-guard",
+  "mergedAt": "2026-10-18T09:08:02Z",
+  "number": 28,
+  "state": "MERGED",
+  "title": "Steer a Giga chat turn once when it runs past 3 minutes"
+ },
+ {
+  "headRefName": "feat/g2-giga-folder",
+  "mergedAt": "2026-10-18T07:09:13Z",
+  "number": 26,
+  "state": "MERGED",
+  "title": "Run a Giga's MonoCode sessions in its own folder and let them commit there"
+ },
+ {
+  "headRefName": "feat/e7-1-lead-link",
+  "mergedAt": "2026-10-18T09:26:58Z",
+  "number": 23,
+  "state": "MERGED",
+  "title": "Store each session's lead in sessions.lead_session_id"
+ },
+ {
+  "headRefName": "feat/g1-read-work",
+  "mergedAt": "2026-10-18T02:51:18Z",
+  "number": 22,
+  "state": "MERGED",
+  "title": "Let monos.read return thinking and tool rows with work: true"
+ },
+ {
+  "headRefName": "feat/e7-levels",
+  "mergedAt": null,
+  "number": 20,
+  "state": "CLOSED",
+  "title": "Gate messages and app actions by level, and limit hops and rates"
+ },
+ {
+  "headRefName": "feat/e-i5b-order",
+  "mergedAt": "2026-10-17T07:38:43Z",
+  "number": 19,
+  "state": "MERGED",
+  "title": "Keep the user's Mono messages in typed order and move the send routing out of App.tsx"
+ },
+ {
+  "headRefName": "feat/e-i6-composer",
+  "mergedAt": "2026-10-18T00:14:18Z",
+  "number": 18,
+  "state": "MERGED",
+  "title": "Show what a message refers to: composer bar, Reply and Steer, grey quote"
+ },
+ {
+  "headRefName": "feat/e-i5-links-r2",
+  "mergedAt": "2026-10-17T03:29:26Z",
+  "number": 17,
+  "state": "MERGED",
+  "title": "Link user messages to what they refer to and make the user's steer whole-turn (round 2)"
+ },
+ {
+  "headRefName": "feat/e-i5-links",
+  "mergedAt": null,
+  "number": 16,
+  "state": "CLOSED",
+  "title": "Link user messages to what they refer to and make the user's steer whole-turn"
+ },
+ {
+  "headRefName": "feat/e-i4-line",
+  "mergedAt": "2026-10-17T01:01:08Z",
+  "number": 15,
+  "state": "MERGED",
+  "title": "Prepend an inference line to Mono replies and steers"
+ },
+ {
+  "headRefName": "feat/e-i3-get",
+  "mergedAt": "2026-10-16T14:33:55Z",
+  "number": 14,
+  "state": "MERGED",
+  "title": "Add get_message to read one Mono message by id or handle"
+ },
+ {
+  "headRefName": "feat/e-i2-send",
+  "mergedAt": "2026-10-16T14:14:31Z",
+  "number": 13,
+  "state": "MERGED",
+  "title": "Send Mono messages with an intent and route steers by their target"
+ },
+ {
+  "headRefName": "feat/e-i1-intent",
+  "mergedAt": "2026-10-16T09:54:15Z",
+  "number": 12,
+  "state": "MERGED",
+  "title": "Store one intent and one target per Mono message"
+ },
+ {
+  "headRefName": "feat/e-ui5-handles",
+  "mergedAt": "2026-10-16T11:13:23Z",
+  "number": 11,
+  "state": "MERGED",
+  "title": "Show a waiting Mono notice as its own queue row"
+ },
+ {
+  "headRefName": "feat/e6-clear",
+  "mergedAt": "2026-10-16T09:34:31Z",
+  "number": 10,
+  "state": "MERGED",
+  "title": "Drop a chat's Mono messages when it is reset, deleted or archived"
+ },
+ {
+  "headRefName": "feat/e5-handles",
+  "mergedAt": "2026-10-16T05:11:05Z",
+  "number": 9,
+  "state": "MERGED",
+  "title": "Add reply handles and turn-end rules for Mono messages"
+ },
+ {
+  "headRefName": "feat/e4b-mcp",
+  "mergedAt": "2026-10-16T02:55:10Z",
+  "number": 8,
+  "state": "MERGED",
+  "title": "Register the Mono messaging tools over MCP and omp host tools"
+ },
+ {
+  "headRefName": "feat/e4a-messages-cli",
+  "mergedAt": "2026-10-16T00:11:06Z",
+  "number": 7,
+  "state": "MERGED",
+  "title": "Add the Mono messaging tools core on the app CLI"
+ },
+ {
+  "headRefName": "feat/e3-mono-messages",
+  "mergedAt": "2026-10-15T18:54:34Z",
+  "number": 5,
+  "state": "MERGED",
+  "title": "Add Mono message identity and the mono_messages table"
+ },
+ {
+  "headRefName": "feat/e2-mono-cli",
+  "mergedAt": "2026-10-15T17:04:11Z",
+  "number": 4,
+  "state": "MERGED",
+  "title": "Add monos.get and monos.update with coded errors for Mono CLI actions"
+ },
+ {
+  "headRefName": "feat/e1-monos-table",
+  "mergedAt": "2026-10-15T14:36:22Z",
+  "number": 3,
+  "state": "MERGED",
+  "title": "Save the Mono roster in monocode.db"
+ },
+ {
+  "headRefName": "fix/e8-not-sent",
+  "mergedAt": "2026-10-15T14:35:49Z",
+  "number": 2,
+  "state": "MERGED",
+  "title": "Let a Mono's own messages steer past a message that waits for the turn end"
+ }
+]

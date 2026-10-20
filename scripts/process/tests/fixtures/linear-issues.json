@@ -1,0 +1,1968 @@
+[
+ {
+  "identifier": "ADE-68",
+  "title": "Notice reaches the Orchestrator slowly in 4 cases after the ADE-15 fix",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "identifier": "ADE-67",
+  "title": "Question card in a session doesn't respond: options and Continue can't be clicked",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "identifier": "ADE-66",
+  "title": "Dead menu item: 'Move group to new window' in TabGroupMenu can never appear",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "identifier": "ADE-65",
+  "title": "Flaky CI: macOS Rust lib tests abort with 'Rust cannot catch foreign exceptions' after the pasteboard tests",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "identifier": "ADE-64",
+  "title": "A steer that misses the start of a turn ends the app's turn record while the provider's turn keeps running",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "identifier": "ADE-63",
+  "title": "R5c: Ask parties are actors (mono:<id> or session:<id>)",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-23",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/155"
+        },
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/150"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-62",
+  "title": "in_flight_sessions is one list for all windows; each window replaces it whole",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-11",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/161"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-61",
+  "title": "New Window boot marks the other window's running chats as interrupted",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "identifier": "ADE-60",
+  "title": "Relaunch resume sends \"Continue\" twice; the turn's durationMs is stamped at 14 ms",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": [
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/160"
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "identifier": "ADE-59",
+  "title": "Mono message footer shows a notice's end time on inverted turns",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": [
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/156"
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "identifier": "ADE-57",
+  "title": "ADE-48 part 2: keep worktree-pinned tabs in the saved workspace across restart",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-48",
+      "state": {
+       "type": "completed"
+      },
+      "completedAt": "2026-10-20T07:32:48.501Z",
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/111"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-56",
+  "title": "ADE-14 follow-up: approvals write rules in SQL, and limits on options and links",
+  "state": {
+   "type": "backlog"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-51",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/131"
+        },
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/130"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-55",
+  "title": "ADE-14 S6: E2E suite on real app state for every Definition of done item",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-50",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/115"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-51",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/131"
+        },
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/130"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-52",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/125"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-53",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/152"
+        },
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/148"
+        },
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/143"
+        },
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/144"
+        },
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/145"
+        },
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/147"
+        },
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/146"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-54",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/128"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-54",
+  "title": "ADE-14 S5 (UI): open-cards sidebar badge and decision line in the Giga chat",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": [
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/128"
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-50",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/115"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-52",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/125"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-53",
+  "title": "ADE-14 S4 (UI): approvals board page and decide actions",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": [
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/152"
+    },
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/148"
+    },
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/143"
+    },
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/144"
+    },
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/145"
+    },
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/147"
+    },
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/146"
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-52",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/125"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-52",
+  "title": "ADE-14 S3: deliver a decision to the filing Giga, queued",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": [
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/125"
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-50",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/115"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-51",
+  "title": "ADE-14 S2: approvals_board tool for Gigas (CLI, MCP, omp)",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": [
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/131"
+    },
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/130"
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-50",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/115"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-50",
+  "title": "ADE-14 S1: approvals table in monocode.db and its store",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": [
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/115"
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "related",
+     "issue": {
+      "identifier": "ADE-56",
+      "state": {
+       "type": "backlog"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-47",
+  "title": "A session watched by two Mono requests is reported twice when it ends",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "identifier": "ADE-46",
+  "title": "Completion groups are lost when the app relaunches while a group waits",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-15",
+      "state": {
+       "type": "completed"
+      },
+      "completedAt": "2026-10-19T10:17:43.041Z",
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/105"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-45",
+  "title": "F1: Finish-gate run and real-data runs",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-18",
+      "state": {
+       "type": "completed"
+      },
+      "completedAt": "2026-10-19T16:59:56.215Z",
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-25",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-30",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-31",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-34",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-38",
+      "state": {
+       "type": "backlog"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-40",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-43",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-44",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-44",
+  "title": "D4: Claude Code deny rules on the app data folder",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-41",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-43",
+  "title": "D3: Migrate the plaintext database on launch",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-42",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-42",
+  "title": "D2: SQLCipher with the key in the login keychain",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-41",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-41",
+  "title": "D1: Sandbox every spawned agent",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-36",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-40",
+  "title": "E2: Eval baseline runs V1 to V4",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-39",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-39",
+  "title": "E1: Eval harness for V1 to V4",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-21",
+      "state": {
+       "type": "completed"
+      },
+      "completedAt": "2026-10-20T00:23:40.050Z",
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/142"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-35",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-38",
+  "title": "R20: Approvals board hookup (waits on ADE-14)",
+  "state": {
+   "type": "backlog"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-14",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": [
+        {
+         "state": {
+          "type": "backlog"
+         }
+        },
+        {
+         "state": {
+          "type": "unstarted"
+         }
+        },
+        {
+         "state": {
+          "type": "started"
+         }
+        },
+        {
+         "state": {
+          "type": "started"
+         }
+        },
+        {
+         "state": {
+          "type": "started"
+         }
+        },
+        {
+         "state": {
+          "type": "started"
+         }
+        },
+        {
+         "state": {
+          "type": "started"
+         }
+        }
+       ]
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-37",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-37",
+  "title": "R19: A question reaches the Giga with its ask id",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-32",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-36",
+  "title": "R18: Retire reply, handles and wanting_reply",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-35",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-35",
+  "title": "R17: Upward speech needs an open ask",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-32",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-33",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-34",
+  "title": "R16: Interrupted agents are woken to resume",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-27",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-33",
+  "title": "R15: Blocked path reaches the parent at once",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-27",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-32",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-32",
+  "title": "R14: Question, answer and one update",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-29",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-31",
+  "title": "R13: Catch-up reminders are spaced out",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-29",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-30",
+  "title": "R12: Miss report",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-29",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-29",
+  "title": "R11: Deadline reminder, parent asks why, miss with reason",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-28",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-28",
+  "title": "R10: The 5-minute reminder offers one extension",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-27",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-27",
+  "title": "R9: Reminder delivery, steer if busy, wake if idle",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-21",
+      "state": {
+       "type": "completed"
+      },
+      "completedAt": "2026-10-20T00:23:40.050Z",
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/142"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-26",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-26",
+  "title": "R8: Scheduler and reminder outbox",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-23",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/155"
+        },
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/150"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-25",
+  "title": "R7: A start is an ask",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-24",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-24",
+  "title": "R6: Agents can ask and ack",
+  "state": {
+   "type": "unstarted"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-23",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/155"
+        },
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/150"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-63",
+      "state": {
+       "type": "unstarted"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-23",
+  "title": "R5: Ask and ack ledger",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": [
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/155"
+    },
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/150"
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-20",
+      "state": {
+       "type": "completed"
+      },
+      "completedAt": "2026-10-19T19:18:20.712Z",
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-22",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/139"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-22",
+  "title": "R4: Levels come only from the database",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": [
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/139"
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-19",
+      "state": {
+       "type": "completed"
+      },
+      "completedAt": "2026-10-19T16:30:23.350Z",
+      "canceledAt": null,
+      "attachments": {
+       "nodes": []
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-14",
+  "title": "Approvals board: Gigas file approval cards, Tyler decides, the decision queues back to the filing Giga",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "identifier": "ADE-13",
+  "title": "First launch starts with one Giga Mono, one Mono and the MonoCode project",
+  "state": {
+   "type": "backlog"
+  },
+  "attachments": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "identifier": "ADE-11",
+  "title": "Tabs in a second window are never saved",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": [
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/161"
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "related",
+     "issue": {
+      "identifier": "ADE-48",
+      "state": {
+       "type": "completed"
+      },
+      "completedAt": "2026-10-20T07:32:48.501Z",
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/111"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-10",
+  "title": "Turn start and duration wrong when a queued Mono message runs after a notice that came in later",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": [
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/134"
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-5",
+      "state": {
+       "type": "completed"
+      },
+      "completedAt": "2026-10-19T09:59:37.008Z",
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/84"
+        },
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/40"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-8",
+  "title": "Mono turn duration missing when a queued message started the turn or a draft follows it",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": [
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/134"
+    },
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/54"
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-10",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/134"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ },
+ {
+  "identifier": "ADE-7",
+  "title": "liveAgents turnStartedAt loses a session's turn start after a steer",
+  "state": {
+   "type": "started"
+  },
+  "attachments": {
+   "nodes": [
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/134"
+    },
+    {
+     "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/49"
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-10",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/134"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    },
+    {
+     "type": "related",
+     "issue": {
+      "identifier": "ADE-8",
+      "state": {
+       "type": "started"
+      },
+      "completedAt": null,
+      "canceledAt": null,
+      "attachments": {
+       "nodes": [
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/134"
+        },
+        {
+         "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/54"
+        }
+       ]
+      },
+      "children": {
+       "nodes": []
+      }
+     }
+    }
+   ]
+  }
+ }
+]
