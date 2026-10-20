@@ -1,6 +1,6 @@
-"""What gate/mutation mutates: the changed lines of non-test TypeScript files, as
-Stryker `--mutate` specs (`path:start-end`), and whether any non-test Rust file
-changed (cargo mutants --in-diff finds its own lines in the diff).
+"""What gate/mutation mutates: the changed lines of non-test TypeScript files under src/
+(the root vitest config tests only src/), as Stryker `mutate` specs (`path:start-end`),
+and whether any non-test Rust file changed (cargo mutants --in-diff finds its own lines).
 
 Usage: git diff --unified=0 <merge-base> <head> | mutation_targets.py
 Prints `rust=yes|no` and `stryker=<comma-separated specs>` lines for GITHUB_OUTPUT.
@@ -10,7 +10,7 @@ import sys
 
 from tier import TEST
 
-TS = re.compile(r'\.(ts|tsx)$')
+TS = re.compile(r'^src/.*\.(ts|tsx)$')
 HUNK = re.compile(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@')
 
 

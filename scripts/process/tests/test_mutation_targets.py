@@ -27,6 +27,13 @@ class Targets(unittest.TestCase):
         self.assertEqual(targets(file_diff('src-tauri/src/foo/tests.rs', '@@ -1 +1 @@')), (False, []))
         self.assertEqual(targets(file_diff('src-tauri/src/foo.rs', '@@ -1 +1 @@')), (True, []))
 
+    def test_rust_then_ts_keeps_both(self):
+        diff = file_diff('src-tauri/src/foo.rs', '@@ -1 +1 @@') + file_diff('src/a.ts', '@@ -2 +2 @@')
+        self.assertEqual(targets(diff), (True, ['src/a.ts:2-2']))
+
+    def test_ts_outside_src_is_not_mutated(self):
+        self.assertEqual(targets(file_diff('host/server.ts', '@@ -1 +1 @@')), (False, []))
+
     def test_deleted_file_is_skipped(self):
         diff = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-x\n-y\n'
         self.assertEqual(targets(diff), (False, []))
