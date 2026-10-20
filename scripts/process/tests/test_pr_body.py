@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import subprocess
@@ -218,14 +219,15 @@ class TicketPartTest(unittest.TestCase):
     def test_missing_line_on_an_ade_pr(self):
         self.assertIn("ticket-part", lint_body(PR_142, self.ADE))
 
-    def test_part_above_total_or_zero_fails(self):
-        for line in ("Ticket-part: 4/3", "Ticket-part: 0/3", "Ticket-part: 1/3 (draft)", "ticket-part: 1/3"):
+    def test_only_the_exact_line_with_1_to_n_passes(self):
+        for line in ("Ticket-part: 4/3", "Ticket-part: 0/3", "Ticket-part: 1/3 (draft)", "ticket-part: 1/3", "Ticket-part: 1 / 2"):
             with self.subTest(line=line):
                 self.assertIn("ticket-part", lint_body(PR_142 + f"\n{line}\n", self.ADE))
 
     def test_non_ade_pr_needs_no_line(self):
         self.assertEqual(lint_body(PR_142, "Process fixes D2: body lint"), [])
         self.assertEqual(lint_body(PR_142, "Fix ADE-53 follow-up"), [], "only a title that starts with ADE-<digits>")
+        self.assertEqual(lint_body(PR_142, "ADE-5x: odd"), [], "ADE-5x is not a ticket id")
 
 
 class StackTest(unittest.TestCase):
@@ -241,19 +243,19 @@ class DecideTest(unittest.TestCase):
     COMPLETE = PR_142
 
     def test_overlap_warns_and_still_passes(self):
-        lines, code = decide(self.COMPLETE, {"src/app/App.tsx"}, [open_pr(161, "src/app/App.tsx")], 10, 160)
+        lines, code = decide(self.COMPLETE, "", {"src/app/App.tsx"}, [open_pr(161, "src/app/App.tsx")], 10, 160)
         self.assertEqual(code, 0)
         self.assertTrue(lines[-1].startswith("::warning::tiny PR (10 non-test lines)"))
 
     def test_missing_item_fails(self):
-        self.assertEqual(decide("No body items.", set(), [], 10, 160)[1], 1)
+        self.assertEqual(decide("No body items.", "", set(), [], 10, 160)[1], 1)
 
     def test_without_nt_the_body_is_still_checked(self):
-        self.assertEqual(decide("No body items.", set(), None, None, 160),
+        self.assertEqual(decide("No body items.", "", set(), None, None, 160),
                          ([f"pr-body: missing {i}: {HINTS[i]}" for i in ("size", "self-pass", "file-caps")], 1))
 
     def test_paths_cannot_end_the_warning_line(self):
-        lines, _ = decide(self.COMPLETE, {"a\nb%"}, [open_pr(161, "a\nb%")], 10, 160)
+        lines, _ = decide(self.COMPLETE, "", {"a\nb%"}, [open_pr(161, "a\nb%")], 10, 160)
         self.assertNotIn("\n", lines[-1])
         self.assertIn("a%0Ab%25", lines[-1])
 
@@ -271,9 +273,21 @@ class GhBoundaryTest(unittest.TestCase):
     def test_gh_failure_exits_2(self):
         self.assertEqual(self.run_with_fake_gh("#!/bin/sh\nexit 1\n", "160", "--nt", "10").returncode, 2)
 
+    def test_the_title_reaches_the_lint_through_main(self):
+        # The fake gh answers only the fields it is asked for, as the real one does.
+        answers = {}
+        for name, fields in (("with", {"title": "ADE-53: x"}), ("without", {})):
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as answer:
+                json.dump({"body": PR_142, "files": [], **fields}, answer)
+            self.addCleanup(os.unlink, answer.name)
+            answers[name] = answer.name
+        gh = f'#!/bin/sh\ncase "$*" in *title*) cat {answers["with"]} ;; *) cat {answers["without"]} ;; esac\n'
+        run = self.run_with_fake_gh(gh, "160")
+        self.assertEqual((run.returncode, run.stdout.splitlines()), (1, [f"pr-body: missing ticket-part: {HINTS['ticket-part']}"]))
+
     def test_without_nt_the_cli_still_lints(self):
         # gate/tier failed, so the step passes no --nt; the body must still be checked.
-        run = self.run_with_fake_gh("#!/bin/sh\necho '{\"body\": \"\", \"files\": []}'\n", "160")
+        run = self.run_with_fake_gh("#!/bin/sh\necho '{\"body\": \"\", \"files\": [], \"title\": \"x\"}'\n", "160")
         self.assertEqual(run.returncode, 1)
         self.assertEqual(run.stdout.splitlines(), [f"pr-body: missing {i}: {HINTS[i]}" for i in ("size", "self-pass", "file-caps")])
 
