@@ -257,53 +257,67 @@ for (const [entry, again] of [
   });
 }
 
-test("with every tab in a worktree, boot opens the default workspace with no tab and each worktree keeps its tab", async ({
-  app,
-  page,
-}) => {
-  // What workspaceSnapshot saves for tabs 01 and 02, both in worktrees
-  // (worktreeTabsRestart.realdb.test.ts proves the save and the boot).
-  const [first, second] = realDb.snapshot.tabs;
-  const titleOf = (tab: typeof first) => realDb.records[tab.focusedId].title;
-  const treeOf = (tab: typeof first) =>
-    realDb.records[tab.focusedId].worktreeCwd!;
-  await mount(app, {
-    ...realDb.snapshot,
-    tabs: [first, second],
-    activeTabId: "",
-    tabWorkspaces: [first, second].map((tab) => ({
-      tabId: tab.id,
-      path: treeOf(tab),
-    })),
+/** Tabs 01 and 02 of the fixture, both in worktrees, as workspaceSnapshot
+ * saves them (worktreeTabsRestart.realdb.test.ts proves the save and boot). */
+const [first, second] = realDb.snapshot.tabs;
+const titleOf = (tab: typeof first) => realDb.records[tab.focusedId].title;
+const rowOf = (page: Page, tab: typeof first) =>
+  page.getByRole("listbox", { name: "Working copies" }).getByRole("option", {
+    name: new RegExp(realDb.records[tab.focusedId].branch!),
   });
+const allInWorktrees = {
+  ...realDb.snapshot,
+  tabs: [first, second],
+  activeTabId: "",
+  tabWorkspaces: [first, second].map((tab) => ({
+    tabId: tab.id,
+    path: realDb.records[tab.focusedId].worktreeCwd!,
+  })),
+};
+
+/** The default workspace is shown with no tab, and each worktree keeps one. */
+async function expectDefaultEmpty(page: Page) {
   await expect(switcher(page)).toHaveText("Workspace");
   await expect.poll(() => strip(page)).toEqual([]);
   await switcher(page).click();
   for (const tab of [first, second])
-    await expect(
-      page
-        .getByRole("listbox", { name: "Working copies" })
-        .getByRole("option", {
-          name: new RegExp(realDb.records[tab.focusedId].branch!),
-        })
-        .getByLabel("1 open tab"),
-    ).toBeVisible();
+    await expect(rowOf(page, tab).getByLabel("1 open tab")).toBeVisible();
+}
+
+test("with every tab in a worktree, boot opens the default workspace with no tab and each worktree keeps its tab", async ({
+  app,
+  page,
+}) => {
+  await mount(app, allInWorktrees);
+  await expectDefaultEmpty(page);
   await page.screenshot({
     path: test.info().outputPath("F1-all-in-worktrees.png"),
   });
 
-  await page
-    .getByRole("listbox", { name: "Working copies" })
-    .getByRole("option", {
-      name: new RegExp(realDb.records[second.focusedId].branch!),
-    })
-    .click();
+  await rowOf(page, second).click();
   await expect
     .poll(() => strip(page))
     .toEqual([`monocode · ${titleOf(second)}`]);
   await expect(tab(page, titleOf(second))).toHaveClass(/bg-selection/);
   await page.screenshot({
     path: test.info().outputPath("F2-all-in-worktrees.png"),
+  });
+});
+
+test("quitting on a worktree tab with no default-workspace tab restarts on the default workspace with no tab", async ({
+  app,
+  page,
+}) => {
+  await mount(app, allInWorktrees);
+  await switcher(page).click();
+  await rowOf(page, second).click();
+  await expect(tab(page, titleOf(second))).toHaveClass(/bg-selection/);
+
+  await app.restart();
+
+  await expectDefaultEmpty(page);
+  await page.screenshot({
+    path: test.info().outputPath("F1-all-in-worktrees-restart.png"),
   });
 });
 
