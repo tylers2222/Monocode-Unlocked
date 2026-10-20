@@ -22,13 +22,17 @@ TEST = re.compile(r'(^|/)(tests?|__tests__|e2e|fixtures?|scenario|evals?)/|\.(te
 DOC = re.compile(r'\.(md|txt)$|^docs/|CHANGELOG')
 CONFIG = re.compile(r'(package(-lock)?\.json|Cargo\.lock|\.ya?ml|\.toml|\.json|\.eslintrc.*|\.npmrc|tsconfig.*)$')
 GATE_PATH = re.compile(r'^\.github/workflows/gate|^scripts/gate/|^scripts/process/|integrity|heavy-lock')
+# Concurrency: the lock and scheduler files and the primitives. T3 and the interrogate rule share them.
+LOCK_PATH = r'(?<![Cc]argo\.)(?<!-)lock\.|scheduler'
+CONCURRENCY_CODE = r'Mutex|RwLock|tokio::spawn|thread::spawn|AtomicU|flock'
 T3_PATH = re.compile(r'session_store|mono_messages|mono_gate|ask_gate|asks\.rs|active_clock|migrat|control_cli|/store/|Store\.ts'
-                     r'|(?<![Cc]argo\.)(?<!-)lock\.|scheduler|/hooks/|/use[A-Z]\w*\.tsx?$')
+                     r'|' + LOCK_PATH + r'|/hooks/|/use[A-Z]\w*\.tsx?$')
 PURE_DIR = re.compile(r'/model/|^scripts/')
 NOT_CODE_LINE = re.compile(r'^\s*(//|/\*|\*|#|"|\'|`|$)')
 T3_CODE = re.compile(r'\b(useState|useEffect|useLayoutEffect|useReducer|useRef|useSyncExternalStore|useCallback|useMemo)\b'
                      r'|\binvoke\(|\blisten\(|#\[tauri::command\]|rusqlite|\.execute\(|CREATE TABLE|ALTER TABLE|BEGIN IMMEDIATE'
-                     r'|Mutex|RwLock|tokio::spawn|thread::spawn|AtomicU|setTimeout|setInterval|flock|clock_gettime')
+                     r'|' + CONCURRENCY_CODE + r'|setTimeout|setInterval|clock_gettime')
+CONCURRENCY = re.compile(LOCK_PATH + '|' + CONCURRENCY_CODE)
 # Multi-line string openers: a Rust raw string r#"..."# and a JS/TS template literal.
 STRING_OPEN = {'.rs': re.compile(r'(?<!\w)b?r(#+)"'), '.ts': re.compile(r'(?<!\\)`()')}
 STRING_FILE = re.compile(r'\.(rs|[cm]?[jt]sx?)$')
@@ -38,8 +42,6 @@ STRING_LINE = re.compile(r'^\s*(["\'`]|b?r#+")|(?<!\w)b?r#+"|"[^"]{40,}"|\'[^\']
 TIER_LABEL = re.compile(r'^tier:T[123]$')
 INTERROGATE_LABEL = 'needs-interrogate'
 INTERROGATE_LINES = 300
-# A T3 reason that names a concurrency primitive or a lock or scheduler file.
-CONCURRENCY = re.compile(r'Mutex|RwLock|tokio::spawn|thread::spawn|AtomicU|flock|(?<![Cc]argo\.)(?<!-)lock\.|scheduler')
 
 Line = collections.namedtuple('Line', 'kind text text_line')  # kind: '+', '-', ' ' or '@'
 
@@ -136,9 +138,18 @@ def non_test_lines(files):
     return sum(f['additions'] for f in files if not TEST.search(f['path']) and not DOC.search(f['path']))
 
 
-def needs_interrogate(t, nt, why):
+def gate_or_concurrency(files, diff_text):
+    """Whether a non-test file is a gate, lock or scheduler file, or its changed lines (with
+    git's context, as T3_CODE reads them) use a concurrency primitive."""
+    lines = parse_diff(diff_text, {})
+    prod = [f['path'] for f in files if not TEST.search(f['path']) and not DOC.search(f['path'])]
+    return any(GATE_PATH.search(p) or re.search(LOCK_PATH, p)
+               or CONCURRENCY.search('\n'.join(l.text for l in lines.get(p, []))) for p in prod)
+
+
+def needs_interrogate(t, nt, gate_or_concurrency_file):
     """Interrogate before review round 1: T3 with 300+ non-test lines, or T3 for a gate or concurrency file."""
-    return t == 'T3' and (nt >= INTERROGATE_LINES or any(w.startswith('gate:') or CONCURRENCY.search(w) for w in why))
+    return t == 'T3' and (nt >= INTERROGATE_LINES or gate_or_concurrency_file)
 
 
 def gh(*args, check=True):
@@ -176,7 +187,7 @@ def main(argv):
     diff = gh('pr', 'diff', pr, '-R', repo, check=False) or None
     t, why = tier(files, diff, multi_line_sets(repo, pr, files) if diff else {})
     nt = non_test_lines(files)
-    interrogate = needs_interrogate(t, nt, why)
+    interrogate = needs_interrogate(t, nt, gate_or_concurrency(files, diff))
     print(f'tier: {t}, {nt} non-test lines added' + (', needs interrogate before round 1' if interrogate else ''))
     for w in why:
         print(f'tier:   {w}')
