@@ -170,7 +170,7 @@ def main(argv):
     diff = gh('pr', 'diff', pr, '-R', repo, check=False)
     t, why = tier(files, diff, string_files(repo, pr, files) if diff else frozenset())
     nt = non_test_lines(files)
-    interrogate = needs_interrogate(t, nt, gate_or_concurrency(files, diff or ""))
+    interrogate = needs_interrogate(t, nt, gate_or_concurrency(files, diff))
     print(f'tier: {t}, {nt} non-test lines added' + (', needs interrogate before round 1' if interrogate else ''))
     for w in why:
         print(f'tier:   {w}')
