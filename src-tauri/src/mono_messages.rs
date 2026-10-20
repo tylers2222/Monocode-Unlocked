@@ -3160,6 +3160,7 @@ pub(crate) fn submit_and_recheck(
         match input.into() {
             Call::Message(input) => submit(&conn, caller, request_id, input, &live, now),
             Call::Ask(input) => asks::ask(&conn, caller, request_id, input, &live, now),
+            Call::Ack(input) => asks::ack(&conn, caller, request_id, input, &live, now),
         }
         .map_err(|error| error.to_string())?
     };
