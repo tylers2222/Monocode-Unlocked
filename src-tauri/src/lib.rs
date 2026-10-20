@@ -4,6 +4,8 @@ mod account_identity;
 mod active_clock;
 mod approvals;
 mod artifacts;
+mod ask_gate;
+mod asks;
 mod automations;
 mod azure_devops;
 mod chat_background;
