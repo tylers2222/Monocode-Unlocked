@@ -1,5 +1,5 @@
 {
- "source": "ade46-fixture.py on a .backup copy of com.monocode.second/monocode.db taken 2026-10-20 23:55. Real ids, request ids, request order, notifyOnComplete as the Orchestrator's CLI calls passed it, and continued-turn ends; prompts cut to their first line; transcripts left out.",
+ "source": "ade46-fixture.py on a .backup copy of com.monocode.second/monocode.db taken 2026-10-20 23:55. Real ids, request ids, request order, notifyOnComplete as the Orchestrator's CLI calls passed it; prompts cut to their first line; transcripts left out.",
  "mono": {
   "id": "bf5b3c41-a4b3-480e-a4db-0a36d5105810",
   "data": {
@@ -80,16 +80,6 @@
    "requestId": "1e40e774-e80b-45ce-82d6-0f5e6326527e",
    "prompt": "Orchestrator: SHIP 5 swap in about 1 minute. Both MonoCode apps will quit and relaunch, which ends your turn. Right now: commit any work in progress to your branch (no git stash), do not start a new heavy run, and append one line to /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/shar",
    "notifyOnComplete": false
-  }
- ],
- "ends": [
-  {
-   "at": "10-20 17:19:37",
-   "sessionId": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-3e217e0f-f3fe-4289-aee1-dbee872c4aa7"
-  },
-  {
-   "at": "10-20 17:57:51",
-   "sessionId": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-b4677bea-0d5c-4efe-b570-6a3d7a1eab69"
   }
  ]
 }

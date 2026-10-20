@@ -6,9 +6,12 @@ import {
   type QueuedMessage,
   type Session,
 } from "../../sessions/model/session";
+import type { TurnId } from "./monoMessages";
 
 const RESULT_MAX_CHARS = 12_000;
 const BATCH_RESULT_MAX_CHARS = 48_000;
+/** Key prefix of the groups `restore` takes back after a quit. */
+const RESTORED = "restored:";
 
 /** Freeze this turn's result before either conversation starts another turn. */
 type CompletionOptions = {
@@ -305,7 +308,7 @@ export class MonoSessionCompletionBatches {
   ) {
     const quitEnds = new Map<string, ControlOutcome>();
     for (const { origin, request, result } of saved) {
-      const key = `restored:${origin.monoId}:${origin.turn}`;
+      const key = `${RESTORED}${origin.monoId}:${origin.turn}`;
       const batch = this.batches.get(key) ?? {
         origin,
         phase: "open" as const,
@@ -338,15 +341,24 @@ export class MonoSessionCompletionBatches {
     }
   }
 
-  /** The watcher of the Continue turn that picks `sessionId` up after a quit. */
-  resume(sessionId: string) {
-    const watchers = [...this.batches].flatMap(([key, group]) =>
-      [...group.results.values()]
-        .filter((entry) => entry.sessionId === sessionId && !entry.settled)
-        .map((entry) => this.watcher(key, group, entry)),
-    );
+  /**
+   * The watcher of one Continue that asks to open turn `turnId` of
+   * `sessionId` after a quit. Only an outcome of a turn that really opened
+   * (its opener block carries `turnId`) settles the restored members; a
+   * refused or duplicate Continue opened nothing, so its outcome is ignored.
+   */
+  resume(sessionId: string, turnId: TurnId) {
     return (outcome: ControlOutcome) => {
-      for (const watcher of watchers) watcher(outcome);
+      const opened = this.session(sessionId)?.blocks.some(
+        (block) => block.role === "user" && block.turnId === turnId,
+      );
+      if (!opened) return;
+      for (const [key, group] of this.batches) {
+        if (!key.startsWith(RESTORED)) continue;
+        for (const entry of group.results.values())
+          if (entry.sessionId === sessionId)
+            this.watcher(key, group, entry)(outcome);
+      }
     };
   }
 

@@ -1924,11 +1924,10 @@ function Workspace({
         activeTabIdRef.current,
         projectCwdRef.current,
         readProjectReturnMemory(),
+        monoCompletionBatches.current!.undelivered(),
         "unload",
         projectTerminalsRef.current,
         lastDockSideRef.current ?? undefined,
-        undefined,
-        monoCompletionBatches.current!.undelivered(),
       ).finally(() => {
         void reapWindowRuntime(
           sessionsRef.current,
@@ -2473,9 +2472,9 @@ function Workspace({
       () => projectTerminalsRef.current,
       readProjectReturnMemory,
       flushHarnessEvents,
+      () => monoCompletionBatches.current!.undelivered(),
       () => lastDockSideRef.current,
       keepWorkspaceTab,
-      () => monoCompletionBatches.current!.undelivered(),
     );
     void getCurrentWindow()
       .onCloseRequested(async (event) => {
@@ -2509,11 +2508,11 @@ function Workspace({
           activeTabIdRef.current,
           projectCwdRef.current,
           readProjectReturnMemory(),
+          monoCompletionBatches.current!.undelivered(),
           "unload",
           projectTerminalsRef.current,
           lastDockSideRef.current ?? undefined,
           keepWorkspaceTab,
-          monoCompletionBatches.current!.undelivered(),
         ).finally(() => {
           void (toTray ? hideCurrentWindow() : closeCurrentWindow());
         });
@@ -10521,7 +10520,7 @@ function Workspace({
         void submitWithSettlement({
           submit: (onSettled) =>
             onSubmit(id, CONTINUE_PROMPT, [], { turnId, onSettled }),
-          onSettled: monoCompletionBatches.current!.resume(id),
+          onSettled: monoCompletionBatches.current!.resume(id, turnId),
           rejectionMessage: "The interrupted turn could not continue.",
         });
       }

@@ -26,6 +26,7 @@ import {
 } from "../../features/workspace/model/workspaceSnapshot";
 import { loadWorkspaceSnapshot, saveWorkspaceSnapshot } from "../../features/sessions/data/sessionStore";
 import { reconcileProjectReturn } from "../../features/projects/model/projectReturn";
+import { savedMonoCompletions } from "../../features/monos/model/monoSessionCompletion";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
@@ -118,6 +119,7 @@ describe("project choices through lifecycle saves", () => {
       () => [],
       () => state.memory,
       vi.fn(),
+      () => [],
     );
     try {
       await handleQuitRequested();
@@ -149,6 +151,7 @@ describe("project choices through lifecycle saves", () => {
       () => [],
       readMemory,
       vi.fn(),
+      () => [],
     );
     try {
       await handleQuitRequested();
@@ -168,6 +171,7 @@ describe("project choices through lifecycle saves", () => {
       state.activeTabId,
       state.projectCwd,
       state.memory,
+      [],
       "unload",
     );
     expect([...(lastSavedMemory() ?? [])]).toEqual([...state.memory]);
@@ -184,6 +188,7 @@ describe("project choices through lifecycle saves", () => {
       () => [],
       () => state.memory,
       vi.fn(),
+      () => [],
     );
     try {
       await closeBusyWindow();
@@ -237,6 +242,7 @@ describe("closing a busy window", () => {
       () => [],
       () => new Map(),
       vi.fn(),
+      () => [],
     );
     return { session, release };
   }
@@ -292,6 +298,7 @@ describe("coordinated quit", () => {
       () => [],
       () => new Map(),
       vi.fn(),
+      () => [],
     );
   }
 
@@ -324,6 +331,7 @@ describe("coordinated quit", () => {
       () => [],
       () => new Map(),
       vi.fn(),
+      () => [],
     );
     try {
       await reportQuitPoll(1);
@@ -467,6 +475,7 @@ describe("remembering the terminal dock side across restarts", () => {
       () => [],
       () => new Map(),
       vi.fn(),
+      () => [],
       () => state.side,
     );
     try {
@@ -486,6 +495,7 @@ describe("remembering the terminal dock side across restarts", () => {
       state.activeTabId,
       state.projectCwd,
       new Map(),
+      [],
       "unload",
       [],
       "left",
@@ -510,6 +520,76 @@ describe("remembering the terminal dock side across restarts", () => {
     const { handleQuitRequested } = await import("./appLifecycle");
     await handleQuitRequested();
     expect(await lastSavedDockSide()).toBe("left");
+  });
+});
+
+// ADE-46: the Mono completions a quit keeps reach the snapshot on every path
+// that marks running turns interrupted. Each case imports a fresh lifecycle,
+// whose boot resume and live window are module state.
+describe("keeping the Mono's waiting completions", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.mocked(ask).mockResolvedValue(true);
+  });
+
+  const kept = [
+    {
+      origin: { monoId: "mono", turn: 2 },
+      request: {
+        requestId: "3e217e0f",
+        sessionId: "s-872c4aa7",
+        project: "/alpha",
+        prompt: "Fix the M-10 wording",
+      },
+    },
+  ];
+
+  async function savedCompletions() {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const args = vi
+      .mocked(invoke)
+      .mock.calls.filter(([command]) => command === "workspace_set_snapshot")
+      .at(-1)?.[1];
+    return args && typeof args === "object" && "snapshot" in args
+      ? savedMonoCompletions(args.snapshot)
+      : undefined;
+  }
+
+  it("saves them when a busy window is closed", async () => {
+    const session = { ...newSession("cursor", "/alpha"), busy: true };
+    session.blocks = [{ id: "user", role: "user", text: "test" }];
+    const tab = newTab(session.id);
+    const lifecycle = await import("./appLifecycle");
+    const release = lifecycle.setQuitWorkspace(
+      () => [session],
+      () => [tab],
+      () => tab.id,
+      () => "/alpha",
+      () => [],
+      () => new Map(),
+      vi.fn(),
+      () => kept,
+    );
+    try {
+      await lifecycle.closeBusyWindow();
+      expect(await savedCompletions()).toEqual(kept);
+    } finally {
+      release();
+    }
+  });
+
+  it("saves them again when the app quits while it is still booting", async () => {
+    const session = { ...newSession("cursor", "/alpha"), id: "a1" };
+    const tab = newTab(session.id);
+    const store = await import("../../features/sessions/data/sessionStore");
+    vi.mocked(store.loadWorkspaceSnapshot).mockResolvedValue({
+      ...collectWorkspaceSnapshot([tab], [session], tab.id, "/alpha", new Map()),
+      monoCompletions: kept,
+    });
+    const { handleQuitRequested } = await import("./appLifecycle");
+    await handleQuitRequested();
+    expect(await savedCompletions()).toEqual(kept);
   });
 });
 

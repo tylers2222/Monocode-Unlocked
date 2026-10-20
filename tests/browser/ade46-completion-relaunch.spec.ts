@@ -42,6 +42,7 @@ const CHAT = db.monoChat.id;
 const MONO = db.mono.data.name;
 const [STARTED, SENT] = db.sessions.map((session) => session.id);
 const NOTICE = "MonoCode completion notification";
+const CONTINUE = "Continue from where you left off.";
 
 type OmpLine = {
   sessionId: string;
@@ -52,6 +53,8 @@ declare global {
   interface Window {
     ompLines?: OmpLine[];
     controlReplies?: { id: string; response: ControlResponse }[];
+    projectLocation?: Promise<void>;
+    releaseProjectLocation?: () => void;
   }
 }
 
@@ -99,14 +102,84 @@ const handlers: MountOptions["handlers"] = {
     });
     return null;
   },
-  // session_store.rs replace_in_flight: what a relaunch resumes.
+  // session_store.rs replace_in_flight: what a relaunch resumes. A reload
+  // writes it last; `ade46.keepAtInFlight` keeps the store as that write
+  // leaves it, as the Rust database outlives the page.
   session_set_in_flight: (store, { sessions }) => {
     store.inFlight = sessions as { sessionId: string; cwd: string }[];
+    if (sessionStorage.getItem("ade46.keepAtInFlight")) {
+      sessionStorage.removeItem("ade46.keepAtInFlight");
+      window.appBackend!.keepStore();
+    }
     return null;
   },
-  // The real project folder is named monocode, which the app warns about at boot.
-  "plugin:dialog|message": () => null,
+  // The user answers OK to each dialog: the warning the app shows at boot
+  // because the real project folder is named monocode, and the busy-window
+  // close, whose `ask` compares the answer with its OK label.
+  "plugin:dialog|message": (_store, { message }) =>
+    String(message).startsWith("Close this window") ? "Close window" : "Ok",
+  // fs.rs resolve_project_location. Once `holdLocation` is set, the check
+  // waits for `releaseProjectLocation`, as the real one takes about a second
+  // after a relaunch (ADE-60). sessionStorage outlives the reload.
+  resolve_project_location: async (_store, { path }) => {
+    if (sessionStorage.getItem("ade46.holdLocation")) {
+      if (!window.projectLocation) {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        window.projectLocation = promise;
+        window.releaseProjectLocation = resolve;
+      }
+      await window.projectLocation;
+    }
+    return { path, identity: path };
+  },
+  mono_chat_keep_alive: () => false,
+  hide_window: () => null,
+  destroy_window: () => null,
 };
+
+const keepAtInFlight = (page: Page) =>
+  page.evaluate(() => sessionStorage.setItem("ade46.keepAtInFlight", "1"));
+
+const holdLocation = (page: Page) =>
+  page.evaluate(() => sessionStorage.setItem("ade46.holdLocation", "1"));
+
+/** Until React has committed, run its effects and their zero-delay timers. */
+const rendered = (page: Page) =>
+  page.evaluate(() => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => setTimeout(resolve)),
+    );
+    return promise;
+  });
+
+/**
+ * The window closed (its close sent `closed`); the app opens again on the
+ * store it left, with the location check released.
+ */
+async function reopenAfter(page: Page, closed: string) {
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (closed) =>
+          window.appBackend!.calls.some(({ command }) => command === closed),
+        closed,
+      ),
+    )
+    .toBe(true);
+  await page.evaluate(() => {
+    sessionStorage.removeItem("ade46.holdLocation");
+    window.appBackend!.keepStore();
+  });
+  await reopen(page);
+}
+
+async function reopen(page: Page) {
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Automations" })).toBeVisible({
+    timeout: 30_000,
+  });
+}
 
 /** Session ids as the lane B output names them: the last 8 characters. */
 const at = (id: string) => id.slice(-8);
@@ -115,6 +188,7 @@ async function mountOrchestrator(
   app: AppShell,
   page: Page,
   extra: SessionSummary[] = [],
+  platform: MountOptions["platform"] = "macos",
 ) {
   await app.mount(
     {
@@ -126,7 +200,7 @@ async function mountOrchestrator(
       ].map((session) => ({ ...session, createdAt: 1, updatedAt: 1 })),
       monos: [{ id: db.mono.id, role: "mono", data: db.mono.data }],
     },
-    { handlers },
+    { handlers, platform },
   );
   await openMono(page);
 }
@@ -243,16 +317,27 @@ test("the ship 5 restart: each monitored session the quit cut reports once when 
   await expect.poll(() => prompts(page, STARTED)).toHaveLength(1);
   await expect.poll(() => prompts(page, SENT)).toHaveLength(1);
 
+  // As at ship 5 (ADE-60): SENT works in a worktree, so its Continue opens at
+  // once and the app renders again while STARTED's Continue waits on its
+  // project's location check. STARTED's Continue is asked for twice; the
+  // second copy is refused on the turn the first opens.
+  await holdLocation(page);
   await app.restart();
+  await expect.poll(() => prompts(page, SENT)).toEqual([CONTINUE]);
   await expect
-    .poll(() => prompts(page, STARTED))
-    .toEqual(["Continue from where you left off."]);
-  await expect
-    .poll(() => prompts(page, SENT))
-    .toEqual(["Continue from where you left off."]);
+    .poll(() => page.evaluate(() => !!window.releaseProjectLocation))
+    .toBe(true);
+  await rendered(page);
+  await page.evaluate(() => window.releaseProjectLocation!());
+  await expect.poll(() => prompts(page, STARTED)).toEqual([CONTINUE]);
+  await rendered(page);
+  expect(await notices(page)).toEqual([]);
 
   await endTurn(app, STARTED, "M-10 #117 wording fix done.");
   await expect.poll(() => notices(page)).toEqual([[at(STARTED)]]);
+  expect(
+    (await prompts(page, CHAT)).find((text) => text.includes(NOTICE)),
+  ).toContain("M-10 #117 wording fix done.");
   await endTurn(app, CHAT, "Noted.");
   await endTurn(app, SENT, "ADE-58 repro done.");
   await expect.poll(() => notices(page)).toEqual([[at(STARTED)], [at(SENT)]]);
@@ -302,9 +387,7 @@ test("a result the Mono was told of before the quit is not reported again", asyn
   await expect(busy).toHaveCount(0);
 
   await app.restart();
-  await expect
-    .poll(() => prompts(page, S2.id))
-    .toEqual(["Continue from where you left off."]);
+  await expect.poll(() => prompts(page, S2.id)).toEqual([CONTINUE]);
   await endTurn(app, S2.id, "M-10 wording fixed.");
   await expect.poll(() => notices(page)).toEqual([[at(S2.id)]]);
 });
@@ -339,4 +422,78 @@ test("a monitored session that ended while the app was down is reported once aft
   await monoTurn(page, "Anything else?");
   expect(await notices(page)).toEqual([[at(offline.id)]]);
   expect(await prompts(page, offline.id)).toEqual([]);
+});
+
+// Each save path that ends this window keeps the waiting group: a reload, a
+// close with nothing running, and closing a busy window on Linux.
+test("a reload keeps the waiting group", async ({ app, page }) => {
+  await mountOrchestrator(app, page);
+  await call(app, page, "reload", "sessions.send", {
+    sessionId: SENT,
+    prompt: "Reproduce ADE-58.",
+    project: PROJECT,
+    notifyOnComplete: true,
+  });
+  await expect.poll(() => prompts(page, SENT)).toHaveLength(1);
+
+  await keepAtInFlight(page);
+  await reopen(page);
+  await expect.poll(() => prompts(page, SENT)).toEqual([CONTINUE]);
+  await endTurn(app, SENT, "ADE-58 repro done.");
+  await expect.poll(() => notices(page)).toEqual([[at(SENT)]]);
+});
+
+test("closing the window with nothing running keeps the waiting group", async ({
+  app,
+  page,
+}) => {
+  await mountOrchestrator(app, page, [db.sessions[0]]);
+  await call(app, page, "idle-close", "sessions.send", {
+    sessionId: STARTED,
+    prompt: "Fix the M-10 wording.",
+    project: PROJECT,
+    notifyOnComplete: true,
+  });
+  await expect.poll(() => prompts(page, STARTED)).toHaveLength(1);
+  // After a relaunch the Continue waits on the location check, so the
+  // window runs nothing while the Mono still waits on STARTED.
+  await holdLocation(page);
+  await app.restart();
+  await expect
+    .poll(() => page.evaluate(() => !!window.releaseProjectLocation))
+    .toBe(true);
+
+  await app.emit("tauri://close-requested", {});
+  await reopenAfter(page, "destroy_window");
+  await expect.poll(() => prompts(page, STARTED)).toEqual([CONTINUE]);
+  await endTurn(app, STARTED, "M-10 wording fixed.");
+  await expect.poll(() => notices(page)).toEqual([[at(STARTED)]]);
+});
+
+test("closing a busy window on Linux keeps the waiting group", async ({
+  app,
+  page,
+}) => {
+  await mountOrchestrator(app, page, [], "linux");
+  await call(app, page, "busy-close", "sessions.send", {
+    sessionId: SENT,
+    prompt: "Reproduce ADE-58.",
+    project: PROJECT,
+    notifyOnComplete: true,
+  });
+  await expect.poll(() => prompts(page, SENT)).toHaveLength(1);
+
+  // The close stops SENT's turn after it saves, and this page lives on;
+  // keep the store as the save left it, as the Rust database does.
+  await keepAtInFlight(page);
+  await app.emit("tauri://close-requested", {});
+  await expect
+    .poll(() =>
+      page.evaluate(() => sessionStorage.getItem("ade46.keepAtInFlight")),
+    )
+    .toBeNull();
+  await reopen(page);
+  await expect.poll(() => prompts(page, SENT)).toEqual([CONTINUE]);
+  await endTurn(app, SENT, "ADE-58 repro done.");
+  await expect.poll(() => notices(page)).toEqual([[at(SENT)]]);
 });

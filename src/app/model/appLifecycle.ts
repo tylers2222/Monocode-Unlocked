@@ -89,9 +89,9 @@ export function setQuitWorkspace(
   projectTerminals: () => ProjectTerminalDock[],
   projectReturnMemory: () => ProjectReturnMemory,
   flush: () => void,
+  monoCompletions: () => SavedMonoCompletion[],
   lastDockSide: () => DockSide | null = () => null,
   keepTab?: (tab: WorkspaceTab) => boolean,
-  monoCompletions: () => SavedMonoCompletion[] = () => [],
 ): () => void {
   liveWorkspace = {
     sessions,
@@ -126,11 +126,11 @@ export async function handleQuitRequested(): Promise<boolean> {
         liveWorkspace.activeTabId(),
         liveWorkspace.projectCwd(),
         liveWorkspace.projectReturnMemory(),
+        liveWorkspace.monoCompletions(),
         "quit",
         liveWorkspace.projectTerminals(),
         liveWorkspace.lastDockSide() ?? undefined,
         liveWorkspace.keepTab,
-        liveWorkspace.monoCompletions(),
       );
       return true;
     } catch {
@@ -209,6 +209,7 @@ export async function closeBusyWindow(): Promise<void> {
     liveWorkspace.activeTabId(),
     liveWorkspace.projectCwd(),
     liveWorkspace.projectReturnMemory(),
+    liveWorkspace.monoCompletions(),
     liveWorkspace.projectTerminals(),
     liveWorkspace.lastDockSide() ?? undefined,
   );
@@ -370,11 +371,11 @@ export async function persistQuitState(
   activeTabId: string,
   projectCwd: string,
   memory: ProjectReturnMemory,
+  monoCompletions: SavedMonoCompletion[],
   mode: "quit" | "unload" = "quit",
   projectTerminals: ProjectTerminalDock[] = [],
   lastDockSide?: DockSide,
   keepTab?: (tab: WorkspaceTab) => boolean,
-  monoCompletions: SavedMonoCompletion[] = [],
 ): Promise<void> {
   const refs = inFlightRefs(sessions, tabs);
   const interrupted = new Set(refs.map((ref) => ref.sessionId));
@@ -449,6 +450,7 @@ async function confirmAndCloseWindow(
   activeTabId: string,
   projectCwd: string,
   memory: ProjectReturnMemory,
+  monoCompletions: SavedMonoCompletion[],
   projectTerminals: ProjectTerminalDock[] = [],
   lastDockSide?: DockSide,
 ): Promise<void> {
@@ -471,6 +473,7 @@ async function confirmAndCloseWindow(
         activeTabId,
         projectCwd,
         memory,
+        monoCompletions,
         "quit",
         projectTerminals,
         lastDockSide,
