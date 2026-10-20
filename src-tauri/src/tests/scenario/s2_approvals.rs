@@ -716,7 +716,8 @@ fn cards_and_a_queued_decision_survive_a_kill(
 /// Defects: a kill loses a card, a status, a decision note or a queued
 /// decision, or delivers it twice; the badge counts other than the open
 /// cards; deleting the filing Giga deletes its card or forgets who filed
-/// it; or deciding that card sends a message to anyone.
+/// it; or deciding that card sends a message to anyone, even to a new Giga
+/// that takes the removed Giga's name.
 #[test]
 fn s2_cards_survive_a_restart_and_a_removed_giga_gets_nothing() {
     let mut world = World::new("s2-restart");
@@ -737,6 +738,20 @@ fn s2_cards_survive_a_restart_and_a_removed_giga_gets_nothing() {
     );
     assert_eq!(removed.status, Status::Open, "the card stays open");
     world.badge_matches(project, 2, "the removed Giga's card still counts");
+    let namesake = world.add_mono("s2-giga-b2", MonoRole::Giga);
+    let rename: mono_roster::MonoUpdate =
+        serde_json::from_value(json!({"id": "s2-giga-b2", "patch": {"name": "s2-giga-b"}}))
+            .unwrap();
+    mono_roster::update_many(
+        &world.conn(),
+        &[mono_roster::validate_update(rename).unwrap()],
+    )
+    .unwrap();
+    assert_eq!(
+        world.count("SELECT count(*) FROM monos WHERE name = ?1", &["s2-giga-b"]),
+        1,
+        "another Giga now goes by the removed Giga's name"
+    );
     let board_rows = world.count(
         "SELECT count(*) FROM mono_messages WHERE from_session_id = ?1",
         &[BOARD],
@@ -764,6 +779,11 @@ fn s2_cards_survive_a_restart_and_a_removed_giga_gets_nothing() {
     assert!(
         world.start_turn(&b.chat, "b-t1").is_empty(),
         "the removed Giga's chat gets nothing"
+    );
+    world.down(60_000);
+    assert!(
+        world.start_turn(&namesake.chat, "b2-t1").is_empty(),
+        "a new Giga with the removed Giga's name gets nothing"
     );
     world.badge_matches(project, 1, "only the kept card is open");
 

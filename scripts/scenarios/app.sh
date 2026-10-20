@@ -180,7 +180,7 @@ case "${1:-}" in
     for run in $(seq 1 "${2:-1}"); do "$0" s0-run "$run" || failed=$((failed + 1)); done
     log "S0: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
-  approvals-run) run_approvals "$2" ;;
+  approvals-run) export GIGA_EVAL_SANDBOX=1 GIGA_EVAL_WATCH_NOTIFY=$$; run_approvals "$2" ;;
   approvals)
     APPROVALS_USER_BIN="${APPROVALS_USER_BIN:-$(user_bin)}"
     [[ -x "$APPROVALS_USER_BIN" ]] || die "no test binary for the user tool"

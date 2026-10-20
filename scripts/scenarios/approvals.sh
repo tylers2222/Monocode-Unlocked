@@ -25,9 +25,14 @@ user() {
     | grep '"step":'
 }
 
-# Only the puppet and node are on PATH: the copied database holds turns for
-# the user's real agents, which must not start here.
-start_sandboxed() {
+# The copy holds turns and sessions for the user's real agents. The instance
+# runs under scripts/giga-eval/sandbox.sh (GIGA_EVAL_SANDBOX=1): the copy is
+# scrubbed, every start is guarded, and the app runs in a profile that lets
+# it start only itself, node, the puppet and git, reach only localhost and
+# write only under /tmp. Node is on the launch PATH for the puppet's
+# `#!/usr/bin/env node`; the sandbox refuses the login shell the app would
+# read PATH from.
+start_app() {
   mkdir -p "$EVAL_OUT/path"
   ln -sf "$(command -v node)" "$EVAL_OUT/path/node"
   PATH="$EVAL_OUT/path:/usr/bin:/bin:/usr/sbin:/sbin" "$INSTANCE" start
@@ -151,15 +156,19 @@ run_approvals() {
   UPTIME=0; WALL="$(date +%s)000"; BOOT_MS=$((WALL - 3600000))
   clock_write "$UPTIME" "$WALL"
   sqlite3 "file:$REAL_APP_DATA/monocode.db?mode=ro" ".backup '$DB'"
+  install_approvals_puppet
+  "$INSTANCE" scrub "$FX_MODEL"
+  rm -f "$EVAL_OUT/sandbox-stray.txt"
+  local since; since="$(date '+%Y-%m-%d %H:%M:%S')"
+  trap 'echo "  FAIL a process other than the app and the puppet ran: $(cat "$EVAL_OUT/sandbox-stray.txt")"; exit 1' USR1
   local real_sessions refused_before
   real_sessions="$(sqlite3 "$DB" "SELECT count(*) FROM sessions")"
   refused_before="$(sqlite3 "$DB" "SELECT count(*) FROM mono_messages WHERE gate_result = 'not_a_giga'")"
-  install_approvals_puppet
-  start_sandboxed
+  start_app
   wait_until 30 "the first launch writes mono_clock" holds "SELECT count(*) = 1 FROM mono_clock"
   "$INSTANCE" stop
   approvals_seed
-  start_sandboxed
+  start_app
   wait_until 120 "A's second turn ends the chain" holds \
     "SELECT status = 'withdrawn' FROM approvals WHERE heading = 'ADE55 Withdraw me'"
   wait_until 60 "C files its card" holds "SELECT count(*) = 1 FROM approvals WHERE heading = 'ADE55 Orphan card'"
@@ -208,7 +217,7 @@ run_approvals() {
   expect "nothing for the removed Giga's card" \
     "$(qs "SELECT count(*) FROM mono_messages WHERE request_id = (SELECT id FROM approvals WHERE heading = 'ADE55 Orphan card')")" 0
 
-  start_sandboxed
+  start_app
   wait_until 60 "the Gigas take their decisions" holds \
     "SELECT count(*) = 4 FROM mono_messages WHERE from_session_id = 'approvals-board' AND delivered_at IS NOT NULL"
   wait_until 30 "the four decisions reach the puppets" bash -c \
@@ -228,7 +237,7 @@ run_approvals() {
   local before sent; before="$(cards)"; sent="$(decided_prompts)"
   kill9
   WALL=$((WALL + 30000)); clock_write "$UPTIME" "$WALL"
-  start_sandboxed
+  start_app
   wait_until 30 "the restart logs app_down" holds "SELECT count(*) >= 1 FROM mono_downtime WHERE cause = 'app_down'"
   advance 10000
   expect "every card and status after kill -9 and restart" "$(cards)" "$before"
@@ -236,5 +245,7 @@ run_approvals() {
   expect "open cards after the restart" "$(q "SELECT count(*) FROM approvals WHERE status = 'open' AND heading LIKE 'ADE55 %'")" 1
   expect "steers" "$(jq -s '[.[] | select(.steer == true)] | length' "$PUPPET/log.jsonl")" 0
   "$INSTANCE" stop
+  expect "processes other than the app and the puppet" "$(cat "$EVAL_OUT/sandbox-stray.txt" 2>/dev/null | wc -l | tr -d ' ')" 0
+  echo "  info the sandbox refused: $("$INSTANCE" denied "$since")"
   return "$FAILED"
 }
