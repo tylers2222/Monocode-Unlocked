@@ -94,48 +94,6 @@ export type WorkspaceSnapshot = {
   tabWorkspaces?: TabWorkspace[];
 };
 
-/**
- * Today's save: only the tabs `keepTab` keeps reopen, and so do only the
- * sessions they show.
- */
-export function collectWorkspaceSnapshot(
-  tabs: WorkspaceTab[],
-  sessions: Session[],
-  activeTabId: string,
-  projectCwd: string,
-  memory: ProjectReturnMemory,
-  projectTerminals: ProjectTerminalDock[] = [],
-  lastDockSide?: DockSide,
-  keepTab?: (tab: WorkspaceTab) => boolean,
-): WorkspaceSnapshot {
-  const kept = keepTab ? tabs.filter(keepTab) : tabs;
-  const keptIds = new Set(kept.flatMap((tab) => leafIds(tab.layout)));
-  const droppedIds = new Set(
-    tabs
-      .filter((tab) => !kept.includes(tab))
-      .flatMap((tab) => leafIds(tab.layout))
-      .filter((id) => !keptIds.has(id)),
-  );
-  const snapshot = savedFields(
-    kept,
-    sessions.filter((session) => !droppedIds.has(session.id)),
-    activeTabId,
-    projectCwd,
-    projectTerminals,
-    lastDockSide,
-  );
-  return withProjectReturnTargets(
-    {
-      ...snapshot,
-      activeTabId: savedActiveTabId(
-        filterTabsForProject(tabs, sessions, snapshot.projectCwd),
-        snapshot.tabs,
-        activeTabId,
-      ),
-    },
-    memory,
-  );
-}
 
 /** The window's fields in their saved form; agent and Inbox tabs left out. */
 function savedFields(

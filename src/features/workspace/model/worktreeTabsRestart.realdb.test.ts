@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import realDb from "./fixtures/worktreeTabsRestart.realdb.json";
 
 type Row = Record<string, unknown>;
@@ -110,15 +110,83 @@ beforeEach(() => {
   store.records = structuredClone(realDb.records) as Record<string, Row>;
 });
 
-it("saves every worktree tab with its worktree, and boot pins each one back", async () => {
-  const window = await inWorktrees(await boot());
-  const { saveWorkspaceSnapshot, workspaceSnapshot } = await webview();
-  await saveWorkspaceSnapshot(workspaceSnapshot([window]));
-  // 4 saved tabs reopened in their worktrees, 3 opened from the rail.
-  expect(
-    (store.snapshot as { tabWorkspaces?: unknown[] }).tabWorkspaces,
-  ).toHaveLength(7);
-  expectRestored(window, await boot());
+describe("worktree tabs come back after each save path (real saved data)", () => {
+  it("normal-use save, then a crash", async () => {
+    const window = await inWorktrees(await boot());
+    const { saveWorkspaceSnapshot, workspaceSnapshot } = await webview();
+    await saveWorkspaceSnapshot(workspaceSnapshot([window]));
+    // 4 saved tabs reopened in their worktrees, 3 opened from the rail.
+    expect(
+      (store.snapshot as { tabWorkspaces?: unknown[] }).tabWorkspaces,
+    ).toHaveLength(7);
+    expectRestored(window, await boot());
+  });
+
+  it("quit, with a worktree chat still running", async () => {
+    const booted = await inWorktrees(await boot());
+    const runningTab = booted.tabs[1];
+    const window = {
+      ...booted,
+      sessions: booted.sessions.map((session) =>
+        session.id === runningTab.focusedId ? { ...session, busy: true } : session,
+      ),
+    };
+    const { commitQuit, setQuitWorkspace } = await webview();
+    setQuitWorkspace(() => window, () => undefined);
+    await commitQuit(1);
+    expect(store.inFlight.map((ref) => ref.sessionId)).toEqual([
+      runningTab.focusedId,
+    ]);
+
+    const restored = await boot();
+    expectRestored(window, restored);
+    // F3 (a): it comes back in its own saved tab, in its worktree, not as a
+    // new tab at the end of the default strip.
+    expect(restored.tabs[1].id).toBe(runningTab.id);
+    expect(
+      restored.sessions.find((session) => session.id === runningTab.focusedId)
+        ?.blocks.at(-1)?.notice,
+    ).toBe("interrupt");
+  });
+
+  it("close-requested on an idle window", async () => {
+    const window = await inWorktrees(await boot());
+    const { persistQuitState } = await webview();
+    await persistQuitState(window, "unload");
+    expectRestored(window, await boot());
+  });
+
+  it("webview reload", async () => {
+    const window = await inWorktrees(await boot());
+    const { persistQuitState } = await webview();
+    await persistQuitState(window, "unload");
+    expectRestored(window, await boot());
+  });
+
+  it("close of a busy window", async () => {
+    const booted = await inWorktrees(await boot());
+    const window = {
+      ...booted,
+      sessions: booted.sessions.map((session, index) =>
+        index === 0 ? { ...session, busy: true } : session,
+      ),
+    };
+    const { closeBusyWindow, setQuitWorkspace } = await webview();
+    setQuitWorkspace(() => window, () => undefined);
+    await closeBusyWindow();
+    expectRestored(window, await boot());
+  });
+
+  it("quit while the app is still booting", async () => {
+    const window = await inWorktrees(await boot());
+    const first = await webview();
+    await first.saveWorkspaceSnapshot(first.workspaceSnapshot([window]));
+
+    const booting = await webview();
+    await booting.loadBootWorkspace();
+    expect(await booting.handleQuitRequested()).toBe(true);
+    expectRestored(window, await boot());
+  });
 });
 
 it("a tab saved in a worktree that was removed comes back in the default workspace", async () => {
