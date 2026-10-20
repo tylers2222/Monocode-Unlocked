@@ -15,6 +15,7 @@ import {
 } from "../../sessions/model/session";
 import { enqueueMonoMessage } from "./monoMessaging";
 import {
+  APPROVALS_SENDER,
   newTurnId,
   noticeRequestId,
   renderMonoMessage,
@@ -135,11 +136,15 @@ function rowLink(
   };
 }
 
-/** Who sent a row: its Mono, else the lead or worker session that wrote it. */
+/**
+ * Who sent a row: its Mono, the user for an approvals-board decision, else
+ * the lead or worker session that wrote it.
+ */
 async function rowSender(
   host: MonoQueueHost,
   message: Pick<MonoMessage, "fromMonoId" | "fromSessionId">,
 ): Promise<MessageSender | undefined> {
+  if (message.fromSessionId === APPROVALS_SENDER) return { kind: "user" };
   if (!message.fromMonoId) return host.sessionSender(message.fromSessionId);
   const mono = host.sender(message.fromMonoId);
   return mono && { kind: "mono", ...mono };

@@ -434,10 +434,35 @@ export type Reading = {
   target: ReplyTarget | null;
 };
 
-/** Who sent a row, as its reader is told: a Mono, or a lead or worker session. */
+export const APPROVALS_SENDER = "approvals-board" as SessionId;
+
+/** Who sent a row, as its reader is told: a Mono, a lead or worker session, or the user. */
 export type MessageSender =
   | { kind: "mono"; name: string; role: MonoRole }
-  | { kind: "session"; title: string; level: "lead" | "worker" };
+  | { kind: "session"; title: string; level: "lead" | "worker" }
+  | { kind: "user" };
+
+function fromAttributes(
+  message: Pick<MessageBase, "fromMonoId" | "fromSessionId">,
+  sender: MessageSender | undefined,
+): string[] {
+  switch (sender?.kind) {
+    case "user":
+      return ['from="the user"', 'via="approvals board"'];
+    case "session":
+      return [
+        `from="${attribute(sender.title)}"`,
+        `session_id="${message.fromSessionId}"`,
+        `level="${sender.level}"`,
+      ];
+    default:
+      return [
+        `from="${attribute(sender?.name ?? "a deleted Mono")}"`,
+        ...(message.fromMonoId ? [`mono_id="${message.fromMonoId}"`] : []),
+        ...(sender ? [`role="${sender.role}"`] : []),
+      ];
+  }
+}
 
 /**
  * What the receiving agent reads (design 5.2, 16.7). A message that wants a
@@ -469,21 +494,9 @@ export function renderMonoMessage(
       targetRef(reading.target, reading),
     );
   }
-  const from =
-    sender?.kind === "session"
-      ? [
-          `from="${attribute(sender.title)}"`,
-          `session_id="${message.fromSessionId}"`,
-          `level="${sender.level}"`,
-        ]
-      : [
-          `from="${attribute(sender?.name ?? "a deleted Mono")}"`,
-          ...(message.fromMonoId ? [`mono_id="${message.fromMonoId}"`] : []),
-          ...(sender ? [`role="${sender.role}"`] : []),
-        ];
   const attributes = [
     `message_id="${message.id}"`,
-    ...from,
+    ...fromAttributes(message, sender),
     `wanting_reply="${message.wantingReply}"`,
     ...(handle ? [`handle="${handle}"`] : []),
     ...(line && message.replyTo ? [`reply_to="${message.replyTo}"`] : []),
