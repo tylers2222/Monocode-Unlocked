@@ -113,6 +113,13 @@ class Rules(unittest.TestCase):
         for diff in (None, ''):
             self.assertEqual(T.tier(with_test(PLAN), diff, set()), ('T3', ['no diff from GitHub']))
 
+    def test_mutation_tool_configs_are_gate_code(self):
+        for path in ('.cargo/config.toml', 'src-tauri/.cargo/mutants.toml', 'mutants.toml', 'stryker.config.mjs', 'stryker.conf.json'):
+            with self.subTest(path=path):
+                diff = one_file_diff(path, 1, ['-a = 1', '+a = 2'])
+                self.assertEqual(T.tier([{'path': path, 'additions': 1}], diff, set()), ('T3', ['gate:' + path]))
+        self.assertFalse(T.GATE_PATH.search('src/features/cargo/model/mutants.ts'), 'only the config files')
+
     def test_pure_code_without_a_test_is_t2(self):
         diff = one_file_diff(PLAN, 9, ['-  return 1;', '+  return 2;'])
         self.assertEqual(T.tier([{'path': PLAN, 'additions': 1}], diff, set())[0], 'T2')

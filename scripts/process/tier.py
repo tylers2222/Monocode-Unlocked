@@ -22,7 +22,9 @@ from urllib.parse import quote
 TEST = re.compile(r'(^|/)(tests?|__tests__|e2e|fixtures?|scenario|evals?)/|\.(test|spec)\.|tests\.rs$|_test\.|\.snap$')
 DOC = re.compile(r'\.(md|txt)$|^docs/|CHANGELOG')
 CONFIG = re.compile(r'(package(-lock)?\.json|Cargo\.lock|\.ya?ml|\.toml|\.json|\.eslintrc.*|\.npmrc|tsconfig.*)$')
-GATE_PATH = re.compile(r'^\.github/workflows/gate|^scripts/gate/|^scripts/process/|integrity|heavy-lock')
+# Gate code: the gate's workflows and scripts, and the configs of the tools gate/mutation runs.
+GATE_PATH = re.compile(r'^\.github/workflows/gate|^scripts/gate/|^scripts/process/|integrity|heavy-lock'
+                       r'|(^|/)\.cargo/|(^|/)mutants\.toml$|(^|/)stryker\.(conf|config)\.[cm]?[jt]s(on)?$')
 # Concurrency: the lock and scheduler files and the primitives. T3 and the interrogate rule share them.
 LOCK_PATH = r'(?<![Cc]argo\.)(?<!-)lock\.|scheduler'
 CONCURRENCY_CODE = r'Mutex|RwLock|tokio::spawn|thread::spawn|AtomicU|flock'

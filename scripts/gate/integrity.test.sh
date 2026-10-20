@@ -66,7 +66,8 @@ probe baseline-grows 1 'baseline counts grow by 1' perl -pi -e 's/"count": 1/"co
 probe gate-file 1 'scripts/gate/x.sh: edits a gate file' eval 'echo "# x" >> scripts/gate/x.sh'
 probe gate-rename 1 'scripts/gate/x.sh: edits a gate file' git mv scripts/gate/x.sh scripts/x.sh
 for path in scripts/process/tier.py src/eslint.config.js .github/workflows/ci.yml .github/actions/x/action.yml src-tauri/clippy.toml .clippy.toml \
-  .cargo/config.toml rust-toolchain.toml scripts/install-linux-deps-debian.sh .npmrc; do
+  .cargo/config.toml src-tauri/.cargo/mutants.toml mutants.toml src-tauri/mutants.toml stryker.config.mjs stryker.conf.json \
+  rust-toolchain.toml scripts/install-linux-deps-debian.sh .npmrc; do
   probe "gate-path $path" 1 "$path: edits a gate file" eval "mkdir -p '$(dirname "$path")' && echo x > '$path'"
 done
 probe cargo-lint 1 'Cargo.toml:2: edits a lint or install setting' perl -pi -e 's/"deny"/"allow"/' Cargo.toml
