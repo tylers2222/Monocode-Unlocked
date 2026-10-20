@@ -6,8 +6,9 @@ The reviewer posts its verdict as the commit status review/agent on the commit i
 minors-only verdict on an older commit carries to the head when a fixer-proof comment
 line by a collaborator covers each minor finding (m1 to mK), the PR's own change since
 the verdict adds no file, stays inside the reviewed files and changes at most 60 lines,
-and the other checks on the head pass. T2 and T3 carry only a round 1 verdict, and T3
-also needs a green gate/mutation check run on the head from the gate-mutation workflow.
+and the other checks on the head pass. T2 and T3 carry only a round 1 verdict. A T3 head
+fails on every path until a gate/mutation check run from the gate-mutation workflow
+succeeded on it.
 Only verdicts posted for this PR count. Any other head needs a new review verdict.
 
 Usage: python3 scripts/process/merge_rule.py <pr> <T1|T2|T3> [--post-carry]
@@ -161,6 +162,8 @@ def decide(
     """Decides on the latest verdict. reviewed_files is the PR diff at the verdict's commit;
     since_review is the PR's own change since then. mutation is mutation_result() for the
     head: a conclusion, "pending", or None when there is no trusted gate/mutation run."""
+    if tier == "T3" and mutation != "success":
+        return refuse(f"T3 needs a green gate/mutation on the head (it is {mutation or 'missing'})")
     verdict = latest(verdicts)
     if verdict is None:
         return refuse("no review verdict yet")
@@ -192,8 +195,6 @@ def decide(
         return refuse(f"{since} touches files outside the reviewed diff ({', '.join(outside)}); it needs a new review verdict")
     if since_review.changed > MAX_FIX_LINES:
         return refuse(f"{since} changes {since_review.changed} lines, more than {MAX_FIX_LINES}; it needs a new review verdict")
-    if tier == "T3" and mutation != "success":
-        return refuse(f"T3 carries only with a green gate/mutation on the head (it is {mutation or 'missing'})")
     if checks_failed:
         return refuse(f"failed checks: {', '.join(checks_failed)}")
     if checks_pending:
