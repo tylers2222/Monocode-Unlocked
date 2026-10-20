@@ -8,6 +8,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import tier as T
 
 RECORDED = Path(__file__).parent / 'fixtures' / 'tier_recorded.json.gz'
+PLAN = 'src/features/orchestration/model/orchestrationPlan.ts'
+PLAN_TEST = 'src/features/orchestration/model/orchestrationPlan.test.ts'
 
 
 def recorded():
@@ -16,8 +18,8 @@ def recorded():
 
 
 def run(rec):
-    raw = {p: (set(old), set(new)) for p, (old, new) in rec['raw'].items()}
-    return T.tier(rec['files'], rec['diff'], raw)
+    multi_line = {p: (set(old), set(new)) for p, (old, new) in rec['raw'].items()}
+    return T.tier(rec['files'], rec['diff'], multi_line)
 
 
 def one_file_diff(path, start, lines):
@@ -25,8 +27,12 @@ def one_file_diff(path, start, lines):
     return f'diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -{start},1 +{start},1 @@ fn x\n{body}\n'
 
 
+def with_test(path):
+    return [{'path': path, 'additions': 1}, {'path': PLAN_TEST, 'additions': 1}]
+
+
 class RecordedPrs(unittest.TestCase):
-    """The 62 PRs the 2026-10-20 review tiered by hand-checked script, with their real diffs."""
+    """The 62 PRs the 2026-10-20 review tiered, with their real diffs and files."""
 
     def test_every_recorded_pr_keeps_its_tier(self):
         wrong = [(r['n'], r['tier'], run(r)) for r in recorded() if r['n'] != 116 and run(r)[0] != r['tier']]
@@ -35,26 +41,66 @@ class RecordedPrs(unittest.TestCase):
     def test_116_rules_text_is_not_t1(self):
         rec = next(r for r in recorded() if r['n'] == 116)
         self.assertEqual(rec['tier'], 'T1', 'the review set #116 to T1 by hand')
-        self.assertEqual(run(rec)[0], 'T3')
+        self.assertEqual(run(rec), ('T3', ['path:src-tauri/src/control_cli.rs', 'path:src-tauri/src/mono_messages.rs']))
 
 
-class RawStrings(unittest.TestCase):
-    def test_lines_of_a_multi_line_raw_string(self):
-        src = 'const A: &str = r##"first\nsecond "quoted"\n"##;\nlet b = r#"one line"#;\nfn c() {}\n'
-        self.assertEqual(T.raw_string_lines(src), {1, 2, 3})
+class StringText(unittest.TestCase):
+    """Agent rules, prompts and help text in a pure folder are T2, never T1."""
 
-    def test_plain_strings_and_one_line_raw_strings_are_code(self):
-        self.assertEqual(T.raw_string_lines('let a = "r";\nlet b = r"x";\nlet c = br#"y"#;\n'), set())
+    def test_ts_prompt_line_in_a_model_file_is_t2(self):
+        diff = one_file_diff(PLAN, 251, ['-    "You are the orchestrator: decide the breakdown.",',
+                                         '+    "You are the orchestrator: decide the task breakdown.",'])
+        self.assertEqual(T.tier(with_test(PLAN), diff, {}),
+                         ('T2', ['string text (agent rules, prompts, help) in: ' + PLAN]))
 
-    def test_rules_text_in_a_pure_folder_is_t2_not_t1(self):
-        path = 'src/features/x/model/rules.rs'
-        files = [{'path': path, 'additions': 1}, {'path': 'src/features/x/model/rules.test.ts', 'additions': 1}]
-        diff = one_file_diff(path, 2, ['-Old rule.', '+New rule.'])
-        self.assertEqual(T.tier(files, diff, {path: ({2}, {2})})[0], 'T2')
-        self.assertEqual(T.tier(files, diff, {})[0], 'T1', 'the same lines as code stay T1')
+    def test_line_inside_a_multi_line_template_is_t2(self):
+        path = 'src/features/monos/model/monoHabits.ts'
+        diff = one_file_diff(path, 3, ['-Habit: run it.', '+Habit: run it now.'])
+        self.assertEqual(T.tier(with_test(path), diff, {path: ({3}, {3})})[0], 'T2')
+        self.assertEqual(T.tier(with_test(path), diff, {})[0], 'T1', 'the same line outside a template is code')
 
-    def test_rules_text_does_not_lower_a_state_path(self):
-        path = 'src-tauri/src/control_cli.rs'
-        files = [{'path': path, 'additions': 1}]
-        diff = one_file_diff(path, 5, ['-Old help.', '+New help.'])
-        self.assertEqual(T.tier(files, diff, {path: ({5}, {5})})[0], 'T3')
+    def test_one_line_rust_raw_string_is_t2(self):
+        path = 'src-tauri/src/agent/model/rules.rs'
+        diff = one_file_diff(path, 2, ['-const R: &str = "x";', '+const R: &str = r#"Never merge without a review."#;'])
+        self.assertEqual(T.tier(with_test(path), diff, {})[0], 'T2')
+
+    def test_short_literal_in_code_stays_t1(self):
+        diff = one_file_diff(PLAN, 9, ['-  return kind === "a";', '+  return kind === "b";'])
+        self.assertEqual(T.tier(with_test(PLAN), diff, {})[0], 'T1')
+
+    def test_multi_line_string_lines(self):
+        rust = 'const A: &str = r##"first\nsecond "quoted"\n"##;\nlet b = r#"one line"#;\nfn c() {}\n'
+        self.assertEqual(T.multi_line_string_lines(rust, 'a.rs'), {1, 2, 3})
+        ts = 'const a = `one ${x}`;\nconst b = `first\nsecond \\` still\n`;\nf();\n'
+        self.assertEqual(T.multi_line_string_lines(ts, 'a.ts'), {2, 3, 4})
+
+
+class Rules(unittest.TestCase):
+    def test_gate_logic_in_scripts_process_is_t3(self):
+        path = 'scripts/process/tier.py'
+        files = [{'path': path, 'additions': 1}, {'path': 'scripts/process/tests/test_tier.py', 'additions': 1}]
+        diff = one_file_diff(path, 25, ['-X = 1', '+X = 2'])
+        self.assertEqual(T.tier(files, diff, {}), ('T3', ['gate:' + path]))
+
+    def test_pure_code_without_a_test_is_t2(self):
+        diff = one_file_diff(PLAN, 9, ['-  return 1;', '+  return 2;'])
+        self.assertEqual(T.tier([{'path': PLAN, 'additions': 1}], diff, {})[0], 'T2')
+        self.assertEqual(T.tier(with_test(PLAN), diff, {})[0], 'T1')
+
+
+class Labels(unittest.TestCase):
+    def test_old_tier_label_is_replaced(self):
+        self.assertEqual(T.label_changes(['tier:T1', 'instance:2'], 'T3'), (['tier:T1'], ['tier:T3']))
+
+    def test_current_label_needs_no_call(self):
+        self.assertEqual(T.label_changes(['tier:T3', 'process-fix'], 'T3'), ([], []))
+
+    def test_extra_tier_label_is_removed(self):
+        self.assertEqual(T.label_changes(['tier:T2', 'tier:T3'], 'T3'), (['tier:T2'], []))
+
+    def test_t3_label_is_a_tier_label(self):
+        self.assertEqual(T.label_changes(['tier:T3'], 'T1'), (['tier:T3'], ['tier:T1']))
+
+
+if __name__ == '__main__':
+    unittest.main()

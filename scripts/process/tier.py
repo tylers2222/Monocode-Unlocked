@@ -1,15 +1,14 @@
 """Review tier of a pull request: the riskiest code it touches.
 
-T3: gates, state paths (store, DB, IPC, hooks) or concurrency code. T1: docs, config
-and tests only, or pure model/script code with tests. T2: everything else. Agent
-rules, prompts and help text inside Rust raw strings are behaviour, so they are T2
-at least and never T1 (PR #116). The rules come from the 2026-10-20 process review,
-section 4b.
+T3: gates (including scripts/process/, the gate's own logic), state paths (store,
+DB, IPC, hooks) or concurrency code. T1: docs, config and tests only, or pure
+model/script code with tests. T2: everything else. Agent rules, prompts and help
+text are behaviour, so a change to string text in a pure folder is T2 at least and
+never T1 (PR #116). The rules come from the 2026-10-20 process review, section 4b.
 
 Usage: tier.py <pr-number> [--apply]
-Prints the tier and its reasons. With GITHUB_OUTPUT set, writes `tier` and `nt`
-(non-test lines added). --apply sets the label tier:T<n> and removes any other
-tier label. GATE_REPO overrides the repository.
+Prints the tier and its reasons. --apply makes tier:T<n> the PR's only tier label.
+GATE_REPO overrides the repository.
 """
 import collections
 import json
@@ -22,7 +21,7 @@ from urllib.parse import quote
 TEST = re.compile(r'(^|/)(tests?|__tests__|e2e|fixtures?|scenario|evals?)/|\.(test|spec)\.|tests\.rs$|_test\.|\.snap$')
 DOC = re.compile(r'\.(md|txt)$|^docs/|CHANGELOG')
 CONFIG = re.compile(r'(package(-lock)?\.json|Cargo\.lock|\.ya?ml|\.toml|\.json|\.eslintrc.*|\.npmrc|tsconfig.*)$')
-GATE_PATH = re.compile(r'^\.github/workflows/gate|^scripts/gate/|integrity|heavy-lock')
+GATE_PATH = re.compile(r'^\.github/workflows/gate|^scripts/gate/|^scripts/process/|integrity|heavy-lock')
 T3_PATH = re.compile(r'session_store|mono_messages|mono_gate|ask_gate|asks\.rs|active_clock|migrat|control_cli|/store/|Store\.ts'
                      r'|(?<![Cc]argo\.)(?<!-)lock\.|scheduler|/hooks/|/use[A-Z]\w*\.tsx?$')
 PURE_DIR = re.compile(r'/model/|^scripts/')
@@ -30,15 +29,22 @@ NOT_CODE_LINE = re.compile(r'^\s*(//|/\*|\*|#|"|\'|`|$)')
 T3_CODE = re.compile(r'\b(useState|useEffect|useLayoutEffect|useReducer|useRef|useSyncExternalStore|useCallback|useMemo)\b'
                      r'|\binvoke\(|\blisten\(|#\[tauri::command\]|rusqlite|\.execute\(|CREATE TABLE|ALTER TABLE|BEGIN IMMEDIATE'
                      r'|Mutex|RwLock|tokio::spawn|thread::spawn|AtomicU|setTimeout|setInterval|flock|clock_gettime')
-RAW_OPEN = re.compile(r'(?<!\w)b?r(#+)"')
+# Multi-line string openers: a Rust raw string r#"..."# and a JS/TS template literal.
+STRING_OPEN = {'.rs': re.compile(r'(?<!\w)b?r(#+)"'), '.ts': re.compile(r'(?<!\\)`()')}
+STRING_FILE = re.compile(r'\.(rs|[cm]?[jt]sx?)$')
+# A changed line that is string text: it starts with a quote, holds a raw string, or
+# holds a literal of 40+ characters, the length of a sentence of prose.
+STRING_LINE = re.compile(r'^\s*(["\'`]|b?r#+")|(?<!\w)b?r#+"|"[^"]{40,}"|\'[^\']{40,}\'|`[^`]{40,}`')
 TIER_LABEL = re.compile(r'^tier:T[123]$')
 
-Line = collections.namedtuple('Line', 'kind text raw')  # kind: '+', '-', ' ' or '@'
+Line = collections.namedtuple('Line', 'kind text text_line')  # kind: '+', '-', ' ' or '@'
 
 
-def raw_string_lines(source):
-    """1-based numbers of the lines of a Rust file that are text of a multi-line raw
-    string r#"..."#: they start inside one, or open one that ends on a later line."""
+def multi_line_string_lines(source, path):
+    """1-based numbers of the lines of a source file that are text of a multi-line Rust
+    raw string or JS/TS template literal: they start inside one, or open one that ends
+    on a later line."""
+    opener = STRING_OPEN['.rs' if path.endswith('.rs') else '.ts']
     inside, closer = set(), None
     for no, line in enumerate(source.splitlines(), 1):
         if closer:
@@ -46,22 +52,22 @@ def raw_string_lines(source):
         pos = 0
         while True:
             if closer is None:
-                opened = RAW_OPEN.search(line, pos)
+                opened = opener.search(line, pos)
                 if not opened:
                     break
-                closer, pos = '"' + opened.group(1), opened.end()
-            end = line.find(closer, pos)
-            if end < 0:
+                closer, pos = re.compile(r'(?<!\\)' + re.escape(opened.group(0)[-1] + opened.group(1))), opened.end()
+            end = closer.search(line, pos)
+            if not end:
                 break
-            closer, pos = None, end + len(closer)
+            closer, pos = None, end.end()
         if closer:
             inside.add(no)
     return inside
 
 
-def parse_diff(text, raw):
-    """Per file, the hunk lines in order. raw maps a path to the raw-string line
-    numbers of its old and new versions; a line in one of them is flagged raw."""
+def parse_diff(text, multi_line):
+    """Per file, the hunk lines in order, each flagged when it is string text.
+    multi_line maps a path to the multi_line_string_lines of its old and new versions."""
     files, cur, old_no, new_no = collections.defaultdict(list), None, 0, 0
     for ln in text.splitlines():
         if ln.startswith('+++ '):
@@ -73,19 +79,20 @@ def parse_diff(text, raw):
                 old_no, new_no = (int(n) for n in re.match(r'@@ -(\d+)(?:,\d+)? \+(\d+)', ln).groups())
                 files[cur].append(Line('@', ln.split('@@')[-1], False))  # enclosing function name git prints
         elif cur and ln[:1] in '+- ':
-            old_raw, new_raw = raw.get(cur, (set(), set()))
+            old_text, new_text = multi_line.get(cur, (set(), set()))
             kind = ln[:1]
-            flag = old_no in old_raw if kind == '-' else new_no in new_raw
-            files[cur].append(Line(kind, ln[1:], flag))
+            inside = old_no in old_text if kind == '-' else new_no in new_text
+            files[cur].append(Line(kind, ln[1:], inside or bool(STRING_LINE.search(ln[1:]))))
             old_no += kind != '+'
             new_no += kind != '-'
     return files
 
 
-def tier(files, diff_text, raw=None):
-    """files: [{'path', 'additions'}] as the GitHub API lists them. raw: per Rust
-    path, (old, new) raw_string_lines of its two versions. Returns (tier, reasons)."""
-    lines = parse_diff(diff_text, raw or {})
+def tier(files, diff_text, multi_line=None):
+    """files: [{'path', 'additions'}] as the GitHub API lists them. multi_line: per
+    source path, (old, new) multi_line_string_lines of its two versions, for the files
+    that could be T1 (pure folders). Returns (tier, reasons)."""
+    lines = parse_diff(diff_text, multi_line or {})
     changed = lambda p: [l for l in lines.get(p, []) if l.kind in '+-']
     prod = [f['path'] for f in files if not TEST.search(f['path']) and not DOC.search(f['path'])]
     why = []
@@ -103,9 +110,9 @@ def tier(files, diff_text, raw=None):
     if why:
         return 'T3', why
     code = [p for p in prod if not CONFIG.search(p)]
-    rules_text = [p for p in code if any(l.raw for l in changed(p))]
+    rules_text = [p for p in code if PURE_DIR.search(p) and STRING_FILE.search(p) and any(l.text_line for l in changed(p))]
     if rules_text:
-        return 'T2', ['agent rules or help text in raw strings: ' + ', '.join(rules_text[:3])]
+        return 'T2', ['string text (agent rules, prompts, help) in: ' + ', '.join(rules_text[:3])]
     tests_touched = any(TEST.search(f['path']) for f in files)
     if not code:
         return 'T1', ['docs/config/tests only']
@@ -125,23 +132,21 @@ def gh(*args, check=True):
     return run.stdout if run.returncode == 0 else ''
 
 
-def raw_sets(repo, pr, files):
-    """raw_string_lines of each Rust file at the merge base and at the head."""
+def multi_line_sets(repo, pr, files):
+    """multi_line_string_lines at the merge base and the head, for the source files in
+    pure folders: only there can string text change the tier."""
     head, base = gh('api', f'repos/{repo}/pulls/{pr}', '--jq', '.head.sha + " " + .base.sha').split()
     merge_base = gh('api', f'repos/{repo}/compare/{base}...{head}', '--jq', '.merge_base_commit.sha').strip()
     show = lambda path, ref: gh('api', '-H', 'Accept: application/vnd.github.raw',
                                 f'repos/{repo}/contents/{quote(path)}?ref={ref}', check=False)
-    return {f['path']: (raw_string_lines(show(f['path'], merge_base)), raw_string_lines(show(f['path'], head)))
-            for f in files if f['path'].endswith('.rs')}
+    return {p: (multi_line_string_lines(show(p, merge_base), p), multi_line_string_lines(show(p, head), p))
+            for p in (f['path'] for f in files) if PURE_DIR.search(p) and STRING_FILE.search(p)}
 
 
-def apply_label(repo, pr, t):
-    labels = gh('api', f'repos/{repo}/issues/{pr}/labels', '--jq', '.[].name').splitlines()
-    for old in labels:
-        if TIER_LABEL.match(old) and old != f'tier:{t}':
-            gh('api', '-X', 'DELETE', f'repos/{repo}/issues/{pr}/labels/{quote(old)}')
-    if f'tier:{t}' not in labels:
-        gh('api', '-X', 'POST', f'repos/{repo}/issues/{pr}/labels', '-f', f'labels[]=tier:{t}')
+def label_changes(labels, t):
+    """(tier labels to remove, labels to add) so that tier:<t> is the PR's only tier label."""
+    want = f'tier:{t}'
+    return [l for l in labels if TIER_LABEL.match(l) and l != want], [] if want in labels else [want]
 
 
 def main(argv):
@@ -150,16 +155,20 @@ def main(argv):
     pr, repo = argv[1], os.environ.get('GATE_REPO', 'tylers2222/Monocode-Unlocked')
     files = [json.loads(l) for l in gh('api', '--paginate', f'repos/{repo}/pulls/{pr}/files',
                                         '--jq', '.[] | {path: .filename, additions}').splitlines()]
-    t, why = tier(files, gh('pr', 'diff', pr, '-R', repo), raw_sets(repo, pr, files))
-    nt = non_test_lines(files)
-    print(f'tier: {t}, {nt} non-test lines added')
+    diff = gh('pr', 'diff', pr, '-R', repo, check=False)
+    if files and not diff:
+        t, why = 'T3', ['GitHub gives no diff for this PR (over 20 000 lines or 300 files), so it gets the strictest tier']
+    else:
+        t, why = tier(files, diff, multi_line_sets(repo, pr, files))
+    print(f'tier: {t}, {non_test_lines(files)} non-test lines added')
     for w in why:
         print(f'tier:   {w}')
-    if os.environ.get('GITHUB_OUTPUT'):
-        with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-            out.write(f'tier={t}\nnt={nt}\n')
     if '--apply' in argv:
-        apply_label(repo, pr, t)
+        remove, add = label_changes(gh('api', f'repos/{repo}/issues/{pr}/labels', '--jq', '.[].name').splitlines(), t)
+        for old in remove:
+            gh('api', '-X', 'DELETE', f'repos/{repo}/issues/{pr}/labels/{quote(old)}')
+        for new in add:
+            gh('api', '-X', 'POST', f'repos/{repo}/issues/{pr}/labels', '-f', f'labels[]={new}')
 
 
 if __name__ == '__main__':

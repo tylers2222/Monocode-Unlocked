@@ -10,7 +10,7 @@ name: gate-integrity
 on:
   pull_request_target:
     branches: [tyler/main]
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
@@ -26,16 +26,12 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    outputs:
-      tier: ${{ steps.tier.outputs.tier }}
-      nt: ${{ steps.tier.outputs.nt }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
       - name: Tier the PR and set its tier label
-        id: tier
         env:
           GH_TOKEN: ${{ github.token }}
           GATE_REPO: ${{ github.repository }}
@@ -64,7 +60,7 @@ jobs:
       - name: Integrity check (default-branch script, diff only)
         run: bash scripts/gate/integrity.sh "$BASE_SHA" "$HEAD_SHA"
 
-      - name: gate/tier passed
+      - name: Fail when gate/tier failed
         if: ${{ !cancelled() && needs.tier.result != 'success' }}
         env:
           RESULT: ${{ needs.tier.result }}
