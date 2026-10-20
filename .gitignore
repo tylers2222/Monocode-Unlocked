@@ -58,3 +58,4 @@ Desktop.ini
 
 # Local document preview mockup
 /work/mono-document-preview.html
+__pycache__/
