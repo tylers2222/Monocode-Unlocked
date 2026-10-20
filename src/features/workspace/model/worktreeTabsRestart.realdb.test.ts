@@ -110,8 +110,10 @@ beforeEach(() => {
   store.records = structuredClone(realDb.records) as Record<string, Row>;
 });
 
+// The App entry points that save through these (normal use, close-requested,
+// reload) are proven in tests/browser/ade57-worktree-tabs-restart.spec.ts.
 describe("worktree tabs come back after each save path (real saved data)", () => {
-  it("normal-use save, then a crash", async () => {
+  it("workspaceSnapshot written by saveWorkspaceSnapshot, then a crash", async () => {
     const window = await inWorktrees(await boot());
     const { saveWorkspaceSnapshot, workspaceSnapshot } = await webview();
     await saveWorkspaceSnapshot(workspaceSnapshot([window]));
@@ -128,11 +130,16 @@ describe("worktree tabs come back after each save path (real saved data)", () =>
     const window = {
       ...booted,
       sessions: booted.sessions.map((session) =>
-        session.id === runningTab.focusedId ? { ...session, busy: true } : session,
+        session.id === runningTab.focusedId
+          ? { ...session, busy: true }
+          : session,
       ),
     };
     const { commitQuit, setQuitWorkspace } = await webview();
-    setQuitWorkspace(() => window, () => undefined);
+    setQuitWorkspace(
+      () => window,
+      () => undefined,
+    );
     await commitQuit(1);
     expect(store.inFlight.map((ref) => ref.sessionId)).toEqual([
       runningTab.focusedId,
@@ -144,19 +151,13 @@ describe("worktree tabs come back after each save path (real saved data)", () =>
     // new tab at the end of the default strip.
     expect(restored.tabs[1].id).toBe(runningTab.id);
     expect(
-      restored.sessions.find((session) => session.id === runningTab.focusedId)
+      restored.sessions
+        .find((session) => session.id === runningTab.focusedId)
         ?.blocks.at(-1)?.notice,
     ).toBe("interrupt");
   });
 
-  it("close-requested on an idle window", async () => {
-    const window = await inWorktrees(await boot());
-    const { persistQuitState } = await webview();
-    await persistQuitState(window, "unload");
-    expectRestored(window, await boot());
-  });
-
-  it("webview reload", async () => {
+  it("persistQuitState unload, as close-requested and reload call it", async () => {
     const window = await inWorktrees(await boot());
     const { persistQuitState } = await webview();
     await persistQuitState(window, "unload");
@@ -172,7 +173,10 @@ describe("worktree tabs come back after each save path (real saved data)", () =>
       ),
     };
     const { closeBusyWindow, setQuitWorkspace } = await webview();
-    setQuitWorkspace(() => window, () => undefined);
+    setQuitWorkspace(
+      () => window,
+      () => undefined,
+    );
     await closeBusyWindow();
     expectRestored(window, await boot());
   });
@@ -198,7 +202,11 @@ it("a tab saved in a worktree that was removed comes back in the default workspa
   );
   const id = removedTab.focusedId;
   const record = store.records[id] as { cwd: string; worktreeCwd: string };
-  store.records[id] = detachSessionWorktree(record, PROJECT, record.worktreeCwd);
+  store.records[id] = detachSessionWorktree(
+    record,
+    PROJECT,
+    record.worktreeCwd,
+  );
 
   const restored = await boot();
   expect(workspaces(restored)).toEqual(
@@ -206,4 +214,23 @@ it("a tab saved in a worktree that was removed comes back in the default workspa
       tabId === removedTab.id ? [tabId, PROJECT] : [tabId, path],
     ),
   );
+});
+
+it("with every tab in a worktree, saves no active tab, and boot keeps each tab in its worktree with none active", async () => {
+  const booted = await inWorktrees(await boot());
+  const window = { ...booted, tabs: booted.tabs.slice(0, 2) };
+  const { saveWorkspaceSnapshot, workspaceSnapshot } = await webview();
+  const saved = workspaceSnapshot([window]);
+  await saveWorkspaceSnapshot(saved);
+  const restored = await boot();
+  expect({
+    savedActive: saved.activeTabId,
+    bootActive: restored.activeTabId,
+    workspaces: workspaces(restored),
+  }).toEqual({
+    savedActive: "",
+    bootActive: "",
+    workspaces: workspaces(window),
+  });
+  expect(workspaces(window).every(([, path]) => path !== PROJECT)).toBe(true);
 });

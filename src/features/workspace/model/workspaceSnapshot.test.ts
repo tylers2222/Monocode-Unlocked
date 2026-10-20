@@ -860,7 +860,7 @@ describe("worktree tabs", () => {
     });
   });
 
-  it("with no default-workspace tab, saves the active tab in the default workspace and boot restores it there, active", () => {
+  it("with no default-workspace tab, saves no active tab, and boot keeps it that way with every tab in its worktree", () => {
     const tabs = [
       { ...newTab("w"), id: "tab-w" },
       { ...newTab("x"), id: "tab-x" },
@@ -879,11 +879,13 @@ describe("worktree tabs", () => {
     ]);
     const restored = hydrateWorkspaceSnapshot(snapshot, new Map())!;
     expect({
+      saved: snapshot.activeTabId,
       active: restored.activeTabId,
       pins: Object.fromEntries(restored.pins),
     }).toEqual({
-      active: "tab-w",
-      pins: { "tab-w": "/repo", "tab-x": "/trees/b" },
+      saved: "",
+      active: "",
+      pins: { "tab-w": "/trees/a", "tab-x": "/trees/b" },
     });
   });
 

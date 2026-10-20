@@ -141,30 +141,25 @@ export function workspaceSnapshot([
     projectTerminals,
     lastDockSide,
   );
-  const strip = filterTabsForProject(tabs, sessions, snapshot.projectCwd);
-  const worktreeTabs = savedTabWorkspaces(snapshot.tabs, sessions, pins);
-  const candidates = snapshot.tabs.filter(
-    (tab) => !worktreeTabs.some((entry) => entry.tabId === tab.id),
+  const tabWorkspaces = savedTabWorkspaces(snapshot.tabs, sessions, pins);
+  // Boot opens each project on its default workspace, so the active tab and
+  // the project return targets come from that workspace only. With no tab
+  // there, no tab is active and every worktree tab stays under its worktree.
+  const inDefault = snapshot.tabs.filter(
+    (tab) => !tabWorkspaces.some((entry) => entry.tabId === tab.id),
   );
-  // Boot opens each project on its default workspace and pins the active tab
-  // there. So the active tab is a default-workspace tab, and with none, the
-  // active tab itself is saved in the default workspace.
-  const active = savedActiveTabId(
-    strip,
-    candidates.length > 0 ? candidates : snapshot.tabs,
-    activeTabId,
-  );
-  const tabWorkspaces = worktreeTabs.filter((entry) => entry.tabId !== active);
   return withProjectReturnTargets(
     {
       ...snapshot,
-      activeTabId: active,
+      activeTabId: savedActiveTabId(
+        filterTabsForProject(tabs, sessions, snapshot.projectCwd),
+        inDefault,
+        activeTabId,
+      ),
       ...(tabWorkspaces.length > 0 ? { tabWorkspaces } : {}),
     },
     memory,
-    snapshot.tabs.filter(
-      (tab) => !tabWorkspaces.some((entry) => entry.tabId === tab.id),
-    ),
+    inDefault,
   );
 }
 
@@ -331,7 +326,9 @@ function withoutInboxSessions(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
     ...snapshot,
     tabs,
     sessions: snapshot.sessions.filter((session) => !session.inboxAsk),
-    activeTabId: tabs.some((tab) => tab.id === snapshot.activeTabId)
+    activeTabId:
+      !snapshot.activeTabId ||
+      tabs.some((tab) => tab.id === snapshot.activeTabId)
       ? snapshot.activeTabId
       : (tabs[0]?.id ?? ""),
   };
@@ -361,9 +358,11 @@ export function parseWorkspaceSnapshot(raw: unknown): WorkspaceSnapshot | null {
         .map(sanitizeStub)
         .filter((stub): stub is WorkspaceSessionStub => stub != null)
     : [];
-  const activeTabId = tabs.some((tab) => tab.id === value.activeTabId)
-    ? value.activeTabId
-    : tabs[0].id;
+  // "" is saved on purpose: no tab is in the default workspace.
+  const activeTabId =
+    !value.activeTabId || tabs.some((tab) => tab.id === value.activeTabId)
+      ? value.activeTabId
+      : tabs[0].id;
   const projectCwd =
     typeof value.projectCwd === "string" && value.projectCwd.trim()
       ? value.projectCwd.trim()
@@ -478,9 +477,10 @@ export function hydrateWorkspaceSnapshot(
   }
 
   if (tabs.length === 0) return null;
-  const activeTabId = tabs.some((tab) => tab.id === parsed.activeTabId)
-    ? parsed.activeTabId
-    : tabs[0].id;
+  const activeTabId =
+    !parsed.activeTabId || tabs.some((tab) => tab.id === parsed.activeTabId)
+      ? parsed.activeTabId
+      : tabs[0].id;
   const projectCwd =
     parsed.projectCwd !== "~"
       ? parsed.projectCwd

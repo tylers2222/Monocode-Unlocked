@@ -8,7 +8,8 @@ import { type AppShell, expect, type MountOptions, test } from "./app/fixture";
 // (`worktreeTabsRestart.realdb.json`: the saved tabs of ~/Desktop/monocode and
 // what session_store.rs returned for them, from a copy of the shipped app's
 // database, ids and text made up). The user opens one of the project's idle
-// worktree sessions in its worktree, then the app restarts or reloads.
+// worktree sessions in its worktree, then the app restarts, reloads, closes
+// or crashes.
 
 type Record_ = SessionSummary & { blocks: Block[]; title: string };
 const realDb = JSON.parse(
@@ -20,7 +21,7 @@ const realDb = JSON.parse(
     "utf8",
   ),
 ) as {
-  snapshot: { projectCwd: string };
+  snapshot: { projectCwd: string; tabs: { id: string; focusedId: string }[] };
   railSessions: string[];
   records: Record<string, Record_>;
 };
@@ -35,7 +36,10 @@ const handlers: MountOptions["handlers"] = {
   harness_resolve_omp: () => ({ path: "/usr/local/bin/omp" }),
   harness_spawn: () => 4242,
   harness_write: (_store, { sessionId, line }) => {
-    const request = JSON.parse(line as string) as { id?: string; type?: string };
+    const request = JSON.parse(line as string) as {
+      id?: string;
+      type?: string;
+    };
     if (request.id)
       void window.appBackend!.emit("harness-stdout", {
         sessionId,
@@ -58,6 +62,10 @@ const handlers: MountOptions["handlers"] = {
   // reservedProjectName.ts tells the user once that a project named
   // "monocode" shares the app's name; the dialog answers with nothing.
   "plugin:dialog|message": () => null,
+  // window.rs: close-requested asks whether a Mono chat keeps the app alive,
+  // then destroys the window; the page itself stays for the reopen.
+  mono_chat_keep_alive: () => false,
+  destroy_window: () => null,
   // worktrees.rs list: the checkout and the worktrees its sessions work in.
   git_worktrees: (store, { cwd }) => {
     const tree = (path: string, branch: string, isMain: boolean) => ({
@@ -89,7 +97,7 @@ const handlers: MountOptions["handlers"] = {
   },
 };
 
-async function mount(app: AppShell) {
+async function mount(app: AppShell, workspace: unknown = realDb.snapshot) {
   const blocks: Record<string, Block[]> = {};
   const sessions = records.map(({ blocks: saved, ...summary }) => {
     blocks[summary.id] = saved;
@@ -101,7 +109,7 @@ async function mount(app: AppShell) {
       projects: [PROJECT],
       sessions,
       blocks,
-      workspace: realDb.snapshot,
+      workspace,
     },
     { handlers },
   );
@@ -109,7 +117,10 @@ async function mount(app: AppShell) {
 
 const banner = (page: Page) => page.getByRole("banner");
 const tab = (page: Page, title: string) =>
-  banner(page).getByRole("button", { name: `monocode · ${title}`, exact: true });
+  banner(page).getByRole("button", {
+    name: `monocode · ${title}`,
+    exact: true,
+  });
 
 /** The tabs of the workspace on screen, in strip order. */
 const strip = (page: Page) =>
@@ -137,34 +148,79 @@ async function openInWorktree(page: Page) {
   await pickWorktree(page);
   await page
     .getByRole("complementary")
-    .getByRole("button", { name: new RegExp(`^(?!Archive ).* ${OPENED.title}$`) })
+    .getByRole("button", {
+      name: new RegExp(`^(?!Archive ).* ${OPENED.title}$`),
+    })
     .click();
   await expect(tab(page, OPENED.title)).toBeVisible();
   await expect.poll(() => strip(page)).toEqual([`monocode · ${OPENED.title}`]);
 }
 
-async function reload(page: Page) {
-  // The app's own reload save runs on pagehide (App.tsx reap).
-  await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          (window.appBackend!.store.workspace as { tabWorkspaces?: unknown })
-            ?.tabWorkspaces,
-      ),
-    )
-    .toBeTruthy();
-  await page.evaluate(() => window.appBackend!.keepStore());
-  await page.reload();
+/** The worktree entries of the saved workspace, once a save wrote them. */
+const savedWorktreeTabs = (page: Page) =>
+  page.evaluate(() => {
+    const saved = window.appBackend!.store.workspace;
+    return saved && typeof saved === "object" && "tabWorkspaces" in saved
+      ? saved.tabWorkspaces
+      : undefined;
+  });
+
+async function booted(page: Page) {
   await expect(page.getByRole("button", { name: "Automations" })).toBeVisible({
     timeout: 30_000,
   });
 }
 
+/**
+ * Runs one App save path alone: waits for the normal-use save, empties the
+ * saved workspace (that save skips a key it already wrote), runs `save`, and
+ * waits for it to write the worktree tab back. Then reopens on that store.
+ */
+async function saveAloneAndReopen(page: Page, save: () => Promise<unknown>) {
+  await expect.poll(() => savedWorktreeTabs(page)).toBeTruthy();
+  await page.evaluate(() => {
+    window.appBackend!.store.workspace = null;
+  });
+  await save();
+  await expect.poll(() => savedWorktreeTabs(page)).toBeTruthy();
+  await page.evaluate(() => window.appBackend!.keepStore());
+  await page.reload();
+  await booted(page);
+}
+
+/**
+ * Ends the page with no quit, as a crash does, once the normal-use save
+ * landed. The next load gets the store as it stood then, so the unload save
+ * the reload runs cannot add to it.
+ */
+async function crashAndReopen(page: Page) {
+  await expect.poll(() => savedWorktreeTabs(page)).toBeTruthy();
+  const store = await page.evaluate(() =>
+    JSON.stringify(window.appBackend!.store),
+  );
+  await page.addInitScript((store) => {
+    sessionStorage.setItem("appBackendStore", store);
+  }, store);
+  await page.reload();
+  await booted(page);
+}
+
 for (const [entry, again] of [
   ["restart", (app: AppShell) => app.restart()],
-  ["reload", (_app: AppShell, page: Page) => reload(page)],
+  [
+    "reload",
+    (_app: AppShell, page: Page) =>
+      saveAloneAndReopen(page, () =>
+        // The app's own reload save runs on pagehide (App.tsx reap).
+        page.evaluate(() => window.dispatchEvent(new Event("pagehide"))),
+      ),
+  ],
+  [
+    "close-requested",
+    (app: AppShell, page: Page) =>
+      saveAloneAndReopen(page, () => app.emit("tauri://close-requested")),
+  ],
+  ["crash", (_app: AppShell, page: Page) => crashAndReopen(page)],
 ] as const) {
   test(`a worktree tab comes back in its worktree after a ${entry}`, async ({
     app,
@@ -185,11 +241,63 @@ for (const [entry, again] of [
 
     await worktreeRow(page).click();
     await expect(switcher(page)).toHaveText(TREE);
-    await expect.poll(() => strip(page)).toEqual([`monocode · ${OPENED.title}`]);
+    await expect
+      .poll(() => strip(page))
+      .toEqual([`monocode · ${OPENED.title}`]);
     await expect(tab(page, OPENED.title)).toHaveClass(/bg-selection/);
     await page.screenshot({ path: test.info().outputPath(`F2-${entry}.png`) });
   });
 }
+
+test("with every tab in a worktree, boot opens the default workspace with no tab and each worktree keeps its tab", async ({
+  app,
+  page,
+}) => {
+  // What workspaceSnapshot saves for tabs 01 and 02, both in worktrees
+  // (worktreeTabsRestart.realdb.test.ts proves the save and the boot).
+  const [first, second] = realDb.snapshot.tabs;
+  const titleOf = (tab: typeof first) => realDb.records[tab.focusedId].title;
+  const treeOf = (tab: typeof first) =>
+    realDb.records[tab.focusedId].worktreeCwd!;
+  await mount(app, {
+    ...realDb.snapshot,
+    tabs: [first, second],
+    activeTabId: "",
+    tabWorkspaces: [first, second].map((tab) => ({
+      tabId: tab.id,
+      path: treeOf(tab),
+    })),
+  });
+  await expect(switcher(page)).toHaveText("Workspace");
+  await expect.poll(() => strip(page)).toEqual([]);
+  await switcher(page).click();
+  for (const tab of [first, second])
+    await expect(
+      page
+        .getByRole("listbox", { name: "Working copies" })
+        .getByRole("option", {
+          name: new RegExp(realDb.records[tab.focusedId].branch!),
+        })
+        .getByLabel("1 open tab"),
+    ).toBeVisible();
+  await page.screenshot({
+    path: test.info().outputPath("F1-all-in-worktrees.png"),
+  });
+
+  await page
+    .getByRole("listbox", { name: "Working copies" })
+    .getByRole("option", {
+      name: new RegExp(realDb.records[second.focusedId].branch!),
+    })
+    .click();
+  await expect
+    .poll(() => strip(page))
+    .toEqual([`monocode · ${titleOf(second)}`]);
+  await expect(tab(page, titleOf(second))).toHaveClass(/bg-selection/);
+  await page.screenshot({
+    path: test.info().outputPath("F2-all-in-worktrees.png"),
+  });
+});
 
 test("a chat running in a worktree at quit comes back in that worktree, still working", async ({
   app,
