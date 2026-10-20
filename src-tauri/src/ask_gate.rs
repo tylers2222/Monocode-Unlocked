@@ -98,13 +98,9 @@ impl AckRefused {
 }
 
 /// Why the guarded ack `UPDATE` changed no row, from the ask as it stands
-/// (`None`: no such ask) and the acking session (`None`: no saved row).
-/// `Ok` is an ask this caller may ack.
-pub fn decide_ack(ask: Option<&AskState>, caller: Option<&SessionId>) -> Result<(), AckRefused> {
-    let Some(ask) = ask else {
-        return Err(AckRefused::NoOpenAsk);
-    };
-    if Some(&ask.child_session) != caller {
+/// and the acking session. `Ok` is an ask this caller may ack.
+pub fn decide_ack(ask: &AskState, caller: &SessionId) -> Result<(), AckRefused> {
+    if &ask.child_session != caller {
         return Err(AckRefused::NotYours);
     }
     match ask.state {
@@ -179,8 +175,8 @@ mod tests {
         );
     }
 
-    // Defect: an ack of a missing ask, of another session's ask or of an
-    // acked ask is told the wrong reason.
+    // Defect: an ack of another session's ask, of an acked ask or of a
+    // dropped ask is told the wrong reason.
     #[test]
     fn an_ack_that_changes_no_row_names_why() {
         let me = SessionId::parse("worker").unwrap();
@@ -188,27 +184,19 @@ mod tests {
             state: State::Open,
             child_session: SessionId::parse(child).unwrap(),
         };
-        assert_eq!(decide_ack(None, Some(&me)), Err(AckRefused::NoOpenAsk));
-        assert_eq!(
-            decide_ack(Some(&open("w2")), Some(&me)),
-            Err(AckRefused::NotYours)
-        );
+        assert_eq!(decide_ack(&open("w2"), &me), Err(AckRefused::NotYours));
         let with = |state| AskState {
             state,
             ..open("worker")
         };
         assert_eq!(
-            decide_ack(Some(&with(State::Acked)), Some(&me)),
+            decide_ack(&with(State::Acked), &me),
             Err(AckRefused::AlreadyAcked)
         );
         assert_eq!(
-            decide_ack(Some(&with(State::Dropped)), Some(&me)),
+            decide_ack(&with(State::Dropped), &me),
             Err(AckRefused::NoOpenAsk)
         );
-        assert_eq!(decide_ack(Some(&open("worker")), Some(&me)), Ok(()));
-        assert_eq!(
-            decide_ack(Some(&open("worker")), None),
-            Err(AckRefused::NotYours)
-        );
+        assert_eq!(decide_ack(&open("worker"), &me), Ok(()));
     }
 }

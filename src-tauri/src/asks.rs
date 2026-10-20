@@ -12,7 +12,8 @@ use serde_json::{json, Value};
 use crate::ask_gate::{self, AckRefused, AskState, Party, State};
 use crate::mono_gate::{self, Caller, Input, Level, Refusal, SessionLevel, Speaker};
 use crate::mono_messages::{
-    self, Live, MessageId, MonoId, RequestId, SessionId, Status, Submitted, Tool, ToolError,
+    self, Live, MessageId, MonoId, MonoMessage, RequestId, SessionId, Status, Submitted, Tool,
+    ToolError,
 };
 use crate::mono_roster::MonoRole;
 
@@ -140,34 +141,23 @@ pub fn ask(
     };
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let prior = mono_messages::get_by_request(&tx, &caller.session_id, request_id)?;
+    if another_calls(prior.first(), |id| is_ask(&tx, id))? {
+        return Ok(reused());
+    }
     let mut new = None;
-    match prior.first() {
-        // A repeat answers the first outcome through `submit_in`, but only
-        // a repeat of an ask: a plain send under this request id with the
-        // same fields has the carrier's hash, and is no ask.
-        Some(first) if !matches!(first.status, Status::Rejected { .. }) => {
-            if !is_ask(&tx, &first.id)? {
-                return Ok(failed(
-                    Refusal::RequestIdReused.as_str(),
-                    mono_gate::REQUEST_ID_REUSED,
-                ));
-            }
-        }
-        Some(_) => {}
-        None => {
-            let parent = caller_party(&tx, caller)?;
-            let child = addressed_party(&tx, &input.send_to)?;
-            // A party with no saved row: the send gate below answers it.
-            if let (Some(parent), Some(child)) = (parent, child) {
-                let started = match caller.mono_id() {
-                    Some(mono) => started_by(&tx, mono, &child.session)?,
-                    None => false,
-                };
-                let due = input.due_minutes;
-                match ask_gate::decide_ask(&parent, &child, started, due, active_ms(&tx)?) {
-                    Ok(due) => new = Some((due, parent, child)),
-                    Err(refused) => return Ok(failed(refused.code(), refused.hint())),
-                }
+    if prior.is_empty() {
+        let parent = caller_party(&tx, caller)?;
+        let child = addressed_party(&tx, &input.send_to)?;
+        // A party with no saved row: the send gate below answers it.
+        if let (Some(parent), Some(child)) = (parent, child) {
+            let started = match caller.mono_id() {
+                Some(mono) => started_by(&tx, mono, &child.session)?,
+                None => false,
+            };
+            let due = input.due_minutes;
+            match ask_gate::decide_ask(&parent, &child, started, due, active_ms(&tx)?) {
+                Ok(due) => new = Some((due, parent, child)),
+                Err(refused) => return Ok(failed(refused.code(), refused.hint())),
             }
         }
     }
@@ -204,10 +194,12 @@ pub fn ask(
 }
 
 /// `ack` from `caller` (design R5): spends the key of ask `ask_id`, which
-/// must be open and sent to the caller, and tells its parent. One guarded
-/// `UPDATE` decides it, in one `BEGIN IMMEDIATE` with the event and the row
-/// to the parent, so of two acks of one ask exactly one gets through, and a
-/// row to the parent that is refused leaves the ask open.
+/// must be open and sent to the caller, and tells its parent. The row to the
+/// parent goes first; only once the send gate accepts it does one guarded
+/// `UPDATE` decide the ack, in one `BEGIN IMMEDIATE` with the event, so of
+/// two acks of one ask exactly one gets through. A refused row is kept with
+/// the ask untouched, so a repeat (same request id) answers the first
+/// outcome, as it does for every tool.
 pub fn ack(
     conn: &Connection,
     caller: &Caller,
@@ -225,60 +217,74 @@ pub fn ack(
         return refused(AckRefused::NoOpenAsk);
     };
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let ask = load(&tx, &ask_id)?;
+    let Some((ask, parent)) = load(&tx, &ask_id)? else {
+        return refused(AckRefused::NoOpenAsk);
+    };
+    let prior = mono_messages::get_by_request(&tx, &caller.session_id, request_id)?;
+    if another_calls(prior.first(), |id| acked_with(&tx, &ask_id, id))? {
+        return Ok(reused());
+    }
+    let carrier = match carrier(&parent, &input.message) {
+        Ok(carrier) => carrier,
+        Err(hint) => return Ok(failed(Refusal::InvalidInput.as_str(), hint)),
+    };
     let me = caller_party(&tx, caller)?.map(|party| party.session);
-    // A repeat of the ack (same request id) changes nothing and answers the
-    // first outcome through `submit_in`.
-    if mono_messages::get_by_request(&tx, &caller.session_id, request_id)?.is_empty() {
+    let submitted = mono_messages::submit_in(&tx, caller, request_id, carrier, live, now)?;
+    if let Submitted::Accepted {
+        messages,
+        duplicate: false,
+        ..
+    } = &submitted
+    {
+        // The gate let through a caller with no saved row (a session the
+        // window lists): no child of any ask. Dropping `tx` undoes the row.
+        let Some(me) = me else {
+            return refused(AckRefused::NotYours);
+        };
         let changed = tx.execute(
             "UPDATE mono_asks SET state = 'acked'
               WHERE id = ?1 AND state = 'open' AND child_session = ?2",
-            params![ask_id.as_str(), me.as_ref().map(SessionId::as_str)],
+            params![ask_id.as_str(), me.as_str()],
         )?;
         if changed == 0 {
             // `Ok` here would be an ask that turned open between the read and
             // the update, which the write lock rules out.
-            let state = ask.as_ref().map(|(state, _)| state);
-            let reason = ask_gate::decide_ack(state, me.as_ref()).err();
+            let reason = ask_gate::decide_ack(&ask, &me).err();
             return refused(reason.unwrap_or(AckRefused::NoOpenAsk));
         }
-    }
-    let Some((_, parent)) = &ask else {
-        return refused(AckRefused::NoOpenAsk);
-    };
-    let carrier = match carrier(&parent_address(&tx, parent)?, &input.message) {
-        Ok(carrier) => carrier,
-        Err(hint) => return Ok(failed(Refusal::InvalidInput.as_str(), hint)),
-    };
-    let submitted = mono_messages::submit_in(&tx, caller, request_id, carrier, live, now)?;
-    match &submitted {
-        Submitted::Accepted {
-            duplicate: true, ..
-        } => {}
-        Submitted::Accepted { messages, .. } => {
-            tx.execute(
-                "INSERT INTO mono_ask_events (ask_id, kind, seq, message_id, at_active_ms, at_wall_ms)
-                 VALUES (?1, 'ack', 1, ?2, ?3, ?4)",
-                params![
-                    ask_id.as_str(),
-                    messages[0].message.id.as_str(),
-                    active_ms(&tx)?,
-                    now
-                ],
-            )?;
-        }
-        // Dropping `tx` rolls the ack back with the refused row.
-        Submitted::Failed { error } => {
-            return Ok(Submitted::Failed {
-                error: ToolError {
-                    message_id: None,
-                    ..error.clone()
-                },
-            })
-        }
+        tx.execute(
+            "INSERT INTO mono_ask_events (ask_id, kind, seq, message_id, at_active_ms, at_wall_ms)
+             VALUES (?1, 'ack', 1, ?2, ?3, ?4)",
+            params![
+                ask_id.as_str(),
+                messages[0].message.id.as_str(),
+                active_ms(&tx)?,
+                now
+            ],
+        )?;
     }
     tx.commit()?;
     Ok(submitted)
+}
+
+fn reused() -> Submitted {
+    failed(
+        Refusal::RequestIdReused.as_str(),
+        mono_gate::REQUEST_ID_REUSED,
+    )
+}
+
+/// Whether `prior`, the first row already under this call's request id, is
+/// another call's: an accepted row that `own` says this call did not write.
+/// No row, or a rejected one whose refusal `submit_in` replays, is not.
+fn another_calls(
+    prior: Option<&MonoMessage>,
+    own: impl FnOnce(&MessageId) -> rusqlite::Result<bool>,
+) -> rusqlite::Result<bool> {
+    match prior {
+        Some(row) if !matches!(row.status, Status::Rejected { .. }) => Ok(!own(&row.id)?),
+        _ => Ok(false),
+    }
 }
 
 /// The stored active time (R2), at most one persist interval behind.
@@ -355,28 +361,26 @@ fn started_by(conn: &Connection, mono: &MonoId, session: &SessionId) -> rusqlite
     )
 }
 
-/// Where an ack to `parent` goes: the Mono whose chat it is, else the session.
-fn parent_address(conn: &Connection, parent: &SessionId) -> rusqlite::Result<String> {
-    Ok(conn
-        .query_row(
-            "SELECT id FROM monos WHERE json_extract(data_json, '$.sessionId') = ?1",
-            [parent.as_str()],
-            |row| row.get(0),
-        )
-        .optional()?
-        .unwrap_or_else(|| parent.as_str().to_string()))
+/// Whether row `id` carried the ack of ask `ask`.
+fn acked_with(conn: &Connection, ask: &MessageId, id: &MessageId) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM mono_ask_events
+           WHERE kind = 'ack' AND ask_id = ?1 AND message_id = ?2)",
+        params![ask.as_str(), id.as_str()],
+        |row| row.get(0),
+    )
 }
 
-/// Ask `id` as `ack` reads it, with its parent session.
-fn load(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<(AskState, SessionId)>> {
+/// Ask `id` as `ack` reads it, with where its ack goes: the sender of the
+/// row that carried the ask, a Mono by its id, which outlives a chat reset.
+fn load(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<(AskState, String)>> {
     conn.query_row(
-        "SELECT state, child_session, parent_session FROM mono_asks WHERE id = ?1",
+        "SELECT a.state, a.child_session, COALESCE(m.from_mono_id, m.from_session_id)
+           FROM mono_asks a JOIN mono_messages m ON m.id = a.id
+          WHERE a.id = ?1",
         [id.as_str()],
         |row| {
-            let session = |index: usize| -> rusqlite::Result<SessionId> {
-                let text: String = row.get(index)?;
-                SessionId::parse(&text).ok_or(rusqlite::Error::InvalidQuery)
-            };
+            let child: String = row.get(1)?;
             let state = match row.get::<_, String>(0)?.as_str() {
                 "open" => State::Open,
                 "acked" => State::Acked,
@@ -385,9 +389,9 @@ fn load(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<(AskState,
             Ok((
                 AskState {
                     state,
-                    child_session: session(1)?,
+                    child_session: SessionId::parse(&child).ok_or(rusqlite::Error::InvalidQuery)?,
                 },
-                session(2)?,
+                row.get(2)?,
             ))
         },
     )
