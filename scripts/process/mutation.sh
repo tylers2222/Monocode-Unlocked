@@ -9,7 +9,9 @@ set -euo pipefail
 
 case ${1-} in
   rust)
-    cargo mutants --in-diff "$2" --jobs 2 --timeout-multiplier 3
+    # The binary, not `cargo mutants`: a PR could alias that cargo subcommand, and
+    # --no-config ignores a .cargo/mutants.toml it adds.
+    cargo-mutants mutants --no-config --in-diff "$2" --jobs 2 --timeout-multiplier 3
     ;;
   ts)
     npm ci --ignore-scripts
@@ -21,7 +23,7 @@ case ${1-} in
       console.log(JSON.stringify({ testRunner: "vitest", mutate, thresholds, concurrency: 2,
         coverageAnalysis: "perTest", reporters: ["clear-text", "progress"] }));
     ' > "$config"
-    npx stryker run "$config"
+    node node_modules/@stryker-mutator/core/bin/stryker.js run "$config"
     ;;
   *)
     echo "usage: mutation.sh rust <diff-file> | ts <specs>" >&2

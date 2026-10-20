@@ -189,23 +189,34 @@ class Interrogate(unittest.TestCase):
     def test_review_outliers_need_interrogate(self):
         for rec in recorded():
             if rec['n'] in (18, 103):
-                tier, why = run(rec)
-                self.assertTrue(T.needs_interrogate(tier, T.non_test_lines(rec['files']), why), rec['n'])
+                tier, _ = run(rec)
+                busy = T.gate_or_concurrency(rec['files'], rec['diff'])
+                self.assertTrue(T.needs_interrogate(tier, T.non_test_lines(rec['files']), busy), rec['n'])
 
     def test_t3_from_300_non_test_lines(self):
-        why = ['path:src/features/sessions/data/sessionStore.ts']
-        self.assertFalse(T.needs_interrogate('T3', 299, why))
-        self.assertTrue(T.needs_interrogate('T3', 300, why))
+        self.assertFalse(T.needs_interrogate('T3', 299, False))
+        self.assertTrue(T.needs_interrogate('T3', 300, False))
+        self.assertTrue(T.needs_interrogate('T3', 5, True))
+        self.assertFalse(T.needs_interrogate('T2', 900, True))
 
-    def test_t3_gate_or_concurrency_file_at_any_size(self):
-        self.assertTrue(T.needs_interrogate('T3', 5, ['gate:scripts/gate/integrity.sh']))
-        self.assertTrue(T.needs_interrogate('T3', 5, ['code:src-tauri/src/x.rs:Mutex']))
-        self.assertTrue(T.needs_interrogate('T3', 5, ['path:src-tauri/src/heavy_lock.rs']))
-        self.assertFalse(T.needs_interrogate('T3', 5, ['code:src/app/App.tsx:useState']))
+    def test_concurrency_behind_another_t3_token(self):
+        # The first T3 token of each file is not a concurrency one, so the reasons do not show it.
+        cases = {
+            'src-tauri/src/commands/workers.rs': ['+#[tauri::command]', '+fn start(s: State<Mutex<Pool>>) {', '+    tokio::spawn(run());', '+}'],
+            'src-tauri/src/a.rs': ['+let db = rusqlite::Connection::open(p)?;', '+let shared = Arc::new(Mutex::new(db));'],
+        }
+        for path, lines in cases.items():
+            with self.subTest(path=path):
+                files, diff = [{'path': path, 'additions': len(lines)}], one_file_diff(path, 1, lines)
+                self.assertNotIn('Mutex', ' '.join(T.tier(files, diff, {})[1]))
+                self.assertTrue(T.gate_or_concurrency(files, diff))
 
-    def test_only_t3(self):
-        self.assertFalse(T.needs_interrogate('T2', 900, ['app logic: src/a.ts']))
-
+    def test_gate_and_lock_files_and_plain_code(self):
+        one = lambda path, line: ([{'path': path, 'additions': 1}], one_file_diff(path, 1, [line]))
+        self.assertTrue(T.gate_or_concurrency(*one('scripts/gate/integrity.sh', '+# x')))
+        self.assertTrue(T.gate_or_concurrency(*one('src-tauri/src/heavy_lock.rs', '+let a = 1;')))
+        self.assertFalse(T.gate_or_concurrency(*one('src/app/App.tsx', '+const [a, b] = useState(0);')))
+        self.assertFalse(T.gate_or_concurrency(*one('src/a.test.ts', '+new Mutex();')), 'test files do not count')
 
 if __name__ == '__main__':
     unittest.main()
