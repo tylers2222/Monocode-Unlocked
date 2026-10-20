@@ -1,0 +1,95 @@
+name: preview-gate-integrity
+
+# GitHub runs a pull_request_target workflow from the default branch, and the
+# checkout below takes the default branch too, so a pull request cannot edit the
+# check that judges it. The branches filter keeps the job to pull requests into
+# tyler/main. That is safe only while no step runs pull request code: the PR head
+# is fetched as git objects for `git diff` and never checked out, installed, built
+# or sourced. The scripts it runs come from the default-branch checkout too.
+# A label change re-runs the gate, so a hand-set tier label is put back.
+on:
+  pull_request:
+    branches: ['lane-d/preview-*']
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tier:
+    name: preview/tier
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      tier: ${{ steps.tier.outputs.tier }}
+      nt: ${{ steps.tier.outputs.nt }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Tier the PR and set its tier label
+        id: tier
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: python3 scripts/process/tier.py "$PR" --apply
+
+  integrity:
+    name: preview/integrity
+    needs: tier
+    # A skipped required check counts as passed, so this job runs even when
+    # gate/tier fails, and its last step fails it.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      GH_TOKEN: ${{ github.token }}
+      GATE_REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch the PR head as git objects only
+        run: git fetch --no-tags origin "$HEAD_SHA"
+
+      - name: Integrity check (default-branch script, diff only)
+        run: bash scripts/gate/integrity.sh "$BASE_SHA" "$HEAD_SHA"
+
+      # Each check below reads the PR live, so a re-run sees the current body and labels.
+      - name: PR description (size, self-pass, file caps) and tiny-PR overlap warning
+        if: ${{ !cancelled() }}
+        env:
+          NT: ${{ needs.tier.outputs.nt }}
+        run: python3 scripts/process/pr_body.py "$PR" --nt "$NT"
+
+      # The two label checks come from PR #164; they run once it is on the default branch.
+      - name: waits-tyler label category
+        if: ${{ !cancelled() && hashFiles('scripts/process/waits-tyler.py') != '' }}
+        run: python3 scripts/process/waits-tyler.py --pr "$PR" --repo "$GATE_REPO"
+
+      - name: Exactly one instance label
+        if: ${{ !cancelled() && hashFiles('scripts/process/instance-label.py') != '' }}
+        run: python3 scripts/process/instance-label.py --pr "$PR" --repo "$GATE_REPO"
+
+      - name: preview/tier passed
+        if: ${{ !cancelled() && needs.tier.result != 'success' }}
+        env:
+          RESULT: ${{ needs.tier.result }}
+        run: |
+          echo "integrity: gate/tier ended $RESULT"
+          exit 1
