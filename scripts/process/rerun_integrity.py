@@ -40,25 +40,25 @@ def main():
     sha = gh('api', f'repos/{repo}/pulls/{value}', '--jq', '.head.sha').strip() if kind == 'pr' else value
     deadline = time.monotonic() + WAIT_SECONDS
     while True:
-        runs = json.loads(gh('api', f'repos/{repo}/actions/workflows/{workflow}/runs?head_sha={sha}&event={trigger}&per_page=1',
-                             '--jq', '[.workflow_runs[] | {id, status}]'))
-        if not runs:
-            print(f'rerun: no {workflow} run for {sha}')
+        # Runs created in the same second come back in any order, and a run cancelled
+        # before its jobs started has no job to re-run, so take the newest run (by id)
+        # that has the job.
+        runs = sorted(json.loads(gh('api', f'repos/{repo}/actions/workflows/{workflow}/runs?head_sha={sha}&event={trigger}&per_page=20',
+                                    '--jq', '[.workflow_runs[] | {id, status}]')), key=lambda run: -run['id'])
+        with_job = [(run, job) for run in runs for job in json.loads(gh(
+            'api', f'repos/{repo}/actions/runs/{run["id"]}/jobs', '--jq', '[.jobs[] | {id, name}]')) if job['name'] == job_name]
+        if not with_job:
+            print(f'rerun: no {workflow} run with job {job_name} for {sha}')
             return 0
-        if runs[0]['status'] == 'completed':
+        run, job = with_job[0]
+        if run['status'] == 'completed':
             break
         if time.monotonic() > deadline:
-            print(f'rerun: run {runs[0]["id"]} still {runs[0]["status"]} after {WAIT_SECONDS}s')
+            print(f'rerun: run {run["id"]} still {run["status"]} after {WAIT_SECONDS}s')
             return 1
         time.sleep(POLL_SECONDS)
-    run_id = runs[0]['id']
-    jobs = json.loads(gh('api', f'repos/{repo}/actions/runs/{run_id}/jobs', '--jq', '[.jobs[] | {id, name}]'))
-    job = next((j for j in jobs if j['name'] == job_name), None)
-    if job is None:
-        print(f'rerun: run {run_id} has no job {job_name}')
-        return 1
     gh('api', '-X', 'POST', f'repos/{repo}/actions/jobs/{job["id"]}/rerun')
-    print(f'rerun: re-ran {job_name} (job {job["id"]}) of run {run_id} for {sha}')
+    print(f'rerun: re-ran {job_name} (job {job["id"]}) of run {run["id"]} for {sha}')
     return 0
 
 
