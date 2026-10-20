@@ -1632,3 +1632,7 @@ function asRuntimeMode(value: string): RuntimeMode {
     ? (value as RuntimeMode)
     : "supervised";
 }
+
+export function throwawayIsPositive(n: number): boolean {
+  return n > 0;
+}
