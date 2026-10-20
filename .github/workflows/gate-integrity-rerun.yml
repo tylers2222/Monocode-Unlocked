@@ -1,0 +1,42 @@
+name: gate-integrity-rerun
+
+# gate/integrity reads review verdicts, fixer-proof comments and the other checks
+# of the head, and none of them starts a pull_request_target run. This re-runs the
+# gate/integrity job of the head's latest run when one of them changes, so the
+# required context follows. It runs default-branch code only and never checks out
+# a pull request. Statuses the gate posts itself use GITHUB_TOKEN, which starts
+# no workflow, so this cannot loop.
+on:
+  issue_comment:
+    types: [created, edited]
+  status:
+  workflow_run:
+    workflows: [CI, gate]
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.sha || github.event.workflow_run.head_sha || github.event.issue.number }}
+
+jobs:
+  rerun:
+    # Only events gate/integrity reads; every other status or comment costs no runner.
+    if: >-
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, 'fixer-proof:'))
+      || (github.event_name == 'status' && github.event.context == 'review/agent' && github.event.state != 'pending')
+      || (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_REPO: ${{ github.repository }}
+        run: python3 scripts/process/rerun_integrity.py
