@@ -15,7 +15,7 @@ Usage: python3 scripts/process/merge_rule.py <pr> <T1|T2|T3> [--post-carry]
 Prints "merge-rule: <reason>" and exits 0 when the head may merge, 1 when it may not and
 2 when gh or git fails. Only --post-carry writes to GitHub: it posts a carry as
 review/agent success on the head. Run it in a checkout that holds the PR head and
-origin/<base>. GATE_REPO overrides the repository (default tylers2222/Monocode-Unlocked).
+origin/tyler/main. GATE_REPO overrides the repository (default tylers2222/Monocode-Unlocked).
 """
 import argparse
 import json
@@ -31,6 +31,12 @@ from datetime import datetime
 REPO = os.environ.get("GATE_REPO") or "tylers2222/Monocode-Unlocked"
 TIERS = ("T1", "T2", "T3")
 MAX_FIX_LINES = 60
+# Carries are judged against this branch only; it cannot be force-pushed (the gate ruleset).
+PR_BASE = "tyler/main"
+# GitHub lists at most this many commits of a PR.
+COMMIT_LIST_CAP = 250
+# Timeline events after a verdict that make the reviewed history or diff unknowable.
+HISTORY_EVENTS = {"head_ref_force_pushed": "was force-pushed", "base_ref_changed": "changed its base"}
 PASSING = frozenset({"success", "skipped", "neutral"})
 # The review verdict is what this script decides on, so it is not a check to wait for.
 REVIEW_CONTEXT = "review/agent"
@@ -129,8 +135,14 @@ def collect_verdicts(statuses_by_sha: Mapping[str, Iterable[Mapping[str, str]]],
     ]
 
 
+def severity(verdict: Verdict) -> tuple:
+    """Orders verdicts from best to worst; unknown counts are worst."""
+    return (not verdict.clean, verdict.blockers != 0, verdict.majors != 0, verdict.minors or 0)
+
+
 def latest(verdicts: Iterable[Verdict]) -> Verdict | None:
-    return max(verdicts, key=lambda verdict: verdict.at, default=None)
+    """The newest verdict; timestamps have whole seconds, so on a tie the worst one."""
+    return max(verdicts, key=lambda verdict: (verdict.at, severity(verdict)), default=None)
 
 
 def describe(verdict: Verdict) -> str:
@@ -157,10 +169,15 @@ def decide(
     checks_failed: Sequence[str],
     checks_pending: Sequence[str],
     review_in_progress: bool,
+    base_branch: str,
+    history: Sequence[tuple[str, datetime]],
+    commits_capped: bool,
 ) -> Decision:
     """Decides on the latest verdict. mutation is mutation_result() for the head: a
     conclusion, "pending", or None when there is no trusted gate/mutation run.
-    reviewed_files is the PR diff at the verdict's commit; since_review is own_change()."""
+    reviewed_files is the PR diff at the verdict's commit; since_review is own_change().
+    base_branch is the PR's base; history is the PR's HISTORY_EVENTS as (event, time);
+    commits_capped is true when GitHub's commit list stopped at COMMIT_LIST_CAP."""
     verdict = latest(verdicts)
     if verdict is None:
         return refuse("no review verdict yet")
@@ -182,6 +199,13 @@ def decide(
         return refuse(f"{name} {where}: push the minor fixes; the verdict carries only to a newer head")
     if tier != "T1" and verdict.round != 1:
         return refuse(f"{name} {where}: {tier} carries only a round 1 verdict; it needs a new review verdict")
+    if base_branch != PR_BASE:
+        return refuse(f"{name} {where}: a verdict carries only on a PR into {PR_BASE} (this one is into {base_branch})")
+    if commits_capped:
+        return refuse(f"GitHub lists only {COMMIT_LIST_CAP} of the PR's commits, so a later verdict may be hidden; it needs a new review verdict")
+    rewrites = sorted({HISTORY_EVENTS[event] for event, at in history if at >= verdict.at})
+    if rewrites:
+        return refuse(f"since r{verdict.round} ({sha7}) the PR {' and '.join(rewrites)}; it needs a new review verdict")
     since = f"since r{verdict.round} ({sha7}) the head"
     if since_review.problem:
         return refuse(f"{since} {since_review.problem}; it needs a new review verdict")
@@ -261,7 +285,7 @@ def own_change(reviewed: str, head: str, base: str) -> DiffStat:
     branch, a conflict resolved by hand, an edit inside the merge), whose count then holds
     the merged branch's lines too. A merge of more than two parents, a head that does not
     descend from the reviewed commit, or a binary change cannot be measured, so it never
-    carries. base is the base branch's current tip (origin/<base>)."""
+    carries. base is origin/tyler/main, the tip of the branch every carried PR goes into."""
     if git("merge-base", "--is-ancestor", reviewed, head, allowed=(0, 1)).returncode:
         return DiffStat({}, 0, "does not descend from the reviewed commit")
     files, changed = {}, 0
@@ -317,10 +341,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     view = json.loads(gh("pr", "view", str(args.pr), "-R", REPO, "--json", "headRefOid,baseRefName"))
-    head, base = view["headRefOid"], f"origin/{view['baseRefName']}"
+    head, base = view["headRefOid"], f"origin/{PR_BASE}"
+    commits = api(f"repos/{REPO}/pulls/{args.pr}/commits", ".[].sha")
+    timeline = api(f"repos/{REPO}/issues/{args.pr}/timeline",
+                   ".[] | select(" + " or ".join(f'.event == "{e}"' for e in HISTORY_EVENTS) + ") | {event, created_at, commit_id}")
+    # A force-push drops commits from the list; the heads it pushed may still hold verdicts.
     review_statuses = f'.[] | select(.context == "{REVIEW_CONTEXT}") | {{state, description, created_at, target_url}}'
     statuses_by_sha = {sha: api(f"repos/{REPO}/commits/{sha}/statuses", review_statuses)
-                       for sha in api(f"repos/{REPO}/pulls/{args.pr}/commits", ".[].sha")}
+                       for sha in dict.fromkeys([*commits, *(event["commit_id"] for event in timeline if event["commit_id"])])}
     verdicts = collect_verdicts(statuses_by_sha, f"https://github.com/{REPO}/pull/{args.pr}")
     comments = ".[] | {body, createdAt: .created_at, authorAssociation: .author_association}"
     proofs, errors = parse_proofs(api(f"repos/{REPO}/issues/{args.pr}/comments", comments))
@@ -338,7 +366,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     decision = decide(args.tier, head, verdicts, proofs, mutation_result(runs, head, workflow_paths),
                       reviewed_files=reviewed_files, since_review=since_review, checks_failed=checks_failed,
-                      checks_pending=checks_pending, review_in_progress=bool(head_review and head_review["state"] == "pending"))
+                      checks_pending=checks_pending, review_in_progress=bool(head_review and head_review["state"] == "pending"),
+                      base_branch=view["baseRefName"], history=[(event["event"], parse_time(event["created_at"])) for event in timeline],
+                      commits_capped=len(commits) >= COMMIT_LIST_CAP)
     for line in [*errors, decision.reason]:
         print(f"merge-rule: {line}")
     already = head_review and head_review["state"] == "success" and head_review["description"] == decision.reason

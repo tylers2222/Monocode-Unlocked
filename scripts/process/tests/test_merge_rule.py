@@ -61,7 +61,8 @@ def decide_fix(**changes):
     for m1. A test changes one input."""
     inputs = {"tier": "T2", "head": FIX, "verdicts": [verdict(MINOR)], "proofs": proven("m1"), "mutation": None,
               "reviewed_files": REVIEWED_FILES, "since_review": DiffStat({SPEC: "modified"}, 3),
-              "checks_failed": [], "checks_pending": [], "review_in_progress": False}
+              "checks_failed": [], "checks_pending": [], "review_in_progress": False,
+              "base_branch": "tyler/main", "history": [], "commits_capped": False}
     return decide(**{**inputs, **changes})
 
 
@@ -199,6 +200,25 @@ class DecideTest(unittest.TestCase):
                 self.assertRefused(decide_fix(tier="T3", mutation=result), "gate/mutation")
         self.assertTrue(decide_fix(tier="T3", mutation="success").carry)
 
+    def test_a_force_push_or_base_change_at_or_after_the_verdict_blocks_carry(self):
+        for event, words in (("head_ref_force_pushed", "was force-pushed"), ("base_ref_changed", "changed its base")):
+            with self.subTest(event=event):
+                self.assertRefused(decide_fix(history=[(event, AT)]), words, "new review verdict")
+                self.assertTrue(decide_fix(history=[(event, AT - timedelta(seconds=1))]).carry, "before the verdict the reviewer saw it")
+
+    def test_only_a_pr_into_tyler_main_carries(self):
+        self.assertRefused(decide_fix(base_branch="gate/d3b-rerun"), "only on a PR into tyler/main")
+
+    def test_a_capped_commit_list_blocks_carry(self):
+        self.assertRefused(decide_fix(commits_capped=True), "only 250")
+
+    def test_a_tie_picks_the_worst_verdict(self):
+        minors, blocker = verdict(MINOR), verdict(BLOCKER, sha=FIX)
+        for verdicts in ([minors, blocker], [blocker, minors]):
+            with self.subTest(first=verdicts[0].blockers):
+                self.assertRefused(decide_fix(verdicts=verdicts), "1B")
+        self.assertTrue(decide_fix(verdicts=[verdict(MINOR, at=AT + timedelta(seconds=1)), blocker]).carry, "a newer verdict still wins")
+
     def test_failed_or_pending_checks_or_a_review_in_progress_block_carry(self):
         self.assertRefused(decide_fix(checks_failed=["gate/lint"], checks_pending=["browser"]), "failed checks: gate/lint")
         self.assertRefused(decide_fix(checks_pending=["browser", "check (macos-latest)"]), "waiting for checks: browser")
@@ -290,6 +310,7 @@ class MainTest(unittest.TestCase):
             "repos/tylers2222/Monocode-Unlocked/issues/160/comments": list(comments),
             f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/check-runs": list(check_runs),
             f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/status": [],
+            "repos/tylers2222/Monocode-Unlocked/issues/160/timeline": [],
         }
         def gh(*args):
             self.assertEqual(args[:2], ("pr", "view"), "merge_rule.py only reads")
@@ -375,14 +396,22 @@ class CarryOnGitTest(unittest.TestCase):
             edit()
         return self.commit("Merge branch 'main' into pr"), run.returncode
 
-    def run_main(self, head, head_review=None):
-        """(exit code, posted, printed) of main() for the head; origin/main is main's tip."""
-        self.git("update-ref", "refs/remotes/origin/main", self.git("rev-parse", "main").strip())
-        url = "https://github.com/tylers2222/Monocode-Unlocked/pull/195"
-        statuses = {self.reviewed: [{"state": "failure", "description": "r1 changes needed: 0B/0M/1m (x)",
-                                     "created_at": "2026-10-20T11:00:00Z", "target_url": url}], head: []}
+    URL = "https://github.com/tylers2222/Monocode-Unlocked/pull/195"
+
+    def status(self, description, at="2026-10-20T11:00:00Z"):
+        return {"state": "failure", "description": description, "created_at": at, "target_url": self.URL}
+
+    def run_main(self, head, head_review=None, base="tyler/main", origin=None, reviewed=None, statuses=None, commits=None, timeline=()):
+        """(exit code, posted, printed) of main() for the head. origin: {branch: sha} for
+        refs/remotes/origin/* (default: tyler/main at main's tip). statuses: {sha: statuses}
+        (default: r1 0B/0M/1m on the reviewed commit). commits: what GitHub lists for the PR."""
+        for branch, sha in (origin or {"tyler/main": self.git("rev-parse", "main").strip()}).items():
+            self.git("update-ref", f"refs/remotes/origin/{branch}", sha)
+        reviewed = reviewed or self.reviewed
+        statuses = statuses or {reviewed: [self.status("r1 changes needed: 0B/0M/1m (x)")]}
         answers = {
-            "repos/tylers2222/Monocode-Unlocked/pulls/195/commits": [self.reviewed, head],
+            "repos/tylers2222/Monocode-Unlocked/pulls/195/commits": commits or [reviewed, head],
+            "repos/tylers2222/Monocode-Unlocked/issues/195/timeline": list(timeline),
             "repos/tylers2222/Monocode-Unlocked/issues/195/comments": [
                 {"body": "fixer-proof: m1 test=test_x", "createdAt": "2026-10-20T12:00:00Z", "authorAssociation": "OWNER"}],
             f"repos/tylers2222/Monocode-Unlocked/commits/{head}/status": [head_review] if head_review else [],
@@ -390,10 +419,10 @@ class CarryOnGitTest(unittest.TestCase):
         }
         posted, printed = [], []
         def api(path, jq, paginate=True):
-            return statuses[path.split("/")[-2]] if path.endswith("/statuses") else answers[path]
+            return statuses.get(path.split("/")[-2], []) if path.endswith("/statuses") else answers[path]
         def gh(*args):
             if args[:2] == ("pr", "view"):
-                return f'{{"headRefOid": "{head}", "baseRefName": "main"}}'
+                return f'{{"headRefOid": "{head}", "baseRefName": "{base}"}}'
             posted.append(args)
             return ""
         with unittest.mock.patch.object(merge_rule, "api", api), unittest.mock.patch.object(merge_rule, "gh", gh), \
@@ -406,8 +435,8 @@ class CarryOnGitTest(unittest.TestCase):
         self.assertEqual((code, len(posted)), (0, 1), printed)
         self.assertIn(f"repos/tylers2222/Monocode-Unlocked/statuses/{head}", posted[0])
 
-    def assertBlocks(self, head, *words):
-        code, posted, printed = self.run_main(head)
+    def assertBlocks(self, head, *words, **fixture):
+        code, posted, printed = self.run_main(head, **fixture)
         self.assertEqual((code, posted), (1, []), printed)
         for word in words:
             self.assertIn(word, printed)
@@ -523,6 +552,102 @@ class CarryOnGitTest(unittest.TestCase):
         self.assertCarries(head)
         already = {"context": "review/agent", "state": "success", "description": "carried from " + self.reviewed[:7] + ": minors-only + fixer proof (T2)"}
         self.assertEqual(self.run_main(head, already)[:2], (0, []))
+
+    # The seven wrong carries of the #228 edge-case check (reviews/228-verify.md), by row.
+    BLOCKER_R2 = "r2 changes needed: 1B/0M/0m (y)"
+
+    def fix(self, lines):
+        self.write("src/a.py", self.read("src/a.py") + [f"def fix_{n}(): pass" for n in range(lines)])
+        return self.commit(f"fix: {lines} lines")
+
+    def stacked(self):
+        """S adds src/c.py on the first commit; the PR (reviewed at rp) is on S; S then gains
+        s2 (20 lines in c.py, a new d.py) that is not on tyler/main."""
+        self.git("checkout", "-qb", "S", self.git("rev-list", "--max-parents=0", "main").strip())
+        self.write("src/c.py", [f"c{n}" for n in range(10)])
+        s1 = self.commit("S: s1")
+        self.git("checkout", "-qb", "pr2", s1)
+        self.write("src/a.py", self.gate[:1] + ["    audit_pr()  # the PR's change"] + self.gate[1:] + self.filler + self.big)
+        rp = self.commit("pr2: reviewed")
+        self.git("checkout", "-q", "S")
+        self.write("src/c.py", self.read("src/c.py") + [f"unreviewed_{n}" for n in range(20)])
+        self.write("src/d.py", ["new on S"])
+        s2 = self.commit("S: s2, not on tyler/main")
+        self.git("checkout", "-q", "pr2")
+        return s1, rp, s2
+
+    def test_v9_a_force_push_that_drops_a_later_blocker_verdict_blocks(self):
+        dropped = self.fix(1)
+        self.git("checkout", "-q", "-B", "pr", self.reviewed)
+        head = self.fix(2)
+        self.assertBlocks(head, "was force-pushed", statuses={
+            self.reviewed: [self.status("r1 changes needed: 0B/0M/1m (x)")], dropped: [self.status(self.BLOCKER_R2, "2026-10-20T11:30:00Z")]},
+            timeline=[{"event": "head_ref_force_pushed", "created_at": "2026-10-20T11:40:00Z", "commit_id": head}])
+
+    def test_v9_a_verdict_on_a_force_pushed_head_is_read(self):
+        self.git("checkout", "-qb", "b", self.reviewed)
+        dropped = self.fix(1)
+        self.git("checkout", "-q", "pr")
+        head = self.fix(2)
+        self.assertBlocks(head, "1B", statuses={
+            self.reviewed: [self.status("r1 changes needed: 0B/0M/1m (x)")], dropped: [self.status(self.BLOCKER_R2, "2026-10-20T11:30:00Z")]},
+            timeline=[{"event": "head_ref_force_pushed", "created_at": "2026-10-20T11:20:00Z", "commit_id": dropped},
+                      {"event": "head_ref_force_pushed", "created_at": "2026-10-20T11:40:00Z", "commit_id": head}])
+
+    def test_v35_a_capped_commit_list_blocks(self):
+        hidden = self.fix(1)
+        head = self.fix(2)
+        listed = [self.reviewed] + [f"{n:040x}" for n in range(1, 250)]  # GitHub stops at 250; hidden and head are past it
+        self.assertBlocks(head, "only 250", commits=listed, statuses={
+            self.reviewed: [self.status("r1 changes needed: 0B/0M/1m (x)")], hidden: [self.status(self.BLOCKER_R2, "2026-10-20T13:00:00Z")]})
+
+    def test_v36_same_second_verdicts_pick_the_blocker(self):
+        later = self.fix(1)
+        head = self.fix(2)
+        self.assertBlocks(head, "1B", commits=[self.reviewed, later, head], statuses={
+            self.reviewed: [self.status("r1 changes needed: 0B/0M/1m (x)")], later: [self.status(self.BLOCKER_R2)]})
+
+    def retargeted(self, squash):
+        s1, rp, _ = self.stacked()
+        if squash:
+            self.git("checkout", "-q", "main")
+            self.git("checkout", "-q", s1, "--", "src/c.py")
+            self.commit("S squash-merged into tyler/main")
+            self.git("checkout", "-q", "pr2")
+            self.merge_main()
+        self.write("src/c.py", self.read("src/c.py") + ["c_fix()"])
+        head = self.commit("fix touches c.py, which this PR's review never covered")
+        return head, rp
+
+    def test_v38_a_base_change_after_the_verdict_blocks(self):
+        head, rp = self.retargeted(squash=False)
+        self.assertBlocks(head, "changed its base", reviewed=rp, commits=self.git("rev-list", "--reverse", f"main..{head}").split(),
+                          timeline=[{"event": "base_ref_changed", "created_at": "2026-10-20T11:30:00Z", "commit_id": None}])
+
+    def test_v39_a_base_change_after_the_verdict_blocks_when_the_old_base_was_squash_merged(self):
+        head, rp = self.retargeted(squash=True)
+        self.assertBlocks(head, "changed its base", reviewed=rp, commits=self.git("rev-list", "--reverse", f"main..{head}").split(),
+                          timeline=[{"event": "base_ref_changed", "created_at": "2026-10-20T11:30:00Z", "commit_id": None}])
+
+    def test_v6_a_stacked_pr_merging_unreviewed_base_commits_blocks(self):
+        _, rp, s2 = self.stacked()
+        self.git("merge", "-q", "--no-ff", "-m", "Merge branch 'S' into pr2", "S")
+        head = self.git("rev-parse", "HEAD").strip()
+        self.assertBlocks(head, "only on a PR into tyler/main", reviewed=rp, base="gate/d3b-rerun",
+                          origin={"gate/d3b-rerun": s2, "tyler/main": self.git("rev-parse", "main").strip()})
+
+    def test_v31_a_stale_base_that_holds_a_force_pushed_away_commit_blocks(self):
+        self.git("checkout", "-qb", "gate/x", "main")
+        self.write("src/a.py", self.read("src/a.py") + ["# X, later force-pushed away from gate/x"])
+        x = self.commit("X")
+        self.git("checkout", "-q", "pr")
+        self.git("merge", "-q", "--no-ff", "-m", "Merge X into pr", x)
+        self.assertBlocks(self.git("rev-parse", "HEAD").strip(), "only on a PR into tyler/main", base="gate/x",
+                          origin={"gate/x": x, "tyler/main": self.git("rev-parse", "main").strip()})
+
+    def test_a_pr_into_a_base_the_checkout_never_fetched_is_refused_not_crashed(self):
+        """Judged against origin/tyler/main only, so a stacked PR's own base need not exist locally."""
+        self.assertBlocks(self.fix(1), "only on a PR into tyler/main", base="gate/not-fetched")
 
 
 if __name__ == "__main__":
