@@ -854,6 +854,62 @@ it("marks the compact group for search without expanding its commands or narrati
   expect(container.querySelector("[data-mono-work] button")).toBeNull();
 });
 
+it("ends a Mono message's footer at the run that started last, wherever it sits", () => {
+  const at = (time: string) => new Date(`2026-10-19T${time}`).getTime();
+  const clock = (ms: number) =>
+    new Date(ms).toLocaleTimeString(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  const footerTime = () =>
+    container
+      .querySelector("[data-turn-actions]")!
+      .textContent!.match(/\d+:\d\d\s?[AP]M/)![0];
+  const message: Block = {
+    id: "message",
+    role: "user",
+    text: "Record the approval and merge after a clean round",
+    sentAt: at("21:33:22"),
+  };
+  const notice = (startedAt: number, durationMs: number): Block => ({
+    id: "notice",
+    role: "user",
+    text: "Session finished",
+    internal: true,
+    appRequestId: "mono-completion-app-mono-review",
+    startedAt,
+    durationMs,
+  });
+  const props = { agentName: "Fork Orchestrator" };
+
+  // The message runs first and the notice's run follows it.
+  render(
+    [
+      { ...message, startedAt: at("21:33:22"), durationMs: 20_000 },
+      { id: "filed", role: "assistant", text: "Filed it." },
+      notice(at("21:33:45"), 26_000),
+      { id: "review", role: "assistant", text: "The review found a blocker." },
+    ],
+    props,
+  );
+  expect(container.querySelectorAll("[data-turn-actions]")).toHaveLength(1);
+  expect(footerTime()).toBe(clock(at("21:34:11")));
+
+  // The real inverted shape (m_nrw3tsvkuxzg): the message waited in the
+  // queue while the notice below it ran, then started after the notice.
+  render(
+    [
+      { ...message, startedAt: at("21:33:51"), durationMs: 19_084 },
+      { id: "filed", role: "assistant", text: "Filed it." },
+      notice(at("21:33:25"), 26_114),
+      { id: "review", role: "assistant", text: "The review found a blocker." },
+    ],
+    props,
+  );
+  expect(container.querySelectorAll("[data-turn-actions]")).toHaveLength(1);
+  expect(footerTime()).toBe(clock(at("21:34:10")));
+});
+
 it("keeps interrupted Mono messages together above one working indicator", () => {
   const blocks: Block[] = [
     {
