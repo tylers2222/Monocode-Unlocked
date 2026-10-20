@@ -56,6 +56,8 @@ jobs:
       checks: read
       # The workflow file of the head's gate/mutation run (merge_rule.py trusts only one).
       actions: read
+      # Only for the carry post below.
+      statuses: write
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -105,15 +107,17 @@ jobs:
           fi
           python3 scripts/process/instance-label.py --pr "$PR" --repo "$GATE_REPO"
 
-      # Fails until the latest review verdict is clean on the head (T3: and a trusted green
-      # gate/mutation on it). It only reads; review/agent stays reviewer-only.
+      # Fails until the head may merge under the tier rule: a clean review verdict on the
+      # head, or a minors-only verdict carried by fixer proof. --post-carry posts the
+      # carried verdict as review/agent on the head; delete the flag and `statuses: write`
+      # to keep review/agent reviewer-only.
       # gate-integrity-rerun.yml re-runs this job when a verdict or another check changes.
       - name: Merge rule (review verdict and fixer proof)
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           TIER: ${{ needs.tier.outputs.tier }}
-        run: python3 scripts/process/merge_rule.py "$PR" "$TIER"
+        run: python3 scripts/process/merge_rule.py "$PR" "$TIER" --post-carry
 
       - name: Fail when gate/tier failed
         if: ${{ !cancelled() && needs.tier.result != 'success' }}
