@@ -76,3 +76,4 @@ async function pluginsFor(parser: ParserName): Promise<Plugin[]> {
 }
 
 export const throwawayOne = 1;
+export const throwawayTwo = 1;
