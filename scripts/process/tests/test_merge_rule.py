@@ -1,4 +1,7 @@
 import re
+import shutil
+import subprocess
+import tempfile
 import sys
 import unittest
 import unittest.mock
@@ -271,7 +274,7 @@ class PrChangeSinceTest(unittest.TestCase):
     def test_base_merged_in_adds_nothing(self):
         # "Update branch": the file's blob changed (base edits) but the PR's own patch did not.
         then = [compare_file(SPEC)]
-        self.assertEqual(pr_change_since(then, [compare_file(SPEC, sha="s2")]), DiffStat({SPEC: "modified"}, 0))
+        self.assertEqual(pr_change_since(then, [compare_file(SPEC, sha="s2")]), DiffStat({}, 0))
 
     def test_changed_patch_lines_are_counted(self):
         now = [compare_file(SPEC, sha="s2", patch="@@ -1 +1,2 @@\n-a\n+b\n+c")]
@@ -354,6 +357,93 @@ class RerunListTest(unittest.TestCase):
         rerun = (WORKFLOWS / "gate-integrity-rerun.yml").read_text()
         listed = re.search(r"(?m)^    workflows: \[(.*)\]$", rerun).group(1)
         self.assertEqual({name.strip() for name in listed.split(",")}, on_pr)
+
+
+
+class UpdateBranchMergeTest(unittest.TestCase):
+    """pr_change_since on real git objects: GitHub's compare A...B is the diff from
+    merge-base(A, B) to B, and this builds the same file list from a temporary repo."""
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", self.repo, *args], check=True, capture_output=True, text=True).stdout
+
+    def write(self, path, lines):
+        (Path(self.repo) / path).write_text("".join(f"{line}\n" for line in lines))
+
+    def commit(self, message):
+        self.git("add", "-A")
+        self.git("commit", "-qm", message)
+        return self.git("rev-parse", "HEAD").strip()
+
+    def compare(self, base, head):
+        merge_base = self.git("merge-base", base, head).strip()
+        files = []
+        for row in self.git("diff", "--name-status", "--no-renames", merge_base, head).splitlines():
+            code, path = row.split("\t")
+            status = {"A": "added", "D": "removed"}.get(code, "modified")
+            patch = self.git("diff", merge_base, head, "--", path)
+            patch = patch[patch.index("@@"):] if "@@" in patch else None
+            sha = self.git("rev-parse", f"{head}:{path}").strip() if status != "removed" else None
+            files.append({"filename": path, "status": status, "sha": sha, "patch": patch})
+        return files
+
+    def setUp(self):
+        self.repo = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.repo)
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.email", "t@example.com")
+        self.git("config", "user.name", "t")
+        self.body = [f"line {n}" for n in range(1, 101)]
+        self.write("a.ts", self.body)
+        self.write("b.ts", ["other"])
+        self.commit("base")
+        self.git("checkout", "-qb", "pr")
+        self.write("a.ts", self.body[:50] + ["pr change"] + self.body[50:])
+        self.reviewed = self.commit("pr: reviewed")
+        self.git("checkout", "-q", "main")
+        self.write("a.ts", ["main change at the top"] + self.body)
+        self.write("b.ts", ["other, changed on main"])
+        self.main = self.commit("main moves")
+        self.git("checkout", "-q", "pr")
+
+    def merge_main(self, edit=None):
+        """Update branch: merge main into the PR, with an extra edit hidden in the merge commit."""
+        self.git("merge", "-q", "--no-commit", "--no-ff", "main")
+        if edit:
+            edit()
+        return self.commit("Merge branch 'main' into pr")
+
+    def change_since_review(self, head):
+        then = self.compare(self.main, self.reviewed)
+        return then, pr_change_since(then, self.compare(self.main, head))
+
+    def test_clean_update_branch_adds_nothing(self):
+        _, since = self.change_since_review(self.merge_main())
+        self.assertEqual(since, DiffStat({}, 0), "main's own edits to a.ts and b.ts are not the PR's change")
+
+    def test_edit_hidden_in_the_merge_counts(self):
+        lines = (Path(self.repo) / "a.ts").read_text
+        hidden = lambda: (Path(self.repo) / "a.ts").write_text(lines().replace("line 80\n", "line 80, edited in the merge\n"))
+        _, since = self.change_since_review(self.merge_main(hidden))
+        self.assertEqual(since, DiffStat({"a.ts": "modified"}, 2), "one changed line: its - and + lines")
+
+    def test_61_lines_hidden_in_the_merge_block_the_carry(self):
+        def hidden():
+            path = Path(self.repo) / "a.ts"
+            path.write_text(path.read_text() + "".join(f"merge line {n}\n" for n in range(61)))
+        then, since = self.change_since_review(self.merge_main(hidden))
+        self.assertEqual(since.changed, 61)
+        reviewed_files = DiffStat({file["filename"]: file["status"] for file in then}, 0)
+        decision = decide_fix(tier="T2", reviewed_files=reviewed_files, since_review=since)
+        self.assertFalse(decision.ok)
+        self.assertIn("61 lines", decision.reason)
+
+    def test_new_file_added_in_the_merge_blocks_the_carry(self):
+        _, since = self.change_since_review(self.merge_main(lambda: self.write("c.ts", ["new in the merge"])))
+        self.assertEqual(since.files, {"c.ts": "added"})
+        decision = decide_fix(tier="T2", reviewed_files=DiffStat({"a.ts": "modified"}, 0), since_review=since)
+        self.assertFalse(decision.ok)
+        self.assertIn("adds a new file (c.ts)", decision.reason)
 
 
 if __name__ == "__main__":

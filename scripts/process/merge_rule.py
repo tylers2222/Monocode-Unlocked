@@ -229,13 +229,16 @@ def pr_change_since(then: Iterable[Mapping[str, str | None]], now: Iterable[Mapp
         old, new = before.get(path), after.get(path)
         if old and new and (old["sha"], old["status"]) == (new["sha"], new["status"]):
             continue
-        files[path] = "modified" if old and new else new["status"] if new else "reverted"
         sides = [file for file in (old, new) if file and file["status"] != "removed"]
         if any(file.get("patch") is None for file in sides):
-            changed += MAX_FIX_LINES + 1
-            continue
-        a, b = (Counter(l for l in (file or {}).get("patch", "").splitlines() if l[:1] in "+-") for file in (old, new))
-        changed += sum(((a - b) + (b - a)).values())
+            lines = MAX_FIX_LINES + 1
+        else:
+            a, b = (Counter(l for l in (file or {}).get("patch", "").splitlines() if l[:1] in "+-") for file in (old, new))
+            lines = sum(((a - b) + (b - a)).values())
+        if lines == 0 and old and new and old["status"] == new["status"]:
+            continue  # only the base moved under this file (Update branch)
+        files[path] = "modified" if old and new else new["status"] if new else "reverted"
+        changed += lines
     return DiffStat(files, changed)
 
 
