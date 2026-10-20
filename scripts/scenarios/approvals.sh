@@ -27,16 +27,12 @@ user() {
 
 # The copy holds turns and sessions for the user's real agents. The instance
 # runs under scripts/giga-eval/sandbox.sh (GIGA_EVAL_SANDBOX=1): the copy is
-# scrubbed, every start is guarded, and the app runs in a profile that lets
-# it start only itself, node, the puppet and git, reach only localhost and
-# write only under /tmp. Node is on the launch PATH for the puppet's
-# `#!/usr/bin/env node`; the sandbox refuses the login shell the app would
-# read PATH from.
-start_app() {
-  mkdir -p "$EVAL_OUT/path"
-  ln -sf "$(command -v node)" "$EVAL_OUT/path/node"
-  PATH="$EVAL_OUT/path:/usr/bin:/bin:/usr/sbin:/sbin" "$INSTANCE" start
-}
+# scrubbed and every start is guarded (the primary protection), the home is
+# fresh with no real login, and the app starts from `env -i` with a fixed
+# PATH in a profile that lets it start only itself, node, the puppet and
+# git, reach only localhost, and write only to the temp HOME and its own
+# jail dir.
+start_app() { "$INSTANCE" start; }
 
 approvals_seed() {
   local scratch="$EVAL_HOME/$SCRATCH_NAME" now; now="$(date +%s)000"
