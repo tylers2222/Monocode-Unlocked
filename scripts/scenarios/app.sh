@@ -10,14 +10,6 @@
 export GIGA_EVAL_OUT="${GIGA_EVAL_OUT:-/tmp/scenario-app}"
 export GIGA_EVAL_HOME="${GIGA_EVAL_HOME:-/tmp/scenario-app-home}"
 SCENARIOS="$(cd "$(dirname "$0")" && pwd)"
-# Before any write, lib.sh's mkdir too: every file this script makes lives
-# under these two.
-for dir in "$GIGA_EVAL_HOME" "$GIGA_EVAL_OUT"; do
-  case "$dir" in
-    /tmp/?*|/private/tmp/?*) ;;
-    *) echo "GIGA_EVAL_HOME and GIGA_EVAL_OUT must be under /tmp, got $dir" >&2; exit 2 ;;
-  esac
-done
 source "$SCENARIOS/../giga-eval/lib.sh"
 INSTANCE="$EVAL_DIR/instance.sh"
 APP_DATA="$EVAL_HOME/Library/Application Support/$EVAL_ID"
@@ -58,14 +50,18 @@ clock_write() {
 # Awake time while the app runs, in steps under the 30 s tick cap, one
 # 1 s tick per step.
 advance() {
-  local left="$1" step
+  local left="$1" step want
+  want="$(active_ms)"
   while ((left > 0)); do
     step=$((left < 20000 ? left : 20000))
     UPTIME=$((UPTIME + step)); WALL=$((WALL + step)); left=$((left - step))
+    want=$((want + step))
     clock_write "$UPTIME" "$WALL"
-    sleep 1.5
+    # One write per tick: two writes in one tick read as one jump, which
+    # the app caps at 30 s. Each step is 5 s or more, so the app stores it.
+    wait_until 30 "the app stores active_ms $want" \
+      holds "SELECT active_ms = $want FROM mono_clock WHERE id = 1"
   done
-  sleep 1.5
 }
 
 active_ms() { q "SELECT active_ms FROM mono_clock WHERE id = 1"; }
