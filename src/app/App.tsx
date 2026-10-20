@@ -486,7 +486,7 @@ import {
   planWorkspaceTabClose,
   switchSessionInTab,
   workspaceTabCwd,
-  workspaceTabWorktree,
+  tabWorkspace,
   focusedWorkspaceTabCwd,
 } from "../features/workspace/model/workspaceTabGroups";
 import { applyAddToChatRequest } from "../features/sessions/model/addChatToWorkspace";
@@ -879,6 +879,7 @@ import {
 import {
   collectWorkspaceSnapshot,
   workspaceSnapshotKey,
+  type WindowWorkspace,
 } from "../features/workspace/model/workspaceSnapshot";
 import type { InstalledUpdate } from "./model/updateNotice";
 import {
@@ -893,7 +894,6 @@ import {
   persistQuitState,
   reapWindowRuntime,
   setQuitWorkspace,
-  type ResumedWorkspace,
 } from "./model/appLifecycle";
 
 const SearchView = lazySurface(
@@ -974,8 +974,8 @@ type SubmitOptions = ComposerTurnOptions & {
   providerTook?: (accepted: boolean) => void;
   /**
    * The id of the turn this submit opens; set by the Mono hand-off that
-   * took the slot for it (design 5.2). A busy session opens none, so it
-   * refuses the submit.
+   * took the slot for it (design 5.2), and by the Continue after a relaunch.
+   * A busy session opens none, so it refuses the submit.
    */
   turnId?: TurnId;
   /** What the agent reads instead of `text`, which the transcript shows. */
@@ -1163,7 +1163,7 @@ function titleTabsEqual(a: TitleTab[], b: TitleTab[]): boolean {
 registerBuiltinHarnesses();
 
 type AppProps = {
-  resumed?: ResumedWorkspace | null;
+  resumed?: WindowWorkspace | null;
   installedUpdate?: InstalledUpdate | null;
   history?: SessionSummary[];
   historyCwd?: string | null;
@@ -1536,36 +1536,12 @@ function Workspace({
    * opening an idle session, or moving one from its composer, never switches
    * the workspace. A running session opened with no tab opens in its own
    * worktree, which becomes the project's workspace (`onSelectHistorySession`).
-   * Unpinned tabs (restored ones) group by their own worktree. */
-  // Only the default workspace's tabs were saved, so every restored tab
-  // belongs to it, including one its composer moved to a worktree.
-  const [restoredPins] = useState(
-    () =>
-      new Map(
-        tabs.flatMap((tab) => {
-          const project = workspaceTabCwd(tab, sessions);
-          return project && !isRemoteProjectPath(project)
-            ? [[tab.id, project] as const]
-            : [];
-        }),
-      ),
-  );
-  const workspacePins = useRef(restoredPins);
-  const tabWorkspace = useCallback(
-    (tab: WorkspaceTab, list: readonly Session[]) => {
-      const pinnedTab = workspacePins.current.get(tab.id);
-      if (pinnedTab) return pinnedTab;
-      for (const id of leafIds(tab.layout)) {
-        const pinned = workspacePins.current.get(id);
-        if (pinned) return pinned;
-      }
-      return workspaceTabWorktree(tab, list);
-    },
-    [],
-  );
+   * Unpinned tabs group by their own worktree. */
+  const [workspacePins] = useState(() => new Map(resumed?.pins));
   const tabWorktreeOf = useCallback(
-    (tab: WorkspaceTab) => tabWorkspace(tab, sessionsRef.current),
-    [tabWorkspace],
+    (tab: WorkspaceTab) =>
+      tabWorkspace(tab, sessionsRef.current, workspacePins),
+    [workspacePins],
   );
   /** Saved tabs: the app reopens on each project's default workspace, so
    * tabs from other worktrees close with it instead of piling up. */
@@ -1573,10 +1549,10 @@ function Workspace({
     (tab: WorkspaceTab) => {
       const project = workspaceTabCwd(tab, sessionsRef.current);
       if (!project || isRemoteProjectPath(project)) return true;
-      const workspace = tabWorkspace(tab, sessionsRef.current);
+      const workspace = tabWorkspace(tab, sessionsRef.current, workspacePins);
       return !workspace || sameProjectPath(workspace, project);
     },
-    [tabWorkspace],
+    [workspacePins],
   );
 
   const workspaceNavigation = useWorkspaceNavigation({
@@ -1584,8 +1560,7 @@ function Workspace({
     activeTabId,
     tabs,
     sessions,
-    pins: workspacePins.current,
-    tabWorkspace,
+    pins: workspacePins,
     moveSession: (id, tree, isCurrent) =>
       onWorktreeChange(id, tree, false, isCurrent),
     activateTab: (id) => {
@@ -3824,7 +3799,7 @@ function Workspace({
 
         // The blank replacement stays in the tab's worktree, so clearing the
         // last tab there does not switch the workspace back to the project.
-        const workspace = tabWorkspace(tab, sessionsRef.current);
+        const workspace = tabWorkspace(tab, sessionsRef.current, workspacePins);
         const focus = worktreeFocus(oldSession.cwd);
         const session = {
           ...newSession(
@@ -4160,7 +4135,7 @@ function Workspace({
     if (!sidebarCwd || sidebarCwd === "~" || isRemoteProjectPath(sidebarCwd))
       return stats;
     for (const tab of filterTabsForProject(tabs, sessions, sidebarCwd)) {
-      const workspace = tabWorkspace(tab, sessions) ?? sidebarCwd;
+      const workspace = tabWorkspace(tab, sessions, workspacePins) ?? sidebarCwd;
       const key = pathKey(workspace);
       const entry = stats.get(key) ?? { tabs: 0, busy: false };
       entry.tabs += 1;
@@ -4170,7 +4145,7 @@ function Workspace({
       stats.set(key, entry);
     }
     return stats;
-  }, [tabs, sessions, sidebarCwd, tabWorkspace, workspaceNavigation.revision]);
+  }, [tabs, sessions, sidebarCwd, workspacePins, workspaceNavigation.revision]);
   const deckProjectTabs = useMemo(() => {
     // A projectless session belongs to no project, so it stands on its own
     // rather than trailing the last project's tabs.
@@ -4180,7 +4155,7 @@ function Workspace({
     const worktree = projectWorktree?.path ?? projectCwd;
     return filterTabsForProject(tabs, sessions, projectCwd).filter((tab) => {
       if (tab.id === activeTabId) return true;
-      const workspace = tabWorkspace(tab, sessions);
+      const workspace = tabWorkspace(tab, sessions, workspacePins);
       return !workspace || sameProjectPath(workspace, worktree);
     });
   }, [
@@ -4189,7 +4164,7 @@ function Workspace({
     sessions,
     projectCwd,
     projectWorktree?.path,
-    tabWorkspace,
+    workspacePins,
     workspaceNavigation.revision,
   ]);
 
@@ -5091,7 +5066,7 @@ function Workspace({
       // project focuses that worktree, as when a project opens to a running
       // session's tab (useWorkspaceNavigation `drain`).
       if (runningTurnStart(session.id, sessionsRef.current) !== undefined) {
-        workspacePins.current.set(tabId, sessionWorkCwd(session));
+        workspacePins.set(tabId, sessionWorkCwd(session));
         workspaceNavigation.selectProject(session.cwd);
       }
       if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
@@ -6254,7 +6229,7 @@ function Workspace({
           // context attached to the files they describe.
           const tab = newTab(selected.id);
           if (fromComposer)
-            workspacePins.current.set(
+            workspacePins.set(
               selected.id,
               currentWorkspace(source.cwd),
             );
@@ -6284,8 +6259,8 @@ function Workspace({
         }
         const next = sessionInWorktree(latest, target);
         if (fromComposer)
-          workspacePins.current.set(sessionId, currentWorkspace(latest.cwd));
-        else workspacePins.current.delete(sessionId);
+          workspacePins.set(sessionId, currentWorkspace(latest.cwd));
+        else workspacePins.delete(sessionId);
         if (latest.worktreeRemoved)
           await keepSessionChanges(sessionId, target.path);
         pendingPersist.current.delete(sessionId);
@@ -7992,7 +7967,7 @@ function Workspace({
           );
           workCwd = sessionWorkCwd({ cwd: current.cwd, worktreeCwd: tree.path });
           agentCwd = sessionAgentCwd({ ...current, worktreeCwd: tree.path });
-          workspacePins.current.set(sessionId, currentWorkspace(current.cwd));
+          workspacePins.set(sessionId, currentWorkspace(current.cwd));
           if (proposalDraft)
             proposalDraft = { ...proposalDraft, checkoutCwd: workCwd };
           setSessions((prev) =>
@@ -10504,7 +10479,11 @@ function Workspace({
         ) {
           continue;
         }
-        onSubmit(id, CONTINUE_PROMPT);
+        // A Continue opens the turn the quit cut short, or nothing. This
+        // effect runs again whenever another session resumes, so a Continue
+        // still waiting on its project's location check is asked for twice;
+        // the second must not steer into the turn the first opened.
+        onSubmit(id, CONTINUE_PROMPT, [], { turnId: newTurnId() });
       }
     }, 0);
     return () => window.clearTimeout(timer);
