@@ -102,8 +102,9 @@ export function isHiddenTool(block: Block): boolean {
   if (block.role !== "tool" && block.role !== "approval") return false;
   // Harnesses also publish todo mutations as ordinary tool calls. The
   // canonical tasks block is the user-facing representation, so keep the
-  // provider-internal call out of the activity stack.
-  if (block.tool?.kind?.toLowerCase() === "tasks") return true;
+  // provider-internal call out of the activity stack, unless the provider
+  // asks before running it, as OpenCode's supervised rules do for `todowrite`.
+  if (block.tool?.kind?.toLowerCase() === "tasks") return !needsApproval(block);
   if (
     isEditTool(
       block.tool?.kind,
