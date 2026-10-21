@@ -342,9 +342,6 @@ const OPENCODE_ENV = [
 
 test.describe("with OpenCode installed", () => {
   test.skip(!OPENCODE, "needs the opencode binary on PATH");
-  // The recorded tests cover both engines. Playwright's macOS WebKit aborts
-  // after the todo turn (NSTextInputContext textInputClientDidUpdateSelection).
-  test.skip(({ browserName }) => browserName !== "chromium");
 
   let model: Server;
   let release: () => void;
@@ -399,7 +396,16 @@ test.describe("with OpenCode installed", () => {
   });
 
   for (const scenario of SCENARIOS)
-    test(`a real OpenCode server ${scenario.name}`, async ({ app, page }) => {
+    test(`a real OpenCode server ${scenario.name}`, async ({
+      app,
+      page,
+      browserName,
+    }) => {
+      test.skip(
+        browserName === "webkit" &&
+          scenario.run === steerWhileTodoApprovalWaits,
+        "Playwright's macOS WebKit aborts after the todo turn (NSTextInputContext textInputClientDidUpdateSelection); the recorded test covers WebKit",
+      );
       const recording: Recording = {
         sessionId: "",
         afterPrompt: [],

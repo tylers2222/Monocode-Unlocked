@@ -1,5 +1,6 @@
 import { isSingleEmoji } from "../../sessions/model/emojiMessage";
 import type { Block } from "../../sessions/model/session";
+import { needsApproval } from "../../sessions/model/transcriptActivity";
 
 /**
  * A Mono can answer with only an emoji on the user's message, as a friend
@@ -78,9 +79,14 @@ export function monoReactionBlocks(blocks: Block[]): Block[] {
     changed = true;
     if (target >= 0) {
       // The reaction is the whole answer: the thinking and steps behind it
-      // would only draw an empty reply. Errors still show.
+      // would only draw an empty reply. Errors and pending approvals still show.
       const after = out.splice(target + 1);
-      out.push(...after.filter((step) => step.role === "system" && step.notice));
+      out.push(
+        ...after.filter(
+          (step) =>
+            (step.role === "system" && step.notice) || needsApproval(step),
+        ),
+      );
       out[target] = withReaction(out[target], emoji, "monoReaction");
     } else out.push(withReaction(block, emoji, "text"));
   }

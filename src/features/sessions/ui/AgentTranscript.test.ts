@@ -551,14 +551,17 @@ describe("AgentTranscript collapsed work", () => {
     ],
   ])("offers Allow for a pending approval on %s", (_shape, events) => {
     const { blocks } = applyHarnessEvents(newSession("opencode", "/w"), events);
-    const markup = renderToStaticMarkup(
-      createElement(AgentTranscript, {
-        blocks: [{ id: "user", role: "user", text: "Go" }, ...blocks],
-        busy: true,
-        onApproval: () => undefined,
-      }),
-    );
-    expect(markup).toContain("Allow</button>");
+    for (const inlineWork of [false, true]) {
+      const markup = renderToStaticMarkup(
+        createElement(AgentTranscript, {
+          blocks: [{ id: "user", role: "user", text: "Go" }, ...blocks],
+          busy: true,
+          inlineWork,
+          onApproval: () => undefined,
+        }),
+      );
+      expect(markup, `inlineWork: ${inlineWork}`).toContain("Allow</button>");
+    }
   });
 
   it("opens a failed subagent's own row on its provider reason", () => {
@@ -946,6 +949,29 @@ describe("Mono inline work", () => {
       }),
     );
   }
+
+  it("keeps a pending approval when the Mono's reply is only a reaction", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AgentTranscript, {
+        blocks: [
+          { id: "user", role: "user", text: "deploy it" },
+          {
+            id: "relay",
+            role: "approval",
+            text: "git push",
+            tool: { title: "git push" },
+            approval: { requestId: 1_000_000_001 },
+          },
+          { id: "reply", role: "assistant", text: "<reaction>👍</reaction>" },
+        ],
+        busy: true,
+        inlineWork: true,
+        agentMascot: { mascot: "cat", color: "#6ba" },
+        onApproval: () => {},
+      }),
+    );
+    expect(markup).toContain("Allow</button>");
+  });
 
   it.each([true, false])(
     "keeps narration hidden and shows the final reply only after completion (busy=%s)",
