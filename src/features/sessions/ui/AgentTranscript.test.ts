@@ -1,7 +1,10 @@
 import { createElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { vi, describe, expect, it } from "vitest";
-import type { Block } from "../model/session";
+import { applyHarnessEvents } from "../../../integrations/harness/core/apply";
+import type { HarnessEvent } from "../../../integrations/harness/core/types";
+import { extensionUiTitle } from "../../../integrations/harness/providers/pi/piProtocol";
+import { newSession, type Block } from "../model/session";
 import { AgentTranscript } from "./AgentTranscript";
 
 function tool(id: string, approval?: Block["approval"]): Block {
@@ -57,8 +60,7 @@ describe("AgentTranscript collapsed work", () => {
   });
 
   it("shows MonoCode CLI actions instead of their long shell commands", () => {
-    const command =
-      "/repo/target/debug/MonoCode.app/Contents/MacOS/monocode";
+    const command = "/repo/target/debug/MonoCode.app/Contents/MacOS/monocode";
     const markup = render(
       [
         { id: "user", role: "user", text: "/monocode list my notes" },
@@ -89,7 +91,8 @@ describe("AgentTranscript collapsed work", () => {
   });
 
   it("shows the full command before approving a MonoCode CLI call", () => {
-    const command = "monocode app sessions.send --json '{\"prompt\":\"private-marker\"}'";
+    const command =
+      'monocode app sessions.send --json \'{"prompt":"private-marker"}\'';
     const markup = renderToStaticMarkup(
       createElement(AgentTranscript, {
         blocks: [
@@ -458,6 +461,104 @@ describe("AgentTranscript collapsed work", () => {
     expect(markup).toContain("hidden-detail-approval");
     expect(markup).toContain("Please approve the command.");
     expect(markup.includes('aria-label="Show the work"')).toBe(false);
+  });
+
+  it.each<[string, HarnessEvent[]]>([
+    [
+      "an ACP tool call of kind other titled Tool",
+      [
+        { type: "tool.started", callId: "c1", title: "Tool", kind: "other" },
+        {
+          type: "approval.requested",
+          requestId: 1,
+          title: "Tool",
+          kind: "other",
+          callId: "c1",
+        },
+      ],
+    ],
+    [
+      "an ACP request of kind other with no title",
+      [
+        {
+          type: "approval.requested",
+          requestId: 1,
+          title: "",
+          kind: "other",
+          callId: "c1",
+        },
+      ],
+    ],
+    [
+      "an omp extension confirm titled Run",
+      [
+        {
+          type: "approval.requested",
+          requestId: 1,
+          title: extensionUiTitle({
+            type: "extension_ui_request",
+            id: "e1",
+            method: "confirm",
+            title: "Run",
+            message: "",
+          }),
+          kind: "other",
+        },
+      ],
+    ],
+    [
+      "an OpenCode todowrite call",
+      [
+        {
+          type: "tool.started",
+          callId: "c1",
+          title: "todowrite",
+          kind: "tasks",
+          status: "pending",
+        },
+        {
+          type: "approval.requested",
+          requestId: 1,
+          title: "todowrite *",
+          kind: "tasks",
+          callId: "c1",
+        },
+      ],
+    ],
+    [
+      "a fetch",
+      [
+        {
+          type: "approval.requested",
+          requestId: 1,
+          title: "Fetch https://x.dev",
+          kind: "fetch",
+          callId: "c1",
+        },
+      ],
+    ],
+    [
+      "a Codex permissions request",
+      [
+        {
+          type: "approval.requested",
+          requestId: 1,
+          title: "Approve permissions",
+          kind: "other",
+          callId: "i1",
+        },
+      ],
+    ],
+  ])("offers Allow for a pending approval on %s", (_shape, events) => {
+    const { blocks } = applyHarnessEvents(newSession("opencode", "/w"), events);
+    const markup = renderToStaticMarkup(
+      createElement(AgentTranscript, {
+        blocks: [{ id: "user", role: "user", text: "Go" }, ...blocks],
+        busy: true,
+        onApproval: () => undefined,
+      }),
+    );
+    expect(markup).toContain("Allow</button>");
   });
 
   it("opens a failed subagent's own row on its provider reason", () => {
