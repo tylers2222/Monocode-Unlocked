@@ -27,7 +27,7 @@ const HOME_VAR = process.platform === "win32" ? "USERPROFILE" : "HOME";
 function loginDirs(env: NodeJS.ProcessEnv, cwd: string): [string, string][] {
   const at = (value: string | undefined) => (value ? resolve(cwd, value) : homedir());
   const home = at(env[HOME_VAR]);
-  const profile: [string, string][] = HOME_VAR === "HOME" ? [] : [[HOME_VAR, home]];
+  const profile: [string, string][] = [];
   return [
     ["HOME", at(env.HOME)],
     ...profile,
@@ -73,7 +73,6 @@ export function spawnRealHarness(
   const childEnv: NodeJS.ProcessEnv = {
     PATH: process.env.PATH,
     HOME: ownDir,
-    [HOME_VAR]: ownDir,
     PI_CODING_AGENT_DIR: join(ownDir, ".omp", "agent"),
     CLAUDE_CONFIG_DIR: join(ownDir, ".claude"),
     CODEX_HOME: join(ownDir, ".codex"),
