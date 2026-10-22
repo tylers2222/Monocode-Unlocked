@@ -11,7 +11,9 @@
 // roles of every grandchild as nested arrays.
 ObjC.import("CoreGraphics");
 
-const se = Application("System Events");
+// By path: a lookup by name can fail with -2700 (Application can't be
+// found) while System Events runs.
+const se = Application("/System/Library/CoreServices/System Events.app");
 const MAX_DEPTH = 40;
 
 // JXA's whose({unixId}) can return another process with the same name (the

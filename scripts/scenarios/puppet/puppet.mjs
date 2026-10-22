@@ -7,9 +7,13 @@
 // script.json: {"app": "<monocode binary>", "rules": [{"match": "...",
 //   "calls": [{"tool": "send_message", "arguments": {...}}], "reply": "..."}]}
 // Each call goes through `<app> app-mcp`, the app's MCP server, with the app
-// token this process got from the app. log.jsonl gets one line per prompt
-// ({"prompt", "rule", "steer"}) and per call ({"tool", "input", "result"}).
-import { spawn } from "node:child_process";
+// token this process got from the app. A call with "action" instead of
+// "tool" runs `<app> app <action>`, for an action with no MCP tool. An
+// argument "$ask_id" or "$ack_of" is that attribute of the prompt's
+// <mono_message>; "$prev.<field>" is that field of the previous call's
+// result. log.jsonl gets one line per prompt ({"prompt", "rule", "steer"})
+// and per call ({"tool" or "action", "input", "result"}).
+import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -71,14 +75,44 @@ function mcp(app) {
   };
 }
 
+function cli(app, action, input) {
+  const run = spawnSync(app, ["app", action, "--json", JSON.stringify(input)], {
+    encoding: "utf8",
+  });
+  try {
+    return JSON.parse(run.stdout);
+  } catch {
+    return { ok: false, error: `exit ${run.status}: ${run.stderr}` };
+  }
+}
+
+function fill(input, text, prev) {
+  const attribute = (name) =>
+    text.match(new RegExp(`<mono_message [^>]*\\b${name}="([^"]*)"`))?.[1];
+  const value = (raw) => {
+    if (raw === "$ask_id" || raw === "$ack_of") return attribute(raw.slice(1));
+    if (typeof raw === "string" && raw.startsWith("$prev."))
+      return prev?.result?.[raw.slice(6)];
+    return raw;
+  };
+  return Object.fromEntries(
+    Object.entries(input).map(([key, raw]) => [key, value(raw)]),
+  );
+}
+
 async function runTurn(text, steer) {
   const script = JSON.parse(readFileSync(join(dir, "script.json"), "utf8"));
   const rule = script.rules.find((candidate) => text.includes(candidate.match));
   log({ prompt: text, rule: rule?.match ?? null, steer });
   if (!rule) return "";
   const server = mcp(script.app);
-  for (const { tool, arguments: input } of rule.calls ?? []) {
-    log({ tool, input, result: await server.call(tool, input) });
+  let prev;
+  for (const { tool, action, arguments: raw } of rule.calls ?? []) {
+    const input = fill(raw, text, prev);
+    prev = tool
+      ? await server.call(tool, input)
+      : cli(script.app, action, input);
+    log({ ...(tool ? { tool } : { action }), input, result: prev });
   }
   server.close();
   return rule.reply ?? "";
