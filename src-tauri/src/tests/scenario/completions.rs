@@ -38,13 +38,16 @@ fn rows(world: &World) -> i64 {
         .unwrap()
 }
 
-fn claim(world: &World, window: &str, run: &str) -> Vec<Value> {
-    completions::claim(&world.conn(), Owner { window, run }, world.now()).unwrap()
+/// `live` is the labels of the windows open at the boot.
+fn claim(world: &World, window: &str, run: &str, live: &[&str]) -> Vec<Value> {
+    completions::claim(&world.conn(), Owner { window, run }, live, world.now()).unwrap()
 }
 
 fn hold(world: &World, window: &str, run: &str, entries: &[Value]) {
-    completions::hold(&world.conn(), Owner { window, run }, world.now(), entries).unwrap();
+    completions::hold(&world.conn(), Owner { window, run }, entries).unwrap();
 }
+
+const BOTH: &[&str] = &["main", "window-2"];
 
 fn deliver(world: &World, window: &str, run: &str, requests: &[&str]) -> bool {
     let requests: Vec<String> = requests.iter().map(ToString::to_string).collect();
@@ -74,7 +77,7 @@ fn marks(world: &World) -> i64 {
 fn a_waiting_result_reaches_one_window_once_across_kills_and_reloads() {
     let mut world = World::new("ade89-completions");
     assert!(
-        claim(&world, "main", "run-1").is_empty(),
+        claim(&world, "main", "run-1", &["main"]).is_empty(),
         "a new database holds nothing"
     );
     hold(
@@ -86,17 +89,17 @@ fn a_waiting_result_reaches_one_window_once_across_kills_and_reloads() {
 
     world.kill();
     world.restart();
-    let first = claim(&world, "window-2", "run-2");
+    let first = claim(&world, "window-2", "run-2", BOTH);
     assert_eq!(
         ids(&first),
         ["a", "b"],
         "the first window to boot takes the killed run's results"
     );
     assert!(
-        claim(&world, "main", "run-2").is_empty(),
+        claim(&world, "main", "run-2", BOTH).is_empty(),
         "the second window gets nothing"
     );
-    let reloaded = claim(&world, "window-2", "run-2");
+    let reloaded = claim(&world, "window-2", "run-2", BOTH);
     assert_eq!(
         ids(&reloaded),
         ["a", "b"],
@@ -104,7 +107,7 @@ fn a_waiting_result_reaches_one_window_once_across_kills_and_reloads() {
     );
 
     hold(&world, "main", "run-2", &[saved("a", Some("stolen"))]);
-    let held = claim(&world, "window-2", "run-2");
+    let held = claim(&world, "window-2", "run-2", BOTH);
     assert!(
         held[0].get("result").is_none(),
         "another window cannot rewrite a held result"
@@ -131,7 +134,7 @@ fn a_waiting_result_reaches_one_window_once_across_kills_and_reloads() {
     world.kill();
     world.restart();
     assert!(
-        claim(&world, "main", "run-3").is_empty(),
+        claim(&world, "main", "run-3", &["main"]).is_empty(),
         "a delivered result does not come back"
     );
     assert!(
@@ -145,33 +148,29 @@ fn a_waiting_result_reaches_one_window_once_across_kills_and_reloads() {
             params![world.now() - 2_592_000_001],
         )
         .unwrap();
-    claim(&world, "main", "run-3");
+    claim(&world, "main", "run-3", &["main"]);
     assert_eq!(marks(&world), 0, "a claim drops marks older than 30 days");
 }
 
 #[test]
 fn a_closed_windows_results_go_to_the_next_window_that_boots() {
     let world = World::new("ade89-closed-window");
-    assert!(claim(&world, "window-4", "run-1").is_empty());
+    let open = ["main", "window-4"];
+    assert!(claim(&world, "window-4", "run-1", &open).is_empty());
     hold(&world, "window-4", "run-1", &[saved("c", None)]);
     assert!(
-        claim(&world, "main", "run-1").is_empty(),
-        "a live window keeps its results"
+        claim(&world, "main", "run-1", &open).is_empty(),
+        "an open window keeps its results"
     );
-    let closing = Owner {
-        window: "window-4",
-        run: "run-1",
-    };
-    completions::release(&world.conn(), closing).unwrap();
-    // The window's last hold reaches Rust after it closed: its result for c
-    // and a new d.
+    // window-4 closes. Its last hold reaches Rust after that: its result for
+    // c and a new d.
     hold(
         &world,
         "window-4",
         "run-1",
         &[saved("c", Some("done")), saved("d", None)],
     );
-    let taken = claim(&world, "main", "run-1");
+    let taken = claim(&world, "main", "run-1", &["main"]);
     assert_eq!(
         ids(&taken),
         ["c", "d"],
@@ -183,7 +182,7 @@ fn a_closed_windows_results_go_to_the_next_window_that_boots() {
     );
     hold(&world, "main", "run-1", &[saved("e", None)]);
     assert_eq!(
-        ids(&claim(&world, "main", "run-1")),
+        ids(&claim(&world, "main", "run-1", &["main"])),
         ["e"],
         "a hold replaces what the window held"
     );
@@ -219,7 +218,7 @@ fn the_first_claim_moves_the_results_a_quit_kept_in_the_workspace_row() {
     );
 
     assert_eq!(
-        ids(&claim(&world, "main", "run-1")),
+        ids(&claim(&world, "main", "run-1", BOTH)),
         ["a"],
         "the claim adopts each well-formed result"
     );
@@ -236,14 +235,14 @@ fn the_first_claim_moves_the_results_a_quit_kept_in_the_workspace_row() {
         "the row keeps its workspace and carries no results"
     );
     assert!(
-        claim(&world, "window-2", "run-1").is_empty(),
+        claim(&world, "window-2", "run-1", BOTH).is_empty(),
         "the second window gets nothing"
     );
 
     world.kill();
     world.restart();
     assert_eq!(
-        ids(&claim(&world, "main", "run-2")),
+        ids(&claim(&world, "main", "run-2", &["main"])),
         ["a"],
         "the adopted result survives a kill once"
     );
@@ -260,7 +259,6 @@ fn two_windows_booting_at_once_take_each_result_once() {
             window: "main",
             run: "run-1",
         },
-        world.now(),
         &many,
     )
     .unwrap();
@@ -280,6 +278,7 @@ fn two_windows_booting_at_once_take_each_result_once() {
                         window,
                         run: "run-2",
                     },
+                    BOTH,
                     now,
                 )
                 .unwrap();
@@ -309,8 +308,8 @@ fn two_windows_booting_at_once_take_each_result_once() {
     );
 }
 
-/// The three commands as a window calls them, through Tauri's argument binding,
-/// and a closed window handing its rows on (`window_closed`).
+/// The three commands as a window calls them, through Tauri's argument
+/// binding. The other window's claim sees `main` open, so it takes nothing.
 #[cfg(not(windows))]
 #[test]
 fn each_window_claims_holds_and_delivers_its_own_results_through_the_commands() {
@@ -372,17 +371,5 @@ fn each_window_claims_holds_and_delivers_its_own_results_through_the_commands() 
     assert!(
         held(&main).is_empty(),
         "a result the window no longer owes is gone"
-    );
-
-    call(
-        &main,
-        "mono_completions_hold",
-        json!({ "saved": [saved("c", None)] }),
-    );
-    completions::window_closed(app.handle(), "main");
-    assert_eq!(
-        held(&other),
-        ["c"],
-        "a closed window's result goes to the next boot"
     );
 }

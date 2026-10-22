@@ -8,7 +8,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::Value;
-use tauri::{AppHandle, Manager, Runtime, State, WebviewWindow};
+use tauri::{Manager, Runtime, State, WebviewWindow};
 
 use crate::session_store::SessionStore;
 
@@ -38,8 +38,7 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            request_id   TEXT PRIMARY KEY,
            saved_json   TEXT NOT NULL,
            window_label TEXT NOT NULL,
-           window_run   TEXT NOT NULL,
-           claimed_at   INTEGER NOT NULL
+           window_run   TEXT NOT NULL
          );
          CREATE TABLE IF NOT EXISTS mono_completion_deliveries (
            group_id     TEXT PRIMARY KEY,
@@ -55,16 +54,27 @@ fn request_id(saved: &Value) -> Result<&str, String> {
         .ok_or_else(|| "a saved completion has no request.requestId".into())
 }
 
-/// A window's boot: it takes every row of an earlier run (or released by a
-/// closed window) and the rows its own earlier boot held, and returns all
-/// it now holds. Rows another live window of this run holds stay its own.
-pub(crate) fn claim(conn: &Connection, owner: Owner, now: i64) -> rusqlite::Result<Vec<Value>> {
+/// A window's boot: it takes every row of an earlier run, of a window that
+/// is no longer open (`live` names the open ones), and of its own earlier
+/// boot, and returns all it now holds. Rows another open window holds stay
+/// its own.
+pub(crate) fn claim(
+    conn: &Connection,
+    owner: Owner,
+    live: &[&str],
+    now: i64,
+) -> rusqlite::Result<Vec<Value>> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     adopt_workspace_row(&tx)?;
     tx.execute(
-        "UPDATE mono_completions SET window_label = ?1, window_run = ?2, claimed_at = ?3
-         WHERE window_run <> ?2 OR window_label = ?1",
-        params![owner.window, owner.run, now],
+        "UPDATE mono_completions SET window_label = ?1, window_run = ?2
+         WHERE window_run <> ?2 OR window_label = ?1
+           OR window_label NOT IN (SELECT value FROM json_each(?3))",
+        params![
+            owner.window,
+            owner.run,
+            serde_json::to_string(live).unwrap_or_default()
+        ],
     )?;
     tx.execute(
         "DELETE FROM mono_completion_deliveries WHERE delivered_at < ?1",
@@ -108,8 +118,8 @@ fn adopt_workspace_row(tx: &Transaction) -> rusqlite::Result<()> {
         if let Ok(id) = request_id(saved) {
             tx.execute(
                 "INSERT OR IGNORE INTO mono_completions
-                   (request_id, saved_json, window_label, window_run, claimed_at)
-                 VALUES (?1, ?2, '', '', 0)",
+                   (request_id, saved_json, window_label, window_run)
+                 VALUES (?1, ?2, '', '')",
                 params![id, saved.to_string()],
             )?;
         }
@@ -123,12 +133,7 @@ fn adopt_workspace_row(tx: &Transaction) -> rusqlite::Result<()> {
 
 /// What the window owes now: its rows become exactly `saved`, in one
 /// commit. A row another window holds is left as it is.
-pub(crate) fn hold(
-    conn: &Connection,
-    owner: Owner,
-    now: i64,
-    saved: &[Value],
-) -> Result<(), String> {
+pub(crate) fn hold(conn: &Connection, owner: Owner, saved: &[Value]) -> Result<(), String> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     tx.execute(
@@ -138,9 +143,14 @@ pub(crate) fn hold(
     .map_err(|e| e.to_string())?;
     for entry in saved {
         tx.execute(
-            "INSERT INTO mono_completions (request_id, saved_json, window_label, window_run, claimed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (request_id) DO NOTHING",
-            params![request_id(entry)?, entry.to_string(), owner.window, owner.run, now],
+            "INSERT INTO mono_completions (request_id, saved_json, window_label, window_run)
+             VALUES (?1, ?2, ?3, ?4) ON CONFLICT (request_id) DO NOTHING",
+            params![
+                request_id(entry)?,
+                entry.to_string(),
+                owner.window,
+                owner.run
+            ],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -183,34 +193,6 @@ pub(crate) fn deliver(
     Ok(marked)
 }
 
-/// A closed window's rows go back to the next window that boots.
-pub(crate) fn release(conn: &Connection, owner: Owner) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE mono_completions SET window_run = '' WHERE window_label = ?1 AND window_run = ?2",
-        params![owner.window, owner.run],
-    )
-    .map(drop)
-}
-
-pub fn window_closed<R: Runtime>(app: &AppHandle<R>, label: &str) {
-    let (Some(store), Some(run)) = (app.try_state::<SessionStore>(), app.try_state::<Run>()) else {
-        return;
-    };
-    let released = store.lock_conn().and_then(|conn| {
-        release(
-            &conn,
-            Owner {
-                window: label,
-                run: &run.0,
-            },
-        )
-        .map_err(|e| e.to_string())
-    });
-    if let Err(error) = released {
-        eprintln!("monocode: release the completion results of {label}: {error}");
-    }
-}
-
 #[tauri::command(async)]
 pub fn mono_completions_claim<R: Runtime>(
     window: WebviewWindow<R>,
@@ -221,7 +203,15 @@ pub fn mono_completions_claim<R: Runtime>(
         window: window.label(),
         run: &run.0,
     };
-    claim(&*store.lock_conn()?, owner, crate::mono_messages::now_ms()).map_err(|e| e.to_string())
+    let open = window.webview_windows();
+    let live: Vec<&str> = open.keys().map(String::as_str).collect();
+    claim(
+        &*store.lock_conn()?,
+        owner,
+        &live,
+        crate::mono_messages::now_ms(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
@@ -235,12 +225,7 @@ pub fn mono_completions_hold<R: Runtime>(
         window: window.label(),
         run: &run.0,
     };
-    hold(
-        &*store.lock_conn()?,
-        owner,
-        crate::mono_messages::now_ms(),
-        &saved,
-    )
+    hold(&*store.lock_conn()?, owner, &saved)
 }
 
 #[tauri::command(async)]

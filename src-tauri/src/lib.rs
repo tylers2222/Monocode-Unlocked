@@ -727,7 +727,6 @@ pub fn run() {
                 .iter()
                 .any(|window| window.label() != label);
             control::window_closed(handle, &label);
-            mono_completions::window_closed(handle, &label);
             #[cfg(target_os = "macos")]
             mono_chat::window_closed(handle, &label);
             if !other_window {
