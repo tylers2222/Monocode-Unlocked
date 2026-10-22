@@ -495,15 +495,38 @@ test("a queue paused by a failed worktree removal waits for Resume, not the next
 
   expect(await send(page, app, "r3", "Go on")).toEqual(delivered("sent"));
   await endTurn(app);
-  expect(await send(page, app, "r4", "Update the changelog")).toEqual(
-    delivered("sent"),
-  );
+  expect(
+    await send(page, app, "r4", "Update the changelog"),
+    "the follow-up has not started, so the session takes a plain prompt",
+  ).toEqual(delivered("sent"));
   await expect
     .poll(
       async () => (await turns(page)).slice(2),
       "the next prompts run; the paused follow-up does not",
     )
     .toEqual(["new turn", "Go on", "new turn", "Update the changelog"]);
+
+  // Resume does nothing while a turn runs (App.tsx onResumeQueue).
+  await endTurn(app);
+  await page.keyboard.press("Escape");
+  await page.getByText("Fix the parser").first().click();
+  await page.getByRole("button", { name: "Resume", exact: true }).click();
+  await endTurn(app);
+  await expect
+    .poll(
+      async () => (await turns(page)).slice(2),
+      "Resume continues, then the kept follow-up runs",
+    )
+    .toEqual([
+      "new turn",
+      "Go on",
+      "new turn",
+      "Update the changelog",
+      "new turn",
+      "Continue from where you left off.",
+      "new turn",
+      "Also cover the empty input",
+    ]);
 });
 
 /**
