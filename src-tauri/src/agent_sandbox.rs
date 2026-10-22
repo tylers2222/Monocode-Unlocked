@@ -126,7 +126,7 @@ fn write_settings(data: &Path) -> Result<PathBuf, String> {
         .find(|dir| dir.extension().is_some_and(|ext| ext == "app"))
         .unwrap_or(&exe);
     let startup: Vec<PathBuf> = STARTUP_FILES.iter().map(|file| home.join(file)).collect();
-    let deny_read: Vec<String> = std::iter::once(data)
+    let mut deny_read: Vec<String> = std::iter::once(data)
         .chain(startup.iter().map(PathBuf::as_path))
         .map(path_entry)
         .collect();
@@ -139,19 +139,11 @@ fn write_settings(data: &Path) -> Result<PathBuf, String> {
             .filter(|dir| dir.is_absolute())
             .map(|dir| path_entry(&dir)),
     );
-    dedup(&mut deny_write);
     let mut default_write = DEFAULT_WRITE.map(String::from).to_vec();
     default_write.push(path_entry(&std::env::temp_dir()));
-    // srt allows writes by the resolved path, and on macOS `/tmp` and the temp
-    // dir sit behind `/private` links.
-    let resolved: Vec<String> = default_write
-        .iter()
-        .filter(|entry| Path::new(entry).is_absolute())
-        .filter_map(|entry| std::fs::canonicalize(entry).ok())
-        .map(|real| path_entry(&real))
-        .collect();
-    default_write.extend(resolved);
-    dedup(&mut default_write);
+    for list in [&mut deny_read, &mut deny_write, &mut default_write] {
+        add_resolved(list);
+    }
 
     let path = data.join(SETTINGS_FILE);
     crate::mcp::write_json_config(&path, |saved| {
@@ -193,7 +185,37 @@ fn path_entry(path: &Path) -> String {
         .into_owned()
 }
 
-fn dedup(list: &mut Vec<String>) {
+/// srt matches a path as the kernel sees it, and resolves only paths that
+/// exist: a deny of a missing file under a link (`/tmp` is `/private/tmp` on
+/// macOS) would never match. So each absolute entry also gets its resolved
+/// form, and the list loses its duplicates.
+fn add_resolved(list: &mut Vec<String>) {
+    let real: Vec<String> = list
+        .iter()
+        .map(Path::new)
+        .filter(|entry| entry.is_absolute())
+        .filter_map(resolved)
+        .map(|real| path_entry(&real))
+        .collect();
+    list.extend(real);
     let mut seen = HashSet::new();
     list.retain(|entry| seen.insert(entry.clone()));
+}
+
+/// `path` with its deepest existing ancestor resolved.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut dir = path;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(dir) {
+            return Some(
+                missing
+                    .iter()
+                    .rev()
+                    .fold(real, |real, part| real.join(part)),
+            );
+        }
+        missing.push(dir.file_name()?);
+        dir = dir.parent()?;
+    }
 }

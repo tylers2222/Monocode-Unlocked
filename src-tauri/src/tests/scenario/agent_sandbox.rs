@@ -139,15 +139,24 @@ fn on_runs_the_cli_under_srt(rig: &Rig) {
 
 fn on_settings_deny_the_protected_paths(rig: &Rig) {
     let written = rig.written();
-    let deny_read = rig.deny_read();
-    assert_eq!(strings(&written["filesystem"]["denyRead"]), deny_read);
+    let deny_read = strings(&written["filesystem"]["denyRead"]);
+    let literal = rig.deny_read();
+    assert_eq!(
+        deny_read[..literal.len()],
+        literal[..],
+        "the protected paths, in order"
+    );
+    // The folder sits in the temp dir, which macOS reaches through /private.
+    let real = path(&std::fs::canonicalize(&rig.data.0).unwrap());
+    assert!(deny_read.contains(&real), "the resolved {real} is readable");
     assert_eq!(written["filesystem"]["allowRead"], json!([]));
     let deny_write = strings(&written["filesystem"]["denyWrite"]);
-    assert_eq!(
-        deny_write[..deny_read.len()],
-        deny_read[..],
-        "reads denied are writes denied"
-    );
+    for entry in &deny_read {
+        assert!(
+            deny_write.contains(entry),
+            "{entry} is readable-denied but writable"
+        );
+    }
     // The test binary sits in no `.app`, so the binary itself is the bundle.
     assert!(deny_write.contains(&path(&std::env::current_exe().unwrap())));
     for dir in std::env::split_paths(&crate::harness::gui_search_path()) {
@@ -207,6 +216,7 @@ fn on_settings_start_with_the_default_allows(rig: &Rig) {
 }
 
 fn on_keeps_only_the_user_lists(rig: &Rig) {
+    let first = rig.written();
     let edit = json!({
         "filesystem": {"allowWrite": ["/work"], "allowRead": ["/"], "denyRead": []},
         "network": {"allowedDomains": ["example.com"]},
@@ -231,8 +241,7 @@ fn on_keeps_only_the_user_lists(rig: &Rig) {
         "a user allowRead is dropped"
     );
     assert_eq!(
-        strings(&edited["filesystem"]["denyRead"]),
-        rig.deny_read(),
+        edited["filesystem"]["denyRead"], first["filesystem"]["denyRead"],
         "denyRead is the app's"
     );
     assert!(
