@@ -133,8 +133,19 @@ export function MessageQueue({
           </>
         ) : null}
         <div className="divide-y divide-stroke empty:hidden [.divide-y+&]:border-t [.divide-y+&]:border-stroke">
-          {decisions.map(({ id, decision }) => (
-            <QueuedDecisionRow key={id} decision={decision} />
+          {decisions.map(({ id, decision, error }) => (
+            <QueuedDecisionRow
+              key={id}
+              decision={decision}
+              remove={
+                <RemoveButton
+                  disabled={sendingId === id}
+                  onRemove={() => onDelete?.(id)}
+                />
+              }
+            >
+              <FailedLine error={error} />
+            </QueuedDecisionRow>
           ))}
         </div>
         {statusLine ? (
@@ -220,11 +231,7 @@ export function MessageQueue({
                     <div className="truncate text-content/80" title={label}>
                       {label}
                     </div>
-                    {message.error ? (
-                      <p role="alert" className="text-red-400">
-                        {message.error}
-                      </p>
-                    ) : null}
+                    <FailedLine error={message.error} />
                   </div>
                   {onSteer && !message.monoSessionCompletion ? (
                     <button
@@ -247,16 +254,10 @@ export function MessageQueue({
                   >
                     <Pencil className="size-3.5" />
                   </button>
-                  <button
-                    type="button"
-                    title="Remove queued message"
-                    aria-label="Remove queued message"
+                  <RemoveButton
                     disabled={sending}
-                    onClick={() => onDelete?.(message.id)}
-                    className="grid size-6 shrink-0 place-items-center rounded-md hover:bg-content/10 hover:text-content"
-                  >
-                    <Trash2 className="size-3.5" />
-                  </button>
+                    onRemove={() => onDelete?.(message.id)}
+                  />
                 </>
               )}
             </div>
@@ -265,6 +266,37 @@ export function MessageQueue({
       </div>
     </div>
   );
+}
+
+/** Drops one queued message; a board decision is one too (frame A·7b). */
+function RemoveButton({
+  disabled,
+  onRemove,
+}: {
+  disabled: boolean;
+  onRemove: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title="Remove queued message"
+      aria-label="Remove queued message"
+      disabled={disabled}
+      onClick={onRemove}
+      className="grid size-6 shrink-0 place-items-center rounded-md hover:bg-content/10 hover:text-content"
+    >
+      <Trash2 className="size-3.5" />
+    </button>
+  );
+}
+
+/** Why a queued message or decision was not sent (design U10, frame A·7b). */
+function FailedLine({ error }: { error?: string }) {
+  return error ? (
+    <p role="alert" className="text-red-400">
+      {error}
+    </p>
+  ) : null;
 }
 
 /** Design U10: a sender notice, in words, with only a remove control. */

@@ -393,7 +393,9 @@ type DropAnswer = "dropped" | "closed" | "in_flight";
 /**
  * Design 5.5 rule 8: the user removes queue item `itemId`. The item of a
  * Mono row goes only after Rust dropped the row or found it closed; while a
- * hand-off holds the row, the item stays. Returns whether the item went.
+ * hand-off holds the row, the item stays. Returns whether the item went. A
+ * board decision Rust dropped was never sent, so its bubble goes too: its
+ * line would say it was sent (frame A·7b).
  */
 export async function removeQueued(
   host: Pick<MonoQueueHost, "session" | "update">,
@@ -403,13 +405,21 @@ export async function removeQueued(
   const item = host
     .session(sessionId)
     ?.queuedMessages?.find((queued) => queued.id === itemId);
+  let answer: DropAnswer | undefined;
   if (item?.monoMessageId) {
-    const answer = await invoke<DropAnswer>("mono_message_drop", {
+    answer = await invoke<DropAnswer>("mono_message_drop", {
       id: item.monoMessageId,
     });
     if (answer === "in_flight") return false;
   }
-  host.update(sessionId, (session) => dequeueQueuedMessage(session, itemId));
+  host.update(sessionId, (session) => {
+    const rest = dequeueQueuedMessage(session, itemId);
+    if (answer !== "dropped") return rest;
+    const blocks = rest.blocks.filter(
+      (block) => !(block.boardDecision && block.id === item?.blockId),
+    );
+    return blocks.length < rest.blocks.length ? { ...rest, blocks } : rest;
+  });
   return true;
 }
 
