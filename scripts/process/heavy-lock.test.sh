@@ -127,17 +127,21 @@ check "fifo: the relocking loop passes the waiter at most once (passed $passed)"
 
 # The wait line names the holder's pid. No sleeps: the holder blocks on a FIFO, and the
 # test releases it only after the waiter has printed its first "waiting" line. 20 runs.
+# The FIFOs are opened read-write, which never blocks, and each read gives up after 10 s,
+# so a broken lock fails these checks instead of hanging the suite.
 reset
 mkfifo "$root/case/ready" "$root/case/gate" "$root/case/wait"
 logged_runs=0
 for i in $(seq 20); do
   "$lock_sh" "$bin/fifo-hold" "$root/case/ready" "$root/case/gate" 2>/dev/null &
   holder=$!
-  read -r _ < "$root/case/ready"
+  exec 6<> "$root/case/ready"
+  read -t 10 -r _ <&6
+  exec 6<&-
   "$lock_sh" true "run$i" 2> "$root/case/wait" &
   waiter=$!
-  exec 7< "$root/case/wait"
-  read -r _ <&7
+  exec 7<> "$root/case/wait"
+  read -t 10 -r _ <&7
   echo go > "$root/case/gate"
   wait "$waiter" "$holder"
   exec 7<&-
@@ -264,7 +268,9 @@ within 5 eval 'child_pid=$(cat "$HEAVY_LOCK/child" 2>/dev/null)'
 within 5 dead "$child_pid"
 sleep 1
 check "end before release: the lock is still held while the end line is written" eval '[ "$(cat "$HEAVY_LOCK/pid" 2>/dev/null)" = "$holder" ]'
-read -r end_line < "$root/case/log"
+exec 8<> "$root/case/log"
+read -t 10 -r end_line <&8
+exec 8<&-
 check "end before release: the end line is the holder's" grep -q "end=1 rc=0 signal=0 holder=\[pid $holder " <<< "$end_line"
 check "end before release: then the lock is released" within 5 eval '[ ! -e "$HEAVY_LOCK" ]'
 
