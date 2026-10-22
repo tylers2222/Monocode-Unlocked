@@ -255,8 +255,34 @@ run_ade89() {
   expect "rows once it is delivered" "$(rows)" 0
   expect "delivered groups" "$(q "SELECT count(*) FROM mono_completion_deliveries")" 1
   echo "  Continue prompts: $(prompts "Continue from where you left off.")"
+  [[ "$mode" == kill ]] && crash_before_the_mark "$mono_chat" "$work"
   "$INSTANCE" stop
   return "$FAILED"
+}
+
+# A kill after the notice reached the Mono's queue and before the delivered
+# commit leaves the result's row and no mark. That state is rebuilt here from
+# the delivered run, since the gap between the two writes is too short to
+# hit with a kill. The relaunch sends the notice again under the same id,
+# and the Mono's queue, which already holds it, takes it once.
+crash_before_the_mark() {
+  local mono_chat="$1" work="$2" project="$EVAL_HOME/$SCRATCH_NAME"
+  kill9
+  sqlite3 "$DB" "DELETE FROM mono_completion_deliveries;
+    INSERT INTO mono_completions (request_id, saved_json, window_label, window_run) VALUES ('$work',
+      json_object('origin', json_object('monoId', '$mono_chat', 'turn', 1),
+        'request', json_object('requestId', '$work', 'sessionId', '$work', 'project', '$project',
+          'prompt', 'ADE89-WORK Build it.'),
+        'result', json_object('sessionId', '$work', 'project', '$project', 'title', 'ADE89-WORK',
+          'status', 'completed', 'originalPrompt', 'ADE89-WORK Build it.', 'result', 'Done.',
+          'truncated', json('false'))),
+      'main', 'killed-run');"
+  "$INSTANCE" start
+  wait_until 30 "the relaunch sends it again and marks it" \
+    holds "SELECT (SELECT count(*) FROM mono_completions) = 0 AND (SELECT count(*) FROM mono_completion_deliveries) = 1"
+  # A second copy would follow the first within the same second or two.
+  sleep 5
+  expect "notices after a kill between the queue and the mark" "$(prompts "$NOTICE")" 1
 }
 
 case "${1:-}" in
