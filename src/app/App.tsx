@@ -4977,6 +4977,7 @@ function Workspace({
             const stopped = {
               ...stopStreaming(latest),
               queueStatus: "paused" as const,
+              queuePause: undefined,
             };
             sessionsRef.current = sessionsRef.current.map((session) =>
               session.id === id ? stopped : session,
@@ -5402,6 +5403,7 @@ function Workspace({
             ...stopStreaming(latest),
             busy: false,
             queueStatus: "paused" as const,
+            queuePause: undefined,
             pendingQuestion: undefined,
           };
           sessionsRef.current = sessionsRef.current.map((entry) =>
@@ -9590,6 +9592,7 @@ function Workspace({
                 : {
                     ...entry,
                     queueStatus: "active",
+                    queuePause: undefined,
                     queuedMessages: resumeQueuedMessages(entry.queuedMessages),
                   }
               : entry,
@@ -9603,6 +9606,7 @@ function Workspace({
             ? {
                 ...entry,
                 queueStatus: "resuming",
+                queuePause: undefined,
                 queuedMessages: withoutPauseReason(entry.queuedMessages),
               }
             : entry,

@@ -297,23 +297,35 @@ test("an error pause and each item's queue time survive a restart, and the next 
     ]);
 });
 
-test("sessions.queue.clear drops the queue for the session that started it and refuses anyone else", async ({
+test("sessions.queue.clear drops the queue for the session's lead and the session that started it, and refuses anyone else", async ({
   app,
   page,
 }) => {
-  await mount(page, app, undefined, {}, [session("stranger", "Fix the docs")], {
-    stranger: OPERATOR,
-    builder: [
-      {
-        id: "b0",
-        role: "user",
-        text: "Fix the parser",
-        appRequestId: "app-orchestrator-r0",
-        startedBy: "orchestrator",
-      },
+  await mount(
+    page,
+    app,
+    { ...session("builder", "Fix the parser"), leadSessionId: "lead" },
+    {},
+    [
+      session("stranger", "Fix the docs"),
+      session("lead", "Lead the parser work"),
     ],
-  });
+    {
+      stranger: OPERATOR,
+      lead: OPERATOR,
+      builder: [
+        {
+          id: "b0",
+          role: "user",
+          text: "Fix the parser",
+          appRequestId: "app-orchestrator-r0",
+          startedBy: "orchestrator",
+        },
+      ],
+    },
+  );
   await page.getByText("Fix the docs").click();
+  await page.getByText("Lead the parser work").click();
   await send(page, app, "r1", "Run the tests");
   await send(page, app, "r2", "Also cover the empty input", "followUp");
 
@@ -328,8 +340,20 @@ test("sessions.queue.clear drops the queue for the session that started it and r
     ok: false,
     code: "not_session_owner",
   });
-  await request(app, "r4", "sessions.queue.clear", { sessionId: "builder" });
-  expect(await reply(page, "r4")).toEqual({
+  await request(
+    app,
+    "r4",
+    "sessions.queue.clear",
+    { sessionId: "builder" },
+    "lead",
+  );
+  expect(await reply(page, "r4"), "the lead may clear").toEqual({
+    ok: true,
+    result: { sessionId: "builder", cleared: 1 },
+  });
+  await send(page, app, "r4b", "Then run the linter", "followUp");
+  await request(app, "r4c", "sessions.queue.clear", { sessionId: "builder" });
+  expect(await reply(page, "r4c"), "the starter may clear").toEqual({
     ok: true,
     result: { sessionId: "builder", cleared: 1 },
   });
@@ -347,6 +371,76 @@ test("sessions.queue.clear drops the queue for the session that started it and r
     ),
     "the saved row has no queue",
   ).toBeUndefined();
+});
+
+test("Resume after a rate-limited turn drops the error reason with the pause", async ({
+  app,
+  page,
+}) => {
+  await mount(page, app);
+  await send(page, app, "r1", "Fix the parser");
+  await send(page, app, "r2", "Also cover the empty input", "followUp");
+  await endTurn(app, RATE_LIMIT);
+  const saved = () =>
+    page.evaluate(() => window.appBackend!.store.queues.builder);
+  await expect
+    .poll(saved, "the failed turn saves an error pause")
+    .toMatchObject({ queueStatus: "paused", queuePause: "error" });
+
+  await page.getByText("Fix the parser").first().click();
+  await page.getByRole("button", { name: "Resume", exact: true }).click();
+  await expect
+    .poll(async () => (await saved())?.queueStatus, "Resume saves the queue")
+    .not.toBe("paused");
+  expect(
+    (await saved())?.queuePause,
+    "no error reason outlives the pause",
+  ).toBeUndefined();
+  await endTurn(app);
+  await expect
+    .poll(async () => (await turns(page)).at(-1), "the follow-up then runs")
+    .toBe("Also cover the empty input");
+});
+
+test("a worktree deleted under a rate-limited turn leaves a pause that waits for Resume", async ({
+  app,
+  page,
+}) => {
+  await mount(
+    page,
+    app,
+    {
+      ...session("builder", "Fix the parser"),
+      worktreeCwd: "/Users/test/acme-worktrees/parser",
+    },
+    {
+      resolve_project_location: (_, { path }) =>
+        path === "/Users/test/acme-worktrees/parser"
+          ? null
+          : { path, identity: path },
+    },
+  );
+  await send(page, app, "r1", "Fix the parser");
+  await send(page, app, "r2", "Also cover the empty input", "followUp");
+  await endTurn(app, RATE_LIMIT);
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => ({
+          detached: window.appBackend!.store.sessions.find(
+            (row) => row.id === "builder",
+          )?.worktreeRemoved,
+          queue: window.appBackend!.store.queues.builder,
+        })),
+      "the saved row is detached, paused, with no error reason",
+    )
+    .toEqual({
+      detached: true,
+      queue: expect.objectContaining({
+        queueStatus: "paused",
+        queuePause: undefined,
+      }),
+    });
 });
 
 /**

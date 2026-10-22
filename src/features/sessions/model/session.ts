@@ -552,9 +552,9 @@ export type Session = {
   queueStatus?: MessageQueueStatus;
   /**
    * A failed turn paused the queue, so the next turn that starts resumes it
-   * (`resumeAfterFailedTurn`), after a restart too. Read only while
-   * `queueStatus` is paused; every pause of a live session (`pauseQueue`,
-   * `detachSessionWorktree`) sets it.
+   * (`resumeAfterFailedTurn`), after a restart too. Only `pauseQueue` sets it
+   * to "error"; every other pause and every resume clears it, so it never
+   * outlives the pause it names.
    */
   queuePause?: "error";
   /** Prevent auto-dispatch while this queued row is being edited. In-memory only. */

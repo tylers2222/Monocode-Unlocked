@@ -195,9 +195,7 @@ function persistableMeta(
       ? {
           queuedMessages,
           queueStatus: session.queueStatus ?? "active",
-          ...(session.queueStatus === "paused" && session.queuePause
-            ? { queuePause: session.queuePause }
-            : {}),
+          ...(session.queuePause ? { queuePause: session.queuePause } : {}),
         }
       : {}),
     ...(session.providerSessionId && isPersistableId(session.providerSessionId)
