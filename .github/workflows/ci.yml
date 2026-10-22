@@ -72,6 +72,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - run: bash scripts/process/heavy-lock.test.sh
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
