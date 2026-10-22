@@ -1058,6 +1058,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
                       pendingQuestion={!!session.pendingQuestion}
                       backgroundTasks={session.backgroundTasks}
                       onApproval={session.worktreeRemoved ? undefined : approve}
+                      onQuestionReply={
+                        session.worktreeRemoved ? undefined : replyQuestion
+                      }
                       onAddToChat={addSelectionToChat}
                       onSaveNote={notesEnabled ? saveNote : undefined}
                       onSendDraft={
