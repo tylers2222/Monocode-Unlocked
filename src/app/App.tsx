@@ -1372,10 +1372,11 @@ function Workspace({
     useState<InboxSessionPortal | null>(null);
   const openingInboxSessions = useRef(new Map<string, Promise<string>>());
   const [notesViewOpen, setNotesViewOpen] = useState(false);
-  // Milestones is a page of the Automations area: one flag closes either.
+  // Milestones and Approvals are pages of the Automations area: one flag
+  // closes any of them.
   const [automationsViewOpen, setAutomationsViewOpen] = useState(false);
   const [automationsPage, setAutomationsPage] = useState<
-    "automations" | "milestones"
+    "automations" | "milestones" | "approvals"
   >("automations");
   const [inspectedWorkerId, setInspectedWorkerId] = useState<string | null>(
     null,
@@ -12328,7 +12329,7 @@ function Workspace({
   }, []);
 
   const openAutomationsPage = useCallback(
-    (page: "automations" | "milestones") => {
+    (page: "automations" | "milestones" | "approvals") => {
       workspaceNavigation.cancel();
       startTransition(() => {
         setFilePickerOpen(false);
@@ -12348,6 +12349,10 @@ function Workspace({
   );
   const onOpenMilestones = useCallback(
     () => openAutomationsPage("milestones"),
+    [openAutomationsPage],
+  );
+  const onOpenApprovals = useCallback(
+    () => openAutomationsPage("approvals"),
     [openAutomationsPage],
   );
 
@@ -13631,6 +13636,7 @@ function Workspace({
               onOpenNotes={notesEnabled ? onOpenNotes : undefined}
               onOpenAutomations={onOpenAutomations}
               onOpenMilestones={onOpenMilestones}
+              onOpenApprovals={onOpenApprovals}
               onGoToFile={onGoToFile}
               searchActive={searchViewOpen}
               inboxActive={inboxViewOpen}
@@ -13640,6 +13646,9 @@ function Workspace({
               }
               milestonesActive={
                 automationsViewOpen && automationsPage === "milestones"
+              }
+              approvalsActive={
+                automationsViewOpen && automationsPage === "approvals"
               }
               notesEnabled={notesEnabled}
               projectRailOpen={projectRailOpen}
