@@ -155,9 +155,14 @@ const rendered = (page: Page) =>
 
 /**
  * The window closed (its close sent `closed`); the app opens again on the
- * store it left, with the location check released.
+ * store it left, with the location check released. `beforeExit` runs while
+ * the closed window still runs, as `app.restart`'s does.
  */
-async function reopenAfter(page: Page, closed: string) {
+async function reopenAfter(
+  page: Page,
+  closed: string,
+  beforeExit?: () => Promise<void>,
+) {
   await expect
     .poll(() =>
       page.evaluate(
@@ -167,6 +172,7 @@ async function reopenAfter(page: Page, closed: string) {
       ),
     )
     .toBe(true);
+  await beforeExit?.();
   await page.evaluate(() => {
     sessionStorage.removeItem("ade46.holdLocation");
     window.appBackend!.keepStore();
@@ -465,6 +471,41 @@ test("closing the window with nothing running keeps the waiting group", async ({
 
   await app.emit("tauri://close-requested", {});
   await reopenAfter(page, "destroy_window");
+  await expect.poll(() => prompts(page, STARTED)).toEqual([CONTINUE]);
+  await endTurn(app, STARTED, "M-10 wording fixed.");
+  await expect.poll(() => notices(page)).toEqual([[at(STARTED)]]);
+});
+
+// The window saves its layout 250 ms after a change, and once after each
+// boot, without the Mono completions. A quit or a close saves them; a layout
+// save the window scheduled before that must not land after it and drop them.
+test("a layout save scheduled before a quit or close keeps the waiting group", async ({
+  app,
+  page,
+}) => {
+  await page.clock.install();
+  await mountOrchestrator(app, page, [db.sessions[0]]);
+  await call(app, page, "late-save", "sessions.send", {
+    sessionId: STARTED,
+    prompt: "Fix the M-10 wording.",
+    project: PROJECT,
+    notifyOnComplete: true,
+  });
+  await expect.poll(() => prompts(page, STARTED)).toHaveLength(1);
+  await holdLocation(page);
+  // Timers now run only when the test runs the clock, so each boot's layout
+  // save waits until after the next quit or close has saved.
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
+  await app.restart();
+
+  const exit = () => page.clock.runFor(1_000);
+  await app.restart(exit);
+  await expect
+    .poll(() => page.evaluate(() => !!window.releaseProjectLocation))
+    .toBe(true);
+  await app.emit("tauri://close-requested", {});
+  await reopenAfter(page, "destroy_window", exit);
+  await page.clock.resume();
   await expect.poll(() => prompts(page, STARTED)).toEqual([CONTINUE]);
   await endTurn(app, STARTED, "M-10 wording fixed.");
   await expect.poll(() => notices(page)).toEqual([[at(STARTED)]]);
