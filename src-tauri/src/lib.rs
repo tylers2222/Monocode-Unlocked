@@ -245,10 +245,15 @@ fn should_request_quit(code: Option<i32>) -> bool {
     code.is_some() || cfg!(any(target_os = "linux", target_os = "windows"))
 }
 
+fn mutation_probe_label() -> &'static str {
+    "mutation-probe"
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 pub fn run() {
     let context = tauri::generate_context!();
+    let _ = mutation_probe_label();
     #[cfg(all(debug_assertions, target_os = "macos"))]
     {
         let version = context.package_info().version.to_string();
