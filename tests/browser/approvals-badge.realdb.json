@@ -1,0 +1,257 @@
+{
+  "monos": [
+    {
+      "id": "d79d140b-66e7-4844-900d-5719c2663344",
+      "role": "giga",
+      "sortOrder": 0,
+      "data": {
+        "color": "hsl(12 80% 58%)",
+        "gigaSlug": "monocode-general",
+        "mascot": "invader",
+        "name": "Monocode General",
+        "projects": [
+          "/Users/test/MonoCode"
+        ]
+      }
+    },
+    {
+      "id": "111350ab-c382-42bd-b986-17797290569b",
+      "role": "mono",
+      "sortOrder": 1,
+      "data": {
+        "color": "hsl(211 92% 62%)",
+        "mascot": "rocket",
+        "name": "Os_proj_2_orchestrator",
+        "projects": [
+          "/Users/test/Desktop/os_project_2"
+        ]
+      }
+    },
+    {
+      "id": "915a5bcc-1d14-4c1f-aa39-2c34438c578e",
+      "role": "mono",
+      "sortOrder": 2,
+      "data": {
+        "color": "hsl(45 90% 55%)",
+        "mascot": "ghost",
+        "name": "Modelist Orchestrator",
+        "projects": [
+          "/Users/test/Desktop/Evelyn Faye Coding/Modelist"
+        ]
+      }
+    },
+    {
+      "id": "a1f83f52-3833-48d3-94c4-f501dca89a49",
+      "role": "mono",
+      "sortOrder": 3,
+      "data": {
+        "color": "hsl(25 85% 58%)",
+        "mascot": "robot",
+        "name": "Vibtra Orchestrator",
+        "projects": [
+          "/Users/test/Desktop/vibtra"
+        ]
+      }
+    },
+    {
+      "id": "079e3605-b6d3-455a-a0a1-821dcb3dd037",
+      "role": "mono",
+      "sortOrder": 4,
+      "data": {
+        "color": "hsl(142 55% 50%)",
+        "mascot": "cat",
+        "name": "Content Factory",
+        "projects": [
+          "/Users/test/Desktop/content-factory"
+        ]
+      }
+    },
+    {
+      "id": "d5826daa-dd3a-45cd-920a-618df2d9a842",
+      "role": "mono",
+      "sortOrder": 5,
+      "data": {
+        "color": "hsl(330 70% 62%)",
+        "mascot": "skull",
+        "name": "MonoCode Fork Orchestrator",
+        "projects": [
+          "/Users/test/Desktop/monocode"
+        ]
+      }
+    },
+    {
+      "id": "09d66d3c-76a8-4a91-9203-7f4c234e3210",
+      "role": "mono",
+      "sortOrder": 6,
+      "data": {
+        "color": "hsl(280 55% 62%)",
+        "mascot": "frog",
+        "name": "Mono Reviewer",
+        "projects": [
+          "/Users/test/Desktop/mono-review"
+        ]
+      }
+    },
+    {
+      "id": "1bc853ea-8a85-47f8-a638-91bab49ec04b",
+      "role": "mono",
+      "sortOrder": 7,
+      "data": {
+        "color": "hsl(175 55% 48%)",
+        "mascot": "crab",
+        "name": "Random Orchestrator",
+        "projects": [
+          "/Users/test/Desktop/random"
+        ]
+      }
+    }
+  ],
+  "projects": [
+    "/Users/test/MonoCode",
+    "/Users/test/Desktop/os_project_2",
+    "/Users/test/Desktop/Evelyn Faye Coding/Modelist",
+    "/Users/test/Desktop/vibtra",
+    "/Users/test/Desktop/content-factory",
+    "/Users/test/Desktop/monocode",
+    "/Users/test/Desktop/mono-review",
+    "/Users/test/Desktop/random"
+  ],
+  "approvals": [
+    { "number": 139, "projectPath": "/Users/test/MonoCode", "status": "approved" },
+    { "number": 140, "projectPath": "/Users/test/Desktop/os_project_2", "status": "approved" },
+    { "number": 141, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "rejected" },
+    { "number": 142, "projectPath": "/Users/test/Desktop/vibtra", "status": "changes_requested" },
+    { "number": 143, "projectPath": "/Users/test/Desktop/content-factory", "status": "withdrawn" },
+    { "number": 144, "projectPath": "/Users/test/Desktop/monocode", "status": "withdrawn" },
+    { "number": 145, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 146, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 147, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 148, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 149, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 150, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 151, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 152, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 153, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 154, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 155, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 156, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 157, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 158, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 159, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 160, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 161, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 162, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 163, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 164, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 165, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 166, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 167, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 168, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 169, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 170, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 171, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 172, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 173, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 174, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 175, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 176, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 177, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 178, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 179, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 180, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 181, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 182, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 183, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 184, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 185, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 186, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 187, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 188, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 189, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 190, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 191, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 192, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 193, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 194, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 195, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 196, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 197, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 198, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 199, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 200, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 201, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 202, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 203, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 204, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 205, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 206, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 207, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 208, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 209, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 210, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 211, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 212, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 213, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 214, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 215, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 216, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 217, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 218, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 219, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 220, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 221, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 222, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 223, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 224, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 225, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 226, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 227, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 228, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 229, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 230, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 231, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 232, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 233, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 234, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 235, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 236, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 237, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 238, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 239, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 240, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 241, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 242, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 243, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 244, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 245, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 246, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 247, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 248, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 249, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 250, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 251, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 252, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 253, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 254, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 255, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 256, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 257, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 258, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 259, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 260, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 261, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 262, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 263, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 264, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 265, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 266, "projectPath": "/Users/test/Desktop/random", "status": "open" },
+    { "number": 267, "projectPath": "/Users/test/MonoCode", "status": "open" },
+    { "number": 268, "projectPath": "/Users/test/Desktop/os_project_2", "status": "open" },
+    { "number": 269, "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist", "status": "open" },
+    { "number": 270, "projectPath": "/Users/test/Desktop/vibtra", "status": "open" },
+    { "number": 271, "projectPath": "/Users/test/Desktop/content-factory", "status": "open" },
+    { "number": 272, "projectPath": "/Users/test/Desktop/monocode", "status": "open" },
+    { "number": 273, "projectPath": "/Users/test/Desktop/mono-review", "status": "open" },
+    { "number": 274, "projectPath": "/Users/test/Desktop/random", "status": "open" }
+  ]
+}
