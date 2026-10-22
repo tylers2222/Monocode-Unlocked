@@ -28,6 +28,7 @@ jobs:
       contents: read
       pull-requests: write
     outputs:
+      tier: ${{ steps.tier.outputs.tier }}
       nt: ${{ steps.tier.outputs.nt }}
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +53,9 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      checks: read
+      # The workflow file of the head's gate/mutation run (merge_rule.py trusts only one).
+      actions: read
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -100,6 +104,15 @@ jobs:
             exit 1
           fi
           python3 scripts/process/instance-label.py --pr "$PR" --repo "$GATE_REPO"
+
+      # Fails until the latest review verdict is clean on the head (T3: and a trusted green
+      # gate/mutation on it). It only reads; review/agent stays reviewer-only.
+      - name: Merge rule (review verdict and fixer proof)
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TIER: ${{ needs.tier.outputs.tier }}
+        run: python3 scripts/process/merge_rule.py "$PR" "$TIER"
 
       - name: Fail when gate/tier failed
         if: ${{ !cancelled() && needs.tier.result != 'success' }}
