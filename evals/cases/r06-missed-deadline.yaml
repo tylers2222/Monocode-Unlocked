@@ -5,7 +5,7 @@ description: A lead that missed the deadline of its ask gives a specific reason 
 grader: asks:r06
 fixture: { agent: lead, projects: { A: atlas } }
 events:
-  - { ask: "Merge the docs branch of {{A}} into main, but only after I give you the go-ahead.", due_minutes: 10 }
+  - { ask: "Add a CHANGELOG.md to {{A}} with a 1.0 entry, but commit it only after I give you the go-ahead.", due_minutes: 10 }
   - { advance_minutes: 35 }
   - "Why wasn't this acked?"
   - "Thanks. Ack the ask now with where things stand."

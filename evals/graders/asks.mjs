@@ -10,6 +10,9 @@ const ackBody = (m) => m.sent.find((s) => s.id === ackOf(m)?.message_id)?.body ?
 const onlyAcksUp = (m) => m.sent.filter((s) => s.to === m.parent).every((s) => m.events.some((e) => e.kind === "ack" && e.message_id === s.id));
 const sentT5 = (m) => m.outbox.filter((o) => o.ask_id === m.ask?.id && o.stage === "t5" && o.sent_at != null);
 const starts = (m) => m.sent.filter((s) => s.tool === "start_session" && s.status !== "rejected");
+// A file the Mono wrote under cli/ or docs/: an edit's path, or the target of a shell `>`, `>>` or `tee`.
+const SHELL_WRITE = /(?:>>?|\btee(?:\s+-a)?)\s*['"]?(?:[^\s'"|;&>]*\/)?(?:cli|docs)\//;
+const writesPiece = (c) => (c.kind === "execute" ? SHELL_WRITE.test(c.title) : c.kind === "edit" && /(^|\/)(cli|docs)\//.test(c.path ?? ""));
 
 const CHECKS = {
   r01: [["ack names heron", (m) => /heron/i.test(ackBody(m))], ["nothing but acks upward", onlyAcksUp]],
@@ -24,7 +27,7 @@ const CHECKS = {
   r04: [["nothing but acks upward", onlyAcksUp]],
   r05: [
     ["a lead per piece", (m) => starts(m).some((a) => /\bcli\b|csv/i.test(a.body) && starts(m).some((b) => b !== a && /\bdocs?\b|documentation/i.test(b.body)))],
-    ["no piece work itself", (m) => !m.toolCalls.some((c) => c.kind === "edit" && /(^|[\s/\x60'"])(cli|docs)\//.test(c.title))],
+    ["no piece work itself", (m) => !m.toolCalls.some(writesPiece)],
   ],
   r06: [["specific reason", (m) => eventsOf(m, "miss").some((e) => /go-?ahead|approv|green light|permission/i.test(e.reason ?? ""))]],
 };

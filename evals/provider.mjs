@@ -195,10 +195,17 @@ export function actionOf(tool, text) {
   return null;
 }
 
+// omp keeps a write's path in preview.path and an edit's in its detail as `[path#tag]`; a shell command is the title.
 const toolCallsOf = (blocks) =>
   blocks
     .filter((b) => b.role === "tool" && b.tool)
-    .map(({ tool, text }) => ({ action: actionOf(tool, text), title: tool.title ?? tool.kind ?? "", ok: /"ok"\s*:\s*true/.test(tool.detail ?? ""), kind: tool.kind ?? null }));
+    .map(({ tool, text }) => ({
+      action: actionOf(tool, text),
+      title: tool.title ?? tool.kind ?? "",
+      ok: /"ok"\s*:\s*true/.test(tool.detail ?? ""),
+      kind: tool.kind ?? null,
+      path: tool.preview?.path ?? tool.detail?.match(/^\[([^\]#]+)#/)?.[1] ?? null,
+    }));
 
 function usage(turns) {
   const t = { prompt: 0, completion: 0, cached: 0, total: 0 };
