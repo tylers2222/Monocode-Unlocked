@@ -22,9 +22,11 @@ has a Files list, and no open PR of the instance or worktree of another ticket
 changes a file on that list. Otherwise it waits, and the lines under it name
 each blocker, each overlapping PR or worktree with its files, or "no Files
 list". The Files list is the `Files.` line of the issue's section in the
-Change R plan (PLAN), else a `Files:` line in the issue description. A word
-with a `/` or a `.` is a path; a path ending in `/` covers the directory, `*`
-matches within one directory, and `a/{b,c}` lists a/b and a/c. A worktree
+Change R plan (PLAN), else a `Files:` line in the issue description. Its
+paths are the backtick-quoted words with a `/` or a `.`, or, with nothing
+quoted, a comma list of such words (a list with prose in it has none). A path
+whose last part has no `.` covers the directory, `*` matches within one
+directory, and `a/{b,c}/{d,e}` lists every combination. A worktree
 counts when it exists, its branch names a ticket (the builder rule below) and
 it shares history with tyler/main; scratch and review checkouts do not count,
 and work with a PR counts through the PR. It changes the files that differ
@@ -48,7 +50,8 @@ add, and writes nothing.
 
 The Linear key is LINEAR_API_KEY, else the Linear MCP header in
 ~/.omp/agent/mcp.json. Exit 0: nothing to do. Exit 1: a START NOW issue has
-been ready for more than 60 minutes, or a Todo issue is unlabelled.
+been ready for more than 60 minutes, an issue with no unmerged blocker has no
+Files list, or a Todo issue is unlabelled.
 Exit 2: a source failed or answered something unexpected.
 """
 import argparse
@@ -79,8 +82,9 @@ BASE = "refs/remotes/tyler/tyler/main"
 HIGH = (1, 2)
 PLAN_TICKET = re.compile(r"^- ([REDF]\d+): (ADE-\d+)$", re.MULTILINE)
 FILES_LINE = re.compile(r"^Files[.:] (.+)$", re.MULTILINE)
-PATH_TOKEN = re.compile(r"[\w.*/-]*\{[^}\n]*\}[\w.*/-]*|[\w.*/-]+")
-BRACES = re.compile(r"(.*)\{([^}]*)\}(.*)")
+PATH = re.compile(r"\S*[/.]\S*")
+NO_FILES = "no Files list"
+BRACES = re.compile(r"\{([^{}]*)\}")
 BRANCH_TICKET = re.compile(r"(?:^|/)ade-([1-9]\d*)(?=-|$)", re.IGNORECASE)
 TITLE_TICKET = re.compile(r"ADE-(\d+)\b")
 TICKET_PART = re.compile(r"^Ticket-part: (\d+)/(\d+)\r?$", re.MULTILINE)
@@ -188,18 +192,28 @@ def unattributed(sessions):
     return [session for session in busy(sessions) if (session["branch"] or "main") == "main"]
 
 
+def expand(path):
+    """`a/{b,c}/{d,e}` -> a/b/d, a/b/e, a/c/d, a/c/e."""
+    braces = BRACES.search(path)
+    if not braces:
+        return [path]
+    head, tail = path[:braces.start()], path[braces.end():]
+    return [full for part in braces[1].split(",") for full in expand(head + part + tail)]
+
+
 def file_patterns(line):
-    """The paths and globs on a Files line."""
-    patterns = []
-    for token in PATH_TOKEN.findall(line):
-        token = token.rstrip(".")
-        if "/" in token or "." in token:
-            braces = BRACES.fullmatch(token)
-            if braces:
-                patterns += [braces[1] + part.strip() + braces[3] for part in braces[2].split(",")]
-            else:
-                patterns.append(token)
-    return tuple(patterns)
+    """The paths on a Files line: its backtick-quoted paths, or with nothing quoted, a comma list that holds
+    only paths (a list with prose in it gives none). A path whose last part has no `.` is a directory."""
+    line = re.sub(r"\s*,\s*", ",", line)
+    quoted = line.split("`")[1::2]
+    if quoted:
+        paths = [span for span in quoted if PATH.fullmatch(span)]
+    else:
+        paths = [item.strip().rstrip(".") for item in re.split(r",(?![^{]*\})", line)]
+        if not all(PATH.fullmatch(path) for path in paths):
+            return ()
+    expanded = [full for path in paths for full in expand(path)]
+    return tuple(path if path.endswith("/") or "." in path.rsplit("/", 1)[-1] else path + "/" for path in expanded)
 
 
 def plan_files(text):
@@ -257,7 +271,7 @@ def ready_issues(issues, sessions, finals, instance, plan, claims):
         if not blocked:
             since = max(times.values()) if times else entered_state(issue) or parse_time(issue["createdAt"])
         patterns = ticket_files(issue, plan)
-        waits = blocked + (overlaps(ident, patterns, claims) if patterns else ["no Files list"])
+        waits = blocked + (overlaps(ident, patterns, claims) if patterns else [NO_FILES])
         rank = (bool(waits), ident not in plan, issue["priority"] not in HIGH, number(ident))
         todo.append((rank, Todo(ident, issue["title"], since, tuple(waits))))
     return [item for _, item in sorted(todo, key=lambda pair: pair[0])], unlabelled
@@ -266,16 +280,20 @@ def ready_issues(issues, sessions, finals, instance, plan, claims):
 def report(todo, unlabelled, unattributed_sessions, now):
     """Output lines and the exit code."""
     start = [issue for issue in todo if not issue.waits]
-    lines, late = ["START NOW (blockers merged, Files list, no file overlap):"], 0
-    for issue in start:
-        waited = now - issue.since
-        late += waited > MAX_WAIT
+    no_files = [issue for issue in todo if issue.since and issue.waits == (NO_FILES,)]
+    late = sum(now - issue.since > MAX_WAIT for issue in start)
+
+    def ready(issue):
         when = issue.since.astimezone().strftime("%Y-%m-%d %H:%M")
-        lines.append(f"{issue.id}  ready since {when} ({int(waited.total_seconds() // 60)} min)  {issue.title}")
-    lines.append("WAIT:")
+        return f"{issue.id}  ready since {when} ({int((now - issue.since).total_seconds() // 60)} min)  {issue.title}"
+
+    lines = ["START NOW (blockers merged, Files list, no file overlap):", *map(ready, start), "WAIT:"]
     for issue in todo:
         if issue.waits:
             lines += [f"{issue.id}  {issue.title}", *(f"    {reason}" for reason in issue.waits)]
+    if no_files:
+        lines.append("no Files list (blockers merged; add a Files: line of paths to the description):")
+        lines += map(ready, no_files)
     if unlabelled:
         lines.append("unlabelled (a Todo issue needs exactly one of instance:1, instance:2):")
         lines += [f"{issue['identifier']}  {issue['title']}" for issue in unlabelled]
@@ -283,9 +301,9 @@ def report(todo, unlabelled, unattributed_sessions, now):
         lines.append("unattributed (busy on main or no branch; a builder works on a branch named ade-<n>):")
         lines += [f"instance {s['instance']}  {s['id'][-8:]}  {s['branch'] or '<no branch>'}  {s['title']}"
                   for s in unattributed_sessions]
-    lines.append(f"ready-issues: {len(start)} start now, {late} waiting more than 60 min, {len(todo) - len(start)} wait, "
-                 f"{len(unlabelled)} unlabelled, {len(unattributed_sessions)} unattributed.")
-    return lines, 1 if late or unlabelled else 0
+    lines.append(f"ready-issues: {len(start)} start now, {late} waiting more than 60 min, {len(no_files)} with no Files list, "
+                 f"{len(todo) - len(start)} wait, {len(unlabelled)} unlabelled, {len(unattributed_sessions)} unattributed.")
+    return lines, 1 if late or no_files or unlabelled else 0
 
 
 def linear_key():
@@ -351,7 +369,14 @@ def merged_prs():
 
 
 def open_prs(instance):
-    return gh_prs("--state", "open", "--label", f"instance:{instance}", "--limit", "500", "--json", "number,headRefName,files")
+    """The instance's open PRs. gh lists at most 100 files of a PR, so a longer list is read from the API page by page."""
+    prs = gh_prs("--state", "open", "--label", f"instance:{instance}", "--limit", "500", "--json", "number,headRefName,files,changedFiles")
+    for pr in prs:
+        if len(pr["files"]) < pr["changedFiles"]:
+            out = subprocess.run(["gh", "api", "--paginate", f"repos/{REPO}/pulls/{pr['number']}/files", "--jq", ".[].filename"],
+                                 check=True, capture_output=True, text=True).stdout
+            pr["files"] = [{"path": path} for path in out.splitlines()]
+    return prs
 
 
 def pr_claims(prs):
@@ -362,13 +387,14 @@ def git(cwd, *args):
     return subprocess.run(["git", "-C", cwd, *args], check=True, capture_output=True, text=True).stdout
 
 
-def worktree_claims(repo):
-    """Each existing ticket worktree's files that differ from its merge base with tyler/main, committed or not, and its untracked files."""
+def worktree_claims(repo, pr_branches):
+    """Each existing ticket worktree's files that differ from its merge base with tyler/main, committed or not, and its untracked files.
+    A worktree whose branch has an open PR counts through the PR."""
     claims = []
     for entry in git(repo, "worktree", "list", "--porcelain").strip().split("\n\n"):
         fields = {key: value for key, _, value in (line.partition(" ") for line in entry.splitlines())}
         path, branch = fields["worktree"], fields.get("branch", "").removeprefix("refs/heads/")
-        if not branch_tickets(branch) or not Path(path).is_dir():
+        if not branch_tickets(branch) or branch in pr_branches or not Path(path).is_dir():
             continue
         merge_base = subprocess.run(["git", "-C", path, "merge-base", BASE, "HEAD"], capture_output=True, text=True)
         if merge_base.returncode == 1:
@@ -412,7 +438,8 @@ def main():
         issues = open_issues_and_blockers(key)
         finals = final_parts(merged_prs())
         plan = plan_files(PLAN.read_text())
-        claims = pr_claims(open_prs(args.instance)) + worktree_claims(REPO_DIR)
+        prs = open_prs(args.instance)
+        claims = pr_claims(prs) + worktree_claims(REPO_DIR, {pr["headRefName"] for pr in prs})
         labelled = to_label(issues, finals)
         if labelled and not args.dry_run:
             add_code_complete(key, labelled)

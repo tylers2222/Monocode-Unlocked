@@ -126,9 +126,10 @@ class ReadyIssues(EditIssues, unittest.TestCase):
         self.assertEqual(unlabelled, [])
         found = ri.unattributed(self.sessions)
         lines, code = ri.report(todo, unlabelled, found, RECORDED_AT)
-        self.assertEqual(code, 0, "an issue that waits for a Files list is no alarm")
-        self.assertIn("ADE-64  A steer that misses the start of a turn ends the app's turn record while the provider's turn keeps running", lines)
-        self.assertIn("ready-issues: 0 start now, 0 waiting more than 60 min, 27 wait, 0 unlabelled, 16 unattributed.", lines)
+        self.assertEqual(code, 1, "four issues with no blocker wait for a human to add a Files list")
+        no_files = lines[lines.index(next(line for line in lines if line.startswith("no Files list (blockers merged"))) + 1:][:4]
+        self.assertEqual([line.split()[0] for line in no_files], ["ADE-61", "ADE-64", "ADE-65", "ADE-66"])
+        self.assertIn("ready-issues: 0 start now, 0 waiting more than 60 min, 4 with no Files list, 27 wait, 0 unlabelled, 16 unattributed.", lines)
 
     def test_reads_both_databases(self):
         self.assertEqual(ri.builder_tickets(self.sessions), {"ADE-52", "ADE-53"},
@@ -285,7 +286,9 @@ class ReadyIssues(EditIssues, unittest.TestCase):
         self.event("ADE-64", "2026-10-20T12:00:00", state="unstarted")
         ready = self.ready()["ADE-64"]
         self.assertEqual(ready.since, at("2026-10-20T12:00:00"))
-        self.assertEqual(ri.report([ready], [], [], ready.since + timedelta(minutes=61))[1], 0, "it waits for a Files list")
+        self.assertEqual(ri.report([ready], [], [], ready.since)[1], 1, "no Files list needs a human at once")
+        blocked = dataclasses.replace(ready, since=None, waits=("blocker ADE-11", "no Files list"))
+        self.assertEqual(ri.report([blocked], [], [], ready.since + timedelta(minutes=61))[1], 0, "the blocker comes first")
         start = dataclasses.replace(ready, waits=())
         self.assertEqual(ri.report([start], [], [], ready.since + timedelta(minutes=60))[1], 0)
         self.assertEqual(ri.report([start], [], [], ready.since + timedelta(minutes=61))[1], 1)
@@ -334,7 +337,7 @@ def run_main(*args, issues, merged, dbs, open_prs=(), repo=None, now=None):
     if repo:
         sources["REPO_DIR"] = repo
     else:
-        sources["worktree_claims"] = lambda path: []
+        sources["worktree_claims"] = lambda path, pr_branches: []
     if now:
         sources["datetime"] = type("Clock", (datetime,), {"now": classmethod(lambda cls, tz=None: now)})
     with mock.patch.multiple(ri, **sources), \
@@ -363,7 +366,7 @@ class StartNow(EditIssues, unittest.TestCase):
     Worktrees: feat/ade-26-ask-scheduler commits src-tauri/src/ask_scheduler.rs; feat/ade-31-catch-up edits it
     without a commit; feat/ade-91-scratch stages src-tauri/src/control.rs and adds two untracked files; a detached
     review checkout changes the same files; fix/ade-90-done changed CHANGELOG.md and is merged; assets/ade-92 is an
-    orphan branch with no merge base.
+    orphan branch with no merge base; fix/ade-79-turn-end-with-background-job is the branch of open PR #255.
     """
 
     def setUp(self):
@@ -375,7 +378,8 @@ class StartNow(EditIssues, unittest.TestCase):
         for name in ["src-tauri/src/ask_scheduler.rs", "src-tauri/src/control.rs", "CHANGELOG.md", "scripts/a.sh"]:
             write(self.main / name, "base\n")
         self.commit(self.main, "base")
-        for branch, name in [("feat/ade-26-ask-scheduler", "src-tauri/src/ask_scheduler.rs"), ("fix/ade-90-done", "CHANGELOG.md")]:
+        for branch, name in [("feat/ade-26-ask-scheduler", "src-tauri/src/ask_scheduler.rs"), ("fix/ade-90-done", "CHANGELOG.md"),
+                             ("fix/ade-79-turn-end-with-background-job", PI_PROTOCOL)]:
             path = root / branch.replace("/", "-")
             git(self.main, "worktree", "add", "-q", "-b", branch, path)
             write(path / name)
@@ -401,6 +405,12 @@ class StartNow(EditIssues, unittest.TestCase):
         self.files("ADE-82", "`src-tauri/src/{harness.rs, control.rs}`")
         self.set_state("ADE-79", "unstarted", "2026-10-22T09:30:00")
         self.files("ADE-79", f"`{PI_PROTOCOL}`")
+        self.files("ADE-66", "the scenario harness, e.g. the world in src-tauri/src/scenario")
+        self.files("ADE-81", "`harness_spawn` in `#[cfg(test)]`")
+        self.files("ADE-69", "src/features/sessions, CHANGELOG.md.")
+        self.files("ADE-74", "`src-tauri/src/{ask_scheduler,control}.{rs,ts}`")
+        ade31 = self.issue("ADE-31")
+        ade31["description"] = ade31["description"].replace("`src-tauri/src/ask_scheduler.rs`", "`src/features/unrelated.ts`")
         self.dbs = build_dbs(root)
 
     def commit(self, cwd, message):
@@ -415,7 +425,7 @@ class StartNow(EditIssues, unittest.TestCase):
         self.issue(ident)["description"] += f"\nFiles: {line}\n"
 
     def todo(self):
-        claims = ri.pr_claims(OPEN_PRS_1022) + ri.worktree_claims(self.main)
+        claims = ri.pr_claims(OPEN_PRS_1022) + ri.worktree_claims(self.main, {pr["headRefName"] for pr in OPEN_PRS_1022})
         todo, _ = ri.ready_issues(self.issues, ri.app_sessions(self.dbs), {}, "2", ri.plan_files(PLAN.read_text()), claims)
         return {issue.id: issue.waits for issue in todo}
 
@@ -423,19 +433,26 @@ class StartNow(EditIssues, unittest.TestCase):
         waits = self.todo()
         scratch = "worktree feat/ade-91-scratch"
         self.assertEqual(waits["ADE-31"], ("blocker ADE-29", "worktree feat/ade-26-ask-scheduler: src-tauri/src/ask_scheduler.rs"),
-                         "its own feat/ade-31 worktree does not block it")
+                         "the plan's Files line decides, not the description's; its own feat/ade-31 worktree does not block it")
         self.assertEqual(waits["ADE-34"], ("blocker ADE-27", "worktree feat/ade-26-ask-scheduler: src-tauri/src/ask_scheduler.rs",
                                            "worktree feat/ade-31-catch-up: src-tauri/src/ask_scheduler.rs",
                                            f"{scratch}: src-tauri/src/control.rs"),
                          "the detached review checkout does not count")
         self.assertEqual(waits["ADE-64"], (f"{scratch}: scripts/b.sh, src/features/sessions/model/new.ts",),
                          "untracked files count; the merged fix/ade-90 CHANGELOG.md does not")
-        self.assertEqual(waits["ADE-78"], (f"PR #255: {PI_PROTOCOL}",))
+        self.assertEqual(waits["ADE-78"], (f"PR #255: {PI_PROTOCOL}",), "the worktree of PR #255's branch counts through the PR")
         self.assertEqual(waits["ADE-79"], (), "PR #255 is on its own branch")
         self.assertEqual(waits["ADE-25"], ("blocker ADE-24",), "ADE-24 is In Progress")
         self.assertEqual(waits["ADE-65"], ())
         self.assertEqual(waits["ADE-82"], (f"{scratch}: src-tauri/src/control.rs",), "a/{b, c} lists a/b and a/c")
         self.assertEqual(waits["ADE-11"], ("no Files list",), "ADE-57, its blocker, is code-complete")
+        self.assertEqual(waits["ADE-66"], ("no Files list",), "a list with prose in it has no paths")
+        self.assertEqual(waits["ADE-81"], ("no Files list",), "a quoted word with no / or . is no path")
+        self.assertEqual(waits["ADE-69"], (f"{scratch}: src/features/sessions/model/new.ts",),
+                         "a plain comma list counts, and a path with no . is a directory")
+        self.assertEqual(waits["ADE-74"], ("worktree feat/ade-26-ask-scheduler: src-tauri/src/ask_scheduler.rs",
+                                           "worktree feat/ade-31-catch-up: src-tauri/src/ask_scheduler.rs",
+                                           f"{scratch}: src-tauri/src/control.rs"), "every brace group expands")
 
         self.set_state("ADE-29", "completed", "2026-10-22T09:30:00")
         self.merge("feat/ade-26-ask-scheduler")
@@ -446,15 +463,50 @@ class StartNow(EditIssues, unittest.TestCase):
         code, out, _ = run_main(issues=self.issues, merged=[], dbs=self.dbs, open_prs=OPEN_PRS_1022, repo=self.main,
                                 now=at("2026-10-22T10:03:00"))
         start = out[out.index("START NOW"):out.index("WAIT:")].splitlines()[1:]
-        self.assertEqual([line.split()[0] for line in start], ["ADE-30", "ADE-31", "ADE-78", "ADE-79", "ADE-64", "ADE-65", "ADE-82"],
+        self.assertEqual([line.split()[0] for line in start], ["ADE-30", "ADE-31", "ADE-78", "ADE-79", "ADE-64", "ADE-65", "ADE-69", "ADE-82"],
                          "Change R, then High, then the rest, each by number")
         self.assertIn("(33 min)  R13: Catch-up reminders are spaced out", start[1], "ready since ADE-29 was done")
         self.assertIn("(33 min)", start[3], "ready since it entered Todo")
         self.assertIn("ADE-34  R16: Interrupted agents are woken to resume\n    blocker ADE-27\n"
                       "    worktree feat/ade-31-catch-up: src-tauri/src/ask_scheduler.rs\n", out,
                       "the merged ADE-26 work and the deleted, locked scratch worktree no longer block")
-        self.assertIn("ready-issues: 7 start now, 4 waiting more than 60 min,", out)
+        no_files = out[out.index("no Files list (blockers merged"):out.index("unattributed")].splitlines()[1:]
+        self.assertEqual([line.split()[0] for line in no_files], ["ADE-11", "ADE-66", "ADE-81"],
+                         "named in the alarm: blockers merged, no Files list")
+        self.assertIn("ready-issues: 8 start now, 5 waiting more than 60 min,", out)
         self.assertEqual(code, 1)
+
+
+FAKE_GH = """\
+#!/usr/bin/env python3
+import sys
+from pathlib import Path
+here = Path(__file__).parent
+with open(here / "calls", "a") as calls:
+    print(" ".join(sys.argv[1:]), file=calls)
+print((here / ("api.txt" if sys.argv[1] == "api" else "list.json")).read_text(), end="")
+"""
+
+
+class OpenPrs(unittest.TestCase):
+    """rust-lang/rust #164662, recorded 2026-10-23 00:00 AEDT: `gh pr list --json files` gives 100 of its 144 files
+    (fixtures/gh-pr-list-cut-164662.json); `gh api --paginate .../pulls/164662/files` gives all 144
+    (fixtures/gh-api-files-164662.txt). A fake gh on PATH answers with them."""
+
+    def test_a_file_past_the_first_100_still_blocks(self):
+        late_file = "tests/run-make/const-destruct-stable-toolchain/rmake.rs"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            shutil.copy(HERE / "fixtures/gh-pr-list-cut-164662.json", tmp / "list.json")
+            shutil.copy(HERE / "fixtures/gh-api-files-164662.txt", tmp / "api.txt")
+            (tmp / "gh").write_text(FAKE_GH)
+            (tmp / "gh").chmod(0o755)
+            with mock.patch.dict(os.environ, {"PATH": f"{tmp}{os.pathsep}{os.environ['PATH']}"}):
+                claims = ri.pr_claims(ri.open_prs("2"))
+            calls = (tmp / "calls").read_text().splitlines()
+        self.assertEqual(len(claims[0].files), 144)
+        self.assertEqual(ri.overlaps("ADE-1", (late_file,), claims), [f"PR #164662: {late_file}"])
+        self.assertEqual(calls[1], "api --paginate repos/tylers2222/Monocode-Unlocked/pulls/164662/files --jq .[].filename")
 
 
 class CommandLine(unittest.TestCase):
