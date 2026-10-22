@@ -667,6 +667,11 @@ export function questionRoute(
   return card ? { sessionId, requestId, card } : { sessionId, requestId };
 }
 
+/** Every request a run has put to the Mono's chat, still relayed. */
+export function runRelays(runId: string): ApprovalRelay[] {
+  return [...relays.values()].filter((relay) => relay.runId === runId);
+}
+
 /** Relays still open when their run ended, to withdraw from the chat. */
 export function dropRelays(runId: string): ApprovalRelay[] {
   const dropped: ApprovalRelay[] = [];

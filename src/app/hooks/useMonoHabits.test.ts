@@ -178,6 +178,8 @@ function makeHost(reply: string, approve?: { wait: Promise<void> }) {
         }),
     ),
     endApprovals: vi.fn(),
+    askQuestion: vi.fn(),
+    endQuestions: vi.fn(),
   };
   return host;
 }

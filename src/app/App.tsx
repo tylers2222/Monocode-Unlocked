@@ -680,6 +680,8 @@ import {
 import { useMonoHabits } from "./hooks/useMonoHabits";
 import { useFloatingMono } from "./hooks/useFloatingMono";
 import {
+  askHabitQuestion,
+  endHabitQuestions,
   habitQuestionReply,
   setHabitQuestionHost,
 } from "../features/monos/model/habitQuestionHost";
@@ -8825,6 +8827,8 @@ function Workspace({
       for (const relay of dropRelays(runId))
         decideMonoBlock(relay.monoId, relay.blockId, "cancelled");
     },
+    askQuestion: askHabitQuestion,
+    endQuestions: endHabitQuestions,
   });
 
   const automationSessionReservations = useRef(new Set<string>());

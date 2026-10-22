@@ -1,9 +1,22 @@
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { updateSessionState } from "../../../app/model/sessionState";
 import type { Block, Session } from "../../sessions/model/session";
-import type { UserQuestionReply } from "../../sessions/model/userQuestion";
-import { answerHabitQuestion } from "./habitQuestion";
-import { questionRoute, type ApprovalRelay } from "./monoHabits";
+import type {
+  UserQuestionPrompt,
+  UserQuestionReply,
+} from "../../sessions/model/userQuestion";
+import {
+  answerHabitQuestion,
+  endHabitQuestion,
+  type HabitQuestionStop,
+} from "./habitQuestion";
+import {
+  questionRoute,
+  relayApproval,
+  runRelays,
+  type ApprovalRelay,
+  type Habit,
+} from "./monoHabits";
 
 type Reply = (
   sessionId: string,
@@ -31,6 +44,41 @@ export function setHabitQuestionHost(
   append: Host["append"],
 ): void {
   host = { sessions, setSessions, persist, append };
+}
+
+/** Puts a run's question to the user in its Mono's chat. */
+export function askHabitQuestion(
+  monoId: string,
+  habit: Habit,
+  runId: string,
+  runAt: number,
+  prompt: UserQuestionPrompt,
+): void {
+  const blockId = crypto.randomUUID();
+  const requestId = relayApproval({
+    monoId,
+    runId,
+    requestId: prompt.requestId,
+    blockId,
+  });
+  host?.append(monoId, {
+    id: blockId,
+    role: "assistant",
+    text: "",
+    habitQuestion: {
+      runId,
+      runAt,
+      // The run's own card keeps any deadline; this one only answers.
+      prompt: { requestId, title: prompt.title, questions: prompt.questions },
+    },
+    monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
+  });
+}
+
+/** Settles a run's open question cards once it ends. */
+export function endHabitQuestions(runId: string, end: HabitQuestionStop): void {
+  for (const relay of runRelays(runId))
+    settleHabitCard(relay, (block) => endHabitQuestion(block, end));
 }
 
 const routed = new WeakMap<Reply, Reply>();
