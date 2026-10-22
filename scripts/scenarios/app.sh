@@ -210,7 +210,7 @@ probe() {
 denied() { probe "$1" '.code != 0 and (.stdout + .stderr | test("[Oo]peration not permitted|authorization denied"))'; }
 # Each probe's exit code and first output line, for the run's record.
 show_probes() {
-  jq -r 'select(.exec) | "  probe \(.exec[0]) \(.exec[-1] | .[0:60]): exit \(.code): \((.stderr + .stdout) | split("\n")[0] | .[0:160])"' "$PUPPET/log.jsonl"
+  jq -r 'select(.exec) | "  probe \(.exec[0]) \(.exec[-1] | .[0:60]): exit \(.code): \((.stderr + .stdout) | split("\n")[0] // "" | .[0:160])"' "$PUPPET/log.jsonl"
 }
 habit_failed() { jq -e '.[0].lastOutcome == "failed"' "$APP_DATA/monos/d1-giga/habits.json" >/dev/null; }
 
