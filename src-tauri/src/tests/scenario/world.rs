@@ -266,6 +266,11 @@ impl World {
         self.dir.join("scheduler.lock")
     }
 
+    /// The database file, for a second connection as another thread's.
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     pub(crate) fn store(&self) -> &SessionStore {
         &self.app.as_ref().expect("the app is not running").store
     }
