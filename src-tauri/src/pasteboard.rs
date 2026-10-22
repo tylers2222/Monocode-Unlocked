@@ -447,8 +447,11 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, Barrier};
 
+    /// `pasteboardWithUniqueName` can give two threads that ask at the same
+    /// moment the same pasteboard.
     fn private_pasteboard() -> Retained<NSPasteboard> {
-        NSPasteboard::pasteboardWithUniqueName()
+        let name = format!("monocode-test-{}", uuid::Uuid::new_v4());
+        NSPasteboard::pasteboardWithName(&NSString::from_str(&name))
     }
 
     #[test]
