@@ -566,6 +566,12 @@ const HANDLERS: Record<string, Handler> = {
     status: "unavailable",
     message: "Pi not signed in",
   }),
+  fetch_opencode_go_usage: () => ({
+    status: "unavailable",
+    httpStatus: null,
+    body: null,
+    error: "OpenCode Go not connected",
+  }),
   list_skills: empty,
   reminder_list: empty,
   reminder_take_open: none,

@@ -8,7 +8,17 @@
 #   instance.sh lsof-check                 prove no open file under the real app data or ~/MonoCode
 #   instance.sh stop                       quit the instance and every process it started
 #   instance.sh status
+#   instance.sh scrub <model>             on the instance's database: every session on the fx puppet,
+#                                          no queued turn (for a copy of the real database)
+#   instance.sh guard [db]                 fail when a sandboxed start would refuse <db>
+#   instance.sh denied <since>             what the sandbox refused since a `log show` date
+#
+# GIGA_EVAL_SANDBOX=1 (see sandbox.sh): `home` links no real logins, and
+# `start` needs a fresh home, refuses an unsafe database, starts the app from
+# `env -i` under sandbox.sh's profile after a preflight, and watches its
+# process tree (GIGA_EVAL_WATCH_NOTIFY: a pid to get USR1 on a stray).
 source "$(dirname "$0")/lib.sh"
+source "$(dirname "$0")/sandbox.sh"
 
 SRC_ROOT="$EVAL_OUT/src"
 TARGET_DIR="$EVAL_OUT/target"
@@ -54,10 +64,13 @@ cmd_home() {
   if [[ "${1:-}" == "--fresh" ]]; then
     [[ -z "$(target_pid instance)" ]] || die "stop the instance before --fresh"
     rm -rf "$EVAL_HOME"   # rm -rf removes symlinks, never their targets
+    mkdir -p "$EVAL_HOME"
+    [[ "${GIGA_EVAL_SANDBOX:-}" != 1 ]] || { touch "$SANDBOX_HOME_MARK"; : >"$EVAL_OUT/preflight.pids"; }
   fi
   mkdir -p "$EVAL_HOME/Library"
   local rel
-  for rel in "${LINKS[@]}"; do
+  [[ "${GIGA_EVAL_SANDBOX:-}" == 1 ]] && LINKS=()
+  for rel in ${LINKS[@]+"${LINKS[@]}"}; do
     [[ -e "$REAL_HOME/$rel" ]] || continue
     if [[ ! -L "$EVAL_HOME/$rel" ]]; then
       [[ -e "$EVAL_HOME/$rel" ]] && die "$EVAL_HOME/$rel exists and is not a symlink"
@@ -72,7 +85,25 @@ cmd_start() {
   [[ -z "$(target_pid instance)" ]] || die "instance already running (pid $(target_pid instance))"
   if [[ "${1:-}" == "--fresh-home" ]]; then cmd_home --fresh; else cmd_home; fi
   local app; app="$(cat "$EVAL_OUT/instance.app" 2>/dev/null)" || die "build first"
-  local bin="$app/Contents/MacOS/monocode"
+  local bin="$app/Contents/MacOS/monocode" jail=()
+  if [[ "${GIGA_EVAL_SANDBOX:-}" == 1 ]]; then
+    sandbox_home_ok || exit 1
+    if [[ -f "$APP_DATA/monocode.db" ]]; then
+      sandbox_checkpoint "$APP_DATA/monocode.db"
+      sandbox_guard "$APP_DATA/monocode.db" || exit 1
+    fi
+    local jailtmp envs profile="$EVAL_OUT/instance.sb"
+    jailtmp="$(cat "$EVAL_OUT/instance.jailtmp" 2>/dev/null || true)"
+    [[ "$jailtmp" != /private/tmp/giga-eval-jail.* ]] || rm -rf "$jailtmp"
+    jailtmp="$(mktemp -d /private/tmp/giga-eval-jail.XXXXXX)"
+    echo "$jailtmp" >"$EVAL_OUT/instance.jailtmp"
+    envs="$(sandbox_env "$jailtmp")"
+    sandbox_env_ok "$envs" || exit 1
+    sandbox_profile "$bin" "$jailtmp" "$profile"
+    sandbox_launch "$profile" "$envs"
+    sandbox_preflight "$bin" "$jailtmp" || exit 1
+    jail=("${SANDBOX_LAUNCH[@]}")
+  fi
   touch "$EVAL_OUT/instance.marker"
   # A fake-clock build stops at launch without its clock file. This one holds
   # still; scripts/scenarios/app.sh writes its own and moves it.
@@ -90,11 +121,15 @@ cmd_start() {
   # Opened as a plain child, not through LaunchServices, so HOME and the
   # persistence flags reach the process.
   (cd "$scratch" && HOME="$EVAL_HOME" CFFIXED_USER_HOME="$EVAL_HOME" PATH="$PATH" \
-    exec nohup "$bin" -ApplePersistence NO -NSQuitAlwaysKeepsWindows NO \
+    exec nohup ${jail[@]+"${jail[@]}"} "$bin" -ApplePersistence NO -NSQuitAlwaysKeepsWindows NO \
     >"$EVAL_OUT/instance.log" 2>&1 </dev/null) &
   local pid=$!
   disown "$pid" 2>/dev/null || true
   echo "$pid" >"$EVAL_OUT/instance.pid"
+  if [[ "${GIGA_EVAL_SANDBOX:-}" == 1 ]]; then
+    sandbox_watch "$pid" "$(realpath "$bin")" </dev/null >/dev/null 2>&1 &
+    disown $! 2>/dev/null || true
+  fi
   local i
   for i in $(seq 1 60); do
     kill -0 "$pid" 2>/dev/null || die "instance exited, see $EVAL_OUT/instance.log"
@@ -155,6 +190,8 @@ cmd_stop() {
   sleep 1
   for k in $kids; do kill -KILL "$k" 2>/dev/null || true; done
   rm -f "$EVAL_OUT/instance.pid"
+  local jailtmp; jailtmp="$(cat "$EVAL_OUT/instance.jailtmp" 2>/dev/null || true)"
+  [[ "$jailtmp" != /private/tmp/giga-eval-jail.* ]] || rm -rf "$jailtmp"
   log "stopped pid $pid and $(echo "$kids" | grep -c . || true) descendants"
 }
 
@@ -172,5 +209,8 @@ case "${1:-}" in
   lsof-check) cmd_lsof_check ;;
   stop) cmd_stop ;;
   status) cmd_status ;;
-  *) sed -n '2,9p' "$0"; exit 2 ;;
+  scrub) sandbox_scrub "$APP_DATA/monocode.db" "${2:?usage: instance.sh scrub <model>}" ;;
+  guard) sandbox_guard "${2:-$APP_DATA/monocode.db}" && log "safe: ${2:-$APP_DATA/monocode.db}" ;;
+  denied) sandbox_denied "${2:?usage: instance.sh denied <since>}" ;;
+  *) sed -n '2,19p' "$0"; exit 2 ;;
 esac
