@@ -204,11 +204,10 @@ if [[ "${1:-}" == --version ]]; then
 fi
 printf '%s\0' "$@" >"$PUPPET/claude-argv/$$"
 [[ -n "$REAL" ]] || exit 1
-# The fake model: no spend and no real account. --add-dir models a session
-# whose writable area holds the data folders, so only denyWrite stops a write.
+# Fake model, no spend. --add-dir puts the data folders in the writable area.
 if [[ -f "$PUPPET/fake-model-port" ]]; then
   export ANTHROPIC_BASE_URL="http://127.0.0.1:$(cat "$PUPPET/fake-model-port")" ANTHROPIC_API_KEY=sk-fake-local \
-    CLAUDE_CONFIG_DIR="$PUPPET/claude-config" DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+    DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
   unset ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
   set -- "$@" --add-dir "$SUPPORT"
 fi
@@ -238,8 +237,10 @@ SQL
 # never returns. `file`: a refused write leaves it absent. `want`: a call that
 # must still work.
 d4_probes() {
-  jq -n --arg data "$APP_DATA" --arg second "$D4_SECOND" --arg work "$D4_WORK" --arg hook "$PUPPET/hook.out" '
+  jq -n --arg data "$APP_DATA" --arg second "$D4_SECOND" --arg work "$D4_WORK" --arg hook "$PUPPET/hook.out" \
+    --arg config "$CLAUDE_CONFIG_DIR" '
     def own_db: "sqlite3 '\''\($data)/monocode.db'\'' '\''SELECT upper(name) FROM monos'\''";
+    def hook: {hooks: {PreToolUse: [{matcher: "*", hooks: [{type: "command", command: "\(own_db) > \($hook)"}]}]}} | tostring;
     [{label: "Read own note", name: "Read", input: {file_path: "\($data)/note.txt"}, leak: "SECRET-OWN"},
      {label: "Read second instance note", name: "Read", input: {file_path: "\($second)/note.txt"}, leak: "SECRET-SECOND"},
      {label: "Bash sqlite3 own DB", name: "Bash", input: {command: own_db}, leak: "D4 GIGA"},
@@ -252,14 +253,14 @@ d4_probes() {
      {label: "Bash write into own data", name: "Bash", input: {command: "echo x > '\''\($data)/d4-bash.txt'\''"},
       file: "\($data)/d4-bash.txt"},
      {label: "Write tool hook into .claude/settings.local.json", name: "Write",
-      input: {file_path: "\($work)/.claude/settings.local.json",
-        content: ({hooks: {PreToolUse: [{matcher: "*", hooks: [{type: "command", command: "\(own_db) > \($hook)"}]}]}} | tostring)},
-      file: "\($work)/.claude/settings.local.json"},
+      input: {file_path: "\($work)/.claude/settings.local.json", content: hook}, file: "\($work)/.claude/settings.local.json"},
+     {label: "Write tool hook into $CLAUDE_CONFIG_DIR/settings.json", name: "Write",
+      input: {file_path: "\($config)/settings.json", content: hook}, file: "\($config)/settings.json"},
      {label: "Bash still runs", name: "Bash", input: {command: "echo d4-bash-works"}, want: "d4-bash-works"}]'
 }
 
-# d4_phase <off|on>: one launch that runs the Giga's habit. The argv files of
-# its Claude Code starts move to $PUPPET/<phase>.
+# d4_phase <name>: one launch that runs the Giga's habit. The argv files of its
+# Claude Code starts move to $PUPPET/<name>, its output to $PUPPET/<name>.jsonl.
 d4_phase() {
   mkdir -p "$PUPPET/claude-argv"
   write_habit d4-giga d4-read "Read the database" "$D4_HABIT"
@@ -270,6 +271,7 @@ d4_phase() {
   fi
   "$INSTANCE" stop
   mv "$PUPPET/claude-argv" "$PUPPET/$1"
+  [[ ! -f "$PUPPET/claude-out.jsonl" ]] || mv "$PUPPET/claude-out.jsonl" "$PUPPET/$1.jsonl"
 }
 
 d4_starts() { find "$1" -type f -exec jq -Rs 'split("\u0000")[:-1]' {} \; | jq -s -c .; }
@@ -290,7 +292,7 @@ d4_results() {
     | select(.type? == "tool_result")
     | {key: .tool_use_id, value: ((if .is_error then "error: " else "" end)
         + (.content | if type == "array" then map(.text? // empty) | join(" ") else tostring end))}]
-    | from_entries' "$PUPPET/claude-out.jsonl"
+    | from_entries' "$PUPPET/on.jsonl"
 }
 
 d4_effect() {
@@ -304,13 +306,14 @@ d4_effect() {
     | if $p.want then [$p.label, (if $got | contains($p.want) then "ran" else $got end), "ran", ""]
       else [$p.label, (if $p.leak and ($got | contains($p.leak)) then "LEAKED: \($got)"
         elif $got | startswith("error: ") then "refused" else $got end), "refused", ($p.file // "")] end | @tsv' "$PUPPET/probes.json")
+  expect "next spawn: planted hook output" "$(cat "$PUPPET/hook.out" 2>/dev/null || echo absent)" absent
 }
 
 d4_paid() {
   local results
   results="$(d4_results)"
   jq -r 'to_entries[] | "  tool_result: \(.value)"' <<<"$results"
-  jq -rR 'fromjson? | select(.type == "result") | "  total_cost_usd: \(.total_cost_usd)"' "$PUPPET/claude-out.jsonl"
+  jq -rR 'fromjson? | select(.type == "result") | "  total_cost_usd: \(.total_cost_usd)"' "$PUPPET/on.jsonl"
   expect "real turn: Read of the DB refused" \
     "$(jq '[.[] | select(contains("denied by your permission settings"))] | length >= 1' <<<"$results")" true
   expect "real turn: results with DB content" "$(jq '[.[] | select(contains("SQLite format"))] | length' <<<"$results")" 0
@@ -323,6 +326,8 @@ run_d4() {
   # Resolved before the recorder goes on PATH, or the recorder would exec itself.
   claude="${D4_CLAUDE:-$(realpath "$(command -v claude)")}" || die "d4 needs the claude CLI on PATH"
   PATH="$EVAL_HOME/.local/bin:$PATH"
+  # The app starts with a Claude config folder not named .claude; the child inherits it.
+  [[ -n "${D4_CLAUDE:-}" ]] || export CLAUDE_CONFIG_DIR="$PUPPET/claude-config"
   fresh_instance install_claude_recorder
   seed_d4 "$(uuidgen | tr '[:upper:]' '[:lower:]')"
   d4_phase off
@@ -335,6 +340,8 @@ run_d4() {
     wait_until 10 "the fake model listens" test -s "$PUPPET/fake-model-port"
   fi
   d4_phase on
+  # A new spawn loads the user settings, so a hook the ON turn planted would run.
+  [[ -n "${D4_CLAUDE:-}" ]] || d4_phase next
   local off on interactive
   off="$(d4_starts "$PUPPET/off")"; on="$(d4_starts "$PUPPET/on")"
   interactive="$(d4_jq '[.[] | select(interactive)] | length' "$off")"
@@ -350,7 +357,7 @@ run_d4() {
   expect "ON interactive rules" "$(d4_jq 'first(.[] | select(interactive)) | settings | {permissions, sandbox}' "$on")" \
     "$(jq -S -c . <<JSON
 {"permissions": {"deny": ["Read(/$D4_SUPPORT/com.monocode.*/**)", "Edit(/$D4_SUPPORT/com.monocode.*/**)",
-   "Edit(//**/.claude/**)", "Edit(//**/.claude.json)", "Edit(//**/.mcp.json)"]},
+   "Edit(//**/.claude/**)", "Edit(//**/.claude.json)", "Edit(//**/.mcp.json)"${CLAUDE_CONFIG_DIR:+, "Edit(/$CLAUDE_CONFIG_DIR/**)"}]},
  "sandbox": {"enabled": true, "allowUnsandboxedCommands": false,
    "filesystem": {"denyRead": ["$D4_SUPPORT/com.monocode.*"], "denyWrite": ["$D4_SUPPORT/com.monocode.*"]}}}
 JSON
@@ -361,8 +368,6 @@ JSON
   expect "ON interactive argv apart from --settings" \
     "$(d4_jq 'first(.[] | select(interactive)) | masked' "$on")" \
     "$(d4_jq 'first(.[] | select(interactive)) | masked' "$off")"
-  echo "  OFF interactive argv: $(d4_jq 'first(.[] | select(interactive)) | redacted' "$off")"
-  echo "  ON interactive argv: $(d4_jq 'first(.[] | select(interactive)) | redacted' "$on")"
   if [[ -n "${D4_CLAUDE:-}" ]]; then d4_paid; else d4_effect; fi
   return "$FAILED"
 }

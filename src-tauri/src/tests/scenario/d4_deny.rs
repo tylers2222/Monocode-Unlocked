@@ -3,6 +3,7 @@
 //! that every bad input fails the spawn instead of starting Claude Code bare.
 //! `scripts/scenarios/app.sh d4` proves what the rules stop, with the real CLI.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use crate::claude_deny::args_in;
@@ -48,13 +49,13 @@ fn d4_marker_decides_and_bad_input_fails_the_spawn() {
     let plain = spawn_args(r#"{"alwaysThinkingEnabled":true}"#);
 
     assert_eq!(
-        args_in(&data, plain.clone()).unwrap(),
+        args_in(&data, None, plain.clone()).unwrap(),
         plain,
         "off: args unchanged"
     );
 
     turn_on(&data);
-    let on = args_in(&data, plain.clone()).unwrap();
+    let on = args_in(&data, None, plain.clone()).unwrap();
     assert!(has_rules(&on), "on: rules added");
     assert_eq!(
         settings_of(&on)["alwaysThinkingEnabled"],
@@ -63,24 +64,36 @@ fn d4_marker_decides_and_bad_input_fails_the_spawn() {
     );
 
     for bad in ["not json", "[]", r#""text""#] {
-        let refused = args_in(&data, spawn_args(bad));
+        let refused = args_in(&data, None, spawn_args(bad));
         assert!(refused.is_err(), "on: --settings {bad} fails the spawn");
     }
     let mut trailing = plain.clone();
     trailing.truncate(2);
     assert!(
-        args_in(&data, trailing).is_err(),
+        args_in(&data, None, trailing).is_err(),
         "on: --settings with no value fails"
     );
     for key in ["permissions", "sandbox"] {
-        let refused = args_in(&data, spawn_args(&format!(r#"{{"{key}":{{}}}}"#)));
+        let refused = args_in(&data, None, spawn_args(&format!(r#"{{"{key}":{{}}}}"#)));
         assert!(
             refused.unwrap_err().contains(key),
             "on: an existing {key} key fails"
         );
     }
 
-    let login = args_in(&data, vec!["auth".into(), "login".into()]).unwrap();
+    let config = OsStr::new("/Users/me/claude-config");
+    let on = args_in(&data, Some(config), plain.clone()).unwrap();
+    let deny = settings_of(&on)["permissions"]["deny"].clone();
+    assert!(
+        deny.as_array()
+            .unwrap()
+            .contains(&"Edit(//Users/me/claude-config/**)".into()),
+        "on: CLAUDE_CONFIG_DIR is edit-denied"
+    );
+    let relative = args_in(&data, Some(OsStr::new("claude-config")), plain.clone());
+    assert!(relative.is_err(), "on: a relative CLAUDE_CONFIG_DIR fails");
+
+    let login = args_in(&data, None, vec!["auth".into(), "login".into()]).unwrap();
     assert_eq!(
         login[0], "--settings",
         "on: auth login gets --settings first"
@@ -90,14 +103,14 @@ fn d4_marker_decides_and_bad_input_fails_the_spawn() {
     let unreadable = root.join("com.monocode.file");
     std::fs::write(&unreadable, "").unwrap();
     assert!(
-        has_rules(&args_in(&unreadable, plain.clone()).unwrap()),
+        has_rules(&args_in(&unreadable, None, plain.clone()).unwrap()),
         "a marker that cannot be read counts as on"
     );
 
     let other = root.join("other.app");
     turn_on(&other);
     assert!(
-        args_in(&other, plain).is_err(),
+        args_in(&other, None, plain).is_err(),
         "on: a folder not named com.monocode.* fails"
     );
 

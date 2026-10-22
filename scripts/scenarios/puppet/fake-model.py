@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""A local Messages API for scripts/scenarios/app.sh d4. No model runs.
+"""A local Messages API for scripts/scenarios/app.sh d4: fake-model.py <port-file> <probes.json>
 
-    fake-model.py <port-file> <probes.json>
-
-Writes its port to <port-file>. When a request's messages contain "D4-HABIT",
-it answers with probe n as a tool call, where n is the count of tool results so
-far, and with text once every probe has run. probes.json is a list of
-{"name": <tool>, "input": {...}}. Any other request gets text.
+Writes its port to <port-file>. A request whose messages contain "D4-HABIT"
+gets probe n as a tool call (n = tool results so far), then text; probes.json
+is app.sh's list (fields `name` and `input` are used). Others get text.
 """
 import json
 import sys
