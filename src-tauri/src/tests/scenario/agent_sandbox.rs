@@ -52,30 +52,38 @@ fn path(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// One app data folder and the srt stand-ins, for the whole scenario.
+/// One app data folder and the srt stand-ins, for the whole scenario. The
+/// folder is reached through a link, `<root>/linked -> <root>/real`, as
+/// macOS reaches `/tmp` through `/private/tmp`, so the resolved path differs
+/// from the given one on every OS.
 struct Rig {
-    data: Folder,
+    root: Folder,
     tools: Folder,
+    data: PathBuf,
     settings: PathBuf,
     pinned: PathBuf,
 }
 
 impl Rig {
     fn new() -> Self {
-        let data = folder();
+        let root = folder();
+        std::fs::create_dir_all(root.0.join("real/com.monocode.test")).unwrap();
+        std::os::unix::fs::symlink(root.0.join("real"), root.0.join("linked")).unwrap();
+        let data = root.0.join("linked/com.monocode.test");
         let tools = folder();
-        let settings = data.0.join("agent-sandbox.json");
+        let settings = data.join("agent-sandbox.json");
         let pinned = fake_srt(&tools.0, "0.0.81");
         Self {
-            data,
+            root,
             tools,
+            data,
             settings,
             pinned,
         }
     }
 
     fn spawn(&self) -> Result<std::process::Command, String> {
-        command_in(&self.data.0, "fx", || Some(self.pinned.clone()))
+        command_in(&self.data, "fx", || Some(self.pinned.clone()))
     }
 
     fn written(&self) -> Value {
@@ -100,8 +108,8 @@ impl Rig {
             ".profile",
             ".config/fish",
         ];
-        let siblings = self.data.0.parent().unwrap().join("com.monocode.*");
-        [path(&self.data.0), path(&siblings)]
+        let siblings = self.data.parent().unwrap().join("com.monocode.*");
+        [path(&self.data), path(&siblings)]
             .into_iter()
             .chain(startup.map(|file| path(&home.join(file))))
             .collect()
@@ -109,7 +117,7 @@ impl Rig {
 }
 
 fn off_starts_the_cli_bare(rig: &Rig) {
-    let off = command_in(&rig.data.0, "fx", || panic!("srt looked up while off")).unwrap();
+    let off = command_in(&rig.data, "fx", || panic!("srt looked up while off")).unwrap();
     assert_eq!(
         argv(&off),
         ("fx".into(), vec![]),
@@ -119,13 +127,13 @@ fn off_starts_the_cli_bare(rig: &Rig) {
 }
 
 fn on_refuses_without_the_pinned_srt(rig: &Rig) {
-    let missing = command_in(&rig.data.0, "fx", || None).unwrap_err();
+    let missing = command_in(&rig.data, "fx", || None).unwrap_err();
     assert!(
         missing.contains("srt is not installed"),
         "missing srt: {missing}"
     );
     let older = fake_srt(&rig.tools.0, "0.0.80");
-    let wrong = command_in(&rig.data.0, "fx", || Some(older)).unwrap_err();
+    let wrong = command_in(&rig.data, "fx", || Some(older)).unwrap_err();
     assert!(wrong.contains("needs srt 0.0.81"), "other version: {wrong}");
     assert!(!rig.settings.exists(), "a refused spawn writes no settings");
 }
@@ -150,9 +158,16 @@ fn on_settings_deny_the_protected_paths(rig: &Rig) {
         literal[..],
         "the protected paths, in order"
     );
-    // The folder sits in the temp dir, which macOS reaches through /private.
-    let real = path(&std::fs::canonicalize(&rig.data.0).unwrap());
-    assert!(deny_read.contains(&real), "the resolved {real} is readable");
+    // srt matches the resolved path: the folder, and the pattern for every
+    // MonoCode folder beside it, which names no existing path.
+    let real = std::fs::canonicalize(rig.root.0.join("real")).unwrap();
+    for entry in [real.join("com.monocode.test"), real.join("com.monocode.*")] {
+        let entry = path(&entry);
+        assert!(
+            deny_read.contains(&entry),
+            "the resolved {entry} is readable"
+        );
+    }
     assert_eq!(written["filesystem"]["allowRead"], json!([]));
     let deny_write = strings(&written["filesystem"]["denyWrite"]);
     for entry in &deny_read {
@@ -271,7 +286,7 @@ fn on_keeps_only_the_user_lists(rig: &Rig) {
 fn the_sandbox_setting_decides_how_a_harness_child_starts() {
     let rig = Rig::new();
     off_starts_the_cli_bare(&rig);
-    std::fs::write(rig.data.0.join("agent-sandbox-on"), b"").unwrap();
+    std::fs::write(rig.data.join("agent-sandbox-on"), b"").unwrap();
     on_refuses_without_the_pinned_srt(&rig);
     on_runs_the_cli_under_srt(&rig);
     on_settings_deny_the_protected_paths(&rig);
