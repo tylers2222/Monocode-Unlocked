@@ -438,7 +438,8 @@ mod png_tests {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 mod tests {
     use super::{file_paths_from, write_file_to};
     use objc2::{msg_send, rc::Retained};
