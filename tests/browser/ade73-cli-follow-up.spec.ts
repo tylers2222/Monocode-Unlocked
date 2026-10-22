@@ -443,6 +443,69 @@ test("a worktree deleted under a rate-limited turn leaves a pause that waits for
     });
 });
 
+test("a queue paused by a failed worktree removal waits for Resume, not the next prompt", async ({
+  app,
+  page,
+}) => {
+  await mount(
+    page,
+    app,
+    {
+      ...session("builder", "Fix the parser"),
+      worktreeCwd: "/Users/test/acme-worktrees/parser",
+    },
+    {
+      // worktrees.rs list: the main checkout and the builder's worktree.
+      git_worktrees: (_store, { cwd }) => ({
+        worktrees: [true, false].map((isMain) => ({
+          path: isMain ? cwd : `${cwd}-worktrees/parser`,
+          branch: isMain ? "main" : "parser",
+          head: "0000000000000000000000000000000000000000",
+          isMain,
+          locked: false,
+          prunable: false,
+          missing: false,
+          dirty: false,
+          unpushed: 0,
+          sessionIds: isMain ? [] : ["builder"],
+        })),
+        defaultRoot: `${cwd}-worktrees`,
+      }),
+      git_worktree_check_remove: () => null,
+      git_worktree_remove: () => {
+        throw "fatal: 'acme-worktrees/parser' is locked by another process";
+      },
+    },
+  );
+  await send(page, app, "r1", "Fix the parser");
+  await send(page, app, "r2", "Also cover the empty input", "followUp");
+  await endTurn(app, RATE_LIMIT);
+
+  await page.getByRole("button", { name: /^Settings/ }).click();
+  await page.getByRole("button", { name: "Worktrees", exact: true }).click();
+  const settings = page.getByRole("region", { name: "Settings" });
+  await settings.getByRole("button", { name: "Delete parser" }).click();
+  await page
+    .getByRole("button", { name: "Delete worktree", exact: true })
+    .click();
+  await expect(
+    settings.getByText("locked by another process").first(),
+    "the removal fails and keeps the session",
+  ).toBeVisible();
+
+  expect(await send(page, app, "r3", "Go on")).toEqual(delivered("sent"));
+  await endTurn(app);
+  expect(await send(page, app, "r4", "Update the changelog")).toEqual(
+    delivered("sent"),
+  );
+  await expect
+    .poll(
+      async () => (await turns(page)).slice(2),
+      "the next prompts run; the paused follow-up does not",
+    )
+    .toEqual(["new turn", "Go on", "new turn", "Update the changelog"]);
+});
+
 /**
  * mono_messages.rs for one accepted send: it writes the row and routes it to
  * the recipient's queue. The gate is tested in mono_gate.rs.
