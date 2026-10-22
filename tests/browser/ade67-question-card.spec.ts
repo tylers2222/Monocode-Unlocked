@@ -112,6 +112,9 @@ async function bridgeOmp(page: Page, app: AppShell): Promise<OmpBridge> {
     PI_CODING_AGENT_DIR: join(dir, "agent"),
     ADE67_ANSWERS: answers,
   };
+  console.log(
+    `[ade67 rig] ${OMP}: HOME=${dir}, agent dir ${env.PI_CODING_AGENT_DIR}, only model http://127.0.0.1:${port}/v1 (local fake), env keys ${Object.keys(env).join(",")}`,
+  );
   const children = new Map<string, ChildProcess>();
   const emit = (event: string, payload: unknown) => {
     if (!page.isClosed()) void app.emit(event, payload).catch(() => undefined);
@@ -282,7 +285,12 @@ async function runChecks(page: Page, ms: number, until = () => false) {
     await page.clock.fastForward(2_000);
 }
 
-test.skip(!OMP, "needs the omp binary on PATH");
+// Locally the spec skips without omp. CI installs omp, so there a missing omp
+// fails the spec instead of hiding the ADE-67 regression test in the skips.
+test.skip(!OMP && !process.env.CI, "needs the omp binary on PATH");
+test.beforeEach(() => {
+  expect(OMP, "omp is on PATH (CI installs it in the browser job)").not.toBe("");
+});
 
 for (const choice of ["No", "Skip"] as const) {
   test(`a habit run gets ${choice} from the card after its hour of work`, async ({
@@ -335,7 +343,12 @@ for (const choice of ["No", "Skip"] as const) {
 test("a habit run stopped while it waits leaves no question card", async ({
   app,
   page,
+  browserName,
 }) => {
+  test.skip(
+    browserName === "webkit",
+    "21,600 fake-clock steps take over 5 min in WebKit; the stop logic does not depend on the browser, and chromium runs it",
+  );
   // 21,600 checks of fake time; on the base the stop comes at the hour.
   test.setTimeout(5 * MINUTE);
   const omp = await bridgeOmp(page, app);
