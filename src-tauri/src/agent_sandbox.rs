@@ -73,21 +73,31 @@ const DEFAULT_DOMAINS: [&str; 16] = [
 
 pub(crate) fn command(app: &AppHandle, program: &str) -> Result<Command, String> {
     let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    command_in(&data, program, || crate::harness::resolve_gui_binary("srt"))
+}
+
+/// `command` for the app data folder `data`; `find_srt` runs only when the
+/// sandbox is on.
+pub(crate) fn command_in(
+    data: &Path,
+    program: &str,
+    find_srt: impl FnOnce() -> Option<PathBuf>,
+) -> Result<Command, String> {
     let on =
         std::fs::exists(data.join(ON_MARKER)).map_err(|e| format!("{}: {e}", data.display()))?;
     if !on {
         return Ok(Command::new(program));
     }
-    let srt = pinned_srt()?;
-    let settings = write_settings(&data)?;
+    let srt = pinned_srt(find_srt())?;
+    let settings = write_settings(data)?;
     let mut cmd = Command::new(srt);
     cmd.arg("--settings").arg(settings).arg("--").arg(program);
     Ok(cmd)
 }
 
-fn pinned_srt() -> Result<PathBuf, String> {
+fn pinned_srt(srt: Option<PathBuf>) -> Result<PathBuf, String> {
     let install = format!("npm install -g @anthropic-ai/sandbox-runtime@{SRT_VERSION}");
-    let srt = crate::harness::resolve_gui_binary("srt").ok_or_else(|| {
+    let srt = srt.ok_or_else(|| {
         format!("The agent sandbox is on, but srt is not installed. Run `{install}`.")
     })?;
     let output = crate::harness::exec_output(
