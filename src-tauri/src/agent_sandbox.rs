@@ -3,8 +3,8 @@
 //! child starts as `srt --settings <app data>/agent-sandbox.json -- <cli>
 //! <args>`. srt runs it, and every process it starts, under a Seatbelt profile
 //! that allows writes only to `allowWrite`, network only to `allowedDomains`,
-//! and reads everywhere except `denyRead`. The app data folder is in both deny
-//! lists, so the agent can neither read the database nor change this setting.
+//! and reads everywhere except `denyRead`. Every MonoCode data folder is in
+//! both deny lists, so the agent can neither read a database nor change this setting.
 //!
 //! The user may edit `filesystem.allowWrite` and `network.allowedDomains` in
 //! the settings file. The app rewrites every other key before each spawn, and
@@ -23,6 +23,9 @@ use tauri::{AppHandle, Manager};
 const SRT_VERSION: &str = "0.0.81";
 const ON_MARKER: &str = "agent-sandbox-on";
 const SETTINGS_FILE: &str = "agent-sandbox.json";
+/// Every MonoCode build's data folder sits next to this one (`com.monocode.desktop`,
+/// `.second`, `.desktop.gigaeval`, dev builds), and each holds a database.
+const ALL_INSTANCES: &str = "com.monocode.*";
 
 /// Under HOME. A write to any of these runs code outside the sandbox later.
 const STARTUP_FILES: [&str; 11] = [
@@ -126,7 +129,9 @@ fn write_settings(data: &Path) -> Result<PathBuf, String> {
         .find(|dir| dir.extension().is_some_and(|ext| ext == "app"))
         .unwrap_or(&exe);
     let startup: Vec<PathBuf> = STARTUP_FILES.iter().map(|file| home.join(file)).collect();
+    let instances = data.parent().map(|dir| dir.join(ALL_INSTANCES));
     let mut deny_read: Vec<String> = std::iter::once(data)
+        .chain(instances.as_deref())
         .chain(startup.iter().map(PathBuf::as_path))
         .map(path_entry)
         .collect();

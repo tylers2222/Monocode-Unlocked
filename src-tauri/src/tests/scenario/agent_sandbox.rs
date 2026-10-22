@@ -82,7 +82,9 @@ impl Rig {
         serde_json::from_str(&std::fs::read_to_string(&self.settings).unwrap()).unwrap()
     }
 
-    /// The app data folder, then LaunchAgents and the shell startup files.
+    /// The app data folder, every MonoCode data folder beside it (the live
+    /// `com.monocode.second` among them), then LaunchAgents and the shell
+    /// startup files.
     fn deny_read(&self) -> Vec<String> {
         let home = PathBuf::from(crate::dirs_home().unwrap());
         let startup = [
@@ -98,7 +100,9 @@ impl Rig {
             ".profile",
             ".config/fish",
         ];
-        std::iter::once(path(&self.data.0))
+        let siblings = self.data.0.parent().unwrap().join("com.monocode.*");
+        [path(&self.data.0), path(&siblings)]
+            .into_iter()
             .chain(startup.map(|file| path(&home.join(file))))
             .collect()
     }

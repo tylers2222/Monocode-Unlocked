@@ -178,6 +178,8 @@ run_s0() {
 
 SANDBOX_ON="$APP_DATA/agent-sandbox-on"
 SANDBOX_SETTINGS="$APP_DATA/agent-sandbox.json"
+# A stand-in for the live MonoCode 2 data folder, next to the instance's own.
+SECOND_DB="$(dirname "$APP_DATA")/com.monocode.second/monocode.db"
 SRT_PIN=0.0.81
 
 # srt at the pinned version, under the temp HOME's ~/.local/bin, where the
@@ -194,9 +196,11 @@ install_srt() {
 d1_phase() {
   : >"$PUPPET/log.jsonl"
   request_habit d1-giga "Probe" "D1-HABIT: probe the sandbox."
-  jq -n --arg app "$(target_bin instance)" --arg db "$DB" --arg on "$SANDBOX_ON" --arg phase "$1" '{app: $app, rules: [
+  jq -n --arg app "$(target_bin instance)" --arg db "$DB" --arg second "$SECOND_DB" --arg on "$SANDBOX_ON" --arg phase "$1" '{app: $app, rules: [
     {match: "D1-HABIT", exec: [
       ["sqlite3", $db, ".tables"],
+      ["sqlite3", $second, "select v from s"],
+      ["python3", "-c", "import sys; print(open(sys.argv[1], \"rb\").read()[:15].decode())", $second],
       ["cat", $db],
       ["node", "-e", "try { require(\"fs\").readFileSync(process.argv[1]); console.log(\"read\") } catch (e) { console.log(e.message); process.exit(1) }", $db],
       ["sh", "-c", "echo d1-\($phase) > d1-own.txt && cat d1-own.txt"],
@@ -226,6 +230,8 @@ run_d1() {
   log "D1"
   fresh_pair d1
   install_srt
+  mkdir -p "$(dirname "$SECOND_DB")"
+  sqlite3 "$SECOND_DB" "CREATE TABLE s (v TEXT); INSERT INTO s VALUES ('SECRET-SECOND')"
 
   echo "on:"
   touch "$SANDBOX_ON"
@@ -235,7 +241,9 @@ run_d1() {
   d1_phase on
   "$INSTANCE" start
   wait_until 90 "the Mono gets the Giga's message" saw D1-Q
-  expect "sqlite3 .tables on the DB is denied" "$(denied sqlite3)" true
+  expect "sqlite3 .tables on the DB is denied" "$(denied "sqlite3 $DB")" true
+  expect "sqlite3 on another instance's DB is denied" "$(denied "sqlite3 $SECOND_DB")" true
+  expect "a python open of another instance's DB is denied" "$(denied "python3")" true
   expect "cat of the DB is denied" "$(denied "cat $DB")" true
   expect "a node read of the DB is denied" "$(denied 'readFileSync')" true
   expect "rm of the setting is denied" "$(denied "rm $SANDBOX_ON")" true
@@ -247,6 +255,7 @@ run_d1() {
   expect "the puppet runs under srt" "$(probe SANDBOX_RUNTIME '.stdout | rtrimstr("\n")')" "sandbox=1"
   expect "tool calls that failed" "$(jq -s '[.[] | select(.tool and .result.ok != true)] | length' "$PUPPET/log.jsonl")" 0
   expect "the settings deny reads of the app data" "$(jq --arg d "$APP_DATA" '.filesystem.denyRead | index($d) != null' "$SANDBOX_SETTINGS")" true
+  expect "the settings deny every MonoCode data folder" "$(jq --arg d "$(dirname "$APP_DATA")/com.monocode.*" '.filesystem.denyRead | index($d) != null' "$SANDBOX_SETTINGS")" true
   local bundle; bundle="$(target_bin instance)"; bundle="${bundle%/Contents/MacOS/*}"
   expect "the settings deny writes to the app bundle" "$(jq --arg d "$bundle" '.filesystem.denyWrite | index($d) != null' "$SANDBOX_SETTINGS")" true
   show_probes
@@ -257,7 +266,9 @@ run_d1() {
   d1_phase off
   "$INSTANCE" start
   wait_until 90 "the Mono gets the Giga's message" saw D1-Q
-  expect "sqlite3 .tables on the DB" "$(probe sqlite3 '"\(.code) \(.stdout | test("mono_clock"))"')" "0 true"
+  expect "sqlite3 .tables on the DB" "$(probe "sqlite3 $DB" '"\(.code) \(.stdout | test("mono_clock"))"')" "0 true"
+  expect "sqlite3 on another instance's DB" "$(probe "sqlite3 $SECOND_DB" '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 SECRET-SECOND"
+  expect "a python open of another instance's DB" "$(probe python3 '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 SQLite format 3"
   expect "cat of the DB" "$(probe "cat $DB" '"\(.code) \(.bytes > 0)"')" "0 true"
   expect "a node read of the DB" "$(probe readFileSync '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 read"
   expect "the worktree write" "$(probe d1-own '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 d1-off"
