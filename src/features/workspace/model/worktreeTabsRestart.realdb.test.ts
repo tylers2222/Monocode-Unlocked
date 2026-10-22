@@ -116,7 +116,7 @@ describe("worktree tabs come back after each save path (real saved data)", () =>
   it("workspaceSnapshot written by saveWorkspaceSnapshot, then a crash", async () => {
     const window = await inWorktrees(await boot());
     const { saveWorkspaceSnapshot, workspaceSnapshot } = await webview();
-    await saveWorkspaceSnapshot(workspaceSnapshot([window]));
+    await saveWorkspaceSnapshot(workspaceSnapshot([window]), Date.now());
     // 4 saved tabs reopened in their worktrees, 3 opened from the rail.
     expect(
       (store.snapshot as { tabWorkspaces?: unknown[] }).tabWorkspaces,
@@ -184,7 +184,7 @@ describe("worktree tabs come back after each save path (real saved data)", () =>
   it("quit while the app is still booting", async () => {
     const window = await inWorktrees(await boot());
     const first = await webview();
-    await first.saveWorkspaceSnapshot(first.workspaceSnapshot([window]));
+    await first.saveWorkspaceSnapshot(first.workspaceSnapshot([window]), Date.now());
 
     const booting = await webview();
     await booting.loadBootWorkspace();
@@ -196,7 +196,7 @@ describe("worktree tabs come back after each save path (real saved data)", () =>
 it("a tab saved in a worktree that was removed comes back in the default workspace", async () => {
   const window = await inWorktrees(await boot());
   const { saveWorkspaceSnapshot, workspaceSnapshot } = await webview();
-  await saveWorkspaceSnapshot(workspaceSnapshot([window]));
+  await saveWorkspaceSnapshot(workspaceSnapshot([window]), Date.now());
   const [removedTab] = window.tabs.filter(
     (tab) => tabWorkspace(tab, window.sessions, window.pins) !== PROJECT,
   );
@@ -221,7 +221,7 @@ it("with every tab in a worktree, saves no active tab, and boot keeps each tab i
   const window = { ...booted, tabs: booted.tabs.slice(0, 2) };
   const { saveWorkspaceSnapshot, workspaceSnapshot } = await webview();
   const saved = workspaceSnapshot([window]);
-  await saveWorkspaceSnapshot(saved);
+  await saveWorkspaceSnapshot(saved, Date.now());
   const restored = await boot();
   expect({
     savedActive: saved.activeTabId,

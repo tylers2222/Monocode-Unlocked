@@ -918,10 +918,17 @@ export async function takeInFlightSessions(): Promise<
  */
 let workspaceWrite: Promise<unknown> = Promise.resolve();
 
-export async function saveWorkspaceSnapshot(snapshot: unknown): Promise<void> {
+/**
+ * `readAt` is the `Date.now()` at which the caller read the window it saves.
+ * The store keeps a snapshot only over one read no later (ADE-46).
+ */
+export async function saveWorkspaceSnapshot(
+  snapshot: unknown,
+  readAt: number,
+): Promise<void> {
   const run = workspaceWrite
     .catch(() => undefined)
-    .then(() => invoke("workspace_set_snapshot", { snapshot }));
+    .then(() => invoke("workspace_set_snapshot", { snapshot, readAt }));
   workspaceWrite = run;
   await run;
 }
