@@ -9,20 +9,17 @@
 //! The rules are defense in depth only. The Read rule does not stop a script
 //! that opens the file itself, the OS sandbox covers Bash only, and Claude Code
 //! runs Bash unsandboxed where the sandbox cannot start (`failIfUnavailable`
-//! stays off). Inside D1's srt (ADE-41) Claude Code's sandbox cannot start, so
-//! dropping the `sandbox` block there is decided where the spawn is wrapped.
+//! stays off). Inside D1's srt (ADE-41) Claude Code's sandbox cannot start,
+//! and srt is the only Bash control. This module always adds the `sandbox`
+//! block; dropping it under srt belongs to the code that wraps the spawn.
 
+use std::ffi::OsStr;
 use std::path::Path;
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 const ON_MARKER: &str = "claude-deny-rules-on";
-const CLAUDE_CONFIG: [&str; 3] = [
-    "Edit(//**/.claude/**)",
-    "Edit(//**/.claude.json)",
-    "Edit(//**/.mcp.json)",
-];
 
 pub(crate) fn args(app: &AppHandle, args: Vec<String>) -> Result<Vec<String>, String> {
     let data = app
@@ -42,14 +39,14 @@ pub(crate) fn args_in(data: &Path, args: Vec<String>) -> Result<Vec<String>, Str
 }
 
 fn with_deny_rules(mut args: Vec<String>, data: &Path) -> Result<Vec<String>, String> {
-    let (Some(parent), Some(name)) = (data.parent().and_then(Path::to_str), data.file_name())
-    else {
-        return Err("Claude Code deny rules: the app data path is not UTF-8.".into());
+    let Some(parent) = data.parent().and_then(Path::to_str) else {
+        return Err("Claude Code deny rules: the app data path has no UTF-8 parent folder.".into());
     };
     if !parent.starts_with('/') {
         return Err("Claude Code deny rules: they need a macOS or Linux app data path. Remove claude-deny-rules-on from the app data folder to start Claude Code.".into());
     }
-    if !name.to_string_lossy().starts_with("com.monocode.") {
+    let name = data.file_name().and_then(OsStr::to_str);
+    if !name.is_some_and(|name| name.starts_with("com.monocode.")) {
         return Err(
             "Claude Code deny rules: the app data folder is not named com.monocode.*.".into(),
         );
@@ -78,12 +75,16 @@ fn with_deny_rules(mut args: Vec<String>, data: &Path) -> Result<Vec<String>, St
     }
     let folders = format!("{parent}/com.monocode.*");
     // Read and Edit rules mark an absolute path with `//`. Sandbox paths are plain.
-    let mut deny = vec![
-        format!("Read(/{folders}/**)"),
-        format!("Edit(/{folders}/**)"),
-    ];
-    deny.extend(CLAUDE_CONFIG.map(String::from));
-    settings.insert("permissions".into(), json!({ "deny": deny }));
+    settings.insert(
+        "permissions".into(),
+        json!({ "deny": [
+            format!("Read(/{folders}/**)"),
+            format!("Edit(/{folders}/**)"),
+            "Edit(//**/.claude/**)",
+            "Edit(//**/.claude.json)",
+            "Edit(//**/.mcp.json)",
+        ] }),
+    );
     settings.insert(
         "sandbox".into(),
         json!({

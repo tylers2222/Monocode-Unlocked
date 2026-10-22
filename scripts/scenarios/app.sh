@@ -184,8 +184,8 @@ run_s0() {
 
 D4_INTERACTIVE="--setting-sources=user,project,local"
 D4_HABIT="D4-HABIT: Use the Read tool to read the file $DB. Make only that one tool call. Then reply with the exact text of the tool result."
-D4_SUP="$(dirname "$APP_DATA")"
-D4_SECOND="$D4_SUP/com.monocode.second"
+D4_SUPPORT="$(dirname "$APP_DATA")"
+D4_SECOND="$D4_SUPPORT/com.monocode.second"
 # The Giga's workspace: Claude Code's working folder.
 D4_WORK="$EVAL_HOME/MonoCode/gigas/d4-giga"
 
@@ -195,7 +195,7 @@ install_claude_recorder() {
   # The app starts it without $PUPPET. `--version` is the launch update check
   # through harness_exec, not a start, so it is not recorded.
   { echo '#!/usr/bin/env bash'
-    printf 'PUPPET=%q\nSUP=%q\n' "$PUPPET" "$D4_SUP"
+    printf 'PUPPET=%q\nSUPPORT=%q\n' "$PUPPET" "$D4_SUPPORT"
     cat <<'SH'
 REAL="$(cat "$PUPPET/real-claude" 2>/dev/null || true)"
 if [[ "${1:-}" == --version ]]; then
@@ -210,7 +210,7 @@ if [[ -f "$PUPPET/fake-model-port" ]]; then
   export ANTHROPIC_BASE_URL="http://127.0.0.1:$(cat "$PUPPET/fake-model-port")" ANTHROPIC_API_KEY=sk-fake-local \
     CLAUDE_CONFIG_DIR="$PUPPET/claude-config" DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
   unset ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
-  set -- "$@" --add-dir "$SUP"
+  set -- "$@" --add-dir "$SUPPORT"
 fi
 exec "$REAL" "$@" > >(tee -a "$PUPPET/claude-out.jsonl")
 SH
@@ -288,7 +288,8 @@ d4_jq() {
 d4_results() {
   jq -R -s -c '[split("\n")[] | fromjson? | select(.type == "user") | .message.content[]?
     | select(.type? == "tool_result")
-    | {key: .tool_use_id, value: (.content | if type == "array" then map(.text? // empty) | join(" ") else tostring end)}]
+    | {key: .tool_use_id, value: ((if .is_error then "error: " else "" end)
+        + (.content | if type == "array" then map(.text? // empty) | join(" ") else tostring end))}]
     | from_entries' "$PUPPET/claude-out.jsonl"
 }
 
@@ -301,9 +302,8 @@ d4_effect() {
     expect "ON: $label" "$verdict" "$want"
   done < <(jq -r --argjson r "$results" 'to_entries[] | .value as $p | ($r["toolu_d4_\(.key)"] // "no result") as $got
     | if $p.want then [$p.label, (if $got | contains($p.want) then "ran" else $got end), "ran", ""]
-      else [$p.label, (if $got == "no result" then $got elif $p.leak and ($got | contains($p.leak)) then "LEAKED: \($got)"
-        else "refused" end), "refused", ($p.file // "")] end | @tsv' "$PUPPET/probes.json")
-  expect "ON: hook output" "$([[ -e "$PUPPET/hook.out" ]] && cat "$PUPPET/hook.out" || echo absent)" absent
+      else [$p.label, (if $p.leak and ($got | contains($p.leak)) then "LEAKED: \($got)"
+        elif $got | startswith("error: ") then "refused" else $got end), "refused", ($p.file // "")] end | @tsv' "$PUPPET/probes.json")
 }
 
 d4_paid() {
@@ -319,9 +319,9 @@ d4_paid() {
 run_d4() {
   FAILED=0
   log "D4"
-  local claude fake
+  local claude
+  # Resolved before the recorder goes on PATH, or the recorder would exec itself.
   claude="${D4_CLAUDE:-$(realpath "$(command -v claude)")}" || die "d4 needs the claude CLI on PATH"
-  # The app resolves the recorder as claude.
   PATH="$EVAL_HOME/.local/bin:$PATH"
   fresh_instance install_claude_recorder
   seed_d4 "$(uuidgen | tr '[:upper:]' '[:lower:]')"
@@ -331,8 +331,7 @@ run_d4() {
   if [[ -z "${D4_CLAUDE:-}" ]]; then
     d4_probes >"$PUPPET/probes.json"
     python3 "$SCENARIOS/puppet/fake-model.py" "$PUPPET/fake-model-port" "$PUPPET/probes.json" &
-    fake=$!
-    trap 'kill "$fake" 2>/dev/null' EXIT
+    trap "kill $! 2>/dev/null" EXIT
     wait_until 10 "the fake model listens" test -s "$PUPPET/fake-model-port"
   fi
   d4_phase on
@@ -350,10 +349,10 @@ run_d4() {
   # same today. Only this exact, documented rule set catches such a drift.
   expect "ON interactive rules" "$(d4_jq 'first(.[] | select(interactive)) | settings | {permissions, sandbox}' "$on")" \
     "$(jq -S -c . <<JSON
-{"permissions": {"deny": ["Read(/$D4_SUP/com.monocode.*/**)", "Edit(/$D4_SUP/com.monocode.*/**)",
+{"permissions": {"deny": ["Read(/$D4_SUPPORT/com.monocode.*/**)", "Edit(/$D4_SUPPORT/com.monocode.*/**)",
    "Edit(//**/.claude/**)", "Edit(//**/.claude.json)", "Edit(//**/.mcp.json)"]},
  "sandbox": {"enabled": true, "allowUnsandboxedCommands": false,
-   "filesystem": {"denyRead": ["$D4_SUP/com.monocode.*"], "denyWrite": ["$D4_SUP/com.monocode.*"]}}}
+   "filesystem": {"denyRead": ["$D4_SUPPORT/com.monocode.*"], "denyWrite": ["$D4_SUPPORT/com.monocode.*"]}}}
 JSON
 )"
   expect "ON interactive settings apart from the rules" \

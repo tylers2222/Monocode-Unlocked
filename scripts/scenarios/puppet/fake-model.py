@@ -10,14 +10,15 @@ far, and with text once every probe has run. probes.json is a list of
 """
 import json
 import sys
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-PROBES = json.load(open(sys.argv[2]))
+PROBES = json.loads(Path(sys.argv[2]).read_text())
 
 
 def reply(body):
     text = json.dumps(body.get("messages", []))
-    tools = {tool.get("name") for tool in body.get("tools", [])}
+    tools = {tool["name"] for tool in body.get("tools", [])}
     n = text.count('"tool_result"')
     if "D4-HABIT" in text and n < len(PROBES) and PROBES[n]["name"] in tools:
         probe = PROBES[n]
@@ -67,5 +68,5 @@ class Handler(BaseHTTPRequestHandler):
 
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-open(sys.argv[1], "w").write(str(server.server_address[1]))
+Path(sys.argv[1]).write_text(str(server.server_address[1]))
 server.serve_forever()
