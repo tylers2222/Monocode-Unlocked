@@ -3,8 +3,9 @@
 
 use std::fmt;
 
-use crate::mono_gate::Level;
+use crate::mono_gate::{Level, SessionLevel};
 use crate::mono_messages::{MonoId, SessionId};
+use crate::mono_roster::MonoRole;
 
 /// Ask budget in active minutes: the default and the bounds of `due_minutes`.
 pub const DEFAULT_DUE_MINUTES: u32 = 60;
@@ -46,11 +47,48 @@ impl fmt::Display for Actor {
     }
 }
 
-/// A party to an ask: its level and the actor it is.
+/// A party to an ask, built from a Mono's role or a session's level, so a
+/// Giga or Mono is always a `mono:` actor and a lead or worker a `session:`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Party {
-    pub level: Level,
-    pub actor: Actor,
+    level: Level,
+    actor: Actor,
+}
+
+impl Party {
+    pub fn mono(role: MonoRole, mono: MonoId) -> Self {
+        let level = match role {
+            MonoRole::Giga => Level::Giga,
+            MonoRole::Mono => Level::Mono,
+        };
+        Party {
+            level,
+            actor: Actor::Mono(mono),
+        }
+    }
+
+    pub fn session(level: SessionLevel, session: SessionId) -> Self {
+        let level = match level {
+            SessionLevel::Lead => Level::Lead,
+            SessionLevel::Worker { lead } => Level::Worker { lead },
+        };
+        Party {
+            level,
+            actor: Actor::Session(session),
+        }
+    }
+
+    pub fn level(&self) -> &Level {
+        &self.level
+    }
+
+    pub fn actor(&self) -> &Actor {
+        &self.actor
+    }
+
+    pub fn into_actor(self) -> Actor {
+        self.actor
+    }
 }
 
 /// Plan section 1: Giga to a Mono, Mono to a lead it started, lead to its
@@ -154,15 +192,16 @@ pub fn decide_ack(ask: &AskState, caller: &Actor) -> Result<(), AckRefused> {
 mod tests {
     use super::*;
 
-    fn party(level: Level, actor: &str) -> Party {
-        Party {
-            level,
-            actor: Actor::parse(actor).unwrap(),
-        }
+    fn mono(role: MonoRole, id: &str) -> Party {
+        Party::mono(role, MonoId::parse(id).unwrap())
     }
 
-    fn worker_of(lead: &str) -> Level {
-        Level::Worker {
+    fn session(level: SessionLevel, id: &str) -> Party {
+        Party::session(level, SessionId::parse(id).unwrap())
+    }
+
+    fn worker_of(lead: &str) -> SessionLevel {
+        SessionLevel::Worker {
             lead: SessionId::parse(lead).unwrap(),
         }
     }
@@ -172,11 +211,11 @@ mod tests {
     // worker, a worker anyone), or a direct child is refused.
     #[test]
     fn only_a_direct_child_can_be_asked() {
-        let giga = party(Level::Giga, "mono:giga");
-        let mono = party(Level::Mono, "mono:mono");
-        let lead = party(Level::Lead, "session:lead");
-        let worker = party(worker_of("lead"), "session:worker");
-        let others = party(worker_of("other"), "session:w2");
+        let giga = mono(MonoRole::Giga, "giga");
+        let mono = mono(MonoRole::Mono, "mono");
+        let lead = session(SessionLevel::Lead, "lead");
+        let worker = session(worker_of("lead"), "worker");
+        let others = session(worker_of("other"), "w2");
         for (parent, child, started, direct) in [
             (&giga, &mono, false, true),
             (&mono, &lead, true, true),
@@ -200,10 +239,10 @@ mod tests {
     // not the active time now plus its budget.
     #[test]
     fn the_due_time_is_active_time_plus_the_budget_and_none_for_a_giga() {
-        let mono = party(Level::Mono, "mono:mono");
-        let lead = party(Level::Lead, "session:lead");
-        let worker = party(worker_of("lead"), "session:worker");
-        let giga = party(Level::Giga, "mono:g");
+        let giga = mono(MonoRole::Giga, "g");
+        let mono = mono(MonoRole::Mono, "mono");
+        let lead = session(SessionLevel::Lead, "lead");
+        let worker = session(worker_of("lead"), "worker");
         assert_eq!(decide_ask(&giga, &mono, false, Some(30), 5_000), Ok(None));
         assert_eq!(
             decide_ask(&mono, &lead, true, None, 5_000),

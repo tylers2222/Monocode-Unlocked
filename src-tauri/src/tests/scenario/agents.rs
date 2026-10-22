@@ -96,8 +96,9 @@ impl World {
             session_store::delete_session(&conn, mono.chat.as_str(), session_store::Removal::End)
                 .unwrap();
             let update = json!({"id": mono.id.as_str(), "patch": {"sessionId": chat}});
-            let update = mono_roster::validate_update(serde_json::from_value(update).unwrap());
-            mono_roster::update_many(&conn, &[update.unwrap()]).unwrap();
+            let update = serde_json::from_value(update).unwrap();
+            let update = mono_roster::validate_update(update).unwrap();
+            mono_roster::update_many(&conn, &[update]).unwrap();
         }
         Mono {
             id: mono.id.clone(),

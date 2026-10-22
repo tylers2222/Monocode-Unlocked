@@ -10,15 +10,15 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::ask_gate::{self, AckRefused, Actor, AskState, Party, State};
-use crate::mono_gate::{self, Caller, Input, Level, Refusal, SessionLevel, Speaker};
+use crate::mono_gate::{self, Caller, Input, Refusal, Speaker};
 use crate::mono_messages::{
     self, Live, MessageId, MonoId, MonoMessage, RequestId, SessionId, Status, Submitted, Tool,
     ToolError,
 };
-use crate::mono_roster::MonoRole;
 
-/// A Giga or Mono party (level 1 or 2) is `mono:<id>`, a lead or worker
-/// `session:<id>`.
+/// The ask table under `name`, so the R5c rebuild copies into the same
+/// shape. A Giga or Mono party (level 1 or 2) is `mono:<id>`, a lead or
+/// worker `session:<id>`.
 fn asks_sql(name: &str) -> String {
     format!(
         "CREATE TABLE IF NOT EXISTS {name} (
@@ -26,7 +26,7 @@ fn asks_sql(name: &str) -> String {
            parent_actor        TEXT NOT NULL CHECK (parent_actor GLOB
                                  CASE WHEN parent_level <= 2 THEN 'mono:?*' ELSE 'session:?*' END),
            child_actor         TEXT NOT NULL CHECK (child_actor <> parent_actor) CHECK (child_actor GLOB
-                                 CASE WHEN child_level = 2 THEN 'mono:?*' ELSE 'session:?*' END),
+                                 CASE WHEN child_level <= 2 THEN 'mono:?*' ELSE 'session:?*' END),
            parent_level        INTEGER NOT NULL CHECK (parent_level BETWEEN 1 AND 3),
            child_level         INTEGER NOT NULL CHECK (child_level = parent_level + 1),
            state               TEXT NOT NULL CHECK (state IN ('open', 'acked')),
@@ -68,10 +68,11 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
 /// `dropped`. Each Giga or Mono party becomes the Mono its ask's carrier row
 /// names (`from_mono_id` for the parent, `to_mono_id` for the child), which
 /// a chat reset does not change; a lead or worker keeps its session. Nothing
-/// expires, so a `dropped` ask is open again. Keyed on the old column, so it
-/// runs once; a Mono party with no carrier Mono fails the copy and the next
-/// open tries again. Foreign keys are off for the copy, as for
-/// `mono_messages`: `DROP TABLE` under them fails once an event names an ask.
+/// expires, so a `dropped` ask is open again. An ask whose Giga or Mono was
+/// deleted since (the carrier names no Mono) can never be acked or reach its
+/// asker, so it is left out with its events. Keyed on the old column, so it
+/// runs once. Foreign keys are off for the copy, as for `mono_messages`:
+/// `DROP TABLE` under them fails once an event names an ask.
 fn rebuild_with_actors(conn: &Connection) -> rusqlite::Result<()> {
     let chats: bool = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM pragma_table_info('mono_asks') WHERE name = 'parent_session')",
@@ -88,15 +89,17 @@ fn rebuild_with_actors(conn: &Connection) -> rusqlite::Result<()> {
              {}
              INSERT INTO mono_asks_new (id, parent_actor, child_actor, parent_level, child_level,
                state, due_active_ms, paused_at_active_ms, stage, next_due_active_ms, created_wall_ms)
-             SELECT a.id,
+             SELECT * FROM (SELECT a.id,
                CASE WHEN a.parent_level <= 2 THEN 'mono:' || m.from_mono_id
-                    ELSE 'session:' || a.parent_session END,
-               CASE WHEN a.child_level = 2 THEN 'mono:' || m.to_mono_id
-                    ELSE 'session:' || a.child_session END,
+                    ELSE 'session:' || a.parent_session END AS parent_actor,
+               CASE WHEN a.child_level <= 2 THEN 'mono:' || m.to_mono_id
+                    ELSE 'session:' || a.child_session END AS child_actor,
                a.parent_level, a.child_level, CASE a.state WHEN 'acked' THEN 'acked' ELSE 'open' END,
                a.due_active_ms, a.paused_at_active_ms, a.stage, a.next_due_active_ms,
                a.created_wall_ms
-             FROM mono_asks a LEFT JOIN mono_messages m ON m.id = a.id;
+             FROM mono_asks a LEFT JOIN mono_messages m ON m.id = a.id)
+             WHERE parent_actor IS NOT NULL AND child_actor IS NOT NULL;
+             DELETE FROM mono_ask_events WHERE ask_id NOT IN (SELECT id FROM mono_asks_new);
              DROP TABLE mono_asks;
              ALTER TABLE mono_asks_new RENAME TO mono_asks;",
             asks_sql("mono_asks_new")
@@ -204,7 +207,7 @@ pub fn ask(
         let child = addressed_party(&tx, &input.send_to)?;
         // A party with no saved row: the send gate below answers it.
         if let (Some(parent), Some(child)) = (parent, child) {
-            let started = match (caller.mono_id(), &child.actor) {
+            let started = match (caller.mono_id(), child.actor()) {
                 (Some(mono), Actor::Session(lead)) => started_by(&tx, mono, lead)?,
                 _ => false,
             };
@@ -234,10 +237,10 @@ pub fn ask(
              VALUES (?1, ?2, ?3, ?4, ?5, 'open', ?6, ?7)",
             params![
                 messages[0].message.id.as_str(),
-                parent.actor.to_string(),
-                child.actor.to_string(),
-                parent.level.rank(),
-                child.level.rank(),
+                parent.actor().to_string(),
+                child.actor().to_string(),
+                parent.level().rank(),
+                child.level().rank(),
                 due,
                 now
             ],
@@ -282,7 +285,7 @@ pub fn ack(
         Ok(carrier) => carrier,
         Err(hint) => return Ok(failed(Refusal::InvalidInput.as_str(), hint)),
     };
-    let me = caller_party(&tx, caller)?.map(|party| party.actor);
+    let me = caller_party(&tx, caller)?.map(Party::into_actor);
     // Decided before the send, as `ask` is: an ack that is not this caller's
     // to give never reaches the send gate. A repeat or a retried refusal
     // (a row under this request id) answers its first outcome instead.
@@ -361,25 +364,12 @@ fn active_ms(conn: &Connection) -> rusqlite::Result<i64> {
 }
 
 fn mono_party(conn: &Connection, mono: &MonoId) -> rusqlite::Result<Option<Party>> {
-    Ok(mono_messages::mono_row(conn, mono)?.map(|row| Party {
-        level: match row.role {
-            MonoRole::Giga => Level::Giga,
-            MonoRole::Mono => Level::Mono,
-        },
-        actor: Actor::Mono(mono.clone()),
-    }))
+    Ok(mono_messages::mono_row(conn, mono)?.map(|row| Party::mono(row.role, mono.clone())))
 }
 
 fn session_party(conn: &Connection, session: &SessionId) -> rusqlite::Result<Option<Party>> {
-    Ok(
-        mono_messages::session_level(conn, session)?.map(|level| Party {
-            level: match level {
-                SessionLevel::Lead => Level::Lead,
-                SessionLevel::Worker { lead } => Level::Worker { lead },
-            },
-            actor: Actor::Session(session.clone()),
-        }),
-    )
+    Ok(mono_messages::session_level(conn, session)?
+        .map(|level| Party::session(level, session.clone())))
 }
 
 /// The caller, from saved rows: a Mono is its mono id, whichever chat calls.
@@ -432,7 +422,6 @@ fn acked_with(conn: &Connection, ask: &MessageId, id: &MessageId) -> rusqlite::R
     )
 }
 
-/// Ask `id` as `ack` reads it.
 fn load(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<AskState>> {
     conn.query_row(
         "SELECT state, parent_actor, child_actor FROM mono_asks WHERE id = ?1",
