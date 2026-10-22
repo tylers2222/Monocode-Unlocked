@@ -926,12 +926,35 @@ fn s1_6_a_mono_resets_its_chat_mid_ask_and_both_acks_reach_their_parent() {
     let mut live = tree.live().to_vec();
     live.push(&reset.chat);
     let done = |ask: &MessageId| json!({"ask_id": ask.as_str(), "message": "Done"});
-    let dead = world.tool(&mono_caller(&tree.mono, "m2"), "dead-ack", "ack", done(&giga_ask), &live);
-    assert!(matches!(dead, Submitted::Failed { .. }), "the dead chat acked: {dead:?}");
-    assert_eq!(ask_row(&world, &giga_ask).0, "open", "a refused ack spends no key");
-    let mono_ack = world.tool(&mono_caller(&reset, "m3"), "m-ack", "ack", done(&giga_ask), &live);
+    let dead = world.tool(
+        &mono_caller(&tree.mono, "m2"),
+        "dead-ack",
+        "ack",
+        done(&giga_ask),
+        &live,
+    );
+    assert!(
+        matches!(dead, Submitted::Failed { .. }),
+        "the dead chat acked: {dead:?}"
+    );
+    assert_eq!(
+        ask_row(&world, &giga_ask).0,
+        "open",
+        "a refused ack spends no key"
+    );
+    let mono_ack = world.tool(
+        &mono_caller(&reset, "m3"),
+        "m-ack",
+        "ack",
+        done(&giga_ask),
+        &live,
+    );
     written(mono_ack);
-    assert_eq!(ask_row(&world, &giga_ask).0, "acked", "the Mono acked from its new chat");
+    assert_eq!(
+        ask_row(&world, &giga_ask).0,
+        "acked",
+        "the Mono acked from its new chat"
+    );
     assert_eq!(
         ack_went_to(&world, &giga_ask),
         (Some(tree.giga.id.as_str().to_string()), None)
@@ -952,6 +975,220 @@ fn s1_6_a_mono_resets_its_chat_mid_ask_and_both_acks_reach_their_parent() {
     assert!(
         handed.iter().any(|row| row.message.id == lead_ack),
         "the lead's ack reaches the Mono's new chat: {handed:?}"
+    );
+}
+
+/// The chat an actor column of the R5c table names, as R5 stored it: a
+/// Mono's chat at the time, a session itself.
+fn chat_of(column: &str) -> String {
+    format!(
+        "CASE WHEN {column} GLOB 'mono:*'
+           THEN (SELECT json_extract(data_json, '$.sessionId') FROM monos WHERE id = substr({column}, 6))
+           ELSE substr({column}, 9) END"
+    )
+}
+
+/// The schema of the ask tables, then every ask: its parties and state.
+type AsksSnapshot = (Vec<Option<String>>, Vec<(String, String, String, String)>);
+
+fn asks_snapshot(world: &World) -> AsksSnapshot {
+    let conn = world.conn();
+    let schema = conn
+        .prepare("SELECT sql FROM sqlite_master WHERE tbl_name LIKE 'mono_ask%' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let rows = conn
+        .prepare("SELECT id, parent_actor, child_actor, state FROM mono_asks ORDER BY id")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    (schema, rows)
+}
+
+/// R5c migration. A database from tyler/main before R5c: its asks name
+/// chats, one was `dropped`, one is acked with its event, and the Mono reset
+/// its chat after asking. Defect: a restart leaves a party as a chat, maps a
+/// Mono to anything but its id (its dead chat, or the other party), keeps
+/// `dropped`, loses an ask or its ack event, changes anything on a second
+/// restart, or a migrated ask cannot be acked from the Mono's new chat.
+#[test]
+fn r5c_a_restart_moves_asks_from_chats_to_actors_once() {
+    let mut world = World::new("r5c-migrate");
+    let tree = tree(&world);
+    let giga_ask = written(ask(
+        &world,
+        &tree,
+        &mono_caller(&tree.giga, "g1"),
+        "g-ask",
+        tree.mono.id.as_str(),
+        None,
+    ));
+    let mono_ask = written(ask(
+        &world,
+        &tree,
+        &mono_caller(&tree.mono, "m1"),
+        "m-ask",
+        tree.lead.as_str(),
+        None,
+    ));
+    let lead = session_caller(&tree.lead, P);
+    let lead_ask = written(ask(
+        &world,
+        &tree,
+        &lead,
+        "l-ask",
+        tree.worker.as_str(),
+        None,
+    ));
+    let other_ask = written(ask(
+        &world,
+        &tree,
+        &lead,
+        "o-ask",
+        tree.other.as_str(),
+        None,
+    ));
+    written(ack(
+        &world,
+        &tree,
+        &session_caller(&tree.worker, P),
+        "w-ack",
+        &lead_ask,
+    ));
+    world
+        .conn()
+        .execute_batch(&format!(
+            "PRAGMA foreign_keys = OFF;
+             CREATE TABLE mono_asks_r5 (
+               id                  TEXT PRIMARY KEY,
+               parent_session      TEXT NOT NULL,
+               child_session       TEXT NOT NULL CHECK (child_session <> parent_session),
+               parent_level        INTEGER NOT NULL CHECK (parent_level BETWEEN 1 AND 3),
+               child_level         INTEGER NOT NULL CHECK (child_level = parent_level + 1),
+               state               TEXT NOT NULL CHECK (state IN ('open', 'acked', 'dropped')),
+               due_active_ms       INTEGER CHECK ((due_active_ms IS NULL) = (parent_level = 1)),
+               paused_at_active_ms INTEGER,
+               stage               INTEGER NOT NULL DEFAULT 0 CHECK (stage BETWEEN 0 AND 3),
+               next_due_active_ms  INTEGER,
+               created_wall_ms     INTEGER NOT NULL
+             );
+             INSERT INTO mono_asks_r5 SELECT id, {}, {}, parent_level, child_level, state,
+               due_active_ms, paused_at_active_ms, stage, next_due_active_ms, created_wall_ms
+               FROM mono_asks;
+             DROP TABLE mono_asks;
+             ALTER TABLE mono_asks_r5 RENAME TO mono_asks;
+             CREATE INDEX mono_asks_child ON mono_asks (child_session) WHERE state = 'open';
+             CREATE INDEX mono_asks_next_due ON mono_asks (next_due_active_ms) WHERE state = 'open';
+             UPDATE mono_asks SET state = 'dropped' WHERE id = '{}';
+             PRAGMA foreign_keys = ON;",
+            chat_of("parent_actor"),
+            chat_of("child_actor"),
+            other_ask.as_str()
+        ))
+        .unwrap();
+    let reset = world.reset_mono_chat(&tree.mono, "r5c-mono-chat-2");
+    world.kill();
+    world.restart();
+    let migrated = asks_snapshot(&world);
+    let (giga, mono) = (tree.giga.id.as_str(), tree.mono.id.as_str());
+    let mut expected: Vec<_> = [
+        (
+            &giga_ask,
+            format!("mono:{giga}"),
+            format!("mono:{mono}"),
+            "open",
+        ),
+        (
+            &mono_ask,
+            format!("mono:{mono}"),
+            "session:r5-lead".into(),
+            "open",
+        ),
+        (
+            &lead_ask,
+            "session:r5-lead".into(),
+            "session:r5-worker".into(),
+            "acked",
+        ),
+        (
+            &other_ask,
+            "session:r5-lead".into(),
+            "session:r5-other".into(),
+            "open",
+        ),
+    ]
+    .into_iter()
+    .map(|(id, parent, child, state)| (id.as_str().to_string(), parent, child, state.to_string()))
+    .collect();
+    expected.sort();
+    assert_eq!(migrated.1, expected, "every ask, its parties as actors");
+    assert!(
+        migrated
+            .0
+            .iter()
+            .flatten()
+            .all(|sql| !sql.contains("_session")),
+        "no chat column or index is left: {:?}",
+        migrated.0
+    );
+    assert_eq!(
+        count(
+            &world,
+            "SELECT count(*) FROM mono_ask_events WHERE kind = 'ack'"
+        ),
+        1,
+        "the ack event survives"
+    );
+    assert_eq!(
+        count(
+            &world,
+            "SELECT count(*) FROM pragma_foreign_key_check('mono_ask_events')"
+        ),
+        0
+    );
+    let dropped = world.conn().execute(
+        "UPDATE mono_asks SET state = 'dropped' WHERE id = ?1",
+        [other_ask.as_str()],
+    );
+    assert!(dropped.is_err(), "nothing expires: {dropped:?}");
+    world.kill();
+    world.restart();
+    assert_eq!(
+        asks_snapshot(&world),
+        migrated,
+        "a second restart changes nothing"
+    );
+    let mut live = tree.live().to_vec();
+    live.push(&reset.chat);
+    let done = |ask: &MessageId| json!({"ask_id": ask.as_str(), "message": "Done"});
+    written(world.tool(
+        &mono_caller(&reset, "m2"),
+        "m-ack",
+        "ack",
+        done(&giga_ask),
+        &live,
+    ));
+    written(world.tool(&lead, "l-ack", "ack", done(&mono_ask), &live));
+    let other = session_caller(&tree.other, P);
+    written(world.tool(&other, "o-ack", "ack", done(&other_ask), &live));
+    assert_eq!(
+        count(
+            &world,
+            "SELECT count(*) FROM mono_asks WHERE state = 'acked'"
+        ),
+        4,
+        "every migrated ask is acked by its child"
+    );
+    assert_eq!(
+        ack_went_to(&world, &mono_ask),
+        (Some(mono.to_string()), None)
     );
 }
 
