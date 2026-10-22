@@ -1,0 +1,60 @@
+{
+ "source": "Reduced from a .backup copy of com.monocode.desktop/monocode.db taken 2026-10-22 (ADE-74): the `monos` rows of the MonoCode Fork Orchestrator (role mono) and Monocode General (role giga) and their own chats as session_store.rs lists them. Names, roles, data keys, mascot, color, giga slug, harness, model and runtime mode are real; project paths are real below the home folder, which is /Users/test; ids, allowlist ids and chat titles are made up.",
+ "monos": [
+  {
+   "id": "monocode-general",
+   "role": "giga",
+   "data": {
+    "color": "hsl(12 80% 58%)",
+    "gigaSlug": "monocode-general",
+    "mascot": "invader",
+    "name": "Monocode General",
+    "projects": [
+     "/Users/test/MonoCode"
+    ],
+    "sessionId": "monocode-general-chat",
+    "showStartedSessionsInSidebar": true,
+    "useSidebarFolders": true
+   }
+  },
+  {
+   "id": "fork-orchestrator",
+   "role": "mono",
+   "data": {
+    "color": "hsl(330 70% 62%)",
+    "mascot": "skull",
+    "messageAllowlist": [
+     "allowed-1"
+    ],
+    "name": "MonoCode Fork Orchestrator",
+    "projects": [
+     "/Users/test/Desktop/monocode"
+    ],
+    "sessionId": "fork-orchestrator-chat",
+    "showStartedSessionsInSidebar": true
+   }
+  }
+ ],
+ "chats": [
+  {
+   "id": "monocode-general-chat",
+   "cwd": "/Users/test",
+   "harness": "omp",
+   "model": "omp:default",
+   "runtimeMode": "full-access",
+   "title": "Monocode General",
+   "createdAt": 1,
+   "updatedAt": 1
+  },
+  {
+   "id": "fork-orchestrator-chat",
+   "cwd": "/Users/test",
+   "harness": "omp",
+   "model": "omp:default",
+   "runtimeMode": "auto",
+   "title": "MonoCode Fork Orchestrator",
+   "createdAt": 1,
+   "updatedAt": 1
+  }
+ ]
+}

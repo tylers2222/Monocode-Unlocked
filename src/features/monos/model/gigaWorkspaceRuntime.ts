@@ -27,6 +27,7 @@ import {
 import { addProjectOnce } from "../../projects/model/recents";
 import {
   findMono,
+  isMonoSession,
   listMonos,
   monoForSession,
   monoLook,
@@ -54,7 +55,7 @@ export function setGigaWorkspacePoster(
   post = poster;
 }
 
-/** A running Giga chat turn's guard. */
+/** A running Mono or Giga chat turn's guard. */
 type TurnGuard = {
   turnId: TurnId;
   /** Checks made so far, all at or past the limit. */
@@ -273,14 +274,14 @@ export function finishGigaTurn(
 }
 
 /**
- * Starts the guard of turn `turnId`: a Giga's own chat still running it at
- * the limit is steered once to move the work to a session.
+ * Starts the guard of turn `turnId`: a Mono's or Giga's own chat still
+ * running it at the limit is steered once to move the work to a session.
  */
 export function armTurnGuard(sessionId: string, turnId: TurnId): void {
   const host = guardHost;
   if (!host) return;
   disarmTurnGuard(sessionId);
-  if (!monoForSession(sessionId)?.giga) return;
+  if (!isMonoSession(sessionId)) return;
   const guard: TurnGuard = { turnId, checks: 0 };
   turnGuards.set(sessionId, guard);
   guard.cancel = host.schedule(
