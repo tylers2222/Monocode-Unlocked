@@ -107,6 +107,7 @@ jobs:
 
       # Fails until the latest review verdict is clean on the head (T3: and a trusted green
       # gate/mutation on it). It only reads; review/agent stays reviewer-only.
+      # gate-integrity-rerun.yml re-runs this job when a verdict or another check changes.
       - name: Merge rule (review verdict and fixer proof)
         if: ${{ !cancelled() }}
         env:
