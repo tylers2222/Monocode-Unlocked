@@ -127,26 +127,28 @@ check "fifo: the relocking loop passes the waiter at most once (passed $passed)"
 
 # The wait line names the holder's pid. No sleeps: the holder blocks on a FIFO, and the
 # test releases it only after the waiter has printed its first "waiting" line. 20 runs.
-# The FIFOs are opened read-write, which never blocks, and each read gives up after 10 s,
-# so a broken lock fails these checks instead of hanging the suite.
+# All three FIFOs are opened read-write, which never blocks; each read gives up after 10 s
+# and ends the loop, so a broken lock fails this check instead of hanging the suite.
 reset
 mkfifo "$root/case/ready" "$root/case/gate" "$root/case/wait"
+exec 9<> "$root/case/gate"
 logged_runs=0
 for i in $(seq 20); do
   "$lock_sh" "$bin/fifo-hold" "$root/case/ready" "$root/case/gate" 2>/dev/null &
   holder=$!
   exec 6<> "$root/case/ready"
-  read -t 10 -r _ <&6
+  read -t 10 -r _ <&6 || { exec 6<&-; break; }
   exec 6<&-
   "$lock_sh" true "run$i" 2> "$root/case/wait" &
   waiter=$!
   exec 7<> "$root/case/wait"
-  read -t 10 -r _ <&7
-  echo go > "$root/case/gate"
+  read -t 10 -r _ <&7 || { exec 7<&-; break; }
+  echo go >&9
   wait "$waiter" "$holder"
   exec 7<&-
   logged "cmd=true run$i\] waited=[0-9]*s holder=\[pid $holder " && logged_runs=$((logged_runs + 1))
 done
+exec 9<&-
 check "fifo: the wait is logged with the holder pid ($logged_runs of 20 runs)" [ "$logged_runs" = 20 ]
 
 # A lock whose holder pid is dead is cleared by the next caller.
@@ -269,6 +271,7 @@ within 5 dead "$child_pid"
 sleep 1
 check "end before release: the lock is still held while the end line is written" eval '[ "$(cat "$HEAVY_LOCK/pid" 2>/dev/null)" = "$holder" ]'
 exec 8<> "$root/case/log"
+end_line=
 read -t 10 -r end_line <&8
 exec 8<&-
 check "end before release: the end line is the holder's" grep -q "end=1 rc=0 signal=0 holder=\[pid $holder " <<< "$end_line"
