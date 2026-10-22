@@ -202,6 +202,25 @@ fn sha256(text: &str) -> PayloadHash {
     PayloadHash::parse(&digest).expect("sha256 is 64 lowercase hex digits")
 }
 
+/// The `invalid_input` hint when `raw` has a field that `tool` does not take.
+pub fn known_fields(tool: &str, raw: &Value, allowed: &[&str]) -> Result<(), String> {
+    let unknown: Vec<&str> = raw
+        .as_object()
+        .into_iter()
+        .flat_map(Map::keys)
+        .map(String::as_str)
+        .filter(|key| !allowed.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "Unknown {tool} fields: {}. Allowed: {}.",
+        unknown.join(", "),
+        allowed.join(", ")
+    ))
+}
+
 /// S1 and R1: the input the model sent, or the `invalid_input` hint.
 pub fn parse(tool: Tool, raw: &Value) -> Result<Input, String> {
     let empty = Map::new();
@@ -220,19 +239,7 @@ pub fn parse(tool: Tool, raw: &Value) -> Result<Input, String> {
             return Err(format!("{} is not a messaging tool", tool.as_str()))
         }
     };
-    let unknown: Vec<&str> = fields
-        .keys()
-        .map(String::as_str)
-        .filter(|key| !allowed.contains(key))
-        .collect();
-    if !unknown.is_empty() {
-        return Err(format!(
-            "Unknown {} fields: {}. Allowed: {}.",
-            tool.as_str(),
-            unknown.join(", "),
-            allowed.join(", ")
-        ));
-    }
+    known_fields(tool.as_str(), raw, allowed)?;
     // SQLite counts a text only up to U+0000, so the row of such a body,
     // accepted or rejected, fails its length CHECK.
     let message = match fields.get("message") {

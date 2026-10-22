@@ -678,14 +678,17 @@ type Submitted =
 
 async function submit(
   host: MonoMessagingHost,
-  tool: "send_message" | "reply",
+  tool: "send_message" | "reply" | "ask" | "ack",
   requestId: string,
-  input: SendInput | ReplyInput,
+  input: SendInput | ReplyInput | RawInput,
 ): Promise<Accepted> {
   const resolved = await host.caller();
   if (!resolved.ok) throw new AppActionError(resolved.code, resolved.hint);
   const loaded = host.sessions();
-  const sendTo = "send_to" in input ? input.send_to : undefined;
+  const sendTo =
+    "send_to" in input && typeof input.send_to === "string"
+      ? input.send_to
+      : undefined;
   const addressed =
     sendTo && !loaded.some((session) => session.id === sendTo)
       ? await host.stored(sendTo)
@@ -873,7 +876,32 @@ export async function sendMessage(
   requestId: string,
   input: SendInput,
 ) {
-  const submitted = await submit(host, "send_message", requestId, input);
+  return sendAnswer(host, await submit(host, "send_message", requestId, input));
+}
+
+/** An `ask` or `ack` call as the model gave it: Rust parses it (R6). */
+type RawInput = Record<string, unknown>;
+
+/** `messages.ask` (R6): a send that is also a key on the asked child. */
+export async function askMessage(
+  host: MonoMessagingHost,
+  requestId: string,
+  input: RawInput,
+) {
+  return sendAnswer(host, await submit(host, "ask", requestId, input));
+}
+
+/** `messages.ack` (R6): a send to the asker that spends the ask's key. */
+export async function ackMessage(
+  host: MonoMessagingHost,
+  requestId: string,
+  input: RawInput,
+) {
+  return sendAnswer(host, await submit(host, "ack", requestId, input));
+}
+
+/** What `messages.send`, `messages.ask` and `messages.ack` answer. */
+async function sendAnswer(host: MonoMessagingHost, submitted: Accepted) {
   const [{ message }] = submitted.messages;
   const delivery = await sendDelivery(host, submitted, message);
   // A steer that could not join its turn is dropped; the answer says so

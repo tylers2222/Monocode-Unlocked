@@ -9,7 +9,7 @@ use serde_json::json;
 use super::agents::{mono_caller, session_caller, Mono};
 use super::world::World;
 use crate::ask_gate::AckRefused;
-use crate::asks::{self, Carries};
+use crate::asks::{self, AckInput, AskInput, Carries};
 use crate::mono_gate::Caller;
 use crate::mono_messages::{
     Live, LiveSession, MessageId, RequestId, SessionId, Submitted, Targeted,
@@ -381,10 +381,7 @@ fn a_failed_ask_insert_leaves_no_carrier_row() {
             &world.conn(),
             &session_caller(&tree.lead, P),
             &RequestId::parse("fault").unwrap(),
-            Ok(
-                serde_json::from_value(json!({"message": "Do y", "send_to": tree.worker.as_str()}))
-                    .unwrap(),
-            ),
+            AskInput::parse(&json!({"message": "Do y", "send_to": tree.worker.as_str()})),
             live,
             world.now(),
         )
@@ -623,10 +620,7 @@ fn s2_two_acks_at_the_same_instant_one_gets_through() {
                     &conn,
                     &session_caller(&worker, P),
                     &RequestId::parse(key).unwrap(),
-                    Ok(
-                        serde_json::from_value(json!({"ask_id": id.as_str(), "message": "Done"}))
-                            .unwrap(),
-                    ),
+                    AckInput::parse(&json!({"ask_id": id.as_str(), "message": "Done"})),
                     &live,
                     now,
                 )
@@ -843,7 +837,7 @@ fn a_failed_ack_event_insert_leaves_the_ask_open_and_no_row() {
             &world.conn(),
             &session_caller(&tree.worker, P),
             &RequestId::parse("fault").unwrap(),
-            Ok(serde_json::from_value(json!({"ask_id": id.as_str(), "message": "Done"})).unwrap()),
+            AckInput::parse(&json!({"ask_id": id.as_str(), "message": "Done"})),
             live,
             world.now(),
         )
@@ -1275,9 +1269,11 @@ fn ack_after_migration(world: &World, tree: &Tree, reset: &Mono, asks: [&Message
 }
 
 /// Review r1 n3. Defect: an ack with a field the tool does not have is
-/// taken, or a second ack event of one ask can be stored.
+/// taken, or a second ack event of one ask can be stored. R6b: Rust is the
+/// one parser of ask and ack, so a refusal does not name the field the agent
+/// has to fix.
 #[test]
-fn an_ack_takes_only_its_fields_and_stores_one_event() {
+fn an_ask_or_ack_refusal_names_its_field_and_an_ack_stores_one_event() {
     let world = World::new("r5-ack-shape");
     let tree = tree(&world);
     let worker = session_caller(&tree.worker, P);
@@ -1289,9 +1285,56 @@ fn an_ack_takes_only_its_fields_and_stores_one_event() {
         tree.worker.as_str(),
         None,
     ));
-    let input = json!({"ask_id": id.as_str(), "message": "Done", "due_minutes": 5});
-    let got = world.tool(&worker, "w-extra", "ack", input, &tree.live());
-    assert_eq!(refusal(got).0, "invalid_input");
+    let lead = session_caller(&tree.lead, P);
+    let to = tree.worker.as_str();
+    for (n, (from, tool, input, field)) in [
+        (
+            &worker,
+            "ack",
+            json!({"ask_id": id.as_str(), "message": "Done", "due_minutes": 5}),
+            "due_minutes",
+        ),
+        (&worker, "ack", json!({"message": "Done"}), "ask_id"),
+        (
+            &worker,
+            "ack",
+            json!({"ask_id": 7, "message": "Done"}),
+            "ask_id",
+        ),
+        (
+            &worker,
+            "ack",
+            json!({"ask_id": id.as_str(), "message": 5}),
+            "message",
+        ),
+        (
+            &lead,
+            "ask",
+            json!({"send_to": to, "message": "Do y", "due_minutes": 1.5}),
+            "due_minutes",
+        ),
+        (
+            &lead,
+            "ask",
+            json!({"send_to": to, "message": "Do y", "due_minutes": -5}),
+            "due_minutes",
+        ),
+        (
+            &lead,
+            "ask",
+            json!({"send_to": to, "message": 5}),
+            "message",
+        ),
+        (&lead, "ask", json!({"message": "Do y"}), "send_to"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (code, hint) =
+            refusal(world.tool(from, &format!("bad-{n}"), tool, input, &tree.live()));
+        assert_eq!(code, "invalid_input", "{tool} {field}: {hint}");
+        assert!(hint.contains(field), "{tool} {field}: {hint}");
+    }
     assert_eq!(ask_row(&world, &id).0, "open");
     written(ack(&world, &tree, &worker, "w-ack", &id));
     let second = world.conn().execute(

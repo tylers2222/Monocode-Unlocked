@@ -5,8 +5,7 @@
 //! id of the row that carried it. Its parties are actors (`ask_gate::Actor`).
 
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::ask_gate::{self, AckRefused, Actor, AskState, Party, State};
@@ -128,29 +127,73 @@ impl From<Result<Input, String>> for Call {
 /// The call tool `tool` makes with `input`; `None` for no such tool.
 pub fn call(tool: &str, input: &Value) -> Option<Call> {
     Some(match tool {
-        "ask" => Call::Ask(fields(input)),
-        "ack" => Call::Ack(fields(input)),
+        "ask" => Call::Ask(AskInput::parse(input)),
+        "ack" => Call::Ack(AckInput::parse(input)),
         _ => Call::Message(mono_gate::parse(Tool::parse(tool)?, input)),
     })
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct AskInput {
     message: String,
     send_to: String,
     due_minutes: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct AckInput {
-    ask_id: String,
+    ask_id: MessageId,
     message: String,
 }
 
-fn fields<T: DeserializeOwned>(input: &Value) -> Result<T, String> {
-    serde_json::from_value(input.clone()).map_err(|error| error.to_string())
+// R6: an ask or ack input is parsed here and nowhere else, field by field, so
+// each `invalid_input` hint names its field. `message` and `send_to` go on to
+// the carrier's `mono_gate::parse`, which names them; a value that is not a
+// string reads as empty there.
+fn text(raw: &Value, name: &str) -> String {
+    raw.get(name)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// `ask_gate::DUE_MINUTES` and `DEFAULT_DUE_MINUTES` in words.
+const DUE_RULE: &str =
+    "due_minutes must be a whole number of active minutes, 10 to 480. Leave it out for 60.";
+
+impl AskInput {
+    pub fn parse(raw: &Value) -> Result<Self, String> {
+        mono_gate::known_fields("ask", raw, &["message", "send_to", "due_minutes"])?;
+        let due_minutes = raw
+            .get("due_minutes")
+            .map(|due| {
+                due.as_u64()
+                    .and_then(|due| u32::try_from(due).ok())
+                    .filter(|due| ask_gate::DUE_MINUTES.contains(due))
+                    .ok_or(DUE_RULE)
+            })
+            .transpose()?;
+        Ok(AskInput {
+            message: text(raw, "message"),
+            send_to: text(raw, "send_to"),
+            due_minutes,
+        })
+    }
+}
+
+impl AckInput {
+    pub fn parse(raw: &Value) -> Result<Self, String> {
+        mono_gate::known_fields("ack", raw, &["ask_id", "message"])?;
+        let ask_id = raw
+            .get("ask_id")
+            .and_then(Value::as_str)
+            .and_then(MessageId::parse)
+            .ok_or("ask_id must be the ask_id (m_…) of the <mono_message> that asked you.")?;
+        Ok(AckInput {
+            ask_id,
+            message: text(raw, "message"),
+        })
+    }
 }
 
 /// What a `mono_messages` row carries in the ledger (R6), for its reader.
@@ -226,20 +269,11 @@ pub fn ask(
     live: &Live,
     now: i64,
 ) -> rusqlite::Result<Submitted> {
-    let range = ask_gate::DUE_MINUTES;
-    let (carrier, input) = match input.and_then(|input| {
-        if input.due_minutes.is_some_and(|due| !range.contains(&due)) {
-            return Err(format!(
-                "due_minutes is {} to {}.",
-                range.start(),
-                range.end()
-            ));
-        }
-        Ok((carrier(&input.send_to, &input.message)?, input))
-    }) {
-        Ok(input) => input,
-        Err(hint) => return Ok(failed(Refusal::InvalidInput.as_str(), hint)),
-    };
+    let (carrier, input) =
+        match input.and_then(|input| Ok((carrier(&input.send_to, &input.message)?, input))) {
+            Ok(input) => input,
+            Err(hint) => return Ok(failed(Refusal::InvalidInput.as_str(), hint)),
+        };
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let prior = mono_messages::get_by_request(&tx, &caller.session_id, request_id)?;
     if another_calls(prior.first(), |id| is_ask(&tx, id))? {
@@ -317,9 +351,7 @@ pub fn ack(
         Err(hint) => return Ok(failed(Refusal::InvalidInput.as_str(), hint)),
     };
     let refused = |reason: AckRefused| Ok(failed("ack_refused", reason.hint()));
-    let Some(ask_id) = MessageId::parse(&input.ask_id) else {
-        return refused(AckRefused::NoOpenAsk);
-    };
+    let ask_id = input.ask_id;
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let Some(ask) = load(&tx, &ask_id)? else {
         return refused(AckRefused::NoOpenAsk);
