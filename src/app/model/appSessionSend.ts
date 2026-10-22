@@ -4,11 +4,13 @@ import type {
 } from "../../features/agent-app/model/agentApp";
 import type { ControlOutcome } from "../../features/orchestration/model/orchestration";
 import { switchingProviders } from "../../features/sessions/model/handoff";
+import { enqueueQueuedMessage } from "../../features/sessions/model/messageQueue";
 import { consumeOperatorCommand } from "../../features/sessions/model/operatorCommand";
 import type {
   AppDelivery,
   Block,
   HarnessId,
+  MessageQueueStatus,
   QueuedMessage,
   Session,
 } from "../../features/sessions/model/session";
@@ -84,6 +86,8 @@ export function planAppSend(input: {
   steerBlocked?: string;
   /** isMonoSession(id), from the caller. */
   mono: boolean;
+  /** The session's queueStatus: a paused queue sends nothing until Resume. */
+  queueStatus?: MessageQueueStatus;
 }): AppSendPlan {
   if (!input.busy) return "send";
   if (input.mono)
@@ -93,7 +97,13 @@ export function planAppSend(input: {
         : "A Mono's own conversation does not accept whenBusy; try again when it finishes",
     );
   if (input.whenBusy === undefined) throw new Error(SESSION_BUSY_ERROR);
-  if (input.whenBusy === "followUp") return "queue";
+  if (input.whenBusy === "followUp") {
+    if (input.queueStatus === "paused")
+      throw new Error(
+        "The session's queue is paused, so a follow-up would not run; ask the user to resume it, or send without whenBusy when the session is idle",
+      );
+    return "queue";
+  }
   // Hermes may queue a "steer" as a follow-up, and its acknowledgement can time
   // out after delivery, so the CLI could not report "steered" truthfully.
   if (!input.steerable || input.harness === "hermes")
@@ -140,19 +150,12 @@ export function queueAppFollowUp(
   session: Session,
   item: { id: string; prompt: string; requestId: string },
 ): Session {
-  return {
-    ...session,
-    queuedMessages: [
-      ...(session.queuedMessages ?? []),
-      {
-        id: item.id,
-        text: item.prompt,
-        attachments: [],
-        appRequestId: item.requestId,
-      },
-    ],
-    queueStatus: session.queueStatus === "paused" ? "paused" : "active",
-  };
+  return enqueueQueuedMessage(session, {
+    id: item.id,
+    text: item.prompt,
+    attachments: [],
+    appRequestId: item.requestId,
+  });
 }
 
 /** Block fields for a user turn that sends queued item `message`. */
