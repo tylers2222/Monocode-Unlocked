@@ -10,7 +10,9 @@ import { type AppShell, expect, type MountOptions, test } from "./app/fixture";
 // messages.send answered `delivery: "queue"` and monos.get looked like any
 // queue. `ade78-ship6.realdb.json` is reduced from the .backup the swap took
 // at 08:48:51 and from the database after it: both Monos, their chats on
-// omp:default, and General's real messages.
+// omp:default, and General's real messages. The model was not the cause: a
+// chat on a model id the catalog does not list still runs, so no send to it
+// is held.
 
 type Mono = {
   id: string;
@@ -34,8 +36,7 @@ const FORK = db.fork;
 const GENERAL = db.general;
 
 type ControlResponse =
-  | { ok: true; result: Record<string, unknown> }
-  | { ok: false; error: string };
+  { ok: true; result: Record<string, unknown> } | { ok: false; error: string };
 type OmpLine = { sessionId: string; type?: string; message?: string };
 declare global {
   interface Window {
@@ -43,6 +44,8 @@ declare global {
     controlReplies?: { id: string; response: ControlResponse }[];
     /** The real id of the next row mono_message_submit writes. */
     nextRowId?: string;
+    /** The row mono_message_submit wrote last. */
+    lastRow?: Record<string, unknown>;
     /** Each send_to Mono's chat, as mono_gate.rs reads it from `monos`. */
     monoChats?: Record<string, string>;
   }
@@ -119,6 +122,7 @@ const handlers: MountOptions["handlers"] = {
       delivery: "queue",
       slot: null,
     };
+    window.lastRow = row;
     return {
       outcome: "accepted",
       messages: [{ message: row, target: null }],
@@ -129,12 +133,26 @@ const handlers: MountOptions["handlers"] = {
   },
   mono_messages_unqueued: () => [],
   mono_messages_pending_notices: () => [],
+  // The idle receiver's queue pump opens a turn with the row it was sent.
+  mono_message_assign_slot: (_store, { turnId, kind }) => ({
+    message: {
+      ...window.lastRow,
+      delivery: kind,
+      slot: { turnId, deliveredAt: null },
+    },
+    target: null,
+  }),
+  mono_message_mark_delivery: () => null,
   "plugin:dialog|message": () => "Ok",
   resolve_project_location: (_store, { path }) => ({ path, identity: path }),
 };
 
 /** The chat map is set on every load, so it outlives `app.restart()`. */
-async function mountMonos(app: AppShell, page: Page) {
+async function mountMonos(
+  app: AppShell,
+  page: Page,
+  forkModel = FORK.chat.summary.model,
+) {
   await page.addInitScript(
     (chats) => {
       window.monoChats = chats;
@@ -144,11 +162,10 @@ async function mountMonos(app: AppShell, page: Page) {
   await app.mount(
     {
       projects: [...FORK.data.projects, ...GENERAL.data.projects],
-      sessions: [FORK, GENERAL].map(({ chat }) => ({
-        ...chat.summary,
-        createdAt: 1,
-        updatedAt: 1,
-      })),
+      sessions: [
+        { ...FORK.chat.summary, model: forkModel },
+        GENERAL.chat.summary,
+      ].map((summary) => ({ ...summary, createdAt: 1, updatedAt: 1 })),
       monos: [FORK, GENERAL].map(({ id, role, data }) => ({ id, role, data })),
     },
     { handlers },
@@ -159,7 +176,9 @@ async function openMono(page: Page, mono: Mono) {
   await page
     .getByRole("button", { name: new RegExp(`^${mono.data.name}, `) })
     .click();
-  await expect(page.getByPlaceholder(`Message ${mono.data.name}`)).toBeVisible();
+  await expect(
+    page.getByPlaceholder(`Message ${mono.data.name}`),
+  ).toBeVisible();
 }
 
 /** One `monocode app` call from General's running turn, as control.rs delivers it. */
@@ -267,7 +286,13 @@ test("ship 6: a Mono queue the relaunch paused is reported to its senders and in
       monoId: FORK.id,
     }),
   ).toMatchObject({ busy: false, queuePaused: true, model: "omp:default" });
-  const { monos } = (await fromGeneral(app, page, "list-after", "monos.list", {})) as {
+  const { monos } = (await fromGeneral(
+    app,
+    page,
+    "list-after",
+    "monos.list",
+    {},
+  )) as {
     monos: { id: string; queuePaused: boolean }[];
   };
   expect(
@@ -281,4 +306,45 @@ test("ship 6: a Mono queue the relaunch paused is reported to its senders and in
     await forkPrompts(page),
     "the paused queue holds the interrupted turn's Continue and every message",
   ).toEqual([]);
+});
+
+test("a Mono whose saved model the catalog does not list still runs the messages it is sent", async ({
+  app,
+  page,
+}) => {
+  await mountMonos(app, page, "omp:anthropic/claude-gone-1");
+  await openMono(page, GENERAL);
+  const { harnesses } = (await fromGeneral(
+    app,
+    page,
+    "models",
+    "models.list",
+    {},
+  )) as {
+    harnesses: { id: string; models: { id: string }[] }[];
+  };
+  expect(
+    harnesses.find(({ id }) => id === "omp")!.models.map(({ id }) => id),
+  ).not.toContain("omp:anthropic/claude-gone-1");
+
+  expect(await send(app, page, db.afterRelaunch)).toMatchObject({
+    delivery: "submit",
+  });
+  await expect
+    .poll(() => forkPrompts(page))
+    .toEqual([expect.stringContaining(db.afterRelaunch.body.slice(0, 40))]);
+  expect(
+    await page.evaluate(
+      (chat) =>
+        window
+          .appBackend!.calls.filter(
+            ({ command, args }) =>
+              command === "harness_spawn" &&
+              (args as { sessionId: string }).sessionId === chat,
+          )
+          .map(({ args }) => (args as { args: string[] }).args),
+      FORK.data.sessionId,
+    ),
+    "omp gets the saved model and reports any failure as a turn error",
+  ).toEqual([expect.arrayContaining(["--model", "anthropic/claude-gone-1"])]);
 });

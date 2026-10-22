@@ -138,6 +138,7 @@ const captainListing = {
   projects: [],
   busy: false,
   queued: 0,
+  queuePaused: false,
   hasConversation: true,
   self: true,
 };
@@ -148,6 +149,7 @@ const shroomListing = {
   projects: ["/code/app"],
   busy: true,
   queued: 1,
+  queuePaused: false,
   hasConversation: true,
   updatedAt: 1_760_000_000_000,
   self: false,
@@ -166,6 +168,7 @@ it("lists every Mono with its role to a Mono with no projects and marks only its
         projects: [],
         busy: false,
         queued: 0,
+        queuePaused: false,
         hasConversation: false,
         self: false,
       },
