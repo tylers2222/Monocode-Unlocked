@@ -682,9 +682,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             mono_chat::mono_menu_bar_set_visible,
             mono_completions::mono_completions_claim,
-            mono_completions::mono_completions_save,
+            mono_completions::mono_completions_hold,
             mono_completions::mono_completions_deliver,
-            mono_completions::mono_completions_remove,
             chat_background::save_chat_background,
             chat_background::remove_chat_background,
             chat_background::save_project_chat_background,

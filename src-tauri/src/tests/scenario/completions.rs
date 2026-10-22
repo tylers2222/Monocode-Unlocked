@@ -42,8 +42,8 @@ fn claim(world: &World, window: &str, run: &str) -> Vec<Value> {
     completions::claim(&world.conn(), Owner { window, run }, world.now()).unwrap()
 }
 
-fn save(world: &World, window: &str, run: &str, entries: &[Value]) {
-    completions::save(&world.conn(), Owner { window, run }, world.now(), entries).unwrap();
+fn hold(world: &World, window: &str, run: &str, entries: &[Value]) {
+    completions::hold(&world.conn(), Owner { window, run }, world.now(), entries).unwrap();
 }
 
 fn deliver(world: &World, window: &str, run: &str, requests: &[&str]) -> bool {
@@ -77,7 +77,7 @@ fn a_waiting_result_reaches_one_window_once_across_kills_and_reloads() {
         claim(&world, "main", "run-1").is_empty(),
         "a new database holds nothing"
     );
-    save(
+    hold(
         &world,
         "main",
         "run-1",
@@ -103,7 +103,7 @@ fn a_waiting_result_reaches_one_window_once_across_kills_and_reloads() {
         "a reloaded window takes back what its earlier boot held"
     );
 
-    save(&world, "main", "run-2", &[saved("a", Some("stolen"))]);
+    hold(&world, "main", "run-2", &[saved("a", Some("stolen"))]);
     let held = claim(&world, "window-2", "run-2");
     assert!(
         held[0].get("result").is_none(),
@@ -153,7 +153,7 @@ fn a_waiting_result_reaches_one_window_once_across_kills_and_reloads() {
 fn a_closed_windows_results_go_to_the_next_window_that_boots() {
     let world = World::new("ade89-closed-window");
     assert!(claim(&world, "window-4", "run-1").is_empty());
-    save(&world, "window-4", "run-1", &[saved("c", None)]);
+    hold(&world, "window-4", "run-1", &[saved("c", None)]);
     assert!(
         claim(&world, "main", "run-1").is_empty(),
         "a live window keeps its results"
@@ -168,12 +168,12 @@ fn a_closed_windows_results_go_to_the_next_window_that_boots() {
         ["c"],
         "the next window to boot takes them"
     );
-    let main = Owner {
-        window: "main",
-        run: "run-1",
-    };
-    completions::remove(&world.conn(), main, &["c".to_string()]).unwrap();
-    assert_eq!(rows(&world), 0, "a dismissed result is gone");
+    hold(&world, "main", "run-1", &[saved("d", None)]);
+    assert_eq!(
+        ids(&claim(&world, "main", "run-1")),
+        ["d"],
+        "a hold replaces what the window held"
+    );
 }
 
 #[test]
@@ -241,7 +241,7 @@ fn the_first_claim_moves_the_results_a_quit_kept_in_the_workspace_row() {
 fn two_windows_booting_at_once_take_each_result_once() {
     let world = World::new("ade89-race");
     let many: Vec<Value> = (0..40).map(|n| saved(&format!("r{n}"), None)).collect();
-    completions::save(
+    completions::hold(
         &world.conn(),
         Owner {
             window: "main",
@@ -296,11 +296,11 @@ fn two_windows_booting_at_once_take_each_result_once() {
     );
 }
 
-/// The four commands as a window calls them, through Tauri's argument binding,
+/// The three commands as a window calls them, through Tauri's argument binding,
 /// and a closed window handing its rows on (`window_closed`).
 #[cfg(not(windows))]
 #[test]
-fn each_window_claims_saves_and_delivers_its_own_results_through_the_commands() {
+fn each_window_claims_holds_and_delivers_its_own_results_through_the_commands() {
     use crate::mono_messages::tests::invoke_command;
     use crate::session_store::SessionStore;
 
@@ -310,9 +310,8 @@ fn each_window_claims_saves_and_delivers_its_own_results_through_the_commands() 
         .manage(completions::Run::default())
         .invoke_handler(tauri::generate_handler![
             completions::mono_completions_claim,
-            completions::mono_completions_save,
-            completions::mono_completions_deliver,
-            completions::mono_completions_remove
+            completions::mono_completions_hold,
+            completions::mono_completions_deliver
         ])
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
@@ -338,10 +337,14 @@ fn each_window_claims_saves_and_delivers_its_own_results_through_the_commands() 
 
     call(
         &main,
-        "mono_completions_save",
+        "mono_completions_hold",
         json!({ "saved": [saved("a", None)] }),
     );
-    assert_eq!(held(&main), ["a"], "the saving window holds its result");
+    assert_eq!(
+        held(&main),
+        ["a"],
+        "the holding window claims its result back"
+    );
     assert!(held(&other).is_empty(), "the other window gets nothing");
     assert!(!deliver(&other, "a"), "the other window cannot deliver it");
     assert!(deliver(&main, "a"), "the holder delivers it");
@@ -349,19 +352,18 @@ fn each_window_claims_saves_and_delivers_its_own_results_through_the_commands() 
 
     call(
         &main,
-        "mono_completions_save",
+        "mono_completions_hold",
         json!({ "saved": [saved("b", None)] }),
     );
-    call(
-        &main,
-        "mono_completions_remove",
-        json!({ "requestIds": ["b"] }),
+    call(&main, "mono_completions_hold", json!({ "saved": [] }));
+    assert!(
+        held(&main).is_empty(),
+        "a result the window no longer owes is gone"
     );
-    assert!(held(&main).is_empty(), "a removed result is gone");
 
     call(
         &main,
-        "mono_completions_save",
+        "mono_completions_hold",
         json!({ "saved": [saved("c", None)] }),
     );
     completions::window_closed(app.handle(), "main");

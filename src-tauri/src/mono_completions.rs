@@ -121,9 +121,9 @@ fn adopt_workspace_row(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Writes results the window holds: new ones, and ones whose turn ended.
-/// A row another window holds is left as it is.
-pub(crate) fn save(
+/// What the window owes now: its rows become exactly `saved`, in one
+/// commit. A row another window holds is left as it is.
+pub(crate) fn hold(
     conn: &Connection,
     owner: Owner,
     now: i64,
@@ -131,12 +131,15 @@ pub(crate) fn save(
 ) -> Result<(), String> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM mono_completions WHERE window_label = ?1 AND window_run = ?2",
+        params![owner.window, owner.run],
+    )
+    .map_err(|e| e.to_string())?;
     for entry in saved {
         tx.execute(
             "INSERT INTO mono_completions (request_id, saved_json, window_label, window_run, claimed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT (request_id) DO UPDATE SET saved_json = excluded.saved_json
-             WHERE window_label = excluded.window_label AND window_run = excluded.window_run",
+             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (request_id) DO NOTHING",
             params![request_id(entry)?, entry.to_string(), owner.window, owner.run, now],
         )
         .map_err(|e| e.to_string())?;
@@ -170,30 +173,14 @@ pub(crate) fn deliver(
         "INSERT OR IGNORE INTO mono_completion_deliveries (group_id, delivered_at) VALUES (?1, ?2)",
         params![group_id, now],
     )? == 1;
-    remove_in(&tx, owner, request_ids)?;
-    tx.commit()?;
-    Ok(marked)
-}
-
-/// Results the window will not send: dismissed, or reported in another notice.
-pub(crate) fn remove(
-    conn: &Connection,
-    owner: Owner,
-    request_ids: &[String],
-) -> rusqlite::Result<()> {
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    remove_in(&tx, owner, request_ids)?;
-    tx.commit()
-}
-
-fn remove_in(tx: &Transaction, owner: Owner, request_ids: &[String]) -> rusqlite::Result<()> {
     for id in request_ids {
         tx.execute(
             "DELETE FROM mono_completions WHERE request_id = ?1 AND window_label = ?2 AND window_run = ?3",
             params![id, owner.window, owner.run],
         )?;
     }
-    Ok(())
+    tx.commit()?;
+    Ok(marked)
 }
 
 /// A closed window's rows go back to the next window that boots.
@@ -238,7 +225,7 @@ pub fn mono_completions_claim<R: Runtime>(
 }
 
 #[tauri::command(async)]
-pub fn mono_completions_save<R: Runtime>(
+pub fn mono_completions_hold<R: Runtime>(
     window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
     run: State<'_, Run>,
@@ -248,7 +235,7 @@ pub fn mono_completions_save<R: Runtime>(
         window: window.label(),
         run: &run.0,
     };
-    save(
+    hold(
         &*store.lock_conn()?,
         owner,
         crate::mono_messages::now_ms(),
@@ -276,18 +263,4 @@ pub fn mono_completions_deliver<R: Runtime>(
         &request_ids,
     )
     .map_err(|e| e.to_string())
-}
-
-#[tauri::command(async)]
-pub fn mono_completions_remove<R: Runtime>(
-    window: WebviewWindow<R>,
-    store: State<'_, SessionStore>,
-    run: State<'_, Run>,
-    request_ids: Vec<String>,
-) -> Result<(), String> {
-    let owner = Owner {
-        window: window.label(),
-        run: &run.0,
-    };
-    remove(&*store.lock_conn()?, owner, &request_ids).map_err(|e| e.to_string())
 }
