@@ -10,6 +10,8 @@
 mod agents;
 mod asks;
 mod clock;
+#[cfg(unix)]
+mod d4_deny;
 mod s0_baseline;
 mod s1_levels;
 mod world;
