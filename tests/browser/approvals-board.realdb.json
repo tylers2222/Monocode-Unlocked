@@ -1,0 +1,562 @@
+{
+  "now": 1792450440000,
+  "monos": [
+    {
+      "id": "d79d140b-66e7-4844-900d-5719c2663344",
+      "role": "giga",
+      "sortOrder": 0,
+      "data": {
+        "color": "hsl(12 80% 58%)",
+        "gigaSlug": "monocode-general",
+        "mascot": "invader",
+        "name": "Monocode General",
+        "projects": [
+          "/Users/test/MonoCode"
+        ],
+        "sessionId": "f91c6b52-8120-44dd-8845-24385da17370"
+      }
+    },
+    {
+      "id": "111350ab-c382-42bd-b986-17797290569b",
+      "role": "mono",
+      "sortOrder": 1,
+      "data": {
+        "color": "hsl(211 92% 62%)",
+        "mascot": "rocket",
+        "name": "Os_proj_2_orchestrator",
+        "projects": [
+          "/Users/test/Desktop/os_project_2"
+        ],
+        "sessionId": "8248fb99-fa97-4a4a-9e08-34085dee0c68"
+      }
+    },
+    {
+      "id": "915a5bcc-1d14-4c1f-aa39-2c34438c578e",
+      "role": "mono",
+      "sortOrder": 2,
+      "data": {
+        "color": "hsl(45 90% 55%)",
+        "mascot": "ghost",
+        "name": "Modelist Orchestrator",
+        "projects": [
+          "/Users/test/Desktop/Evelyn Faye Coding/Modelist"
+        ],
+        "sessionId": "1919c078-c7e8-44b1-aa62-1b036c2adc29"
+      }
+    },
+    {
+      "id": "a1f83f52-3833-48d3-94c4-f501dca89a49",
+      "role": "mono",
+      "sortOrder": 3,
+      "data": {
+        "color": "hsl(25 85% 58%)",
+        "mascot": "robot",
+        "name": "Vibtra Orchestrator",
+        "projects": [
+          "/Users/test/Desktop/vibtra"
+        ],
+        "sessionId": "975a3c7c-d9d1-4ba6-ba81-f9e02bd66665"
+      }
+    },
+    {
+      "id": "079e3605-b6d3-455a-a0a1-821dcb3dd037",
+      "role": "mono",
+      "sortOrder": 4,
+      "data": {
+        "color": "hsl(142 55% 50%)",
+        "mascot": "cat",
+        "name": "Content Factory",
+        "projects": [
+          "/Users/test/Desktop/content-factory"
+        ],
+        "sessionId": "cf8a3232-b680-47a6-9cf4-eeb1530a25e1"
+      }
+    },
+    {
+      "id": "d5826daa-dd3a-45cd-920a-618df2d9a842",
+      "role": "mono",
+      "sortOrder": 5,
+      "data": {
+        "color": "hsl(330 70% 62%)",
+        "mascot": "skull",
+        "name": "MonoCode Fork Orchestrator",
+        "projects": [
+          "/Users/test/Desktop/monocode"
+        ],
+        "sessionId": "14746f73-915f-4a39-95aa-c6973a96296e"
+      }
+    },
+    {
+      "id": "09d66d3c-76a8-4a91-9203-7f4c234e3210",
+      "role": "mono",
+      "sortOrder": 6,
+      "data": {
+        "color": "hsl(280 55% 62%)",
+        "mascot": "frog",
+        "name": "Mono Reviewer",
+        "projects": [
+          "/Users/test/Desktop/mono-review"
+        ],
+        "sessionId": "79188861-d544-4289-ab88-7f59c8fcf7d0"
+      }
+    },
+    {
+      "id": "1bc853ea-8a85-47f8-a638-91bab49ec04b",
+      "role": "mono",
+      "sortOrder": 7,
+      "data": {
+        "color": "hsl(175 55% 48%)",
+        "mascot": "crab",
+        "name": "Random Orchestrator",
+        "projects": [
+          "/Users/test/Desktop/random"
+        ],
+        "sessionId": "8655d9d4-2dbc-4a6b-98be-c603e4550e98"
+      }
+    }
+  ],
+  "projects": [
+    "/Users/test/MonoCode",
+    "/Users/test/Desktop/os_project_2",
+    "/Users/test/Desktop/Evelyn Faye Coding/Modelist",
+    "/Users/test/Desktop/vibtra",
+    "/Users/test/Desktop/content-factory",
+    "/Users/test/Desktop/monocode",
+    "/Users/test/Desktop/mono-review",
+    "/Users/test/Desktop/random"
+  ],
+  "approvals": [
+    {
+      "id": "2dfe8bd6-04a3-4b37-8522-9f001ca0d3e9",
+      "number": 1,
+      "projectPath": "/Users/test/Desktop/monocode",
+      "heading": "Bump Playwright to 1.49",
+      "summary": "The 1.49 release fixes the WebKit focus bug two specs work around.",
+      "tradeoffs": {
+        "pros": [
+          "Two workarounds go"
+        ],
+        "cons": [
+          "A new browser download in CI"
+        ]
+      },
+      "options": [],
+      "urgency": "not_blocking",
+      "links": [],
+      "origin": "MonoCode Fork Orchestrator",
+      "requestedBy": {
+        "id": "d79d140b-66e7-4844-900d-5719c2663344",
+        "name": "Monocode General"
+      },
+      "createdAt": 1792227600000,
+      "status": {
+        "state": "withdrawn",
+        "withdrawnAt": 1792253520000
+      }
+    },
+    {
+      "id": "98c0feb5-f81e-4e51-b6d9-8cbabe6032e7",
+      "number": 2,
+      "projectPath": "/Users/test/Desktop/monocode",
+      "heading": "Store the Giga and Mono discussion on the card",
+      "summary": "Keep the full back-and-forth between the Giga and the Mono on the card, so the board shows why it was filed.",
+      "tradeoffs": {
+        "pros": [
+          "The board explains itself"
+        ],
+        "cons": [
+          "The card grows without limit"
+        ]
+      },
+      "options": [],
+      "urgency": "not_blocking",
+      "links": [],
+      "origin": "MonoCode Fork Orchestrator",
+      "requestedBy": {
+        "id": "d79d140b-66e7-4844-900d-5719c2663344",
+        "name": "Monocode General"
+      },
+      "createdAt": 1792315800000,
+      "status": {
+        "state": "decided",
+        "verdict": "rejected",
+        "decidedAt": 1792345860000,
+        "note": "No. The Giga has the context; the board stays small.",
+        "chosen": [],
+        "undelivered": "removed"
+      }
+    },
+    {
+      "id": "eddeaaf9-7dd4-4f9d-a76b-7b9d90a9457e",
+      "number": 3,
+      "projectPath": "/Users/test/Desktop/monocode",
+      "heading": "Index approvals on (project_id, status) only",
+      "summary": "The ticket asks for one index. Withdraw and update also look up a card by its filer.",
+      "tradeoffs": {
+        "pros": [
+          "One index to keep"
+        ],
+        "cons": [
+          "Filer lookups scan the project"
+        ]
+      },
+      "options": [
+        {
+          "label": "Index (project_id, status) only",
+          "description": null,
+          "recommended": true
+        },
+        {
+          "label": "Also index (requested_by, status)",
+          "description": null,
+          "recommended": false
+        }
+      ],
+      "urgency": "not_blocking",
+      "links": [],
+      "origin": "Mono Reviewer",
+      "requestedBy": {
+        "id": "d79d140b-66e7-4844-900d-5719c2663344",
+        "name": "Monocode General"
+      },
+      "createdAt": 1792321200000,
+      "status": {
+        "state": "decided",
+        "verdict": "changes_requested",
+        "decidedAt": 1792346700000,
+        "note": "Take option 2 as well, then file it again with the query plan from the copied database.",
+        "chosen": [
+          "Also index (requested_by, status)"
+        ],
+        "undelivered": null
+      }
+    },
+    {
+      "id": "b118cc5c-c596-4279-9ba0-4c7c6808c37c",
+      "number": 4,
+      "projectPath": "/Users/test/Desktop/monocode",
+      "heading": "Use a fake clock in the E2E suite",
+      "summary": "Two specs wait in real time for the badge to refresh.",
+      "tradeoffs": {
+        "pros": [
+          "No real waits"
+        ],
+        "cons": [
+          "Every spec sets the clock"
+        ]
+      },
+      "options": [],
+      "urgency": "blocking",
+      "links": [],
+      "origin": "Mono Reviewer",
+      "requestedBy": {
+        "id": "d79d140b-66e7-4844-900d-5719c2663344",
+        "name": "Monocode General"
+      },
+      "createdAt": 1792422000000,
+      "status": {
+        "state": "decided",
+        "verdict": "approved",
+        "decidedAt": 1792443240000,
+        "note": null,
+        "chosen": [],
+        "undelivered": "waiting"
+      }
+    },
+    {
+      "id": "966b7bf3-d938-4419-a350-ff7f46c1dae6",
+      "number": 5,
+      "projectPath": "/Users/test/Desktop/monocode",
+      "heading": "Show decided cards for 30 days, then hide them?",
+      "summary": "Decided cards stay on the board for good, so after a month the Decided list gets long. Hidden cards stay in the table; only the board stops listing them.",
+      "tradeoffs": {
+        "pros": [
+          "The board stays short"
+        ],
+        "cons": [
+          "Old decisions need a second click"
+        ]
+      },
+      "options": [
+        {
+          "label": "Hide after 30 days",
+          "description": "A “Show older” row at the end of Decided.",
+          "recommended": true
+        },
+        {
+          "label": "Keep them all",
+          "description": "Nothing hidden; the list grows.",
+          "recommended": false
+        }
+      ],
+      "urgency": "not_blocking",
+      "links": [
+        {
+          "kind": "linear",
+          "title": "ADE-53",
+          "url": "https://linear.app/adebuild/issue/ADE-53"
+        }
+      ],
+      "origin": "MonoCode Fork Orchestrator",
+      "requestedBy": {
+        "id": "d79d140b-66e7-4844-900d-5719c2663344",
+        "name": "Monocode General"
+      },
+      "createdAt": 1792446840000,
+      "status": {
+        "state": "open"
+      }
+    },
+    {
+      "id": "25c92d27-72fa-46d7-9e8b-e2f0abb95552",
+      "number": 6,
+      "projectPath": "/Users/test/Desktop/monocode",
+      "heading": "Keep Playwright at one worker in CI?",
+      "summary": "CI runs the E2E suite with --workers=1 to match the machine rule. A full run takes 14 minutes. Two workers cut it to 8, but two specs share the copied app database and flake about one run in ten.",
+      "tradeoffs": {
+        "pros": [
+          "No flakes from the shared database copy",
+          "Same setting locally and in CI"
+        ],
+        "cons": [
+          "14-minute runs on every push",
+          "Slower feedback on the S6 E2E PRs"
+        ]
+      },
+      "options": [],
+      "urgency": "not_blocking",
+      "links": [
+        {
+          "kind": "pr",
+          "title": "PR #112 CI config",
+          "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/112"
+        }
+      ],
+      "origin": "Mono Reviewer",
+      "requestedBy": {
+        "id": "d79d140b-66e7-4844-900d-5719c2663344",
+        "name": "Monocode General"
+      },
+      "createdAt": 1792450140000,
+      "status": {
+        "state": "open"
+      }
+    },
+    {
+      "id": "59d3ab0b-22cb-48ab-b3b7-5671767488e2",
+      "number": 7,
+      "projectPath": "/Users/test/Desktop/monocode",
+      "heading": "Wait for PR #109 before the approvals tool is built?",
+      "summary": "The approvals_board tool must know which Giga called it. PR #109 adds that caller identity, but MonoCode 2’s Fork Orchestrator owns it and it is still in review. S1 is done; S2 and S3 wait on this.",
+      "tradeoffs": {
+        "pros": [
+          "One caller identity and one gate, as the ticket asks",
+          "No rebase or second code path to delete later"
+        ],
+        "cons": [
+          "S2 and S3 slip until #109 merges, likely a day",
+          "This instance idles on account 1 meanwhile"
+        ]
+      },
+      "options": [
+        {
+          "label": "Wait for #109, then build S2 on its caller identity",
+          "description": "S2 and S3 start when #109 merges. One gate, one identity path.",
+          "recommended": true
+        },
+        {
+          "label": "Build S2 on tyler/main now, rebase onto #109 later",
+          "description": "No wait. S2 reads the session id itself until #109 lands, then switches.",
+          "recommended": false
+        },
+        {
+          "label": "Split the identity part of #109 into its own small PR",
+          "description": "MonoCode 2 opens it today; both instances build on it.",
+          "recommended": false
+        }
+      ],
+      "urgency": "blocking",
+      "links": [
+        {
+          "kind": "pr",
+          "title": "PR #109 caller identity",
+          "url": "https://github.com/tylers2222/Monocode-Unlocked/pull/109"
+        },
+        {
+          "kind": "linear",
+          "title": "ADE-51",
+          "url": "https://linear.app/adebuild/issue/ADE-51"
+        },
+        {
+          "kind": "doop",
+          "title": "Approvals board frames",
+          "url": "https://doop.design/c/oRuRCkta7A"
+        }
+      ],
+      "origin": "MonoCode Fork Orchestrator",
+      "requestedBy": {
+        "id": "d79d140b-66e7-4844-900d-5719c2663344",
+        "name": "Monocode General"
+      },
+      "createdAt": 1792449720000,
+      "status": {
+        "state": "open"
+      }
+    },
+    {
+      "id": "43db1c5e-0aa0-4bca-a56b-e57446047a17",
+      "number": 8,
+      "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist",
+      "heading": "Keep the model picker in v1?",
+      "summary": "The picker works for flat configs only.",
+      "tradeoffs": {
+        "pros": [
+          "Users choose a model"
+        ],
+        "cons": [
+          "Nested configs fail"
+        ]
+      },
+      "options": [
+        {
+          "label": "Keep it",
+          "description": null,
+          "recommended": true
+        },
+        {
+          "label": "Hide it",
+          "description": null,
+          "recommended": false
+        }
+      ],
+      "urgency": "not_blocking",
+      "links": [],
+      "origin": "Modelist Orchestrator",
+      "requestedBy": {
+        "id": null,
+        "name": "Modelist General"
+      },
+      "createdAt": 1792414440000,
+      "status": {
+        "state": "decided",
+        "verdict": "approved",
+        "decidedAt": 1792416000000,
+        "note": "Told the Modelist Orchestrator myself.",
+        "chosen": [
+          "Keep it"
+        ],
+        "undelivered": null
+      }
+    },
+    {
+      "id": "572885f1-c107-423e-9bad-86c850ee2156",
+      "number": 9,
+      "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist",
+      "heading": "Drop the CSV export from Modelist v1?",
+      "summary": "The CSV export breaks on nested model configs and needs a flattening step nobody has designed. JSON export already works. Modelist Orchestrator’s worker stopped at the export screen.",
+      "tradeoffs": {
+        "pros": [
+          "v1 ships this week",
+          "One export format to test"
+        ],
+        "cons": [
+          "Two early users asked for CSV by name",
+          "CSV comes back as v1.1 work"
+        ]
+      },
+      "options": [
+        {
+          "label": "Drop CSV, ship JSON only",
+          "description": "Add CSV in v1.1 with a designed flattening.",
+          "recommended": true
+        },
+        {
+          "label": "Keep CSV, slip v1 a week",
+          "description": "Design the flattening first.",
+          "recommended": false
+        }
+      ],
+      "urgency": "blocking",
+      "links": [
+        {
+          "kind": "linear",
+          "title": "ADE-38",
+          "url": "https://linear.app/adebuild/issue/ADE-38"
+        }
+      ],
+      "origin": "Modelist Orchestrator",
+      "requestedBy": {
+        "id": null,
+        "name": "Modelist General"
+      },
+      "createdAt": 1792353600000,
+      "status": {
+        "state": "open"
+      }
+    },
+    {
+      "id": "2b1a375f-42c5-4ba0-b111-b77b45d567bc",
+      "number": 10,
+      "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist",
+      "heading": "Pin the model list to one provider API version?",
+      "summary": "The model list changes whenever a provider ships a model, and two screenshots in the docs went stale.",
+      "tradeoffs": {
+        "pros": [
+          "The docs stay right"
+        ],
+        "cons": [
+          "New models wait for a release"
+        ]
+      },
+      "options": [],
+      "urgency": "not_blocking",
+      "links": [],
+      "origin": "Modelist Orchestrator",
+      "requestedBy": {
+        "id": null,
+        "name": "Modelist General"
+      },
+      "createdAt": 1792415640000,
+      "status": {
+        "state": "decided",
+        "verdict": "approved",
+        "decidedAt": 1792419000000,
+        "note": null,
+        "chosen": [],
+        "undelivered": "waiting"
+      }
+    },
+    {
+      "id": "e7abf279-6866-42f2-beec-43acb7107207",
+      "number": 11,
+      "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist",
+      "heading": "Rename presets to profiles in v1?",
+      "summary": "Two users called presets profiles in feedback.",
+      "tradeoffs": {
+        "pros": [
+          "Matches what users say"
+        ],
+        "cons": [
+          "Every doc page changes"
+        ]
+      },
+      "options": [],
+      "urgency": "not_blocking",
+      "links": [],
+      "origin": "Modelist Orchestrator",
+      "requestedBy": {
+        "id": null,
+        "name": "Modelist General"
+      },
+      "createdAt": 1792416840000,
+      "status": {
+        "state": "decided",
+        "verdict": "rejected",
+        "decidedAt": 1792423800000,
+        "note": "No. Presets is the word in the docs.",
+        "chosen": [],
+        "undelivered": "removed"
+      }
+    }
+  ]
+}

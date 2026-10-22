@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { normalizeProjectPath } from "../../projects/model/recents";
 import { countBadge } from "../../../shared/lib/numbers";
+import type { Verdict } from "./boardDecision";
 
 export type Urgency = "blocking" | "not_blocking";
 
@@ -34,19 +35,21 @@ export type Approval = ApprovalCard & {
   requestedBy: { id: string | null; name: string };
   /** Unix milliseconds, as are the status times. */
   createdAt: number;
-  status:
-    | { state: "open" }
-    | { state: "withdrawn"; withdrawnAt: number }
-    | {
-        state: "decided";
-        verdict: "approved" | "rejected" | "changes_requested";
-        decidedAt: number;
-        note: string | null;
-        chosen: string[];
-        /** Dropped: sent again to the Giga's next chat, or removed by the user. */
-        undelivered: "waiting" | "removed" | null;
-      };
+  status: ApprovalStatus;
 };
+
+export type ApprovalStatus =
+  | { state: "open" }
+  | { state: "withdrawn"; withdrawnAt: number }
+  | {
+      state: "decided";
+      verdict: "approved" | "rejected" | "changes_requested";
+      decidedAt: number;
+      note: string | null;
+      chosen: string[];
+      /** Dropped: sent again to the Giga's next chat, or removed by the user. */
+      undelivered: "waiting" | "removed" | null;
+    };
 
 export const CARD_FIELDS = [
   "heading",
@@ -91,7 +94,11 @@ function cardList<T>(
 }
 
 function approvalOption(value: unknown, name: string): ApprovalOption {
-  const option = onlyFields(value, name, ["label", "description", "recommended"]);
+  const option = onlyFields(value, name, [
+    "label",
+    "description",
+    "recommended",
+  ]);
   const { recommended = false } = option;
   if (typeof recommended !== "boolean")
     throw new Error(`${name}.recommended must be a boolean`);
@@ -170,12 +177,201 @@ export type OpenCounts = { total: number; byProject: Record<string, number> };
 
 export type ApprovalsBadge = { label: string; pill?: string };
 
+export type Closed = Verdict | "withdrawn";
+
+export type ClosedStatus = Exclude<ApprovalStatus, { state: "open" }>;
+
+export type ClosedApproval = Approval & { status: ClosedStatus };
+
 export function openCounts(): Promise<OpenCounts> {
   return invoke("approvals_open_counts");
+}
+
+export function listApprovals(projectPath: string): Promise<Approval[]> {
+  return invoke("approvals_list", { projectPath });
 }
 
 export function approvalsBadge(open: number): ApprovalsBadge {
   return open > 0
     ? { label: `Approvals, ${open} open`, pill: countBadge(open) }
     : { label: "Approvals" };
+}
+
+/** Its Giga was deleted after it filed: `requested_by` is null (ON DELETE SET NULL). */
+export function filerRemoved(card: Approval): boolean {
+  return card.requestedBy.id === null;
+}
+
+export function closedAs(status: ClosedStatus): Closed {
+  return status.state === "decided" ? status.verdict : "withdrawn";
+}
+
+export function closedAt(status: ClosedStatus): number {
+  return status.state === "decided" ? status.decidedAt : status.withdrawnAt;
+}
+
+export type Board = {
+  open: Approval[];
+  closed: ClosedApproval[];
+  summary: string;
+};
+
+/** `approvals_list` sends open cards first (blocking, then newest) and the rest after; the board keeps that order. */
+export function board(cards: readonly Approval[]): Board {
+  const open = cards.filter((card) => card.status.state === "open");
+  const closed = cards.filter(
+    (card): card is ClosedApproval => card.status.state !== "open",
+  );
+  const blocking = open.filter((card) => card.urgency === "blocking").length;
+  const summary = `${open.length} open · ${blocking} blocking · ${closed.length} decided`;
+  return { open, closed, summary };
+}
+
+/**
+ * Where the decision went (ADE-52 `undelivered`): `waiting` is sent again to
+ * the Giga's next chat (A·5b), `unqueued` was removed from the Giga's queue by
+ * the user and is never sent (A·5c).
+ */
+export type Delivery =
+  "sent" | "waiting" | "unqueued" | "filer_removed" | "withdrawn";
+
+export function delivery(card: ClosedApproval): Delivery {
+  if (card.status.state === "withdrawn") return "withdrawn";
+  if (filerRemoved(card)) return "filer_removed";
+  if (card.status.undelivered === "removed") return "unqueued";
+  return card.status.undelivered ?? "sent";
+}
+
+const clock = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit",
+});
+const date = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+});
+
+const time = (at: number) => clock.format(at).toLowerCase();
+
+function daysBefore(at: number, now: number): number {
+  const midnight = (ms: number) => new Date(ms).setHours(0, 0, 0, 0);
+  return Math.round((midnight(now) - midnight(at)) / 86_400_000);
+}
+
+export const stamp = (at: number) => `${date.format(at)}, ${time(at)}`;
+
+export function dayOrTime(at: number, now: number): string {
+  const days = daysBefore(at, now);
+  if (days === 0) return time(at);
+  return days === 1 ? "yesterday" : date.format(at);
+}
+
+export function ago(at: number, now: number): string {
+  const minutes = Math.floor((now - at) / 60_000);
+  if (minutes < 60) return `${Math.max(1, minutes)}m ago`;
+  return daysBefore(at, now) === 0
+    ? `${Math.floor(minutes / 60)}h ago`
+    : dayOrTime(at, now);
+}
+
+export const deliveryTime = (at: number, now: number) =>
+  daysBefore(at, now) === 0 ? time(at) : stamp(at);
+
+export function decide(
+  card: Approval,
+  verdict: Verdict,
+  comment: string,
+  chosen: string[],
+): Promise<Approval> {
+  return invoke("approvals_decide", {
+    id: card.id,
+    verdict,
+    note: comment.trim() ? comment : null,
+    chosen,
+  });
+}
+
+/** The decide refusals the board answers on screen (frame A·8). */
+export type DecideFailure =
+  | { code: "filer_has_no_chat" }
+  | { code: "approval_not_open" }
+  | { code: "decision_too_long"; chars: number; max: number };
+
+/** Rust counts the delivered body (decide.rs `decision_text`); the board only reads its numbers. */
+const TOO_LONG = /^decision_too_long:(\d+):(\d+)$/;
+
+export function decideFailure(error: unknown): DecideFailure | null {
+  if (error === "filer_has_no_chat" || error === "approval_not_open")
+    return { code: error };
+  const tooLong = typeof error === "string" ? TOO_LONG.exec(error) : null;
+  return tooLong
+    ? {
+        code: "decision_too_long",
+        chars: Number(tooLong[1]),
+        max: Number(tooLong[2]),
+      }
+    : null;
+}
+
+export type ApproveButton = { enabled: boolean; label: string };
+
+export function approveButton(options: number, ticked: number): ApproveButton {
+  if (options === 0) return { enabled: true, label: "Approve" };
+  if (ticked === 0) return { enabled: false, label: "Approve" };
+  return {
+    enabled: true,
+    label: `Approve ${ticked} option${ticked === 1 ? "" : "s"}`,
+  };
+}
+
+/**
+ * Ticks and the cursor by option label: labels are unique per card and are
+ * its only option id, so a Giga update never moves a tick to another option.
+ */
+export type Picker = { cursor: string | null; ticked: ReadonlySet<string> };
+
+export const OPEN_PICKER: Picker = { cursor: null, ticked: new Set() };
+
+/** The ticked labels the card still has, in its order. */
+export function chosen(
+  picker: Picker,
+  options: readonly ApprovalOption[],
+): string[] {
+  return options
+    .map((option) => option.label)
+    .filter((label) => picker.ticked.has(label));
+}
+
+/** The cursor's row; before any key or tick, the Giga's recommended row. */
+export function cursorRow(
+  picker: Picker,
+  options: readonly ApprovalOption[],
+): number {
+  const at = options.findIndex((option) => option.label === picker.cursor);
+  if (at >= 0) return at;
+  return Math.max(
+    0,
+    options.findIndex((option) => option.recommended),
+  );
+}
+
+export function tick(picker: Picker, label: string): Picker {
+  const ticked = new Set(picker.ticked);
+  if (!ticked.delete(label)) ticked.add(label);
+  return { cursor: label, ticked };
+}
+
+export function pickerKey(
+  picker: Picker,
+  key: string,
+  options: readonly ApprovalOption[],
+): Picker | null {
+  if (options.length === 0) return null;
+  const row = cursorRow(picker, options);
+  const to = (at: number) => ({ ...picker, cursor: options[at].label });
+  if (key === "ArrowDown") return to(Math.min(options.length - 1, row + 1));
+  if (key === "ArrowUp") return to(Math.max(0, row - 1));
+  if (key === " ") return tick(picker, options[row].label);
+  const option = /^[1-9]$/.test(key) ? options[Number(key) - 1] : undefined;
+  return option ? tick(picker, option.label) : null;
 }
