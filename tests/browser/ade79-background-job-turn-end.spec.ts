@@ -179,8 +179,12 @@ async function expectTurnEnded(page: Page, text: string, reply: Reply) {
   await soft
     .poll(() => savedReply(page, reply), `"${TEXT[reply]}" is saved at once`)
     .toBe(true);
-  const block = await opener(page, text);
-  soft(block?.durationMs, `the turn "${text}" has its duration`).toBeDefined();
+  await soft
+    .poll(
+      async () => (await opener(page, text))?.durationMs,
+      `the turn "${text}" has its duration`,
+    )
+    .toBeDefined();
 }
 
 needsOmp();
