@@ -600,14 +600,26 @@ pub fn session_set_archived(
     archived: bool,
 ) -> Result<(), String> {
     validate_id(&session_id, "session")?;
-    let archive = |conn: &Connection| set_archived(conn, &session_id, archived);
     if archived {
-        crate::control::end_session(&app, &session_id, archive)
+        crate::control::end_session(&app, &session_id, |conn| {
+            set_archived(conn, &session_id, true)
+        })
     } else {
-        archive(&*store.lock_conn()?)
-            .map(drop)
-            .map_err(|e| e.to_string())
+        unarchive(&app, &store, &session_id)
     }
+}
+
+/// The chat gets back the decisions its archive dropped, so a window that
+/// has it loaded is told to queue them.
+pub(crate) fn unarchive<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    store: &SessionStore,
+    session_id: &str,
+) -> Result<(), String> {
+    let notices =
+        set_archived(&*store.lock_conn()?, session_id, false).map_err(|e| e.to_string())?;
+    notices.emit(app);
+    Ok(())
 }
 
 #[tauri::command(async)]
@@ -2030,8 +2042,7 @@ pub(crate) fn set_archived(
     let notices = if archived {
         clear_ended(&tx, session_id)?
     } else {
-        crate::mono_messages::session_reopened(&tx, session_id)?;
-        Default::default()
+        crate::mono_messages::session_reopened(&tx, session_id)?
     };
     tx.execute(
         "UPDATE sessions SET archived = ?1 WHERE id = ?2",

@@ -12,6 +12,10 @@ use crate::milestones::{check_project, require};
 use crate::mono_messages::{now_ms, MonoId};
 use crate::session_store::SessionStore;
 
+pub(crate) mod decide;
+
+use decide::UNDELIVERED;
+
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS approvals (
@@ -122,7 +126,7 @@ pub struct Filer {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
     Approved,
@@ -153,6 +157,15 @@ pub struct Decision {
     pub decided_at: i64,
     pub note: Option<String>,
     pub chosen: Vec<String>,
+    /// Dropped before the Giga took it: sent again to its next chat, or removed by the user.
+    pub undelivered: Option<Undelivered>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Undelivered {
+    Waiting,
+    Removed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -218,6 +231,11 @@ fn row_to_approval(row: &Row<'_>) -> rusqlite::Result<Approval> {
                 .map(|chosen| json("chosen_options", &chosen))
                 .transpose()?
                 .unwrap_or_default(),
+            undelivered: match row.get("removed")? {
+                None => None,
+                Some(false) => Some(Undelivered::Waiting),
+                Some(true) => Some(Undelivered::Removed),
+            },
         }),
         (status, _) => return Err(invalid("status", status)),
     };
@@ -252,7 +270,7 @@ fn row_to_approval(row: &Row<'_>) -> rusqlite::Result<Approval> {
 pub(crate) fn list(conn: &Connection, project: &str) -> Result<Vec<Approval>, String> {
     check_project(project)?;
     conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM approvals WHERE project_path = ?1
+        "SELECT {COLUMNS}, {UNDELIVERED} FROM approvals WHERE project_path = ?1
          ORDER BY status <> 'open', status = 'open' AND urgency <> 'blocking',
            coalesce(decided_at, withdrawn_at, created_at) DESC, number DESC"
     ))
@@ -377,7 +395,7 @@ fn named<'a>(columns: &'a [(&'static str, Sql)], more: Named<'a>) -> Named<'a> {
 
 pub(crate) fn get(conn: &Connection, id: &str) -> Result<Approval, String> {
     conn.query_row(
-        &format!("SELECT {COLUMNS} FROM approvals WHERE id = ?1"),
+        &format!("SELECT {COLUMNS}, {UNDELIVERED} FROM approvals WHERE id = ?1"),
         [id],
         row_to_approval,
     )
@@ -483,6 +501,12 @@ pub fn approvals_list(
     project_path: String,
 ) -> Result<Vec<Approval>, String> {
     list(&*store.lock_conn()?, &project_path)
+}
+
+/// One card by id: the chat line of a decision reads its card (frame A·7).
+#[tauri::command(async)]
+pub fn approvals_get(store: State<'_, SessionStore>, id: String) -> Result<Approval, String> {
+    get(&*store.lock_conn()?, &id)
 }
 
 #[tauri::command(async)]

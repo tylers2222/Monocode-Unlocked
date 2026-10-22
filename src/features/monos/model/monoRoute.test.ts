@@ -370,6 +370,20 @@ const rust = vi.hoisted(() => {
               },
             };
       }
+      // approvals.rs approvals_get: the card a decision row names, decided.
+      case "approvals_get":
+        return {
+          id: args.id,
+          number: 3,
+          heading: "Ship it",
+          status: {
+            state: "decided",
+            verdict: "approved",
+            decidedAt: 1,
+            note: null,
+            chosen: [],
+          },
+        };
     }
     throw new Error(`unexpected command ${command}`);
   };
@@ -1334,6 +1348,43 @@ it("names the session that wrote a row with no Mono when it is a lead or worker"
   expect(deliver.mock.calls[0][0].text).toBe(
     '<mono_message message_id="m_aaaaaaaaaaaa" from="Fix login" session_id="worker-1" level="worker" wanting_reply="false">\nReport: done\n</mono_message>',
   );
+});
+
+// ADE-52. Defect: an approvals-board decision reads as a deleted Mono's
+// message, or its item steers the Giga's running turn instead of waiting
+// for the turn end.
+it("queues an approvals-board decision in the Giga's chat as the user's, after the turn", async () => {
+  rust.state.rows = [
+    ended({
+      requestId: "00000000-0000-4000-8000-000000000001",
+      fromMonoId: null,
+      fromSessionId: "approvals-board",
+      to: { kind: "mono", monoId: "giga" },
+      addressed: "giga",
+      body: 'The user decided approval card APR-3 "Ship it".',
+      status: "delivered",
+      wantingReply: false,
+      handledBySession: "giga-chat",
+      delivery: "queue",
+      slot: null,
+    }),
+  ];
+  const { host, get } = world([chat("giga-chat", { busy: true })]);
+  await reconcile(host, "giga-chat");
+  expect(get("giga-chat").queuedMessages).toMatchObject([
+    {
+      monoMessageId: "m_aaaaaaaaaaaa",
+      waitForIdle: true,
+      text: '<mono_message message_id="m_aaaaaaaaaaaa" from="the user" via="approvals board" wanting_reply="false">\nThe user decided approval card APR-3 "Ship it".\n</mono_message>',
+    },
+  ]);
+  expect(get("giga-chat").blocks.at(-1)?.boardDecision).toEqual({
+    number: 3,
+    heading: "Ship it",
+    verdict: "approved",
+    note: null,
+    chosen: [],
+  });
 });
 
 // PR7-6 review r1 nit 3, design 5.5 rule 4. Defect: a refused hand-off of a

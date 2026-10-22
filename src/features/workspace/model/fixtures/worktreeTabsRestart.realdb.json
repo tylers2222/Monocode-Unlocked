@@ -1,0 +1,392 @@
+{
+  "source": "Reduced from a read-only copy of com.monocode.desktop monocode.db (.backup 2026-10-20 18:35 AEDT, /tmp/mc947/ade57/desktop.db) by change-linear/plans/ade57-pr2/extract-fixture.mjs. snapshot: the 5 saved tabs of ~/Desktop/monocode in saved order, plus one tab from the home folder; the saved active tab belongs to another project, so the first project tab is active. railSessions: the 3 newest idle worktree sessions of the project with no tab. records: session_get rows, mapped as session_store.rs get_session_record does. Ids, titles, text and the home path are made up; cwd, worktree paths, branches, harness and timestamps are real.",
+  "snapshot": {
+    "tabs": [
+      {
+        "editorPanes": [],
+        "focusedId": "ade57-session-01",
+        "id": "ade57-tab-01",
+        "kind": "session",
+        "layout": {
+          "id": "ade57-session-01",
+          "type": "leaf"
+        },
+        "terminalPanes": []
+      },
+      {
+        "editorPanes": [],
+        "focusedId": "ade57-session-02",
+        "id": "ade57-tab-02",
+        "kind": "session",
+        "layout": {
+          "id": "ade57-session-02",
+          "type": "leaf"
+        },
+        "terminalPanes": []
+      },
+      {
+        "editorPanes": [],
+        "focusedId": "ade57-session-03",
+        "id": "ade57-tab-03",
+        "kind": "session",
+        "layout": {
+          "id": "ade57-session-03",
+          "type": "leaf"
+        },
+        "terminalPanes": []
+      },
+      {
+        "editorPanes": [],
+        "focusedId": "ade57-session-04",
+        "id": "ade57-tab-04",
+        "kind": "session",
+        "layout": {
+          "id": "ade57-session-04",
+          "type": "leaf"
+        },
+        "terminalPanes": []
+      },
+      {
+        "editorPanes": [],
+        "focusedId": "ade57-session-05",
+        "id": "ade57-tab-05",
+        "kind": "session",
+        "layout": {
+          "id": "ade57-session-05",
+          "type": "leaf"
+        },
+        "terminalPanes": []
+      },
+      {
+        "editorPanes": [],
+        "focusedId": "ade57-session-06",
+        "id": "ade57-tab-06",
+        "kind": "session",
+        "layout": {
+          "id": "ade57-session-06",
+          "type": "leaf"
+        },
+        "terminalPanes": []
+      }
+    ],
+    "sessions": [
+      {
+        "branch": "feat/e-i4-line",
+        "cwd": "/Users/test/Desktop/monocode",
+        "harness": "omp",
+        "id": "ade57-session-01",
+        "model": "omp:default",
+        "modelSettings": {},
+        "providerSessionId": "provider-ade57-session-01",
+        "runtimeMode": "auto",
+        "title": "made-up title for ade57-session-01",
+        "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/feat-e-i4-line"
+      },
+      {
+        "branch": "feat/ade-54-approvals-badge",
+        "cwd": "/Users/test/Desktop/monocode",
+        "harness": "omp",
+        "id": "ade57-session-02",
+        "model": "omp:default",
+        "modelSettings": {},
+        "providerSessionId": "provider-ade57-session-02",
+        "runtimeMode": "auto",
+        "title": "made-up title for ade57-session-02",
+        "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/feat-ade-54-approvals-badge"
+      },
+      {
+        "branch": "main",
+        "cwd": "/Users/test/Desktop/monocode",
+        "harness": "omp",
+        "id": "ade57-session-03",
+        "model": "omp:default",
+        "modelSettings": {},
+        "providerSessionId": "provider-ade57-session-03",
+        "runtimeMode": "auto",
+        "title": "made-up title for ade57-session-03"
+      },
+      {
+        "branch": "feat/ade-52-approvals-decide",
+        "cwd": "/Users/test/Desktop/monocode",
+        "harness": "omp",
+        "id": "ade57-session-04",
+        "model": "omp:default",
+        "modelSettings": {},
+        "providerSessionId": "provider-ade57-session-04",
+        "runtimeMode": "auto",
+        "title": "made-up title for ade57-session-04",
+        "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/feat-ade-52-approvals-decide"
+      },
+      {
+        "branch": "feat/ade-53-decide-failed",
+        "cwd": "/Users/test/Desktop/monocode",
+        "harness": "omp",
+        "id": "ade57-session-05",
+        "model": "omp:default",
+        "modelSettings": {},
+        "providerSessionId": "provider-ade57-session-05",
+        "runtimeMode": "auto",
+        "title": "made-up title for ade57-session-05",
+        "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/feat-ade-53-approvals-board"
+      },
+      {
+        "cwd": "/Users/test",
+        "harness": "cursor",
+        "id": "ade57-session-06",
+        "model": "cursor:composer-2.5",
+        "modelSettings": {},
+        "runtimeMode": "supervised",
+        "title": "made-up title for ade57-session-06"
+      }
+    ],
+    "activeTabId": "ade57-tab-01",
+    "projectCwd": "/Users/test/Desktop/monocode",
+    "projectTerminals": []
+  },
+  "railSessions": [
+    "ade57-session-07",
+    "ade57-session-08",
+    "ade57-session-09"
+  ],
+  "records": {
+    "ade57-session-01": {
+      "sidebarHidden": false,
+      "id": "ade57-session-01",
+      "cwd": "/Users/test/Desktop/monocode",
+      "harness": "omp",
+      "model": "omp:default",
+      "modelSettings": {},
+      "runtimeMode": "auto",
+      "title": "made-up title for ade57-session-01",
+      "providerSessionId": "provider-ade57-session-01",
+      "blocks": [
+        {
+          "id": "ade57-session-01-prompt",
+          "role": "user",
+          "text": "made-up prompt",
+          "startedAt": 1792194518913
+        },
+        {
+          "id": "ade57-session-01-reply",
+          "role": "assistant",
+          "text": "made-up reply"
+        }
+      ],
+      "queuedMessages": [],
+      "branch": "feat/e-i4-line",
+      "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/feat-e-i4-line",
+      "worktreeRemoved": false,
+      "createdAt": 1792194518920,
+      "updatedAt": 1792198846677
+    },
+    "ade57-session-02": {
+      "sidebarHidden": false,
+      "id": "ade57-session-02",
+      "cwd": "/Users/test/Desktop/monocode",
+      "harness": "omp",
+      "model": "omp:default",
+      "modelSettings": {},
+      "runtimeMode": "auto",
+      "title": "made-up title for ade57-session-02",
+      "providerSessionId": "provider-ade57-session-02",
+      "blocks": [
+        {
+          "id": "ade57-session-02-prompt",
+          "role": "user",
+          "text": "made-up prompt",
+          "startedAt": 1792419073567
+        },
+        {
+          "id": "ade57-session-02-reply",
+          "role": "assistant",
+          "text": "made-up reply"
+        }
+      ],
+      "queuedMessages": [],
+      "branch": "feat/ade-54-approvals-badge",
+      "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/feat-ade-54-approvals-badge",
+      "worktreeRemoved": false,
+      "createdAt": 1792419073572,
+      "updatedAt": 1792476400227
+    },
+    "ade57-session-03": {
+      "sidebarHidden": false,
+      "id": "ade57-session-03",
+      "cwd": "/Users/test/Desktop/monocode",
+      "harness": "omp",
+      "model": "omp:default",
+      "modelSettings": {},
+      "runtimeMode": "auto",
+      "title": "made-up title for ade57-session-03",
+      "providerSessionId": "provider-ade57-session-03",
+      "blocks": [
+        {
+          "id": "ade57-session-03-prompt",
+          "role": "user",
+          "text": "made-up prompt",
+          "startedAt": 1792196940993
+        },
+        {
+          "id": "ade57-session-03-reply",
+          "role": "assistant",
+          "text": "made-up reply"
+        }
+      ],
+      "queuedMessages": [],
+      "branch": "main",
+      "worktreeRemoved": false,
+      "createdAt": 1792196941024,
+      "updatedAt": 1792197643052
+    },
+    "ade57-session-04": {
+      "sidebarHidden": false,
+      "id": "ade57-session-04",
+      "cwd": "/Users/test/Desktop/monocode",
+      "harness": "omp",
+      "model": "omp:default",
+      "modelSettings": {},
+      "runtimeMode": "auto",
+      "title": "made-up title for ade57-session-04",
+      "providerSessionId": "provider-ade57-session-04",
+      "blocks": [
+        {
+          "id": "ade57-session-04-prompt",
+          "role": "user",
+          "text": "made-up prompt",
+          "startedAt": 1792419071724
+        },
+        {
+          "id": "ade57-session-04-reply",
+          "role": "assistant",
+          "text": "made-up reply"
+        }
+      ],
+      "queuedMessages": [],
+      "branch": "feat/ade-52-approvals-decide",
+      "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/feat-ade-52-approvals-decide",
+      "worktreeRemoved": false,
+      "createdAt": 1792419071728,
+      "updatedAt": 1792477781185
+    },
+    "ade57-session-05": {
+      "sidebarHidden": false,
+      "id": "ade57-session-05",
+      "cwd": "/Users/test/Desktop/monocode",
+      "harness": "omp",
+      "model": "omp:default",
+      "modelSettings": {},
+      "runtimeMode": "auto",
+      "title": "made-up title for ade57-session-05",
+      "providerSessionId": "provider-ade57-session-05",
+      "blocks": [
+        {
+          "id": "ade57-session-05-prompt",
+          "role": "user",
+          "text": "made-up prompt",
+          "startedAt": 1792441489871
+        },
+        {
+          "id": "ade57-session-05-reply",
+          "role": "assistant",
+          "text": "made-up reply"
+        }
+      ],
+      "queuedMessages": [],
+      "branch": "feat/ade-53-decide-failed",
+      "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/feat-ade-53-approvals-board",
+      "worktreeRemoved": false,
+      "createdAt": 1792441489880,
+      "updatedAt": 1792480126008
+    },
+    "ade57-session-07": {
+      "sidebarHidden": false,
+      "id": "ade57-session-07",
+      "cwd": "/Users/test/Desktop/monocode",
+      "harness": "omp",
+      "model": "omp:default",
+      "modelSettings": {},
+      "runtimeMode": "auto",
+      "title": "made-up title for ade57-session-07",
+      "providerSessionId": "provider-ade57-session-07",
+      "blocks": [
+        {
+          "id": "ade57-session-07-prompt",
+          "role": "user",
+          "text": "made-up prompt",
+          "startedAt": 1792414193559
+        },
+        {
+          "id": "ade57-session-07-reply",
+          "role": "assistant",
+          "text": "made-up reply"
+        }
+      ],
+      "queuedMessages": [],
+      "branch": "feat/ade-50-approvals-table",
+      "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/feat-ade-50-approvals-table",
+      "worktreeRemoved": false,
+      "createdAt": 1792414193564,
+      "updatedAt": 1792477175234
+    },
+    "ade57-session-08": {
+      "sidebarHidden": false,
+      "id": "ade57-session-08",
+      "cwd": "/Users/test/Desktop/monocode",
+      "harness": "omp",
+      "model": "omp:default",
+      "modelSettings": {},
+      "runtimeMode": "auto",
+      "title": "made-up title for ade57-session-08",
+      "providerSessionId": "provider-ade57-session-08",
+      "blocks": [
+        {
+          "id": "ade57-session-08-prompt",
+          "role": "user",
+          "text": "made-up prompt",
+          "startedAt": 1792419070073
+        },
+        {
+          "id": "ade57-session-08-reply",
+          "role": "assistant",
+          "text": "made-up reply"
+        }
+      ],
+      "queuedMessages": [],
+      "branch": "feat/ade-51-approvals-tool",
+      "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/feat-ade-51-approvals-tool",
+      "worktreeRemoved": false,
+      "createdAt": 1792419070078,
+      "updatedAt": 1792439135375
+    },
+    "ade57-session-09": {
+      "sidebarHidden": false,
+      "id": "ade57-session-09",
+      "cwd": "/Users/test/Desktop/monocode",
+      "harness": "omp",
+      "model": "omp:default",
+      "modelSettings": {},
+      "runtimeMode": "auto",
+      "title": "made-up title for ade57-session-09",
+      "providerSessionId": "provider-ade57-session-09",
+      "blocks": [
+        {
+          "id": "ade57-session-09-prompt",
+          "role": "user",
+          "text": "made-up prompt",
+          "startedAt": 1792432958749
+        },
+        {
+          "id": "ade57-session-09-reply",
+          "role": "assistant",
+          "text": "made-up reply"
+        }
+      ],
+      "queuedMessages": [],
+      "branch": "fix/ade-14-gate-tests-rs",
+      "worktreeCwd": "/Users/test/Desktop/monocode-worktrees/fix-ade-14-gate-tests-rs",
+      "worktreeRemoved": false,
+      "createdAt": 1792432958753,
+      "updatedAt": 1792435237610
+    }
+  }
+}
