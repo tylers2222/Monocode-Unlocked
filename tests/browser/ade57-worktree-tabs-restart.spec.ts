@@ -290,10 +290,34 @@ test("with every tab in a worktree, boot opens the default workspace with no tab
 }) => {
   await mount(app, allInWorktrees);
   await expectDefaultEmpty(page);
+  // No session is active, so the sidebar marks none of the hidden ones.
+  await expect(
+    page.getByRole("complementary").locator('[aria-current="true"]'),
+  ).toHaveCount(0);
   await page.screenshot({
     path: test.info().outputPath("F1-all-in-worktrees.png"),
   });
 
+  // Closing on the empty default workspace has no tab to act on, so it must
+  // not clear a hidden worktree tab.
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("ControlOrMeta+w");
+  await switcher(page).click();
+  await rowOf(page, first).click();
+  await expect
+    .poll(() => strip(page))
+    .toEqual([`monocode · ${titleOf(first)}`]);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window.appBackend!.store.workspace as WorkspaceSnapshot | null)
+            ?.tabs[0]?.focusedId,
+      ),
+    )
+    .toBe(first.focusedId);
+
+  await switcher(page).click();
   await rowOf(page, second).click();
   await expect
     .poll(() => strip(page))

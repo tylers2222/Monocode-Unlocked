@@ -1990,7 +1990,7 @@ function Workspace({
     });
   }, []);
 
-  const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
+  const activeTab = tabs.find((t) => t.id === activeTabId);
   const active =
     sessions.find((session) => session.id === activeTab?.focusedId) ??
     sessions.find(
