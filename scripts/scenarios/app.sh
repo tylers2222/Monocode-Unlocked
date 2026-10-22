@@ -181,14 +181,15 @@ SANDBOX_SETTINGS="$APP_DATA/agent-sandbox.json"
 # A stand-in for the live MonoCode 2 data folder, next to the instance's own.
 SECOND_DB="$(dirname "$APP_DATA")/com.monocode.second/monocode.db"
 SRT_PIN=0.0.81
+SRT_PREFIX="$EVAL_OUT/srt-$SRT_PIN"
+SRT_MODULES="$SRT_PREFIX/node_modules"
 
 # srt at the pinned version, under the temp HOME's ~/.local/bin, where the
 # app's search PATH finds it.
 install_srt() {
-  local prefix="$EVAL_OUT/srt-$SRT_PIN"
-  [[ -x "$prefix/node_modules/.bin/srt" ]] \
-    || npm install --prefix "$prefix" --no-audit --no-fund "@anthropic-ai/sandbox-runtime@$SRT_PIN" >/dev/null
-  ln -sf "$prefix/node_modules/.bin/srt" "$EVAL_HOME/.local/bin/srt"
+  [[ -x "$SRT_MODULES/.bin/srt" ]] \
+    || npm install --prefix "$SRT_PREFIX" --no-audit --no-fund "@anthropic-ai/sandbox-runtime@$SRT_PIN" >/dev/null
+  ln -sf "$SRT_MODULES/.bin/srt" "$EVAL_HOME/.local/bin/srt"
 }
 
 # d1_phase <name>: the Giga's habit runs once more on the next start, and
@@ -196,7 +197,7 @@ install_srt() {
 d1_phase() {
   : >"$PUPPET/log.jsonl"
   request_habit d1-giga "Probe" "D1-HABIT: probe the sandbox."
-  jq -n --arg app "$(target_bin instance)" --arg db "$DB" --arg second "$SECOND_DB" --arg on "$SANDBOX_ON" --arg phase "$1" '{app: $app, rules: [
+  jq -n --arg app "$(target_bin instance)" --arg db "$DB" --arg second "$SECOND_DB" --arg on "$SANDBOX_ON" --arg srt "$SRT_MODULES" --arg phase "$1" '{app: $app, rules: [
     {match: "D1-HABIT", exec: [
       ["sqlite3", $db, ".tables"],
       ["sqlite3", $second, "select v from s"],
@@ -206,6 +207,8 @@ d1_phase() {
       ["sh", "-c", "echo d1-\($phase) > d1-own.txt && cat d1-own.txt"],
       ["sh", "-c", "mkdir -p ~/Library/LaunchAgents && echo x > ~/Library/LaunchAgents/d1-probe.plist"],
       ["sh", "-c", "echo x > ~/.local/bin/d1-probe"],
+      ["sh", "-c", "mkdir -p ~/.config/git && echo x >> ~/.config/git/config"],
+      ["sh", "-c", "echo x > \"$1\"/d1-probe", "sh", $srt],
       ["sh", "-c", "mkdir -p /tmp/claude-$(id -u)/d1-\($phase) && echo made"],
       ["sh", "-c", "echo sandbox=${SANDBOX_RUNTIME:-none}"],
       ["rm", $on]],
@@ -236,8 +239,8 @@ run_d1() {
   echo "on:"
   touch "$SANDBOX_ON"
   # The app's default allowWrite: the temp HOME (and so ~/.puppet, where the
-  # puppet logs, and ~/.local/bin, a search PATH dir) is under /tmp.
-  rm -f "$SANDBOX_SETTINGS"
+  # puppet logs, ~/.local/bin, a search PATH dir, ~/.config/git, and srt's
+  # code) is under /tmp, so only the deny lists keep those out.
   d1_phase on
   "$INSTANCE" start
   wait_until 90 "the Mono gets the Giga's message" saw D1-Q
@@ -250,6 +253,8 @@ run_d1() {
   expect "the setting is still there" "$([[ -e "$SANDBOX_ON" ]] && echo yes)" yes
   expect "a write to ~/Library/LaunchAgents is denied" "$(denied LaunchAgents)" true
   expect "a write to ~/.local/bin, under an allowed /tmp, is denied" "$(denied .local/bin/d1-probe)" true
+  expect "a write to ~/.config/git/config is denied" "$(denied .config/git/config)" true
+  expect "a write into srt's own code is denied" "$(denied "$SRT_MODULES")" true
   expect "a mkdir under /tmp, as Claude Code does" "$(probe /tmp/claude- '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 made"
   expect "the worktree write" "$(probe d1-own '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 d1-on"
   expect "the puppet runs under srt" "$(probe SANDBOX_RUNTIME '.stdout | rtrimstr("\n")')" "sandbox=1"
