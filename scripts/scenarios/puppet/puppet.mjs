@@ -81,12 +81,13 @@ async function runTurn(text, steer) {
   if (!rule) return "";
   for (const [program, ...rest] of rule.exec ?? []) {
     const run = spawnSync(program, rest, { encoding: "latin1" });
+    const stdout = run.stdout ?? "";
     log({
       exec: [program, ...rest],
       code: run.status,
-      stdout: run.stdout.slice(0, 400),
-      bytes: run.stdout.length,
-      stderr: run.stderr.slice(0, 400),
+      stdout: stdout.slice(0, 400),
+      bytes: stdout.length,
+      stderr: (run.stderr ?? String(run.error)).slice(0, 400),
     });
   }
   const server = mcp(script.app);

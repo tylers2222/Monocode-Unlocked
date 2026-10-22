@@ -1,15 +1,17 @@
 //! The agent sandbox (ADE-41). It is off unless `<app data>/agent-sandbox-on`
 //! exists, and off, a harness child starts exactly as it always did. On, the
 //! child starts as `srt --settings <app data>/agent-sandbox.json -- <cli>
-//! <args>`, under a deny-default Seatbelt profile that every process it starts
-//! inherits. The profile keeps the agent out of the app data folder, so it can
-//! read neither the database nor this setting, and cannot change either.
+//! <args>`. srt runs it, and every process it starts, under a Seatbelt profile
+//! that allows writes only to `allowWrite`, network only to `allowedDomains`,
+//! and reads everywhere except `denyRead`. The app data folder is in both deny
+//! lists, so the agent can neither read the database nor change this setting.
 //!
 //! The user may edit `filesystem.allowWrite` and `network.allowedDomains` in
 //! the settings file. The app rewrites every other key before each spawn, and
 //! srt lets `denyWrite` win over `allowWrite`, so an edit cannot reopen a
 //! denied path.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -69,16 +71,13 @@ const DEFAULT_DOMAINS: [&str; 16] = [
     "*.crates.io",
 ];
 
-/// The command a harness child starts with.
 pub(crate) fn command(app: &AppHandle, program: &str) -> Result<Command, String> {
-    let Some(data) = app
-        .path()
-        .app_data_dir()
-        .ok()
-        .filter(|data| data.join(ON_MARKER).exists())
-    else {
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let on =
+        std::fs::exists(data.join(ON_MARKER)).map_err(|e| format!("{}: {e}", data.display()))?;
+    if !on {
         return Ok(Command::new(program));
-    };
+    }
     let srt = pinned_srt()?;
     let settings = write_settings(&data)?;
     let mut cmd = Command::new(srt);
@@ -109,86 +108,62 @@ fn pinned_srt() -> Result<PathBuf, String> {
 }
 
 fn write_settings(data: &Path) -> Result<PathBuf, String> {
-    let path = data.join(SETTINGS_FILE);
-    let saved = match std::fs::read_to_string(&path) {
-        Ok(text) => Some(
-            serde_json::from_str::<Value>(&text).map_err(|e| format!("{}: {e}", path.display()))?,
-        ),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(format!("{}: {e}", path.display())),
-    };
-    let home = crate::dirs_home().ok_or("The agent sandbox needs a home directory.")?;
+    let home =
+        PathBuf::from(crate::dirs_home().ok_or("The agent sandbox needs a home directory.")?);
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let bundle = exe
         .ancestors()
         .find(|dir| dir.extension().is_some_and(|ext| ext == "app"))
         .unwrap_or(&exe);
-    let search_path = crate::harness::gui_search_path();
-    let protected = Protected {
-        data,
-        bundle,
-        home: Path::new(&home),
-        search_path: std::env::split_paths(&search_path).collect(),
-        temp: std::env::temp_dir(),
-    };
-    let temp = data.join(format!(".{SETTINGS_FILE}.{}.tmp", uuid::Uuid::new_v4()));
-    std::fs::write(&temp, settings(&protected, saved.as_ref()).to_string())
-        .and_then(|()| std::fs::rename(&temp, &path))
-        .map_err(|e| {
-            let _ = std::fs::remove_file(&temp);
-            format!("{}: {e}", path.display())
-        })?;
+    let startup: Vec<PathBuf> = STARTUP_FILES.iter().map(|file| home.join(file)).collect();
+    let deny_read: Vec<String> = std::iter::once(data)
+        .chain(startup.iter().map(PathBuf::as_path))
+        .map(path_entry)
+        .collect();
+    let mut deny_write = deny_read.clone();
+    deny_write.push(path_entry(bundle));
+    // The app runs what it finds on its search PATH outside the sandbox
+    // (`--help` probes, the next spawn), so an agent must not plant a binary there.
+    deny_write.extend(
+        std::env::split_paths(&crate::harness::gui_search_path())
+            .filter(|dir| dir.is_absolute())
+            .map(|dir| path_entry(&dir)),
+    );
+    let mut seen = HashSet::new();
+    deny_write.retain(|entry| seen.insert(entry.clone()));
+    let mut default_write = DEFAULT_WRITE.map(String::from).to_vec();
+    default_write.push(path_entry(&std::env::temp_dir()));
+
+    let path = data.join(SETTINGS_FILE);
+    crate::mcp::write_json_config(&path, |saved| {
+        let allow_write = user_list(saved, "/filesystem/allowWrite", json!(default_write))?;
+        let domains = user_list(saved, "/network/allowedDomains", json!(DEFAULT_DOMAINS))?;
+        *saved = json!({
+            "filesystem": {
+                "denyRead": deny_read,
+                "allowRead": [],
+                "allowWrite": allow_write,
+                "denyWrite": deny_write,
+            },
+            "network": {
+                "allowedDomains": domains,
+                "deniedDomains": [],
+                // The app's tool endpoint is loopback TCP on a port picked at launch.
+                "allowLocalBinding": true,
+            },
+        });
+        Ok(())
+    })
+    .map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(path)
 }
 
-struct Protected<'a> {
-    data: &'a Path,
-    bundle: &'a Path,
-    home: &'a Path,
-    /// The app runs what it finds here outside the sandbox (`--help` probes,
-    /// the next spawn), so an agent must not be able to plant a binary there.
-    search_path: Vec<PathBuf>,
-    temp: PathBuf,
-}
-
-fn settings(protected: &Protected, saved: Option<&Value>) -> Value {
-    let user_list = |pointer: &str, default: Value| {
-        saved
-            .and_then(|saved| saved.pointer(pointer))
-            .filter(|list| list.is_array())
-            .cloned()
-            .unwrap_or(default)
-    };
-    let mut default_write = DEFAULT_WRITE.map(String::from).to_vec();
-    default_write.push(path_entry(&protected.temp));
-    let startup: Vec<PathBuf> = STARTUP_FILES
-        .iter()
-        .map(|file| protected.home.join(file))
-        .collect();
-    let deny_read = std::iter::once(protected.data).chain(startup.iter().map(PathBuf::as_path));
-    let deny_write = deny_read.clone().chain([protected.bundle]).chain(
-        protected
-            .search_path
-            .iter()
-            .filter(|dir| dir.is_absolute())
-            .map(PathBuf::as_path),
-    );
-    let deny_read: Vec<String> = deny_read.map(path_entry).collect();
-    let deny_write: Vec<String> = deny_write.map(path_entry).collect();
-    json!({
-        "filesystem": {
-            "denyRead": deny_read,
-            "allowRead": [],
-            "allowWrite": user_list("/filesystem/allowWrite", json!(default_write)),
-            "denyWrite": deny_write,
-        },
-        "network": {
-            "allowedDomains": user_list("/network/allowedDomains", json!(DEFAULT_DOMAINS)),
-            "deniedDomains": [],
-            // The app's tool endpoint is loopback TCP on a port picked at launch.
-            "allowLocalBinding": true,
-        },
-    })
+fn user_list(saved: &Value, pointer: &str, default: Value) -> Result<Value, String> {
+    match saved.pointer(pointer) {
+        None => Ok(default),
+        Some(list) if list.is_array() => Ok(list.clone()),
+        Some(_) => Err(format!("{pointer} must be a list")),
+    }
 }
 
 /// srt rejects a deny entry that ends in a separator, as a PATH dir may.
