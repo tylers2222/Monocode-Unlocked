@@ -15,6 +15,10 @@ import {
 } from "../../sessions/model/session";
 import { enqueueMonoMessage } from "./monoMessaging";
 import {
+  boardDecision,
+  type BoardDecision,
+} from "../../approvals/model/boardDecision";
+import {
   APPROVALS_SENDER,
   newTurnId,
   noticeRequestId,
@@ -89,7 +93,12 @@ export type MonoQueueHost = {
  */
 export function ensureQueued(
   session: Session,
-  message: { id: MessageId; text: string; link?: MessageLink },
+  message: {
+    id: MessageId;
+    text: string;
+    link?: MessageLink;
+    decision?: BoardDecision;
+  },
   kind: QueueKind,
   bubble: boolean,
 ): Session {
@@ -103,11 +112,10 @@ export function ensureQueued(
     ...(kind === "queue" ? { waitForIdle: true } : {}),
   };
   if (bubble && !session.blocks.some((block) => block.id === message.id))
-    return enqueueMonoMessage(
-      session,
-      item,
-      message.link ? { link: message.link } : undefined,
-    );
+    return enqueueMonoMessage(session, item, {
+      ...(message.link ? { link: message.link } : {}),
+      ...(message.decision ? { boardDecision: message.decision } : {}),
+    });
   return {
     ...session,
     queuedMessages: [
@@ -153,21 +161,31 @@ async function rowSender(
 function queueItem(
   { message, target }: Targeted<Routed>,
   sender: MessageSender | undefined,
+  decision?: BoardDecision,
 ) {
   return {
     id: message.id,
     text: renderMonoMessage(message, sender),
     link: rowLink(message, target),
+    decision,
   };
 }
 
 /**
- * Each row's queue item. The senders resolve first, so the rows then queue
- * in one synchronous run.
+ * Each row's queue item. The senders and the cards of decision rows resolve
+ * first, so the rows then queue in one synchronous run.
  */
 function queueItems(host: MonoQueueHost, rows: Targeted<Routed>[]) {
   return Promise.all(
-    rows.map(async (row) => queueItem(row, await rowSender(host, row.message))),
+    rows.map(async (row) =>
+      queueItem(
+        row,
+        await rowSender(host, row.message),
+        row.message.fromSessionId === APPROVALS_SENDER
+          ? await boardDecision(row.message.requestId)
+          : undefined,
+      ),
+    ),
   );
 }
 
