@@ -6,7 +6,10 @@ import {
   type ToolErrorDetails,
 } from "../../agent-app/model/appActionError";
 import { excerpt, type ReplyTarget } from "../../sessions/model/messageIntent";
-import { dequeueQueuedMessage } from "../../sessions/model/messageQueue";
+import {
+  dequeueQueuedMessage,
+  enqueueQueuedMessage,
+} from "../../sessions/model/messageQueue";
 import {
   WHOLE_TURN,
   type MessageLink,
@@ -108,14 +111,10 @@ export function ensureQueued(
       item,
       message.link ? { link: message.link } : undefined,
     );
-  return {
-    ...session,
-    queuedMessages: [
-      ...(session.queuedMessages ?? []),
-      bubble ? { ...item, blockId: message.id } : item,
-    ],
-    queueStatus: session.queueStatus === "paused" ? "paused" : "active",
-  };
+  return enqueueQueuedMessage(
+    session,
+    bubble ? { ...item, blockId: message.id } : item,
+  );
 }
 
 /**
@@ -188,20 +187,13 @@ function ensureNotice(
     session.blocks.some((block) => block.appRequestId === notice.id)
   )
     return session;
-  return {
-    ...session,
-    queuedMessages: [
-      ...(session.queuedMessages ?? []),
-      {
-        id: notice.id,
-        appRequestId: notice.id,
-        text: notice.text,
-        attachments: [],
-        waitForIdle: true,
-      },
-    ],
-    queueStatus: session.queueStatus === "paused" ? "paused" : "active",
-  };
+  return enqueueQueuedMessage(session, {
+    id: notice.id,
+    appRequestId: notice.id,
+    text: notice.text,
+    attachments: [],
+    waitForIdle: true,
+  });
 }
 
 function noticeItem(host: MonoQueueHost, message: Noticed) {

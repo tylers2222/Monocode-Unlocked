@@ -544,6 +544,7 @@ import {
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
+  enqueueQueuedMessage,
   failQueuedMessage,
   nextQueuedSend,
   pauseQueue,
@@ -7447,26 +7448,23 @@ function Workspace({
           setSessions((prev) =>
             prev.map((s) =>
               s.id === sessionId
-                ? {
-                    ...s,
-                    inboxCard: rawCommand ? s.inboxCard : undefined,
-                    noteCard: rawCommand ? s.noteCard : undefined,
-                    handoffCard: rawCommand ? s.handoffCard : undefined,
-                    queuedMessages: [
-                      ...(s.queuedMessages ?? []),
-                      {
-                        id: crypto.randomUUID(),
-                        text,
-                        attachments,
-                        noteCard,
-                        handoffCard,
-                        intent,
-                        ...sent.item,
-                      },
-                    ],
-                    queueStatus:
-                      s.queueStatus === "paused" ? "paused" : "active",
-                  }
+                ? enqueueQueuedMessage(
+                    {
+                      ...s,
+                      inboxCard: rawCommand ? s.inboxCard : undefined,
+                      noteCard: rawCommand ? s.noteCard : undefined,
+                      handoffCard: rawCommand ? s.handoffCard : undefined,
+                    },
+                    {
+                      id: crypto.randomUUID(),
+                      text,
+                      attachments,
+                      noteCard,
+                      handoffCard,
+                      intent,
+                      ...sent.item,
+                    },
+                  )
                 : s,
             ),
           );
@@ -11603,6 +11601,18 @@ function Workspace({
               await flushSync(() => stopSessionRef.current(id));
               flushHarnessEvents();
               dismissCompletion(id);
+            },
+            clearQueue: async (id) => {
+              const target = await ensureOpenSessionRef.current(id);
+              if (!target || !canAccessProject(target.cwd))
+                throw new Error("Session is unavailable in this project");
+              let cleared = 0;
+              for (const { id: itemId } of target.queuedMessages ?? [])
+                if (await removeQueued(monoQueue, id, itemId)) {
+                  turnWatchers.current.cancel(itemId);
+                  cleared++;
+                }
+              return cleared;
             },
             remove: async (id, mode) => {
               const target = await ensureOpenSessionRef.current(id);

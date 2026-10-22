@@ -39,7 +39,8 @@ const OPERATOR: Block[] = [
 ];
 
 type ControlResponse =
-  { ok: true; result: { delivery: string } } | { ok: false; error: string };
+  | { ok: true; result: Record<string, unknown> }
+  | { ok: false; error: string; code?: string };
 
 declare global {
   interface Window {
@@ -96,11 +97,14 @@ async function mount(
   app: AppShell,
   builder: SessionSummary = session("builder", "Fix the parser"),
   extra: Record<string, Handler> = {},
+  more: SessionSummary[] = [],
+  blocks: Record<string, Block[]> = {},
 ) {
   await app.mount(
     {
       projects: [PROJECT],
-      sessions: [session("orchestrator", "Run the builders"), builder],
+      sessions: [session("orchestrator", "Run the builders"), builder, ...more],
+      blocks,
     },
     { handlers: { ...handlers, ...extra } },
   );
@@ -110,17 +114,18 @@ async function mount(
   await page.getByText("Run the builders").click();
 }
 
-/** The orchestrator emits `monocode app <action>`, as control.rs delivers it. */
+/** `from` emits `monocode app <action>`, as control.rs delivers it. */
 async function request(
   app: AppShell,
   requestId: string,
   action: string,
   input: Record<string, unknown>,
+  from = "orchestrator",
 ) {
   await app.emit("monocode-control-request", {
     id: requestId,
     namespace: "app",
-    sessionId: "orchestrator",
+    sessionId: from,
     requestId,
     action,
     input,
@@ -246,6 +251,102 @@ test("a follow-up queued before a rate-limited turn runs after the next turn", a
       "new turn",
       "Also cover the empty input",
     ]);
+});
+
+test("an error pause and each item's queue time survive a restart, and the next turn still lifts the pause", async ({
+  app,
+  page,
+}) => {
+  await mount(page, app);
+  await send(page, app, "r1", "Fix the parser");
+  await send(page, app, "r2", "Also cover the empty input", "followUp");
+  await endTurn(app, RATE_LIMIT);
+
+  await app.restart();
+  expect(
+    await page.evaluate(() => window.appBackend!.store.queues.builder),
+    "the saved row keeps the reason and the time",
+  ).toEqual(
+    expect.objectContaining({
+      queueStatus: "paused",
+      queuePause: "error",
+      queuedMessages: [
+        expect.objectContaining({
+          text: "Also cover the empty input",
+          queuedAt: expect.any(Number),
+        }),
+      ],
+    }),
+  );
+
+  await page.getByText("Run the builders").first().click();
+  expect(await send(page, app, "r3", "Your turn stopped; go on")).toEqual(
+    delivered("sent"),
+  );
+  await expect
+    .poll(() => turns(page))
+    .toEqual(["new turn", "Your turn stopped; go on"]);
+  await endTurn(app);
+  await expect
+    .poll(() => turns(page), "the follow-up from before the restart runs")
+    .toEqual([
+      "new turn",
+      "Your turn stopped; go on",
+      "new turn",
+      "Also cover the empty input",
+    ]);
+});
+
+test("sessions.queue.clear drops the queue for the session that started it and refuses anyone else", async ({
+  app,
+  page,
+}) => {
+  await mount(page, app, undefined, {}, [session("stranger", "Fix the docs")], {
+    stranger: OPERATOR,
+    builder: [
+      {
+        id: "b0",
+        role: "user",
+        text: "Fix the parser",
+        appRequestId: "app-orchestrator-r0",
+        startedBy: "orchestrator",
+      },
+    ],
+  });
+  await page.getByText("Fix the docs").click();
+  await send(page, app, "r1", "Run the tests");
+  await send(page, app, "r2", "Also cover the empty input", "followUp");
+
+  await request(
+    app,
+    "r3",
+    "sessions.queue.clear",
+    { sessionId: "builder" },
+    "stranger",
+  );
+  expect(await reply(page, "r3")).toMatchObject({
+    ok: false,
+    code: "not_session_owner",
+  });
+  await request(app, "r4", "sessions.queue.clear", { sessionId: "builder" });
+  expect(await reply(page, "r4")).toEqual({
+    ok: true,
+    result: { sessionId: "builder", cleared: 1 },
+  });
+
+  await endTurn(app);
+  expect(await send(page, app, "r5", "Update the changelog")).toEqual(
+    delivered("sent"),
+  );
+  await expect
+    .poll(() => turns(page), "the cleared follow-up never runs")
+    .toEqual(["new turn", "Run the tests", "new turn", "Update the changelog"]);
+  expect(
+    await page.evaluate(
+      () => window.appBackend!.store.queues.builder?.queuedMessages,
+    ),
+    "the saved row has no queue",
+  ).toBeUndefined();
 });
 
 /**

@@ -342,6 +342,8 @@ export type QueuedMessage = {
   error?: string;
   /** MonoCode quit while this message waited; cleared when the queue resumes. */
   pausedBy?: "quit";
+  /** Epoch ms when it entered the queue (`enqueueQueuedMessage`). */
+  queuedAt?: number;
 };
 
 export type MessageQueueStatus = "active" | "paused" | "resuming";
@@ -547,9 +549,9 @@ export type Session = {
   queueStatus?: MessageQueueStatus;
   /**
    * A failed turn paused the queue, so the next turn that starts resumes it
-   * (`resumeAfterFailedTurn`). Read only while `queueStatus` is paused; every
-   * pause of a live session (`pauseQueue`, `detachSessionWorktree`) sets it.
-   * In-memory only.
+   * (`resumeAfterFailedTurn`), after a restart too. Read only while
+   * `queueStatus` is paused; every pause of a live session (`pauseQueue`,
+   * `detachSessionWorktree`) sets it.
    */
   queuePause?: "error";
   /** Prevent auto-dispatch while this queued row is being edited. In-memory only. */

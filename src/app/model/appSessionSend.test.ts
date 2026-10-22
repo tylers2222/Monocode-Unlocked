@@ -532,6 +532,7 @@ describe("queueAppFollowUp", () => {
           text: prompt,
           attachments: [],
           appRequestId: "request-5",
+          queuedAt: expect.any(Number),
         },
       ]);
       expect(session.queueStatus).toBe(expected);

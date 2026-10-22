@@ -13,6 +13,24 @@ export function isEditingQueuedHead(session: Session): boolean {
   return Boolean(head && session.editingQueuedMessageId === head.id);
 }
 
+/**
+ * Add `message` at the end of the queue, stamped with when it was queued. A
+ * paused queue stays paused; any other queue sends.
+ */
+export function enqueueQueuedMessage(
+  session: Session,
+  message: QueuedMessage,
+): Session {
+  return {
+    ...session,
+    queuedMessages: [
+      ...(session.queuedMessages ?? []),
+      { ...message, queuedAt: Date.now() },
+    ],
+    queueStatus: session.queueStatus === "paused" ? "paused" : "active",
+  };
+}
+
 export function dequeueQueuedMessage(
   session: Session,
   messageId: string,
@@ -25,6 +43,7 @@ export function dequeueQueuedMessage(
     ...session,
     queuedMessages: remains ? queuedMessages : undefined,
     queueStatus: remains ? session.queueStatus : undefined,
+    queuePause: remains ? session.queuePause : undefined,
     editingQueuedMessageId:
       session.editingQueuedMessageId === messageId
         ? undefined

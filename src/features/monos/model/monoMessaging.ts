@@ -6,6 +6,7 @@ import { displayAttachments } from "../../sessions/model/attachments";
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
+  enqueueQueuedMessage,
   QUIT_PAUSE_NOTICE,
   heldUntilTurnEnd,
 } from "../../sessions/model/messageQueue";
@@ -44,15 +45,10 @@ export function enqueueMonoMessage(
     ...appended.blocks[appended.blocks.length - 1],
     id: message.id,
   };
-  return {
-    ...session,
-    blocks: [...session.blocks, bubble],
-    queuedMessages: [
-      ...(session.queuedMessages ?? []),
-      { ...message, blockId: bubble.id },
-    ],
-    queueStatus: session.queueStatus === "paused" ? "paused" : "active",
-  };
+  return enqueueQueuedMessage(
+    { ...session, blocks: [...session.blocks, bubble] },
+    { ...message, blockId: bubble.id },
+  );
 }
 
 /** Acknowledgement updates the existing bubble instead of appending it again. */

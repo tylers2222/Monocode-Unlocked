@@ -232,6 +232,8 @@ export type AgentAppHost = {
     requestId: string,
   ): Promise<{ alreadySaved: boolean; draft: boolean }>;
   stop(id: string): Promise<void>;
+  /** Drops the session's queued items; answers how many went. */
+  clearQueue(id: string): Promise<number>;
   remove(id: string, mode: "archive" | "delete"): Promise<void>;
   worktrees(cwd: string): Promise<Worktrees>;
   createWorktree(
@@ -362,6 +364,7 @@ export const FIELDS = new Map<string, readonly string[]>([
   ],
   ["sessions.draft", ["sessionId", "prompt", "project"]],
   ["sessions.stop", ["sessionId", "project"]],
+  ["sessions.queue.clear", ["sessionId", "project"]],
   ["sessions.archive", ["sessionId", "project"]],
   ["sessions.delete", ["sessionId", "project"]],
   [
@@ -1810,6 +1813,15 @@ export async function handleAgentApp(
         `app-${source.id}-${requestId}`,
       );
       return { sessionId: id, saved: true, ...result };
+    }
+    case "sessions.queue.clear": {
+      const id = requiredString(input.sessionId, "sessionId", 256);
+      const target = await projectSession(source, id, input, host);
+      const owner = target.blocks.find((block) => block.role === "user")
+        ?.startedBy;
+      if (target.leadSessionId !== source.id && owner !== source.id)
+        throw monoError("not_session_owner");
+      return { sessionId: id, cleared: await host.clearQueue(id) };
     }
     case "sessions.stop":
     case "sessions.archive":

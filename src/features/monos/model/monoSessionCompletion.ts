@@ -1,4 +1,5 @@
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
+import { enqueueQueuedMessage } from "../../sessions/model/messageQueue";
 import {
   opensTurn,
   type MonoSessionCompletion,
@@ -398,9 +399,5 @@ export function enqueueMonoSessionCompletion(
     mono.blocks.some((block) => block.appRequestId === message.id)
   )
     return mono;
-  return {
-    ...mono,
-    queuedMessages: [...(mono.queuedMessages ?? []), message],
-    queueStatus: mono.queueStatus === "paused" ? "paused" : "active",
-  };
+  return enqueueQueuedMessage(mono, message);
 }

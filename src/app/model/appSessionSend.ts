@@ -4,6 +4,7 @@ import type {
 } from "../../features/agent-app/model/agentApp";
 import type { ControlOutcome } from "../../features/orchestration/model/orchestration";
 import { switchingProviders } from "../../features/sessions/model/handoff";
+import { enqueueQueuedMessage } from "../../features/sessions/model/messageQueue";
 import { consumeOperatorCommand } from "../../features/sessions/model/operatorCommand";
 import type {
   AppDelivery,
@@ -149,19 +150,12 @@ export function queueAppFollowUp(
   session: Session,
   item: { id: string; prompt: string; requestId: string },
 ): Session {
-  return {
-    ...session,
-    queuedMessages: [
-      ...(session.queuedMessages ?? []),
-      {
-        id: item.id,
-        text: item.prompt,
-        attachments: [],
-        appRequestId: item.requestId,
-      },
-    ],
-    queueStatus: "active",
-  };
+  return enqueueQueuedMessage(session, {
+    id: item.id,
+    text: item.prompt,
+    attachments: [],
+    appRequestId: item.requestId,
+  });
 }
 
 /** Block fields for a user turn that sends queued item `message`. */
