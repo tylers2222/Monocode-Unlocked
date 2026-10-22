@@ -176,7 +176,7 @@ fn on_settings_deny_the_protected_paths(rig: &Rig) {
 
 fn on_settings_start_with_the_default_allows(rig: &Rig) {
     let written = rig.written();
-    let mut allow_write: Vec<String> = [
+    let defaults = [
         ".",
         "/tmp",
         "~/.omp",
@@ -188,13 +188,14 @@ fn on_settings_start_with_the_default_allows(rig: &Rig) {
         "~/.config",
         "~/Library/Caches",
     ]
-    .map(String::from)
-    .to_vec();
-    let temp = std::env::temp_dir();
-    allow_write.push(path(&temp.components().collect::<PathBuf>()));
+    .map(String::from);
     let allowed = strings(&written["filesystem"]["allowWrite"]);
-    assert_eq!(allowed[..allow_write.len()], allow_write[..]);
-    // srt matches the resolved path: on macOS /tmp is /private/tmp.
+    assert_eq!(allowed[..defaults.len()], defaults[..]);
+    // The temp dir is `/tmp` on Linux and under `/var/folders` on macOS, where
+    // srt matches the resolved path: `/tmp` is `/private/tmp` there.
+    let temp = std::env::temp_dir();
+    let literal = path(&temp.components().collect::<PathBuf>());
+    assert!(allowed.contains(&literal), "{literal} is not writable");
     for dir in [Path::new("/tmp"), temp.as_path()] {
         let real = path(&std::fs::canonicalize(dir).unwrap());
         assert!(allowed.contains(&real), "{real} is not writable");
