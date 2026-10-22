@@ -345,7 +345,7 @@ export async function steerTurn(
   const buildCommand =
     flavor.id === "omp" && message.startsWith("/")
       ? (input: Parameters<typeof buildPiPrompt>[0]) =>
-          buildPiPrompt({ ...input, streaming: true })
+          buildPiPrompt({ ...input, streamingBehavior: "steer" })
       : buildPiSteer;
   const command = buildCommand({
     text: message,
@@ -654,6 +654,8 @@ async function runTurn(
           ...buildPiPrompt({
             text: input.text,
             attachments: input.attachments,
+            // omp may be answering a background job's result on its own.
+            streamingBehavior: "followUp",
           }),
           id: promptId,
         },
@@ -887,7 +889,6 @@ function handleFrame(
       );
       return;
     }
-    if (type === "agent_end" && rec.isTerminal === false) return;
   }
   if (type === "compaction_start") live.compacting = true;
   if (type === "compaction_end") live.compacting = false;
@@ -1019,9 +1020,31 @@ function handleFrame(
   // The retry carries the real answer, so the attempt it replaces stays quiet.
   if (willRetry === true) live.turnError = null;
   if (willRetry === false && !live.compacting && !live.retrying) {
-    flushTurnError(flavor, live);
-    void settleTurn(live);
+    void settleAgentEnd(flavor, live, rec.isTerminal !== false);
   }
+}
+
+/**
+ * OMP ends a run with `agent_end` isTerminal:false when it may run again
+ * without a prompt: a background job hands back its result when it ends,
+ * which can be hours later, or a steer came in after the run's last poll.
+ * The turn ends with the run unless omp has already started the next one.
+ */
+async function settleAgentEnd(
+  flavor: PiFlavor,
+  live: Live,
+  terminal: boolean,
+): Promise<void> {
+  const token = live.settleToken;
+  if (!terminal) {
+    const state = await live.rpc
+      .request({ type: "get_state" }, STATS_TIMEOUT_MS)
+      .catch(() => null);
+    if (asRecord(state?.data)?.isStreaming === true) return;
+    if (live.settleToken !== token) return;
+  }
+  flushTurnError(flavor, live);
+  await settleTurn(live);
 }
 
 function flushTurnError(flavor: PiFlavor, live: Live): void {
