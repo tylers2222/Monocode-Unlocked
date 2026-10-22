@@ -978,6 +978,10 @@ pub fn harness_spawn(
     if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref()) {
         return Err("harness_spawn: not a resolved harness CLI".to_string());
     }
+    let args = match binary_provider.as_deref() {
+        Some("claude") => crate::claude_deny::args(&app, args)?,
+        _ => args,
+    };
 
     // `--config` is a global option, so it precedes the `acp` subcommand.
     let devin_config = match devin_ask_edits {

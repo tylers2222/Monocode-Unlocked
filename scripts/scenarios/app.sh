@@ -4,6 +4,8 @@
 #
 #   app.sh build [checkout]   build the instance (under heavy-lock.sh)
 #   app.sh s0 [runs]          S0 through the real app, `runs` times (default 1)
+#   app.sh d4                 D4 deny rules, off then on, with a recorder as
+#                             claude; D4_CLAUDE=<real claude> also runs a model
 #
 # GIGA_EVAL_OUT and GIGA_EVAL_HOME default to their own /tmp folders, apart
 # from other GigaEval runs. The installed apps and their data are never used.
@@ -166,6 +168,121 @@ run_s0() {
   return "$FAILED"
 }
 
+D4_INTERACTIVE="--setting-sources=user,project,local"
+
+install_claude_recorder() {
+  local bin="$EVAL_HOME/.local/bin/claude"
+  mkdir -p "$(dirname "$bin")" "$PUPPET"
+  # The app starts it without $PUPPET. `--version` is the launch update check
+  # through harness_exec, not a start, so it is not recorded.
+  { echo '#!/usr/bin/env bash'
+    printf 'PUPPET=%q\n' "$PUPPET"
+    cat <<'SH'
+REAL="$(cat "$PUPPET/real-claude" 2>/dev/null || true)"
+if [[ "${1:-}" == --version ]]; then
+  [[ -z "$REAL" ]] || exec "$REAL" "$@"
+  echo "2.1.305 (Claude Code)"; exit 0
+fi
+printf '%s\0' "$@" >"$PUPPET/claude-argv/$$"
+[[ -n "$REAL" ]] || exit 1
+exec "$REAL" "$@" > >(tee -a "$PUPPET/claude-out.jsonl")
+SH
+  } >"$bin"
+  chmod +x "$bin"
+}
+
+seed_d4() {
+  local giga_chat="$1" scratch="$EVAL_HOME/$SCRATCH_NAME" now; now="$(date +%s)000"
+  sqlite3 "$DB" <<SQL
+INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at) VALUES
+  ('d4-giga', 'D4 Giga', 'giga', json_object('name', 'D4 Giga', 'sessionId', '$giga_chat',
+    'gigaSlug', 'd4-giga', 'projects', json_array('$scratch')), 0, $now, $now);
+INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at) VALUES
+  ('$giga_chat', '$scratch', 'claude', 'claude:haiku-4.5', 'full-access', 'D4 Giga', $now, $now);
+SQL
+  request_d4_habit
+}
+
+request_d4_habit() {
+  local now; now="$(date +%s)000"
+  mkdir -p "$APP_DATA/monos/d4-giga"
+  jq -n --argjson now "$now" --arg db "$DB" '[{id: "d4-read", name: "Read the database",
+    instructions: "D4-HABIT: Use the Read tool to read the file \($db). Make only that one tool call. Then reply with the exact text of the tool result.",
+    schedule: {scheduleKind: "daily"}, enabled: true, createdAt: $now, nextRunAt: ($now + 86400000), runRequested: true}]' \
+    >"$APP_DATA/monos/d4-giga/habits.json"
+}
+
+d4_starts() { find "$1" -type f -exec jq -Rs 'split("\u0000")[:-1]' {} \; | jq -s -c .; }
+
+d4_jq() {
+  jq -S -c --arg interactive "$D4_INTERACTIVE" '
+    def interactive: index($interactive) != null;
+    def settings: index("--settings") as $i | if $i then .[$i + 1] | fromjson else null end;
+    def redacted: index("--mcp-config") as $i | if $i then .[$i + 1] = "<mcp-config>" else . end;
+    '"$1" <<<"$2"
+}
+
+run_d4() {
+  FAILED=0
+  log "D4"
+  "$INSTANCE" stop
+  "$INSTANCE" home --fresh
+  mkdir -p "$APP_DATA"
+  UPTIME=0; WALL="$(date +%s)000"; BOOT_MS=$((WALL - 3600000))
+  clock_write "$UPTIME" "$WALL"
+  install_claude_recorder
+  mkdir -p "$PUPPET/claude-argv"
+  # The PATH prefix makes the app resolve the recorder as claude. The first
+  # launch only creates and migrates the DB.
+  PATH="$EVAL_HOME/.local/bin:$PATH" "$INSTANCE" start
+  wait_until 30 "the first launch writes mono_clock" holds "SELECT count(*) = 1 FROM mono_clock"
+  "$INSTANCE" stop
+  local giga_chat; giga_chat="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  seed_d4 "$giga_chat"
+  PATH="$EVAL_HOME/.local/bin:$PATH" "$INSTANCE" start
+  wait_until 90 "the app starts Claude Code for the Giga" grep -qrF -e "$D4_INTERACTIVE" "$PUPPET/claude-argv"
+  "$INSTANCE" stop
+  mv "$PUPPET/claude-argv" "$PUPPET/off"
+  mkdir "$PUPPET/claude-argv"
+  touch "$APP_DATA/claude-deny-rules-on"
+  request_d4_habit
+  if [[ -n "${D4_CLAUDE:-}" ]]; then echo "$D4_CLAUDE" >"$PUPPET/real-claude"; fi
+  PATH="$EVAL_HOME/.local/bin:$PATH" "$INSTANCE" start
+  wait_until 90 "the app starts Claude Code for the Giga" grep -qrF -e "$D4_INTERACTIVE" "$PUPPET/claude-argv"
+  if [[ -n "${D4_CLAUDE:-}" ]]; then
+    wait_until 180 "Claude Code ends a turn" grep -qsF '"type":"result"' "$PUPPET/claude-out.jsonl"
+  fi
+  "$INSTANCE" stop
+  mv "$PUPPET/claude-argv" "$PUPPET/on"
+  local off on interactive
+  off="$(d4_starts "$PUPPET/off")"; on="$(d4_starts "$PUPPET/on")"
+  interactive="$(d4_jq '[.[] | select(interactive)] | length' "$off")"
+  echo "D4 readings:"
+  expect "OFF starts with deny rules" \
+    "$(d4_jq '[.[] | settings | select(.permissions != null or .sandbox != null)] | length' "$off")" 0
+  expect "OFF interactive starts ($interactive), at least 1" "$(jq -n "$interactive >= 1")" true
+  expect "ON interactive permissions" "$(d4_jq 'first(.[] | select(interactive)) | settings.permissions' "$on")" \
+    "$(jq -S -c -n --arg d "$APP_DATA" '{deny: ["Read(/\($d)/**)", "Edit(/\($d)/**)"]}')"
+  expect "ON interactive sandbox" "$(d4_jq 'first(.[] | select(interactive)) | settings.sandbox' "$on")" \
+    "$(jq -S -c -n --arg d "$APP_DATA" '{enabled: true, allowUnsandboxedCommands: false,
+      filesystem: {denyRead: [$d], denyWrite: [$d]}}')"
+  expect "ON starts without deny rules, of $(d4_jq length "$on")" \
+    "$(d4_jq '[.[] | settings | select(.permissions.deny == null)] | length' "$on")" 0
+  expect "ON interactive settings apart from the rules" \
+    "$(d4_jq 'first(.[] | select(interactive)) | settings | del(.permissions, .sandbox)' "$on")" \
+    "$(d4_jq 'first(.[] | select(interactive)) | settings' "$off")"
+  echo "  OFF interactive argv: $(d4_jq 'first(.[] | select(interactive)) | redacted' "$off")"
+  echo "  ON interactive argv: $(d4_jq 'first(.[] | select(interactive)) | redacted' "$on")"
+  if [[ -n "${D4_CLAUDE:-}" ]]; then
+    jq -rR 'fromjson? | select(.type == "user") | .message.content[]? | select(.type? == "tool_result")
+      | "  tool_result: \(.content | if type == "array" then map(.text? // empty) | join("\n") else . end)"' \
+      "$PUPPET/claude-out.jsonl"
+    jq -rR 'fromjson? | select(.type == "result") | "  total_cost_usd: \(.total_cost_usd)"' "$PUPPET/claude-out.jsonl"
+  fi
+  "$INSTANCE" stop
+  return "$FAILED"
+}
+
 case "${1:-}" in
   build) "$INSTANCE" build "${2:-$SCENARIOS/../..}" scenario ;;
   # One run per process: a run called in `||` would run with errexit off.
@@ -175,5 +292,7 @@ case "${1:-}" in
     for run in $(seq 1 "${2:-1}"); do "$0" s0-run "$run" || failed=$((failed + 1)); done
     log "S0: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
-  *) sed -n '2,9p' "$0"; exit 2 ;;
+  d4-run) run_d4 ;;
+  d4) "$0" d4-run ;;
+  *) sed -n '2,11p' "$0"; exit 2 ;;
 esac
