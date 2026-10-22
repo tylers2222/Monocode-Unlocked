@@ -5,10 +5,13 @@ name: gate-integrity
 # check that judges it. The branches filter keeps the job to pull requests into
 # tyler/main. That is safe only while no step runs pull request code: the PR head
 # is fetched as git objects for `git diff` and never checked out, installed, built
-# or sourced.
+# or sourced. The scripts it runs come from the default-branch checkout too.
+# A label or body change re-runs the gate: a hand-set tier label is put back, and the
+# body and label checks see the new state.
 on:
   pull_request_target:
     branches: [tyler/main]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
@@ -18,12 +21,47 @@ permissions:
   contents: read
 
 jobs:
+  tier:
+    name: gate/tier
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      tier: ${{ steps.tier.outputs.tier }}
+      nt: ${{ steps.tier.outputs.nt }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Tier the PR and set its tier label
+        id: tier
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: python3 scripts/process/tier.py "$PR" --apply
+
   integrity:
     name: gate/integrity
+    needs: tier
+    # A skipped required check counts as passed, so this job runs even when
+    # gate/tier fails, and its last step fails it.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      # The workflow file of the head's gate/mutation run: merge_rule.py trusts only
+      # .github/workflows/gate-mutation.yml, and a T3 head fails until that run succeeds.
+      actions: read
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      GATE_REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,3 +73,59 @@ jobs:
 
       - name: Integrity check (default-branch script, diff only)
         run: bash scripts/gate/integrity.sh "$BASE_SHA" "$HEAD_SHA"
+
+      # The Actions policy allows pull_request_target only for this file, and any other
+      # workflow with it could run PR code with a write token.
+      - name: Only gate-integrity.yml uses pull_request_target
+        if: ${{ !cancelled() }}
+        run: python3 scripts/process/workflow_events.py "$BASE_SHA" "$HEAD_SHA"
+
+      # Each check below reads the PR live, so a re-run sees the current body and labels.
+      - name: PR description (size, self-pass, file caps) and tiny-PR overlap warning
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NT: ${{ needs.tier.outputs.nt }}
+        run: python3 scripts/process/pr_body.py "$PR" ${NT:+--nt "$NT"}
+
+      # The two label checks come from #164, which merges first. A missing script fails
+      # the step, so a check can never be skipped without a red gate/integrity.
+      - name: waits-tyler label category
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f scripts/process/waits-tyler.py ]; then
+            echo "::error::scripts/process/waits-tyler.py is missing on the default branch; #164 must merge first"
+            exit 1
+          fi
+          python3 scripts/process/waits-tyler.py --pr "$PR" --repo "$GATE_REPO"
+
+      - name: Exactly one instance label
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f scripts/process/instance-label.py ]; then
+            echo "::error::scripts/process/instance-label.py is missing on the default branch; #164 must merge first"
+            exit 1
+          fi
+          python3 scripts/process/instance-label.py --pr "$PR" --repo "$GATE_REPO"
+
+      # Fails until the latest review verdict is clean on the head (T3: and a trusted green
+      # gate/mutation on it). It only reads; review/agent stays reviewer-only.
+      # gate-integrity-rerun.yml re-runs this job when a verdict or another check changes.
+      - name: Merge rule (review verdict and fixer proof)
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TIER: ${{ needs.tier.outputs.tier }}
+        run: python3 scripts/process/merge_rule.py "$PR" "$TIER"
+
+      - name: Fail when gate/tier failed
+        if: ${{ !cancelled() && needs.tier.result != 'success' }}
+        env:
+          RESULT: ${{ needs.tier.result }}
+        run: |
+          echo "integrity: gate/tier ended $RESULT"
+          exit 1

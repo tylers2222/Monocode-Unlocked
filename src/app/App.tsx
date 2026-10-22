@@ -895,6 +895,7 @@ import {
   persistQuitState,
   reapWindowRuntime,
   setQuitWorkspace,
+  type QuitWorkspace,
 } from "./model/appLifecycle";
 
 const SearchView = lazySurface(
@@ -999,6 +1000,11 @@ type Submit = (
   attachments?: Attachment[],
   options?: SubmitOptions,
 ) => SubmissionAcceptance;
+
+/** The window continues this session's quit turn by itself after a relaunch. */
+function continuesAfterQuit(session: Session): boolean {
+  return canAutoContinue(session) && isLiveHarness(session.harness);
+}
 
 function withPlanStatus(
   session: Session,
@@ -1164,7 +1170,7 @@ function titleTabsEqual(a: TitleTab[], b: TitleTab[]): boolean {
 registerBuiltinHarnesses();
 
 type AppProps = {
-  resumed?: WindowWorkspace | null;
+  resumed?: QuitWorkspace | null;
   installedUpdate?: InstalledUpdate | null;
   history?: SessionSummary[];
   historyCwd?: string | null;
@@ -1692,6 +1698,14 @@ function Workspace({
     }),
     [readProjectReturnMemory, workspacePins],
   );
+  /** This window as a quit, reload or close saves it (ADE-46). */
+  const readQuitWorkspace = useCallback(
+    (): QuitWorkspace => ({
+      ...readWindowWorkspace(),
+      monoCompletions: monoCompletionBatches.current!.undelivered(),
+    }),
+    [readWindowWorkspace],
+  );
 
   const tabVisitRef = useRef(emptyTabVisitHistory(activeTabId));
   const tabVisitFromHistoryRef = useRef(false);
@@ -1894,7 +1908,7 @@ function Workspace({
     const stopBridge = startHarnessBridge();
     const reap = () => {
       if (isAppQuitting()) return;
-      void persistQuitState(readWindowWorkspace(), "unload").finally(() => {
+      void persistQuitState(readQuitWorkspace(), "unload").finally(() => {
         void reapWindowRuntime(
           sessionsRef.current,
           tabsRef.current,
@@ -1910,7 +1924,7 @@ function Workspace({
       stopBridge();
       harnessEvents.cancelScheduled();
     };
-  }, [resumed, readWindowWorkspace, harnessEvents]);
+  }, [resumed, readQuitWorkspace, harnessEvents]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2431,7 +2445,7 @@ function Workspace({
   useEffect(() => {
     let unlistenClose: (() => void) | undefined;
     const releaseQuit = setQuitWorkspace(
-      readWindowWorkspace,
+      readQuitWorkspace,
       flushHarnessEvents,
     );
     void getCurrentWindow()
@@ -2460,7 +2474,7 @@ function Workspace({
           void hideCurrentWindow();
           return;
         }
-        void persistQuitState(readWindowWorkspace(), "unload").finally(() => {
+        void persistQuitState(readQuitWorkspace(), "unload").finally(() => {
           void (toTray ? hideCurrentWindow() : closeCurrentWindow());
         });
       })
@@ -2471,7 +2485,7 @@ function Workspace({
       releaseQuit();
       unlistenClose?.();
     };
-  }, [flushHarnessEvents, readWindowWorkspace]);
+  }, [flushHarnessEvents, readQuitWorkspace]);
 
   const refreshHistory = useCallback(async (cwd: string) => {
     if (!cwd || cwd === "~") return;
@@ -8989,6 +9003,14 @@ function Workspace({
       (sessionId) =>
         sessionsRef.current.find((session) => session.id === sessionId),
     );
+    monoCompletionBatches.current.restore(
+      resumed?.monoCompletions ?? [],
+      (sessionId) =>
+        sessionsRef.current.some(
+          (session) =>
+            session.id === sessionId && continuesAfterQuit(session),
+        ),
+    );
   }
   useEffect(() => {
     monoCompletionBatches.current!.closeInactive(({ monoId, turn }) => {
@@ -10428,9 +10450,7 @@ function Workspace({
   );
 
   const autoContinueKey = sessions
-    .filter(
-      (session) => canAutoContinue(session) && isLiveHarness(session.harness),
-    )
+    .filter(continuesAfterQuit)
     .map((session) => session.id)
     .join("\n");
 
@@ -10442,18 +10462,18 @@ function Workspace({
     const timer = window.setTimeout(() => {
       for (const id of ids) {
         const session = sessionsRef.current.find((entry) => entry.id === id);
-        if (
-          !session ||
-          !canAutoContinue(session) ||
-          !isLiveHarness(session.harness)
-        ) {
-          continue;
-        }
+        if (!session || !continuesAfterQuit(session)) continue;
         // A Continue opens the turn the quit cut short, or nothing. This
         // effect runs again whenever another session resumes, so a Continue
         // still waiting on its project's location check is asked for twice;
         // the second must not steer into the turn the first opened.
-        onSubmit(id, CONTINUE_PROMPT, [], { turnId: newTurnId() });
+        const turnId = newTurnId();
+        void submitWithSettlement({
+          submit: (onSettled) =>
+            onSubmit(id, CONTINUE_PROMPT, [], { turnId, onSettled }),
+          onSettled: monoCompletionBatches.current!.resume(id, turnId),
+          rejectionMessage: "The interrupted turn could not continue.",
+        });
       }
     }, 0);
     return () => window.clearTimeout(timer);
