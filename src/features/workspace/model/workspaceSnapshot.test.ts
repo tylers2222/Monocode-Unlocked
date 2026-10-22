@@ -23,10 +23,9 @@ import {
 import { createProjectTerminal } from "../../projects/model/projectTerminal";
 import { newSession, type Session } from "../../sessions/model/session";
 import {
-  collectWorkspaceSnapshot,
+  workspaceSnapshot,
   hydrateWorkspaceSnapshot,
   parseWorkspaceSnapshot,
-  workspaceSnapshot,
   type WorkspaceSnapshot,
 } from "./workspaceSnapshot";
 import { remotePath } from "../../connections/model/remoteProjects";
@@ -52,13 +51,17 @@ describe("project return snapshots", () => {
       },
     };
     const tab = newEditorWorkspaceTab(file);
-    const snapshot = collectWorkspaceSnapshot(
-      [tab],
-      [],
-      tab.id,
-      project,
-      new Map(),
-    );
+    const snapshot = workspaceSnapshot([
+      {
+        tabs: [tab],
+        sessions: [],
+        activeTabId: tab.id,
+        projectCwd: project,
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      },
+    ]);
     const restored = parseWorkspaceSnapshot(snapshot);
     expect(restored?.tabs[0].editorPanes[0].files[0]).toMatchObject({
       path: "remote://env/repo/src/index.ts",
@@ -80,13 +83,7 @@ describe("project return snapshots", () => {
       },
     };
     const tab = newEditorWorkspaceTab(file);
-    const snapshot = collectWorkspaceSnapshot(
-      [tab],
-      [],
-      tab.id,
-      project,
-      new Map(),
-    );
+    const snapshot = workspaceSnapshot([{ tabs: [tab], sessions: [], activeTabId: tab.id, projectCwd: project, projectReturnMemory: new Map(), projectTerminals: [], pins: new Map() }]);
     const restored = parseWorkspaceSnapshot(snapshot);
     expect(restored?.tabs[0].editorPanes[0].files[0]).toMatchObject({
       review: true,
@@ -106,7 +103,17 @@ describe("project return snapshots", () => {
       id: `tab-${session.id}`,
     }));
     return {
-      ...collectWorkspaceSnapshot(tabs, sessions, "tab-b2", "/beta", new Map()),
+      ...workspaceSnapshot([
+        {
+          tabs,
+          sessions,
+          activeTabId: "tab-b2",
+          projectCwd: "/beta",
+          projectReturnMemory: new Map(),
+          projectTerminals: [],
+          pins: new Map(),
+        },
+      ]),
       projectReturnTargets: [
         { projectPath: "/alpha", tabId: "a2" },
         { projectPath: "/beta", tabId: "b2" },
@@ -129,13 +136,17 @@ describe("project return snapshots", () => {
       ["/beta", "b2"],
       ["/gone", "missing"],
     ]);
-    const snapshot = collectWorkspaceSnapshot(
-      tabs,
-      sessions,
-      "tab-b2",
-      "/beta",
-      memory,
-    );
+    const snapshot = workspaceSnapshot([
+      {
+        tabs,
+        sessions,
+        activeTabId: "tab-b2",
+        projectCwd: "/beta",
+        projectReturnMemory: memory,
+        projectTerminals: [],
+        pins: new Map(),
+      },
+    ]);
     const restored = hydrateWorkspaceSnapshot(snapshot, new Map());
     expect([...(restored?.projectReturnMemory ?? [])]).toEqual([
       ["/alpha", "a2"],
@@ -212,7 +223,7 @@ describe("project return snapshots", () => {
   });
 });
 
-describe("collectWorkspaceSnapshot", () => {
+describe("workspaceSnapshot", () => {
   it("stores tabs, stubs, and the focused tab — not transcripts", () => {
     const session = chat("s1", "/tmp/a");
     session.worktreeCwd = "/tmp/a-worktrees/feature";
@@ -224,13 +235,18 @@ describe("collectWorkspaceSnapshot", () => {
       id: "t1",
       editorPanes: [{ id: "e1", files: [file], activeFileId: file.id }],
     };
-    const snapshot = collectWorkspaceSnapshot(
-      [tab],
-      [session],
-      "t1",
-      "/tmp/a",
-      new Map(),
-    );
+    const snapshot = workspaceSnapshot([
+      {
+        tabs: [tab],
+        sessions: [session],
+        activeTabId: "t1",
+        projectCwd: "/tmp/a",
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        // The active tab belongs to the workspace on screen (App pins it).
+        pins: new Map([["t1", "/tmp/a"]]),
+      },
+    ]);
     expect(snapshot.activeTabId).toBe("t1");
     expect(snapshot.tabs[0]?.editorPanes[0]?.files[0]?.path).toBe(
       "/tmp/a/README.md",
@@ -269,13 +285,17 @@ describe("collectWorkspaceSnapshot", () => {
         { id: "e2", files: [file, mixed], activeFileId: mixed.id },
       ],
     };
-    const snapshot = collectWorkspaceSnapshot(
-      [tab],
-      [],
-      "t1",
-      "/tmp/a",
-      new Map(),
-    );
+    const snapshot = workspaceSnapshot([
+      {
+        tabs: [tab],
+        sessions: [],
+        activeTabId: "t1",
+        projectCwd: "/tmp/a",
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      },
+    ]);
     const panes = snapshot.tabs[0]!.editorPanes;
     // The agent-only pane is gone along with its leaf; the mixed one keeps its
     // file and falls back to it as the active tab.
@@ -294,13 +314,7 @@ describe("collectWorkspaceSnapshot", () => {
       id: "t1",
       editorPanes: [{ id: "e1", files: [file], activeFileId: file.id }],
     };
-    const snapshot = collectWorkspaceSnapshot(
-      [tab],
-      [],
-      "t1",
-      "/tmp/a",
-      new Map(),
-    );
+    const snapshot = workspaceSnapshot([{ tabs: [tab], sessions: [], activeTabId: "t1", projectCwd: "/tmp/a", projectReturnMemory: new Map(), projectTerminals: [], pins: new Map() }]);
     const workspace = hydrateWorkspaceSnapshot(snapshot, new Map());
     const restored = workspace?.tabs[0]?.editorPanes[0]?.files[0];
     expect(restored?.changes).toBe(true);
@@ -320,13 +334,7 @@ describe("collectWorkspaceSnapshot", () => {
       id: "t1",
       editorPanes: [{ id: "e1", files: [file], activeFileId: file.id }],
     };
-    const snapshot = collectWorkspaceSnapshot(
-      [tab],
-      [],
-      "t1",
-      "/tmp/a",
-      new Map(),
-    );
+    const snapshot = workspaceSnapshot([{ tabs: [tab], sessions: [], activeTabId: "t1", projectCwd: "/tmp/a", projectReturnMemory: new Map(), projectTerminals: [], pins: new Map() }]);
     const restored = hydrateWorkspaceSnapshot(snapshot, new Map())?.tabs[0]
       ?.editorPanes[0]?.files[0];
     expect(restored?.sessionChanges).toEqual({ sessionId: "session-a" });
@@ -346,13 +354,17 @@ describe("collectWorkspaceSnapshot", () => {
       ...newTab("editor"),
       editorPanes: [{ id: "editor", files: [file], activeFileId: file.id }],
     };
-    const snapshot = collectWorkspaceSnapshot(
-      [tab],
-      [],
-      tab.id,
-      "/repo",
-      new Map(),
-    );
+    const snapshot = workspaceSnapshot([
+      {
+        tabs: [tab],
+        sessions: [],
+        activeTabId: tab.id,
+        projectCwd: "/repo",
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      },
+    ]);
     const restored = hydrateWorkspaceSnapshot(snapshot, new Map())?.tabs[0]
       ?.editorPanes[0]?.files[0];
     expect(restored).toMatchObject({
@@ -372,13 +384,7 @@ describe("collectWorkspaceSnapshot", () => {
       id: "t1",
       editorPanes: [{ id: "e1", files: [file], activeFileId: file.id }],
     };
-    const snapshot = collectWorkspaceSnapshot(
-      [tab],
-      [],
-      "t1",
-      "/tmp/a",
-      new Map(),
-    );
+    const snapshot = workspaceSnapshot([{ tabs: [tab], sessions: [], activeTabId: "t1", projectCwd: "/tmp/a", projectReturnMemory: new Map(), projectTerminals: [], pins: new Map() }]);
     const workspace = hydrateWorkspaceSnapshot(snapshot, new Map());
     const restored = workspace?.tabs[0]?.editorPanes[0]?.files[0];
     expect(restored?.commit).toEqual({
@@ -390,13 +396,17 @@ describe("collectWorkspaceSnapshot", () => {
 
   it("round-trips a release-note descriptor", () => {
     const tab = newReleaseNotesWorkspaceTab({ version: "0.1.22" });
-    const snapshot = collectWorkspaceSnapshot(
-      [tab],
-      [],
-      tab.id,
-      "~",
-      new Map(),
-    );
+    const snapshot = workspaceSnapshot([
+      {
+        tabs: [tab],
+        sessions: [],
+        activeTabId: tab.id,
+        projectCwd: "~",
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      },
+    ]);
     const workspace = hydrateWorkspaceSnapshot(snapshot, new Map());
 
     expect(workspace?.tabs[0]?.editorPanes[0]?.files[0]?.releaseNotes).toEqual({
@@ -408,14 +418,17 @@ describe("collectWorkspaceSnapshot", () => {
   it("stores the project terminal dock", () => {
     const term = newTerminalFile("/tmp/a", "zsh");
     const dock = createProjectTerminal("/tmp/a", term);
-    const snapshot = collectWorkspaceSnapshot(
-      [{ ...newTab("s1"), id: "t1" }],
-      [],
-      "t1",
-      "/tmp/a",
-      new Map(),
-      [dock],
-    );
+    const snapshot = workspaceSnapshot([
+      {
+        tabs: [{ ...newTab("s1"), id: "t1" }],
+        sessions: [],
+        activeTabId: "t1",
+        projectCwd: "/tmp/a",
+        projectReturnMemory: new Map(),
+        projectTerminals: [dock],
+        pins: new Map(),
+      },
+    ]);
     expect(snapshot.projectTerminals).toEqual([
       expect.objectContaining({
         projectPath: "/tmp/a",
@@ -429,24 +442,31 @@ describe("collectWorkspaceSnapshot", () => {
   it("stores the last dock side for new projects", () => {
     const term = newTerminalFile("/tmp/a", "zsh");
     const dock = createProjectTerminal("/tmp/a", term);
-    const snapshot = collectWorkspaceSnapshot(
-      [{ ...newTab("s1"), id: "t1" }],
-      [],
-      "t1",
-      "/tmp/a",
-      new Map(),
-      [dock],
-      "right",
-    );
+    const snapshot = workspaceSnapshot([
+      {
+        tabs: [{ ...newTab("s1"), id: "t1" }],
+        sessions: [],
+        activeTabId: "t1",
+        projectCwd: "/tmp/a",
+        projectReturnMemory: new Map(),
+        projectTerminals: [dock],
+        lastDockSide: "right",
+        pins: new Map(),
+      },
+    ]);
     expect(snapshot.lastDockSide).toBe("right");
     expect(
-      collectWorkspaceSnapshot(
-        [{ ...newTab("s1"), id: "t1" }],
-        [],
-        "t1",
-        "/tmp/a",
-        new Map(),
-      ).lastDockSide,
+      workspaceSnapshot([
+        {
+          tabs: [{ ...newTab("s1"), id: "t1" }],
+          sessions: [],
+          activeTabId: "t1",
+          projectCwd: "/tmp/a",
+          projectReturnMemory: new Map(),
+          projectTerminals: [],
+          pins: new Map(),
+        },
+      ]).lastDockSide,
     ).toBeUndefined();
   });
 });
@@ -462,15 +482,18 @@ describe("parseWorkspaceSnapshot", () => {
 
   it("keeps a valid last dock side and drops an invalid one", () => {
     const term = newTerminalFile("/tmp/a", "zsh");
-    const snapshot = collectWorkspaceSnapshot(
-      [{ ...newTab("s1"), id: "t1" }],
-      [],
-      "t1",
-      "/tmp/a",
-      new Map(),
-      [createProjectTerminal("/tmp/a", term)],
-      "right",
-    );
+    const snapshot = workspaceSnapshot([
+      {
+        tabs: [{ ...newTab("s1"), id: "t1" }],
+        sessions: [],
+        activeTabId: "t1",
+        projectCwd: "/tmp/a",
+        projectReturnMemory: new Map(),
+        projectTerminals: [createProjectTerminal("/tmp/a", term)],
+        lastDockSide: "right",
+        pins: new Map(),
+      },
+    ]);
     const raw = JSON.parse(JSON.stringify(snapshot)) as Record<string, unknown>;
     expect(parseWorkspaceSnapshot(raw)?.lastDockSide).toBe("right");
     raw.lastDockSide = "diagonal";
@@ -568,13 +591,17 @@ describe("hydrateWorkspaceSnapshot", () => {
       focusedId: "e1",
       editorPanes: [{ id: "e1", files: [file], activeFileId: file.id }],
     };
-    const snapshot = collectWorkspaceSnapshot(
-      [tab],
-      [left, right],
-      "t1",
-      "/tmp/a",
-      new Map(),
-    );
+    const snapshot = workspaceSnapshot([
+      {
+        tabs: [tab],
+        sessions: [left, right],
+        activeTabId: "t1",
+        projectCwd: "/tmp/a",
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      },
+    ]);
     const loaded = new Map([
       [
         "s1",
@@ -605,13 +632,17 @@ describe("hydrateWorkspaceSnapshot", () => {
     const open = chat("s1", "/tmp/a");
     const parked = chat("s2", "/tmp/a");
     parked.busy = true;
-    const snapshot = collectWorkspaceSnapshot(
-      [{ ...newTab("s1"), id: "t1" }],
-      [open, parked],
-      "t1",
-      "/tmp/a",
-      new Map(),
-    );
+    const snapshot = workspaceSnapshot([
+      {
+        tabs: [{ ...newTab("s1"), id: "t1" }],
+        sessions: [open, parked],
+        activeTabId: "t1",
+        projectCwd: "/tmp/a",
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      },
+    ]);
     const workspace = hydrateWorkspaceSnapshot(
       snapshot,
       new Map([
@@ -636,13 +667,17 @@ describe("hydrateWorkspaceSnapshot", () => {
       modelSettings: { reasoningEffort: "high", serviceTier: "priority" },
     };
     const tab = newTab(session.id);
-    const snapshot = collectWorkspaceSnapshot(
-      [tab],
-      [session],
-      tab.id,
-      session.cwd,
-      new Map(),
-    );
+    const snapshot = workspaceSnapshot([
+      {
+        tabs: [tab],
+        sessions: [session],
+        activeTabId: tab.id,
+        projectCwd: session.cwd,
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      },
+    ]);
     const restored = hydrateWorkspaceSnapshot(
       snapshot,
       new Map(),
@@ -670,13 +705,7 @@ describe("hydrateWorkspaceSnapshot", () => {
       editorPanes: [],
       terminalPanes: [{ id: "p1", files: [term], activeFileId: term.id }],
     };
-    const snapshot = collectWorkspaceSnapshot(
-      [tab],
-      [],
-      "t1",
-      "/tmp/a",
-      new Map(),
-    );
+    const snapshot = workspaceSnapshot([{ tabs: [tab], sessions: [], activeTabId: "t1", projectCwd: "/tmp/a", projectReturnMemory: new Map(), projectTerminals: [], pins: new Map() }]);
     const workspace = hydrateWorkspaceSnapshot(snapshot, new Map());
     expect(workspace?.tabs[0]?.terminalPanes[0]?.files[0]?.terminal).toBe(true);
   });
@@ -689,14 +718,7 @@ describe("hydrateWorkspaceSnapshot", () => {
       size: 300,
       open: false,
     };
-    const snapshot = collectWorkspaceSnapshot(
-      [{ ...newTab("s1"), id: "t1" }],
-      [],
-      "t1",
-      "/tmp/a",
-      new Map(),
-      [dock],
-    );
+    const snapshot = workspaceSnapshot([{ tabs: [{ ...newTab("s1"), id: "t1" }], sessions: [], activeTabId: "t1", projectCwd: "/tmp/a", projectReturnMemory: new Map(), projectTerminals: [dock], pins: new Map() }]);
     const workspace = hydrateWorkspaceSnapshot(snapshot, new Map());
     expect(workspace?.projectTerminals).toEqual([
       expect.objectContaining({
@@ -716,149 +738,24 @@ describe("hydrateWorkspaceSnapshot", () => {
 
   it("restores the last dock side", () => {
     const term = newTerminalFile("/tmp/a", "zsh");
-    const snapshot = collectWorkspaceSnapshot(
-      [{ ...newTab("s1"), id: "t1" }],
-      [],
-      "t1",
-      "/tmp/a",
-      new Map(),
-      [createProjectTerminal("/tmp/a", term)],
-      "left",
-    );
+    const snapshot = workspaceSnapshot([
+      {
+        tabs: [{ ...newTab("s1"), id: "t1" }],
+        sessions: [],
+        activeTabId: "t1",
+        projectCwd: "/tmp/a",
+        projectReturnMemory: new Map(),
+        projectTerminals: [createProjectTerminal("/tmp/a", term)],
+        lastDockSide: "left",
+        pins: new Map(),
+      },
+    ]);
     const workspace = hydrateWorkspaceSnapshot(snapshot, new Map());
     expect(workspace?.lastDockSide).toBe("left");
   });
 });
 
-describe("worktree tab cleanup", () => {
-  it("drops tabs the caller leaves out, with sessions only they showed", () => {
-    const main = chat("main", "/repo");
-    const feature = { ...chat("feature", "/repo"), worktreeCwd: "/trees/a" };
-    const mainTab = { ...newTab("main"), id: "tab-main" };
-    const featureTab = { ...newTab("feature"), id: "tab-feature" };
-    const snapshot = collectWorkspaceSnapshot(
-      [mainTab, featureTab],
-      [main, feature],
-      "tab-feature",
-      "/repo",
-      new Map(),
-      [],
-      undefined,
-      (tab) => tab.id !== "tab-feature",
-    );
-    expect(snapshot.tabs.map((tab) => tab.id)).toEqual(["tab-main"]);
-    expect(snapshot.sessions.map((stub) => stub.id)).toEqual(["main"]);
-  });
-
-  it("saves as active the nearest saved tab before an unsaved active tab, else after it", () => {
-    const ids = ["w1", "a", "w2", "b"];
-    const tabs = ids.map((id) => ({ ...newTab(id), id }));
-    const save = (activeTabId: string, keep: (id: string) => boolean) =>
-      collectWorkspaceSnapshot(
-        tabs,
-        ids.map((id) => chat(id, "/repo")),
-        activeTabId,
-        "/repo",
-        new Map(),
-        [],
-        undefined,
-        (tab) => keep(tab.id),
-      ).activeTabId;
-    const keepMain = (id: string) => !id.startsWith("w");
-    expect(save("b", keepMain)).toBe("b");
-    expect(save("w2", keepMain)).toBe("a");
-    expect(save("w1", keepMain)).toBe("a");
-    expect(save("w1", () => false)).toBe("");
-  });
-
-  it("looks for the nearest saved tab in the saved project only", () => {
-    const sessions = [
-      chat("s1", "/p"),
-      chat("s2", "/q"),
-      chat("s3", "/p"),
-      chat("s4", "/p"),
-    ];
-    // onSelectHistorySession: the project switches to /p, then the running
-    // session's tab opens beside the still-active /q tab.
-    const tabs = insertTabBesideActive(
-      [
-        { ...newTab("s1"), id: "a" },
-        { ...newTab("s2"), id: "q1" },
-        { ...newTab("s4"), id: "b" },
-      ],
-      { ...newTab("s3"), id: "w1" },
-      "q1",
-    );
-    const snapshot = collectWorkspaceSnapshot(
-      tabs,
-      sessions,
-      "w1",
-      "/p",
-      new Map(),
-      [],
-      undefined,
-      (tab) => tab.id !== "w1",
-    );
-    expect(snapshot.activeTabId).toBe("a");
-  });
-
-  it("falls back to the next tab of the project, then to the first saved tab", () => {
-    const tab = (id: string) => ({ ...newTab(id), id });
-    const save = (tabs: WorkspaceTab[]) =>
-      collectWorkspaceSnapshot(
-        tabs,
-        [chat("q1", "/q"), chat("w1", "/p"), chat("b", "/p")],
-        "w1",
-        "/p",
-        new Map(),
-        [],
-        undefined,
-        (saved) => saved.id !== "w1",
-      ).activeTabId;
-    expect(save([tab("q1"), tab("w1"), tab("b")])).toBe("b");
-    expect(save([tab("q1"), tab("w1")])).toBe("q1");
-  });
-
-  it("keeps a saved active tab that belongs to no project", () => {
-    const snapshot = collectWorkspaceSnapshot(
-      [
-        { ...newTab("s1"), id: "a" },
-        { ...newTab("home"), id: "h" },
-      ],
-      [chat("s1", "/p"), chat("home", "~")],
-      "h",
-      "/p",
-      new Map(),
-    );
-    expect(snapshot.activeTabId).toBe("h");
-  });
-
-  it("saves the nearest saved tab when an agent-only active tab is dropped", () => {
-    const agent = newAgentTab("Audit the UI", "/repo", {
-      sessionId: "worker",
-      leadId: "s1",
-      harness: "codex",
-    });
-    const agentTab = {
-      ...newTab("s1"),
-      id: "g",
-      layout: leaf("e1"),
-      focusedId: "e1",
-      editorPanes: [{ id: "e1", files: [agent], activeFileId: agent.id }],
-    };
-    const snapshot = collectWorkspaceSnapshot(
-      [{ ...newTab("s1"), id: "a" }, agentTab, { ...newTab("s2"), id: "b" }],
-      [chat("s1", "/repo"), chat("s2", "/repo")],
-      "g",
-      "/repo",
-      new Map(),
-    );
-    expect(snapshot.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
-    expect(snapshot.activeTabId).toBe("a");
-  });
-});
-
-describe("workspaceSnapshot: worktree tabs", () => {
+describe("worktree tabs", () => {
   const window = (
     tabs: WorkspaceTab[],
     sessions: Session[],
@@ -963,7 +860,7 @@ describe("workspaceSnapshot: worktree tabs", () => {
     });
   });
 
-  it("with no default-workspace tab, saves the active tab in the default workspace and boot restores it there, active", () => {
+  it("with no default-workspace tab, saves no active tab, and boot keeps it that way with every tab in its worktree", () => {
     const tabs = [
       { ...newTab("w"), id: "tab-w" },
       { ...newTab("x"), id: "tab-x" },
@@ -982,11 +879,13 @@ describe("workspaceSnapshot: worktree tabs", () => {
     ]);
     const restored = hydrateWorkspaceSnapshot(snapshot, new Map())!;
     expect({
+      saved: snapshot.activeTabId,
       active: restored.activeTabId,
       pins: Object.fromEntries(restored.pins),
     }).toEqual({
-      active: "tab-w",
-      pins: { "tab-w": "/repo", "tab-x": "/trees/b" },
+      saved: "",
+      active: "",
+      pins: { "tab-w": "/trees/a", "tab-x": "/trees/b" },
     });
   });
 
@@ -1117,5 +1016,55 @@ describe("workspaceSnapshot: worktree tabs", () => {
       { projectPath: "/repo", tabId: "feature" },
     ]);
     expect(targets("/trees/a")).toEqual([]);
+  });
+
+  it("keeps a saved active tab that belongs to no project", () => {
+    const snapshot = workspaceSnapshot([
+      {
+        tabs: [
+          { ...newTab("s1"), id: "a" },
+          { ...newTab("home"), id: "h" },
+        ],
+        sessions: [chat("s1", "/p"), chat("home", "~")],
+        activeTabId: "h",
+        projectCwd: "/p",
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      },
+    ]);
+    expect(snapshot.activeTabId).toBe("h");
+  });
+
+  it("saves the nearest saved tab when an agent-only active tab is dropped", () => {
+    const agent = newAgentTab("Audit the UI", "/repo", {
+      sessionId: "worker",
+      leadId: "s1",
+      harness: "codex",
+    });
+    const agentTab = {
+      ...newTab("s1"),
+      id: "g",
+      layout: leaf("e1"),
+      focusedId: "e1",
+      editorPanes: [{ id: "e1", files: [agent], activeFileId: agent.id }],
+    };
+    const snapshot = workspaceSnapshot([
+      {
+        tabs: [
+          { ...newTab("s1"), id: "a" },
+          agentTab,
+          { ...newTab("s2"), id: "b" },
+        ],
+        sessions: [chat("s1", "/repo"), chat("s2", "/repo")],
+        activeTabId: "g",
+        projectCwd: "/repo",
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      },
+    ]);
+    expect(snapshot.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
+    expect(snapshot.activeTabId).toBe("a");
   });
 });

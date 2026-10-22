@@ -1,4 +1,4 @@
-import { Fragment } from "react";
+import { Fragment, type ReactNode } from "react";
 import { CheckCircle, ListEnd } from "../../../shared/ui/icons";
 import { quoteText } from "../../sessions/ui/composerIntent";
 import { SentNotice } from "../../sessions/ui/SentNotice";
@@ -76,10 +76,22 @@ export function SentDecision({
   );
 }
 
-/** Frame A·7: a board decision that waits for its Giga's turn to end. */
-export function QueuedDecisionRow({ decision }: { decision: BoardDecision }) {
+/**
+ * Frame A·7: a board decision that waits for its Giga's turn to end.
+ * `remove` is the queue's own remove control; `children` is its failure
+ * line when the send failed (A·7b).
+ */
+export function QueuedDecisionRow({
+  decision,
+  remove,
+  children,
+}: {
+  decision: BoardDecision;
+  remove: ReactNode;
+  children?: ReactNode;
+}) {
   return (
-    <div data-queued-decision className="flex gap-2 py-1.5">
+    <div data-queued-decision className="flex gap-2 py-1.5 text-[12px]">
       <ListEnd className="mt-px size-3.5 shrink-0 text-content/60" />
       <div className="min-w-0 flex-1">
         <div className="text-[11px] text-content/70">
@@ -88,7 +100,9 @@ export function QueuedDecisionRow({ decision }: { decision: BoardDecision }) {
         <p className="mt-px text-[12.5px] leading-[18px] text-content/85">
           <Headline decision={decision} />
         </p>
+        {children}
       </div>
+      {remove}
     </div>
   );
 }

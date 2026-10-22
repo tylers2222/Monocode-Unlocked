@@ -877,7 +877,7 @@ import {
   type ProjectOpenStep,
 } from "../features/projects/model/projectOpenRun";
 import {
-  collectWorkspaceSnapshot,
+  workspaceSnapshot,
   workspaceSnapshotKey,
   type WindowWorkspace,
 } from "../features/workspace/model/workspaceSnapshot";
@@ -1544,17 +1544,6 @@ function Workspace({
       tabWorkspace(tab, sessionsRef.current, workspacePins),
     [workspacePins],
   );
-  /** Saved tabs: the app reopens on each project's default workspace, so
-   * tabs from other worktrees close with it instead of piling up. */
-  const keepWorkspaceTab = useCallback(
-    (tab: WorkspaceTab) => {
-      const project = workspaceTabCwd(tab, sessionsRef.current);
-      if (!project || isRemoteProjectPath(project)) return true;
-      const workspace = tabWorkspace(tab, sessionsRef.current, workspacePins);
-      return !workspace || sameProjectPath(workspace, project);
-    },
-    [workspacePins],
-  );
 
   const workspaceNavigation = useWorkspaceNavigation({
     project: projectCwd,
@@ -1687,6 +1676,21 @@ function Workspace({
   useEffect(() => {
     readProjectReturnMemory();
   }, [activeTabId, tabs, sessions, readProjectReturnMemory]);
+
+  /** This window, as every save path passes it to `workspaceSnapshot`. */
+  const readWindowWorkspace = useCallback(
+    (): WindowWorkspace => ({
+      tabs: tabsRef.current,
+      sessions: sessionsRef.current,
+      activeTabId: activeTabIdRef.current,
+      projectCwd: projectCwdRef.current,
+      projectReturnMemory: readProjectReturnMemory(),
+      projectTerminals: projectTerminalsRef.current,
+      lastDockSide: lastDockSideRef.current ?? undefined,
+      pins: workspacePins,
+    }),
+    [readProjectReturnMemory, workspacePins],
+  );
 
   const tabVisitRef = useRef(emptyTabVisitHistory(activeTabId));
   const tabVisitFromHistoryRef = useRef(false);
@@ -1889,16 +1893,7 @@ function Workspace({
     const stopBridge = startHarnessBridge();
     const reap = () => {
       if (isAppQuitting()) return;
-      void persistQuitState(
-        sessionsRef.current,
-        tabsRef.current,
-        activeTabIdRef.current,
-        projectCwdRef.current,
-        readProjectReturnMemory(),
-        "unload",
-        projectTerminalsRef.current,
-        lastDockSideRef.current ?? undefined,
-      ).finally(() => {
+      void persistQuitState(readWindowWorkspace(), "unload").finally(() => {
         void reapWindowRuntime(
           sessionsRef.current,
           tabsRef.current,
@@ -1914,7 +1909,7 @@ function Workspace({
       stopBridge();
       harnessEvents.cancelScheduled();
     };
-  }, [resumed, readProjectReturnMemory, harnessEvents]);
+  }, [resumed, readWindowWorkspace, harnessEvents]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1996,7 +1991,7 @@ function Workspace({
     });
   }, []);
 
-  const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
+  const activeTab = tabs.find((t) => t.id === activeTabId);
   const active =
     sessions.find((session) => session.id === activeTab?.focusedId) ??
     sessions.find(
@@ -2435,15 +2430,8 @@ function Workspace({
   useEffect(() => {
     let unlistenClose: (() => void) | undefined;
     const releaseQuit = setQuitWorkspace(
-      () => sessionsRef.current,
-      () => tabsRef.current,
-      () => activeTabIdRef.current,
-      () => projectCwdRef.current,
-      () => projectTerminalsRef.current,
-      readProjectReturnMemory,
+      readWindowWorkspace,
       flushHarnessEvents,
-      () => lastDockSideRef.current,
-      keepWorkspaceTab,
     );
     void getCurrentWindow()
       .onCloseRequested(async (event) => {
@@ -2471,17 +2459,7 @@ function Workspace({
           void hideCurrentWindow();
           return;
         }
-        void persistQuitState(
-          sessionsRef.current,
-          tabsRef.current,
-          activeTabIdRef.current,
-          projectCwdRef.current,
-          readProjectReturnMemory(),
-          "unload",
-          projectTerminalsRef.current,
-          lastDockSideRef.current ?? undefined,
-          keepWorkspaceTab,
-        ).finally(() => {
+        void persistQuitState(readWindowWorkspace(), "unload").finally(() => {
           void (toTray ? hideCurrentWindow() : closeCurrentWindow());
         });
       })
@@ -2492,7 +2470,7 @@ function Workspace({
       releaseQuit();
       unlistenClose?.();
     };
-  }, [flushHarnessEvents, keepWorkspaceTab, readProjectReturnMemory]);
+  }, [flushHarnessEvents, readWindowWorkspace]);
 
   const refreshHistory = useCallback(async (cwd: string) => {
     if (!cwd || cwd === "~") return;
@@ -2662,23 +2640,11 @@ function Workspace({
     void replaceInFlightSessions(refs).catch(() => undefined);
   }, [sessions, tabs]);
 
+  // The state below says when to save. What is saved is the same window the
+  // quit, close and reload paths save.
   useEffect(() => {
     const save = workspaceSave.current;
-    const snapshot = collectWorkspaceSnapshot(
-      tabs,
-      sessions,
-      activeTabId,
-      projectCwd,
-      reconcileProjectReturn({
-        memory: projectReturnRef.current,
-        tabs,
-        sessions,
-        activeTabId,
-      }),
-      projectTerminals,
-      lastDockSide ?? undefined,
-      keepWorkspaceTab,
-    );
+    const snapshot = workspaceSnapshot([readWindowWorkspace()]);
     const key = workspaceSnapshotKey(snapshot);
     if (save.pending?.key === key) return;
     window.clearTimeout(save.pending?.timer);
@@ -2697,7 +2663,7 @@ function Workspace({
     projectCwd,
     projectTerminals,
     lastDockSide,
-    keepWorkspaceTab,
+    readWindowWorkspace,
     projectWorktree?.path,
     workspaceNavigation.revision,
   ]);
@@ -4136,7 +4102,8 @@ function Workspace({
     if (!sidebarCwd || sidebarCwd === "~" || isRemoteProjectPath(sidebarCwd))
       return stats;
     for (const tab of filterTabsForProject(tabs, sessions, sidebarCwd)) {
-      const workspace = tabWorkspace(tab, sessions, workspacePins) ?? sidebarCwd;
+      const workspace =
+        tabWorkspace(tab, sessions, workspacePins) ?? sidebarCwd;
       const key = pathKey(workspace);
       const entry = stats.get(key) ?? { tabs: 0, busy: false };
       entry.tabs += 1;
