@@ -342,7 +342,8 @@ run_d4() {
   d4_phase on
   # A new spawn loads the user settings, so a hook the ON turn planted would run.
   [[ -n "${D4_CLAUDE:-}" ]] || d4_phase next
-  local off on interactive
+  local off on interactive config_rule=""
+  [[ -z "${CLAUDE_CONFIG_DIR:-}" ]] || config_rule=", \"Edit(/$CLAUDE_CONFIG_DIR/**)\""
   off="$(d4_starts "$PUPPET/off")"; on="$(d4_starts "$PUPPET/on")"
   interactive="$(d4_jq '[.[] | select(interactive)] | length' "$off")"
   echo "D4 readings:"
@@ -357,7 +358,7 @@ run_d4() {
   expect "ON interactive rules" "$(d4_jq 'first(.[] | select(interactive)) | settings | {permissions, sandbox}' "$on")" \
     "$(jq -S -c . <<JSON
 {"permissions": {"deny": ["Read(/$D4_SUPPORT/com.monocode.*/**)", "Edit(/$D4_SUPPORT/com.monocode.*/**)",
-   "Edit(//**/.claude/**)", "Edit(//**/.claude.json)", "Edit(//**/.mcp.json)"${CLAUDE_CONFIG_DIR:+, "Edit(/$CLAUDE_CONFIG_DIR/**)"}]},
+   "Edit(//**/.claude/**)", "Edit(//**/.claude.json)", "Edit(//**/.mcp.json)"$config_rule]},
  "sandbox": {"enabled": true, "allowUnsandboxedCommands": false,
    "filesystem": {"denyRead": ["$D4_SUPPORT/com.monocode.*"], "denyWrite": ["$D4_SUPPORT/com.monocode.*"]}}}
 JSON
