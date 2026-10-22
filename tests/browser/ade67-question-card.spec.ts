@@ -19,6 +19,11 @@ const HOME = "/Users/test";
 const GIGA_CHAT = "giga-chat";
 const MINUTE = 60_000;
 const QUESTION = "Spend a saved Claude rate-limit reset?";
+/**
+ * The card's first appearance waits on a real omp starting: on a CI runner
+ * its first prompt can take several seconds ("working for 4s", no card yet).
+ */
+const OMP_START = { timeout: 30_000 };
 
 const OMP = spawnSync("which", ["omp"], { encoding: "utf8" }).stdout.trim();
 
@@ -242,7 +247,7 @@ const ATLAS_SEED = {
 const card = (page: Page) => page.locator("[data-question-form]");
 
 async function answer(page: Page, choice: "No" | "Skip") {
-  await expect(card(page)).toContainText(QUESTION);
+  await expect(card(page)).toContainText(QUESTION, OMP_START);
   if (choice === "Skip") {
     await card(page).getByRole("button", { name: "Skip" }).click();
     return;
@@ -273,7 +278,7 @@ async function startHabitRun(page: Page, app: AppShell) {
   await habit.getByRole("button", { name: "Run now" }).click();
   await page.getByRole("tab", { name: "Sessions", exact: true }).click();
   await page.locator('[data-mono-session^="app-giga-chat-habit-"]').click();
-  await expect(card(page)).toContainText(QUESTION);
+  await expect(card(page)).toContainText(QUESTION, OMP_START);
 }
 
 /**
@@ -297,6 +302,8 @@ for (const choice of ["No", "Skip"] as const) {
     app,
     page,
   }) => {
+    // 1,830 fake-clock steps: about 15 s locally, over 30 s in CI WebKit.
+    test.setTimeout(2 * MINUTE);
     const omp = await bridgeOmp(page, app);
     await startHabitRun(page, app);
     // Tyler answered about 95 minutes after the run asked. 61 minutes is
