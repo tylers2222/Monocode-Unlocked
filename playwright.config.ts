@@ -2,6 +2,8 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests/browser",
+  // tests/**/*.test.ts are vitest unit tests of the browser rigs.
+  testMatch: "**/*.spec.ts",
   workers: 1,
   use: {
     baseURL: "http://127.0.0.1:1435",
