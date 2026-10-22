@@ -896,14 +896,24 @@ fn an_ack_from_no_saved_row_gets_the_send_gates_answer() {
     );
 }
 
-/// Review r1 M1. Defect: after a Mono resets its chat (the app's
-/// `resetMonoSession`: the old chat is cleared, the Mono points at a new
-/// one), its lead's ack is sent to the dead chat, refused, and the ask can
-/// never be acked.
+/// S1.6 "A Mono resets its chat mid-ask and still acks; its lead's ack still
+/// reaches it" (R5c). A Giga asks the Mono, the Mono asks its lead, then the
+/// Mono resets its chat through the app's own path. Defect: the Mono's ack
+/// from its new chat is refused because the ask names the dead chat; the
+/// dead chat can still ack; the lead's ack goes to the dead chat or never
+/// reaches the new one; or either ask is left open.
 #[test]
-fn a_leads_ack_reaches_its_mono_after_the_mono_resets_its_chat() {
-    let world = World::new("r5-ack-reset");
+fn s1_6_a_mono_resets_its_chat_mid_ask_and_both_acks_reach_their_parent() {
+    let mut world = World::new("r5c-s1-6");
     let tree = tree(&world);
+    let giga_ask = written(ask(
+        &world,
+        &tree,
+        &mono_caller(&tree.giga, "g1"),
+        "g-ask",
+        tree.mono.id.as_str(),
+        None,
+    ));
     let mono_ask = written(ask(
         &world,
         &tree,
@@ -912,34 +922,36 @@ fn a_leads_ack_reaches_its_mono_after_the_mono_resets_its_chat() {
         tree.lead.as_str(),
         None,
     ));
-    {
-        let mut conn = world.conn();
-        let tx = conn.transaction().unwrap();
-        crate::mono_messages::clear_session(&tx, &tree.mono.chat, world.now()).unwrap();
-        tx.execute(
-            "DELETE FROM sessions WHERE id = ?1",
-            [tree.mono.chat.as_str()],
-        )
-        .unwrap();
-        tx.execute(
-            "UPDATE monos SET data_json = json_set(data_json, '$.sessionId', 'r5-mono-chat-2') WHERE id = ?1",
-            [tree.mono.id.as_str()],
-        )
-        .unwrap();
-        tx.commit().unwrap();
-    }
-    world.add_session("r5-mono-chat-2", "/", None);
-    written(ack(
-        &world,
-        &tree,
+    let reset = world.reset_mono_chat(&tree.mono, "r5c-mono-chat-2");
+    let mut live = tree.live().to_vec();
+    live.push(&reset.chat);
+    let done = |ask: &MessageId| json!({"ask_id": ask.as_str(), "message": "Done"});
+    let dead = world.tool(&mono_caller(&tree.mono, "m2"), "dead-ack", "ack", done(&giga_ask), &live);
+    assert!(matches!(dead, Submitted::Failed { .. }), "the dead chat acked: {dead:?}");
+    assert_eq!(ask_row(&world, &giga_ask).0, "open", "a refused ack spends no key");
+    let mono_ack = world.tool(&mono_caller(&reset, "m3"), "m-ack", "ack", done(&giga_ask), &live);
+    written(mono_ack);
+    assert_eq!(ask_row(&world, &giga_ask).0, "acked", "the Mono acked from its new chat");
+    assert_eq!(
+        ack_went_to(&world, &giga_ask),
+        (Some(tree.giga.id.as_str().to_string()), None)
+    );
+    let lead_ack = written(world.tool(
         &session_caller(&tree.lead, P),
         "l-ack",
-        &mono_ask,
+        "ack",
+        done(&mono_ask),
+        &live,
     ));
     assert_eq!(ask_row(&world, &mono_ask).0, "acked");
     assert_eq!(
         ack_went_to(&world, &mono_ask),
         (Some(tree.mono.id.as_str().to_string()), None)
+    );
+    let handed = world.start_turn(&reset.chat, "m4");
+    assert!(
+        handed.iter().any(|row| row.message.id == lead_ack),
+        "the lead's ack reaches the Mono's new chat: {handed:?}"
     );
 }
 
