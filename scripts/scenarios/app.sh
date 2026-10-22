@@ -215,7 +215,7 @@ INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, 
 SQL
 }
 
-# d4_phase <off|on>: one launch that runs the Giga's habit. The argv files of
+# d4_phase <off|on|d1>: one launch that runs the Giga's habit. The argv files of
 # its Claude Code starts move to $PUPPET/<phase>.
 d4_phase() {
   mkdir -p "$PUPPET/claude-argv"
@@ -252,15 +252,19 @@ run_d4() {
   touch "$APP_DATA/claude-deny-rules-on"
   if [[ -n "${D4_CLAUDE:-}" ]]; then echo "$D4_CLAUDE" >"$PUPPET/real-claude"; fi
   d4_phase on
-  local off on interactive
-  off="$(d4_starts "$PUPPET/off")"; on="$(d4_starts "$PUPPET/on")"
+  # D1's marker: with its srt sandbox on, D4 adds only permissions.deny.
+  rm -f "$PUPPET/real-claude"
+  touch "$APP_DATA/agent-sandbox-on"
+  d4_phase d1
+  local off on d1 interactive deny
+  off="$(d4_starts "$PUPPET/off")"; on="$(d4_starts "$PUPPET/on")"; d1="$(d4_starts "$PUPPET/d1")"
   interactive="$(d4_jq '[.[] | select(interactive)] | length' "$off")"
+  deny="$(jq -S -c -n --arg d "$APP_DATA" '{deny: ["Read(/\($d)/**)", "Edit(/\($d)/**)"]}')"
   echo "D4 readings:"
   expect "OFF starts with deny rules" \
     "$(d4_jq '[.[] | settings | select(.permissions != null or .sandbox != null)] | length' "$off")" 0
   expect "OFF interactive starts ($interactive), at least 1" "$((interactive >= 1))" 1
-  expect "ON interactive permissions" "$(d4_jq 'first(.[] | select(interactive)) | settings.permissions' "$on")" \
-    "$(jq -S -c -n --arg d "$APP_DATA" '{deny: ["Read(/\($d)/**)", "Edit(/\($d)/**)"]}')"
+  expect "ON interactive permissions" "$(d4_jq 'first(.[] | select(interactive)) | settings.permissions' "$on")" "$deny"
   expect "ON interactive sandbox" "$(d4_jq 'first(.[] | select(interactive)) | settings.sandbox' "$on")" \
     "$(jq -S -c -n --arg d "$APP_DATA" '{enabled: true, allowUnsandboxedCommands: false,
       filesystem: {denyRead: [$d], denyWrite: [$d]}}')"
@@ -272,6 +276,8 @@ run_d4() {
   expect "ON interactive argv apart from --settings" \
     "$(d4_jq 'first(.[] | select(interactive)) | masked' "$on")" \
     "$(d4_jq 'first(.[] | select(interactive)) | masked' "$off")"
+  expect "D1 on: interactive permissions" "$(d4_jq 'first(.[] | select(interactive)) | settings.permissions' "$d1")" "$deny"
+  expect "D1 on: interactive sandbox" "$(d4_jq 'first(.[] | select(interactive)) | settings.sandbox' "$d1")" null
   echo "  OFF interactive argv: $(d4_jq 'first(.[] | select(interactive)) | redacted' "$off")"
   echo "  ON interactive argv: $(d4_jq 'first(.[] | select(interactive)) | redacted' "$on")"
   if [[ -n "${D4_CLAUDE:-}" ]]; then

@@ -4,8 +4,11 @@
 //! `sandbox` rules on the app data folder. The rules are defense in depth only.
 //! The Read rule does not stop a script that opens the file itself, the OS
 //! sandbox covers Bash only, and Claude Code runs Bash unsandboxed where the
-//! sandbox cannot start (`failIfUnavailable` stays off so it still runs inside
-//! the D1 sandbox).
+//! sandbox cannot start (`failIfUnavailable` stays off).
+//!
+//! With the D1 sandbox on (`agent-sandbox-on`, ADE-41), only `permissions.deny`
+//! is added. Inside srt, Claude Code's own sandbox fails to start ("Failed to
+//! initialize sandbox"), and srt already denies the folder to every process.
 
 use std::path::Path;
 
@@ -13,6 +16,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 const ON_MARKER: &str = "claude-deny-rules-on";
+const D1_MARKER: &str = "agent-sandbox-on";
 
 pub(crate) fn args(app: &AppHandle, args: Vec<String>) -> Result<Vec<String>, String> {
     let Some(data) = app
@@ -27,6 +31,7 @@ pub(crate) fn args(app: &AppHandle, args: Vec<String>) -> Result<Vec<String>, St
 }
 
 fn with_deny_rules(mut args: Vec<String>, data: &Path) -> Result<Vec<String>, String> {
+    let in_d1_sandbox = data.join(D1_MARKER).exists();
     let data = data
         .to_str()
         .ok_or("Claude Code deny rules: the app data path is not UTF-8.")?;
@@ -61,14 +66,16 @@ fn with_deny_rules(mut args: Vec<String>, data: &Path) -> Result<Vec<String>, St
         "permissions".into(),
         json!({ "deny": [format!("Read({pattern})"), format!("Edit({pattern})")] }),
     );
-    settings.insert(
-        "sandbox".into(),
-        json!({
-            "enabled": true,
-            "allowUnsandboxedCommands": false,
-            "filesystem": { "denyRead": [data], "denyWrite": [data] },
-        }),
-    );
+    if !in_d1_sandbox {
+        settings.insert(
+            "sandbox".into(),
+            json!({
+                "enabled": true,
+                "allowUnsandboxedCommands": false,
+                "filesystem": { "denyRead": [data], "denyWrite": [data] },
+            }),
+        );
+    }
     args[at] = Value::Object(settings).to_string();
     Ok(args)
 }
