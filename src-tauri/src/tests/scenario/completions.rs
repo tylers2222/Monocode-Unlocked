@@ -134,6 +134,19 @@ fn a_waiting_result_reaches_one_window_once_across_kills_and_reloads() {
         claim(&world, "main", "run-3").is_empty(),
         "a delivered result does not come back"
     );
+    assert!(
+        !deliver(&world, "main", "run-3", &["a", "b"]),
+        "a claim keeps a recent delivery mark"
+    );
+    world
+        .conn()
+        .execute(
+            "UPDATE mono_completion_deliveries SET delivered_at = ?1",
+            params![world.now() - 2_592_000_001],
+        )
+        .unwrap();
+    claim(&world, "main", "run-3");
+    assert_eq!(marks(&world), 0, "a claim drops marks older than 30 days");
 }
 
 #[test]
@@ -280,5 +293,81 @@ fn two_windows_booting_at_once_take_each_result_once() {
         (claimed, taken.len()),
         (40, 40),
         "every result goes to exactly one window"
+    );
+}
+
+/// The four commands as a window calls them, through Tauri's argument binding,
+/// and a closed window handing its rows on (`window_closed`).
+#[cfg(not(windows))]
+#[test]
+fn each_window_claims_saves_and_delivers_its_own_results_through_the_commands() {
+    use crate::mono_messages::tests::invoke_command;
+    use crate::session_store::SessionStore;
+
+    let world = World::new("ade89-commands");
+    let app = tauri::test::mock_builder()
+        .manage(SessionStore::open(world.path().to_path_buf()).unwrap())
+        .manage(completions::Run::default())
+        .invoke_handler(tauri::generate_handler![
+            completions::mono_completions_claim,
+            completions::mono_completions_save,
+            completions::mono_completions_deliver,
+            completions::mono_completions_remove
+        ])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let window = |label: &str| {
+        tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
+            .build()
+            .unwrap()
+    };
+    let (main, other) = (window("main"), window("window-1"));
+    let call = |window, command: &str, args: Value| invoke_command(window, command, &args).unwrap();
+    let held = |window| {
+        let claimed = call(window, "mono_completions_claim", json!({}));
+        ids(claimed.as_array().unwrap())
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let deliver = |window, request: &str| {
+        let args =
+            json!({ "groupId": format!("mono-completion-{request}"), "requestIds": [request] });
+        call(window, "mono_completions_deliver", args) == json!(true)
+    };
+
+    call(
+        &main,
+        "mono_completions_save",
+        json!({ "saved": [saved("a", None)] }),
+    );
+    assert_eq!(held(&main), ["a"], "the saving window holds its result");
+    assert!(held(&other).is_empty(), "the other window gets nothing");
+    assert!(!deliver(&other, "a"), "the other window cannot deliver it");
+    assert!(deliver(&main, "a"), "the holder delivers it");
+    assert!(!deliver(&main, "a"), "once");
+
+    call(
+        &main,
+        "mono_completions_save",
+        json!({ "saved": [saved("b", None)] }),
+    );
+    call(
+        &main,
+        "mono_completions_remove",
+        json!({ "requestIds": ["b"] }),
+    );
+    assert!(held(&main).is_empty(), "a removed result is gone");
+
+    call(
+        &main,
+        "mono_completions_save",
+        json!({ "saved": [saved("c", None)] }),
+    );
+    completions::window_closed(app.handle(), "main");
+    assert_eq!(
+        held(&other),
+        ["c"],
+        "a closed window's result goes to the next boot"
     );
 }

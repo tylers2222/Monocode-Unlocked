@@ -8,7 +8,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::Value;
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Manager, Runtime, State, WebviewWindow};
 
 use crate::session_store::SessionStore;
 
@@ -29,8 +29,8 @@ pub(crate) struct Owner<'a> {
     pub run: &'a str,
 }
 
-/// A delivery mark only has to outlive a retry of the same notice.
-const DELIVERY_MARK_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+/// A delivery mark only has to outlive a retry of the same notice: 30 days.
+const DELIVERY_MARK_MS: i64 = 2_592_000_000;
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -205,7 +205,7 @@ pub(crate) fn release(conn: &Connection, owner: Owner) -> rusqlite::Result<()> {
     .map(drop)
 }
 
-pub fn window_closed(app: &AppHandle, label: &str) {
+pub fn window_closed<R: Runtime>(app: &AppHandle<R>, label: &str) {
     let (Some(store), Some(run)) = (app.try_state::<SessionStore>(), app.try_state::<Run>()) else {
         return;
     };
@@ -225,8 +225,8 @@ pub fn window_closed(app: &AppHandle, label: &str) {
 }
 
 #[tauri::command(async)]
-pub fn mono_completions_claim(
-    window: WebviewWindow,
+pub fn mono_completions_claim<R: Runtime>(
+    window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
     run: State<'_, Run>,
 ) -> Result<Vec<Value>, String> {
@@ -238,8 +238,8 @@ pub fn mono_completions_claim(
 }
 
 #[tauri::command(async)]
-pub fn mono_completions_save(
-    window: WebviewWindow,
+pub fn mono_completions_save<R: Runtime>(
+    window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
     run: State<'_, Run>,
     saved: Vec<Value>,
@@ -257,8 +257,8 @@ pub fn mono_completions_save(
 }
 
 #[tauri::command(async)]
-pub fn mono_completions_deliver(
-    window: WebviewWindow,
+pub fn mono_completions_deliver<R: Runtime>(
+    window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
     run: State<'_, Run>,
     group_id: String,
@@ -279,8 +279,8 @@ pub fn mono_completions_deliver(
 }
 
 #[tauri::command(async)]
-pub fn mono_completions_remove(
-    window: WebviewWindow,
+pub fn mono_completions_remove<R: Runtime>(
+    window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
     run: State<'_, Run>,
     request_ids: Vec<String>,
