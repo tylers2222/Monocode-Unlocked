@@ -1,7 +1,15 @@
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { updateSessionState } from "../../../app/model/sessionState";
 import type { Block, Session } from "../../sessions/model/session";
-import type { ApprovalRelay } from "./monoHabits";
+import type { UserQuestionReply } from "../../sessions/model/userQuestion";
+import { answerHabitQuestion } from "./habitQuestion";
+import { questionRoute, type ApprovalRelay } from "./monoHabits";
+
+type Reply = (
+  sessionId: string,
+  requestId: number,
+  reply: UserQuestionReply,
+) => void;
 
 type Host = {
   sessions: RefObject<Session[]>;
@@ -23,6 +31,31 @@ export function setHabitQuestionHost(
   append: Host["append"],
 ): void {
   host = { sessions, setSessions, persist, append };
+}
+
+const routed = new WeakMap<Reply, Reply>();
+
+/**
+ * The app's one answer path, with the habit's card in it: either card's
+ * answer reaches the run once, and the Mono's card settles with it. The same
+ * path in gives the same function out, so a pane's props stay stable.
+ */
+export function habitQuestionReply(reply: Reply): Reply {
+  const known = routed.get(reply);
+  if (known) return known;
+  const route: Reply = (sessionId, requestId, answer) => {
+    const target = questionRoute(sessionId, requestId);
+    const live = host?.sessions.current.some(
+      (session) => session.id === target.sessionId,
+    );
+    if (target.card && live)
+      settleHabitCard(target.card, (block) =>
+        answerHabitQuestion(block, answer),
+      );
+    reply(target.sessionId, target.requestId, answer);
+  };
+  routed.set(reply, route);
+  return route;
 }
 
 /** Applies `update` to the habit card a relay points at and saves the Mono's
