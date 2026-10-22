@@ -6,7 +6,7 @@ import type { Page } from "@playwright/test";
 import type { SessionSummary } from "../../src/features/sessions/data/sessionStore";
 import type { Block } from "../../src/features/sessions/model/session";
 import { type AppShell, expect, test } from "./app/fixture";
-import { OMP, bridgeOmp, ompHandlers, type ModelRequest } from "./app/ompBridge";
+import { bridgeOmp, needsOmp, ompHandlers, type ModelRequest } from "./app/ompBridge";
 
 const PROJECT = "/Users/test/acme";
 const SESSION = "s-1";
@@ -183,7 +183,7 @@ async function expectTurnEnded(page: Page, text: string, reply: Reply) {
   soft(block?.durationMs, `the turn "${text}" has its duration`).toBeDefined();
 }
 
-test.skip(!OMP, "needs the omp binary on PATH");
+needsOmp();
 
 test("an omp turn that leaves a background job running ends when omp's turn ends", async ({
   app,

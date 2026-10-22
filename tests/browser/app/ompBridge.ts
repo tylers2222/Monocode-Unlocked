@@ -5,11 +5,23 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Page } from "@playwright/test";
-import type { AppShell } from "./fixture";
+import { type AppShell, expect, test } from "./fixture";
 import { spawnRealHarness } from "./realHarness";
 
-/** The omp on PATH; empty when there is none, so a spec can skip. */
+/** The omp on PATH; empty when there is none. */
 export const OMP = spawnSync("which", ["omp"], { encoding: "utf8" }).stdout.trim();
+
+/**
+ * Call at the top of a real-omp spec. Locally the spec skips without omp. CI
+ * installs omp in the browser job, so there a missing omp fails each test
+ * instead of hiding the spec among the skips.
+ */
+export function needsOmp(): void {
+  test.skip(!OMP && !process.env.CI, "needs the omp binary on PATH");
+  test.beforeEach(() => {
+    expect(OMP, "omp is on PATH (CI installs it in the browser job)").not.toBe("");
+  });
+}
 
 /** What omp sends the local model: the conversation so far and its tools. */
 export type ModelRequest = {
@@ -110,6 +122,9 @@ export async function bridgeOmp(
   writeFileSync(
     join(dir, ".omp", "agent", "models.yml"),
     `providers:\n  offline:\n    baseUrl: http://127.0.0.1:${port}/v1\n    api: openai-completions\n    apiKey: offline\n    models:\n      - id: offline-model\n`,
+  );
+  console.log(
+    `[omp rig] ${OMP}: HOME=${dir}, agent dir ${join(dir, ".omp", "agent")}, only model http://127.0.0.1:${port}/v1 (local fake)`,
   );
   const children = new Map<string, ChildProcess>();
   const spawned: ChildProcess[] = [];

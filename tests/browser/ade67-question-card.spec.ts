@@ -4,12 +4,17 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import type { SessionSummary } from "../../src/features/sessions/data/sessionStore";
 import { type AppShell, expect, test } from "./app/fixture";
-import { OMP, bridgeOmp, ompHandlers } from "./app/ompBridge";
+import { bridgeOmp, needsOmp, ompHandlers } from "./app/ompBridge";
 
 const HOME = "/Users/test";
 const GIGA_CHAT = "giga-chat";
 const MINUTE = 60_000;
 const QUESTION = "Spend a saved Claude rate-limit reset?";
+/**
+ * The card's first appearance waits on a real omp starting: on a CI runner
+ * its first prompt can take several seconds ("working for 4s", no card yet).
+ */
+const OMP_START = { timeout: 30_000 };
 
 // The agent's model is a local server: its first answer calls `ask_user`, a
 // real omp tool that asks through omp's extension UI (`ui.select`), the way
@@ -129,7 +134,7 @@ const ATLAS_SEED = {
 const card = (page: Page) => page.locator("[data-question-form]");
 
 async function answer(page: Page, choice: "No" | "Skip") {
-  await expect(card(page)).toContainText(QUESTION);
+  await expect(card(page)).toContainText(QUESTION, OMP_START);
   if (choice === "Skip") {
     await card(page).getByRole("button", { name: "Skip" }).click();
     return;
@@ -160,7 +165,7 @@ async function startHabitRun(page: Page, app: AppShell) {
   await habit.getByRole("button", { name: "Run now" }).click();
   await page.getByRole("tab", { name: "Sessions", exact: true }).click();
   await page.locator('[data-mono-session^="app-giga-chat-habit-"]').click();
-  await expect(card(page)).toContainText(QUESTION);
+  await expect(card(page)).toContainText(QUESTION, OMP_START);
 }
 
 /**
@@ -172,13 +177,15 @@ async function runChecks(page: Page, ms: number, until = () => false) {
     await page.clock.fastForward(2_000);
 }
 
-test.skip(!OMP, "needs the omp binary on PATH");
+needsOmp();
 
 for (const choice of ["No", "Skip"] as const) {
   test(`a habit run gets ${choice} from the card after its hour of work`, async ({
     app,
     page,
   }) => {
+    // 1,830 fake-clock steps: about 15 s locally, over 30 s in CI WebKit.
+    test.setTimeout(2 * MINUTE);
     const omp = await startOmp(page, app);
     await startHabitRun(page, app);
     // Tyler answered about 95 minutes after the run asked. 61 minutes is
@@ -225,7 +232,12 @@ for (const choice of ["No", "Skip"] as const) {
 test("a habit run stopped while it waits leaves no question card", async ({
   app,
   page,
+  browserName,
 }) => {
+  test.skip(
+    browserName === "webkit",
+    "21,600 fake-clock steps take over 5 min in WebKit; the stop logic does not depend on the browser, and chromium runs it",
+  );
   // 21,600 checks of fake time; on the base the stop comes at the hour.
   test.setTimeout(5 * MINUTE);
   const omp = await startOmp(page, app);
