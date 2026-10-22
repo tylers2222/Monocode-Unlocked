@@ -48,6 +48,27 @@ function tryStart(ownDir: string, env: NodeJS.ProcessEnv, cwd = ownDir) {
   };
 }
 
+/**
+ * Keys the OS or Node's process layer (libuv) puts in every child's env,
+ * whatever env the helper passes. macOS adds its text encoding. On Windows,
+ * libuv copies these from the parent when the given env lacks them.
+ */
+const OS_ADDED: Partial<Record<NodeJS.Platform, string[]>> = {
+  darwin: ["__CF_USER_TEXT_ENCODING"],
+  win32: [
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOGONSERVER",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "TEMP",
+    "USERDOMAIN",
+    "USERNAME",
+    "USERPROFILE",
+    "WINDIR",
+  ],
+};
+
 describe("spawnRealHarness", () => {
   it("builds the harness env itself: PATH, and HOME and login dirs in the temp dir, nothing else from the parent", async () => {
     // The agent shell that runs these tests holds a live app token like this.
@@ -55,8 +76,7 @@ describe("spawnRealHarness", () => {
     const own = tempDir();
     const seen = await startAndRead(own, own);
     expect(seen.MONOCODE_APP_TOKEN, "the parent's env does not reach the harness").toBeUndefined();
-    // macOS sets this one in every new process; the helper does not pass it.
-    delete seen.__CF_USER_TEXT_ENCODING;
+    for (const key of OS_ADDED[process.platform] ?? []) delete seen[key];
     expect(seen).toEqual({
       PATH: process.env.PATH,
       HOME: own,
