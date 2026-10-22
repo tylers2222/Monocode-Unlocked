@@ -163,15 +163,28 @@ fn a_closed_windows_results_go_to_the_next_window_that_boots() {
         run: "run-1",
     };
     completions::release(&world.conn(), closing).unwrap();
-    assert_eq!(
-        ids(&claim(&world, "main", "run-1")),
-        ["c"],
-        "the next window to boot takes them"
+    // The window's last hold reaches Rust after it closed: its result for c
+    // and a new d.
+    hold(
+        &world,
+        "window-4",
+        "run-1",
+        &[saved("c", Some("done")), saved("d", None)],
     );
-    hold(&world, "main", "run-1", &[saved("d", None)]);
+    let taken = claim(&world, "main", "run-1");
+    assert_eq!(
+        ids(&taken),
+        ["c", "d"],
+        "the next window to boot takes them all"
+    );
+    assert!(
+        taken[0].get("result").is_some(),
+        "with the closing window's newest results"
+    );
+    hold(&world, "main", "run-1", &[saved("e", None)]);
     assert_eq!(
         ids(&claim(&world, "main", "run-1")),
-        ["d"],
+        ["e"],
         "a hold replaces what the window held"
     );
 }
