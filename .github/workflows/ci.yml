@@ -179,13 +179,11 @@ jobs:
         # only way to catch packages that are missing from EPEL 10.
         image: [fedora:43, almalinux:10]
     steps:
-      # One dnf run tries each mirror from the metalink once, so a mirror outage
-      # fails it with "All mirrors were tried". A later run fetches the metalink
-      # again and usually gets working mirrors. This shim retries every dnf call
-      # in the job, including the ones in the setup script. An error that does
-      # not go away, such as a missing package, still fails after the last try.
+      # librepo fails with "All mirrors were tried" when the mirror set from one
+      # metalink fetch is bad. dnf does not fetch the metalink again within a
+      # run, but a new dnf run does, and it usually gets working mirrors.
       - &dnf-retry
-        name: Retry dnf through mirror outages
+        name: Wrap every dnf call in the job with retries
         run: |
           cat > /usr/local/bin/dnf <<'EOF'
           #!/bin/sh
