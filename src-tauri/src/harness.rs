@@ -987,6 +987,7 @@ pub fn harness_spawn(
         }
         Some(true) => return Err("Edit approvals are only supported for `devin acp`".into()),
     };
+    let mut cmd = crate::agent_sandbox::command(&app, &command)?;
 
     let _reservation = crate::worktree_lifecycle::reserve_spawn(&workdir)?;
     let (epoch, kill_all, prev) = host.begin_spawn(&session_id);
@@ -994,7 +995,6 @@ pub fn harness_spawn(
         terminate(prev.pid);
     }
 
-    let mut cmd = Command::new(&command);
     cmd.args(&devin_config)
         .args(&args)
         .current_dir(&workdir)
