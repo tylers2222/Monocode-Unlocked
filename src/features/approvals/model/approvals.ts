@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { normalizeProjectPath } from "../../projects/model/recents";
+import { countBadge } from "../../../shared/lib/numbers";
 
 export type Urgency = "blocking" | "not_blocking";
 
@@ -160,4 +161,21 @@ export function update(
 
 export function withdraw(id: string, by: string): Promise<Approval> {
   return invoke("approvals_withdraw", { id, by });
+}
+
+/** Rust emits it after every card write: file, update, withdraw (ADE-51) and decide (ADE-52). */
+export const APPROVALS_CHANGED = "approvals-changed";
+
+export type OpenCounts = { total: number; byProject: Record<string, number> };
+
+export type ApprovalsBadge = { label: string; pill?: string };
+
+export function openCounts(): Promise<OpenCounts> {
+  return invoke("approvals_open_counts");
+}
+
+export function approvalsBadge(open: number): ApprovalsBadge {
+  return open > 0
+    ? { label: `Approvals, ${open} open`, pill: countBadge(open) }
+    : { label: "Approvals" };
 }

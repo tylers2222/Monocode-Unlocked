@@ -7,7 +7,7 @@ import {
   shouldPersistSession,
 } from "../../sessions/data/sessionStore";
 import {
-  collectWorkspaceSnapshot,
+  workspaceSnapshot,
   hydrateWorkspaceSnapshot,
   parseWorkspaceSnapshot,
 } from "../../workspace/model/workspaceSnapshot";
@@ -126,13 +126,17 @@ describe("inbox sessions", () => {
       busy: true,
     };
     const tab = newTab(project.id);
-    const snapshot = collectWorkspaceSnapshot(
-      [tab],
-      [project, session],
-      tab.id,
-      project.cwd,
-      new Map(),
-    );
+    const snapshot = workspaceSnapshot([
+      {
+        tabs: [tab],
+        sessions: [project, session],
+        activeTabId: tab.id,
+        projectCwd: project.cwd,
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      },
+    ]);
     expect(snapshot.sessions.map((entry) => entry.id)).toEqual([project.id]);
     const restored = hydrateWorkspaceSnapshot(
       snapshot,

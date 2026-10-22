@@ -8,6 +8,7 @@ import {
 import { ImagePlus, MoreHorizontal, Plus, Trash2 } from "../../shared/ui/icons";
 import { Popover, type PopoverAnchor } from "../../shared/ui/Popover";
 import { Shimmer } from "../../shared/ui/Shimmer";
+import { countBadge } from "../../shared/lib/numbers";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
 import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
 import { MonoIntroCard } from "../../features/monos/ui/MonoIntro";
@@ -49,11 +50,6 @@ export type MonoRailProps = {
 };
 
 const IDLE: MonoState = { status: "idle" };
-
-/** A Mono's unread count as its badge shows it. */
-export function unreadBadge(count: number): string {
-  return count > 99 ? "99+" : String(count);
-}
 
 export function unreadLabel(count: number): string {
   return count === 1 ? "1 new reply" : `${count} new replies`;
@@ -253,7 +249,7 @@ function MonoRows({
                   data-mono-unread={unseen}
                   className="grid h-4 min-w-4 shrink-0 place-items-center rounded-full bg-accent px-1 text-[10px] font-medium tabular-nums leading-none text-white group-hover:hidden group-has-[button:focus-visible]:hidden"
                 >
-                  {unreadBadge(unseen)}
+                  {countBadge(unseen)}
                 </span>
               ) : null}
             </button>
