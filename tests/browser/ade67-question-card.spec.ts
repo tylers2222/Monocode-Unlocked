@@ -1,26 +1,15 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 import type { Page } from "@playwright/test";
 import type { SessionSummary } from "../../src/features/sessions/data/sessionStore";
 import { type AppShell, expect, test } from "./app/fixture";
+import { OMP, bridgeOmp, ompHandlers } from "./app/ompBridge";
 
 const HOME = "/Users/test";
 const GIGA_CHAT = "giga-chat";
 const MINUTE = 60_000;
 const QUESTION = "Spend a saved Claude rate-limit reset?";
-
-const OMP = spawnSync("which", ["omp"], { encoding: "utf8" }).stdout.trim();
 
 // The agent's model is a local server: its first answer calls `ask_user`, a
 // real omp tool that asks through omp's extension UI (`ui.select`), the way
@@ -43,105 +32,23 @@ export default function (pi) {
 }
 `;
 
-function fakeModel(): Server {
-  return createServer((request, response) => {
-    let body = "";
-    request.on("data", (chunk) => (body += chunk));
-    request.on("end", () => {
-      const { messages = [] } = JSON.parse(body || "{}") as {
-        messages?: { role: string }[];
-      };
-      const delta = messages.some((message) => message.role === "tool")
-        ? { role: "assistant", content: "Done." }
-        : {
-            role: "assistant",
-            tool_calls: [
-              {
-                index: 0,
-                id: "call_1",
-                type: "function",
-                function: { name: "ask_user", arguments: "{}" },
-              },
-            ],
-          };
-      const chunk = (choice: object) =>
-        `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 1, model: "offline-model", choices: [{ index: 0, ...choice }] })}\n\n`;
-      response.writeHead(200, { "content-type": "text/event-stream" });
-      response.end(
-        chunk({ delta, finish_reason: null }) +
-          chunk({ delta: {}, finish_reason: "content" in delta ? "stop" : "tool_calls" }) +
-          "data: [DONE]\n\n",
-      );
-    });
-  });
-}
-
 type Answer = { choice: string | null };
 type OmpBridge = { answers: () => Answer[] };
 
-const running = new Set<ChildProcess>();
-const servers = new Set<Server>();
-test.afterEach(() => {
-  for (const child of running) child.kill("SIGKILL");
-  running.clear();
-  for (const server of servers) server.close();
-  servers.clear();
-});
-
-/**
- * The app's harness IPC (harness_spawn / harness_write / harness_kill and the
- * harness-stdout / harness-exit events) piped to a real omp process.
- */
-async function bridgeOmp(page: Page, app: AppShell): Promise<OmpBridge> {
+/** Real omp with the `ask_user` extension; it records each answer it gets. */
+async function startOmp(page: Page, app: AppShell): Promise<OmpBridge> {
   const dir = mkdtempSync(join(tmpdir(), "ade67-"));
   const extension = join(dir, "ask.ts");
   const answers = join(dir, "answers.jsonl");
   writeFileSync(extension, EXTENSION);
-  const model = fakeModel();
-  servers.add(model);
-  await new Promise<void>((resolve) => model.listen(0, "127.0.0.1", resolve));
-  const { port } = model.address() as AddressInfo;
-  mkdirSync(join(dir, "agent"));
-  writeFileSync(
-    join(dir, "agent", "models.yml"),
-    `providers:\n  offline:\n    baseUrl: http://127.0.0.1:${port}/v1\n    api: openai-completions\n    apiKey: offline\n    models:\n      - id: offline-model\n`,
-  );
-  const env: NodeJS.ProcessEnv = {
-    PATH: process.env.PATH,
-    HOME: dir,
-    PI_CODING_AGENT_DIR: join(dir, "agent"),
-    ADE67_ANSWERS: answers,
-  };
-  const children = new Map<string, ChildProcess>();
-  const emit = (event: string, payload: unknown) => {
-    if (!page.isClosed()) void app.emit(event, payload).catch(() => undefined);
-  };
-  await page.exposeFunction(
-    "ompSpawn",
-    (sessionId: string, args: string[]): number => {
-      const child = spawn(
-        OMP,
-        [...args, "--no-session", "--no-extensions", "-e", extension],
-        { cwd: dir, env },
-      );
-      children.set(sessionId, child);
-      running.add(child);
-      createInterface({ input: child.stdout! }).on("line", (line) =>
-        emit("harness-stdout", { sessionId, line }),
-      );
-      child.on("exit", (code) => {
-        running.delete(child);
-        emit("harness-exit", { sessionId, code, pid: child.pid });
-      });
-      return child.pid!;
-    },
-  );
-  await page.exposeFunction("ompWrite", (sessionId: string, line: string) => {
-    children.get(sessionId)?.stdin?.write(`${line}\n`);
-  });
-  await page.exposeFunction("ompKill", (sessionId: string) => {
-    children.get(sessionId)?.kill();
-    children.delete(sessionId);
+  await bridgeOmp(page, app, {
+    dir,
+    args: ["--no-extensions", "-e", extension],
+    env: { ADE67_ANSWERS: answers },
+    model: ({ messages }) =>
+      messages.some((message) => message.role === "tool")
+        ? { text: "Done." }
+        : { tool: "ask_user", arguments: {} },
   });
   return {
     answers: () =>
@@ -156,30 +63,13 @@ async function bridgeOmp(page: Page, app: AppShell): Promise<OmpBridge> {
 
 declare global {
   interface Window {
-    ompSpawn: (sessionId: string, args: string[]) => Promise<number>;
-    ompWrite: (sessionId: string, line: string) => Promise<void>;
-    ompKill: (sessionId: string) => Promise<void>;
     habitsText?: string;
   }
 }
 
-const handlers = {
-  harness_resolve_omp: () => ({ path: "omp" }),
-  harness_spawn: (
-    _store: unknown,
-    { sessionId, args }: { sessionId: string; args: string[] },
-  ) => window.ompSpawn(sessionId, args),
-  harness_write: (
-    _store: unknown,
-    { sessionId, line }: { sessionId: string; line: string },
-  ) => window.ompWrite(sessionId, line).then(() => null),
-  harness_kill: (_store: unknown, { sessionId }: { sessionId: string }) =>
-    window.ompKill(sessionId).then(() => null),
-};
-
 /** Atlas has one habit; mono.rs keeps what the app saves to habits.json. */
 const habitHandlers = {
-  ...handlers,
+  ...ompHandlers,
   mono_read: (_store: unknown, { mono, path }: { mono: string; path: string }) =>
     mono === "giga-1" && path === "habits.json"
       ? {
@@ -289,7 +179,7 @@ for (const choice of ["No", "Skip"] as const) {
     app,
     page,
   }) => {
-    const omp = await bridgeOmp(page, app);
+    const omp = await startOmp(page, app);
     await startHabitRun(page, app);
     // Tyler answered about 95 minutes after the run asked. 61 minutes is
     // enough: it is past the run's 60-minute work limit (HABIT_RUN_TIMEOUT_MS),
@@ -306,8 +196,8 @@ for (const choice of ["No", "Skip"] as const) {
   });
 
   test(`a Giga chat gets ${choice} from the card`, async ({ app, page }) => {
-    const omp = await bridgeOmp(page, app);
-    await app.mount(ATLAS_SEED, { handlers });
+    const omp = await startOmp(page, app);
+    await app.mount(ATLAS_SEED, { handlers: ompHandlers });
     await page.getByRole("button", { name: /^Atlas, / }).click();
     const composer = page.getByPlaceholder("Message Atlas");
     await composer.fill("Check in");
@@ -317,11 +207,11 @@ for (const choice of ["No", "Skip"] as const) {
   });
 
   test(`a project session gets ${choice} from the card`, async ({ app, page }) => {
-    const omp = await bridgeOmp(page, app);
+    const omp = await startOmp(page, app);
     const project = `${HOME}/acme`;
     await app.mount(
       { projects: [project], sessions: [chat("s-1", project, "Fix the login redirect")] },
-      { handlers },
+      { handlers: ompHandlers },
     );
     await page.getByText("Fix the login redirect").click();
     const composer = page.getByPlaceholder("Ask, build, / for commands");
@@ -338,7 +228,7 @@ test("a habit run stopped while it waits leaves no question card", async ({
 }) => {
   // 21,600 checks of fake time; on the base the stop comes at the hour.
   test.setTimeout(5 * MINUTE);
-  const omp = await bridgeOmp(page, app);
+  const omp = await startOmp(page, app);
   await startHabitRun(page, app);
   // The run gives up on the user after 12 hours and stops; omp gets a skip.
   await runChecks(page, 12 * 60 * MINUTE + MINUTE, () => omp.answers().length > 0);
