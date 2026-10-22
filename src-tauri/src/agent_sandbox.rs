@@ -6,10 +6,11 @@
 //! and reads everywhere except `denyRead`. Every MonoCode data folder is in
 //! both deny lists, so the agent can neither read a database nor change this setting.
 //!
-//! The user may edit `filesystem.allowWrite` and `network.allowedDomains` in
-//! the settings file. The app rewrites every other key before each spawn, and
-//! srt lets `denyWrite` win over `allowWrite`, so an edit cannot reopen a
-//! denied path.
+//! The user adds paths and domains under `extraAllowWrite` and
+//! `extraAllowedDomains` in the settings file. The app rewrites every other key
+//! from its defaults before each spawn, so a later fix to the defaults reaches
+//! every machine. srt lets `denyWrite` win over `allowWrite`, so an addition
+//! cannot reopen a denied path.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -17,7 +18,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Runtime};
 
 /// The settings format is a research preview, so no other version runs.
 const SRT_VERSION: &str = "0.0.81";
@@ -27,7 +28,8 @@ const SETTINGS_FILE: &str = "agent-sandbox.json";
 /// `.second`, `.desktop.gigaeval`, dev builds), and each holds a database.
 const ALL_INSTANCES: &str = "com.monocode.*";
 
-/// Under HOME. A write to any of these runs code outside the sandbox later.
+/// Under HOME. A write to any of these runs code outside the sandbox later,
+/// and no agent needs to read them: login items and shell startup files.
 const STARTUP_FILES: [&str; 11] = [
     "Library/LaunchAgents",
     ".zshenv",
@@ -42,7 +44,16 @@ const STARTUP_FILES: [&str; 11] = [
     ".config/fish",
 ];
 
-const DEFAULT_WRITE: [&str; 10] = [
+/// Under HOME. Config that programs outside the sandbox load later: git's
+/// global config (with `<XDG config>/git`; the app's own git calls honour
+/// `core.fsmonitor` and `core.hooksPath`), Claude Code's user hooks and Codex's
+/// `notify` command. The agent's own git, Claude Code and Codex read them, so
+/// only writes are denied.
+const OTHERS_CONFIG: [&str; 3] = [".gitconfig", ".claude/settings.json", ".codex/config.toml"];
+
+/// Each harness's own state folder. Under the XDG config folder only OpenCode
+/// (`opencode`) and Devin (`devin`) write, so it is not allowed whole.
+const DEFAULT_WRITE: [&str; 9] = [
     ".",
     "/tmp",
     "~/.omp",
@@ -51,7 +62,6 @@ const DEFAULT_WRITE: [&str; 10] = [
     "~/.codex",
     "~/.cache",
     "~/.npm",
-    "~/.config",
     "~/Library/Caches",
 ];
 
@@ -74,7 +84,13 @@ const DEFAULT_DOMAINS: [&str; 16] = [
     "*.crates.io",
 ];
 
-pub(crate) fn command(app: &AppHandle, program: &str) -> Result<Command, String> {
+/// The command a harness child starts with, and whether srt runs it.
+pub(crate) struct Spawn {
+    pub(crate) cmd: Command,
+    pub(crate) sandboxed: bool,
+}
+
+pub(crate) fn command<R: Runtime>(app: &AppHandle<R>, program: &str) -> Result<Spawn, String> {
     let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     command_in(&data, program, || crate::harness::resolve_gui_binary("srt"))
 }
@@ -85,17 +101,18 @@ pub(crate) fn command_in(
     data: &Path,
     program: &str,
     find_srt: impl FnOnce() -> Option<PathBuf>,
-) -> Result<Command, String> {
-    let on =
+) -> Result<Spawn, String> {
+    let sandboxed =
         std::fs::exists(data.join(ON_MARKER)).map_err(|e| format!("{}: {e}", data.display()))?;
-    if !on {
-        return Ok(Command::new(program));
+    if !sandboxed {
+        let cmd = Command::new(program);
+        return Ok(Spawn { cmd, sandboxed });
     }
     let srt = pinned_srt(find_srt())?;
-    let settings = write_settings(data)?;
+    let settings = write_settings(data, &srt)?;
     let mut cmd = Command::new(srt);
     cmd.arg("--settings").arg(settings).arg("--").arg(program);
-    Ok(cmd)
+    Ok(Spawn { cmd, sandboxed })
 }
 
 fn pinned_srt(srt: Option<PathBuf>) -> Result<PathBuf, String> {
@@ -109,18 +126,32 @@ fn pinned_srt(srt: Option<PathBuf>) -> Result<PathBuf, String> {
         None,
         Duration::from_secs(15),
     )?;
-    let found = String::from_utf8_lossy(&output.stdout);
-    if found.trim() != SRT_VERSION {
-        return Err(format!(
-            "The agent sandbox needs srt {SRT_VERSION}, but {} is {}. Run `{install}`.",
-            srt.display(),
-            found.trim()
-        ));
+    let needs = format!(
+        "The agent sandbox needs srt {SRT_VERSION}, but {}",
+        srt.display()
+    );
+    match String::from_utf8_lossy(&output.stdout).trim() {
+        SRT_VERSION => Ok(srt),
+        "" => Err(format!(
+            "{needs} did not answer `--version` ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+        found => Err(format!("{needs} is {found}. Run `{install}`.")),
     }
-    Ok(srt)
 }
 
-fn write_settings(data: &Path) -> Result<PathBuf, String> {
+/// srt itself runs outside the sandbox, so the folder its code and modules
+/// load from must not be writable from inside it.
+fn srt_modules(srt: &Path) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(srt).ok()?;
+    let modules = real
+        .ancestors()
+        .find(|dir| dir.file_name().is_some_and(|name| name == "node_modules"));
+    modules.or_else(|| real.parent()).map(Path::to_path_buf)
+}
+
+fn write_settings(data: &Path, srt: &Path) -> Result<PathBuf, String> {
     let home =
         PathBuf::from(crate::dirs_home().ok_or("The agent sandbox needs a home directory.")?);
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -136,7 +167,18 @@ fn write_settings(data: &Path) -> Result<PathBuf, String> {
         .map(path_entry)
         .collect();
     let mut deny_write = deny_read.clone();
+    // `$XDG_CONFIG_HOME`, as git, OpenCode and Devin find it (devin_config.rs).
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(|| home.join(".config"), PathBuf::from);
+    deny_write.extend(
+        OTHERS_CONFIG
+            .iter()
+            .map(|file| path_entry(&home.join(file))),
+    );
+    deny_write.push(path_entry(&config.join("git")));
     deny_write.push(path_entry(bundle));
+    deny_write.extend(srt_modules(srt).as_deref().map(path_entry));
     // The app runs what it finds on its search PATH outside the sandbox
     // (`--help` probes, the next spawn), so an agent must not plant a binary there.
     deny_write.extend(
@@ -146,15 +188,20 @@ fn write_settings(data: &Path) -> Result<PathBuf, String> {
     );
     let mut default_write = DEFAULT_WRITE.map(String::from).to_vec();
     default_write.push(path_entry(&std::env::temp_dir()));
+    default_write.extend(["opencode", "devin"].map(|tool| path_entry(&config.join(tool))));
     for list in [&mut deny_read, &mut deny_write, &mut default_write] {
         add_resolved(list);
     }
 
     let path = data.join(SETTINGS_FILE);
     crate::mcp::write_json_config(&path, |saved| {
-        let allow_write = user_list(saved, "/filesystem/allowWrite", json!(default_write))?;
-        let domains = user_list(saved, "/network/allowedDomains", json!(DEFAULT_DOMAINS))?;
+        let extra_write = user_list(saved, "extraAllowWrite")?;
+        let extra_domains = user_list(saved, "extraAllowedDomains")?;
+        let allow_write = [default_write.as_slice(), &extra_write].concat();
+        let domains = [DEFAULT_DOMAINS.map(String::from).as_slice(), &extra_domains].concat();
         *saved = json!({
+            "extraAllowWrite": extra_write,
+            "extraAllowedDomains": extra_domains,
             "filesystem": {
                 "denyRead": deny_read,
                 "allowRead": [],
@@ -174,11 +221,13 @@ fn write_settings(data: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn user_list(saved: &Value, pointer: &str, default: Value) -> Result<Value, String> {
-    match saved.pointer(pointer) {
-        None => Ok(default),
-        Some(list) if list.is_array() => Ok(list.clone()),
-        Some(_) => Err(format!("{pointer} must be a list")),
+/// The user's additions under `key`. srt refuses the whole file for one entry
+/// that is not a string, so the app refuses it here with the key named.
+fn user_list(saved: &Value, key: &str) -> Result<Vec<String>, String> {
+    match saved.get(key) {
+        None => Ok(Vec::new()),
+        Some(list) => serde_json::from_value(list.clone())
+            .map_err(|_| format!("{key} must be a list of strings")),
     }
 }
 
