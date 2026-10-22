@@ -158,6 +158,45 @@ fn falls_due_at(world: &mut World, ask: &MessageId, at: i64, recipient: &str) {
     assert_eq!(ladder(world, ask), (1, None));
 }
 
+fn outbox_rows(world: &World) -> i64 {
+    world
+        .conn()
+        .query_row("SELECT count(*) FROM mono_outbox", [], |row| row.get(0))
+        .unwrap()
+}
+
+/// Review r1 m3. The tick is one transaction: a fault on the stage write,
+/// then on the outbox insert, put on the store's own connection, fails the
+/// tick and leaves `a` and the outbox as they were. With the fault gone, a
+/// tick at the same active time enqueues `a`'s reminder once.
+fn a_failed_tick_writes_nothing(world: &mut World, a: &MessageId, ta: i64) {
+    advance_to(world, ta - 1);
+    assert_eq!(outbox_rows(world), 0, "no reminder before {ta}");
+    for (step, fault) in [
+        (1, "BEFORE UPDATE OF stage ON mono_asks"),
+        (0, "BEFORE INSERT ON mono_outbox"),
+    ] {
+        world
+            .conn()
+            .execute_batch(&format!(
+                "CREATE TEMP TRIGGER s5_fault {fault} BEGIN SELECT RAISE(ABORT, 's5 fault'); END;"
+            ))
+            .unwrap();
+        let ticked = world.try_advance(step);
+        world
+            .conn()
+            .execute_batch("DROP TRIGGER temp.s5_fault;")
+            .unwrap();
+        assert!(ticked.is_err(), "a fault {fault} fails the tick");
+        assert_eq!(world.active_ms(), ta);
+        assert_eq!(ladder(world, a), (0, Some(ta)), "{fault}: no stage moved");
+        assert_eq!(outbox_rows(world), 0, "{fault}: no row written");
+    }
+    world.try_advance(0).unwrap();
+    assert_eq!(reminders(world, a), t5(a, "session:s5-lead", ta));
+    assert_eq!(ladder(world, a), (1, None));
+}
+
 /// Spending a key withdraws its unsent reminder, and keeps a sent one: a
 /// window claimed and sent `sent`'s reminder before its child acked.
 fn acks_withdraw_unsent_reminders(
@@ -185,8 +224,15 @@ fn acks_withdraw_unsent_reminders(
 /// S5 "killed and restarted 40 minutes later": the active clock lost at
 /// most its persist interval, the unsent claim is pending again, nothing
 /// fell due, and `b`'s reminder comes 40 minutes later on the wall clock
-/// than it would have.
-fn restarts_40_minutes_later(world: &mut World, b: &MessageId, tb: i64, sent: &MessageId) {
+/// than it would have. Review r1 m2: `legacy`, an open ask as R5 wrote it
+/// (no next due), gets its next due on open and is reminded at the first
+/// tick, since its time passed while it had none.
+fn restarts_40_minutes_later(
+    world: &mut World,
+    (b, tb): (&MessageId, i64),
+    (legacy, t_legacy): (&MessageId, i64),
+    sent: &MessageId,
+) {
     let (wall_kill, active_kill) = (world.now(), world.active_ms());
     world.down(40 * MINUTE);
     let lost = active_kill - world.active_ms();
@@ -201,7 +247,13 @@ fn restarts_40_minutes_later(world: &mut World, b: &MessageId, tb: i64, sent: &M
         Some("main"),
         "a sent reminder stays claimed"
     );
+    assert_eq!(ladder(world, legacy), (0, Some(t_legacy)), "seeded on open");
+    let first_tick = world.active_ms() + SECOND;
     falls_due_at(world, b, tb, "session:s5-w2");
+    assert_eq!(
+        reminders(world, legacy),
+        t5(legacy, "session:s5-w1", first_tick)
+    );
     assert_eq!(
         world.now() - wall_kill - (tb - active_kill),
         40 * MINUTE + lost,
@@ -283,7 +335,9 @@ fn a_later_builds_stage_is_left_alone(world: &mut World, a: &MessageId) {
 /// of one key fails the tick; a claim a window held when the app died keeps
 /// its reminder from every window, or a sent one is pending again; an ack
 /// leaves an unsent reminder or drops a sent one; a ladder stage past this
-/// build's ladder stops the tick; or a Giga's untimed ask is reminded.
+/// build's ladder stops the tick; a Giga's untimed ask is reminded; an open
+/// ask from before R8 is never reminded; or a failed tick keeps half its
+/// writes.
 #[test]
 fn s5_reminders_fall_due_in_active_time_across_restarts_sleep_and_wall_jumps() {
     let mut world = World::new("s5");
@@ -308,14 +362,26 @@ fn s5_reminders_fall_due_in_active_time_across_restarts_sleep_and_wall_jumps() {
     let b = ask(&world, &live, &l, "s5-b", w2.as_str(), 15);
     let c = ask(&world, &live, &m, "s5-c", lead.as_str(), 20);
     let d = ask(&world, &live, &l, "s5-d", w1.as_str(), 25);
+    let legacy = ask(&world, &live, &l, "s5-r5", w1.as_str(), 10);
+    world
+        .conn()
+        .execute(
+            "UPDATE mono_asks SET next_due_active_ms = NULL WHERE id = ?1",
+            [legacy.as_str()],
+        )
+        .unwrap();
     let [ta, tb, tc, td] = [&a, &b, &c, &d].map(|id| due(&world, id) - T5_LEAD);
     assert_eq!(ladder(&world, &untimed), (0, None), "a Giga sets no clock");
     assert_eq!(ladder(&world, &a), (0, Some(ta)));
 
-    // At its active time to the millisecond, never before.
-    falls_due_at(&mut world, &a, ta, "session:s5-lead");
+    // At its active time to the millisecond, never before, in one transaction.
+    a_failed_tick_writes_nothing(&mut world, &a, ta);
     assert_eq!(reminders(&world, &acked), t5(&acked, "session:s5-w1", ta));
     assert_eq!(reminders(&world, &sent), t5(&sent, "session:s5-w2", ta));
+    assert!(
+        reminders(&world, &legacy).is_empty(),
+        "no next due, no reminder"
+    );
     assert_eq!(pending(&world), derived(&world));
     acks_withdraw_unsent_reminders(&world, &live, (&acked, &w1), (&sent, &w2));
 
@@ -327,7 +393,8 @@ fn s5_reminders_fall_due_in_active_time_across_restarts_sleep_and_wall_jumps() {
             [t5_key(&a)],
         )
         .unwrap();
-    restarts_40_minutes_later(&mut world, &b, tb, &sent);
+    let t_legacy = due(&world, &legacy) - T5_LEAD;
+    restarts_40_minutes_later(&mut world, (&b, tb), (&legacy, t_legacy), &sent);
     assert_eq!(schema(&world), opened, "a second open changes no schema");
     a_lost_stage_write_keeps_one_row(&mut world, &a, ta);
     sleeps_an_hour(&mut world, &c, tc);
@@ -340,7 +407,7 @@ fn s5_reminders_fall_due_in_active_time_across_restarts_sleep_and_wall_jumps() {
     assert_eq!(pending(&world), derived(&world));
     assert_eq!(schema(&world), opened);
     let keys: Vec<String> = pending(&world).into_iter().map(|(key, _)| key).collect();
-    let mut expected = [&a, &b, &c, &d].map(t5_key);
+    let mut expected = [&a, &b, &c, &d, &legacy].map(t5_key);
     expected.sort();
     assert_eq!(keys, expected);
     assert!(

@@ -20,6 +20,11 @@ const LADDER: &[Rung] = &[Rung {
 }];
 
 /// `ask_id` is nullable: a later `resume:<session>:<boot>` row has no ask.
+/// Then every open, unpaused, timed ask with no next due and a rung left
+/// gets that rung's due time: an ask written before this build (R5 left
+/// `next_due_active_ms` NULL), or one at the end of a shorter ladder when a
+/// later build appends rungs. Only NULL rows change, so a second open
+/// changes nothing.
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS mono_outbox (
@@ -32,7 +37,16 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            claimed_by   TEXT,
            sent_at      INTEGER
          );",
-    )
+    )?;
+    for (done, rung) in (0_i64..).zip(LADDER) {
+        conn.execute(
+            "UPDATE mono_asks SET next_due_active_ms = due_active_ms + ?2
+              WHERE state = 'open' AND stage = ?1 AND due_active_ms IS NOT NULL
+                AND paused_at_active_ms IS NULL AND next_due_active_ms IS NULL",
+            params![done, rung.from_due_ms],
+        )?;
+    }
+    Ok(())
 }
 
 /// The next rung for an ask that has `done` rungs enqueued.
