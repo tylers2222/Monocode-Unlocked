@@ -20,7 +20,7 @@ import {
 } from "./appLifecycle";
 import type { DockSide } from "../../features/projects/model/projectTerminal";
 import {
-  collectWorkspaceSnapshot,
+  workspaceSnapshot,
   hydrateWorkspaceSnapshot,
   parseWorkspaceSnapshot,
 } from "../../features/workspace/model/workspaceSnapshot";
@@ -102,21 +102,28 @@ describe("project choices through lifecycle saves", () => {
     const { handleQuitRequested, setQuitWorkspace } =
       await import("./appLifecycle");
     await saveWorkspaceSnapshot(
-      collectWorkspaceSnapshot(
-        state.tabs,
-        state.sessions,
-        state.activeTabId,
-        state.projectCwd,
-        state.memory,
-      ),
+      workspaceSnapshot([
+        {
+          tabs: state.tabs,
+          sessions: state.sessions,
+          activeTabId: state.activeTabId,
+          projectCwd: state.projectCwd,
+          projectReturnMemory: state.memory,
+          projectTerminals: [],
+          pins: new Map(),
+        },
+      ]),
     );
     const release = setQuitWorkspace(
-      () => state.sessions,
-      () => state.tabs,
-      () => state.activeTabId,
-      () => state.projectCwd,
-      () => [],
-      () => state.memory,
+      () => ({
+        tabs: state.tabs,
+        sessions: state.sessions,
+        activeTabId: state.activeTabId,
+        projectCwd: state.projectCwd,
+        projectReturnMemory: state.memory,
+        projectTerminals: [],
+        pins: new Map(),
+      }),
       vi.fn(),
     );
     try {
@@ -142,12 +149,15 @@ describe("project choices through lifecycle saves", () => {
     state.projectCwd = "/alpha";
     const readMemory = () => reconcileProjectReturn(state);
     const release = setQuitWorkspace(
-      () => state.sessions,
-      () => state.tabs,
-      () => state.activeTabId,
-      () => state.projectCwd,
-      () => [],
-      readMemory,
+      () => ({
+        tabs: state.tabs,
+        sessions: state.sessions,
+        activeTabId: state.activeTabId,
+        projectCwd: state.projectCwd,
+        projectReturnMemory: readMemory(),
+        projectTerminals: [],
+        pins: new Map(),
+      }),
       vi.fn(),
     );
     try {
@@ -163,11 +173,15 @@ describe("project choices through lifecycle saves", () => {
     const state = workspace();
     const { persistQuitState } = await import("./appLifecycle");
     await persistQuitState(
-      state.sessions,
-      state.tabs,
-      state.activeTabId,
-      state.projectCwd,
-      state.memory,
+      {
+        tabs: state.tabs,
+        sessions: state.sessions,
+        activeTabId: state.activeTabId,
+        projectCwd: state.projectCwd,
+        projectReturnMemory: state.memory,
+        projectTerminals: [],
+        pins: new Map(),
+      },
       "unload",
     );
     expect([...(lastSavedMemory() ?? [])]).toEqual([...state.memory]);
@@ -176,15 +190,7 @@ describe("project choices through lifecycle saves", () => {
   it("preserves choices when closing a busy window", async () => {
     const state = workspace();
     state.sessions[3].busy = true;
-    const release = setQuitWorkspace(
-      () => state.sessions,
-      () => state.tabs,
-      () => state.activeTabId,
-      () => state.projectCwd,
-      () => [],
-      () => state.memory,
-      vi.fn(),
-    );
+    const release = setQuitWorkspace(() => ({ tabs: state.tabs, sessions: state.sessions, activeTabId: state.activeTabId, projectCwd: state.projectCwd, projectReturnMemory: state.memory, projectTerminals: [], pins: new Map() }), vi.fn());
     try {
       await closeBusyWindow();
       expect([...(lastSavedMemory() ?? [])]).toEqual([...state.memory]);
@@ -198,13 +204,7 @@ describe("project choices through lifecycle saves", () => {
     const state = workspace();
     state.sessions[0].worktreeCwd = "/alpha-worktrees/feature";
     vi.mocked(loadWorkspaceSnapshot).mockResolvedValue(
-      collectWorkspaceSnapshot(
-        state.tabs,
-        state.sessions,
-        state.activeTabId,
-        state.projectCwd,
-        state.memory,
-      ),
+      workspaceSnapshot([{ tabs: state.tabs, sessions: state.sessions, activeTabId: state.activeTabId, projectCwd: state.projectCwd, projectReturnMemory: state.memory, projectTerminals: [], pins: new Map() }]),
     );
     const { handleQuitRequested } = await import("./appLifecycle");
     await handleQuitRequested();
@@ -230,12 +230,15 @@ describe("closing a busy window", () => {
     session.blocks = [{ id: "user", role: "user", text: "test" }];
     const tab = newTab(session.id);
     const release = setQuitWorkspace(
-      () => [session],
-      () => [tab],
-      () => tab.id,
-      () => session.cwd,
-      () => [],
-      () => new Map(),
+      () => ({
+        tabs: [tab],
+        sessions: [session],
+        activeTabId: tab.id,
+        projectCwd: session.cwd,
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      }),
       vi.fn(),
     );
     return { session, release };
@@ -285,12 +288,15 @@ describe("coordinated quit", () => {
     session.blocks = [{ id: "user", role: "user", text: "test" }];
     const tab = newTab(session.id);
     return setQuitWorkspace(
-      () => [session],
-      () => [tab],
-      () => tab.id,
-      () => session.cwd,
-      () => [],
-      () => new Map(),
+      () => ({
+        tabs: [tab],
+        sessions: [session],
+        activeTabId: tab.id,
+        projectCwd: session.cwd,
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      }),
       vi.fn(),
     );
   }
@@ -316,15 +322,7 @@ describe("coordinated quit", () => {
     session.busy = true;
     session.inboxAsk = true;
     const tab = newTab(session.id);
-    const release = setQuitWorkspace(
-      () => [session],
-      () => [tab],
-      () => tab.id,
-      () => session.cwd,
-      () => [],
-      () => new Map(),
-      vi.fn(),
-    );
+    const release = setQuitWorkspace(() => ({ tabs: [tab], sessions: [session], activeTabId: tab.id, projectCwd: session.cwd, projectReturnMemory: new Map(), projectTerminals: [], pins: new Map() }), vi.fn());
     try {
       await reportQuitPoll(1);
       expect(invokedWith("quit_poll_reply")).toEqual({ id: 1, inFlight: 1 });
@@ -460,14 +458,17 @@ describe("remembering the terminal dock side across restarts", () => {
       "./appLifecycle"
     );
     const release = setQuitWorkspace(
-      () => state.sessions,
-      () => state.tabs,
-      () => state.activeTabId,
-      () => state.projectCwd,
-      () => [],
-      () => new Map(),
+      () => ({
+        tabs: state.tabs,
+        sessions: state.sessions,
+        activeTabId: state.activeTabId,
+        projectCwd: state.projectCwd,
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        lastDockSide: state.side ?? undefined,
+        pins: new Map(),
+      }),
       vi.fn(),
-      () => state.side,
     );
     try {
       await handleQuitRequested();
@@ -481,14 +482,17 @@ describe("remembering the terminal dock side across restarts", () => {
     const state = dockWorkspace("left");
     const { persistQuitState } = await import("./appLifecycle");
     await persistQuitState(
-      state.sessions,
-      state.tabs,
-      state.activeTabId,
-      state.projectCwd,
-      new Map(),
+      {
+        tabs: state.tabs,
+        sessions: state.sessions,
+        activeTabId: state.activeTabId,
+        projectCwd: state.projectCwd,
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        lastDockSide: "left",
+        pins: new Map(),
+      },
       "unload",
-      [],
-      "left",
     );
     expect(await lastSavedDockSide()).toBe("left");
   });
@@ -497,15 +501,18 @@ describe("remembering the terminal dock side across restarts", () => {
     const state = dockWorkspace("left");
     const store = await import("../../features/sessions/data/sessionStore");
     vi.mocked(store.loadWorkspaceSnapshot).mockResolvedValue(
-      collectWorkspaceSnapshot(
-        state.tabs,
-        state.sessions,
-        state.activeTabId,
-        state.projectCwd,
-        new Map(),
-        [],
-        "left",
-      ),
+      workspaceSnapshot([
+        {
+          tabs: state.tabs,
+          sessions: state.sessions,
+          activeTabId: state.activeTabId,
+          projectCwd: state.projectCwd,
+          projectReturnMemory: new Map(),
+          projectTerminals: [],
+          lastDockSide: "left",
+          pins: new Map(),
+        },
+      ]),
     );
     const { handleQuitRequested } = await import("./appLifecycle");
     await handleQuitRequested();

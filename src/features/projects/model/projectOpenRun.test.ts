@@ -7,7 +7,7 @@ import {
 } from "../../sessions/model/session";
 import { planProjectOpenRun, type ProjectOpenStep } from "./projectOpenRun";
 import {
-  collectWorkspaceSnapshot,
+  workspaceSnapshot,
   hydrateWorkspaceSnapshot,
 } from "../../workspace/model/workspaceSnapshot";
 
@@ -142,13 +142,17 @@ describe("planning a run of folders", () => {
       const remote = "remote://host/Users/me/code/monocode";
       const local = `/Users/me/code/${name}`;
       const original = workspace([chat("remote-shell", remote)]);
-      const snapshot = collectWorkspaceSnapshot(
-        original.tabs,
-        original.sessions,
-        original.activeTabId,
-        remote,
-        original.memory,
-      );
+      const snapshot = workspaceSnapshot([
+        {
+          tabs: original.tabs,
+          sessions: original.sessions,
+          activeTabId: original.activeTabId,
+          projectCwd: remote,
+          projectReturnMemory: original.memory,
+          projectTerminals: [],
+          pins: new Map(),
+        },
+      ]);
       const restored = hydrateWorkspaceSnapshot(snapshot, new Map())!;
       // Remote transcripts arrive from the host after workspace restoration.
       expect(restored.sessions[0].blocks).toEqual([]);
