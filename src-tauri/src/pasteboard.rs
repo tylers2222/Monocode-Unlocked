@@ -441,13 +441,52 @@ mod png_tests {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::{file_paths_from, write_file_to};
+    use objc2::{msg_send, rc::Retained};
     use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeString};
     use objc2_foundation::{NSString, NSURL};
     use std::path::Path;
+    use std::sync::{Arc, Barrier};
+
+    fn private_pasteboard() -> Retained<NSPasteboard> {
+        NSPasteboard::pasteboardWithUniqueName()
+    }
+
+    #[test]
+    fn private_pasteboards_made_on_parallel_threads_stay_separate() {
+        const THREADS: usize = 8;
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|thread| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let pbs: Vec<_> = (0..500).map(|_| private_pasteboard()).collect();
+                    let paths: Vec<_> = (0..pbs.len())
+                        .map(|i| format!("/tmp/{thread}-{i}"))
+                        .collect();
+                    for (pb, path) in pbs.iter().zip(&paths) {
+                        write_file_to(pb, Path::new(path)).unwrap();
+                    }
+                    barrier.wait();
+                    let crossed = pbs
+                        .iter()
+                        .zip(&paths)
+                        .filter(|(pb, path)| file_paths_from(pb) != [path.as_str()])
+                        .count();
+                    for pb in &pbs {
+                        let _: () = unsafe { msg_send![&**pb, releaseGlobally] };
+                    }
+                    crossed
+                })
+            })
+            .collect();
+        let crossed: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
+        assert_eq!(crossed, 0, "pasteboards were shared between threads");
+    }
 
     #[test]
     fn reads_file_urls_from_a_private_pasteboard() {
-        let pb = NSPasteboard::pasteboardWithUniqueName();
+        let pb = private_pasteboard();
         pb.clearContents();
         let ok = pb.setString_forType(
             &NSString::from_str("file:///tmp/finder%20copy.txt"),
@@ -483,7 +522,7 @@ mod tests {
         let reference = url.fileReferenceURL().unwrap();
         assert!(reference.isFileReferenceURL());
 
-        let pb = NSPasteboard::pasteboardWithUniqueName();
+        let pb = private_pasteboard();
         pb.clearContents();
         assert!(
             pb.setString_forType(&reference.absoluteString().unwrap(), unsafe {
@@ -499,7 +538,7 @@ mod tests {
 
     #[test]
     fn ignores_file_urls_with_non_local_hosts() {
-        let pb = NSPasteboard::pasteboardWithUniqueName();
+        let pb = private_pasteboard();
         for url in [
             "file://server.example/tmp/a.png",
             r"file://localhost\@server.example/tmp/a.png",
@@ -517,7 +556,7 @@ mod tests {
 
     #[test]
     fn accepts_file_urls_with_a_localhost_host() {
-        let pb = NSPasteboard::pasteboardWithUniqueName();
+        let pb = private_pasteboard();
         pb.clearContents();
         assert!(pb.setString_forType(
             &NSString::from_str("file://localhost/tmp/finder%20copy.txt"),
@@ -531,7 +570,7 @@ mod tests {
 
     #[test]
     fn ignores_pasteboards_without_file_urls() {
-        let pb = NSPasteboard::pasteboardWithUniqueName();
+        let pb = private_pasteboard();
         pb.clearContents();
         pb.setString_forType(&NSString::from_str("hello"), unsafe {
             NSPasteboardTypeString
@@ -541,7 +580,7 @@ mod tests {
 
     #[test]
     fn ignores_non_file_urls_in_file_url_items() {
-        let pb = NSPasteboard::pasteboardWithUniqueName();
+        let pb = private_pasteboard();
         pb.clearContents();
         pb.setString_forType(
             &NSString::from_str("https://example.com/image.png"),
@@ -552,7 +591,7 @@ mod tests {
 
     #[test]
     fn writes_original_file_url_to_a_private_pasteboard() {
-        let pb = NSPasteboard::pasteboardWithUniqueName();
+        let pb = private_pasteboard();
         write_file_to(&pb, Path::new("/tmp/original image.png")).unwrap();
         assert_eq!(
             file_paths_from(&pb),
