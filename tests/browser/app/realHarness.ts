@@ -12,14 +12,25 @@ const LOGIN_VARS = [
 ];
 
 /**
+ * `os.homedir()`, the home a harness falls back to, reads `HOME` on Unix and
+ * `USERPROFILE` on Windows. On Windows the child gets the parent's
+ * `USERPROFILE` (libuv copies it) unless the env sets one.
+ */
+const HOME_VAR = process.platform === "win32" ? "USERPROFILE" : "HOME";
+
+/**
  * Each dir the harness would read a login from, resolved as the harness does:
- * by text against the child's `cwd` (`path.resolve`, as omp does). omp keeps
- * its config at `HOME` joined with `PI_CONFIG_DIR` (default `.omp`).
+ * by text against the child's `cwd` (`path.resolve`, as omp does). An unset
+ * home var means the parent's home. omp keeps its config at the home joined
+ * with `PI_CONFIG_DIR` (default `.omp`).
  */
 function loginDirs(env: NodeJS.ProcessEnv, cwd: string): [string, string][] {
-  const home = env.HOME ? resolve(cwd, env.HOME) : homedir();
+  const at = (value: string | undefined) => (value ? resolve(cwd, value) : homedir());
+  const home = at(env[HOME_VAR]);
+  const profile: [string, string][] = HOME_VAR === "HOME" ? [] : [[HOME_VAR, home]];
   return [
-    ["HOME", home],
+    ["HOME", at(env.HOME)],
+    ...profile,
     ["PI_CONFIG_DIR", join(home, env.PI_CONFIG_DIR || ".omp")],
     ...LOGIN_VARS.flatMap((name): [string, string][] => {
       const dir = env[name];
@@ -48,10 +59,11 @@ function inside(path: string, ownDir: string): boolean {
 
 /**
  * Spawns a real harness for a test rig. The child's env is built here, not
- * taken from the caller: `PATH`, `HOME` and the harness login dirs inside
- * `ownDir` (the test's temp dir), then `env`, which holds only what the rig
- * adds. Before anything starts, it refuses when any dir the harness would read
- * a login from resolves outside `ownDir`.
+ * taken from the caller: `PATH`, then `HOME` (and `USERPROFILE` on Windows)
+ * and the harness login dirs inside `ownDir` (the test's temp dir), then
+ * `env`, which holds only what the rig adds. Before anything starts, it
+ * refuses when any dir the harness would read a login from resolves outside
+ * `ownDir`.
  */
 export function spawnRealHarness(
   command: string,
@@ -61,6 +73,7 @@ export function spawnRealHarness(
   const childEnv: NodeJS.ProcessEnv = {
     PATH: process.env.PATH,
     HOME: ownDir,
+    [HOME_VAR]: ownDir,
     PI_CODING_AGENT_DIR: join(ownDir, ".omp", "agent"),
     CLAUDE_CONFIG_DIR: join(ownDir, ".claude"),
     CODEX_HOME: join(ownDir, ".codex"),

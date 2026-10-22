@@ -7,7 +7,7 @@ import {
   rmSync,
   symlinkSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawnRealHarness } from "./realHarness";
@@ -52,6 +52,7 @@ function tryStart(ownDir: string, env: NodeJS.ProcessEnv, cwd = ownDir) {
  * Keys the OS or Node's process layer (libuv) puts in every child's env,
  * whatever env the helper passes. macOS adds its text encoding. On Windows,
  * libuv copies these from the parent when the given env lacks them.
+ * USERPROFILE is not here: it is the Windows home, so the helper sets it.
  */
 const OS_ADDED: Partial<Record<NodeJS.Platform, string[]>> = {
   darwin: ["__CF_USER_TEXT_ENCODING"],
@@ -64,7 +65,6 @@ const OS_ADDED: Partial<Record<NodeJS.Platform, string[]>> = {
     "TEMP",
     "USERDOMAIN",
     "USERNAME",
-    "USERPROFILE",
     "WINDIR",
   ],
 };
@@ -80,6 +80,7 @@ describe("spawnRealHarness", () => {
     expect(seen).toEqual({
       PATH: process.env.PATH,
       HOME: own,
+      ...(process.platform === "win32" ? { USERPROFILE: own } : {}),
       PI_CODING_AGENT_DIR: join(own, ".omp", "agent"),
       CLAUDE_CONFIG_DIR: join(own, ".claude"),
       CODEX_HOME: join(own, ".codex"),
@@ -98,6 +99,16 @@ describe("spawnRealHarness", () => {
     expect(start).toThrow(`PI_CONFIG_DIR=${join(home, ".omp")}`);
     expect(existsSync(marker)).toBe(false);
   });
+
+  it.runIf(process.platform === "win32")(
+    "refuses a rig that unsets USERPROFILE on Windows, where it is the home",
+    () => {
+      const own = tempDir();
+      const { marker, start } = tryStart(own, { USERPROFILE: undefined });
+      expect(start).toThrow(`USERPROFILE=${homedir()}`);
+      expect(existsSync(marker)).toBe(false);
+    },
+  );
 
   it("refuses a real HOME even with every login var inside the temp dir", () => {
     const own = tempDir();
