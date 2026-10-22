@@ -29,6 +29,7 @@ import {
   renderMonoNotice,
   type CallErrorCode,
   type Caller,
+  type Carries,
   type Delivery,
   type GetInput,
   type Handle,
@@ -53,6 +54,7 @@ type Routed = Extract<MonoMessage, { handledBySession: unknown }>;
 type Targeted<M extends MonoMessage> = {
   message: M;
   target: ReplyTarget | null;
+  carries: Carries | null;
 };
 /** A row `assign_slot` takes: it refuses every other status. */
 type Waiting = Extract<MonoMessage, { status: "open" | "delivered" }>;
@@ -158,13 +160,13 @@ async function rowSender(
 }
 
 function queueItem(
-  { message, target }: Targeted<Routed>,
+  { message, target, carries }: Targeted<Routed>,
   sender: MessageSender | undefined,
   decision?: BoardDecision,
 ) {
   return {
     id: message.id,
-    text: renderMonoMessage(message, sender),
+    text: renderMonoMessage({ ...message, carries }, sender),
     link: rowLink(message, target),
     decision,
   };
@@ -344,7 +346,7 @@ export async function handOff(
     host.update(sessionId, (session) => dequeueQueuedMessage(session, id));
     return false;
   }
-  const row = assigned.message;
+  const row = { ...assigned.message, carries: assigned.carries };
   const handle = row.status === "open" ? row.slot?.handle : undefined;
   let sender: MessageSender | undefined;
   let accepted = false;

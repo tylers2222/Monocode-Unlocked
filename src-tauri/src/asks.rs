@@ -6,7 +6,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::ask_gate::{self, AckRefused, Actor, AskState, Party, State};
@@ -60,7 +60,9 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            UNIQUE (ask_id, kind, seq),
            CHECK (kind NOT IN ('question', 'answer') OR seq <= 3),
            CHECK (kind NOT IN ('ack', 'update', 'extension', 'miss') OR seq = 1)
-         );",
+         );
+         CREATE INDEX IF NOT EXISTS mono_ask_events_ack_message
+           ON mono_ask_events (message_id) WHERE kind = 'ack';",
     )
 }
 
@@ -151,6 +153,48 @@ fn fields<T: DeserializeOwned>(input: &Value) -> Result<T, String> {
     serde_json::from_value(input.clone()).map_err(|error| error.to_string())
 }
 
+/// What a `mono_messages` row carries in the ledger (R6), for its reader.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Carries {
+    /// The row is ask `id` (its own id). `due_in_ms` is the active time
+    /// left, none for a Giga's ask.
+    #[serde(rename_all = "camelCase")]
+    Ask { due_in_ms: Option<i64> },
+    /// The row is the ack of ask `ask_id`.
+    #[serde(rename_all = "camelCase")]
+    Ack { ask_id: MessageId },
+}
+
+/// What row `id` carries: `mono_asks` by id, else the `ack` event that
+/// names the row.
+pub fn carries(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<Carries>> {
+    let due: Option<Option<i64>> = conn
+        .query_row(
+            "SELECT due_active_ms FROM mono_asks WHERE id = ?1",
+            [id.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(due) = due {
+        let due_in_ms = due.map(|due| active_ms(conn).map(|active| due - active));
+        return Ok(Some(Carries::Ask {
+            due_in_ms: due_in_ms.transpose()?,
+        }));
+    }
+    conn.query_row(
+        "SELECT ask_id FROM mono_ask_events WHERE kind = 'ack' AND message_id = ?1",
+        [id.as_str()],
+        |row| {
+            let ask_id = MessageId::parse(&row.get::<_, String>(0)?);
+            Ok(Carries::Ack {
+                ask_id: ask_id.ok_or(rusqlite::Error::InvalidQuery)?,
+            })
+        },
+    )
+    .optional()
+}
+
 /// A `send_message` of `message` to `send_to`: what carries an ask or ack.
 fn carrier(send_to: &str, message: &str) -> Result<Input, String> {
     mono_gate::parse(
@@ -211,23 +255,23 @@ pub fn ask(
                 (Some(mono), Actor::Session(lead)) => started_by(&tx, mono, lead)?,
                 _ => false,
             };
-            let due = input.due_minutes;
-            match ask_gate::decide_ask(&parent, &child, started, due, active_ms(&tx)?) {
-                Ok(due) => new = Some((due, parent, child)),
+            let (due, active) = (input.due_minutes, active_ms(&tx)?);
+            match ask_gate::decide_ask(&parent, &child, started, due, active) {
+                Ok(due) => new = Some((due, active, parent, child)),
                 Err(refused) => return Ok(failed(refused.code(), refused.hint())),
             }
         }
     }
-    let submitted = mono_messages::submit_in(&tx, caller, request_id, carrier, live, now)?;
+    let mut submitted = mono_messages::submit_in(&tx, caller, request_id, carrier, live, now)?;
     if let Submitted::Accepted {
         messages,
         duplicate: false,
         ..
-    } = &submitted
+    } = &mut submitted
     {
         // The gate let through a party with no saved row (a session the
         // window lists): no child of the caller. Dropping `tx` undoes the row.
-        let Some((due, parent, child)) = new else {
+        let Some((due, active, parent, child)) = new else {
             let refused = ask_gate::AskRefused::NotDirectChild;
             return Ok(failed(refused.code(), refused.hint()));
         };
@@ -245,6 +289,9 @@ pub fn ask(
                 now
             ],
         )?;
+        messages[0].carries = Some(Carries::Ask {
+            due_in_ms: due.map(|due| due - active),
+        });
     }
     tx.commit()?;
     Ok(submitted)
@@ -296,12 +343,12 @@ pub fn ack(
             }
         }
     }
-    let submitted = mono_messages::submit_in(&tx, caller, request_id, carrier, live, now)?;
+    let mut submitted = mono_messages::submit_in(&tx, caller, request_id, carrier, live, now)?;
     if let Submitted::Accepted {
         messages,
         duplicate: false,
         ..
-    } = &submitted
+    } = &mut submitted
     {
         // The gate let through a caller with no saved row (a session the
         // window lists): no child of any ask. Dropping `tx` undoes the row.
@@ -328,6 +375,7 @@ pub fn ack(
                 now
             ],
         )?;
+        messages[0].carries = Some(Carries::Ack { ask_id });
     }
     tx.commit()?;
     Ok(submitted)
