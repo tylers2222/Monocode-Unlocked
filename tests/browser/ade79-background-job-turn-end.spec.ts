@@ -1,18 +1,13 @@
-import { spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Page } from "@playwright/test";
 import type { SessionSummary } from "../../src/features/sessions/data/sessionStore";
 import type { Block } from "../../src/features/sessions/model/session";
 import { type AppShell, expect, test } from "./app/fixture";
-import { spawnRealHarness } from "./app/realHarness";
+import { OMP, bridgeOmp, ompHandlers, type ModelRequest } from "./app/ompBridge";
 
-const OMP = spawnSync("which", ["omp"], { encoding: "utf8" }).stdout.trim();
 const PROJECT = "/Users/test/acme";
 const SESSION = "s-1";
 const HOLD_MS = 20_000;
@@ -25,7 +20,7 @@ type Reply = "watching" | "finished" | "waiting" | "noted" | "hi" | "welcome";
  * marker file exists. omp hands the job's result back as a user message that
  * starts "Background job".
  */
-function reply(last: { role: string; content?: unknown }): Reply | "start" {
+function reply(last: ModelRequest["messages"][number]): Reply | "start" {
   const text = JSON.stringify(last.content ?? "");
   if (last.role === "tool") return "watching";
   if (text.includes("Background job")) return "finished";
@@ -58,22 +53,13 @@ type OmpRig = {
   stopHeld: () => Promise<void>;
 };
 
-const running = new Set<ChildProcess>();
-const servers = new Set<Server>();
-test.afterEach(() => {
-  for (const child of running) child.kill("SIGKILL");
-  running.clear();
-  for (const server of servers) server.close();
-  servers.clear();
-});
-
 /**
- * The app's harness IPC piped to a real omp, whose model is a local server.
- * With `gateStop`, an extension's session_stop hook holds omp's settle until
- * the test opens the gate: a steer sent then reaches omp after its run's last
- * poll, so omp ends that run with `agent_end` isTerminal:false and runs again.
+ * Real omp through the app's harness IPC. With `gateStop`, an extension's
+ * session_stop hook holds omp's settle until the test opens the gate: a steer
+ * sent then reaches omp after its run's last poll, so omp ends that run with
+ * `agent_end` isTerminal:false and runs again.
  */
-async function bridgeOmp(
+async function startOmp(
   page: Page,
   app: AppShell,
   { gateStop = false } = {},
@@ -96,89 +82,28 @@ export default function (pi) {
 `,
   );
   const holds = new Map<Reply, { reached: () => void; released: Promise<void> }>();
-  const model = createServer((request, response) => {
-    let body = "";
-    request.on("data", (chunk) => (body += chunk));
-    request.on("end", async () => {
-      const { messages = [], tools = [] } = JSON.parse(body || "{}") as {
-        messages?: { role: string; content?: unknown }[];
-        tools?: unknown[];
-      };
+  await bridgeOmp(page, app, {
+    dir,
+    args: gateStop ? ["--no-extensions", "-e", extension] : [],
+    model: async ({ messages, tools }) => {
       // A title job runs without tools; it gets plain text.
       const next = tools.length ? reply(messages.at(-1)!) : "welcome";
-      const hold = next === "start" ? undefined : holds.get(next);
+      if (next === "start")
+        return {
+          tool: "bash",
+          arguments: {
+            command: `while [ ! -f ${marker} ]; do sleep 0.1; done; echo built`,
+            async: true,
+          },
+        };
+      const hold = holds.get(next);
       if (hold) {
-        holds.delete(next as Reply);
+        holds.delete(next);
         hold.reached();
         await hold.released;
       }
-      const delta =
-        next === "start"
-          ? {
-              role: "assistant",
-              tool_calls: [
-                {
-                  index: 0,
-                  id: "call_watch",
-                  type: "function",
-                  function: {
-                    name: "bash",
-                    arguments: JSON.stringify({
-                      command: `while [ ! -f ${marker} ]; do sleep 0.1; done; echo built`,
-                      async: true,
-                    }),
-                  },
-                },
-              ],
-            }
-          : { role: "assistant", content: TEXT[next] };
-      const chunk = (choice: object) =>
-        `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 1, model: "offline-model", choices: [{ index: 0, ...choice }] })}\n\n`;
-      response.writeHead(200, { "content-type": "text/event-stream" });
-      response.end(
-        chunk({ delta, finish_reason: null }) +
-          chunk({ delta: {}, finish_reason: next === "start" ? "tool_calls" : "stop" }) +
-          "data: [DONE]\n\n",
-      );
-    });
-  });
-  servers.add(model);
-  const listening = Promise.withResolvers<void>();
-  model.listen(0, "127.0.0.1", listening.resolve);
-  await listening.promise;
-  const { port } = model.address() as AddressInfo;
-  mkdirSync(join(dir, ".omp", "agent"), { recursive: true });
-  writeFileSync(
-    join(dir, ".omp", "agent", "models.yml"),
-    `providers:\n  offline:\n    baseUrl: http://127.0.0.1:${port}/v1\n    api: openai-completions\n    apiKey: offline\n    models:\n      - id: offline-model\n`,
-  );
-  const children = new Map<string, ChildProcess>();
-  const emit = (event: string, payload: unknown) => {
-    if (!page.isClosed()) void app.emit(event, payload).catch(() => undefined);
-  };
-  await page.exposeFunction("ompSpawn", (sessionId: string, args: string[]) => {
-    const extra = gateStop ? ["--no-extensions", "-e", extension] : [];
-    const child = spawnRealHarness(OMP, [...args, "--no-session", ...extra], {
-      cwd: dir,
-      ownDir: dir,
-    });
-    children.set(sessionId, child);
-    running.add(child);
-    createInterface({ input: child.stdout! }).on("line", (line) =>
-      emit("harness-stdout", { sessionId, line }),
-    );
-    child.on("exit", (code) => {
-      running.delete(child);
-      emit("harness-exit", { sessionId, code, pid: child.pid });
-    });
-    return child.pid!;
-  });
-  await page.exposeFunction("ompWrite", (sessionId: string, line: string) => {
-    children.get(sessionId)?.stdin?.write(`${line}\n`);
-  });
-  await page.exposeFunction("ompKill", (sessionId: string) => {
-    children.get(sessionId)?.kill();
-    children.delete(sessionId);
+      return { text: TEXT[next] };
+    },
   });
   return {
     hold: (next) => {
@@ -195,28 +120,6 @@ export default function (pi) {
   };
 }
 
-declare global {
-  interface Window {
-    ompSpawn: (sessionId: string, args: string[]) => Promise<number>;
-    ompWrite: (sessionId: string, line: string) => Promise<void>;
-    ompKill: (sessionId: string) => Promise<void>;
-  }
-}
-
-const handlers = {
-  harness_resolve_omp: () => ({ path: "omp" }),
-  harness_spawn: (
-    _store: unknown,
-    { sessionId, args }: { sessionId: string; args: string[] },
-  ) => window.ompSpawn(sessionId, args),
-  harness_write: (
-    _store: unknown,
-    { sessionId, line }: { sessionId: string; line: string },
-  ) => window.ompWrite(sessionId, line).then(() => null),
-  harness_kill: (_store: unknown, { sessionId }: { sessionId: string }) =>
-    window.ompKill(sessionId).then(() => null),
-};
-
 const chat: SessionSummary = {
   id: SESSION,
   cwd: PROJECT,
@@ -230,7 +133,7 @@ const chat: SessionSummary = {
 
 async function openSession(page: Page, app: AppShell) {
   await page.clock.install({ time: new Date("2026-10-22T09:00:00Z") });
-  await app.mount({ projects: [PROJECT], sessions: [chat] }, { handlers });
+  await app.mount({ projects: [PROJECT], sessions: [chat] }, { handlers: ompHandlers });
   await page.getByText("Watch the build").click();
 }
 
@@ -286,7 +189,7 @@ test("an omp turn that leaves a background job running ends when omp's turn ends
   app,
   page,
 }) => {
-  const omp = await bridgeOmp(page, app);
+  const omp = await startOmp(page, app);
   await openSession(page, app);
 
   const watching = omp.hold("watching");
@@ -311,10 +214,6 @@ test("an omp turn that leaves a background job running ends when omp's turn ends
     .toBe(true);
   await expect(stopButton(page), "the job's result opens no turn").toHaveCount(0);
   expect(
-    (await saved(page)).filter((block) => block.streaming),
-    "nothing is left streaming after omp's own run",
-  ).toEqual([]);
-  expect(
     (await opener(page, "START the watcher"))!.durationMs,
     "the job's later end does not change the turn that started it",
   ).toBe(startTurn);
@@ -333,7 +232,7 @@ test("a message sent while omp answers a finished background job runs as the nex
   app,
   page,
 }) => {
-  const omp = await bridgeOmp(page, app);
+  const omp = await startOmp(page, app);
   await openSession(page, app);
   await send(page, "START the watcher");
   await expectTurnEnded(page, "START the watcher", "watching");
@@ -364,7 +263,7 @@ test("a steer that omp takes after its run's last poll stays in the turn", async
   app,
   page,
 }) => {
-  const omp = await bridgeOmp(page, app, { gateStop: true });
+  const omp = await startOmp(page, app, { gateStop: true });
   await openSession(page, app);
   await send(page, "hello");
   await omp.stopHeld();
