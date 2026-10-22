@@ -87,11 +87,12 @@ describe("spawnRealHarness", () => {
     });
   });
 
-  it("refuses unset login vars when HOME holds a real login", () => {
+  it("refuses unset login vars when the home holds a real login", () => {
     const own = tempDir();
     const home = realLogin();
+    // The home the harness falls back to: USERPROFILE on Windows, HOME elsewhere.
     const { marker, start } = tryStart(own, {
-      HOME: home,
+      [process.platform === "win32" ? "USERPROFILE" : "HOME"]: home,
       PI_CODING_AGENT_DIR: undefined,
       CLAUDE_CONFIG_DIR: undefined,
       CODEX_HOME: undefined,
