@@ -128,13 +128,15 @@ check "fifo: the relocking loop passes the waiter at most once (passed $passed)"
 # The wait line names the holder's pid. No sleeps: the holder blocks on a FIFO, and the
 # test releases it only after the waiter has printed its first "waiting" line. 20 runs.
 # All three FIFOs are opened read-write, which never blocks; each read gives up after 10 s
-# and ends the loop, so a broken lock fails this check instead of hanging the suite.
+# and ends the loop, so a broken lock fails this check instead of hanging the suite. The
+# holder does not inherit fd 9: closing it after the loop then gives a fifo-hold left by a
+# break EOF, so it exits.
 reset
 mkfifo "$root/case/ready" "$root/case/gate" "$root/case/wait"
 exec 9<> "$root/case/gate"
 logged_runs=0
 for i in $(seq 20); do
-  "$lock_sh" "$bin/fifo-hold" "$root/case/ready" "$root/case/gate" 2>/dev/null &
+  "$lock_sh" "$bin/fifo-hold" "$root/case/ready" "$root/case/gate" 2>/dev/null 9<&- &
   holder=$!
   exec 6<> "$root/case/ready"
   read -t 10 -r _ <&6 || { exec 6<&-; break; }
