@@ -1,0 +1,248 @@
+{
+ "1": {
+  "ok": true,
+  "result": {
+   "cwd": "/Users/test/Desktop/monocode",
+   "sessions": [
+    {
+     "id": "app-test-1-01",
+     "title": "omp · Recorded session 1.1",
+     "harness": "omp",
+     "model": "omp:default",
+     "branch": "main",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-1-02",
+     "title": "omp · Recorded session 1.2",
+     "harness": "omp",
+     "model": "omp:default",
+     "branch": "main",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-1-03",
+     "title": "omp · Recorded session 1.3",
+     "harness": "omp",
+     "model": "omp:default",
+     "branch": "feat/ade-53-recorded",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-1-04",
+     "title": "omp · Recorded session 1.4",
+     "harness": "omp",
+     "model": "omp:default",
+     "branch": "main",
+     "busy": false,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-1-05",
+     "title": "omp · Recorded session 1.5",
+     "harness": "omp",
+     "model": "omp:default",
+     "branch": "main",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-1-06",
+     "title": "omp · Recorded session 1.6",
+     "harness": "omp",
+     "model": "omp:default",
+     "branch": "main",
+     "busy": false,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-1-07",
+     "title": "omp · Recorded session 1.7",
+     "harness": "omp",
+     "model": "omp:default",
+     "branch": "feat/ade-52-recorded",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-1-08",
+     "title": "omp · Recorded session 1.8",
+     "harness": "omp",
+     "model": "omp:default",
+     "branch": "main",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    }
+   ]
+  }
+ },
+ "2": {
+  "ok": true,
+  "result": {
+   "cwd": "/Users/test/Desktop/monocode",
+   "sessions": [
+    {
+     "id": "app-test-2-01",
+     "title": "omp · Recorded session 2.1",
+     "harness": "omp",
+     "model": "omp:anthropic/claude-opus-5-5",
+     "branch": "main",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-2-02",
+     "title": "omp · Recorded session 2.2",
+     "harness": "omp",
+     "model": "omp:anthropic/claude-opus-5-5",
+     "branch": "main",
+     "busy": false,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-2-03",
+     "title": "omp · Recorded session 2.3",
+     "harness": "omp",
+     "model": "omp:anthropic/claude-opus-5-5",
+     "branch": "mc/recorded-2-3",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-2-04",
+     "title": "omp · Recorded session 2.4",
+     "harness": "omp",
+     "model": "omp:anthropic/claude-opus-5-5",
+     "branch": "main",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-2-05",
+     "title": "omp · Recorded session 2.5",
+     "harness": "omp",
+     "model": "omp:anthropic/claude-opus-5-5",
+     "branch": "main",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-2-06",
+     "title": "omp · Recorded session 2.6",
+     "harness": "omp",
+     "model": "omp:anthropic/claude-opus-5-5",
+     "branch": "main",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-2-07",
+     "title": "omp · Recorded session 2.7",
+     "harness": "omp",
+     "model": "omp:anthropic/claude-opus-5-5",
+     "branch": "main",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-2-08",
+     "title": "omp · Recorded session 2.8",
+     "harness": "omp",
+     "model": "omp:anthropic/claude-opus-5-5",
+     "branch": "main",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-2-09",
+     "title": "omp · Recorded session 2.9",
+     "harness": "omp",
+     "model": "omp:anthropic/claude-opus-5-5",
+     "branch": "main",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-2-10",
+     "title": "omp · Recorded session 2.10",
+     "harness": "omp",
+     "model": "omp:anthropic/claude-opus-5-5",
+     "branch": "main",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-2-11",
+     "title": "omp · Recorded session 2.11",
+     "harness": "omp",
+     "model": "omp:default",
+     "branch": "feat/recorded-2-11",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-2-12",
+     "title": "omp · Recorded session 2.12",
+     "harness": "omp",
+     "model": "omp:anthropic/claude-opus-5-5",
+     "branch": "main",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-2-13",
+     "title": "omp · Recorded session 2.13",
+     "harness": "omp",
+     "model": "omp:anthropic/claude-opus-5-5",
+     "branch": "main",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-2-14",
+     "title": "omp · Recorded session 2.14",
+     "harness": "omp",
+     "model": "omp:anthropic/claude-opus-5-5",
+     "branch": "main",
+     "busy": true,
+     "hasDraft": false,
+     "archived": false
+    },
+    {
+     "id": "app-test-2-15",
+     "title": "omp · Recorded session 2.15",
+     "harness": "omp",
+     "model": "omp:anthropic/claude-opus-5-5",
+     "branch": "main",
+     "busy": false,
+     "hasDraft": false,
+     "archived": false
+    }
+   ]
+  }
+ }
+}

@@ -4,23 +4,21 @@
 
 fixtures/linear-issues.json is the script's two Linear queries (the open ADE
 issues, then the closed issues that block one). fixtures/merged-prs.json is 5
-PRs of the script's gh query; none had a Ticket-part line yet. fixtures/app-dbs.json
-holds, for each app database, the CREATE TABLE statements of `sessions` and
-`in_flight_sessions`, and the in-flight rows with their session rows plus a few
-idle ones. The tests build two SQLite files from it and read them with the
-script's own reader.
+PRs of the script's gh query; none had a Ticket-part line yet.
+fixtures/app-sessions.json holds, for each instance, the `monocode app
+sessions.list` reply for the app's data at that time: the monocode project's
+in-flight sessions plus a few idle ones. The tests read it through a fake
+`monocode` that prints the reply and logs each call.
 """
 import copy
 import io
 import importlib.util
 import json
-import os
-import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -30,37 +28,72 @@ SCRIPT = HERE.parent / "ready-issues.py"
 _spec = importlib.util.spec_from_file_location("ready_issues", SCRIPT)
 ri = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ri)
+# The made-up project of fixtures/app-sessions.json.
+PROJECT = "/Users/test/Desktop/monocode"
+# ready-issues reads its project from MONOCODE_PROJECT before it asks git.
+MADE_UP_PROJECT = mock.patch.dict("os.environ", {"MONOCODE_PROJECT": PROJECT})
+
+
+def setUpModule():
+    MADE_UP_PROJECT.start()
+
+
+def tearDownModule():
+    MADE_UP_PROJECT.stop()
+
 
 RECORDED_AT = datetime(2026, 10, 20, 14, 1, tzinfo=timezone.utc)
 ISSUES = json.loads((HERE / "fixtures/linear-issues.json").read_text())
 PRS = json.loads((HERE / "fixtures/merged-prs.json").read_text())
-APP = json.loads((HERE / "fixtures/app-dbs.json").read_text())
+APP = json.loads((HERE / "fixtures/app-sessions.json").read_text())
+FAKE_CLI = """\
+#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+me = Path(__file__)
+with open(me.with_name("calls"), "a") as log:
+    print(json.dumps(sys.argv[1:]), file=log)
+replies = json.loads(me.with_name("replies.json").read_text())
+payload = sys.argv[sys.argv.index("--json") + 1]
+print(replies.get(payload, replies[""]))
+"""
 
 
 def at(text):
     return datetime.fromisoformat(text).replace(tzinfo=timezone.utc)
 
 
-def build_dbs(directory):
-    paths = {}
-    for name, recorded in APP["dbs"].items():
-        path = paths[name] = Path(directory) / f"instance-{name}.db"
-        with sqlite3.connect(path) as db:
-            for sql in recorded["schema"]:
-                db.execute(sql)
-            columns = recorded["columns"]
-            db.executemany(f"INSERT INTO sessions ({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))})",
-                           recorded["sessions"])
-            db.executemany("INSERT INTO in_flight_sessions VALUES (?, ?, ?)", recorded["in_flight"])
-    return paths
+def fake_cli(directory, replies):
+    """A `monocode` that prints replies[its --json payload], else replies[""], and logs its argv to `calls`."""
+    cli = Path(directory) / "monocode"
+    cli.write_text(FAKE_CLI)
+    cli.chmod(cli.stat().st_mode | stat.S_IEXEC)
+    (cli.parent / "replies.json").write_text(json.dumps(replies))
+    return cli
+
+
+def calls(cli):
+    log = cli.with_name("calls")
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def fake_clis(directory, replies=None):
+    """One fake CLI per instance, answering its recorded sessions.list."""
+    clis = {}
+    for name, reply in APP.items():
+        folder = Path(directory) / f"instance-{name}"
+        folder.mkdir(exist_ok=True)
+        clis[name] = fake_cli(folder, replies or {"": json.dumps(reply)})
+    return clis
 
 
 class ReadyIssues(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.dbs = build_dbs(cls.tmp.name)
-        cls.SESSIONS = ri.app_sessions(cls.dbs)
+        cls.clis = fake_clis(cls.tmp.name)
+        with mock.patch.object(ri, "APP_CLIS", cls.clis):
+            cls.SESSIONS = ri.app_sessions("1") + ri.app_sessions("2")
 
     @classmethod
     def tearDownClass(cls):
@@ -95,7 +128,7 @@ class ReadyIssues(unittest.TestCase):
         self.event(ident, when, state=state)
 
     def session(self, branch, busy=True, archived=0, instance="2", title="omp · a builder"):
-        row = {"id": f"app-test-{len(self.sessions)}", "title": title, "branch": branch, "worktree_cwd": None,
+        row = {"id": f"app-test-{len(self.sessions)}", "title": title, "branch": branch,
                "archived": archived, "instance": instance, "busy": busy}
         self.sessions.append(row)
         return row
@@ -107,35 +140,37 @@ class ReadyIssues(unittest.TestCase):
         found = ri.unattributed(self.sessions)
         lines, code = ri.report(ready, unlabelled, found, RECORDED_AT)
         self.assertEqual(code, 1, "the four issues with no blockers have waited hours")
-        self.assertIn("ready-issues: 4 ready with no builder, 4 waiting more than 60 min, 0 unlabelled, 16 unattributed.", lines)
+        self.assertIn("ready-issues: 4 ready with no builder, 4 waiting more than 60 min, 0 unlabelled, 15 unattributed.", lines)
 
-    def test_reads_both_databases(self):
-        self.assertEqual(ri.builder_tickets(self.sessions), {"ADE-52", "ADE-53"},
+    def test_reads_the_monocode_project_from_the_app_of_its_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clis = fake_clis(tmp)
+            with mock.patch.object(ri, "APP_CLIS", clis):
+                sessions = ri.app_sessions("1")
+            self.assertEqual(calls(clis["1"]), [["app", "sessions.list", "--json", json.dumps({"project": PROJECT})]])
+            self.assertEqual(calls(clis["2"]), [], "the other instance is not asked")
+        self.assertEqual({s["instance"] for s in sessions}, {"1"})
+        self.assertEqual(ri.builder_tickets(sessions), {"ADE-52", "ADE-53"},
                          "instance 1's in-flight builders on feat/ade-52-* and feat/ade-53-*")
-        self.assertEqual({s["instance"] for s in self.sessions}, {"1", "2"})
+        self.assertEqual({s["id"] for s in ri.busy(sessions)},
+                         {s["id"] for s in APP["1"]["result"]["sessions"] if s["busy"]})
 
-    def test_reader_never_creates_a_database(self):
-        missing = Path(self.tmp.name) / "absent.db"
-        with self.assertRaises(sqlite3.OperationalError):
-            ri.read_db(missing)
-        self.assertFalse(missing.exists())
-
-    def test_reader_connection_refuses_writes(self):
-        with closing(ri.connect_ro(self.dbs["2"])) as db:
-            for sql in ["DELETE FROM in_flight_sessions", "UPDATE sessions SET archived = 1", "CREATE TABLE x (y)"]:
-                with self.subTest(sql=sql), self.assertRaisesRegex(sqlite3.OperationalError, "attempt to write a readonly database"):
-                    db.execute(sql)
-
-    def test_each_instance_is_busy_from_its_own_in_flight_table(self):
-        sessions = ri.app_sessions(self.dbs)
-        for name, recorded in APP["dbs"].items():
-            with self.subTest(instance=name):
-                busy = {s["id"] for s in ri.busy(sessions) if s["instance"] == name}
-                self.assertEqual(busy, {row[0] for row in recorded["in_flight"]})
-        with mock.patch.dict(os.environ, {"MONOCODE_APP_ENDPOINT": "127.0.0.1:1", "MONOCODE_APP_TOKEN": "x"}):
-            self.assertEqual(ri.app_sessions(self.dbs), sessions, "the environment picks nothing")
-        self.assertEqual(ri.builder_tickets([s for s in sessions if s["instance"] == "1"]), {"ADE-52", "ADE-53"})
-        self.assertEqual(ri.builder_tickets([s for s in sessions if s["instance"] == "2"]), set())
+    def test_a_session_lists_its_own_project_and_only_the_monocode_one_counts(self):
+        listed = APP["2"]
+        refused = {"ok": False, "error": "project is only for a Mono"}
+        other = {"ok": True, "result": {"cwd": "/tmp/vibtra", "sessions": []}}
+        for case, reply, error in [
+            ("a session, refused a project, lists its own", listed, None),
+            ("a session in another project", other, f"listed /tmp/vibtra, not {PROJECT}"),
+        ]:
+            with self.subTest(case), tempfile.TemporaryDirectory() as tmp:
+                cli = fake_cli(tmp, {json.dumps({"project": PROJECT}): json.dumps(refused), "": json.dumps(reply)})
+                with mock.patch.object(ri, "APP_CLIS", {"2": cli}):
+                    if error:
+                        self.assertRaisesRegex(RuntimeError, error, ri.app_sessions, "2")
+                    else:
+                        self.assertEqual(len(ri.app_sessions("2")), len(listed["result"]["sessions"]))
+                self.assertEqual([call[-1] for call in calls(cli)], [json.dumps({"project": PROJECT}), "{}"])
 
     def test_builder_is_a_busy_session_on_the_ticket_branch(self):
         cases = [
@@ -172,7 +207,7 @@ class ReadyIssues(unittest.TestCase):
         for blocker in ["ADE-50", "ADE-51", "ADE-52", "ADE-53", "ADE-54"]:
             self.set_state(blocker, "completed", "2026-10-20T13:00:00")
         self.assertNotIn("ADE-55", self.ready("1"), "ADE-52 and ADE-53 have busy builders on instance 1")
-        self.sessions = [s for s in self.sessions if s["id"][-8:] not in ("904afb7b", "fee699bc")]
+        self.sessions = [s for s in self.sessions if s["id"] not in ("app-test-1-03", "app-test-1-07")]
         self.assertEqual(self.ready("1")["ADE-55"].since, at("2026-10-20T13:00:00"))
 
     def test_final_part_needs_the_exact_line_and_n_equal_to_n(self):
@@ -286,25 +321,38 @@ class ReadyIssues(unittest.TestCase):
         self.session("fix/ade-61-x")
         self.session("main", busy=False)
         found = ri.unattributed(self.sessions)
-        self.assertEqual(len(found), 17, "16 recorded busy sessions on main, plus the one with no branch")
+        self.assertEqual(len(found), 16, "15 recorded busy sessions on main, plus the one with no branch")
         self.assertTrue(all(s["busy"] and (s["branch"] or "main") == "main" for s in found))
         lines, code = ri.report([], [], found, RECORDED_AT)
         self.assertEqual(code, 0, "informational only")
         self.assertIn(f"instance 2  {no_branch['id'][-8:]}  <no branch>  omp · no branch", lines)
 
 
-    def run_main(self, *args):
-        self.pr(161)["body"] += "\nTicket-part: 3/3\n"
+class Main(unittest.TestCase):
+    """main() as checkin runs it, with no app database readable."""
+
+    def setUp(self):
+        self.prs = copy.deepcopy(PRS)
+        next(pr for pr in self.prs if pr["number"] == 161)["body"] += "\nTicket-part: 3/3\n"
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        self.clis = fake_clis(tmp.name)
+
+    def run_main(self, *args, clis=None):
         writes = []
-        with mock.patch.object(ri, "APP_DBS", self.dbs), \
+        # The sandbox of D1 denies the app data folder: no database opens.
+        with mock.patch.object(ri, "APP_CLIS", clis or self.clis, create=True), \
+                mock.patch("sqlite3.connect", side_effect=PermissionError("Operation not permitted")), \
                 mock.patch.object(ri, "linear_key", lambda: "key"), \
                 mock.patch.object(ri, "open_issues_and_blockers", lambda key: copy.deepcopy(ISSUES)), \
                 mock.patch.object(ri, "merged_prs", lambda: self.prs), \
                 mock.patch.object(ri, "add_code_complete", lambda key, issues: writes.extend(i["identifier"] for i in issues)), \
                 mock.patch.object(sys, "argv", ["ready-issues.py", "--instance", "2", *args]), \
-                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out, \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
             code = ri.main()
-        return code, out.getvalue(), writes
+        return code, out.getvalue() + err.getvalue(), writes
 
     def test_dry_run_prints_and_writes_nothing(self):
         code, out, writes = self.run_main("--dry-run")
@@ -314,27 +362,30 @@ class ReadyIssues(unittest.TestCase):
         self.assertEqual(writes, ["ADE-11"])
         self.assertIn("ADE-11  labelled code-complete (PR #161 is its last part)", out)
 
+    def test_builders_come_from_the_app_cli_when_no_database_opens(self):
+        code, out, _ = self.run_main("--dry-run")
+        self.assertEqual(code, 1, out)
+        self.assertIn("ready-issues: 5 ready with no builder, 5 waiting more than 60 min, 0 unlabelled, 11 unattributed.", out)
+        self.assertEqual(calls(self.clis["2"]),
+                         [["app", "sessions.list", "--json", json.dumps({"project": PROJECT})]])
+        self.assertEqual(calls(self.clis["1"]), [])
+
+    def test_an_app_cli_that_fails_exits_2(self):
+        for case, reply in [("no token", json.dumps({"ok": False, "error": "MONOCODE_APP_TOKEN is not set."})),
+                            ("no JSON", "Cannot connect to MonoCode"), ("no output", "")]:
+            with self.subTest(case):
+                cli = fake_cli(Path(self.tmp) / "instance-2", {"": reply})
+                code, out, writes = self.run_main(clis={"2": cli})
+                self.assertEqual((code, writes), (2, []), out)
+                self.assertTrue(out.startswith("ready-issues: "), out)
+        code, out, _ = self.run_main(clis={"2": "/nonexistent/monocode"})
+        self.assertEqual(code, 2, out)
+
 
 class CommandLine(unittest.TestCase):
-    def run_script(self, *args, db_bytes=None):
-        with tempfile.TemporaryDirectory() as home:
-            if db_bytes is not None:
-                for bundle in ["com.monocode.desktop", "com.monocode.second"]:
-                    path = Path(home) / "Library/Application Support" / bundle / "monocode.db"
-                    path.parent.mkdir(parents=True)
-                    path.write_bytes(db_bytes)
-            env = {**os.environ, "HOME": home, "LINEAR_API_KEY": "lin_api_unused"}
-            return subprocess.run([sys.executable, SCRIPT, *args], env=env, capture_output=True, text=True)
-
     def test_instance_is_required(self):
-        self.assertEqual(self.run_script().returncode, 2)
-
-    def test_unreadable_app_database_exits_2(self):
-        for db_bytes in [None, b"not a database at all, just bytes", b""]:
-            with self.subTest(db_bytes=db_bytes):
-                result = self.run_script("--instance", "2", db_bytes=db_bytes)
-                self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertNotIn("Traceback", result.stderr)
+        result = subprocess.run([sys.executable, SCRIPT], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
 
 
 if __name__ == "__main__":
