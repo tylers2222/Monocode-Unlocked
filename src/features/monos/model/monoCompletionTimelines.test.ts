@@ -160,6 +160,7 @@ function replay(events: Event[]) {
     },
     (run, ms) => setTimeout(run, ms),
     () => undefined,
+    { hold() {}, deliver() {} },
   );
   /** Every request that watches a session's running turn. */
   const watchers = new Map<string, ((outcome: ControlOutcome) => void)[]>();

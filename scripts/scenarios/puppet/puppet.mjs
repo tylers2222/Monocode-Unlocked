@@ -5,10 +5,14 @@
 // contains, and ends the turn.
 //
 // script.json: {"app": "<monocode binary>", "rules": [{"match": "...",
-//   "calls": [{"tool": "send_message", "arguments": {...}}], "reply": "..."}]}
-// Each call goes through `<app> app-mcp`, the app's MCP server, with the app
-// token this process got from the app. log.jsonl gets one line per prompt
-// ({"prompt", "rule", "steer"}) and per call ({"tool", "input", "result"}).
+//   "calls": [{"tool": "send_message", "arguments": {...}}], "reply": "...",
+//   "hold": 1}]}
+// A `tool` call goes through `<app> app-mcp`, the app's MCP server, and an
+// `action` call ({"action": "sessions.start", "arguments": {...}}) through
+// `<app> app <action>`, both with the app token this process got from the app.
+// A rule with `hold: n` never ends its first n turns. log.jsonl gets one line
+// per prompt ({"prompt", "rule", "steer"}) and per call ({"tool" or "action",
+// "input", "result"}).
 import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -71,14 +75,33 @@ function mcp(app) {
   };
 }
 
+function appAction(app, action, input) {
+  return new Promise((resolve) => {
+    const child = spawn(app, ["app", action, "--json", JSON.stringify(input)], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => (output += chunk));
+    child.stderr.on("data", (chunk) => (output += chunk));
+    child.on("close", (code) => resolve({ ok: code === 0, output }));
+  });
+}
+
 async function runTurn(text, steer) {
   const script = JSON.parse(readFileSync(join(dir, "script.json"), "utf8"));
   const rule = script.rules.find((candidate) => text.includes(candidate.match));
   log({ prompt: text, rule: rule?.match ?? null, steer });
   if (!rule) return "";
+  if (rule.hold) {
+    const prompts = readFileSync(join(dir, "log.jsonl"), "utf8")
+      .split("\n")
+      .filter((line) => line && JSON.parse(line).rule === rule.match).length;
+    if (prompts <= rule.hold) return new Promise(() => {});
+  }
   const server = mcp(script.app);
-  for (const { tool, arguments: input } of rule.calls ?? []) {
-    log({ tool, input, result: await server.call(tool, input) });
+  for (const { tool, action, arguments: input } of rule.calls ?? []) {
+    if (action) log({ action, input, result: await appAction(script.app, action, input) });
+    else log({ tool, input, result: await server.call(tool, input) });
   }
   server.close();
   return rule.reply ?? "";

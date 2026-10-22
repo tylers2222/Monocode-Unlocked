@@ -28,6 +28,7 @@ function batchesOver(sessions: Map<string, Session> = new Map()) {
     ready,
     (run, ms) => setTimeout(run, ms),
     (id) => sessions.get(id),
+    { hold() {}, deliver() {} },
   );
   const reported = () =>
     ready.mock.calls.map(([, message]) =>
@@ -183,25 +184,21 @@ describe("Mono completions across a relaunch", () => {
     expect(batches.undelivered()).toEqual(saved);
   });
 
-  it("reads kept results from a saved snapshot and drops malformed ones", () => {
+  it("reads the claimed results and drops malformed ones", () => {
     const good: SavedMonoCompletion = {
       origin: { monoId: "mono", turn: 1 },
       request: request("a"),
     };
     expect(
-      savedMonoCompletions({
-        tabs: [],
-        monoCompletions: [
-          good,
-          { origin: { monoId: "mono" }, request: request("no-turn") },
-          { origin: { monoId: "mono", turn: 1 }, request: { requestId: "x" } },
-          { ...good, result: { sessionId: "a" } },
-          null,
-        ],
-      }),
+      savedMonoCompletions([
+        good,
+        { origin: { monoId: "mono" }, request: request("no-turn") },
+        { origin: { monoId: "mono", turn: 1 }, request: { requestId: "x" } },
+        { ...good, result: { sessionId: "a" } },
+        null,
+      ]),
     ).toEqual([good]);
-    expect(savedMonoCompletions({ tabs: [] })).toEqual([]);
     expect(savedMonoCompletions(null)).toEqual([]);
-    expect(savedMonoCompletions({ monoCompletions: "x" })).toEqual([]);
+    expect(savedMonoCompletions({ monoCompletions: [good] })).toEqual([]);
   });
 });

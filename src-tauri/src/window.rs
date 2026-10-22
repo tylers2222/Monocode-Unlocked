@@ -72,6 +72,29 @@ pub fn open_new_window(app: &AppHandle) -> Result<(), String> {
     open_session_window(app, true).map(|_| ())
 }
 
+/// GigaEval builds only (`scripts/scenarios/app.sh`): a file named
+/// `open-window` in the data folder asks for one more workspace window, as
+/// File > New Window does, so a scenario can open it without a click.
+#[cfg(feature = "fake-clock")]
+pub fn open_on_request(app: &AppHandle) -> Result<(), String> {
+    let request = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("open-window");
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(1));
+        if std::fs::remove_file(&request).is_ok() {
+            let handle = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                let _ = open_new_window(&handle);
+            });
+        }
+    });
+    Ok(())
+}
+
 fn configure_session_window(config: &mut tauri::utils::config::WindowConfig, reveal: bool) {
     config.visible = reveal;
     config.focus = reveal;
