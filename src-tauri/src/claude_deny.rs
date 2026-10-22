@@ -1,9 +1,11 @@
 //! Claude Code deny rules (ADE-44). They are off unless
-//! `<app data>/claude-deny-rules-on` exists, and off, the args stay exactly as
-//! the front end sent them. On, the `--settings` object gets `permissions.deny`
-//! and `sandbox` rules on the app data folder. The rules are defense in depth
-//! only: the Read rule does not stop a script that opens the file itself, and
-//! the OS sandbox covers Bash only.
+//! `<app data>/claude-deny-rules-on` exists. Off, the args stay exactly as the
+//! front end sent them. On, the `--settings` object gets `permissions.deny` and
+//! `sandbox` rules on the app data folder. The rules are defense in depth only.
+//! The Read rule does not stop a script that opens the file itself, the OS
+//! sandbox covers Bash only, and Claude Code runs Bash unsandboxed where the
+//! sandbox cannot start (`failIfUnavailable` stays off so it still runs inside
+//! the D1 sandbox).
 
 use std::path::Path;
 
@@ -29,11 +31,12 @@ fn with_deny_rules(mut args: Vec<String>, data: &Path) -> Result<Vec<String>, St
         .to_str()
         .ok_or("Claude Code deny rules: the app data path is not UTF-8.")?;
     if !data.starts_with('/') {
-        return Err("Claude Code deny rules support macOS and Linux only.".into());
+        return Err("Claude Code deny rules: they need a macOS or Linux app data path. Remove claude-deny-rules-on from the app data folder to start Claude Code.".into());
     }
     let at = match args.iter().position(|arg| arg == "--settings") {
         Some(flag) => flag + 1,
-        // `claude auth login` fails on a root option after the subcommand.
+        // `claude auth login` (authSupport.ts) has no --settings, and claude
+        // refuses a root option after the subcommand.
         None => {
             args.insert(0, "--settings".into());
             args.insert(1, "{}".into());
@@ -52,6 +55,7 @@ fn with_deny_rules(mut args: Vec<String>, data: &Path) -> Result<Vec<String>, St
             ));
         }
     }
+    // Read and Edit rules mark an absolute path with `//`. Sandbox paths are plain.
     let pattern = format!("/{data}/**");
     settings.insert(
         "permissions".into(),
