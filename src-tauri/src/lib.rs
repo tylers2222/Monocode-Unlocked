@@ -382,6 +382,7 @@ pub fn run() {
             milestones::milestone_settings_get,
             milestones::milestone_settings_set,
             approvals::approvals_list,
+            approvals::approvals_get,
             approvals::approvals_open_counts,
             approvals::approvals_file,
             approvals::approvals_update,

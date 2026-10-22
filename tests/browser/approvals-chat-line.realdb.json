@@ -1,0 +1,453 @@
+{
+  "cards": {
+    "0bfedd56-1422-480c-82b8-ef94d6db1766": {
+      "createdAt": 1792525515757,
+      "heading": "Bump Vite to 7",
+      "id": "0bfedd56-1422-480c-82b8-ef94d6db1766",
+      "links": [],
+      "number": 4,
+      "options": [],
+      "origin": null,
+      "projectPath": "/Users/test/MonoCode",
+      "requestedBy": {
+        "id": "d79d140b-66e7-4844-900d-5719c2663344",
+        "name": "Monocode General"
+      },
+      "status": {
+        "chosen": [],
+        "decidedAt": 1792525515762,
+        "note": null,
+        "state": "decided",
+        "undelivered": null,
+        "verdict": "approved"
+      },
+      "summary": "Bump Vite to 7 Filed for the A·7 chat line.",
+      "tradeoffs": {
+        "cons": [
+          "One more page"
+        ],
+        "pros": [
+          "One place to decide"
+        ]
+      },
+      "urgency": "not_blocking"
+    },
+    "3deaed4f-8d5b-4e5a-81d3-3a188a513983": {
+      "createdAt": 1792525515757,
+      "heading": "Bump Playwright to 1.49",
+      "id": "3deaed4f-8d5b-4e5a-81d3-3a188a513983",
+      "links": [],
+      "number": 5,
+      "options": [],
+      "origin": null,
+      "projectPath": "/Users/test/MonoCode",
+      "requestedBy": {
+        "id": "d79d140b-66e7-4844-900d-5719c2663344",
+        "name": "Monocode General"
+      },
+      "status": {
+        "state": "withdrawn",
+        "withdrawnAt": 1792525515758
+      },
+      "summary": "Bump Playwright to 1.49 Filed for the A·7 chat line.",
+      "tradeoffs": {
+        "cons": [
+          "One more page"
+        ],
+        "pros": [
+          "One place to decide"
+        ]
+      },
+      "urgency": "not_blocking"
+    },
+    "41bc020b-77fb-4677-bd9b-56d09fef1b10": {
+      "createdAt": 1792525515757,
+      "heading": "Index approvals on (project_id, status) only",
+      "id": "41bc020b-77fb-4677-bd9b-56d09fef1b10",
+      "links": [],
+      "number": 3,
+      "options": [
+        {
+          "description": null,
+          "label": "Index (project_id, status) only",
+          "recommended": false
+        },
+        {
+          "description": null,
+          "label": "Also index (requested_by, status)",
+          "recommended": false
+        }
+      ],
+      "origin": null,
+      "projectPath": "/Users/test/MonoCode",
+      "requestedBy": {
+        "id": "d79d140b-66e7-4844-900d-5719c2663344",
+        "name": "Monocode General"
+      },
+      "status": {
+        "chosen": [
+          "Also index (requested_by, status)"
+        ],
+        "decidedAt": 1792525515761,
+        "note": "Take option 2 as well, then file it again with the query plan.",
+        "state": "decided",
+        "undelivered": null,
+        "verdict": "changes_requested"
+      },
+      "summary": "Index approvals on (project_id, status) only Filed for the A·7 chat line.",
+      "tradeoffs": {
+        "cons": [
+          "One more page"
+        ],
+        "pros": [
+          "One place to decide"
+        ]
+      },
+      "urgency": "not_blocking"
+    },
+    "9ad28bbd-1870-48dc-ba50-bfe16e2764fe": {
+      "createdAt": 1792525515757,
+      "heading": "Keep CSV export in v1",
+      "id": "9ad28bbd-1870-48dc-ba50-bfe16e2764fe",
+      "links": [],
+      "number": 6,
+      "options": [],
+      "origin": null,
+      "projectPath": "/Users/test/MonoCode",
+      "requestedBy": {
+        "id": null,
+        "name": "Modelist General"
+      },
+      "status": {
+        "chosen": [],
+        "decidedAt": 1792525515763,
+        "note": null,
+        "state": "decided",
+        "undelivered": null,
+        "verdict": "approved"
+      },
+      "summary": "Keep CSV export in v1 Filed for the A·7 chat line.",
+      "tradeoffs": {
+        "cons": [
+          "One more page"
+        ],
+        "pros": [
+          "One place to decide"
+        ]
+      },
+      "urgency": "not_blocking"
+    },
+    "b639dcb9-3135-4ee5-949d-d68e7e0e52fe": {
+      "createdAt": 1792525515757,
+      "heading": "Store the Giga and Mono discussion on the card",
+      "id": "b639dcb9-3135-4ee5-949d-d68e7e0e52fe",
+      "links": [],
+      "number": 2,
+      "options": [],
+      "origin": null,
+      "projectPath": "/Users/test/MonoCode",
+      "requestedBy": {
+        "id": "d79d140b-66e7-4844-900d-5719c2663344",
+        "name": "Monocode General"
+      },
+      "status": {
+        "chosen": [],
+        "decidedAt": 1792525515760,
+        "note": "No. The Giga has the context; the board stays small.",
+        "state": "decided",
+        "undelivered": null,
+        "verdict": "rejected"
+      },
+      "summary": "Store the Giga and Mono discussion on the card Filed for the A·7 chat line.",
+      "tradeoffs": {
+        "cons": [
+          "One more page"
+        ],
+        "pros": [
+          "One place to decide"
+        ]
+      },
+      "urgency": "not_blocking"
+    },
+    "e1683802-999b-4342-9af3-094de3adcea7": {
+      "createdAt": 1792525515757,
+      "heading": "Wait for PR #109 before the approvals tool is built?",
+      "id": "e1683802-999b-4342-9af3-094de3adcea7",
+      "links": [],
+      "number": 1,
+      "options": [
+        {
+          "description": null,
+          "label": "Wait for #109, then build S2 on its caller identity",
+          "recommended": false
+        },
+        {
+          "description": null,
+          "label": "Build S2 on tyler/main now",
+          "recommended": false
+        }
+      ],
+      "origin": null,
+      "projectPath": "/Users/test/MonoCode",
+      "requestedBy": {
+        "id": "d79d140b-66e7-4844-900d-5719c2663344",
+        "name": "Monocode General"
+      },
+      "status": {
+        "chosen": [
+          "Wait for #109, then build S2 on its caller identity"
+        ],
+        "decidedAt": 1792525515759,
+        "note": "Fine. Ask MonoCode 2 to put #109 first in its queue.",
+        "state": "decided",
+        "undelivered": null,
+        "verdict": "approved"
+      },
+      "summary": "Wait for PR #109 before the approvals tool is built? Filed for the A·7 chat line.",
+      "tradeoffs": {
+        "cons": [
+          "One more page"
+        ],
+        "pros": [
+          "One place to decide"
+        ]
+      },
+      "urgency": "not_blocking"
+    }
+  },
+  "chat": "f91c6b52-8120-44dd-8845-24385da17370",
+  "giga": "d79d140b-66e7-4844-900d-5719c2663344",
+  "monos": [
+    {
+      "data": {
+        "color": "hsl(12 80% 58%)",
+        "gigaSlug": "monocode-general",
+        "mascot": "invader",
+        "name": "Monocode General",
+        "projects": [
+          "/Users/test/MonoCode"
+        ],
+        "sessionId": "f91c6b52-8120-44dd-8845-24385da17370",
+        "showStartedSessionsInSidebar": true,
+        "useSidebarFolders": true
+      },
+      "id": "d79d140b-66e7-4844-900d-5719c2663344",
+      "role": "giga"
+    },
+    {
+      "data": {
+        "color": "hsl(211 92% 62%)",
+        "mascot": "rocket",
+        "name": "Os_proj_2_orchestrator",
+        "projects": [
+          "/Users/test/Desktop/os_project_2"
+        ],
+        "sessionId": "8248fb99-fa97-4a4a-9e08-34085dee0c68",
+        "showStartedSessionsInSidebar": true
+      },
+      "id": "111350ab-c382-42bd-b986-17797290569b",
+      "role": "mono"
+    },
+    {
+      "data": {
+        "color": "hsl(45 90% 55%)",
+        "mascot": "ghost",
+        "name": "Modelist Orchestrator",
+        "projects": [
+          "/Users/test/Desktop/Evelyn Faye Coding/Modelist"
+        ],
+        "sessionId": "1919c078-c7e8-44b1-aa62-1b036c2adc29",
+        "showStartedSessionsInSidebar": true
+      },
+      "id": "915a5bcc-1d14-4c1f-aa39-2c34438c578e",
+      "role": "mono"
+    },
+    {
+      "data": {
+        "color": "hsl(25 85% 58%)",
+        "mascot": "robot",
+        "name": "Vibtra Orchestrator",
+        "projects": [
+          "/Users/test/Desktop/vibtra"
+        ],
+        "sessionId": "975a3c7c-d9d1-4ba6-ba81-f9e02bd66665",
+        "showStartedSessionsInSidebar": true
+      },
+      "id": "a1f83f52-3833-48d3-94c4-f501dca89a49",
+      "role": "mono"
+    },
+    {
+      "data": {
+        "color": "hsl(142 55% 50%)",
+        "mascot": "cat",
+        "name": "Content Factory",
+        "projects": [
+          "/Users/test/Desktop/content-factory"
+        ],
+        "sessionId": "cf8a3232-b680-47a6-9cf4-eeb1530a25e1",
+        "showStartedSessionsInSidebar": true
+      },
+      "id": "079e3605-b6d3-455a-a0a1-821dcb3dd037",
+      "role": "mono"
+    },
+    {
+      "data": {
+        "color": "hsl(330 70% 62%)",
+        "mascot": "skull",
+        "name": "MonoCode Fork Orchestrator",
+        "projects": [
+          "/Users/test/Desktop/monocode"
+        ],
+        "sessionId": "14746f73-915f-4a39-95aa-c6973a96296e",
+        "showStartedSessionsInSidebar": true
+      },
+      "id": "d5826daa-dd3a-45cd-920a-618df2d9a842",
+      "role": "mono"
+    },
+    {
+      "data": {
+        "color": "hsl(280 55% 62%)",
+        "mascot": "frog",
+        "name": "Mono Reviewer",
+        "projects": [
+          "/Users/test/Desktop/mono-review"
+        ],
+        "sessionId": "79188861-d544-4289-ab88-7f59c8fcf7d0",
+        "showStartedSessionsInSidebar": true,
+        "useSidebarFolders": true
+      },
+      "id": "09d66d3c-76a8-4a91-9203-7f4c234e3210",
+      "role": "mono"
+    },
+    {
+      "data": {
+        "color": "hsl(175 55% 48%)",
+        "mascot": "crab",
+        "name": "Random Orchestrator",
+        "projects": [
+          "/Users/test/Desktop/random"
+        ],
+        "sessionId": "8655d9d4-2dbc-4a6b-98be-c603e4550e98"
+      },
+      "id": "1bc853ea-8a85-47f8-a638-91bab49ec04b",
+      "role": "mono"
+    }
+  ],
+  "project": "/Users/test/MonoCode",
+  "removedGiga": "9ad28bbd-1870-48dc-ba50-bfe16e2764fe",
+  "rows": [
+    {
+      "message": {
+        "addressed": "d79d140b-66e7-4844-900d-5719c2663344",
+        "body": "The user decided approval card APR-1 \"Wait for PR #109 before the approvals tool is built?\".\ncard_id: e1683802-999b-4342-9af3-094de3adcea7\ndecision: approved\nchosen_options: [\"Wait for #109, then build S2 on its caller identity\"]\ncomment: Fine. Ask MonoCode 2 to put #109 first in its queue.",
+        "bodyChars": 291,
+        "createdAt": 1792525515759,
+        "delivery": "queue",
+        "fromMonoId": null,
+        "fromSessionId": "approvals-board",
+        "handledBySession": "f91c6b52-8120-44dd-8845-24385da17370",
+        "hop": 0,
+        "id": "m_h2l43fr7iml7",
+        "intent": "new",
+        "part": 0,
+        "replyTo": null,
+        "requestId": "e1683802-999b-4342-9af3-094de3adcea7",
+        "scope": null,
+        "slot": null,
+        "status": "delivered",
+        "to": {
+          "kind": "mono",
+          "monoId": "d79d140b-66e7-4844-900d-5719c2663344"
+        },
+        "tool": "send_message",
+        "wantingReply": false
+      },
+      "target": null
+    },
+    {
+      "message": {
+        "addressed": "d79d140b-66e7-4844-900d-5719c2663344",
+        "body": "The user decided approval card APR-2 \"Store the Giga and Mono discussion on the card\".\ncard_id: b639dcb9-3135-4ee5-949d-d68e7e0e52fe\ndecision: rejected\nchosen_options: []\ncomment: No. The Giga has the context; the board stays small.",
+        "bodyChars": 232,
+        "createdAt": 1792525515760,
+        "delivery": "queue",
+        "fromMonoId": null,
+        "fromSessionId": "approvals-board",
+        "handledBySession": "f91c6b52-8120-44dd-8845-24385da17370",
+        "hop": 0,
+        "id": "m_ouq7mres6e3g",
+        "intent": "new",
+        "part": 0,
+        "replyTo": null,
+        "requestId": "b639dcb9-3135-4ee5-949d-d68e7e0e52fe",
+        "scope": null,
+        "slot": null,
+        "status": "delivered",
+        "to": {
+          "kind": "mono",
+          "monoId": "d79d140b-66e7-4844-900d-5719c2663344"
+        },
+        "tool": "send_message",
+        "wantingReply": false
+      },
+      "target": null
+    },
+    {
+      "message": {
+        "addressed": "d79d140b-66e7-4844-900d-5719c2663344",
+        "body": "The user decided approval card APR-3 \"Index approvals on (project_id, status) only\".\ncard_id: 41bc020b-77fb-4677-bd9b-56d09fef1b10\ndecision: changes_requested\nchosen_options: [\"Also index (requested_by, status)\"]\ncomment: Take option 2 as well, then file it again with the query plan.",
+        "bodyChars": 284,
+        "createdAt": 1792525515761,
+        "delivery": "queue",
+        "fromMonoId": null,
+        "fromSessionId": "approvals-board",
+        "handledBySession": "f91c6b52-8120-44dd-8845-24385da17370",
+        "hop": 0,
+        "id": "m_fepmhfk7euhd",
+        "intent": "new",
+        "part": 0,
+        "replyTo": null,
+        "requestId": "41bc020b-77fb-4677-bd9b-56d09fef1b10",
+        "scope": null,
+        "slot": null,
+        "status": "delivered",
+        "to": {
+          "kind": "mono",
+          "monoId": "d79d140b-66e7-4844-900d-5719c2663344"
+        },
+        "tool": "send_message",
+        "wantingReply": false
+      },
+      "target": null
+    },
+    {
+      "message": {
+        "addressed": "d79d140b-66e7-4844-900d-5719c2663344",
+        "body": "The user decided approval card APR-4 \"Bump Vite to 7\".\ncard_id: 0bfedd56-1422-480c-82b8-ef94d6db1766\ndecision: approved\nchosen_options: []",
+        "bodyChars": 138,
+        "createdAt": 1792525515762,
+        "delivery": "queue",
+        "fromMonoId": null,
+        "fromSessionId": "approvals-board",
+        "handledBySession": "f91c6b52-8120-44dd-8845-24385da17370",
+        "hop": 0,
+        "id": "m_ltuiy5jwt2xr",
+        "intent": "new",
+        "part": 0,
+        "replyTo": null,
+        "requestId": "0bfedd56-1422-480c-82b8-ef94d6db1766",
+        "scope": null,
+        "slot": null,
+        "status": "delivered",
+        "to": {
+          "kind": "mono",
+          "monoId": "d79d140b-66e7-4844-900d-5719c2663344"
+        },
+        "tool": "send_message",
+        "wantingReply": false
+      },
+      "target": null
+    }
+  ],
+  "withdrawn": "3deaed4f-8d5b-4e5a-81d3-3a188a513983"
+}

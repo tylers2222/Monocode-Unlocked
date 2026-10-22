@@ -15,6 +15,10 @@ import {
 } from "../../sessions/model/session";
 import { enqueueMonoMessage } from "./monoMessaging";
 import {
+  boardDecision,
+  type BoardDecision,
+} from "../../approvals/model/boardDecision";
+import {
   APPROVALS_SENDER,
   newTurnId,
   noticeRequestId,
@@ -89,7 +93,12 @@ export type MonoQueueHost = {
  */
 export function ensureQueued(
   session: Session,
-  message: { id: MessageId; text: string; link?: MessageLink },
+  message: {
+    id: MessageId;
+    text: string;
+    link?: MessageLink;
+    decision?: BoardDecision;
+  },
   kind: QueueKind,
   bubble: boolean,
 ): Session {
@@ -103,11 +112,10 @@ export function ensureQueued(
     ...(kind === "queue" ? { waitForIdle: true } : {}),
   };
   if (bubble && !session.blocks.some((block) => block.id === message.id))
-    return enqueueMonoMessage(
-      session,
-      item,
-      message.link ? { link: message.link } : undefined,
-    );
+    return enqueueMonoMessage(session, item, {
+      ...(message.link ? { link: message.link } : {}),
+      ...(message.decision ? { boardDecision: message.decision } : {}),
+    });
   return {
     ...session,
     queuedMessages: [
@@ -153,21 +161,31 @@ async function rowSender(
 function queueItem(
   { message, target }: Targeted<Routed>,
   sender: MessageSender | undefined,
+  decision?: BoardDecision,
 ) {
   return {
     id: message.id,
     text: renderMonoMessage(message, sender),
     link: rowLink(message, target),
+    decision,
   };
 }
 
 /**
- * Each row's queue item. The senders resolve first, so the rows then queue
- * in one synchronous run.
+ * Each row's queue item. The senders and the cards of decision rows resolve
+ * first, so the rows then queue in one synchronous run.
  */
 function queueItems(host: MonoQueueHost, rows: Targeted<Routed>[]) {
   return Promise.all(
-    rows.map(async (row) => queueItem(row, await rowSender(host, row.message))),
+    rows.map(async (row) =>
+      queueItem(
+        row,
+        await rowSender(host, row.message),
+        row.message.fromSessionId === APPROVALS_SENDER
+          ? await boardDecision(row.message.requestId)
+          : undefined,
+      ),
+    ),
   );
 }
 
@@ -375,7 +393,9 @@ type DropAnswer = "dropped" | "closed" | "in_flight";
 /**
  * Design 5.5 rule 8: the user removes queue item `itemId`. The item of a
  * Mono row goes only after Rust dropped the row or found it closed; while a
- * hand-off holds the row, the item stays. Returns whether the item went.
+ * hand-off holds the row, the item stays. Returns whether the item went. A
+ * board decision Rust dropped was never sent, so its bubble goes too: its
+ * line would say it was sent (frame A·7b).
  */
 export async function removeQueued(
   host: Pick<MonoQueueHost, "session" | "update">,
@@ -385,13 +405,21 @@ export async function removeQueued(
   const item = host
     .session(sessionId)
     ?.queuedMessages?.find((queued) => queued.id === itemId);
+  let answer: DropAnswer | undefined;
   if (item?.monoMessageId) {
-    const answer = await invoke<DropAnswer>("mono_message_drop", {
+    answer = await invoke<DropAnswer>("mono_message_drop", {
       id: item.monoMessageId,
     });
     if (answer === "in_flight") return false;
   }
-  host.update(sessionId, (session) => dequeueQueuedMessage(session, itemId));
+  host.update(sessionId, (session) => {
+    const rest = dequeueQueuedMessage(session, itemId);
+    if (answer !== "dropped") return rest;
+    const blocks = rest.blocks.filter(
+      (block) => !(block.boardDecision && block.id === item?.blockId),
+    );
+    return blocks.length < rest.blocks.length ? { ...rest, blocks } : rest;
+  });
   return true;
 }
 
