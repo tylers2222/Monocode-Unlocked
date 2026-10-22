@@ -586,7 +586,6 @@ import {
   persistFingerprint,
   rebaseProjectSessions,
   replaceInFlightSessions,
-  saveWorkspaceSnapshot,
   setSessionArchived,
   setSessionLinkedWorkItem,
   setSessionPinned,
@@ -888,6 +887,7 @@ import {
   closeBusyWindow,
   closeCurrentWindow,
   confirmReload,
+  deferWorkspaceSave,
   hasInFlightSessions,
   hideCurrentWindow,
   isAppQuitting,
@@ -2665,10 +2665,11 @@ function Workspace({
     window.clearTimeout(save.pending?.timer);
     save.pending = undefined;
     if (save.saved === key) return;
+    const write = deferWorkspaceSave(snapshot);
     const timer = window.setTimeout(() => {
       save.saved = key;
       save.pending = undefined;
-      void saveWorkspaceSnapshot(snapshot).catch(() => undefined);
+      write();
     }, 250);
     save.pending = { key, timer };
   }, [

@@ -41,6 +41,7 @@ import {
   restoreWorkspacePins,
   workspaceSnapshot,
   type WindowWorkspace,
+  type WorkspaceSnapshot,
 } from "../../features/workspace/model/workspaceSnapshot";
 import { lastProjectPath, normalizeProjectPath, sameProjectPath } from "../../features/projects/model/recents";
 import {
@@ -74,6 +75,8 @@ let quitDialogOpen = false;
 let bootingResumed: QuitWorkspace | null = null;
 let liveWorkspace: { read: () => QuitWorkspace; flush: () => void } | null =
   null;
+/** A count, not a flag: a close to tray saves, then the window runs on. */
+let quitSnapshots = 0;
 
 export function isAppQuitting(): boolean {
   return quitting;
@@ -360,8 +363,23 @@ export async function persistQuitState(
   }
 }
 
+/**
+ * The window's running save: `snapshot` is read now and written when the
+ * returned function runs. A quit snapshot written in between is the window's
+ * last word and also keeps the Mono completions `snapshot` leaves out, so this
+ * write is dropped rather than land after it (ADE-46).
+ */
+export function deferWorkspaceSave(snapshot: WorkspaceSnapshot): () => void {
+  const before = quitSnapshots;
+  return () => {
+    if (quitSnapshots !== before) return;
+    void saveWorkspaceSnapshot(snapshot).catch(() => undefined);
+  };
+}
+
 /** The workspace snapshot with the Mono completions the window still owes. */
 function saveQuitSnapshot(workspace: QuitWorkspace): Promise<void> {
+  quitSnapshots += 1;
   return saveWorkspaceSnapshot({
     ...workspaceSnapshot([workspace]),
     monoCompletions: workspace.monoCompletions,
