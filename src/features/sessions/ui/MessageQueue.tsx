@@ -16,6 +16,8 @@ import {
   parseMonoNotice,
   type MonoNotice,
 } from "../../monos/model/monoMessages";
+import type { QueuedDecision } from "../../monos/model/monoMessaging";
+import { QueuedDecisionRow } from "../../approvals/ui/BoardDecisionLine";
 import type { MessageQueueStatus, QueuedMessage } from "../model/session";
 
 export function MessageQueue({
@@ -29,6 +31,7 @@ export function MessageQueue({
   onResume,
   variant = "queue",
   sendingId,
+  decisions = [],
 }: {
   messages: QueuedMessage[];
   status?: MessageQueueStatus;
@@ -41,6 +44,8 @@ export function MessageQueue({
   onResume?: () => void;
   variant?: "queue" | "messages";
   sendingId?: string;
+  /** Board decisions that wait for the turn end (frame A·7). */
+  decisions?: QueuedDecision[];
 }) {
   const [editingId, setEditingId] = useState<string>();
   const [editDraft, setEditDraft] = useState("");
@@ -53,9 +58,9 @@ export function MessageQueue({
       if (editingIdRef.current) onEditingChangeRef.current?.();
     };
   }, []);
-  if (messages.length === 0) return null;
+  if (messages.length + decisions.length === 0) return null;
   const paused = status === "paused";
-  const failed = messages.some((message) => message.error);
+  const failed = [...messages, ...decisions].some((message) => message.error);
   const notices = messages.flatMap((message) => {
     const notice = parseMonoNotice(message);
     return notice ? [{ id: message.id, notice, error: message.error }] : [];
@@ -127,11 +132,18 @@ export function MessageQueue({
             </div>
           </>
         ) : null}
+        <div className="divide-y divide-stroke empty:hidden [.divide-y+&]:border-t [.divide-y+&]:border-stroke">
+          {decisions.map(({ id, decision }) => (
+            <QueuedDecisionRow key={id} decision={decision} />
+          ))}
+        </div>
         {statusLine ? (
           <div
             role="status"
             className={`py-1 text-[11px] text-content/50 ${
-              notices.length > 0 ? "border-t border-stroke" : ""
+              notices.length + decisions.length > 0
+                ? "border-t border-stroke"
+                : ""
             }`}
           >
             {sendingId ? "Sending…" : "Waiting to send"}
@@ -153,7 +165,8 @@ export function MessageQueue({
             <div
               key={message.id}
               className={`flex min-h-7 items-center gap-2 text-[12px] ${
-                index > 0 || (notices.length > 0 && !statusLine)
+                index > 0 ||
+                (notices.length + decisions.length > 0 && !statusLine)
                   ? "border-t border-stroke"
                   : ""
               }`}

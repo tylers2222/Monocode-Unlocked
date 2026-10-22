@@ -1,3 +1,4 @@
+import type { BoardDecision } from "../../approvals/model/boardDecision";
 import { dropContextWindow, type ContextUsage } from "./contextUsage";
 import type { UserQuestionPrompt } from "./userQuestion";
 import type { HandoffComposerCard } from "./handoff";
@@ -465,6 +466,8 @@ export type Block = {
   monoHabit?: { id: string; name: string; at: number };
   /** A card a Mono put in its chat; see `features/monos/model/monoCards`. */
   monoCard?: import("../../monos/model/monoCards").MonoCard;
+  /** An approvals-board decision this user block delivers to its Giga (frame A·7). */
+  boardDecision?: BoardDecision;
   /**
    * The emoji a Mono answered this user message with. Drawn from its reply
    * when the chat renders; see `features/monos/model/monoReaction`.

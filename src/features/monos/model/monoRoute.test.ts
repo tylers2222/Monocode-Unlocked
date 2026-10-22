@@ -370,6 +370,20 @@ const rust = vi.hoisted(() => {
               },
             };
       }
+      // approvals.rs approvals_get: the card a decision row names, decided.
+      case "approvals_get":
+        return {
+          id: args.id,
+          number: 3,
+          heading: "Ship it",
+          status: {
+            state: "decided",
+            verdict: "approved",
+            decidedAt: 1,
+            note: null,
+            chosen: [],
+          },
+        };
     }
     throw new Error(`unexpected command ${command}`);
   };
@@ -1364,6 +1378,13 @@ it("queues an approvals-board decision in the Giga's chat as the user's, after t
       text: '<mono_message message_id="m_aaaaaaaaaaaa" from="the user" via="approvals board" wanting_reply="false">\nThe user decided approval card APR-3 "Ship it".\n</mono_message>',
     },
   ]);
+  expect(get("giga-chat").blocks.at(-1)?.boardDecision).toEqual({
+    number: 3,
+    heading: "Ship it",
+    verdict: "approved",
+    note: null,
+    chosen: [],
+  });
 });
 
 // PR7-6 review r1 nit 3, design 5.5 rule 4. Defect: a refused hand-off of a
