@@ -493,16 +493,18 @@ test("a layout save scheduled before a quit or close keeps the waiting group", a
   });
   await expect.poll(() => prompts(page, STARTED)).toHaveLength(1);
   await holdLocation(page);
-  // Timers now run only when the test runs the clock, so each boot's layout
-  // save waits until after the next quit or close has saved.
+  // Timers now run only when the test runs the clock. Each boot arms a layout
+  // save; the quit or close reads the window 100 ms later and saves first.
   await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
   await app.restart();
 
   const exit = () => page.clock.runFor(1_000);
+  await page.clock.runFor(100);
   await app.restart(exit);
   await expect
     .poll(() => page.evaluate(() => !!window.releaseProjectLocation))
     .toBe(true);
+  await page.clock.runFor(100);
   await app.emit("tauri://close-requested", {});
   await reopenAfter(page, "destroy_window", exit);
   await page.clock.resume();

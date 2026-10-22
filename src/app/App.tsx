@@ -586,6 +586,7 @@ import {
   persistFingerprint,
   rebaseProjectSessions,
   replaceInFlightSessions,
+  saveWorkspaceSnapshot,
   setSessionArchived,
   setSessionLinkedWorkItem,
   setSessionPinned,
@@ -887,7 +888,6 @@ import {
   closeBusyWindow,
   closeCurrentWindow,
   confirmReload,
-  deferWorkspaceSave,
   hasInFlightSessions,
   hideCurrentWindow,
   isAppQuitting,
@@ -2659,17 +2659,17 @@ function Workspace({
   // quit, close and reload paths save.
   useEffect(() => {
     const save = workspaceSave.current;
+    const readAt = Date.now();
     const snapshot = workspaceSnapshot([readWindowWorkspace()]);
     const key = workspaceSnapshotKey(snapshot);
     if (save.pending?.key === key) return;
     window.clearTimeout(save.pending?.timer);
     save.pending = undefined;
     if (save.saved === key) return;
-    const write = deferWorkspaceSave(snapshot);
     const timer = window.setTimeout(() => {
       save.saved = key;
       save.pending = undefined;
-      void write();
+      void saveWorkspaceSnapshot(snapshot, readAt).catch(() => undefined);
     }, 250);
     save.pending = { key, timer };
   }, [

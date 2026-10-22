@@ -114,6 +114,7 @@ describe("project choices through lifecycle saves", () => {
           pins: new Map(),
         },
       ]),
+      Date.now(),
     );
     const release = setQuitWorkspace(
       () => ({
@@ -608,31 +609,6 @@ describe("keeping the Mono's waiting completions", () => {
     const { handleQuitRequested } = await import("./appLifecycle");
     await handleQuitRequested();
     expect(await savedCompletions()).toEqual(kept);
-  });
-
-  // The window's running save reads its snapshot, then writes it 250 ms later
-  // without the completions. A quit or close save in between must stay last.
-  it("drops a running save that a quit or close save overtook, and writes one read after it", async () => {
-    const session = { ...newSession("cursor", "/alpha"), id: "a1" };
-    const tab = newTab(session.id);
-    const workspace = {
-      tabs: [tab],
-      sessions: [session],
-      activeTabId: tab.id,
-      projectCwd: "/alpha",
-      projectReturnMemory: new Map(),
-      projectTerminals: [],
-      pins: new Map(),
-    };
-    const lifecycle = await import("./appLifecycle");
-    const overtaken = lifecycle.deferWorkspaceSave(workspaceSnapshot([workspace]));
-    await lifecycle.persistQuitState({ ...workspace, monoCompletions: kept }, "unload");
-    await overtaken();
-    expect(await savedCompletions()).toEqual(kept);
-
-    // A close to tray leaves the window running; its next save still lands.
-    await lifecycle.deferWorkspaceSave(workspaceSnapshot([workspace]))();
-    expect(await savedCompletions()).toEqual([]);
   });
 });
 
