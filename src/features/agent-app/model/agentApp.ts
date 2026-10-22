@@ -7,10 +7,14 @@ import {
 } from "../../sessions/model/models";
 import { requireHarnessModel } from "./agentModelChoice";
 import {
+  parseAckInput,
+  parseAskInput,
   parseGetInput,
   parseReplyInput,
   parseSendInput,
   parseSessionId,
+  type AckInput,
+  type AskInput,
   type GetInput,
   type ReplyInput,
   type SendInput,
@@ -295,6 +299,8 @@ export type AgentAppHost = {
   messages?: {
     getMonos(): Promise<unknown>;
     send(requestId: string, input: SendInput): Promise<unknown>;
+    ask(requestId: string, input: AskInput): Promise<unknown>;
+    ack(requestId: string, input: AckInput): Promise<unknown>;
     reply(requestId: string, input: ReplyInput): Promise<unknown>;
     get(input: GetInput): Promise<unknown>;
   };
@@ -422,6 +428,8 @@ export const FIELDS = new Map<string, readonly string[]>([
     "messages.send",
     ["message", "send_to", "wanting_reply", "intent", "reply_to", "scope"],
   ],
+  ["messages.ask", ["message", "send_to", "due_minutes"]],
+  ["messages.ack", ["ask_id", "message"]],
   ["messages.reply", ["message", "wanting_reply", "to"]],
   ["messages.get", ["handle"]],
   ["milestones.list", ["project"]],
@@ -1705,6 +1713,16 @@ export async function handleAgentApp(
       return messages.send(
         requestId,
         checked(() => parseSendInput(input)),
+      );
+    if (action === "messages.ask")
+      return messages.ask(
+        requestId,
+        checked(() => parseAskInput(input)),
+      );
+    if (action === "messages.ack")
+      return messages.ack(
+        requestId,
+        checked(() => parseAckInput(input)),
       );
     if (action === "messages.reply")
       return messages.reply(

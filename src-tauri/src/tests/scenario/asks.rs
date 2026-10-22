@@ -9,9 +9,11 @@ use serde_json::json;
 use super::agents::{mono_caller, session_caller, Mono};
 use super::world::World;
 use crate::ask_gate::AckRefused;
-use crate::asks;
+use crate::asks::{self, Carries};
 use crate::mono_gate::Caller;
-use crate::mono_messages::{Live, LiveSession, MessageId, RequestId, SessionId, Submitted};
+use crate::mono_messages::{
+    Live, LiveSession, MessageId, RequestId, SessionId, Submitted, Targeted,
+};
 use crate::mono_roster::{self, MonoRole};
 
 const P: &str = "/p";
@@ -47,16 +49,45 @@ impl Tree {
     }
 }
 
-/// The ask row a call wrote; panics on anything else.
-fn written(submitted: Submitted) -> MessageId {
+/// The row a call wrote and what it carries (R6); panics on anything else.
+fn carried(submitted: Submitted) -> (MessageId, Option<Carries>) {
     match submitted {
         Submitted::Accepted {
             mut messages,
             duplicate: false,
             ..
-        } => messages.remove(0).message.id,
+        } => {
+            let row = messages.remove(0);
+            (row.message.id, row.carries)
+        }
         other => panic!("not a new accept: {other:?}"),
     }
+}
+
+/// The ask row a call wrote; panics on anything else.
+fn written(submitted: Submitted) -> MessageId {
+    carried(submitted).0
+}
+
+/// Each row a turn was handed, with what it carries.
+fn handed(rows: Vec<Targeted>) -> Vec<(MessageId, Option<Carries>)> {
+    rows.into_iter()
+        .map(|row| (row.message.id, row.carries))
+        .collect()
+}
+
+/// What an ask row carries with `minutes` of active time left.
+fn due_in(minutes: i64) -> Option<Carries> {
+    Some(Carries::Ask {
+        due_in_ms: Some(minutes * 60_000),
+    })
+}
+
+/// What the ack row of ask `ask` carries.
+fn acks(ask: &MessageId) -> Option<Carries> {
+    Some(Carries::Ack {
+        ask_id: ask.clone(),
+    })
 }
 
 fn refusal(submitted: Submitted) -> (&'static str, String) {
@@ -371,21 +402,27 @@ fn a_failed_ask_insert_leaves_no_carrier_row() {
 /// S1 "Each ack() reaches only the direct parent, and the ask is ticked off
 /// in the database". Defect: an ack goes to someone other than the asker, or
 /// an acked ask stays open or has no ack event, or its event loses the
-/// active time it happened at.
+/// active time it happened at. R6: a row does not tell its reader the ask
+/// it carries with the active time left at hand-off, or the ack it carries,
+/// or a plain message claims one.
 #[test]
 fn s1_each_ack_reaches_only_its_direct_parent_and_ticks_the_ask() {
     let mut world = World::new("r5-s1");
     let tree = tree(&world);
+    let giga = mono_caller(&tree.giga, "g1");
+    let note = json!({"message": "CI is red", "send_to": tree.lead.as_str(), "wanting_reply": false, "intent": "new"});
+    let note = written(world.tool(&giga, "g-note", "send_message", note, &tree.live()));
     world.advance(20_000);
     let lead = session_caller(&tree.lead, P);
-    let giga_ask = written(ask(
+    let (giga_ask, carries) = carried(ask(
         &world,
         &tree,
-        &mono_caller(&tree.giga, "g1"),
+        &giga,
         "g-ask",
         tree.mono.id.as_str(),
         None,
     ));
+    assert_eq!(carries, Some(Carries::Ask { due_in_ms: None }));
     let mono_ask = written(ask(
         &world,
         &tree,
@@ -394,7 +431,7 @@ fn s1_each_ack_reaches_only_its_direct_parent_and_ticks_the_ask() {
         tree.lead.as_str(),
         None,
     ));
-    let lead_ask = written(ask(
+    let (lead_ask, carries) = carried(ask(
         &world,
         &tree,
         &lead,
@@ -402,13 +439,29 @@ fn s1_each_ack_reaches_only_its_direct_parent_and_ticks_the_ask() {
         tree.worker.as_str(),
         None,
     ));
-    written(ack(
+    assert_eq!(carries, due_in(60));
+    // A turn reads the time left when it takes the ask.
+    world.advance(60_000);
+    assert_eq!(
+        handed(world.start_turn(&tree.worker, "t1")),
+        [(lead_ask.clone(), due_in(59))]
+    );
+    let (worker_ack, carries) = carried(ack(
         &world,
         &tree,
         &session_caller(&tree.worker, P),
         "w-ack",
         &lead_ask,
     ));
+    assert_eq!(carries, acks(&lead_ask));
+    assert_eq!(
+        handed(world.start_turn(&tree.lead, "t1")),
+        [
+            (note, None),
+            (mono_ask.clone(), due_in(59)),
+            (worker_ack, acks(&lead_ask))
+        ]
+    );
     written(ack(&world, &tree, &lead, "l-ack", &mono_ask));
     written(ack(
         &world,

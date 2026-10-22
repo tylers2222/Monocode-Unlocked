@@ -27,8 +27,11 @@ import {
   noticeRequestId,
   renderMonoMessage,
   renderMonoNotice,
+  type AckInput,
+  type AskInput,
   type CallErrorCode,
   type Caller,
+  type Carries,
   type Delivery,
   type GetInput,
   type Handle,
@@ -53,6 +56,7 @@ type Routed = Extract<MonoMessage, { handledBySession: unknown }>;
 type Targeted<M extends MonoMessage> = {
   message: M;
   target: ReplyTarget | null;
+  carries: Carries | null;
 };
 /** A row `assign_slot` takes: it refuses every other status. */
 type Waiting = Extract<MonoMessage, { status: "open" | "delivered" }>;
@@ -158,13 +162,13 @@ async function rowSender(
 }
 
 function queueItem(
-  { message, target }: Targeted<Routed>,
+  { message, target, carries }: Targeted<Routed>,
   sender: MessageSender | undefined,
   decision?: BoardDecision,
 ) {
   return {
     id: message.id,
-    text: renderMonoMessage(message, sender),
+    text: renderMonoMessage({ ...message, carries }, sender),
     link: rowLink(message, target),
     decision,
   };
@@ -344,7 +348,7 @@ export async function handOff(
     host.update(sessionId, (session) => dequeueQueuedMessage(session, id));
     return false;
   }
-  const row = assigned.message;
+  const row = { ...assigned.message, carries: assigned.carries };
   const handle = row.status === "open" ? row.slot?.handle : undefined;
   let sender: MessageSender | undefined;
   let accepted = false;
@@ -676,9 +680,9 @@ type Submitted =
 
 async function submit(
   host: MonoMessagingHost,
-  tool: "send_message" | "reply",
+  tool: "send_message" | "reply" | "ask" | "ack",
   requestId: string,
-  input: SendInput | ReplyInput,
+  input: SendInput | ReplyInput | AskInput | AckInput,
 ): Promise<Accepted> {
   const resolved = await host.caller();
   if (!resolved.ok) throw new AppActionError(resolved.code, resolved.hint);
@@ -871,7 +875,29 @@ export async function sendMessage(
   requestId: string,
   input: SendInput,
 ) {
-  const submitted = await submit(host, "send_message", requestId, input);
+  return sendAnswer(host, await submit(host, "send_message", requestId, input));
+}
+
+/** `messages.ask` (R6): a send that is also a key on the asked child. */
+export async function askMessage(
+  host: MonoMessagingHost,
+  requestId: string,
+  input: AskInput,
+) {
+  return sendAnswer(host, await submit(host, "ask", requestId, input));
+}
+
+/** `messages.ack` (R6): a send to the asker that spends the ask's key. */
+export async function ackMessage(
+  host: MonoMessagingHost,
+  requestId: string,
+  input: AckInput,
+) {
+  return sendAnswer(host, await submit(host, "ack", requestId, input));
+}
+
+/** What `messages.send`, `messages.ask` and `messages.ack` answer. */
+async function sendAnswer(host: MonoMessagingHost, submitted: Accepted) {
   const [{ message }] = submitted.messages;
   const delivery = await sendDelivery(host, submitted, message);
   // A steer that could not join its turn is dropped; the answer says so

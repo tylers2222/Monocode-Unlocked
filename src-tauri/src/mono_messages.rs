@@ -2282,6 +2282,7 @@ pub fn reply_target(conn: &Connection, id: &MessageId) -> rusqlite::Result<Reply
 pub struct Targeted {
     pub message: MonoMessage,
     pub target: Option<ReplyTarget>,
+    pub carries: Option<asks::Carries>,
 }
 
 fn targeted(conn: &Connection, message: MonoMessage) -> rusqlite::Result<Targeted> {
@@ -2289,7 +2290,12 @@ fn targeted(conn: &Connection, message: MonoMessage) -> rusqlite::Result<Targete
         Some(target) => Some(reply_target(conn, target)?),
         None => None,
     };
-    Ok(Targeted { message, target })
+    let carries = asks::carries(conn, &message.id)?;
+    Ok(Targeted {
+        message,
+        target,
+        carries,
+    })
 }
 
 /// Design 5.5 rule 3: before a hand-off removes a queue item or sends its

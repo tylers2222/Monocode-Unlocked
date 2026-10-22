@@ -318,9 +318,7 @@ function message(raw: Record<string, unknown>): string {
   return raw.message;
 }
 
-/** Throws the `invalid_input` hint. Rust parses the same input again (S1). */
-export function parseSendInput(raw: Record<string, unknown>): SendInput {
-  const text = message(raw);
+function sendTo(raw: Record<string, unknown>): string {
   if (
     typeof raw.send_to !== "string" ||
     !raw.send_to.trim() ||
@@ -329,6 +327,13 @@ export function parseSendInput(raw: Record<string, unknown>): SendInput {
     throw new Error(
       "send_to must be a mono_id from get_monos or the id of a session in one of your projects",
     );
+  return raw.send_to;
+}
+
+/** Throws the `invalid_input` hint. Rust parses the same input again (S1). */
+export function parseSendInput(raw: Record<string, unknown>): SendInput {
+  const text = message(raw);
+  const to = sendTo(raw);
   if (typeof raw.wanting_reply !== "boolean")
     throw new Error(
       "wanting_reply is required: true when you need an answer, false otherwise",
@@ -339,7 +344,7 @@ export function parseSendInput(raw: Record<string, unknown>): SendInput {
     );
   const send = {
     message: text,
-    send_to: raw.send_to,
+    send_to: to,
     wanting_reply: raw.wanting_reply,
     intent: raw.intent,
   };
@@ -400,6 +405,40 @@ export function parseGetInput(raw: Record<string, unknown>): GetInput {
       'handle must be one message_id or one handle such as "#1".',
     );
   return { handle };
+}
+
+/** An `ask` call (R6). Rust checks it again and decides who may be asked. */
+export type AskInput = {
+  message: string;
+  send_to: string;
+  due_minutes?: number;
+};
+/** An `ack` call (R6): spends the key of ask `ask_id`. */
+export type AckInput = { ask_id: MessageId; message: string };
+
+/** Throws the `invalid_input` hint. Rust parses the same input again. */
+export function parseAskInput(raw: Record<string, unknown>): AskInput {
+  const ask = { message: message(raw), send_to: sendTo(raw) };
+  if (raw.due_minutes === undefined) return ask;
+  const due = raw.due_minutes;
+  if (
+    typeof due !== "number" ||
+    !Number.isInteger(due) ||
+    due < 10 ||
+    due > 480
+  )
+    throw new Error("due_minutes must be a whole number of minutes, 10 to 480");
+  return { ...ask, due_minutes: due };
+}
+
+/** Throws the `invalid_input` hint. Rust parses the same input again. */
+export function parseAckInput(raw: Record<string, unknown>): AckInput {
+  const askId = parseMessageId(raw.ask_id);
+  if (!askId)
+    throw new Error(
+      "ask_id must be the ask_id of a <mono_message> you were asked (m_…)",
+    );
+  return { ask_id: askId, message: message(raw) };
 }
 
 /** One end of a message as `get_message` shows it. */
@@ -464,6 +503,29 @@ function fromAttributes(
   }
 }
 
+/** What a row carries in the ask ledger (R6), from Rust's `Targeted.carries`. */
+export type Carries =
+  { kind: "ask"; dueInMs: number | null } | { kind: "ack"; askId: MessageId };
+
+function ledgerAttributes(
+  id: MessageId,
+  carries: Carries | null | undefined,
+): string[] {
+  switch (carries?.kind) {
+    case "ask":
+      return [
+        `ask_id="${id}"`,
+        ...(carries.dueInMs === null
+          ? []
+          : [`due_in="${Math.max(0, Math.ceil(carries.dueInMs / 60_000))}m"`]),
+      ];
+    case "ack":
+      return [`ack_of="${carries.askId}"`];
+    default:
+      return [];
+  }
+}
+
 /**
  * What the receiving agent reads (design 5.2, 16.7). A message that wants a
  * reply shows the handle of the turn it was handed to. A hand-off also
@@ -472,11 +534,13 @@ function fromAttributes(
  * `<mono_messaging_rules>`. A reading whose target is not the row's
  * `reply_to` throws: the line would name another message, or none. A lead
  * or worker sender shows its session id, the `send_to` of an answer to it;
- * a row with no known sender is a deleted Mono's.
+ * a row with no known sender is a deleted Mono's. An ask shows its
+ * `ask_id` and, with a deadline, the active minutes left (`due_in`); an ack
+ * the ask it closes (`ack_of`).
  */
 export function renderMonoMessage(
   message: Pick<MessageBase, "id" | "fromMonoId" | "fromSessionId" | "body"> &
-    Intent & { wantingReply: boolean },
+    Intent & { wantingReply: boolean; carries?: Carries | null },
   sender: MessageSender | undefined,
   handle?: Handle,
   reading?: Reading,
@@ -499,6 +563,7 @@ export function renderMonoMessage(
     ...fromAttributes(message, sender),
     `wanting_reply="${message.wantingReply}"`,
     ...(handle ? [`handle="${handle}"`] : []),
+    ...ledgerAttributes(message.id, message.carries),
     ...(line && message.replyTo ? [`reply_to="${message.replyTo}"`] : []),
   ];
   return `<mono_message ${attributes.join(" ")}>\n${line ? `${line}\n` : ""}${message.body}\n</mono_message>`;
