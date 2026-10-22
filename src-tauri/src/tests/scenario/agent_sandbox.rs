@@ -48,59 +48,44 @@ fn strings(list: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Defect: with the setting off a child starts wrapped, or a settings file
-/// appears; with it on, a missing or other-version srt starts the child bare;
-/// the settings leave the app data folder, the bundle, a startup file or a
-/// search PATH dir open; or the app drops the user's own lists, or keeps a
-/// user key that would reopen a denied path.
-#[test]
-fn the_sandbox_setting_decides_how_a_harness_child_starts() {
-    let data = folder();
-    let tools = folder();
-    let settings = data.0.join("agent-sandbox.json");
-    let marker = data.0.join("agent-sandbox-on");
-    let pinned = fake_srt(&tools.0, "0.0.81");
+fn path(p: &Path) -> String {
+    p.to_string_lossy().into_owned()
+}
 
-    let off = command_in(&data.0, "fx", || panic!("srt looked up while off")).unwrap();
-    assert_eq!(
-        argv(&off),
-        ("fx".into(), vec![]),
-        "off: the CLI starts bare"
-    );
-    assert!(!settings.exists(), "off: no settings file");
+/// One app data folder and the srt stand-ins, for the whole scenario.
+struct Rig {
+    data: Folder,
+    tools: Folder,
+    settings: PathBuf,
+    pinned: PathBuf,
+}
 
-    std::fs::write(&marker, b"").unwrap();
-    let missing = command_in(&data.0, "fx", || None).unwrap_err();
-    assert!(
-        missing.contains("srt is not installed"),
-        "missing srt: {missing}"
-    );
-    let older = fake_srt(&tools.0, "0.0.80");
-    let wrong = command_in(&data.0, "fx", || Some(older)).unwrap_err();
-    assert!(wrong.contains("needs srt 0.0.81"), "other version: {wrong}");
-    assert!(!settings.exists(), "a refused spawn writes no settings");
+impl Rig {
+    fn new() -> Self {
+        let data = folder();
+        let tools = folder();
+        let settings = data.0.join("agent-sandbox.json");
+        let pinned = fake_srt(&tools.0, "0.0.81");
+        Self {
+            data,
+            tools,
+            settings,
+            pinned,
+        }
+    }
 
-    let on = command_in(&data.0, "fx", || Some(pinned.clone())).unwrap();
-    let path = |p: &Path| p.to_string_lossy().into_owned();
-    assert_eq!(
-        argv(&on),
-        (
-            path(&pinned),
-            vec![
-                "--settings".into(),
-                path(&settings),
-                "--".into(),
-                "fx".into()
-            ]
-        ),
-        "on: srt runs the CLI with the app's settings"
-    );
-    let written: Value =
-        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
-    let home = PathBuf::from(crate::dirs_home().unwrap());
-    let mut deny_read = vec![path(&data.0)];
-    deny_read.extend(
-        [
+    fn spawn(&self) -> Result<std::process::Command, String> {
+        command_in(&self.data.0, "fx", || Some(self.pinned.clone()))
+    }
+
+    fn written(&self) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(&self.settings).unwrap()).unwrap()
+    }
+
+    /// The app data folder, then LaunchAgents and the shell startup files.
+    fn deny_read(&self) -> Vec<String> {
+        let home = PathBuf::from(crate::dirs_home().unwrap());
+        let startup = [
             "Library/LaunchAgents",
             ".zshenv",
             ".zprofile",
@@ -112,9 +97,49 @@ fn the_sandbox_setting_decides_how_a_harness_child_starts() {
             ".bash_login",
             ".profile",
             ".config/fish",
-        ]
-        .map(|file| path(&home.join(file))),
+        ];
+        std::iter::once(path(&self.data.0))
+            .chain(startup.map(|file| path(&home.join(file))))
+            .collect()
+    }
+}
+
+fn off_starts_the_cli_bare(rig: &Rig) {
+    let off = command_in(&rig.data.0, "fx", || panic!("srt looked up while off")).unwrap();
+    assert_eq!(
+        argv(&off),
+        ("fx".into(), vec![]),
+        "off: the CLI starts bare"
     );
+    assert!(!rig.settings.exists(), "off: no settings file");
+}
+
+fn on_refuses_without_the_pinned_srt(rig: &Rig) {
+    let missing = command_in(&rig.data.0, "fx", || None).unwrap_err();
+    assert!(
+        missing.contains("srt is not installed"),
+        "missing srt: {missing}"
+    );
+    let older = fake_srt(&rig.tools.0, "0.0.80");
+    let wrong = command_in(&rig.data.0, "fx", || Some(older)).unwrap_err();
+    assert!(wrong.contains("needs srt 0.0.81"), "other version: {wrong}");
+    assert!(!rig.settings.exists(), "a refused spawn writes no settings");
+}
+
+fn on_runs_the_cli_under_srt(rig: &Rig) {
+    let on = rig.spawn().unwrap();
+    let args = vec![
+        "--settings".into(),
+        path(&rig.settings),
+        "--".into(),
+        "fx".into(),
+    ];
+    assert_eq!(argv(&on), (path(&rig.pinned), args), "on: srt runs the CLI");
+}
+
+fn on_settings_deny_the_protected_paths(rig: &Rig) {
+    let written = rig.written();
+    let deny_read = rig.deny_read();
     assert_eq!(strings(&written["filesystem"]["denyRead"]), deny_read);
     assert_eq!(written["filesystem"]["allowRead"], json!([]));
     let deny_write = strings(&written["filesystem"]["denyWrite"]);
@@ -138,6 +163,10 @@ fn the_sandbox_setting_decides_how_a_harness_child_starts() {
     unique.sort();
     unique.dedup();
     assert_eq!(unique.len(), deny_write.len(), "denyWrite has duplicates");
+}
+
+fn on_settings_start_with_the_default_allows(rig: &Rig) {
+    let written = rig.written();
     let mut allow_write: Vec<String> = [
         ".",
         "/tmp",
@@ -170,19 +199,17 @@ fn the_sandbox_setting_decides_how_a_harness_child_starts() {
         );
     }
     assert_eq!(written["network"]["allowLocalBinding"], json!(true));
+}
 
-    std::fs::write(
-        &settings,
-        json!({
-            "filesystem": {"allowWrite": ["/work"], "allowRead": ["/"], "denyRead": []},
-            "network": {"allowedDomains": ["example.com"]},
-            "allowAppleEvents": true,
-        })
-        .to_string(),
-    )
-    .unwrap();
-    command_in(&data.0, "fx", || Some(pinned.clone())).unwrap();
-    let edited: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+fn on_keeps_only_the_user_lists(rig: &Rig) {
+    let edit = json!({
+        "filesystem": {"allowWrite": ["/work"], "allowRead": ["/"], "denyRead": []},
+        "network": {"allowedDomains": ["example.com"]},
+        "allowAppleEvents": true,
+    });
+    std::fs::write(&rig.settings, edit.to_string()).unwrap();
+    rig.spawn().unwrap();
+    let edited = rig.written();
     assert_eq!(
         edited["filesystem"]["allowWrite"],
         json!(["/work"]),
@@ -200,7 +227,7 @@ fn the_sandbox_setting_decides_how_a_harness_child_starts() {
     );
     assert_eq!(
         strings(&edited["filesystem"]["denyRead"]),
-        deny_read,
+        rig.deny_read(),
         "denyRead is the app's"
     );
     assert!(
@@ -208,10 +235,27 @@ fn the_sandbox_setting_decides_how_a_harness_child_starts() {
         "other user keys are dropped"
     );
 
-    std::fs::write(&settings, r#"{"filesystem": {"allowWrite": "/work"}}"#).unwrap();
-    let bad = command_in(&data.0, "fx", || Some(pinned.clone())).unwrap_err();
+    std::fs::write(&rig.settings, r#"{"filesystem": {"allowWrite": "/work"}}"#).unwrap();
+    let bad = rig.spawn().unwrap_err();
     assert!(
         bad.contains("/filesystem/allowWrite must be a list"),
         "not a list: {bad}"
     );
+}
+
+/// Defect: with the setting off a child starts wrapped, or a settings file
+/// appears; with it on, a missing or other-version srt starts the child bare;
+/// the settings leave the app data folder, the bundle, a startup file or a
+/// search PATH dir open; or the app drops the user's own lists, or keeps a
+/// user key that would reopen a denied path.
+#[test]
+fn the_sandbox_setting_decides_how_a_harness_child_starts() {
+    let rig = Rig::new();
+    off_starts_the_cli_bare(&rig);
+    std::fs::write(rig.data.0.join("agent-sandbox-on"), b"").unwrap();
+    on_refuses_without_the_pinned_srt(&rig);
+    on_runs_the_cli_under_srt(&rig);
+    on_settings_deny_the_protected_paths(&rig);
+    on_settings_start_with_the_default_allows(&rig);
+    on_keeps_only_the_user_lists(&rig);
 }
