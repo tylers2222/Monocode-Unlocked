@@ -202,6 +202,7 @@ d1_phase() {
       ["sh", "-c", "echo d1-\($phase) > d1-own.txt && cat d1-own.txt"],
       ["sh", "-c", "mkdir -p ~/Library/LaunchAgents && echo x > ~/Library/LaunchAgents/d1-probe.plist"],
       ["sh", "-c", "echo x > ~/.local/bin/d1-probe"],
+      ["sh", "-c", "mkdir -p /tmp/claude-$(id -u)/d1-\($phase) && echo made"],
       ["sh", "-c", "echo sandbox=${SANDBOX_RUNTIME:-none}"],
       ["rm", $on]],
      calls: [{tool: "send_message", arguments:
@@ -228,9 +229,9 @@ run_d1() {
 
   echo "on:"
   touch "$SANDBOX_ON"
-  # The user's own allowWrite list, kept by the app: the puppet logs to
-  # ~/.puppet, and ~/.local holds the app's search PATH dir ~/.local/bin.
-  jq -n '{filesystem: {allowWrite: [".", "/tmp", "~/.puppet", "~/.local"]}}' >"$SANDBOX_SETTINGS"
+  # The app's default allowWrite: the temp HOME (and so ~/.puppet, where the
+  # puppet logs, and ~/.local/bin, a search PATH dir) is under /tmp.
+  rm -f "$SANDBOX_SETTINGS"
   d1_phase on
   "$INSTANCE" start
   wait_until 90 "the Mono gets the Giga's message" saw D1-Q
@@ -240,14 +241,14 @@ run_d1() {
   expect "rm of the setting is denied" "$(denied "rm $SANDBOX_ON")" true
   expect "the setting is still there" "$([[ -e "$SANDBOX_ON" ]] && echo yes)" yes
   expect "a write to ~/Library/LaunchAgents is denied" "$(denied LaunchAgents)" true
-  expect "a write to ~/.local/bin, under an allowed ~/.local, is denied" "$(denied .local/bin/d1-probe)" true
+  expect "a write to ~/.local/bin, under an allowed /tmp, is denied" "$(denied .local/bin/d1-probe)" true
+  expect "a mkdir under /tmp, as Claude Code does" "$(probe /tmp/claude- '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 made"
   expect "the worktree write" "$(probe d1-own '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 d1-on"
   expect "the puppet runs under srt" "$(probe SANDBOX_RUNTIME '.stdout | rtrimstr("\n")')" "sandbox=1"
   expect "tool calls that failed" "$(jq -s '[.[] | select(.tool and .result.ok != true)] | length' "$PUPPET/log.jsonl")" 0
   expect "the settings deny reads of the app data" "$(jq --arg d "$APP_DATA" '.filesystem.denyRead | index($d) != null' "$SANDBOX_SETTINGS")" true
   local bundle; bundle="$(target_bin instance)"; bundle="${bundle%/Contents/MacOS/*}"
   expect "the settings deny writes to the app bundle" "$(jq --arg d "$bundle" '.filesystem.denyWrite | index($d) != null' "$SANDBOX_SETTINGS")" true
-  expect "the user's allowWrite is kept" "$(jq -c '.filesystem.allowWrite' "$SANDBOX_SETTINGS")" '[".","/tmp","~/.puppet","~/.local"]'
   show_probes
   "$INSTANCE" stop
 

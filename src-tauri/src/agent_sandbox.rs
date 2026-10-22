@@ -139,10 +139,19 @@ fn write_settings(data: &Path) -> Result<PathBuf, String> {
             .filter(|dir| dir.is_absolute())
             .map(|dir| path_entry(&dir)),
     );
-    let mut seen = HashSet::new();
-    deny_write.retain(|entry| seen.insert(entry.clone()));
+    dedup(&mut deny_write);
     let mut default_write = DEFAULT_WRITE.map(String::from).to_vec();
     default_write.push(path_entry(&std::env::temp_dir()));
+    // srt allows writes by the resolved path, and on macOS `/tmp` and the temp
+    // dir sit behind `/private` links.
+    let resolved: Vec<String> = default_write
+        .iter()
+        .filter(|entry| Path::new(entry).is_absolute())
+        .filter_map(|entry| std::fs::canonicalize(entry).ok())
+        .map(|real| path_entry(&real))
+        .collect();
+    default_write.extend(resolved);
+    dedup(&mut default_write);
 
     let path = data.join(SETTINGS_FILE);
     crate::mcp::write_json_config(&path, |saved| {
@@ -182,4 +191,9 @@ fn path_entry(path: &Path) -> String {
         .collect::<PathBuf>()
         .to_string_lossy()
         .into_owned()
+}
+
+fn dedup(list: &mut Vec<String>) {
+    let mut seen = HashSet::new();
+    list.retain(|entry| seen.insert(entry.clone()));
 }

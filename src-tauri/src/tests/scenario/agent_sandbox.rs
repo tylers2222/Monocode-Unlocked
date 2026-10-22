@@ -181,10 +181,15 @@ fn on_settings_start_with_the_default_allows(rig: &Rig) {
     ]
     .map(String::from)
     .to_vec();
-    allow_write.push(path(
-        &std::env::temp_dir().components().collect::<PathBuf>(),
-    ));
-    assert_eq!(strings(&written["filesystem"]["allowWrite"]), allow_write);
+    let temp = std::env::temp_dir();
+    allow_write.push(path(&temp.components().collect::<PathBuf>()));
+    let allowed = strings(&written["filesystem"]["allowWrite"]);
+    assert_eq!(allowed[..allow_write.len()], allow_write[..]);
+    // srt matches the resolved path: on macOS /tmp is /private/tmp.
+    for dir in [Path::new("/tmp"), temp.as_path()] {
+        let real = path(&std::fs::canonicalize(dir).unwrap());
+        assert!(allowed.contains(&real), "{real} is not writable");
+    }
     let domains = strings(&written["network"]["allowedDomains"]);
     for domain in [
         "*.anthropic.com",
