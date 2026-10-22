@@ -11,6 +11,7 @@ import {
   Archive,
   Chatting,
   Check,
+  CheckCircle,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -32,6 +33,7 @@ import {
   StickyNote,
   Flag,
   Zap,
+  type IconComponent,
 } from "../../shared/ui/icons";
 import {
   memo,
@@ -54,7 +56,7 @@ import {
   saveSidebarTabOrder,
   type SidebarTabId,
 } from "../../features/settings/model/appearance";
-import { formatInteger } from "../../shared/lib/numbers";
+import { countBadge, formatInteger } from "../../shared/lib/numbers";
 import {
   type GitFileDiffKind,
   type GitHistoryCommit,
@@ -136,6 +138,7 @@ import { useDragResize } from "../../shared/hooks/useDragResize";
 import { useGitFileStatuses } from "../../features/source-control/hooks/useGitFileStatuses";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import { useProjectDiffStats } from "../../features/source-control/hooks/useProjectDiffStats";
+import { useApprovalsBadge } from "../../features/approvals/hooks/useApprovalsBadge";
 import { useSortable } from "../../shared/hooks/useSortable";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
 import { normalizeHex } from "../../shared/lib/colorUtils";
@@ -192,7 +195,6 @@ import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
 import { useRailMonosPinned } from "../../features/settings/model/displayPrefs";
 import type { PickerMonos } from "../../features/projects/ui/SearchableProjectPicker";
 import {
-  unreadBadge,
   unreadLabel,
   type MonoRailProps,
 } from "./MonoRailSection";
@@ -327,12 +329,14 @@ type Props = {
   onOpenNotes?: () => void;
   onOpenAutomations?: () => void;
   onOpenMilestones?: () => void;
+  onOpenApprovals?: () => void;
   onGoToFile?: () => void;
   searchActive?: boolean;
   inboxActive?: boolean;
   notesActive?: boolean;
   automationsActive?: boolean;
   milestonesActive?: boolean;
+  approvalsActive?: boolean;
   notesEnabled?: boolean;
   onToggleProjectRail?: () => void;
   projectRailOpen?: boolean;
@@ -425,12 +429,14 @@ function SidebarComponent({
   onOpenNotes,
   onOpenAutomations,
   onOpenMilestones,
+  onOpenApprovals,
   onGoToFile,
   searchActive = false,
   inboxActive = false,
   notesActive = false,
   automationsActive = false,
   milestonesActive = false,
+  approvalsActive = false,
   notesEnabled = true,
   onToggleProjectRail,
   projectRailOpen = true,
@@ -842,6 +848,7 @@ function SidebarComponent({
     notesActive ||
     automationsActive ||
     milestonesActive ||
+    approvalsActive ||
     settingsOpen;
   // A remembered Mono sits underneath these views; select it only while visible.
   const railMonos = monos
@@ -1805,11 +1812,13 @@ function SidebarComponent({
               onOpenNotes={notesEnabled ? onOpenNotes : undefined}
               onOpenAutomations={onOpenAutomations}
               onOpenMilestones={onOpenMilestones}
+              onOpenApprovals={onOpenApprovals}
               searchActive={searchActive}
               inboxActive={inboxActive}
               notesActive={notesActive}
               automationsActive={automationsActive}
               milestonesActive={milestonesActive}
+              approvalsActive={approvalsActive}
               inboxUnseen={inboxUnseen}
             />
           ) : null}
@@ -2337,6 +2346,8 @@ function SidebarComponent({
           automationsActive={automationsActive}
           onOpenMilestones={onOpenMilestones}
           milestonesActive={milestonesActive}
+          onOpenApprovals={onOpenApprovals}
+          approvalsActive={approvalsActive}
           onOpenSettings={onOpenSettings}
           onTogglePanel={onToggleProjectRail}
           onLeaveActive={onGoBack}
@@ -2370,6 +2381,8 @@ function SidebarComponent({
           automationsActive={automationsActive}
           onOpenMilestones={onOpenMilestones}
           milestonesActive={milestonesActive}
+          onOpenApprovals={onOpenApprovals}
+          approvalsActive={approvalsActive}
           onTogglePanel={onToggleProjectRail}
           onSelectProject={onSelectProject}
           onOpenProject={onOpenProject}
@@ -2448,11 +2461,13 @@ function SidebarProjectPicker({
   onOpenNotes,
   onOpenAutomations,
   onOpenMilestones,
+  onOpenApprovals,
   searchActive = false,
   inboxActive = false,
   notesActive = false,
   automationsActive = false,
   milestonesActive = false,
+  approvalsActive = false,
   inboxUnseen = false,
 }: {
   cwd: string;
@@ -2468,17 +2483,20 @@ function SidebarProjectPicker({
   onOpenNotes?: () => void;
   onOpenAutomations?: () => void;
   onOpenMilestones?: () => void;
+  onOpenApprovals?: () => void;
   searchActive?: boolean;
   inboxActive?: boolean;
   notesActive?: boolean;
   automationsActive?: boolean;
   milestonesActive?: boolean;
+  approvalsActive?: boolean;
   inboxUnseen?: boolean;
 }) {
   const [inboxMenu, setInboxMenu] = useState<{ x: number; y: number } | null>(
     null,
   );
   const inboxTrigger = useRef<HTMLElement | null>(null);
+  const approvals = useApprovalsBadge();
   return (
     <div
       className="flex h-9 items-center gap-0.5 border-b border-stroke px-2"
@@ -2522,15 +2540,7 @@ function SidebarProjectPicker({
               setInboxMenu({ x, y });
             }}
           >
-            <span className="relative">
-              <Inbox className="size-3.5" strokeWidth={1.75} />
-              {inboxUnseen ? (
-                <span
-                  aria-hidden
-                  className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-accent"
-                />
-              ) : null}
-            </span>
+            <DotIcon icon={Inbox} dot={inboxUnseen} />
           </IconButton>
         ) : null}
         {onOpenNotes ? (
@@ -2556,6 +2566,15 @@ function SidebarProjectPicker({
             <Flag className="size-3.5" strokeWidth={1.75} />
           </IconButton>
         ) : null}
+        {onOpenApprovals ? (
+          <IconButton
+            label={approvals.label}
+            active={approvalsActive}
+            onClick={onOpenApprovals}
+          >
+            <DotIcon icon={CheckCircle} dot={approvals.pill != null} />
+          </IconButton>
+        ) : null}
       </div>
       {inboxMenu ? (
         <InboxNotificationMenu
@@ -2569,6 +2588,20 @@ function SidebarProjectPicker({
         />
       ) : null}
     </div>
+  );
+}
+
+function DotIcon({ icon: Icon, dot }: { icon: IconComponent; dot: boolean }) {
+  return (
+    <span className="relative">
+      <Icon className="size-3.5" strokeWidth={1.75} />
+      {dot ? (
+        <span
+          aria-hidden
+          className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-accent"
+        />
+      ) : null}
+    </span>
   );
 }
 
@@ -2600,6 +2633,8 @@ function CompactProjectRail({
   automationsActive,
   onOpenMilestones,
   milestonesActive,
+  onOpenApprovals,
+  approvalsActive,
   onOpenSettings,
   onTogglePanel,
   onLeaveActive,
@@ -2635,6 +2670,8 @@ function CompactProjectRail({
   automationsActive: boolean;
   onOpenMilestones?: () => void;
   milestonesActive: boolean;
+  onOpenApprovals?: () => void;
+  approvalsActive: boolean;
   onOpenSettings?: () => void;
   onTogglePanel?: () => void;
   onLeaveActive?: () => void;
@@ -2646,6 +2683,7 @@ function CompactProjectRail({
 }) {
   const monosSnap = useSyncExternalStore(subscribeMonos, monosSnapshot);
   const monosPinned = useRailMonosPinned();
+  const approvals = useApprovalsBadge();
   const monoItems = useMemo(() => {
     if (!monos) return [];
     return listMonos().map((mono) => ({
@@ -2835,6 +2873,15 @@ function CompactProjectRail({
             onClick={action(milestonesActive, onOpenMilestones)}
           />
         ) : null}
+        {onOpenApprovals ? (
+          <CompactRailAction
+            label={approvals.label}
+            icon={CheckCircle}
+            active={approvalsActive}
+            dot={approvals.pill != null}
+            onClick={action(approvalsActive, onOpenApprovals)}
+          />
+        ) : null}
       </div>
       <div className="min-h-2 flex-1" />
       <div className="flex w-full flex-col items-center gap-1 py-1.5">
@@ -2907,7 +2954,7 @@ function CompactRailMono({
           data-mono-unread={unseen}
           className="absolute -right-0.5 -top-0.5 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-background-base px-0.5 text-[9px] font-medium tabular-nums leading-none text-content/80 ring-1 ring-content/15"
         >
-          {unreadBadge(unseen)}
+          {countBadge(unseen)}
         </span>
       ) : null}
     </button>

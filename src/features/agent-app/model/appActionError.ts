@@ -32,6 +32,8 @@ const HINTS = {
   self_update: "A Mono cannot update itself",
   mono_busy:
     "That Mono is busy, so nothing was changed. Update it again after its turn ends",
+  not_session_owner:
+    "Only the session's lead or the session that started it can clear its queue. Do not retry.",
   app_cli_unavailable:
     "This session cannot use the MonoCode app CLI: it is an Inbox Ask, an orchestration lead or worker, or no longer open in MonoCode. Do not retry.",
   ...RUST_COMMAND_HINTS,

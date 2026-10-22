@@ -62,9 +62,16 @@ type SessionUpsert = SessionSummary & {
   blocks: Block[];
   queuedMessages?: unknown[];
   queueStatus?: string;
+  queuePause?: string;
   contextUsed?: number;
   contextWindow?: number;
   workFolder?: string;
+};
+
+export type ApprovalRow = {
+  number: number;
+  projectPath: string;
+  status: "open" | "approved" | "rejected" | "changes_requested" | "withdrawn";
 };
 
 /** Everything the fake backend knows, in the shapes Rust sends. */
@@ -83,11 +90,20 @@ export type FakeStore = {
   blocks: Record<string, Block[]>;
   /** session_store.rs `work_folder`: on the record, not the summary. */
   workFolders: Record<string, string>;
+  /**
+   * session_store.rs `queued_messages_json`, `queue_status` and
+   * `queue_pause`: on the record, not the summary.
+   */
+  queues: Record<
+    string,
+    Pick<SessionUpsert, "queuedMessages" | "queueStatus" | "queuePause">
+  >;
   automations: Automation[];
   /** milestones.rs rows of every project. */
   milestones: Milestone[];
   /** milestone_settings rows by project path; no row means on, nothing hidden. */
   milestoneSettings: Record<string, MilestoneSettings>;
+  approvals: ApprovalRow[];
   /** sessionStore.ts `saveWorkspaceSnapshot`: the open tabs, as last saved. */
   workspace: unknown;
   /** session_store.rs `in_flight_sessions`: what the last window had running. */
@@ -103,6 +119,7 @@ export type FakeSeed = Partial<{
   automations: Automation[];
   milestones: Milestone[];
   milestoneSettings: Record<string, MilestoneSettings>;
+  approvals: ApprovalRow[];
   /** Saved state a real database already holds when the app starts. */
   blocks: Record<string, Block[]>;
   workFolders: Record<string, string>;
@@ -248,6 +265,7 @@ function sessionRecord(store: FakeStore, sessionId: unknown) {
     modelSettings: {},
     blocks: store.blocks[row.id] ?? [],
     queuedMessages: [],
+    ...store.queues[row.id],
   };
 }
 
@@ -262,8 +280,9 @@ const upsertSession: Handler = (store, { session }) => {
     modelSettings: _modelSettings,
     providerAccountId: _providerAccountId,
     blocks,
-    queuedMessages: _queuedMessages,
-    queueStatus: _queueStatus,
+    queuedMessages,
+    queueStatus,
+    queuePause,
     contextUsed: _contextUsed,
     contextWindow: _contextWindow,
     workFolder,
@@ -271,6 +290,7 @@ const upsertSession: Handler = (store, { session }) => {
   } = session as SessionUpsert;
   const kept = store.sessions.find((row) => row.id === summary.id);
   store.blocks[summary.id] = blocks;
+  store.queues[summary.id] = { queuedMessages, queueStatus, queuePause };
   if (workFolder) store.workFolders[summary.id] = workFolder;
   else delete store.workFolders[summary.id];
   const row = sessionRow({
@@ -533,6 +553,16 @@ const HANDLERS: Record<string, Handler> = {
     void window.appBackend!.emit(MILESTONES_CHANGED, { projectPath });
     return row;
   },
+  approvals_open_counts: (store) => {
+    const byProject: Record<string, number> = {};
+    for (const { projectPath, status } of store.approvals)
+      if (status === "open")
+        byProject[projectPath] = (byProject[projectPath] ?? 0) + 1;
+    return {
+      total: Object.values(byProject).reduce((sum, open) => sum + open, 0),
+      byProject,
+    };
+  },
   automation_runs_list: empty,
   control_load: none,
   control_owns_session: () => false,
@@ -723,9 +753,11 @@ function storeFrom(seed: FakeSeed): FakeStore {
     rosterRevision: 1,
     blocks: seed.blocks ?? {},
     workFolders: seed.workFolders ?? {},
+    queues: {},
     automations: seed.automations ?? [],
     milestones: seed.milestones ?? [],
     milestoneSettings: seed.milestoneSettings ?? {},
+    approvals: seed.approvals ?? [],
     workspace: seed.workspace ?? null,
     inFlight: seed.inFlight ?? [],
   };

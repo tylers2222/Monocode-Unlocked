@@ -121,6 +121,9 @@ pub struct SessionUpsert {
     pub queued_messages: Vec<Value>,
     #[serde(default)]
     pub queue_status: Option<String>,
+    /// Why a paused queue holds: `error` when a failed turn paused it.
+    #[serde(default)]
+    pub queue_pause: Option<String>,
     /// Last context-window reading reported by the harness, if any.
     #[serde(default)]
     pub context_used: Option<i64>,
@@ -211,6 +214,8 @@ pub struct SessionRecord {
     pub queued_messages: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_pause: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_used: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -867,6 +872,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("automation_id", "TEXT"),
         ("queued_messages_json", "TEXT NOT NULL DEFAULT '[]'"),
         ("queue_status", "TEXT"),
+        ("queue_pause", "TEXT"),
         ("sidebar_hidden", "INTEGER NOT NULL DEFAULT 0"),
         ("work_folder", "TEXT"),
     ] {
@@ -1338,9 +1344,9 @@ pub(crate) fn upsert_session(
            context_used, context_window, worktree_cwd, has_user_message,
            linked_work_item_json, provider_account_id, worktree_removed, is_draft,
            automation_id, queued_messages_json, queue_status, sidebar_hidden, work_folder,
-           lead_session_id
+           lead_session_id, queue_pause
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-           (SELECT id FROM sessions WHERE id = ?26))
+           (SELECT id FROM sessions WHERE id = ?26), ?27)
          ON CONFLICT(id) DO UPDATE SET
            cwd = excluded.cwd,
            harness = excluded.harness,
@@ -1363,6 +1369,7 @@ pub(crate) fn upsert_session(
            automation_id = excluded.automation_id,
            queued_messages_json = excluded.queued_messages_json,
            queue_status = excluded.queue_status,
+           queue_pause = excluded.queue_pause,
            sidebar_hidden = excluded.sidebar_hidden,
            work_folder = excluded.work_folder
          RETURNING lead_session_id",
@@ -1393,6 +1400,7 @@ pub(crate) fn upsert_session(
             i64::from(session.sidebar_hidden),
             work_folder,
             session.lead_session_id,
+            session.queue_pause,
         ],
         |row| row.get(0),
     )?;
@@ -2103,7 +2111,7 @@ fn get_session_record(
                 context_used, context_window, branch, worktree_cwd,
                 linked_work_item_json, provider_account_id, worktree_removed,
                 automation_id, queued_messages_json, queue_status, sidebar_hidden,
-                work_folder, lead_session_id
+                work_folder, lead_session_id, queue_pause
          FROM sessions
          WHERE id = ?1 AND inbox_ask IS NULL"
         ),
@@ -2145,6 +2153,7 @@ fn get_session_record(
                     )
                 })?,
                 queue_status: row.get(20)?,
+                queue_pause: row.get(24)?,
                 context_used: row.get(11)?,
                 context_window: row.get(12)?,
                 branch: row.get(13)?,
@@ -2353,6 +2362,7 @@ mod tests {
             blocks: json!([{ "id": "b1", "role": "user", "text": "hello" }]),
             queued_messages: vec![],
             queue_status: None,
+            queue_pause: None,
             context_used: None,
             context_window: None,
             branch: None,
@@ -2747,18 +2757,22 @@ mod tests {
             json!({"id":"second", "text":"", "attachments":[{"id":"image", "kind":"image", "data":"bytes"}], "error":"Offline"}),
         ];
         row.queue_status = Some("paused".into());
+        row.queue_pause = Some("error".into());
         upsert_session(&conn, &row).unwrap();
         let stored = get_session(&conn, "queued").unwrap().unwrap();
         assert_eq!(stored.queued_messages, row.queued_messages);
         assert_eq!(stored.queue_status.as_deref(), Some("paused"));
+        assert_eq!(stored.queue_pause.as_deref(), Some("error"));
         assert_eq!(stored.blocks, row.blocks);
 
         row.queued_messages.clear();
         row.queue_status = None;
+        row.queue_pause = None;
         upsert_session(&conn, &row).unwrap();
         let stored = get_session(&conn, "queued").unwrap().unwrap();
         assert!(stored.queued_messages.is_empty());
         assert_eq!(stored.queue_status, None);
+        assert_eq!(stored.queue_pause, None);
         assert_eq!(stored.blocks, row.blocks);
     }
 
