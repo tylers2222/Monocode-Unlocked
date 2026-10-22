@@ -1116,6 +1116,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::approvals::ensure_tables(conn)?;
     crate::active_clock::ensure_tables(conn)?;
     crate::asks::ensure_tables(conn)?;
+    crate::ask_scheduler::ensure_tables(conn)?;
     Ok(())
 }
 
