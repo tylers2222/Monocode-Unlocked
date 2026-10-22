@@ -1097,7 +1097,7 @@ mod tests {
                     [&tree.path],
                 ).unwrap();
                 conn.execute(
-                    "INSERT INTO in_flight_sessions VALUES ('s1', ?1, 3)",
+                    "INSERT INTO in_flight_sessions (session_id, cwd, sort_index) VALUES ('s1', ?1, 3)",
                     [&tree.path],
                 )
                 .unwrap();

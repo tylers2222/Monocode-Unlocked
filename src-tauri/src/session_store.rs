@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewWindow};
 
 const MIGRATION_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS sessions (
@@ -31,6 +31,7 @@ CREATE INDEX IF NOT EXISTS sessions_cwd_updated_idx
 pub struct SessionStore {
     conn: Mutex<Connection>,
     read_conn: Mutex<Option<Connection>>,
+    run_id: String,
 }
 
 impl SessionStore {
@@ -57,6 +58,7 @@ impl SessionStore {
         Ok(Self {
             conn: Mutex::new(conn),
             read_conn: Mutex::new(Some(read_conn)),
+            run_id: uuid::Uuid::new_v4().simple().to_string(),
         })
     }
 
@@ -69,6 +71,7 @@ impl SessionStore {
         Ok(Self {
             conn: Mutex::new(conn),
             read_conn: Mutex::new(None),
+            run_id: uuid::Uuid::new_v4().simple().to_string(),
         })
     }
 
@@ -657,8 +660,9 @@ pub struct InFlightSession {
 }
 
 #[tauri::command(async)]
-pub fn session_set_in_flight(
+pub fn session_set_in_flight<R: Runtime>(
     store: State<'_, SessionStore>,
+    window: WebviewWindow<R>,
     sessions: Vec<InFlightSession>,
 ) -> Result<(), String> {
     for session in &sessions {
@@ -668,7 +672,8 @@ pub fn session_set_in_flight(
         }
     }
     let mut conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    replace_in_flight(&mut conn, &sessions).map_err(|e| e.to_string())
+    replace_in_flight(&mut conn, &store.run_id, window.label(), &sessions)
+        .map_err(|e| e.to_string())
 }
 
 /// Read the quit snapshot without clearing it. Vite/dev reloads must not
@@ -1058,6 +1063,21 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            sessions_json TEXT NOT NULL
          );",
     )?;
+    for column in ["window_label", "run_id"] {
+        let present: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('in_flight_sessions') WHERE name = ?1",
+            [column],
+            |row| row.get(0),
+        )?;
+        if present == 0 {
+            conn.execute(
+                &format!(
+                    "ALTER TABLE in_flight_sessions ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
+                ),
+                [],
+            )?;
+        }
+    }
     // Compatibility only: earlier Inbox Ask builds saved temporary chats here.
     // Keep those records off normal surfaces without deleting their transcripts.
     ensure_session_column(conn, "inbox_ask", "TEXT")?;
@@ -2185,16 +2205,30 @@ fn list_in_flight(conn: &Connection) -> rusqlite::Result<Vec<InFlightSession>> {
     rows.collect()
 }
 
-fn replace_in_flight(conn: &mut Connection, sessions: &[InFlightSession]) -> rusqlite::Result<()> {
+fn replace_in_flight(
+    conn: &mut Connection,
+    run_id: &str,
+    window: &str,
+    sessions: &[InFlightSession],
+) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
-    tx.execute("DELETE FROM in_flight_sessions", [])?;
+    tx.execute(
+        "DELETE FROM in_flight_sessions WHERE window_label = ?1 OR run_id <> ?2",
+        params![window, run_id],
+    )?;
     {
         let mut insert = tx.prepare(
-            "INSERT INTO in_flight_sessions (session_id, cwd, sort_index)
-             VALUES (?1, ?2, ?3)",
+            "INSERT OR IGNORE INTO in_flight_sessions (session_id, cwd, sort_index, window_label, run_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
         for (index, session) in sessions.iter().enumerate() {
-            insert.execute(params![session.session_id, session.cwd, index as i64])?;
+            insert.execute(params![
+                session.session_id,
+                session.cwd,
+                index as i64,
+                window,
+                run_id
+            ])?;
         }
     }
     tx.commit()?;
@@ -3678,6 +3712,8 @@ mod tests {
         let mut conn = store.conn.lock().unwrap();
         replace_in_flight(
             &mut conn,
+            "run",
+            "main",
             &[
                 InFlightSession {
                     session_id: "s2".into(),
@@ -3705,6 +3741,8 @@ mod tests {
         let mut conn = store.conn.lock().unwrap();
         replace_in_flight(
             &mut conn,
+            "run",
+            "main",
             &[InFlightSession {
                 session_id: "s1".into(),
                 cwd: "/tmp/a".into(),
@@ -3718,20 +3756,153 @@ mod tests {
         assert_eq!(listed_again.len(), 1);
     }
 
+    #[cfg(not(windows))]
+    fn launch_two_windows(
+        path: &std::path::Path,
+    ) -> (
+        tauri::App<tauri::test::MockRuntime>,
+        [tauri::WebviewWindow<tauri::test::MockRuntime>; 2],
+    ) {
+        let app = tauri::test::mock_builder()
+            .manage(SessionStore::open(path.to_path_buf()).unwrap())
+            .invoke_handler(tauri::generate_handler![
+                session_set_in_flight,
+                session_list_in_flight
+            ])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let window = |label: &str| {
+            tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
+                .build()
+                .unwrap()
+        };
+        let windows = [window("main"), window("window-1")];
+        (app, windows)
+    }
+
+    /// ADE-62. Defect: a window's save replaces every window's running
+    /// sessions, so a relaunch resumes only the last saver's; or rows from the
+    /// last run outlive the first save of this one, so a relaunch resumes them
+    /// a second time.
+    #[cfg(not(windows))]
+    fn each_window_keeps_its_running_sessions_through_a_relaunch(
+        path: &std::path::Path,
+        [a, b, c]: [(String, String); 3],
+    ) {
+        use crate::mono_messages::tests::invoke_command;
+        let save = |window: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+                    running: &[&(String, String)]| {
+            let sessions: Vec<Value> = running
+                .iter()
+                .map(|(id, cwd)| json!({ "sessionId": id, "cwd": cwd }))
+                .collect();
+            invoke_command(
+                window,
+                "session_set_in_flight",
+                &json!({ "sessions": sessions }),
+            )
+            .unwrap();
+        };
+        let resumed = |window: &tauri::WebviewWindow<tauri::test::MockRuntime>| {
+            let listed = invoke_command(window, "session_list_in_flight", &json!({})).unwrap();
+            let mut ids: Vec<String> = listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["sessionId"].as_str().unwrap().to_owned())
+                .collect();
+            ids.sort();
+            ids
+        };
+        let ids = |sessions: &[&(String, String)]| {
+            let mut ids: Vec<String> = sessions.iter().map(|(id, _)| id.clone()).collect();
+            ids.sort();
+            ids
+        };
+        let earlier: Vec<String> = {
+            let conn = Connection::open(path).unwrap();
+            let mut statement = conn
+                .prepare("SELECT session_id FROM in_flight_sessions ORDER BY session_id")
+                .unwrap();
+            let rows = statement.query_map([], |row| row.get(0)).unwrap();
+            rows.collect::<rusqlite::Result<_>>().unwrap()
+        };
+
+        let (app, [main, second]) = launch_two_windows(path);
+        assert_eq!(resumed(&main), earlier, "boot reads the last run's rows");
+        save(&main, &[&a]);
+        save(&second, &[&b]);
+        assert_eq!(
+            resumed(&main),
+            ids(&[&a, &b]),
+            "one window's save keeps the other window's running session"
+        );
+        save(&main, &[&a, &c]);
+        assert_eq!(resumed(&second), ids(&[&a, &b, &c]));
+        save(&second, &[]);
+        assert_eq!(
+            resumed(&main),
+            ids(&[&a, &c]),
+            "a window's save drops its own finished session"
+        );
+        save(&second, &[&b]);
+        save(&main, &[&a, &c]);
+        drop(app);
+
+        let (_app, [main, _second]) = launch_two_windows(path);
+        assert_eq!(
+            resumed(&main),
+            ids(&[&a, &b, &c]),
+            "the relaunch resumes both windows' running sessions once"
+        );
+        save(&main, &[&c]);
+        assert_eq!(
+            resumed(&main),
+            ids(&[&c]),
+            "the first save of this run drops the rows the relaunch resumed"
+        );
+    }
+
+    #[cfg(not(windows))]
     #[test]
-    fn in_flight_replace_clears_previous() {
-        let store = SessionStore::open_in_memory().unwrap();
-        let mut conn = store.conn.lock().unwrap();
-        replace_in_flight(
-            &mut conn,
-            &[InFlightSession {
-                session_id: "old".into(),
-                cwd: "/tmp/old".into(),
-            }],
-        )
-        .unwrap();
-        replace_in_flight(&mut conn, &[]).unwrap();
-        assert!(take_in_flight(&mut conn).unwrap().is_empty());
+    fn each_window_keeps_its_running_sessions_on_a_new_database() {
+        let path =
+            std::env::temp_dir().join(format!("monocode-in-flight-{}.db", uuid::Uuid::new_v4()));
+        SessionStore::open(path.clone())
+            .unwrap()
+            .lock_conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO in_flight_sessions (session_id, cwd, sort_index) VALUES ('earlier', '/tmp/e', 0)",
+                [],
+            )
+            .unwrap();
+        let running = |id: &str| (id.to_owned(), format!("/tmp/{id}"));
+        each_window_keeps_its_running_sessions_through_a_relaunch(
+            &path,
+            [running("a"), running("b"), running("c")],
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "needs MONOCODE_DB_COPY, a fresh copy of the app's monocode.db"]
+    fn each_window_keeps_its_running_sessions_on_a_copy_of_the_app_database() {
+        let path = PathBuf::from(std::env::var("MONOCODE_DB_COPY").unwrap());
+        let newest: Vec<(String, String)> = {
+            let conn = Connection::open(&path).unwrap();
+            let mut statement = conn
+                .prepare("SELECT id, cwd FROM sessions ORDER BY updated_at DESC LIMIT 3")
+                .unwrap();
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap();
+            rows.collect::<rusqlite::Result<_>>().unwrap()
+        };
+        each_window_keeps_its_running_sessions_through_a_relaunch(
+            &path,
+            newest.try_into().unwrap(),
+        );
     }
 
     #[test]
@@ -3789,6 +3960,8 @@ mod tests {
         upsert_session(&conn, &sample("finished", "/repo", "Finished")).unwrap();
         replace_in_flight(
             &mut conn,
+            "run",
+            "main",
             &[InFlightSession {
                 session_id: id.into(),
                 cwd: "/repo".into(),
