@@ -1,15 +1,19 @@
-"""Tests for checkin.sh, run as a copy next to stub alarm scripts.
+"""Tests for checkin.sh, run as a copy next to stub alarm scripts or the real notice-gap.py.
 
     python3 -m unittest discover -s scripts/process/tests
 """
 import os
 import shutil
+import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-PROCESS = Path(__file__).parent.parent
+HERE = Path(__file__).parent
+PROCESS = HERE.parent
+LOG = HERE / "fixtures/notice-gap-finished-log.txt"
 BASH = shutil.which("bash")
 CHECKS = ["ready-issues", "pr-cap", "notice-gap"]
 SUMMARY = "checkin: {} (ready-issues={} pr-cap={} notice-gap={} missing=0 unmatched=0)"
@@ -19,9 +23,18 @@ from pathlib import Path
 me = Path(__file__)
 with open(me.with_name("log"), "a") as log:
     print(me.stem, file=log)
+print(me.stem, sys.argv[1:], file=sys.stderr)
 out = me.with_suffix(".out")
-print(out.read_text() if out.exists() else f"{me.stem} {sys.argv[1:]}")
-print(me.stem, file=sys.stderr)
+if out.exists():
+    print(out.read_text(), end="")
+"""
+# notice-gap.py itself, on the fixture database and a finished.log, at a fixed time.
+REAL_NOTICE_GAP = """\
+import os, sys
+from pathlib import Path
+with open(Path(__file__).with_name("log"), "a") as log:
+    print("notice-gap", file=log)
+os.execv(sys.executable, [sys.executable, {script!r}, {log!r}, "--db", {db!r}, "--now", {now!r}, *sys.argv[1:]])
 """
 # name: stub exit codes in CHECKS order, checkin exit code, summary word
 CASES = {
@@ -32,43 +45,60 @@ CASES = {
     "first check errors, the rest still run": ([2, 0, 0], 2, "error"),
     "unexpected code 3": ([0, 3, 0], 2, "error"),
 }
-# The fixed-width table of notice-gap.py render(). The ok row's log text says MISSING, and the footer's
-# single-digit counts put "unmatched," at the verdict offset.
-NOTICE_GAP = """\
-logged       session   turn end        notice            delay  verdict    line
-10-19 18:38  -         -               -                     -  unmatched  2026-10-19 18:38 AEDT Change R plan v2 done
--            30f5be8b  10-20 16:36:09  -                     -  MISSING    (no finished.log line)
--            9c41d2e7  10-20 17:02:51  -                     -  MISSING    (no finished.log line)
-10-19 15:21  4d93f1f2  10-19 15:21:40  10-19 15:21:40     0.0m  ok         2026-10-19 15:21 M-9a2 #92 MISSING rows fixed, done
-3 monitored turn ends (1 with a finished.log line), 1 log lines unmatched, 2 late or missing notices (more than 10 min)"""
 
 
-def run(codes, notice_gap_out=None, without_python3=False, from_its_dir=False):
-    """Run a copy of checkin.sh next to stubs that exit with codes; result.ran lists the stubs that ran, in order.
-
-    The notice-gap stub prints notice_gap_out when given, else its name and arguments like the other stubs.
-    bash gets the copy's absolute path from an empty cwd, or with from_its_dir `checkin.sh` from the copy's directory.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp = Path(tmp)
-        empty = tmp / "empty"
-        empty.mkdir()
-        shutil.copy(PROCESS / "checkin.sh", tmp)
-        for name, code in zip(CHECKS, codes):
-            (tmp / f"{name}.py").write_text(f"{STUB}sys.exit({code})\n")
-        if notice_gap_out is not None:
-            (tmp / "notice-gap.out").write_text(notice_gap_out)
-        script, cwd = ("checkin.sh", tmp) if from_its_dir else (tmp / "checkin.sh", empty)
-        env = {**os.environ, "PATH": str(empty)} if without_python3 else None
-        result = subprocess.run([BASH, script], cwd=cwd, env=env, capture_output=True, text=True)
-        log = tmp / "log"
-        result.ran = log.read_text().split() if log.exists() else []
-        return result
+def at(clock):
+    return f"2026-10-20T{clock}:00+11:00"
 
 
 class Checkin(unittest.TestCase):
-    def assertCheckin(self, codes, status, last_line, **how):
-        result = run(codes, **how)
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = tempfile.TemporaryDirectory()
+        cls.db = Path(cls.folder.name) / "monocode.db"
+        with sqlite3.connect(cls.db) as con:
+            con.executescript((HERE / "fixtures/notice-gap.sql").read_text())
+        empty_log = Path(cls.folder.name) / "empty.log"
+        empty_log.write_text("")
+        # The table notice-gap prints when nothing is due: the notice-gap stub prints it.
+        cls.no_rows = subprocess.run(
+            [sys.executable, PROCESS / "notice-gap.py", empty_log, "--db", cls.db, "--now", at("03:00"), "--hours", "1"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.folder.cleanup()
+
+    def run_checkin(self, codes=(0, 0, 0), notice_gap_out=None, now=None, log=LOG, from_its_dir=False, **env):
+        """Run a copy of checkin.sh next to stubs that exit with codes (None: hang); result.ran lists what ran.
+
+        The notice-gap stub prints notice_gap_out, by default the real empty table. With now, notice-gap.py
+        is the real script on the fixtures at that time. env keys are set; PATH="" leaves no python3 or perl.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            empty = tmp / "empty"
+            empty.mkdir()
+            shutil.copy(PROCESS / "checkin.sh", tmp)
+            for name, code in zip(CHECKS, codes):
+                end = "import time\ntime.sleep(60)\n" if code is None else f"sys.exit({code})\n"
+                (tmp / f"{name}.py").write_text(STUB + end)
+            (tmp / "notice-gap.out").write_text(self.no_rows if notice_gap_out is None else notice_gap_out)
+            if now:
+                (tmp / "notice-gap.py").write_text(REAL_NOTICE_GAP.format(
+                    script=str(PROCESS / "notice-gap.py"), log=str(log), db=str(self.db), now=at(now)))
+            script, cwd = ("checkin.sh", tmp) if from_its_dir else (tmp / "checkin.sh", empty)
+            env = {**os.environ, **env}
+            if env.get("PATH") == "":
+                env["PATH"] = str(empty)
+            result = subprocess.run([BASH, script], cwd=cwd, env=env, capture_output=True, text=True)
+            log_file = tmp / "log"
+            result.ran = log_file.read_text().split() if log_file.exists() else []
+            return result
+
+    def assertCheckin(self, status, last_line, *args, **kwargs):
+        result = self.run_checkin(*args, **kwargs)
         self.assertEqual(result.returncode, status, result.stdout + result.stderr)
         self.assertEqual(result.stdout.splitlines()[-1], last_line)
         self.assertEqual(result.ran, CHECKS)
@@ -77,41 +107,66 @@ class Checkin(unittest.TestCase):
     def test_status_is_the_worst_check(self):
         for case, (codes, status, word) in CASES.items():
             with self.subTest(case):
-                self.assertCheckin(codes, status, SUMMARY.format(word, *codes))
+                self.assertCheckin(status, SUMMARY.format(word, *codes), codes)
 
-    def test_missing_and_unmatched_rows_are_an_alarm(self):
-        for case, codes, status, last_line in [
-            ("rows alone", [0, 0, 0], 1, "checkin: alarm (ready-issues=0 pr-cap=0 notice-gap=0 missing=2 unmatched=1)"),
-            ("an error still wins", [0, 0, 2], 2, "checkin: error (ready-issues=0 pr-cap=0 notice-gap=2 missing=2 unmatched=1)"),
+    def test_notice_gap_judges_only_the_window(self):
+        # In the fixtures, 05:30-09:30 and 15:30-18:30 have late or missing notices; 12:30-14:30 has none.
+        with tempfile.TemporaryDirectory() as tmp:
+            # The 18:19 line matches an ok turn; its text says MISSING, which must not count.
+            log = Path(tmp) / "finished.log"
+            log.write_text(LOG.read_text().replace("resumed after Ship 5:", "resumed after Ship 5 (MISSING no more):"))
+            for case, now, env, codes, status, last_line in [
+                ("old rows outside the window", "14:30", {}, [0, 0],
+                 0, "checkin: ok (ready-issues=0 pr-cap=0 notice-gap=0 missing=0 unmatched=0)"),
+                ("the same rows in a wider CHECKIN_HOURS (3 late notices)", "14:30", {"CHECKIN_HOURS": "10"}, [0, 0],
+                 1, "checkin: alarm (ready-issues=0 pr-cap=0 notice-gap=1 missing=0 unmatched=5)"),
+                ("new missing notices", "18:30", {}, [0, 0],
+                 1, "checkin: alarm (ready-issues=0 pr-cap=0 notice-gap=1 missing=4 unmatched=5)"),
+                ("finished.log rows with no notice turn, notice-gap itself ok", "12:00", {}, [0, 0],
+                 1, "checkin: alarm (ready-issues=0 pr-cap=0 notice-gap=0 missing=0 unmatched=2)"),
+                ("an error still wins over the rows", "12:00", {}, [2, 0],
+                 2, "checkin: error (ready-issues=2 pr-cap=0 notice-gap=0 missing=0 unmatched=2)"),
+            ]:
+                with self.subTest(case):
+                    result = self.assertCheckin(status, last_line, codes, now=now, log=log, **env)
+                    self.assertIn("monitored turn ends", result.stdout)
+
+    def test_notice_gap_without_its_table_is_an_error(self):
+        for case, code, out in [
+            ("a crash", 1, ""),
+            ("a renamed verdict column", 0, self.no_rows.replace(" verdict ", " result  ")),
         ]:
             with self.subTest(case):
-                result = self.assertCheckin(codes, status, last_line, notice_gap_out=NOTICE_GAP)
-                self.assertIn(f"== notice-gap\n{NOTICE_GAP}\n", result.stdout)
+                self.assertCheckin(2, SUMMARY.format("error", 0, 0, 2), [0, 0, code], notice_gap_out=out)
+
+    def test_a_hanging_script_is_stopped_and_the_rest_still_run(self):
+        self.assertCheckin(2, SUMMARY.format("error", 142, 0, 0), [None, 0, 0], CHECKIN_TIMEOUT="1")
 
     def test_runs_from_its_own_directory(self):
-        self.assertCheckin([0, 0, 0], 0, SUMMARY.format("ok", 0, 0, 0), from_its_dir=True)
+        self.assertCheckin(0, SUMMARY.format("ok", 0, 0, 0), from_its_dir=True)
 
     def test_each_check_runs_under_its_header_with_its_flags(self):
-        result = run([0, 0, 0])
-        self.assertEqual(result.stdout, """\
+        result = self.run_checkin()
+        self.assertEqual(result.stdout, f"""\
 == ready-issues
-ready-issues ['--instance', '2']
 == pr-cap
-pr-cap ['--instance', '2']
 == notice-gap
-notice-gap []
-checkin: ok (ready-issues=0 pr-cap=0 notice-gap=0 missing=0 unmatched=0)
+{self.no_rows}checkin: ok (ready-issues=0 pr-cap=0 notice-gap=0 missing=0 unmatched=0)
 """)
-        self.assertEqual(result.stderr, "ready-issues\npr-cap\nnotice-gap\n")
+        self.assertEqual(result.stderr, """\
+ready-issues ['--instance', '2']
+pr-cap ['--instance', '2']
+notice-gap ['--hours', '2']
+""")
 
-    def test_missing_python3_is_an_error(self):
-        result = run([0, 0, 0], without_python3=True)
+    def test_missing_tools_are_an_error(self):
+        result = self.run_checkin(PATH="")
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(result.stdout, """\
 == ready-issues
 == pr-cap
 == notice-gap
-checkin: error (ready-issues=127 pr-cap=127 notice-gap=127 missing=0 unmatched=0)
+checkin: error (ready-issues=127 pr-cap=127 notice-gap=2 missing=0 unmatched=0)
 """)
 
 
