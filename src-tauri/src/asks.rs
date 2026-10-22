@@ -320,7 +320,8 @@ pub fn ack(
             let reason = ask_gate::decide_ack(&ask, &me).err();
             return refused(reason.unwrap_or(AckRefused::NoOpenAsk));
         }
-        // A spent key gets no reminder.
+        // Spending the key withdraws every unsent outbox row of the ask, a
+        // claimed one too: nothing about a spent key goes out.
         tx.execute(
             "DELETE FROM mono_outbox WHERE ask_id = ?1 AND sent_at IS NULL",
             [ask_id.as_str()],

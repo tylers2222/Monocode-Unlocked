@@ -23,6 +23,8 @@ const T5_LEAD: i64 = 5 * MINUTE;
 /// R2: the active time a kill may lose, the clock row's persist interval.
 const PERSIST: i64 = 5 * SECOND;
 
+type Reminder = (String, String, String, i64);
+
 fn ask(
     world: &World,
     live: &[&SessionId],
@@ -33,6 +35,12 @@ fn ask(
 ) -> MessageId {
     let input = json!({"message": format!("Do {key}"), "send_to": to, "due_minutes": due});
     written(world.tool(from, key, "ask", input, live))
+}
+
+fn ack(world: &World, live: &[&SessionId], child: &SessionId, ask: &MessageId) {
+    let input = json!({"ask_id": ask.as_str(), "message": "Done"});
+    let key = format!("ack-{}", ask.as_str());
+    written(world.tool(&session_caller(child, P), &key, "ack", input, live));
 }
 
 fn due(world: &World, ask: &MessageId) -> i64 {
@@ -58,19 +66,39 @@ fn ladder(world: &World, ask: &MessageId) -> (i64, Option<i64>) {
         .unwrap()
 }
 
-/// The outbox rows of `ask` as `(key, recipient, at_active_ms)`.
-fn reminders(world: &World, ask: &MessageId) -> Vec<(String, String, i64)> {
+fn t5_key(ask: &MessageId) -> String {
+    format!("reminder:{}:t5", ask.as_str())
+}
+
+/// The outbox rows of `ask` as `(key, stage, recipient, at_active_ms)`.
+fn reminders(world: &World, ask: &MessageId) -> Vec<Reminder> {
     world
         .conn()
         .prepare(
-            "SELECT key, recipient, at_active_ms FROM mono_outbox WHERE ask_id = ?1 ORDER BY key",
+            "SELECT key, stage, recipient, at_active_ms FROM mono_outbox
+              WHERE ask_id = ?1 ORDER BY key",
         )
         .unwrap()
         .query_map([ask.as_str()], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })
         .unwrap()
         .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+fn t5(ask: &MessageId, recipient: &str, at: i64) -> Vec<Reminder> {
+    vec![(t5_key(ask), "t5".into(), recipient.into(), at)]
+}
+
+fn claimed_by(world: &World, key: &str) -> Option<String> {
+    world
+        .conn()
+        .query_row(
+            "SELECT claimed_by FROM mono_outbox WHERE key = ?1",
+            [key],
+            |row| row.get(0),
+        )
         .unwrap()
 }
 
@@ -126,18 +154,135 @@ fn falls_due_at(world: &mut World, ask: &MessageId, at: i64, recipient: &str) {
         "no reminder 1 ms before {at}"
     );
     world.advance(1);
-    let key = format!("reminder:{}:t5", ask.as_str());
-    assert_eq!(reminders(world, ask), [(key, recipient.to_string(), at)]);
+    assert_eq!(reminders(world, ask), t5(ask, recipient, at));
     assert_eq!(ladder(world, ask), (1, None));
+}
+
+/// Spending a key withdraws its unsent reminder, and keeps a sent one: a
+/// window claimed and sent `sent`'s reminder before its child acked.
+fn acks_withdraw_unsent_reminders(
+    world: &World,
+    live: &[&SessionId],
+    (acked, acked_child): (&MessageId, &SessionId),
+    (sent, sent_child): (&MessageId, &SessionId),
+) {
+    world
+        .conn()
+        .execute(
+            "UPDATE mono_outbox SET claimed_by = 'main', sent_at = ?2 WHERE key = ?1",
+            params![t5_key(sent), world.now()],
+        )
+        .unwrap();
+    ack(world, live, acked_child, acked);
+    ack(world, live, sent_child, sent);
+    assert!(
+        reminders(world, acked).is_empty(),
+        "an acked ask has no unsent reminder"
+    );
+    assert_eq!(reminders(world, sent).len(), 1, "a sent reminder is kept");
+}
+
+/// S5 "killed and restarted 40 minutes later": the active clock lost at
+/// most its persist interval, the unsent claim is pending again, nothing
+/// fell due, and `b`'s reminder comes 40 minutes later on the wall clock
+/// than it would have.
+fn restarts_40_minutes_later(world: &mut World, b: &MessageId, tb: i64, sent: &MessageId) {
+    let (wall_kill, active_kill) = (world.now(), world.active_ms());
+    world.down(40 * MINUTE);
+    let lost = active_kill - world.active_ms();
+    assert!((0..=PERSIST).contains(&lost), "a restart lost {lost} ms");
+    assert_eq!(
+        pending(world),
+        derived(world),
+        "pending rebuilt from mono_asks"
+    );
+    assert_eq!(
+        claimed_by(world, &t5_key(sent)).as_deref(),
+        Some("main"),
+        "a sent reminder stays claimed"
+    );
+    falls_due_at(world, b, tb, "session:s5-w2");
+    assert_eq!(
+        world.now() - wall_kill - (tb - active_kill),
+        40 * MINUTE + lost,
+        "b's reminder moved back by the time the app was down"
+    );
+}
+
+/// A stage write lost (an older copy of `mono_asks`) makes `a` fall due
+/// again: its key keeps one row, and the tick goes on.
+fn a_lost_stage_write_keeps_one_row(world: &mut World, a: &MessageId, ta: i64) {
+    world
+        .conn()
+        .execute(
+            "UPDATE mono_asks SET stage = 0, next_due_active_ms = ?2 WHERE id = ?1",
+            params![a.as_str(), ta],
+        )
+        .unwrap();
+    world.advance(SECOND);
+    assert_eq!(reminders(world, a), t5(a, "session:s5-lead", ta));
+    assert_eq!(ladder(world, a), (1, None));
+}
+
+/// S5 "a one-hour sleep": an hour asleep a minute before `c`'s reminder
+/// moves it back an hour.
+fn sleeps_an_hour(world: &mut World, c: &MessageId, tc: i64) {
+    advance_to(world, tc - MINUTE);
+    let (wall_sleep, active_sleep) = (world.now(), world.active_ms());
+    world.sleep(HOUR);
+    assert_eq!(world.active_ms(), active_sleep, "sleep adds no active time");
+    falls_due_at(world, c, tc, "session:s5-lead");
+    assert_eq!(
+        world.now() - wall_sleep - (tc - active_sleep),
+        HOUR,
+        "c's reminder moved back by the hour asleep"
+    );
+}
+
+/// S5 "the system clock jumps forward and back": a jump 2 h forward past
+/// `d`'s deadline and 4 h back leave its reminder to active time. A tick
+/// that lands past the due time enqueues at the tick's active time.
+fn wall_jumps_leave_reminders_to_active_time(world: &mut World, d: &MessageId, td: i64) {
+    advance_to(world, td - MINUTE);
+    world.jump_wall(2 * HOUR);
+    assert!(
+        reminders(world, d).is_empty(),
+        "a wall jump is no active time"
+    );
+    world.jump_wall(-4 * HOUR);
+    advance_to(world, td - 1);
+    assert!(reminders(world, d).is_empty(), "no reminder before {td}");
+    world.stall(2 * SECOND);
+    assert_eq!(
+        reminders(world, d),
+        t5(d, "session:s5-w1", td - 1 + 2 * SECOND)
+    );
+}
+
+/// A later build's ladder has stages past this one's: its next due on an
+/// ask at the end of this ladder is left alone, and the tick goes on.
+fn a_later_builds_stage_is_left_alone(world: &mut World, a: &MessageId) {
+    let later = world.active_ms();
+    world
+        .conn()
+        .execute(
+            "UPDATE mono_asks SET next_due_active_ms = ?2 WHERE id = ?1",
+            params![a.as_str(), later],
+        )
+        .unwrap();
+    world.advance(SECOND);
+    assert_eq!(reminders(world, a).len(), 1);
+    assert_eq!(ladder(world, a), (1, Some(later)));
 }
 
 /// S5 "killed and restarted 40 minutes later", "a one-hour sleep", "the
 /// system clock jumps forward and back" and "after every restart, all
 /// pending reminders are rebuilt from the database". Defect: a reminder is
-/// enqueued before its active time; app downtime, sleep or a wall jump
-/// moves a reminder earlier; a second enqueue of one key fails the tick; a
-/// claim a window held when the app died keeps its reminder from every
-/// window; an acked ask keeps a pending reminder; a ladder stage past this
+/// enqueued before its active time or stamped with another time; app
+/// downtime, sleep or a wall jump moves a reminder earlier; a second enqueue
+/// of one key fails the tick; a claim a window held when the app died keeps
+/// its reminder from every window, or a sent one is pending again; an ack
+/// leaves an unsent reminder or drops a sent one; a ladder stage past this
 /// build's ladder stops the tick; or a Giga's untimed ask is reminded.
 #[test]
 fn s5_reminders_fall_due_in_active_time_across_restarts_sleep_and_wall_jumps() {
@@ -151,124 +296,43 @@ fn s5_reminders_fall_due_in_active_time_across_restarts_sleep_and_wall_jumps() {
     world.advance(20 * SECOND);
 
     let live = [&lead, &w1, &w2];
-    let (m, l) = (mono_caller(&mono, "m1"), session_caller(&lead, P));
-    let untimed = ask(
-        &world,
-        &live,
-        &mono_caller(&giga, "g1"),
-        "s5-g",
-        mono.id.as_str(),
-        30,
+    let (g, m, l) = (
+        mono_caller(&giga, "g1"),
+        mono_caller(&mono, "m1"),
+        session_caller(&lead, P),
     );
+    let untimed = ask(&world, &live, &g, "s5-g", mono.id.as_str(), 30);
     let a = ask(&world, &live, &m, "s5-a", lead.as_str(), 10);
     let acked = ask(&world, &live, &l, "s5-f", w1.as_str(), 10);
+    let sent = ask(&world, &live, &l, "s5-e", w2.as_str(), 10);
     let b = ask(&world, &live, &l, "s5-b", w2.as_str(), 15);
     let c = ask(&world, &live, &m, "s5-c", lead.as_str(), 20);
     let d = ask(&world, &live, &l, "s5-d", w1.as_str(), 25);
-    let [ta, tf, tb, tc, td] = [&a, &acked, &b, &c, &d].map(|id| due(&world, id) - T5_LEAD);
-    assert_eq!(
-        ladder(&world, &untimed),
-        (0, None),
-        "a Giga's ask has no clock"
-    );
+    let [ta, tb, tc, td] = [&a, &b, &c, &d].map(|id| due(&world, id) - T5_LEAD);
+    assert_eq!(ladder(&world, &untimed), (0, None), "a Giga sets no clock");
     assert_eq!(ladder(&world, &a), (0, Some(ta)));
 
     // At its active time to the millisecond, never before.
     falls_due_at(&mut world, &a, ta, "session:s5-lead");
-    assert_eq!(tf, ta);
-    assert_eq!(reminders(&world, &acked).len(), 1);
+    assert_eq!(reminders(&world, &acked), t5(&acked, "session:s5-w1", ta));
+    assert_eq!(reminders(&world, &sent), t5(&sent, "session:s5-w2", ta));
     assert_eq!(pending(&world), derived(&world));
+    acks_withdraw_unsent_reminders(&world, &live, (&acked, &w1), (&sent, &w2));
 
-    // Spending the key withdraws its unsent reminder.
-    let ack = json!({"ask_id": acked.as_str(), "message": "Done"});
-    written(world.tool(&session_caller(&w1, P), "s5-f-ack", "ack", ack, &live));
-    assert!(
-        reminders(&world, &acked).is_empty(),
-        "an acked ask has no reminder"
-    );
-
-    // A window claimed A's reminder and had not sent it when the app died.
-    let a_key = format!("reminder:{}:t5", a.as_str());
+    // A window claimed `a`'s reminder and had not sent it when the app died.
     world
         .conn()
         .execute(
             "UPDATE mono_outbox SET claimed_by = 'main' WHERE key = ?1",
-            [&a_key],
+            [t5_key(&a)],
         )
         .unwrap();
-
-    // Killed and restarted 40 minutes later: the active clock lost at most
-    // its persist interval, nothing fell due, and B's reminder comes 40
-    // minutes later on the wall clock than it would have.
-    let (wall_kill, active_kill) = (world.now(), world.active_ms());
-    world.down(40 * MINUTE);
-    let lost = active_kill - world.active_ms();
-    assert!((0..=PERSIST).contains(&lost), "a restart lost {lost} ms");
-    assert_eq!(
-        pending(&world),
-        derived(&world),
-        "pending rebuilt from mono_asks"
-    );
+    restarts_40_minutes_later(&mut world, &b, tb, &sent);
     assert_eq!(schema(&world), opened, "a second open changes no schema");
-    falls_due_at(&mut world, &b, tb, "session:s5-w2");
-    assert_eq!(
-        world.now() - wall_kill - (tb - active_kill),
-        40 * MINUTE + lost,
-        "B's reminder moved back by the time the app was down"
-    );
-
-    // A stage write lost (an older copy of mono_asks) makes A fall due
-    // again: its key keeps one row, and the tick goes on.
-    world
-        .conn()
-        .execute(
-            "UPDATE mono_asks SET stage = 0, next_due_active_ms = ?2 WHERE id = ?1",
-            params![a.as_str(), ta],
-        )
-        .unwrap();
-    world.advance(SECOND);
-    assert_eq!(
-        reminders(&world, &a),
-        [(a_key.clone(), "session:s5-lead".into(), ta)]
-    );
-    assert_eq!(ladder(&world, &a), (1, None));
-
-    // A one-hour sleep a minute before C's reminder moves it back an hour.
-    advance_to(&mut world, tc - MINUTE);
-    let (wall_sleep, active_sleep) = (world.now(), world.active_ms());
-    world.sleep(HOUR);
-    assert_eq!(world.active_ms(), active_sleep, "sleep adds no active time");
-    falls_due_at(&mut world, &c, tc, "session:s5-lead");
-    assert_eq!(
-        world.now() - wall_sleep - (tc - active_sleep),
-        HOUR,
-        "C's reminder moved back by the hour asleep"
-    );
-
-    // The wall clock jumps 2 h forward past D's deadline, then 4 h back:
-    // D's reminder still comes at its active time.
-    advance_to(&mut world, td - MINUTE);
-    world.jump_wall(2 * HOUR);
-    assert!(
-        reminders(&world, &d).is_empty(),
-        "a wall jump is no active time"
-    );
-    world.jump_wall(-4 * HOUR);
-    falls_due_at(&mut world, &d, td, "session:s5-w1");
-
-    // A later build's ladder has stages past this one's: its next due on an
-    // ask at the end of this ladder is left alone.
-    let later = world.active_ms();
-    world
-        .conn()
-        .execute(
-            "UPDATE mono_asks SET next_due_active_ms = ?2 WHERE id = ?1",
-            params![a.as_str(), later],
-        )
-        .unwrap();
-    world.advance(SECOND);
-    assert_eq!(reminders(&world, &a).len(), 1);
-    assert_eq!(ladder(&world, &a), (1, Some(later)));
+    a_lost_stage_write_keeps_one_row(&mut world, &a, ta);
+    sleeps_an_hour(&mut world, &c, tc);
+    wall_jumps_leave_reminders_to_active_time(&mut world, &d, td);
+    a_later_builds_stage_is_left_alone(&mut world, &a);
 
     // After a reboot the pending set is again what mono_asks implies: one
     // reminder per timed open ask, none for the Giga's ask.
@@ -276,7 +340,7 @@ fn s5_reminders_fall_due_in_active_time_across_restarts_sleep_and_wall_jumps() {
     assert_eq!(pending(&world), derived(&world));
     assert_eq!(schema(&world), opened);
     let keys: Vec<String> = pending(&world).into_iter().map(|(key, _)| key).collect();
-    let mut expected = [&a, &b, &c, &d].map(|id| format!("reminder:{}:t5", id.as_str()));
+    let mut expected = [&a, &b, &c, &d].map(t5_key);
     expected.sort();
     assert_eq!(keys, expected);
     assert!(
