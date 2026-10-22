@@ -503,6 +503,12 @@ pub fn approvals_list(
     list(&*store.lock_conn()?, &project_path)
 }
 
+/// One card by id: the chat line of a decision reads its card (frame A·7).
+#[tauri::command(async)]
+pub fn approvals_get(store: State<'_, SessionStore>, id: String) -> Result<Approval, String> {
+    get(&*store.lock_conn()?, &id)
+}
+
 #[tauri::command(async)]
 pub fn approvals_open_counts(store: State<'_, SessionStore>) -> Result<OpenCounts, String> {
     open_counts(&*store.lock_conn()?)
