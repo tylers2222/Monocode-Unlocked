@@ -118,13 +118,21 @@ export async function bridgeOmp(
   server.listen(0, "127.0.0.1", listening.resolve);
   await listening.promise;
   const { port } = server.address() as AddressInfo;
-  mkdirSync(join(dir, ".omp", "agent"), { recursive: true });
+  const agentDir = join(dir, ".omp", "agent");
+  mkdirSync(agentDir, { recursive: true });
   writeFileSync(
-    join(dir, ".omp", "agent", "models.yml"),
+    join(agentDir, "models.yml"),
     `providers:\n  offline:\n    baseUrl: http://127.0.0.1:${port}/v1\n    api: openai-completions\n    apiKey: offline\n    models:\n      - id: offline-model\n`,
   );
+  // omp also finds model servers running on this machine (Ollama, llama.cpp,
+  // LM Studio) and caches them in the agent dir every omp here shares. An omp
+  // that starts after the cache has one picks it as its default model.
+  writeFileSync(
+    join(agentDir, "config.yml"),
+    "disabledProviders: [ollama, llama.cpp, lm-studio]\n",
+  );
   console.log(
-    `[omp rig] ${OMP}: HOME=${dir}, agent dir ${join(dir, ".omp", "agent")}, only model http://127.0.0.1:${port}/v1 (local fake)`,
+    `[omp rig] ${OMP}: HOME=${dir}, agent dir ${agentDir}, only model http://127.0.0.1:${port}/v1 (local fake)`,
   );
   const children = new Map<string, ChildProcess>();
   const spawned: ChildProcess[] = [];
