@@ -284,51 +284,52 @@ async function expectDefaultEmpty(page: Page) {
     await expect(rowOf(page, tab).getByLabel("1 open tab")).toBeVisible();
 }
 
+/** The sessions of the saved tabs, in order, as the store holds them. */
+const savedSessions = (page: Page) =>
+  page.evaluate(() =>
+    (window.appBackend!.store.workspace as WorkspaceSnapshot | null)?.tabs.map(
+      (entry) => entry.focusedId,
+    ),
+  );
+
+/**
+ * Nothing is active: the default strip is empty and the sidebar marks no
+ * session. Cmd+W there has no tab to act on, so each worktree tab still
+ * holds its original session, on screen and in the saved workspace.
+ */
+async function expectNothingActive(page: Page, shot: string) {
+  await expectDefaultEmpty(page);
+  await expect(
+    page.getByRole("complementary").locator('[aria-current="true"]'),
+  ).toHaveCount(0);
+  await page.screenshot({ path: test.info().outputPath(shot) });
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("ControlOrMeta+w");
+  for (const entry of [first, second]) {
+    await switcher(page).click();
+    await rowOf(page, entry).click();
+    await expect
+      .poll(() => strip(page))
+      .toEqual([`monocode · ${titleOf(entry)}`]);
+    await expect(tab(page, titleOf(entry))).toHaveClass(/bg-selection/);
+  }
+  await expect
+    .poll(() => savedSessions(page))
+    .toEqual([first.focusedId, second.focusedId]);
+}
+
 test("with every tab in a worktree, boot opens the default workspace with no tab and each worktree keeps its tab", async ({
   app,
   page,
 }) => {
   await mount(app, allInWorktrees);
-  await expectDefaultEmpty(page);
-  // No session is active, so the sidebar marks none of the hidden ones.
-  await expect(
-    page.getByRole("complementary").locator('[aria-current="true"]'),
-  ).toHaveCount(0);
-  await page.screenshot({
-    path: test.info().outputPath("F1-all-in-worktrees.png"),
-  });
-
-  // Closing on the empty default workspace has no tab to act on, so it must
-  // not clear a hidden worktree tab.
-  await page.keyboard.press("Escape");
-  await page.keyboard.press("ControlOrMeta+w");
-  await switcher(page).click();
-  await rowOf(page, first).click();
-  await expect
-    .poll(() => strip(page))
-    .toEqual([`monocode · ${titleOf(first)}`]);
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          (window.appBackend!.store.workspace as WorkspaceSnapshot | null)
-            ?.tabs[0]?.focusedId,
-      ),
-    )
-    .toBe(first.focusedId);
-
-  await switcher(page).click();
-  await rowOf(page, second).click();
-  await expect
-    .poll(() => strip(page))
-    .toEqual([`monocode · ${titleOf(second)}`]);
-  await expect(tab(page, titleOf(second))).toHaveClass(/bg-selection/);
+  await expectNothingActive(page, "F1-all-in-worktrees.png");
   await page.screenshot({
     path: test.info().outputPath("F2-all-in-worktrees.png"),
   });
 });
 
-test("quitting on a worktree tab with no default-workspace tab restarts on the default workspace with no tab", async ({
+test("quitting on a worktree tab with no default-workspace tab restarts with nothing active, and Cmd+W keeps every worktree session", async ({
   app,
   page,
 }) => {
@@ -337,12 +338,19 @@ test("quitting on a worktree tab with no default-workspace tab restarts on the d
   await rowOf(page, second).click();
   await expect(tab(page, titleOf(second))).toHaveClass(/bg-selection/);
 
+  // The real quit save (quit_commit, then quit_ready) and a new boot.
   await app.restart();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window.appBackend!.store.workspace as WorkspaceSnapshot | null)
+            ?.activeTabId,
+      ),
+    )
+    .toBe("");
 
-  await expectDefaultEmpty(page);
-  await page.screenshot({
-    path: test.info().outputPath("F1-all-in-worktrees-restart.png"),
-  });
+  await expectNothingActive(page, "F1-all-in-worktrees-restart.png");
 });
 
 test("a chat running in a worktree at quit comes back in that worktree, still working", async ({
