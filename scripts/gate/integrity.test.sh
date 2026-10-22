@@ -65,7 +65,7 @@ probe moved-disable 0 'ok, 2 non-test lines' move_disable
 probe baseline-grows 1 'baseline counts grow by 1' perl -pi -e 's/"count": 1/"count": 2/' eslint-suppressions.json
 probe gate-file 1 'scripts/gate/x.sh: edits a gate file' eval 'echo "# x" >> scripts/gate/x.sh'
 probe gate-rename 1 'scripts/gate/x.sh: edits a gate file' git mv scripts/gate/x.sh scripts/x.sh
-for path in src/eslint.config.js .github/workflows/ci.yml .github/actions/x/action.yml src-tauri/clippy.toml .clippy.toml \
+for path in scripts/process/tier.py src/eslint.config.js .github/workflows/ci.yml .github/actions/x/action.yml src-tauri/clippy.toml .clippy.toml \
   .cargo/config.toml rust-toolchain.toml scripts/install-linux-deps-debian.sh .npmrc; do
   probe "gate-path $path" 1 "$path: edits a gate file" eval "mkdir -p '$(dirname "$path")' && echo x > '$path'"
 done
