@@ -208,6 +208,10 @@ probe() {
   jq -rs --arg p "$1" "[.[] | select(.exec and (.exec | join(\" \") | contains(\$p)))] | last | $2" "$PUPPET/log.jsonl"
 }
 denied() { probe "$1" '.code != 0 and (.stdout + .stderr | test("[Oo]peration not permitted|authorization denied"))'; }
+# Each probe's exit code and first output line, for the run's record.
+show_probes() {
+  jq -r 'select(.exec) | "  probe \(.exec[0]) \(.exec[-1] | .[0:60]): exit \(.code): \((.stderr + .stdout) | split("\n")[0] | .[0:160])"' "$PUPPET/log.jsonl"
+}
 habit_failed() { jq -e '.[0].lastOutcome == "failed"' "$APP_DATA/monos/d1-giga/habits.json" >/dev/null; }
 
 run_d1() {
@@ -258,6 +262,7 @@ SQL
   local bundle; bundle="$(target_bin instance)"; bundle="${bundle%/Contents/MacOS/*}"
   expect "the settings deny writes to the app bundle" "$(jq --arg d "$bundle" '.filesystem.denyWrite | index($d) != null' "$SANDBOX_SETTINGS")" true
   expect "the user's allowWrite is kept" "$(jq -c '.filesystem.allowWrite' "$SANDBOX_SETTINGS")" '[".","/tmp","~/.puppet","~/.local"]'
+  show_probes
   "$INSTANCE" stop
 
   echo "off:"
@@ -273,6 +278,7 @@ SQL
   expect "tool calls that failed" "$(jq -s '[.[] | select(.tool and .result.ok != true)] | length' "$PUPPET/log.jsonl")" 0
   expect "no settings file is written" "$([[ -e "$SANDBOX_SETTINGS" ]] && echo written || echo none)" none
   "$INSTANCE" stop
+  show_probes
 
   echo "on without srt:"
   rm "$EVAL_HOME/.local/bin/srt"
@@ -284,6 +290,7 @@ SQL
   wait_until 60 "the habit run fails" habit_failed
   expect "the run's error" "$(jq -r '.[0].lastError | test("srt is not installed")' "$APP_DATA/monos/d1-giga/habits.json")" true
   expect "prompts the puppet got" "$(prompts D1-HABIT)" 0
+  jq -r '"  error: " + .[0].lastError' "$APP_DATA/monos/d1-giga/habits.json"
   "$INSTANCE" stop
   return "$FAILED"
 }
