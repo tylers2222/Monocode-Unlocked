@@ -8,6 +8,7 @@ import {
   type MonoSpawnedSession,
   type Session,
 } from "../../features/sessions/model/session";
+import type { UserQuestionPrompt } from "../../features/sessions/model/userQuestion";
 import {
   findMono,
   listMonos,
@@ -38,6 +39,7 @@ import {
   updateHabits,
   type Habit,
 } from "../../features/monos/model/monoHabits";
+import type { HabitAskEnd } from "../../features/monos/model/habitQuestion";
 
 const TICK_MS = 60_000;
 
@@ -75,8 +77,16 @@ export type MonoHabitHost = {
     runId: string,
     block: Block,
   ): void;
-  /** Withdraws the run's unanswered approvals from the chat once it ends. */
-  endApprovals(runId: string): void;
+  /** Puts a question the run is waiting on to the user, in the Mono's chat. */
+  askQuestion(
+    monoSessionId: string,
+    habit: Habit,
+    runId: string,
+    runAt: number,
+    prompt: UserQuestionPrompt,
+  ): void;
+  /** Settles the run's unanswered asks in the chat once it ends. */
+  endAsks(runId: string, end: HabitAskEnd): void;
 };
 
 const POLL_MS = 2_000;
@@ -93,17 +103,25 @@ function finalReply(session: Session | undefined): string {
   return "";
 }
 
+/** A run that waited on the user past HABIT_USER_WAIT_MS. */
+const NOBODY_ANSWERED: ControlOutcome = {
+  status: "failed",
+  text: "",
+  error: "Nobody answered it.",
+};
+
 /**
- * Sends the run's turn and waits for it, relaying any approval it asks for to
- * the Mono's chat. Only time spent working counts toward the timeout; time
- * waiting on the user for an approval or a question has its own, much longer
- * limit.
+ * Sends the run's turn and waits for it, relaying any approval or question it
+ * asks to the Mono's chat. Only time spent working counts toward the timeout;
+ * time waiting on the user for an approval or a question has its own, much
+ * longer limit.
  */
 async function watchRun(
   host: MonoHabitHost,
   monoId: string,
   habit: Habit,
   runId: string,
+  runAt: number,
   start: () => Promise<ControlOutcome>,
 ): Promise<ControlOutcome> {
   let settled: ControlOutcome | undefined;
@@ -128,16 +146,17 @@ async function watchRun(
     for (const block of pending)
       if (!isRelayed(runId, block.approval!.requestId))
         host.askApproval(monoId, habit, runId, block);
+    const question = run?.pendingQuestion;
+    if (question && !isRelayed(runId, question.requestId))
+      host.askQuestion(monoId, habit, runId, runAt, question);
     if (run && sessionNeedsInput(run)) waiting += POLL_MS;
     else working += POLL_MS;
-    if (working >= HABIT_RUN_TIMEOUT_MS || waiting >= HABIT_USER_WAIT_MS)
+    if (waiting >= HABIT_USER_WAIT_MS) return NOBODY_ANSWERED;
+    if (working >= HABIT_RUN_TIMEOUT_MS)
       return {
         status: "failed",
         text: "",
-        error:
-          waiting >= HABIT_USER_WAIT_MS
-            ? "Nobody answered it."
-            : "It took too long and was stopped.",
+        error: "It took too long and was stopped.",
       };
   }
   return settled;
@@ -204,7 +223,7 @@ export function useMonoHabits(host: MonoHabitHost, enabled = true) {
       try {
         // /operator gives the run the same app access the Mono has.
         const prompt = `/operator ${habitRunPrompt(look, files, habit, now)}`;
-        outcome = await watchRun(host, mono.id, habit, run.id, () =>
+        outcome = await watchRun(host, mono.id, habit, run.id, now, () =>
           host.run(run.id, prompt),
         );
       } catch (error) {
@@ -218,7 +237,9 @@ export function useMonoHabits(host: MonoHabitHost, enabled = true) {
       const reply = finalReply(ended) || outcome.text;
       const artifacts = artifactCards(ended?.blocks ?? []);
       const launches = habitRunLaunches(run.id);
-      host.endApprovals(run.id);
+      host.endAsks(run.id, {
+        kind: outcome === NOBODY_ANSWERED ? "timed-out" : "stopped",
+      });
       // A run that timed out is still going; stop it, but keep what it did.
       if (ended?.busy) await host.stop(run.id).catch(() => undefined);
       clearHabitRun(run.id);

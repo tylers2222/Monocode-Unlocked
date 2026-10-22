@@ -602,21 +602,22 @@ export function habitRunLaunches(sessionId: string): MonoSpawnedSession[] {
 }
 
 /**
- * An approval a habit run asked for, put to the user in the Mono's chat
- * under an id of its own: the run's request ids would collide with the
- * Mono's. In memory only; a relay outlives neither its run nor the app.
+ * An approval or question a habit run asked for, put to the user in the
+ * Mono's chat under an id of its own: the run's request ids would collide
+ * with the Mono's. In memory only; a relay outlives neither its run nor the
+ * app.
  */
-export type ApprovalRelay = {
+export type MonoRelay = {
   monoId: string;
   runId: string;
   requestId: number;
   blockId: string;
 };
 
-const relays = new Map<number, ApprovalRelay>();
+const relays = new Map<number, MonoRelay>();
 let nextRelayId = 1_000_000_000;
 
-export function relayApproval(relay: ApprovalRelay): number {
+export function relayToMono(relay: MonoRelay): number {
   const id = nextRelayId++;
   relays.set(id, relay);
   return id;
@@ -626,7 +627,7 @@ export function relayApproval(relay: ApprovalRelay): number {
 export function takeRelayedApproval(
   monoId: string,
   requestId: number,
-): ApprovalRelay | undefined {
+): MonoRelay | undefined {
   const relay = relays.get(requestId);
   if (!relay || relay.monoId !== monoId) return undefined;
   relays.delete(requestId);
@@ -640,9 +641,33 @@ export function isRelayed(runId: string, requestId: number): boolean {
   return false;
 }
 
+/**
+ * Where an answer to a question goes: the session that asked and its own
+ * request id, and the habit's card in a Mono's chat that settles with it.
+ * Unlike an approval's, the relay stays until the run ends: the run's own
+ * card clears only when the harness says so, and the next check must not ask
+ * again in between.
+ */
+export function questionRoute(
+  sessionId: string,
+  requestId: number,
+): { sessionId: string; requestId: number; card?: MonoRelay } {
+  const relayed = relays.get(requestId);
+  if (relayed?.monoId === sessionId)
+    return {
+      sessionId: relayed.runId,
+      requestId: relayed.requestId,
+      card: relayed,
+    };
+  for (const relay of relays.values())
+    if (relay.runId === sessionId && relay.requestId === requestId)
+      return { sessionId, requestId, card: relay };
+  return { sessionId, requestId };
+}
+
 /** Relays still open when their run ended, to withdraw from the chat. */
-export function dropRelays(runId: string): ApprovalRelay[] {
-  const dropped: ApprovalRelay[] = [];
+export function dropRelays(runId: string): MonoRelay[] {
+  const dropped: MonoRelay[] = [];
   for (const [id, relay] of relays)
     if (relay.runId === runId) {
       relays.delete(id);

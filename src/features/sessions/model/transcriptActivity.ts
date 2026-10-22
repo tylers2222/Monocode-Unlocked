@@ -655,7 +655,9 @@ function isIgnoredTurnBlock(block: Block): boolean {
   // Keep thinking as a step in the group, so a long think does not read as
   // the agent having stalled.
   if (block.role === "reasoning") return !block.text.trim();
-  return block.role === "assistant" && !block.text.trim();
+  return (
+    block.role === "assistant" && !block.text.trim() && !block.habitQuestion
+  );
 }
 
 /** Text the user actually reads: assistant prose, tasks, and plans, not tool chrome. */

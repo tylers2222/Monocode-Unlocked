@@ -13,7 +13,7 @@ import {
   afterRun,
   dropRelays,
   isRelayed,
-  relayApproval,
+  relayToMono,
   takeRelayedApproval,
   dueHabits,
   habitPostsContext,
@@ -202,7 +202,7 @@ it("hands the Mono what its habits posted since the user last wrote", () => {
 });
 
 it("routes an answer in the Mono's chat back to the run that asked", () => {
-  const id = relayApproval({
+  const id = relayToMono({
     monoId: "mono",
     runId: "run",
     requestId: 7,
@@ -217,7 +217,7 @@ it("routes an answer in the Mono's chat back to the run that asked", () => {
     requestId: 7,
   });
   expect(takeRelayedApproval("mono", id)).toBeUndefined();
-  relayApproval({ monoId: "mono", runId: "run", requestId: 8, blockId: "c" });
+  relayToMono({ monoId: "mono", runId: "run", requestId: 8, blockId: "c" });
   expect(dropRelays("run").map((relay) => relay.blockId)).toEqual(["c"]);
   expect(isRelayed("run", 8)).toBe(false);
 });

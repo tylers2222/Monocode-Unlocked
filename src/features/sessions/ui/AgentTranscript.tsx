@@ -70,6 +70,8 @@ import { SentDecision } from "../../approvals/ui/BoardDecisionLine";
 import { SentNotice } from "./SentNotice";
 import { monoReactionBlocks } from "../../monos/model/monoReaction";
 import type { ApprovalDecision } from "../../../integrations/harness";
+import type { UserQuestionReply } from "../model/userQuestion";
+import { HabitQuestionCard } from "./HabitQuestionCard";
 import {
   isHarnessAuthError,
   supportsHarnessLogin,
@@ -238,6 +240,8 @@ type Props = {
   /** Work the agent left running when it yielded; the turn waits on it. */
   backgroundTasks?: string[];
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
+  /** Answers a habit run's question card in a Mono's chat. */
+  onQuestionReply?: (requestId: number, reply: UserQuestionReply) => void;
   onAddToChat?: (text: string) => void;
   onSaveNote?: (text: string) => void | Promise<void>;
   onSendDraft?: (block: Block) => boolean | void;
@@ -302,6 +306,7 @@ function AgentTranscriptComponent({
   pendingQuestion = false,
   backgroundTasks,
   onApproval,
+  onQuestionReply,
   onAddToChat,
   onSaveNote,
   onSendDraft,
@@ -1361,6 +1366,12 @@ function AgentTranscriptComponent({
                     (itemIndex === foldLineAt && showFoldLine))
                 }
                 onApproval={onApproval}
+                onQuestionReply={onQuestionReply}
+                onOpenRun={
+                  item.block.habitQuestion && onOpenSession
+                    ? (runId) => onOpenSession(turnId, turn, runId)
+                    : undefined
+                }
                 onSaveNote={onSaveNote}
                 onSendDraft={onSendDraft}
                 onRemoveDraft={onRemoveDraft}
@@ -2205,6 +2216,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
   agentName,
   localMedia = false,
   onApproval,
+  onQuestionReply,
+  onOpenRun,
   onSaveNote,
   onSendDraft,
   onRemoveDraft,
@@ -2240,6 +2253,9 @@ const TranscriptBlock = memo(function TranscriptBlock({
   /** Show local images and videos a reply links to, as Mono chats do. */
   localMedia?: boolean;
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
+  onQuestionReply?: (requestId: number, reply: UserQuestionReply) => void;
+  /** Opens the habit run a question card came from. */
+  onOpenRun?: (runId: string) => void;
   onSaveNote?: (text: string) => void | Promise<void>;
   onSendDraft?: (block: Block) => boolean | void;
   onRemoveDraft?: (block: Block) => boolean | void;
@@ -2362,6 +2378,18 @@ const TranscriptBlock = memo(function TranscriptBlock({
           }
         />
       </div>
+    );
+  }
+
+  if (block.habitQuestion && block.monoHabit) {
+    return (
+      <HabitQuestionCard
+        asked={block.habitQuestion}
+        habit={block.monoHabit.name}
+        runFrom={formatClockTime(block.habitQuestion.runAt)}
+        onReply={onQuestionReply}
+        onOpenRun={onOpenRun}
+      />
     );
   }
 

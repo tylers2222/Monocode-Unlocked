@@ -675,12 +675,17 @@ import {
 import { useMonoHabits } from "./hooks/useMonoHabits";
 import { useFloatingMono } from "./hooks/useFloatingMono";
 import {
+  answerHabitQuestion,
+  endHabitAsk,
+} from "../features/monos/model/habitQuestion";
+import {
   dropRelays,
   habitPostsContext,
   habitRunMono,
   isHabitRun,
   noteHabitRunLaunch,
-  relayApproval,
+  questionRoute,
+  relayToMono,
   takeRelayedApproval,
   loadHabits,
   unseenHabitPosts,
@@ -8621,13 +8626,10 @@ function Workspace({
     [submitSession],
   );
 
-  // onApproval is created once; it reaches the current helper through this.
-  const decideMonoBlockRef = useRef<
-    (
-      monoId: string,
-      blockId: string,
-      decided: "allow" | "deny" | "cancelled",
-    ) => void
+  // onApproval and onQuestionReply are created once; they reach the current
+  // helper through this.
+  const updateMonoBlockRef = useRef<
+    (monoId: string, blockId: string, update: (block: Block) => Block) => void
   >(() => {});
   /** Adds a block to a Mono's chat outside any turn, once no reply is streaming. */
   const appendToMono = (
@@ -8653,29 +8655,26 @@ function Workspace({
     persistSession(next);
     then?.(next);
   };
-  const decideMonoBlock = (
+  const updateMonoBlock = (
     monoId: string,
     blockId: string,
-    decided: "allow" | "deny" | "cancelled",
+    update: (block: Block) => Block,
   ) => {
-    const decide = (session: Session) =>
-      session.id === monoId
-        ? {
-            ...session,
-            blocks: session.blocks.map((block) =>
-              block.id === blockId && block.approval
-                ? { ...block, approval: { ...block.approval, decided } }
-                : block,
-            ),
-          }
-        : session;
-    sessionsRef.current = sessionsRef.current.map(decide);
-    setSessions(sessionsRef.current);
-    persistSession(
-      sessionsRef.current.find((session) => session.id === monoId),
+    const mono = sessionsRef.current.find((session) => session.id === monoId);
+    const block = mono?.blocks.find((entry) => entry.id === blockId);
+    const next = block && update(block);
+    if (!mono || !next || next === block) return;
+    const settled: Session = {
+      ...mono,
+      blocks: mono.blocks.map((entry) => (entry === block ? next : entry)),
+    };
+    sessionsRef.current = sessionsRef.current.map((session) =>
+      session.id === monoId ? settled : session,
     );
+    setSessions(sessionsRef.current);
+    persistSession(settled);
   };
-  decideMonoBlockRef.current = decideMonoBlock;
+  updateMonoBlockRef.current = updateMonoBlock;
   setGigaWorkspacePoster((monoId, text) => {
     const chatId = findMono(monoId)?.sessionId;
     if (chatId)
@@ -8787,7 +8786,7 @@ function Workspace({
     // fires for the Mono; the answer is routed back in onApproval.
     askApproval: (monoId, habit, runId, block) => {
       const blockId = crypto.randomUUID();
-      const requestId = relayApproval({
+      const requestId = relayToMono({
         monoId,
         runId,
         requestId: block.approval!.requestId,
@@ -8802,9 +8801,38 @@ function Workspace({
         monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
       });
     },
-    endApprovals: (runId) => {
+    // The question goes to the chat the same way. Its answer, from either
+    // card, is routed back in onQuestionReply.
+    askQuestion: (monoId, habit, runId, runAt, prompt) => {
+      const blockId = crypto.randomUUID();
+      const requestId = relayToMono({
+        monoId,
+        runId,
+        requestId: prompt.requestId,
+        blockId,
+      });
+      appendToMono(monoId, {
+        id: blockId,
+        role: "assistant",
+        text: "",
+        habitQuestion: {
+          runId,
+          runAt,
+          // The run's own card keeps any deadline; this one only answers.
+          prompt: {
+            requestId,
+            title: prompt.title,
+            questions: prompt.questions,
+          },
+        },
+        monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
+      });
+    },
+    endAsks: (runId, end) => {
       for (const relay of dropRelays(runId))
-        decideMonoBlock(relay.monoId, relay.blockId, "cancelled");
+        updateMonoBlock(relay.monoId, relay.blockId, (block) =>
+          endHabitAsk(block, end),
+        );
     },
   });
 
@@ -10718,14 +10746,16 @@ function Workspace({
               relay.requestId,
               decision,
             );
-          decideMonoBlockRef.current(
-            sessionId,
-            asked.id,
+          const decided =
             relay && run
               ? decision === "deny"
                 ? "deny"
                 : "allow"
-              : "cancelled",
+              : "cancelled";
+          updateMonoBlockRef.current(sessionId, asked.id, (block) =>
+            block.approval
+              ? { ...block, approval: { ...block.approval, decided } }
+              : block,
           );
           return;
         }
@@ -10741,13 +10771,25 @@ function Workspace({
 
   const onQuestionReply = useCallback(
     (sessionId: string, requestId: number, reply: UserQuestionReply) => {
-      const session = sessionsRef.current.find((s) => s.id === sessionId);
+      const route = questionRoute(sessionId, requestId);
+      const session = sessionsRef.current.find((s) => s.id === route.sessionId);
       if (!session || session.worktreeRemoved) return;
+      if (route.card)
+        updateMonoBlockRef.current(
+          route.card.monoId,
+          route.card.blockId,
+          (block) => answerHabitQuestion(block, reply),
+        );
       if (remoteProjectFor(session.cwd)) {
-        remoteSessionActions(sessionId)?.answer(requestId, reply);
+        remoteSessionActions(session.id)?.answer(route.requestId, reply);
         return;
       }
-      respondHarnessQuestion(session.harness, sessionId, requestId, reply);
+      respondHarnessQuestion(
+        session.harness,
+        session.id,
+        route.requestId,
+        reply,
+      );
     },
     [],
   );

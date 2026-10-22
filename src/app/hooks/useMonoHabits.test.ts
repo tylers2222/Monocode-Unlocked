@@ -64,7 +64,7 @@ const {
   isHabitRun,
   loadHabits,
   noteHabitRunLaunch,
-  relayApproval,
+  relayToMono,
 } = await import("../../features/monos/model/monoHabits");
 const { loadMonoFiles } = await import("../../features/monos/model/monoFiles");
 
@@ -170,14 +170,15 @@ function makeHost(reply: string, approve?: { wait: Promise<void> }) {
     // Like the app: the request is relayed, so later polls skip it.
     askApproval: vi.fn(
       (monoId: string, _habit: Habit, runId: string, block: Block) =>
-        relayApproval({
+        relayToMono({
           monoId,
           runId,
           requestId: block.approval!.requestId,
           blockId: "b",
         }),
     ),
-    endApprovals: vi.fn(),
+    askQuestion: vi.fn(),
+    endAsks: vi.fn(),
   };
   return host;
 }
@@ -252,7 +253,7 @@ it("runs a due habit in a kept session and posts what it found", async () => {
   ).toBe(true);
   // Found by tools that list the sessions of the Mono's chat.
   expect(run.id.startsWith("app-mono-habit-")).toBe(true);
-  expect(host.endApprovals).toHaveBeenCalledWith(run.id);
+  expect(host.endAsks).toHaveBeenCalledWith(run.id, { kind: "stopped" });
   await vi.waitFor(() => expect(stored[0].lastOutcome).toBe("posted"));
   expect(stored[0].runs?.[0]).toMatchObject({
     outcome: "posted",

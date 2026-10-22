@@ -51,6 +51,11 @@ import type {
 } from "../model/session";
 
 import { HARNESSES, RUNTIME_MODES } from "../model/session";
+import { questionsFromUnknown } from "../model/userQuestion";
+import type {
+  HabitQuestion,
+  HabitQuestionEnd,
+} from "../../monos/model/habitQuestion";
 
 import { restoreOrchestrationProposal } from "../../orchestration/model/orchestrationPlan";
 
@@ -931,6 +936,42 @@ export async function loadWorkspaceSnapshot(): Promise<unknown | null> {
   return raw ?? null;
 }
 
+/** A saved habit question card. Only a settled one is kept. */
+function parseHabitQuestion(value: unknown): HabitQuestion | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { runId, runAt, prompt, end } = value as Record<string, unknown>;
+  const { requestId, title } = (prompt ?? {}) as Record<string, unknown>;
+  const questions = questionsFromUnknown(prompt);
+  const ended = parseQuestionEnd(end);
+  if (
+    typeof runId !== "string" ||
+    typeof runAt !== "number" ||
+    typeof requestId !== "number" ||
+    !questions.length ||
+    !ended
+  )
+    return undefined;
+  return {
+    runId,
+    runAt,
+    prompt: {
+      requestId,
+      ...(typeof title === "string" ? { title } : {}),
+      questions,
+    },
+    end: ended,
+  };
+}
+
+function parseQuestionEnd(value: unknown): HabitQuestionEnd | undefined {
+  const { kind, answer } = (value ?? {}) as Record<string, unknown>;
+  if (kind === "answered")
+    return typeof answer === "string" ? { kind, answer } : undefined;
+  return kind === "skipped" || kind === "stopped" || kind === "timed-out"
+    ? { kind }
+    : undefined;
+}
+
 function sanitizeBlock(
   block: Block,
   options?: { hydrate?: boolean },
@@ -962,6 +1003,12 @@ function sanitizeBlock(
       name: block.monoHabit.name,
       at: block.monoHabit.at,
     };
+  }
+  // Like a live approval, an open question's request id dies with the app.
+  if (block.habitQuestion) {
+    const asked = parseHabitQuestion(block.habitQuestion);
+    if (!asked) return null;
+    next.habitQuestion = asked;
   }
   if (block.role === "user" && typeof block.sentAt === "number")
     next.sentAt = block.sentAt;

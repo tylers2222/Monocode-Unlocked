@@ -236,7 +236,9 @@ const ATLAS_SEED = {
   ],
 };
 
-const card = (page: Page) => page.locator("[data-question-form]");
+// The session's own card; a habit run's question also shows in the Mono's chat.
+const card = (page: Page) =>
+  page.locator("[data-question-form]:not([data-habit-question] *)");
 
 async function answer(page: Page, choice: "No" | "Skip") {
   await expect(card(page)).toContainText(QUESTION);
