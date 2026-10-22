@@ -10,8 +10,8 @@ import {
   type SavedMonoCompletion,
 } from "./monoSessionCompletion";
 
-// ADE-46: what a quit keeps of the Mono's waiting completion groups, and how
-// the relaunch hands each kept result to the Mono once.
+// ADE-46 and ADE-89: what the store keeps of the Mono's waiting completion
+// groups, and how the relaunch hands each kept result to the Mono once.
 
 const S = "s-872c4aa7";
 const request = (requestId: string, sessionId = S) => ({
@@ -22,26 +22,45 @@ const request = (requestId: string, sessionId = S) => ({
 });
 const end = (text: string): ControlOutcome => ({ status: "completed", text });
 
-function batchesOver(sessions: Map<string, Session> = new Map()) {
+/** `rows` is what mono_completions holds for this window: what a stop keeps. */
+function batchesOver(
+  sessions: Map<string, Session> = new Map(),
+  claimed: SavedMonoCompletion[] = [],
+) {
   const ready = vi.fn();
+  const rows = new Map(claimed.map((row) => [row.request.requestId, row]));
+  const delivered: string[] = [];
   const batches = new MonoSessionCompletionBatches(
     ready,
     (run, ms) => setTimeout(run, ms),
     (id) => sessions.get(id),
+    {
+      save: (saved) => {
+        for (const row of saved) rows.set(row.request.requestId, row);
+      },
+      deliver: (groupId, requestIds) => {
+        delivered.push(groupId);
+        for (const id of requestIds) rows.delete(id);
+      },
+      remove: (requestIds) => {
+        for (const id of requestIds) rows.delete(id);
+      },
+    },
   );
+  batches.restore(claimed, () => !!sessions.get(S));
   const reported = () =>
     ready.mock.calls.map(([, message]) =>
       [...message.text.matchAll(/"sessionId":"([^"]+)"/g)].map(([, id]) => id),
     );
-  return { batches, ready, reported };
+  return { batches, ready, reported, rows, delivered };
 }
 
 describe("Mono completions across a relaunch", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it("a quit keeps each result the Mono was not given, once per end, and only accepted requests", () => {
-    const { batches, reported } = batchesOver();
+  it("the store keeps each result the Mono was not given, once per end, and only accepted requests", () => {
+    const { batches, reported, rows } = batchesOver();
     const first = { monoId: "mono", turn: 1 };
     const second = { monoId: "mono", turn: 2 };
     const told = end("ADE-58 paused");
@@ -63,13 +82,11 @@ describe("Mono completions across a relaunch", () => {
     });
 
     expect(
-      batches
-        .undelivered()
-        .map(({ origin, request, result }) => [
-          origin.turn,
-          request.requestId,
-          result?.result,
-        ]),
+      [...rows.values()].map(({ origin, request, result }) => [
+        origin.turn,
+        request.requestId,
+        result?.result,
+      ]),
     ).toEqual([
       [2, "running", undefined],
       [2, "held", "M-10 wording fixed"],
@@ -98,11 +115,9 @@ describe("Mono completions across a relaunch", () => {
       ],
     };
     const sessions = new Map([[S, session]]);
-    const { batches, ready } = batchesOver(sessions);
-    batches.restore(
-      [{ origin: { monoId: "mono", turn: 7 }, request: request("3e217e0f") }],
-      () => true,
-    );
+    const { batches, ready, rows, delivered } = batchesOver(sessions, [
+      { origin: { monoId: "mono", turn: 7 }, request: request("3e217e0f") },
+    ]);
     const opened = batches.resume(S, "t1" as TurnId);
     const refused = batches.resume(S, "t2" as TurnId);
     sessions.set(S, {
@@ -135,33 +150,29 @@ describe("Mono completions across a relaunch", () => {
       status: "completed",
     });
     expect(message.text).toContain("M-10 #117 wording fix done.");
-    expect(batches.undelivered()).toEqual([]);
+    expect([...rows.keys()]).toEqual([]);
+    expect(delivered).toEqual(["mono-completion-3e217e0f"]);
   });
 
   it("a session the relaunch cannot continue is reported once as interrupted", () => {
-    const { batches, reported, ready } = batchesOver();
-    batches.restore(
-      [
-        {
-          origin: { monoId: "mono", turn: 3 },
-          request: request("a", "s-offline"),
-        },
-        {
-          origin: { monoId: "mono", turn: 3 },
-          request: request("b", "s-offline"),
-        },
-      ],
-      () => false,
-    );
+    const { batches, reported, ready, rows } = batchesOver(new Map(), [
+      {
+        origin: { monoId: "mono", turn: 3 },
+        request: request("a", "s-offline"),
+      },
+      {
+        origin: { monoId: "mono", turn: 3 },
+        request: request("b", "s-offline"),
+      },
+    ]);
     batches.closeInactive(() => false);
     batches.closeInactive(() => false);
     expect(reported()).toEqual([["s-offline"]]);
     expect(ready.mock.calls[0][1].text).toContain(INTERRUPT_MESSAGE);
-    expect(batches.undelivered()).toEqual([]);
+    expect([...rows.keys()]).toEqual([]);
   });
 
-  it("a second quit keeps what the first kept and the relaunch has not sent", () => {
-    const { batches } = batchesOver();
+  it("a second stop keeps what the first kept and the relaunch has not sent", () => {
     const result = {
       sessionId: "s-held",
       project: "/code/monocode",
@@ -179,29 +190,25 @@ describe("Mono completions across a relaunch", () => {
         result,
       },
     ];
-    batches.restore(saved, () => true);
-    expect(batches.undelivered()).toEqual(saved);
+    const { rows } = batchesOver(new Map(), saved);
+    expect([...rows.values()]).toEqual(saved);
   });
 
-  it("reads kept results from a saved snapshot and drops malformed ones", () => {
+  it("reads the claimed results and drops malformed ones", () => {
     const good: SavedMonoCompletion = {
       origin: { monoId: "mono", turn: 1 },
       request: request("a"),
     };
     expect(
-      savedMonoCompletions({
-        tabs: [],
-        monoCompletions: [
-          good,
-          { origin: { monoId: "mono" }, request: request("no-turn") },
-          { origin: { monoId: "mono", turn: 1 }, request: { requestId: "x" } },
-          { ...good, result: { sessionId: "a" } },
-          null,
-        ],
-      }),
+      savedMonoCompletions([
+        good,
+        { origin: { monoId: "mono" }, request: request("no-turn") },
+        { origin: { monoId: "mono", turn: 1 }, request: { requestId: "x" } },
+        { ...good, result: { sessionId: "a" } },
+        null,
+      ]),
     ).toEqual([good]);
-    expect(savedMonoCompletions({ tabs: [] })).toEqual([]);
     expect(savedMonoCompletions(null)).toEqual([]);
-    expect(savedMonoCompletions({ monoCompletions: "x" })).toEqual([]);
+    expect(savedMonoCompletions({ monoCompletions: [good] })).toEqual([]);
   });
 });

@@ -38,7 +38,9 @@ import {
   dismissQueuedMonoSessionCompletion,
   enqueueMonoSessionCompletion,
   MonoSessionCompletionBatches,
+  monoCompletionStore,
   type MonoCompletionRequest,
+  type SavedMonoCompletion,
 } from "../features/monos/model/monoSessionCompletion";
 import {
   acceptQuickLaunch,
@@ -895,7 +897,6 @@ import {
   persistQuitState,
   reapWindowRuntime,
   setQuitWorkspace,
-  type QuitWorkspace,
 } from "./model/appLifecycle";
 
 const SearchView = lazySurface(
@@ -1170,7 +1171,9 @@ function titleTabsEqual(a: TitleTab[], b: TitleTab[]): boolean {
 registerBuiltinHarnesses();
 
 type AppProps = {
-  resumed?: QuitWorkspace | null;
+  resumed?: WindowWorkspace | null;
+  /** The Mono completion results this window claimed at boot (ADE-89). */
+  monoCompletions?: SavedMonoCompletion[];
   installedUpdate?: InstalledUpdate | null;
   history?: SessionSummary[];
   historyCwd?: string | null;
@@ -1196,6 +1199,7 @@ export default function App(props: AppProps) {
 
 function Workspace({
   resumed = null,
+  monoCompletions = [],
   installedUpdate = null,
   history: bootHistory = [],
   historyCwd: bootHistoryCwd = null,
@@ -1698,14 +1702,6 @@ function Workspace({
     }),
     [readProjectReturnMemory, workspacePins],
   );
-  /** This window as a quit, reload or close saves it (ADE-46). */
-  const readQuitWorkspace = useCallback(
-    (): QuitWorkspace => ({
-      ...readWindowWorkspace(),
-      monoCompletions: monoCompletionBatches.current!.undelivered(),
-    }),
-    [readWindowWorkspace],
-  );
 
   const tabVisitRef = useRef(emptyTabVisitHistory(activeTabId));
   const tabVisitFromHistoryRef = useRef(false);
@@ -1908,7 +1904,7 @@ function Workspace({
     const stopBridge = startHarnessBridge();
     const reap = () => {
       if (isAppQuitting()) return;
-      void persistQuitState(readQuitWorkspace(), "unload").finally(() => {
+      void persistQuitState(readWindowWorkspace(), "unload").finally(() => {
         void reapWindowRuntime(
           sessionsRef.current,
           tabsRef.current,
@@ -1924,7 +1920,7 @@ function Workspace({
       stopBridge();
       harnessEvents.cancelScheduled();
     };
-  }, [resumed, readQuitWorkspace, harnessEvents]);
+  }, [resumed, readWindowWorkspace, harnessEvents]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2445,7 +2441,7 @@ function Workspace({
   useEffect(() => {
     let unlistenClose: (() => void) | undefined;
     const releaseQuit = setQuitWorkspace(
-      readQuitWorkspace,
+      readWindowWorkspace,
       flushHarnessEvents,
     );
     void getCurrentWindow()
@@ -2474,7 +2470,7 @@ function Workspace({
           void hideCurrentWindow();
           return;
         }
-        void persistQuitState(readQuitWorkspace(), "unload").finally(() => {
+        void persistQuitState(readWindowWorkspace(), "unload").finally(() => {
           void (toTray ? hideCurrentWindow() : closeCurrentWindow());
         });
       })
@@ -2485,7 +2481,7 @@ function Workspace({
       releaseQuit();
       unlistenClose?.();
     };
-  }, [flushHarnessEvents, readQuitWorkspace]);
+  }, [flushHarnessEvents, readWindowWorkspace]);
 
   const refreshHistory = useCallback(async (cwd: string) => {
     if (!cwd || cwd === "~") return;
@@ -9002,9 +8998,10 @@ function Workspace({
       scheduleAfter,
       (sessionId) =>
         sessionsRef.current.find((session) => session.id === sessionId),
+      monoCompletionStore,
     );
     monoCompletionBatches.current.restore(
-      resumed?.monoCompletions ?? [],
+      monoCompletions,
       (sessionId) =>
         sessionsRef.current.some(
           (session) =>

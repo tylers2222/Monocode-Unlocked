@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
 import { INTERRUPT_MESSAGE } from "../../sessions/model/inFlight";
 import { enqueueQueuedMessage } from "../../sessions/model/messageQueue";
@@ -152,14 +153,48 @@ type CompletionBatch = {
 };
 
 /**
- * A monitored request whose end the Mono has not been given, kept across a
- * quit (ADE-46). `result` is set when the request's turn had already ended.
+ * A monitored request whose end the Mono has not been given, kept in the
+ * window's `mono_completions` rows (ADE-89). `result` is set when the
+ * request's turn has ended.
  */
 export type SavedMonoCompletion = {
   origin: MonoCompletionOrigin;
   request: MonoCompletionRequest;
   result?: MonoSessionCompletionResult;
 };
+
+/**
+ * The rows of the results this window owes (mono_completions.rs). `deliver`
+ * deletes a group's rows in the commit that marks the group delivered. It
+ * runs once the notice is in the Mono's queue: a stop before that keeps the
+ * rows, and the next notice keeps the same id, which the queue takes once.
+ */
+export type MonoCompletionStore = {
+  save(saved: SavedMonoCompletion[]): void;
+  deliver(groupId: string, requestIds: string[]): void;
+  remove(requestIds: string[]): void;
+};
+
+let storeCalls: Promise<void> = Promise.resolve();
+
+/** In call order, so a delivery never reaches Rust before its result's save. */
+function write(command: string, args: Record<string, unknown>) {
+  storeCalls = storeCalls
+    .then(() => invoke<void>(command, args))
+    .catch(console.error);
+}
+
+export const monoCompletionStore: MonoCompletionStore = {
+  save: (saved) => write("mono_completions_save", { saved }),
+  deliver: (groupId, requestIds) =>
+    write("mono_completions_deliver", { groupId, requestIds }),
+  remove: (requestIds) => write("mono_completions_remove", { requestIds }),
+};
+
+/** This window's boot takes the results no live window holds. */
+export async function claimMonoCompletions(): Promise<SavedMonoCompletion[]> {
+  return savedMonoCompletions(await invoke<unknown>("mono_completions_claim"));
+}
 
 /** Results handed to `onReady`; a dismissal can still remove one before it is queued. */
 type CompletionDelivery = {
@@ -214,6 +249,7 @@ export class MonoSessionCompletionBatches {
     ) => void | Promise<void>,
     private schedule: (run: () => void, ms: number) => void,
     private session: (sessionId: string) => Session | undefined,
+    private store: MonoCompletionStore,
   ) {}
 
   /** Returns the watcher of `request`'s turn, called with that turn's outcome. */
@@ -234,8 +270,44 @@ export class MonoSessionCompletionBatches {
     if (!result || result.settled) {
       result = { ...request, accepted: !options.awaitAcceptance };
       batch.results.set(request.requestId, result);
+      this.keep(origin, result);
     }
     return this.watcher(key, batch, result);
+  }
+
+  /**
+   * Keeps an accepted member in the store while the Mono is owed its end. A
+   * steer and the request it joined share an end: the store keeps the first
+   * one waiting with it, and none once the Mono was given it (ADE-47).
+   */
+  private keep(origin: MonoCompletionOrigin, entry: CompletionMember) {
+    const { accepted, settled, ...request } = entry;
+    if (!accepted) return;
+    if (
+      settled &&
+      (this.reportedEnds.get(origin.monoId)?.has(settled.end) ||
+        this.waitingWith(new Set([settled.end]), entry).length)
+    ) {
+      this.store.remove([request.requestId]);
+      return;
+    }
+    this.store.save([
+      { origin, request, ...(settled ? { result: settled.result } : {}) },
+    ]);
+  }
+
+  /** The other accepted members waiting with one of `ends`. */
+  private waitingWith(ends: Set<ControlOutcome>, except?: CompletionMember) {
+    return [...this.batches.values()].flatMap(({ results }) =>
+      [...results.values()].flatMap((member) =>
+        member !== except &&
+        member.accepted &&
+        member.settled &&
+        ends.has(member.settled.end)
+          ? [member.requestId]
+          : [],
+      ),
+    );
   }
 
   private watcher(
@@ -255,6 +327,7 @@ export class MonoSessionCompletionBatches {
           }),
           end: outcome,
         };
+        this.keep(group.origin, entry);
         this.release(key, group);
       },
       {
@@ -263,6 +336,7 @@ export class MonoSessionCompletionBatches {
         accept: () => {
           if (group.results.get(requestId) !== entry) return;
           entry.accepted = true;
+          this.keep(group.origin, entry);
           this.release(key, group);
         },
         // A rejected CLI launch was already reported in the calling turn.
@@ -276,32 +350,11 @@ export class MonoSessionCompletionBatches {
   }
 
   /**
-   * What a quit keeps (ADE-46): each accepted member whose end the Mono was
-   * not given, once per end. A steer and the request it joined share an end,
-   * so a held steer whose end another group already reported is left out.
-   */
-  undelivered(): SavedMonoCompletion[] {
-    const kept = new Set<ControlOutcome>();
-    return [...this.batches.values()].flatMap(({ origin, results }) =>
-      [...results.values()].flatMap(({ accepted, settled, ...request }) => {
-        if (!accepted) return [];
-        if (!settled) return [{ origin, request }];
-        if (
-          this.reportedEnds.get(origin.monoId)?.has(settled.end) ||
-          kept.has(settled.end)
-        )
-          return [];
-        kept.add(settled.end);
-        return [{ origin, request, result: settled.result }];
-      }),
-    );
-  }
-
-  /**
-   * Takes back what a quit kept. The quit ended every launching turn, so each
-   * group is open and sends on the next `closeInactive`. A member whose turn
-   * the quit cut waits for `resume` when `continues` says a Continue turn picks
-   * the session up; else the quit was its end.
+   * Takes back the results this window claimed at boot. The app that owed
+   * them stopped, which ended every launching turn, so each group is open
+   * and sends on the next `closeInactive`. A member whose turn the stop cut
+   * waits for `resume` when `continues` says a Continue turn picks the
+   * session up; else the stop was its end.
    */
   restore(
     saved: SavedMonoCompletion[],
@@ -365,17 +418,19 @@ export class MonoSessionCompletionBatches {
 
   /** The calling Mono already knows the outcome of its own lifecycle command. */
   dismissSession(monoId: string, sessionId: string) {
-    const dismiss = (results: Map<string, { sessionId: string }>) => {
-      for (const [requestId, result] of results) {
-        if (result.sessionId === sessionId) results.delete(requestId);
-      }
-    };
+    const dismiss = (results: Map<string, { sessionId: string }>) =>
+      [...results].flatMap(([requestId, result]) => {
+        if (result.sessionId !== sessionId) return [];
+        results.delete(requestId);
+        return [requestId];
+      });
     for (const delivery of this.deliveries) {
       if (delivery.monoId === monoId) dismiss(delivery.results);
     }
     for (const [key, batch] of this.batches) {
       if (batch.origin.monoId !== monoId) continue;
-      dismiss(batch.results);
+      const dismissed = dismiss(batch.results);
+      if (dismissed.length) this.store.remove(dismissed);
       this.release(key, batch);
     }
   }
@@ -404,31 +459,43 @@ export class MonoSessionCompletionBatches {
     // Removing before delivery prevents reentrant or repeated callbacks from replaying it.
     for (const requestId of release) group.results.delete(requestId);
     if (!group.results.size) this.batches.delete(key);
+    const sending = new Set(send.map(({ requestId }) => requestId));
+    const unsent = release.filter((requestId) => !sending.has(requestId));
+    if (unsent.length) this.store.remove(unsent);
     if (!send.length) return;
     const reported = this.reportedEnds.get(monoId) ?? new WeakSet();
     this.reportedEnds.set(monoId, reported);
     for (const { end } of send) reported.add(end);
+    // A member still waiting with an end sent here will not be sent either.
+    const sharing = this.waitingWith(new Set(send.map(({ end }) => end)));
+    if (sharing.length) this.store.remove(sharing);
     const results = new Map(
       send.map(({ requestId, result }) => [requestId, result]),
     );
     const delivery: CompletionDelivery = { monoId, results };
+    // A member is released once, so its first id names this group alone,
+    // and the id stays a persistable app request id however many it holds.
+    const requestIds = [...sending].sort();
     const id =
-      results.size === 1
-        ? `mono-completion-${[...results.keys()][0]}`
-        : `mono-completion-batch-${crypto.randomUUID()}`;
+      requestIds.length === 1
+        ? `mono-completion-${requestIds[0]}`
+        : `mono-completion-batch-${requestIds[0]}`;
     const current = () => {
       const values = [...delivery.results.values()];
       return values.length ? completionMessage(id, values) : undefined;
     };
     this.deliveries.add(delivery);
-    const delivered = this.onReady(delivery.monoId, current()!, current);
-    if (delivered) {
-      void delivered
-        .finally(() => this.deliveries.delete(delivery))
-        .catch(console.error);
-    } else {
-      this.deliveries.delete(delivery);
+    const queued = this.onReady(monoId, current()!, current);
+    const done = () => this.deliveries.delete(delivery);
+    if (!queued) {
+      done();
+      this.store.deliver(id, requestIds);
+      return;
     }
+    void queued
+      .then(() => this.store.deliver(id, requestIds))
+      .finally(done)
+      .catch(console.error);
   }
 }
 
@@ -483,12 +550,8 @@ function isCompletionResult(
   );
 }
 
-/** What `undelivered` kept in a saved workspace snapshot; malformed entries are dropped. */
-export function savedMonoCompletions(snapshot: unknown): SavedMonoCompletion[] {
-  const raw =
-    snapshot && typeof snapshot === "object" && "monoCompletions" in snapshot
-      ? snapshot.monoCompletions
-      : undefined;
+/** The rows a claim returned; malformed entries are dropped. */
+export function savedMonoCompletions(raw: unknown): SavedMonoCompletion[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((entry): entry is SavedMonoCompletion => {
     const { origin, request, result } = (entry ?? {}) as Record<

@@ -4,6 +4,9 @@
 #
 #   app.sh build [checkout]   build the instance (under heavy-lock.sh)
 #   app.sh s0 [runs]          S0 through the real app, `runs` times (default 1)
+#   app.sh ade89 MODE [runs]  ADE-89: a waiting completion result survives
+#                             two exits with no quit save (MODE kill, term,
+#                             or two: kill with two windows) and arrives once
 #
 # GIGA_EVAL_OUT and GIGA_EVAL_HOME default to their own /tmp folders, apart
 # from other GigaEval runs. The installed apps and their data are never used.
@@ -99,18 +102,21 @@ SQL
 }
 
 install_puppet() {
+  local rules="$1"
   mkdir -p "$EVAL_HOME/.local/bin" "$PUPPET"
   cp "$SCENARIOS/puppet/puppet.mjs" "$EVAL_HOME/.local/bin/fx"
   chmod +x "$EVAL_HOME/.local/bin/fx"
   : >"$PUPPET/log.jsonl"
-  # The answer rule goes first: a prompt carrying the answer may quote the ask.
-  jq -n --arg app "$(target_bin instance)" '{app: $app, rules: [
-    {match: "S0-HABIT", calls: [{tool: "send_message", arguments:
-      {message: "S0-Q Is CI green?", send_to: "s0-mono", wanting_reply: false, intent: "new"}}], reply: "Asked."},
-    {match: "S0-A", reply: "Noted."},
-    {match: "S0-Q", calls: [{tool: "send_message", arguments:
-      {message: "S0-A Yes, CI is green.", send_to: "s0-giga", wanting_reply: false, intent: "new"}}], reply: "Answered."}]}' >"$PUPPET/script.json"
+  jq -n --arg app "$(target_bin instance)" --argjson rules "$rules" '{app: $app, rules: $rules}' >"$PUPPET/script.json"
 }
+
+# The answer rule goes first: a prompt carrying the answer may quote the ask.
+S0_RULES='[
+  {"match": "S0-HABIT", "calls": [{"tool": "send_message", "arguments":
+    {"message": "S0-Q Is CI green?", "send_to": "s0-mono", "wanting_reply": false, "intent": "new"}}], "reply": "Asked."},
+  {"match": "S0-A", "reply": "Noted."},
+  {"match": "S0-Q", "calls": [{"tool": "send_message", "arguments":
+    {"message": "S0-A Yes, CI is green.", "send_to": "s0-giga", "wanting_reply": false, "intent": "new"}}], "reply": "Answered."}]'
 
 prompts() { jq -s --arg rule "$1" '[.[] | select(.rule == $rule)] | length' "$PUPPET/log.jsonl"; }
 saw() { (($(prompts "$1") > 0)); }
@@ -124,7 +130,7 @@ run_s0() {
   mkdir -p "$APP_DATA"
   UPTIME=0; WALL="$(date +%s)000"; BOOT_MS=$((WALL - 3600000))
   clock_write "$UPTIME" "$WALL"
-  install_puppet
+  install_puppet "$S0_RULES"
   # The first launch only creates and migrates the DB.
   "$INSTANCE" start
   wait_until 30 "the first launch writes mono_clock" holds "SELECT count(*) = 1 FROM mono_clock"
@@ -166,10 +172,104 @@ run_s0() {
   return "$FAILED"
 }
 
+# The notice rule goes first: the notice quotes the session's prompt.
+NOTICE="MonoCode completion notification"
+ADE89_RULES='[
+  {"match": "S0-HABIT", "calls": [{"tool": "send_message", "arguments":
+    {"message": "ADE89-GO Start the work session.", "send_to": "s0-mono", "wanting_reply": false, "intent": "new"}}], "reply": "Asked."},
+  {"match": "'"$NOTICE"'", "reply": "Reviewed."},
+  {"match": "Continue from where you left off.", "hold": 1, "reply": "Done."},
+  {"match": "ADE89-WORK", "hold": 1, "reply": "Done."},
+  {"match": "ADE89-GO", "calls": [{"action": "sessions.start", "arguments":
+    {"prompt": "ADE89-WORK Build it.", "harness": "fx", "model": "fx:zai/glm-5.2-fast"}}], "reply": "Started."}]'
+
+# The app exits with no quit save: kill -9, or SIGTERM (instance.sh stop).
+exit_unsaved() {
+  case "$1" in
+    kill|two) kill9 ;;
+    term) "$INSTANCE" stop ;;
+  esac
+}
+
+# In mode `two` a second workspace window opens about 1 s after each launch
+# (window.rs open_on_request), while the first one already claimed at boot.
+launch() {
+  [[ "$1" == two ]] && touch "$APP_DATA/open-window"
+  "$INSTANCE" start
+  # The new window's boot (load, then its claim) takes about 2 s, and nothing
+  # it writes marks its end, so the run waits that long and more.
+  [[ "$1" == two ]] && sleep 8
+  return 0
+}
+
+rows() { q "SELECT count(*) FROM mono_completions"; }
+
+# ADE-89: a waiting completion result is a mono_completions row from the
+# moment the Mono starts the session. It survives two exits with no quit save
+# and reaches the Mono once, with one or two windows open.
+run_ade89() {
+  local mode="$1" run="$2" giga_chat mono_chat work _
+  FAILED=0
+  log "ADE-89 run $run, exit by $mode"
+  "$INSTANCE" stop
+  "$INSTANCE" home --fresh
+  mkdir -p "$APP_DATA"
+  UPTIME=0; WALL="$(date +%s)000"; BOOT_MS=$((WALL - 3600000))
+  clock_write "$UPTIME" "$WALL"
+  install_puppet "$ADE89_RULES"
+  "$INSTANCE" start
+  wait_until 30 "the first launch writes mono_clock" holds "SELECT count(*) = 1 FROM mono_clock"
+  "$INSTANCE" stop
+  giga_chat="$(uuidgen | tr '[:upper:]' '[:lower:]')"; mono_chat="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  seed "$giga_chat" "$mono_chat"
+  "$INSTANCE" start
+  wait_until 90 "the Mono's session runs, alone in flight" \
+    holds "SELECT count(*) = 1 AND min(session_id) NOT IN ('$giga_chat', '$mono_chat') FROM in_flight_sessions"
+  work="$(q "SELECT session_id FROM in_flight_sessions")"
+  wait_until 30 "the Mono's turn ends" holds "SELECT count(*) = 0 FROM in_flight_sessions WHERE session_id = '$mono_chat'"
+  wait_until 30 "the waiting result is a row" holds "SELECT count(*) = 1 FROM mono_completions WHERE request_id = '$work'"
+  echo "ade89 ($mode) run $run readings:"
+  expect "sessions.start calls that failed" "$(jq -s '[.[] | select(.action and .result.ok != true)] | length' "$PUPPET/log.jsonl")" 0
+  expect "workspace rows that carry results" "$(q "SELECT count(*) FROM workspace_snapshot WHERE json_type(snapshot_json, '$.monoCompletions') IS NOT NULL")" 0
+  kill9
+
+  launch "$mode"
+  wait_until 60 "the relaunch continues the session" saw "Continue from where you left off."
+  if [[ "$mode" == two ]]; then
+    # The second window binds the same harness session, which ends the first
+    # window's Continue turn ("fx exited"), so the result may already be sent.
+    expect "windows that hold a row, at most one" "$(q "SELECT count(DISTINCT window_label) <= 1 FROM mono_completions")" 1
+    expect "rows and notices after the first relaunch" "$(( $(rows) + $(prompts "$NOTICE") ))" 1
+  else
+    expect "rows after the first relaunch" "$(rows)" 1
+    expect "windows that hold them" "$(q "SELECT count(DISTINCT window_label) FROM mono_completions")" 1
+    expect "notices before the second exit" "$(prompts "$NOTICE")" 0
+  fi
+  exit_unsaved "$mode"
+
+  launch "$mode"
+  for _ in $(seq 1 60); do saw "$NOTICE" && break; sleep 1; done
+  # A second copy would follow the first within the same second or two.
+  sleep 5
+  expect "notices to the Mono" "$(prompts "$NOTICE")" 1
+  expect "rows once it is delivered" "$(rows)" 0
+  expect "delivered groups" "$(q "SELECT count(*) FROM mono_completion_deliveries")" 1
+  echo "  Continue prompts: $(prompts "Continue from where you left off.")"
+  "$INSTANCE" stop
+  return "$FAILED"
+}
+
 case "${1:-}" in
   build) "$INSTANCE" build "${2:-$SCENARIOS/../..}" scenario ;;
   # One run per process: a run called in `||` would run with errexit off.
   s0-run) run_s0 "$2" ;;
+  ade89-run) run_ade89 "$2" "$3" ;;
+  ade89)
+    [[ "${2:-}" =~ ^(kill|term|two)$ ]] || die "usage: app.sh ade89 kill|term|two [runs]"
+    failed=0
+    for run in $(seq 1 "${3:-1}"); do "$0" ade89-run "$2" "$run" || failed=$((failed + 1)); done
+    log "ADE-89 $2: $(( ${3:-1} - failed ))/${3:-1} passed"
+    ((failed == 0)) ;;
   s0)
     failed=0
     for run in $(seq 1 "${2:-1}"); do "$0" s0-run "$run" || failed=$((failed + 1)); done
