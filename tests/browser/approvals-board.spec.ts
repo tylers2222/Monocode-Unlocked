@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
+import Delete02Icon from "@hugeicons/core-free-icons/Delete02Icon";
 import type { Approval } from "../../src/features/approvals/model/approvals";
 import { expect, test, type FakeSeed, type MountOptions } from "./app/fixture";
 
@@ -14,6 +15,10 @@ const REAL_DB: Required<Pick<FakeSeed, "monos" | "projects">> & {
 );
 const MONOCODE = "/Users/test/Desktop/monocode";
 const MINUTE = 60_000;
+// icons.tsx's Trash2. An icon renders no name, so it is matched by its path data.
+const TRASH2 = `svg${Delete02Icon.flatMap(([tag, attrs]) =>
+  tag === "path" ? [`:has(> path[d="${String(attrs.d)}"])`] : [],
+).join("")}`;
 
 const allowReservedNameDialog: MountOptions["handlers"] = {
   "plugin:dialog|message": (_store, { message }) => {
@@ -179,6 +184,13 @@ test("the board shows each card state of a copy of the app database", async ({
   ).not.toContainText("Options");
   await shot(page, "board-open");
 
+  await expect(
+    row(page, "Store the Giga")
+      .getByText("not sent", { exact: true })
+      .locator(TRASH2),
+    "the row's Trash2",
+  ).toHaveCount(1);
+
   await row(page, "Index approvals").click();
   const changes = card(page, "Index approvals on (project_id, status) only");
   await expect(changes).toContainText("Changes requestedNot blockingAPR-");
@@ -213,8 +225,8 @@ test("the board shows each card state of a copy of the app database", async ({
   );
   await expect(unqueued).toBeVisible();
   await expect(
-    unqueued.locator("xpath=..").locator("xpath=./*[local-name()='svg']"),
-    "the queue's remove icon",
+    unqueued.locator("xpath=..").locator(TRASH2),
+    "the line's Trash2",
   ).toHaveCount(1);
   await expect(rejected.getByRole("button", { name: /^Open / })).toHaveCount(0);
   await expect(rejected.locator(".text-amber-400")).toHaveCount(0);
@@ -250,7 +262,7 @@ test("the board shows each card state of a copy of the app database", async ({
 
   await pickProject(page, /^Modelist/);
   await expect(
-    board(page).getByText("1 open · 1 blocking · 1 decided"),
+    board(page).getByText("1 open · 1 blocking · 3 decided"),
   ).toBeVisible();
   await expect(
     card(page, "Drop the CSV export from Modelist v1?"),
@@ -264,17 +276,34 @@ test("the board shows each card state of a copy of the app database", async ({
   await expect(orphan).toContainText(
     "You can still decide it to close the card. Nothing is sent: there is no Giga to receive it.",
   );
-  const orphanRow = row(page, "Keep the model picker");
-  await expect(orphanRow).toHaveText(
+  // A removed filer wins over the queue: one card was waiting for the Giga's
+  // next chat and one was removed from its queue before the Giga was deleted.
+  await expect(rows(page), "each row reads A·5's not sent").toHaveText([
+    /^RejectedRename presets to profiles in v1\?Modelist General not sent · 7h ago$/,
+    /^ApprovedPin the model list to one provider API version\?Modelist General not sent · 8h ago$/,
     /^ApprovedKeep the model picker in v1\?Modelist General not sent · 9h ago$/,
-  );
-  await expect(orphanRow.getByRole("deletion")).toHaveText("Modelist General");
-  await orphanRow.click();
-  await expect(
-    card(page, "Keep the model picker in v1?")
-      .getByText("Not sent: the Giga that filed this was removed.")
-      .locator("svg"),
-  ).toHaveCount(1);
+  ]);
+  await expect(rows(page).getByRole("deletion")).toHaveText([
+    "Modelist General",
+    "Modelist General",
+    "Modelist General",
+  ]);
+  for (const heading of [
+    "Rename presets to profiles in v1?",
+    "Pin the model list to one provider API version?",
+    "Keep the model picker in v1?",
+  ]) {
+    await row(page, heading).click();
+    const gone = card(page, heading);
+    const line = gone.locator(".text-amber-400", {
+      hasText: "Not sent: the Giga that filed this was removed.",
+    });
+    await expect(line, `${heading} shows A·5's amber line`).toHaveCount(1);
+    await expect(line.locator("svg")).toHaveCount(1);
+    await expect(gone).not.toContainText("Waiting to send");
+    await expect(gone).not.toContainText("’s queue");
+    await expect(gone.getByRole("button", { name: /^Open / })).toHaveCount(0);
+  }
   await shot(page, "board-removed");
 });
 
