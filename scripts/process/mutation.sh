@@ -7,6 +7,7 @@
 #                                  mutation_targets.py's comma-separated path:start-end;
 #                                  stryker_scope.py decides (one run per file)
 # The workflow's 55-minute step timeouts are the last bound: a timed-out step fails.
+# Throwaway control: no exclusion; this comment only keeps the PR T3.
 set -euo pipefail
 MAX_MUTANTS=150
 here=$(cd "$(dirname "$0")" && pwd)
@@ -21,9 +22,7 @@ case ${1-} in
       echo "::error::$count Rust mutants, more than $MAX_MUTANTS; split the PR so each part mutates fewer"
       exit 1
     fi
-    # run builds the real app event loop: only app.sh can call it, cargo test cannot (#284 review r1, CI run 39825194390).
-    "$CARGO_MUTANTS" mutants --no-config --in-diff "$2" --jobs 2 --timeout-multiplier 3 \
-      --exclude-re '^src-tauri/src/lib\.rs:[0-9]+:[0-9]+: replace run with \(\)$'
+    "$CARGO_MUTANTS" mutants --no-config --in-diff "$2" --jobs 2 --timeout-multiplier 3
     ;;
   ts)
     # The PR's tree, for its tests and source imports.
