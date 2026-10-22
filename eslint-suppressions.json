@@ -697,7 +697,7 @@
   },
   "src/features/milestones/ui/MilestoneTimeline.tsx": {
     "max-lines-per-function": {
-      "count": 2
+      "count": 1
     }
   },
   "src/features/milestones/ui/MilestonesView.tsx": {
@@ -758,7 +758,7 @@
   },
   "src/features/monos/model/monoMessages.ts": {
     "complexity": {
-      "count": 2
+      "count": 1
     }
   },
   "src/features/monos/model/monoMigration.test.ts": {

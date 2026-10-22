@@ -17,6 +17,7 @@ import type { Worktree } from "../../features/source-control/model/worktrees";
 import type { WorkspaceTab } from "../../features/workspace/model/layout";
 import {
   filterTabsForProject,
+  tabWorkspace,
   workspaceTabCwd,
 } from "../../features/workspace/model/workspaceTabGroups";
 import { pathKey } from "../../shared/lib/paths";
@@ -29,10 +30,6 @@ type Options = {
   tabs: WorkspaceTab[];
   sessions: Session[];
   pins: Map<string, string>;
-  tabWorkspace: (
-    tab: WorkspaceTab,
-    sessions: readonly Session[],
-  ) => string | null;
   moveSession: (
     id: string,
     tree: Worktree,
@@ -107,7 +104,7 @@ export function useWorkspaceNavigation(options: Options) {
         const session = view.sessions.find(
           (entry) => entry.id === tab.focusedId,
         );
-        const landing = view.tabWorkspace(tab, view.sessions);
+        const landing = tabWorkspace(tab, view.sessions, view.pins);
         const landingFocus =
           landing && !sameProjectPath(landing, next.project)
             ? { path: landing, branch: session?.branch ?? null }
@@ -148,7 +145,7 @@ export function useWorkspaceNavigation(options: Options) {
             view.sessions,
             next.project,
           ).filter((entry) => {
-            const workspace = view.tabWorkspace(entry, view.sessions);
+            const workspace = tabWorkspace(entry, view.sessions, view.pins);
             return !workspace || sameProjectPath(workspace, path);
           });
           const target =

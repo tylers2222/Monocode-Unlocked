@@ -42,6 +42,8 @@ export type Approval = ApprovalCard & {
         decidedAt: number;
         note: string | null;
         chosen: string[];
+        /** Dropped: sent again to the Giga's next chat, or removed by the user. */
+        undelivered: "waiting" | "removed" | null;
       };
 };
 
