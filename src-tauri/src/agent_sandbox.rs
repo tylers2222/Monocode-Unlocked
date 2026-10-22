@@ -1,16 +1,10 @@
-//! The agent sandbox (ADE-41). It is off unless `<app data>/agent-sandbox-on`
-//! exists, and off, a harness child starts exactly as it always did. On, the
-//! child starts as `srt --settings <app data>/agent-sandbox.json -- <cli>
-//! <args>`. srt runs it, and every process it starts, under a Seatbelt profile
-//! that allows writes only to `allowWrite`, network only to `allowedDomains`,
-//! and reads everywhere except `denyRead`. Every MonoCode data folder is in
-//! both deny lists, so the agent can neither read a database nor change this setting.
-//!
-//! The user adds paths and domains under `extraAllowWrite` and
-//! `extraAllowedDomains` in the settings file. The app rewrites every other key
-//! from its defaults before each spawn, so a later fix to the defaults reaches
-//! every machine. srt lets `denyWrite` win over `allowWrite`, so an addition
-//! cannot reopen a denied path.
+//! The agent sandbox (ADE-41), off unless `<app data>/agent-sandbox-on` exists.
+//! Off, a harness child starts as it always did. On, it starts as `srt
+//! --settings <app data>/agent-sandbox.json -- <cli> <args>`: writes only to
+//! `allowWrite`, network only to `allowedDomains`, reads all but `denyRead`.
+//! Every MonoCode data folder is in both deny lists. The user's `extraAllowWrite`
+//! and `extraAllowedDomains` are added to the defaults on every spawn, and srt
+//! lets `denyWrite` win, so an addition cannot reopen a denied path.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -24,8 +18,7 @@ use tauri::{AppHandle, Manager, Runtime};
 const SRT_VERSION: &str = "0.0.81";
 const ON_MARKER: &str = "agent-sandbox-on";
 const SETTINGS_FILE: &str = "agent-sandbox.json";
-/// Every MonoCode build's data folder sits next to this one (`com.monocode.desktop`,
-/// `.second`, `.desktop.gigaeval`, dev builds), and each holds a database.
+/// Every MonoCode build's data folder (`.second`, `.desktop.gigaeval`, dev builds).
 const ALL_INSTANCES: &str = "com.monocode.*";
 
 /// Under HOME. A write to any of these runs code outside the sandbox later,
@@ -258,18 +251,8 @@ fn add_resolved(list: &mut Vec<String>) {
 
 /// `path` with its deepest existing ancestor resolved.
 fn resolved(path: &Path) -> Option<PathBuf> {
-    let mut missing = Vec::new();
-    let mut dir = path;
-    loop {
-        if let Ok(real) = std::fs::canonicalize(dir) {
-            return Some(
-                missing
-                    .iter()
-                    .rev()
-                    .fold(real, |real, part| real.join(part)),
-            );
-        }
-        missing.push(dir.file_name()?);
-        dir = dir.parent()?;
+    match std::fs::canonicalize(path) {
+        Ok(real) => Some(real),
+        Err(_) => Some(resolved(path.parent()?)?.join(path.file_name()?)),
     }
 }

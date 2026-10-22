@@ -7,11 +7,11 @@
 // script.json: {"app": "<monocode binary>", "rules": [{"match": "...",
 //   "exec": [["sqlite3", "x.db", ".tables"]],
 //   "calls": [{"tool": "send_message", "arguments": {...}}], "reply": "..."}]}
-// Each exec runs in the agent's working directory, without a shell. Each call
-// goes through `<app> app-mcp`, the app's MCP server, with the app
+// Each call goes through `<app> app-mcp`, the app's MCP server, with the app
 // token this process got from the app. log.jsonl gets one line per prompt
-// ({"prompt", "rule", "steer"}), per exec ({"exec", "code", "stdout",
-// "bytes", "stderr"}) and per call ({"tool", "input", "result"}).
+// ({"prompt", "rule", "steer"}) and per call ({"tool", "input", "result"}).
+// Each exec runs in the agent's folder without a shell and logs {"exec", "code",
+// "stdout", "bytes", "stderr"}.
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";

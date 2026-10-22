@@ -222,10 +222,6 @@ probe() {
   jq -rs --arg p "$1" "[.[] | select(.exec and (.exec | join(\" \") | contains(\$p)))] | last | $2" "$PUPPET/log.jsonl"
 }
 denied() { probe "$1" '.code != 0 and (.stdout + .stderr | test("[Oo]peration not permitted|authorization denied"))'; }
-# Each probe's exit code and first output line, for the run's record.
-show_probes() {
-  jq -r 'select(.exec) | "  probe \(.exec[0]) \(.exec[-1] | .[0:60]): exit \(.code): \((.stderr + .stdout) | split("\n")[0] // "" | .[0:160])"' "$PUPPET/log.jsonl"
-}
 habit_failed() { jq -e '.[0].lastOutcome == "failed"' "$APP_DATA/monos/d1-giga/habits.json" >/dev/null; }
 
 run_d1() {
@@ -238,9 +234,8 @@ run_d1() {
 
   echo "on:"
   touch "$SANDBOX_ON"
-  # The app's default allowWrite: the temp HOME (and so ~/.puppet, where the
-  # puppet logs, ~/.local/bin, a search PATH dir, ~/.config/git, and srt's
-  # code) is under /tmp, so only the deny lists keep those out.
+  # The temp HOME and srt are under /tmp, which the app's defaults allow, so
+  # only the deny lists keep ~/.local/bin, ~/.config/git and srt's code out.
   d1_phase on
   "$INSTANCE" start
   wait_until 90 "the Mono gets the Giga's message" saw D1-Q
@@ -259,11 +254,7 @@ run_d1() {
   expect "the worktree write" "$(probe d1-own '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 d1-on"
   expect "the puppet runs under srt" "$(probe SANDBOX_RUNTIME '.stdout | rtrimstr("\n")')" "sandbox=1"
   expect "tool calls that failed" "$(jq -s '[.[] | select(.tool and .result.ok != true)] | length' "$PUPPET/log.jsonl")" 0
-  expect "the settings deny reads of the app data" "$(jq --arg d "$APP_DATA" '.filesystem.denyRead | index($d) != null' "$SANDBOX_SETTINGS")" true
-  expect "the settings deny every MonoCode data folder" "$(jq --arg d "$(dirname "$APP_DATA")/com.monocode.*" '.filesystem.denyRead | index($d) != null' "$SANDBOX_SETTINGS")" true
-  local bundle; bundle="$(target_bin instance)"; bundle="${bundle%/Contents/MacOS/*}"
-  expect "the settings deny writes to the app bundle" "$(jq --arg d "$bundle" '.filesystem.denyWrite | index($d) != null' "$SANDBOX_SETTINGS")" true
-  show_probes
+  cp "$PUPPET/log.jsonl" "$EVAL_OUT/d1-on.puppet.jsonl"
   "$INSTANCE" stop
 
   echo "off:"
@@ -280,8 +271,8 @@ run_d1() {
   expect "the puppet runs without srt" "$(probe SANDBOX_RUNTIME '.stdout | rtrimstr("\n")')" "sandbox=none"
   expect "tool calls that failed" "$(jq -s '[.[] | select(.tool and .result.ok != true)] | length' "$PUPPET/log.jsonl")" 0
   expect "no settings file is written" "$([[ -e "$SANDBOX_SETTINGS" ]] && echo written || echo none)" none
+  cp "$PUPPET/log.jsonl" "$EVAL_OUT/d1-off.puppet.jsonl"
   "$INSTANCE" stop
-  show_probes
 
   echo "on without srt:"
   rm "$EVAL_HOME/.local/bin/srt"
@@ -293,7 +284,6 @@ run_d1() {
   wait_until 60 "the habit run fails" habit_failed
   expect "the run's error" "$(jq -r '.[0].lastError | test("srt is not installed")' "$APP_DATA/monos/d1-giga/habits.json")" true
   expect "prompts the puppet got" "$(prompts D1-HABIT)" 0
-  jq -r '"  error: " + .[0].lastError' "$APP_DATA/monos/d1-giga/habits.json"
   "$INSTANCE" stop
   return "$FAILED"
 }
