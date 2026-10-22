@@ -7519,10 +7519,7 @@ function Workspace({
           },
           fallbackError: `${current.harness} could not steer the active turn`,
           fail: (message) => {
-            enqueueHarnessEvent(sessionId, {
-              type: "session.error",
-              message,
-            });
+            enqueueHarnessEvent(sessionId, { type: "steer.failed", message });
             flushHarnessEvents();
           },
         });
