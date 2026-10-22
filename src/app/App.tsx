@@ -11343,6 +11343,7 @@ function Workspace({
                   harness: session.harness,
                   model: session.model,
                   busy: false,
+                  branch: session.branch,
                   hasDraft: !!session.draft,
                   archived: !!session.archived,
                 });
@@ -11366,6 +11367,7 @@ function Workspace({
                   harness: session.harness,
                   model: session.model,
                   busy: !!session.busy,
+                  branch: session.branch,
                   hasDraft: !!sessionDraftBlock(session),
                   archived: byId.get(session.id)?.archived ?? false,
                 });

@@ -20,11 +20,13 @@ blockers, since it entered Todo (history, else createdAt).
 
 Builders. A session builds ticket ADE-<id> when it is busy, not archived, and
 the branch the app recorded for it matches `(^|/)ade-<id>(-|$)` (any case,
-the exact id with no leading zero). Both app databases are read the same way,
-read-only: a session is busy when its id is in that app's in_flight_sessions
-table. The app CLI is not used, because it answers for whichever instance the
-environment points at. Titles are never matched. Busy sessions on `main` or
-with no branch are listed as "unattributed".
+the exact id with no leading zero). The sessions are the monocode project's,
+from `monocode app sessions.list` in the app of the instance --instance names.
+Run the script in a session or Mono of that instance: the CLI answers for the
+instance its environment points at, so the other instance is not read, and a
+closed or code-complete blocker that a builder there still works on counts as
+unblocked. Titles are never matched. Busy sessions on `main` or with no branch
+are listed as "unattributed".
 
 --dry-run prints `would label ADE-<n>` for each code-complete label it would
 add, and writes nothing.
@@ -38,11 +40,9 @@ import argparse
 import json
 import os
 import re
-import sqlite3
 import subprocess
 import sys
 import urllib.request
-from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -52,9 +52,9 @@ MAX_WAIT = timedelta(minutes=60)
 CLOSED = ("completed", "canceled", "duplicate")
 CODE_COMPLETE = "code-complete"
 INSTANCES = ("1", "2")
-APP_DBS = {
-    "1": Path.home() / "Library/Application Support/com.monocode.desktop/monocode.db",
-    "2": Path.home() / "Library/Application Support/com.monocode.second/monocode.db",
+APP_CLIS = {
+    "1": "/Applications/MonoCode.app/Contents/MacOS/monocode",
+    "2": "/Applications/MonoCode 2.app/Contents/MacOS/monocode",
 }
 BRANCH_TICKET = re.compile(r"(?:^|/)ade-([1-9]\d*)(?=-|$)", re.IGNORECASE)
 TITLE_TICKET = re.compile(r"ADE-(\d+)\b")
@@ -251,26 +251,36 @@ def merged_prs():
     ).stdout)
 
 
-def connect_ro(path):
-    return sqlite3.connect(f"{Path(path).as_uri()}?mode=ro", uri=True)
+def sessions_list(instance, payload):
+    run = subprocess.run([APP_CLIS[instance], "app", "sessions.list", "--json", json.dumps(payload)],
+                         capture_output=True, text=True, timeout=60)
+    return json.loads(run.stdout)
 
 
-def read_db(path):
-    """(session rows, in-flight session ids) of one app database, opened read-only."""
-    with closing(connect_ro(path)) as db:
-        db.row_factory = sqlite3.Row
-        rows = [dict(row) for row in db.execute("SELECT id, title, branch, worktree_cwd, archived FROM sessions")]
-        in_flight = {row[0] for row in db.execute("SELECT session_id FROM in_flight_sessions")}
-    return rows, in_flight
+def monocode_project():
+    """$MONOCODE_PROJECT, else the main checkout of the git repo that holds this script, from a worktree too."""
+    if os.environ.get("MONOCODE_PROJECT"):
+        return os.environ["MONOCODE_PROJECT"]
+    common_dir = subprocess.run(
+        ["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    return str(Path(common_dir).parent)
 
 
-def app_sessions(dbs):
-    """Sessions of both instances; busy when the app lists the id in its own in_flight_sessions."""
-    sessions = []
-    for name, path in dbs.items():
-        rows, in_flight = read_db(path)
-        sessions += [{**row, "instance": name, "busy": row["id"] in in_flight} for row in rows]
-    return sessions
+def app_sessions(instance):
+    """The monocode project's sessions, from `sessions.list` in the app of this instance."""
+    project = monocode_project()
+    reply = sessions_list(instance, {"project": project})
+    # A Mono names the project; a session lists its own and may not name one.
+    if reply.get("error") == "project is only for a Mono":
+        reply = sessions_list(instance, {})
+    if not reply.get("ok"):
+        raise RuntimeError(f"app sessions.list: {reply.get('error')}")
+    if os.path.realpath(reply["result"]["cwd"]) != os.path.realpath(project):
+        raise RuntimeError(f"app sessions.list listed {reply['result']['cwd']}, not {project}")
+    return [{"id": s["id"], "title": s["title"], "branch": s.get("branch"), "archived": s["archived"],
+             "busy": s["busy"], "instance": instance} for s in reply["result"]["sessions"]]
 
 
 def main():
@@ -279,7 +289,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="print the labels it would add; write nothing")
     args = parser.parse_args()
     try:
-        sessions = app_sessions(APP_DBS)
+        sessions = app_sessions(args.instance)
         key = linear_key()
         issues = open_issues_and_blockers(key)
         finals = final_parts(merged_prs())

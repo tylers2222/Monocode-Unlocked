@@ -171,7 +171,8 @@ A Mono chat or habit run whose Mono is gone gets not_a_mono.
 
 Actions:
   models.list    {}  Available providers, models, settings and permission modes.
-  sessions.list  {}  Project sessions with IDs, busy status, hasDraft and archived.
+  sessions.list  {}  Project sessions with IDs, branch, busy status, hasDraft
+                  and archived.
   sessions.read  {"sessionId":"...","before":"<turnId>","limit":3,"maxChars":1200}
                   Read up to 3 recent user/assistant exchanges. Tools and
                   reasoning are omitted. Omit before for the newest page;

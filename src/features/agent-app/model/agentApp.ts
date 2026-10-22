@@ -127,6 +127,7 @@ export type AppSessionListing = {
   title: string;
   harness: HarnessId;
   model: string;
+  branch?: string;
   busy: boolean;
   hasDraft: boolean;
   archived: boolean;
