@@ -157,14 +157,14 @@ sandbox_preflight() {
   listener=$!
   for i in $(seq 1 40); do [[ -S "$sockdir/s" ]] && break; sleep 0.05; done
   want="env= home=$EVAL_HOME connect=EPERM sock=EPERM sock_jail=ok real_home=EPERM tmp=EPERM user_tmp=EPERM
-puppet=EPERM app=EPERM rename_local=EPERM zsh=EPERM jail=ok write_home=ok exec_node=ok"
+puppet=EPERM app=EPERM rename_local=EPERM rename_home=EPERM zsh=EPERM jail=ok write_home=ok exec_node=ok"
   got="$("${SANDBOX_LAUNCH[@]}" "$node" -e '
     const [real, utmp, puppet, app, jail, sock] = process.argv.slice(1);
     const fs = require("fs"), net = require("net"), cp = require("child_process");
     const home = process.env.HOME;
     const out = (k, v) => console.log(`${k}=${v}`);
     const write = (p, keep) => { try { fs.appendFileSync(p, ""); if (!keep) fs.unlinkSync(p); return "ok"; } catch (e) { return e.code; } };
-    const rename = (p) => { try { fs.renameSync(p, `${p}.moved`); fs.renameSync(`${p}.moved`, p); return "ok"; } catch (e) { return e.code; } };
+    const rename = (p, to) => { try { fs.renameSync(p, to); fs.renameSync(to, p); return "ok"; } catch (e) { return e.code; } };
     out("env", Object.keys(process.env).filter((k) => /^(MONOCODE_|SSH_AUTH_SOCK$)|TOKEN|SECRET|API_KEY|PASSWORD/.test(k)).join(","));
     out("home", home);
     out("real_home", write(`${real}/.giga-eval-preflight-${process.pid}`));
@@ -172,7 +172,8 @@ puppet=EPERM app=EPERM rename_local=EPERM zsh=EPERM jail=ok write_home=ok exec_n
     out("user_tmp", write(`${utmp}/giga-eval-preflight-${process.pid}`));
     out("puppet", write(puppet, true));
     out("app", write(app, true));
-    out("rename_local", rename(`${home}/.local`));
+    out("rename_local", rename(`${home}/.local`, `${home}/.local.moved`));
+    out("rename_home", rename(home, `${jail}/home`));
     out("jail", write(`${jail}/preflight`));
     out("write_home", write(`${home}/.giga-eval-preflight`));
     const pids = [process.pid];

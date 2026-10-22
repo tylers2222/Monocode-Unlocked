@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # sandbox.sh: the watcher's rule on the lines from review round 2 of #163
 # (r4328192833), and each protection of the start failing when it is
-# removed (review rounds 1 and 2 of #243). macOS only (sandbox-exec). Nothing
+# removed (review rounds 1 to 3 of #243). macOS only (sandbox-exec). Nothing
 # here links or reads a real login, looks up a name, reaches a remote host or
 # connects to a real unix socket. Two runs never share a path.
 # Run: bash scripts/giga-eval/sandbox.test.sh
@@ -63,10 +63,33 @@ sed "s|(subpath \"/dev\"))|(subpath \"/dev\") (subpath \"$(realpath "$(getconf D
 expect fails "writes allowed in the per-user temp dir" start_ok "$EVAL_OUT/wide.sb" "$ENVS"
 sed -E 's|^\(allow network-outbound \(remote unix-socket .*|(allow network-outbound (remote unix-socket))|' "$PROFILE" >"$EVAL_OUT/sock.sb"
 expect fails "unix sockets allowed everywhere" start_ok "$EVAL_OUT/sock.sb" "$ENVS"
-sed -E 's| \(literal "[^"]*/\.local"\) \(literal "[^"]*"\)||' "$PROFILE" >"$EVAL_OUT/rename.sb"
-expect fails "the puppet's parent dirs writable (rename and replace)" start_ok "$EVAL_OUT/rename.sb" "$ENVS"
+jail_sees() { sandbox_launch "$1" "$2" && sandbox_preflight "${3:-$APP}" "$JAIL"; }
+# fails_on <probe> <what> <command...>: the start fails, and the preflight
+# names <probe> among the results it wanted and did not get.
+fails_on() {
+  local probe="$1" what="$2" msg; shift 2
+  if msg="$(log() { echo "$*"; }; "$@" 2>&1)"; then fail "ok, expected fails on $probe: $what"; return; fi
+  msg="${msg#*wanted }"
+  [[ " ${msg%%; got*} " == *" $probe "* ]] && pass "fails on $probe: $what" || fail "fails, but not on $probe: $what"
+}
+# without <profile> <app> <filter>: start with one filter cut from the
+# profile's deny file-write* rule; a cut that changes nothing fails.
+without() {
+  local l; while IFS= read -r l; do [[ "$l" == "(deny file-write* "* ]] && l="${l/" $3"/}"; printf '%s\n' "$l"; done <"$1" >"$EVAL_OUT/cut.sb"
+  ! cmp -s "$1" "$EVAL_OUT/cut.sb" && sandbox_launch "$EVAL_OUT/cut.sb" "$ENVS" && sandbox_preflight "$2" "$JAIL"
+}
+H="$(realpath "$EVAL_HOME")"
+fails_on puppet=EPERM 'only (subpath "<home>/.local/bin") removed' without "$PROFILE" "$APP" "(subpath \"$H/.local/bin\")"
+fails_on rename_local=EPERM 'only (literal "<home>/.local") removed' without "$PROFILE" "$APP" "(literal \"$H/.local\")"
+fails_on rename_home=EPERM 'only (literal "<home>") removed' without "$PROFILE" "$APP" "(literal \"$H\")"
+# The app's rule matters only where writes are allowed: an app under HOME.
+HOME_APP="$EVAL_HOME/A.app/Contents/MacOS/monocode"
+mkdir -p "$(dirname "$HOME_APP")" && cp /usr/bin/true "$HOME_APP"
+sandbox_profile "$HOME_APP" "$JAIL" "$EVAL_OUT/home-app.sb"
+expect ok "an app under HOME with the full profile" jail_sees "$EVAL_OUT/home-app.sb" "$ENVS" "$HOME_APP"
+fails_on app=EPERM 'only (subpath "<app bundle>") removed' without "$EVAL_OUT/home-app.sb" "$HOME_APP" "(subpath \"$H/A.app\")"
+rm -rf "$EVAL_HOME/A.app"
 expect fails "MONOCODE_APP_TOKEN in the env" start_ok "$PROFILE" "$ENVS"$'\n'"MONOCODE_APP_TOKEN=x"
-jail_sees() { sandbox_launch "$1" "$2" && sandbox_preflight "$APP" "$JAIL"; }
 expect fails "MONOCODE_APP_TOKEN reaches the jail" jail_sees "$PROFILE" "$ENVS"$'\n'"MONOCODE_APP_TOKEN=x"
 eval "$(declare -f sandbox_launch | sed 's/env -i /env /')"
 expect fails "a launch without env -i" start_ok "$PROFILE" "$ENVS"
