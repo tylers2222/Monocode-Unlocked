@@ -5,7 +5,6 @@ import {
   type IconSvgElement,
 } from "@hugeicons/react";
 import Add01Icon from "@hugeicons/core-free-icons/Add01Icon";
-import AddSquareIcon from "@hugeicons/core-free-icons/AddSquareIcon";
 import AlertCircleIcon from "@hugeicons/core-free-icons/AlertCircleIcon";
 import Calendar03Icon from "@hugeicons/core-free-icons/Calendar03Icon";
 import AppWindowIcon from "@hugeicons/core-free-icons/AppWindowIcon";
@@ -275,7 +274,6 @@ export const SlidersHorizontal = wrap(
 export const SmilePlus = wrap(SmilePlusIcon, "SmilePlus");
 export const Sparkles = wrap(SparklesIcon, "Sparkles");
 export const Square = wrap(SquareIcon, "Square");
-export const SquarePlus = wrap(AddSquareIcon, "SquarePlus");
 export const Star = wrap(StarIcon, "Star");
 export const StickyNote = wrap(Note01Icon, "StickyNote");
 export const Terminal = wrap(ComputerTerminal01Icon, "Terminal");
