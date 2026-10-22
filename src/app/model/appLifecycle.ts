@@ -75,8 +75,11 @@ let quitDialogOpen = false;
 let bootingResumed: QuitWorkspace | null = null;
 let liveWorkspace: { read: () => QuitWorkspace; flush: () => void } | null =
   null;
-/** A count, not a flag: a close to tray saves, then the window runs on. */
-let quitSnapshots = 0;
+/**
+ * Replaced by each quit snapshot, not set once: a close to tray saves one,
+ * then the window runs on and saves again.
+ */
+let quitSnapshot = {};
 
 export function isAppQuitting(): boolean {
   return quitting;
@@ -369,17 +372,19 @@ export async function persistQuitState(
  * last word and also keeps the Mono completions `snapshot` leaves out, so this
  * write is dropped rather than land after it (ADE-46).
  */
-export function deferWorkspaceSave(snapshot: WorkspaceSnapshot): () => void {
-  const before = quitSnapshots;
-  return () => {
-    if (quitSnapshots !== before) return;
-    void saveWorkspaceSnapshot(snapshot).catch(() => undefined);
+export function deferWorkspaceSave(
+  snapshot: WorkspaceSnapshot,
+): () => Promise<void> {
+  const readUnder = quitSnapshot;
+  return async () => {
+    if (quitSnapshot !== readUnder) return;
+    await saveWorkspaceSnapshot(snapshot).catch(() => undefined);
   };
 }
 
 /** The workspace snapshot with the Mono completions the window still owes. */
 function saveQuitSnapshot(workspace: QuitWorkspace): Promise<void> {
-  quitSnapshots += 1;
+  quitSnapshot = {};
   return saveWorkspaceSnapshot({
     ...workspaceSnapshot([workspace]),
     monoCompletions: workspace.monoCompletions,

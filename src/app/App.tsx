@@ -2669,7 +2669,7 @@ function Workspace({
     const timer = window.setTimeout(() => {
       save.saved = key;
       save.pending = undefined;
-      write();
+      void write();
     }, 250);
     save.pending = { key, timer };
   }, [
