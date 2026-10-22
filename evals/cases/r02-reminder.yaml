@@ -1,0 +1,10 @@
+id: r02-reminder
+version: 1
+pending: [ADE-24, ADE-26, ADE-27, ADE-28]
+description: A lead given the 5-minute reminder on its ask acks it or uses its extension, and never ignores it (V1 normal work).
+grader: asks:r02
+fixture: { agent: lead, projects: { A: atlas } }
+events:
+  - { ask: "I will send you the build number for the {{A}} release soon. When it arrives, write it to RELEASE.md.", due_minutes: 10 }
+  - { advance_minutes: 6 }
+  - "The build number is 4521."
