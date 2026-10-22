@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { parseBoardDecision } from "../../approvals/model/boardDecision";
 import { isMonoSession } from "../../monos/model/mono";
 import { sanitizeMonoSpawnedSessions } from "../../monos/model/monoSpawnedSessions";
 import { parseMessageId, parseTurnId } from "../../monos/model/monoMessages";
@@ -999,6 +1000,8 @@ function sanitizeBlock(
   const completion = sanitizeMonoSessionCompletion(block.monoSessionCompletion);
   if (block.role === "user" && block.internal && completion)
     next.monoSessionCompletion = completion;
+  const decision = parseBoardDecision(block.boardDecision);
+  if (block.role === "user" && decision) next.boardDecision = decision;
   const spawned = sanitizeMonoSpawnedSessions(block.monoSpawnedSessions);
   if (block.role === "user" && spawned.length)
     next.monoSpawnedSessions = spawned;

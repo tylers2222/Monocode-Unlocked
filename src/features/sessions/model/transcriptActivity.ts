@@ -85,7 +85,7 @@ export function isIncompleteTool(
   label: string,
   state: ToolCallState,
 ): boolean {
-  if (state !== "pending") return false;
+  if (state !== "pending" || needsApproval(block)) return false;
   const kind = block.tool?.kind?.toLowerCase();
   if (kind && kind !== "other") return false;
   if (
@@ -98,8 +98,9 @@ export function isIncompleteTool(
   return !label || isWeakToolTitle(label);
 }
 
+/** A block that waits on an approval is never hidden, since only an answer ends the wait. */
 export function isHiddenTool(block: Block): boolean {
-  if (block.role !== "tool" && block.role !== "approval") return false;
+  if (!isToolBlock(block) || needsApproval(block)) return false;
   // Harnesses also publish todo mutations as ordinary tool calls. The
   // canonical tasks block is the user-facing representation, so keep the
   // provider-internal call out of the activity stack.

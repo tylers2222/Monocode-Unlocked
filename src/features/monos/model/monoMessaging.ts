@@ -10,6 +10,7 @@ import {
   heldUntilTurnEnd,
 } from "../../sessions/model/messageQueue";
 import { parseMonoNotice } from "./monoMessages";
+import type { BoardDecision } from "../../approvals/model/boardDecision";
 import type {
   Attachment,
   Block,
@@ -32,7 +33,7 @@ export type MessageDelivery =
 export function enqueueMonoMessage(
   session: Session,
   message: QueuedMessage,
-  cards?: UserCards,
+  cards?: UserCards & { boardDecision?: BoardDecision },
 ): Session {
   const appended = appendSteerUser(
     session,
@@ -43,6 +44,7 @@ export function enqueueMonoMessage(
   const bubble = {
     ...appended.blocks[appended.blocks.length - 1],
     id: message.id,
+    ...(cards?.boardDecision ? { boardDecision: cards.boardDecision } : {}),
   };
   return {
     ...session,
@@ -75,7 +77,7 @@ export function acknowledgeMonoMessage(
     options.cards,
   );
   const accepted = appended.blocks[appended.blocks.length - 1];
-  const blocks = message.blockId
+  const updated = message.blockId
     ? remaining.blocks.map((block) =>
         block.id === message.blockId
           ? {
@@ -87,6 +89,13 @@ export function acknowledgeMonoMessage(
           : block,
       )
     : [...remaining.blocks, { ...accepted, id: message.id }];
+  // A decision showed only in the queue, so its line goes where it was sent.
+  const decision = updated.find(
+    (block) => block.id === message.blockId && block.boardDecision,
+  );
+  const blocks = decision
+    ? [...updated.filter((block) => block !== decision), decision]
+    : updated;
   return options.mode === "new-turn"
     ? { ...appended, blocks }
     : { ...remaining, blocks };
@@ -120,7 +129,8 @@ export function monoMessageDeliveries(
 /**
  * The rows a Mono chat's queue shows: its notices (design 5.3), first, and the
  * completion reports that wait or failed. Ready reports deliver in the
- * background; every other item shows as its bubble.
+ * background; every other item shows as its bubble, but a board decision
+ * shows in `monoQueueDecisions` instead.
  */
 export function monoQueueRows(session: Session): QueuedMessage[] {
   const ready = canDispatchQueuedHead(session);
@@ -134,8 +144,35 @@ export function monoQueueRows(session: Session): QueuedMessage[] {
   ];
 }
 
+export type QueuedDecision = {
+  id: string;
+  decision: BoardDecision;
+  error?: string;
+};
+
+/**
+ * Frame A·7: a board decision waits in the queue as one "not sent yet" row,
+ * and its bubble stays hidden until it is sent.
+ */
+export function monoQueueDecisions(session: Session): QueuedDecision[] {
+  const queued = session.queuedMessages ?? [];
+  if (queued.length === 0) return [];
+  const decisions = new Map(
+    session.blocks.flatMap((block) =>
+      block.boardDecision ? [[block.id, block.boardDecision] as const] : [],
+    ),
+  );
+  return queued.flatMap(({ id, blockId, error }) => {
+    const decision = blockId && decisions.get(blockId);
+    return decision ? [{ id, decision, ...(error ? { error } : {}) }] : [];
+  });
+}
+
 const legacyBubbles = new WeakMap<QueuedMessage, Block>();
-/** Older queues had no bubble; pending pasted images also need their saved bytes. */
+/**
+ * Older queues had no bubble; pending pasted images also need their saved
+ * bytes. A board decision's bubble stays hidden while its queue row shows it.
+ */
 export function monoPendingTranscriptBlocks(
   session: Session,
   blocks: Block[],
@@ -144,11 +181,15 @@ export function monoPendingTranscriptBlocks(
     (message) => !message.monoSessionCompletion && !parseMonoNotice(message),
   );
   if (!messages?.length) return blocks;
+  const waiting = new Set(messages.map((message) => message.blockId));
+  const shown = blocks.filter(
+    (block) => !(block.boardDecision && waiting.has(block.id)),
+  );
   const byBlock = new Map(
     messages.map((message) => [message.blockId ?? message.id, message]),
   );
-  let changed = false;
-  const visible = blocks.map((block) => {
+  let changed = shown.length < blocks.length;
+  const visible = shown.map((block) => {
     const message = byBlock.get(block.id);
     if (
       !message ||

@@ -23,7 +23,6 @@ import {
   splitPane,
   type WorkspaceTab,
 } from "../../features/workspace/model/layout";
-import { workspaceTabWorktree } from "../../features/workspace/model/workspaceTabGroups";
 import { useWorkspaceNavigation } from "./useWorkspaceNavigation";
 
 const project = "/navigation-project";
@@ -43,7 +42,6 @@ let view: {
 let directOpen: (id: string) => void;
 let openProject: (path: string, landingTab: string) => void;
 let pins: Map<string, string>;
-let noWorkspace: Set<string>;
 const activate = vi.fn();
 const move =
   vi.fn<
@@ -95,10 +93,6 @@ async function mount(
     navigation = useWorkspaceNavigation({
       ...state,
       pins,
-      tabWorkspace: (tab, list) =>
-        noWorkspace.has(tab.id)
-          ? null
-          : (pins.get(tab.id) ?? workspaceTabWorktree(tab, list)),
       moveSession: async (id, tree, isCurrent) => {
         await move(id, tree, isCurrent);
         if (isCurrent())
@@ -165,7 +159,6 @@ const screen = () => JSON.parse(container.textContent!);
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  noWorkspace = new Set();
   setWorktreeFocus(project, undefined);
   setWorktreeFocus(other, undefined);
   move.mockReset().mockResolvedValue(undefined);
@@ -395,24 +388,6 @@ it("the worktree switcher still leaves a running session", async () => {
     activeTab: "tab-worktree",
     workspace: treeA.path,
     checkout: treeA.path,
-  });
-  expect(move).not.toHaveBeenCalled();
-});
-
-it("project selection keeps today's worktree focus when a running landing tab reports no workspace", async () => {
-  setWorktreeFocus(project, treeA);
-  await mount([
-    chat("worktree", project, treeA.path, true),
-    { ...chat("running", project, undefined, true), busy: true },
-    chat("other", other, undefined, true),
-  ]);
-  noWorkspace.add("tab-running");
-  await act(async () => openProject(other, "tab-other"));
-  await act(async () => openProject(project, "tab-running"));
-  expect(screen()).toMatchObject({
-    activeTab: "tab-running",
-    workspace: treeA.path,
-    pending: false,
   });
   expect(move).not.toHaveBeenCalled();
 });

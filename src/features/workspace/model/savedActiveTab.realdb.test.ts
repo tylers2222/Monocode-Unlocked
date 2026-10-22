@@ -21,19 +21,17 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { loadResumedWorkspace } from "../../../app/model/appLifecycle";
-import { sameProjectPath } from "../../projects/model/recents";
 import { getSession } from "../../sessions/data/sessionStore";
 import { sessionWorkCwd, type Session } from "../../sessions/model/session";
-import { newTab, type WorkspaceTab } from "./layout";
+import { newTab } from "./layout";
 import { insertTabBesideActive } from "./tabGroups";
 import {
-  collectWorkspaceSnapshot,
   hydrateWorkspaceSnapshot,
   parseWorkspaceSnapshot,
+  workspaceSnapshot,
 } from "./workspaceSnapshot";
-import { workspaceTabCwd } from "./workspaceTabGroups";
 
-it("saves an active tab it also saves after a running worktree session opens, and boot lands on it", async () => {
+it("saves a running worktree session's tab in its worktree, keeps the active tab in the default workspace, and boot restores both", async () => {
   const before = parseWorkspaceSnapshot(realDb.snapshot);
   if (!before) throw new Error("the saved snapshot does not parse");
   const loaded = new Map<string, Session>();
@@ -46,42 +44,35 @@ it("saves an active tab it also saves after a running worktree session opens, an
   if (!window || !running) throw new Error("the fixture does not load");
 
   // App.tsx onSelectHistorySession: a running session with no tab opens
-  // beside the active tab, pinned to its own worktree. Every restored tab is
-  // pinned to its project folder (restoredPins), and keepWorkspaceTab saves a
-  // tab only when its pin is that folder. Both live inside the App component,
-  // so this is a simplified copy that can drift from keepWorkspaceTab: it
-  // skips leaf pins and the workspaceTabWorktree fallback, which this fixture
-  // does not need.
+  // beside the active tab, pinned to its own worktree.
   const opened = newTab(running.id);
-  const tabs = insertTabBesideActive(window.tabs, opened, window.activeTabId);
-  const sessions = [...window.sessions, running];
-  const pins = new Map(
-    window.tabs.map((tab) => [tab.id, workspaceTabCwd(tab, sessions) ?? ""]),
-  );
-  pins.set(opened.id, sessionWorkCwd(running));
-  const keepTab = (tab: WorkspaceTab) =>
-    sameProjectPath(pins.get(tab.id) ?? "", workspaceTabCwd(tab, sessions) ?? "");
-
-  const snapshot = collectWorkspaceSnapshot(
-    tabs,
-    sessions,
-    opened.id,
-    window.projectCwd,
-    new Map(),
-    [],
-    undefined,
-    keepTab,
-  );
+  const worktree = sessionWorkCwd(running);
+  const snapshot = workspaceSnapshot([
+    {
+      ...window,
+      tabs: insertTabBesideActive(window.tabs, opened, window.activeTabId),
+      sessions: [...window.sessions, running],
+      activeTabId: opened.id,
+      pins: new Map(window.pins).set(opened.id, worktree),
+    },
+  ]);
   saved.snapshot = snapshot;
   const restored = await loadResumedWorkspace();
 
+  expect(worktree).not.toBe(window.projectCwd);
   expect({
     savedTabs: snapshot.tabs.map((tab) => tab.id),
+    tabWorkspaces: snapshot.tabWorkspaces,
     savedActive: snapshot.activeTabId,
+    bootTabs: restored?.tabs.map((tab) => tab.id),
     bootActive: restored?.activeTabId,
+    bootPin: restored?.pins.get(opened.id),
   }).toEqual({
-    savedTabs: ["tab-0001", "tab-0002", "tab-0004"],
+    savedTabs: ["tab-0001", "tab-0002", opened.id, "tab-0004"],
+    tabWorkspaces: [{ tabId: opened.id, path: worktree }],
     savedActive: "tab-0002",
+    bootTabs: ["tab-0001", "tab-0002", opened.id, "tab-0004"],
     bootActive: "tab-0002",
+    bootPin: worktree,
   });
 });
