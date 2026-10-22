@@ -1742,23 +1742,30 @@ mod tests {
 
     const TOKEN: &str = "tok3n-never-printed";
 
+    /// The next connection to `listener` within `wait`, or none. A test whose
+    /// app-mcp never connects fails instead of hanging.
+    fn accept_within(
+        listener: &std::net::TcpListener,
+        wait: Duration,
+    ) -> Option<std::net::TcpStream> {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + wait;
+        while std::time::Instant::now() < deadline {
+            if let Ok((stream, _)) = listener.accept() {
+                stream.set_nonblocking(false).unwrap();
+                return Some(stream);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        None
+    }
+
     /// A loopback app that answers each connection with the next reply and
     /// returns the requests it read. It stops once no call comes for a second.
     fn fake_app(replies: Vec<Value>) -> (String, std::thread::JoinHandle<Vec<Value>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
         let endpoint = listener.local_addr().unwrap().to_string();
-        let accept = move || {
-            let deadline = std::time::Instant::now() + Duration::from_secs(1);
-            while std::time::Instant::now() < deadline {
-                if let Ok((stream, _)) = listener.accept() {
-                    stream.set_nonblocking(false).unwrap();
-                    return Some(stream);
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            None
-        };
+        let accept = move || accept_within(&listener, Duration::from_secs(1));
         let app = std::thread::spawn(move || {
             replies
                 .into_iter()
@@ -2233,14 +2240,11 @@ mod tests {
             let first = late.clone();
             let app = std::thread::spawn(move || {
                 let mut applied = std::collections::HashMap::<String, Value>::new();
-                listener.set_nonblocking(true).unwrap();
-                let deadline = std::time::Instant::now() + Duration::from_secs(2);
-                while std::time::Instant::now() < deadline {
-                    let Ok((stream, _)) = listener.accept() else {
-                        std::thread::sleep(Duration::from_millis(5));
-                        continue;
-                    };
-                    stream.set_nonblocking(false).unwrap();
+                let started = std::time::Instant::now();
+                let wait = Duration::from_secs(2);
+                while let Some(stream) =
+                    accept_within(&listener, wait.saturating_sub(started.elapsed()))
+                {
                     let mut line = String::new();
                     BufReader::new(&stream).read_line(&mut line).unwrap();
                     let request: Value = serde_json::from_str(&line).unwrap();
@@ -2297,7 +2301,8 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = listener.local_addr().unwrap().to_string();
         let app = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
+            let stream =
+                accept_within(&listener, Duration::from_secs(10)).expect("app-mcp never connected");
             let mut line = String::new();
             BufReader::new(&stream).read_line(&mut line).unwrap();
             // No answer, and the app is gone before the retry.
