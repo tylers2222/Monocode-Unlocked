@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 50] = [
+const APP_ACTIONS: [&str; 51] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -90,6 +90,7 @@ const APP_ACTIONS: [&str; 50] = [
     "sessions.draft",
     "sessions.start",
     "sessions.stop",
+    "sessions.queue.clear",
     "sessions.archive",
     "sessions.delete",
     "monos.list",
@@ -256,6 +257,10 @@ Actions:
                   Stop a session's current turn and pause its queued messages.
                   The conversation and checkout are kept. Idle sessions are
                   unchanged. Reuse --request-id on retries.
+  sessions.queue.clear {"sessionId":"..."}
+                  Drop every message queued for a session; answers
+                  {"cleared":n}. Only the session's lead or the session that
+                  started it may: anyone else gets not_session_owner.
   sessions.archive {"sessionId":"..."}
                   Stop the session if running, save its conversation, and
                   archive it. It can be restored from MonoCode's archive.
@@ -1333,6 +1338,7 @@ mod tests {
             "sessions.send",
             "sessions.draft",
             "sessions.stop",
+            "sessions.queue.clear",
             "sessions.archive",
             "sessions.delete",
         ] {

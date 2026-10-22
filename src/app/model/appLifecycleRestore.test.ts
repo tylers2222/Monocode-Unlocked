@@ -4,7 +4,7 @@ import { getSession } from "../../features/sessions/data/sessionStore";
 import { queuePauseNotice } from "../../features/sessions/model/messageQueue";
 import { newSession } from "../../features/sessions/model/session";
 import { newTab } from "../../features/workspace/model/layout";
-import { collectWorkspaceSnapshot } from "../../features/workspace/model/workspaceSnapshot";
+import { workspaceSnapshot } from "../../features/workspace/model/workspaceSnapshot";
 import { loadResumedWorkspace } from "./appLifecycle";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -34,13 +34,17 @@ const stored = {
 };
 it("restores a queue the quit stopped with its reason, even after a background read", async () => {
   const tab = newTab(stored.id);
-  const snapshot = collectWorkspaceSnapshot(
-    [tab],
-    [{ ...newSession("codex", stored.cwd), id: stored.id }],
-    tab.id,
-    stored.cwd,
-    new Map(),
-  );
+  const snapshot = workspaceSnapshot([
+    {
+      tabs: [tab],
+      sessions: [{ ...newSession("codex", stored.cwd), id: stored.id }],
+      activeTabId: tab.id,
+      projectCwd: stored.cwd,
+      projectReturnMemory: new Map(),
+      projectTerminals: [],
+      pins: new Map(),
+    },
+  ]);
   vi.mocked(invoke).mockImplementation(async (command) => {
     if (command === "session_get") return stored;
     if (command === "workspace_get_snapshot") return snapshot;
