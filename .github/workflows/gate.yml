@@ -41,6 +41,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/gate/integrity.test.sh
 
+      - name: scripts/process rule tests
+        if: ${{ !cancelled() }}
+        run: python3 -m unittest discover -s scripts/process/tests
+
       - name: Baselines only shrink
         if: ${{ !cancelled() }}
         run: node scripts/gate/baseline-growth.mjs "$BASE"
