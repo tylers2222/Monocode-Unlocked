@@ -54,6 +54,8 @@ declare global {
     unqueued?: Row[];
     /** mono_message_assign_slot refuses while set, as a locked store does. */
     refuseSlots?: boolean;
+    /** mono_message_drop answers this instead of dropping the row. */
+    dropAnswer?: "closed";
   }
 }
 
@@ -99,6 +101,7 @@ const handlers: MountOptions["handlers"] = {
   // mono_messages.rs drop_message on a waiting row: the user removed it, so
   // its card reads undelivered "removed" (decide.rs UNDELIVERED).
   mono_message_drop: (_store, { id }) => {
+    if (window.dropAnswer) return window.dropAnswer;
     const row = window.chatLine!.rows.find((row) => row.message.id === id)!;
     const status = window.chatLine!.cards[row.message.requestId].status;
     if (status.state === "decided") status.undelivered = "removed";
@@ -358,11 +361,11 @@ test("a decision waits in the busy Giga's queue, then shows once as its sent lin
 const FIRST = ROWS[0];
 const UNDELIVERABLE = "Delivery is unavailable. Retry when the agent is ready.";
 
-/** The idle Giga's chat gets the first decision row; its hand-off starts at once. */
-async function firstDecisionArrives(page: Page, app: AppShell) {
+/** The Giga's chat gets decision `row`; an idle chat starts its hand-off at once. */
+async function decisionArrives(page: Page, app: AppShell, row = FIRST) {
   await page.evaluate((row) => {
     window.unqueued = [row];
-  }, FIRST);
+  }, row);
   await app.emit("mono-message-notices", { sessions: [fixture.chat] });
 }
 
@@ -377,7 +380,7 @@ test("a decision whose send failed shows the queue's failure line once, then sen
   await page.evaluate(() => {
     window.refuseSlots = true;
   });
-  await firstDecisionArrives(page, app);
+  await decisionArrives(page, app);
   const failed = queueRows(page).getByRole("alert");
   await expect(failed).toHaveText(UNDELIVERABLE);
   await expect(page.getByText(UNDELIVERABLE)).toHaveCount(1);
@@ -426,7 +429,7 @@ test("a bidi override in a heading cannot reorder the decision line", async ({
       status: { ...decided.status, chosen: ["Ship it"], note: null },
     },
   });
-  await firstDecisionArrives(page, app);
+  await decisionArrives(page, app);
   await acceptPrompt(page, app, 1);
   await expect(lines(page)).toHaveCount(1);
   const shown = lines(page).getByText(heading, { exact: true });
@@ -446,22 +449,15 @@ test("a bidi override in a heading cannot reorder the decision line", async ({
   );
 });
 
-// Frame A·7b, lead finding on review r1. Defects: a waiting decision has no
-// remove control, or Remove skips the drop or drops twice; the removed
-// decision keeps its row, gets a line that says it was sent, reaches the
-// Giga at the turn end, or comes back after a restart.
-test("Remove on a waiting decision drops it once, and no line says it was sent", async ({
-  page,
-  app,
-}) => {
-  await mountGiga(page, app);
+const busyTurn = async (page: Page, app: AppShell, count: number) => {
   const composer = page.getByPlaceholder(`Message ${NAME}`);
   await composer.fill("Run the S1 migration tests");
   await composer.press("Enter");
-  await acceptPrompt(page, app, 1);
-  await firstDecisionArrives(page, app);
-  await expect(queueRows(page)).toHaveCount(1);
+  await acceptPrompt(page, app, count);
+};
 
+/** Removes `row`, the only queued row, with one drop; answers its card's status. */
+async function removeQueuedDecision(page: Page, row: Row) {
   await queueRows(page)
     .getByRole("button", { name: "Remove queued message" })
     .click();
@@ -474,23 +470,87 @@ test("Remove on a waiting decision drops it once, and no line says it was sent",
         )
         .map(({ args }) => args),
     ),
-  ).toEqual([{ id: FIRST.message.id }]);
-  expect(
-    await page.evaluate(
-      (id) => window.__TAURI_INTERNALS__.invoke("approvals_get", { id }),
-      FIRST.message.requestId,
-    ),
-  ).toMatchObject({ status: { state: "decided", undelivered: "removed" } });
-  await expect(lines(page)).toHaveCount(0);
+  ).toEqual([{ id: row.message.id }]);
+  return page.evaluate(
+    async (id) =>
+      (
+        (await window.__TAURI_INTERNALS__.invoke("approvals_get", {
+          id,
+        })) as Approval
+      ).status,
+    row.message.requestId,
+  );
+}
+
+// Frame A·7b, lead finding on review r1 and review r1 m1. Defects: a waiting
+// decision has no remove control, or Remove skips the drop or drops twice;
+// the removed decision keeps its row, gets a line that says it was sent,
+// reaches the Giga at the turn end, or comes back after a restart; Remove on
+// one decision takes the sent lines of other decisions with it.
+test("Remove on a waiting decision drops it once, and no line says it was sent", async ({
+  page,
+  app,
+}) => {
+  const sent = ROWS.slice(0, 2);
+  const removed = ROWS[2];
+  const sentLinesStay = async () => {
+    await expect(lines(page)).toHaveCount(sent.length);
+    for (const row of sent)
+      await expect(
+        lines(page).filter({ hasText: `“${card(row).heading}”` }),
+      ).toHaveCount(1);
+    await expect(page.getByText(card(removed).heading)).toHaveCount(0);
+  };
+  await mountGiga(page, app);
+  for (const [index, row] of sent.entries()) {
+    await decisionArrives(page, app, row);
+    await acceptPrompt(page, app, index + 1);
+    await expect(lines(page)).toHaveCount(index + 1);
+    await endTurn(app, `Noted APR-${card(row).number}.`);
+  }
+  await busyTurn(page, app, sent.length + 1);
+  await decisionArrives(page, app, removed);
+  await expect(queueRows(page)).toHaveCount(1);
+
+  expect(await removeQueuedDecision(page, removed)).toMatchObject({
+    state: "decided",
+    undelivered: "removed",
+  });
+  await sentLinesStay();
 
   await endTurn(app, "The S1 migration tests pass.");
   await expect(page.getByText("The S1 migration tests pass.")).toBeVisible();
-  expect(await prompts(page)).toHaveLength(1);
-  await expect(lines(page)).toHaveCount(0);
+  expect(await prompts(page)).toHaveLength(sent.length + 1);
+  await sentLinesStay();
 
   await app.restart();
   await page.getByRole("button", { name: new RegExp(`^${NAME}, `) }).click();
   await expect(page.getByText("The S1 migration tests pass.")).toBeVisible();
-  await expect(lines(page)).toHaveCount(0);
+  await sentLinesStay();
   await expect(queueRows(page)).toHaveCount(0);
+});
+
+// Review r1 n1. Rust answers `closed` when the row was already sent or is
+// gone. Defect: Remove then deletes the decision's bubble, so a decision the
+// Giga may have got loses its line, or its card reads "removed".
+test("Remove on a decision Rust already closed keeps its line", async ({
+  page,
+  app,
+}) => {
+  await mountGiga(page, app);
+  await busyTurn(page, app, 1);
+  await decisionArrives(page, app);
+  await expect(queueRows(page)).toHaveCount(1);
+  await page.evaluate(() => {
+    window.dropAnswer = "closed";
+  });
+
+  expect(await removeQueuedDecision(page, FIRST)).toMatchObject({
+    state: "decided",
+    undelivered: null,
+  });
+  await expect(lines(page)).toHaveCount(1);
+  await expect(
+    lines(page).filter({ hasText: `“${card(FIRST).heading}”` }),
+  ).toHaveCount(1);
 });
