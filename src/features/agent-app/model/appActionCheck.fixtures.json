@@ -1104,6 +1104,47 @@
       "requestId": "w-sessions-stop"
     },
     {
+      "action": "sessions.queue.clear",
+      "caller": "worker",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.queue.clear",
+              "caller": {
+                "access": "operator",
+                "cwd": "/code/app",
+                "kind": "session",
+                "sessionId": "worker",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "sessionId": "lead"
+              },
+              "requestId": "w-sessions-queue-clear",
+              "startedSessionId": null,
+              "target": "lead"
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "worker_scope",
+              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "message_id": "m_aaaaaaaaaaaa"
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
+      "input": {
+        "sessionId": "lead"
+      },
+      "name": "A4: a worker's sessions.queue.clear",
+      "ran": null,
+      "requestId": "w-sessions-queue-clear"
+    },
+    {
       "action": "sessions.archive",
       "caller": "worker",
       "calls": [

@@ -544,6 +544,7 @@ import {
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
+  enqueueQueuedMessage,
   failQueuedMessage,
   nextQueuedSend,
   pauseQueue,
@@ -1377,10 +1378,11 @@ function Workspace({
     useState<InboxSessionPortal | null>(null);
   const openingInboxSessions = useRef(new Map<string, Promise<string>>());
   const [notesViewOpen, setNotesViewOpen] = useState(false);
-  // Milestones is a page of the Automations area: one flag closes either.
+  // Milestones and Approvals are pages of the Automations area: one flag
+  // closes any of them.
   const [automationsViewOpen, setAutomationsViewOpen] = useState(false);
   const [automationsPage, setAutomationsPage] = useState<
-    "automations" | "milestones"
+    "automations" | "milestones" | "approvals"
   >("automations");
   const [inspectedWorkerId, setInspectedWorkerId] = useState<string | null>(
     null,
@@ -4957,6 +4959,7 @@ function Workspace({
             const stopped = {
               ...stopStreaming(latest),
               queueStatus: "paused" as const,
+              queuePause: undefined,
             };
             sessionsRef.current = sessionsRef.current.map((session) =>
               session.id === id ? stopped : session,
@@ -5382,6 +5385,7 @@ function Workspace({
             ...stopStreaming(latest),
             busy: false,
             queueStatus: "paused" as const,
+            queuePause: undefined,
             pendingQuestion: undefined,
           };
           sessionsRef.current = sessionsRef.current.map((entry) =>
@@ -7428,26 +7432,23 @@ function Workspace({
           setSessions((prev) =>
             prev.map((s) =>
               s.id === sessionId
-                ? {
-                    ...s,
-                    inboxCard: rawCommand ? s.inboxCard : undefined,
-                    noteCard: rawCommand ? s.noteCard : undefined,
-                    handoffCard: rawCommand ? s.handoffCard : undefined,
-                    queuedMessages: [
-                      ...(s.queuedMessages ?? []),
-                      {
-                        id: crypto.randomUUID(),
-                        text,
-                        attachments,
-                        noteCard,
-                        handoffCard,
-                        intent,
-                        ...sent.item,
-                      },
-                    ],
-                    queueStatus:
-                      s.queueStatus === "paused" ? "paused" : "active",
-                  }
+                ? enqueueQueuedMessage(
+                    {
+                      ...s,
+                      inboxCard: rawCommand ? s.inboxCard : undefined,
+                      noteCard: rawCommand ? s.noteCard : undefined,
+                      handoffCard: rawCommand ? s.handoffCard : undefined,
+                    },
+                    {
+                      id: crypto.randomUUID(),
+                      text,
+                      attachments,
+                      noteCard,
+                      handoffCard,
+                      intent,
+                      ...sent.item,
+                    },
+                  )
                 : s,
             ),
           );
@@ -9581,6 +9582,7 @@ function Workspace({
                 : {
                     ...entry,
                     queueStatus: "active",
+                    queuePause: undefined,
                     queuedMessages: resumeQueuedMessages(entry.queuedMessages),
                   }
               : entry,
@@ -9594,6 +9596,7 @@ function Workspace({
             ? {
                 ...entry,
                 queueStatus: "resuming",
+                queuePause: undefined,
                 queuedMessages: withoutPauseReason(entry.queuedMessages),
               }
             : entry,
@@ -11427,6 +11430,7 @@ function Workspace({
                   canSteerHarness(latest.harness),
                 steerBlocked: steerBlockReason(latest, prompt),
                 mono: isMonoSession(id),
+                queueStatus: latest.queueStatus,
               });
               if (plan === "send" && sessionDraftBlock(target))
                 throw new Error(
@@ -11589,6 +11593,18 @@ function Workspace({
               await flushSync(() => stopSessionRef.current(id));
               flushHarnessEvents();
               dismissCompletion(id);
+            },
+            clearQueue: async (id) => {
+              const target = await ensureOpenSessionRef.current(id);
+              if (!target || !canAccessProject(target.cwd))
+                throw new Error("Session is unavailable in this project");
+              let cleared = 0;
+              for (const { id: itemId } of target.queuedMessages ?? [])
+                if (await removeQueued(monoQueue, id, itemId)) {
+                  turnWatchers.current.cancel(itemId);
+                  cleared++;
+                }
+              return cleared;
             },
             remove: async (id, mode) => {
               const target = await ensureOpenSessionRef.current(id);
@@ -12333,7 +12349,7 @@ function Workspace({
   }, []);
 
   const openAutomationsPage = useCallback(
-    (page: "automations" | "milestones") => {
+    (page: "automations" | "milestones" | "approvals") => {
       workspaceNavigation.cancel();
       startTransition(() => {
         setFilePickerOpen(false);
@@ -12353,6 +12369,10 @@ function Workspace({
   );
   const onOpenMilestones = useCallback(
     () => openAutomationsPage("milestones"),
+    [openAutomationsPage],
+  );
+  const onOpenApprovals = useCallback(
+    () => openAutomationsPage("approvals"),
     [openAutomationsPage],
   );
 
@@ -13636,6 +13656,7 @@ function Workspace({
               onOpenNotes={notesEnabled ? onOpenNotes : undefined}
               onOpenAutomations={onOpenAutomations}
               onOpenMilestones={onOpenMilestones}
+              onOpenApprovals={onOpenApprovals}
               onGoToFile={onGoToFile}
               searchActive={searchViewOpen}
               inboxActive={inboxViewOpen}
@@ -13645,6 +13666,9 @@ function Workspace({
               }
               milestonesActive={
                 automationsViewOpen && automationsPage === "milestones"
+              }
+              approvalsActive={
+                automationsViewOpen && automationsPage === "approvals"
               }
               notesEnabled={notesEnabled}
               projectRailOpen={projectRailOpen}

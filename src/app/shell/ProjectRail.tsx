@@ -1,5 +1,6 @@
 import {
   BellOff,
+  CheckCircle,
   ChevronDown,
   ChevronRight,
   FolderPlus,
@@ -20,6 +21,7 @@ import { useDragResize } from "../../shared/hooks/useDragResize";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import { useProjectDiffStats } from "../../features/source-control/hooks/useProjectDiffStats";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
+import { useApprovalsBadge } from "../../features/approvals/hooks/useApprovalsBadge";
 import { useTabGroupLogos } from "../../features/projects/hooks/useTabGroupLogos";
 import {
   loadProjectRailWidth,
@@ -111,6 +113,8 @@ type Props = {
   automationsActive?: boolean;
   onOpenMilestones?: () => void;
   milestonesActive?: boolean;
+  onOpenApprovals?: () => void;
+  approvalsActive?: boolean;
   onTogglePanel?: () => void;
   onSelectProject: (path: string) => void;
   onOpenProject: () => void;
@@ -152,6 +156,8 @@ export function ProjectRail({
   automationsActive = false,
   onOpenMilestones,
   milestonesActive = false,
+  onOpenApprovals,
+  approvalsActive = false,
   onTogglePanel,
   onSelectProject,
   onOpenProject,
@@ -228,6 +234,7 @@ export function ProjectRail({
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const scrollRef = useRef<HTMLDivElement>(null);
   const groupLogos = useTabGroupLogos();
+  const approvals = useApprovalsBadge();
   const muteStatuses = new Map<string, string | null>();
   for (const project of notificationProjects.projects) {
     const status = notificationMuteStatus(notificationPreferences[project.id]);
@@ -339,6 +346,7 @@ export function ProjectRail({
     notesActive ||
     automationsActive ||
     milestonesActive ||
+    approvalsActive ||
     !!monos?.activeId;
   const pinnedIds = sections.pinned.map((item) => item.path);
   const projectIds = groupedProjectSections.ungrouped.map((item) => item.path);
@@ -429,6 +437,16 @@ export function ProjectRail({
                 onClick={onOpenMilestones}
                 active={milestonesActive}
                 ariaLabel="Milestones"
+              />
+            ) : null}
+            {onOpenApprovals ? (
+              <RailAction
+                label="Approvals"
+                icon={CheckCircle}
+                onClick={onOpenApprovals}
+                active={approvalsActive}
+                badge={approvals.pill}
+                ariaLabel={approvals.label}
               />
             ) : null}
           </div>
