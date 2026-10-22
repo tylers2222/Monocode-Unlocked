@@ -41,8 +41,8 @@ import { InboxProviderMark } from "./InboxProviderMark";
 import { ProjectLogoIcon } from "../../projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
 import { Popover } from "../../../shared/ui/Popover";
-import { IconButton, OverlayNav } from "../../../app/shell/TitleBar";
-import { WindowControls } from "../../../app/shell/WindowControls";
+import { PageFrame } from "../../../app/shell/PageFrame";
+import { IconButton } from "../../../app/shell/TitleBar";
 import { useDragResize } from "../../../shared/hooks/useDragResize";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { useTabGroupLogos } from "../../projects/hooks/useTabGroupLogos";
@@ -102,7 +102,6 @@ import {
 } from "../model/inboxFilters";
 import { copyText } from "../../../platform/tauri/clipboard";
 import { projectKey, projectName } from "../../../shared/lib/paths";
-import { IS_MAC } from "../../../platform/tauri/platform";
 import { playCue } from "../../settings/model/sounds";
 import {
   sameProjectPath,
@@ -1135,31 +1134,15 @@ export function InboxView({
     ) : null;
 
   return (
-    <div
-      role="region"
-      aria-label="Inbox"
+    <PageFrame
+      label="Inbox"
+      icon={Inbox}
       data-app-inbox
-      className="flex min-h-0 min-w-0 flex-1 flex-col text-content"
+      besideRail={besideRail}
+      compactRail={compactRail}
+      onClose={onClose}
+      onToggleSidebar={onToggleSidebar}
     >
-      <div
-        className="flex h-10 shrink-0 select-none items-center border-b border-stroke"
-        data-tauri-drag-region="deep"
-      >
-        {IS_MAC && compactRail ? <div className="w-4 shrink-0" /> : null}
-        {IS_MAC && !besideRail ? <div className="w-[78px] shrink-0" /> : null}
-        {besideRail ? null : (
-          <OverlayNav onBack={onClose} onToggleSidebar={onToggleSidebar} />
-        )}
-        <div className="flex min-w-0 flex-1 items-center gap-2 px-3 text-[13px]">
-          <Inbox
-            className="size-3.5 shrink-0 text-content/45"
-            strokeWidth={1.75}
-          />
-          <span className="min-w-0 truncate text-content">Inbox</span>
-        </div>
-        {IS_MAC ? null : <WindowControls />}
-      </div>
-
       <div className="flex min-h-0 min-w-0 flex-1">
         {list}
         <div className="relative flex min-h-0 min-w-0 flex-1">
@@ -1194,7 +1177,7 @@ export function InboxView({
       </div>
       {filtersPortal}
       {connectPortal}
-    </div>
+    </PageFrame>
   );
 }
 

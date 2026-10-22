@@ -1,0 +1,12 @@
+{
+  "name": "gate-mutation-stryker",
+  "private": true,
+  "description": "Stryker and vitest for gate/mutation, installed by the job from this lockfile outside the PR's package tree. The job points the PR's node_modules/vitest at this vitest, so the PR's overrides and lockfile cannot change vitest, its runner plugin or anything they load. vitest loads its test environments (happy-dom) from this tree too. Versions are the ones the repo locks; Stryker core imports typescript to rewrite tsconfig.json in its sandbox.",
+  "dependencies": {
+    "@stryker-mutator/core": "9.6.1",
+    "@stryker-mutator/vitest-runner": "9.6.1",
+    "happy-dom": "20.14.0",
+    "typescript": "5.8.3",
+    "vitest": "3.2.7"
+  }
+}
