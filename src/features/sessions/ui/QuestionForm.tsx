@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
 } from "react";
 import { Check, MessageSquare } from "../../../shared/ui/icons";
 import {
@@ -20,9 +21,22 @@ type Props = {
   prompt: UserQuestionPrompt;
   onReply: (requestId: number, reply: UserQuestionReply) => void;
   onInteraction?: (requestId: number) => void;
+  /** Takes the title's place in the top line. */
+  header?: ReactNode;
+  /** Sits left of Continue. */
+  footer?: ReactNode;
+  /** Shown, dimmed, with nothing to press. */
+  disabled?: boolean;
 };
 
-export function QuestionForm({ prompt, onReply, onInteraction }: Props) {
+export function QuestionForm({
+  prompt,
+  onReply,
+  onInteraction,
+  header,
+  footer,
+  disabled,
+}: Props) {
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
@@ -117,7 +131,7 @@ export function QuestionForm({ prompt, onReply, onInteraction }: Props) {
             strokeWidth={1.75}
           />
           <span className="min-w-0 flex-1 truncate text-[11px] text-content/50">
-            {title}
+            {header ?? title}
           </span>
           {total > 1 ? (
             <span className="shrink-0 text-[11px] text-content/40">
@@ -126,13 +140,14 @@ export function QuestionForm({ prompt, onReply, onInteraction }: Props) {
           ) : null}
           <button
             type="button"
-            className="h-6 shrink-0 rounded-md px-1.5 text-[11px] text-content/55 hover:bg-content/10 hover:text-content"
+            className="h-6 shrink-0 rounded-md px-1.5 text-[11px] text-content/55 hover:bg-content/10 hover:text-content disabled:opacity-50"
+            disabled={disabled}
             onClick={skipCurrent}
           >
             Skip
           </button>
         </div>
-        <div className="mt-2">
+        <div className="mt-2 inert:opacity-45" inert={disabled}>
           <QuestionFields
             key={question.id}
             question={question}
@@ -170,6 +185,7 @@ export function QuestionForm({ prompt, onReply, onInteraction }: Props) {
           />
         </div>
         <div className="mt-2.5 flex items-center justify-end gap-2">
+          {footer}
           {prompt.autoResolveAt != null ? (
             <span
               className="mr-auto text-[11px] text-content/40"
@@ -191,7 +207,7 @@ export function QuestionForm({ prompt, onReply, onInteraction }: Props) {
           ) : null}
           <button
             type="submit"
-            disabled={!ready}
+            disabled={!ready || disabled}
             className="h-6 rounded-md bg-content px-2.5 text-[11px] font-medium text-background-base hover:bg-content/80 disabled:opacity-40"
           >
             Continue
