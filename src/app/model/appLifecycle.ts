@@ -43,22 +43,36 @@ import {
   type WindowWorkspace,
 } from "../../features/workspace/model/workspaceSnapshot";
 import { lastProjectPath, normalizeProjectPath, sameProjectPath } from "../../features/projects/model/recents";
+import {
+  savedMonoCompletions,
+  type SavedMonoCompletion,
+} from "../../features/monos/model/monoSessionCompletion";
 
 export { hasInFlightSessions };
 
+/**
+ * The window as a quit, reload or close saves it, and as the next boot
+ * resumes it: its workspace plus the Mono completions it still owes (ADE-46).
+ * `workspaceSnapshot` copies only the workspace fields, so every save path
+ * writes `monoCompletions` beside it.
+ */
+export type QuitWorkspace = WindowWorkspace & {
+  monoCompletions: SavedMonoCompletion[];
+};
+
 export type BootWorkspace = {
-  resumed: WindowWorkspace | null;
+  resumed: QuitWorkspace | null;
   /** Sidebar rows listed before first paint, so the rail is not empty. */
   history: SessionSummary[];
   historyCwd: string | null;
 };
 
-let resumedPromise: Promise<WindowWorkspace | null> | null = null;
+let resumedPromise: Promise<QuitWorkspace | null> | null = null;
 let bootPromise: Promise<BootWorkspace> | null = null;
 let quitting = false;
 let quitDialogOpen = false;
-let bootingResumed: WindowWorkspace | null = null;
-let liveWorkspace: { read: () => WindowWorkspace; flush: () => void } | null =
+let bootingResumed: QuitWorkspace | null = null;
+let liveWorkspace: { read: () => QuitWorkspace; flush: () => void } | null =
   null;
 
 export function isAppQuitting(): boolean {
@@ -66,7 +80,7 @@ export function isAppQuitting(): boolean {
 }
 
 export function setQuitWorkspace(
-  read: () => WindowWorkspace,
+  read: () => QuitWorkspace,
   flush: () => void,
 ): () => void {
   liveWorkspace = { read, flush };
@@ -160,7 +174,7 @@ export async function closeBusyWindow(): Promise<void> {
   await confirmAndCloseWindow(liveWorkspace.read());
 }
 
-export function loadResumedWorkspace(): Promise<WindowWorkspace | null> {
+export function loadResumedWorkspace(): Promise<QuitWorkspace | null> {
   if (!resumedPromise) resumedPromise = loadResumedWorkspaceOnce();
   return resumedPromise;
 }
@@ -202,7 +216,7 @@ async function listProjectHistory(
   }
 }
 
-async function loadResumedWorkspaceOnce(): Promise<WindowWorkspace | null> {
+async function loadResumedWorkspaceOnce(): Promise<QuitWorkspace | null> {
   const [snapshotRaw, refs] = await Promise.all([
     loadWorkspaceSnapshot().catch(() => null),
     listInFlightSessions().catch(() => []),
@@ -227,10 +241,10 @@ async function loadResumedWorkspaceOnce(): Promise<WindowWorkspace | null> {
     }),
   );
 
-  let workspace = snapshot
+  let hydrated = snapshot
     ? hydrateWorkspaceSnapshot(snapshot, loaded, interrupted)
     : null;
-  if (!workspace && refs.length > 0) {
+  if (!hydrated && refs.length > 0) {
     const sessions: Session[] = [];
     for (const ref of refs) {
       const record = loaded.get(ref.sessionId);
@@ -238,13 +252,17 @@ async function loadResumedWorkspaceOnce(): Promise<WindowWorkspace | null> {
       sessions.push(markTurnInterrupted(record));
     }
     const resumed = workspaceFromResumed(sessions);
-    workspace = resumed && {
+    hydrated = resumed && {
       ...resumed,
       projectTerminals: [],
       projectReturnMemory: new Map(),
       pins: restoreWorkspacePins(resumed.tabs, resumed.sessions),
     };
   }
+  const workspace = hydrated && {
+    ...hydrated,
+    monoCompletions: savedMonoCompletions(snapshotRaw),
+  };
 
   bootingResumed = workspace;
   if (workspace) {
@@ -314,7 +332,7 @@ export async function persistLiveTranscripts(
 }
 
 export async function persistQuitState(
-  workspace: WindowWorkspace,
+  workspace: QuitWorkspace,
   mode: "quit" | "unload",
 ): Promise<void> {
   const refs = inFlightRefs(workspace.sessions, workspace.tabs);
@@ -334,7 +352,7 @@ export async function persistQuitState(
       await write(upsertSession(payload));
     }),
   );
-  await write(saveWorkspaceSnapshot(workspaceSnapshot([workspace])));
+  await write(saveQuitSnapshot(workspace));
   // Vite/webview reload must not wipe a restored snapshot: those chats are idle
   // in this process until Continue runs.
   if (mode === "quit" || refs.length > 0) {
@@ -342,15 +360,21 @@ export async function persistQuitState(
   }
 }
 
-async function persistBootingResume(workspace: WindowWorkspace): Promise<void> {
+/** The workspace snapshot with the Mono completions the window still owes. */
+function saveQuitSnapshot(workspace: QuitWorkspace): Promise<void> {
+  return saveWorkspaceSnapshot({
+    ...workspaceSnapshot([workspace]),
+    monoCompletions: workspace.monoCompletions,
+  });
+}
+
+async function persistBootingResume(workspace: QuitWorkspace): Promise<void> {
   await Promise.all(
     workspace.sessions
       .filter(shouldPersistSession)
       .map((session) => upsertSession(session).catch(() => null)),
   );
-  await saveWorkspaceSnapshot(workspaceSnapshot([workspace])).catch(
-    () => undefined,
-  );
+  await saveQuitSnapshot(workspace).catch(() => undefined);
   await replaceInFlightSessions(
     workspace.sessions
       .filter(wasTurnInterrupted)
@@ -362,7 +386,7 @@ async function persistBootingResume(workspace: WindowWorkspace): Promise<void> {
 }
 
 async function confirmAndCloseWindow(
-  workspace: WindowWorkspace,
+  workspace: QuitWorkspace,
 ): Promise<void> {
   if (quitDialogOpen) return;
   quitDialogOpen = true;
