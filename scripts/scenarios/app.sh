@@ -207,7 +207,6 @@ d1_phase() {
       ["sh", "-c", "echo d1-\($phase) > d1-own.txt && cat d1-own.txt"],
       ["sh", "-c", "mkdir -p ~/Library/LaunchAgents && echo x > ~/Library/LaunchAgents/d1-probe.plist"],
       ["sh", "-c", "echo x > ~/.local/bin/d1-probe"],
-      ["sh", "-c", "mkdir -p ~/.config/git && echo x >> ~/.config/git/config"],
       ["sh", "-c", "echo x > \"$1\"/d1-probe", "sh", $srt],
       ["sh", "-c", "mkdir -p /tmp/claude-$(id -u)/d1-\($phase) && echo made"],
       ["sh", "-c", "echo sandbox=${SANDBOX_RUNTIME:-none}"],
@@ -235,7 +234,8 @@ run_d1() {
   echo "on:"
   touch "$SANDBOX_ON"
   # The temp HOME and srt are under /tmp, which the app's defaults allow, so
-  # only the deny lists keep ~/.local/bin, ~/.config/git and srt's code out.
+  # only the deny lists keep ~/.local/bin and srt's code out. (The temp HOME's
+  # ~/.config and ~/.gitconfig are links to the real ones: no probe writes there.)
   d1_phase on
   "$INSTANCE" start
   wait_until 90 "the Mono gets the Giga's message" saw D1-Q
@@ -248,7 +248,6 @@ run_d1() {
   expect "the setting is still there" "$([[ -e "$SANDBOX_ON" ]] && echo yes)" yes
   expect "a write to ~/Library/LaunchAgents is denied" "$(denied LaunchAgents)" true
   expect "a write to ~/.local/bin, under an allowed /tmp, is denied" "$(denied .local/bin/d1-probe)" true
-  expect "a write to ~/.config/git/config is denied" "$(denied .config/git/config)" true
   expect "a write into srt's own code is denied" "$(denied "$SRT_MODULES")" true
   expect "a mkdir under /tmp, as Claude Code does" "$(probe /tmp/claude- '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 made"
   expect "the worktree write" "$(probe d1-own '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 d1-on"
