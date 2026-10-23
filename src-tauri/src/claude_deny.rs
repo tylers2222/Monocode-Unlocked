@@ -9,8 +9,9 @@
 //! Defense in depth only: the Read rule does not stop a script that opens the
 //! file itself, the sandbox covers Bash only, and Bash runs unsandboxed where
 //! the sandbox cannot start (`failIfUnavailable` stays off). Inside D1's srt
-//! (ADE-41) the sandbox cannot start and srt is the only Bash control; dropping
-//! the block there belongs to the code that wraps the spawn.
+//! (ADE-41) the sandbox cannot start, and with the block present the session's
+//! first Bash call fails trying, so a spawn that `agent_sandbox::command` wraps
+//! in srt gets no `sandbox` block; srt is the Bash control there.
 
 use std::ffi::OsStr;
 use std::io::ErrorKind;
@@ -24,6 +25,7 @@ const ON_MARKER: &str = "claude-deny-rules-on";
 pub(crate) fn args<R: Runtime>(
     app: &AppHandle<R>,
     workdir: &Path,
+    in_srt: bool,
     args: Vec<String>,
 ) -> Result<Vec<String>, String> {
     let data = app
@@ -36,17 +38,19 @@ pub(crate) fn args<R: Runtime>(
         .map(PathBuf::from)
         .or_else(|| crate::passwd_identity().map(|id| id.home.into()))
         .unwrap_or_default();
-    args_in(&data, config_dir.as_deref(), &home, workdir, args)
+    args_in(&data, config_dir.as_deref(), &home, workdir, in_srt, args)
 }
 
 /// A marker that cannot be read counts as on: an IO error must not lower
 /// protection. `config_dir` is the `CLAUDE_CONFIG_DIR` the child inherits,
-/// `home` its HOME and `workdir` its working folder.
+/// `home` its HOME, `workdir` its working folder, and `in_srt` whether D1 runs
+/// it inside srt.
 pub(crate) fn args_in(
     data: &Path,
     config_dir: Option<&OsStr>,
     home: &Path,
     workdir: &Path,
+    in_srt: bool,
     mut args: Vec<String>,
 ) -> Result<Vec<String>, String> {
     if matches!(std::fs::exists(data.join(ON_MARKER)), Ok(false)) {
@@ -98,14 +102,16 @@ pub(crate) fn args_in(
     ];
     deny.extend(config);
     settings.insert("permissions".into(), json!({ "deny": deny }));
-    settings.insert(
-        "sandbox".into(),
-        json!({
-            "enabled": true,
-            "allowUnsandboxedCommands": false,
-            "filesystem": { "denyRead": [folders], "denyWrite": [folders] },
-        }),
-    );
+    if !in_srt {
+        settings.insert(
+            "sandbox".into(),
+            json!({
+                "enabled": true,
+                "allowUnsandboxedCommands": false,
+                "filesystem": { "denyRead": [folders], "denyWrite": [folders] },
+            }),
+        );
+    }
     args[at] = Value::Object(settings).to_string();
     Ok(args)
 }

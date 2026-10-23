@@ -978,8 +978,10 @@ pub fn harness_spawn<R: Runtime>(
     if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref()) {
         return Err("harness_spawn: not a resolved harness CLI".to_string());
     }
+    let crate::agent_sandbox::Spawn { mut cmd, sandboxed } =
+        crate::agent_sandbox::command(&app, &command)?;
     let args = match binary_provider.as_deref() {
-        Some("claude") => crate::claude_deny::args(&app, &workdir, args)?,
+        Some("claude") => crate::claude_deny::args(&app, &workdir, sandboxed, args)?,
         _ => args,
     };
 
@@ -991,8 +993,6 @@ pub fn harness_spawn<R: Runtime>(
         }
         Some(true) => return Err("Edit approvals are only supported for `devin acp`".into()),
     };
-    let crate::agent_sandbox::Spawn { mut cmd, sandboxed } =
-        crate::agent_sandbox::command(&app, &command)?;
 
     let _reservation = crate::worktree_lifecycle::reserve_spawn(&workdir)?;
     let (epoch, kill_all, prev) = host.begin_spawn(&session_id);

@@ -68,7 +68,7 @@ fn d4_marker_decides_and_bad_input_fails_the_spawn() {
     std::fs::create_dir_all(&work).unwrap();
     let plain = spawn_args(r#"{"alwaysThinkingEnabled":true}"#);
     let spawn = |data: &Path, config: Option<&str>, args: Vec<String>| {
-        args_in(data, config.map(OsStr::new), &home, &work, args)
+        args_in(data, config.map(OsStr::new), &home, &work, false, args)
     };
 
     assert_eq!(
@@ -84,6 +84,11 @@ fn d4_marker_decides_and_bad_input_fails_the_spawn() {
         settings_of(&on)["alwaysThinkingEnabled"],
         true,
         "on: other keys kept"
+    );
+    let in_srt = settings_of(&args_in(&data, None, &home, &work, true, plain.clone()).unwrap());
+    assert!(
+        in_srt["permissions"]["deny"].is_array() && in_srt.get("sandbox").is_none(),
+        "on inside D1's srt: deny rules, no sandbox block"
     );
 
     for bad in ["not json", "[]", r#""text""#] {
