@@ -1,0 +1,62 @@
+{
+  "source": "Reduced from a .backup copy of com.monocode.second/monocode.db taken 2026-10-22 (ADE-64): the omp session where a relaunch Continue was steered 11 ms after it opened its turn. record: the session as session_store.rs saves it, with only its last block before the relaunch (the interrupt notice); the project folder is the test project and the title is a neutral stand-in for the real one, which quoted a user prompt. miss: the opener, the steer and the error notice as saved after that relaunch, verbatim; the opener has durationMs 14 though omp ran the turn on (reasoning, five tool calls and a reply follow the notice).",
+  "record": {
+    "id": "app-86984142-5f1a-4018-af62-ddb105cb6cb4-3e217e0f-f3fe-4289-aee1-dbee872c4aa7",
+    "harness": "omp",
+    "model": "omp:default",
+    "runtimeMode": "auto",
+    "title": "omp · ADE-64 steer miss",
+    "blocks": [
+      {
+        "id": "fad28724-6c60-4d8c-9a4b-83223d73a632",
+        "notice": "interrupt",
+        "role": "system",
+        "text": "Turn interrupted when MonoCode quit."
+      }
+    ]
+  },
+  "miss": {
+    "opener": {
+      "durationMs": 14,
+      "id": "a1e76101-c93b-44eb-8fcb-a05c404e5862",
+      "role": "user",
+      "startedAt": 1792477177362,
+      "text": "Continue from where you left off.",
+      "turnId": "d16f0c39-099e-44ed-92bf-2247b392929b",
+      "turnModel": {
+        "harness": "omp",
+        "id": "omp:anthropic/claude-opus-5-5",
+        "name": "Default"
+      }
+    },
+    "steer": {
+      "id": "4c9b730b-7720-436b-8b5f-6337acf6d18d",
+      "link": {
+        "intent": "steer",
+        "scope": "turn"
+      },
+      "role": "user",
+      "sentAt": 1792477177373,
+      "text": "Continue from where you left off.",
+      "turnId": "d16f0c39-099e-44ed-92bf-2247b392929b",
+      "turnMetrics": {
+        "cacheHitPercent": 80.24961785444711,
+        "cacheReadTokens": 423145,
+        "cacheWriteTokens": 104131,
+        "inputTokens": 10,
+        "outputTokens": 2309
+      },
+      "turnModel": {
+        "harness": "omp",
+        "id": "omp:anthropic/claude-opus-5-5",
+        "name": "Default"
+      }
+    },
+    "error": {
+      "id": "6a39ace3-e8ab-468e-b039-cd45c14d3be8",
+      "notice": "error",
+      "role": "system",
+      "text": "No active turn to steer"
+    }
+  }
+}
