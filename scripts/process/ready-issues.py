@@ -21,12 +21,16 @@ blockers, since it entered Todo (history, else createdAt).
 Builders. A session builds ticket ADE-<id> when it is busy, not archived, and
 the branch the app recorded for it matches `(^|/)ade-<id>(-|$)` (any case,
 the exact id with no leading zero). The sessions are the monocode project's,
-from `monocode app sessions.list` in the app of the instance --instance names.
-Run the script in a session or Mono of that instance: the CLI answers for the
-instance its environment points at, so the other instance is not read, and a
-closed or code-complete blocker that a builder there still works on counts as
-unblocked. Titles are never matched. Busy sessions on `main` or with no branch
-are listed as "unattributed".
+from `monocode app sessions.list`. The CLI answers for the app its environment
+points at, whichever binary runs it, so the reply names that app
+(`appIdentifier`) and the script exits 2 unless it is the app of --instance.
+Run the script in a session or Mono of that instance. The other instance is not
+read: the lead accepted this one-instance scope on 2026-10-23 (decisions.md,
+ADE-84 #268 r1 m2), because the CLI answers only for its own app and D1 denies
+direct database reads. A closed or code-complete blocker that a builder of the
+other instance still works on counts as unblocked. A reply from an app built
+before #268 has no `appIdentifier` and exits 2. Titles are never matched. Busy
+sessions on `main` or with no branch are listed as "unattributed".
 
 --dry-run prints `would label ADE-<n>` for each code-complete label it would
 add, and writes nothing.
@@ -51,11 +55,8 @@ REPO = "tylers2222/Monocode-Unlocked"
 MAX_WAIT = timedelta(minutes=60)
 CLOSED = ("completed", "canceled", "duplicate")
 CODE_COMPLETE = "code-complete"
-INSTANCES = ("1", "2")
-APP_CLIS = {
-    "1": "/Applications/MonoCode.app/Contents/MacOS/monocode",
-    "2": "/Applications/MonoCode 2.app/Contents/MacOS/monocode",
-}
+INSTANCE_APPS = {"1": "com.monocode.desktop", "2": "com.monocode.second"}
+APP_CLI = "/Applications/MonoCode.app/Contents/MacOS/monocode"
 BRANCH_TICKET = re.compile(r"(?:^|/)ade-([1-9]\d*)(?=-|$)", re.IGNORECASE)
 TITLE_TICKET = re.compile(r"ADE-(\d+)\b")
 TICKET_PART = re.compile(r"^Ticket-part: (\d+)/(\d+)\r?$", re.MULTILINE)
@@ -251,8 +252,8 @@ def merged_prs():
     ).stdout)
 
 
-def sessions_list(instance, payload):
-    run = subprocess.run([APP_CLIS[instance], "app", "sessions.list", "--json", json.dumps(payload)],
+def sessions_list(payload):
+    run = subprocess.run([APP_CLI, "app", "sessions.list", "--json", json.dumps(payload)],
                          capture_output=True, text=True, timeout=60)
     return json.loads(run.stdout)
 
@@ -271,21 +272,27 @@ def monocode_project():
 def app_sessions(instance):
     """The monocode project's sessions, from `sessions.list` in the app of this instance."""
     project = monocode_project()
-    reply = sessions_list(instance, {"project": project})
+    reply = sessions_list({"project": project})
     # A Mono names the project; a session lists its own and may not name one.
     if reply.get("error") == "project is only for a Mono":
-        reply = sessions_list(instance, {})
+        reply = sessions_list({})
     if not reply.get("ok"):
         raise RuntimeError(f"app sessions.list: {reply.get('error')}")
-    if os.path.realpath(reply["result"]["cwd"]) != os.path.realpath(project):
-        raise RuntimeError(f"app sessions.list listed {reply['result']['cwd']}, not {project}")
-    return [{"id": s["id"], "title": s["title"], "branch": s.get("branch"), "archived": s["archived"],
-             "busy": s["busy"], "instance": instance} for s in reply["result"]["sessions"]]
+    result = reply["result"]
+    if "appIdentifier" not in result:
+        raise RuntimeError("app sessions.list has no appIdentifier: the app was built before #268 and sends no branch")
+    if result["appIdentifier"] != INSTANCE_APPS[instance]:
+        raise RuntimeError(f"app sessions.list was answered by {result['appIdentifier']}, not instance {instance} "
+                           f"({INSTANCE_APPS[instance]}); run it in a session of instance {instance}")
+    if os.path.realpath(result["cwd"]) != os.path.realpath(project):
+        raise RuntimeError(f"app sessions.list listed {result['cwd']}, not {project}")
+    return [{"id": s["id"], "title": s["title"], "branch": s["branch"], "archived": s["archived"],
+             "busy": s["busy"], "instance": instance} for s in result["sessions"]]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--instance", required=True, choices=INSTANCES)
+    parser.add_argument("--instance", required=True, choices=list(INSTANCE_APPS))
     parser.add_argument("--dry-run", action="store_true", help="print the labels it would add; write nothing")
     args = parser.parse_args()
     try:

@@ -2,6 +2,7 @@
  "1": {
   "ok": true,
   "result": {
+   "appIdentifier": "com.monocode.desktop",
    "cwd": "/Users/test/Desktop/monocode",
    "sessions": [
     {
@@ -90,6 +91,7 @@
  "2": {
   "ok": true,
   "result": {
+   "appIdentifier": "com.monocode.second",
    "cwd": "/Users/test/Desktop/monocode",
    "sessions": [
     {

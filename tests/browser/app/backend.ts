@@ -681,6 +681,7 @@ const HANDLERS: Record<string, Handler> = {
   resolve_project_location: (_, { path }) => ({ path, identity: path }),
   quick_composer_prepare: () => false,
   "plugin:app|version": () => "0.0.0-test",
+  "plugin:app|identifier": () => "com.monocode.desktop",
   "plugin:app|bundle_type": none,
   "plugin:updater|check": none,
   "plugin:window|is_maximized": () => false,

@@ -6,8 +6,10 @@ fixtures/linear-issues.json is the script's two Linear queries (the open ADE
 issues, then the closed issues that block one). fixtures/merged-prs.json is 5
 PRs of the script's gh query; none had a Ticket-part line yet.
 fixtures/app-sessions.json holds, for each instance, the `monocode app
-sessions.list` reply for the app's data at that time: the monocode project's
-in-flight sessions plus a few idle ones. The tests read it through a fake
+sessions.list` reply for the app's data at that time: the app's identifier,
+then the monocode project's in-flight sessions plus a few idle ones. Busy and
+archived flags and which branches name a ticket are as recorded; ids, titles,
+the home folder and branch names are made up. The tests read it through a fake
 `monocode` that prints the reply and logs each call.
 """
 import copy
@@ -77,23 +79,21 @@ def calls(cli):
     return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
 
-def fake_clis(directory, replies=None):
-    """One fake CLI per instance, answering its recorded sessions.list."""
-    clis = {}
-    for name, reply in APP.items():
-        folder = Path(directory) / f"instance-{name}"
-        folder.mkdir(exist_ok=True)
-        clis[name] = fake_cli(folder, replies or {"": json.dumps(reply)})
-    return clis
+def recorded_cli(directory, instance):
+    """A fake CLI answering the sessions.list that the app of this instance recorded."""
+    folder = Path(directory) / f"instance-{instance}"
+    folder.mkdir(exist_ok=True)
+    return fake_cli(folder, {"": json.dumps(APP[instance])})
 
 
 class ReadyIssues(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.clis = fake_clis(cls.tmp.name)
-        with mock.patch.object(ri, "APP_CLIS", cls.clis):
-            cls.SESSIONS = ri.app_sessions("1") + ri.app_sessions("2")
+        cls.SESSIONS = []
+        for instance in APP:
+            with mock.patch.object(ri, "APP_CLI", recorded_cli(cls.tmp.name, instance)):
+                cls.SESSIONS += ri.app_sessions(instance)
 
     @classmethod
     def tearDownClass(cls):
@@ -142,13 +142,12 @@ class ReadyIssues(unittest.TestCase):
         self.assertEqual(code, 1, "the four issues with no blockers have waited hours")
         self.assertIn("ready-issues: 4 ready with no builder, 4 waiting more than 60 min, 0 unlabelled, 15 unattributed.", lines)
 
-    def test_reads_the_monocode_project_from_the_app_of_its_instance(self):
+    def test_lists_the_builders_in_the_reply_of_its_instance(self):
         with tempfile.TemporaryDirectory() as tmp:
-            clis = fake_clis(tmp)
-            with mock.patch.object(ri, "APP_CLIS", clis):
+            cli = recorded_cli(tmp, "1")
+            with mock.patch.object(ri, "APP_CLI", cli):
                 sessions = ri.app_sessions("1")
-            self.assertEqual(calls(clis["1"]), [["app", "sessions.list", "--json", json.dumps({"project": PROJECT})]])
-            self.assertEqual(calls(clis["2"]), [], "the other instance is not asked")
+            self.assertEqual(calls(cli), [["app", "sessions.list", "--json", json.dumps({"project": PROJECT})]])
         self.assertEqual({s["instance"] for s in sessions}, {"1"})
         self.assertEqual(ri.builder_tickets(sessions), {"ADE-52", "ADE-53"},
                          "instance 1's in-flight builders on feat/ade-52-* and feat/ade-53-*")
@@ -158,14 +157,14 @@ class ReadyIssues(unittest.TestCase):
     def test_a_session_lists_its_own_project_and_only_the_monocode_one_counts(self):
         listed = APP["2"]
         refused = {"ok": False, "error": "project is only for a Mono"}
-        other = {"ok": True, "result": {"cwd": "/tmp/vibtra", "sessions": []}}
+        other = {"ok": True, "result": {"appIdentifier": "com.monocode.second", "cwd": "/tmp/vibtra", "sessions": []}}
         for case, reply, error in [
             ("a session, refused a project, lists its own", listed, None),
             ("a session in another project", other, f"listed /tmp/vibtra, not {PROJECT}"),
         ]:
             with self.subTest(case), tempfile.TemporaryDirectory() as tmp:
                 cli = fake_cli(tmp, {json.dumps({"project": PROJECT}): json.dumps(refused), "": json.dumps(reply)})
-                with mock.patch.object(ri, "APP_CLIS", {"2": cli}):
+                with mock.patch.object(ri, "APP_CLI", cli):
                     if error:
                         self.assertRaisesRegex(RuntimeError, error, ri.app_sessions, "2")
                     else:
@@ -337,18 +336,18 @@ class Main(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = tmp.name
-        self.clis = fake_clis(tmp.name)
+        self.cli = recorded_cli(tmp.name, "2")
 
-    def run_main(self, *args, clis=None):
+    def run_main(self, *args, cli=None, instance="2"):
         writes = []
         # The sandbox of D1 denies the app data folder: no database opens.
-        with mock.patch.object(ri, "APP_CLIS", clis or self.clis, create=True), \
+        with mock.patch.object(ri, "APP_CLI", cli or self.cli), \
                 mock.patch("sqlite3.connect", side_effect=PermissionError("Operation not permitted")), \
                 mock.patch.object(ri, "linear_key", lambda: "key"), \
                 mock.patch.object(ri, "open_issues_and_blockers", lambda key: copy.deepcopy(ISSUES)), \
                 mock.patch.object(ri, "merged_prs", lambda: self.prs), \
                 mock.patch.object(ri, "add_code_complete", lambda key, issues: writes.extend(i["identifier"] for i in issues)), \
-                mock.patch.object(sys, "argv", ["ready-issues.py", "--instance", "2", *args]), \
+                mock.patch.object(sys, "argv", ["ready-issues.py", "--instance", instance, *args]), \
                 mock.patch("sys.stdout", new_callable=io.StringIO) as out, \
                 mock.patch("sys.stderr", new_callable=io.StringIO) as err:
             code = ri.main()
@@ -366,19 +365,37 @@ class Main(unittest.TestCase):
         code, out, _ = self.run_main("--dry-run")
         self.assertEqual(code, 1, out)
         self.assertIn("ready-issues: 5 ready with no builder, 5 waiting more than 60 min, 0 unlabelled, 11 unattributed.", out)
-        self.assertEqual(calls(self.clis["2"]),
+        self.assertEqual(calls(self.cli),
                          [["app", "sessions.list", "--json", json.dumps({"project": PROJECT})]])
-        self.assertEqual(calls(self.clis["1"]), [])
+
+    def test_a_reply_from_the_other_instance_exits_2(self):
+        for instance, answered in [("2", "1"), ("1", "2")]:
+            with self.subTest(instance=instance, answered=answered):
+                cli = recorded_cli(self.tmp, answered)
+                code, out, writes = self.run_main(cli=cli, instance=instance)
+                self.assertEqual((code, writes), (2, []), out)
+                self.assertIn(f"answered by {APP[answered]['result']['appIdentifier']}, not instance {instance}", out)
+
+    def test_a_reply_from_an_app_built_before_268_exits_2(self):
+        old = copy.deepcopy(APP["2"])
+        del old["result"]["appIdentifier"]
+        for session in old["result"]["sessions"]:
+            del session["branch"]
+        cli = fake_cli(Path(self.tmp) / "instance-2", {"": json.dumps(old)})
+        code, out, writes = self.run_main("--dry-run", cli=cli)
+        self.assertEqual((code, writes), (2, []), out)
+        self.assertIn("no appIdentifier", out)
+        self.assertNotIn("ready with no builder", out)
 
     def test_an_app_cli_that_fails_exits_2(self):
         for case, reply in [("no token", json.dumps({"ok": False, "error": "MONOCODE_APP_TOKEN is not set."})),
                             ("no JSON", "Cannot connect to MonoCode"), ("no output", "")]:
             with self.subTest(case):
                 cli = fake_cli(Path(self.tmp) / "instance-2", {"": reply})
-                code, out, writes = self.run_main(clis={"2": cli})
+                code, out, writes = self.run_main(cli=cli)
                 self.assertEqual((code, writes), (2, []), out)
                 self.assertTrue(out.startswith("ready-issues: "), out)
-        code, out, _ = self.run_main(clis={"2": "/nonexistent/monocode"})
+        code, out, _ = self.run_main(cli="/nonexistent/monocode")
         self.assertEqual(code, 2, out)
 
 
