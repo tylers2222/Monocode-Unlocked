@@ -17,12 +17,12 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Runtime};
 
 const ON_MARKER: &str = "claude-deny-rules-on";
 
-pub(crate) fn args(
-    app: &AppHandle,
+pub(crate) fn args<R: Runtime>(
+    app: &AppHandle<R>,
     workdir: &Path,
     args: Vec<String>,
 ) -> Result<Vec<String>, String> {

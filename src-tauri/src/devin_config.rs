@@ -10,14 +10,14 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Runtime};
 
 use crate::{dirs_home, jsonc::strip_jsonc_comments};
 
 pub(crate) const ASK_EDITS_RULE: &str = "Write(**)";
 
 /// The `--config` arguments for a supervised `devin acp` child.
-pub(crate) fn supervised_args(app: &AppHandle) -> Result<Vec<String>, String> {
+pub(crate) fn supervised_args<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<String>, String> {
     let config = ask_before_edits(read_user_config()?.as_deref())?;
     let dir = app
         .path()
