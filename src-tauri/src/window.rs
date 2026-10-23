@@ -207,10 +207,11 @@ pub fn hide_window(window: WebviewWindow) -> Result<(), String> {
 
 /// Finish a close. `destroy` skips CloseRequested so the JS handler does not
 /// loop; `close` would fire it again. A window closed beside another one
-/// stopped its chats, so a relaunch must not resume them. The last close keeps
-/// them: on Linux and Windows it is a quit. Async: the delete waits for the
-/// store lock, and the main thread must not. The window's chats are already
-/// killed, so a store error must not keep it open.
+/// stopped its chats and closed its tabs, so a relaunch must not resume or
+/// reopen them. The last close keeps them: on Linux and Windows it is a quit.
+/// Async: the delete waits for the store lock, and the main thread must not.
+/// The window's chats are already killed, so a store error must not keep it
+/// open.
 #[tauri::command(async)]
 pub fn destroy_window<R: Runtime>(
     window: WebviewWindow<R>,
@@ -221,9 +222,7 @@ pub fn destroy_window<R: Runtime>(
         .any(|other| other.label() != window.label());
     let closed = window.destroy().map_err(|err| err.to_string());
     if another {
-        if let Err(error) =
-            crate::session_store::forget_closed_window_in_flight(&store, window.label())
-        {
+        if let Err(error) = crate::session_store::forget_closed_window(&store, window.label()) {
             eprintln!(
                 "Window {} closed; its rows stay until another window saves: {error}",
                 window.label()

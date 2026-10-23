@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -676,10 +676,7 @@ pub fn session_set_in_flight<R: Runtime>(
     // Read the open windows under the store lock: a window that opens and
     // saves while this save waits must be in the list, or its rows are swept.
     let mut conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let open: Vec<String> = crate::window::workspace_windows(&window)
-        .iter()
-        .map(|open| open.label().to_owned())
-        .collect();
+    let open = open_workspace_windows(&window);
     replace_in_flight(&mut conn, &store.run_id, window.label(), &open, &sessions)
         .map_err(|e| e.to_string())
 }
@@ -705,15 +702,27 @@ pub fn session_list_in_flight<R: Runtime>(
 }
 
 /// A window closed while the app keeps running: its chats stopped with it,
-/// so a relaunch must not resume them.
-pub fn forget_closed_window_in_flight(store: &SessionStore, window: &str) -> Result<(), String> {
+/// so a relaunch must not resume them, and its tabs closed with it, so a
+/// relaunch must not reopen them.
+pub fn forget_closed_window(store: &SessionStore, window: &str) -> Result<(), String> {
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    conn.execute(
-        "DELETE FROM in_flight_sessions WHERE window_label = ?1 AND run_id = ?2",
-        params![window, store.run_id],
-    )
-    .map(drop)
-    .map_err(|e| e.to_string())
+    for table in ["in_flight_sessions", "workspace_window_snapshots"] {
+        conn.execute(
+            &format!("DELETE FROM {table} WHERE window_label = ?1 AND run_id = ?2"),
+            params![window, store.run_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Every workspace window's label. The saves that sweep the rows of closed
+/// windows read it under the store lock.
+fn open_workspace_windows<R: Runtime>(window: &WebviewWindow<R>) -> Vec<String> {
+    crate::window::workspace_windows(window)
+        .iter()
+        .map(|open| open.label().to_owned())
+        .collect()
 }
 
 /// Read and clear the quit snapshot so a restored window cannot take it twice.
@@ -727,32 +736,47 @@ pub fn session_take_in_flight(
 
 const WORKSPACE_SNAPSHOT_MAX_BYTES: usize = 2_000_000;
 
+/// Set in every snapshot this build saves. An older build rewrites the shared
+/// row without it, so a shared row without it is newer than the window rows.
+const WINDOW_ROWS_KEY: &str = "windowRows";
+
 /// `read_at` is when the window read the state in `snapshot`, in ms.
 #[tauri::command(async)]
-pub fn workspace_set_snapshot(
+pub fn workspace_set_snapshot<R: Runtime>(
     store: State<'_, SessionStore>,
-    snapshot: Value,
+    window: WebviewWindow<R>,
+    mut snapshot: Value,
     read_at: i64,
 ) -> Result<(), String> {
-    if !snapshot.is_object() {
-        return Err("workspace snapshot must be an object".into());
-    }
+    snapshot
+        .as_object_mut()
+        .ok_or("workspace snapshot must be an object")?
+        .insert(WINDOW_ROWS_KEY.into(), Value::Bool(true));
     let json = serde_json::to_string(&snapshot).map_err(|e| e.to_string())?;
     if json.len() > WORKSPACE_SNAPSHOT_MAX_BYTES {
         return Err("workspace snapshot is too large".into());
     }
-    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    set_workspace_snapshot(&conn, &json, read_at, now_millis()).map_err(|e| e.to_string())
+    let mut conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    let open = open_workspace_windows(&window);
+    set_workspace_snapshot(
+        &mut conn,
+        &store.run_id,
+        window.label(),
+        &open,
+        &json,
+        read_at,
+        now_millis(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
-pub fn workspace_get_snapshot(store: State<'_, SessionStore>) -> Result<Option<Value>, String> {
+pub fn workspace_get_snapshot<R: Runtime>(
+    store: State<'_, SessionStore>,
+    window: WebviewWindow<R>,
+) -> Result<Option<Value>, String> {
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let json = get_workspace_snapshot(&conn).map_err(|e| e.to_string())?;
-    match json {
-        None => Ok(None),
-        Some(raw) => serde_json::from_str(&raw).map_err(|e| e.to_string()),
-    }
+    get_workspace_snapshot(&conn, &store.run_id, window.label())
 }
 
 /// Add a `sessions` column when it is absent, so a half-applied history cannot
@@ -1100,6 +1124,13 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            id INTEGER PRIMARY KEY CHECK (id = 1),
            snapshot_json TEXT NOT NULL,
            updated_at INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS workspace_window_snapshots (
+           window_label TEXT NOT NULL,
+           run_id TEXT NOT NULL,
+           snapshot_json TEXT NOT NULL,
+           read_at INTEGER NOT NULL,
+           PRIMARY KEY (window_label, run_id)
          );
          CREATE TABLE IF NOT EXISTS worktree_removals (
            path TEXT PRIMARY KEY,
@@ -2315,42 +2346,165 @@ fn snapshot_supersedes(stored: Option<i64>, incoming: i64, now: i64) -> bool {
     }
 }
 
-/// Runs under the store lock, so the check and the write are one step for
-/// every window. `updated_at` holds the stored snapshot's read time.
+/// Runs under the store lock, so each check and its write are one step for
+/// every window. The shared row (`id = 1`, `updated_at` = its read time)
+/// keeps the newest-read snapshot of any window: New Window opens a copy of
+/// it, and an older build reads only it. The window's own row keeps the
+/// window's newest-read snapshot (ADE-11). Like `replace_in_flight`, a save
+/// drops the rows an earlier run left, which this run's windows restored, and
+/// this run's rows of windows that closed.
 fn set_workspace_snapshot(
-    conn: &Connection,
+    conn: &mut Connection,
+    run_id: &str,
+    window: &str,
+    open_windows: &[String],
     json: &str,
     read_at: i64,
     now: i64,
 ) -> rusqlite::Result<()> {
-    let stored = conn
+    let tx = conn.transaction()?;
+    let shared = tx
         .query_row(
             "SELECT updated_at FROM workspace_snapshot WHERE id = 1",
             [],
             |row| row.get(0),
         )
         .optional()?;
-    if !snapshot_supersedes(stored, read_at, now) {
-        return Ok(());
+    if snapshot_supersedes(shared, read_at, now) {
+        tx.execute(
+            "INSERT INTO workspace_snapshot (id, snapshot_json, updated_at)
+             VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET
+               snapshot_json = excluded.snapshot_json,
+               updated_at = excluded.updated_at",
+            params![json, read_at],
+        )?;
     }
-    conn.execute(
-        "INSERT INTO workspace_snapshot (id, snapshot_json, updated_at)
-         VALUES (1, ?1, ?2)
-         ON CONFLICT(id) DO UPDATE SET
-           snapshot_json = excluded.snapshot_json,
-           updated_at = excluded.updated_at",
-        params![json, read_at],
+    let own = tx
+        .query_row(
+            "SELECT read_at FROM workspace_window_snapshots WHERE window_label = ?1 AND run_id = ?2",
+            params![window, run_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if snapshot_supersedes(own, read_at, now) {
+        tx.execute(
+            "INSERT INTO workspace_window_snapshots (window_label, run_id, snapshot_json, read_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(window_label, run_id) DO UPDATE SET
+               snapshot_json = excluded.snapshot_json,
+               read_at = excluded.read_at",
+            params![window, run_id, json, read_at],
+        )?;
+    }
+    tx.execute(
+        "DELETE FROM workspace_window_snapshots
+         WHERE run_id <> ?1 OR window_label NOT IN (SELECT value FROM json_each(?2))",
+        params![run_id, json!(open_windows).to_string()],
     )?;
-    Ok(())
+    tx.commit()
 }
 
-fn get_workspace_snapshot(conn: &Connection) -> rusqlite::Result<Option<String>> {
-    conn.query_row(
-        "SELECT snapshot_json FROM workspace_snapshot WHERE id = 1",
-        [],
-        |row| row.get(0),
-    )
-    .optional()
+/// What a window restores (ADE-11). A reload gets the window's own row of
+/// this run. A relaunch, or a window that opens before this run's first save,
+/// gets every row the earlier run left, joined newest first. Otherwise, or
+/// when an older build saved last, it gets the shared row.
+fn get_workspace_snapshot(
+    conn: &Connection,
+    run_id: &str,
+    window: &str,
+) -> Result<Option<Value>, String> {
+    let parse = |raw: rusqlite::Result<String>| -> Result<Value, String> {
+        serde_json::from_str(&raw.map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    };
+    let shared = conn
+        .query_row(
+            "SELECT snapshot_json FROM workspace_snapshot WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .transpose()
+        .map(parse)
+        .transpose()?;
+    if shared
+        .as_ref()
+        .is_some_and(|row| row.get(WINDOW_ROWS_KEY).is_none())
+    {
+        return Ok(shared);
+    }
+    let mut statement = conn
+        .prepare(
+            "SELECT snapshot_json FROM workspace_window_snapshots
+             WHERE window_label = ?1 OR run_id <> ?2
+             ORDER BY read_at DESC, window_label ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map(params![window, run_id], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .map(parse)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(join_window_snapshots(rows).or(shared))
+}
+
+/// The rows as the one snapshot boot restores. The first row keeps its
+/// settings and tabs. Each later row adds every tab whose id and panes no
+/// earlier row shows, then its session stubs and saved tab workspaces. So a
+/// tab New Window copied, or a chat open in both windows, comes back once. A
+/// later tab that shows such a chat beside another one is left out too; the
+/// other chat stays in the sidebar. Restore keeps the first stub of a session
+/// and the first saved workspace of a tab.
+fn join_window_snapshots(rows: Vec<Value>) -> Option<Value> {
+    let mut rows = rows.into_iter();
+    let mut joined = rows.next()?;
+    for mut row in rows {
+        let shown: HashSet<String> = joined["tabs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(tab_and_pane_ids)
+            .collect();
+        let tabs = take_list(&mut row, "tabs")
+            .into_iter()
+            .filter(|tab| tab_and_pane_ids(tab).iter().all(|id| !shown.contains(id)))
+            .collect();
+        append_list(&mut joined, "tabs", tabs);
+        for key in ["sessions", "tabWorkspaces"] {
+            let items = take_list(&mut row, key);
+            append_list(&mut joined, key, items);
+        }
+    }
+    Some(joined)
+}
+
+/// A saved tab's id and the ids of the panes its layout shows.
+fn tab_and_pane_ids(tab: &Value) -> Vec<String> {
+    fn panes(node: &Value, ids: &mut Vec<String>) {
+        match node["children"].as_array() {
+            Some(children) => children.iter().for_each(|child| panes(child, ids)),
+            None => ids.extend(node["id"].as_str().map(str::to_owned)),
+        }
+    }
+    let mut ids = vec![tab["id"].as_str().unwrap_or_default().to_owned()];
+    panes(&tab["layout"], &mut ids);
+    ids
+}
+
+fn take_list(row: &mut Value, key: &str) -> Vec<Value> {
+    match row.get_mut(key).map(Value::take) {
+        Some(Value::Array(items)) => items,
+        _ => Vec::new(),
+    }
+}
+
+fn append_list(row: &mut Value, key: &str, items: Vec<Value>) {
+    if let Some(Value::Array(list)) = row
+        .as_object_mut()
+        .map(|fields| fields.entry(key).or_insert_with(|| json!([])))
+    {
+        list.extend(items);
+    }
 }
 
 pub(crate) fn validate_id(value: &str, label: &str) -> Result<(), String> {
@@ -3876,6 +4030,8 @@ mod tests {
                 .invoke_handler(tauri::generate_handler![
                     session_set_in_flight,
                     session_list_in_flight,
+                    workspace_set_snapshot,
+                    workspace_get_snapshot,
                     crate::window::destroy_window
                 ]),
             labels,
@@ -4383,19 +4539,6 @@ mod tests {
     }
 
     #[test]
-    fn workspace_snapshot_round_trips_and_replaces() {
-        let store = SessionStore::open_in_memory().unwrap();
-        let conn = store.conn.lock().unwrap();
-        set_workspace_snapshot(&conn, r#"{"tabs":[{"id":"t1"}]}"#, 1, 10).unwrap();
-        let first = get_workspace_snapshot(&conn).unwrap().unwrap();
-        assert!(first.contains("t1"));
-        set_workspace_snapshot(&conn, r#"{"tabs":[{"id":"t2"}]}"#, 2, 10).unwrap();
-        let second = get_workspace_snapshot(&conn).unwrap().unwrap();
-        assert!(second.contains("t2"));
-        assert!(!second.contains("t1"));
-    }
-
-    #[test]
     fn a_snapshot_supersedes_one_read_no_later_unless_the_clock_stepped_back() {
         assert!(snapshot_supersedes(None, 5, 10));
         assert!(snapshot_supersedes(Some(5), 6, 10));
@@ -4407,23 +4550,324 @@ mod tests {
         assert!(snapshot_supersedes(Some(11), 4, 10));
     }
 
-    // ADE-46, through the IPC command as each window calls it. A quit save
-    // that fails keeps the row's read time, so it drops no later save. Window
-    // B's running save, read before window A's quit save, arrives after it
-    // and must not replace A's waiting group. Not on Windows: see `tauri`
-    // under `[target.'cfg(not(windows))'.dev-dependencies]` in Cargo.toml.
+    /// A saved tab `id` showing `panes`: one leaf, or a split of them.
+    #[cfg(not(windows))]
+    fn saved_tab(id: &str, panes: &[&str]) -> Value {
+        let leaf = |pane: &&str| json!({ "type": "leaf", "id": pane });
+        let layout = match panes {
+            [pane] => leaf(pane),
+            _ => json!({
+                "type": "split",
+                "id": format!("split-{id}"),
+                "dir": "right",
+                "children": panes.iter().map(leaf).collect::<Vec<_>>(),
+                "sizes": [0.5, 0.5]
+            }),
+        };
+        json!({ "kind": "session", "id": id, "layout": layout, "focusedId": panes[0], "editorPanes": [] })
+    }
+
+    /// `base` with `tabs` after its own, a stub per pane they show, and the
+    /// last of them active.
+    #[cfg(not(windows))]
+    fn with_tabs(base: &Value, tabs: &[Value]) -> Value {
+        let mut next = base.clone();
+        for tab in tabs {
+            next["tabs"].as_array_mut().unwrap().push(tab.clone());
+            let layout = &tab["layout"];
+            let leaves = layout["children"]
+                .as_array()
+                .cloned()
+                .unwrap_or_else(|| vec![layout.clone()]);
+            for leaf in leaves {
+                next["sessions"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({ "id": leaf["id"] }));
+            }
+        }
+        next["activeTabId"] = tabs.last().unwrap()["id"].clone();
+        next
+    }
+
+    #[cfg(not(windows))]
+    fn tab_ids(snapshot: &Value) -> Vec<String> {
+        snapshot["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tab| tab["id"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[cfg(not(windows))]
+    fn save_snapshot(
+        window: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+        snapshot: &Value,
+        read_at: i64,
+    ) {
+        crate::mono_messages::tests::invoke_command(
+            window,
+            "workspace_set_snapshot",
+            &json!({ "snapshot": snapshot, "readAt": read_at }),
+        )
+        .unwrap();
+    }
+
+    /// What the window's boot or reload restores.
+    #[cfg(not(windows))]
+    fn restored_snapshot(window: &tauri::WebviewWindow<tauri::test::MockRuntime>) -> Value {
+        crate::mono_messages::tests::invoke_command(window, "workspace_get_snapshot", &json!({}))
+            .unwrap()
+    }
+
+    /// The saved tab ids of `seed`, then `extra`.
+    #[cfg(not(windows))]
+    fn seed_then(seed: &Value, extra: &[&str]) -> Vec<String> {
+        tab_ids(seed)
+            .into_iter()
+            .chain(extra.iter().map(|id| id.to_string()))
+            .collect()
+    }
+
+    /// ADE-11. Defect: every window writes the one snapshot row, so a
+    /// relaunch restores only the last saver's tabs, a reload restores another
+    /// window's tabs, and a crash after a window closed restores the closed
+    /// window's tabs. `path` holds a snapshot an older build saved; `opened`
+    /// are four sessions it does not show.
+    #[cfg(not(windows))]
+    fn each_window_keeps_its_tabs_through_a_relaunch(path: &std::path::Path, opened: [&str; 4]) {
+        let seed: Value = Connection::open(path)
+            .unwrap()
+            .query_row(
+                "SELECT snapshot_json FROM workspace_snapshot WHERE id = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|raw| serde_json::from_str(&raw).unwrap())
+            .unwrap();
+        two_windows_save_their_own_tabs(path, &seed, opened);
+        let joined = seed_then(&seed, &["tab-w", "tab-x2", "tab-m"]);
+        for relaunch in [
+            "the relaunch",
+            "a crash before the first save, then a relaunch",
+        ] {
+            let (_app, [main]) = launch_windows(path, ["main"]);
+            let restored = restored_snapshot(&main);
+            assert_eq!(
+                tab_ids(&restored),
+                joined,
+                "{relaunch} restores the newest window's tabs, then each other window's tab whose id and chats are new"
+            );
+            assert_eq!(
+                restored["activeTabId"], "tab-x2",
+                "{relaunch} keeps the newest window's settings"
+            );
+            assert!(
+                restored["sessions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|stub| stub["id"] == opened[0]),
+                "{relaunch} keeps the other window's session stubs"
+            );
+            assert!(
+                restored["tabWorkspaces"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!({ "tabId": "tab-m", "path": "/trees/m" })),
+                "{relaunch} keeps the other window's saved tab workspaces"
+            );
+        }
+        closed_windows_leave_their_tabs_out(path, &seed, &joined, opened);
+
+        let older = with_tabs(&seed, &[saved_tab("tab-older", &[opened[3]])]);
+        Connection::open(path)
+            .unwrap()
+            .execute(
+                "UPDATE workspace_snapshot SET snapshot_json = ?1, updated_at = ?2 WHERE id = 1",
+                params![older.to_string(), now_millis() - 10],
+            )
+            .unwrap();
+        let (_app, [main]) = launch_windows(path, ["main"]);
+        assert_eq!(
+            tab_ids(&restored_snapshot(&main)),
+            seed_then(&seed, &["tab-older"]),
+            "when an older build saved last, its one row wins over the window rows"
+        );
+    }
+
+    /// Main and New Window each open their own chats, x in both, and save.
+    #[cfg(not(windows))]
+    fn two_windows_save_their_own_tabs(
+        path: &std::path::Path,
+        seed: &Value,
+        [m, w, x, y]: [&str; 4],
+    ) {
+        let start = now_millis() - 100_000;
+        let (_app, [main, second]) = launch_two_windows(path);
+        assert_eq!(
+            tab_ids(&restored_snapshot(&main)),
+            tab_ids(seed),
+            "a database from before window rows restores its one row"
+        );
+        assert_eq!(
+            tab_ids(&restored_snapshot(&second)),
+            tab_ids(seed),
+            "New Window opens a copy of it"
+        );
+        let mut main_saved = with_tabs(
+            seed,
+            &[
+                saved_tab("tab-m", &[m]),
+                saved_tab("tab-x1", &[x]),
+                saved_tab("tab-yw", &[y, w]),
+            ],
+        );
+        main_saved["tabWorkspaces"] = json!([{ "tabId": "tab-m", "path": "/trees/m" }]);
+        let second_saved = with_tabs(seed, &[saved_tab("tab-w", &[w]), saved_tab("tab-x2", &[x])]);
+        save_snapshot(&main, &main_saved, start + 10);
+        save_snapshot(&second, &second_saved, start + 20);
+        save_snapshot(&main, seed, start + 5);
+        assert_eq!(
+            tab_ids(&restored_snapshot(&main)),
+            seed_then(seed, &["tab-m", "tab-x1", "tab-yw"]),
+            "a reload restores the window's own tabs, and a save read before its newest one does not replace it"
+        );
+        assert_eq!(
+            tab_ids(&restored_snapshot(&second)),
+            seed_then(seed, &["tab-w", "tab-x2"])
+        );
+    }
+
+    /// A window that closes beside another, by `destroy_window` or with its
+    /// delete failed, leaves its tabs out of the next relaunch; the last
+    /// window's close keeps them.
+    #[cfg(not(windows))]
+    fn closed_windows_leave_their_tabs_out(
+        path: &std::path::Path,
+        seed: &Value,
+        joined: &[String],
+        [m, w, ..]: [&str; 4],
+    ) {
+        let (app, [main, second]) = launch_two_windows(path);
+        let restored = restored_snapshot(&main);
+        assert_eq!(
+            tab_ids(&restored_snapshot(&second)),
+            joined,
+            "a window that opens before this run's first save gets the join too"
+        );
+        save_snapshot(&main, &restored, now_millis() - 50);
+        assert_eq!(
+            tab_ids(&restored_snapshot(&second)),
+            joined,
+            "New Window then opens a copy of the newest save"
+        );
+        save_snapshot(
+            &second,
+            &with_tabs(&restored, &[saved_tab("tab-closed", &[m])]),
+            now_millis() - 40,
+        );
+        crate::mono_messages::tests::invoke_command(&second, "destroy_window", &json!({})).unwrap();
+        drop(app);
+        let (app, [main]) = launch_windows(path, ["main"]);
+        assert_eq!(
+            tab_ids(&restored_snapshot(&main)),
+            joined,
+            "a crash after a window closed beside another does not reopen the closed window's tabs"
+        );
+
+        let second =
+            tauri::WebviewWindowBuilder::new(&app, "window-1", tauri::WebviewUrl::default())
+                .build()
+                .unwrap();
+        save_snapshot(
+            &second,
+            &with_tabs(seed, &[saved_tab("tab-gone", &[w])]),
+            now_millis() - 30,
+        );
+        // The mock runtime has no event loop to drop the window; this close
+        // skips destroy_window, as a failed delete would.
+        AsRef::<tauri::Webview<_>>::as_ref(&second).close().unwrap();
+        save_snapshot(&main, &restored, now_millis() - 20);
+        crate::mono_messages::tests::invoke_command(&main, "destroy_window", &json!({})).unwrap();
+        drop(app);
+        let (_app, [main]) = launch_windows(path, ["main"]);
+        assert_eq!(
+            tab_ids(&restored_snapshot(&main)),
+            joined,
+            "a save drops the rows of a window that closed; the last window's close keeps its tabs"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn each_window_keeps_its_tabs_on_a_new_database() {
+        let path = DbFile(temp_db("window-snapshots"));
+        let seed = with_tabs(
+            &json!({ "tabs": [], "sessions": [], "activeTabId": "", "projectCwd": "/tmp/acme" }),
+            &[saved_tab("tab-a", &["a"]), saved_tab("tab-b", &["b"])],
+        );
+        SessionStore::open(path.to_path_buf())
+            .unwrap()
+            .lock_conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO workspace_snapshot (id, snapshot_json, updated_at) VALUES (1, ?1, 1)",
+                [seed.to_string()],
+            )
+            .unwrap();
+        each_window_keeps_its_tabs_through_a_relaunch(&path, ["m", "w", "x", "y"]);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "needs MONOCODE_DB_COPY, a fresh copy of the app's monocode.db"]
+    fn each_window_keeps_its_tabs_on_a_copy_of_the_app_database() {
+        let path = private_copy_of_the_app_database();
+        let opened: Vec<String> = {
+            let conn = Connection::open(&*path).unwrap();
+            let shown: String = conn
+                .query_row(
+                    "SELECT snapshot_json FROM workspace_snapshot WHERE id = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut statement = conn
+                .prepare("SELECT id FROM sessions ORDER BY updated_at DESC")
+                .unwrap();
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .filter(|id| !shown.contains(id.as_str()))
+                .take(4)
+                .collect();
+            rows
+        };
+        let opened: Vec<&str> = opened.iter().map(String::as_str).collect();
+        each_window_keeps_its_tabs_through_a_relaunch(&path, opened.try_into().unwrap());
+    }
+
+    // ADE-46, through the IPC command as each window calls it, on the shared
+    // row that a New Window (window-3) opens a copy of. A quit save that
+    // fails keeps the row's read time, so it drops no later save. Window B's
+    // running save, read before window A's quit save, arrives after it and
+    // must not replace A's waiting group. Not on Windows: see `tauri` under
+    // `[target.'cfg(not(windows))'.dev-dependencies]` in Cargo.toml.
     #[cfg(not(windows))]
     #[test]
     fn two_windows_and_a_failed_quit_keep_the_newest_read_snapshot() {
         use crate::mono_messages::tests::invoke_command;
-        let (_app, [a, b]) = mock_windows(
+        let (_app, [a, b, new_window]) = mock_windows(
             tauri::test::mock_builder()
                 .manage(SessionStore::open_in_memory().unwrap())
                 .invoke_handler(tauri::generate_handler![
                     workspace_set_snapshot,
                     workspace_get_snapshot
                 ]),
-            ["main", "window-2"],
+            ["main", "window-2", "window-3"],
         );
         let start = now_millis() - 10_000;
         let save = |webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
@@ -4435,7 +4879,7 @@ mod tests {
                 &json!({ "snapshot": snapshot, "readAt": start + read }),
             )
         };
-        let saved = || invoke_command(&a, "workspace_get_snapshot", &json!({})).unwrap();
+        let saved = || invoke_command(&new_window, "workspace_get_snapshot", &json!({})).unwrap();
 
         save(&a, json!({ "by": "A running" }), 100).unwrap();
         let too_large = json!({ "by": "A quit", "pad": "x".repeat(2_000_001) });
@@ -4451,7 +4895,8 @@ mod tests {
         let quit = json!({ "by": "A quit", "monoCompletions": [{ "request": { "sessionId": "872c4aa7" } }] });
         save(&a, quit.clone(), 300).unwrap();
         save(&b, json!({ "by": "B running, read before A quit" }), 250).unwrap();
-        assert_eq!(saved(), quit);
+        assert_eq!(saved()["by"], "A quit");
+        assert_eq!(saved()["monoCompletions"], quit["monoCompletions"]);
 
         save(&b, json!({ "by": "B running, read after A quit" }), 400).unwrap();
         assert_eq!(saved()["by"], "B running, read after A quit");
