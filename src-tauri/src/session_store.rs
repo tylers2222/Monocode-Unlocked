@@ -697,10 +697,12 @@ pub fn session_take_in_flight(
 
 const WORKSPACE_SNAPSHOT_MAX_BYTES: usize = 2_000_000;
 
+/// `read_at` is when the window read the state in `snapshot`, in ms.
 #[tauri::command(async)]
 pub fn workspace_set_snapshot(
     store: State<'_, SessionStore>,
     snapshot: Value,
+    read_at: i64,
 ) -> Result<(), String> {
     if !snapshot.is_object() {
         return Err("workspace snapshot must be an object".into());
@@ -710,7 +712,7 @@ pub fn workspace_set_snapshot(
         return Err("workspace snapshot is too large".into());
     }
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    set_workspace_snapshot(&conn, &json).map_err(|e| e.to_string())
+    set_workspace_snapshot(&conn, &json, read_at, now_millis()).map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
@@ -1136,6 +1138,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::approvals::ensure_tables(conn)?;
     crate::active_clock::ensure_tables(conn)?;
     crate::asks::ensure_tables(conn)?;
+    crate::ask_scheduler::ensure_tables(conn)?;
     Ok(())
 }
 
@@ -2254,14 +2257,42 @@ fn take_in_flight(conn: &mut Connection) -> rusqlite::Result<Vec<InFlightSession
     Ok(sessions)
 }
 
-fn set_workspace_snapshot(conn: &Connection, json: &str) -> rusqlite::Result<()> {
+/// Whether a snapshot read at `incoming` replaces the one stored at `stored`
+/// (ADE-46). A save that was read before the stored one is older and loses,
+/// whichever window wrote it. A stored time after `now` means the clock
+/// stepped back since; that row must not make every later save lose.
+fn snapshot_supersedes(stored: Option<i64>, incoming: i64, now: i64) -> bool {
+    match stored {
+        None => true,
+        Some(stored) => incoming >= stored || stored > now,
+    }
+}
+
+/// Runs under the store lock, so the check and the write are one step for
+/// every window. `updated_at` holds the stored snapshot's read time.
+fn set_workspace_snapshot(
+    conn: &Connection,
+    json: &str,
+    read_at: i64,
+    now: i64,
+) -> rusqlite::Result<()> {
+    let stored = conn
+        .query_row(
+            "SELECT updated_at FROM workspace_snapshot WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if !snapshot_supersedes(stored, read_at, now) {
+        return Ok(());
+    }
     conn.execute(
         "INSERT INTO workspace_snapshot (id, snapshot_json, updated_at)
          VALUES (1, ?1, ?2)
          ON CONFLICT(id) DO UPDATE SET
            snapshot_json = excluded.snapshot_json,
            updated_at = excluded.updated_at",
-        params![json, now_millis()],
+        params![json, read_at],
     )?;
     Ok(())
 }
@@ -3931,13 +3962,80 @@ mod tests {
     fn workspace_snapshot_round_trips_and_replaces() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        set_workspace_snapshot(&conn, r#"{"tabs":[{"id":"t1"}]}"#).unwrap();
+        set_workspace_snapshot(&conn, r#"{"tabs":[{"id":"t1"}]}"#, 1, 10).unwrap();
         let first = get_workspace_snapshot(&conn).unwrap().unwrap();
         assert!(first.contains("t1"));
-        set_workspace_snapshot(&conn, r#"{"tabs":[{"id":"t2"}]}"#).unwrap();
+        set_workspace_snapshot(&conn, r#"{"tabs":[{"id":"t2"}]}"#, 2, 10).unwrap();
         let second = get_workspace_snapshot(&conn).unwrap().unwrap();
         assert!(second.contains("t2"));
         assert!(!second.contains("t1"));
+    }
+
+    #[test]
+    fn a_snapshot_supersedes_one_read_no_later_unless_the_clock_stepped_back() {
+        assert!(snapshot_supersedes(None, 5, 10));
+        assert!(snapshot_supersedes(Some(5), 6, 10));
+        assert!(snapshot_supersedes(Some(5), 5, 10));
+        assert!(!snapshot_supersedes(Some(5), 4, 10));
+        assert!(!snapshot_supersedes(Some(10), 4, 10));
+        // Stored after now: the clock stepped back, so the stored time says
+        // nothing about order and the new save lands.
+        assert!(snapshot_supersedes(Some(11), 4, 10));
+    }
+
+    // ADE-46, through the IPC command as each window calls it. A quit save
+    // that fails keeps the row's read time, so it drops no later save. Window
+    // B's running save, read before window A's quit save, arrives after it
+    // and must not replace A's waiting group. Not on Windows: see `tauri`
+    // under `[target.'cfg(not(windows))'.dev-dependencies]` in Cargo.toml.
+    #[cfg(not(windows))]
+    #[test]
+    fn two_windows_and_a_failed_quit_keep_the_newest_read_snapshot() {
+        use crate::mono_messages::tests::invoke_command;
+        let app = tauri::test::mock_builder()
+            .manage(SessionStore::open_in_memory().unwrap())
+            .invoke_handler(tauri::generate_handler![
+                workspace_set_snapshot,
+                workspace_get_snapshot
+            ])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let window = |label: &str| {
+            tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
+                .build()
+                .unwrap()
+        };
+        let (a, b) = (window("main"), window("window-2"));
+        let start = now_millis() - 10_000;
+        let save = |webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+                    snapshot: Value,
+                    read: i64| {
+            invoke_command(
+                webview,
+                "workspace_set_snapshot",
+                &json!({ "snapshot": snapshot, "readAt": start + read }),
+            )
+        };
+        let saved = || invoke_command(&a, "workspace_get_snapshot", &json!({})).unwrap();
+
+        save(&a, json!({ "by": "A running" }), 100).unwrap();
+        let too_large = json!({ "by": "A quit", "pad": "x".repeat(2_000_001) });
+        assert!(save(&a, too_large, 300).is_err());
+        save(
+            &b,
+            json!({ "by": "B running, read before the failed quit" }),
+            200,
+        )
+        .unwrap();
+        assert_eq!(saved()["by"], "B running, read before the failed quit");
+
+        let quit = json!({ "by": "A quit", "monoCompletions": [{ "request": { "sessionId": "872c4aa7" } }] });
+        save(&a, quit.clone(), 300).unwrap();
+        save(&b, json!({ "by": "B running, read before A quit" }), 250).unwrap();
+        assert_eq!(saved(), quit);
+
+        save(&b, json!({ "by": "B running, read after A quit" }), 400).unwrap();
+        assert_eq!(saved()["by"], "B running, read after A quit");
     }
 
     // ADE-5. The project-open rule finds a running session with no tab only

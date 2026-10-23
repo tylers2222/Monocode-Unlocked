@@ -114,6 +114,7 @@ describe("project choices through lifecycle saves", () => {
           pins: new Map(),
         },
       ]),
+      Date.now(),
     );
     const release = setQuitWorkspace(
       () => ({
