@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use tauri::window::Color;
 #[cfg(target_os = "windows")]
 use tauri::window::{Effect, EffectsBuilder};
-use tauri::{AppHandle, Emitter, EventTarget, Manager, WebviewWindow, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, EventTarget, Manager, Runtime, State, WebviewWindow, WebviewWindowBuilder,
+};
 
 static WINDOW_COUNTER: AtomicU32 = AtomicU32::new(1);
 
@@ -203,11 +205,32 @@ pub fn hide_window(window: WebviewWindow) -> Result<(), String> {
     window.hide().map_err(|err| err.to_string())
 }
 
-/// Finish an idle close. `destroy` skips CloseRequested so the JS handler
-/// does not loop; `close` would fire it again.
-#[tauri::command]
-pub fn destroy_window(window: WebviewWindow) -> Result<(), String> {
-    window.destroy().map_err(|err| err.to_string())
+/// Finish a close. `destroy` skips CloseRequested so the JS handler does not
+/// loop; `close` would fire it again. A window closed beside another one
+/// stopped its chats, so a relaunch must not resume them. The last close keeps
+/// them: on Linux and Windows it is a quit. Async: the delete waits for the
+/// store lock, and the main thread must not. The window's chats are already
+/// killed, so a store error must not keep it open.
+#[tauri::command(async)]
+pub fn destroy_window<R: Runtime>(
+    window: WebviewWindow<R>,
+    store: State<'_, crate::session_store::SessionStore>,
+) -> Result<(), String> {
+    let another = workspace_windows(&window)
+        .iter()
+        .any(|other| other.label() != window.label());
+    let closed = window.destroy().map_err(|err| err.to_string());
+    if another {
+        if let Err(error) =
+            crate::session_store::forget_closed_window_in_flight(&store, window.label())
+        {
+            eprintln!(
+                "Window {} closed; its rows stay until another window saves: {error}",
+                window.label()
+            );
+        }
+    }
+    closed
 }
 
 pub fn is_workspace_window(label: &str) -> bool {
@@ -218,8 +241,8 @@ pub fn is_workspace_window(label: &str) -> bool {
 }
 
 /// Every workspace window, sorted by label.
-pub fn workspace_windows(app: &AppHandle) -> Vec<WebviewWindow> {
-    let mut windows: Vec<WebviewWindow> = app
+pub fn workspace_windows<R: Runtime, M: Manager<R>>(app: &M) -> Vec<WebviewWindow<R>> {
+    let mut windows: Vec<WebviewWindow<R>> = app
         .webview_windows()
         .into_values()
         .filter(|window| is_workspace_window(window.label()))

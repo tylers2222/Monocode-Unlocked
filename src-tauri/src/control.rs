@@ -11,7 +11,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewWindow};
 
 use crate::harness::HarnessHost;
 use crate::mono_messages::{self, Notices, SessionId};
@@ -973,7 +973,7 @@ fn close_window(
     notices
 }
 
-pub fn configure_child(app: &AppHandle, session_id: &str, cmd: &mut Command) {
+pub fn configure_child<R: Runtime>(app: &AppHandle<R>, session_id: &str, cmd: &mut Command) {
     cmd.env_remove("MONOCODE_CONTROL_ENDPOINT")
         .env_remove("MONOCODE_CONTROL_TOKEN")
         .env_remove("MONOCODE_APP_ENDPOINT")
@@ -1277,6 +1277,12 @@ pub(crate) mod tests {
     #[cfg(not(windows))]
     pub(crate) fn boot(host: &ControlHost, store: &SessionStore, window: &str) {
         boot_window(&host.inner, store, window, &HarnessHost::new());
+    }
+
+    /// `control_turn_finished` for the turn `start_turn_in_canonical_cwd` began.
+    #[cfg(not(windows))]
+    pub(crate) fn finish_started_turn(host: &ControlHost, store: &SessionStore, session: &str) {
+        finish_turn(&host.inner, store, session, &format!("turn-{session}"));
     }
 
     // Review r1 m1 (control level). Stop takes the Giga's turn-4 out of

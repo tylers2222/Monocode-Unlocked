@@ -7,6 +7,7 @@
 //!
 //! `scripts/scenarios/repeat.sh <filter>` runs a scenario 20 times.
 
+mod agent_sandbox;
 mod agents;
 mod asks;
 mod clock;
