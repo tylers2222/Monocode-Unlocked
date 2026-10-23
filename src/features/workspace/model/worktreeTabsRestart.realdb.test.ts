@@ -59,9 +59,13 @@ import { newTab } from "./layout";
 import type { WindowWorkspace } from "./workspaceSnapshot";
 import { tabWorkspace } from "./workspaceTabGroups";
 
-const ROOT = join(tmpdir(), `ade69-worktree-tabs-${process.pid}`);
-const realDb = JSON.parse(
-  JSON.stringify(recorded).replaceAll("/Users/test", ROOT),
+// Forward slashes on Windows too: the app's path helpers normalize to them.
+const ROOT = join(tmpdir(), `ade69-worktree-tabs-${process.pid}`).replaceAll(
+  "\\",
+  "/",
+);
+const realDb = JSON.parse(JSON.stringify(recorded), (_key, value: unknown) =>
+  typeof value === "string" ? value.replaceAll("/Users/test", ROOT) : value,
 ) as typeof recorded;
 const PROJECT = realDb.snapshot.projectCwd;
 
@@ -264,7 +268,7 @@ it("a tab saved in a worktree that was removed comes back in the default workspa
 it("a tab saved in a worktree deleted outside the app comes back in the default workspace", async () => {
   const window = await inWorktrees(await boot());
   const { saveWorkspaceSnapshot, workspaceSnapshot } = await webview();
-  await saveWorkspaceSnapshot(workspaceSnapshot([window]));
+  await saveWorkspaceSnapshot(workspaceSnapshot([window]), Date.now());
   const [, deletedTab] = window.tabs.filter(
     (tab) => tabWorkspace(tab, window.sessions, window.pins) !== PROJECT,
   );
