@@ -87,7 +87,8 @@ function sse(reply: ModelReply): string {
  * and the harness-stdout / harness-exit events) to a real omp whose only
  * model is a local server answering with `model`. omp runs in `dir` with its
  * login there (spawnRealHarness), with `args` added after the app's own. The
- * processes and the server close with the page.
+ * processes and the server close with the page. `ready(sessionId)` resolves
+ * on the first `ready` frame of the omp the app starts for that session.
  */
 export async function bridgeOmp(
   page: Page,
@@ -103,7 +104,7 @@ export async function bridgeOmp(
     args?: string[];
     env?: NodeJS.ProcessEnv;
   },
-): Promise<void> {
+): Promise<{ ready: (sessionId: string) => Promise<void> }> {
   const server = createServer((request, response) => {
     let body = "";
     request.on("data", (chunk) => (body += chunk));
@@ -125,16 +126,22 @@ export async function bridgeOmp(
     `providers:\n  offline:\n    baseUrl: http://127.0.0.1:${port}/v1\n    api: openai-completions\n    apiKey: offline\n    models:\n      - id: offline-model\n`,
   );
   // omp also finds model servers running on this machine (Ollama, llama.cpp,
-  // LM Studio) and caches them in the agent dir every omp here shares. An omp
-  // that starts after the cache has one picks it as its default model.
+  // LM Studio, Apple) and caches them in the agent dir every omp here shares.
+  // An omp that starts after the cache has one could pick it as its default.
   writeFileSync(
     join(agentDir, "config.yml"),
-    "disabledProviders: [ollama, llama.cpp, lm-studio]\n",
+    "modelRoles:\n  default: offline/offline-model\ndisabledProviders: [ollama, llama.cpp, lm-studio, apple]\n",
   );
   console.log(
     `[omp rig] ${OMP}: HOME=${dir}, agent dir ${agentDir}, only model http://127.0.0.1:${port}/v1 (local fake)`,
   );
   const children = new Map<string, ChildProcess>();
+  const readyBySession = new Map<string, PromiseWithResolvers<void>>();
+  const readyFor = (sessionId: string) => {
+    let ready = readyBySession.get(sessionId);
+    if (!ready) readyBySession.set(sessionId, (ready = Promise.withResolvers()));
+    return ready;
+  };
   const spawned: ChildProcess[] = [];
   page.once("close", () => {
     for (const child of spawned) child.kill("SIGKILL");
@@ -151,9 +158,10 @@ export async function bridgeOmp(
     });
     children.set(sessionId, child);
     spawned.push(child);
-    createInterface({ input: child.stdout! }).on("line", (line) =>
-      emit("harness-stdout", { sessionId, line }),
-    );
+    createInterface({ input: child.stdout! }).on("line", (line) => {
+      if (line.startsWith('{"type":"ready"')) readyFor(sessionId).resolve();
+      emit("harness-stdout", { sessionId, line });
+    });
     child.on("exit", (code) =>
       emit("harness-exit", { sessionId, code, pid: child.pid }),
     );
@@ -165,4 +173,5 @@ export async function bridgeOmp(
   await page.exposeFunction("ompKill", (sessionId: string) => {
     children.get(sessionId)?.kill();
   });
+  return { ready: (sessionId) => readyFor(sessionId).promise };
 }
