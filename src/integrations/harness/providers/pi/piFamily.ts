@@ -125,6 +125,9 @@ type Live = {
   activeTurn: boolean;
   emittedAssistant: string;
   emittedReasoning: string;
+  /** Output streamed by a run omp started while no app turn was open. */
+  idleAssistant: boolean;
+  idleReasoning: boolean;
   /** Reason the turn failed, held until we know it is not being retried. */
   turnError: string | null;
   turnUsage: PiTurnUsage;
@@ -140,6 +143,10 @@ type Resume = {
 const INIT_TIMEOUT_MS = 45_000;
 const STATS_TIMEOUT_MS = 4_000;
 const COMPACT_TIMEOUT_MS = 30 * 60_000;
+const SEAL_EVENTS: readonly HarnessEvent[] = [
+  { type: "message.completed" },
+  { type: "reasoning.completed" },
+];
 
 type FlavorState = {
   liveByThread: Map<string, Live>;
@@ -398,10 +405,7 @@ export async function cancelTurn(
     question.resolve({ kind: "skipped" });
   live.questions.clear();
   await live.rpc.request({ type: "abort" }, 5_000).catch(() => undefined);
-  finishActiveTurn(live, [
-    { type: "message.completed" },
-    { type: "reasoning.completed" },
-  ]);
+  finishActiveTurn(live, SEAL_EVENTS);
 }
 
 export async function stopSession(
@@ -541,6 +545,8 @@ async function startLive(
     activeTurn: false,
     emittedAssistant: "",
     emittedReasoning: "",
+    idleAssistant: false,
+    idleReasoning: false,
     turnError: null,
     turnUsage: { done: {}, open: {} },
   };
@@ -629,6 +635,8 @@ async function runTurn(
 ): Promise<void> {
   live.emittedAssistant = "";
   live.emittedReasoning = "";
+  live.idleAssistant = false;
+  live.idleReasoning = false;
   live.turnError = null;
   live.turnUsage = { done: {}, open: {} };
   live.toolsByIndex.clear();
@@ -668,10 +676,7 @@ async function runTurn(
       flavor.id === "omp" &&
       asRecord(response?.data)?.agentInvoked === false
     ) {
-      finishActiveTurn(live, [
-        { type: "message.completed" },
-        { type: "reasoning.completed" },
-      ]);
+      finishActiveTurn(live, SEAL_EVENTS);
     }
     settlePendingTurn(live);
     await turnPromise;
@@ -870,10 +875,7 @@ function handleFrame(
         rec.id === live.promptId &&
         rec.agentInvoked === false
       ) {
-        finishActiveTurn(live, [
-          { type: "message.completed" },
-          { type: "reasoning.completed" },
-        ]);
+        finishActiveTurn(live, SEAL_EVENTS);
       }
       return;
     }
@@ -908,11 +910,14 @@ function handleFrame(
 
   const delta = assistantDeltaFromEvent(rec);
   if (delta) {
+    const idle = !live.activeTurn && !live.turnDone;
     if (delta.kind === "text") {
       live.emittedAssistant += delta.text;
+      live.idleAssistant ||= idle;
       live.onEvent({ type: "message.delta", text: delta.text });
     } else {
       live.emittedReasoning += delta.text;
+      live.idleReasoning ||= idle;
       live.onEvent({ type: "reasoning.delta", text: delta.text });
     }
   }
@@ -1060,8 +1065,10 @@ function flushTurnError(flavor: PiFlavor, live: Live): void {
 async function settleTurn(live: Live): Promise<void> {
   if (live.settling || live.cancelled || live.muteUpdates) return;
   if (!live.activeTurn && !live.turnDone) {
-    live.onEvent({ type: "message.completed" });
-    live.onEvent({ type: "reasoning.completed" });
+    if (live.idleAssistant) live.onEvent({ type: "message.completed" });
+    if (live.idleReasoning) live.onEvent({ type: "reasoning.completed" });
+    live.idleAssistant = false;
+    live.idleReasoning = false;
     return;
   }
   live.settling = true;
@@ -1079,10 +1086,7 @@ async function settleTurn(live: Live): Promise<void> {
     // meter stays on the last streamed usage
   }
   if (live.settleToken === token && !live.cancelled) {
-    finishActiveTurn(live, [
-      { type: "message.completed" },
-      { type: "reasoning.completed" },
-    ]);
+    finishActiveTurn(live, SEAL_EVENTS);
   }
   if (live.settleToken === token) live.settling = false;
 }
@@ -1354,7 +1358,10 @@ function emitTaskListIfNeeded(live: Live, tool: InFlightTool): void {
   if (items) live.onEvent({ type: "tasks.updated", items });
 }
 
-function finishActiveTurn(live: Live, extraEvents: HarnessEvent[] = []): void {
+function finishActiveTurn(
+  live: Live,
+  extraEvents: readonly HarnessEvent[] = [],
+): void {
   if (!live.activeTurn && !live.turnDone) return;
   live.turnEndPending = false;
   live.activeTurn = false;

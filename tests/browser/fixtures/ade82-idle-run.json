@@ -11,13 +11,13 @@
         "id": "ade82-opener",
         "role": "user",
         "text": "Check the deploy.",
-        "startedAt": 1792152243108,
-        "durationMs": 1312605,
+        "startedAt": 1000,
+        "durationMs": 60000,
         "turnMetrics": {
-          "cacheHitPercent": 95.5,
+          "cacheHitPercent": 90,
           "cacheReadTokens": 120000,
           "cacheWriteTokens": 5000,
-          "inputTokens": 84,
+          "inputTokens": 100,
           "outputTokens": 1100
         },
         "turnModel": { "harness": "omp", "id": "omp:default", "name": "Default" }

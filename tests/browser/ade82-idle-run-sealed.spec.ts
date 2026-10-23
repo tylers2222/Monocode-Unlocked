@@ -4,9 +4,9 @@ import { join } from "node:path";
 import type { SessionSummary } from "../../src/features/sessions/data/sessionStore";
 import { sessionDisplayTitle, type Block } from "../../src/features/sessions/model/session";
 import { expect, test } from "./app/fixture";
-import { OMP, bridgeOmp, ompHandlers, type ModelRequest } from "./app/ompBridge";
+import { bridgeOmp, needsOmp, ompHandlers, type ModelRequest } from "./app/ompBridge";
 
-const realDb = JSON.parse(
+const seed = JSON.parse(
   readFileSync(new URL("./fixtures/ade82-idle-run.json", import.meta.url), "utf8"),
 ) as {
   record: Pick<SessionSummary, "id" | "harness" | "model" | "runtimeMode" | "title"> & {
@@ -18,7 +18,7 @@ const PROJECT = "/Users/test/acme";
 const WATCHING = "Watching the build.";
 const FINISHED = "The watcher finished.";
 
-test.skip(!OMP, "needs the omp binary on PATH");
+needsOmp();
 
 test("the reply of a run omp starts on its own is sealed when that run ends", async ({
   app,
@@ -28,8 +28,6 @@ test("the reply of a run omp starts on its own is sealed when that run ends", as
   const marker = join(dir, "build.done");
   await bridgeOmp(page, app, {
     dir,
-    // A local Ollama would otherwise be picked over the rig's model.
-    args: ["--model", "offline/offline-model"],
     model: ({ messages, tools }: ModelRequest) => {
       // A title job runs without tools.
       if (!tools.length) return { text: "Watch the build" };
@@ -47,17 +45,17 @@ test("the reply of a run omp starts on its own is sealed when that run ends", as
   await app.mount(
     {
       projects: [PROJECT],
-      sessions: [{ ...realDb.record, cwd: PROJECT, createdAt: 1, updatedAt: 1 }],
-      blocks: { [realDb.record.id]: realDb.record.blocks },
+      sessions: [{ ...seed.record, cwd: PROJECT, createdAt: 1, updatedAt: 1 }],
+      blocks: { [seed.record.id]: seed.record.blocks },
     },
     { handlers: ompHandlers },
   );
   const main = page.getByRole("main");
   await expect(async () => {
     await page
-      .getByText(sessionDisplayTitle(realDb.record.title, realDb.record.harness), { exact: true })
+      .getByText(sessionDisplayTitle(seed.record.title, seed.record.harness), { exact: true })
       .click();
-    await expect(main.getByText(realDb.record.blocks[0].text)).toBeVisible({ timeout: 1_000 });
+    await expect(main.getByText(seed.record.blocks[0].text)).toBeVisible({ timeout: 1_000 });
   }).toPass();
 
   const composer = page.getByPlaceholder("Ask, build, / for commands");
