@@ -1059,7 +1059,11 @@ function flushTurnError(flavor: PiFlavor, live: Live): void {
 
 async function settleTurn(live: Live): Promise<void> {
   if (live.settling || live.cancelled || live.muteUpdates) return;
-  if (!live.activeTurn && !live.turnDone) return;
+  if (!live.activeTurn && !live.turnDone) {
+    live.onEvent({ type: "message.completed" });
+    live.onEvent({ type: "reasoning.completed" });
+    return;
+  }
   live.settling = true;
   const token = live.settleToken;
   try {
