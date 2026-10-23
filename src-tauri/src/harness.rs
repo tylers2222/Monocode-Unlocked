@@ -978,8 +978,12 @@ pub fn harness_spawn<R: Runtime>(
     if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref()) {
         return Err("harness_spawn: not a resolved harness CLI".to_string());
     }
+    let srt_deny = match binary_provider.as_deref() {
+        Some("claude") => crate::claude_deny::srt_deny(&app, &workdir)?,
+        _ => Vec::new(),
+    };
     let crate::agent_sandbox::Spawn { mut cmd, sandboxed } =
-        crate::agent_sandbox::command(&app, &command)?;
+        crate::agent_sandbox::command(&app, &command, &srt_deny)?;
     let args = match binary_provider.as_deref() {
         Some("claude") => crate::claude_deny::args(&app, &workdir, sandboxed, args)?,
         _ => args,

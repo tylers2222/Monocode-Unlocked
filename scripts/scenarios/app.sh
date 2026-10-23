@@ -4,9 +4,9 @@
 #
 #   app.sh build [checkout]   build the instance (under heavy-lock.sh)
 #   app.sh s0 [runs]          S0 through the real app, `runs` times (default 1)
-#   app.sh d4                 D4 deny rules, off then on, with a recorder as
-#                             claude; on runs the claude CLI on PATH against
-#                             puppet/fake-model.py; D4_CLAUDE=<real claude>
+#   app.sh d4 [d1]            D4 deny rules (d4.test.sh), off then on, with the
+#                             claude CLI on PATH against puppet/fake-model.py;
+#                             d1: with D1's srt too. D4_CLAUDE=<real claude>
 #                             runs one real model turn instead
 #   app.sh d1                 D1: the agent sandbox on, off, and on without srt
 #
@@ -303,6 +303,6 @@ case "${1:-}" in
     for run in $(seq 1 "${2:-1}"); do "$0" s0-run "$run" || failed=$((failed + 1)); done
     log "S0: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
-  d4) source "$SCENARIOS/d4.test.sh"; run_d4 ;;
+  d4) source "$SCENARIOS/d4.test.sh"; run_d4 "${2:-}" ;;
   *) sed -n '2,14p' "$0"; exit 2 ;;
 esac

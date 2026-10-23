@@ -1,9 +1,16 @@
+# shellcheck shell=bash
+# D4 (ADE-44) through the real app: Claude Code deny rules off, then on, then
+# a next spawn that would run a hook the ON turn planted. `d1`: D1's agent
+# sandbox on too, with the real srt, where Claude Code's own sandbox is off.
+# Sourced by `app.sh d4 [d1]`, which holds the shared helpers.
+
 D4_INTERACTIVE="--setting-sources=user,project,local"
 D4_HABIT="D4-HABIT: Use the Read tool to read the file $DB. Make only that one tool call. Then reply with the exact text of the tool result."
 D4_SUPPORT="$(dirname "$APP_DATA")"
 D4_SECOND="$D4_SUPPORT/com.monocode.second"
 # The Giga's workspace: Claude Code's working folder. Its .claude/settings.json
-# is a symlink to a settings file kept with the dotfiles.
+# links through cfg/current.json (a "current version" link) to a settings file
+# kept with the dotfiles.
 D4_WORK="$EVAL_HOME/MonoCode/gigas/d4-giga"
 D4_DOTFILE="$PUPPET/dotfiles/claude-settings.json"
 
@@ -21,6 +28,7 @@ if [[ "${1:-}" == --version ]]; then
   echo "2.1.305 (Claude Code)"; exit 0
 fi
 printf '%s\0' "$@" >"$PUPPET/claude-argv/$$"
+echo "${SANDBOX_RUNTIME:-none}" >"$PUPPET/claude-argv/srt"
 [[ -n "$REAL" ]] || exit 1
 # Fake model, no spend. --add-dir puts the data folders in the writable area.
 if [[ -f "$PUPPET/fake-model-port" ]]; then
@@ -29,7 +37,9 @@ if [[ -f "$PUPPET/fake-model-port" ]]; then
   unset ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
   set -- "$@" --add-dir "$SUPPORT"
 fi
-exec "$REAL" "$@" > >(tee -a "$PUPPET/claude-out.jsonl")
+# srt refuses the /dev/fd path a process substitution opens, so a plain pipe.
+"$REAL" "$@" | tee -a "$PUPPET/claude-out.jsonl"
+exit "${PIPESTATUS[0]}"
 SH
   } >"$bin"
   chmod +x "$bin"
@@ -45,9 +55,10 @@ SQL
   sqlite3 "$D4_SECOND/monocode.db" "CREATE TABLE s(v); INSERT INTO s VALUES ('SECRET-SECOND');"
   echo SECRET-SECOND >"$D4_SECOND/note.txt"
   echo SECRET-OWN >"$APP_DATA/note.txt"
-  mkdir -p "$D4_WORK/.claude" "$(dirname "$D4_DOTFILE")"
+  mkdir -p "$D4_WORK/.claude" "$D4_WORK/cfg" "$(dirname "$D4_DOTFILE")"
   printf '{"env": {}}' >"$D4_DOTFILE"
-  ln -s "$D4_DOTFILE" "$D4_WORK/.claude/settings.json"
+  ln -s "$D4_DOTFILE" "$D4_WORK/cfg/current.json"
+  ln -s "$D4_WORK/cfg/current.json" "$D4_WORK/.claude/settings.json"
 }
 
 # Tool calls the fake model makes in one turn. `leak`: text a refused call
@@ -76,6 +87,10 @@ d4_probes() {
      {label: "Read the dotfile behind .claude/settings.json", name: "Read", input: {file_path: $dotfile}, want: "env"},
      {label: "Edit tool hook into the dotfile behind .claude/settings.json", name: "Edit",
       input: {file_path: $dotfile, old_string: "{\"env\": {}}", new_string: hook}},
+     {label: "Bash: point the middle link of .claude/settings.json at a hook file", name: "Bash",
+      input: {command: "cd \("\($work)/cfg" | @sh) && printf %s \(hook | @sh) > evil.json && ln -sfn evil.json current.json"}},
+     {label: "Bash python: replace the .claude/settings.json link with a hook file", name: "Bash",
+      input: {command: "python3 -c \("import os, sys; os.remove(sys.argv[1]); open(sys.argv[1], \"w\").write(sys.argv[2])" | @sh) \("\($work)/.claude/settings.json" | @sh) \(hook | @sh)"}},
      {label: "Bash still runs", name: "Bash", input: {command: "echo d4-bash-works"}, want: "d4-bash-works"}]'
 }
 
@@ -94,7 +109,7 @@ d4_phase() {
   [[ ! -f "$PUPPET/claude-out.jsonl" ]] || mv "$PUPPET/claude-out.jsonl" "$PUPPET/$1.jsonl"
 }
 
-d4_starts() { find "$1" -type f -exec jq -Rs 'split("\u0000")[:-1]' {} \; | jq -s -c .; }
+d4_starts() { find "$1" -type f -name '[0-9]*' -exec jq -Rs 'split("\u0000")[:-1]' {} \; | jq -s -c .; }
 
 d4_jq() {
   jq -S -c --arg interactive "$D4_INTERACTIVE" '
@@ -141,7 +156,9 @@ d4_paid() {
 
 run_d4() {
   FAILED=0
-  log "D4"
+  local d1="$1" sandbox='{"enabled": true, "allowUnsandboxedCommands": false,
+   "filesystem": {"denyRead": ["'"$D4_SUPPORT"'/com.monocode.*"], "denyWrite": ["'"$D4_SUPPORT"'/com.monocode.*"]}}'
+  log "D4 $d1"
   local claude
   # Resolved before the recorder goes on PATH, or the recorder would exec itself.
   claude="${D4_CLAUDE:-$(realpath "$(command -v claude)")}" || die "d4 needs the claude CLI on PATH"
@@ -153,6 +170,13 @@ run_d4() {
   d4_phase off
   touch "$APP_DATA/claude-deny-rules-on"
   echo "$claude" >"$PUPPET/real-claude"
+  if [[ -n "$d1" ]]; then
+    # Inside srt Claude Code gets no sandbox block (claude_deny.rs).
+    sandbox=null
+    install_srt
+    touch "$SANDBOX_ON"
+    echo '{"extraAllowedDomains": ["127.0.0.1", "localhost"]}' >"$SANDBOX_SETTINGS"
+  fi
   if [[ -z "${D4_CLAUDE:-}" ]]; then
     d4_probes >"$PUPPET/probes.json"
     python3 "$SCENARIOS/puppet/fake-model.py" "$PUPPET/fake-model-port" "$PUPPET/probes.json" &
@@ -183,9 +207,8 @@ run_d4() {
     "$(jq -S -c '.permissions.deny |= sort' <<JSON
 {"permissions": {"deny": ["Read(/$D4_SUPPORT/com.monocode.*/**)", "Edit(/$D4_SUPPORT/com.monocode.*/**)",
    "Edit(//**/.claude/**)", "Edit(//**/.claude.json)", "Edit(//**/.mcp.json)",
-   "Edit(/${CLAUDE_CONFIG_DIR:-$EVAL_HOME/.claude}/**)", "Edit(/$(realpath "$D4_DOTFILE"))"$links]},
- "sandbox": {"enabled": true, "allowUnsandboxedCommands": false,
-   "filesystem": {"denyRead": ["$D4_SUPPORT/com.monocode.*"], "denyWrite": ["$D4_SUPPORT/com.monocode.*"]}}}
+   "Edit(/${CLAUDE_CONFIG_DIR:-$EVAL_HOME/.claude}/**)", "Edit(/$(realpath "$D4_WORK")/cfg/current.json)",
+   "Edit(/$(realpath "$D4_DOTFILE"))"$links]}, "sandbox": $sandbox}
 JSON
 )"
   expect "ON interactive settings apart from the rules" \
@@ -194,6 +217,8 @@ JSON
   expect "ON interactive argv apart from --settings" \
     "$(d4_jq 'first(.[] | select(interactive)) | masked' "$on")" \
     "$(d4_jq 'first(.[] | select(interactive)) | masked' "$off")"
+  expect "Claude Code starts under srt: OFF, ON" "$(cat "$PUPPET/off/srt") $(cat "$PUPPET/on/srt")" \
+    "none $([[ -n "$d1" ]] && echo 1 || echo none)"
   if [[ -n "${D4_CLAUDE:-}" ]]; then d4_paid; else d4_effect; fi
   return "$FAILED"
 }

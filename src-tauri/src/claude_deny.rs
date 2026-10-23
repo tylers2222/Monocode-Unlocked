@@ -3,17 +3,19 @@
 //! `permissions.deny` and `sandbox` rules on every `com.monocode.*` data folder
 //! beside this app's own, and Edit rules on the files Claude Code loads hooks
 //! and MCP servers from (`.claude`, `.claude.json`, `.mcp.json`, the config
-//! folder `CLAUDE_CONFIG_DIR` or `$HOME/.claude`, and the real path behind any
-//! of them that is a symlink), which run outside its sandbox.
+//! folder `CLAUDE_CONFIG_DIR` or `$HOME/.claude`, and each link on the way to
+//! any of them that is a symlink), which run outside its sandbox.
 //!
 //! Defense in depth only: the Read rule does not stop a script that opens the
 //! file itself, the sandbox covers Bash only, and Bash runs unsandboxed where
 //! the sandbox cannot start (`failIfUnavailable` stays off). Inside D1's srt
 //! (ADE-41) the sandbox cannot start, and with the block present the session's
 //! first Bash call fails trying, so a spawn that `agent_sandbox::command` wraps
-//! in srt gets no `sandbox` block; srt is the Bash control there.
+//! in srt gets no `sandbox` block, and srt denies writes to the hook files
+//! instead (`srt_deny`). Not to `.claude.json`: Claude Code writes it, so a
+//! script inside srt can still add an MCP server there.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
@@ -28,17 +30,54 @@ pub(crate) fn args<R: Runtime>(
     in_srt: bool,
     args: Vec<String>,
 ) -> Result<Vec<String>, String> {
+    let (data, config_dir, home) = child_env(app)?;
+    args_in(&data, config_dir.as_deref(), &home, workdir, in_srt, args)
+}
+
+/// What D1's srt must deny writes to for this spawn: inside srt, Claude Code's
+/// own sandbox, which refuses these to Bash, does not run.
+pub(crate) fn srt_deny<R: Runtime>(
+    app: &AppHandle<R>,
+    workdir: &Path,
+) -> Result<Vec<String>, String> {
+    let (data, config_dir, home) = child_env(app)?;
+    srt_deny_in(&data, config_dir.as_deref(), &home, workdir)
+}
+
+/// The app data folder, and the `CLAUDE_CONFIG_DIR` and HOME the child inherits.
+fn child_env<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(PathBuf, Option<OsString>, PathBuf), String> {
     let data = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("Claude Code deny rules: no app data folder: {e}"))?;
-    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
-    // The child's HOME, as `apply_gui_env` sets it.
+    // HOME as `apply_gui_env` sets it.
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .or_else(|| crate::passwd_identity().map(|id| id.home.into()))
         .unwrap_or_default();
-    args_in(&data, config_dir.as_deref(), &home, workdir, in_srt, args)
+    Ok((data, std::env::var_os("CLAUDE_CONFIG_DIR"), home))
+}
+
+/// The hook files Claude Code never writes itself, each with every link on the
+/// way, spelled as the kernel sees them: srt matches that path, and a deny on a
+/// link is not one on its target. Empty while the marker is absent.
+pub(crate) fn srt_deny_in(
+    data: &Path,
+    config_dir: Option<&OsStr>,
+    home: &Path,
+    workdir: &Path,
+) -> Result<Vec<String>, String> {
+    if matches!(std::fs::exists(data.join(ON_MARKER)), Ok(false)) {
+        return Ok(Vec::new());
+    }
+    let config = config_dir.map_or_else(|| home.join(".claude"), PathBuf::from);
+    let mut deny = Vec::new();
+    for file in hook_files(&config, home, workdir) {
+        deny.extend(link_chain(&file)?);
+    }
+    Ok(deny)
 }
 
 /// A marker that cannot be read counts as on: an IO error must not lower
@@ -116,9 +155,10 @@ pub(crate) fn args_in(
     Ok(args)
 }
 
-/// Edit rules on the config folder, and on the real path behind each hook or
-/// MCP source that is a symlink: Claude Code loads the file through the link,
-/// and neither a glob nor a literal rule on the link path covers its target.
+/// Edit rules on the config folder, and on each link and the real path behind
+/// every hook or MCP source that is a symlink: Claude Code loads the file
+/// through them, and a rule on a link covers neither its target nor the links
+/// after it.
 fn config_rules(
     config_dir: Option<&OsStr>,
     home: &Path,
@@ -132,46 +172,73 @@ fn config_rules(
         return Err("Claude Code deny rules: CLAUDE_CONFIG_DIR (or $HOME/.claude) is not an absolute path without . or .. segments.".into());
     };
     let mut rules = vec![format!("Edit(/{text}/**)")];
-    let (user, project) = (home.join(".claude"), workdir.join(".claude"));
-    let sources = [
-        (config.join("settings.json"), ""),
-        (config.join(".claude.json"), ""),
-        (user.join("settings.json"), ""),
-        (home.join(".claude.json"), ""),
-        (project.join("settings.json"), ""),
-        (project.join("settings.local.json"), ""),
-        (workdir.join(".mcp.json"), ""),
-        (config, "/**"),
-        (user, "/**"),
-        (project, "/**"),
-    ];
+    let files = hook_files(&config, home, workdir)
+        .into_iter()
+        .chain([config.join(".claude.json"), home.join(".claude.json")]);
+    let folders = [config, home.join(".claude"), workdir.join(".claude")];
+    let sources = files
+        .map(|file| (file, ""))
+        .chain(folders.map(|folder| (folder, "/**")));
     for (path, tail) in sources {
-        if let Some(real) = link_target(&path)? {
-            let rule = format!("Edit(/{real}{tail})");
-            if !rules.contains(&rule) {
-                rules.push(rule);
+        if let [_, links @ .., real] = link_chain(&path)?.as_slice() {
+            let real = format!("Edit(/{real}{tail})");
+            for rule in links
+                .iter()
+                .map(|link| format!("Edit(/{link})"))
+                .chain([real])
+            {
+                if !rules.contains(&rule) {
+                    rules.push(rule);
+                }
             }
         }
     }
     Ok(rules)
 }
 
-fn link_target(path: &Path) -> Result<Option<String>, String> {
-    let failed = |why: String| {
+/// The settings and MCP files Claude Code loads hooks and servers from and
+/// never writes itself.
+fn hook_files(config: &Path, home: &Path, workdir: &Path) -> [PathBuf; 5] {
+    let project = workdir.join(".claude");
+    [
+        config.join("settings.json"),
+        home.join(".claude/settings.json"),
+        project.join("settings.json"),
+        project.join("settings.local.json"),
+        workdir.join(".mcp.json"),
+    ]
+}
+
+/// `path` where its name lives (its folders resolved), then each link it
+/// resolves through, ending at its real path.
+fn link_chain(path: &Path) -> Result<Vec<String>, String> {
+    let failed = |why: &dyn std::fmt::Display| {
         format!(
             "Claude Code deny rules: cannot resolve {}: {why}",
             path.display()
         )
     };
-    match path.symlink_metadata() {
-        Ok(meta) if meta.is_symlink() => {
-            let real = path.canonicalize().map_err(|e| failed(e.to_string()))?;
-            real.to_str()
-                .map(|real| Some(real.to_owned()))
-                .ok_or_else(|| failed("not UTF-8".into()))
+    let missing =
+        |e: &std::io::Error| matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory);
+    let mut chain = Vec::new();
+    let mut next = path.to_path_buf();
+    // The kernel gives up after 40 links too.
+    while chain.len() <= 40 {
+        let here = match next.parent().map(Path::canonicalize) {
+            Some(Ok(parent)) => parent.join(next.file_name().unwrap_or_default()),
+            Some(Err(e)) if !missing(&e) => return Err(failed(&e)),
+            _ => next,
+        };
+        chain.push(
+            here.to_str()
+                .ok_or_else(|| failed(&"not UTF-8"))?
+                .to_owned(),
+        );
+        match here.read_link() {
+            Ok(target) => next = here.parent().unwrap_or(&here).join(target),
+            Err(e) if e.kind() == ErrorKind::InvalidInput || missing(&e) => return Ok(chain),
+            Err(e) => return Err(failed(&e)),
         }
-        Ok(_) => Ok(None),
-        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => Ok(None),
-        Err(e) => Err(failed(e.to_string())),
     }
+    Err(failed(&"too many links"))
 }

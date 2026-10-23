@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 use super::agent_sandbox::{mock_app, script, wait_for};
-use crate::claude_deny::args_in;
+use crate::claude_deny::{args_in, srt_deny_in};
 
 fn root() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("monocode-scenario-d4-{}", uuid::Uuid::new_v4()));
@@ -82,6 +82,10 @@ fn d4_marker_decides_and_bad_input_fails_the_spawn() {
         spawn(&data, None, plain.clone()).unwrap(),
         plain,
         "off: args unchanged"
+    );
+    assert!(
+        srt_deny_in(&data, None, &home, &work).unwrap().is_empty(),
+        "off: nothing for srt to deny"
     );
 
     turn_on(&data);
@@ -164,6 +168,7 @@ fn d4_marker_decides_and_bad_input_fails_the_spawn() {
             "on: symlinked {target} settings deny {rule}"
         );
     }
+    a_settings_chain_is_denied_at_every_link(&root, &data, &home, &work, config_text);
     let root_text = root.to_str().unwrap();
     for bad in [
         "claude-config".to_owned(),
@@ -218,12 +223,73 @@ fn an_unreadable_hook_source_fails_the_spawn(root: &Path, data: &Path, work: &Pa
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// `link` -> `<dir>/current.json` -> `v1.json` (the "current version" layout),
+/// and the two hops after `link`, as the kernel spells them.
+fn two_link_chain(link: &Path, dir: &Path) -> [String; 2] {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::fs::write(dir.join("v1.json"), "{}").unwrap();
+    symlink("v1.json", dir.join("current.json")).unwrap();
+    let _ = std::fs::remove_file(link);
+    symlink(dir.join("current.json"), link).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    ["current.json", "v1.json"].map(|hop| dir.join(hop).to_string_lossy().into_owned())
+}
+
+/// Defect: a link in the middle of a settings chain gets no rule, so Bash can
+/// point it at a file the agent wrote; or srt, which runs Bash without Claude
+/// Code's sandbox, is not told the hook files and their links.
+fn a_settings_chain_is_denied_at_every_link(
+    root: &Path,
+    data: &Path,
+    home: &Path,
+    work: &Path,
+    config: &str,
+) {
+    let chain = two_link_chain(&work.join(".claude/settings.local.json"), &root.join("cfg"));
+    let on = args_in(
+        data,
+        Some(OsStr::new(config)),
+        home,
+        work,
+        false,
+        spawn_args("{}"),
+    );
+    let deny = deny_of(&on.unwrap());
+    for hop in &chain {
+        let rule = format!("Edit(/{hop})");
+        assert!(
+            deny.contains(&rule),
+            "on: a two-link settings chain denies {rule}"
+        );
+    }
+    let real = root.canonicalize().unwrap();
+    let real = real.to_str().unwrap();
+    let srt = srt_deny_in(data, Some(OsStr::new(config)), home, work).unwrap();
+    let expected = [
+        format!("{real}/claude-config/settings.json"),
+        format!("{real}/dotfiles/config-settings.json"),
+        format!("{real}/work/.claude/settings.json"),
+        format!("{real}/dotfiles/project-settings.json"),
+        format!("{real}/work/.claude/settings.local.json"),
+        format!("{real}/work/.mcp.json"),
+    ];
+    for path in expected.iter().chain(&chain) {
+        assert!(srt.contains(path), "on: srt denies writes to {path}");
+    }
+    assert!(
+        !srt.iter().any(|path| path.ends_with(".claude.json")),
+        "on: srt leaves .claude.json to Claude Code, which writes it"
+    );
+}
+
 const SPAWN_ROOT: &str = "MC_ADE44_SPAWN_ROOT";
 
 /// Defect: `harness_spawn` starts Claude Code without the rules while D4 is on,
-/// changes its args while D4 is off, or keeps Claude Code's sandbox block when
-/// D1 runs the spawn inside srt. A process of its own, so the PATH that puts
-/// the stand-ins first and the temp HOME change no other test.
+/// changes its args while D4 is off, keeps Claude Code's sandbox block when D1
+/// runs the spawn inside srt, or does not give srt the hook files there. A
+/// process of its own, so the PATH that puts the stand-ins first and the temp
+/// HOME change no other test.
 #[test]
 fn harness_spawn_gives_claude_the_rules_and_drops_the_sandbox_block_inside_srt() {
     let root = root();
@@ -237,6 +303,7 @@ printf '%s\0' "$@" > argv.part && mv argv.part argv"#,
     script(
         &tools.join("srt"),
         r#"[ "$1" = --version ] && { echo 0.0.81; exit 0; }
+printf '%s' "$2" > srt-settings
 shift 3
 exec "$@""#,
     );
@@ -299,9 +366,28 @@ fn harness_spawn_child() {
     turn_on(&data);
     assert!(has_rules(&spawn("on")), "on: rules and sandbox block");
     std::fs::write(data.join("agent-sandbox-on"), "").unwrap();
+    let work = root.join("in-srt");
+    let chain = two_link_chain(&work.join(".claude/settings.local.json"), &work.join("cfg"));
     let in_srt = settings_of(&spawn("in-srt"));
     assert!(
         in_srt["permissions"]["deny"].is_array() && in_srt.get("sandbox").is_none(),
         "inside srt: rules, no sandbox block"
     );
+    spawn("in-srt-later");
+    let given = std::fs::read_to_string(work.join("srt-settings")).unwrap();
+    let srt: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(given).unwrap()).unwrap();
+    let deny: Vec<String> = serde_json::from_value(srt["filesystem"]["denyWrite"].clone()).unwrap();
+    let hooks = ["settings.json", "settings.local.json"].map(|file| {
+        work.join(".claude")
+            .join(file)
+            .to_string_lossy()
+            .into_owned()
+    });
+    for path in hooks.iter().chain(&chain) {
+        assert!(
+            deny.contains(path),
+            "inside srt: srt denies writes to {path}, also after a later spawn wrote its own settings"
+        );
+    }
 }

@@ -92,7 +92,7 @@ impl Rig {
     }
 
     fn spawn(&self) -> Result<Spawn, String> {
-        command_in(&self.data, "fx", || Some(self.pinned.clone()))
+        command_in(&self.data, "fx", &[], || Some(self.pinned.clone()))
     }
 
     fn written(&self) -> Value {
@@ -126,7 +126,7 @@ impl Rig {
 }
 
 fn off_starts_the_cli_bare(rig: &Rig) {
-    let off = command_in(&rig.data, "fx", || panic!("srt looked up while off")).unwrap();
+    let off = command_in(&rig.data, "fx", &[], || panic!("srt looked up while off")).unwrap();
     assert!(!off.sandboxed, "off: not sandboxed");
     assert_eq!(
         argv(&off.cmd),
@@ -137,7 +137,7 @@ fn off_starts_the_cli_bare(rig: &Rig) {
 }
 
 fn on_refuses_without_a_working_pinned_srt(rig: &Rig) {
-    let refused = |find: Option<PathBuf>| command_in(&rig.data, "fx", || find).err().unwrap();
+    let refused = |find: Option<PathBuf>| command_in(&rig.data, "fx", &[], || find).err().unwrap();
     let missing = refused(None);
     assert!(
         missing.contains("srt is not installed"),
@@ -161,7 +161,7 @@ fn on_refuses_an_unreadable_data_folder() {
     std::fs::create_dir_all(&data).unwrap();
     let locked = root.0.join("locked");
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let result = command_in(&data, "fx", || {
+    let result = command_in(&data, "fx", &[], || {
         panic!("srt looked up for an unreadable folder")
     });
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
