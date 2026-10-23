@@ -2654,6 +2654,7 @@ pub fn release_window_slots(conn: &Connection, label: &str, now: i64) -> rusqlit
 /// worktree was removed) is never loaded again to take its messages, so they
 /// are dropped and their senders are owed a notice. No window listens yet,
 /// and every window reconciles when it boots, so this names no session.
+/// A reminder that a window claimed and did not send is pending again (R8).
 pub fn startup(conn: &Connection, now: i64) -> rusqlite::Result<()> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     end_turn_rows(&tx, "turn_id IS NOT NULL", params![now])?;
@@ -2680,6 +2681,7 @@ pub fn startup(conn: &Connection, now: i64) -> rusqlite::Result<()> {
     // A decision moved to a chat that is gone too is dropped again there.
     crate::approvals::decide::requeue(&tx, now)?;
     drop_gone()?;
+    crate::ask_scheduler::startup(&tx)?;
     tx.commit()
 }
 

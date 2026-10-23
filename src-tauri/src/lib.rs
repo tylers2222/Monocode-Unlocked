@@ -6,6 +6,7 @@ mod agent_sandbox;
 mod approvals;
 mod artifacts;
 mod ask_gate;
+mod ask_scheduler;
 mod asks;
 mod automations;
 mod azure_devops;

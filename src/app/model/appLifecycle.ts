@@ -335,6 +335,7 @@ export async function persistQuitState(
   workspace: QuitWorkspace,
   mode: "quit" | "unload",
 ): Promise<void> {
+  const readAt = Date.now();
   const refs = inFlightRefs(workspace.sessions, workspace.tabs);
   const interrupted = new Set(refs.map((ref) => ref.sessionId));
   // A quit ends the process, so a swallowed write is work that never comes
@@ -352,7 +353,7 @@ export async function persistQuitState(
       await write(upsertSession(payload));
     }),
   );
-  await write(saveQuitSnapshot(workspace));
+  await write(saveQuitSnapshot(workspace, readAt));
   // Vite/webview reload must not wipe a restored snapshot: those chats are idle
   // in this process until Continue runs.
   if (mode === "quit" || refs.length > 0) {
@@ -361,20 +362,27 @@ export async function persistQuitState(
 }
 
 /** The workspace snapshot with the Mono completions the window still owes. */
-function saveQuitSnapshot(workspace: QuitWorkspace): Promise<void> {
-  return saveWorkspaceSnapshot({
-    ...workspaceSnapshot([workspace]),
-    monoCompletions: workspace.monoCompletions,
-  });
+function saveQuitSnapshot(
+  workspace: QuitWorkspace,
+  readAt: number,
+): Promise<void> {
+  return saveWorkspaceSnapshot(
+    {
+      ...workspaceSnapshot([workspace]),
+      monoCompletions: workspace.monoCompletions,
+    },
+    readAt,
+  );
 }
 
 async function persistBootingResume(workspace: QuitWorkspace): Promise<void> {
+  const readAt = Date.now();
   await Promise.all(
     workspace.sessions
       .filter(shouldPersistSession)
       .map((session) => upsertSession(session).catch(() => null)),
   );
-  await saveQuitSnapshot(workspace).catch(() => undefined);
+  await saveQuitSnapshot(workspace, readAt).catch(() => undefined);
   await replaceInFlightSessions(
     workspace.sessions
       .filter(wasTurnInterrupted)
