@@ -345,7 +345,8 @@ const HANDLERS: Record<string, Handler> = {
   ),
   home_dir: (store) => store.home,
   default_cwd: (store) => store.home,
-  workspace_get_snapshot: (store) => store.workspace,
+  // The page is one window, so its own row is the only one.
+  workspace_get_snapshot: (store) => (store.workspace ? [store.workspace] : []),
   // session_store.rs snapshot_supersedes: a snapshot read before the stored
   // one loses, unless the stored time is after now (the clock stepped back).
   workspace_set_snapshot: (store, { snapshot, readAt }) => {

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -770,11 +770,13 @@ pub fn workspace_set_snapshot<R: Runtime>(
     .map_err(|e| e.to_string())
 }
 
+/// The rows a window restores, newest first; the web app joins them
+/// (`workspaceSnapshotJoin.ts`).
 #[tauri::command(async)]
 pub fn workspace_get_snapshot<R: Runtime>(
     store: State<'_, SessionStore>,
     window: WebviewWindow<R>,
-) -> Result<Option<Value>, String> {
+) -> Result<Vec<Value>, String> {
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     get_workspace_snapshot(&conn, &store.run_id, window.label())
 }
@@ -2405,33 +2407,33 @@ fn set_workspace_snapshot(
     tx.commit()
 }
 
-/// What a window restores (ADE-11). A reload gets the window's own row of
-/// this run. A relaunch, or a window that opens before this run's first save,
-/// gets every row the earlier run left, joined newest first. Otherwise, or
-/// when an older build saved last, it gets the shared row.
+/// What a window restores (ADE-11), newest first. A reload gets the window's
+/// own row of this run. A relaunch, or a window that opens before this run's
+/// first save, gets every row the earlier run left. Otherwise, or when an
+/// older build saved last, it gets the shared row. The rows stop before their
+/// total passes `WORKSPACE_SNAPSHOT_MAX_BYTES`, so the oldest drop first: their
+/// join holds no more than they do, and the window that restores it can save it.
 fn get_workspace_snapshot(
     conn: &Connection,
     run_id: &str,
     window: &str,
-) -> Result<Option<Value>, String> {
-    let parse = |raw: rusqlite::Result<String>| -> Result<Value, String> {
-        serde_json::from_str(&raw.map_err(|e| e.to_string())?).map_err(|e| e.to_string())
-    };
-    let shared = conn
+) -> Result<Vec<Value>, String> {
+    let shared: Option<Value> = conn
         .query_row(
             "SELECT snapshot_json FROM workspace_snapshot WHERE id = 1",
             [],
-            |row| row.get(0),
+            |row| row.get::<_, String>(0),
         )
         .optional()
+        .map_err(|e| e.to_string())?
+        .map(|raw| serde_json::from_str(&raw))
         .transpose()
-        .map(parse)
-        .transpose()?;
+        .map_err(|e| e.to_string())?;
     if shared
         .as_ref()
         .is_some_and(|row| row.get(WINDOW_ROWS_KEY).is_none())
     {
-        return Ok(shared);
+        return Ok(shared.into_iter().collect());
     }
     let mut statement = conn
         .prepare(
@@ -2441,70 +2443,25 @@ fn get_workspace_snapshot(
         )
         .map_err(|e| e.to_string())?;
     let rows = statement
-        .query_map(params![window, run_id], |row| row.get(0))
+        .query_map(params![window, run_id], |row| row.get::<_, String>(0))
         .map_err(|e| e.to_string())?
-        .map(parse)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(join_window_snapshots(rows).or(shared))
-}
-
-/// The rows as the one snapshot boot restores. The first row keeps its
-/// settings and tabs. Each later row adds every tab whose id and panes no
-/// earlier row shows, then its session stubs and saved tab workspaces. So a
-/// tab New Window copied, or a chat open in both windows, comes back once. A
-/// later tab that shows such a chat beside another one is left out too; the
-/// other chat stays in the sidebar. Restore keeps the first stub of a session
-/// and the first saved workspace of a tab.
-fn join_window_snapshots(rows: Vec<Value>) -> Option<Value> {
-    let mut rows = rows.into_iter();
-    let mut joined = rows.next()?;
-    for mut row in rows {
-        let shown: HashSet<String> = joined["tabs"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .flat_map(tab_and_pane_ids)
-            .collect();
-        let tabs = take_list(&mut row, "tabs")
-            .into_iter()
-            .filter(|tab| tab_and_pane_ids(tab).iter().all(|id| !shown.contains(id)))
-            .collect();
-        append_list(&mut joined, "tabs", tabs);
-        for key in ["sessions", "tabWorkspaces"] {
-            let items = take_list(&mut row, key);
-            append_list(&mut joined, key, items);
-        }
-    }
-    Some(joined)
-}
-
-/// A saved tab's id and the ids of the panes its layout shows.
-fn tab_and_pane_ids(tab: &Value) -> Vec<String> {
-    fn panes(node: &Value, ids: &mut Vec<String>) {
-        match node["children"].as_array() {
-            Some(children) => children.iter().for_each(|child| panes(child, ids)),
-            None => ids.extend(node["id"].as_str().map(str::to_owned)),
-        }
-    }
-    let mut ids = vec![tab["id"].as_str().unwrap_or_default().to_owned()];
-    panes(&tab["layout"], &mut ids);
-    ids
-}
-
-fn take_list(row: &mut Value, key: &str) -> Vec<Value> {
-    match row.get_mut(key).map(Value::take) {
-        Some(Value::Array(items)) => items,
-        _ => Vec::new(),
-    }
-}
-
-fn append_list(row: &mut Value, key: &str, items: Vec<Value>) {
-    if let Some(Value::Array(list)) = row
-        .as_object_mut()
-        .map(|fields| fields.entry(key).or_insert_with(|| json!([])))
-    {
-        list.extend(items);
-    }
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    let mut total = 0;
+    let rows = rows
+        .into_iter()
+        .take_while(|raw| {
+            total += raw.len();
+            total <= WORKSPACE_SNAPSHOT_MAX_BYTES
+        })
+        .map(|raw| serde_json::from_str(&raw))
+        .collect::<Result<Vec<Value>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(if rows.is_empty() {
+        shared.into_iter().collect()
+    } else {
+        rows
+    })
 }
 
 pub(crate) fn validate_id(value: &str, label: &str) -> Result<(), String> {
@@ -4567,37 +4524,16 @@ mod tests {
         json!({ "kind": "session", "id": id, "layout": layout, "focusedId": panes[0], "editorPanes": [] })
     }
 
-    /// `base` with `tabs` after its own, a stub per pane they show, and the
-    /// last of them active.
+    /// `base` with `tabs` after its own, the last of them active.
     #[cfg(not(windows))]
     fn with_tabs(base: &Value, tabs: &[Value]) -> Value {
         let mut next = base.clone();
-        for tab in tabs {
-            next["tabs"].as_array_mut().unwrap().push(tab.clone());
-            let layout = &tab["layout"];
-            let leaves = layout["children"]
-                .as_array()
-                .cloned()
-                .unwrap_or_else(|| vec![layout.clone()]);
-            for leaf in leaves {
-                next["sessions"]
-                    .as_array_mut()
-                    .unwrap()
-                    .push(json!({ "id": leaf["id"] }));
-            }
-        }
+        next["tabs"]
+            .as_array_mut()
+            .unwrap()
+            .extend(tabs.iter().cloned());
         next["activeTabId"] = tabs.last().unwrap()["id"].clone();
         next
-    }
-
-    #[cfg(not(windows))]
-    fn tab_ids(snapshot: &Value) -> Vec<String> {
-        snapshot["tabs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|tab| tab["id"].as_str().unwrap().to_owned())
-            .collect()
     }
 
     #[cfg(not(windows))]
@@ -4614,27 +4550,45 @@ mod tests {
         .unwrap();
     }
 
-    /// What the window's boot or reload restores.
+    /// The rows the window's boot or reload restores, newest first.
     #[cfg(not(windows))]
-    fn restored_snapshot(window: &tauri::WebviewWindow<tauri::test::MockRuntime>) -> Value {
-        crate::mono_messages::tests::invoke_command(window, "workspace_get_snapshot", &json!({}))
-            .unwrap()
+    fn restored_rows(window: &tauri::WebviewWindow<tauri::test::MockRuntime>) -> Vec<Value> {
+        serde_json::from_value(
+            crate::mono_messages::tests::invoke_command(
+                window,
+                "workspace_get_snapshot",
+                &json!({}),
+            )
+            .unwrap(),
+        )
+        .unwrap()
     }
 
-    /// The saved tab ids of `seed`, then `extra`.
+    /// `snapshot` as the store keeps it.
     #[cfg(not(windows))]
-    fn seed_then(seed: &Value, extra: &[&str]) -> Vec<String> {
-        tab_ids(seed)
-            .into_iter()
-            .chain(extra.iter().map(|id| id.to_string()))
-            .collect()
+    fn stored(snapshot: &Value) -> Value {
+        let mut row = snapshot.clone();
+        row[WINDOW_ROWS_KEY] = json!(true);
+        row
+    }
+
+    /// The labels of the windows that have a row.
+    #[cfg(not(windows))]
+    fn window_rows(path: &std::path::Path) -> Vec<String> {
+        let conn = Connection::open(path).unwrap();
+        let mut statement = conn
+            .prepare("SELECT window_label FROM workspace_window_snapshots ORDER BY window_label")
+            .unwrap();
+        let rows = statement.query_map([], |row| row.get(0)).unwrap();
+        rows.collect::<rusqlite::Result<_>>().unwrap()
     }
 
     /// ADE-11. Defect: every window writes the one snapshot row, so a
     /// relaunch restores only the last saver's tabs, a reload restores another
     /// window's tabs, and a crash after a window closed restores the closed
     /// window's tabs. `path` holds a snapshot an older build saved; `opened`
-    /// are four sessions it does not show.
+    /// are four sessions it does not show. The web app joins the rows
+    /// (workspaceSnapshotJoin.realdb.test.ts).
     #[cfg(not(windows))]
     fn each_window_keeps_its_tabs_through_a_relaunch(path: &std::path::Path, opened: [&str; 4]) {
         let seed: Value = Connection::open(path)
@@ -4646,40 +4600,19 @@ mod tests {
             )
             .map(|raw| serde_json::from_str(&raw).unwrap())
             .unwrap();
-        two_windows_save_their_own_tabs(path, &seed, opened);
-        let joined = seed_then(&seed, &["tab-w", "tab-x2", "tab-m"]);
+        let [main_saved, second_saved] = two_windows_save_their_own_tabs(path, &seed, opened);
         for relaunch in [
             "the relaunch",
             "a crash before the first save, then a relaunch",
         ] {
             let (_app, [main]) = launch_windows(path, ["main"]);
-            let restored = restored_snapshot(&main);
             assert_eq!(
-                tab_ids(&restored),
-                joined,
-                "{relaunch} restores the newest window's tabs, then each other window's tab whose id and chats are new"
-            );
-            assert_eq!(
-                restored["activeTabId"], "tab-x2",
-                "{relaunch} keeps the newest window's settings"
-            );
-            assert!(
-                restored["sessions"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|stub| stub["id"] == opened[0]),
-                "{relaunch} keeps the other window's session stubs"
-            );
-            assert!(
-                restored["tabWorkspaces"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&json!({ "tabId": "tab-m", "path": "/trees/m" })),
-                "{relaunch} keeps the other window's saved tab workspaces"
+                restored_rows(&main),
+                [stored(&second_saved), stored(&main_saved)],
+                "{relaunch} restores each window's row of the last run whole, newest first"
             );
         }
-        closed_windows_leave_their_tabs_out(path, &seed, &joined, opened);
+        closed_windows_leave_their_tabs_out(path, &seed, opened);
 
         let older = with_tabs(&seed, &[saved_tab("tab-older", &[opened[3]])]);
         Connection::open(path)
@@ -4691,29 +4624,30 @@ mod tests {
             .unwrap();
         let (_app, [main]) = launch_windows(path, ["main"]);
         assert_eq!(
-            tab_ids(&restored_snapshot(&main)),
-            seed_then(&seed, &["tab-older"]),
+            restored_rows(&main),
+            [older],
             "when an older build saved last, its one row wins over the window rows"
         );
     }
 
     /// Main and New Window each open their own chats, x in both, and save.
+    /// Returns what each saved.
     #[cfg(not(windows))]
     fn two_windows_save_their_own_tabs(
         path: &std::path::Path,
         seed: &Value,
         [m, w, x, y]: [&str; 4],
-    ) {
+    ) -> [Value; 2] {
         let start = now_millis() - 100_000;
         let (_app, [main, second]) = launch_two_windows(path);
         assert_eq!(
-            tab_ids(&restored_snapshot(&main)),
-            tab_ids(seed),
+            restored_rows(&main),
+            std::slice::from_ref(seed),
             "a database from before window rows restores its one row"
         );
         assert_eq!(
-            tab_ids(&restored_snapshot(&second)),
-            tab_ids(seed),
+            restored_rows(&second),
+            std::slice::from_ref(seed),
             "New Window opens a copy of it"
         );
         let mut main_saved = with_tabs(
@@ -4730,51 +4664,49 @@ mod tests {
         save_snapshot(&second, &second_saved, start + 20);
         save_snapshot(&main, seed, start + 5);
         assert_eq!(
-            tab_ids(&restored_snapshot(&main)),
-            seed_then(seed, &["tab-m", "tab-x1", "tab-yw"]),
-            "a reload restores the window's own tabs, and a save read before its newest one does not replace it"
+            restored_rows(&main),
+            [stored(&main_saved)],
+            "a reload restores the window's own row, and a save read before its newest one does not replace it"
         );
-        assert_eq!(
-            tab_ids(&restored_snapshot(&second)),
-            seed_then(seed, &["tab-w", "tab-x2"])
-        );
+        assert_eq!(restored_rows(&second), [stored(&second_saved)]);
+        [main_saved, second_saved]
     }
 
-    /// A window that closes beside another, by `destroy_window` or with its
-    /// delete failed, leaves its tabs out of the next relaunch; the last
-    /// window's close keeps them.
+    /// After a relaunch, main closes the last run's tabs but one. A window
+    /// that closes beside another, by `destroy_window` or with its delete
+    /// failed, leaves its tabs out of the next relaunch; the last window's
+    /// close keeps them.
     #[cfg(not(windows))]
     fn closed_windows_leave_their_tabs_out(
         path: &std::path::Path,
         seed: &Value,
-        joined: &[String],
         [m, w, ..]: [&str; 4],
     ) {
         let (app, [main, second]) = launch_two_windows(path);
-        let restored = restored_snapshot(&main);
         assert_eq!(
-            tab_ids(&restored_snapshot(&second)),
-            joined,
-            "a window that opens before this run's first save gets the join too"
+            restored_rows(&second),
+            restored_rows(&main),
+            "a window that opens before this run's first save gets the last run's rows too"
         );
-        save_snapshot(&main, &restored, now_millis() - 50);
+        let relaunched = with_tabs(seed, &[saved_tab("tab-w", &[w])]);
+        save_snapshot(&main, &relaunched, now_millis() - 50);
         assert_eq!(
-            tab_ids(&restored_snapshot(&second)),
-            joined,
-            "New Window then opens a copy of the newest save"
+            restored_rows(&second),
+            [stored(&relaunched)],
+            "the first save of this run drops the last run's rows, and New Window opens a copy of it"
         );
         save_snapshot(
             &second,
-            &with_tabs(&restored, &[saved_tab("tab-closed", &[m])]),
+            &with_tabs(&relaunched, &[saved_tab("tab-closed", &[m])]),
             now_millis() - 40,
         );
         crate::mono_messages::tests::invoke_command(&second, "destroy_window", &json!({})).unwrap();
         drop(app);
         let (app, [main]) = launch_windows(path, ["main"]);
         assert_eq!(
-            tab_ids(&restored_snapshot(&main)),
-            joined,
-            "a crash after a window closed beside another does not reopen the closed window's tabs"
+            restored_rows(&main),
+            [stored(&relaunched)],
+            "after a crash, the tabs closed after the relaunch and the tabs of a window closed beside another stay closed"
         );
 
         let second =
@@ -4783,21 +4715,28 @@ mod tests {
                 .unwrap();
         save_snapshot(
             &second,
-            &with_tabs(seed, &[saved_tab("tab-gone", &[w])]),
+            &with_tabs(seed, &[saved_tab("tab-gone", &["gone"])]),
             now_millis() - 30,
         );
         // The mock runtime has no event loop to drop the window; this close
         // skips destroy_window, as a failed delete would.
         AsRef::<tauri::Webview<_>>::as_ref(&second).close().unwrap();
-        save_snapshot(&main, &restored, now_millis() - 20);
+        let last = with_tabs(seed, &[saved_tab("tab-last", &[w])]);
+        save_snapshot(&main, &last, now_millis() - 20);
+        assert_eq!(
+            window_rows(path),
+            ["main"],
+            "a save drops this run's row of a window that closed"
+        );
         crate::mono_messages::tests::invoke_command(&main, "destroy_window", &json!({})).unwrap();
+        assert_eq!(
+            window_rows(path),
+            ["main"],
+            "the last window's close keeps its row"
+        );
         drop(app);
         let (_app, [main]) = launch_windows(path, ["main"]);
-        assert_eq!(
-            tab_ids(&restored_snapshot(&main)),
-            joined,
-            "a save drops the rows of a window that closed; the last window's close keeps its tabs"
-        );
+        assert_eq!(restored_rows(&main), [stored(&last)]);
     }
 
     #[cfg(not(windows))]
@@ -4850,6 +4789,78 @@ mod tests {
         each_window_keeps_its_tabs_through_a_relaunch(&path, opened.try_into().unwrap());
     }
 
+    /// ADE-11 review M1. `workspaceSnapshotJoin.realdb.json` holds what the
+    /// web app's real `workspaceSnapshot` saves for each window, and the rows
+    /// a relaunch then reads; workspaceSnapshotJoin.realdb.test.ts writes and
+    /// checks the saves and restores the rows through the real boot. With
+    /// WRITE_WINDOW_ROWS_FIXTURE=1 this test writes the rows instead of
+    /// comparing. Defect: the rows drop or change a field the web app saved,
+    /// or come in another order than newest first.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_rows_a_relaunch_restores_are_the_ones_the_web_app_joins() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/features/workspace/model/fixtures/workspaceSnapshotJoin.realdb.json"
+        );
+        let write = std::env::var("WRITE_WINDOW_ROWS_FIXTURE").as_deref() == Ok("1");
+        let mut fixture: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        for scenario in fixture["scenarios"].as_array_mut().unwrap() {
+            let db = DbFile(temp_db("window-snapshots-join"));
+            let (app, windows) = launch_two_windows(&db);
+            for save in scenario["saves"].as_array().unwrap() {
+                let window = windows
+                    .iter()
+                    .find(|window| save["window"] == window.label())
+                    .unwrap();
+                save_snapshot(window, &save["snapshot"], save["readAt"].as_i64().unwrap());
+            }
+            drop(app);
+            let (_app, [main]) = launch_windows(&db, ["main"]);
+            let rows = json!(restored_rows(&main));
+            if write {
+                scenario["rows"] = rows;
+            } else {
+                assert_eq!(rows, scenario["rows"], "{}", scenario["name"]);
+            }
+        }
+        if write {
+            let text = serde_json::to_string_pretty(&fixture).unwrap();
+            std::fs::write(path, format!("{text}\n")).unwrap();
+        }
+    }
+
+    /// ADE-11 review m4. Defect: the rows of a relaunch add up past the size
+    /// of one save, so the window that restores their join can never save.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_relaunch_restores_the_newest_rows_that_fit_one_snapshot() {
+        let path = DbFile(temp_db("window-snapshots-cap"));
+        let empty = stored(&json!({ "pad": "" })).to_string().len();
+        let row = |bytes: usize| json!({ "pad": "x".repeat(bytes - empty) });
+        let half = WORKSPACE_SNAPSHOT_MAX_BYTES / 2;
+        let rest = WORKSPACE_SNAPSHOT_MAX_BYTES - half;
+        for (sizes, kept) in [([half, rest, empty], 2), ([half, rest + 1, empty], 1)] {
+            let (app, windows) = launch_windows(&path, ["main", "window-1", "window-2"]);
+            let start = now_millis() - 1_000;
+            for (age, (window, bytes)) in windows.iter().zip(sizes).enumerate() {
+                save_snapshot(window, &row(bytes), start - i64::try_from(age).unwrap());
+            }
+            drop(app);
+            let (_app, [main]) = launch_windows(&path, ["main"]);
+            let restored: Vec<usize> = restored_rows(&main)
+                .iter()
+                .map(|row| row.to_string().len())
+                .collect();
+            assert_eq!(
+                restored,
+                sizes[..kept],
+                "the newest rows whose total fits one snapshot, oldest out first"
+            );
+        }
+    }
+
     // ADE-46, through the IPC command as each window calls it, on the shared
     // row that a New Window (window-3) opens a copy of. A quit save that
     // fails keeps the row's read time, so it drops no later save. Window B's
@@ -4879,7 +4890,9 @@ mod tests {
                 &json!({ "snapshot": snapshot, "readAt": start + read }),
             )
         };
-        let saved = || invoke_command(&new_window, "workspace_get_snapshot", &json!({})).unwrap();
+        let saved = || {
+            invoke_command(&new_window, "workspace_get_snapshot", &json!({})).unwrap()[0].clone()
+        };
 
         save(&a, json!({ "by": "A running" }), 100).unwrap();
         let too_large = json!({ "by": "A quit", "pad": "x".repeat(2_000_001) });

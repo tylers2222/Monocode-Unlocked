@@ -1,0 +1,1060 @@
+{
+  "scenarios": [
+    {
+      "name": "New Window copies the tabs, each window changes its copy, main saves last",
+      "rows": [
+        {
+          "activeTabId": "tab-blank",
+          "lastDockSide": "bottom",
+          "monoCompletions": [
+            {
+              "origin": {
+                "monoId": "mono-1",
+                "turn": 1
+              },
+              "request": {
+                "project": "/tmp/acme",
+                "prompt": "Sum up the notes",
+                "requestId": "req-main",
+                "sessionId": "x"
+              }
+            }
+          ],
+          "projectCwd": "/tmp/acme",
+          "projectReturnTargets": [],
+          "projectTerminals": [
+            {
+              "open": true,
+              "pane": {
+                "activeFileId": "dock-main-shell",
+                "files": [
+                  {
+                    "cwd": "/tmp/acme",
+                    "id": "dock-main-shell",
+                    "path": "zsh",
+                    "terminal": true
+                  }
+                ],
+                "id": "dock-main"
+              },
+              "projectPath": "/tmp/acme",
+              "side": "bottom",
+              "size": 240
+            }
+          ],
+          "sessions": [
+            {
+              "cwd": "/tmp/acme",
+              "harness": "codex",
+              "id": "blank",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": ""
+            },
+            {
+              "cwd": "/tmp/acme",
+              "harness": "codex",
+              "id": "a",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": "a, as main saw it"
+            },
+            {
+              "cwd": "/tmp/acme",
+              "harness": "codex",
+              "id": "t",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": "t",
+              "worktreeCwd": "/tmp/acme-worktrees/fix"
+            },
+            {
+              "cwd": "/tmp/acme",
+              "harness": "codex",
+              "id": "x",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": "x"
+            }
+          ],
+          "tabs": [
+            {
+              "editorPanes": [],
+              "focusedId": "blank",
+              "id": "tab-blank",
+              "kind": "session",
+              "layout": {
+                "id": "blank",
+                "type": "leaf"
+              },
+              "terminalPanes": []
+            },
+            {
+              "editorPanes": [
+                {
+                  "activeFileId": "file-readme",
+                  "files": [
+                    {
+                      "cwd": "/tmp/acme",
+                      "id": "file-readme",
+                      "path": "/tmp/acme/README.md"
+                    }
+                  ],
+                  "id": "pane-f"
+                }
+              ],
+              "focusedId": "a",
+              "id": "tab-shared",
+              "kind": "session",
+              "layout": {
+                "children": [
+                  {
+                    "id": "a",
+                    "type": "leaf"
+                  },
+                  {
+                    "id": "pane-f",
+                    "type": "leaf"
+                  }
+                ],
+                "dir": "right",
+                "id": "split-tab-shared",
+                "sizes": [
+                  0.5,
+                  0.5
+                ],
+                "type": "split"
+              },
+              "terminalPanes": []
+            },
+            {
+              "editorPanes": [],
+              "focusedId": "t",
+              "id": "tab-tree",
+              "kind": "session",
+              "layout": {
+                "id": "t",
+                "type": "leaf"
+              },
+              "terminalPanes": []
+            },
+            {
+              "editorPanes": [],
+              "focusedId": "x",
+              "id": "tab-x",
+              "kind": "session",
+              "layout": {
+                "id": "x",
+                "type": "leaf"
+              },
+              "terminalPanes": []
+            }
+          ],
+          "windowRows": true
+        },
+        {
+          "activeTabId": "tab-n",
+          "lastDockSide": "left",
+          "monoCompletions": [
+            {
+              "origin": {
+                "monoId": "mono-1",
+                "turn": 1
+              },
+              "request": {
+                "project": "/tmp/acme",
+                "prompt": "Sum up the notes",
+                "requestId": "req-window-1",
+                "sessionId": "x"
+              }
+            }
+          ],
+          "projectCwd": "/tmp/notes",
+          "projectReturnTargets": [
+            {
+              "projectPath": "/tmp/notes",
+              "tabId": "n"
+            }
+          ],
+          "projectTerminals": [
+            {
+              "open": true,
+              "pane": {
+                "activeFileId": "dock-second-shell",
+                "files": [
+                  {
+                    "cwd": "/tmp/acme",
+                    "id": "dock-second-shell",
+                    "path": "zsh",
+                    "terminal": true
+                  }
+                ],
+                "id": "dock-second"
+              },
+              "projectPath": "/tmp/acme",
+              "side": "bottom",
+              "size": 240
+            },
+            {
+              "open": true,
+              "pane": {
+                "activeFileId": "dock-notes-shell",
+                "files": [
+                  {
+                    "cwd": "/tmp/notes",
+                    "id": "dock-notes-shell",
+                    "path": "zsh",
+                    "terminal": true
+                  }
+                ],
+                "id": "dock-notes"
+              },
+              "projectPath": "/tmp/notes",
+              "side": "bottom",
+              "size": 240
+            }
+          ],
+          "sessions": [
+            {
+              "cwd": "/tmp/acme",
+              "harness": "codex",
+              "id": "z",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": "z"
+            },
+            {
+              "cwd": "/tmp/acme",
+              "harness": "codex",
+              "id": "a",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": "a, as window-1 saw it"
+            },
+            {
+              "cwd": "/tmp/acme",
+              "harness": "codex",
+              "id": "w",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": "w"
+            },
+            {
+              "cwd": "/tmp/acme",
+              "harness": "codex",
+              "id": "t",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": "t",
+              "worktreeCwd": "/tmp/acme-worktrees/fix"
+            },
+            {
+              "cwd": "/tmp/acme",
+              "harness": "codex",
+              "id": "u",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": "u",
+              "worktreeCwd": "/tmp/acme-worktrees/fix"
+            },
+            {
+              "cwd": "/tmp/notes",
+              "harness": "codex",
+              "id": "n",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": "n"
+            }
+          ],
+          "tabWorkspaces": [
+            {
+              "path": "/tmp/acme-worktrees/fix",
+              "tabId": "tab-tree"
+            },
+            {
+              "path": "/tmp/acme-worktrees/fix",
+              "tabId": "tab-u"
+            }
+          ],
+          "tabs": [
+            {
+              "editorPanes": [],
+              "focusedId": "z",
+              "id": "tab-blank",
+              "kind": "session",
+              "layout": {
+                "id": "z",
+                "type": "leaf"
+              },
+              "terminalPanes": []
+            },
+            {
+              "editorPanes": [
+                {
+                  "activeFileId": "file-readme",
+                  "files": [
+                    {
+                      "cwd": "/tmp/acme",
+                      "id": "file-readme",
+                      "path": "/tmp/acme/README.md"
+                    }
+                  ],
+                  "id": "pane-f"
+                }
+              ],
+              "focusedId": "a",
+              "id": "tab-shared",
+              "kind": "session",
+              "layout": {
+                "children": [
+                  {
+                    "id": "a",
+                    "type": "leaf"
+                  },
+                  {
+                    "id": "pane-f",
+                    "type": "leaf"
+                  },
+                  {
+                    "id": "w",
+                    "type": "leaf"
+                  }
+                ],
+                "dir": "right",
+                "id": "split-tab-shared",
+                "sizes": [
+                  0.3333333333333333,
+                  0.3333333333333333,
+                  0.3333333333333333
+                ],
+                "type": "split"
+              },
+              "terminalPanes": []
+            },
+            {
+              "editorPanes": [],
+              "focusedId": "t",
+              "id": "tab-tree",
+              "kind": "session",
+              "layout": {
+                "id": "t",
+                "type": "leaf"
+              },
+              "terminalPanes": []
+            },
+            {
+              "editorPanes": [],
+              "focusedId": "u",
+              "id": "tab-u",
+              "kind": "session",
+              "layout": {
+                "id": "u",
+                "type": "leaf"
+              },
+              "terminalPanes": []
+            },
+            {
+              "editorPanes": [],
+              "focusedId": "n",
+              "id": "tab-n",
+              "kind": "session",
+              "layout": {
+                "id": "n",
+                "type": "leaf"
+              },
+              "terminalPanes": []
+            }
+          ],
+          "windowRows": true
+        }
+      ],
+      "saves": [
+        {
+          "readAt": 1000,
+          "snapshot": {
+            "activeTabId": "tab-n",
+            "lastDockSide": "left",
+            "monoCompletions": [
+              {
+                "origin": {
+                  "monoId": "mono-1",
+                  "turn": 1
+                },
+                "request": {
+                  "project": "/tmp/acme",
+                  "prompt": "Sum up the notes",
+                  "requestId": "req-window-1",
+                  "sessionId": "x"
+                }
+              }
+            ],
+            "projectCwd": "/tmp/notes",
+            "projectReturnTargets": [
+              {
+                "projectPath": "/tmp/notes",
+                "tabId": "n"
+              }
+            ],
+            "projectTerminals": [
+              {
+                "open": true,
+                "pane": {
+                  "activeFileId": "dock-second-shell",
+                  "files": [
+                    {
+                      "cwd": "/tmp/acme",
+                      "id": "dock-second-shell",
+                      "path": "zsh",
+                      "terminal": true
+                    }
+                  ],
+                  "id": "dock-second"
+                },
+                "projectPath": "/tmp/acme",
+                "side": "bottom",
+                "size": 240
+              },
+              {
+                "open": true,
+                "pane": {
+                  "activeFileId": "dock-notes-shell",
+                  "files": [
+                    {
+                      "cwd": "/tmp/notes",
+                      "id": "dock-notes-shell",
+                      "path": "zsh",
+                      "terminal": true
+                    }
+                  ],
+                  "id": "dock-notes"
+                },
+                "projectPath": "/tmp/notes",
+                "side": "bottom",
+                "size": 240
+              }
+            ],
+            "sessions": [
+              {
+                "cwd": "/tmp/acme",
+                "harness": "codex",
+                "id": "z",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": "z"
+              },
+              {
+                "cwd": "/tmp/acme",
+                "harness": "codex",
+                "id": "a",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": "a, as window-1 saw it"
+              },
+              {
+                "cwd": "/tmp/acme",
+                "harness": "codex",
+                "id": "w",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": "w"
+              },
+              {
+                "cwd": "/tmp/acme",
+                "harness": "codex",
+                "id": "t",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": "t",
+                "worktreeCwd": "/tmp/acme-worktrees/fix"
+              },
+              {
+                "cwd": "/tmp/acme",
+                "harness": "codex",
+                "id": "u",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": "u",
+                "worktreeCwd": "/tmp/acme-worktrees/fix"
+              },
+              {
+                "cwd": "/tmp/notes",
+                "harness": "codex",
+                "id": "n",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": "n"
+              }
+            ],
+            "tabWorkspaces": [
+              {
+                "path": "/tmp/acme-worktrees/fix",
+                "tabId": "tab-tree"
+              },
+              {
+                "path": "/tmp/acme-worktrees/fix",
+                "tabId": "tab-u"
+              }
+            ],
+            "tabs": [
+              {
+                "editorPanes": [],
+                "focusedId": "z",
+                "id": "tab-blank",
+                "kind": "session",
+                "layout": {
+                  "id": "z",
+                  "type": "leaf"
+                },
+                "terminalPanes": []
+              },
+              {
+                "editorPanes": [
+                  {
+                    "activeFileId": "file-readme",
+                    "files": [
+                      {
+                        "cwd": "/tmp/acme",
+                        "id": "file-readme",
+                        "path": "/tmp/acme/README.md"
+                      }
+                    ],
+                    "id": "pane-f"
+                  }
+                ],
+                "focusedId": "a",
+                "id": "tab-shared",
+                "kind": "session",
+                "layout": {
+                  "children": [
+                    {
+                      "id": "a",
+                      "type": "leaf"
+                    },
+                    {
+                      "id": "pane-f",
+                      "type": "leaf"
+                    },
+                    {
+                      "id": "w",
+                      "type": "leaf"
+                    }
+                  ],
+                  "dir": "right",
+                  "id": "split-tab-shared",
+                  "sizes": [
+                    0.3333333333333333,
+                    0.3333333333333333,
+                    0.3333333333333333
+                  ],
+                  "type": "split"
+                },
+                "terminalPanes": []
+              },
+              {
+                "editorPanes": [],
+                "focusedId": "t",
+                "id": "tab-tree",
+                "kind": "session",
+                "layout": {
+                  "id": "t",
+                  "type": "leaf"
+                },
+                "terminalPanes": []
+              },
+              {
+                "editorPanes": [],
+                "focusedId": "u",
+                "id": "tab-u",
+                "kind": "session",
+                "layout": {
+                  "id": "u",
+                  "type": "leaf"
+                },
+                "terminalPanes": []
+              },
+              {
+                "editorPanes": [],
+                "focusedId": "n",
+                "id": "tab-n",
+                "kind": "session",
+                "layout": {
+                  "id": "n",
+                  "type": "leaf"
+                },
+                "terminalPanes": []
+              }
+            ]
+          },
+          "window": "window-1"
+        },
+        {
+          "readAt": 2000,
+          "snapshot": {
+            "activeTabId": "tab-blank",
+            "lastDockSide": "bottom",
+            "monoCompletions": [
+              {
+                "origin": {
+                  "monoId": "mono-1",
+                  "turn": 1
+                },
+                "request": {
+                  "project": "/tmp/acme",
+                  "prompt": "Sum up the notes",
+                  "requestId": "req-main",
+                  "sessionId": "x"
+                }
+              }
+            ],
+            "projectCwd": "/tmp/acme",
+            "projectReturnTargets": [],
+            "projectTerminals": [
+              {
+                "open": true,
+                "pane": {
+                  "activeFileId": "dock-main-shell",
+                  "files": [
+                    {
+                      "cwd": "/tmp/acme",
+                      "id": "dock-main-shell",
+                      "path": "zsh",
+                      "terminal": true
+                    }
+                  ],
+                  "id": "dock-main"
+                },
+                "projectPath": "/tmp/acme",
+                "side": "bottom",
+                "size": 240
+              }
+            ],
+            "sessions": [
+              {
+                "cwd": "/tmp/acme",
+                "harness": "codex",
+                "id": "blank",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": ""
+              },
+              {
+                "cwd": "/tmp/acme",
+                "harness": "codex",
+                "id": "a",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": "a, as main saw it"
+              },
+              {
+                "cwd": "/tmp/acme",
+                "harness": "codex",
+                "id": "t",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": "t",
+                "worktreeCwd": "/tmp/acme-worktrees/fix"
+              },
+              {
+                "cwd": "/tmp/acme",
+                "harness": "codex",
+                "id": "x",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": "x"
+              }
+            ],
+            "tabs": [
+              {
+                "editorPanes": [],
+                "focusedId": "blank",
+                "id": "tab-blank",
+                "kind": "session",
+                "layout": {
+                  "id": "blank",
+                  "type": "leaf"
+                },
+                "terminalPanes": []
+              },
+              {
+                "editorPanes": [
+                  {
+                    "activeFileId": "file-readme",
+                    "files": [
+                      {
+                        "cwd": "/tmp/acme",
+                        "id": "file-readme",
+                        "path": "/tmp/acme/README.md"
+                      }
+                    ],
+                    "id": "pane-f"
+                  }
+                ],
+                "focusedId": "a",
+                "id": "tab-shared",
+                "kind": "session",
+                "layout": {
+                  "children": [
+                    {
+                      "id": "a",
+                      "type": "leaf"
+                    },
+                    {
+                      "id": "pane-f",
+                      "type": "leaf"
+                    }
+                  ],
+                  "dir": "right",
+                  "id": "split-tab-shared",
+                  "sizes": [
+                    0.5,
+                    0.5
+                  ],
+                  "type": "split"
+                },
+                "terminalPanes": []
+              },
+              {
+                "editorPanes": [],
+                "focusedId": "t",
+                "id": "tab-tree",
+                "kind": "session",
+                "layout": {
+                  "id": "t",
+                  "type": "leaf"
+                },
+                "terminalPanes": []
+              },
+              {
+                "editorPanes": [],
+                "focusedId": "x",
+                "id": "tab-x",
+                "kind": "session",
+                "layout": {
+                  "id": "x",
+                  "type": "leaf"
+                },
+                "terminalPanes": []
+              }
+            ]
+          },
+          "window": "main"
+        }
+      ]
+    },
+    {
+      "name": "two windows that pin no tab to a worktree",
+      "rows": [
+        {
+          "activeTabId": "tab-j",
+          "monoCompletions": [],
+          "projectCwd": "/tmp/acme",
+          "projectReturnTargets": [],
+          "projectTerminals": [],
+          "sessions": [
+            {
+              "cwd": "/tmp/acme",
+              "harness": "codex",
+              "id": "j",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": "j"
+            }
+          ],
+          "tabs": [
+            {
+              "editorPanes": [],
+              "focusedId": "j",
+              "id": "tab-j",
+              "kind": "session",
+              "layout": {
+                "id": "j",
+                "type": "leaf"
+              },
+              "terminalPanes": []
+            }
+          ],
+          "windowRows": true
+        },
+        {
+          "activeTabId": "tab-k",
+          "monoCompletions": [],
+          "projectCwd": "/tmp/acme",
+          "projectReturnTargets": [],
+          "projectTerminals": [],
+          "sessions": [
+            {
+              "cwd": "/tmp/acme",
+              "harness": "codex",
+              "id": "k",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": "k"
+            }
+          ],
+          "tabs": [
+            {
+              "editorPanes": [],
+              "focusedId": "k",
+              "id": "tab-k",
+              "kind": "session",
+              "layout": {
+                "id": "k",
+                "type": "leaf"
+              },
+              "terminalPanes": []
+            }
+          ],
+          "windowRows": true
+        }
+      ],
+      "saves": [
+        {
+          "readAt": 1000,
+          "snapshot": {
+            "activeTabId": "tab-k",
+            "monoCompletions": [],
+            "projectCwd": "/tmp/acme",
+            "projectReturnTargets": [],
+            "projectTerminals": [],
+            "sessions": [
+              {
+                "cwd": "/tmp/acme",
+                "harness": "codex",
+                "id": "k",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": "k"
+              }
+            ],
+            "tabs": [
+              {
+                "editorPanes": [],
+                "focusedId": "k",
+                "id": "tab-k",
+                "kind": "session",
+                "layout": {
+                  "id": "k",
+                  "type": "leaf"
+                },
+                "terminalPanes": []
+              }
+            ]
+          },
+          "window": "window-1"
+        },
+        {
+          "readAt": 2000,
+          "snapshot": {
+            "activeTabId": "tab-j",
+            "monoCompletions": [],
+            "projectCwd": "/tmp/acme",
+            "projectReturnTargets": [],
+            "projectTerminals": [],
+            "sessions": [
+              {
+                "cwd": "/tmp/acme",
+                "harness": "codex",
+                "id": "j",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": "j"
+              }
+            ],
+            "tabs": [
+              {
+                "editorPanes": [],
+                "focusedId": "j",
+                "id": "tab-j",
+                "kind": "session",
+                "layout": {
+                  "id": "j",
+                  "type": "leaf"
+                },
+                "terminalPanes": []
+              }
+            ]
+          },
+          "window": "main"
+        }
+      ]
+    },
+    {
+      "name": "main closed every tab and saves last",
+      "rows": [
+        {
+          "activeTabId": "",
+          "monoCompletions": [
+            {
+              "origin": {
+                "monoId": "mono-1",
+                "turn": 1
+              },
+              "request": {
+                "project": "/tmp/acme",
+                "prompt": "Sum up the notes",
+                "requestId": "req-main",
+                "sessionId": "x"
+              }
+            }
+          ],
+          "projectCwd": "/tmp/acme",
+          "projectReturnTargets": [],
+          "projectTerminals": [],
+          "sessions": [],
+          "tabs": [],
+          "windowRows": true
+        },
+        {
+          "activeTabId": "tab-k",
+          "monoCompletions": [
+            {
+              "origin": {
+                "monoId": "mono-1",
+                "turn": 1
+              },
+              "request": {
+                "project": "/tmp/acme",
+                "prompt": "Sum up the notes",
+                "requestId": "req-window-1",
+                "sessionId": "x"
+              }
+            }
+          ],
+          "projectCwd": "/tmp/notes",
+          "projectReturnTargets": [],
+          "projectTerminals": [],
+          "sessions": [
+            {
+              "cwd": "/tmp/notes",
+              "harness": "codex",
+              "id": "k",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": "k"
+            }
+          ],
+          "tabs": [
+            {
+              "editorPanes": [],
+              "focusedId": "k",
+              "id": "tab-k",
+              "kind": "session",
+              "layout": {
+                "id": "k",
+                "type": "leaf"
+              },
+              "terminalPanes": []
+            }
+          ],
+          "windowRows": true
+        }
+      ],
+      "saves": [
+        {
+          "readAt": 1000,
+          "snapshot": {
+            "activeTabId": "tab-k",
+            "monoCompletions": [
+              {
+                "origin": {
+                  "monoId": "mono-1",
+                  "turn": 1
+                },
+                "request": {
+                  "project": "/tmp/acme",
+                  "prompt": "Sum up the notes",
+                  "requestId": "req-window-1",
+                  "sessionId": "x"
+                }
+              }
+            ],
+            "projectCwd": "/tmp/notes",
+            "projectReturnTargets": [],
+            "projectTerminals": [],
+            "sessions": [
+              {
+                "cwd": "/tmp/notes",
+                "harness": "codex",
+                "id": "k",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": "k"
+              }
+            ],
+            "tabs": [
+              {
+                "editorPanes": [],
+                "focusedId": "k",
+                "id": "tab-k",
+                "kind": "session",
+                "layout": {
+                  "id": "k",
+                  "type": "leaf"
+                },
+                "terminalPanes": []
+              }
+            ]
+          },
+          "window": "window-1"
+        },
+        {
+          "readAt": 2000,
+          "snapshot": {
+            "activeTabId": "",
+            "monoCompletions": [
+              {
+                "origin": {
+                  "monoId": "mono-1",
+                  "turn": 1
+                },
+                "request": {
+                  "project": "/tmp/acme",
+                  "prompt": "Sum up the notes",
+                  "requestId": "req-main",
+                  "sessionId": "x"
+                }
+              }
+            ],
+            "projectCwd": "/tmp/acme",
+            "projectReturnTargets": [],
+            "projectTerminals": [],
+            "sessions": [],
+            "tabs": []
+          },
+          "window": "main"
+        }
+      ]
+    },
+    {
+      "name": "nothing was saved",
+      "rows": [],
+      "saves": []
+    }
+  ]
+}

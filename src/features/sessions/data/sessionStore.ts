@@ -56,6 +56,11 @@ import { restoreOrchestrationProposal } from "../../orchestration/model/orchestr
 
 import type { OrchestrationSummary } from "../../orchestration/model/orchestrationSummary";
 
+import {
+  joinWorkspaceSnapshots,
+  type JoinedWorkspaceSnapshot,
+} from "../../workspace/model/workspaceSnapshotJoin";
+
 export type SessionSummary = {
   sidebarHidden?: boolean;
   orchestrationLeadId?: string;
@@ -933,9 +938,8 @@ export async function saveWorkspaceSnapshot(
   await run;
 }
 
-export async function loadWorkspaceSnapshot(): Promise<unknown | null> {
-  const raw = await invoke<unknown | null>("workspace_get_snapshot");
-  return raw ?? null;
+export async function loadWorkspaceSnapshot(): Promise<JoinedWorkspaceSnapshot | null> {
+  return joinWorkspaceSnapshots(await invoke<unknown[]>("workspace_get_snapshot"));
 }
 
 function sanitizeBlock(
