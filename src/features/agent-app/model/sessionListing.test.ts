@@ -63,6 +63,20 @@ it("lists the app that answered and each session's branch, null when it has none
   });
 });
 
+// ADE-84 #268 r2 M1. The app rewrites a saved session's branch from git on
+// every save; the open session keeps the branch the app attached. Defect: an
+// open session lists that stale branch, so ready-issues misses its builder.
+it("lists an open session's saved branch over the one it opened with", () => {
+  const listed = appSessionListings(
+    PROJECT,
+    [saved("switched", { branch: "fix/ade-48-x" })],
+    [open("switched", { branch: "mc/x", busy: true })],
+  );
+  expect(listed.map(({ id, branch, busy }) => ({ id, branch, busy }))).toStrictEqual([
+    { id: "switched", branch: "fix/ade-48-x", busy: true },
+  ]);
+});
+
 // Defect: a worker, a habit run, an Inbox Ask or another project's session
 // lists as one of the project's sessions, or a draft goes unreported.
 it("lists only the project's own sessions, and an open one's draft", () => {

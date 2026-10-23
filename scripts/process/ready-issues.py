@@ -21,9 +21,11 @@ blockers, since it entered Todo (history, else createdAt).
 Builders. A session builds ticket ADE-<id> when it is busy, not archived, and
 the branch the app recorded for it matches `(^|/)ade-<id>(-|$)` (any case,
 the exact id with no leading zero). The sessions are the monocode project's,
-from `monocode app sessions.list`. The CLI answers for the app its environment
-points at, whichever binary runs it, so the reply names that app
-(`appIdentifier`) and the script exits 2 unless it is the app of --instance.
+from `monocode app sessions.list`. The project is $MONOCODE_PROJECT, else the
+main checkout of the git repo that holds this script (also when it runs from a
+worktree). The CLI answers for the app its environment points at, whichever
+binary runs it, so the reply names that app (`appIdentifier`) and the script
+exits 2 unless it is the app of --instance.
 Run the script in a session or Mono of that instance. The other instance is not
 read: the lead accepted this one-instance scope on 2026-10-23 (decisions.md,
 ADE-84 #268 r1 m2), because the CLI answers only for its own app and D1 denies

@@ -16,6 +16,7 @@ import copy
 import io
 import importlib.util
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -158,8 +159,11 @@ class ReadyIssues(unittest.TestCase):
         listed = APP["2"]
         refused = {"ok": False, "error": "project is only for a Mono"}
         other = {"ok": True, "result": {"appIdentifier": "com.monocode.second", "cwd": "/tmp/vibtra", "sessions": []}}
+        slashed = copy.deepcopy(listed)
+        slashed["result"]["cwd"] += "/"
         for case, reply, error in [
             ("a session, refused a project, lists its own", listed, None),
+            ("the app's path of the project ends in a slash", slashed, None),
             ("a session in another project", other, f"listed /tmp/vibtra, not {PROJECT}"),
         ]:
             with self.subTest(case), tempfile.TemporaryDirectory() as tmp:
@@ -388,15 +392,52 @@ class Main(unittest.TestCase):
         self.assertNotIn("ready with no builder", out)
 
     def test_an_app_cli_that_fails_exits_2(self):
-        for case, reply in [("no token", json.dumps({"ok": False, "error": "MONOCODE_APP_TOKEN is not set."})),
-                            ("no JSON", "Cannot connect to MonoCode"), ("no output", "")]:
+        not_json = "ready-issues: JSONDecodeError: Expecting value: line {} column 1 (char {})"
+        for case, reply, line in [
+            ("no token", json.dumps({"ok": False, "error": "MONOCODE_APP_TOKEN is not set."}),
+             "ready-issues: RuntimeError: app sessions.list: MONOCODE_APP_TOKEN is not set."),
+            ("no JSON", "Cannot connect to MonoCode", not_json.format(1, 0)),
+            ("no output", "", not_json.format(2, 1)),
+        ]:
             with self.subTest(case):
                 cli = fake_cli(Path(self.tmp) / "instance-2", {"": reply})
                 code, out, writes = self.run_main(cli=cli)
                 self.assertEqual((code, writes), (2, []), out)
-                self.assertTrue(out.startswith("ready-issues: "), out)
+                self.assertIn(line, out.splitlines())
         code, out, _ = self.run_main(cli="/nonexistent/monocode")
         self.assertEqual(code, 2, out)
+
+
+class Project(unittest.TestCase):
+    """The monocode project ready-issues asks the app for, on any account or clone."""
+
+    def load(self, script):
+        spec = importlib.util.spec_from_file_location("ready_issues_copy", script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    # Defect: the project is a fixed home path, or the worktree the script runs from.
+    def test_the_project_is_the_main_checkout_of_the_scripts_repo(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict("os.environ"):
+            del os.environ["MONOCODE_PROJECT"]
+            main, worktree, loose = Path(tmp) / "clone", Path(tmp) / "clone-worktree", Path(tmp) / "loose"
+            git = ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"]
+            subprocess.run([*git, "init", "-q", main], check=True)
+            (main / "ready-issues.py").write_text(SCRIPT.read_text())
+            subprocess.run([*git, "-C", main, "add", "ready-issues.py"], check=True)
+            subprocess.run([*git, "-C", main, "commit", "-qm", "script"], check=True)
+            subprocess.run([*git, "-C", main, "worktree", "add", "-q", worktree], check=True, capture_output=True)
+            for copy_in in (main, worktree):
+                with self.subTest(copy_in.name):
+                    project = self.load(copy_in / "ready-issues.py").monocode_project()
+                    self.assertEqual(os.path.realpath(project), os.path.realpath(main))
+            os.environ["MONOCODE_PROJECT"] = "/Users/test/elsewhere"
+            self.assertEqual(self.load(worktree / "ready-issues.py").monocode_project(), "/Users/test/elsewhere")
+            del os.environ["MONOCODE_PROJECT"]
+            loose.mkdir()
+            (loose / "ready-issues.py").write_text(SCRIPT.read_text())
+            self.assertRaises(subprocess.CalledProcessError, self.load(loose / "ready-issues.py").monocode_project)
 
 
 class CommandLine(unittest.TestCase):

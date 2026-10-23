@@ -41,7 +41,7 @@ notice_gap() {
 	return "$code"
 }
 
-check ready-issues script ready-issues --instance 2
+check ready-issues script ready-issues --instance 1
 check pr-cap script pr-cap --instance 2
 check notice-gap notice_gap
 
