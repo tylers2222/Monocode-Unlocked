@@ -693,6 +693,18 @@ pub fn session_list_in_flight<R: Runtime>(
     Ok(sessions)
 }
 
+/// A window closed while the app keeps running: its chats stopped with it,
+/// so a relaunch must not resume them.
+pub fn forget_closed_window_in_flight(store: &SessionStore, window: &str) -> Result<(), String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    conn.execute(
+        "DELETE FROM in_flight_sessions WHERE window_label = ?1 AND run_id = ?2",
+        params![window, store.run_id],
+    )
+    .map(drop)
+    .map_err(|e| e.to_string())
+}
+
 /// Read and clear the quit snapshot so a restored window cannot take it twice.
 #[tauri::command(async)]
 pub fn session_take_in_flight(
@@ -749,21 +761,18 @@ fn ensure_session_column(conn: &Connection, column: &str, decl: &str) -> rusqlit
     Ok(())
 }
 
-/// Add a `sessions` column when it is missing, tolerating the case where a
+/// Add a column to `table` when it is missing, tolerating the case where a
 /// recorded migration version has no matching column.
-fn ensure_column(conn: &Connection, name: &str, decl: &str) -> rusqlite::Result<()> {
+fn ensure_column(conn: &Connection, table: &str, name: &str, decl: &str) -> rusqlite::Result<()> {
     let present: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?1",
-        params![name],
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        params![table, name],
         |row| row.get(0),
     )?;
     if present > 0 {
         return Ok(());
     }
-    conn.execute(
-        &format!("ALTER TABLE sessions ADD COLUMN {name} {decl}"),
-        [],
-    )?;
+    conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {name} {decl}"), [])?;
     Ok(())
 }
 
@@ -808,7 +817,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "CREATE TABLE IF NOT EXISTS in_flight_sessions (
                session_id TEXT PRIMARY KEY,
                cwd TEXT NOT NULL,
-               sort_index INTEGER NOT NULL
+               sort_index INTEGER NOT NULL,
+               window_label TEXT NOT NULL DEFAULT '',
+               run_id TEXT NOT NULL DEFAULT ''
              );",
         )?;
         conn.execute(
@@ -851,7 +862,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         // `blocks_json LIKE '%"role":"user"%'`, which reads and substring-scans
         // every transcript in the project on each switch. Materialize the
         // predicate so the covering index can answer it instead.
-        ensure_column(conn, "has_user_message", "INTEGER NOT NULL DEFAULT 0")?;
+        ensure_column(
+            conn,
+            "sessions",
+            "has_user_message",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         conn.execute(
             "UPDATE sessions SET has_user_message =
                CASE WHEN blocks_json != '[]' AND blocks_json LIKE '%\"role\":\"user\"%'
@@ -903,9 +919,14 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         // Version rows are not proof the columns landed: a DB can carry a
         // recorded version from another build without the ALTER that went with
         // it, and indexing a missing column aborts the whole migration.
-        ensure_column(conn, "branch", "TEXT")?;
-        ensure_column(conn, "archived", "INTEGER NOT NULL DEFAULT 0")?;
-        ensure_column(conn, "has_user_message", "INTEGER NOT NULL DEFAULT 0")?;
+        ensure_column(conn, "sessions", "branch", "TEXT")?;
+        ensure_column(conn, "sessions", "archived", "INTEGER NOT NULL DEFAULT 0")?;
+        ensure_column(
+            conn,
+            "sessions",
+            "has_user_message",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         conn.execute_batch(
             "DROP INDEX IF EXISTS sessions_cwd_listed_idx;
              CREATE INDEX IF NOT EXISTS sessions_cwd_cover_idx
@@ -929,7 +950,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         // Pinning is a listing column, so it has to live in the covering
         // index with `archived`. Selecting it off the table would walk past
         // `blocks_json` on every project switch.
-        ensure_column(conn, "pinned", "INTEGER NOT NULL DEFAULT 0")?;
+        ensure_column(conn, "sessions", "pinned", "INTEGER NOT NULL DEFAULT 0")?;
         conn.execute_batch(
             "DROP INDEX IF EXISTS sessions_cwd_cover_idx;
              CREATE INDEX IF NOT EXISTS sessions_cwd_cover_idx
@@ -945,7 +966,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     if current < 12 {
         // The sidebar renders this metadata for every row, so keep it in the
         // same covering index as the rest of the session-card projection.
-        ensure_column(conn, "linked_work_item_json", "TEXT")?;
+        ensure_column(conn, "sessions", "linked_work_item_json", "TEXT")?;
         conn.execute_batch(
             "DROP INDEX IF EXISTS sessions_cwd_cover_idx;
              CREATE INDEX IF NOT EXISTS sessions_cwd_cover_idx
@@ -1060,7 +1081,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "CREATE TABLE IF NOT EXISTS in_flight_sessions (
            session_id TEXT PRIMARY KEY,
            cwd TEXT NOT NULL,
-           sort_index INTEGER NOT NULL
+           sort_index INTEGER NOT NULL,
+           window_label TEXT NOT NULL DEFAULT '',
+           run_id TEXT NOT NULL DEFAULT ''
          );
          CREATE TABLE IF NOT EXISTS workspace_snapshot (
            id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1073,19 +1096,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
          );",
     )?;
     for column in ["window_label", "run_id"] {
-        let present: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('in_flight_sessions') WHERE name = ?1",
-            [column],
-            |row| row.get(0),
+        ensure_column(
+            conn,
+            "in_flight_sessions",
+            column,
+            "TEXT NOT NULL DEFAULT ''",
         )?;
-        if present == 0 {
-            conn.execute(
-                &format!(
-                    "ALTER TABLE in_flight_sessions ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
-                ),
-                [],
-            )?;
-        }
     }
     // Compatibility only: earlier Inbox Ask builds saved temporary chats here.
     // Keep those records off normal surfaces without deleting their transcripts.
@@ -3794,6 +3810,26 @@ mod tests {
         assert_eq!(listed_again.len(), 1);
     }
 
+    /// The app `builder` makes, with one webview window per label.
+    #[cfg(not(windows))]
+    fn mock_windows<const N: usize>(
+        builder: tauri::Builder<tauri::test::MockRuntime>,
+        labels: [&str; N],
+    ) -> (
+        tauri::App<tauri::test::MockRuntime>,
+        [tauri::WebviewWindow<tauri::test::MockRuntime>; N],
+    ) {
+        let app = builder
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let windows = labels.map(|label| {
+            tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
+                .build()
+                .unwrap()
+        });
+        (app, windows)
+    }
+
     #[cfg(not(windows))]
     fn launch_two_windows(
         path: &std::path::Path,
@@ -3801,22 +3837,27 @@ mod tests {
         tauri::App<tauri::test::MockRuntime>,
         [tauri::WebviewWindow<tauri::test::MockRuntime>; 2],
     ) {
-        let app = tauri::test::mock_builder()
-            .manage(SessionStore::open(path.to_path_buf()).unwrap())
-            .manage(crate::control::tests::host())
-            .invoke_handler(tauri::generate_handler![
-                session_set_in_flight,
-                session_list_in_flight
-            ])
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap();
-        let window = |label: &str| {
-            tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
-                .build()
-                .unwrap()
-        };
-        let windows = [window("main"), window("window-1")];
-        (app, windows)
+        mock_windows(
+            tauri::test::mock_builder()
+                .manage(SessionStore::open(path.to_path_buf()).unwrap())
+                .manage(crate::control::tests::host())
+                .invoke_handler(tauri::generate_handler![
+                    session_set_in_flight,
+                    session_list_in_flight
+                ]),
+            ["main", "window-1"],
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn remove_db(path: &std::path::Path) {
+        for file in [
+            path.to_owned(),
+            path.with_extension("db-wal"),
+            path.with_extension("db-shm"),
+        ] {
+            let _ = std::fs::remove_file(file);
+        }
     }
 
     #[cfg(not(windows))]
@@ -3893,6 +3934,12 @@ mod tests {
             ids([&a, &b]),
             "one window's save keeps the other window's running session"
         );
+        save_in_flight(&second, &[&a, &b]);
+        assert_eq!(
+            ids(&in_flight_rows(path)),
+            ids([&a, &b]),
+            "a session open in both windows is saved once"
+        );
         save_in_flight(&main, &[&a, &c]);
         assert_eq!(resumed(&second), ids([&a, &b, &c]));
         save_in_flight(&second, &[]);
@@ -3922,8 +3969,7 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn each_window_keeps_its_running_sessions_on_a_new_database() {
-        let path =
-            std::env::temp_dir().join(format!("monocode-in-flight-{}.db", uuid::Uuid::new_v4()));
+        let path = temp_db("in-flight");
         SessionStore::open(path.clone())
             .unwrap()
             .lock_conn()
@@ -3938,12 +3984,12 @@ mod tests {
             &path,
             [running("a"), running("b"), running("c")],
         );
+        remove_db(&path);
     }
 
     #[cfg(not(windows))]
     fn private_copy_of_the_app_database() -> PathBuf {
-        let path =
-            std::env::temp_dir().join(format!("monocode-in-flight-{}.db", uuid::Uuid::new_v4()));
+        let path = temp_db("in-flight");
         Connection::open(std::env::var("MONOCODE_DB_COPY").unwrap())
             .unwrap()
             .execute("VACUUM INTO ?1", [path.to_str().unwrap()])
@@ -3970,6 +4016,25 @@ mod tests {
             &path,
             newest.try_into().unwrap(),
         );
+        remove_db(&path);
+    }
+
+    /// ADE-62 review M2. Defect: a window closed while other windows stay open
+    /// saves the chats it stopped, and the next launch resumes them.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_window_closed_before_the_quit_does_not_resume_its_stopped_sessions() {
+        let path = temp_db("in-flight-closed");
+        let running = |id: &str| (id.to_owned(), format!("/tmp/{id}"));
+        let (app, [main, second]) = launch_two_windows(&path);
+        save_in_flight(&main, &[&running("kept")]);
+        save_in_flight(&second, &[&running("stopped")]);
+        forget_closed_window_in_flight(&app.state::<SessionStore>(), second.label()).unwrap();
+        drop(app);
+
+        let (_app, [main, _second]) = launch_two_windows(&path);
+        assert_eq!(resumed(&main), ["kept"]);
+        remove_db(&path);
     }
 
     #[cfg(not(windows))]
@@ -4027,8 +4092,7 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn a_new_window_leaves_out_the_turns_another_window_runs_on_a_new_database() {
-        let path =
-            std::env::temp_dir().join(format!("monocode-in-flight-{}.db", uuid::Uuid::new_v4()));
+        let path = temp_db("in-flight");
         SessionStore::open(path.clone())
             .unwrap()
             .lock_conn()
@@ -4041,6 +4105,7 @@ mod tests {
             &path,
             &("own".into(), "/tmp/own".into()),
         );
+        remove_db(&path);
     }
 
     #[cfg(not(windows))]
@@ -4058,6 +4123,7 @@ mod tests {
             )
             .unwrap();
         a_new_window_leaves_out_the_turns_another_window_runs(&path, &own);
+        remove_db(&path);
     }
 
     #[test]
@@ -4116,20 +4182,15 @@ mod tests {
     #[test]
     fn two_windows_and_a_failed_quit_keep_the_newest_read_snapshot() {
         use crate::mono_messages::tests::invoke_command;
-        let app = tauri::test::mock_builder()
-            .manage(SessionStore::open_in_memory().unwrap())
-            .invoke_handler(tauri::generate_handler![
-                workspace_set_snapshot,
-                workspace_get_snapshot
-            ])
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap();
-        let window = |label: &str| {
-            tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
-                .build()
-                .unwrap()
-        };
-        let (a, b) = (window("main"), window("window-2"));
+        let (_app, [a, b]) = mock_windows(
+            tauri::test::mock_builder()
+                .manage(SessionStore::open_in_memory().unwrap())
+                .invoke_handler(tauri::generate_handler![
+                    workspace_set_snapshot,
+                    workspace_get_snapshot
+                ]),
+            ["main", "window-2"],
+        );
         let start = now_millis() - 10_000;
         let save = |webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
                     snapshot: Value,
