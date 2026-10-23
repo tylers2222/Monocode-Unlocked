@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewWindow};
 
+use crate::control::ControlHost;
+
 const MIGRATION_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
@@ -679,11 +681,16 @@ pub fn session_set_in_flight<R: Runtime>(
 /// Read the quit snapshot without clearing it. Vite/dev reloads must not
 /// consume the only copy.
 #[tauri::command(async)]
-pub fn session_list_in_flight(
+pub fn session_list_in_flight<R: Runtime>(
     store: State<'_, SessionStore>,
+    control: State<'_, ControlHost>,
+    window: WebviewWindow<R>,
 ) -> Result<Vec<InFlightSession>, String> {
+    let running = control.sessions_running_outside(window.label());
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    list_in_flight(&conn).map_err(|e| e.to_string())
+    let mut sessions = list_in_flight(&conn).map_err(|e| e.to_string())?;
+    sessions.retain(|session| !running.contains(&session.session_id));
+    Ok(sessions)
 }
 
 /// Read and clear the quit snapshot so a restored window cannot take it twice.
@@ -3796,6 +3803,7 @@ mod tests {
     ) {
         let app = tauri::test::mock_builder()
             .manage(SessionStore::open(path.to_path_buf()).unwrap())
+            .manage(crate::control::tests::host())
             .invoke_handler(tauri::generate_handler![
                 session_set_in_flight,
                 session_list_in_flight
@@ -3811,6 +3819,60 @@ mod tests {
         (app, windows)
     }
 
+    #[cfg(not(windows))]
+    fn save_in_flight(
+        window: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+        running: &[&(String, String)],
+    ) {
+        let sessions: Vec<Value> = running
+            .iter()
+            .map(|(id, cwd)| json!({ "sessionId": id, "cwd": cwd }))
+            .collect();
+        crate::mono_messages::tests::invoke_command(
+            window,
+            "session_set_in_flight",
+            &json!({ "sessions": sessions }),
+        )
+        .unwrap();
+    }
+
+    #[cfg(not(windows))]
+    fn resumed(window: &tauri::WebviewWindow<tauri::test::MockRuntime>) -> Vec<String> {
+        let listed = crate::mono_messages::tests::invoke_command(
+            window,
+            "session_list_in_flight",
+            &json!({}),
+        )
+        .unwrap();
+        let mut ids: Vec<String> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["sessionId"].as_str().unwrap().to_owned())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    #[cfg(not(windows))]
+    fn ids<'a>(sessions: impl IntoIterator<Item = &'a (String, String)>) -> Vec<String> {
+        let mut ids: Vec<String> = sessions.into_iter().map(|(id, _)| id.clone()).collect();
+        ids.sort();
+        ids
+    }
+
+    #[cfg(not(windows))]
+    fn in_flight_rows(path: &std::path::Path) -> Vec<(String, String)> {
+        let conn = Connection::open(path).unwrap();
+        let mut statement = conn
+            .prepare("SELECT session_id, cwd FROM in_flight_sessions ORDER BY session_id")
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap();
+        rows.collect::<rusqlite::Result<_>>().unwrap()
+    }
+
     /// ADE-62. Defect: a window's save replaces every window's running
     /// sessions, so a relaunch resumes only the last saver's; or rows from the
     /// last run outlive the first save of this one, so a relaunch resumes them
@@ -3820,76 +3882,39 @@ mod tests {
         path: &std::path::Path,
         [a, b, c]: [(String, String); 3],
     ) {
-        use crate::mono_messages::tests::invoke_command;
-        let save = |window: &tauri::WebviewWindow<tauri::test::MockRuntime>,
-                    running: &[&(String, String)]| {
-            let sessions: Vec<Value> = running
-                .iter()
-                .map(|(id, cwd)| json!({ "sessionId": id, "cwd": cwd }))
-                .collect();
-            invoke_command(
-                window,
-                "session_set_in_flight",
-                &json!({ "sessions": sessions }),
-            )
-            .unwrap();
-        };
-        let resumed = |window: &tauri::WebviewWindow<tauri::test::MockRuntime>| {
-            let listed = invoke_command(window, "session_list_in_flight", &json!({})).unwrap();
-            let mut ids: Vec<String> = listed
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|row| row["sessionId"].as_str().unwrap().to_owned())
-                .collect();
-            ids.sort();
-            ids
-        };
-        let ids = |sessions: &[&(String, String)]| {
-            let mut ids: Vec<String> = sessions.iter().map(|(id, _)| id.clone()).collect();
-            ids.sort();
-            ids
-        };
-        let earlier: Vec<String> = {
-            let conn = Connection::open(path).unwrap();
-            let mut statement = conn
-                .prepare("SELECT session_id FROM in_flight_sessions ORDER BY session_id")
-                .unwrap();
-            let rows = statement.query_map([], |row| row.get(0)).unwrap();
-            rows.collect::<rusqlite::Result<_>>().unwrap()
-        };
+        let earlier = ids(&in_flight_rows(path));
 
         let (app, [main, second]) = launch_two_windows(path);
         assert_eq!(resumed(&main), earlier, "boot reads the last run's rows");
-        save(&main, &[&a]);
-        save(&second, &[&b]);
+        save_in_flight(&main, &[&a]);
+        save_in_flight(&second, &[&b]);
         assert_eq!(
             resumed(&main),
-            ids(&[&a, &b]),
+            ids([&a, &b]),
             "one window's save keeps the other window's running session"
         );
-        save(&main, &[&a, &c]);
-        assert_eq!(resumed(&second), ids(&[&a, &b, &c]));
-        save(&second, &[]);
+        save_in_flight(&main, &[&a, &c]);
+        assert_eq!(resumed(&second), ids([&a, &b, &c]));
+        save_in_flight(&second, &[]);
         assert_eq!(
             resumed(&main),
-            ids(&[&a, &c]),
+            ids([&a, &c]),
             "a window's save drops its own finished session"
         );
-        save(&second, &[&b]);
-        save(&main, &[&a, &c]);
+        save_in_flight(&second, &[&b]);
+        save_in_flight(&main, &[&a, &c]);
         drop(app);
 
         let (_app, [main, _second]) = launch_two_windows(path);
         assert_eq!(
             resumed(&main),
-            ids(&[&a, &b, &c]),
+            ids([&a, &b, &c]),
             "the relaunch resumes both windows' running sessions once"
         );
-        save(&main, &[&c]);
+        save_in_flight(&main, &[&c]);
         assert_eq!(
             resumed(&main),
-            ids(&[&c]),
+            ids([&c]),
             "the first save of this run drops the rows the relaunch resumed"
         );
     }
@@ -3916,10 +3941,21 @@ mod tests {
     }
 
     #[cfg(not(windows))]
+    fn private_copy_of_the_app_database() -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("monocode-in-flight-{}.db", uuid::Uuid::new_v4()));
+        Connection::open(std::env::var("MONOCODE_DB_COPY").unwrap())
+            .unwrap()
+            .execute("VACUUM INTO ?1", [path.to_str().unwrap()])
+            .unwrap();
+        path
+    }
+
+    #[cfg(not(windows))]
     #[test]
     #[ignore = "needs MONOCODE_DB_COPY, a fresh copy of the app's monocode.db"]
     fn each_window_keeps_its_running_sessions_on_a_copy_of_the_app_database() {
-        let path = PathBuf::from(std::env::var("MONOCODE_DB_COPY").unwrap());
+        let path = private_copy_of_the_app_database();
         let newest: Vec<(String, String)> = {
             let conn = Connection::open(&path).unwrap();
             let mut statement = conn
@@ -3934,6 +3970,94 @@ mod tests {
             &path,
             newest.try_into().unwrap(),
         );
+    }
+
+    #[cfg(not(windows))]
+    fn a_new_window_leaves_out_the_turns_another_window_runs(
+        path: &std::path::Path,
+        own: &(String, String),
+    ) {
+        use crate::control::{tests as control, ControlHost};
+        let running = in_flight_rows(path);
+        assert!(!running.is_empty() && !running.contains(own));
+        let (app, [main, second]) = launch_two_windows(path);
+        let store = app.state::<SessionStore>();
+        let host = app.state::<ControlHost>();
+
+        control::boot(&host, &store, "main");
+        assert_eq!(
+            resumed(&main),
+            ids(&running),
+            "boot reads the last run's rows"
+        );
+        for session in &running {
+            control::start_turn_in_canonical_cwd(&host, &store, session, "main");
+        }
+
+        control::boot(&host, &store, "window-1");
+        assert_eq!(
+            resumed(&second),
+            Vec::<String>::new(),
+            "a new window leaves out the last run's rows another window continues"
+        );
+        save_in_flight(&main, &running.iter().collect::<Vec<_>>());
+        assert_eq!(
+            resumed(&second),
+            Vec::<String>::new(),
+            "a new window leaves out every session another window runs"
+        );
+        assert_eq!(
+            host.running_sessions()
+                .into_keys()
+                .collect::<std::collections::HashSet<_>>(),
+            ids(&running).into_iter().collect(),
+            "the new window's boot ends no turn of the other window"
+        );
+        control::start_turn_in_canonical_cwd(&host, &store, own, "window-1");
+        save_in_flight(&second, &[own]);
+
+        control::boot(&host, &store, "main");
+        assert_eq!(
+            resumed(&main),
+            ids(&running),
+            "a reloaded window reads its own cut-short turns and not the turn another window runs"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_new_window_leaves_out_the_turns_another_window_runs_on_a_new_database() {
+        let path =
+            std::env::temp_dir().join(format!("monocode-in-flight-{}.db", uuid::Uuid::new_v4()));
+        SessionStore::open(path.clone())
+            .unwrap()
+            .lock_conn()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO in_flight_sessions (session_id, cwd, sort_index) VALUES ('a', '/tmp/a', 0), ('b', '/tmp/b', 1)",
+            )
+            .unwrap();
+        a_new_window_leaves_out_the_turns_another_window_runs(
+            &path,
+            &("own".into(), "/tmp/own".into()),
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "needs MONOCODE_DB_COPY, a fresh copy of the app's monocode.db"]
+    fn a_new_window_leaves_out_the_turns_another_window_runs_on_a_copy_of_the_app_database() {
+        let path = private_copy_of_the_app_database();
+        let own = Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT id, cwd FROM sessions WHERE id NOT IN (SELECT session_id FROM in_flight_sessions)
+                 ORDER BY updated_at DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        a_new_window_leaves_out_the_turns_another_window_runs(&path, &own);
     }
 
     #[test]
