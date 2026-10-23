@@ -944,6 +944,13 @@ const MilestonesView = lazySurface(
   },
   { suspense: false },
 );
+const ApprovalsView = lazySurface(
+  async () => {
+    const module = await import("../features/approvals/ui/ApprovalsView");
+    return { default: module.ApprovalsView };
+  },
+  { suspense: false },
+);
 
 type LinkedWorkItemPanelState = {
   item: LinkedWorkItem;
@@ -1662,6 +1669,7 @@ function Workspace({
         LinkedWorkItemPanel.preload,
         AutomationsView.preload,
         MilestonesView.preload,
+        ApprovalsView.preload,
         listAutomations,
         ...(notesEnabled ? [NotesView.preload, loadNotes] : []),
       ]),
@@ -14038,6 +14046,16 @@ function Workspace({
                   cwd={projectCwd}
                   recents={recents}
                   sessions={sidebarHistory}
+                  onClose={onLeaveAutomations}
+                  onToggleSidebar={onToggleSidebar}
+                />
+              ) : null}
+              {automationsViewOpen && automationsPage === "approvals" ? (
+                <ApprovalsView
+                  besideRail={projectRailOpen || compactProjectRail}
+                  compactRail={compactRailActive}
+                  cwd={projectCwd}
+                  recents={recents}
                   onClose={onLeaveAutomations}
                   onToggleSidebar={onToggleSidebar}
                 />
