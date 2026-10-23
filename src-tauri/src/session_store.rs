@@ -673,11 +673,13 @@ pub fn session_set_in_flight<R: Runtime>(
             return Err("cwd is required".into());
         }
     }
+    // Read the open windows under the store lock: a window that opens and
+    // saves while this save waits must be in the list, or its rows are swept.
+    let mut conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     let open: Vec<String> = crate::window::workspace_windows(&window)
         .iter()
         .map(|open| open.label().to_owned())
         .collect();
-    let mut conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     replace_in_flight(&mut conn, &store.run_id, window.label(), &open, &sessions)
         .map_err(|e| e.to_string())
 }
@@ -4192,6 +4194,51 @@ mod tests {
             resumed(&main),
             ["kept"],
             "the next launch resumes only the chats of the window open at the quit"
+        );
+    }
+
+    /// ADE-62 review r4 m1. main's save waits for the store lock while
+    /// window-1 opens and saves first. Defect: main's sweep uses a window list
+    /// read before window-1 existed, drops window-1's live row, and a crash
+    /// before window-1's next save loses that chat's resume.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_window_that_opens_while_another_save_waits_keeps_its_rows() {
+        let path = DbFile(temp_db("in-flight-stale-window-list"));
+        let (app, [main]) = launch_windows(&path, ["main"]);
+        let store: &SessionStore = app.state::<SessionStore>().inner();
+        let mut held = store.lock_conn().unwrap();
+        let saver = {
+            let main = main.clone();
+            std::thread::spawn(move || {
+                save_in_flight(&main, &[&("kept".to_owned(), "/tmp/kept".to_owned())])
+            })
+        };
+        // Let main's save reach the store lock before window-1 exists.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let second =
+            tauri::WebviewWindowBuilder::new(&app, "window-1", tauri::WebviewUrl::default())
+                .build()
+                .unwrap();
+        let open: Vec<String> = crate::window::workspace_windows(&second)
+            .iter()
+            .map(|window| window.label().to_owned())
+            .collect();
+        let live = InFlightSession {
+            session_id: "live".into(),
+            cwd: "/tmp/live".into(),
+        };
+        replace_in_flight(&mut held, &store.run_id, "window-1", &open, &[live]).unwrap();
+        drop(held);
+        saver.join().unwrap();
+        assert_eq!(resumed(&second), ["live"], "window-1 reloads its live chat");
+        drop(app);
+
+        let (_app, [main]) = launch_windows(&path, ["main"]);
+        assert_eq!(
+            resumed(&main),
+            ["kept", "live"],
+            "a crash relaunch resumes the chats of both windows"
         );
     }
 
