@@ -17,6 +17,8 @@ const seed = JSON.parse(
 const PROJECT = "/Users/test/acme";
 const WATCHING = "Watching the build.";
 const FINISHED = "The watcher finished.";
+/** The first reply waits on a real omp starting: about 3s on a CI runner. */
+const OMP_START = { timeout: 30_000 };
 
 needsOmp();
 
@@ -61,7 +63,7 @@ test("the reply of a run omp starts on its own is sealed when that run ends", as
   const composer = page.getByPlaceholder("Ask, build, / for commands");
   await composer.fill("Start the watcher");
   await composer.press("Enter");
-  await expect(main.getByText(WATCHING)).toBeVisible();
+  await expect(main.getByText(WATCHING)).toBeVisible(OMP_START);
   await expect(main.getByRole("button", { name: "Stop" }), "the turn ends").toHaveCount(0);
 
   writeFileSync(marker, "");
