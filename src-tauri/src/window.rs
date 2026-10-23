@@ -225,7 +225,7 @@ pub fn destroy_window<R: Runtime>(
             crate::session_store::forget_closed_window_in_flight(&store, window.label())
         {
             eprintln!(
-                "Window {} closed, but a relaunch may resume its stopped chats: {error}",
+                "Window {} closed; its rows stay until another window saves: {error}",
                 window.label()
             );
         }

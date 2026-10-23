@@ -673,8 +673,12 @@ pub fn session_set_in_flight<R: Runtime>(
             return Err("cwd is required".into());
         }
     }
+    let open: Vec<String> = crate::window::workspace_windows(&window)
+        .iter()
+        .map(|open| open.label().to_owned())
+        .collect();
     let mut conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    replace_in_flight(&mut conn, &store.run_id, window.label(), &sessions)
+    replace_in_flight(&mut conn, &store.run_id, window.label(), &open, &sessions)
         .map_err(|e| e.to_string())
 }
 
@@ -2241,16 +2245,24 @@ fn list_in_flight(
     rows.collect()
 }
 
+/// Also drops this run's rows of every window that is gone: a close whose
+/// delete failed must not leave its stopped chats for the next launch.
 fn replace_in_flight(
     conn: &mut Connection,
     run_id: &str,
     window: &str,
+    open_windows: &[String],
     sessions: &[InFlightSession],
 ) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     tx.execute(
         "DELETE FROM in_flight_sessions WHERE window_label = ?1 OR run_id <> ?2",
         params![window, run_id],
+    )?;
+    tx.execute(
+        "DELETE FROM in_flight_sessions
+         WHERE run_id = ?1 AND window_label NOT IN (SELECT value FROM json_each(?2))",
+        params![run_id, json!(open_windows).to_string()],
     )?;
     {
         let mut insert = tx.prepare(
@@ -3772,6 +3784,7 @@ mod tests {
             &mut conn,
             "run",
             "main",
+            &["main".to_owned()],
             &[
                 InFlightSession {
                     session_id: "s2".into(),
@@ -3801,6 +3814,7 @@ mod tests {
             &mut conn,
             "run",
             "main",
+            &["main".to_owned()],
             &[InFlightSession {
                 session_id: "s1".into(),
                 cwd: "/tmp/a".into(),
@@ -4141,6 +4155,46 @@ mod tests {
         );
     }
 
+    /// ADE-62 review r3 m1. Defect: the close's delete fails, no later save
+    /// drops the closed window's rows, and the next launch resumes the chats
+    /// the user agreed to stop.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_window_whose_close_could_not_drop_its_rows_does_not_resume_them_after_the_quit() {
+        let path = DbFile(temp_db("in-flight-close-delete-failed"));
+        let running = |id: &str| (id.to_owned(), format!("/tmp/{id}"));
+        let (app, [main, second]) = launch_two_windows(&path);
+        save_in_flight(&main, &[&running("kept")]);
+        save_in_flight(&second, &[&running("stopped")]);
+        let store = app.state::<SessionStore>();
+        store
+            .lock_conn()
+            .unwrap()
+            .execute_batch(
+                "CREATE TEMP TRIGGER close_delete_fails BEFORE DELETE ON in_flight_sessions
+                 WHEN old.window_label = 'window-1'
+                 BEGIN SELECT RAISE(ABORT, 'stand-in for a disk error'); END;",
+            )
+            .unwrap();
+        crate::mono_messages::tests::invoke_command(&second, "destroy_window", &json!({})).unwrap();
+        // The mock runtime has no event loop to drop the destroyed window.
+        AsRef::<tauri::Webview<_>>::as_ref(&second).close().unwrap();
+        store
+            .lock_conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER close_delete_fails")
+            .unwrap();
+        save_in_flight(&main, &[&running("kept")]);
+        drop(app);
+
+        let (_app, [main]) = launch_windows(&path, ["main"]);
+        assert_eq!(
+            resumed(&main),
+            ["kept"],
+            "the next launch resumes only the chats of the window open at the quit"
+        );
+    }
+
     /// ADE-62 review r2 M1 (probe 1). A chat stays in flight after its turn
     /// ends, until its window's next save. Defect: a window that boots in
     /// that gap reads the chat and resumes it a second time.
@@ -4378,6 +4432,7 @@ mod tests {
             &mut conn,
             "run",
             "main",
+            &["main".to_owned()],
             &[InFlightSession {
                 session_id: id.into(),
                 cwd: "/repo".into(),
