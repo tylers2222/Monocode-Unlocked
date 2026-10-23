@@ -4,6 +4,7 @@
 #
 #   app.sh build [checkout]   build the instance (under heavy-lock.sh)
 #   app.sh s0 [runs]          S0 through the real app, `runs` times (default 1)
+#   app.sh d1                 D1: the agent sandbox on, off, and on without srt
 #
 # GIGA_EVAL_OUT and GIGA_EVAL_HOME default to their own /tmp folders, apart
 # from other GigaEval runs. The installed apps and their data are never used.
@@ -175,14 +176,126 @@ run_s0() {
   return "$FAILED"
 }
 
+SANDBOX_ON="$APP_DATA/agent-sandbox-on"
+SANDBOX_SETTINGS="$APP_DATA/agent-sandbox.json"
+# A stand-in for the live MonoCode 2 data folder, next to the instance's own.
+SECOND_DB="$(dirname "$APP_DATA")/com.monocode.second/monocode.db"
+SRT_PIN=0.0.81
+SRT_PREFIX="$EVAL_OUT/srt-$SRT_PIN"
+SRT_MODULES="$SRT_PREFIX/node_modules"
+
+# srt at the pinned version, under the temp HOME's ~/.local/bin, where the
+# app's search PATH finds it.
+install_srt() {
+  [[ -x "$SRT_MODULES/.bin/srt" ]] \
+    || npm install --prefix "$SRT_PREFIX" --no-audit --no-fund "@anthropic-ai/sandbox-runtime@$SRT_PIN" >/dev/null
+  ln -sf "$SRT_MODULES/.bin/srt" "$EVAL_HOME/.local/bin/srt"
+}
+
+# d1_phase <name>: the Giga's habit runs once more on the next start, and
+# its puppet runs every probe in its project folder.
+d1_phase() {
+  : >"$PUPPET/log.jsonl"
+  request_habit d1-giga "Probe" "D1-HABIT: probe the sandbox."
+  jq -n --arg app "$(target_bin instance)" --arg db "$DB" --arg second "$SECOND_DB" --arg on "$SANDBOX_ON" --arg srt "$SRT_MODULES" --arg phase "$1" '{app: $app, rules: [
+    {match: "D1-HABIT", exec: [
+      ["sqlite3", $db, ".tables"],
+      ["sqlite3", $second, "select v from s"],
+      ["python3", "-c", "import sys; print(open(sys.argv[1], \"rb\").read()[:15].decode())", $second],
+      ["cat", $db],
+      ["node", "-e", "try { require(\"fs\").readFileSync(process.argv[1]); console.log(\"read\") } catch (e) { console.log(e.message); process.exit(1) }", $db],
+      ["sh", "-c", "echo d1-\($phase) > d1-own.txt && cat d1-own.txt"],
+      ["sh", "-c", "mkdir -p ~/Library/LaunchAgents && echo x > ~/Library/LaunchAgents/d1-probe.plist"],
+      ["sh", "-c", "echo x > ~/.local/bin/d1-probe"],
+      ["sh", "-c", "echo x > \"$1\"/d1-probe", "sh", $srt],
+      ["sh", "-c", "mkdir -p /tmp/claude-$(id -u)/d1-\($phase) && echo made"],
+      ["sh", "-c", "echo sandbox=${SANDBOX_RUNTIME:-none}"],
+      ["rm", $on]],
+     calls: [{tool: "send_message", arguments:
+      {message: "D1-Q The probes ran.", send_to: "d1-mono", wanting_reply: false, intent: "new"}}], reply: "Probed."},
+    {match: "D1-Q", reply: "Noted."}]}' >"$PUPPET/script.json"
+}
+
+# probe <part of the argv> <jq on its log line>
+probe() {
+  jq -rs --arg p "$1" "[.[] | select(.exec and (.exec | join(\" \") | contains(\$p)))] | last | $2" "$PUPPET/log.jsonl"
+}
+denied() { probe "$1" '.code != 0 and (.stdout + .stderr | test("[Oo]peration not permitted|authorization denied"))'; }
+habit_failed() { jq -e '.[0].lastOutcome == "failed"' "$APP_DATA/monos/d1-giga/habits.json" >/dev/null; }
+
+run_d1() {
+  FAILED=0
+  log "D1"
+  fresh_pair d1
+  install_srt
+  mkdir -p "$(dirname "$SECOND_DB")"
+  sqlite3 "$SECOND_DB" "CREATE TABLE s (v TEXT); INSERT INTO s VALUES ('SECRET-SECOND')"
+
+  echo "on:"
+  touch "$SANDBOX_ON"
+  # The temp HOME and srt are under /tmp, which the app's defaults allow, so
+  # only the deny lists keep ~/.local/bin and srt's code out. (The temp HOME's
+  # ~/.config and ~/.gitconfig are links to the real ones: no probe writes there.)
+  d1_phase on
+  "$INSTANCE" start
+  wait_until 90 "the Mono gets the Giga's message" saw D1-Q
+  expect "sqlite3 .tables on the DB is denied" "$(denied "sqlite3 $DB")" true
+  expect "sqlite3 on another instance's DB is denied" "$(denied "sqlite3 $SECOND_DB")" true
+  expect "a python open of another instance's DB is denied" "$(denied "python3")" true
+  expect "cat of the DB is denied" "$(denied "cat $DB")" true
+  expect "a node read of the DB is denied" "$(denied 'readFileSync')" true
+  expect "rm of the setting is denied" "$(denied "rm $SANDBOX_ON")" true
+  expect "the setting is still there" "$([[ -e "$SANDBOX_ON" ]] && echo yes)" yes
+  expect "a write to ~/Library/LaunchAgents is denied" "$(denied LaunchAgents)" true
+  expect "a write to ~/.local/bin, under an allowed /tmp, is denied" "$(denied .local/bin/d1-probe)" true
+  expect "a write into srt's own code is denied" "$(denied "$SRT_MODULES")" true
+  expect "a mkdir under /tmp, as Claude Code does" "$(probe /tmp/claude- '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 made"
+  expect "the worktree write" "$(probe d1-own '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 d1-on"
+  expect "the puppet runs under srt" "$(probe SANDBOX_RUNTIME '.stdout | rtrimstr("\n")')" "sandbox=1"
+  expect "tool calls that failed" "$(jq -s '[.[] | select(.tool and .result.ok != true)] | length' "$PUPPET/log.jsonl")" 0
+  cp "$PUPPET/log.jsonl" "$EVAL_OUT/d1-on.puppet.jsonl"
+  "$INSTANCE" stop
+
+  echo "off:"
+  rm -f "$SANDBOX_ON" "$SANDBOX_SETTINGS"
+  d1_phase off
+  "$INSTANCE" start
+  wait_until 90 "the Mono gets the Giga's message" saw D1-Q
+  expect "sqlite3 .tables on the DB" "$(probe "sqlite3 $DB" '"\(.code) \(.stdout | test("mono_clock"))"')" "0 true"
+  expect "sqlite3 on another instance's DB" "$(probe "sqlite3 $SECOND_DB" '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 SECRET-SECOND"
+  expect "a python open of another instance's DB" "$(probe python3 '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 SQLite format 3"
+  expect "cat of the DB" "$(probe "cat $DB" '"\(.code) \(.bytes > 0)"')" "0 true"
+  expect "a node read of the DB" "$(probe readFileSync '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 read"
+  expect "the worktree write" "$(probe d1-own '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 d1-off"
+  expect "the puppet runs without srt" "$(probe SANDBOX_RUNTIME '.stdout | rtrimstr("\n")')" "sandbox=none"
+  expect "tool calls that failed" "$(jq -s '[.[] | select(.tool and .result.ok != true)] | length' "$PUPPET/log.jsonl")" 0
+  expect "no settings file is written" "$([[ -e "$SANDBOX_SETTINGS" ]] && echo written || echo none)" none
+  cp "$PUPPET/log.jsonl" "$EVAL_OUT/d1-off.puppet.jsonl"
+  "$INSTANCE" stop
+
+  echo "on without srt:"
+  rm "$EVAL_HOME/.local/bin/srt"
+  ! command -v srt >/dev/null && ! HOME="$EVAL_HOME" "$SHELL" -lic 'command -v srt' >/dev/null 2>&1 \
+    || die "an srt outside the temp HOME would stand in for the missing one"
+  touch "$SANDBOX_ON"
+  d1_phase missing
+  "$INSTANCE" start
+  wait_until 60 "the habit run fails" habit_failed
+  expect "the run's error" "$(jq -r '.[0].lastError | test("srt is not installed")' "$APP_DATA/monos/d1-giga/habits.json")" true
+  expect "prompts the puppet got" "$(prompts D1-HABIT)" 0
+  "$INSTANCE" stop
+  return "$FAILED"
+}
+
 case "${1:-}" in
   build) "$INSTANCE" build "${2:-$SCENARIOS/../..}" scenario ;;
   # One run per process: a run called in `||` would run with errexit off.
   s0-run) run_s0 "$2" ;;
+  d1) run_d1 ;;
   s0)
     failed=0
     for run in $(seq 1 "${2:-1}"); do "$0" s0-run "$run" || failed=$((failed + 1)); done
     log "S0: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
-  *) sed -n '2,9p' "$0"; exit 2 ;;
+  *) sed -n '2,10p' "$0"; exit 2 ;;
 esac
