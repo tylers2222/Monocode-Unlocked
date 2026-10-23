@@ -244,7 +244,11 @@ test("a habit run stopped while it waits leaves no question card", async ({
   await startHabitRun(page, app);
   // The run gives up on the user after 12 hours and stops; omp gets a skip.
   await runChecks(page, 12 * 60 * MINUTE + MINUTE, () => omp.answers().length > 0);
-  expect(omp.answers(), "the stop skips omp's question").toEqual([{ choice: null }]);
+  // The stop can land in the loop's last steps; omp then still needs real
+  // time to read the cancel and record the skip.
+  await expect
+    .poll(() => omp.answers(), { message: "the stop skips omp's question", timeout: 5_000 })
+    .toEqual([{ choice: null }]);
   await expect(card(page), "the card goes with the question").toHaveCount(0);
   await expect(page.getByText(/Waiting for answers/)).toHaveCount(0);
   await expect(
