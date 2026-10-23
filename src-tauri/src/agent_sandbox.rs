@@ -41,7 +41,8 @@ const STARTUP_FILES: [&str; 11] = [
 /// global config (with `<XDG config>/git`; the app's own git calls honour
 /// `core.fsmonitor` and `core.hooksPath`), Claude Code's user hooks and Codex's
 /// `notify` command. The agent's own git, Claude Code and Codex read them, so
-/// only writes are denied.
+/// only writes are denied. Inside the repo srt denies only `.git/hooks` and
+/// `.git/config`; a linked worktree's `.git` file stays writable (ADE-101).
 const OTHERS_CONFIG: [&str; 3] = [".gitconfig", ".claude/settings.json", ".codex/config.toml"];
 
 /// Each harness's own state folder. Under the XDG config folder only OpenCode
