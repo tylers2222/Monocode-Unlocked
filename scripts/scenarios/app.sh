@@ -185,8 +185,10 @@ D4_INTERACTIVE="--setting-sources=user,project,local"
 D4_HABIT="D4-HABIT: Use the Read tool to read the file $DB. Make only that one tool call. Then reply with the exact text of the tool result."
 D4_SUPPORT="$(dirname "$APP_DATA")"
 D4_SECOND="$D4_SUPPORT/com.monocode.second"
-# The Giga's workspace: Claude Code's working folder.
+# The Giga's workspace: Claude Code's working folder. Its .claude/settings.json
+# is a symlink to a settings file kept with the dotfiles.
 D4_WORK="$EVAL_HOME/MonoCode/gigas/d4-giga"
+D4_DOTFILE="$PUPPET/dotfiles/claude-settings.json"
 
 install_claude_recorder() {
   local bin="$EVAL_HOME/.local/bin/claude"
@@ -226,6 +228,9 @@ SQL
   sqlite3 "$D4_SECOND/monocode.db" "CREATE TABLE s(v); INSERT INTO s VALUES ('SECRET-SECOND');"
   echo SECRET-SECOND >"$D4_SECOND/note.txt"
   echo SECRET-OWN >"$APP_DATA/note.txt"
+  mkdir -p "$D4_WORK/.claude" "$(dirname "$D4_DOTFILE")"
+  printf '{"env": {}}' >"$D4_DOTFILE"
+  ln -s "$D4_DOTFILE" "$D4_WORK/.claude/settings.json"
 }
 
 # Tool calls the fake model makes in one turn. `leak`: text a refused call
@@ -233,7 +238,7 @@ SQL
 # must still work.
 d4_probes() {
   jq -n --arg data "$APP_DATA" --arg second "$D4_SECOND" --arg work "$D4_WORK" --arg hook "$PUPPET/hook.out" \
-    --arg config "$CLAUDE_CONFIG_DIR" '
+    --arg config "$CLAUDE_CONFIG_DIR" --arg dotfile "$D4_DOTFILE" '
     def own_db: "sqlite3 '\''\($data)/monocode.db'\'' '\''SELECT upper(name) FROM monos'\''";
     def hook: {hooks: {PreToolUse: [{matcher: "*", hooks: [{type: "command", command: "\(own_db) > \($hook)"}]}]}} | tostring;
     [{label: "Read own note", name: "Read", input: {file_path: "\($data)/note.txt"}, leak: "SECRET-OWN"},
@@ -251,6 +256,9 @@ d4_probes() {
       input: {file_path: "\($work)/.claude/settings.local.json", content: hook}, file: "\($work)/.claude/settings.local.json"},
      {label: "Write tool hook into $CLAUDE_CONFIG_DIR/settings.json", name: "Write",
       input: {file_path: "\($config)/settings.json", content: hook}, file: "\($config)/settings.json"},
+     {label: "Read the dotfile behind .claude/settings.json", name: "Read", input: {file_path: $dotfile}, want: "env"},
+     {label: "Edit tool hook into the dotfile behind .claude/settings.json", name: "Edit",
+      input: {file_path: $dotfile, old_string: "{\"env\": {}}", new_string: hook}},
      {label: "Bash still runs", name: "Bash", input: {command: "echo d4-bash-works"}, want: "d4-bash-works"}]'
 }
 
@@ -337,8 +345,11 @@ run_d4() {
   d4_phase on
   # A new spawn loads the user settings, so a hook the ON turn planted would run.
   [[ -n "${D4_CLAUDE:-}" ]] || d4_phase next
-  local off on interactive config_rule=""
-  [[ -z "${CLAUDE_CONFIG_DIR:-}" ]] || config_rule=", \"Edit(/$CLAUDE_CONFIG_DIR/**)\""
+  local off on interactive links=""
+  # GigaEval links the real home's login files into the temp home; a linked hook
+  # source also gets a rule on its target.
+  [[ ! -L "$EVAL_HOME/.claude.json" ]] || links+=", \"Edit(/$(realpath "$EVAL_HOME/.claude.json"))\""
+  [[ ! -L "$EVAL_HOME/.claude" ]] || links+=", \"Edit(/$(realpath "$EVAL_HOME/.claude")/**)\""
   off="$(d4_starts "$PUPPET/off")"; on="$(d4_starts "$PUPPET/on")"
   interactive="$(d4_jq '[.[] | select(interactive)] | length' "$off")"
   echo "D4 readings:"
@@ -350,10 +361,12 @@ run_d4() {
   # Claude Code 2.1.305 also feeds the Read and Edit denies into its sandbox,
   # so dropping /**, the folder Edit rule, denyRead or denyWrite is refused the
   # same today. Only this exact, documented rule set catches such a drift.
-  expect "ON interactive rules" "$(d4_jq 'first(.[] | select(interactive)) | settings | {permissions, sandbox}' "$on")" \
-    "$(jq -S -c . <<JSON
+  expect "ON interactive rules" \
+    "$(d4_jq 'first(.[] | select(interactive)) | settings | {permissions, sandbox} | .permissions.deny |= sort' "$on")" \
+    "$(jq -S -c '.permissions.deny |= sort' <<JSON
 {"permissions": {"deny": ["Read(/$D4_SUPPORT/com.monocode.*/**)", "Edit(/$D4_SUPPORT/com.monocode.*/**)",
-   "Edit(//**/.claude/**)", "Edit(//**/.claude.json)", "Edit(//**/.mcp.json)"$config_rule]},
+   "Edit(//**/.claude/**)", "Edit(//**/.claude.json)", "Edit(//**/.mcp.json)",
+   "Edit(/${CLAUDE_CONFIG_DIR:-$EVAL_HOME/.claude}/**)", "Edit(/$(realpath "$D4_DOTFILE"))"$links]},
  "sandbox": {"enabled": true, "allowUnsandboxedCommands": false,
    "filesystem": {"denyRead": ["$D4_SUPPORT/com.monocode.*"], "denyWrite": ["$D4_SUPPORT/com.monocode.*"]}}}
 JSON

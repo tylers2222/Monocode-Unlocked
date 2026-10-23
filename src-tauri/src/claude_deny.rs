@@ -2,8 +2,9 @@
 //! exists. Off, the args stay as the front end sent them. On, `--settings` gets
 //! `permissions.deny` and `sandbox` rules on every `com.monocode.*` data folder
 //! beside this app's own, and Edit rules on the files Claude Code loads hooks
-//! and MCP servers from (`.claude`, `.claude.json`, `.mcp.json`,
-//! `CLAUDE_CONFIG_DIR`), which run outside its sandbox.
+//! and MCP servers from (`.claude`, `.claude.json`, `.mcp.json`, the config
+//! folder `CLAUDE_CONFIG_DIR` or `$HOME/.claude`, and the real path behind any
+//! of them that is a symlink), which run outside its sandbox.
 //!
 //! Defense in depth only: the Read rule does not stop a script that opens the
 //! file itself, the sandbox covers Bash only, and Bash runs unsandboxed where
@@ -12,37 +13,46 @@
 //! the block there belongs to the code that wraps the spawn.
 
 use std::ffi::OsStr;
-use std::path::Path;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 const ON_MARKER: &str = "claude-deny-rules-on";
 
-pub(crate) fn args(app: &AppHandle, args: Vec<String>) -> Result<Vec<String>, String> {
+pub(crate) fn args(
+    app: &AppHandle,
+    workdir: &Path,
+    args: Vec<String>,
+) -> Result<Vec<String>, String> {
     let data = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("Claude Code deny rules: no app data folder: {e}"))?;
     let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
-    args_in(&data, config_dir.as_deref(), args)
+    // The child's HOME, as `apply_gui_env` sets it.
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| crate::passwd_identity().map(|id| id.home.into()))
+        .unwrap_or_default();
+    args_in(&data, config_dir.as_deref(), &home, workdir, args)
 }
 
 /// A marker that cannot be read counts as on: an IO error must not lower
-/// protection. `config_dir` is the `CLAUDE_CONFIG_DIR` the child inherits.
+/// protection. `config_dir` is the `CLAUDE_CONFIG_DIR` the child inherits,
+/// `home` its HOME and `workdir` its working folder.
 pub(crate) fn args_in(
     data: &Path,
     config_dir: Option<&OsStr>,
+    home: &Path,
+    workdir: &Path,
     mut args: Vec<String>,
 ) -> Result<Vec<String>, String> {
     if matches!(std::fs::exists(data.join(ON_MARKER)), Ok(false)) {
         return Ok(args);
     }
-    let config = match config_dir.map(OsStr::to_str) {
-        None => None,
-        Some(Some(dir)) if dir.starts_with('/') => Some(format!("Edit(/{dir}/**)")),
-        Some(_) => return Err("Claude Code deny rules: CLAUDE_CONFIG_DIR is not absolute.".into()),
-    };
+    let config = config_rules(config_dir, home, workdir)?;
     let Some(parent) = data.parent().and_then(Path::to_str) else {
         return Err("Claude Code deny rules: the app data path has no UTF-8 parent folder.".into());
     };
@@ -98,4 +108,64 @@ pub(crate) fn args_in(
     );
     args[at] = Value::Object(settings).to_string();
     Ok(args)
+}
+
+/// Edit rules on the config folder, and on the real path behind each hook or
+/// MCP source that is a symlink: Claude Code loads the file through the link,
+/// and neither a glob nor a literal rule on the link path covers its target.
+fn config_rules(
+    config_dir: Option<&OsStr>,
+    home: &Path,
+    workdir: &Path,
+) -> Result<Vec<String>, String> {
+    let config = config_dir.map_or_else(|| home.join(".claude"), PathBuf::from);
+    // Claude Code matches a rule's path as written, so `.` or `..` would match nothing.
+    let Some(text) = config.to_str().filter(|text| {
+        text.starts_with('/') && !text.split('/').any(|part| part == "." || part == "..")
+    }) else {
+        return Err("Claude Code deny rules: CLAUDE_CONFIG_DIR (or $HOME/.claude) is not an absolute path without . or .. segments.".into());
+    };
+    let mut rules = vec![format!("Edit(/{text}/**)")];
+    let (user, project) = (home.join(".claude"), workdir.join(".claude"));
+    let sources = [
+        (config.join("settings.json"), ""),
+        (config.join(".claude.json"), ""),
+        (user.join("settings.json"), ""),
+        (home.join(".claude.json"), ""),
+        (project.join("settings.json"), ""),
+        (project.join("settings.local.json"), ""),
+        (workdir.join(".mcp.json"), ""),
+        (config, "/**"),
+        (user, "/**"),
+        (project, "/**"),
+    ];
+    for (path, tail) in sources {
+        if let Some(real) = link_target(&path)? {
+            let rule = format!("Edit(/{real}{tail})");
+            if !rules.contains(&rule) {
+                rules.push(rule);
+            }
+        }
+    }
+    Ok(rules)
+}
+
+fn link_target(path: &Path) -> Result<Option<String>, String> {
+    let failed = |why: String| {
+        format!(
+            "Claude Code deny rules: cannot resolve {}: {why}",
+            path.display()
+        )
+    };
+    match path.symlink_metadata() {
+        Ok(meta) if meta.is_symlink() => {
+            let real = path.canonicalize().map_err(|e| failed(e.to_string()))?;
+            real.to_str()
+                .map(|real| Some(real.to_owned()))
+                .ok_or_else(|| failed("not UTF-8".into()))
+        }
+        Ok(_) => Ok(None),
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => Ok(None),
+        Err(e) => Err(failed(e.to_string())),
+    }
 }

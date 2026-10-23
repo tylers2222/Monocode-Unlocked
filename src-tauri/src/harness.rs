@@ -979,7 +979,7 @@ pub fn harness_spawn(
         return Err("harness_spawn: not a resolved harness CLI".to_string());
     }
     let args = match binary_provider.as_deref() {
-        Some("claude") => crate::claude_deny::args(&app, args)?,
+        Some("claude") => crate::claude_deny::args(&app, &workdir, args)?,
         _ => args,
     };
 
