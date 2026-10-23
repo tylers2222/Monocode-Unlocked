@@ -725,13 +725,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             mono_chat::window_closed(handle, &label);
             if !other_window {
-                // Its in-flight rows stay: on Linux and Windows the last close is a quit.
                 reap_harness_children(handle);
-            } else if !window::allow_exit() {
-                let _ = session_store::forget_closed_window_in_flight(
-                    &handle.state::<session_store::SessionStore>(),
-                    &label,
-                );
             }
         }
         tauri::RunEvent::ExitRequested { api, code, .. } => {

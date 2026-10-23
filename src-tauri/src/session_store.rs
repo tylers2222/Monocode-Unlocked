@@ -2669,15 +2669,9 @@ mod tests {
         assert!(!list_by_project(&conn, "/tmp/a").unwrap()[0].draft);
     }
 
+    /// A fresh path: tests run on parallel threads, and the clock can repeat.
     fn temp_db(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "monocode-{name}-{}-{}.db",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
+        std::env::temp_dir().join(format!("monocode-{name}-{}.db", uuid::Uuid::new_v4()))
     }
 
     /// The `monos` columns as `name type notnull pk`.
@@ -3837,15 +3831,28 @@ mod tests {
         tauri::App<tauri::test::MockRuntime>,
         [tauri::WebviewWindow<tauri::test::MockRuntime>; 2],
     ) {
+        launch_windows(path, ["main", "window-1"])
+    }
+
+    /// The app on the database at `path`, with the in-flight commands.
+    #[cfg(not(windows))]
+    fn launch_windows<const N: usize>(
+        path: &std::path::Path,
+        labels: [&str; N],
+    ) -> (
+        tauri::App<tauri::test::MockRuntime>,
+        [tauri::WebviewWindow<tauri::test::MockRuntime>; N],
+    ) {
         mock_windows(
             tauri::test::mock_builder()
                 .manage(SessionStore::open(path.to_path_buf()).unwrap())
                 .manage(crate::control::tests::host())
                 .invoke_handler(tauri::generate_handler![
                     session_set_in_flight,
-                    session_list_in_flight
+                    session_list_in_flight,
+                    crate::window::destroy_window
                 ]),
-            ["main", "window-1"],
+            labels,
         )
     }
 
@@ -4020,7 +4027,8 @@ mod tests {
     }
 
     /// ADE-62 review M2. Defect: a window closed while other windows stay open
-    /// saves the chats it stopped, and the next launch resumes them.
+    /// saves the chats it stopped, and the next launch resumes them. The last
+    /// close is a quit on Linux and Windows, so its chats resume.
     #[cfg(not(windows))]
     #[test]
     fn a_window_closed_before_the_quit_does_not_resume_its_stopped_sessions() {
@@ -4029,11 +4037,24 @@ mod tests {
         let (app, [main, second]) = launch_two_windows(&path);
         save_in_flight(&main, &[&running("kept")]);
         save_in_flight(&second, &[&running("stopped")]);
-        forget_closed_window_in_flight(&app.state::<SessionStore>(), second.label()).unwrap();
+        crate::mono_messages::tests::invoke_command(&second, "destroy_window", &json!({})).unwrap();
+        assert_eq!(
+            ids(&in_flight_rows(&path)),
+            ["kept"],
+            "a window closed beside another one drops its rows"
+        );
         drop(app);
 
-        let (_app, [main, _second]) = launch_two_windows(&path);
-        assert_eq!(resumed(&main), ["kept"]);
+        let (app, [main]) = launch_windows(&path, ["main"]);
+        save_in_flight(&main, &[&running("kept")]);
+        crate::mono_messages::tests::invoke_command(&main, "destroy_window", &json!({})).unwrap();
+        drop(app);
+        let (_app, [main]) = launch_windows(&path, ["main"]);
+        assert_eq!(
+            resumed(&main),
+            ["kept"],
+            "the last window's close keeps its rows for the relaunch"
+        );
         remove_db(&path);
     }
 
