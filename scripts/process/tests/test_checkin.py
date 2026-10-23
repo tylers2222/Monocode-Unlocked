@@ -155,7 +155,7 @@ class Checkin(unittest.TestCase):
 """)
         self.assertEqual(result.stderr, """\
 ready-issues ['--instance', '1']
-pr-cap ['--instance', '2']
+pr-cap ['--instance', '1']
 notice-gap ['--hours', '2']
 """)
 
