@@ -710,6 +710,15 @@ pub fn forget_closed_window_in_flight(store: &SessionStore, window: &str) -> Res
     .map_err(|e| e.to_string())
 }
 
+/// Read and clear the quit snapshot so a restored window cannot take it twice.
+#[tauri::command(async)]
+pub fn session_take_in_flight(
+    store: State<'_, SessionStore>,
+) -> Result<Vec<InFlightSession>, String> {
+    let mut conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    take_in_flight(&mut conn).map_err(|e| e.to_string())
+}
+
 const WORKSPACE_SNAPSHOT_MAX_BYTES: usize = 2_000_000;
 
 /// `read_at` is when the window read the state in `snapshot`, in ms.
@@ -2262,6 +2271,25 @@ fn replace_in_flight(
     Ok(())
 }
 
+fn take_in_flight(conn: &mut Connection) -> rusqlite::Result<Vec<InFlightSession>> {
+    let tx = conn.transaction()?;
+    let sessions = {
+        let mut statement = tx.prepare(
+            "SELECT session_id, cwd FROM in_flight_sessions ORDER BY sort_index ASC, session_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(InFlightSession {
+                session_id: row.get(0)?,
+                cwd: row.get(1)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    tx.execute("DELETE FROM in_flight_sessions", [])?;
+    tx.commit()?;
+    Ok(sessions)
+}
+
 /// Whether a snapshot read at `incoming` replaces the one stored at `stored`
 /// (ADE-46). A save that was read before the stored one is older and loses,
 /// whichever window wrote it. A stored time after `now` means the clock
@@ -3756,13 +3784,34 @@ mod tests {
             ],
         )
         .unwrap();
-        for _ in 0..2 {
-            let listed = list_in_flight(&conn, "run", "main").unwrap();
-            assert_eq!(listed.len(), 2);
-            assert_eq!(listed[0].session_id, "s2");
-            assert_eq!(listed[0].cwd, "/tmp/b");
-            assert_eq!(listed[1].session_id, "s1");
-        }
+        let first = take_in_flight(&mut conn).unwrap();
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].session_id, "s2");
+        assert_eq!(first[0].cwd, "/tmp/b");
+        assert_eq!(first[1].session_id, "s1");
+        let second = take_in_flight(&mut conn).unwrap();
+        assert!(second.is_empty());
+    }
+
+    #[test]
+    fn in_flight_list_does_not_clear() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let mut conn = store.conn.lock().unwrap();
+        replace_in_flight(
+            &mut conn,
+            "run",
+            "main",
+            &[InFlightSession {
+                session_id: "s1".into(),
+                cwd: "/tmp/a".into(),
+            }],
+        )
+        .unwrap();
+        let listed = list_in_flight(&conn, "run", "main").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session_id, "s1");
+        let listed_again = list_in_flight(&conn, "run", "main").unwrap();
+        assert_eq!(listed_again.len(), 1);
     }
 
     /// The app `builder` makes, with one webview window per label.
