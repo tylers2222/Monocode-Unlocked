@@ -169,6 +169,9 @@ fn d4_marker_decides_and_bad_input_fails_the_spawn() {
         );
     }
     a_settings_chain_is_denied_at_every_link(&root, &data, &home, &work, config_text);
+    a_folder_link_on_the_way_is_denied_to_srt(&root, &data, &home);
+    a_script_a_project_hook_runs_is_denied_to_srt(&root, &data, &home);
+    a_dangling_settings_link_is_denied_where_it_points(&root, &data, &home);
     let root_text = root.to_str().unwrap();
     for bad in [
         "claude-config".to_owned(),
@@ -280,6 +283,69 @@ fn a_settings_chain_is_denied_at_every_link(
     assert!(
         !srt.iter().any(|path| path.ends_with(".claude.json")),
         "on: srt leaves .claude.json to Claude Code, which writes it"
+    );
+}
+
+/// Defect (review r5 C1): srt is not told a folder link on the way from a
+/// settings link to its target, so Bash inside srt points it at a hook folder.
+fn a_folder_link_on_the_way_is_denied_to_srt(root: &Path, data: &Path, home: &Path) {
+    let work = root.join("c1");
+    link_to(&work.join("cfg-v1"), &work.join("cfg"), true);
+    std::fs::write(work.join("cfg-v1/settings.json"), "{}").unwrap();
+    std::fs::create_dir_all(work.join(".claude")).unwrap();
+    symlink(
+        work.join("cfg/settings.json"),
+        work.join(".claude/settings.local.json"),
+    )
+    .unwrap();
+    let link = format!("{}/cfg", work.canonicalize().unwrap().display());
+    let srt = srt_deny_in(data, None, home, &work).unwrap();
+    assert!(
+        srt.contains(&link),
+        "on: srt denies writes to the folder link {link}: {srt:?}"
+    );
+}
+
+/// Defect (review r5 E1): a script under `.claude` that the user's project hook
+/// runs is not denied to srt, so Bash inside srt rewrites what the hook runs.
+fn a_script_a_project_hook_runs_is_denied_to_srt(root: &Path, data: &Path, home: &Path) {
+    let work = root.join("e1");
+    std::fs::create_dir_all(work.join(".claude/hooks")).unwrap();
+    std::fs::write(work.join(".claude/hooks/fmt.sh"), "true\n").unwrap();
+    let hook = r#"sh "$CLAUDE_PROJECT_DIR"/.claude/hooks/fmt.sh && echo done"#;
+    let settings = serde_json::json!({"hooks": {"PreToolUse": [
+        {"matcher": "*", "hooks": [{"type": "command", "command": hook}]}]}});
+    std::fs::write(work.join(".claude/settings.json"), settings.to_string()).unwrap();
+    let script = format!(
+        "{}/.claude/hooks/fmt.sh",
+        work.canonicalize().unwrap().display()
+    );
+    let srt = srt_deny_in(data, None, home, &work).unwrap();
+    assert!(
+        srt.contains(&script),
+        "on: srt denies writes to {script}: {srt:?}"
+    );
+}
+
+/// Defect (review r5 G4): a settings link to a file not there yet is denied as
+/// `.claude/../gen/settings.json`, which matches nothing, so the Write tool
+/// creates the target with a hook in it.
+fn a_dangling_settings_link_is_denied_where_it_points(root: &Path, data: &Path, home: &Path) {
+    let work = root.join("g4");
+    std::fs::create_dir_all(work.join(".claude")).unwrap();
+    symlink(
+        "../gen/settings.json",
+        work.join(".claude/settings.local.json"),
+    )
+    .unwrap();
+    let rule = format!(
+        "Edit(/{}/gen/settings.json)",
+        work.canonicalize().unwrap().display()
+    );
+    let deny = deny_of(&args_in(data, None, home, &work, false, spawn_args("{}")).unwrap());
+    assert!(
+        deny.contains(&rule),
+        "on: a dangling settings link denies {rule}: {deny:?}"
     );
 }
 

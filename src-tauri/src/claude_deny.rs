@@ -3,8 +3,9 @@
 //! `permissions.deny` and `sandbox` rules on every `com.monocode.*` data folder
 //! beside this app's own, and Edit rules on the files Claude Code loads hooks
 //! and MCP servers from (`.claude`, `.claude.json`, `.mcp.json`, the config
-//! folder `CLAUDE_CONFIG_DIR` or `$HOME/.claude`, and each link on the way to
-//! any of them that is a symlink), which run outside its sandbox.
+//! folder `CLAUDE_CONFIG_DIR` or `$HOME/.claude`, each file under a `.claude`
+//! folder that a hook command names, and each link on the way to any of them
+//! that is a symlink), which run outside its sandbox.
 //!
 //! Defense in depth only: the Read rule does not stop a script that opens the
 //! file itself, the sandbox covers Bash only, and Bash runs unsandboxed where
@@ -197,20 +198,70 @@ fn config_rules(
 }
 
 /// The settings and MCP files Claude Code loads hooks and servers from and
-/// never writes itself.
-fn hook_files(config: &Path, home: &Path, workdir: &Path) -> [PathBuf; 5] {
+/// never writes itself, and each path through a `.claude` folder that a hook
+/// command in those settings names (`$CLAUDE_PROJECT_DIR`, `$HOME` and `~`
+/// expanded, a relative path taken from `workdir`, where hooks run).
+fn hook_files(config: &Path, home: &Path, workdir: &Path) -> Vec<PathBuf> {
     let project = workdir.join(".claude");
-    [
+    let mut files = vec![
         config.join("settings.json"),
         home.join(".claude/settings.json"),
         project.join("settings.json"),
         project.join("settings.local.json"),
-        workdir.join(".mcp.json"),
-    ]
+    ];
+    let vars = [
+        ("$CLAUDE_PROJECT_DIR", workdir),
+        ("$HOME", home),
+        ("~", home),
+    ];
+    for command in files
+        .iter()
+        .flat_map(|file| hook_commands(file))
+        .collect::<Vec<_>>()
+    {
+        for word in command.split(|c: char| c.is_whitespace() || ";&|()<>`".contains(c)) {
+            let (base, rest) = vars
+                .iter()
+                .find_map(|(var, base)| {
+                    Some((*base, word.strip_prefix(var)?.trim_start_matches('/')))
+                })
+                .unwrap_or((workdir, word));
+            if Path::new(rest)
+                .components()
+                .any(|name| name.as_os_str() == ".claude")
+            {
+                files.push(base.join(rest));
+            }
+        }
+    }
+    files.push(workdir.join(".mcp.json"));
+    files
+}
+
+/// Each hook command in `settings`, quotes and braces dropped. A file Claude
+/// Code cannot read or parse holds no hook it runs.
+fn hook_commands(settings: &Path) -> Vec<String> {
+    let Some(settings) = std::fs::read_to_string(settings)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+    else {
+        return Vec::new();
+    };
+    settings["hooks"]
+        .as_object()
+        .into_iter()
+        .flat_map(|events| events.values().filter_map(Value::as_array).flatten())
+        .filter_map(|group| group["hooks"].as_array())
+        .flatten()
+        .filter_map(|hook| hook["command"].as_str())
+        .map(|command| command.replace(['"', '\'', '{', '}'], ""))
+        .collect()
 }
 
 /// `path` where its name lives (its folders resolved), then each link it
-/// resolves through, ending at its real path.
+/// resolves through, a folder on the way included, ending at its real path.
+/// Past a name that is not there, the rest is spelled as written with `..`
+/// folded: Claude Code matches a rule's path as written.
 fn link_chain(path: &Path) -> Result<Vec<String>, String> {
     let failed = |why: &dyn std::fmt::Display| {
         format!(
@@ -220,25 +271,47 @@ fn link_chain(path: &Path) -> Result<Vec<String>, String> {
     };
     let missing =
         |e: &std::io::Error| matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory);
-    let mut chain = Vec::new();
-    let mut next = path.to_path_buf();
-    // The kernel gives up after 40 links too.
-    while chain.len() <= 40 {
-        let here = match next.parent().map(Path::canonicalize) {
-            Some(Ok(parent)) => parent.join(next.file_name().unwrap_or_default()),
-            Some(Err(e)) if !missing(&e) => return Err(failed(&e)),
-            _ => next,
-        };
-        chain.push(
-            here.to_str()
-                .ok_or_else(|| failed(&"not UTF-8"))?
-                .to_owned(),
-        );
-        match here.read_link() {
-            Ok(target) => next = here.parent().unwrap_or(&here).join(target),
-            Err(e) if e.kind() == ErrorKind::InvalidInput || missing(&e) => return Ok(chain),
-            Err(e) => return Err(failed(&e)),
+    let utf8 = |at: &Path| {
+        at.to_str()
+            .map(str::to_owned)
+            .ok_or_else(|| failed(&"not UTF-8"))
+    };
+    let names = |at: &Path| -> Vec<OsString> {
+        at.components()
+            .rev()
+            .map(|name| name.as_os_str().to_owned())
+            .collect()
+    };
+    let mut todo = names(&std::path::absolute(path).map_err(|e| failed(&e))?);
+    let (mut at, mut chain, mut links) = (PathBuf::new(), Vec::new(), 0);
+    while let Some(name) = todo.pop() {
+        if name == "." || name == ".." {
+            if name == ".." {
+                at.pop();
+            }
+            continue;
         }
+        let here = at.join(&name);
+        let target = match here.read_link() {
+            Ok(target) => target,
+            Err(e) if missing(&e) || e.kind() == ErrorKind::InvalidInput => {
+                at = here;
+                continue;
+            }
+            Err(e) => return Err(failed(&e)),
+        };
+        links += 1;
+        // The kernel gives up after 40 links too.
+        if links > 40 {
+            return Err(failed(&"too many links"));
+        }
+        // The folders of `path` are followed silently: they are not on the way
+        // to a link target. Only root can replace a link in `/`.
+        if (todo.is_empty() || !chain.is_empty()) && at != Path::new("/") {
+            chain.push(utf8(&here)?);
+        }
+        todo.extend(names(&target));
     }
-    Err(failed(&"too many links"))
+    chain.push(utf8(&at)?);
+    Ok(chain)
 }
