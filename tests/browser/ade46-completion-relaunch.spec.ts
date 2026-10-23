@@ -7,8 +7,9 @@ import { type AppShell, expect, type MountOptions, test } from "./app/fixture";
 // (10-20 17:19) quit the app while the Orchestrator monitored two running
 // sessions; the relaunch continued both turns and the Orchestrator was never
 // told they ended. `ade46-ship5.realdb.json` holds that moment, reduced from a
-// .backup copy of the MonoCode 2 database: the real Mono, sessions, request
-// ids, request order and which requests asked to be notified. Each case quits
+// .backup copy of the MonoCode 2 database: the real Mono, session ids, request
+// ids, request order and which requests asked to be notified, with made-up
+// titles and prompts under /Users/test. Each case quits
 // through `app.restart()` (quit_commit, quit_ready, a new page on the saved
 // store).
 

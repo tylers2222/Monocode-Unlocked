@@ -2,11 +2,13 @@
 
     python3 -m unittest discover -s scripts/process/tests
 
-The fixtures are recorded from a .backup copy of the MonoCode 2 database
+The fixtures keep the shape of a .backup copy of the MonoCode 2 database
 (2026-10-20 22:07) and finished.log, for 10-19 23:05 to 23:25 and 10-20 04:30
 to 18:25: the four ADE-68 late notices, the ship 5 relaunch, the 10-19 23:20
-send without notifyOnComplete, and the on-time notices between. Each worker
-report keeps only its head SHAs and PR numbers; the script reads no more.
+send without notifyOnComplete, and the on-time notices between. Session ids,
+times, head SHAs and PR numbers are kept; all text is made up. Prompts are
+made-up filler with the same lengths, shared openings and quote positions, so
+notices and sends match the same turns.
 """
 
 import importlib.util
@@ -223,7 +225,7 @@ class NoticeGap(unittest.TestCase):
         self.assertEqual(notice_gap.verdict(first, None, [quiet], first.prompts, AT("10:30:00")), "MISSING")
 
     def test_a_notify_send_of_another_brief_with_the_same_opening_does_not_count(self):
-        brief = "Read /Users/tylerstewart/MonoCode/gigas/monocode-general-2/projects/process-fixes/briefs/"
+        brief = "Read /Users/test/briefs/"
         turn = end(LANE_B, AT("10:00:00"), prompt=f"{brief}fix-r2.md and do all of it.")
         other = notice_gap.Send(AT("08:00:00"), f'sessions.send {LANE_B[-36:]} "notifyOnComplete":true,"prompt":"{brief}fix-r1.md"', True)
         quiet = notice_gap.Send(AT("09:50:00"), f'sessions.send {LANE_B[-36:]} "prompt":"{brief}fix-r2.md and do all of it."', False)
