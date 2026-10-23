@@ -315,6 +315,7 @@ fn two_windows_booting_at_once_take_each_result_once() {
 fn each_window_claims_holds_and_delivers_its_own_results_through_the_commands() {
     use crate::mono_messages::tests::invoke_command;
     use crate::session_store::SessionStore;
+    use tauri::Manager;
 
     let world = World::new("ade89-commands");
     let app = tauri::test::mock_builder()
@@ -367,9 +368,47 @@ fn each_window_claims_holds_and_delivers_its_own_results_through_the_commands() 
         "mono_completions_hold",
         json!({ "saved": [saved("b", None)] }),
     );
+    let run: String = world
+        .conn()
+        .query_row("SELECT window_run FROM mono_completions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
     call(&main, "mono_completions_hold", json!({ "saved": [] }));
     assert!(
         held(&main).is_empty(),
         "a result the window no longer owes is gone"
     );
+
+    // window-2 boots and holds `w` while window-1's claim waits on the
+    // store lock. The claim reads the open windows under that lock, so it
+    // sees window-2 and leaves `w` to it.
+    let store = app.state::<SessionStore>();
+    let lock = store.lock_conn().unwrap();
+    let (started, waiting) = std::sync::mpsc::channel();
+    let racing = other.clone();
+    let waited = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        let claimed = invoke_command(&racing, "mono_completions_claim", &json!({})).unwrap();
+        ids(claimed.as_array().unwrap()).len()
+    });
+    waiting.recv().unwrap();
+    // Time for a claim that read the windows before the lock to read them
+    // now, before window-2 exists. The fixed claim passes without it.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let booted = window("window-2");
+    let owner = Owner {
+        window: "window-2",
+        run: &run,
+    };
+    let open = ["main", "window-1", "window-2"];
+    completions::claim(&lock, owner, &open, world.now()).unwrap();
+    completions::hold(&lock, owner, &[saved("w", Some("done"))]).unwrap();
+    drop(lock);
+    assert_eq!(
+        waited.join().unwrap(),
+        0,
+        "a claim that waited on the lock leaves the window that opened meanwhile its rows"
+    );
+    assert!(deliver(&booted, "w"), "that window delivers its own result");
 }
