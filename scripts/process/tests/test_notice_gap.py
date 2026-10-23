@@ -153,10 +153,10 @@ class NoticeGap(unittest.TestCase):
     def test_a_notice_counts_for_the_turn_whose_prompt_it_quotes(self):
         # Lane A, 10-20: a queued follow-up started as the first turn ended, and
         # the first turn's notice came after the follow-up had ended too.
-        first = end(LANE_B, AT("23:50:50"), first=True, prompt="Process fixes, lane a. Read the brief")
+        first = end(LANE_B, AT("23:50:50"), first=True, prompt="Made-up lane a. Read the brief")
         follow_up = end(LANE_B, AT("23:51:53"), prompt="#164 review r1: 0B/0M/3m")
         notices = [
-            notice_gap.Notice(AT("23:53:28"), frozenset({(LANE_B, "Process fixes, lane a.")})),
+            notice_gap.Notice(AT("23:53:28"), frozenset({(LANE_B, "Made-up lane a.")})),
             notice_gap.Notice(AT("23:54:20"), frozenset({(LANE_B, "#164 review r1: 0B/0M/3m")})),
         ]
         self.assertEqual(notice_gap.notice_for(first, notices), notices[0])
@@ -286,10 +286,10 @@ class NoticeGap(unittest.TestCase):
 
     def test_reads_every_time_format_in_finished_log(self):
         entries = notice_gap.parse_log(
-            "2026-10-20T00:24:28Z PR #141 ADE-47 r3 review done\n"
-            "2026-10-20 05:31:22 +1100 ADE-20 R2 #132 round 1 fixed\n"
-            "2026-10-20 05:42 AEDT PR #132 r2 review done\n"
-            "M-11 #159 open at e5f15fd8. 2026-10-20 21:09 AEDT (ping failed)\n"
+            "2026-10-20T00:24:28Z PR #141 made-up status\n"
+            "2026-10-20 05:31:22 +1100 ADE-20 #132 made-up step\n"
+            "2026-10-20 05:42 AEDT PR #132 made-up note\n"
+            "M-11 #159 made-up at e5f15fd8. 2026-10-20 21:09 AEDT (made-up)\n"
             "a line with no time\n"
         )
         self.assertEqual(
