@@ -203,15 +203,12 @@ pub fn mono_completions_claim<R: Runtime>(
         window: window.label(),
         run: &run.0,
     };
+    // Under the lock no other claim or hold runs, so the open windows read
+    // here are the ones at the claim: a window that opens later holds none.
+    let conn = store.lock_conn()?;
     let open = window.webview_windows();
     let live: Vec<&str> = open.keys().map(String::as_str).collect();
-    claim(
-        &*store.lock_conn()?,
-        owner,
-        &live,
-        crate::mono_messages::now_ms(),
-    )
-    .map_err(|e| e.to_string())
+    claim(&conn, owner, &live, crate::mono_messages::now_ms()).map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
