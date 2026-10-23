@@ -444,6 +444,7 @@ exec "$@""#,
         ])
         .env("PATH", std::env::join_paths(dirs).unwrap())
         .env(SPAWN_ROOT, &tools)
+        .env("XDG_CONFIG_HOME", root.0.join("xdg"))
         .output()
         .unwrap();
     assert!(
@@ -516,6 +517,20 @@ fn harness_spawn_child() {
         settings.trim(),
         path(&data.join("agent-sandbox.json")),
         "on: srt ran it"
+    );
+    // This process has `XDG_CONFIG_HOME` set, as some users do.
+    let text = std::fs::read_to_string(data.join("agent-sandbox.json")).unwrap();
+    let written: Value = serde_json::from_str(&text).unwrap();
+    let xdg = root.join("xdg");
+    let allowed = strings(&written["filesystem"]["allowWrite"]);
+    assert!(
+        allowed.contains(&path(&xdg.join("opencode"))),
+        "on: {allowed:?}"
+    );
+    let denied = strings(&written["filesystem"]["denyWrite"]);
+    assert!(
+        denied.contains(&path(&xdg.join("git"))),
+        "on: git config under XDG is writable"
     );
 }
 
