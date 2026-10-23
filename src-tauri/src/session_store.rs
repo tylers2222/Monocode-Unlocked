@@ -678,8 +678,12 @@ pub fn session_set_in_flight<R: Runtime>(
         .map_err(|e| e.to_string())
 }
 
-/// Read the quit snapshot without clearing it. Vite/dev reloads must not
-/// consume the only copy.
+/// The chats this window resumes when it boots or reloads. The read clears
+/// no row: a Vite/dev reload must not consume the only copy. It lists this
+/// window's own rows of this run, and the earlier run's rows whose turn no
+/// other window holds. Another window's rows of this run are that window's
+/// live chats, with or without an authorized turn (turn start, compaction,
+/// and the time between a turn's end and that window's next save).
 #[tauri::command(async)]
 pub fn session_list_in_flight<R: Runtime>(
     store: State<'_, SessionStore>,
@@ -688,7 +692,8 @@ pub fn session_list_in_flight<R: Runtime>(
 ) -> Result<Vec<InFlightSession>, String> {
     let running = control.sessions_running_outside(window.label());
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let mut sessions = list_in_flight(&conn).map_err(|e| e.to_string())?;
+    let mut sessions =
+        list_in_flight(&conn, &store.run_id, window.label()).map_err(|e| e.to_string())?;
     sessions.retain(|session| !running.contains(&session.session_id));
     Ok(sessions)
 }
@@ -703,15 +708,6 @@ pub fn forget_closed_window_in_flight(store: &SessionStore, window: &str) -> Res
     )
     .map(drop)
     .map_err(|e| e.to_string())
-}
-
-/// Read and clear the quit snapshot so a restored window cannot take it twice.
-#[tauri::command(async)]
-pub fn session_take_in_flight(
-    store: State<'_, SessionStore>,
-) -> Result<Vec<InFlightSession>, String> {
-    let mut conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    take_in_flight(&mut conn).map_err(|e| e.to_string())
 }
 
 const WORKSPACE_SNAPSHOT_MAX_BYTES: usize = 2_000_000;
@@ -2218,11 +2214,16 @@ fn get_session_record(
     .optional()
 }
 
-fn list_in_flight(conn: &Connection) -> rusqlite::Result<Vec<InFlightSession>> {
+fn list_in_flight(
+    conn: &Connection,
+    run_id: &str,
+    window: &str,
+) -> rusqlite::Result<Vec<InFlightSession>> {
     let mut statement = conn.prepare(
-        "SELECT session_id, cwd FROM in_flight_sessions ORDER BY sort_index ASC, session_id ASC",
+        "SELECT session_id, cwd FROM in_flight_sessions WHERE window_label = ?1 OR run_id <> ?2
+         ORDER BY sort_index ASC, session_id ASC",
     )?;
-    let rows = statement.query_map([], |row| {
+    let rows = statement.query_map(params![window, run_id], |row| {
         Ok(InFlightSession {
             session_id: row.get(0)?,
             cwd: row.get(1)?,
@@ -2259,25 +2260,6 @@ fn replace_in_flight(
     }
     tx.commit()?;
     Ok(())
-}
-
-fn take_in_flight(conn: &mut Connection) -> rusqlite::Result<Vec<InFlightSession>> {
-    let tx = conn.transaction()?;
-    let sessions = {
-        let mut statement = tx.prepare(
-            "SELECT session_id, cwd FROM in_flight_sessions ORDER BY sort_index ASC, session_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok(InFlightSession {
-                session_id: row.get(0)?,
-                cwd: row.get(1)?,
-            })
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
-    tx.execute("DELETE FROM in_flight_sessions", [])?;
-    tx.commit()?;
-    Ok(sessions)
 }
 
 /// Whether a snapshot read at `incoming` replaces the one stored at `stored`
@@ -3755,7 +3737,7 @@ mod tests {
     }
 
     #[test]
-    fn in_flight_set_take_is_ordered_and_destructive() {
+    fn in_flight_list_is_ordered_and_does_not_clear() {
         let store = SessionStore::open_in_memory().unwrap();
         let mut conn = store.conn.lock().unwrap();
         replace_in_flight(
@@ -3774,34 +3756,13 @@ mod tests {
             ],
         )
         .unwrap();
-        let first = take_in_flight(&mut conn).unwrap();
-        assert_eq!(first.len(), 2);
-        assert_eq!(first[0].session_id, "s2");
-        assert_eq!(first[0].cwd, "/tmp/b");
-        assert_eq!(first[1].session_id, "s1");
-        let second = take_in_flight(&mut conn).unwrap();
-        assert!(second.is_empty());
-    }
-
-    #[test]
-    fn in_flight_list_does_not_clear() {
-        let store = SessionStore::open_in_memory().unwrap();
-        let mut conn = store.conn.lock().unwrap();
-        replace_in_flight(
-            &mut conn,
-            "run",
-            "main",
-            &[InFlightSession {
-                session_id: "s1".into(),
-                cwd: "/tmp/a".into(),
-            }],
-        )
-        .unwrap();
-        let listed = list_in_flight(&conn).unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].session_id, "s1");
-        let listed_again = list_in_flight(&conn).unwrap();
-        assert_eq!(listed_again.len(), 1);
+        for _ in 0..2 {
+            let listed = list_in_flight(&conn, "run", "main").unwrap();
+            assert_eq!(listed.len(), 2);
+            assert_eq!(listed[0].session_id, "s2");
+            assert_eq!(listed[0].cwd, "/tmp/b");
+            assert_eq!(listed[1].session_id, "s1");
+        }
     }
 
     /// The app `builder` makes, with one webview window per label.
@@ -3856,14 +3817,29 @@ mod tests {
         )
     }
 
+    /// A test database, removed with its -wal and -shm files when the test
+    /// ends, also when it fails: a copy of the app database is about 100 MB.
     #[cfg(not(windows))]
-    fn remove_db(path: &std::path::Path) {
-        for file in [
-            path.to_owned(),
-            path.with_extension("db-wal"),
-            path.with_extension("db-shm"),
-        ] {
-            let _ = std::fs::remove_file(file);
+    struct DbFile(PathBuf);
+
+    #[cfg(not(windows))]
+    impl std::ops::Deref for DbFile {
+        type Target = std::path::Path;
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    #[cfg(not(windows))]
+    impl Drop for DbFile {
+        fn drop(&mut self) {
+            for file in [
+                self.0.clone(),
+                self.0.with_extension("db-wal"),
+                self.0.with_extension("db-shm"),
+            ] {
+                let _ = std::fs::remove_file(file);
+            }
         }
     }
 
@@ -3937,9 +3913,14 @@ mod tests {
         save_in_flight(&main, &[&a]);
         save_in_flight(&second, &[&b]);
         assert_eq!(
-            resumed(&main),
+            ids(&in_flight_rows(path)),
             ids([&a, &b]),
             "one window's save keeps the other window's running session"
+        );
+        assert_eq!(
+            resumed(&main),
+            ids([&a]),
+            "a reloading window reads its own sessions, not the ones another window runs"
         );
         save_in_flight(&second, &[&a, &b]);
         assert_eq!(
@@ -3948,7 +3929,7 @@ mod tests {
             "a session open in both windows is saved once"
         );
         save_in_flight(&main, &[&a, &c]);
-        assert_eq!(resumed(&second), ids([&a, &b, &c]));
+        assert_eq!(ids(&in_flight_rows(path)), ids([&a, &b, &c]));
         save_in_flight(&second, &[]);
         assert_eq!(
             resumed(&main),
@@ -3976,8 +3957,8 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn each_window_keeps_its_running_sessions_on_a_new_database() {
-        let path = temp_db("in-flight");
-        SessionStore::open(path.clone())
+        let path = DbFile(temp_db("in-flight"));
+        SessionStore::open(path.to_path_buf())
             .unwrap()
             .lock_conn()
             .unwrap()
@@ -3991,12 +3972,11 @@ mod tests {
             &path,
             [running("a"), running("b"), running("c")],
         );
-        remove_db(&path);
     }
 
     #[cfg(not(windows))]
-    fn private_copy_of_the_app_database() -> PathBuf {
-        let path = temp_db("in-flight");
+    fn private_copy_of_the_app_database() -> DbFile {
+        let path = DbFile(temp_db("in-flight"));
         Connection::open(std::env::var("MONOCODE_DB_COPY").unwrap())
             .unwrap()
             .execute("VACUUM INTO ?1", [path.to_str().unwrap()])
@@ -4010,7 +3990,7 @@ mod tests {
     fn each_window_keeps_its_running_sessions_on_a_copy_of_the_app_database() {
         let path = private_copy_of_the_app_database();
         let newest: Vec<(String, String)> = {
-            let conn = Connection::open(&path).unwrap();
+            let conn = Connection::open(&*path).unwrap();
             let mut statement = conn
                 .prepare("SELECT id, cwd FROM sessions ORDER BY updated_at DESC LIMIT 3")
                 .unwrap();
@@ -4023,7 +4003,6 @@ mod tests {
             &path,
             newest.try_into().unwrap(),
         );
-        remove_db(&path);
     }
 
     /// ADE-62 review M2. Defect: a window closed while other windows stay open
@@ -4032,7 +4011,7 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn a_window_closed_before_the_quit_does_not_resume_its_stopped_sessions() {
-        let path = temp_db("in-flight-closed");
+        let path = DbFile(temp_db("in-flight-closed"));
         let running = |id: &str| (id.to_owned(), format!("/tmp/{id}"));
         let (app, [main, second]) = launch_two_windows(&path);
         save_in_flight(&main, &[&running("kept")]);
@@ -4055,7 +4034,93 @@ mod tests {
             ["kept"],
             "the last window's close keeps its rows for the relaunch"
         );
-        remove_db(&path);
+    }
+
+    /// ADE-62 review r2 m1. Tauri runs a sync command on the thread that
+    /// delivers its IPC message, the main thread in the app. Defect: a close
+    /// waits there for the store lock, so one long store write freezes every
+    /// window.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_window_closed_during_a_store_write_does_not_hold_the_calling_thread() {
+        let path = DbFile(temp_db("in-flight-close-thread"));
+        let (app, [_main, second]) = launch_two_windows(&path);
+        let store = app.state::<SessionStore>();
+        let write = store.lock_conn().unwrap();
+        let (answered, answer) = std::sync::mpsc::channel();
+        let (returned, back) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            second.on_message(
+                crate::mono_messages::tests::ipc_request("destroy_window", &json!({})),
+                Box::new(move |_, _, response, _, _| {
+                    let _ = answered.send(matches!(response, tauri::ipc::InvokeResponse::Ok(_)));
+                }),
+            );
+            let _ = returned.send(());
+        });
+        let wait = std::time::Duration::from_secs(10);
+        assert_eq!(
+            back.recv_timeout(wait),
+            Ok(()),
+            "the close gives the calling thread back while a store write runs"
+        );
+        drop(write);
+        assert_eq!(
+            answer.recv_timeout(wait),
+            Ok(true),
+            "the close finishes when the write ends"
+        );
+    }
+
+    /// ADE-62 review r2 m2. The close comes after the window's chats were
+    /// killed. Defect: a store error in the delete of its rows fails the
+    /// close, and the user keeps a window whose chats are dead.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_window_closed_when_its_rows_cannot_be_dropped_still_closes() {
+        let path = DbFile(temp_db("in-flight-close-error"));
+        let (app, [_main, second]) = launch_two_windows(&path);
+        app.state::<SessionStore>()
+            .lock_conn()
+            .unwrap()
+            .execute_batch("DROP TABLE in_flight_sessions")
+            .unwrap();
+        assert_eq!(
+            crate::mono_messages::tests::invoke_command(&second, "destroy_window", &json!({})),
+            Ok(Value::Null),
+            "a store error does not fail the close"
+        );
+    }
+
+    /// ADE-62 review r2 M1 (probe 1). A chat stays in flight after its turn
+    /// ends, until its window's next save. Defect: a window that boots in
+    /// that gap reads the chat and resumes it a second time.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_new_window_leaves_out_a_chat_whose_turn_ended_before_its_window_saved() {
+        use crate::control::{tests as control, ControlHost};
+        let path = DbFile(temp_db("in-flight-turn-end"));
+        let (app, [main, second]) = launch_two_windows(&path);
+        let store = app.state::<SessionStore>();
+        let host = app.state::<ControlHost>();
+        let x = ("x".to_string(), "/tmp/x".to_string());
+        control::boot(&host, &store, "main");
+        control::start_turn_in_canonical_cwd(&host, &store, &x, "main");
+        save_in_flight(&main, &[&x]);
+        control::boot(&host, &store, "window-1");
+        assert_eq!(
+            resumed(&second),
+            Vec::<String>::new(),
+            "a new window leaves out a chat another window runs"
+        );
+        control::finish_started_turn(&host, &store, &x.0);
+        assert_eq!(
+            resumed(&second),
+            Vec::<String>::new(),
+            "a new window leaves out a chat whose turn ended before its window saved"
+        );
+        save_in_flight(&main, &[]);
+        assert_eq!(resumed(&second), Vec::<String>::new());
     }
 
     #[cfg(not(windows))]
@@ -4113,8 +4178,8 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn a_new_window_leaves_out_the_turns_another_window_runs_on_a_new_database() {
-        let path = temp_db("in-flight");
-        SessionStore::open(path.clone())
+        let path = DbFile(temp_db("in-flight"));
+        SessionStore::open(path.to_path_buf())
             .unwrap()
             .lock_conn()
             .unwrap()
@@ -4126,7 +4191,6 @@ mod tests {
             &path,
             &("own".into(), "/tmp/own".into()),
         );
-        remove_db(&path);
     }
 
     #[cfg(not(windows))]
@@ -4134,7 +4198,7 @@ mod tests {
     #[ignore = "needs MONOCODE_DB_COPY, a fresh copy of the app's monocode.db"]
     fn a_new_window_leaves_out_the_turns_another_window_runs_on_a_copy_of_the_app_database() {
         let path = private_copy_of_the_app_database();
-        let own = Connection::open(&path)
+        let own = Connection::open(&*path)
             .unwrap()
             .query_row(
                 "SELECT id, cwd FROM sessions WHERE id NOT IN (SELECT session_id FROM in_flight_sessions)
@@ -4144,7 +4208,6 @@ mod tests {
             )
             .unwrap();
         a_new_window_leaves_out_the_turns_another_window_runs(&path, &own);
-        remove_db(&path);
     }
 
     #[test]
@@ -4277,7 +4340,7 @@ mod tests {
         assert_eq!(record["cwd"], "/repo");
         assert_eq!(record["worktreeCwd"], "/repo-worktrees/feature");
         assert_eq!(record["blocks"][0]["startedAt"], 1_792_360_319_663_i64);
-        let in_flight = list_in_flight(&conn).unwrap();
+        let in_flight = list_in_flight(&conn, "run", "main").unwrap();
         assert_eq!(
             in_flight
                 .iter()

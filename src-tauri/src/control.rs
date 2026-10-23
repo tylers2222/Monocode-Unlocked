@@ -1279,6 +1279,12 @@ pub(crate) mod tests {
         boot_window(&host.inner, store, window, &HarnessHost::new());
     }
 
+    /// `control_turn_finished` for the turn `start_turn_in_canonical_cwd` began.
+    #[cfg(not(windows))]
+    pub(crate) fn finish_started_turn(host: &ControlHost, store: &SessionStore, session: &str) {
+        finish_turn(&host.inner, store, session, &format!("turn-{session}"));
+    }
+
     // Review r1 m1 (control level). Stop takes the Giga's turn-4 out of
     // `active` before its end reaches the store; the next queued turn-5 is
     // authorized in between, and a late answer is accepted for it. Defect:
