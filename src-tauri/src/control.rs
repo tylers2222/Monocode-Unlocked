@@ -11,7 +11,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewWindow};
 
 use crate::harness::HarnessHost;
 use crate::mono_messages::{self, Notices, SessionId};
@@ -973,7 +973,7 @@ fn close_window(
     notices
 }
 
-pub fn configure_child(app: &AppHandle, session_id: &str, cmd: &mut Command) {
+pub fn configure_child<R: Runtime>(app: &AppHandle<R>, session_id: &str, cmd: &mut Command) {
     cmd.env_remove("MONOCODE_CONTROL_ENDPOINT")
         .env_remove("MONOCODE_CONTROL_TOKEN")
         .env_remove("MONOCODE_APP_ENDPOINT")
