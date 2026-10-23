@@ -438,6 +438,8 @@ mod png_tests {
     }
 }
 
+// Two attributes, not cfg(all(...)): scripts/gate/integrity.sh and cargo-mutants
+// count only a bare #[cfg(test)] line as the start of test code.
 #[cfg(test)]
 #[cfg(target_os = "macos")]
 mod tests {
@@ -445,14 +447,31 @@ mod tests {
     use objc2::{msg_send, rc::Retained};
     use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeString};
     use objc2_foundation::{NSString, NSURL};
+    use std::ops::Deref;
     use std::path::Path;
     use std::sync::{Arc, Barrier};
 
-    /// `pasteboardWithUniqueName` can give two threads that ask at the same
-    /// moment the same pasteboard.
-    fn private_pasteboard() -> Retained<NSPasteboard> {
+    struct PrivatePasteboard(Retained<NSPasteboard>);
+
+    impl Deref for PrivatePasteboard {
+        type Target = NSPasteboard;
+        fn deref(&self) -> &NSPasteboard {
+            &self.0
+        }
+    }
+
+    impl Drop for PrivatePasteboard {
+        fn drop(&mut self) {
+            let _: () = unsafe { msg_send![&*self.0, releaseGlobally] };
+        }
+    }
+
+    /// Gives a pasteboard that no other test shares, released when dropped.
+    /// It is named with a UUID because `pasteboardWithUniqueName` can give two
+    /// threads that ask at the same moment the same pasteboard.
+    fn private_pasteboard() -> PrivatePasteboard {
         let name = format!("monocode-test-{}", uuid::Uuid::new_v4());
-        NSPasteboard::pasteboardWithName(&NSString::from_str(&name))
+        PrivatePasteboard(NSPasteboard::pasteboardWithName(&NSString::from_str(&name)))
     }
 
     #[test]
@@ -468,18 +487,21 @@ mod tests {
                     let paths: Vec<_> = (0..pbs.len())
                         .map(|i| format!("/tmp/{thread}-{i}"))
                         .collect();
-                    for (pb, path) in pbs.iter().zip(&paths) {
-                        write_file_to(pb, Path::new(path)).unwrap();
-                    }
-                    barrier.wait();
-                    let crossed = pbs
+                    let writes: Vec<_> = pbs
                         .iter()
                         .zip(&paths)
-                        .filter(|(pb, path)| file_paths_from(pb) != [path.as_str()])
+                        .map(|(pb, path)| write_file_to(pb, Path::new(path)))
+                        .collect();
+                    barrier.wait();
+                    let crossed = writes
+                        .iter()
+                        .zip(pbs.iter().zip(&paths))
+                        .filter(|(write, (pb, path))| {
+                            write.is_err() || file_paths_from(pb) != [path.as_str()]
+                        })
                         .count();
-                    for pb in &pbs {
-                        let _: () = unsafe { msg_send![&**pb, releaseGlobally] };
-                    }
+                    // A shared pasteboard released now could abort another thread's read.
+                    barrier.wait();
                     crossed
                 })
             })
