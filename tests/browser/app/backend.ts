@@ -106,6 +106,8 @@ export type FakeStore = {
   approvals: ApprovalRow[];
   /** sessionStore.ts `saveWorkspaceSnapshot`: the open tabs, as last saved. */
   workspace: unknown;
+  /** session_store.rs `workspace_snapshot.updated_at`: when `workspace` was read. */
+  workspaceReadAt?: number;
   /** session_store.rs `in_flight_sessions`: what the last window had running. */
   inFlight: { sessionId: string; cwd: string }[];
 };
@@ -344,8 +346,15 @@ const HANDLERS: Record<string, Handler> = {
   home_dir: (store) => store.home,
   default_cwd: (store) => store.home,
   workspace_get_snapshot: (store) => store.workspace,
-  workspace_set_snapshot: (store, { snapshot }) => {
-    store.workspace = snapshot;
+  // session_store.rs snapshot_supersedes: a snapshot read before the stored
+  // one loses, unless the stored time is after now (the clock stepped back).
+  workspace_set_snapshot: (store, { snapshot, readAt }) => {
+    const stored = store.workspaceReadAt;
+    const incoming = readAt as number;
+    if (stored === undefined || incoming >= stored || stored > Date.now()) {
+      store.workspace = snapshot;
+      store.workspaceReadAt = incoming;
+    }
     return null;
   },
   session_list_in_flight: (store) => store.inFlight,

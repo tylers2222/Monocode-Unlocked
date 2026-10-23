@@ -84,43 +84,44 @@ expect() {
   if [[ "$got" == "$want" ]]; then echo "  ok   $what: $got"; else echo "  FAIL $what: $got, expected $want"; FAILED=1; fi
 }
 
-# fresh_instance <installer>: a new home with the agent installed and a
-# migrated DB. The first launch only creates and migrates the DB.
-fresh_instance() {
+# fresh_pair <scenario> [installer...]: a fresh temp HOME with the puppet as
+# fx (and the installer's agent), launched once so the DB is created and
+# migrated, then a Giga `<scenario>-giga` and a Mono `<scenario>-mono` on the
+# scratch project, each with an fx chat.
+fresh_pair() {
   "$INSTANCE" stop
   "$INSTANCE" home --fresh
   mkdir -p "$APP_DATA"
   UPTIME=0; WALL="$(date +%s)000"; BOOT_MS=$((WALL - 3600000))
   clock_write "$UPTIME" "$WALL"
-  "$1"
+  install_puppet
+  "${@:2}"
   "$INSTANCE" start
   wait_until 30 "the first launch writes mono_clock" holds "SELECT count(*) = 1 FROM mono_clock"
   "$INSTANCE" stop
-}
-
-# write_habit <mono> <id> <name> <instructions>: a daily habit that runs at
-# the next launch.
-write_habit() {
-  local now; now="$(date +%s)000"
-  mkdir -p "$APP_DATA/monos/$1"
-  jq -n --argjson now "$now" --arg id "$2" --arg name "$3" --arg text "$4" '[{id: $id, name: $name, instructions: $text,
-    schedule: {scheduleKind: "daily"}, enabled: true, createdAt: $now, nextRunAt: ($now + 86400000), runRequested: true}]' \
-    >"$APP_DATA/monos/$1/habits.json"
-}
-
-seed() {
-  local giga_chat="$1" mono_chat="$2" scratch="$EVAL_HOME/$SCRATCH_NAME" now; now="$(date +%s)000"
+  local id="$1" name giga_chat mono_chat scratch="$EVAL_HOME/$SCRATCH_NAME" now
+  name="$(tr '[:lower:]' '[:upper:]' <<<"$1")"; now="$(date +%s)000"
+  giga_chat="$(uuidgen | tr '[:upper:]' '[:lower:]')"; mono_chat="$(uuidgen | tr '[:upper:]' '[:lower:]')"
   sqlite3 "$DB" <<SQL
 INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at) VALUES
-  ('s0-giga', 'S0 Giga', 'giga', json_object('name', 'S0 Giga', 'sessionId', '$giga_chat',
-    'gigaSlug', 's0-giga', 'projects', json_array('$scratch')), 0, $now, $now),
-  ('s0-mono', 'S0 Mono', 'mono', json_object('name', 'S0 Mono', 'sessionId', '$mono_chat',
+  ('$id-giga', '$name Giga', 'giga', json_object('name', '$name Giga', 'sessionId', '$giga_chat',
+    'gigaSlug', '$id-giga', 'projects', json_array('$scratch')), 0, $now, $now),
+  ('$id-mono', '$name Mono', 'mono', json_object('name', '$name Mono', 'sessionId', '$mono_chat',
     'projects', json_array('$scratch')), 1, $now, $now);
 INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at) VALUES
-  ('$giga_chat', '$scratch', 'fx', 'fx:zai/glm-5.2-fast', 'auto', 'S0 Giga', $now, $now),
-  ('$mono_chat', '$scratch', 'fx', 'fx:zai/glm-5.2-fast', 'auto', 'S0 Mono', $now, $now);
+  ('$giga_chat', '$scratch', 'fx', 'fx:zai/glm-5.2-fast', 'auto', '$name Giga', $now, $now),
+  ('$mono_chat', '$scratch', 'fx', 'fx:zai/glm-5.2-fast', 'auto', '$name Mono', $now, $now);
 SQL
-  write_habit s0-giga s0-ask "Ask about CI" "S0-HABIT: ask S0 Mono if CI is green."
+}
+
+# request_habit <mono> <name> <instructions>: the Mono's one habit, which runs
+# at the next start.
+request_habit() {
+  local now; now="$(date +%s)000"
+  mkdir -p "$APP_DATA/monos/$1"
+  jq -n --argjson now "$now" --arg id "$1-habit" --arg name "$2" --arg text "$3" '[{id: $id, name: $name, instructions: $text,
+    schedule: {scheduleKind: "daily"}, enabled: true, createdAt: $now, nextRunAt: ($now + 86400000), runRequested: true}]' \
+    >"$APP_DATA/monos/$1/habits.json"
 }
 
 install_puppet() {
@@ -144,10 +145,8 @@ run_s0() {
   local run="$1"
   FAILED=0
   log "S0 run $run"
-  fresh_instance install_puppet
-  local giga_chat mono_chat
-  giga_chat="$(uuidgen | tr '[:upper:]' '[:lower:]')"; mono_chat="$(uuidgen | tr '[:upper:]' '[:lower:]')"
-  seed "$giga_chat" "$mono_chat"
+  fresh_pair s0
+  request_habit s0-giga "Ask about CI" "S0-HABIT: ask S0 Mono if CI is green."
   "$INSTANCE" start
   wait_until 90 "the ask and the answer are delivered" \
     holds "SELECT count(*) = 2 FROM mono_messages WHERE delivered_at IS NOT NULL"
@@ -218,13 +217,9 @@ SH
 }
 
 seed_d4() {
-  local giga_chat="$1" scratch="$EVAL_HOME/$SCRATCH_NAME" now; now="$(date +%s)000"
-  sqlite3 "$DB" <<SQL
-INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at) VALUES
-  ('d4-giga', 'D4 Giga', 'giga', json_object('name', 'D4 Giga', 'sessionId', '$giga_chat',
-    'gigaSlug', 'd4-giga', 'projects', json_array('$scratch')), 0, $now, $now);
-INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at) VALUES
-  ('$giga_chat', '$scratch', 'claude', 'claude:haiku-4.5', 'full-access', 'D4 Giga', $now, $now);
+  sqlite3 "$DB" <<'SQL'
+UPDATE sessions SET harness = 'claude', model = 'claude:haiku-4.5', runtime_mode = 'full-access'
+  WHERE id = (SELECT json_extract(data_json, '$.sessionId') FROM monos WHERE id = 'd4-giga');
 SQL
   # Another MonoCode instance's data folder beside this one.
   mkdir -p "$D4_SECOND"
@@ -263,7 +258,7 @@ d4_probes() {
 # Claude Code starts move to $PUPPET/<name>, its output to $PUPPET/<name>.jsonl.
 d4_phase() {
   mkdir -p "$PUPPET/claude-argv"
-  write_habit d4-giga d4-read "Read the database" "$D4_HABIT"
+  request_habit d4-giga "Read the database" "$D4_HABIT"
   "$INSTANCE" start
   wait_until 90 "the app starts Claude Code for the Giga ($1)" grep -qrF -e "$D4_INTERACTIVE" "$PUPPET/claude-argv"
   if [[ -f "$PUPPET/real-claude" ]]; then
@@ -328,8 +323,8 @@ run_d4() {
   PATH="$EVAL_HOME/.local/bin:$PATH"
   # The app starts with a Claude config folder not named .claude; the child inherits it.
   [[ -n "${D4_CLAUDE:-}" ]] || export CLAUDE_CONFIG_DIR="$PUPPET/claude-config"
-  fresh_instance install_claude_recorder
-  seed_d4 "$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  fresh_pair d4 install_claude_recorder
+  seed_d4
   d4_phase off
   touch "$APP_DATA/claude-deny-rules-on"
   echo "$claude" >"$PUPPET/real-claude"

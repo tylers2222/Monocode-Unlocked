@@ -14,4 +14,5 @@ mod clock;
 mod d4_deny;
 mod s0_baseline;
 mod s1_levels;
+mod s5_scheduler;
 mod world;

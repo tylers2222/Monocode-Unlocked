@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, tyler/main]
   pull_request:
 
 concurrency:
@@ -38,7 +38,19 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium webkit
-      - run: npm run test:browser
+      # Real-harness specs (tests/browser/ade67-question-card.spec.ts) drive a
+      # real omp. It is the standalone v18.2.11 release binary, checked against
+      # the sha256 in the release's SHA256SUMS.txt; it bundles its dependencies.
+      - name: Install omp 18.2.11 (sha256-checked release binary)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/omp" https://github.com/can1357/oh-my-pi/releases/download/v18.2.11/omp-linux-x64
+          echo "97cf39557bf3d98327dd4c9814380b7e6bcb76e41169edd9b0ff30424c733a2a  $RUNNER_TEMP/omp" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/omp-bin"
+          install -m 0755 "$RUNNER_TEMP/omp" "$RUNNER_TEMP/omp-bin/omp"
+          echo "$RUNNER_TEMP/omp-bin" >> "$GITHUB_PATH"
+      - run: omp --version
+      # list prints each test with its time, so the log shows which specs ran.
+      - run: npm run test:browser -- --reporter=list
       - name: Upload browser screenshots and failure traces
         if: always()
         uses: actions/upload-artifact@v4
@@ -72,6 +84,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - run: bash scripts/process/heavy-lock.test.sh
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'

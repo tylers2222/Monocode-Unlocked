@@ -8,8 +8,8 @@ multi-line string (a JS/TS backtick, any Rust string), or a changed line of stri
 text, is T2 at least and never T1 (PR #116). The rules come from the 2026-10-20 process review, section 4b.
 
 Usage: tier.py <pr-number> [--apply]
-Prints the tier and its reasons. --apply makes tier:T<n> the PR's only tier label.
-GATE_REPO overrides the repository.
+Prints the tier and its reasons. --apply makes tier:T<n> the PR's only tier label and
+sets or removes needs-interrogate. GATE_REPO overrides the repository.
 """
 import collections
 import json
@@ -22,14 +22,19 @@ from urllib.parse import quote
 TEST = re.compile(r'(^|/)(tests?|__tests__|e2e|fixtures?|scenario|evals?)/|\.(test|spec)\.|tests\.rs$|_test\.|\.snap$')
 DOC = re.compile(r'\.(md|txt)$|^docs/|CHANGELOG')
 CONFIG = re.compile(r'(package(-lock)?\.json|Cargo\.lock|\.ya?ml|\.toml|\.json|\.eslintrc.*|\.npmrc|tsconfig.*)$')
-GATE_PATH = re.compile(r'^\.github/workflows/gate|^scripts/gate/|^scripts/process/|integrity|heavy-lock')
+# Gate code: the gate's workflows and scripts, and the configs of the tools gate/mutation runs.
+GATE_PATH = re.compile(r'^\.github/workflows/gate|^scripts/gate/|^scripts/process/|integrity|heavy-lock'
+                       r'|(^|/)\.cargo/|(^|/)mutants\.toml$|(^|/)stryker\.(conf|config)\.[cm]?[jt]s(on)?$')
+# Concurrency: the lock and scheduler files and the primitives. T3 and the interrogate rule share them.
+LOCK_PATH = r'(?<![Cc]argo\.)(?<!-)lock\.|scheduler'
+CONCURRENCY_CODE = r'Mutex|RwLock|tokio::spawn|thread::spawn|AtomicU|flock'
 T3_PATH = re.compile(r'session_store|mono_messages|mono_gate|ask_gate|asks\.rs|active_clock|migrat|control_cli|/store/|Store\.ts'
-                     r'|(?<![Cc]argo\.)(?<!-)lock\.|scheduler|/hooks/|/use[A-Z]\w*\.tsx?$')
+                     r'|' + LOCK_PATH + r'|/hooks/|/use[A-Z]\w*\.tsx?$')
 PURE_DIR = re.compile(r'/model/|^scripts/')
 NOT_CODE_LINE = re.compile(r'^\s*(//|/\*|\*|#|"|\'|`|$)')
 T3_CODE = re.compile(r'\b(useState|useEffect|useLayoutEffect|useReducer|useRef|useSyncExternalStore|useCallback|useMemo)\b'
                      r'|\binvoke\(|\blisten\(|#\[tauri::command\]|rusqlite|\.execute\(|CREATE TABLE|ALTER TABLE|BEGIN IMMEDIATE'
-                     r'|Mutex|RwLock|tokio::spawn|thread::spawn|AtomicU|setTimeout|setInterval|flock|clock_gettime')
+                     r'|' + CONCURRENCY_CODE + r'|setTimeout|setInterval|clock_gettime')
 # A source file that can hold a multi-line string: a JS/TS file with a backtick anywhere
 # (a template literal), a Rust file with any string (a plain Rust string can span lines too).
 # Any changed line in such a file may be prompt text; no scan decides which, so this can
@@ -40,6 +45,8 @@ STRING_FILE = re.compile(r'\.(rs|[cm]?[jt]sx?)$')
 # holds a literal of 40+ characters, the length of a sentence of prose.
 STRING_LINE = re.compile(r'^\s*(["\'`]|b?r#+")|(?<!\w)b?r#+"|"[^"]{40,}"|\'[^\']{40,}\'|`[^`]{40,}`')
 TIER_LABEL = re.compile(r'^tier:T[123]$')
+INTERROGATE_LABEL = 'needs-interrogate'
+INTERROGATE_LINES = 300
 
 Line = collections.namedtuple('Line', 'kind text')  # kind: '+', '-', ' ' or '@'
 
@@ -73,7 +80,7 @@ def tier(files, diff_text, string_files=frozenset()):
         return 'T3', ['no diff from GitHub']
     lines = parse_diff(diff_text)
     changed = lambda p: [l for l in lines.get(p, []) if l.kind in '+-']
-    prod = [f['path'] for f in files if not TEST.search(f['path']) and not DOC.search(f['path'])]
+    prod = prod_paths(files)
     why = []
     for p in prod:
         if CONFIG.search(p) and not GATE_PATH.search(p):
@@ -101,8 +108,27 @@ def tier(files, diff_text, string_files=frozenset()):
     return 'T2', ['app logic: ' + ', '.join(code[:3])]
 
 
+def prod_paths(files):
+    """The paths that count: every file but tests and docs."""
+    return [f['path'] for f in files if not TEST.search(f['path']) and not DOC.search(f['path'])]
+
+
 def non_test_lines(files):
-    return sum(f['additions'] for f in files if not TEST.search(f['path']) and not DOC.search(f['path']))
+    prod = set(prod_paths(files))
+    return sum(f['additions'] for f in files if f['path'] in prod)
+
+
+def gate_or_concurrency(files, diff_text):
+    """Whether a non-test file is a gate, lock or scheduler file, or its changed lines (with
+    git's context, as T3_CODE reads them) use a concurrency primitive."""
+    lines = parse_diff(diff_text)
+    return any(GATE_PATH.search(p) or re.search(LOCK_PATH, p)
+               or re.search(CONCURRENCY_CODE, '\n'.join(l.text for l in lines.get(p, []))) for p in prod_paths(files))
+
+
+def needs_interrogate(t, nt, gate_or_concurrency_file):
+    """Interrogate before review round 1: T3 with 300+ non-test lines, or T3 for a gate or concurrency file."""
+    return t == 'T3' and (nt >= INTERROGATE_LINES or gate_or_concurrency_file)
 
 
 def gh(*args, check=True):
@@ -127,10 +153,12 @@ def string_files(repo, pr, files):
             and any(text is None or can_hold_multi_line_string(text, p) for text in (show(p, merge_base), show(p, head)))}
 
 
-def label_changes(labels, t):
-    """(tier labels to remove, labels to add) so that tier:<t> is the PR's only tier label."""
-    want = f'tier:{t}'
-    return [l for l in labels if TIER_LABEL.match(l) and l != want], [] if want in labels else [want]
+def label_changes(labels, t, interrogate):
+    """(labels to remove, labels to add) so that tier:<t> is the PR's only tier label and
+    needs-interrogate is there exactly when interrogate is true."""
+    want = {f'tier:{t}'} | ({INTERROGATE_LABEL} if interrogate else set())
+    managed = [l for l in labels if TIER_LABEL.match(l) or l == INTERROGATE_LABEL]
+    return [l for l in managed if l not in want], sorted(want - set(labels))
 
 
 def main(argv):
@@ -142,14 +170,15 @@ def main(argv):
     diff = gh('pr', 'diff', pr, '-R', repo, check=False)
     t, why = tier(files, diff, string_files(repo, pr, files) if diff else frozenset())
     nt = non_test_lines(files)
-    print(f'tier: {t}, {nt} non-test lines added')
+    interrogate = needs_interrogate(t, nt, gate_or_concurrency(files, diff))
+    print(f'tier: {t}, {nt} non-test lines added' + (', needs interrogate before round 1' if interrogate else ''))
     for w in why:
         print(f'tier:   {w}')
     if os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-            out.write(f'nt={nt}\n')
+            out.write(f'tier={t}\nnt={nt}\n')
     if '--apply' in argv:
-        remove, add = label_changes(gh('api', f'repos/{repo}/issues/{pr}/labels', '--jq', '.[].name').splitlines(), t)
+        remove, add = label_changes(gh('api', f'repos/{repo}/issues/{pr}/labels', '--jq', '.[].name').splitlines(), t, interrogate)
         for old in remove:
             gh('api', '-X', 'DELETE', f'repos/{repo}/issues/{pr}/labels/{quote(old)}')
         for new in add:
