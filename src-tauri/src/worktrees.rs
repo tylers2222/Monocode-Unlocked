@@ -519,6 +519,8 @@ struct SessionBeforeRemoval {
     context_window: Option<i64>,
     in_flight_cwd: Option<String>,
     in_flight_sort_index: Option<i64>,
+    in_flight_window: Option<String>,
+    in_flight_run: Option<String>,
     detached_cwd: String,
 }
 
@@ -536,7 +538,7 @@ fn prepare_removal(
         let mut session = tx
             .query_row(
                 "SELECT s.cwd, s.worktree_cwd, s.branch, s.provider_session_id,
-                    s.context_used, s.context_window, f.cwd, f.sort_index
+                    s.context_used, s.context_window, f.cwd, f.sort_index, f.window_label, f.run_id
              FROM sessions s LEFT JOIN in_flight_sessions f ON f.session_id = s.id
              WHERE s.id = ?1",
                 [id],
@@ -551,6 +553,8 @@ fn prepare_removal(
                         context_window: row.get(5)?,
                         in_flight_cwd: row.get(6)?,
                         in_flight_sort_index: row.get(7)?,
+                        in_flight_window: row.get(8)?,
+                        in_flight_run: row.get(9)?,
                         detached_cwd: String::new(),
                     })
                 },
@@ -621,8 +625,15 @@ fn finish_removal(
             if let (Some(cwd), Some(index)) = (&session.in_flight_cwd, session.in_flight_sort_index)
             {
                 tx.execute(
-                    "INSERT OR REPLACE INTO in_flight_sessions (session_id, cwd, sort_index) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![session.id, cwd, index],
+                    "INSERT OR REPLACE INTO in_flight_sessions (session_id, cwd, sort_index, window_label, run_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![
+                        session.id,
+                        cwd,
+                        index,
+                        session.in_flight_window.as_deref().unwrap_or_default(),
+                        session.in_flight_run.as_deref().unwrap_or_default()
+                    ],
                 ).map_err(|e| e.to_string())?;
             }
         }
@@ -1097,7 +1108,8 @@ mod tests {
                     [&tree.path],
                 ).unwrap();
                 conn.execute(
-                    "INSERT INTO in_flight_sessions (session_id, cwd, sort_index) VALUES ('s1', ?1, 3)",
+                    "INSERT INTO in_flight_sessions (session_id, cwd, sort_index, window_label, run_id)
+                     VALUES ('s1', ?1, 3, 'window-1', 'run-a')",
                     [&tree.path],
                 )
                 .unwrap();
@@ -1128,14 +1140,18 @@ mod tests {
                         Some(100)
                     )
                 );
-                let in_flight: (String, i64) = conn
+                let in_flight: (String, i64, String, String) = conn
                     .query_row(
-                        "SELECT cwd, sort_index FROM in_flight_sessions WHERE session_id = 's1'",
+                        "SELECT cwd, sort_index, window_label, run_id FROM in_flight_sessions WHERE session_id = 's1'",
                         [],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )
                     .unwrap();
-                assert_eq!(in_flight, (tree.path, 3));
+                assert_eq!(
+                    in_flight,
+                    (tree.path, 3, "window-1".into(), "run-a".into()),
+                    "the restored row keeps the window and run that saved it"
+                );
             }
             let count: i64 = conn
                 .query_row("SELECT COUNT(*) FROM worktree_removals", [], |row| {
@@ -1144,6 +1160,43 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 0);
         }
+    }
+
+    // Defect: a removal journal written before ADE-62 has no in_flight_window
+    // or in_flight_run, so startup cannot parse it and the app does not open.
+    #[test]
+    fn startup_restores_a_journal_written_before_rows_had_a_window() {
+        let repo = repo();
+        let tree = repo.0.join("tree");
+        std::fs::create_dir_all(tree.join(".git")).unwrap();
+        let tree = path_to_js(&tree);
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at, worktree_cwd, worktree_removed)
+             VALUES ('s1', '/repo', 'codex', 'test', 'supervised', 'Keep title', 10, 20, ?1, 1)",
+            [&tree],
+        )
+        .unwrap();
+        let journal = serde_json::json!([{
+            "id": "s1", "cwd": tree, "worktree_cwd": null, "branch": "feature",
+            "provider_session_id": null, "context_used": null, "context_window": null,
+            "in_flight_cwd": tree, "in_flight_sort_index": 2, "detached_cwd": "/repo"
+        }]);
+        conn.execute(
+            "INSERT INTO worktree_removals (path, sessions_json) VALUES (?1, ?2)",
+            rusqlite::params![tree, journal.to_string()],
+        )
+        .unwrap();
+        reconcile_removals(&conn).unwrap();
+        let in_flight: (String, i64, String) = conn
+            .query_row(
+                "SELECT cwd, sort_index, window_label FROM in_flight_sessions WHERE session_id = 's1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(in_flight, (tree, 2, String::new()));
     }
 
     #[test]
