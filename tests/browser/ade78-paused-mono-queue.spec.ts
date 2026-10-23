@@ -8,9 +8,10 @@ import { type AppShell, expect, type MountOptions, test } from "./app/fixture";
 // The relaunch paused that queue ("Paused when MonoCode quit"), so every
 // message General sent for the next 29 hours waited for a Resume, while
 // messages.send answered `delivery: "queue"` and monos.get looked like any
-// queue. `ade78-ship6.realdb.json` is reduced from the .backup the swap took
-// at 08:48:51 and from the database after it: both Monos, their chats on
-// omp:default, and General's real messages. The model was not the cause: a
+// queue. `ade78-ship6.realdb.json` keeps the state shape of the .backup the
+// swap took at 08:48:51 and of the database after it: both Monos, their chats
+// on omp:default, the queued ids and the queue status. Names, paths, titles
+// and message text are made up. The model was not the cause: a
 // chat on a model id the catalog does not list still runs, so no send to it
 // is held.
 
