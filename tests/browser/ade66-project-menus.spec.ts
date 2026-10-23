@@ -22,6 +22,13 @@ test("project and project group menus offer no tab group actions", async ({
   app,
   page,
 }) => {
+  // The new group's default mascot and colour hash its id, so a fixed id keeps
+  // group-menu.png byte-comparable between runs.
+  await page.addInitScript(() => {
+    let next = 0;
+    crypto.randomUUID = () =>
+      `00000000-0000-4000-8000-${String(++next).padStart(12, "0")}`;
+  });
   await app.mount(REAL_RAIL, {
     handlers: {
       "plugin:dialog|message": (_store, { message }) => {
