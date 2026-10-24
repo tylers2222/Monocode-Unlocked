@@ -6,9 +6,21 @@ EVAL_OUT="${GIGA_EVAL_OUT:-/tmp/giga-eval}"
 EVAL_HOME="${GIGA_EVAL_HOME:-/tmp/giga-eval-home}"
 EVAL_ID="com.monocode.desktop.gigaeval"
 EVAL_PRODUCT="MonoCode GigaEval"
-REAL_HOME="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory | awk '{print $2}')"
 INSTALLED_APP="/Applications/MonoCode.app"
-REAL_APP_DATA="$REAL_HOME/Library/Application Support/com.monocode.desktop"
+# The instance's data folder is Tauri's app_data_dir() under HOME=$EVAL_HOME.
+case "$(uname -s)" in
+  Darwin)
+    EVAL_OS=macos
+    REAL_HOME="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory | awk '{print $2}')"
+    REAL_APP_DATA="$REAL_HOME/Library/Application Support/com.monocode.desktop"
+    EVAL_APP_DATA="$EVAL_HOME/Library/Application Support/$EVAL_ID" ;;
+  Linux)
+    EVAL_OS=linux
+    REAL_HOME="$(getent passwd "$(id -un)" | cut -d: -f6)"
+    REAL_APP_DATA="${XDG_DATA_HOME:-$REAL_HOME/.local/share}/com.monocode.desktop"
+    EVAL_APP_DATA="$EVAL_HOME/.local/share/$EVAL_ID" ;;
+  *) echo "giga-eval runs on macOS or Linux, not $(uname -s)" >&2; exit 2 ;;
+esac
 SCRATCH_NAME="giga-eval-scratch"
 
 # Prints `path` as the OS resolves it when that is under /tmp, else fails:
@@ -59,9 +71,14 @@ target_pid() {
     installed) /bin/ps -axo pid=,command= | awk -v b="$INSTALLED_APP/Contents/MacOS/monocode" '$2 == b {print $1; exit}' ;;
   esac
 }
+# The built app in $EVAL_OUT/instance.app is a .app bundle on macOS and the
+# executable itself on Linux (tauri build --no-bundle).
+app_bin() {
+  if [[ "$EVAL_OS" == macos ]]; then echo "$1/Contents/MacOS/monocode"; else echo "$1"; fi
+}
 target_bin() {
   case "$1" in
-    instance) cat "$EVAL_OUT/instance.app" 2>/dev/null | sed 's|$|/Contents/MacOS/monocode|' ;;
+    instance) local app; app="$(cat "$EVAL_OUT/instance.app" 2>/dev/null)" && app_bin "$app" || true ;;
     installed) echo "$INSTALLED_APP/Contents/MacOS/monocode" ;;
   esac
 }
