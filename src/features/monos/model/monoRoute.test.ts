@@ -662,6 +662,30 @@ it("queues a message for a busy Mono behind its running turn", async () => {
   ).toBeUndefined();
 });
 
+// ADE-78. Defect: a message for a Mono whose queue the relaunch paused
+// answers "queue", as if the turn end would send it; it waits for Resume.
+it("tells the sender a message joined a paused queue, and keeps it for Resume", async () => {
+  const { send, get } = world([
+    chat("a-chat", {
+      queueStatus: "paused",
+      queuedMessages: [
+        {
+          id: "before",
+          text: "Before the quit",
+          attachments: [],
+          pausedBy: "quit",
+        },
+      ],
+    }),
+  ]);
+  expect(await send(ask())).toMatchObject({
+    status: "delivered",
+    delivery: "paused",
+  });
+  expect(get("a-chat")).toMatchObject({ queueStatus: "paused" });
+  expect(ids(get("a-chat"))).toEqual(["before", "m_aaaaaaaaaaaa"]);
+});
+
 // Defect: a Mono steer waits for the turn end (it never reaches the running
 // turn), or a waiting item ahead of it blocks it.
 it("steers a busy, ready Mono chat with the message, past a waiting item", async () => {
