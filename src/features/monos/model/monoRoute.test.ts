@@ -1885,13 +1885,7 @@ it("names a late answer's target by its message id in the Giga's turn", async ()
   ];
   const { host } = world([chat("giga-chat", { busy: true }), chat("a-chat")]);
   const deliver = vi.fn((_: HandedOff) => true);
-  await handOff(
-    host,
-    "giga-chat",
-    "m_bbbbbbbbbbbb" as MessageId,
-    "steer",
-    deliver,
-  );
+  await handOff(host, "giga-chat", "m_bbbbbbbbbbbb" as MessageId, "steer", deliver);
   expect(deliver.mock.calls[0][0].turnId).toBe("run-giga-chat");
   expect(deliver.mock.calls[0][0].text).toContain(
     `\n[steer → ${target.id} · "Is CI green?"]\nIt is green now\n`,
