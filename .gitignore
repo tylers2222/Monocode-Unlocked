@@ -23,6 +23,7 @@ gen/schemas/
 coverage/
 playwright-report/
 test-results/
+e2e-results/
 .vite/
 .turbo/
 *.tsbuildinfo
