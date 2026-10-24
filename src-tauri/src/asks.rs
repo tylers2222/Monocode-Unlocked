@@ -6,7 +6,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::ask_gate::{self, AckRefused, Actor, AskState, Party, State};
@@ -61,7 +61,9 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            UNIQUE (ask_id, kind, seq),
            CHECK (kind NOT IN ('question', 'answer') OR seq <= 3),
            CHECK (kind NOT IN ('ack', 'update', 'extension', 'miss') OR seq = 1)
-         );",
+         );
+         CREATE INDEX IF NOT EXISTS mono_ask_events_ack_message
+           ON mono_ask_events (message_id) WHERE kind = 'ack';",
     )
 }
 
@@ -152,6 +154,41 @@ fn fields<T: DeserializeOwned>(input: &Value) -> Result<T, String> {
     serde_json::from_value(input.clone()).map_err(|error| error.to_string())
 }
 
+/// What a `mono_messages` row carries in the ledger (R6), for its reader.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Carries {
+    /// The row is ask `id` (its own id). `due_in_ms` is the active time
+    /// left, none for a Giga's ask.
+    #[serde(rename_all = "camelCase")]
+    Ask { due_in_ms: Option<i64> },
+    /// The row is the ack of ask `ask_id`.
+    #[serde(rename_all = "camelCase")]
+    Ack { ask_id: MessageId },
+}
+
+/// What row `id` carries: `mono_asks` by id, else the `ack` event that
+/// names the row. One statement, as `targeted()` reads it for every row.
+pub fn carries(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<Carries>> {
+    let (ask, due_in_ms, ack_of): (bool, Option<i64>, Option<String>) = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM mono_asks WHERE id = ?1),
+           (SELECT due_active_ms - ifnull((SELECT active_ms FROM mono_clock WHERE id = 1), 0)
+              FROM mono_asks WHERE id = ?1),
+           (SELECT ask_id FROM mono_ask_events WHERE kind = 'ack' AND message_id = ?1)",
+        [id.as_str()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if ask {
+        return Ok(Some(Carries::Ask { due_in_ms }));
+    }
+    ack_of
+        .map(|ask_id| {
+            let ask_id = MessageId::parse(&ask_id).ok_or(rusqlite::Error::InvalidQuery)?;
+            Ok(Carries::Ack { ask_id })
+        })
+        .transpose()
+}
+
 /// A `send_message` of `message` to `send_to`: what carries an ask or ack.
 fn carrier(send_to: &str, message: &str) -> Result<Input, String> {
     mono_gate::parse(
@@ -219,12 +256,12 @@ pub fn ask(
             }
         }
     }
-    let submitted = mono_messages::submit_in(&tx, caller, request_id, carrier, live, now)?;
+    let mut submitted = mono_messages::submit_in(&tx, caller, request_id, carrier, live, now)?;
     if let Submitted::Accepted {
         messages,
         duplicate: false,
         ..
-    } = &submitted
+    } = &mut submitted
     {
         // The gate let through a party with no saved row (a session the
         // window lists): no child of the caller. Dropping `tx` undoes the row.
@@ -247,6 +284,7 @@ pub fn ask(
                 now
             ],
         )?;
+        messages[0].carries = carries(&tx, &messages[0].message.id)?;
     }
     tx.commit()?;
     Ok(submitted)
@@ -298,12 +336,12 @@ pub fn ack(
             }
         }
     }
-    let submitted = mono_messages::submit_in(&tx, caller, request_id, carrier, live, now)?;
+    let mut submitted = mono_messages::submit_in(&tx, caller, request_id, carrier, live, now)?;
     if let Submitted::Accepted {
         messages,
         duplicate: false,
         ..
-    } = &submitted
+    } = &mut submitted
     {
         // The gate let through a caller with no saved row (a session the
         // window lists): no child of any ask. Dropping `tx` undoes the row.
@@ -336,6 +374,7 @@ pub fn ack(
                 now
             ],
         )?;
+        messages[0].carries = carries(&tx, &messages[0].message.id)?;
     }
     tx.commit()?;
     Ok(submitted)
