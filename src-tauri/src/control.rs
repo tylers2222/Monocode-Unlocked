@@ -11,7 +11,7 @@ use std::time::Duration;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewWindow};
 
 use crate::harness::HarnessHost;
 use crate::mono_messages::{self, Notices, SessionId};
@@ -312,6 +312,20 @@ impl ControlHost {
                     .active
                     .iter()
                     .map(|(session, turn)| (session.clone(), turn.turn_id.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn sessions_running_outside(&self, label: &str) -> HashSet<String> {
+        self.inner
+            .lock()
+            .map(|inner| {
+                inner
+                    .active
+                    .iter()
+                    .filter(|(_, turn)| turn.window != label)
+                    .map(|(session, _)| session.clone())
                     .collect()
             })
             .unwrap_or_default()
@@ -959,7 +973,7 @@ fn close_window(
     notices
 }
 
-pub fn configure_child(app: &AppHandle, session_id: &str, cmd: &mut Command) {
+pub fn configure_child<R: Runtime>(app: &AppHandle<R>, session_id: &str, cmd: &mut Command) {
     cmd.env_remove("MONOCODE_CONTROL_ENDPOINT")
         .env_remove("MONOCODE_CONTROL_TOKEN")
         .env_remove("MONOCODE_APP_ENDPOINT")
@@ -1214,7 +1228,7 @@ pub fn control_scopes(cwd: String, files: Vec<String>) -> Result<Vec<String>, St
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::mono_messages::tests::{
         hand_off, handed_off, late_answer, messaging_store, sent, stored_row,
@@ -1231,6 +1245,44 @@ mod tests {
                 turn_id: turn_id.into(),
             },
         );
+    }
+
+    pub(crate) fn host() -> ControlHost {
+        ControlHost {
+            endpoint: String::new(),
+            inner: Arc::default(),
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn start_turn_in_canonical_cwd(
+        host: &ControlHost,
+        store: &SessionStore,
+        (session, cwd): &(String, String),
+        window: &str,
+    ) {
+        let turn_id = format!("turn-{session}");
+        authorize_turn(
+            &host.inner,
+            store,
+            session,
+            window,
+            cwd.clone(),
+            false,
+            &turn_id,
+        )
+        .unwrap();
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn boot(host: &ControlHost, store: &SessionStore, window: &str) {
+        boot_window(&host.inner, store, window, &HarnessHost::new());
+    }
+
+    /// `control_turn_finished` for the turn `start_turn_in_canonical_cwd` began.
+    #[cfg(not(windows))]
+    pub(crate) fn finish_started_turn(host: &ControlHost, store: &SessionStore, session: &str) {
+        finish_turn(&host.inner, store, session, &format!("turn-{session}"));
     }
 
     // Review r1 m1 (control level). Stop takes the Giga's turn-4 out of
@@ -1582,10 +1634,7 @@ mod tests {
     // the session than the one that runs its target.
     #[test]
     fn running_sessions_are_the_sessions_with_an_active_turn_and_its_id() {
-        let host = ControlHost {
-            endpoint: String::new(),
-            inner: Arc::new(Mutex::new(Inner::default())),
-        };
+        let host = host();
         run(&host.inner, "a-chat", "main", "turn-1");
         assert_eq!(
             host.running_sessions(),

@@ -1,55 +1,55 @@
-2026-10-19 23:13:02 PR #103 fix round 6 done: head 008e1e2d, rebased onto tyler/main b687aace (#108, #109, #111). One baseline change: MilestoneTimeline.tsx max-lines-per-function 1->2 (#108 4ddd29cd); #109/#111 needed none. All gate steps pass locally; CI 13/13 green on the merge with b687aace. Review rounds: 6.
-2026-10-19 23:19 AEDT #103 review r7 DONE: clean (0B/0M/0m) for 008e1e2d; review/agent=success; 12 threads resolved; tyler/main still b687aace, merge before anything else lands. (app ping failed: access inactive)
-2026-10-19 23:20 AEDT #103 review r7 addendum: Size count is +401/-33 not +400/-33 (config/workflows/scripts +316/-2 not +315/-2); nit, verdict stays clean for 008e1e2d. #103 already MERGED as d41d817b (tree 409e746e = reviewed tree).
-2026-10-19 23:22:18 +1100 PR7-13 #116 open, head c2b896f2, CI 12/12 green, 162 non-test lines, 8/8 mutations caught, last PR of the stack: done (ping failed: turn_inactive)
-2026-10-20 04:40:57 +1100 ADE-20 R2 #132 open, head aac6d80e, CI 14/14 green incl gate/lint+integrity, clock 20/20, 9/9 mutations, both real-DB copies; one unexplained clock failure in ~170 runs noted in body: done (ping failed: turn_inactive)
-2026-10-20 04:48:01 PR #134 (ADE-10) ready for review: head 58bddd6c, CI 14/14 green incl. gate/lint and gate/integrity. turnOpener picks by start time; runningTurnOf reuses it. Real turns fixed (m_4kkwsmecdx start 08:03:31->08:03:45, stamp nothing->1768240 ms; m_ghsv7ogxwg 20:26:00->20:26:05, nothing->28459 ms). 3 new tests fail on main; mutations caught. +27/-23 non-test. Review rounds: 0.
-2026-10-20 05:00:17 +1100 ADE-52 #125 rebased onto feat/ade-51-approvals-store 58304d3b (contains a98c86df), head 2528b99a, base retargeted, one copy of shared helpers + announce, approvals-changed after decide with mock-IPC test, 27/27 mutations caught, CI 13/13 green; gate/integrity (main-only) would count 571 because tests.rs files are not exempt (real ~197); not merged
-2026-10-20 05:01:50 AEDT Review r1 of PR #132 (ADE-20 R2) at aac6d80e done: changes needed, 0 blockers, 0 majors, 4 minors. Review: change-r/reviews/r2-round1.md. Nits issue #135.
-2026-10-20 05:03:54 ADE-10 review r1 done: PR #134 head 58bddd6c clean (0B/0M/0m, 2 nits); review/agent success; change-linear/reviews/ade10-round1.md
-2026-10-20 05:31:22 +1100 ADE-20 R2 #132 round 1 fixed, head d6596fc1, CI 14/14 green, parallel 8x150 before 1197/1200 after 1200/1200, 14/16 mutations (2 survivors = nits n1/n2 in #135): done (ping failed: turn_inactive)
-2026-10-20 05:38:54 PR #138 (ADE-49) ready for review: head 6e9e4c87, CI 14/14 green. Cause: two video tabs mount two players; Linux WebKit (WPE/GStreamer) hangs when two pipelines start together, any codec (15/100 fail with two videos, 0/60 with one). Fix: second tab is an image; 20/20 webkit in CI (run 39301285909). Possible same hang in the Linux app: needs a product fix, not built (front-end rule). Review rounds: 0.
-2026-10-20 05:42 AEDT PR #132 r2 review done: head d6596fc1 VERDICT clean (0B/0M/0m, 1 nit n8 to #135); review change-r/reviews/r2-round2.md
-2026-10-20 06:13 ADE-49 r1 review of PR #138 at 6e9e4c87 done: changes needed 0B/0M/1m + 4 nits (pause asserts pass without app pausing; add element.loop = true). Review: change-linear/reviews/ade49-round1.md
-2026-10-20 06:29:32 +1100 ADE-52 #125 round 1 fixed: head 95a7f040, m1 requeue/notSent + m2 real-test order, nits, 34/34 mutations caught, CI 13/13 green (host windows passed on rerun after a Compress-Archive packaging flake), 283 non-test lines by #136 integrity.sh, 6 line comments answered; blank comment rule left for ADE-53 (send null); not merged
-2026-10-20 06:39:25 PR #138 (ADE-49) fix round 1 done: head 2cf5e48f, CI 14/14 green. Clip loops, so M1 (pause code removed) and M2 (FilePane.tsx:219 wiring removed) now fail on chromium and webkit; unmodified spec passes. 20/20 webkit proof on new head (run 39309810707), scratch deleted. Nits 1, 2, 4 fixed; nit 3 in ADE-58. Review rounds: 1.
-2026-10-20 06:44:17 AEDT ADE-49 r2 review done: PR #138 head 2cf5e48f clean (0B/0M/0m, 1 body nit); review/agent success; change-linear/reviews/ade49-round2.md
-2026-10-20 07:01 R4 #139 (ADE-22) open: levels come only from the database, head 119c58d1, CI 14/14 green, not merged. (ping failed: turn_inactive)
-2026-10-20 07:36 AEDT #139 R4 review r1 on 119c58d1 DONE: changes needed 0B/1M/4m (M1: unsaved /operator session in ~ gets unknown_caller forever; first-turn row write not awaited). Nits #140. change-r/reviews/r4-round1.md
-2026-10-20 07:52:20 +1100 ADE-52 #125 round 2 fixed: head 3b0700e2 on tyler/main 0aa8f426, m3/m4/nits, 39/39 mutations caught, 343 non-test lines by #136 rule (no split), CI 13/14 green, gate/integrity fails only on size because tests.rs counts until #136; not merged
-2026-10-20 08:10:49 ADE-47 PR #141 https://github.com/tylers2222/Monocode-Unlocked/pull/141 head b368e39fc78f9f0a8935b0fce35ac1c788841679 CI 14/14 green, not merged (messages.send ping failed)
-2026-10-20 08:37:51 +1100 ADE-47 #141 review r1 done on b368e39f: changes-needed 0B/1M/1m; review change-linear/reviews/ade47-round1.md; review/agent failure posted
-2026-10-20 09:31 R4 #139 fix r1 pushed: head 923eb596, CI 14/14, review rounds 1. R3 #142 open: head 118c3791, CI 14/14. Neither merged. (ping failed: turn_inactive)
-2026-10-20 10:00 PR #139 review r2 done on 923eb596: changes needed 0B/0M/1m (started-turn save await untested); review change-r/reviews/r4-round2.md
-2026-10-20 10:03 R3 review r1 done: PR #142 head 118c3791, changes needed (0B/1M/4m), review/agent failure posted; change-r/reviews/r3-round1.md, nits #149
-2026-10-20 10:23 ADE-53 build done as a 6-PR stack on #128: #143 c7aa35ab, #144 298e8290, #145 2b139efc, #146 4a382bdd, #147 383fd056, #148 f6b4a185; CI 13/13 each; mutations 0 missed; not merged. Decide error text (filer_has_no_chat, approval_not_open) unbuilt: no frame. (no app CLI)
-2026-10-20 10:25:48 ADE-47 round 1: PR #141 head f60c19e6, CI 14/14 green, review fixes done, not merged (messages.send ping failed: app access inactive)
-2026-10-20 10:41 R4 #139 r2 pushed: head f808e4af, CI 14/14, rounds 2. R3 #142 r1 pushed: head 9a1cee9d, CI 14/14, rounds 1. Neither merged. (ping failed: turn_inactive)
-2026-10-20 10:45 AEDT ADE-47 #141 r2 review done on f60c19e6: changes needed 0B/0M/1m (session lookup in watch untested); review/agent failure posted; change-linear/reviews/ade47-round2.md
-2026-10-20 11:18:53 ADE-47 round 2: PR #141 head f7248a05, CI 14/14 green, review fixes done, not merged (messages.send ping failed)
-2026-10-20 11:22:06 PR #139 r3 review done: clean for f808e4af (0B/0M/0m, n11 to #140), review/agent success posted
-2026-10-20 11:22 PR #142 r2 review done: VERDICT clean for 9a1cee9d; review/agent success; nits n7-n9 on #149
-2026-10-20T00:24:28Z PR #141 ADE-47 r3 review done: head f7248a05 clean (0B/0M/0m), review/agent success; review at change-linear/reviews/ade47-round3.md
-2026-10-20 11:47:09 +1100 ADE-52 #125 round 3 fixed: head f0d36f75, m6 unarchive emits notices (+test), nit removed, 40/40 mutations caught, 360 non-test by #136 rule, CI 13/14 (gate/integrity size only, waits for #136); not merged
-2026-10-20 12:08 R5 #150 (ADE-23 1/2) open: head 464c34c2, CI 13/14 (gate/integrity counts #139's lines until it merges, then rebase). Part 2 pushed as feat/ade-23-ack 26475433, opens after #150 merges. (ping failed: turn_inactive)
-2026-10-20 13:11 #150 r1 review done on 464c34c2: changes needed (0B/0M/4m); no local runs, heavy lock held all round. change-r/reviews/r5a-round1.md
-2026-10-20 14:25 R5a #150 r1 pushed: head 977da383, CI 13/14 (gate/integrity counts #139 until it merges), rounds 1. Part 2 feat/ade-23-ack rebased to e4ba0b21, no PR yet. (ping failed: turn_inactive)
-2026-10-20 14:38 #150 r2 done on 977da383: changes needed 0B/0M/2m (rejected-repeat guard untested; PR body stale). change-r/reviews/r5a-round2.md
-2026-10-20 14:57 ADE-53 round 1 fixed (stack of 7): #143 7fdd780b, #144 4af9e712, #145 3211e436, #146 cf763857, #147 60212257, #148 f744ed88, new #152 c2e6642c (A·8 decide failed). Ticks by label + update scenario; 0 mutations missed; 33 line replies; nits on ADE-56; CI 13/13 on all 7; not merged
-2026-10-20 15:01 R5a #150 r2 pushed: head 9fe5dbfd, CI 13/14 (gate/integrity counts #139 until it merges), rounds 2. Part 2 rebased to a747d808, no PR yet. (ping failed: turn_inactive)
-2026-10-20 15:12:33 #150 r3 on 9fe5dbfd: changes needed 0B/0M/1m (PR body File caps line stale: asks.rs 220/ask_gate.rs 170, head 255/128); m1 test fixed. change-r/reviews/r5a-round3.md
-2026-10-20 15:21 #150 r4 done: 9fe5dbfd clean (0B/0M/0m, 2 nits to #151), review/agent success
-2026-10-20 15:25:13 +1100 ADE-52 #125 round 4: head 2f78cd49, decision_too_long:<chars>:<max> + exact/boundary test, 45/45 mutations caught, 362 non-test by #136 rule, CI 13/14 (gate/integrity size only; host windows passed on rerun after temp-dir EPERM); not merged
-2026-10-20 15:25 #149 nits n7/n8 PR #153 open: head 2250e869, CI 14/14, not merged. (ping failed: turn_inactive)
-2026-10-20 15:41 #153 r1 head 2250e869: changes needed (0B/0M/1m: relative path passes the lib.sh /tmp guard). Review at change-r/reviews/n7n8-round1.md
-2026-10-20 16:01 #153 r1 pushed: head d13e4825, CI 14/14, rounds 1, not merged. (ping failed: turn_inactive)
-2026-10-20 16:04 #153 r2 review done: head d13e4825 VERDICT clean, review/agent success; 1 nit to #149
-2026-10-20 17:08 R5a #150 rebased on a363d977: head 5eba0932, CI 14/14, gate/integrity ok 401. Part 2 pushed 53513cda, no PR. (ping failed: turn_inactive)
-2026-10-20 17:19:07 AEDT M-10 #117 PAUSED for Ship 5: wording fix done, rebased onto tyler/main a363d977, pushed head 6831fef2, PR body updated (decision, Review rounds: 2, size +216/-2), milestones Playwright 130 passed/10 skipped (chromium+webkit), new off shot change-m/reviews/M-10-review-off.png. Nothing uncommitted. NEXT: wait for CI on 6831fef2 (gh pr checks 117 --watch), report result, Finish ping. Do not merge.
-2026-10-20 17:19 STOPPED for ship 5. Done: #150 rebased on a363d977, head 5eba0932, CI 14/14, gate/integrity ok 401; part 2 feat/ade-23-ack pushed 53513cda, no PR. ADE-58 repro in progress: scratch branch scratch/ade-58-repro (head pushed, nothing uncommitted), worktree ~/Desktop/monocode-worktrees/scratch-ade-58; run 39378677019 (RUNS=1, snapshot now seeded into the DB between two launches) is running in CI. NEXT: read that run's 'first run:' log; if both arms show the expected video count, set RUNS=20 in .github/workflows/ade58-repro.yml and push; if not, fall back to a plain WebKitGTK page with two <video> tags; then report counts, run links, verdict, and delete the scratch branch. No PR.
-2026-10-20 17:20:01 AEDT M-10 #117 wording fix DONE: head 6831fef2 (rebased onto tyler/main a363d977), CI 14/14 pass, mergeState BLOCKED only on review/agent for the new head. Not merged. Finish ping failed (app access inactive).
-2026-10-20 17:25 ADE-58 resumed: 1-run check passed in the real app (2 videos loaded, 60 s responsive); 20-run x 4 shapes run pushed on scratch/ade-58-repro.
-2026-10-20 17:29:30 +1100 ADE-52 #125 rebased onto tyler/main f7c9b23e (#136): head f2365d6c, range-diff 6/6 '=' vs 2f78cd49, no conflicts, 362 non-test lines, local gate pass, 45/45 mutations caught, CI 14/14 pass incl gate/integrity; not merged
-2026-10-20 17:57 ADE-58 repro done: real Linux app (WebKitGTK 2.52.6, GStreamer 1.24.2), 0 hangs in 20 runs each of two-tabs/split/hidden and 0/20 one-video control; not reproduced. Scratch branch deleted, no PR. (ping failed: turn_inactive)
-2026-10-20 18:08 ADE-53 round 2 (A·2b in #146, A·5b in #147, A·8 too-long in #152) rebased on #128 46b2d4a7: #143 b3a57cf2 228, #144 47360472 255, #145 1229cc48 349, #146 81e76c36 241, #147 39af4e9d 480, #148 669fd743 362, #152 022a0f07 216 non-test; integrity ok each; 83 mutations 0 missed; CI 13/13 on all 7; not merged
-2026-10-20 18:19:05 AEDT M-10 #117 resumed after Ship 5: confirmed head 6831fef2 on tyler/main a363d977, CI 14/14 pass, needs review/agent on 6831fef2. Not merged. Finish ping failed (app access inactive).
+2026-10-19 23:13:02 made-up status #103 #108 #109 #111 008e1e2 4ddd29c b687aac
+2026-10-19 23:19 made-up status #103 008e1e2 b687aac
+2026-10-19 23:20 made-up status #103 008e1e2 409e746 d41d817
+2026-10-19 23:22:18 +1100 made-up status #116 c2b896f
+2026-10-20 04:40:57 +1100 made-up status #132 aac6d80
+2026-10-20 04:48:01 made-up status #134 1768240 58bddd6
+2026-10-20 05:00:17 +1100 made-up status #125 2528b99 58304d3 a98c86d
+2026-10-20 05:01:50 made-up status #132 #135 aac6d80
+2026-10-20 05:03:54 made-up status #134 58bddd6
+2026-10-20 05:31:22 +1100 made-up status #132 #135 d6596fc
+2026-10-20 05:38:54 made-up status #138 3930128 6e9e4c8
+2026-10-20 05:42 made-up status #132 #135 d6596fc
+2026-10-20 06:13 made-up status #138 6e9e4c8
+2026-10-20 06:29:32 +1100 made-up status #125 #136 95a7f04
+2026-10-20 06:39:25 made-up status #138 2cf5e48 3930981
+2026-10-20 06:44:17 made-up status #138 2cf5e48
+2026-10-20 07:01 made-up status #139 119c58d
+2026-10-20 07:36 made-up status #139 #140 119c58d
+2026-10-20 07:52:20 +1100 made-up status #125 #136 0aa8f42 3b0700e
+2026-10-20 08:10:49 made-up status #141 b368e39
+2026-10-20 08:37:51 +1100 made-up status #141 b368e39
+2026-10-20 09:31 made-up status #139 #142 118c379 923eb59
+2026-10-20 10:00 made-up status #139 923eb59
+2026-10-20 10:03 made-up status #142 #149 118c379
+2026-10-20 10:23 made-up status #128 #143 #144 #145 #146 #147 #148 298e829 2b139ef 383fd05 4a382bd c7aa35a f6b4a18
+2026-10-20 10:25:48 made-up status #141 f60c19e
+2026-10-20 10:41 made-up status #139 #142 9a1cee9 f808e4a
+2026-10-20 10:45 made-up status #141 f60c19e
+2026-10-20 11:18:53 made-up status #141 f7248a0
+2026-10-20 11:22:06 made-up status #139 #140 f808e4a
+2026-10-20 11:22 made-up status #142 #149 9a1cee9
+2026-10-20T00:24:28Z made-up status #141 f7248a0
+2026-10-20 11:47:09 +1100 made-up status #125 #136 f0d36f7
+2026-10-20 12:08 made-up status #139 #150 2647543 464c34c
+2026-10-20 13:11 made-up status #150 464c34c
+2026-10-20 14:25 made-up status #139 #150 977da38 e4ba0b2
+2026-10-20 14:38 made-up status #150 977da38
+2026-10-20 14:57 made-up status #143 #144 #145 #146 #147 #148 #152 3211e43 4af9e71 6021225 7fdd780 c2e6642 cf76385 f744ed8
+2026-10-20 15:01 made-up status #139 #150 9fe5dbf a747d80
+2026-10-20 15:12:33 made-up status #150 9fe5dbf
+2026-10-20 15:21 made-up status #150 #151 9fe5dbf
+2026-10-20 15:25:13 +1100 made-up status #125 #136 2f78cd4
+2026-10-20 15:25 made-up status #149 #153 2250e86
+2026-10-20 15:41 made-up status #153 2250e86
+2026-10-20 16:01 made-up status #153 d13e482
+2026-10-20 16:04 made-up status #149 #153 d13e482
+2026-10-20 17:08 made-up status #150 53513cd 5eba093 a363d97
+2026-10-20 17:19:07 made-up status #117 6831fef a363d97
+2026-10-20 17:19 made-up status #150 3937867 53513cd 5eba093 a363d97
+2026-10-20 17:20:01 made-up status #117 6831fef a363d97
+2026-10-20 17:25 made-up status
+2026-10-20 17:29:30 +1100 made-up status #125 #136 2f78cd4 f2365d6 f7c9b23
+2026-10-20 17:57 made-up status
+2026-10-20 18:08 made-up status #128 #143 #144 #145 #146 #147 #148 #152 022a0f0 1229cc4 39af4e9 46b2d4a 4736047 669fd74 81e76c3 b3a57cf
+2026-10-20 18:19:05 made-up status #117 6831fef a363d97

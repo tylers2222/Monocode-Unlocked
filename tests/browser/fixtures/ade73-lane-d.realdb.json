@@ -1,0 +1,183 @@
+{
+ "source": "Reduced from a .backup copy of com.monocode.second/monocode.db taken 2026-10-21 06:3x AEDT (ADE-73), by change-linear/plans/ade73/extract-fixture.mjs: lane D's builder session as session_store.rs get_session_record returns it. Ids, title and prompt text are made up; the harness, the queue's length, order, keys and paused status, and the 429 error text are real.",
+ "record": {
+  "id": "builder",
+  "cwd": "/Users/test/acme",
+  "harness": "omp",
+  "model": "omp:anthropic/claude-opus-5-5",
+  "modelSettings": {
+   "fast": "false",
+   "thinking": "medium"
+  },
+  "runtimeMode": "auto",
+  "title": "Fix the parser",
+  "blocks": [
+   {
+    "id": "b-prompt",
+    "role": "user",
+    "text": "made-up prompt 1",
+    "startedAt": 1792518580701
+   },
+   {
+    "id": "b-reply",
+    "role": "assistant",
+    "text": "made-up reply"
+   },
+   {
+    "id": "b-error",
+    "role": "system",
+    "text": "429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"This request would exceed your account's rate limit. Please try again later.\"},\"request_id\":\"req_made_up\"} retry-after-ms=552000",
+    "notice": "error"
+   }
+  ],
+  "queuedMessages": [
+   {
+    "appRequestId": "app-orchestrator-request-01",
+    "attachments": [],
+    "id": "queued-01",
+    "text": "made-up follow-up 1"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-02",
+    "attachments": [],
+    "id": "queued-02",
+    "text": "made-up follow-up 2"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-03",
+    "attachments": [],
+    "id": "queued-03",
+    "text": "made-up follow-up 3"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-04",
+    "attachments": [],
+    "id": "queued-04",
+    "text": "made-up follow-up 4"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-05",
+    "attachments": [],
+    "id": "queued-05",
+    "text": "made-up follow-up 5"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-06",
+    "attachments": [],
+    "id": "queued-06",
+    "text": "made-up follow-up 6"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-07",
+    "attachments": [],
+    "id": "queued-07",
+    "text": "made-up follow-up 7"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-08",
+    "attachments": [],
+    "id": "queued-08",
+    "text": "made-up follow-up 8"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-09",
+    "attachments": [],
+    "id": "queued-09",
+    "text": "made-up follow-up 9"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-10",
+    "attachments": [],
+    "id": "queued-10",
+    "text": "made-up follow-up 10"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-11",
+    "attachments": [],
+    "id": "queued-11",
+    "text": "made-up follow-up 11"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-12",
+    "attachments": [],
+    "id": "queued-12",
+    "text": "made-up follow-up 12"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-13",
+    "attachments": [],
+    "id": "queued-13",
+    "text": "made-up follow-up 13"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-14",
+    "attachments": [],
+    "id": "queued-14",
+    "text": "made-up follow-up 14"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-15",
+    "attachments": [],
+    "id": "queued-15",
+    "text": "made-up follow-up 15"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-16",
+    "attachments": [],
+    "id": "queued-16",
+    "text": "made-up follow-up 16"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-17",
+    "attachments": [],
+    "id": "queued-17",
+    "text": "made-up follow-up 17"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-18",
+    "attachments": [],
+    "id": "queued-18",
+    "text": "made-up follow-up 18"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-19",
+    "attachments": [],
+    "id": "queued-19",
+    "text": "made-up follow-up 19"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-20",
+    "attachments": [],
+    "id": "queued-20",
+    "text": "made-up follow-up 20"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-21",
+    "attachments": [],
+    "id": "queued-21",
+    "text": "made-up follow-up 21"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-22",
+    "attachments": [],
+    "id": "queued-22",
+    "text": "made-up follow-up 22"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-23",
+    "attachments": [],
+    "id": "queued-23",
+    "text": "made-up follow-up 23"
+   },
+   {
+    "appRequestId": "app-orchestrator-request-24",
+    "attachments": [],
+    "id": "queued-24",
+    "text": "made-up follow-up 24"
+   }
+  ],
+  "queueStatus": "paused",
+  "createdAt": 1792496664286,
+  "updatedAt": 1792520470763
+ }
+}

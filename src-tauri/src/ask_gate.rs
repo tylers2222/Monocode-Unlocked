@@ -1,19 +1,94 @@
-//! The ask and ack rules (Change R plan v2, R5), with no IO. `asks.rs` loads
-//! the facts from saved rows and writes what these decide.
+//! The ask and ack rules (Change R plan v2, R5 and R5c), with no IO.
+//! `asks.rs` loads the facts from saved rows and writes what these decide.
 
-use crate::mono_gate::Level;
-use crate::mono_messages::SessionId;
+use std::fmt;
+
+use crate::mono_gate::{Level, SessionLevel};
+use crate::mono_messages::{MonoId, SessionId};
+use crate::mono_roster::MonoRole;
 
 /// Ask budget in active minutes: the default and the bounds of `due_minutes`.
 pub const DEFAULT_DUE_MINUTES: u32 = 60;
 pub const DUE_MINUTES: std::ops::RangeInclusive<u32> = 10..=480;
 
-/// A party to an ask: its level and the session that speaks for it (a
-/// Mono's chat for a Giga or Mono).
+/// Who asks or is asked (R5c). A Giga or Mono is its mono id, so it acks
+/// from any chat it has and a chat reset changes nothing. A lead or worker
+/// is its session. `mono_asks` stores it as `mono:<id>` or `session:<id>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Actor {
+    Mono(MonoId),
+    Session(SessionId),
+}
+
+impl Actor {
+    pub fn parse(stored: &str) -> Option<Self> {
+        match stored.split_once(':')? {
+            ("mono", id) => MonoId::parse(id).map(Actor::Mono),
+            ("session", id) => SessionId::parse(id).map(Actor::Session),
+            _ => None,
+        }
+    }
+
+    /// The id a `send_to` names this actor by.
+    pub fn send_to(&self) -> &str {
+        match self {
+            Actor::Mono(id) => id.as_str(),
+            Actor::Session(id) => id.as_str(),
+        }
+    }
+}
+
+impl fmt::Display for Actor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Actor::Mono(id) => write!(f, "mono:{}", id.as_str()),
+            Actor::Session(id) => write!(f, "session:{}", id.as_str()),
+        }
+    }
+}
+
+/// A party to an ask, built from a Mono's role or a session's level, so a
+/// Giga or Mono is always a `mono:` actor and a lead or worker a `session:`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Party {
-    pub level: Level,
-    pub session: SessionId,
+    level: Level,
+    actor: Actor,
+}
+
+impl Party {
+    pub fn mono(role: MonoRole, mono: MonoId) -> Self {
+        let level = match role {
+            MonoRole::Giga => Level::Giga,
+            MonoRole::Mono => Level::Mono,
+        };
+        Party {
+            level,
+            actor: Actor::Mono(mono),
+        }
+    }
+
+    pub fn session(level: SessionLevel, session: SessionId) -> Self {
+        let level = match level {
+            SessionLevel::Lead => Level::Lead,
+            SessionLevel::Worker { lead } => Level::Worker { lead },
+        };
+        Party {
+            level,
+            actor: Actor::Session(session),
+        }
+    }
+
+    pub fn level(&self) -> &Level {
+        &self.level
+    }
+
+    pub fn actor(&self) -> &Actor {
+        &self.actor
+    }
+
+    pub fn into_actor(self) -> Actor {
+        self.actor
+    }
 }
 
 /// Plan section 1: Giga to a Mono, Mono to a lead it started, lead to its
@@ -23,7 +98,9 @@ pub fn is_direct_child(parent: &Party, child: &Party, started_by_parent: bool) -
     match (&parent.level, &child.level) {
         (Level::Giga, Level::Mono) => true,
         (Level::Mono, Level::Lead) => started_by_parent,
-        (Level::Lead, Level::Worker { lead }) => *lead == parent.session,
+        (Level::Lead, Level::Worker { lead }) => {
+            matches!(&parent.actor, Actor::Session(session) if session == lead)
+        }
         _ => false,
     }
 }
@@ -61,19 +138,21 @@ pub fn decide_ask(
     Ok((parent.level != Level::Giga).then_some(active_ms + minutes * 60_000))
 }
 
-/// `mono_asks.state`.
+/// `mono_asks.state`. Nothing expires (R5c): an open ask stays open until
+/// its child acks it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     Open,
     Acked,
-    Dropped,
 }
 
-/// An ask as `ack` reads it.
+/// An ask as `ack` reads it: its state, who asked (where the ack goes) and
+/// who may ack it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AskState {
     pub state: State,
-    pub child_session: SessionId,
+    pub parent: Actor,
+    pub child: Actor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,22 +170,21 @@ impl AckRefused {
                 "This ask was already acked. A new ask from your parent has a new id."
             }
             AckRefused::NotYours => {
-                "This ask is not yours: only the session it was sent to can ack it."
+                "This ask is not yours: only the Mono or session it was sent to can ack it."
             }
         }
     }
 }
 
 /// Why the guarded ack `UPDATE` changed no row, from the ask as it stands
-/// and the acking session. `Ok` is an ask this caller may ack.
-pub fn decide_ack(ask: &AskState, caller: &SessionId) -> Result<(), AckRefused> {
-    if &ask.child_session != caller {
+/// and the acking actor. `Ok` is an ask this caller may ack.
+pub fn decide_ack(ask: &AskState, caller: &Actor) -> Result<(), AckRefused> {
+    if &ask.child != caller {
         return Err(AckRefused::NotYours);
     }
     match ask.state {
         State::Open => Ok(()),
         State::Acked => Err(AckRefused::AlreadyAcked),
-        State::Dropped => Err(AckRefused::NoOpenAsk),
     }
 }
 
@@ -114,15 +192,16 @@ pub fn decide_ack(ask: &AskState, caller: &SessionId) -> Result<(), AckRefused> 
 mod tests {
     use super::*;
 
-    fn party(level: Level, session: &str) -> Party {
-        Party {
-            level,
-            session: SessionId::parse(session).unwrap(),
-        }
+    fn mono(role: MonoRole, id: &str) -> Party {
+        Party::mono(role, MonoId::parse(id).unwrap())
     }
 
-    fn worker_of(lead: &str) -> Level {
-        Level::Worker {
+    fn session(level: SessionLevel, id: &str) -> Party {
+        Party::session(level, SessionId::parse(id).unwrap())
+    }
+
+    fn worker_of(lead: &str) -> SessionLevel {
+        SessionLevel::Worker {
             lead: SessionId::parse(lead).unwrap(),
         }
     }
@@ -132,11 +211,11 @@ mod tests {
     // worker, a worker anyone), or a direct child is refused.
     #[test]
     fn only_a_direct_child_can_be_asked() {
-        let giga = party(Level::Giga, "giga-chat");
-        let mono = party(Level::Mono, "mono-chat");
-        let lead = party(Level::Lead, "lead");
-        let worker = party(worker_of("lead"), "worker");
-        let others = party(worker_of("other"), "w2");
+        let giga = mono(MonoRole::Giga, "giga");
+        let mono = mono(MonoRole::Mono, "mono");
+        let lead = session(SessionLevel::Lead, "lead");
+        let worker = session(worker_of("lead"), "worker");
+        let others = session(worker_of("other"), "w2");
         for (parent, child, started, direct) in [
             (&giga, &mono, false, true),
             (&mono, &lead, true, true),
@@ -160,10 +239,10 @@ mod tests {
     // not the active time now plus its budget.
     #[test]
     fn the_due_time_is_active_time_plus_the_budget_and_none_for_a_giga() {
-        let mono = party(Level::Mono, "mono-chat");
-        let lead = party(Level::Lead, "lead");
-        let worker = party(worker_of("lead"), "worker");
-        let giga = party(Level::Giga, "g");
+        let giga = mono(MonoRole::Giga, "g");
+        let mono = mono(MonoRole::Mono, "mono");
+        let lead = session(SessionLevel::Lead, "lead");
+        let worker = session(worker_of("lead"), "worker");
         assert_eq!(decide_ask(&giga, &mono, false, Some(30), 5_000), Ok(None));
         assert_eq!(
             decide_ask(&mono, &lead, true, None, 5_000),
@@ -175,28 +254,29 @@ mod tests {
         );
     }
 
-    // Defect: an ack of another session's ask, of an acked ask or of a
-    // dropped ask is told the wrong reason.
+    // Defect: an ack of another actor's ask or of an acked ask is told the
+    // wrong reason, or a Mono's ask is the session's of the same id.
     #[test]
     fn an_ack_that_changes_no_row_names_why() {
-        let me = SessionId::parse("worker").unwrap();
+        let me = Actor::parse("session:worker").unwrap();
         let open = |child: &str| AskState {
             state: State::Open,
-            child_session: SessionId::parse(child).unwrap(),
-        };
-        assert_eq!(decide_ack(&open("w2"), &me), Err(AckRefused::NotYours));
-        let with = |state| AskState {
-            state,
-            ..open("worker")
+            parent: Actor::parse("session:lead").unwrap(),
+            child: Actor::parse(child).unwrap(),
         };
         assert_eq!(
-            decide_ack(&with(State::Acked), &me),
-            Err(AckRefused::AlreadyAcked)
+            decide_ack(&open("session:w2"), &me),
+            Err(AckRefused::NotYours)
         );
         assert_eq!(
-            decide_ack(&with(State::Dropped), &me),
-            Err(AckRefused::NoOpenAsk)
+            decide_ack(&open("mono:worker"), &me),
+            Err(AckRefused::NotYours)
         );
-        assert_eq!(decide_ack(&open("worker"), &me), Ok(()));
+        let acked = AskState {
+            state: State::Acked,
+            ..open("session:worker")
+        };
+        assert_eq!(decide_ack(&acked, &me), Err(AckRefused::AlreadyAcked));
+        assert_eq!(decide_ack(&open("session:worker"), &me), Ok(()));
     }
 }
