@@ -13,6 +13,24 @@ export function isEditingQueuedHead(session: Session): boolean {
   return Boolean(head && session.editingQueuedMessageId === head.id);
 }
 
+/**
+ * Add `message` at the end of the queue, stamped with when it was queued. A
+ * paused queue stays paused; any other queue sends.
+ */
+export function enqueueQueuedMessage(
+  session: Session,
+  message: QueuedMessage,
+): Session {
+  return {
+    ...session,
+    queuedMessages: [
+      ...(session.queuedMessages ?? []),
+      { ...message, queuedAt: Date.now() },
+    ],
+    queueStatus: session.queueStatus === "paused" ? "paused" : "active",
+  };
+}
+
 export function dequeueQueuedMessage(
   session: Session,
   messageId: string,
@@ -25,6 +43,7 @@ export function dequeueQueuedMessage(
     ...session,
     queuedMessages: remains ? queuedMessages : undefined,
     queueStatus: remains ? session.queueStatus : undefined,
+    queuePause: remains ? session.queuePause : undefined,
     editingQueuedMessageId:
       session.editingQueuedMessageId === messageId
         ? undefined
@@ -264,12 +283,33 @@ export function withoutPauseReason(
 
 export const QUIT_PAUSE_NOTICE = "Paused when MonoCode quit";
 
-/** Hold what is left of the queue. A new pause replaces the reason for an old one. */
-export function pauseQueue(session: Session): Session {
+/**
+ * Hold what is left of the queue. A new pause replaces the reason for an old
+ * one; `reason` marks a pause that lifts on its own (`resumeAfterFailedTurn`).
+ */
+export function pauseQueue(session: Session, reason?: "error"): Session {
   if (!session.queuedMessages?.length) return session;
   return {
     ...session,
     queueStatus: "paused",
+    queuePause: reason,
+    queuedMessages: withoutPauseReason(session.queuedMessages),
+  };
+}
+
+/**
+ * A new turn ends the pause a failed turn put on the queue: the provider
+ * takes turns again, so the queue sends after this turn, as Resume does.
+ * The reason is the queue's, so items queued after the failure resume too.
+ * A pause the user or a quit made still waits for Resume.
+ */
+export function resumeAfterFailedTurn(session: Session): Session {
+  if (session.queueStatus !== "paused" || session.queuePause !== "error")
+    return session;
+  return {
+    ...session,
+    queueStatus: "resuming",
+    queuePause: undefined,
     queuedMessages: withoutPauseReason(session.queuedMessages),
   };
 }

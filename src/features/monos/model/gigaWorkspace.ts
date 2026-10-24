@@ -166,7 +166,7 @@ export function ensureProblem(report: EnsureReport): string | undefined {
   return report.error ?? report.warning;
 }
 
-/** A Giga chat turn running this long is steered once to move its work. */
+/** A Mono or Giga chat turn running this long is steered once to move its work. */
 export const TURN_GUARD_LIMIT_MS = 3 * 60_000;
 /** How long after a turn that could not take the steer it is checked once more. */
 export const TURN_GUARD_RETRY_MS = 30_000;

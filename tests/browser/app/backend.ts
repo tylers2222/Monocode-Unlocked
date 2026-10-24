@@ -64,6 +64,7 @@ type SessionUpsert = SessionSummary & {
   blocks: Block[];
   queuedMessages?: unknown[];
   queueStatus?: string;
+  queuePause?: string;
   contextUsed?: number;
   contextWindow?: number;
   workFolder?: string;
@@ -85,6 +86,14 @@ export type FakeStore = {
   blocks: Record<string, Block[]>;
   /** session_store.rs `work_folder`: on the record, not the summary. */
   workFolders: Record<string, string>;
+  /**
+   * session_store.rs `queued_messages_json`, `queue_status` and
+   * `queue_pause`: on the record, not the summary.
+   */
+  queues: Record<
+    string,
+    Pick<SessionUpsert, "queuedMessages" | "queueStatus" | "queuePause">
+  >;
   automations: Automation[];
   /** milestones.rs rows of every project. */
   milestones: Milestone[];
@@ -93,6 +102,8 @@ export type FakeStore = {
   approvals: Approval[];
   /** sessionStore.ts `saveWorkspaceSnapshot`: the open tabs, as last saved. */
   workspace: unknown;
+  /** session_store.rs `workspace_snapshot.updated_at`: when `workspace` was read. */
+  workspaceReadAt?: number;
   /** session_store.rs `in_flight_sessions`: what the last window had running. */
   inFlight: { sessionId: string; cwd: string }[];
 };
@@ -252,6 +263,7 @@ function sessionRecord(store: FakeStore, sessionId: unknown) {
     modelSettings: {},
     blocks: store.blocks[row.id] ?? [],
     queuedMessages: [],
+    ...store.queues[row.id],
   };
 }
 
@@ -266,8 +278,9 @@ const upsertSession: Handler = (store, { session }) => {
     modelSettings: _modelSettings,
     providerAccountId: _providerAccountId,
     blocks,
-    queuedMessages: _queuedMessages,
-    queueStatus: _queueStatus,
+    queuedMessages,
+    queueStatus,
+    queuePause,
     contextUsed: _contextUsed,
     contextWindow: _contextWindow,
     workFolder,
@@ -275,6 +288,7 @@ const upsertSession: Handler = (store, { session }) => {
   } = session as SessionUpsert;
   const kept = store.sessions.find((row) => row.id === summary.id);
   store.blocks[summary.id] = blocks;
+  store.queues[summary.id] = { queuedMessages, queueStatus, queuePause };
   if (workFolder) store.workFolders[summary.id] = workFolder;
   else delete store.workFolders[summary.id];
   const row = sessionRow({
@@ -327,9 +341,17 @@ const HANDLERS: Record<string, Handler> = {
   ),
   home_dir: (store) => store.home,
   default_cwd: (store) => store.home,
-  workspace_get_snapshot: (store) => store.workspace,
-  workspace_set_snapshot: (store, { snapshot }) => {
-    store.workspace = snapshot;
+  // The page is one window, so its own row is the only one.
+  workspace_get_snapshot: (store) => (store.workspace ? [store.workspace] : []),
+  // session_store.rs snapshot_supersedes: a snapshot read before the stored
+  // one loses, unless the stored time is after now (the clock stepped back).
+  workspace_set_snapshot: (store, { snapshot, readAt }) => {
+    const stored = store.workspaceReadAt;
+    const incoming = readAt as number;
+    if (stored === undefined || incoming >= stored || stored > Date.now()) {
+      store.workspace = snapshot;
+      store.workspaceReadAt = incoming;
+    }
     return null;
   },
   session_list_in_flight: (store) => store.inFlight,
@@ -808,6 +830,7 @@ function storeFrom(seed: FakeSeed): FakeStore {
     rosterRevision: 1,
     blocks: seed.blocks ?? {},
     workFolders: seed.workFolders ?? {},
+    queues: {},
     automations: seed.automations ?? [],
     milestones: seed.milestones ?? [],
     milestoneSettings: seed.milestoneSettings ?? {},
