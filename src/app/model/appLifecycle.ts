@@ -41,7 +41,9 @@ import {
   restoreWorkspacePins,
   workspaceSnapshot,
   type WindowWorkspace,
+  type WorkspaceSnapshot,
 } from "../../features/workspace/model/workspaceSnapshot";
+import { worktreeDeletedExternally } from "../../features/source-control/model/worktrees";
 import { lastProjectPath, normalizeProjectPath, sameProjectPath } from "../../features/projects/model/recents";
 import {
   savedMonoCompletions,
@@ -234,15 +236,16 @@ async function loadResumedWorkspaceOnce(): Promise<QuitWorkspace | null> {
   for (const ref of refs) ids.add(ref.sessionId);
 
   const loaded = new Map<string, Session>();
-  await Promise.all(
-    [...ids].map(async (id) => {
+  const [present] = await Promise.all([
+    snapshot && withoutDeletedWorktrees(snapshot),
+    ...[...ids].map(async (id) => {
       const record = await getSession(id, { restart: true }).catch(() => null);
       if (record) loaded.set(id, record);
     }),
-  );
+  ]);
 
-  let hydrated = snapshot
-    ? hydrateWorkspaceSnapshot(snapshot, loaded, interrupted)
+  let hydrated = present
+    ? hydrateWorkspaceSnapshot(present, loaded, interrupted)
     : null;
   if (!hydrated && refs.length > 0) {
     const sessions: Session[] = [];
@@ -281,6 +284,22 @@ async function loadResumedWorkspaceOnce(): Promise<QuitWorkspace | null> {
     );
   }
   return workspace;
+}
+
+/** The switcher cannot list a worktree deleted outside the app, so a tab saved
+ * there comes back in its project folder. */
+async function withoutDeletedWorktrees(
+  snapshot: WorkspaceSnapshot,
+): Promise<WorkspaceSnapshot> {
+  const deleted = await Promise.all(
+    (snapshot.tabWorkspaces ?? []).map(({ path }) =>
+      worktreeDeletedExternally(path).catch(() => false),
+    ),
+  );
+  return {
+    ...snapshot,
+    tabWorkspaces: snapshot.tabWorkspaces?.filter((_, index) => !deleted[index]),
+  };
 }
 
 export function bindResumedSessions(sessions: Session[]): void {
@@ -335,6 +354,7 @@ export async function persistQuitState(
   workspace: QuitWorkspace,
   mode: "quit" | "unload",
 ): Promise<void> {
+  const readAt = Date.now();
   const refs = inFlightRefs(workspace.sessions, workspace.tabs);
   const interrupted = new Set(refs.map((ref) => ref.sessionId));
   // A quit ends the process, so a swallowed write is work that never comes
@@ -352,7 +372,7 @@ export async function persistQuitState(
       await write(upsertSession(payload));
     }),
   );
-  await write(saveQuitSnapshot(workspace));
+  await write(saveQuitSnapshot(workspace, readAt));
   // Vite/webview reload must not wipe a restored snapshot: those chats are idle
   // in this process until Continue runs.
   if (mode === "quit" || refs.length > 0) {
@@ -361,20 +381,27 @@ export async function persistQuitState(
 }
 
 /** The workspace snapshot with the Mono completions the window still owes. */
-function saveQuitSnapshot(workspace: QuitWorkspace): Promise<void> {
-  return saveWorkspaceSnapshot({
-    ...workspaceSnapshot([workspace]),
-    monoCompletions: workspace.monoCompletions,
-  });
+function saveQuitSnapshot(
+  workspace: QuitWorkspace,
+  readAt: number,
+): Promise<void> {
+  return saveWorkspaceSnapshot(
+    {
+      ...workspaceSnapshot([workspace]),
+      monoCompletions: workspace.monoCompletions,
+    },
+    readAt,
+  );
 }
 
 async function persistBootingResume(workspace: QuitWorkspace): Promise<void> {
+  const readAt = Date.now();
   await Promise.all(
     workspace.sessions
       .filter(shouldPersistSession)
       .map((session) => upsertSession(session).catch(() => null)),
   );
-  await saveQuitSnapshot(workspace).catch(() => undefined);
+  await saveQuitSnapshot(workspace, readAt).catch(() => undefined);
   await replaceInFlightSessions(
     workspace.sessions
       .filter(wasTurnInterrupted)

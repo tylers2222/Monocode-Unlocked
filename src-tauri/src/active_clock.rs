@@ -1,6 +1,6 @@
 //! The active clock (Change R plan v2, R2; research A). One stored row,
 //! `mono_clock.active_ms`, counts the time the app runs while the computer
-//! is awake. Each ask will be timed against it (`due_active_ms`), so app
+//! is awake. Each ask is timed against it (`due_active_ms`), so app
 //! downtime and sleep never make a deadline pass. A 1 s tick adds the
 //! uptime that passed, read straight from a clock that stops during sleep,
 //! never from `Instant` or a Tokio timer (Rust leaves their sleep behaviour
@@ -128,7 +128,8 @@ impl<C: Clock> ActiveClock<C> {
 
     /// Adds the uptime since the last tick, at most 30 s; logs a sleep when
     /// the monotonic clock moved further than uptime; writes the row every
-    /// 5 s of active time and after a sleep.
+    /// 5 s of active time and after a sleep. Then it enqueues the reminders
+    /// that fell due (`ask_scheduler::run`).
     pub(crate) fn tick(&mut self, conn: &Connection) -> rusqlite::Result<()> {
         let now = self.clock.now();
         let (uptime, monotonic) = (now.uptime_ns, now.monotonic_ns);
@@ -154,6 +155,7 @@ impl<C: Clock> ActiveClock<C> {
             )?;
             self.persisted_ns = self.active_ns;
         }
+        crate::ask_scheduler::run(conn, self.active_ms())?;
         Ok(())
     }
 

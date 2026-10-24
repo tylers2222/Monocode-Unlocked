@@ -944,6 +944,13 @@ const MilestonesView = lazySurface(
   },
   { suspense: false },
 );
+const ApprovalsView = lazySurface(
+  async () => {
+    const module = await import("../features/approvals/ui/ApprovalsView");
+    return { default: module.ApprovalsView };
+  },
+  { suspense: false },
+);
 
 type LinkedWorkItemPanelState = {
   item: LinkedWorkItem;
@@ -1662,6 +1669,7 @@ function Workspace({
         LinkedWorkItemPanel.preload,
         AutomationsView.preload,
         MilestonesView.preload,
+        ApprovalsView.preload,
         listAutomations,
         ...(notesEnabled ? [NotesView.preload, loadNotes] : []),
       ]),
@@ -2659,6 +2667,7 @@ function Workspace({
   // quit, close and reload paths save.
   useEffect(() => {
     const save = workspaceSave.current;
+    const readAt = Date.now();
     const snapshot = workspaceSnapshot([readWindowWorkspace()]);
     const key = workspaceSnapshotKey(snapshot);
     if (save.pending?.key === key) return;
@@ -2668,7 +2677,7 @@ function Workspace({
     const timer = window.setTimeout(() => {
       save.saved = key;
       save.pending = undefined;
-      void saveWorkspaceSnapshot(snapshot).catch(() => undefined);
+      void saveWorkspaceSnapshot(snapshot, readAt).catch(() => undefined);
     }, 250);
     save.pending = { key, timer };
   }, [
@@ -7519,10 +7528,7 @@ function Workspace({
           },
           fallbackError: `${current.harness} could not steer the active turn`,
           fail: (message) => {
-            enqueueHarnessEvent(sessionId, {
-              type: "session.error",
-              message,
-            });
+            enqueueHarnessEvent(sessionId, { type: "steer.failed", message });
             flushHarnessEvents();
           },
         });
@@ -14040,6 +14046,17 @@ function Workspace({
                   sessions={sidebarHistory}
                   onClose={onLeaveAutomations}
                   onToggleSidebar={onToggleSidebar}
+                />
+              ) : null}
+              {automationsViewOpen && automationsPage === "approvals" ? (
+                <ApprovalsView
+                  besideRail={projectRailOpen || compactProjectRail}
+                  compactRail={compactRailActive}
+                  cwd={projectCwd}
+                  recents={recents}
+                  onClose={onLeaveAutomations}
+                  onToggleSidebar={onToggleSidebar}
+                  onOpenMono={onOpenMono}
                 />
               ) : null}
               {automationsViewOpen && automationsPage === "automations" ? (
