@@ -202,6 +202,13 @@ export function applyHarnessEvent(
           notice: "error",
         },
       );
+    case "steer.failed":
+      return appendBlock(session, {
+        id: crypto.randomUUID(),
+        role: "system",
+        text: event.message,
+        notice: "error",
+      });
     case "session.providerBound":
       return { ...session, providerSessionId: event.providerSessionId };
     case "turn.started": {

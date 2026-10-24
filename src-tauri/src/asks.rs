@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::ask_gate::{self, AckRefused, Actor, AskState, Party, State};
+use crate::ask_scheduler;
 use crate::mono_gate::{self, Caller, Input, Refusal, Speaker};
 use crate::mono_messages::{
     self, Live, MessageId, MonoId, MonoMessage, RequestId, SessionId, Status, Submitted, Tool,
@@ -311,8 +312,8 @@ pub fn ask(
         };
         tx.execute(
             "INSERT INTO mono_asks (id, parent_actor, child_actor, parent_level,
-               child_level, state, due_active_ms, created_wall_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'open', ?6, ?7)",
+               child_level, state, due_active_ms, next_due_active_ms, created_wall_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'open', ?6, ?7, ?8)",
             params![
                 messages[0].message.id.as_str(),
                 parent.actor().to_string(),
@@ -320,6 +321,7 @@ pub fn ask(
                 parent.level().rank(),
                 child.level().rank(),
                 due,
+                due.and_then(|due| ask_scheduler::next_due(due, 0)),
                 now
             ],
         )?;
@@ -397,6 +399,12 @@ pub fn ack(
             let reason = ask_gate::decide_ack(&ask, &me).err();
             return refused(reason.unwrap_or(AckRefused::NoOpenAsk));
         }
+        // Spending the key withdraws every unsent outbox row of the ask, a
+        // claimed one too: nothing about a spent key goes out.
+        tx.execute(
+            "DELETE FROM mono_outbox WHERE ask_id = ?1 AND sent_at IS NULL",
+            [ask_id.as_str()],
+        )?;
         tx.execute(
             "INSERT INTO mono_ask_events (ask_id, kind, seq, message_id, at_active_ms, at_wall_ms)
              VALUES (?1, 'ack', 1, ?2, ?3, ?4)",

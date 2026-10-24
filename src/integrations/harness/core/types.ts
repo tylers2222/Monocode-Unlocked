@@ -15,6 +15,8 @@ export type HarnessEvent =
   | { type: "session.started" }
   | { type: "session.ended"; code?: number | null }
   | { type: "session.error"; message: string }
+  /** The provider refused a steer; the turn it was meant for runs on. */
+  | { type: "steer.failed"; message: string }
   | { type: "session.providerBound"; providerSessionId: string }
   | { type: "turn.started"; providerTurnId: string }
   | { type: "turn.ready" }

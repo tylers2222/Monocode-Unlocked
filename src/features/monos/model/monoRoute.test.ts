@@ -44,6 +44,7 @@ import {
   renderMonoMessage,
   renderMonoNotice,
   type Caller,
+  type Carries,
   type Handle,
   type MessageId,
   type MonoId,
@@ -1268,6 +1269,37 @@ it("renders the tags the agents read", () => {
   );
 });
 
+// Exists only for gate/mutation (R6 one-off): the real-app scenario proves the
+// tags reach the agent; this pins the rounding and each kind's attributes.
+it("renders an ask's ask_id and due_in, and an ack's ack_of", () => {
+  const tags = (carries: Carries | null) =>
+    renderMonoMessage(
+      {
+        id: "m_aaaaaaaaaaaa" as MessageId,
+        fromMonoId: "mono-a" as MonoId,
+        fromSessionId: "mono-chat" as SessionId,
+        body: "Go",
+        wantingReply: false,
+        intent: "new",
+        replyTo: null,
+        scope: null,
+        carries,
+      },
+      undefined,
+    )
+      .split("\n")[0]
+      .replace(/^.*wanting_reply="false"/, "");
+  const ask = (dueInMs: number | null) => tags({ kind: "ask", dueInMs });
+  expect(ask(29 * 60_000 + 1)).toBe(' ask_id="m_aaaaaaaaaaaa" due_in="30m">');
+  expect(ask(30 * 60_000)).toBe(' ask_id="m_aaaaaaaaaaaa" due_in="30m">');
+  expect(ask(-90_000)).toBe(' ask_id="m_aaaaaaaaaaaa" due_in="0m">');
+  expect(ask(null)).toBe(' ask_id="m_aaaaaaaaaaaa">');
+  expect(tags({ kind: "ack", askId: "m_bbbbbbbbbbbb" as MessageId })).toBe(
+    ' ack_of="m_bbbbbbbbbbbb">',
+  );
+  expect(tags(null)).toBe(">");
+});
+
 // Design 13. Defect: a lead's or worker's message reads as a deleted Mono's,
 // with no session_id to send an answer to and no level; or a deleted Mono's
 // message reads as a session's.
@@ -1849,7 +1881,13 @@ it("names a late answer's target by its message id in the Giga's turn", async ()
   ];
   const { host } = world([chat("giga-chat", { busy: true }), chat("a-chat")]);
   const deliver = vi.fn((_: HandedOff) => true);
-  await handOff(host, "giga-chat", "m_bbbbbbbbbbbb" as MessageId, "steer", deliver);
+  await handOff(
+    host,
+    "giga-chat",
+    "m_bbbbbbbbbbbb" as MessageId,
+    "steer",
+    deliver,
+  );
   expect(deliver.mock.calls[0][0].turnId).toBe("run-giga-chat");
   expect(deliver.mock.calls[0][0].text).toContain(
     `\n[steer → ${target.id} · "Is CI green?"]\nIt is green now\n`,

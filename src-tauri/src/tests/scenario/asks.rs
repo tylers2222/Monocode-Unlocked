@@ -65,7 +65,7 @@ fn carried(submitted: Submitted) -> (MessageId, Option<Carries>) {
 }
 
 /// The ask row a call wrote; panics on anything else.
-fn written(submitted: Submitted) -> MessageId {
+pub(super) fn written(submitted: Submitted) -> MessageId {
     carried(submitted).0
 }
 

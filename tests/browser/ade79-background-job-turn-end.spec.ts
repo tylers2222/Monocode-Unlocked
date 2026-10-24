@@ -6,7 +6,7 @@ import type { Page } from "@playwright/test";
 import type { SessionSummary } from "../../src/features/sessions/data/sessionStore";
 import type { Block } from "../../src/features/sessions/model/session";
 import { type AppShell, expect, test } from "./app/fixture";
-import { OMP, bridgeOmp, ompHandlers, type ModelRequest } from "./app/ompBridge";
+import { bridgeOmp, needsOmp, ompHandlers, type ModelRequest } from "./app/ompBridge";
 
 const PROJECT = "/Users/test/acme";
 const SESSION = "s-1";
@@ -51,6 +51,8 @@ type OmpRig = {
   openStopGate: () => void;
   /** Resolves once omp's session_stop hook is waiting on the gate. */
   stopHeld: () => Promise<void>;
+  /** Resolves once the session's omp is up. The app starts it at the first send. */
+  ready: Promise<void>;
 };
 
 /**
@@ -82,7 +84,7 @@ export default function (pi) {
 `,
   );
   const holds = new Map<Reply, { reached: () => void; released: Promise<void> }>();
-  await bridgeOmp(page, app, {
+  const { ready } = await bridgeOmp(page, app, {
     dir,
     args: gateStop ? ["--no-extensions", "-e", extension] : [],
     model: async ({ messages, tools }) => {
@@ -117,6 +119,7 @@ export default function (pi) {
     stopHeld: async () => {
       while (!existsSync(held)) await sleep(25);
     },
+    ready: ready(SESSION),
   };
 }
 
@@ -179,11 +182,15 @@ async function expectTurnEnded(page: Page, text: string, reply: Reply) {
   await soft
     .poll(() => savedReply(page, reply), `"${TEXT[reply]}" is saved at once`)
     .toBe(true);
-  const block = await opener(page, text);
-  soft(block?.durationMs, `the turn "${text}" has its duration`).toBeDefined();
+  await soft
+    .poll(
+      async () => (await opener(page, text))?.durationMs,
+      `the turn "${text}" has its duration`,
+    )
+    .toBeDefined();
 }
 
-test.skip(!OMP, "needs the omp binary on PATH");
+needsOmp();
 
 test("an omp turn that leaves a background job running ends when omp's turn ends", async ({
   app,
@@ -193,12 +200,16 @@ test("an omp turn that leaves a background job running ends when omp's turn ends
   await openSession(page, app);
 
   const watching = omp.hold("watching");
+  const sentAt = Date.now();
   await send(page, "START the watcher");
+  await omp.ready;
+  // The duration counts omp's cold start, which is not the app's to bound.
+  const coldStart = Date.now() - sentAt;
   await holdFor(page, watching);
   await expectTurnEnded(page, "START the watcher", "watching");
   const startTurn = (await opener(page, "START the watcher"))?.durationMs ?? NaN;
   expect
-    .soft(startTurn - HOLD_MS, "the duration ends at omp's last stop, not later")
+    .soft(startTurn - HOLD_MS - coldStart, "the duration ends at omp's last stop, not later")
     .toBeLessThan(5_000);
   expect.soft(startTurn).toBeGreaterThanOrEqual(HOLD_MS);
 
@@ -235,6 +246,8 @@ test("a message sent while omp answers a finished background job runs as the nex
   const omp = await startOmp(page, app);
   await openSession(page, app);
   await send(page, "START the watcher");
+  // The turn-end checks time the app, not omp's cold start.
+  await omp.ready;
   await expectTurnEnded(page, "START the watcher", "watching");
 
   // omp starts its own run for the job's result and waits on the model.

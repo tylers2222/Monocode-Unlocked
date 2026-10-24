@@ -5,6 +5,7 @@
 // contains, and ends the turn.
 //
 // script.json: {"app": "<monocode binary>", "rules": [{"match": "...",
+//   "exec": [["sqlite3", "x.db", ".tables"]],
 //   "calls": [{"tool": "send_message", "arguments": {...}}], "reply": "..."}]}
 // Each call goes through `<app> app-mcp`, the app's MCP server, with the app
 // token this process got from the app. A call with "action" instead of
@@ -12,7 +13,9 @@
 // argument "$ask_id" or "$ack_of" is that attribute of the prompt's
 // <mono_message>; "$prev.<field>" is that field of the previous call's
 // result. log.jsonl gets one line per prompt ({"prompt", "rule", "steer"})
-// and per call ({"tool" or "action", "input", "result"}).
+// and per call ({"tool" or "action", "input", "result"}). Each exec runs in
+// the agent's folder without a shell and logs {"exec", "code", "stdout",
+// "bytes", "stderr"}.
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -105,6 +108,17 @@ async function runTurn(text, steer) {
   const rule = script.rules.find((candidate) => text.includes(candidate.match));
   log({ prompt: text, rule: rule?.match ?? null, steer });
   if (!rule) return "";
+  for (const [program, ...rest] of rule.exec ?? []) {
+    const run = spawnSync(program, rest, { encoding: "latin1" });
+    const stdout = run.stdout ?? "";
+    log({
+      exec: [program, ...rest],
+      code: run.status,
+      stdout: stdout.slice(0, 400),
+      bytes: stdout.length,
+      stderr: (run.stderr ?? String(run.error)).slice(0, 400),
+    });
+  }
   const server = mcp(script.app);
   let prev;
   for (const { tool, action, arguments: raw } of rule.calls ?? []) {
