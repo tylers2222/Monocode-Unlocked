@@ -25,7 +25,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args: Row = {}) => {
     switch (command) {
       case "workspace_get_snapshot":
-        return store.snapshot;
+        return [store.snapshot];
       case "workspace_set_snapshot":
         store.snapshot = JSON.parse(JSON.stringify(args.snapshot));
         return null;
