@@ -277,7 +277,8 @@ Actions:
                   must belong to the chosen project.
   monos.list     {}  Mono or habit only. The Monos in MonoCode, with id,
                   name, role (giga or mono), projects, busy, queued,
-                  hasConversation, updatedAt and self (true for you).
+                  queuePaused (its queue sends nothing until someone resumes
+                  it), hasConversation, updatedAt and self (true for you).
   monos.get      {"monoId":"..."}  Mono or habit only. One Mono as monos.list
                   shows it, plus the harness and model its chat runs on (null
                   until it has a chat) and its messageAllowlist. Unknown IDs
@@ -319,8 +320,9 @@ Actions:
                   reply_to and scope. Answer a waiting message with
                   messages.reply. continue is for users only. Returns
                   message_id, status (open or delivered; dropped when a steer
-                  missed its turn), delivery (submit, queue, steer, or
-                  dropped) and hop. Limits for every sender: 6 messages to
+                  missed its turn), delivery (submit, queue, steer, dropped,
+                  or paused: the receiver's queue sends nothing until someone
+                  resumes it) and hop. Limits for every sender: 6 messages to
                   one recipient in 10 minutes (rate_limited; replies and
                   refused calls do not count), chains of replies and steers
                   4 deep (hop_limit), and 8000 characters (too_large). Codes:

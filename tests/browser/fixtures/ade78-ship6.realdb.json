@@ -1,0 +1,78 @@
+{
+  "fork": {
+    "id": "bf5b3c41-a4b3-480e-a4db-0a36d5105810",
+    "role": "mono",
+    "data": {
+      "name": "Test Fork Mono",
+      "mascot": "skull",
+      "color": "hsl(330 70% 62%)",
+      "projects": [
+        "/Users/test/fork-project"
+      ],
+      "sessionId": "86984142-5f1a-4018-af62-ddb105cb6cb4"
+    },
+    "chat": {
+      "summary": {
+        "id": "86984142-5f1a-4018-af62-ddb105cb6cb4",
+        "cwd": "/Users/test",
+        "harness": "omp",
+        "model": "omp:default",
+        "runtimeMode": "auto",
+        "title": "Test Fork Mono",
+        "providerSessionId": "01a15a19-2330-7380-9b56-f20373c906a1"
+      },
+      "queueStatus": "active",
+      "queued": [
+        "m_thewmjokq7f7",
+        "m_lm5nrnf45y42",
+        "mono-completion-app-86984142-5f1a-4018-af62-ddb105cb6cb4-3e7a7344-c7af-490d-9ddc-f8ad6d59ba73",
+        "m_dgviqbjrzcrm",
+        "mono-completion-app-86984142-5f1a-4018-af62-ddb105cb6cb4-3f5fb508-9696-43e8-a05a-5339aa5773ea",
+        "mono-completion-app-86984142-5f1a-4018-af62-ddb105cb6cb4-231bf7d7-8375-42a7-9975-77d7ad816f81",
+        "mono-completion-app-86984142-5f1a-4018-af62-ddb105cb6cb4-f4d220bd-5c39-4a7c-88e3-b5a96ac1fbb2",
+        "mono-completion-app-86984142-5f1a-4018-af62-ddb105cb6cb4-9e152fed-f2b0-4f92-87b3-90654142d0a3",
+        "mono-completion-app-86984142-5f1a-4018-af62-ddb105cb6cb4-049a7dbb-ccba-4169-b553-ed4c14d40fab"
+      ]
+    }
+  },
+  "general": {
+    "id": "00d1806e-c6c7-4ecd-8ac2-b990280542d0",
+    "role": "giga",
+    "data": {
+      "name": "Test Lead Giga",
+      "mascot": "invader",
+      "color": "hsl(211 92% 62%)",
+      "projects": [
+        "/Users/test/lead-project"
+      ],
+      "sessionId": "ff815f76-adb4-411d-9a9a-ecfceb01407a"
+    },
+    "chat": {
+      "summary": {
+        "id": "ff815f76-adb4-411d-9a9a-ecfceb01407a",
+        "cwd": "/Users/test",
+        "harness": "omp",
+        "model": "omp:default",
+        "runtimeMode": "auto",
+        "title": "Test Lead Giga",
+        "providerSessionId": "01a15917-38f8-70c8-9ca5-d23eefc5b76e"
+      },
+      "queueStatus": null,
+      "queued": []
+    }
+  },
+  "beforeQuit": [
+    {
+      "id": "m_thewmjokq7f7",
+      "body": "Made-up message 1: wait for made-up PRs A, B and C, with a made-up cutoff at noon. At the cutoff, take whatever is done; anything not done moves to the next made-up batch. PR C matters most, so review it before PR B if they compete for a reviewer. Do not take PR A alone. Same method as before, and tell me ten minutes before you start."
+    },
+    {
+      "id": "m_dgviqbjrzcrm",
+      "body": "Made-up message 2: the earlier batch plan is accepted, and it replaces the noon cutoff. The next made-up batch goes as soon as PR C is done. One fix: take every timestamp in made-up status notes from the clock, never from an estimate, and correct the wrong lines in the made-up status notes."
+    }
+  ],
+  "afterRelaunch": {
+    "id": "m_ubnczzgyl5qt",
+    "body": "Made-up message 3: the app relaunched. Run the made-up checks for the done items, mark the ones that pass, then resume the parked made-up workers.\n\nMade-up check-in. For each made-up feature and each made-up ticket: where it is, what runs now, what is blocked. Then send one short made-up status message.\n\nMade-up facts:\n- The made-up relaunch finished at a made-up time.\n- No made-up check is recorded yet."
+  }
+}

@@ -524,10 +524,12 @@ export type MonoRouteEvent = {
 };
 
 /**
- * What a route did: the delivery, or `dropped` when a steer could not join
- * its turn and Rust dropped the row with a notice (PR I2 review r1 M2).
+ * What a route did: the delivery, `dropped` when a steer could not join
+ * its turn and Rust dropped the row with a notice (PR I2 review r1 M2), or
+ * `paused` when the row joined a queue that sends nothing until a Resume
+ * (ADE-78).
  */
-export type RouteOutcome = Delivery | "dropped";
+export type RouteOutcome = Delivery | "dropped" | "paused";
 
 /** `mono-message-routed`: the owner's answer to the caller window. */
 export type MonoRoutedEvent = { messageId: MessageId; delivery: RouteOutcome };
@@ -750,6 +752,7 @@ export async function routeMessages(
     host.update(sessionId, (session) =>
       ensureQueued(session, item, kind, bubble),
     );
+  if (target.queueStatus === "paused") return "paused";
   return kind === "steer" ? "steer" : idle ? "submit" : "queue";
 }
 
