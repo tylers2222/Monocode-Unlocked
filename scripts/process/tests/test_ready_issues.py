@@ -8,8 +8,9 @@ for description and priority; the tests add them as null and 0 (no priority).
 fixtures/merged-prs.json is 5 PRs of the script's gh query; none had a
 Ticket-part line yet. fixtures/app-dbs.json holds, for each app database, the
 CREATE TABLE statements of `sessions` and `in_flight_sessions`, and the
-in-flight rows with their session rows plus a few idle ones. The tests build two
-SQLite files from it and read them with the script's own reader.
+in-flight rows with their session rows plus a few idle ones, with made-up titles
+under /Users/test. The tests build two SQLite files from it and read them with
+the script's own reader.
 
 Recorded 2026-10-22: fixtures/linear-issues-2026-10-22.json (the same Linear
 queries with description and priority; each description is made up and keeps

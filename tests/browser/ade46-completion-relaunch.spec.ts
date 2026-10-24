@@ -7,8 +7,9 @@ import { type AppShell, expect, type MountOptions, test } from "./app/fixture";
 // (10-20 17:19) quit the app while the Orchestrator monitored two running
 // sessions; the relaunch continued both turns and the Orchestrator was never
 // told they ended. `ade46-ship5.realdb.json` holds that moment, reduced from a
-// .backup copy of the MonoCode 2 database: the real Mono, sessions, request
-// ids, request order and which requests asked to be notified. Each case quits
+// .backup copy of the MonoCode 2 database: the real Mono, session ids, request
+// ids, request order and which requests asked to be notified, with made-up
+// titles and prompts under /Users/test. Each case quits
 // through `app.restart()` (quit_commit, quit_ready, a new page on the saved
 // store).
 
@@ -155,9 +156,14 @@ const rendered = (page: Page) =>
 
 /**
  * The window closed (its close sent `closed`); the app opens again on the
- * store it left, with the location check released.
+ * store it left, with the location check released. `beforeExit` runs while
+ * the closed window still runs, as `app.restart`'s does.
  */
-async function reopenAfter(page: Page, closed: string) {
+async function reopenAfter(
+  page: Page,
+  closed: string,
+  beforeExit?: () => Promise<void>,
+) {
   await expect
     .poll(() =>
       page.evaluate(
@@ -167,6 +173,7 @@ async function reopenAfter(page: Page, closed: string) {
       ),
     )
     .toBe(true);
+  await beforeExit?.();
   await page.evaluate(() => {
     sessionStorage.removeItem("ade46.holdLocation");
     window.appBackend!.keepStore();
@@ -465,6 +472,43 @@ test("closing the window with nothing running keeps the waiting group", async ({
 
   await app.emit("tauri://close-requested", {});
   await reopenAfter(page, "destroy_window");
+  await expect.poll(() => prompts(page, STARTED)).toEqual([CONTINUE]);
+  await endTurn(app, STARTED, "M-10 wording fixed.");
+  await expect.poll(() => notices(page)).toEqual([[at(STARTED)]]);
+});
+
+// The window saves its layout 250 ms after a change, and once after each
+// boot, without the Mono completions. A quit or a close saves them; a layout
+// save the window scheduled before that must not land after it and drop them.
+test("a layout save scheduled before a quit or close keeps the waiting group", async ({
+  app,
+  page,
+}) => {
+  await page.clock.install();
+  await mountOrchestrator(app, page, [db.sessions[0]]);
+  await call(app, page, "late-save", "sessions.send", {
+    sessionId: STARTED,
+    prompt: "Fix the M-10 wording.",
+    project: PROJECT,
+    notifyOnComplete: true,
+  });
+  await expect.poll(() => prompts(page, STARTED)).toHaveLength(1);
+  await holdLocation(page);
+  // Timers now run only when the test runs the clock. Each boot arms a layout
+  // save; the quit or close reads the window 100 ms later and saves first.
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
+  await app.restart();
+
+  const exit = () => page.clock.runFor(1_000);
+  await page.clock.runFor(100);
+  await app.restart(exit);
+  await expect
+    .poll(() => page.evaluate(() => !!window.releaseProjectLocation))
+    .toBe(true);
+  await page.clock.runFor(100);
+  await app.emit("tauri://close-requested", {});
+  await reopenAfter(page, "destroy_window", exit);
+  await page.clock.resume();
   await expect.poll(() => prompts(page, STARTED)).toEqual([CONTINUE]);
   await endTurn(app, STARTED, "M-10 wording fixed.");
   await expect.poll(() => notices(page)).toEqual([[at(STARTED)]]);

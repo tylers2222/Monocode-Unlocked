@@ -2654,6 +2654,7 @@ pub fn release_window_slots(conn: &Connection, label: &str, now: i64) -> rusqlit
 /// worktree was removed) is never loaded again to take its messages, so they
 /// are dropped and their senders are owed a notice. No window listens yet,
 /// and every window reconciles when it boots, so this names no session.
+/// A reminder that a window claimed and did not send is pending again (R8).
 pub fn startup(conn: &Connection, now: i64) -> rusqlite::Result<()> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     end_turn_rows(&tx, "turn_id IS NOT NULL", params![now])?;
@@ -2680,6 +2681,7 @@ pub fn startup(conn: &Connection, now: i64) -> rusqlite::Result<()> {
     // A decision moved to a chat that is gone too is dropped again there.
     crate::approvals::decide::requeue(&tx, now)?;
     drop_gone()?;
+    crate::ask_scheduler::startup(&tx)?;
     tx.commit()
 }
 
@@ -10256,19 +10258,22 @@ pub(crate) mod tests {
         command: &str,
         args: &Value,
     ) -> Result<Value, Value> {
-        tauri::test::get_ipc_response(
-            webview,
-            tauri::webview::InvokeRequest {
-                cmd: command.into(),
-                callback: tauri::ipc::CallbackFn(0),
-                error: tauri::ipc::CallbackFn(1),
-                url: "tauri://localhost".parse().unwrap(),
-                body: tauri::ipc::InvokeBody::Json(args.clone()),
-                headers: Default::default(),
-                invoke_key: tauri::test::INVOKE_KEY.into(),
-            },
-        )
-        .map(|body| body.deserialize::<Value>().unwrap())
+        tauri::test::get_ipc_response(webview, ipc_request(command, args))
+            .map(|body| body.deserialize::<Value>().unwrap())
+    }
+
+    /// The IPC message the web app sends to call `command` with `args`.
+    #[cfg(not(windows))]
+    pub(crate) fn ipc_request(command: &str, args: &Value) -> tauri::webview::InvokeRequest {
+        tauri::webview::InvokeRequest {
+            cmd: command.into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(args.clone()),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.into(),
+        }
     }
 
     // #91 N1 and #97 N4. Tauri binds each command argument by its parameter

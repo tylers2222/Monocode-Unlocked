@@ -1,0 +1,9 @@
+id: r03-needs-tyler
+version: 1
+pending: [ADE-24, ADE-32]
+description: A lead asked for a choice that only Tyler makes uses question, not ack, and acks with his pick only after the answer arrives (V2 needs Tyler).
+grader: asks:r03
+fixture: { agent: lead, projects: { A: atlas } }
+events:
+  - { ask: "Pick the license for {{A}}: MIT or Apache-2.0. Tyler decides licenses, not you or me. Write the choice to LICENSE-CHOICE.md.", due_minutes: 60 }
+  - { answer: "Tyler picked Apache-2.0." }

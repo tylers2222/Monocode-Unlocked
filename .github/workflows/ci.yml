@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, tyler/main]
   pull_request:
 
 concurrency:
@@ -38,7 +38,19 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium webkit
-      - run: npm run test:browser
+      # Real-harness specs (tests/browser/ade67-question-card.spec.ts) drive a
+      # real omp. It is the standalone v18.2.11 release binary, checked against
+      # the sha256 in the release's SHA256SUMS.txt; it bundles its dependencies.
+      - name: Install omp 18.2.11 (sha256-checked release binary)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/omp" https://github.com/can1357/oh-my-pi/releases/download/v18.2.11/omp-linux-x64
+          echo "97cf39557bf3d98327dd4c9814380b7e6bcb76e41169edd9b0ff30424c733a2a  $RUNNER_TEMP/omp" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/omp-bin"
+          install -m 0755 "$RUNNER_TEMP/omp" "$RUNNER_TEMP/omp-bin/omp"
+          echo "$RUNNER_TEMP/omp-bin" >> "$GITHUB_PATH"
+      - run: omp --version
+      # list prints each test with its time, so the log shows which specs ran.
+      - run: npm run test:browser -- --reporter=list
       - name: Upload browser screenshots and failure traces
         if: always()
         uses: actions/upload-artifact@v4
@@ -179,6 +191,23 @@ jobs:
         # only way to catch packages that are missing from EPEL 10.
         image: [fedora:43, almalinux:10]
     steps:
+      # librepo fails with "All mirrors were tried" when the mirror set from one
+      # metalink fetch is bad. dnf does not fetch the metalink again within a
+      # run, but a new dnf run does, and it usually gets working mirrors.
+      - &dnf-retry
+        name: Wrap every dnf call in the job with retries
+        run: |
+          cat > /usr/local/bin/dnf <<'EOF'
+          #!/bin/sh
+          for delay in 15 30 60; do
+            /usr/bin/dnf "$@" && exit 0
+            echo "dnf failed, retrying in ${delay}s" >&2
+            sleep "$delay"
+          done
+          exec /usr/bin/dnf "$@"
+          EOF
+          chmod +x /usr/local/bin/dnf
+
       # Neither fedora:43 nor almalinux:10 ships git, which actions/checkout
       # otherwise has to work around with a REST API tarball download.
       - name: Install git
@@ -247,6 +276,8 @@ jobs:
     # binary can resolve against EL 10's glibc and runtime libraries.
     container: almalinux:10
     steps:
+      - *dnf-retry
+
       - name: Install git
         run: dnf install -y git
 
