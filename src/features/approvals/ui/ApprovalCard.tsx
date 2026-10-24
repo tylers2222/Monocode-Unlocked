@@ -1,4 +1,9 @@
-import { useSyncExternalStore, type ReactNode } from "react";
+import {
+  useState,
+  useSyncExternalStore,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { UserRemove } from "../../../shared/ui/icons";
 import {
   findMono,
@@ -12,8 +17,20 @@ import { PixelMascot } from "../../projects/ui/PixelMascot";
 import type { ProjectLook } from "../../projects/ui/ProjectList";
 import { quoteText } from "../../sessions/ui/composerIntent";
 import { GigaText } from "./GigaText";
-import { ago, filerRemoved, type Approval } from "../model/approvals";
+import {
+  OPEN_PICKER,
+  ago,
+  approveButton,
+  chosen,
+  decide,
+  filerRemoved,
+  pickerKey,
+  tick,
+  type Approval,
+} from "../model/approvals";
+import type { Verdict } from "../model/boardDecision";
 import { CardBody } from "./CardBody";
+import { DecideBar } from "./DecideBar";
 
 export const PILL =
   "inline-flex h-5 items-center gap-1.5 rounded-[5px] px-[7px] text-[11px] font-semibold whitespace-nowrap";
@@ -133,10 +150,34 @@ export function OpenCard({
   look: ProjectLook;
   now: number;
 }) {
+  const [picker, setPicker] = useState(OPEN_PICKER);
+  const [comment, setComment] = useState("");
+  const ticked = chosen(picker, card.options);
+  const approve = approveButton(card.options.length, ticked.length);
+  const send = (verdict: Verdict) => {
+    if (verdict === "approved" && !approve.enabled) return;
+    decide(card, verdict, comment, ticked).catch((error: unknown) =>
+      console.error("monocode: could not decide the approval", error),
+    );
+  };
+  const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      send("approved");
+      return;
+    }
+    if (event.target !== event.currentTarget) return;
+    const next = pickerKey(picker, event.key, card.options);
+    if (!next) return;
+    event.preventDefault();
+    setPicker(next);
+  };
   return (
     <article
       aria-label={quoteText(card.heading)}
-      className={`overflow-hidden rounded-[10px] border bg-content/3 ${
+      tabIndex={0}
+      onKeyDown={onKeyDown}
+      className={`group overflow-hidden rounded-[10px] border bg-content/3 outline-none ${
         card.urgency === "blocking" ? "border-red-300/30" : "border-content/11"
       }`}
     >
@@ -147,8 +188,19 @@ export function OpenCard({
           text={card.summary}
           className="mt-3 block text-[13px] leading-5 text-content/82"
         />
-        <CardBody card={card} />
+        <CardBody
+          card={card}
+          picker={picker}
+          onTick={(label) => setPicker(tick(picker, label))}
+        />
       </div>
+      <DecideBar
+        card={card}
+        comment={comment}
+        onComment={setComment}
+        approve={approve}
+        onDecide={send}
+      />
     </article>
   );
 }

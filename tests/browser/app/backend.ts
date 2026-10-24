@@ -5,6 +5,7 @@ import {
   mockWindows,
 } from "@tauri-apps/api/mocks";
 import type { Approval } from "../../../src/features/approvals/model/approvals";
+import type { Verdict } from "../../../src/features/approvals/model/boardDecision";
 import type { Automation } from "../../../src/features/automations/model/automations";
 import {
   MILESTONES_CHANGED,
@@ -602,6 +603,39 @@ const HANDLERS: Record<string, Handler> = {
         const [x, y] = [rank(a), rank(b)];
         return x.map((key, index) => key - y[index]).find(Boolean) ?? 0;
       });
+  },
+  // decide.rs `decide` (ADE-52): its refusals, then the CHANGED event.
+  approvals_decide: (store, { id, verdict, note, chosen }) => {
+    const card = store.approvals.find((row) => row.id === id);
+    if (!card) throw "unknown_approval";
+    if (card.status.state !== "open") throw "approval_not_open";
+    const labels = card.options.map((option) => option.label);
+    const picked = chosen as string[];
+    if (
+      new Set(picked).size !== picked.length ||
+      picked.some((label) => !labels.includes(label))
+    )
+      throw "invalid_input: chosen options must be distinct labels of the card's options";
+    if (verdict === "approved" && labels.length > 0 && picked.length === 0)
+      throw "invalid_input: approving a card with options needs at least one chosen option";
+    const text = note === null ? null : String(note).trim();
+    if (text !== null && (text.length < 1 || text.length > 8000))
+      throw "invalid_input: decision note must be 1 to 8000 characters";
+    const filer = card.requestedBy.id;
+    if (filer && !store.monos.find((mono) => mono.id === filer)?.data.sessionId)
+      throw "filer_has_no_chat";
+    card.status = {
+      state: "decided",
+      verdict: verdict as Verdict,
+      decidedAt: Date.now(),
+      note: text,
+      chosen: picked,
+      undelivered: null,
+    };
+    void window.appBackend!.emit("approvals-changed", {
+      projectPath: card.projectPath,
+    });
+    return card;
   },
   automation_runs_list: empty,
   control_load: none,
