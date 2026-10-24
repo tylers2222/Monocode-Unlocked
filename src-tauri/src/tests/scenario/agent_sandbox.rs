@@ -410,9 +410,10 @@ fn wait_for(file: &Path) -> String {
 const SPAWN_ROOT: &str = "MC_ADE41_SPAWN_ROOT";
 
 /// The `harness_spawn` command on Tauri's mock runtime, with a stand-in fx and
-/// a stand-in srt that each write a file in the child's folder. It runs in a
-/// process of its own, so the PATH that puts the stand-in srt first changes no
-/// other test's environment.
+/// a stand-in srt that each write a file in the child's folder. Each writes a
+/// part file and renames it, so `wait_for` never reads a file the shell has
+/// created but not yet filled. It runs in a process of its own, so the PATH
+/// that puts the stand-in srt first changes no other test's environment.
 fn harness_spawn_starts_the_cli_bare_when_off_and_through_srt_when_on() {
     let root = folder();
     // Resolved, as the app's binary resolver hands back a path.
@@ -423,13 +424,13 @@ fn harness_spawn_starts_the_cli_bare_when_off_and_through_srt_when_on() {
         r#"case "$1" in
   --help) echo "fx acp: ask over the Agent Client Protocol" ;;
   --version) echo "fx 0.0.1" ;;
-  *) echo "$*" > ran ;;
+  *) echo "$*" > ran.part && mv ran.part ran ;;
 esac"#,
     );
     script(
         &tools.join("srt"),
         r#"[ "$1" = --version ] && { echo 0.0.81; exit 0; }
-echo "$2" > through-srt
+echo "$2" > through-srt.part && mv through-srt.part through-srt
 shift 3
 exec "$@""#,
     );
