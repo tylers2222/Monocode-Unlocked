@@ -4,6 +4,8 @@ import {
   mockIPC,
   mockWindows,
 } from "@tauri-apps/api/mocks";
+import type { Approval } from "../../../src/features/approvals/model/approvals";
+import type { Verdict } from "../../../src/features/approvals/model/boardDecision";
 import type { Automation } from "../../../src/features/automations/model/automations";
 import {
   MILESTONES_CHANGED,
@@ -68,12 +70,6 @@ type SessionUpsert = SessionSummary & {
   workFolder?: string;
 };
 
-export type ApprovalRow = {
-  number: number;
-  projectPath: string;
-  status: "open" | "approved" | "rejected" | "changes_requested" | "withdrawn";
-};
-
 /** Everything the fake backend knows, in the shapes Rust sends. */
 export type FakeStore = {
   home: string;
@@ -103,7 +99,7 @@ export type FakeStore = {
   milestones: Milestone[];
   /** milestone_settings rows by project path; no row means on, nothing hidden. */
   milestoneSettings: Record<string, MilestoneSettings>;
-  approvals: ApprovalRow[];
+  approvals: Approval[];
   /** sessionStore.ts `saveWorkspaceSnapshot`: the open tabs, as last saved. */
   workspace: unknown;
   /** session_store.rs `workspace_snapshot.updated_at`: when `workspace` was read. */
@@ -125,7 +121,7 @@ export type FakeSeed = Partial<{
   automations: Automation[];
   milestones: Milestone[];
   milestoneSettings: Record<string, MilestoneSettings>;
-  approvals: ApprovalRow[];
+  approvals: Approval[];
   /** Saved state a real database already holds when the app starts. */
   blocks: Record<string, Block[]>;
   workFolders: Record<string, string>;
@@ -349,7 +345,8 @@ const HANDLERS: Record<string, Handler> = {
   ),
   home_dir: (store) => store.home,
   default_cwd: (store) => store.home,
-  workspace_get_snapshot: (store) => store.workspace,
+  // The page is one window, so its own row is the only one.
+  workspace_get_snapshot: (store) => (store.workspace ? [store.workspace] : []),
   // session_store.rs snapshot_supersedes: a snapshot read before the stored
   // one loses, unless the stored time is after now (the clock stepped back).
   workspace_set_snapshot: (store, { snapshot, readAt }) => {
@@ -414,6 +411,21 @@ const HANDLERS: Record<string, Handler> = {
       if (update.sortOrder !== undefined) mono.sortOrder = update.sortOrder;
     }
     if ((updates as MonoUpdate[]).length) store.rosterRevision += 1;
+    // decide.rs requeue (#125 r6): a waiting decision goes to the Giga's new
+    // chat, and the board hears approvals-changed once.
+    let requeued = false;
+    for (const card of store.approvals) {
+      const giga = store.monos.find((mono) => mono.id === card.requestedBy.id);
+      if (
+        card.status.state === "decided" &&
+        card.status.undelivered === "waiting" &&
+        giga?.data.sessionId
+      ) {
+        card.status = { ...card.status, undelivered: null };
+        requeued = true;
+      }
+    }
+    if (requeued) void window.appBackend!.emit("approvals-changed", null);
     return { revision: store.rosterRevision, monos: store.monos };
   },
   // The level rules and start rows live in Rust (appActionCheck.fixtures.json
@@ -586,12 +598,68 @@ const HANDLERS: Record<string, Handler> = {
   approvals_open_counts: (store) => {
     const byProject: Record<string, number> = {};
     for (const { projectPath, status } of store.approvals)
-      if (status === "open")
+      if (status.state === "open")
         byProject[projectPath] = (byProject[projectPath] ?? 0) + 1;
     return {
       total: Object.values(byProject).reduce((sum, open) => sum + open, 0),
       byProject,
     };
+  },
+  // approvals.rs `list`: ORDER BY status <> 'open', open and not blocking,
+  // coalesce(decided_at, withdrawn_at, created_at) DESC, number DESC.
+  approvals_list: (store, { projectPath }) => {
+    const rank = ({ status, urgency, createdAt, number }: Approval) => [
+      Number(status.state !== "open"),
+      Number(status.state === "open" && urgency !== "blocking"),
+      -(status.state === "decided"
+        ? status.decidedAt
+        : status.state === "withdrawn"
+          ? status.withdrawnAt
+          : createdAt),
+      -number,
+    ];
+    return store.approvals
+      .filter((card) => card.projectPath === projectPath)
+      .sort((a, b) => {
+        const [x, y] = [rank(a), rank(b)];
+        return x.map((key, index) => key - y[index]).find(Boolean) ?? 0;
+      });
+  },
+  // decide.rs `decide` (ADE-52): its refusals, then the CHANGED event.
+  approvals_decide: (store, { id, verdict, note, chosen }) => {
+    const card = store.approvals.find((row) => row.id === id);
+    if (!card) throw "unknown_approval";
+    if (card.status.state !== "open") throw "approval_not_open";
+    const labels = card.options.map((option) => option.label);
+    const picked = chosen as string[];
+    if (
+      new Set(picked).size !== picked.length ||
+      picked.some((label) => !labels.includes(label))
+    )
+      throw "invalid_input: chosen options must be distinct labels of the card's options";
+    if (verdict === "approved" && labels.length > 0 && picked.length === 0)
+      throw "invalid_input: approving a card with options needs at least one chosen option";
+    const text = note === null ? null : String(note).trim();
+    if (text === "") throw "invalid_input: decision note must not be blank";
+    // decide.rs decision_text: the message the Giga gets, counted in characters.
+    const body = `The user decided approval card APR-${card.number} "${card.heading}".\ncard_id: ${card.id}\ndecision: ${String(verdict)}\nchosen_options: ${JSON.stringify(picked)}${text === null ? "" : `\ncomment: ${text}`}`;
+    const chars = [...body].length;
+    if (chars > 8000) throw `decision_too_long:${chars}:8000`;
+    const filer = card.requestedBy.id;
+    if (filer && !store.monos.find((mono) => mono.id === filer)?.data.sessionId)
+      throw "filer_has_no_chat";
+    card.status = {
+      state: "decided",
+      verdict: verdict as Verdict,
+      decidedAt: Date.now(),
+      note: text,
+      chosen: picked,
+      undelivered: null,
+    };
+    void window.appBackend!.emit("approvals-changed", {
+      projectPath: card.projectPath,
+    });
+    return card;
   },
   automation_runs_list: empty,
   control_load: none,

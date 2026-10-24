@@ -5,9 +5,10 @@ import {
   approvalsBadge,
   openCounts,
   type ApprovalsBadge,
+  type OpenCounts,
 } from "../model/approvals";
 
-let openInEveryProject = 0;
+let counts: OpenCounts = { total: 0, byProject: {} };
 const listeners = new Set<() => void>();
 let changed: Promise<UnlistenFn | undefined> | undefined;
 let latestRequest = 0;
@@ -15,9 +16,9 @@ let latestRequest = 0;
 async function load() {
   const request = ++latestRequest;
   try {
-    const { total } = await openCounts();
+    const { total, byProject } = await openCounts();
     if (request !== latestRequest) return;
-    openInEveryProject = total;
+    counts = { total, byProject };
     for (const listener of listeners) listener();
   } catch (error) {
     console.error("monocode: could not count open approvals", error);
@@ -47,8 +48,10 @@ function subscribe(listener: () => void) {
   };
 }
 
-const snapshot = () => openInEveryProject;
-
 export function useApprovalsBadge(): ApprovalsBadge {
-  return approvalsBadge(useSyncExternalStore(subscribe, snapshot));
+  return approvalsBadge(useSyncExternalStore(subscribe, () => counts.total));
+}
+
+export function useOpenCounts(): OpenCounts {
+  return useSyncExternalStore(subscribe, () => counts);
 }

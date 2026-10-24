@@ -412,11 +412,12 @@ export function workspaceSnapshotKey(snapshot: WorkspaceSnapshot): string {
 }
 
 /**
- * Reopen the saved tabs/panes. Transcripts come from `loaded` when the
- * session was persisted; blank tabs fall back to the stub.
+ * Reopen the saved tabs/panes of a saved snapshot, which it parses first.
+ * Transcripts come from `loaded` when the session was persisted; blank tabs
+ * fall back to the stub.
  */
 export function hydrateWorkspaceSnapshot(
-  snapshot: WorkspaceSnapshot,
+  snapshot: unknown,
   loaded: Map<string, Session>,
   interruptedIds: ReadonlySet<string> = new Set(),
 ): WindowWorkspace | null {

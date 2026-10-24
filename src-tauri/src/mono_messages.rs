@@ -10258,19 +10258,22 @@ pub(crate) mod tests {
         command: &str,
         args: &Value,
     ) -> Result<Value, Value> {
-        tauri::test::get_ipc_response(
-            webview,
-            tauri::webview::InvokeRequest {
-                cmd: command.into(),
-                callback: tauri::ipc::CallbackFn(0),
-                error: tauri::ipc::CallbackFn(1),
-                url: "tauri://localhost".parse().unwrap(),
-                body: tauri::ipc::InvokeBody::Json(args.clone()),
-                headers: Default::default(),
-                invoke_key: tauri::test::INVOKE_KEY.into(),
-            },
-        )
-        .map(|body| body.deserialize::<Value>().unwrap())
+        tauri::test::get_ipc_response(webview, ipc_request(command, args))
+            .map(|body| body.deserialize::<Value>().unwrap())
+    }
+
+    /// The IPC message the web app sends to call `command` with `args`.
+    #[cfg(not(windows))]
+    pub(crate) fn ipc_request(command: &str, args: &Value) -> tauri::webview::InvokeRequest {
+        tauri::webview::InvokeRequest {
+            cmd: command.into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(args.clone()),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.into(),
+        }
     }
 
     // #91 N1 and #97 N4. Tauri binds each command argument by its parameter

@@ -41,7 +41,9 @@ import {
   restoreWorkspacePins,
   workspaceSnapshot,
   type WindowWorkspace,
+  type WorkspaceSnapshot,
 } from "../../features/workspace/model/workspaceSnapshot";
+import { worktreeDeletedExternally } from "../../features/source-control/model/worktrees";
 import { lastProjectPath, normalizeProjectPath, sameProjectPath } from "../../features/projects/model/recents";
 import type { SavedMonoCompletion } from "../../features/monos/model/monoSessionCompletion";
 import { claimMonoCompletions } from "../../features/sessions/data/monoCompletionStore";
@@ -231,15 +233,16 @@ async function loadResumedWorkspaceOnce(): Promise<WindowWorkspace | null> {
   for (const ref of refs) ids.add(ref.sessionId);
 
   const loaded = new Map<string, Session>();
-  await Promise.all(
-    [...ids].map(async (id) => {
+  const [present] = await Promise.all([
+    snapshot && withoutDeletedWorktrees(snapshot),
+    ...[...ids].map(async (id) => {
       const record = await getSession(id, { restart: true }).catch(() => null);
       if (record) loaded.set(id, record);
     }),
-  );
+  ]);
 
-  let hydrated = snapshot
-    ? hydrateWorkspaceSnapshot(snapshot, loaded, interrupted)
+  let hydrated = present
+    ? hydrateWorkspaceSnapshot(present, loaded, interrupted)
     : null;
   if (!hydrated && refs.length > 0) {
     const sessions: Session[] = [];
@@ -275,6 +278,22 @@ async function loadResumedWorkspaceOnce(): Promise<WindowWorkspace | null> {
     );
   }
   return workspace;
+}
+
+/** The switcher cannot list a worktree deleted outside the app, so a tab saved
+ * there comes back in its project folder. */
+async function withoutDeletedWorktrees(
+  snapshot: WorkspaceSnapshot,
+): Promise<WorkspaceSnapshot> {
+  const deleted = await Promise.all(
+    (snapshot.tabWorkspaces ?? []).map(({ path }) =>
+      worktreeDeletedExternally(path).catch(() => false),
+    ),
+  );
+  return {
+    ...snapshot,
+    tabWorkspaces: snapshot.tabWorkspaces?.filter((_, index) => !deleted[index]),
+  };
 }
 
 export function bindResumedSessions(sessions: Session[]): void {

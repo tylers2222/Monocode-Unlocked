@@ -47,7 +47,7 @@ it("restores a queue the quit stopped with its reason, even after a background r
   ]);
   vi.mocked(invoke).mockImplementation(async (command) => {
     if (command === "session_get") return stored;
-    if (command === "workspace_get_snapshot") return snapshot;
+    if (command === "workspace_get_snapshot") return [snapshot];
     if (command === "session_list_in_flight") return [];
     return null;
   });
