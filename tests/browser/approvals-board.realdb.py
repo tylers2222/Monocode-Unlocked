@@ -152,27 +152,41 @@ file_card(MODELIST, "Drop the CSV export from Modelist v1?",
           "blocking", at(18, 20, 0), by=gone, options=CSV,
           links=[{"kind": "linear", "title": "ADE-38", "url": "https://linear.app/adebuild/issue/ADE-38"}],
           origin="Modelist Orchestrator")
+# A chat reset dropped this decision (it waits for the Giga's next chat), then the user deleted the Giga.
+gone_waiting = file_card(MODELIST, "Pin the model list to one provider API version?",
+                         "The model list changes whenever a provider ships a model, and two screenshots in the docs went stale.",
+                         ["The docs stay right"], ["New models wait for a release"], "not_blocking", NOW - 580 * MIN,
+                         by=gone, origin="Modelist Orchestrator", closed=("approved", at(19, 14, 10), None, None))
+# The user removed this decision from the Giga's queue, then deleted the Giga.
+gone_unqueued = file_card(MODELIST, "Rename presets to profiles in v1?",
+                          "Two users called presets profiles in feedback.",
+                          ["Matches what users say"], ["Every doc page changes"], "not_blocking", NOW - 560 * MIN,
+                          by=gone, origin="Modelist Orchestrator",
+                          closed=("rejected", at(19, 15, 30), "No. Presets is the word in the docs.", None))
 
+
+def drop_decision(card, message_id, payload, to, decided, dropped, removed):
+    """decide.rs drops the queued decision; drop_message sets notified_at when the user removed it."""
+    db.execute(
+        """INSERT INTO mono_messages (id, request_id, part, payload_hash, tool, from_session_id, to_mono_id,
+             addressed, body, body_chars, wanting_reply, intent, hop, status, gate_result, handled_by_session, delivery,
+             closed_at, notified_at, created_at, updated_at)
+           VALUES (?, ?, 0, ?, 'send_message', ?, ?, ?, 'The user decided approval card.', 31, 0, 'new', 0,
+                   'dropped', 'ok', ?, 'queue', ?, ?, ?, ?)""",
+        (message_id, card, payload * 64, SENDER, to, to, str(uuid.uuid4()), dropped, dropped if removed else None,
+         decided, dropped),
+    )
+
+
+drop_decision(gone_waiting, "m_gonewaitingz", "2", GONE_ID, at(19, 14, 10), at(19, 14, 40), removed=False)
+drop_decision(gone_unqueued, "m_goneremovedz", "3", GONE_ID, at(19, 15, 30), at(19, 15, 40), removed=True)
 db.execute("DELETE FROM monos WHERE id = ?", (GONE_ID,))
-assert db.execute("SELECT COUNT(*) FROM approvals WHERE requested_by IS NULL").fetchone()[0] == 2
+assert db.execute("SELECT COUNT(*) FROM approvals WHERE requested_by IS NULL").fetchone()[0] == 4
+assert db.execute("SELECT COUNT(*) FROM mono_messages WHERE to_mono_id IS NULL AND request_id IN (?, ?)",
+                  (gone_waiting, gone_unqueued)).fetchone()[0] == 2
 
-db.execute(
-    """INSERT INTO mono_messages (id, request_id, part, payload_hash, tool, from_session_id, to_mono_id,
-         addressed, body, body_chars, wanting_reply, intent, hop, status, gate_result, handled_by_session, delivery,
-         closed_at, created_at, updated_at)
-       VALUES ('m_abcdefghijkl', ?, 0, ?, 'send_message', ?, ?, ?, 'The user decided approval card.', 31, 0, 'new', 0,
-               'dropped', 'ok', ?, 'queue', ?, ?, ?)""",
-    (not_sent, "0" * 64, SENDER, giga_id, giga_id, str(uuid.uuid4()), NOW - 100 * MIN, NOW - 120 * MIN, NOW - 100 * MIN),
-)
-# The user removed this decision from the Giga's queue (mono_messages drop_message sets notified_at).
-db.execute(
-    """INSERT INTO mono_messages (id, request_id, part, payload_hash, tool, from_session_id, to_mono_id,
-         addressed, body, body_chars, wanting_reply, intent, hop, status, gate_result, handled_by_session, delivery,
-         closed_at, notified_at, created_at, updated_at)
-       VALUES ('m_mnopqrstuvwx', ?, 0, ?, 'send_message', ?, ?, ?, 'The user decided approval card.', 31, 0, 'new', 0,
-               'dropped', 'ok', ?, 'queue', ?, ?, ?, ?)""",
-    (unqueued, "1" * 64, SENDER, giga_id, giga_id, str(uuid.uuid4()), at(18, 18, 0), at(18, 18, 0), at(18, 17, 51), at(18, 18, 0)),
-)
+drop_decision(not_sent, "m_abcdefghijkl", "0", giga_id, NOW - 120 * MIN, NOW - 100 * MIN, removed=False)
+drop_decision(unqueued, "m_mnopqrstuvwx", "1", giga_id, at(18, 17, 51), at(18, 18, 0), removed=True)
 db.commit()
 assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 assert db.execute("PRAGMA foreign_key_check").fetchall() == []

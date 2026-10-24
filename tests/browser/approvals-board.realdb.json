@@ -493,6 +493,70 @@
       "status": {
         "state": "open"
       }
+    },
+    {
+      "id": "2b1a375f-42c5-4ba0-b111-b77b45d567bc",
+      "number": 10,
+      "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist",
+      "heading": "Pin the model list to one provider API version?",
+      "summary": "The model list changes whenever a provider ships a model, and two screenshots in the docs went stale.",
+      "tradeoffs": {
+        "pros": [
+          "The docs stay right"
+        ],
+        "cons": [
+          "New models wait for a release"
+        ]
+      },
+      "options": [],
+      "urgency": "not_blocking",
+      "links": [],
+      "origin": "Modelist Orchestrator",
+      "requestedBy": {
+        "id": null,
+        "name": "Modelist General"
+      },
+      "createdAt": 1792415640000,
+      "status": {
+        "state": "decided",
+        "verdict": "approved",
+        "decidedAt": 1792419000000,
+        "note": null,
+        "chosen": [],
+        "undelivered": "waiting"
+      }
+    },
+    {
+      "id": "e7abf279-6866-42f2-beec-43acb7107207",
+      "number": 11,
+      "projectPath": "/Users/test/Desktop/Evelyn Faye Coding/Modelist",
+      "heading": "Rename presets to profiles in v1?",
+      "summary": "Two users called presets profiles in feedback.",
+      "tradeoffs": {
+        "pros": [
+          "Matches what users say"
+        ],
+        "cons": [
+          "Every doc page changes"
+        ]
+      },
+      "options": [],
+      "urgency": "not_blocking",
+      "links": [],
+      "origin": "Modelist Orchestrator",
+      "requestedBy": {
+        "id": null,
+        "name": "Modelist General"
+      },
+      "createdAt": 1792416840000,
+      "status": {
+        "state": "decided",
+        "verdict": "rejected",
+        "decidedAt": 1792423800000,
+        "note": "No. Presets is the word in the docs.",
+        "chosen": [],
+        "undelivered": "removed"
+      }
     }
   ]
 }

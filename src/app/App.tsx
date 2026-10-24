@@ -14056,6 +14056,7 @@ function Workspace({
                   recents={recents}
                   onClose={onLeaveAutomations}
                   onToggleSidebar={onToggleSidebar}
+                  onOpenMono={onOpenMono}
                 />
               ) : null}
               {automationsViewOpen && automationsPage === "automations" ? (
