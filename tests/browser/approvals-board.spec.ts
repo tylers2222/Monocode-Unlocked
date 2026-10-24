@@ -32,6 +32,14 @@ test.beforeEach(async ({ page }) => {
 const board = (page: Page) => page.getByRole("region", { name: "Approvals" });
 const card = (page: Page, heading: string) =>
   board(page).getByRole("article", { name: heading, exact: true });
+const rows = (page: Page) =>
+  board(page)
+    .locator("main")
+    .getByRole("button", {
+      name: /^(Approved|Rejected|Changes requested|Withdrawn)/,
+    });
+const row = (page: Page, heading: string) =>
+  rows(page).filter({ hasText: heading });
 const shot = (page: Page, name: string) =>
   page.screenshot({
     path: test.info().outputPath(`${name}.png`),
@@ -92,6 +100,13 @@ test("the board shows each card state of a copy of the app database", async ({
     "Wait for PR #109 before the approvals tool is built?",
     "Keep Playwright at one worker in CI?",
     "Show decided cards for 30 days, then hide them?",
+  ]);
+  await expect(board(page).getByText(/^Decided\s*4$/)).toBeVisible();
+  await expect(rows(page), "decided rows, newest decision first").toHaveText([
+    /^ApprovedUse a fake clock in the E2E suiteMonocode General · 2h ago$/,
+    /^Changes requestedIndex approvals on \(project_id, status\) onlyMonocode General · yesterday$/,
+    /^RejectedStore the Giga and Mono discussion on the cardMonocode General · yesterday$/,
+    /^WithdrawnBump Playwright to 1.49Monocode General · Oct 17$/,
   ]);
 
   const gate = card(
@@ -164,6 +179,59 @@ test("the board shows each card state of a copy of the app database", async ({
   ).not.toContainText("Options");
   await shot(page, "board-open");
 
+  await row(page, "Index approvals").click();
+  const changes = card(page, "Index approvals on (project_id, status) only");
+  await expect(changes).toContainText("Changes requestedNot blockingAPR-");
+  await expect(changes).toContainText("decided yesterday");
+  await expect(changes).toContainText(
+    "Changes requested by you · Oct 18, 6:05 pm",
+  );
+  await expect(changes.getByRole("checkbox", { checked: true })).toHaveText(
+    "Also index (requested_by, status)",
+  );
+  await expect(changes.getByRole("checkbox", { checked: false })).toHaveText(
+    "Index (project_id, status) only",
+  );
+  await expect(changes).toContainText(
+    "“Take option 2 as well, then file it again with the query plan from the copied database.”",
+  );
+  await expect(changes).toContainText(
+    "Sent to Monocode General as a queued follow-up · Oct 18, 6:05 pm",
+  );
+
+  await row(page, "Store the Giga").click();
+  const rejected = card(page, "Store the Giga and Mono discussion on the card");
+  await expect(rejected).toContainText("Rejected by you · Oct 18, 5:51 pm");
+  await expect(rejected.getByRole("checkbox")).toHaveCount(0);
+  await expect(rejected).toContainText(
+    "“No. The Giga has the context; the board stays small.”",
+  );
+  // Removed from the Giga's queue by the user: never sent, so never "Sent to".
+  await expect(rejected).not.toContainText("Sent to");
+
+  await row(page, "Bump Playwright").click();
+  const withdrawn = card(page, "Bump Playwright to 1.49");
+  await expect(withdrawn).toContainText("WithdrawnNot blockingAPR-");
+  await expect(withdrawn).toContainText(
+    "Withdrawn by Monocode General · Oct 17, 4:12 pm",
+  );
+  await expect(withdrawn).toContainText(
+    "Nothing to send: the filing Giga withdrew it. You cannot decide a withdrawn card.",
+  );
+  await expect(withdrawn).not.toContainText("Sent to");
+
+  await row(page, "Use a fake clock").click();
+  const waiting = card(page, "Use a fake clock in the E2E suite");
+  await expect(waiting).toContainText("decided 8:54 pm");
+  await expect(waiting).toContainText("Approved by you · Oct 19, 8:54 pm");
+  // The Giga still exists: none of A·5's removed-Giga marks (strike, "removed", amber).
+  await expect(waiting.getByRole("deletion")).toHaveCount(0);
+  await expect(waiting).not.toContainText("removed");
+  await expect(waiting).not.toContainText("Not sent");
+  await expect(waiting.locator(".text-amber-400")).toHaveCount(0);
+  await expect(waiting).not.toContainText("Sent to");
+  await shot(page, "board-decided");
+
   await pickProject(page, /^Modelist/);
   await expect(
     board(page).getByText("1 open · 1 blocking · 1 decided"),
@@ -171,6 +239,27 @@ test("the board shows each card state of a copy of the app database", async ({
   await expect(
     card(page, "Drop the CSV export from Modelist v1?"),
   ).toContainText("yesterday");
+  const orphan = card(page, "Drop the CSV export from Modelist v1?");
+  await expect(orphan.getByRole("deletion")).toHaveText("Modelist General");
+  await expect(orphan).toContainText("filed by Modelist Generalremoved");
+  await expect(orphan).toContainText(
+    "The Giga that filed this was removed. Handle this manually.",
+  );
+  await expect(orphan).toContainText(
+    "You can still decide it to close the card. Nothing is sent: there is no Giga to receive it.",
+  );
+  const orphanRow = row(page, "Keep the model picker");
+  await expect(orphanRow).toHaveText(
+    /^ApprovedKeep the model picker in v1\?Modelist General not sent · 9h ago$/,
+  );
+  await expect(orphanRow.getByRole("deletion")).toHaveText("Modelist General");
+  await orphanRow.click();
+  await expect(
+    card(page, "Keep the model picker in v1?")
+      .getByText("Not sent: the Giga that filed this was removed.")
+      .locator("svg"),
+  ).toHaveCount(1);
+  await shot(page, "board-removed");
 });
 
 test("the board reloads on approvals-changed and isolates Giga text", async ({
@@ -236,6 +325,7 @@ test("the board reloads on approvals-changed and isolates Giga text", async ({
   await expect(
     board(page).getByText("3 open · 1 blocking · 5 decided"),
   ).toBeVisible();
+  await expect(row(page, "Approve txet")).toContainText("1m ago");
   await expect(
     page.getByRole("button", { name: "Approvals, 4 open", exact: true }),
   ).toBeVisible();
@@ -434,4 +524,59 @@ test("the board opens on the project the workspace is in", async ({
       .locator("aside")
       .getByRole("button", { name: /^MonoCode/ }),
   ).toHaveAttribute("aria-current", "true");
+});
+
+test("a closed card isolates its filer's name and strikes it once the Giga is gone", async ({
+  app,
+  page,
+}) => {
+  const name = "Mono \u202Elareneg\u202C";
+  const shown = "Mono lareneg";
+  const approvals = REAL_DB.approvals.map((row) => {
+    if (row.heading === "Bump Playwright to 1.49")
+      return { ...row, requestedBy: { id: null, name } };
+    if (
+      row.heading.startsWith("Index approvals") &&
+      row.status.state === "decided"
+    )
+      return {
+        ...row,
+        requestedBy: { ...row.requestedBy, name },
+        status: { ...row.status, decidedAt: REAL_DB.now - 30 * MINUTE },
+      };
+    return row;
+  });
+  await app.mount(
+    { ...REAL_DB, approvals },
+    { handlers: allowReservedNameDialog },
+  );
+  await openBoard(page, 4);
+  await pickProject(page, /^monocode/);
+
+  const withdrawnRow = row(page, "Bump Playwright");
+  await expect(withdrawnRow.getByRole("deletion")).toHaveText(shown);
+  const sentRow = row(page, "Index approvals");
+  await expect(sentRow.getByRole("deletion")).toHaveCount(0);
+  await expect(sentRow).toContainText(`${shown} · 30m ago`);
+
+  await withdrawnRow.click();
+  await expect(card(page, "Bump Playwright to 1.49")).toContainText(
+    `Withdrawn by ${shown} · Oct 17, 4:12 pm`,
+  );
+  await sentRow.click();
+  await expect(
+    card(page, "Index approvals on (project_id, status) only"),
+  ).toContainText(`Sent to ${shown} as a queued follow-up · 10:24 pm`);
+
+  const names = board(page).locator("main").getByText(shown, { exact: true });
+  await expect(
+    names,
+    "two cards: filed by, and Withdrawn by or Sent to",
+  ).toHaveCount(4);
+  for (const text of await names.all())
+    await expect(text).toHaveAttribute("dir", "auto");
+  expect(
+    await board(page).evaluate((node) => node.textContent?.includes("\u202E")),
+    "bidi controls dropped",
+  ).toBe(false);
 });

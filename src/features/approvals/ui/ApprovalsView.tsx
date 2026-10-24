@@ -19,6 +19,7 @@ import { useApprovalList } from "../hooks/useApprovalList";
 import { useOpenCounts } from "../hooks/useApprovalsBadge";
 import { board } from "../model/approvals";
 import { OpenCard } from "./ApprovalCard";
+import { ClosedCard, ClosedRow } from "./ClosedCard";
 
 type Props = {
   besideRail?: boolean;
@@ -95,6 +96,7 @@ function Group({ title, count }: { title: string; count: number }) {
 
 function Board({ project, look }: { project: string; look: ProjectLook }) {
   const list = useApprovalList(project);
+  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
   if (!list)
     return (
       <div className="grid h-full place-items-center text-content/35">
@@ -109,7 +111,7 @@ function Board({ project, look }: { project: string; look: ProjectLook }) {
       </div>
     );
   const heading = look(project, "size-[18px]");
-  const { open, summary } = board(list.cards);
+  const { open, closed, summary } = board(list.cards);
   const now = Date.now();
   return (
     <div className="mx-auto w-full max-w-[780px] px-8 pt-[30px] pb-7">
@@ -123,6 +125,21 @@ function Board({ project, look }: { project: string; look: ProjectLook }) {
         {open.map((card) => (
           <OpenCard key={card.id} card={card} look={look} now={now} />
         ))}
+        {closed.length > 0 ? (
+          <Group title="Decided" count={closed.length} />
+        ) : null}
+        {closed.map((card) =>
+          opened.has(card.id) ? (
+            <ClosedCard key={card.id} card={card} look={look} now={now} />
+          ) : (
+            <ClosedRow
+              key={card.id}
+              card={card}
+              now={now}
+              onOpen={() => setOpened((ids) => new Set(ids).add(card.id))}
+            />
+          ),
+        )}
       </div>
     </div>
   );

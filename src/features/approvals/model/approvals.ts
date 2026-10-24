@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { normalizeProjectPath } from "../../projects/model/recents";
 import { countBadge } from "../../../shared/lib/numbers";
+import type { Verdict } from "./boardDecision";
 
 export type Urgency = "blocking" | "not_blocking";
 
@@ -176,6 +177,12 @@ export type OpenCounts = { total: number; byProject: Record<string, number> };
 
 export type ApprovalsBadge = { label: string; pill?: string };
 
+export type Closed = Verdict | "withdrawn";
+
+export type ClosedStatus = Exclude<ApprovalStatus, { state: "open" }>;
+
+export type ClosedApproval = Approval & { status: ClosedStatus };
+
 export function openCounts(): Promise<OpenCounts> {
   return invoke("approvals_open_counts");
 }
@@ -190,30 +197,82 @@ export function approvalsBadge(open: number): ApprovalsBadge {
     : { label: "Approvals" };
 }
 
-export type Board = { open: Approval[]; summary: string };
+/** Its Giga was deleted after it filed: `requested_by` is null (ON DELETE SET NULL). */
+export function filerRemoved(card: Approval): boolean {
+  return card.requestedBy.id === null;
+}
+
+export function closedAs(status: ClosedStatus): Closed {
+  return status.state === "decided" ? status.verdict : "withdrawn";
+}
+
+export function closedAt(status: ClosedStatus): number {
+  return status.state === "decided" ? status.decidedAt : status.withdrawnAt;
+}
+
+export type Board = {
+  open: Approval[];
+  closed: ClosedApproval[];
+  summary: string;
+};
 
 /** `approvals_list` sends open cards first (blocking, then newest) and the rest after; the board keeps that order. */
 export function board(cards: readonly Approval[]): Board {
   const open = cards.filter((card) => card.status.state === "open");
+  const closed = cards.filter(
+    (card): card is ClosedApproval => card.status.state !== "open",
+  );
   const blocking = open.filter((card) => card.urgency === "blocking").length;
-  const summary = `${open.length} open · ${blocking} blocking · ${cards.length - open.length} decided`;
-  return { open, summary };
+  const summary = `${open.length} open · ${blocking} blocking · ${closed.length} decided`;
+  return { open, closed, summary };
 }
 
+/**
+ * Where the decision went (ADE-52 `undelivered`): `waiting` is sent again to
+ * the Giga's next chat (A·5b), `unqueued` was removed from the Giga's queue by
+ * the user and is never sent (A·5c).
+ */
+export type Delivery =
+  "sent" | "waiting" | "unqueued" | "filer_removed" | "withdrawn";
+
+export function delivery(card: ClosedApproval): Delivery {
+  if (card.status.state === "withdrawn") return "withdrawn";
+  if (filerRemoved(card)) return "filer_removed";
+  if (card.status.undelivered === "removed") return "unqueued";
+  return card.status.undelivered ?? "sent";
+}
+
+const clock = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit",
+});
 const date = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
 });
+
+const time = (at: number) => clock.format(at).toLowerCase();
 
 function daysBefore(at: number, now: number): number {
   const midnight = (ms: number) => new Date(ms).setHours(0, 0, 0, 0);
   return Math.round((midnight(now) - midnight(at)) / 86_400_000);
 }
 
+export const stamp = (at: number) => `${date.format(at)}, ${time(at)}`;
+
+export function dayOrTime(at: number, now: number): string {
+  const days = daysBefore(at, now);
+  if (days === 0) return time(at);
+  return days === 1 ? "yesterday" : date.format(at);
+}
+
 export function ago(at: number, now: number): string {
   const minutes = Math.floor((now - at) / 60_000);
   if (minutes < 60) return `${Math.max(1, minutes)}m ago`;
-  const days = daysBefore(at, now);
-  if (days === 0) return `${Math.floor(minutes / 60)}h ago`;
-  return days === 1 ? "yesterday" : date.format(at);
+  return daysBefore(at, now) === 0
+    ? `${Math.floor(minutes / 60)}h ago`
+    : dayOrTime(at, now);
 }
+
+export const deliveryTime = (at: number, now: number) =>
+  daysBefore(at, now) === 0 ? time(at) : stamp(at);
