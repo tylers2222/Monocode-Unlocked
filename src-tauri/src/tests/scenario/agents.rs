@@ -87,6 +87,25 @@ impl World {
         self.add_session(id, cwd, None)
     }
 
+    /// `mono` resets its chat as the app's `resetMonoSession` does: the old
+    /// chat is deleted (its messages and token end with it, design 7), the
+    /// Mono points at chat `chat`, and the new chat is saved.
+    pub(crate) fn reset_mono_chat(&self, mono: &Mono, chat: &str) -> Mono {
+        {
+            let conn = self.conn();
+            session_store::delete_session(&conn, mono.chat.as_str(), session_store::Removal::End)
+                .unwrap();
+            let update = json!({"id": mono.id.as_str(), "patch": {"sessionId": chat}});
+            let update = serde_json::from_value(update).unwrap();
+            let update = mono_roster::validate_update(update).unwrap();
+            mono_roster::update_many(&conn, &[update]).unwrap();
+        }
+        Mono {
+            id: mono.id.clone(),
+            chat: self.add_session(chat, "/", None),
+        }
+    }
+
     /// Tool `tool` (`ask`, `ack` or a message tool) from `caller`, through
     /// the command's own dispatch (`asks::call`) and `submit_and_recheck`.
     pub(crate) fn tool(

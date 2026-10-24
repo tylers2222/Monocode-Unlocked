@@ -3,11 +3,13 @@
 // Mono with `messages.send` through the app CLI; the provider waits for that
 // turn to end, then reads the Mono's transcript and the milestones rows
 // read-only from monocode.db. No UI is driven.
+// It reads the ask rows too. A `lead` trial drives a lead session that the
+// sender starts. Trials that ask or move the fake clock run one at a time.
 //
 // Infrastructure failures (instance down, no sender token, turn timeout) come
 // back as `error`, which promptfoo records as ERROR, never as a model failure.
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -26,6 +28,7 @@ const POLL_MS = 3_000;
 const SETTLED_POLLS = 2;
 const LEGACY_QUIET_POLLS = process.env.EVAL_LEGACY_TURN_END === "1" ? 10 : Infinity;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const LEAD_BRIEF = "You are the team lead on this project for Beta, a Mono, and Beta sends you the work.";
 
 // USD per million tokens, by turnModel.id. omp:default is
 // anthropic/claude-opus-5-5 (~/.omp/agent/config.yml modelRoles.default);
@@ -47,18 +50,18 @@ async function query(db, statement, ...params) {
   }
 }
 
-async function send(to, message) {
-  const json = JSON.stringify({ message, send_to: to, wanting_reply: false, intent: "new" });
+/** One app action as the sender Mono: its result. A refusal exits 1 with the reply on stdout. */
+async function app(action, input) {
   let stdout;
   try {
-    ({ stdout } = await run(CLI, [SENDER, "messages.send", json], { env: { ...process.env, GIGA_EVAL_TARGET: "instance" } }));
+    ({ stdout } = await run(CLI, [SENDER, action, JSON.stringify(input)], { env: { ...process.env, GIGA_EVAL_TARGET: "instance" } }));
   } catch (e) {
-    const why = e.code === 3 ? "the sender Mono has no active turn (no app token)" : (e.stderr || e.message).trim().split("\n").pop();
-    throw new InfraError(`messages.send failed: ${why}`);
+    const why = e.code === 3 ? "the sender Mono has no active turn (no app token)" : (e.stdout || e.stderr || e.message).trim().split("\n").pop();
+    throw new InfraError(`${action} failed: ${why}`);
   }
   const reply = JSON.parse(stdout);
-  if (!reply.ok || !reply.result?.message_id) throw new InfraError(`messages.send refused: ${stdout.trim()}`);
-  return reply.result.message_id;
+  if (!reply.ok) throw new InfraError(`${action} refused: ${stdout.trim()}`);
+  return reply.result;
 }
 
 function instanceAlive() {
@@ -99,6 +102,83 @@ async function waitTurnEnd(db, session, messageId) {
   throw new InfraError(`turn for ${messageId} did not end within ${TURN_TIMEOUT_MS / 1000}s`);
 }
 
+async function settleLead(db, lead, project, tables) {
+  const inFlight = ["SELECT count(*) FROM mono_messages WHERE to_session_id=? AND status NOT IN ('rejected','dropped') AND delivered_at IS NULL"];
+  // Only rows to the lead: the `why` notice goes to the held sender, whose part the provider plays itself.
+  if (tables.has("mono_outbox")) inFlight.push("SELECT count(*) FROM mono_outbox WHERE recipient='session:' || ? AND sent_at IS NULL");
+  const sql = `SELECT ${inFlight.map((q) => `(${q})`).join(" + ")} AS waiting`;
+  const deadline = Date.now() + TURN_TIMEOUT_MS;
+  let still = 0;
+  while (Date.now() < deadline) {
+    if (!instanceAlive()) throw new InfraError(`the instance exited while lead ${lead} worked`);
+    const { sessions } = await app("sessions.list", { project });
+    const [{ waiting }] = await query(db, sql, ...inFlight.map(() => lead));
+    still = sessions.find((s) => s.id === lead)?.busy === false && waiting === 0 ? still + 1 : 0;
+    if (still >= SETTLED_POLLS) return;
+    await sleep(POLL_MS);
+  }
+  throw new InfraError(`lead ${lead} did not settle within ${TURN_TIMEOUT_MS / 1000}s`);
+}
+
+// As advance() in scripts/scenarios/app.sh: the app adds at most 30 s per 1 s
+// tick, so the clock moves in 20 s steps, 3 per minute, each stored before the next.
+async function advance(db, minutes) {
+  const file = join(dirname(db), "fake-clock.json");
+  const reading = JSON.parse(readFileSync(file, "utf8"));
+  const activeMs = async () => (await query(db, "SELECT active_ms FROM mono_clock WHERE id=1"))[0]?.active_ms ?? 0;
+  for (let want = await activeMs(), steps = minutes * 3; steps > 0; steps--) {
+    want += 20_000;
+    for (const ns of ["uptime_ns", "monotonic_ns"]) reading[ns] += 20e9;
+    reading.wall_ms += 20_000;
+    writeFileSync(`${file}.tmp`, JSON.stringify(reading));
+    renameSync(`${file}.tmp`, file);
+    for (const until = Date.now() + 30_000; (await activeMs()) < want; await sleep(250)) {
+      if (Date.now() > until) throw new InfraError(`the app did not reach active_ms ${want} within 30s`);
+    }
+  }
+}
+
+// One app, one clock: trials that ask or advance run one at a time in this chain.
+let clockChain = Promise.resolve();
+
+/** Starts the lead of a `lead` trial, runs the events, waiting for the agent after each, and reads its transcript. */
+async function drive(plan, trial, tables) {
+  const lead = trial.agent === "lead"
+    ? (await app("sessions.start", { prompt: LEAD_BRIEF, harness: plan.harness, model: plan.model, project: trial.projects.A, notifyOnComplete: false })).id
+    : null;
+  const messageId = async (action, input) => (await app(action, input)).message_id ?? Promise.reject(new InfraError(`${action} answered no message_id`));
+  const messageIds = [];
+  const settle = () => (lead ? settleLead(plan.db, lead, trial.projects.A, tables) : waitTurnEnd(plan.db, trial.session, messageIds.at(-1)));
+  if (lead) await settle();
+  const to = lead ?? trial.mono;
+  let askId = null, lastSentAt = 0;
+  for (const event of trial.events) {
+    const at = Date.now();
+    if ("send" in event) messageIds.push(await messageId("messages.send", { message: event.send, send_to: to, wanting_reply: false, intent: "new" }));
+    else if ("ask" in event) askId = await messageId("messages.ask", { message: event.ask, send_to: to, due_minutes: event.due_minutes });
+    else if ("advance_minutes" in event) await advance(plan.db, event.advance_minutes);
+    else if (!("answer" in event) || !askId || !(await query(plan.db, "SELECT 1 AS x FROM mono_ask_events WHERE ask_id=? AND kind='question'", askId)).length) continue;
+    else await app("messages.answer", { ask_id: askId, message: event.answer });
+    lastSentAt = at;
+    await settle();
+  }
+  if (lead) {
+    const [session] = await query(plan.db, "SELECT blocks_json FROM sessions WHERE id=?", lead);
+    return { lead, askId, lastSentAt, blocks: JSON.parse(session?.blocks_json ?? "[]") };
+  }
+  const all = (await query(plan.db, "SELECT block_json FROM mono_blocks WHERE session_id=? ORDER BY seq", trial.session)).map((r) => JSON.parse(r.block_json));
+  return { askId, lastSentAt, blocks: all.slice(all.findIndex((b) => b.id === messageIds[0])) };
+}
+
+async function askRows(db, tables, actor, askId) {
+  const rows = (table, cols, order) => (tables.has(table) ? query(db, `SELECT ${cols} FROM ${table} x JOIN mono_asks a ON a.id=x.ask_id WHERE a.child_actor=? ORDER BY ${order}`, actor) : []);
+  return {
+    ask: askId && tables.has("mono_asks") ? ((await query(db, "SELECT id, state, due_active_ms FROM mono_asks WHERE id=?", askId))[0] ?? null) : null,
+    events: await rows("mono_ask_events", "x.ask_id, x.kind, x.seq, x.reason, x.message_id, x.at_active_ms, x.at_wall_ms", "x.at_wall_ms, x.rowid"),
+    outbox: await rows("mono_outbox", 'x."key", x.ask_id, x.stage, x.recipient, x.at_active_ms, x.sent_at', "x.at_active_ms"),
+  };
+}
+
 const ACTION = [
   [/\bmilestones\.(add|list|update|remove|reorder)\b/, (m) => `milestones.${m[1]}`],
   [/\b(add|list|update|remove|reorder)_milestones?\b/, (m) => `milestones.${m[1]}`],
@@ -115,10 +195,17 @@ export function actionOf(tool, text) {
   return null;
 }
 
+// omp keeps a write's path in preview.path and an edit's in its detail as `[path#tag]`; a shell command is the title.
 const toolCallsOf = (blocks) =>
   blocks
     .filter((b) => b.role === "tool" && b.tool)
-    .map((b) => ({ action: actionOf(b.tool, b.text), title: b.tool.title ?? b.tool.kind ?? "", ok: /"ok"\s*:\s*true/.test(b.tool.detail ?? "") }));
+    .map(({ tool, text }) => ({
+      action: actionOf(tool, text),
+      title: tool.title ?? tool.kind ?? "",
+      ok: /"ok"\s*:\s*true/.test(tool.detail ?? ""),
+      kind: tool.kind ?? null,
+      path: tool.preview?.path ?? tool.detail?.match(/^\[([^\]#]+)#/)?.[1] ?? null,
+    }));
 
 function usage(turns) {
   const t = { prompt: 0, completion: 0, cached: 0, total: 0 };
@@ -155,31 +242,23 @@ export default class MonoProvider {
       }
       const trial = plan.trials[caseId]?.[index];
       if (!trial) throw new InfraError(`no seeded trial ${caseId}#${index}; seed with a k of at least ${index + 1}`);
-      let lastSentAt = 0;
-      const messageIds = [];
-      for (const message of trial.messages) {
-        lastSentAt = Date.now();
-        const id = await send(trial.mono, message);
-        await waitTurnEnd(plan.db, trial.session, id);
-        messageIds.push(id);
-      }
-      const all = (await query(plan.db, "SELECT block_json FROM mono_blocks WHERE session_id=? ORDER BY seq", trial.session)).map((r) =>
-        JSON.parse(r.block_json),
-      );
-      const blocks = all.slice(all.findIndex((b) => b.id === messageIds[0]));
+      const tables = new Set((await query(plan.db, "SELECT name FROM sqlite_master WHERE type='table'")).map((r) => r.name));
+      const runTrial = () => drive(plan, trial, tables);
+      const timed = trial.events.some((e) => "ask" in e || "advance_minutes" in e);
+      const { lead, askId, lastSentAt, blocks } = await (timed ? (clockChain = clockChain.then(runTrial, runTrial)) : runTrial());
+      const [actor, from, id] = lead ? [`session:${lead}`, "from_session_id", lead] : [`mono:${trial.mono}`, "from_mono_id", trial.mono];
       const lastTurn = blocks.slice(blocks.findLastIndex((b) => b.role === "user"));
       // A Mono often answers the sender with send_message or reply; the body
       // is only in mono_messages, not in its tool block.
       const sent = await query(
         plan.db,
-        "SELECT body FROM mono_messages WHERE from_mono_id=? AND status<>'rejected' AND created_at>=? ORDER BY created_at",
-        trial.mono,
-        lastSentAt,
+        `SELECT id, tool, CASE WHEN to_mono_id IS NULL THEN 'session:' || to_session_id ELSE 'mono:' || to_mono_id END AS "to", status, body, created_at FROM mono_messages WHERE ${from}=? ORDER BY created_at`,
+        id,
       );
-      const answer = [...lastTurn.filter((b) => b.role === "assistant" && b.text).map((b) => b.text), ...sent.map((m) => m.body)].join("\n");
+      const replies = sent.filter((m) => m.status !== "rejected" && m.created_at >= lastSentAt);
+      const answer = [...lastTurn.filter((b) => b.role === "assistant" && b.text).map((b) => b.text), ...replies.map((m) => m.body)].join("\n");
       const paths = Object.values(trial.projects);
-      const hasTable = (await query(plan.db, "SELECT 1 AS x FROM sqlite_master WHERE name='milestones'")).length > 0;
-      const rows = hasTable
+      const rows = tables.has("milestones")
         ? await query(
             plan.db,
             `SELECT project_path, title, status, created_by FROM milestones WHERE project_path IN (${paths.map(() => "?").join(",")}) ORDER BY project_path, sort_order`,
@@ -188,18 +267,25 @@ export default class MonoProvider {
         : [];
       const toolCalls = toolCallsOf(blocks);
       const turns = blocks.filter((b) => b.role === "user");
+      const asks = await askRows(plan.db, tables, actor, askId);
       const metadata = {
         trial: trial.trial,
         mono: trial.mono,
+        agent: trial.agent,
+        actor,
+        parent: `mono:${SENDER}`,
         harness: plan.harness,
         model: turns.at(-1)?.turnModel?.id ?? plan.model,
         projects: trial.projects,
         toolCalls,
         answer,
         rows,
+        ...asks,
+        sent,
       };
+      const askEvents = asks.events.filter((e) => e.ask_id === askId).map((e) => e.kind);
       return {
-        output: JSON.stringify({ actions: toolCalls.map((c) => c.action).filter(Boolean), answer: answer.slice(0, 500) }),
+        output: JSON.stringify({ actions: toolCalls.map((c) => c.action).filter(Boolean), askEvents, answer: answer.slice(0, 500) }),
         metadata,
         ...usage(turns),
       };

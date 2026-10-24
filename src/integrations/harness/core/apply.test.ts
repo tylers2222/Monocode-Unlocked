@@ -49,7 +49,8 @@ describe("follow-up readiness", () => {
     );
     expect(session.busy).toBe(false);
     expect(session.queueStatus).toBe("paused");
-    expect(session.queuedMessages).toBe(queuedMessages);
+    expect(session.queuePause).toBe("error");
+    expect(session.queuedMessages).toEqual(queuedMessages);
   });
   it("becomes ready only after acceptance and resets when stopped or restarted", () => {
     let session = appendUser(newSession("codex", "/tmp"), "First");
