@@ -127,6 +127,7 @@ export type AppSessionListing = {
   title: string;
   harness: HarnessId;
   model: string;
+  branch: string | null;
   busy: boolean;
   hasDraft: boolean;
   archived: boolean;
@@ -215,6 +216,8 @@ export type AgentAppHost = {
     notifyMonoId?: string,
   ): Promise<void>;
   sessions(cwd: string): Promise<AppSessionListing[]>;
+  /** The app's bundle identifier, which tells one MonoCode instance from another. */
+  appIdentifier(): Promise<string>;
   session(id: string): Promise<Session | null>;
   readConversation?(
     session: Session,
@@ -1756,7 +1759,11 @@ export async function handleAgentApp(
       };
     case "sessions.list": {
       const cwd = requireProject(source, input, host);
-      return { cwd, sessions: await host.sessions(cwd) };
+      return {
+        appIdentifier: await host.appIdentifier(),
+        cwd,
+        sessions: await host.sessions(cwd),
+      };
     }
     case "sessions.read": {
       const id = requiredString(input.sessionId, "sessionId", 256);
