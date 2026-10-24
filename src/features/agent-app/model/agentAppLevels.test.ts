@@ -80,7 +80,7 @@ const SCENARIOS: Scenario[] = [
         fields.includes("sessionId") && action !== "chat.card"
           ? { sessionId: "lead" }
           : {},
-      requestId: `w-${action.replace(".", "-")}`,
+      requestId: `w-${action.replaceAll(".", "-")}`,
       ran: null,
     })),
 ];

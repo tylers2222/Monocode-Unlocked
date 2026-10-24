@@ -38,9 +38,11 @@ export type AppShell = {
   takeReports: () => Promise<BackendReport[]>;
   /**
    * Quits the app and opens it again on the same backend store, as a restart
-   * finds the Rust database as the quit left it.
+   * finds the Rust database as the quit left it. `beforeExit` runs once the
+   * quit has saved: Rust stops the harnesses before it exits, and the window
+   * still runs until then.
    */
-  restart: () => Promise<void>;
+  restart: (beforeExit?: () => Promise<void>) => Promise<void>;
 };
 /**
  * A handler crosses into the page as source text. A method (`name() {…}`)
@@ -106,7 +108,7 @@ async function booted(page: Page) {
  * Quits the way Rust's quit coordinator does (`quit_commit`, then the app's
  * `quit_ready`), then opens the app again on the same store.
  */
-async function restart(page: Page) {
+async function restart(page: Page, beforeExit?: () => Promise<void>) {
   await page.evaluate(() => window.appBackend!.emit("quit_commit", 1));
   await expect
     .poll(() =>
@@ -118,6 +120,7 @@ async function restart(page: Page) {
       ),
     )
     .toEqual({ id: 1, persisted: true });
+  await beforeExit?.();
   await page.evaluate(() => window.appBackend!.keepStore());
   await page.reload();
   await booted(page);
@@ -142,7 +145,7 @@ export const test = base.extend<{ app: AppShell }>({
           { event, payload },
         ),
       takeReports,
-      restart: () => restart(page),
+      restart: (beforeExit) => restart(page, beforeExit),
     });
     expect(
       await takeReports(),

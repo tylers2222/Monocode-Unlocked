@@ -1,13 +1,18 @@
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
+import { INTERRUPT_MESSAGE } from "../../sessions/model/inFlight";
+import { enqueueQueuedMessage } from "../../sessions/model/messageQueue";
 import {
   opensTurn,
   type MonoSessionCompletion,
   type QueuedMessage,
   type Session,
 } from "../../sessions/model/session";
+import type { TurnId } from "./monoMessages";
 
 const RESULT_MAX_CHARS = 12_000;
 const BATCH_RESULT_MAX_CHARS = 48_000;
+/** Key prefix of the groups `restore` takes back after a quit. */
+const RESTORED = "restored:";
 
 /** Freeze this turn's result before either conversation starts another turn. */
 type CompletionOptions = {
@@ -130,8 +135,7 @@ export type MonoCompletionRequest = Pick<
  * other end.
  */
 type Settled = { result: MonoSessionCompletionResult; end: ControlOutcome };
-type CompletionMember = {
-  sessionId: string;
+type CompletionMember = MonoCompletionRequest & {
   accepted: boolean;
   settled?: Settled;
 };
@@ -145,6 +149,16 @@ type CompletionBatch = {
   origin: MonoCompletionOrigin;
   phase: CompletionPhase;
   results: Map<string, CompletionMember>;
+};
+
+/**
+ * A monitored request whose end the Mono has not been given, kept across a
+ * quit (ADE-46). `result` is set when the request's turn had already ended.
+ */
+export type SavedMonoCompletion = {
+  origin: MonoCompletionOrigin;
+  request: MonoCompletionRequest;
+  result?: MonoSessionCompletionResult;
 };
 
 /** Results handed to `onReady`; a dismissal can still remove one before it is queued. */
@@ -208,28 +222,34 @@ export class MonoSessionCompletionBatches {
     request: MonoCompletionRequest,
     options: { awaitAcceptance?: boolean } = {},
   ) {
-    const { requestId, sessionId } = request;
     const key = `${origin.monoId}:${origin.turn}`;
     let batch = this.batches.get(key);
     if (!batch) {
       batch = { origin, phase: "turn", results: new Map() };
       this.batches.set(key, batch);
     }
-    let result = batch.results.get(requestId);
+    let result = batch.results.get(request.requestId);
     // A rejected submission can be retried with the same receipt before this
     // launching turn ends. Wait for its new attempt, ignoring stale callbacks.
     if (!result || result.settled) {
-      result = { sessionId, accepted: !options.awaitAcceptance };
-      batch.results.set(requestId, result);
+      result = { ...request, accepted: !options.awaitAcceptance };
+      batch.results.set(request.requestId, result);
     }
-    const entry = result;
-    const group = batch;
+    return this.watcher(key, batch, result);
+  }
+
+  private watcher(
+    key: string,
+    group: CompletionBatch,
+    entry: CompletionMember,
+  ) {
+    const { requestId, sessionId } = entry;
     return Object.assign(
       (outcome: ControlOutcome) => {
         if (entry.settled || group.results.get(requestId) !== entry) return;
         entry.settled = {
           result: monoSessionCompletionResult({
-            ...request,
+            ...entry,
             outcome,
             session: this.session(sessionId),
           }),
@@ -253,6 +273,94 @@ export class MonoSessionCompletionBatches {
         },
       },
     );
+  }
+
+  /**
+   * What a quit keeps (ADE-46): each accepted member whose end the Mono was
+   * not given, once per end. A steer and the request it joined share an end,
+   * so a held steer whose end another group already reported is left out.
+   */
+  undelivered(): SavedMonoCompletion[] {
+    const kept = new Set<ControlOutcome>();
+    return [...this.batches.values()].flatMap(({ origin, results }) =>
+      [...results.values()].flatMap(({ accepted, settled, ...request }) => {
+        if (!accepted) return [];
+        if (!settled) return [{ origin, request }];
+        if (
+          this.reportedEnds.get(origin.monoId)?.has(settled.end) ||
+          kept.has(settled.end)
+        )
+          return [];
+        kept.add(settled.end);
+        return [{ origin, request, result: settled.result }];
+      }),
+    );
+  }
+
+  /**
+   * Takes back what a quit kept. The quit ended every launching turn, so each
+   * group is open and sends on the next `closeInactive`. A member whose turn
+   * the quit cut waits for `resume` when `continues` says a Continue turn picks
+   * the session up; else the quit was its end.
+   */
+  restore(
+    saved: SavedMonoCompletion[],
+    continues: (sessionId: string) => boolean,
+  ) {
+    const quitEnds = new Map<string, ControlOutcome>();
+    for (const { origin, request, result } of saved) {
+      const key = `${RESTORED}${origin.monoId}:${origin.turn}`;
+      const batch = this.batches.get(key) ?? {
+        origin,
+        phase: "open" as const,
+        results: new Map(),
+      };
+      this.batches.set(key, batch);
+      const member: CompletionMember = { ...request, accepted: true };
+      batch.results.set(request.requestId, member);
+      if (result) {
+        member.settled = {
+          result,
+          end: { status: result.status, text: result.result },
+        };
+      } else if (!continues(request.sessionId)) {
+        const end = quitEnds.get(request.sessionId) ?? {
+          status: "cancelled",
+          text: "",
+          error: INTERRUPT_MESSAGE,
+        };
+        quitEnds.set(request.sessionId, end);
+        member.settled = {
+          result: monoSessionCompletionResult({
+            ...request,
+            outcome: end,
+            session: this.session(request.sessionId),
+          }),
+          end,
+        };
+      }
+    }
+  }
+
+  /**
+   * The watcher of one Continue that asks to open turn `turnId` of
+   * `sessionId` after a quit. Only an outcome of a turn that really opened
+   * (its opener block carries `turnId`) settles the restored members; a
+   * refused or duplicate Continue opened nothing, so its outcome is ignored.
+   */
+  resume(sessionId: string, turnId: TurnId) {
+    return (outcome: ControlOutcome) => {
+      const opened = this.session(sessionId)?.blocks.some(
+        (block) => block.role === "user" && block.turnId === turnId,
+      );
+      if (!opened) return;
+      for (const [key, group] of this.batches) {
+        if (!key.startsWith(RESTORED)) continue;
+        for (const entry of group.results.values())
+          if (entry.sessionId === sessionId)
+            this.watcher(key, group, entry)(outcome);
+      }
+    };
   }
 
   /** The calling Mono already knows the outcome of its own lifecycle command. */
@@ -375,6 +483,29 @@ function isCompletionResult(
   );
 }
 
+/** What `undelivered` kept in a saved workspace snapshot; malformed entries are dropped. */
+export function savedMonoCompletions(snapshot: unknown): SavedMonoCompletion[] {
+  const raw =
+    snapshot && typeof snapshot === "object" && "monoCompletions" in snapshot
+      ? snapshot.monoCompletions
+      : undefined;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((entry): entry is SavedMonoCompletion => {
+    const { origin, request, result } = (entry ?? {}) as Record<
+      string,
+      Record<string, unknown> | undefined
+    >;
+    return (
+      typeof origin?.monoId === "string" &&
+      typeof origin.turn === "number" &&
+      ["requestId", "sessionId", "project", "prompt"].every(
+        (field) => typeof request?.[field] === "string",
+      ) &&
+      (result === undefined || isCompletionResult(result))
+    );
+  });
+}
+
 export function dismissQueuedMonoSessionCompletion(
   mono: Session,
   sessionId: string,
@@ -398,9 +529,5 @@ export function enqueueMonoSessionCompletion(
     mono.blocks.some((block) => block.appRequestId === message.id)
   )
     return mono;
-  return {
-    ...mono,
-    queuedMessages: [...(mono.queuedMessages ?? []), message],
-    queueStatus: mono.queueStatus === "paused" ? "paused" : "active",
-  };
+  return enqueueQueuedMessage(mono, message);
 }

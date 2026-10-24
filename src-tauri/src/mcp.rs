@@ -364,7 +364,7 @@ fn write_json_server(path: &Path, name: &str, server: Value) -> Result<(), Strin
     })
 }
 
-fn write_json_config(
+pub(crate) fn write_json_config(
     path: &Path,
     update: impl FnOnce(&mut Value) -> Result<(), String>,
 ) -> Result<(), String> {

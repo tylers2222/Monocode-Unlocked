@@ -1,0 +1,11 @@
+id: r06-missed-deadline
+version: 1
+pending: [ADE-24, ADE-26, ADE-27, ADE-29]
+description: A lead that missed the deadline of its ask gives a specific reason when asked why it was not acked (V4 missed deadline).
+grader: asks:r06
+fixture: { agent: lead, projects: { A: atlas } }
+events:
+  - { ask: "Add a CHANGELOG.md to {{A}} with a 1.0 entry, but commit it only after I give you the go-ahead.", due_minutes: 10 }
+  - { advance_minutes: 35 }
+  - "Why wasn't this acked?"
+  - "Thanks. Ack the ask now with where things stand."

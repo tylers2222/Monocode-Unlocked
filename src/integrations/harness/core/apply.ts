@@ -27,6 +27,7 @@ import { usageLimitFromError } from "../../../features/sessions/model/usageLimit
 import {
   missedTurn,
   pauseQueue,
+  resumeAfterFailedTurn,
 } from "../../../features/sessions/model/messageQueue";
 
 /**
@@ -185,11 +186,14 @@ export function applyHarnessEvent(
       return appendBlock(
         failStreaming(
           // Do not drain remaining messages into the same failed connection.
-          pauseQueue({
-            ...session,
-            usageLimit:
-              session.usageLimit ?? usageLimitFromError(event.message),
-          }),
+          pauseQueue(
+            {
+              ...session,
+              usageLimit:
+                session.usageLimit ?? usageLimitFromError(event.message),
+            },
+            "error",
+          ),
         ),
         {
           id: crypto.randomUUID(),
@@ -198,6 +202,13 @@ export function applyHarnessEvent(
           notice: "error",
         },
       );
+    case "steer.failed":
+      return appendBlock(session, {
+        id: crypto.randomUUID(),
+        role: "system",
+        text: event.message,
+        notice: "error",
+      });
     case "session.providerBound":
       return { ...session, providerSessionId: event.providerSessionId };
     case "turn.started": {
@@ -522,7 +533,7 @@ export function appendUser(
   attachments: Attachment[] = [],
   extra?: UserTurnExtra,
 ): Session {
-  session = settlePendingApprovals(session);
+  session = resumeAfterFailedTurn(settlePendingApprovals(session));
   return appendBlock(
     { ...session, busy: true, turnReadiness: "starting" },
     {

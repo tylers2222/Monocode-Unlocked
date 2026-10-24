@@ -211,14 +211,16 @@ function piPromptContent(text: string, attachments: Attachment[] = []) {
 export function buildPiPrompt(input: {
   text: string;
   attachments?: Attachment[];
-  streaming?: boolean;
+  /** What the agent does with the prompt when it is already running. */
+  streamingBehavior?: "steer" | "followUp";
 }): Record<string, unknown> {
-  const command: Record<string, unknown> = {
+  return {
     type: "prompt",
     ...piPromptContent(input.text, input.attachments),
+    ...(input.streamingBehavior
+      ? { streamingBehavior: input.streamingBehavior }
+      : {}),
   };
-  if (input.streaming) command.streamingBehavior = "steer";
-  return command;
 }
 
 export type PiForkMessage = {
