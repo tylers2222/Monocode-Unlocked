@@ -12,6 +12,7 @@ mod automations;
 mod azure_devops;
 mod chat_background;
 mod checkpoint;
+mod claude_deny;
 mod codex_mono_store;
 mod control;
 pub mod control_cli;

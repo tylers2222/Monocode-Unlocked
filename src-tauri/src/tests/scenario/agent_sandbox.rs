@@ -30,7 +30,7 @@ fn folder() -> Folder {
     Folder(dir)
 }
 
-fn script(path: &Path, body: &str) -> PathBuf {
+pub(super) fn script(path: &Path, body: &str) -> PathBuf {
     std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path.to_path_buf()
@@ -92,7 +92,7 @@ impl Rig {
     }
 
     fn spawn(&self) -> Result<Spawn, String> {
-        command_in(&self.data, "fx", || Some(self.pinned.clone()))
+        command_in(&self.data, "fx", &[], || Some(self.pinned.clone()))
     }
 
     fn written(&self) -> Value {
@@ -126,7 +126,7 @@ impl Rig {
 }
 
 fn off_starts_the_cli_bare(rig: &Rig) {
-    let off = command_in(&rig.data, "fx", || panic!("srt looked up while off")).unwrap();
+    let off = command_in(&rig.data, "fx", &[], || panic!("srt looked up while off")).unwrap();
     assert!(!off.sandboxed, "off: not sandboxed");
     assert_eq!(
         argv(&off.cmd),
@@ -137,7 +137,7 @@ fn off_starts_the_cli_bare(rig: &Rig) {
 }
 
 fn on_refuses_without_a_working_pinned_srt(rig: &Rig) {
-    let refused = |find: Option<PathBuf>| command_in(&rig.data, "fx", || find).err().unwrap();
+    let refused = |find: Option<PathBuf>| command_in(&rig.data, "fx", &[], || find).err().unwrap();
     let missing = refused(None);
     assert!(
         missing.contains("srt is not installed"),
@@ -161,7 +161,7 @@ fn on_refuses_an_unreadable_data_folder() {
     std::fs::create_dir_all(&data).unwrap();
     let locked = root.0.join("locked");
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let result = command_in(&data, "fx", || {
+    let result = command_in(&data, "fx", &[], || {
         panic!("srt looked up for an unreadable folder")
     });
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -396,7 +396,7 @@ fn an_old_settings_file_gets_the_current_defaults(rig: &Rig) {
     assert_eq!(written["extraAllowWrite"], json!([]));
 }
 
-fn wait_for(file: &Path) -> String {
+pub(super) fn wait_for(file: &Path) -> String {
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
         if let Ok(text) = std::fs::read_to_string(file) {
@@ -468,17 +468,8 @@ fn harness_spawn_child() {
         "another srt comes first on the search PATH"
     );
 
-    // Tauri names the app data folder `<data dir>/<identifier>`, and an
-    // absolute identifier replaces the whole path.
     let data = root.join("app-data");
-    let mut context = tauri::test::mock_context(tauri::test::noop_assets());
-    context.config_mut().identifier = path(&data);
-    let app = tauri::test::mock_builder()
-        .manage(crate::harness::HarnessHost::new())
-        .manage(crate::session_store::SessionStore::open_in_memory().unwrap())
-        .build(context)
-        .unwrap();
-    assert_eq!(app.path().app_data_dir().unwrap(), data);
+    let app = mock_app(&data);
     std::fs::create_dir_all(&data).unwrap();
 
     let spawn = |session: &str| {
@@ -533,6 +524,21 @@ fn harness_spawn_child() {
         denied.contains(&path(&xdg.join("git"))),
         "on: git config under XDG is writable"
     );
+}
+
+/// Tauri's mock runtime with the state `harness_spawn` reads, its app data
+/// folder at `data`: Tauri names it `<data dir>/<identifier>`, and an absolute
+/// identifier replaces the whole path.
+pub(super) fn mock_app(data: &Path) -> tauri::App<tauri::test::MockRuntime> {
+    let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+    context.config_mut().identifier = path(data);
+    let app = tauri::test::mock_builder()
+        .manage(crate::harness::HarnessHost::new())
+        .manage(crate::session_store::SessionStore::open_in_memory().unwrap())
+        .build(context)
+        .unwrap();
+    assert_eq!(app.path().app_data_dir().unwrap(), data);
+    app
 }
 
 /// Defect: with the setting off a child starts wrapped, or a settings file

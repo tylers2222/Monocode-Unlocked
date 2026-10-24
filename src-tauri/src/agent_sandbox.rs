@@ -5,8 +5,11 @@
 //! Every MonoCode data folder is in both deny lists. The user's `extraAllowWrite`
 //! and `extraAllowedDomains` are added to the defaults on every spawn, and srt
 //! lets `denyWrite` win, so an addition cannot reopen a denied path.
+//! A spawn with write denies of its own (ADE-44's hook files) gets a copy with
+//! them added, `agent-sandbox-<hash of its content>.json`.
 
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -84,16 +87,23 @@ pub(crate) struct Spawn {
     pub(crate) sandboxed: bool,
 }
 
-pub(crate) fn command<R: Runtime>(app: &AppHandle<R>, program: &str) -> Result<Spawn, String> {
+pub(crate) fn command<R: Runtime>(
+    app: &AppHandle<R>,
+    program: &str,
+    spawn_deny: &[String],
+) -> Result<Spawn, String> {
     let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    command_in(&data, program, || crate::harness::resolve_gui_binary("srt"))
+    command_in(&data, program, spawn_deny, || {
+        crate::harness::resolve_gui_binary("srt")
+    })
 }
 
-/// `command` for the app data folder `data`; `find_srt` runs only when the
-/// sandbox is on.
+/// `command` for the app data folder `data`, with `spawn_deny` added to srt's
+/// write denies for this spawn only; `find_srt` runs only when the sandbox is on.
 pub(crate) fn command_in(
     data: &Path,
     program: &str,
+    spawn_deny: &[String],
     find_srt: impl FnOnce() -> Option<PathBuf>,
 ) -> Result<Spawn, String> {
     let sandboxed =
@@ -103,7 +113,7 @@ pub(crate) fn command_in(
         return Ok(Spawn { cmd, sandboxed });
     }
     let srt = pinned_srt(find_srt())?;
-    let settings = write_settings(data, &srt)?;
+    let settings = write_settings(data, &srt, spawn_deny)?;
     let mut cmd = Command::new(srt);
     cmd.arg("--settings").arg(settings).arg("--").arg(program);
     Ok(Spawn { cmd, sandboxed })
@@ -145,7 +155,7 @@ fn srt_modules(srt: &Path) -> Option<PathBuf> {
     modules.or_else(|| real.parent()).map(Path::to_path_buf)
 }
 
-fn write_settings(data: &Path, srt: &Path) -> Result<PathBuf, String> {
+fn write_settings(data: &Path, srt: &Path, spawn_deny: &[String]) -> Result<PathBuf, String> {
     let home =
         PathBuf::from(crate::dirs_home().ok_or("The agent sandbox needs a home directory.")?);
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -188,6 +198,7 @@ fn write_settings(data: &Path, srt: &Path) -> Result<PathBuf, String> {
     }
 
     let path = data.join(SETTINGS_FILE);
+    let mut written = Value::Null;
     crate::mcp::write_json_config(&path, |saved| {
         let extra_write = user_list(saved, "extraAllowWrite")?;
         let extra_domains = user_list(saved, "extraAllowedDomains")?;
@@ -209,6 +220,23 @@ fn write_settings(data: &Path, srt: &Path) -> Result<PathBuf, String> {
                 "allowLocalBinding": true,
             },
         });
+        written = saved.clone();
+        Ok(())
+    })
+    .map_err(|e| format!("{}: {e}", path.display()))?;
+    if spawn_deny.is_empty() {
+        return Ok(path);
+    }
+    // In a file named by its content, so a spawn starting at the same time
+    // cannot rewrite this one's denies before its srt reads them.
+    let mut deny = [deny_write, spawn_deny.to_vec()].concat();
+    add_resolved(&mut deny);
+    written["filesystem"]["denyWrite"] = json!(deny);
+    let mut hash = std::hash::DefaultHasher::new();
+    written.to_string().hash(&mut hash);
+    let path = data.join(format!("agent-sandbox-{:016x}.json", hash.finish()));
+    crate::mcp::write_json_config(&path, |saved| {
+        *saved = written;
         Ok(())
     })
     .map_err(|e| format!("{}: {e}", path.display()))?;
