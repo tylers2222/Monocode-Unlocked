@@ -339,10 +339,15 @@ describe("existing providers over headless process I/O", () => {
         if (harness === "codex")
           efforts.push(calls.find((call) => "codexEffort" in call).codexEffort);
         else {
+          // The first turn also starts the isolated title generator, which
+          // records its own argv, in either order, and has no --effort flag.
           const args: string[] = calls.find(
-            (call) => call.claudeArgs,
+            (call) =>
+              call.claudeArgs &&
+              !call.claudeArgs.includes("--no-session-persistence"),
           ).claudeArgs;
-          efforts.push(args[args.indexOf("--effort") + 1] ?? null);
+          const effortAt = args.indexOf("--effort");
+          efforts.push(effortAt < 0 ? null : args[effortAt + 1]);
         }
       }
       expect(efforts).toEqual(["low", "high"]);

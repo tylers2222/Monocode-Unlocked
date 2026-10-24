@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { newSession } from "../../features/sessions/model/session";
 import { newTab } from "../../features/workspace/model/layout";
-import { collectWorkspaceSnapshot } from "../../features/workspace/model/workspaceSnapshot";
+import { workspaceSnapshot } from "../../features/workspace/model/workspaceSnapshot";
 
 const store = vi.hoisted(() => ({
   loadWorkspaceSnapshot: vi.fn(),
@@ -36,7 +36,17 @@ function savedWorkspace() {
   }));
   const tabs = sessions.map((session) => newTab(session.id));
   store.loadWorkspaceSnapshot.mockResolvedValue(
-    collectWorkspaceSnapshot(tabs, sessions, tabs[0].id, "/repo", new Map()),
+    workspaceSnapshot([
+      {
+        tabs,
+        sessions,
+        activeTabId: tabs[0].id,
+        projectCwd: "/repo",
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      },
+    ]),
   );
   store.getSession.mockImplementation(
     async (id: string) => sessions.find((session) => session.id === id) ?? null,

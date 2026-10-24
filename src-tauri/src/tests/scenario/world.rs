@@ -200,8 +200,19 @@ impl World {
     }
 
     fn tick(&mut self) {
+        self.try_tick().unwrap();
+    }
+
+    /// `ms` of awake time pass and one tick runs; its result, for a fault
+    /// a scenario puts on the store's connection.
+    pub(crate) fn try_advance(&mut self, ms: i64) -> rusqlite::Result<()> {
+        self.clock.run(ms);
+        self.try_tick()
+    }
+
+    fn try_tick(&mut self) -> rusqlite::Result<()> {
         let app = self.app.as_mut().expect("the app is not running");
-        app.active.tick(&app.store.lock_conn().unwrap()).unwrap();
+        app.active.tick(&app.store.lock_conn().unwrap())
     }
 
     /// The app's active clock now (what it holds, not what it stored).

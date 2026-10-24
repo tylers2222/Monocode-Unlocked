@@ -544,6 +544,7 @@ import {
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
+  enqueueQueuedMessage,
   failQueuedMessage,
   nextQueuedSend,
   pauseQueue,
@@ -877,7 +878,7 @@ import {
   type ProjectOpenStep,
 } from "../features/projects/model/projectOpenRun";
 import {
-  collectWorkspaceSnapshot,
+  workspaceSnapshot,
   workspaceSnapshotKey,
   type WindowWorkspace,
 } from "../features/workspace/model/workspaceSnapshot";
@@ -894,6 +895,7 @@ import {
   persistQuitState,
   reapWindowRuntime,
   setQuitWorkspace,
+  type QuitWorkspace,
 } from "./model/appLifecycle";
 
 const SearchView = lazySurface(
@@ -1005,6 +1007,11 @@ type Submit = (
   attachments?: Attachment[],
   options?: SubmitOptions,
 ) => SubmissionAcceptance;
+
+/** The window continues this session's quit turn by itself after a relaunch. */
+function continuesAfterQuit(session: Session): boolean {
+  return canAutoContinue(session) && isLiveHarness(session.harness);
+}
 
 function withPlanStatus(
   session: Session,
@@ -1170,7 +1177,7 @@ function titleTabsEqual(a: TitleTab[], b: TitleTab[]): boolean {
 registerBuiltinHarnesses();
 
 type AppProps = {
-  resumed?: WindowWorkspace | null;
+  resumed?: QuitWorkspace | null;
   installedUpdate?: InstalledUpdate | null;
   history?: SessionSummary[];
   historyCwd?: string | null;
@@ -1551,17 +1558,6 @@ function Workspace({
       tabWorkspace(tab, sessionsRef.current, workspacePins),
     [workspacePins],
   );
-  /** Saved tabs: the app reopens on each project's default workspace, so
-   * tabs from other worktrees close with it instead of piling up. */
-  const keepWorkspaceTab = useCallback(
-    (tab: WorkspaceTab) => {
-      const project = workspaceTabCwd(tab, sessionsRef.current);
-      if (!project || isRemoteProjectPath(project)) return true;
-      const workspace = tabWorkspace(tab, sessionsRef.current, workspacePins);
-      return !workspace || sameProjectPath(workspace, project);
-    },
-    [workspacePins],
-  );
 
   const workspaceNavigation = useWorkspaceNavigation({
     project: projectCwd,
@@ -1695,6 +1691,29 @@ function Workspace({
   useEffect(() => {
     readProjectReturnMemory();
   }, [activeTabId, tabs, sessions, readProjectReturnMemory]);
+
+  /** This window, as every save path passes it to `workspaceSnapshot`. */
+  const readWindowWorkspace = useCallback(
+    (): WindowWorkspace => ({
+      tabs: tabsRef.current,
+      sessions: sessionsRef.current,
+      activeTabId: activeTabIdRef.current,
+      projectCwd: projectCwdRef.current,
+      projectReturnMemory: readProjectReturnMemory(),
+      projectTerminals: projectTerminalsRef.current,
+      lastDockSide: lastDockSideRef.current ?? undefined,
+      pins: workspacePins,
+    }),
+    [readProjectReturnMemory, workspacePins],
+  );
+  /** This window as a quit, reload or close saves it (ADE-46). */
+  const readQuitWorkspace = useCallback(
+    (): QuitWorkspace => ({
+      ...readWindowWorkspace(),
+      monoCompletions: monoCompletionBatches.current!.undelivered(),
+    }),
+    [readWindowWorkspace],
+  );
 
   const tabVisitRef = useRef(emptyTabVisitHistory(activeTabId));
   const tabVisitFromHistoryRef = useRef(false);
@@ -1897,16 +1916,7 @@ function Workspace({
     const stopBridge = startHarnessBridge();
     const reap = () => {
       if (isAppQuitting()) return;
-      void persistQuitState(
-        sessionsRef.current,
-        tabsRef.current,
-        activeTabIdRef.current,
-        projectCwdRef.current,
-        readProjectReturnMemory(),
-        "unload",
-        projectTerminalsRef.current,
-        lastDockSideRef.current ?? undefined,
-      ).finally(() => {
+      void persistQuitState(readQuitWorkspace(), "unload").finally(() => {
         void reapWindowRuntime(
           sessionsRef.current,
           tabsRef.current,
@@ -1922,7 +1932,7 @@ function Workspace({
       stopBridge();
       harnessEvents.cancelScheduled();
     };
-  }, [resumed, readProjectReturnMemory, harnessEvents]);
+  }, [resumed, readQuitWorkspace, harnessEvents]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2004,7 +2014,7 @@ function Workspace({
     });
   }, []);
 
-  const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
+  const activeTab = tabs.find((t) => t.id === activeTabId);
   const active =
     sessions.find((session) => session.id === activeTab?.focusedId) ??
     sessions.find(
@@ -2443,15 +2453,8 @@ function Workspace({
   useEffect(() => {
     let unlistenClose: (() => void) | undefined;
     const releaseQuit = setQuitWorkspace(
-      () => sessionsRef.current,
-      () => tabsRef.current,
-      () => activeTabIdRef.current,
-      () => projectCwdRef.current,
-      () => projectTerminalsRef.current,
-      readProjectReturnMemory,
+      readQuitWorkspace,
       flushHarnessEvents,
-      () => lastDockSideRef.current,
-      keepWorkspaceTab,
     );
     void getCurrentWindow()
       .onCloseRequested(async (event) => {
@@ -2479,17 +2482,7 @@ function Workspace({
           void hideCurrentWindow();
           return;
         }
-        void persistQuitState(
-          sessionsRef.current,
-          tabsRef.current,
-          activeTabIdRef.current,
-          projectCwdRef.current,
-          readProjectReturnMemory(),
-          "unload",
-          projectTerminalsRef.current,
-          lastDockSideRef.current ?? undefined,
-          keepWorkspaceTab,
-        ).finally(() => {
+        void persistQuitState(readQuitWorkspace(), "unload").finally(() => {
           void (toTray ? hideCurrentWindow() : closeCurrentWindow());
         });
       })
@@ -2500,7 +2493,7 @@ function Workspace({
       releaseQuit();
       unlistenClose?.();
     };
-  }, [flushHarnessEvents, keepWorkspaceTab, readProjectReturnMemory]);
+  }, [flushHarnessEvents, readQuitWorkspace]);
 
   const refreshHistory = useCallback(async (cwd: string) => {
     if (!cwd || cwd === "~") return;
@@ -2670,23 +2663,12 @@ function Workspace({
     void replaceInFlightSessions(refs).catch(() => undefined);
   }, [sessions, tabs]);
 
+  // The state below says when to save. What is saved is the same window the
+  // quit, close and reload paths save.
   useEffect(() => {
     const save = workspaceSave.current;
-    const snapshot = collectWorkspaceSnapshot(
-      tabs,
-      sessions,
-      activeTabId,
-      projectCwd,
-      reconcileProjectReturn({
-        memory: projectReturnRef.current,
-        tabs,
-        sessions,
-        activeTabId,
-      }),
-      projectTerminals,
-      lastDockSide ?? undefined,
-      keepWorkspaceTab,
-    );
+    const readAt = Date.now();
+    const snapshot = workspaceSnapshot([readWindowWorkspace()]);
     const key = workspaceSnapshotKey(snapshot);
     if (save.pending?.key === key) return;
     window.clearTimeout(save.pending?.timer);
@@ -2695,7 +2677,7 @@ function Workspace({
     const timer = window.setTimeout(() => {
       save.saved = key;
       save.pending = undefined;
-      void saveWorkspaceSnapshot(snapshot).catch(() => undefined);
+      void saveWorkspaceSnapshot(snapshot, readAt).catch(() => undefined);
     }, 250);
     save.pending = { key, timer };
   }, [
@@ -2705,7 +2687,7 @@ function Workspace({
     projectCwd,
     projectTerminals,
     lastDockSide,
-    keepWorkspaceTab,
+    readWindowWorkspace,
     projectWorktree?.path,
     workspaceNavigation.revision,
   ]);
@@ -4144,7 +4126,8 @@ function Workspace({
     if (!sidebarCwd || sidebarCwd === "~" || isRemoteProjectPath(sidebarCwd))
       return stats;
     for (const tab of filterTabsForProject(tabs, sessions, sidebarCwd)) {
-      const workspace = tabWorkspace(tab, sessions, workspacePins) ?? sidebarCwd;
+      const workspace =
+        tabWorkspace(tab, sessions, workspacePins) ?? sidebarCwd;
       const key = pathKey(workspace);
       const entry = stats.get(key) ?? { tabs: 0, busy: false };
       entry.tabs += 1;
@@ -4985,6 +4968,7 @@ function Workspace({
             const stopped = {
               ...stopStreaming(latest),
               queueStatus: "paused" as const,
+              queuePause: undefined,
             };
             sessionsRef.current = sessionsRef.current.map((session) =>
               session.id === id ? stopped : session,
@@ -5410,6 +5394,7 @@ function Workspace({
             ...stopStreaming(latest),
             busy: false,
             queueStatus: "paused" as const,
+            queuePause: undefined,
             pendingQuestion: undefined,
           };
           sessionsRef.current = sessionsRef.current.map((entry) =>
@@ -7456,26 +7441,23 @@ function Workspace({
           setSessions((prev) =>
             prev.map((s) =>
               s.id === sessionId
-                ? {
-                    ...s,
-                    inboxCard: rawCommand ? s.inboxCard : undefined,
-                    noteCard: rawCommand ? s.noteCard : undefined,
-                    handoffCard: rawCommand ? s.handoffCard : undefined,
-                    queuedMessages: [
-                      ...(s.queuedMessages ?? []),
-                      {
-                        id: crypto.randomUUID(),
-                        text,
-                        attachments,
-                        noteCard,
-                        handoffCard,
-                        intent,
-                        ...sent.item,
-                      },
-                    ],
-                    queueStatus:
-                      s.queueStatus === "paused" ? "paused" : "active",
-                  }
+                ? enqueueQueuedMessage(
+                    {
+                      ...s,
+                      inboxCard: rawCommand ? s.inboxCard : undefined,
+                      noteCard: rawCommand ? s.noteCard : undefined,
+                      handoffCard: rawCommand ? s.handoffCard : undefined,
+                    },
+                    {
+                      id: crypto.randomUUID(),
+                      text,
+                      attachments,
+                      noteCard,
+                      handoffCard,
+                      intent,
+                      ...sent.item,
+                    },
+                  )
                 : s,
             ),
           );
@@ -7546,10 +7528,7 @@ function Workspace({
           },
           fallbackError: `${current.harness} could not steer the active turn`,
           fail: (message) => {
-            enqueueHarnessEvent(sessionId, {
-              type: "session.error",
-              message,
-            });
+            enqueueHarnessEvent(sessionId, { type: "steer.failed", message });
             flushHarnessEvents();
           },
         });
@@ -9030,6 +9009,14 @@ function Workspace({
       (sessionId) =>
         sessionsRef.current.find((session) => session.id === sessionId),
     );
+    monoCompletionBatches.current.restore(
+      resumed?.monoCompletions ?? [],
+      (sessionId) =>
+        sessionsRef.current.some(
+          (session) =>
+            session.id === sessionId && continuesAfterQuit(session),
+        ),
+    );
   }
   useEffect(() => {
     monoCompletionBatches.current!.closeInactive(({ monoId, turn }) => {
@@ -9601,6 +9588,7 @@ function Workspace({
                 : {
                     ...entry,
                     queueStatus: "active",
+                    queuePause: undefined,
                     queuedMessages: resumeQueuedMessages(entry.queuedMessages),
                   }
               : entry,
@@ -9614,6 +9602,7 @@ function Workspace({
             ? {
                 ...entry,
                 queueStatus: "resuming",
+                queuePause: undefined,
                 queuedMessages: withoutPauseReason(entry.queuedMessages),
               }
             : entry,
@@ -10467,9 +10456,7 @@ function Workspace({
   );
 
   const autoContinueKey = sessions
-    .filter(
-      (session) => canAutoContinue(session) && isLiveHarness(session.harness),
-    )
+    .filter(continuesAfterQuit)
     .map((session) => session.id)
     .join("\n");
 
@@ -10481,18 +10468,18 @@ function Workspace({
     const timer = window.setTimeout(() => {
       for (const id of ids) {
         const session = sessionsRef.current.find((entry) => entry.id === id);
-        if (
-          !session ||
-          !canAutoContinue(session) ||
-          !isLiveHarness(session.harness)
-        ) {
-          continue;
-        }
+        if (!session || !continuesAfterQuit(session)) continue;
         // A Continue opens the turn the quit cut short, or nothing. This
         // effect runs again whenever another session resumes, so a Continue
         // still waiting on its project's location check is asked for twice;
         // the second must not steer into the turn the first opened.
-        onSubmit(id, CONTINUE_PROMPT, [], { turnId: newTurnId() });
+        const turnId = newTurnId();
+        void submitWithSettlement({
+          submit: (onSettled) =>
+            onSubmit(id, CONTINUE_PROMPT, [], { turnId, onSettled }),
+          onSettled: monoCompletionBatches.current!.resume(id, turnId),
+          rejectionMessage: "The interrupted turn could not continue.",
+        });
       }
     }, 0);
     return () => window.clearTimeout(timer);
@@ -11449,6 +11436,7 @@ function Workspace({
                   canSteerHarness(latest.harness),
                 steerBlocked: steerBlockReason(latest, prompt),
                 mono: isMonoSession(id),
+                queueStatus: latest.queueStatus,
               });
               if (plan === "send" && sessionDraftBlock(target))
                 throw new Error(
@@ -11611,6 +11599,18 @@ function Workspace({
               await flushSync(() => stopSessionRef.current(id));
               flushHarnessEvents();
               dismissCompletion(id);
+            },
+            clearQueue: async (id) => {
+              const target = await ensureOpenSessionRef.current(id);
+              if (!target || !canAccessProject(target.cwd))
+                throw new Error("Session is unavailable in this project");
+              let cleared = 0;
+              for (const { id: itemId } of target.queuedMessages ?? [])
+                if (await removeQueued(monoQueue, id, itemId)) {
+                  turnWatchers.current.cancel(itemId);
+                  cleared++;
+                }
+              return cleared;
             },
             remove: async (id, mode) => {
               const target = await ensureOpenSessionRef.current(id);

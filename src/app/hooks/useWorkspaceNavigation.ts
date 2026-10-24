@@ -99,12 +99,13 @@ export function useWorkspaceNavigation(options: Options) {
         // A project request is recorded in the same event as openProjects.
         // Wait for its landing tab to render before choosing its workspace.
         if (!sameProjectPath(view.project, next.project)) break;
+        // No tab is active after a boot with every tab in a worktree.
         const tab = view.tabs.find((entry) => entry.id === view.activeTabId);
-        if (!tab) break;
-        const session = view.sessions.find(
-          (entry) => entry.id === tab.focusedId,
-        );
-        const landing = tabWorkspace(tab, view.sessions, view.pins);
+        const session =
+          tab && view.sessions.find((entry) => entry.id === tab.focusedId);
+        const landing = tab
+          ? tabWorkspace(tab, view.sessions, view.pins)
+          : null;
         const landingFocus =
           landing && !sameProjectPath(landing, next.project)
             ? { path: landing, branch: session?.branch ?? null }
@@ -123,15 +124,17 @@ export function useWorkspaceNavigation(options: Options) {
         const isCurrent = () =>
           mounted.current &&
           request.current === next &&
-          latest.current.activeTabId === tab.id &&
-          latest.current.tabs.find((entry) => entry.id === tab.id)
-            ?.focusedId === tab.focusedId &&
+          latest.current.activeTabId === view.activeTabId &&
+          (!tab ||
+            latest.current.tabs.find((entry) => entry.id === tab.id)
+              ?.focusedId === tab.focusedId) &&
           sameProjectPath(latest.current.project, next.project);
         try {
           // Mixed-project split tabs keep their existing grouping when the
           // focused pane's project changes. Consume the request without
           // moving the tab or leaving an unfinished navigation behind.
           if (
+            tab &&
             !sameProjectPath(
               workspaceTabCwd(tab, view.sessions) ?? "",
               next.project,
@@ -149,7 +152,7 @@ export function useWorkspaceNavigation(options: Options) {
             return !workspace || sameProjectPath(workspace, path);
           });
           const target =
-            !landing || sameProjectPath(landing, path)
+            tab && (!landing || sameProjectPath(landing, path))
               ? tab
               : (scoped.find((entry) => entry.id === memory.current.get(key)) ??
                 scoped[scoped.length - 1]);
@@ -157,6 +160,7 @@ export function useWorkspaceNavigation(options: Options) {
           if (target) {
             tabId = target.id;
           } else if (
+            tab &&
             session &&
             isBlankSession(session) &&
             sameProjectPath(session.cwd, next.project)
@@ -180,7 +184,7 @@ export function useWorkspaceNavigation(options: Options) {
             );
             if (!isCurrent()) continue;
             tabId = tab.id;
-          } else if (next.kind === "project") {
+          } else if (tab && next.kind === "project") {
             // Returning through the project rail keeps its landing
             // conversation when the remembered workspace has no open tab.
             // Its checkout stays attached to that conversation.

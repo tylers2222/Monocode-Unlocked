@@ -7,8 +7,8 @@ issues, then the closed issues that block one). fixtures/merged-prs.json is 5
 PRs of the script's gh query; none had a Ticket-part line yet. fixtures/app-dbs.json
 holds, for each app database, the CREATE TABLE statements of `sessions` and
 `in_flight_sessions`, and the in-flight rows with their session rows plus a few
-idle ones. The tests build two SQLite files from it and read them with the
-script's own reader.
+idle ones, with made-up titles under /Users/test. The tests build two SQLite
+files from it and read them with the script's own reader.
 """
 import copy
 import io
