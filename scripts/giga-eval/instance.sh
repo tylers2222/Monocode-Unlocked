@@ -2,9 +2,12 @@
 # Build, launch, check and stop an isolated "MonoCode GigaEval" release instance.
 #
 #   instance.sh build <checkout> [label]   copy the checkout's working tree, build a release .app
-#                                          with cargo features $GIGA_EVAL_FEATURES (default fake-clock)
-#   instance.sh home [--fresh]             create the temp HOME (symlinks to real logins, no copies)
-#   instance.sh start [--fresh-home]       launch the last built .app under the temp HOME
+#                                          (Linux: a release binary) with cargo features
+#                                          $GIGA_EVAL_FEATURES (default fake-clock)
+#   instance.sh home [--fresh]             create the temp HOME (symlinks to real logins, no copies;
+#                                          none on Linux)
+#   instance.sh start [--fresh-home]       launch the last build under the temp HOME
+#                                          (Linux: on the X server in $DISPLAY, e.g. Xvfb)
 #   instance.sh lsof-check                 prove no open file under the real app data or ~/MonoCode
 #   instance.sh stop                       quit the instance and every process it started
 #   instance.sh status
@@ -13,7 +16,7 @@
 #   instance.sh guard [db]                 fail when a sandboxed start would refuse <db>
 #   instance.sh denied <since>             what the sandbox refused since a `log show` date
 #
-# GIGA_EVAL_SANDBOX=1 (see sandbox.sh): `home` links no real logins, and
+# GIGA_EVAL_SANDBOX=1 (see sandbox.sh, macOS only): `home` links no real logins, and
 # `start` needs a fresh home, refuses an unsafe database, starts the app from
 # `env -i` under sandbox.sh's profile after a preflight, and watches its
 # process tree (GIGA_EVAL_WATCH_NOTIFY: a pid to get USR1 on a stray).
@@ -22,9 +25,57 @@ source "$(dirname "$0")/sandbox.sh"
 
 SRC_ROOT="$EVAL_OUT/src"
 TARGET_DIR="$EVAL_OUT/target"
-APP_DATA="$EVAL_HOME/Library/Application Support/$EVAL_ID"
+APP_DATA="$EVAL_APP_DATA"
 # Logins the harnesses read. Symlinked, never copied.
 LINKS=(.omp .claude .claude.json .codex .config .gitconfig .ssh Library/Keychains)
+
+# What differs per OS. install_build <label> <src> copies the build to
+# apps/<label>, records it in instance.app and checks its identifier.
+# has_window <pid> is true once the process shows a window. launch <bin>
+# [jail...] execs the app in place of the calling subshell.
+if [[ "$EVAL_OS" == macos ]]; then
+  BUNDLE=(--bundles app)
+  LEAK_DIRS=("$REAL_HOME/Library/WebKit/$EVAL_ID" "$REAL_HOME/Library/Application Support/$EVAL_ID" "$REAL_HOME/Library/Caches/$EVAL_ID")
+  install_build() {
+    local built="$TARGET_DIR/release/bundle/macos/$EVAL_PRODUCT.app" dest="$EVAL_OUT/apps/$1/$EVAL_PRODUCT.app"
+    [[ -d "$built" ]] || die "no bundle at $built"
+    mkdir -p "$(dirname "$dest")"; rm -rf "$dest"; cp -a "$built" "$dest"
+    echo "$dest" >"$EVAL_OUT/instance.app"
+    local bid; bid="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$dest/Contents/Info.plist")"
+    [[ "$bid" == "$EVAL_ID" ]] || die "bundle identifier is $bid, expected $EVAL_ID"
+    local sig; sig="$(codesign -dv "$dest" 2>&1)"
+    [[ "$sig" == *"Signature=adhoc"* ]] || die "bundle is not ad-hoc signed"
+    log "built $dest (identifier $bid, ad-hoc, rev $(cut -c1-10 "$2/.giga-eval-rev"))"
+  }
+  has_window() { osascript -l JavaScript "$EVAL_DIR/ax.js" windowid "$1" >/dev/null 2>&1; }
+  # Opened as a plain child, not through LaunchServices, so HOME and the
+  # persistence flags reach the process.
+  launch() {
+    local bin="$1"; shift
+    HOME="$EVAL_HOME" CFFIXED_USER_HOME="$EVAL_HOME" PATH="$PATH" \
+      exec nohup "$@" "$bin" -ApplePersistence NO -NSQuitAlwaysKeepsWindows NO
+  }
+else
+  BUNDLE=(--no-bundle)
+  LEAK_DIRS=("$REAL_HOME/.local/share/$EVAL_ID" "$REAL_HOME/.cache/$EVAL_ID" "$REAL_HOME/.config/$EVAL_ID")
+  # Linux runs in a container that holds no logins.
+  LINKS=()
+  install_build() {
+    local built="$TARGET_DIR/release/monocode" dest="$EVAL_OUT/apps/$1/monocode"
+    [[ -x "$built" ]] || die "no binary at $built"
+    mkdir -p "$(dirname "$dest")"; cp "$built" "$dest"
+    echo "$dest" >"$EVAL_OUT/instance.app"
+    # No Info.plist: the identifier is in the tauri config the binary embeds.
+    grep -qaF "$EVAL_ID" "$dest" || die "binary does not embed identifier $EVAL_ID"
+    log "built $dest (identifier $EVAL_ID, rev $(cut -c1-10 "$2/.giga-eval-rev"))"
+  }
+  has_window() { xdotool search --onlyvisible --pid "$1" >/dev/null 2>&1; }
+  # The XDG folders follow HOME, so app_data_dir() is $EVAL_APP_DATA.
+  launch() {
+    HOME="$EVAL_HOME" XDG_DATA_HOME="$EVAL_HOME/.local/share" XDG_CONFIG_HOME="$EVAL_HOME/.config" \
+      XDG_CACHE_HOME="$EVAL_HOME/.cache" PATH="$PATH" exec nohup "$1"
+  }
+fi
 
 cmd_build() {
   local checkout="${1:?checkout path}" label="${2:-$(basename "$1")}"
@@ -46,18 +97,10 @@ cmd_build() {
   fi
   local features="${GIGA_EVAL_FEATURES-fake-clock}"
   log "tauri build, features '$features' ($logf)"
-  (cd "$src" && CARGO_TARGET_DIR="$TARGET_DIR" npx tauri build --bundles app --config tauri.gigaeval.json \
+  (cd "$src" && CARGO_TARGET_DIR="$TARGET_DIR" npx tauri build "${BUNDLE[@]}" --config tauri.gigaeval.json \
     ${features:+--features "$features"}) >>"$logf" 2>&1 \
     || die "tauri build failed, see $logf"
-  local built="$TARGET_DIR/release/bundle/macos/$EVAL_PRODUCT.app" dest="$EVAL_OUT/apps/$label/$EVAL_PRODUCT.app"
-  [[ -d "$built" ]] || die "no bundle at $built"
-  mkdir -p "$(dirname "$dest")"; rm -rf "$dest"; cp -a "$built" "$dest"
-  echo "$dest" >"$EVAL_OUT/instance.app"
-  local bid; bid="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$dest/Contents/Info.plist")"
-  [[ "$bid" == "$EVAL_ID" ]] || die "bundle identifier is $bid, expected $EVAL_ID"
-  local sig; sig="$(codesign -dv "$dest" 2>&1)"
-  [[ "$sig" == *"Signature=adhoc"* ]] || die "bundle is not ad-hoc signed"
-  log "built $dest (identifier $bid, ad-hoc, rev $(cut -c1-10 "$src/.giga-eval-rev"))"
+  install_build "$label" "$src"
 }
 
 cmd_home() {
@@ -83,9 +126,12 @@ cmd_home() {
 
 cmd_start() {
   [[ -z "$(target_pid instance)" ]] || die "instance already running (pid $(target_pid instance))"
+  [[ "$EVAL_OS" == macos || "${GIGA_EVAL_SANDBOX:-}" != 1 ]] \
+    || die "GIGA_EVAL_SANDBOX=1 is macOS only (sandbox-exec); on Linux the container is the isolation"
+  [[ "$EVAL_OS" == macos || -n "${DISPLAY:-}" ]] || die "set DISPLAY to an X server (for example Xvfb :99)"
   if [[ "${1:-}" == "--fresh-home" ]]; then cmd_home --fresh; else cmd_home; fi
   local app; app="$(cat "$EVAL_OUT/instance.app" 2>/dev/null)" || die "build first"
-  local bin="$app/Contents/MacOS/monocode" jail=()
+  local bin jail=(); bin="$(app_bin "$app")"
   if [[ "${GIGA_EVAL_SANDBOX:-}" == 1 ]]; then
     sandbox_home_ok || exit 1
     if [[ -f "$APP_DATA/monocode.db" ]]; then
@@ -118,11 +164,7 @@ cmd_start() {
     git -C "$scratch" add README.md
     git -C "$scratch" -c user.name=giga-eval -c user.email=giga-eval@local commit -qm "scratch: initial"
   fi
-  # Opened as a plain child, not through LaunchServices, so HOME and the
-  # persistence flags reach the process.
-  (cd "$scratch" && HOME="$EVAL_HOME" CFFIXED_USER_HOME="$EVAL_HOME" PATH="$PATH" \
-    exec nohup ${jail[@]+"${jail[@]}"} "$bin" -ApplePersistence NO -NSQuitAlwaysKeepsWindows NO \
-    >"$EVAL_OUT/instance.log" 2>&1 </dev/null) &
+  (cd "$scratch" && launch "$bin" ${jail[@]+"${jail[@]}"} >"$EVAL_OUT/instance.log" 2>&1 </dev/null) &
   local pid=$!
   disown "$pid" 2>/dev/null || true
   echo "$pid" >"$EVAL_OUT/instance.pid"
@@ -133,7 +175,7 @@ cmd_start() {
   local i
   for i in $(seq 1 60); do
     kill -0 "$pid" 2>/dev/null || die "instance exited, see $EVAL_OUT/instance.log"
-    if osascript -l JavaScript "$EVAL_DIR/ax.js" windowid "$pid" >/dev/null 2>&1; then
+    if has_window "$pid"; then
       log "instance pid $pid has a window after ${i}s"
       sleep 3   # let the webview load and the app open its stores
       return 0
@@ -165,10 +207,10 @@ cmd_lsof_check() {
   local held_by_us=0 h
   for h in ${holders//,/ }; do [[ ",$pids," == *",$h,"* ]] && held_by_us=1; done
   local leaked_webkit=0 d
-  for d in "$REAL_HOME/Library/WebKit/$EVAL_ID" "$REAL_HOME/Library/Application Support/$EVAL_ID" "$REAL_HOME/Library/Caches/$EVAL_ID"; do
+  for d in "${LEAK_DIRS[@]}"; do
     [[ -e "$d" ]] && { echo "  instance path under the real HOME: $d"; leaked_webkit=1; }
   done
-  [[ "$leaked_webkit" == 0 ]] && echo "  no $EVAL_ID dir under the real HOME (WebKit, Application Support, Caches)"
+  [[ "$leaked_webkit" == 0 ]] && echo "  no $EVAL_ID dir under the real HOME (${LEAK_DIRS[*]#"$REAL_HOME/"})"
   if [[ "$real_data" == 0 && "$real_ws" == 0 && "$held_by_us" == 0 && "$leaked_webkit" == 0 && "$temp_data" -gt 0 ]]; then
     echo "PASS isolation (no real app data, no real ~/MonoCode, $temp_data files under the temp app data)"
   else
@@ -212,5 +254,5 @@ case "${1:-}" in
   scrub) sandbox_scrub "$APP_DATA/monocode.db" "${2:?usage: instance.sh scrub <model>}" ;;
   guard) sandbox_guard "${2:-$APP_DATA/monocode.db}" && log "safe: ${2:-$APP_DATA/monocode.db}" ;;
   denied) sandbox_denied "${2:?usage: instance.sh denied <since>}" ;;
-  *) sed -n '2,19p' "$0"; exit 2 ;;
+  *) sed -n '2,22p' "$0"; exit 2 ;;
 esac
