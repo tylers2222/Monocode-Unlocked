@@ -6,9 +6,12 @@
 #   app.sh s0 [runs]          S0 through the real app, `runs` times (default 1)
 #   app.sh d1                 D1: the agent sandbox on, off, and on without srt
 #   app.sh r6                 R6: agents ask and ack through MCP in the real app
+#   app.sh approvals [runs]   ADE-55 approvals board, macOS only, on a copy
+#                             of the real app database, `runs` times (default 1)
 #
 # GIGA_EVAL_OUT and GIGA_EVAL_HOME default to their own /tmp folders, apart
-# from other GigaEval runs. The installed apps and their data are never used.
+# from other GigaEval runs. The installed apps are never used; `approvals`
+# reads the real app database once, read-only, through `sqlite3 .backup`.
 export GIGA_EVAL_OUT="${GIGA_EVAL_OUT:-/tmp/scenario-app}"
 export GIGA_EVAL_HOME="${GIGA_EVAL_HOME:-/tmp/scenario-app-home}"
 SCENARIOS="$(cd "$(dirname "$0")" && pwd)"
@@ -82,15 +85,21 @@ expect() {
   if [[ "$got" == "$want" ]]; then echo "  ok   $what: $got"; else echo "  FAIL $what: $got, expected $want"; FAILED=1; fi
 }
 
-# fresh_pair <scenario>: a fresh temp HOME with the puppet as fx, launched
-# once so the DB is created and migrated, then a Giga `<scenario>-giga` and a
-# Mono `<scenario>-mono` on the scratch project, each with an fx chat.
-fresh_pair() {
+# fresh_home: the instance stopped, a fresh temp HOME and the fake clock at
+# uptime 0.
+fresh_home() {
   "$INSTANCE" stop
   "$INSTANCE" home --fresh
   mkdir -p "$APP_DATA"
   UPTIME=0; WALL="$(date +%s)000"; BOOT_MS=$((WALL - 3600000))
   clock_write "$UPTIME" "$WALL"
+}
+
+# fresh_pair <scenario>: a fresh temp HOME with the puppet as fx, launched
+# once so the DB is created and migrated, then a Giga `<scenario>-giga` and a
+# Mono `<scenario>-mono` on the scratch project, each with an fx chat.
+fresh_pair() {
+  fresh_home
   install_puppet
   "$INSTANCE" start
   wait_until 30 "the first launch writes mono_clock" holds "SELECT count(*) = 1 FROM mono_clock"
@@ -120,11 +129,16 @@ request_habit() {
     >"$APP_DATA/monos/$1/habits.json"
 }
 
-install_puppet() {
+# install_puppet_bin: the puppet as the temp HOME's fx, with an empty log.
+install_puppet_bin() {
   mkdir -p "$EVAL_HOME/.local/bin" "$PUPPET"
   cp "$SCENARIOS/puppet/puppet.mjs" "$EVAL_HOME/.local/bin/fx"
   chmod +x "$EVAL_HOME/.local/bin/fx"
   : >"$PUPPET/log.jsonl"
+}
+
+install_puppet() {
+  install_puppet_bin
   # The answer rule goes first: a prompt carrying the answer may quote the ask.
   jq -n --arg app "$(target_bin instance)" '{app: $app, rules: [
     {match: "S0-HABIT", calls: [{tool: "send_message", arguments:
@@ -200,7 +214,7 @@ d1_phase() {
   request_habit d1-giga "Probe" "D1-HABIT: probe the sandbox."
   jq -n --arg app "$(target_bin instance)" --arg db "$DB" --arg second "$SECOND_DB" --arg on "$SANDBOX_ON" --arg srt "$SRT_MODULES" --arg phase "$1" '{app: $app, rules: [
     {match: "D1-HABIT", exec: [
-      ["sqlite3", $db, ".tables"],
+      ["sqlite3", $db, "SELECT count(*) FROM mono_clock"],
       ["sqlite3", $second, "select v from s"],
       ["python3", "-c", "import sys; print(open(sys.argv[1], \"rb\").read()[:15].decode())", $second],
       ["cat", $db],
@@ -240,7 +254,7 @@ run_d1() {
   d1_phase on
   "$INSTANCE" start
   wait_until 90 "the Mono gets the Giga's message" saw D1-Q
-  expect "sqlite3 .tables on the DB is denied" "$(denied "sqlite3 $DB")" true
+  expect "sqlite3 on the DB is denied" "$(denied "sqlite3 $DB")" true
   expect "sqlite3 on another instance's DB is denied" "$(denied "sqlite3 $SECOND_DB")" true
   expect "a python open of another instance's DB is denied" "$(denied "python3")" true
   expect "cat of the DB is denied" "$(denied "cat $DB")" true
@@ -262,7 +276,7 @@ run_d1() {
   d1_phase off
   "$INSTANCE" start
   wait_until 90 "the Mono gets the Giga's message" saw D1-Q
-  expect "sqlite3 .tables on the DB" "$(probe "sqlite3 $DB" '"\(.code) \(.stdout | test("mono_clock"))"')" "0 true"
+  expect "sqlite3 on the DB" "$(probe "sqlite3 $DB" '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 1"
   expect "sqlite3 on another instance's DB" "$(probe "sqlite3 $SECOND_DB" '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 SECRET-SECOND"
   expect "a python open of another instance's DB" "$(probe python3 '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 SQLite format 3"
   expect "cat of the DB" "$(probe "cat $DB" '"\(.code) \(.bytes > 0)"')" "0 true"
@@ -403,6 +417,9 @@ run_r6() {
   "$INSTANCE" stop
   return "$FAILED"
 }
+source "$SCENARIOS/approvals.sh"
+
+[[ "${1:-}" != approvals* || "$EVAL_OS" == macos ]] || die "approvals is macOS only (GIGA_EVAL_SANDBOX, sandbox-exec)"
 
 case "${1:-}" in
   build) "$INSTANCE" build "${2:-$SCENARIOS/../..}" scenario ;;
@@ -415,5 +432,14 @@ case "${1:-}" in
     for run in $(seq 1 "${2:-1}"); do "$0" s0-run "$run" || failed=$((failed + 1)); done
     log "S0: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
-  *) sed -n '2,11p' "$0"; exit 2 ;;
+  approvals-run) export GIGA_EVAL_SANDBOX=1 GIGA_EVAL_WATCH_NOTIFY=$$; run_approvals "$2" ;;
+  approvals)
+    APPROVALS_USER_BIN="${APPROVALS_USER_BIN:-$(user_bin)}"
+    [[ -x "$APPROVALS_USER_BIN" ]] || die "no test binary for the user tool"
+    export APPROVALS_USER_BIN
+    failed=0
+    for run in $(seq 1 "${2:-1}"); do "$0" approvals-run "$run" || failed=$((failed + 1)); done
+    log "approvals: $(( ${2:-1} - failed ))/${2:-1} passed"
+    ((failed == 0)) ;;
+  *) sed -n '2,14p' "$0"; exit 2 ;;
 esac
