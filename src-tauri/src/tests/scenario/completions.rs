@@ -371,6 +371,7 @@ fn two_windows_booting_at_once_take_each_result_once() {
 }
 
 /// `mono_session_upsert`'s arguments: the Mono chat saved with `notice` queued.
+#[cfg(not(windows))]
 fn chat_save(notice: &str) -> Value {
     let session = json!({
         "id": "mono-chat", "cwd": "/p", "harness": "fx", "model": "m", "modelSettings": {},
