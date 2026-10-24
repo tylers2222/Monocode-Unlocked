@@ -1270,24 +1270,28 @@ it("renders the tags the agents read", () => {
   );
 });
 
+const ledgerRow = (carries: Carries | null) => ({
+  id: "m_aaaaaaaaaaaa" as MessageId,
+  fromMonoId: "mono-a" as MonoId,
+  fromSessionId: "mono-chat" as SessionId,
+  body: "Go",
+  wantingReply: false,
+  intent: "new" as const,
+  replyTo: null,
+  scope: null,
+  carries,
+});
+const agentReading = {
+  sessionId: "worker-1" as SessionId,
+  turnId: "t-1" as TurnId,
+  target: null,
+};
+
 // Exists only for gate/mutation (R6 one-off): the real-app scenario proves the
 // tags reach the agent; this pins the rounding and each kind's attributes.
-it("renders an ask's ask_id and due_in, and an ack's ack_of", () => {
+it("gives the agent an ask's ask_id and due_in, and an ack's ack_of", () => {
   const tags = (carries: Carries | null) =>
-    renderMonoMessage(
-      {
-        id: "m_aaaaaaaaaaaa" as MessageId,
-        fromMonoId: "mono-a" as MonoId,
-        fromSessionId: "mono-chat" as SessionId,
-        body: "Go",
-        wantingReply: false,
-        intent: "new",
-        replyTo: null,
-        scope: null,
-        carries,
-      },
-      undefined,
-    )
+    renderMonoMessage(ledgerRow(carries), undefined, undefined, agentReading)
       .split("\n")[0]
       .replace(/^.*wanting_reply="false"/, "");
   const ask = (dueInMs: number | null) => tags({ kind: "ask", dueInMs });
@@ -1299,6 +1303,27 @@ it("renders an ask's ask_id and due_in, and an ack's ack_of", () => {
     ' ack_of="m_bbbbbbbbbbbb">',
   );
   expect(tags(null)).toBe(">");
+});
+
+// R6a (Tyler 2026-10-24). Defect: the chat keeps the copy rendered at the
+// hand-off, so an ask's bubble still reads due_in="30m" after its deadline
+// passed, and repeats message_id as ask_id.
+it("shows an ask in the chat with no countdown and no ask_id as its deadline passes", () => {
+  const due = 30 * 60_000;
+  const chatCopy = (activeMs: number) =>
+    renderMonoMessage(
+      ledgerRow({ kind: "ask", dueInMs: due - activeMs }),
+      undefined,
+    );
+  const plain = renderMonoMessage(ledgerRow(null), undefined);
+  expect(chatCopy(0)).toBe(plain);
+  expect(chatCopy(due + 60 * 60_000)).toBe(plain);
+  expect(
+    renderMonoMessage(
+      ledgerRow({ kind: "ack", askId: "m_bbbbbbbbbbbb" as MessageId }),
+      undefined,
+    ),
+  ).toContain(' ack_of="m_bbbbbbbbbbbb">');
 });
 
 // Design 13. Defect: a lead's or worker's message reads as a deleted Mono's,
@@ -1885,7 +1910,13 @@ it("names a late answer's target by its message id in the Giga's turn", async ()
   ];
   const { host } = world([chat("giga-chat", { busy: true }), chat("a-chat")]);
   const deliver = vi.fn((_: HandedOff) => true);
-  await handOff(host, "giga-chat", "m_bbbbbbbbbbbb" as MessageId, "steer", deliver);
+  await handOff(
+    host,
+    "giga-chat",
+    "m_bbbbbbbbbbbb" as MessageId,
+    "steer",
+    deliver,
+  );
   expect(deliver.mock.calls[0][0].turnId).toBe("run-giga-chat");
   expect(deliver.mock.calls[0][0].text).toContain(
     `\n[steer → ${target.id} · "Is CI green?"]\nIt is green now\n`,

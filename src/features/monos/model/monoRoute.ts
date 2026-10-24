@@ -303,8 +303,9 @@ export function createLoadReconciles(host: MonoQueueHost) {
 /**
  * What a hand-off gives the provider: the row with its handle and its
  * inference line (`text`), and the turn. `shown` is the same row without
- * the line, for a transcript block (design 16.7: the line goes to the agent
- * only), and `link` is what that block names (design 16.3).
+ * the line and an ask's `ask_id` and `due_in`, for a transcript block
+ * (design 16.7: the line goes to the agent only), and `link` is what that
+ * block names (design 16.3).
  */
 export type HandedOff = {
   text: string;
