@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Count the open PRs of one MonoCode instance that use a slot of its 4-open-PR cap.
+"""Count the open PRs of one MonoCode instance that use a slot of its open-PR cap.
 
     pr-cap.py --instance <1|2> [--repo <owner/name>]
 
-The cap is per instance. A PR belongs to the instance its `instance:<n>` label
-names (instance-label.py checks every PR has one). Every open PR on the repo
+The cap is per instance: 4 open PRs for instance 1, 6 for instance 2. A PR
+belongs to the instance its `instance:<n>` label names (instance-label.py
+checks every PR has one). Every open PR on the repo
 counts, stacked PRs and drafts too, except a PR held on Tyler (a valid
 waits-tyler:<category> label) and a PR labelled process-fix. A PR with an
 off-list waits-tyler label still counts: that label fails waits-tyler.py and
@@ -21,7 +22,7 @@ from pathlib import Path
 
 import pr_labels
 
-CAP = 4
+CAPS = {"1": 4, "2": 6}
 EXEMPT = "process-fix"
 
 _spec = importlib.util.spec_from_file_location("waits_tyler", Path(__file__).with_name("waits-tyler.py"))
@@ -45,7 +46,7 @@ def split(prs, instance):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--instance", required=True, choices=["1", "2"])
+    parser.add_argument("--instance", required=True, choices=list(CAPS))
     parser.add_argument("--repo", default=pr_labels.REPO)
     args = parser.parse_args()
     try:
@@ -62,8 +63,9 @@ def main():
         print(f"#{pr['number']} -> {pr['baseRefName']}  {pr['title']}")
     for pr in exempt:
         print(f"#{pr['number']} -> {pr['baseRefName']}  {pr['title']} (not counted: {', '.join(exemptions(pr))})")
-    full = len(counted) >= CAP
-    print(f"pr-cap: instance {args.instance}: {len(counted)} of {CAP} slots used, {len(exempt)} not counted. "
+    cap = CAPS[args.instance]
+    full = len(counted) >= cap
+    print(f"pr-cap: instance {args.instance}: {len(counted)} of {cap} slots used, {len(exempt)} not counted. "
           + ("Cap full: no new builder." if full else "A slot is free."))
     return 1 if full else 0
 
