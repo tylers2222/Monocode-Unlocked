@@ -213,7 +213,7 @@ d1_phase() {
   request_habit d1-giga "Probe" "D1-HABIT: probe the sandbox."
   jq -n --arg app "$(target_bin instance)" --arg db "$DB" --arg second "$SECOND_DB" --arg on "$SANDBOX_ON" --arg srt "$SRT_MODULES" --arg phase "$1" '{app: $app, rules: [
     {match: "D1-HABIT", exec: [
-      ["sqlite3", $db, ".tables"],
+      ["sqlite3", $db, "SELECT count(*) FROM mono_clock"],
       ["sqlite3", $second, "select v from s"],
       ["python3", "-c", "import sys; print(open(sys.argv[1], \"rb\").read()[:15].decode())", $second],
       ["cat", $db],
@@ -253,7 +253,7 @@ run_d1() {
   d1_phase on
   "$INSTANCE" start
   wait_until 90 "the Mono gets the Giga's message" saw D1-Q
-  expect "sqlite3 .tables on the DB is denied" "$(denied "sqlite3 $DB")" true
+  expect "sqlite3 on the DB is denied" "$(denied "sqlite3 $DB")" true
   expect "sqlite3 on another instance's DB is denied" "$(denied "sqlite3 $SECOND_DB")" true
   expect "a python open of another instance's DB is denied" "$(denied "python3")" true
   expect "cat of the DB is denied" "$(denied "cat $DB")" true
@@ -275,7 +275,7 @@ run_d1() {
   d1_phase off
   "$INSTANCE" start
   wait_until 90 "the Mono gets the Giga's message" saw D1-Q
-  expect "sqlite3 .tables on the DB" "$(probe "sqlite3 $DB" '"\(.code) \(.stdout | test("mono_clock"))"')" "0 true"
+  expect "sqlite3 on the DB" "$(probe "sqlite3 $DB" '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 1"
   expect "sqlite3 on another instance's DB" "$(probe "sqlite3 $SECOND_DB" '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 SECRET-SECOND"
   expect "a python open of another instance's DB" "$(probe python3 '"\(.code) \(.stdout | rtrimstr("\n"))"')" "0 SQLite format 3"
   expect "cat of the DB" "$(probe "cat $DB" '"\(.code) \(.bytes > 0)"')" "0 true"
