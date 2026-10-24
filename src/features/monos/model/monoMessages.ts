@@ -468,9 +468,19 @@ function fromAttributes(
 export type Carries =
   { kind: "ask"; dueInMs: number | null } | { kind: "ack"; askId: MessageId };
 
-function ledgerAttributes(id: MessageId, carries: Carries | null): string[] {
+/**
+ * Only the agent reads an ask's attributes: `ask_id` repeats `message_id`,
+ * and `due_in` counts active time at the hand-off, so the chat copy would
+ * keep a countdown that stops being true.
+ */
+function ledgerAttributes(
+  id: MessageId,
+  carries: Carries | null,
+  toAgent: boolean,
+): string[] {
   switch (carries?.kind) {
     case "ask":
+      if (!toAgent) return [];
       return [
         `ask_id="${id}"`,
         ...(carries.dueInMs === null
@@ -492,9 +502,9 @@ function ledgerAttributes(id: MessageId, carries: Carries | null): string[] {
  * `<mono_messaging_rules>`. A reading whose target is not the row's
  * `reply_to` throws: the line would name another message, or none. A lead
  * or worker sender shows its session id, the `send_to` of an answer to it;
- * a row with no known sender is a deleted Mono's. An ask shows its
- * `ask_id` and, with a deadline, the active minutes left (`due_in`); an ack
- * the ask it closes (`ack_of`).
+ * a row with no known sender is a deleted Mono's. With a `reading`, an ask
+ * shows its `ask_id` and, with a deadline, the active minutes left
+ * (`due_in`); every copy of an ack shows the ask it closes (`ack_of`).
  */
 export function renderMonoMessage(
   message: Pick<MessageBase, "id" | "fromMonoId" | "fromSessionId" | "body"> &
@@ -521,7 +531,7 @@ export function renderMonoMessage(
     ...fromAttributes(message, sender),
     `wanting_reply="${message.wantingReply}"`,
     ...(handle ? [`handle="${handle}"`] : []),
-    ...ledgerAttributes(message.id, message.carries),
+    ...ledgerAttributes(message.id, message.carries, reading !== undefined),
     ...(line && message.replyTo ? [`reply_to="${message.replyTo}"`] : []),
   ];
   return `<mono_message ${attributes.join(" ")}>\n${line ? `${line}\n` : ""}${message.body}\n</mono_message>`;

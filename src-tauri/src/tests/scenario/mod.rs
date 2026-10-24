@@ -11,6 +11,7 @@ mod agent_sandbox;
 mod agents;
 mod asks;
 mod clock;
+mod completions;
 mod s0_baseline;
 mod s1_levels;
 mod s5_scheduler;
