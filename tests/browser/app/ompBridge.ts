@@ -5,11 +5,23 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Page } from "@playwright/test";
-import type { AppShell } from "./fixture";
+import { type AppShell, expect, test } from "./fixture";
 import { spawnRealHarness } from "./realHarness";
 
-/** The omp on PATH; empty when there is none, so a spec can skip. */
+/** The omp on PATH; empty when there is none. */
 export const OMP = spawnSync("which", ["omp"], { encoding: "utf8" }).stdout.trim();
+
+/**
+ * Call at the top of a real-omp spec. Locally the spec skips without omp. CI
+ * installs omp in the browser job, so there a missing omp fails each test
+ * instead of hiding the spec among the skips.
+ */
+export function needsOmp(): void {
+  test.skip(!OMP && !process.env.CI, "needs the omp binary on PATH");
+  test.beforeEach(() => {
+    expect(OMP, "omp is on PATH (CI installs it in the browser job)").not.toBe("");
+  });
+}
 
 /** What omp sends the local model: the conversation so far and its tools. */
 export type ModelRequest = {
@@ -75,7 +87,8 @@ function sse(reply: ModelReply): string {
  * and the harness-stdout / harness-exit events) to a real omp whose only
  * model is a local server answering with `model`. omp runs in `dir` with its
  * login there (spawnRealHarness), with `args` added after the app's own. The
- * processes and the server close with the page.
+ * processes and the server close with the page. `ready(sessionId)` resolves
+ * on the first `ready` frame of the omp the app starts for that session.
  */
 export async function bridgeOmp(
   page: Page,
@@ -91,7 +104,7 @@ export async function bridgeOmp(
     args?: string[];
     env?: NodeJS.ProcessEnv;
   },
-): Promise<void> {
+): Promise<{ ready: (sessionId: string) => Promise<void> }> {
   const server = createServer((request, response) => {
     let body = "";
     request.on("data", (chunk) => (body += chunk));
@@ -106,12 +119,29 @@ export async function bridgeOmp(
   server.listen(0, "127.0.0.1", listening.resolve);
   await listening.promise;
   const { port } = server.address() as AddressInfo;
-  mkdirSync(join(dir, ".omp", "agent"), { recursive: true });
+  const agentDir = join(dir, ".omp", "agent");
+  mkdirSync(agentDir, { recursive: true });
   writeFileSync(
-    join(dir, ".omp", "agent", "models.yml"),
+    join(agentDir, "models.yml"),
     `providers:\n  offline:\n    baseUrl: http://127.0.0.1:${port}/v1\n    api: openai-completions\n    apiKey: offline\n    models:\n      - id: offline-model\n`,
   );
+  // omp also finds model servers running on this machine (Ollama, llama.cpp,
+  // LM Studio, Apple) and caches them in the agent dir every omp here shares.
+  // An omp that starts after the cache has one could pick it as its default.
+  writeFileSync(
+    join(agentDir, "config.yml"),
+    "modelRoles:\n  default: offline/offline-model\ndisabledProviders: [ollama, llama.cpp, lm-studio, apple]\n",
+  );
+  console.log(
+    `[omp rig] ${OMP}: HOME=${dir}, agent dir ${agentDir}, only model http://127.0.0.1:${port}/v1 (local fake)`,
+  );
   const children = new Map<string, ChildProcess>();
+  const readyBySession = new Map<string, PromiseWithResolvers<void>>();
+  const readyFor = (sessionId: string) => {
+    let ready = readyBySession.get(sessionId);
+    if (!ready) readyBySession.set(sessionId, (ready = Promise.withResolvers()));
+    return ready;
+  };
   const spawned: ChildProcess[] = [];
   page.once("close", () => {
     for (const child of spawned) child.kill("SIGKILL");
@@ -128,9 +158,10 @@ export async function bridgeOmp(
     });
     children.set(sessionId, child);
     spawned.push(child);
-    createInterface({ input: child.stdout! }).on("line", (line) =>
-      emit("harness-stdout", { sessionId, line }),
-    );
+    createInterface({ input: child.stdout! }).on("line", (line) => {
+      if (line.startsWith('{"type":"ready"')) readyFor(sessionId).resolve();
+      emit("harness-stdout", { sessionId, line });
+    });
     child.on("exit", (code) =>
       emit("harness-exit", { sessionId, code, pid: child.pid }),
     );
@@ -142,4 +173,5 @@ export async function bridgeOmp(
   await page.exposeFunction("ompKill", (sessionId: string) => {
     children.get(sessionId)?.kill();
   });
+  return { ready: (sessionId) => readyFor(sessionId).promise };
 }

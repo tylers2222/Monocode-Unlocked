@@ -2661,6 +2661,7 @@ function Workspace({
   // quit, close and reload paths save.
   useEffect(() => {
     const save = workspaceSave.current;
+    const readAt = Date.now();
     const snapshot = workspaceSnapshot([readWindowWorkspace()]);
     const key = workspaceSnapshotKey(snapshot);
     if (save.pending?.key === key) return;
@@ -2670,7 +2671,7 @@ function Workspace({
     const timer = window.setTimeout(() => {
       save.saved = key;
       save.pending = undefined;
-      void saveWorkspaceSnapshot(snapshot).catch(() => undefined);
+      void saveWorkspaceSnapshot(snapshot, readAt).catch(() => undefined);
     }, 250);
     save.pending = { key, timer };
   }, [
@@ -7521,10 +7522,7 @@ function Workspace({
           },
           fallbackError: `${current.harness} could not steer the active turn`,
           fail: (message) => {
-            enqueueHarnessEvent(sessionId, {
-              type: "session.error",
-              message,
-            });
+            enqueueHarnessEvent(sessionId, { type: "steer.failed", message });
             flushHarnessEvents();
           },
         });

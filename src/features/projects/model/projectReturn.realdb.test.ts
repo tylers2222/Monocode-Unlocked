@@ -7,7 +7,7 @@ import realDb from "./fixtures/untabbedRunning.realdb.json";
 // those reads and refuses everything else.
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args?: { sessionId?: string }) => {
-    if (command === "workspace_get_snapshot") return realDb.snapshot;
+    if (command === "workspace_get_snapshot") return [realDb.snapshot];
     if (command === "session_list_in_flight") return realDb.inFlight;
     if (command === "session_get" || command === "mono_session_get")
       return (

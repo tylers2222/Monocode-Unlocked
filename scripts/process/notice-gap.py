@@ -57,7 +57,7 @@ MATCH_AFTER = timedelta(minutes=5)
 # The turn end is rounded from start + duration; its notice can start a moment before.
 NOTICE_SLACK = timedelta(seconds=2)
 # A send quotes its prompt up to the first character that a shell or jq escapes.
-# Briefs share long openings ("Read /Users/tylerstewart/MonoCode/gigas/..."), so
+# Briefs share long openings ("Read ~/MonoCode/gigas/..."), so
 # the whole plain prefix is compared.
 PLAIN = re.compile(r"[^'\"\\$`\n]*")
 MIN_QUOTE = 12

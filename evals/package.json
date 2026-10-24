@@ -4,7 +4,7 @@
   "type": "module",
   "description": "promptfoo evals that run real Monos in an isolated MonoCode GigaEval instance",
   "scripts": {
-    "self-test": "node graders/milestones.mjs --self-test"
+    "self-test": "node graders/milestones.mjs --self-test && node graders/asks.mjs --self-test"
   },
   "dependencies": {
     "js-yaml": "4.1.0",
