@@ -18,7 +18,7 @@
 //! script inside srt can still add an MCP server there.
 
 use std::ffi::{OsStr, OsString};
-use std::io::ErrorKind;
+use std::io::ErrorKind::{InvalidInput, NotADirectory, NotFound};
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -91,6 +91,7 @@ pub(crate) fn srt_deny_in(
         deny.extend(source.to_str().map(str::to_owned));
         deny.extend(link_chain(&source)?);
     }
+    deny.dedup();
     Ok(deny)
 }
 
@@ -298,8 +299,8 @@ fn setting_commands(file: &Path) -> Vec<String> {
         .collect()
 }
 
-/// `path` where its name lives (its folders resolved), then each link it
-/// resolves through, a folder on the way included, ending at its real path.
+/// `path` where its name lives (its own folders resolved), then each link it
+/// or a link target goes through, ending at its real path.
 /// Past a name that is not there, the rest is spelled as written with `..`
 /// folded: Claude Code matches a rule's path as written.
 fn link_chain(path: &Path) -> Result<Vec<String>, String> {
@@ -309,22 +310,20 @@ fn link_chain(path: &Path) -> Result<Vec<String>, String> {
             path.display()
         )
     };
-    let missing =
-        |e: &std::io::Error| matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory);
     let utf8 = |at: &Path| {
         at.to_str()
             .map(str::to_owned)
             .ok_or_else(|| failed(&"not UTF-8"))
     };
-    let names = |at: &Path| -> Vec<OsString> {
+    let names = |at: &Path, theirs: bool| -> Vec<(OsString, bool)> {
         at.components()
             .rev()
-            .map(|name| name.as_os_str().to_owned())
+            .map(|name| (name.as_os_str().to_owned(), theirs))
             .collect()
     };
-    let mut todo = names(&std::path::absolute(path).map_err(|e| failed(&e))?);
+    let mut todo = names(&std::path::absolute(path).map_err(|e| failed(&e))?, false);
     let (mut at, mut chain, mut links) = (PathBuf::new(), Vec::new(), 0);
-    while let Some(name) = todo.pop() {
+    while let Some((name, theirs)) = todo.pop() {
         if name == "." || name == ".." {
             if name == ".." {
                 at.pop();
@@ -334,7 +333,7 @@ fn link_chain(path: &Path) -> Result<Vec<String>, String> {
         let here = at.join(&name);
         let target = match here.read_link() {
             Ok(target) => target,
-            Err(e) if missing(&e) || e.kind() == ErrorKind::InvalidInput => {
+            Err(e) if matches!(e.kind(), NotFound | NotADirectory | InvalidInput) => {
                 at = here;
                 continue;
             }
@@ -345,12 +344,12 @@ fn link_chain(path: &Path) -> Result<Vec<String>, String> {
         if links > 40 {
             return Err(failed(&"too many links"));
         }
-        // The folders of `path` are followed silently: they are not on the way
-        // to a link target. Only root can replace a link in `/`.
-        if (todo.is_empty() || !chain.is_empty()) && at != Path::new("/") {
+        // `path`'s own folders are not listed: srt keeps them in place through
+        // `path` as written (macOS). Only root can replace a link in `/`.
+        if (todo.is_empty() || theirs) && at != Path::new("/") {
             chain.push(utf8(&here)?);
         }
-        todo.extend(names(&target));
+        todo.extend(names(&target, true));
     }
     chain.push(utf8(&at)?);
     Ok(chain)

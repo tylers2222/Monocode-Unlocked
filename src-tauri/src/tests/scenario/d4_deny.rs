@@ -9,7 +9,7 @@
 use std::ffi::OsStr;
 use std::io::ErrorKind;
 use std::os::unix::fs::{symlink, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use tauri::Manager;
 
@@ -353,25 +353,28 @@ fn a_dangling_settings_link_is_denied_where_it_points(root: &Path, data: &Path, 
     );
 }
 
-/// The links from `path`'s own name on, each link a link target goes through,
-/// and the real path, spelled as the kernel sees them (its folders resolved),
-/// worked out apart from `link_chain`. Links in `/` are not listed: only root
-/// can replace them.
+/// The links from `path`'s own name on, every link inside a link target, and
+/// the real path, spelled as the kernel sees them (its folders resolved), worked
+/// out apart from `link_chain`. Links in `/` are not listed: only root can
+/// replace them.
 fn links_and_real(path: &Path, links: &mut Vec<String>) -> String {
-    fn walk(path: &Path, own: bool, links: &mut Vec<String>) -> PathBuf {
+    fn walk(path: &Path, theirs: bool, links: &mut Vec<String>) -> PathBuf {
         let names: Vec<_> = path.components().skip(1).collect();
         let mut at = PathBuf::from("/");
         for (i, name) in names.iter().enumerate() {
+            if *name == Component::ParentDir {
+                at.pop();
+                continue;
+            }
             let here = at.join(name);
             let Ok(target) = here.read_link() else {
                 at = here;
                 continue;
             };
-            let listed = (own || i + 1 == names.len()) && at != Path::new("/");
-            if listed {
+            if (theirs || i + 1 == names.len()) && at != Path::new("/") {
                 links.push(here.to_string_lossy().into_owned());
             }
-            at = walk(&at.join(target), own || listed, links);
+            at = walk(&at.join(target), true, links);
         }
         at
     }
@@ -399,16 +402,18 @@ fn matched(deny: &[String], path: &str) -> bool {
     })
 }
 
-/// Defect (reviews r3 to r7: one link layout per round): a protected path as
+/// Defect (reviews r3 to r8: one link layout per round): a protected path as
 /// written, a link on the way to it, or its real path has no Edit rule or is
 /// not on the srt list, so the Write tool writes through it or Bash inside srt
 /// retargets it. One fixture with a link at each level: a folder above the
 /// config folder, the config folder, its settings file, a folder inside
-/// `.claude` that a hook script is reached through, a skills folder, and a
-/// project settings file through a folder link on the way. Every protected path
-/// must be covered as written, at each link and at its real path. srt blocks
-/// moving each folder of a path it denies (macOS), so the written spelling
-/// also keeps the links among a path's own folders in place there.
+/// `.claude` that a hook script is reached through (`~/.claude/hooks`), one
+/// with a link inside its target (`<work>/.claude/hooks -> ../tools/hooks`,
+/// `<work>/tools -> vendor/tools`), a skills folder, and a project settings
+/// file through a folder link on the way. Every protected path must be covered
+/// as written, at each link and at its real path. srt blocks moving each folder
+/// of a path it denies (macOS), so the written spelling also keeps the links
+/// among a path's own folders in place there.
 fn every_link_and_real_path_on_the_list_is_covered(root: &Path, data: &Path) {
     let at = root.join("links");
     let (home, work) = (at.join("home"), at.join("work"));
@@ -430,12 +435,17 @@ fn every_link_and_real_path_on_the_list_is_covered(root: &Path, data: &Path) {
         true,
     );
     link_to(&at.join("hop-v1"), &at.join("hop"), true);
-    std::fs::write(at.join("hop-v1/settings.json"), "{}").unwrap();
+    let fmt = r#"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": ".claude/hooks/fmt.sh"}]}]}}"#;
+    std::fs::write(at.join("hop-v1/settings.json"), fmt).unwrap();
     symlink(
         at.join("hop/settings.json"),
         work.join(".claude/settings.json"),
     )
     .unwrap();
+    std::fs::create_dir_all(work.join("vendor/tools/hooks")).unwrap();
+    symlink("vendor/tools", work.join("tools")).unwrap();
+    symlink("../tools/hooks", work.join(".claude/hooks")).unwrap();
+    std::fs::write(work.join("vendor/tools/hooks/fmt.sh"), "true\n").unwrap();
 
     let config_dir = Some(config.as_os_str());
     let srt = srt_deny_in(data, config_dir, &home, &work).unwrap();
@@ -444,6 +454,7 @@ fn every_link_and_real_path_on_the_list_is_covered(root: &Path, data: &Path) {
         config.join("settings.json"),
         home.join(".claude/hooks/a.sh"),
         work.join(".claude/settings.json"),
+        work.join(".claude/hooks/fmt.sh"),
     ];
     let folders = [config.join("agents"), work.join(".claude/skills")];
     for (path, folder) in
