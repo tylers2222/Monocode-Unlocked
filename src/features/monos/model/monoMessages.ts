@@ -468,10 +468,7 @@ function fromAttributes(
 export type Carries =
   { kind: "ask"; dueInMs: number | null } | { kind: "ack"; askId: MessageId };
 
-function ledgerAttributes(
-  id: MessageId,
-  carries: Carries | null | undefined,
-): string[] {
+function ledgerAttributes(id: MessageId, carries: Carries | null): string[] {
   switch (carries?.kind) {
     case "ask":
       return [
@@ -501,7 +498,7 @@ function ledgerAttributes(
  */
 export function renderMonoMessage(
   message: Pick<MessageBase, "id" | "fromMonoId" | "fromSessionId" | "body"> &
-    Intent & { wantingReply: boolean; carries?: Carries | null },
+    Intent & { wantingReply: boolean; carries: Carries | null },
   sender: MessageSender | undefined,
   handle?: Handle,
   reading?: Reading,

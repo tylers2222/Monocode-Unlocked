@@ -2276,7 +2276,8 @@ pub fn reply_target(conn: &Connection, id: &MessageId) -> rusqlite::Result<Reply
 
 /// A row and the message its line names: `None` for `new` and for a
 /// whole-turn steer (design 16.7, 16.12.5). A hand-off reads it for the
-/// line, a queue for its bubble's link (PR I5).
+/// line, a queue for its bubble's link (PR I5). `carries` is the row's ask
+/// or ack in the ledger (R6), `None` for any other row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Targeted {

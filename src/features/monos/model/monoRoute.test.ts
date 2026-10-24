@@ -1242,6 +1242,7 @@ it("renders the tags the agents read", () => {
     intent: "new" as const,
     replyTo: null,
     scope: null,
+    carries: null,
   };
   const sender = {
     kind: "mono" as const,
@@ -1313,6 +1314,7 @@ it("names a lead or worker sender by its title, session id and level", () => {
     intent: "new" as const,
     replyTo: null,
     scope: null,
+    carries: null,
   };
   expect(
     renderMonoMessage(message, {
@@ -1471,6 +1473,7 @@ it("starts a reply with a line that names the question by its message id", () =>
         intent: "reply",
         replyTo: question,
         scope: null,
+        carries: null,
       },
       { kind: "mono", name: "A", role: "mono" },
       undefined,
@@ -1502,6 +1505,7 @@ it("refuses to render a hand-off whose target is not the row's reply_to", () => 
     intent: "steer" as const,
     replyTo: "m_bbbbbbbbbbbb" as MessageId,
     scope: null,
+    carries: null,
   };
   const reading = {
     sessionId: "a-chat" as SessionId,

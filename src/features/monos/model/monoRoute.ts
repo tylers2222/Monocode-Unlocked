@@ -50,7 +50,10 @@ import {
 
 /** A row that a session handles: the only kind `submit` accepts or lists. */
 type Routed = Extract<MonoMessage, { handledBySession: unknown }>;
-/** A row and the message its line names (Rust `Targeted`, design 16.7). */
+/**
+ * A row, the message its line names and its ask or ack, if any (Rust
+ * `Targeted`, design 16.7, R6).
+ */
 type Targeted<M extends MonoMessage> = {
   message: M;
   target: ReplyTarget | null;
