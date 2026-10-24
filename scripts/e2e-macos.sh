@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # The e2e-macos job of .github/workflows/e2e.yml, on a hosted macOS runner.
-#   e2e-macos.sh <out> <all|scenarios|milestones>
-# Needs the instance that `scripts/scenarios/app.sh build` builds. Records the
-# screen to <out>/screen.mov, writes one log per scenario and a screenshot of
-# each failure, and writes <out>/results.tsv and junit.xml in the row format of
-# docker/e2e-run.sh. Exits 1 when a row failed.
+#   e2e-macos.sh <out> <all|scenarios|milestones> [scenario] [repeat]
+# Runs every scenario of SCENARIOS that app.sh in this checkout has, or only
+# [scenario] (an app.sh command line), each [repeat] times (default 1), and
+# builds the instance each one needs. Writes one log and one screen recording
+# per run, a screenshot of each failure, and results.tsv and junit.xml in the
+# row format of docker/e2e-run.sh. Exits 1 when a row failed.
 set -uo pipefail
 trap '' PIPE
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -12,12 +13,28 @@ APP="$ROOT/scripts/scenarios/app.sh"
 OUT=$1
 ROWS="$OUT/results.tsv"
 
+# command | the app.sh build it runs on | why CI skips it (empty: CI runs it)
+SCENARIOS=(
+  "s0|build|"
+  "d1|build|"
+  "d4|build|"
+  "d4 d1|build|"
+  "ade89 kill|build|"
+  "ade89 term|build|"
+  "approvals|build|reads a copy of the real app database, which a CI runner does not have"
+  "ade89 two|build-two|"
+)
+
 row() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" >>"$ROWS"; }
+
+# True when app.sh has a case label for the command's first word.
+has() { grep -qE "^  ${1%% *}\)" "$APP"; }
 
 # screencapture -v records until a character arrives on its stdin.
 record_start() {
+  rm -f "$OUT/.stop"
   mkfifo "$OUT/.stop"
-  screencapture -v -C "$OUT/screen.mov" <"$OUT/.stop" &
+  screencapture -v -C "$1" <"$OUT/.stop" &
   RECORDER=$!
   exec 3>"$OUT/.stop"
 }
@@ -25,27 +42,72 @@ record_stop() {
   echo >&3
   exec 3>&-
   wait "$RECORDER" || echo "e2e-macos: screencapture exited $?" >&2
-  rm -f "$OUT/.stop"
+}
+
+# run <suite> <name> <log> <command...>: one row; a screenshot when it fails.
+run() {
+  local suite=$1 name=$2 log=$3 started=$SECONDS status
+  shift 3
+  echo "== $suite: $name"
+  "$@" 2>&1 | tee "$log"
+  status=${PIPESTATUS[0]}
+  if ((status == 0)); then
+    row "$suite" "$name" passed $((SECONDS - started)) ""
+    return 0
+  fi
+  screencapture -x "${log%.log}-failed.png"
+  row "$suite" "$name" failed $((SECONDS - started)) \
+    "exit $status: $(grep -m1 -E 'FAIL|ERROR' "$log" | tr '\t' ' ')"
+  return 1
+}
+
+# use_build <build>: build the instance once; later calls reuse the result.
+BUILT=""
+BUILD_FAILED=""
+use_build() {
+  [[ $BUILT == "$1" ]] && return 0
+  [[ " $BUILD_FAILED " != *" $1 "* ]] || return 1
+  if run build "app.sh $1" "$OUT/$1.log" bash "$APP" "$1"; then
+    BUILT=$1
+  else
+    BUILD_FAILED+=" $1"
+    return 1
+  fi
 }
 
 suite_scenarios() {
-  local code=0 name started log status
-  for name in $(bash "$APP" list); do
-    started=$SECONDS log="$OUT/$name.log"
-    echo "== scenarios: $name"
-    bash "$APP" "$name" 2>&1 | tee "$log"
-    status=${PIPESTATUS[0]}
-    if ((status == 0)); then
-      row scenarios "$name" passed $((SECONDS - started)) ""
-    else
-      screencapture -x "$OUT/$name-failed.png"
-      row scenarios "$name" failed $((SECONDS - started)) \
-        "exit $status: $(grep -m1 -E 'FAIL|ERROR' "$log" | tr '\t' ' ')"
-      code=1
+  local code=0 entry command build skip i slug args matched=""
+  for entry in "${SCENARIOS[@]}"; do
+    IFS='|' read -r command build skip <<<"$entry"
+    [[ -z $ONLY || $ONLY == "$command" ]] || continue
+    matched=1
+    if ! has "$command"; then
+      row scenarios "$command" skipped 0 "not in this checkout's app.sh"
+      continue
     fi
-    # A scenario that stops early leaves its instance running.
-    bash "$ROOT/scripts/giga-eval/instance.sh" stop
+    if [[ -n $skip ]]; then
+      row scenarios "$command" skipped 0 "$skip"
+      continue
+    fi
+    if ! use_build "$build"; then
+      row scenarios "$command" skipped 0 "app.sh $build failed"
+      code=1
+      continue
+    fi
+    read -ra args <<<"$command"
+    for i in $(seq 1 "$REPEAT"); do
+      slug="${command// /-}-$i"
+      record_start "$OUT/$slug.mov"
+      run scenarios "$command #$i" "$OUT/$slug.log" bash "$APP" "${args[@]}" || code=1
+      record_stop
+      # A scenario that stops early leaves its instance running.
+      bash "$ROOT/scripts/giga-eval/instance.sh" stop
+    done
   done
+  if [[ -z $matched ]]; then
+    row scenarios "$ONLY" failed 0 "not one of SCENARIOS in scripts/e2e-macos.sh"
+    code=1
+  fi
   return "$code"
 }
 
@@ -58,13 +120,14 @@ suite_milestones() {
 case ${2:-} in
   all) suites="scenarios milestones" ;;
   scenarios | milestones) suites=$2 ;;
-  *) sed -n '2,7p' "$0"; exit 2 ;;
+  *) sed -n '2,8p' "$0"; exit 2 ;;
 esac
+ONLY=${3:-}
+REPEAT=${4:-1}
 mkdir -p "$OUT"
 printf 'suite\ttest\tstatus\tseconds\tnote\n' >"$ROWS"
-record_start
 code=0
 for suite in $suites; do "suite_$suite" || code=1; done
-record_stop
+rm -f "$OUT/.stop"
 node "$ROOT/docker/e2e-report.mjs" junit "$ROWS" >"$OUT/junit.xml" || code=1
 exit "$code"

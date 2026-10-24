@@ -14,6 +14,14 @@ on:
         type: choice
         options: [all, browser, milestones, scenarios, evals]
         default: all
+      scenario:
+        description: One app.sh scenario command line, for example ade89 two; empty runs every scenario
+        type: string
+        default: ""
+      repeat:
+        description: Runs of each scenario
+        type: number
+        default: 1
 
 permissions:
   contents: read
@@ -24,6 +32,8 @@ concurrency:
 
 env:
   SUITE: ${{ inputs.suite || 'all' }}
+  SCENARIO: ${{ inputs.scenario }}
+  REPEAT: ${{ inputs.repeat || 1 }}
 
 jobs:
   e2e-linux:
@@ -84,7 +94,7 @@ jobs:
     name: e2e-macos
     if: contains(fromJSON('["all", "scenarios", "milestones"]'), inputs.suite || 'all')
     runs-on: macos-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     env:
       GIGA_EVAL_OUT: /tmp/e2e-app
       GIGA_EVAL_HOME: /tmp/e2e-app-home
@@ -115,15 +125,17 @@ jobs:
           echo "$RUNNER_TEMP/omp-bin" >>"$GITHUB_PATH"
       - run: omp --version
 
-      - name: Build the GigaEval instance
-        run: bash scripts/scenarios/app.sh build
+      # d4 runs the real Claude Code CLI against a local fake model (no key).
+      - name: Install Claude Code 2.1.310
+        run: npm install --global --no-audit --no-fund @anthropic-ai/claude-code@2.1.310
 
-      - name: Run the scenarios on the runner's screen
-        run: bash scripts/e2e-macos.sh e2e-results/macos "$SUITE"
+      # Builds the instance each scenario needs, then runs it on the runner's screen.
+      - name: Run the scenarios
+        run: bash scripts/e2e-macos.sh e2e-results/macos "$SUITE" "$SCENARIO" "$REPEAT"
 
       - name: Collect the build and app logs
         if: always()
-        run: mkdir -p e2e-results/macos && cp "$GIGA_EVAL_OUT"/*.log e2e-results/macos/ || true
+        run: mkdir -p e2e-results/macos/app && cp "$GIGA_EVAL_OUT"/*.log e2e-results/macos/app/ || true
 
       - name: Upload the results, screenshots and screen recording
         if: always()
