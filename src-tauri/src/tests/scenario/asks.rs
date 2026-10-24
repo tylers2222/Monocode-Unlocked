@@ -1269,9 +1269,8 @@ fn ack_after_migration(world: &World, tree: &Tree, reset: &Mono, asks: [&Message
 }
 
 /// Review r1 n3. Defect: an ack with a field the tool does not have is
-/// taken, or a second ack event of one ask can be stored. R6b: Rust is the
-/// one parser of ask and ack, so a refusal does not name the field the agent
-/// has to fix.
+/// taken, or a second ack event of one ask can be stored. R6b: a refusal
+/// of a bad ask or ack value does not name the field the agent has to fix.
 #[test]
 fn an_ask_or_ack_refusal_names_its_field_and_an_ack_stores_one_event() {
     let world = World::new("r5-ack-shape");

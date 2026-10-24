@@ -43,7 +43,6 @@ import {
   type NoticeStatus,
   type RejectCode,
   type ReplyInput,
-  type SendInput,
   type SessionId,
   type ToolError,
   type TurnId,
@@ -836,7 +835,7 @@ function route(
 }
 
 /** `messages.get_monos` (design 3.1). */
-export async function getMonos(host: MonoMessagingHost) {
+async function getMonos(host: MonoMessagingHost) {
   const resolved = await host.caller();
   if (!resolved.ok) throw new AppActionError(resolved.code, resolved.hint);
   return {
@@ -879,11 +878,11 @@ export async function getMessage(host: MonoMessagingHost, input: GetInput) {
  * an ask is a send that is also a key on the asked child, an ack a send to
  * the asker that spends it.
  */
-export async function sendMessage(
+async function sendMessage(
   host: MonoMessagingHost,
+  tool: "send_message" | "ask" | "ack",
   requestId: string,
-  input: SendInput | RawInput,
-  tool: "send_message" | "ask" | "ack" = "send_message",
+  input: RawInput,
 ) {
   const submitted = await submit(host, tool, requestId, input);
   const [{ message }] = submitted.messages;
@@ -923,7 +922,7 @@ async function sendDelivery(
 }
 
 /** `messages.reply` (design 3.3). */
-export async function replyMessage(
+async function replyMessage(
   host: MonoMessagingHost,
   requestId: string,
   input: ReplyInput,
@@ -943,9 +942,10 @@ export function agentMessages(
 ): NonNullable<AgentAppHost["messages"]> {
   return {
     getMonos: () => getMonos(host),
-    send: (requestId, input) => sendMessage(host, requestId, input),
-    ask: (requestId, input) => sendMessage(host, requestId, input, "ask"),
-    ack: (requestId, input) => sendMessage(host, requestId, input, "ack"),
+    send: (requestId, input) =>
+      sendMessage(host, "send_message", requestId, input),
+    ask: (requestId, input) => sendMessage(host, "ask", requestId, input),
+    ack: (requestId, input) => sendMessage(host, "ack", requestId, input),
     reply: (requestId, input) => replyMessage(host, requestId, input),
     get: (input) => getMessage(host, input),
   };

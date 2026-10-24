@@ -10,9 +10,9 @@
 // Each call goes through `<app> app-mcp`, the app's MCP server, with the app
 // token this process got from the app. A call with "action" instead of
 // "tool" runs `<app> app <action>`, for an action with no MCP tool. An
-// argument "$ask_id" or "$ack_of" is that attribute of the prompt's
-// <mono_message>; "$prev.<field>" is that field of the previous call's
-// result. log.jsonl gets one line per prompt ({"prompt", "rule", "steer"})
+// argument "$<name>" is attribute <name> of the prompt's <mono_message>, and
+// "$prev.<field>" is that field of the previous call's answer (an action's
+// `result`). log.jsonl gets one line per prompt ({"prompt", "rule", "steer"})
 // and per call ({"tool" or "action", "input", "result"}). Each exec runs in
 // the agent's folder without a shell and logs {"exec", "code", "stdout",
 // "bytes", "stderr"}.
@@ -93,10 +93,9 @@ function fill(input, text, prev) {
   const attribute = (name) =>
     text.match(new RegExp(`<mono_message [^>]*\\b${name}="([^"]*)"`))?.[1];
   const value = (raw) => {
-    if (raw === "$ask_id" || raw === "$ack_of") return attribute(raw.slice(1));
-    if (typeof raw === "string" && raw.startsWith("$prev."))
-      return prev?.result?.[raw.slice(6)];
-    return raw;
+    if (typeof raw !== "string" || !raw.startsWith("$")) return raw;
+    if (raw.startsWith("$prev.")) return (prev?.result ?? prev)?.[raw.slice(6)];
+    return attribute(raw.slice(1));
   };
   return Object.fromEntries(
     Object.entries(input).map(([key, raw]) => [key, value(raw)]),

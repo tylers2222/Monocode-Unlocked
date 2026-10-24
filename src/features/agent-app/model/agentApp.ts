@@ -1710,7 +1710,8 @@ export async function handleAgentApp(
         requestId,
         checked(() => parseSendInput(input)),
       );
-    // Rust parses an ask or ack and names the field in its invalid_input hint.
+    // FIELDS checked the names; Rust parses the values of an ask or ack and
+    // names the bad field in its invalid_input hint.
     if (action === "messages.ask") return messages.ask(requestId, input);
     if (action === "messages.ack") return messages.ack(requestId, input);
     if (action === "messages.reply")

@@ -147,10 +147,11 @@ pub struct AckInput {
     message: String,
 }
 
-// R6: an ask or ack input is parsed here and nowhere else, field by field, so
-// each `invalid_input` hint names its field. `message` and `send_to` go on to
-// the carrier's `mono_gate::parse`, which names them; a value that is not a
-// string reads as empty there.
+// R6: the values of an ask or ack are parsed here, field by field, so each
+// `invalid_input` hint names its field. The web app's `FIELDS` refuses an
+// unknown field first; `known_fields` keeps that rule at this boundary too.
+// `message` and `send_to` go on to the carrier's `mono_gate::parse`, which
+// names them; a value that is not a string reads as empty there.
 fn text(raw: &Value, name: &str) -> String {
     raw.get(name)
         .and_then(Value::as_str)
@@ -158,9 +159,14 @@ fn text(raw: &Value, name: &str) -> String {
         .to_string()
 }
 
-/// `ask_gate::DUE_MINUTES` and `DEFAULT_DUE_MINUTES` in words.
-const DUE_RULE: &str =
-    "due_minutes must be a whole number of active minutes, 10 to 480. Leave it out for 60.";
+fn due_rule() -> String {
+    format!(
+        "due_minutes must be a whole number of active minutes, {} to {}. Leave it out for {}.",
+        ask_gate::DUE_MINUTES.start(),
+        ask_gate::DUE_MINUTES.end(),
+        ask_gate::DEFAULT_DUE_MINUTES
+    )
+}
 
 impl AskInput {
     pub fn parse(raw: &Value) -> Result<Self, String> {
@@ -171,7 +177,7 @@ impl AskInput {
                 due.as_u64()
                     .and_then(|due| u32::try_from(due).ok())
                     .filter(|due| ask_gate::DUE_MINUTES.contains(due))
-                    .ok_or(DUE_RULE)
+                    .ok_or_else(due_rule)
             })
             .transpose()?;
         Ok(AskInput {

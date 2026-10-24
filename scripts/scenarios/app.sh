@@ -335,7 +335,7 @@ run_r6() {
   request_habit r6-giga "Ask for the project" "R6-HABIT: ask R6 Mono to run the project."
   "$INSTANCE" start
   wait_until 120 "both asks are acked" holds "SELECT count(*) = 2 FROM mono_asks WHERE state = 'acked'"
-  wait_until 60 "the Giga gets the Mono's ack and the Mono its lead's" saw R6-REPORT
+  wait_until 60 "the Giga gets the Mono's ack" saw R6-REPORT
   wait_until 60 "the Mono tries to ack its own ask" \
     holds_log '[.[] | select(.input.message == "R6-MINE Acking my own ask.")] | length == 1'
   local giga_ask mono_ask lead

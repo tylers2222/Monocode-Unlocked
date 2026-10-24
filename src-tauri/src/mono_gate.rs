@@ -204,10 +204,11 @@ fn sha256(text: &str) -> PayloadHash {
 
 /// The `invalid_input` hint when `raw` has a field that `tool` does not take.
 pub fn known_fields(tool: &str, raw: &Value, allowed: &[&str]) -> Result<(), String> {
-    let unknown: Vec<&str> = raw
-        .as_object()
-        .into_iter()
-        .flat_map(Map::keys)
+    let Some(fields) = raw.as_object() else {
+        return Ok(());
+    };
+    let unknown: Vec<&str> = fields
+        .keys()
         .map(String::as_str)
         .filter(|key| !allowed.contains(key))
         .collect();
