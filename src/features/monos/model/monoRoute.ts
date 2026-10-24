@@ -29,6 +29,7 @@ import {
   renderMonoNotice,
   type CallErrorCode,
   type Caller,
+  type Carries,
   type Delivery,
   type GetInput,
   type Handle,
@@ -49,10 +50,14 @@ import {
 
 /** A row that a session handles: the only kind `submit` accepts or lists. */
 type Routed = Extract<MonoMessage, { handledBySession: unknown }>;
-/** A row and the message its line names (Rust `Targeted`, design 16.7). */
+/**
+ * A row, the message its line names and its ask or ack, if any (Rust
+ * `Targeted`, design 16.7, R6).
+ */
 type Targeted<M extends MonoMessage> = {
   message: M;
   target: ReplyTarget | null;
+  carries: Carries | null;
 };
 /** A row `assign_slot` takes: it refuses every other status. */
 type Waiting = Extract<MonoMessage, { status: "open" | "delivered" }>;
@@ -158,13 +163,13 @@ async function rowSender(
 }
 
 function queueItem(
-  { message, target }: Targeted<Routed>,
+  { message, target, carries }: Targeted<Routed>,
   sender: MessageSender | undefined,
   decision?: BoardDecision,
 ) {
   return {
     id: message.id,
-    text: renderMonoMessage(message, sender),
+    text: renderMonoMessage({ ...message, carries }, sender),
     link: rowLink(message, target),
     decision,
   };
@@ -298,8 +303,9 @@ export function createLoadReconciles(host: MonoQueueHost) {
 /**
  * What a hand-off gives the provider: the row with its handle and its
  * inference line (`text`), and the turn. `shown` is the same row without
- * the line, for a transcript block (design 16.7: the line goes to the agent
- * only), and `link` is what that block names (design 16.3).
+ * the line and an ask's `ask_id` and `due_in`, for a transcript block
+ * (design 16.7: the line goes to the agent only), and `link` is what that
+ * block names (design 16.3).
  */
 export type HandedOff = {
   text: string;
@@ -344,7 +350,7 @@ export async function handOff(
     host.update(sessionId, (session) => dequeueQueuedMessage(session, id));
     return false;
   }
-  const row = assigned.message;
+  const row = { ...assigned.message, carries: assigned.carries };
   const handle = row.status === "open" ? row.slot?.handle : undefined;
   let sender: MessageSender | undefined;
   let accepted = false;

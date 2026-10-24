@@ -464,6 +464,36 @@ function fromAttributes(
   }
 }
 
+/** What a row carries in the ask ledger (R6), from Rust's `Targeted.carries`. */
+export type Carries =
+  { kind: "ask"; dueInMs: number | null } | { kind: "ack"; askId: MessageId };
+
+/**
+ * Only the agent reads an ask's attributes: `ask_id` repeats `message_id`,
+ * and `due_in` counts active time at the hand-off, so the chat copy would
+ * keep a countdown that stops being true.
+ */
+function ledgerAttributes(
+  id: MessageId,
+  carries: Carries | null,
+  toAgent: boolean,
+): string[] {
+  switch (carries?.kind) {
+    case "ask":
+      if (!toAgent) return [];
+      return [
+        `ask_id="${id}"`,
+        ...(carries.dueInMs === null
+          ? []
+          : [`due_in="${Math.max(0, Math.ceil(carries.dueInMs / 60_000))}m"`]),
+      ];
+    case "ack":
+      return [`ack_of="${carries.askId}"`];
+    default:
+      return [];
+  }
+}
+
 /**
  * What the receiving agent reads (design 5.2, 16.7). A message that wants a
  * reply shows the handle of the turn it was handed to. A hand-off also
@@ -472,11 +502,13 @@ function fromAttributes(
  * `<mono_messaging_rules>`. A reading whose target is not the row's
  * `reply_to` throws: the line would name another message, or none. A lead
  * or worker sender shows its session id, the `send_to` of an answer to it;
- * a row with no known sender is a deleted Mono's.
+ * a row with no known sender is a deleted Mono's. With a `reading`, an ask
+ * shows its `ask_id` and, with a deadline, the active minutes left
+ * (`due_in`); every copy of an ack shows the ask it closes (`ack_of`).
  */
 export function renderMonoMessage(
   message: Pick<MessageBase, "id" | "fromMonoId" | "fromSessionId" | "body"> &
-    Intent & { wantingReply: boolean },
+    Intent & { wantingReply: boolean; carries: Carries | null },
   sender: MessageSender | undefined,
   handle?: Handle,
   reading?: Reading,
@@ -499,6 +531,7 @@ export function renderMonoMessage(
     ...fromAttributes(message, sender),
     `wanting_reply="${message.wantingReply}"`,
     ...(handle ? [`handle="${handle}"`] : []),
+    ...ledgerAttributes(message.id, message.carries, reading !== undefined),
     ...(line && message.replyTo ? [`reply_to="${message.replyTo}"`] : []),
   ];
   return `<mono_message ${attributes.join(" ")}>\n${line ? `${line}\n` : ""}${message.body}\n</mono_message>`;
