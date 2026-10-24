@@ -15,6 +15,7 @@ use tauri::Manager;
 
 use super::agent_sandbox::{mock_app, script, wait_for};
 use crate::claude_deny::{args_in, srt_deny_in};
+use serde_json::json;
 
 fn root() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("monocode-scenario-d4-{}", uuid::Uuid::new_v4()));
@@ -132,7 +133,7 @@ fn d4_marker_decides_and_bad_input_fails_the_spawn() {
         !deny_of(&on)
             .iter()
             .any(|rule| rule.ends_with("/work/.mcp.json)")),
-        "on: a hook source that is not a symlink adds no rule"
+        "on: a source the fixed .mcp.json rule matches adds no rule of its own"
     );
     link_to(&root.join("dotfiles/claude"), &home.join(".claude"), true);
     let deny = deny_of(&spawn(&data, None, plain.clone()).unwrap());
@@ -172,8 +173,9 @@ fn d4_marker_decides_and_bad_input_fails_the_spawn() {
     a_folder_link_on_the_way_is_denied_to_srt(&root, &data, &home);
     a_script_a_project_hook_runs_is_denied_to_srt(&root, &data, &home);
     a_dangling_settings_link_is_denied_where_it_points(&root, &data, &home);
-    a_config_folder_behind_a_folder_link_is_denied_where_it_is(&root, &data, &home, &work);
-    a_script_a_helper_or_mcp_server_runs_is_denied_to_srt(&root, &data);
+    every_link_and_real_path_on_the_list_is_covered(&root, &data);
+    every_command_key_is_read(&root, &data);
+    agent_skill_and_command_folders_are_denied(&root, &data);
     let root_text = root.to_str().unwrap();
     for bad in [
         "claude-config".to_owned(),
@@ -351,61 +353,242 @@ fn a_dangling_settings_link_is_denied_where_it_points(root: &Path, data: &Path, 
     );
 }
 
-/// Defect (review r6 m2): a config folder reached through a folder link gets an
-/// Edit rule only as written, so the Write tool plants a hook through its real
-/// path.
-fn a_config_folder_behind_a_folder_link_is_denied_where_it_is(
-    root: &Path,
-    data: &Path,
-    home: &Path,
-    work: &Path,
-) {
-    link_to(&root.join("m2-real"), &root.join("m2-link"), true);
-    let config = root.join("m2-link/claude-config");
-    std::fs::create_dir_all(&config).unwrap();
-    let rule = format!(
-        "Edit(/{}/m2-real/claude-config/**)",
-        root.canonicalize().unwrap().display()
-    );
-    let on = args_in(
-        data,
-        Some(config.as_os_str()),
-        home,
-        work,
+/// The links from `path`'s own name on, each link a link target goes through,
+/// and the real path, spelled as the kernel sees them (its folders resolved),
+/// worked out apart from `link_chain`. Links in `/` are not listed: only root
+/// can replace them.
+fn links_and_real(path: &Path, links: &mut Vec<String>) -> String {
+    fn walk(path: &Path, own: bool, links: &mut Vec<String>) -> PathBuf {
+        let names: Vec<_> = path.components().skip(1).collect();
+        let mut at = PathBuf::from("/");
+        for (i, name) in names.iter().enumerate() {
+            let here = at.join(name);
+            let Ok(target) = here.read_link() else {
+                at = here;
+                continue;
+            };
+            let listed = (own || i + 1 == names.len()) && at != Path::new("/");
+            if listed {
+                links.push(here.to_string_lossy().into_owned());
+            }
+            at = walk(&at.join(target), own || listed, links);
+        }
+        at
+    }
+    let real = walk(path, false, links);
+    real.to_string_lossy().into_owned()
+}
+
+/// Whether a rule in `deny` matches `path` the way Claude Code reads it: `**`
+/// for any names, an exact path otherwise.
+fn matched(deny: &[String], path: &str) -> bool {
+    let (folders, name) = path.rsplit_once('/').unwrap();
+    deny.iter().any(|rule| match rule.as_str() {
+        "Edit(//**/.claude/**)" => folders.split('/').any(|folder| folder == ".claude"),
+        "Edit(//**/.claude.json)" => name == ".claude.json",
+        "Edit(//**/.mcp.json)" => name == ".mcp.json",
+        rule => rule
+            .strip_prefix("Edit(/")
+            .and_then(|rule| rule.strip_suffix(')'))
+            .is_some_and(|rule| {
+                rule == path
+                    || rule
+                        .strip_suffix("**")
+                        .is_some_and(|dir| path.starts_with(dir))
+            }),
+    })
+}
+
+/// Defect (reviews r3 to r7: one link layout per round): a protected path as
+/// written, a link on the way to it, or its real path has no Edit rule or is
+/// not on the srt list, so the Write tool writes through it or Bash inside srt
+/// retargets it. One fixture with a link at each level: a folder above the
+/// config folder, the config folder, its settings file, a folder inside
+/// `.claude` that a hook script is reached through, a skills folder, and a
+/// project settings file through a folder link on the way. Every protected path
+/// must be covered as written, at each link and at its real path. srt blocks
+/// moving each folder of a path it denies (macOS), so the written spelling
+/// also keeps the links among a path's own folders in place there.
+fn every_link_and_real_path_on_the_list_is_covered(root: &Path, data: &Path) {
+    let at = root.join("links");
+    let (home, work) = (at.join("home"), at.join("work"));
+    link_to(&at.join("above-real"), &at.join("above"), true);
+    link_to(&at.join("config-real"), &at.join("above-real/config"), true);
+    let config = at.join("above/config");
+    link_to(
+        &at.join("dotfiles/config.json"),
+        &config.join("settings.json"),
         false,
-        spawn_args("{}"),
     );
-    let deny = deny_of(&on.unwrap());
+    let hook = r#"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/a.sh"}]}]}}"#;
+    std::fs::write(at.join("dotfiles/config.json"), hook).unwrap();
+    link_to(&at.join("tools/hooks"), &home.join(".claude/hooks"), true);
+    std::fs::write(at.join("tools/hooks/a.sh"), "true\n").unwrap();
+    link_to(
+        &at.join("shared/skills"),
+        &work.join(".claude/skills"),
+        true,
+    );
+    link_to(&at.join("hop-v1"), &at.join("hop"), true);
+    std::fs::write(at.join("hop-v1/settings.json"), "{}").unwrap();
+    symlink(
+        at.join("hop/settings.json"),
+        work.join(".claude/settings.json"),
+    )
+    .unwrap();
+
+    let config_dir = Some(config.as_os_str());
+    let srt = srt_deny_in(data, config_dir, &home, &work).unwrap();
+    let deny = deny_of(&args_in(data, config_dir, &home, &work, false, spawn_args("{}")).unwrap());
+    let files = [
+        config.join("settings.json"),
+        home.join(".claude/hooks/a.sh"),
+        work.join(".claude/settings.json"),
+    ];
+    let folders = [config.join("agents"), work.join(".claude/skills")];
+    for (path, folder) in
+        (files.iter().map(|file| (file, false))).chain(folders.iter().map(|dir| (dir, true)))
+    {
+        let mut links = vec![path.to_string_lossy().into_owned()];
+        let real = links_and_real(path, &mut links);
+        for link in &links {
+            assert!(
+                srt.contains(link),
+                "on: srt denies the link {link} on the way to {path:?}: {srt:?}"
+            );
+            assert!(
+                matched(&deny, link),
+                "on: an Edit rule matches the link {link}: {deny:?}"
+            );
+        }
+        assert!(
+            srt.contains(&real),
+            "on: srt denies {real}, the real {path:?}: {srt:?}"
+        );
+        let inside = if folder {
+            format!("{real}/x.md")
+        } else {
+            real.clone()
+        };
+        assert!(
+            matched(&deny, &inside),
+            "on: an Edit rule matches {inside}: {deny:?}"
+        );
+    }
+    let config_real = links_and_real(&config, &mut Vec::new());
     assert!(
-        deny.contains(&rule),
-        "on: a config folder behind a folder link denies {rule}: {deny:?}"
+        matched(&deny, &format!("{config_real}/settings.local.json")),
+        "on: the real config folder is denied: {deny:?}"
+    );
+    // The link targets above are spelled through the temp folder, which on
+    // macOS is behind a link in `/` (`/var`). Only root can replace one, and a
+    // rule on it would deny the whole tree behind it.
+    let in_root = |path: &str| Path::new(path).parent() == Some(Path::new("/"));
+    assert!(
+        !srt.iter().any(|entry| in_root(entry)),
+        "on: no link in / for srt: {srt:?}"
+    );
+    assert!(
+        !deny.iter().any(|rule| rule
+            .strip_prefix("Edit(/")
+            .is_some_and(|rule| in_root(rule.trim_end_matches(')')))),
+        "on: no Edit rule on a link in /: {deny:?}"
     );
 }
 
-/// Defect (review r6 m3): a script under `.claude` that a helper key or an MCP
-/// server names is not denied to srt, so Bash inside srt rewrites what the next
-/// spawn runs.
-fn a_script_a_helper_or_mcp_server_runs_is_denied_to_srt(root: &Path, data: &Path) {
-    let (home, work) = (root.join("m3-home"), root.join("m3"));
-    std::fs::create_dir_all(home.join(".claude")).unwrap();
-    std::fs::create_dir_all(&work).unwrap();
-    let settings = serde_json::json!({"apiKeyHelper": "~/.claude/key.sh",
-        "statusLine": {"type": "command", "command": "sh .claude/status.sh"}});
-    std::fs::write(home.join(".claude/settings.json"), settings.to_string()).unwrap();
-    let mcp = serde_json::json!({"mcpServers": {"tools": {"command": "node",
-        "args": ["${CLAUDE_PROJECT_DIR}/.claude/mcp/server.js"]}}});
+/// Defect (reviews r6 m3, r7 m1): a key in which Claude Code 2.1.309 keeps a
+/// command is not read, so srt leaves the `.claude` script it names writable.
+/// `CLI_KEYS` is the CLI's own two lists (settings keys, MCP server keys) plus a
+/// hook's `command`, by where each sits; `COMMAND_KEYS` must equal it.
+fn every_command_key_is_read(root: &Path, data: &Path) {
+    const CLI_KEYS: [(&str, &str); 14] = [
+        ("settings", "/apiKeyHelper"),
+        ("settings", "/awsAuthRefresh"),
+        ("settings", "/awsCredentialExport"),
+        ("settings", "/fileSuggestion/command"),
+        ("settings", "/gcpAuthRefresh"),
+        ("settings", "/otelHeadersHelper"),
+        ("settings", "/processWrapper"),
+        ("settings", "/proxyAuthHelper"),
+        ("settings", "/statusLine/command"),
+        ("settings", "/subagentStatusLine/command"),
+        ("hook", "/command"),
+        ("server", "/command"),
+        ("server", "/args"),
+        ("server", "/headersHelper"),
+    ];
+    let mut cli: Vec<&str> = CLI_KEYS.iter().map(|(_, key)| *key).collect();
+    cli.sort_unstable();
+    cli.dedup();
+    let mut ours: Vec<&str> = crate::claude_deny::COMMAND_KEYS.split(' ').collect();
+    ours.sort_unstable();
+    assert_eq!(ours, cli, "COMMAND_KEYS is the CLI's list");
+
+    let (home, work) = (root.join("keys-home"), root.join("keys"));
+    std::fs::create_dir_all(work.join(".claude")).unwrap();
+    let (mut settings, mut hook, mut server) = (json!({}), json!({"type": "command"}), json!({}));
+    let mut scripts = Vec::new();
+    for (holder, key) in CLI_KEYS {
+        let script = format!(".claude/{holder}{}.sh", key.replace('/', "-"));
+        let value = if key == "/args" {
+            json!([script])
+        } else {
+            json!(script)
+        };
+        let holder = match holder {
+            "settings" => &mut settings,
+            "hook" => &mut hook,
+            _ => &mut server,
+        };
+        let names: Vec<&str> = key.split('/').skip(1).collect();
+        let (last, folders) = names.split_last().unwrap();
+        let mut at = holder;
+        for name in folders {
+            at = at
+                .as_object_mut()
+                .unwrap()
+                .entry(*name)
+                .or_insert(json!({}));
+        }
+        at[*last] = value;
+        scripts.push(script);
+    }
+    settings["hooks"] = json!({"Stop": [{"hooks": [hook]}]});
+    std::fs::write(work.join(".claude/settings.json"), settings.to_string()).unwrap();
+    let mcp = json!({"mcpServers": {"tools": server}});
     std::fs::write(work.join(".mcp.json"), mcp.to_string()).unwrap();
     let srt = srt_deny_in(data, None, &home, &work).unwrap();
-    let [home, work] = [home, work].map(|dir| dir.canonicalize().unwrap());
-    for script in [
-        home.join(".claude/key.sh"),
-        work.join(".claude/status.sh"),
-        work.join(".claude/mcp/server.js"),
-    ] {
-        let script = script.to_string_lossy().into_owned();
+    let work = work.canonicalize().unwrap();
+    for script in scripts {
+        let script = work.join(script).to_string_lossy().into_owned();
         assert!(
             srt.contains(&script),
             "on: srt denies writes to {script}: {srt:?}"
+        );
+    }
+}
+
+/// Defect (review r7 m2): agent, skill and command files can define hooks, MCP
+/// servers and `!` commands, but srt leaves their folders writable.
+fn agent_skill_and_command_folders_are_denied(root: &Path, data: &Path) {
+    let (home, work, config) = (
+        root.join("r7m2-home"),
+        root.join("r7m2"),
+        root.join("r7m2-config"),
+    );
+    for dir in [home.join(".claude"), work.join(".claude"), config.clone()] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let srt = srt_deny_in(data, Some(config.as_os_str()), &home, &work).unwrap();
+    let real = |path: &Path| path.canonicalize().unwrap().to_string_lossy().into_owned();
+    for folder in [
+        format!("{}/agents", real(&config)),
+        format!("{}/.claude/commands", real(&home)),
+        format!("{}/.claude/skills", real(&work)),
+    ] {
+        assert!(
+            srt.contains(&folder),
+            "on: srt denies writes to {folder}: {srt:?}"
         );
     }
 }

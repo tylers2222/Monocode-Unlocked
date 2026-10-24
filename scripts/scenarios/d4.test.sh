@@ -187,10 +187,10 @@ run_d4() {
   # A new spawn loads the user settings, so a hook the ON turn planted would run.
   [[ -n "${D4_CLAUDE:-}" ]] || d4_phase next
   local off on interactive links=""
-  # GigaEval links the real home's login files into the temp home; a linked hook
-  # source also gets a rule on its target.
-  [[ ! -L "$EVAL_HOME/.claude.json" ]] || links+=", \"Edit(/$(realpath "$EVAL_HOME/.claude.json"))\""
-  [[ ! -L "$EVAL_HOME/.claude" ]] || links+=", \"Edit(/$(realpath "$EVAL_HOME/.claude")/**)\""
+  # GigaEval links the real home's login files into the temp home. Their real
+  # paths keep the .claude and .claude.json names, so the fixed rules match them;
+  # the ~/.claude link itself gets a rule.
+  [[ ! -L "$EVAL_HOME/.claude" ]] || links+=", \"Edit(/$(realpath "$EVAL_HOME")/.claude)\""
   local config="${CLAUDE_CONFIG_DIR:-$EVAL_HOME/.claude}" real_config
   # A folder link above the config folder (macOS /tmp) gets its real spelling too.
   real_config="$(realpath "$(dirname "$config")")/$(basename "$config")"

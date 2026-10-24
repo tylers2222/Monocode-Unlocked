@@ -1,19 +1,19 @@
 //! Claude Code deny rules (ADE-44), off unless `<app data>/claude-deny-rules-on`
 //! exists. Off, the args stay as the front end sent them. On, `--settings` gets
 //! `permissions.deny` and `sandbox` rules on every `com.monocode.*` data folder
-//! beside this app's own, and Edit rules on the files Claude Code loads hooks
-//! and MCP servers from (`.claude`, `.claude.json`, `.mcp.json`, the config
-//! folder of the spawn's account, `CLAUDE_CONFIG_DIR` or `$HOME/.claude`, each
-//! file under a `.claude` folder that a hook, helper key or MCP server command
-//! names, and each link on the way to any of them that is a symlink), which run
-//! outside its sandbox.
+//! beside this app's own, and Edit rules on what Claude Code loads commands
+//! from (`.claude`, `.claude.json`, `.mcp.json`, the config folder of the
+//! spawn's account, `CLAUDE_CONFIG_DIR` or `$HOME/.claude`, each file under a
+//! `.claude` folder that a command key names, and each other spelling of any
+//! of them), which run outside its sandbox. A partial guard: `COMMAND_KEYS`
+//! names what it does not cover.
 //!
 //! Defense in depth only: the Read rule does not stop a script that opens the
 //! file itself, the sandbox covers Bash only, and Bash runs unsandboxed where
 //! the sandbox cannot start (`failIfUnavailable` stays off). Inside D1's srt
 //! (ADE-41) the sandbox cannot start, and with the block present the session's
 //! first Bash call fails trying, so a spawn that `agent_sandbox::command` wraps
-//! in srt gets no `sandbox` block, and srt denies writes to the hook files
+//! in srt gets no `sandbox` block, and srt denies writes to the command sources
 //! instead (`srt_deny`). Not to `.claude.json`: Claude Code writes it, so a
 //! script inside srt can still add an MCP server there.
 
@@ -72,7 +72,7 @@ fn child_env<R: Runtime>(
     Ok((data, config, home))
 }
 
-/// The hook files Claude Code never writes itself, each with every link on the
+/// The command sources Claude Code never writes itself, each with every link on the
 /// way, spelled as the kernel sees them: srt matches that path, and a deny on a
 /// link is not one on its target. Empty while the marker is absent.
 pub(crate) fn srt_deny_in(
@@ -86,8 +86,10 @@ pub(crate) fn srt_deny_in(
     }
     let config = config_dir.map_or_else(|| home.join(".claude"), PathBuf::from);
     let mut deny = Vec::new();
-    for file in hook_files(&config, home, workdir) {
-        deny.extend(link_chain(&file)?);
+    for (source, _) in command_sources(&config, home, workdir) {
+        // As written too: srt (macOS) then blocks moving any folder on its way.
+        deny.extend(source.to_str().map(str::to_owned));
+        deny.extend(link_chain(&source)?);
     }
     Ok(deny)
 }
@@ -167,10 +169,8 @@ pub(crate) fn args_in(
     Ok(args)
 }
 
-/// Edit rules on the config folder, and on each link and the real path behind
-/// every hook or MCP source that is a symlink: Claude Code loads the file
-/// through them, and a rule on a link covers neither its target nor the links
-/// after it.
+/// Edit rules on the config folder, and on each link and real path of a command
+/// source that the fixed rules miss (one generic rule for every source).
 fn config_rules(
     config_dir: Option<&OsStr>,
     home: &Path,
@@ -184,56 +184,62 @@ fn config_rules(
         return Err("Claude Code deny rules: CLAUDE_CONFIG_DIR (or $HOME/.claude) is not an absolute path without . or .. segments.".into());
     };
     let mut rules = vec![format!("Edit(/{text}/**)")];
-    // The rule above misses the real spelling when a folder link leads there.
-    let resolved = link_chain(&config)?.swap_remove(0);
-    if resolved != text {
-        rules.push(format!("Edit(/{resolved}/**)"));
-    }
-    let files = hook_files(&config, home, workdir)
+    let roots = [home, workdir].map(|dir| (dir.join(".claude"), "/**"));
+    let files = [home, config.as_path()].map(|dir| (dir.join(".claude.json"), ""));
+    let sources = [(config.clone(), "/**")]
         .into_iter()
-        .chain([config.join(".claude.json"), home.join(".claude.json")]);
-    let folders = [config, home.join(".claude"), workdir.join(".claude")];
-    let sources = files
-        .map(|file| (file, ""))
-        .chain(folders.map(|folder| (folder, "/**")));
+        .chain(roots)
+        .chain(command_sources(&config, home, workdir))
+        .chain(files);
     for (path, tail) in sources {
-        if let [_, links @ .., real] = link_chain(&path)?.as_slice() {
-            let real = format!("Edit(/{real}{tail})");
-            for rule in links
-                .iter()
-                .map(|link| format!("Edit(/{link})"))
-                .chain([real])
-            {
-                if !rules.contains(&rule) {
-                    rules.push(rule);
-                }
+        let mut chain = link_chain(&path)?;
+        if let Some(real) = chain.last_mut() {
+            real.push_str(tail);
+        }
+        for at in chain {
+            if !covered(&rules, &at) {
+                rules.push(format!("Edit(/{at})"));
             }
         }
     }
     Ok(rules)
 }
 
-/// The settings and MCP files Claude Code loads hooks and servers from and
-/// never writes itself, and each path through a `.claude` folder that a
-/// command in those files names (`$CLAUDE_PROJECT_DIR`, `$HOME` and `~`
-/// expanded, a relative path taken from `workdir`, where hooks run).
-fn hook_files(config: &Path, home: &Path, workdir: &Path) -> Vec<PathBuf> {
+/// Whether `rules` or the fixed `.claude/**`, `.claude.json` and `.mcp.json`
+/// rules match `path`.
+fn covered(rules: &[String], path: &str) -> bool {
+    let (folders, name) = path.rsplit_once('/').unwrap_or_default();
+    folders.split('/').any(|folder| folder == ".claude")
+        || [".claude.json", ".mcp.json"].contains(&name)
+        || rules
+            .iter()
+            .filter_map(|rule| rule.strip_prefix("Edit(/")?.strip_suffix(')'))
+            .any(|rule| {
+                rule == path || rule.strip_suffix("**").is_some_and(|d| path.starts_with(d))
+            })
+}
+
+/// What Claude Code loads commands from and never writes itself, a folder with
+/// `/**`: the settings and MCP files, each `.claude` path a command in them
+/// names (`$CLAUDE_PROJECT_DIR`, `$HOME` and `~` expanded, a relative path from
+/// `workdir`), and the agent, skill and command folders (hooks, `!` commands).
+fn command_sources(config: &Path, home: &Path, workdir: &Path) -> Vec<(PathBuf, &'static str)> {
     let project = workdir.join(".claude");
-    let mut files = vec![
-        config.join("settings.json"),
-        home.join(".claude/settings.json"),
-        project.join("settings.json"),
-        project.join("settings.local.json"),
-        workdir.join(".mcp.json"),
+    let mut sources = vec![
+        (config.join("settings.json"), ""),
+        (home.join(".claude/settings.json"), ""),
+        (project.join("settings.json"), ""),
+        (project.join("settings.local.json"), ""),
+        (workdir.join(".mcp.json"), ""),
     ];
     let vars = [
         ("$CLAUDE_PROJECT_DIR", workdir),
         ("$HOME", home),
         ("~", home),
     ];
-    for command in files
+    for command in sources
         .iter()
-        .flat_map(|file| setting_commands(file))
+        .flat_map(|(file, _)| setting_commands(file))
         .collect::<Vec<_>>()
     {
         for word in command.split(|c: char| c.is_whitespace() || ";&|()<>`".contains(c)) {
@@ -244,25 +250,30 @@ fn hook_files(config: &Path, home: &Path, workdir: &Path) -> Vec<PathBuf> {
                 })
                 .unwrap_or((workdir, word));
             if rest.split('/').any(|name| name == ".claude") {
-                files.push(base.join(rest));
+                sources.push((base.join(rest), ""));
             }
         }
     }
-    files
+    let folders = ["agents", "commands", "skills"];
+    for dir in [config.to_owned(), home.join(".claude"), project] {
+        sources.extend(folders.map(|name| (dir.join(name), "/**")));
+    }
+    sources
 }
 
-/// Settings keys besides `hooks` that hold a command Claude Code runs.
-const COMMAND_KEYS: [&str; 5] = [
-    "/apiKeyHelper",
-    "/awsAuthRefresh",
-    "/awsCredentialExport",
-    "/otelHeadersHelper",
-    "/statusLine/command",
-];
+/// Where Claude Code 2.1.309 keeps a command it runs: in a settings file, in
+/// each hook, and in each MCP server. D4 is a partial guard. It covers the four
+/// settings files, `.mcp.json`, each `.claude` path these keys name there, the
+/// `agents`, `skills` and `commands` folders, and the links to any of them. Not
+/// covered (ADE-106): `.claude.json` MCP servers, the app's `--mcp-config`
+/// file, plugins, managed settings, scripts that agent or skill files name, and
+/// keys a newer CLI adds: re-check this list on each CLI upgrade.
+pub(crate) const COMMAND_KEYS: &str = "/command /args /headersHelper /apiKeyHelper \
+    /awsAuthRefresh /awsCredentialExport /gcpAuthRefresh /otelHeadersHelper /processWrapper \
+    /proxyAuthHelper /fileSuggestion/command /statusLine/command /subagentStatusLine/command";
 
-/// Each command `file` has Claude Code run (hooks, the `COMMAND_KEYS`, and
-/// each MCP server's command and args), quotes and braces dropped. A file
-/// Claude Code cannot read or parse holds no command it runs.
+/// Each command `file` has Claude Code run (`COMMAND_KEYS` in the file, each hook
+/// and each MCP server), quotes and braces dropped; none if it does not parse.
 fn setting_commands(file: &Path) -> Vec<String> {
     let Some(settings) = std::fs::read_to_string(file)
         .ok()
@@ -275,19 +286,13 @@ fn setting_commands(file: &Path) -> Vec<String> {
         .into_iter()
         .flat_map(|events| events.values().filter_map(Value::as_array).flatten())
         .filter_map(|group| group["hooks"].as_array())
-        .flatten()
-        .map(|hook| &hook["command"]);
-    let servers = settings["mcpServers"]
-        .as_object()
-        .into_iter()
-        .flat_map(|servers| servers.values())
-        .flat_map(|server| {
-            let args = server["args"].as_array().into_iter().flatten();
-            args.chain([&server["command"]])
-        });
-    hooks
-        .chain(COMMAND_KEYS.iter().filter_map(|key| settings.pointer(key)))
-        .chain(servers)
+        .flatten();
+    let servers = settings["mcpServers"].as_object().into_iter().flatten();
+    std::iter::once(&settings)
+        .chain(hooks)
+        .chain(servers.map(|(_, server)| server))
+        .flat_map(|at| COMMAND_KEYS.split(' ').filter_map(|k| at.pointer(k)))
+        .flat_map(|v| v.as_array().map_or(std::slice::from_ref(v), Vec::as_slice))
         .filter_map(Value::as_str)
         .map(|command| command.replace(['"', '\'', '{', '}'], ""))
         .collect()
