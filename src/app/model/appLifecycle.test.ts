@@ -533,3 +533,25 @@ describe("resuming sessions at boot", () => {
     expect(vi.mocked(bindHarnessSession).mock.calls[0][3]).toBe("/w/gigas/a");
   });
 });
+
+// ADE-89, for gate/mutation only (one-off unit-test exception, 2026-10-24).
+// Each case imports a fresh lifecycle: the boot runs once per module.
+describe("claiming the Mono completion results at boot", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it("boots with no results when the claim fails", async () => {
+    const core = await import("@tauri-apps/api/core");
+    vi.mocked(core.invoke).mockImplementation(async (command) => {
+      if (command === "mono_completions_claim") throw new Error("store busy");
+    });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { loadBootWorkspace } = await import("./appLifecycle");
+    await expect(loadBootWorkspace()).resolves.toMatchObject({
+      monoCompletions: [],
+    });
+    expect(logged).toHaveBeenCalledWith(new Error("store busy"));
+  });
+});

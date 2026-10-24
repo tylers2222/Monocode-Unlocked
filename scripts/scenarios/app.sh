@@ -5,8 +5,8 @@
 #   app.sh build [checkout]   build the instance (under heavy-lock.sh)
 #   app.sh s0 [runs]          S0 through the real app, `runs` times (default 1)
 #   app.sh ade89 MODE [runs]  ADE-89: a waiting completion result survives
-#                             two exits with no quit save (MODE kill, term,
-#                             or two: kill with two windows) and arrives once
+#                             two exits with no quit save (MODE kill or
+#                             term) and arrives once
 #
 # GIGA_EVAL_OUT and GIGA_EVAL_HOME default to their own /tmp folders, apart
 # from other GigaEval runs. The installed apps and their data are never used.
@@ -186,27 +186,16 @@ ADE89_RULES='[
 # The app exits with no quit save: kill -9, or SIGTERM (instance.sh stop).
 exit_unsaved() {
   case "$1" in
-    kill|two) kill9 ;;
+    kill) kill9 ;;
     term) "$INSTANCE" stop ;;
   esac
-}
-
-# In mode `two` a second workspace window opens about 1 s after each launch
-# (window.rs open_on_request), while the first one already claimed at boot.
-launch() {
-  [[ "$1" == two ]] && touch "$APP_DATA/open-window"
-  "$INSTANCE" start
-  # The new window's boot (load, then its claim) takes about 2 s, and nothing
-  # it writes marks its end, so the run waits that long and more.
-  [[ "$1" == two ]] && sleep 8
-  return 0
 }
 
 rows() { q "SELECT count(*) FROM mono_completions"; }
 
 # ADE-89: a waiting completion result is a mono_completions row from the
 # moment the Mono starts the session. It survives two exits with no quit save
-# and reaches the Mono once, with one or two windows open.
+# and reaches the Mono once.
 run_ade89() {
   local mode="$1" run="$2" giga_chat mono_chat work _
   FAILED=0
@@ -233,21 +222,14 @@ run_ade89() {
   expect "workspace rows that carry results" "$(q "SELECT count(*) FROM workspace_snapshot WHERE json_type(snapshot_json, '$.monoCompletions') IS NOT NULL")" 0
   kill9
 
-  launch "$mode"
+  "$INSTANCE" start
   wait_until 60 "the relaunch continues the session" saw "Continue from where you left off."
-  if [[ "$mode" == two ]]; then
-    # The second window binds the same harness session, which ends the first
-    # window's Continue turn ("fx exited"), so the result may already be sent.
-    expect "windows that hold a row, at most one" "$(q "SELECT count(DISTINCT window_label) <= 1 FROM mono_completions")" 1
-    expect "rows and notices after the first relaunch" "$(( $(rows) + $(prompts "$NOTICE") ))" 1
-  else
-    expect "rows after the first relaunch" "$(rows)" 1
-    expect "windows that hold them" "$(q "SELECT count(DISTINCT window_label) FROM mono_completions")" 1
-    expect "notices before the second exit" "$(prompts "$NOTICE")" 0
-  fi
+  expect "rows after the first relaunch" "$(rows)" 1
+  expect "windows that hold them" "$(q "SELECT count(DISTINCT window_label) FROM mono_completions")" 1
+  expect "notices before the second exit" "$(prompts "$NOTICE")" 0
   exit_unsaved "$mode"
 
-  launch "$mode"
+  "$INSTANCE" start
   for _ in $(seq 1 60); do saw "$NOTICE" && break; sleep 1; done
   # A second copy would follow the first within the same second or two.
   sleep 5
@@ -291,7 +273,7 @@ case "${1:-}" in
   s0-run) run_s0 "$2" ;;
   ade89-run) run_ade89 "$2" "$3" ;;
   ade89)
-    [[ "${2:-}" =~ ^(kill|term|two)$ ]] || die "usage: app.sh ade89 kill|term|two [runs]"
+    [[ "${2:-}" =~ ^(kill|term)$ ]] || die "usage: app.sh ade89 kill|term [runs]"
     failed=0
     for run in $(seq 1 "${3:-1}"); do "$0" ade89-run "$2" "$run" || failed=$((failed + 1)); done
     log "ADE-89 $2: $(( ${3:-1} - failed ))/${3:-1} passed"

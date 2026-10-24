@@ -38,10 +38,10 @@ import {
   dismissQueuedMonoSessionCompletion,
   enqueueMonoSessionCompletion,
   MonoSessionCompletionBatches,
-  monoCompletionStore,
   type MonoCompletionRequest,
   type SavedMonoCompletion,
 } from "../features/monos/model/monoSessionCompletion";
+import { monoCompletionStore } from "../features/sessions/data/monoCompletionStore";
 import {
   acceptQuickLaunch,
   appLaunchRepeat,
@@ -1702,6 +1702,11 @@ function Workspace({
     }),
     [readProjectReturnMemory, workspacePins],
   );
+  /**
+   * This window as a quit, reload or close saves it (ADE-46). The Mono
+   * completion results it owes live in their own store rows (ADE-89).
+   */
+  const readQuitWorkspace = readWindowWorkspace;
 
   const tabVisitRef = useRef(emptyTabVisitHistory(activeTabId));
   const tabVisitFromHistoryRef = useRef(false);
@@ -1904,7 +1909,7 @@ function Workspace({
     const stopBridge = startHarnessBridge();
     const reap = () => {
       if (isAppQuitting()) return;
-      void persistQuitState(readWindowWorkspace(), "unload").finally(() => {
+      void persistQuitState(readQuitWorkspace(), "unload").finally(() => {
         void reapWindowRuntime(
           sessionsRef.current,
           tabsRef.current,
@@ -1920,7 +1925,7 @@ function Workspace({
       stopBridge();
       harnessEvents.cancelScheduled();
     };
-  }, [resumed, readWindowWorkspace, harnessEvents]);
+  }, [resumed, readQuitWorkspace, harnessEvents]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2441,7 +2446,7 @@ function Workspace({
   useEffect(() => {
     let unlistenClose: (() => void) | undefined;
     const releaseQuit = setQuitWorkspace(
-      readWindowWorkspace,
+      readQuitWorkspace,
       flushHarnessEvents,
     );
     void getCurrentWindow()
@@ -2470,7 +2475,7 @@ function Workspace({
           void hideCurrentWindow();
           return;
         }
-        void persistQuitState(readWindowWorkspace(), "unload").finally(() => {
+        void persistQuitState(readQuitWorkspace(), "unload").finally(() => {
           void (toTray ? hideCurrentWindow() : closeCurrentWindow());
         });
       })
@@ -2481,7 +2486,7 @@ function Workspace({
       releaseQuit();
       unlistenClose?.();
     };
-  }, [flushHarnessEvents, readWindowWorkspace]);
+  }, [flushHarnessEvents, readQuitWorkspace]);
 
   const refreshHistory = useCallback(async (cwd: string) => {
     if (!cwd || cwd === "~") return;

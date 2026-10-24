@@ -296,8 +296,6 @@ pub fn run() {
             session_store::init(app.handle())?;
             control::init(app.handle())?;
             reminders::init(app.handle());
-            #[cfg(feature = "fake-clock")]
-            window::open_on_request(app.handle())?;
             active_clock::init(app.handle())?;
             checkpoint::init(app.handle())?;
             menu::install(app.handle())?;

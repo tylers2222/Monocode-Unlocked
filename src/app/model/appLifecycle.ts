@@ -43,10 +43,8 @@ import {
   type WindowWorkspace,
 } from "../../features/workspace/model/workspaceSnapshot";
 import { lastProjectPath, normalizeProjectPath, sameProjectPath } from "../../features/projects/model/recents";
-import {
-  claimMonoCompletions,
-  type SavedMonoCompletion,
-} from "../../features/monos/model/monoSessionCompletion";
+import type { SavedMonoCompletion } from "../../features/monos/model/monoSessionCompletion";
+import { claimMonoCompletions } from "../../features/sessions/data/monoCompletionStore";
 
 export { hasInFlightSessions };
 

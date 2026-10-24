@@ -201,4 +201,66 @@ describe("Mono completions across a relaunch", () => {
     expect(savedMonoCompletions(null)).toEqual([]);
     expect(savedMonoCompletions({ monoCompletions: [good] })).toEqual([]);
   });
+
+  // ADE-89, for gate/mutation only (one-off unit-test exception, 2026-10-24):
+  // the store rows a kill leaves are what the window owes, and the delivered
+  // mark names the group as a resent notice does.
+  describe("the store rows a kill leaves", () => {
+    const origin = { monoId: "mono", turn: 1 };
+    function batchesWithStore(
+      ready: ConstructorParameters<typeof MonoSessionCompletionBatches>[0],
+    ) {
+      const store = { hold: vi.fn(), deliver: vi.fn() };
+      const batches = new MonoSessionCompletionBatches(
+        ready,
+        (run, ms) => setTimeout(run, ms),
+        () => undefined,
+        store,
+      );
+      return { batches, store };
+    }
+    const owed = (id: string, text: string) => ({
+      origin,
+      request: request(id, `s-${id}`),
+      result: expect.objectContaining({ sessionId: `s-${id}`, result: text }),
+    });
+
+    it("hold each result until its notice is queued, then the group is marked by its first request id", async () => {
+      let queued!: () => void;
+      const ready = vi.fn<
+        ConstructorParameters<typeof MonoSessionCompletionBatches>[0]
+      >(() => new Promise<void>((resolve) => (queued = resolve)));
+      const { batches, store } = batchesWithStore(ready);
+      const b = batches.watch(origin, request("b", "s-b"));
+      const a = batches.watch(origin, request("a", "s-a"));
+      expect(store.hold).toHaveBeenLastCalledWith([
+        { origin, request: request("b", "s-b") },
+        { origin, request: request("a", "s-a") },
+      ]);
+      b(end("B"));
+      a(end("A"));
+      batches.closeInactive(() => false);
+      expect(store.hold).toHaveBeenLastCalledWith([owed("b", "B"), owed("a", "A")]);
+      expect(store.deliver).not.toHaveBeenCalled();
+      queued();
+      await vi.runAllTimersAsync();
+      expect(store.deliver).toHaveBeenCalledExactlyOnceWith(
+        "mono-completion-batch-a",
+        ["a", "b"],
+      );
+      expect(ready.mock.calls[0][1].id).toBe("mono-completion-batch-a");
+    });
+
+    it("a lone result queued at once is marked by its own id", () => {
+      const ready = vi.fn();
+      const { batches, store } = batchesWithStore(ready);
+      batches.watch(origin, request("c", "s-c"))(end("C"));
+      batches.closeInactive(() => false);
+      expect(store.deliver).toHaveBeenCalledExactlyOnceWith(
+        "mono-completion-c",
+        ["c"],
+      );
+      expect(ready.mock.calls[0][1].id).toBe("mono-completion-c");
+    });
+  });
 });

@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
 import { INTERRUPT_MESSAGE } from "../../sessions/model/inFlight";
 import { enqueueQueuedMessage } from "../../sessions/model/messageQueue";
@@ -173,26 +172,6 @@ export type MonoCompletionStore = {
   hold(saved: SavedMonoCompletion[]): void;
   deliver(groupId: string, requestIds: string[]): void;
 };
-
-let storeCalls: Promise<void> = Promise.resolve();
-
-/** In call order, so a delivery never reaches Rust before the hold it follows. */
-function write(command: string, args: Record<string, unknown>) {
-  storeCalls = storeCalls
-    .then(() => invoke<void>(command, args))
-    .catch(console.error);
-}
-
-export const monoCompletionStore: MonoCompletionStore = {
-  hold: (saved) => write("mono_completions_hold", { saved }),
-  deliver: (groupId, requestIds) =>
-    write("mono_completions_deliver", { groupId, requestIds }),
-};
-
-/** This window's boot takes the results no live window holds. */
-export async function claimMonoCompletions(): Promise<SavedMonoCompletion[]> {
-  return savedMonoCompletions(await invoke<unknown>("mono_completions_claim"));
-}
 
 /**
  * Results handed to `onReady`; a dismissal can still remove one before it is
