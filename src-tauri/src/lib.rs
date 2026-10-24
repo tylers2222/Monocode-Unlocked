@@ -40,6 +40,7 @@ mod milestones;
 mod mono;
 #[cfg(target_os = "macos")]
 mod mono_chat;
+mod mono_completions;
 mod mono_gate;
 mod mono_messages;
 mod mono_roster;
@@ -291,6 +292,7 @@ pub fn run() {
         .manage(harness::HarnessHost::new())
         .manage(pty::PtyHost::new())
         .manage(remote::RemoteConnections::default())
+        .manage(mono_completions::Run::default())
         .setup(|app| {
             harness::reap_orphaned_harness_processes();
             session_store::init(app.handle())?;
@@ -681,6 +683,9 @@ pub fn run() {
             mono_chat::mono_chat_switch,
             #[cfg(target_os = "macos")]
             mono_chat::mono_menu_bar_set_visible,
+            mono_completions::mono_completions_claim,
+            mono_completions::mono_completions_hold,
+            mono_completions::mono_completions_deliver,
             chat_background::save_chat_background,
             chat_background::remove_chat_background,
             chat_background::save_project_chat_background,

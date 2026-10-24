@@ -21,7 +21,9 @@ case ${1-} in
       echo "::error::$count Rust mutants, more than $MAX_MUTANTS; split the PR so each part mutates fewer"
       exit 1
     fi
-    "$CARGO_MUTANTS" mutants --no-config --in-diff "$2" --jobs 2 --timeout-multiplier 3
+    # run builds the real app event loop: only app.sh can call it, cargo test cannot (#284 review r1, CI run 39825194390).
+    "$CARGO_MUTANTS" mutants --no-config --in-diff "$2" --jobs 2 --timeout-multiplier 3 \
+      --exclude-re '^src-tauri/src/lib\.rs:[0-9]+:[0-9]+: replace run with \(\)$'
     ;;
   ts)
     # The PR's tree, for its tests and source imports.

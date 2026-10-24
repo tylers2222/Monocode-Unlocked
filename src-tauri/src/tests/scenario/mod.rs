@@ -11,6 +11,7 @@ mod agent_sandbox;
 mod agents;
 mod asks;
 mod clock;
+mod completions;
 #[cfg(unix)]
 mod d4_deny;
 mod s0_baseline;

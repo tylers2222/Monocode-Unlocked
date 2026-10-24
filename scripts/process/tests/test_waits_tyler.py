@@ -132,26 +132,32 @@ class PrCap(unittest.TestCase):
     def test_instance_2_leaves_out_process_fix(self):
         result = run("pr-cap.py", "--instance", "2", gh_out=prs_with({}))
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("instance 2: 3 of 4 slots used, 6 not counted. A slot is free.", result.stdout)
+        self.assertIn("instance 2: 3 of 6 slots used, 6 not counted. A slot is free.", result.stdout)
         self.assertIn("#164 -> tyler/main  Process: waits-tyler label check and PR cap script (not counted: process-fix)", result.stdout)
         self.assertNotIn("#163", result.stdout)
         self.assertNotIn("#170", result.stdout)
 
-    def test_four_counted_is_full(self):
-        result = run("pr-cap.py", "--instance", "2", gh_out=prs_with({164: ["instance:2"]}))
+    def test_instance_2_cap_is_six(self):
+        five = {164: ["instance:2"], 165: ["instance:2"]}
+        result = run("pr-cap.py", "--instance", "2", gh_out=prs_with(five))
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("5 of 6 slots used", result.stdout)
+        result = run("pr-cap.py", "--instance", "2", gh_out=prs_with({**five, 166: ["instance:2"]}))
         self.assertEqual(result.returncode, 1)
-        self.assertIn("4 of 4 slots used", result.stdout)
+        self.assertIn("6 of 6 slots used, 3 not counted. Cap full: no new builder.", result.stdout)
 
     def test_held_pr_frees_a_slot(self):
-        held = {164: ["instance:2"], 160: ["instance:2", "waits-tyler:repo-security"]}
+        held = {164: ["instance:2"], 165: ["instance:2"], 166: ["instance:2"], 160: ["instance:2", "waits-tyler:repo-security"]}
         result = run("pr-cap.py", "--instance", "2", gh_out=prs_with(held))
         self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("5 of 6 slots used", result.stdout)
         self.assertIn("(not counted: waits-tyler:repo-security)", result.stdout)
 
     def test_off_list_label_still_uses_a_slot(self):
-        result = run("pr-cap.py", "--instance", "2", gh_out=prs_with({164: ["instance:2", "waits-tyler:wording"]}))
+        off_list = {164: ["instance:2"], 165: ["instance:2"], 166: ["instance:2", "waits-tyler:wording"]}
+        result = run("pr-cap.py", "--instance", "2", gh_out=prs_with(off_list))
         self.assertEqual(result.returncode, 1)
-        self.assertIn("4 of 4 slots used", result.stdout)
+        self.assertIn("6 of 6 slots used", result.stdout)
 
     def test_instance_is_required(self):
         self.assertEqual(run("pr-cap.py", gh_out=prs_with({})).returncode, 2)

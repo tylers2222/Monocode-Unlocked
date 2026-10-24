@@ -56,6 +56,12 @@ import { restoreOrchestrationProposal } from "../../orchestration/model/orchestr
 
 import type { OrchestrationSummary } from "../../orchestration/model/orchestrationSummary";
 
+import {
+  joinWorkspaceSnapshots,
+  type SaveSiteFields,
+  type SavedWorkspaceSnapshot,
+} from "../../workspace/model/workspaceSnapshotJoin";
+
 export type SessionSummary = {
   sidebarHidden?: boolean;
   orchestrationLeadId?: string;
@@ -923,7 +929,7 @@ let workspaceWrite: Promise<unknown> = Promise.resolve();
  * The store keeps a snapshot only over one read no later (ADE-46).
  */
 export async function saveWorkspaceSnapshot(
-  snapshot: unknown,
+  snapshot: SavedWorkspaceSnapshot,
   readAt: number,
 ): Promise<void> {
   const run = workspaceWrite
@@ -933,9 +939,12 @@ export async function saveWorkspaceSnapshot(
   await run;
 }
 
-export async function loadWorkspaceSnapshot(): Promise<unknown | null> {
-  const raw = await invoke<unknown | null>("workspace_get_snapshot");
-  return raw ?? null;
+export async function loadWorkspaceSnapshot(): Promise<
+  SavedWorkspaceSnapshot | SaveSiteFields | null
+> {
+  return joinWorkspaceSnapshots(
+    await invoke<SaveSiteFields[]>("workspace_get_snapshot"),
+  );
 }
 
 function sanitizeBlock(

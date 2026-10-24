@@ -8,7 +8,7 @@ const saved = vi.hoisted(() => ({ snapshot: null as unknown }));
 // the boot writes, and refuses everything else.
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args?: { sessionId?: string }) => {
-    if (command === "workspace_get_snapshot") return saved.snapshot;
+    if (command === "workspace_get_snapshot") return [saved.snapshot];
     if (command === "session_list_in_flight") return realDb.inFlight;
     if (command === "session_get" || command === "mono_session_get")
       return (

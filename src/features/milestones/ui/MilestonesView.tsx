@@ -1,32 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PageFrame } from "../../../app/shell/PageFrame";
-import { projectKey, projectName } from "../../../shared/lib/paths";
 import {
   AlertCircle,
   Flag,
   LoaderCircle,
   Plus,
-  Search,
   SlidersHorizontal,
 } from "../../../shared/ui/icons";
 import { findMono, monoLook } from "../../monos/model/mono";
-import { useTabGroupLogos } from "../../projects/hooks/useTabGroupLogos";
 import {
   normalizeProjectPath,
   type RecentProject,
 } from "../../projects/model/recents";
-import { ProjectLogoIcon } from "../../projects/ui/ProjectLogoIcon";
-import { ProjectMascot } from "../../projects/ui/ProjectMascot";
-import {
-  loadTabGroupColors,
-  loadTabGroupCustomColors,
-  loadTabGroupLabels,
-  loadTabGroupMascots,
-  resolveTabGroupColor,
-  resolveTabGroupLabel,
-  resolveTabGroupLogo,
-  resolveTabGroupMascot,
-} from "../../workspace/model/tabGroups";
+import { PageFrame } from "../../../app/shell/PageFrame";
+import { ProjectList, useProjectLook } from "../../projects/ui/ProjectList";
 import {
   add,
   list,
@@ -149,7 +135,6 @@ function MilestonesContent({
   const [highlightIds, setHighlightIds] = useState<ReadonlySet<string>>(
     new Set(),
   );
-  const [query, setQuery] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
   /** The open editor: which row, and what the user typed so far. */
   const [editing, setEditing] = useState<EditorState | null>(null);
@@ -218,10 +203,6 @@ function MilestonesContent({
     [sessions],
   );
 
-  const needle = query.trim().toLocaleLowerCase();
-  const shown = paths.filter((path) =>
-    look(path, "size-3.5").name.toLocaleLowerCase().includes(needle),
-  );
   const data = selected ? lists[selected] : undefined;
   const heading = selected ? look(selected, "size-[18px]") : null;
   const error = selected ? errors[selected] : undefined;
@@ -306,55 +287,27 @@ function MilestonesContent({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 text-content">
-      <aside className="flex w-[240px] shrink-0 flex-col border-r border-stroke">
-        <label className="relative flex h-9 shrink-0 items-center border-b border-stroke px-2">
-          <Search className="pointer-events-none absolute left-3 size-3 text-content/40" />
-          <span className="sr-only">Filter projects</span>
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Filter projects"
-            spellCheck={false}
-            autoComplete="off"
-            className="h-7 w-full bg-transparent pl-5 text-[12px] outline-none placeholder:text-content/40"
-          />
-        </label>
-        <ul className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-1.5">
-          {shown.map((path) => {
-            const project = lists[path];
-            const { name, icon } = look(path, "size-3.5");
-            return (
-              <li key={path}>
-                <button
-                  type="button"
-                  aria-current={path === selected ? "true" : undefined}
-                  onClick={() => {
-                    setSelected(path);
-                    setEditing(null);
-                  }}
-                  className={`flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] font-medium ${
-                    path === selected
-                      ? "bg-selection text-content"
-                      : "text-content/70 hover:bg-content/5"
-                  }`}
-                >
-                  {icon}
-                  <span className="min-w-0 truncate">{name}</span>
-                  {project && !project.settings.enabled ? (
-                    <span className="ml-auto rounded border border-content/12 px-[5px] text-[10px] leading-[15px] text-content/40">
-                      Off
-                    </span>
-                  ) : project?.milestones.length ? (
-                    <span className="ml-auto text-[11px] font-normal text-content/40 tabular-nums">
-                      {project.milestones.length}
-                    </span>
-                  ) : null}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </aside>
+      <ProjectList
+        paths={paths}
+        selected={selected}
+        look={look}
+        onSelect={(path) => {
+          setSelected(path);
+          setEditing(null);
+        }}
+        rowEnd={(path) => {
+          const project = lists[path];
+          return project && !project.settings.enabled ? (
+            <span className="ml-auto rounded border border-content/12 px-[5px] text-[10px] leading-[15px] text-content/40">
+              Off
+            </span>
+          ) : project?.milestones.length ? (
+            <span className="ml-auto text-[11px] font-normal text-content/40 tabular-nums">
+              {project.milestones.length}
+            </span>
+          ) : null;
+        }}
+      />
       <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
         {error ? (
           <div className="m-4 flex items-start gap-2 rounded-lg border border-red-400/20 bg-red-400/8 px-3 py-2 text-[12px] text-red-300">
@@ -452,43 +405,3 @@ function MilestonesContent({
   );
 }
 
-/** The rail's name and mascot (or logo) for a project. */
-function useProjectLook() {
-  const logos = useTabGroupLogos();
-  const [groups] = useState(() => ({
-    labels: loadTabGroupLabels(),
-    mascots: loadTabGroupMascots(),
-    colors: loadTabGroupColors(),
-    customColors: loadTabGroupCustomColors(),
-  }));
-  return useCallback(
-    (path: string, size: string) => {
-      const key = projectKey(path);
-      const seed = projectName(path);
-      const logo = resolveTabGroupLogo(key, logos);
-      return {
-        name: resolveTabGroupLabel(key, groups.labels, seed),
-        icon: logo ? (
-          <ProjectLogoIcon
-            path={logo}
-            className={`${size} shrink-0 rounded-sm`}
-            imageClassName={size}
-          />
-        ) : (
-          <ProjectMascot
-            project={seed}
-            color={resolveTabGroupColor(
-              key,
-              groups.colors,
-              groups.customColors,
-              seed,
-            )}
-            name={resolveTabGroupMascot(key, groups.mascots)}
-            className={`${size} shrink-0`}
-          />
-        ),
-      };
-    },
-    [logos, groups],
-  );
-}
