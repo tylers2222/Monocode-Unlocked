@@ -1,0 +1,266 @@
+[
+ {
+  "files": [
+   {
+    "path": ".github/workflows/ci.yml",
+    "additions": 1,
+    "deletions": 1
+   }
+  ],
+  "headRefName": "fix/ci-on-tyler-main",
+  "number": 258
+ },
+ {
+  "files": [
+   {
+    "path": "src/integrations/harness/providers/pi/piFamily.ts",
+    "additions": 27,
+    "deletions": 4
+   },
+   {
+    "path": "src/integrations/harness/providers/pi/piProtocol.test.ts",
+    "additions": 1,
+    "deletions": 1
+   },
+   {
+    "path": "src/integrations/harness/providers/pi/piProtocol.ts",
+    "additions": 6,
+    "deletions": 4
+   },
+   {
+    "path": "tests/browser/ade67-question-card.spec.ts",
+    "additions": 19,
+    "deletions": 129
+   },
+   {
+    "path": "tests/browser/ade79-background-job-turn-end.spec.ts",
+    "additions": 285,
+    "deletions": 0
+   },
+   {
+    "path": "tests/browser/app/ompBridge.ts",
+    "additions": 145,
+    "deletions": 0
+   }
+  ],
+  "headRefName": "fix/ade-79-turn-end-with-background-job",
+  "number": 255
+ },
+ {
+  "files": [
+   {
+    "path": ".github/workflows/gate-mutation.yml",
+    "additions": 10,
+    "deletions": 6
+   },
+   {
+    "path": "scripts/process/mutation.sh",
+    "additions": 20,
+    "deletions": 1
+   },
+   {
+    "path": "scripts/process/stryker/package-lock.json",
+    "additions": 3717,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/stryker/package.json",
+    "additions": 12,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/stryker_scope.py",
+    "additions": 137,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/tests/test_stryker_scope.py",
+    "additions": 198,
+    "deletions": 0
+   }
+  ],
+  "headRefName": "gate/d4b-ts",
+  "number": 244
+ },
+ {
+  "files": [
+   {
+    "path": ".github/workflows/gate-integrity.yml",
+    "additions": 7,
+    "deletions": 3
+   },
+   {
+    "path": "scripts/process/merge_rule.py",
+    "additions": 196,
+    "deletions": 23
+   },
+   {
+    "path": "scripts/process/tests/test_merge_rule.py",
+    "additions": 426,
+    "deletions": 16
+   }
+  ],
+  "headRefName": "gate/d3c-carry",
+  "number": 228
+ },
+ {
+  "files": [
+   {
+    "path": ".github/workflows/ci.yml",
+    "additions": 13,
+    "deletions": 1
+   },
+   {
+    "path": "tests/browser/ade67-question-card.spec.ts",
+    "additions": 23,
+    "deletions": 3
+   }
+  ],
+  "headRefName": "ci/ade-67-omp-browser-job",
+  "number": 226
+ },
+ {
+  "files": [
+   {
+    "path": ".github/workflows/gate-integrity-rerun.yml",
+    "additions": 45,
+    "deletions": 0
+   },
+   {
+    "path": ".github/workflows/gate-integrity.yml",
+    "additions": 1,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/rerun_integrity.py",
+    "additions": 109,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/tests/test_rerun_integrity.py",
+    "additions": 149,
+    "deletions": 0
+   }
+  ],
+  "headRefName": "gate/d3b-rerun",
+  "number": 210
+ },
+ {
+  "files": [
+   {
+    "path": ".github/workflows/gate-integrity.yml",
+    "additions": 8,
+    "deletions": 1
+   },
+   {
+    "path": ".github/workflows/gate-mutation.yml",
+    "additions": 89,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/gate/integrity.sh",
+    "additions": 2,
+    "deletions": 2
+   },
+   {
+    "path": "scripts/gate/integrity.test.sh",
+    "additions": 2,
+    "deletions": 1
+   },
+   {
+    "path": "scripts/process/mutation.sh",
+    "additions": 26,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/mutation_targets.py",
+    "additions": 41,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/tests/test_mutation_targets.py",
+    "additions": 43,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/tests/test_tier.py",
+    "additions": 59,
+    "deletions": 5
+   },
+   {
+    "path": "scripts/process/tests/test_workflow_events.py",
+    "additions": 96,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/tests/test_workflow_on.py",
+    "additions": 28,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/tier.py",
+    "additions": 42,
+    "deletions": 13
+   },
+   {
+    "path": "scripts/process/workflow_events.py",
+    "additions": 76,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/workflow_on.py",
+    "additions": 50,
+    "deletions": 0
+   }
+  ],
+  "headRefName": "gate/d4-mutation",
+  "number": 196
+ },
+ {
+  "files": [
+   {
+    "path": ".github/workflows/gate-integrity.yml",
+    "additions": 13,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/merge_rule.py",
+    "additions": 212,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/tests/test_merge_rule.py",
+    "additions": 244,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/tier.py",
+    "additions": 1,
+    "deletions": 1
+   }
+  ],
+  "headRefName": "gate/d3-merge-rule",
+  "number": 195
+ },
+ {
+  "files": [
+   {
+    "path": ".github/workflows/ci.yml",
+    "additions": 1,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/heavy-lock.sh",
+    "additions": 281,
+    "deletions": 0
+   },
+   {
+    "path": "scripts/process/heavy-lock.test.sh",
+    "additions": 408,
+    "deletions": 0
+   }
+  ],
+  "headRefName": "process/heavy-lock",
+  "number": 165
+ }
+]

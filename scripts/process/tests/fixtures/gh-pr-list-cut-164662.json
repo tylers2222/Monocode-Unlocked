@@ -1,0 +1,509 @@
+[
+ {
+  "changedFiles": 144,
+  "files": [
+   {
+    "path": "compiler/rustc_ast_lowering/src/path.rs",
+    "additions": 15,
+    "deletions": 4
+   },
+   {
+    "path": "compiler/rustc_ast_passes/src/ast_validation.rs",
+    "additions": 4,
+    "deletions": 4
+   },
+   {
+    "path": "compiler/rustc_attr_ir/src/data_structures.rs",
+    "additions": 2,
+    "deletions": 0
+   },
+   {
+    "path": "compiler/rustc_attr_parsing/src/attributes/deprecation.rs",
+    "additions": 1,
+    "deletions": 0
+   },
+   {
+    "path": "compiler/rustc_codegen_cranelift/scripts/test_rustc_tests.sh",
+    "additions": 0,
+    "deletions": 2
+   },
+   {
+    "path": "compiler/rustc_codegen_cranelift/src/driver/aot.rs",
+    "additions": 2,
+    "deletions": 1
+   },
+   {
+    "path": "compiler/rustc_codegen_gcc/src/lib.rs",
+    "additions": 4,
+    "deletions": 1
+   },
+   {
+    "path": "compiler/rustc_codegen_llvm/src/back/llvm_backend.rs",
+    "additions": 31,
+    "deletions": 13
+   },
+   {
+    "path": "compiler/rustc_codegen_llvm/src/back/lto.rs",
+    "additions": 11,
+    "deletions": 12
+   },
+   {
+    "path": "compiler/rustc_codegen_llvm/src/debuginfo/metadata.rs",
+    "additions": 44,
+    "deletions": 2
+   },
+   {
+    "path": "compiler/rustc_codegen_ssa/src/assert_module_sources.rs",
+    "additions": 1,
+    "deletions": 1
+   },
+   {
+    "path": "compiler/rustc_codegen_ssa/src/back/write.rs",
+    "additions": 81,
+    "deletions": 39
+   },
+   {
+    "path": "compiler/rustc_codegen_ssa/src/traits/backend.rs",
+    "additions": 0,
+    "deletions": 8
+   },
+   {
+    "path": "compiler/rustc_codegen_ssa/src/traits/write.rs",
+    "additions": 2,
+    "deletions": 1
+   },
+   {
+    "path": "compiler/rustc_driver_impl/src/lib.rs",
+    "additions": 1,
+    "deletions": 1
+   },
+   {
+    "path": "compiler/rustc_expand/src/mbe/macro_parser.rs",
+    "additions": 7,
+    "deletions": 18
+   },
+   {
+    "path": "compiler/rustc_expand/src/mbe/macro_rules.rs",
+    "additions": 12,
+    "deletions": 9
+   },
+   {
+    "path": "compiler/rustc_feature/src/lib.rs",
+    "additions": 48,
+    "deletions": 4
+   },
+   {
+    "path": "compiler/rustc_feature/src/tests.rs",
+    "additions": 12,
+    "deletions": 0
+   },
+   {
+    "path": "compiler/rustc_hir_id/src/definitions.rs",
+    "additions": 4,
+    "deletions": 0
+   },
+   {
+    "path": "compiler/rustc_hir_id/src/lib.rs",
+    "additions": 7,
+    "deletions": 0
+   },
+   {
+    "path": "compiler/rustc_incremental/src/persist/fs.rs",
+    "additions": 1,
+    "deletions": 1
+   },
+   {
+    "path": "compiler/rustc_interface/src/queries.rs",
+    "additions": 0,
+    "deletions": 24
+   },
+   {
+    "path": "compiler/rustc_lint/src/diagnostics.rs",
+    "additions": 10,
+    "deletions": 8
+   },
+   {
+    "path": "compiler/rustc_lint/src/types.rs",
+    "additions": 112,
+    "deletions": 46
+   },
+   {
+    "path": "compiler/rustc_metadata/src/rmeta/encoder.rs",
+    "additions": 41,
+    "deletions": 13
+   },
+   {
+    "path": "compiler/rustc_middle/src/dep_graph/graph.rs",
+    "additions": 0,
+    "deletions": 6
+   },
+   {
+    "path": "compiler/rustc_middle/src/query/on_disk_cache.rs",
+    "additions": 8,
+    "deletions": 5
+   },
+   {
+    "path": "compiler/rustc_middle/src/ty/context.rs",
+    "additions": 16,
+    "deletions": 0
+   },
+   {
+    "path": "compiler/rustc_monomorphize/src/offload/manifest.rs",
+    "additions": 7,
+    "deletions": 1
+   },
+   {
+    "path": "compiler/rustc_parse/src/diagnostics.rs",
+    "additions": 0,
+    "deletions": 8
+   },
+   {
+    "path": "compiler/rustc_parse/src/parser/path.rs",
+    "additions": 5,
+    "deletions": 3
+   },
+   {
+    "path": "compiler/rustc_passes/src/stability.rs",
+    "additions": 1,
+    "deletions": 1
+   },
+   {
+    "path": "compiler/rustc_serialize/src/lib.rs",
+    "additions": 1,
+    "deletions": 1
+   },
+   {
+    "path": "compiler/rustc_serialize/src/serialize.rs",
+    "additions": 90,
+    "deletions": 12
+   },
+   {
+    "path": "compiler/rustc_session/src/config.rs",
+    "additions": 49,
+    "deletions": 17
+   },
+   {
+    "path": "compiler/rustc_session/src/config/native_libs.rs",
+    "additions": 1,
+    "deletions": 1
+   },
+   {
+    "path": "compiler/rustc_session/src/session.rs",
+    "additions": 39,
+    "deletions": 0
+   },
+   {
+    "path": "compiler/rustc_span/src/def_id.rs",
+    "additions": 22,
+    "deletions": 1
+   },
+   {
+    "path": "compiler/rustc_span/src/hygiene.rs",
+    "additions": 221,
+    "deletions": 69
+   },
+   {
+    "path": "compiler/rustc_span/src/lib.rs",
+    "additions": 11,
+    "deletions": 0
+   },
+   {
+    "path": "compiler/rustc_span/src/symbol.rs",
+    "additions": 7,
+    "deletions": 0
+   },
+   {
+    "path": "compiler/rustc_structures/src/crate_type.rs",
+    "additions": 8,
+    "deletions": 0
+   },
+   {
+    "path": "compiler/rustc_trait_selection/src/error_reporting/infer/region.rs",
+    "additions": 33,
+    "deletions": 33
+   },
+   {
+    "path": "compiler/rustc_ty_utils/src/layout/invariant.rs",
+    "additions": 4,
+    "deletions": 10
+   },
+   {
+    "path": "library/alloc/src/collections/vec_deque/tests.rs",
+    "additions": 52,
+    "deletions": 0
+   },
+   {
+    "path": "library/core/src/arch.rs",
+    "additions": 2,
+    "deletions": 1
+   },
+   {
+    "path": "library/core/src/iter/adapters/skip.rs",
+    "additions": 8,
+    "deletions": 0
+   },
+   {
+    "path": "library/core/src/num/imp/int_bits.rs",
+    "additions": 12,
+    "deletions": 3
+   },
+   {
+    "path": "library/core/src/ops/bit.rs",
+    "additions": 11,
+    "deletions": 2
+   },
+   {
+    "path": "library/core/src/slice/mod.rs",
+    "additions": 2,
+    "deletions": 4
+   },
+   {
+    "path": "library/coretests/tests/iter/adapters/skip.rs",
+    "additions": 25,
+    "deletions": 0
+   },
+   {
+    "path": "library/coretests/tests/lib.rs",
+    "additions": 0,
+    "deletions": 1
+   },
+   {
+    "path": "library/std/src/fs.rs",
+    "additions": 14,
+    "deletions": 0
+   },
+   {
+    "path": "library/std/src/fs/tests.rs",
+    "additions": 13,
+    "deletions": 0
+   },
+   {
+    "path": "library/std/src/lib.rs",
+    "additions": 2,
+    "deletions": 3
+   },
+   {
+    "path": "library/std/src/sys/fs/hermit.rs",
+    "additions": 8,
+    "deletions": 0
+   },
+   {
+    "path": "library/std/src/sys/fs/motor.rs",
+    "additions": 8,
+    "deletions": 0
+   },
+   {
+    "path": "library/std/src/sys/fs/solid.rs",
+    "additions": 8,
+    "deletions": 0
+   },
+   {
+    "path": "library/std/src/sys/fs/uefi.rs",
+    "additions": 8,
+    "deletions": 0
+   },
+   {
+    "path": "library/std/src/sys/fs/unix.rs",
+    "additions": 33,
+    "deletions": 0
+   },
+   {
+    "path": "library/std/src/sys/fs/unix/dir.rs",
+    "additions": 1,
+    "deletions": 1
+   },
+   {
+    "path": "library/std/src/sys/fs/unsupported.rs",
+    "additions": 6,
+    "deletions": 0
+   },
+   {
+    "path": "library/std/src/sys/fs/vexos.rs",
+    "additions": 6,
+    "deletions": 0
+   },
+   {
+    "path": "library/std/src/sys/fs/windows.rs",
+    "additions": 9,
+    "deletions": 0
+   },
+   {
+    "path": "library/std/tests/run-time-detect.rs",
+    "additions": 8,
+    "deletions": 13
+   },
+   {
+    "path": "library/std_detect/src/detect/arch/mod.rs",
+    "additions": 1,
+    "deletions": 7
+   },
+   {
+    "path": "library/std_detect/src/detect/arch/powerpc.rs",
+    "additions": 1,
+    "deletions": 1
+   },
+   {
+    "path": "library/std_detect/src/detect/arch/powerpc64.rs",
+    "additions": 0,
+    "deletions": 33
+   },
+   {
+    "path": "library/std_detect/src/detect/os/freebsd/powerpc.rs",
+    "additions": 11,
+    "deletions": 3
+   },
+   {
+    "path": "library/std_detect/src/detect/os/linux/powerpc.rs",
+    "additions": 17,
+    "deletions": 7
+   },
+   {
+    "path": "library/std_detect/src/detect/os/openbsd/powerpc.rs",
+    "additions": 14,
+    "deletions": 3
+   },
+   {
+    "path": "library/std_detect/src/lib.rs",
+    "additions": 0,
+    "deletions": 1
+   },
+   {
+    "path": "library/std_detect/tests/cpu-detection.rs",
+    "additions": 6,
+    "deletions": 14
+   },
+   {
+    "path": "library/std_detect/tests/macro_trailing_commas.rs",
+    "additions": 1,
+    "deletions": 8
+   },
+   {
+    "path": "library/stdarch/crates/simd-test-macro/src/lib.rs",
+    "additions": 1,
+    "deletions": 2
+   },
+   {
+    "path": "src/doc/rustc-dev-guide/src/tests/misc.md",
+    "additions": 26,
+    "deletions": 20
+   },
+   {
+    "path": "src/librustdoc/config.rs",
+    "additions": 2,
+    "deletions": 2
+   },
+   {
+    "path": "src/librustdoc/doctest.rs",
+    "additions": 1,
+    "deletions": 1
+   },
+   {
+    "path": "src/librustdoc/passes/collect_intra_doc_links.rs",
+    "additions": 11,
+    "deletions": 3
+   },
+   {
+    "path": "src/tools/compiletest/src/directives.rs",
+    "additions": 1,
+    "deletions": 0
+   },
+   {
+    "path": "src/tools/compiletest/src/directives/directive_names.rs",
+    "additions": 1,
+    "deletions": 0
+   },
+   {
+    "path": "src/tools/compiletest/src/directives/handlers.rs",
+    "additions": 19,
+    "deletions": 1
+   },
+   {
+    "path": "src/tools/compiletest/src/runtest.rs",
+    "additions": 25,
+    "deletions": 0
+   },
+   {
+    "path": "src/tools/miri/src/shims/unix/fs.rs",
+    "additions": 7,
+    "deletions": 8
+   },
+   {
+    "path": "src/tools/miri/tests/pass-dep/libc/fs.rs",
+    "additions": 2,
+    "deletions": 0
+   },
+   {
+    "path": "src/tools/miri/tests/pass/shims/fs.rs",
+    "additions": 5,
+    "deletions": 3
+   },
+   {
+    "path": "src/tools/rustfmt/Subtree sync procedure.md",
+    "additions": 6,
+    "deletions": 1
+   },
+   {
+    "path": "tests/codegen-llvm/debug-vtable.rs",
+    "additions": 1,
+    "deletions": 1
+   },
+   {
+    "path": "tests/crashes/invalid-niche-discriminant.rs",
+    "additions": 1,
+    "deletions": 0
+   },
+   {
+    "path": "tests/debuginfo/basic-types/lldb_input/non_windows.json",
+    "additions": 2,
+    "deletions": 2
+   },
+   {
+    "path": "tests/debuginfo/basic-types/lldb_input/windows_gnu.json",
+    "additions": 3,
+    "deletions": 3
+   },
+   {
+    "path": "tests/debuginfo/pretty-std/lldb_input/non_windows.json",
+    "additions": 10,
+    "deletions": 5
+   },
+   {
+    "path": "tests/debuginfo/pretty-std/lldb_input/windows_gnu.json",
+    "additions": 2,
+    "deletions": 2
+   },
+   {
+    "path": "tests/debuginfo/rc_arc.rs",
+    "additions": 10,
+    "deletions": 0
+   },
+   {
+    "path": "tests/incremental/lto.rs",
+    "additions": 11,
+    "deletions": 2
+   },
+   {
+    "path": "tests/pretty/delegation/inherit-attributes.pp",
+    "additions": 6,
+    "deletions": 3
+   },
+   {
+    "path": "tests/pretty/delegation/inline-attribute.pp",
+    "additions": 8,
+    "deletions": 4
+   },
+   {
+    "path": "tests/run-make/const-destruct-stable-toolchain/const-drop-stable.stderr",
+    "additions": 0,
+    "deletions": 11
+   },
+   {
+    "path": "tests/run-make/const-destruct-stable-toolchain/const-drop.rs",
+    "additions": 0,
+    "deletions": 3
+   }
+  ],
+  "headRefName": "rollup-bulxEsP",
+  "number": 164662
+ }
+]

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Print selected environment variables of a running process (macOS, same user).
+"""Print selected environment variables of a running process (same user).
 
     procenv.py <pid> NAME [NAME...]
 
-Reads KERN_PROCARGS2, because macOS `ps` no longer shows another process's
-environment. Prints NAME=value lines only for the names asked for.
+Linux reads /proc/<pid>/environ. macOS reads KERN_PROCARGS2, because macOS
+`ps` no longer shows another process's environment. Prints NAME=value lines
+only for the names asked for.
 """
 import ctypes
 import ctypes.util
@@ -24,21 +25,27 @@ def sysctl(mib, size):
     return buf.raw[: length.value]
 
 
+def to_env(items):
+    env = {}
+    for item in items:
+        if not item:
+            break
+        key, _, value = item.decode("utf-8", "replace").partition("=")
+        env.setdefault(key, value)
+    return env
+
+
 def environ(pid):
+    if sys.platform.startswith("linux"):
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            return to_env(f.read().split(b"\0"))
     argmax = struct.unpack("i", sysctl([CTL_KERN, KERN_ARGMAX], 4))[0]
     raw = sysctl([CTL_KERN, KERN_PROCARGS2, pid], argmax)
     argc = struct.unpack("i", raw[:4])[0]
     rest = raw[4:]
     exe_end = rest.index(b"\0")
     rest = rest[exe_end:].lstrip(b"\0")
-    parts = rest.split(b"\0")
-    env = {}
-    for item in parts[argc:]:
-        if not item:
-            break
-        key, _, value = item.decode("utf-8", "replace").partition("=")
-        env.setdefault(key, value)
-    return env
+    return to_env(rest.split(b"\0")[argc:])
 
 
 def main():
