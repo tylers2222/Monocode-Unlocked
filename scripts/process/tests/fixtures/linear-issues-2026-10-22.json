@@ -1,0 +1,3656 @@
+[
+ {
+  "id": "4e53d58c-5f09-4547-a35f-fec4e7bf4f98",
+  "identifier": "ADE-84",
+  "title": "Process scripts read app state through the app CLI, not monocode.db",
+  "description": "Made-up description of ADE-84 for the ready-issues tests.",
+  "priority": 2,
+  "createdAt": "2026-10-22T09:53:09.378Z",
+  "updatedAt": "2026-10-22T09:53:10.014Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T09:53:10.014Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-22T09:53:10.003Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-22T09:53:10.000Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-22T09:53:09.976Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-83"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "55842bf1-0e65-4c36-9b76-062572b183b2",
+  "identifier": "ADE-83",
+  "title": "ready-issues prints START NOW and WAIT by real dependency and file overlap",
+  "description": "Made-up description of ADE-83 for the ready-issues tests.",
+  "priority": 2,
+  "createdAt": "2026-10-22T09:53:06.966Z",
+  "updatedAt": "2026-10-22T09:56:00.995Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T09:53:10.014Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "b0133213-bf19-48d5-9f98-6813479d9a23",
+  "identifier": "ADE-82",
+  "title": "A harness run the app did not start folds into the last turn and leaves its block streaming",
+  "description": "Made-up description of ADE-82 for the ready-issues tests.",
+  "priority": 3,
+  "createdAt": "2026-10-22T08:21:01.899Z",
+  "updatedAt": "2026-10-22T08:21:21.214Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T08:21:02.493Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "085ff380-8a48-42f2-8da7-a394a989d23f",
+  "identifier": "ADE-81",
+  "title": "Flaky CI: RPM jobs fail when an EPEL/Fedora mirror is down",
+  "description": "Made-up description of ADE-81 for the ready-issues tests.",
+  "priority": 3,
+  "createdAt": "2026-10-22T06:18:44.271Z",
+  "updatedAt": "2026-10-22T07:20:10.418Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "3423bb80-6e3d-40c2-b9f4-bf643d55fc4d",
+  "identifier": "ADE-80",
+  "title": "Milestones page: reopen on the last project, and group or sort milestones by time",
+  "description": "Made-up description of ADE-80 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-22T03:54:26.858Z",
+  "updatedAt": "2026-10-22T03:54:26.858Z",
+  "state": {
+   "type": "backlog"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "fad2793f-12a4-4b20-a2a5-4c4cb93a33a5",
+  "identifier": "ADE-79",
+  "title": "An omp turn that ends while a background job runs never ends in the app",
+  "description": "Made-up description of ADE-79 for the ready-issues tests.",
+  "priority": 2,
+  "createdAt": "2026-10-22T03:54:24.665Z",
+  "updatedAt": "2026-10-22T08:21:02.493Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T08:21:02.493Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-22T08:07:57.129Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-22T07:18:29.051Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "related",
+     "issue": {
+      "identifier": "ADE-82"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "58343a44-f0f7-44ae-9ca7-9cf53d21c23e",
+  "identifier": "ADE-78",
+  "title": "A Mono whose saved model is not in the catalog queues every message silently",
+  "description": "Made-up description of ADE-78 for the ready-issues tests.",
+  "priority": 2,
+  "createdAt": "2026-10-22T03:14:48.070Z",
+  "updatedAt": "2026-10-22T09:56:07.615Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "bbb613e2-9557-4774-907f-08a5b7e0f785",
+  "identifier": "ADE-77",
+  "title": "Check: does a Mono habit's relayed approval get cancelled when the Mono's own turn starts or stops?",
+  "description": "Made-up description of ADE-77 for the ready-issues tests.",
+  "priority": 3,
+  "createdAt": "2026-10-21T02:11:33.570Z",
+  "updatedAt": "2026-10-21T02:11:33.570Z",
+  "state": {
+   "type": "backlog"
+  },
+  "labels": {
+   "nodes": []
+  },
+  "history": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "9eb75180-4175-4ddc-b7b4-e349e3272b16",
+  "identifier": "ADE-76",
+  "title": "OpenCode: do not ask for approval before todo updates (todowrite/todoread)",
+  "description": "Made-up description of ADE-76 for the ready-issues tests.",
+  "priority": 3,
+  "createdAt": "2026-10-21T01:28:19.359Z",
+  "updatedAt": "2026-10-21T01:28:19.359Z",
+  "state": {
+   "type": "backlog"
+  },
+  "labels": {
+   "nodes": []
+  },
+  "history": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "fd9dd254-dc02-4f35-a34b-ce0677bd604b",
+  "identifier": "ADE-74",
+  "title": "Extend the G-3 turn guard from Gigas to Monos (same soft limit)",
+  "description": "Made-up description of ADE-74 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-20T21:00:57.815Z",
+  "updatedAt": "2026-10-20T21:00:57.815Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "4f37e683-cfd1-44c4-aa0f-8d6dd8aa4534",
+  "identifier": "ADE-73",
+  "title": "sessions.send whenBusy followUp accepted as the turn ends is never run",
+  "description": "Made-up description of ADE-73 for the ready-issues tests.",
+  "priority": 1,
+  "createdAt": "2026-10-20T16:25:37.147Z",
+  "updatedAt": "2026-10-22T08:08:55.347Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T19:30:19.509Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T17:01:54.941Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "3df792b3-0cab-4da6-8474-cc80c81f46ba",
+  "identifier": "ADE-72",
+  "title": "Approvals real-DB tests race on one shared MONOCODE_DB_COPY",
+  "description": "Made-up description of ADE-72 for the ready-issues tests.",
+  "priority": 3,
+  "createdAt": "2026-10-20T15:56:18.156Z",
+  "updatedAt": "2026-10-20T15:56:18.156Z",
+  "state": {
+   "type": "backlog"
+  },
+  "labels": {
+   "nodes": []
+  },
+  "history": {
+   "nodes": []
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "3311eb1b-a7fc-4db0-b3af-dd6db6821558",
+  "identifier": "ADE-71",
+  "title": "Show a habit run's open question in the Mono chat, like an approval",
+  "description": "Made-up description of ADE-71 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-20T15:49:19.181Z",
+  "updatedAt": "2026-10-22T09:18:06.134Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T09:18:06.098Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T15:49:19.732Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "5c9ab3ba-c446-45ae-aa4f-b1f9f015a99b",
+  "identifier": "ADE-69",
+  "title": "Tabs pinned to a worktree deleted outside the app stay hidden after a restart",
+  "description": "Made-up description of ADE-69 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-20T15:31:12.256Z",
+  "updatedAt": "2026-10-20T15:31:12.853Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T15:31:12.853Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-57"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "daef2cf8-bd1f-4cad-954e-2323a33d2768",
+  "identifier": "ADE-67",
+  "title": "Question card in a session doesn't respond: options and Continue can't be clicked",
+  "description": "Made-up description of ADE-67 for the ready-issues tests.",
+  "priority": 1,
+  "createdAt": "2026-10-20T10:51:02.004Z",
+  "updatedAt": "2026-10-22T07:07:29.544Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T03:18:42.321Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T15:49:19.732Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T15:49:16.429Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T15:25:18.635Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T15:25:17.031Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "In Review"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T13:04:52.225Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "related",
+     "issue": {
+      "identifier": "ADE-71"
+     }
+    },
+    {
+     "type": "related",
+     "issue": {
+      "identifier": "ADE-70"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "1d93a404-4f23-4699-91d5-f4d0fb4bf01c",
+  "identifier": "ADE-66",
+  "title": "Dead menu item: 'Move group to new window' in TabGroupMenu can never appear",
+  "description": "Made-up description of ADE-66 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-20T10:38:36.976Z",
+  "updatedAt": "2026-10-20T13:04:49.977Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:49.952Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "3823e14a-000e-4413-af47-ae31744630e6",
+  "identifier": "ADE-65",
+  "title": "Flaky CI: macOS Rust lib tests abort with 'Rust cannot catch foreign exceptions' after the pasteboard tests",
+  "description": "Made-up description of ADE-65 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-20T10:22:18.520Z",
+  "updatedAt": "2026-10-20T13:04:47.122Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:47.094Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "2fc3a83a-9cac-48fe-bd32-c61b51b65e2b",
+  "identifier": "ADE-64",
+  "title": "A steer that misses the start of a turn ends the app's turn record while the provider's turn keeps running",
+  "description": "Made-up description of ADE-64 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-20T10:22:16.506Z",
+  "updatedAt": "2026-10-20T13:04:44.820Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:44.798Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "65575faa-fba5-442c-9079-ec2ce2715377",
+  "identifier": "ADE-63",
+  "title": "R5c: Ask parties are actors (mono:<id> or session:<id>)",
+  "description": "Made-up description of ADE-63 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-20T08:07:26.813Z",
+  "updatedAt": "2026-10-22T08:43:53.723Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T06:19:32.946Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-22T05:19:18.360Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:04:42.553Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:48.388Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:42.508Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-23"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "868f1072-aa14-4260-80de-30615d7ddd65",
+  "identifier": "ADE-62",
+  "title": "in_flight_sessions is one list for all windows; each window replaces it whole",
+  "description": "Made-up description of ADE-62 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-20T07:50:52.315Z",
+  "updatedAt": "2026-10-20T14:48:11.372Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:40.362Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:45.724Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-11"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "8f95b10e-5ace-4054-b4fc-50103298dba8",
+  "identifier": "ADE-61",
+  "title": "New Window boot marks the other window's running chats as interrupted",
+  "description": "Made-up description of ADE-61 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-20T07:50:50.271Z",
+  "updatedAt": "2026-10-20T16:20:21.400Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T16:20:21.400Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:04:38.022Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-11"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "db49c818-ba99-46a8-8a20-02bd2964f396",
+  "identifier": "ADE-57",
+  "title": "ADE-48 part 2: keep worktree-pinned tabs in the saved workspace across restart",
+  "description": "Made-up description of ADE-57 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T14:16:58.966Z",
+  "updatedAt": "2026-10-22T05:18:18.323Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    },
+    {
+     "name": "code-complete"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T05:18:18.245Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "code-complete"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T15:31:12.853Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T14:18:06.883Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:04:31.302Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:42.325Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T11:18:29.736Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-48"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "8e297074-c11a-42f6-8b7a-8125da46250d",
+  "identifier": "ADE-56",
+  "title": "ADE-14 follow-up: approvals write rules in SQL, and limits on options and links",
+  "description": "Made-up description of ADE-56 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T13:04:58.709Z",
+  "updatedAt": "2026-10-22T05:43:42.445Z",
+  "state": {
+   "type": "backlog"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:1"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T19:53:47.178Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:04:29.075Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:1"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:39.501Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T00:49:08.605Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T18:38:28.758Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T13:47:58.638Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T13:47:57.829Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T13:04:59.357Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-51"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "2d0195e1-5230-4fac-a5c5-c9346d90c60a",
+  "identifier": "ADE-55",
+  "title": "ADE-14 S6: E2E suite on real app state for every Definition of done item",
+  "description": "Made-up description of ADE-55 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T11:17:14.398Z",
+  "updatedAt": "2026-10-21T02:40:12.172Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:1"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-21T02:40:12.143Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:04:26.898Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:1"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:36.494Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:36.482Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:36.478Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:36.475Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:36.463Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-53"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-51"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-50"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-52"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-54"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "1f3b7fdd-8f4c-4698-aa0c-3d4c57a30680",
+  "identifier": "ADE-54",
+  "title": "ADE-14 S5 (UI): open-cards sidebar badge and decision line in the Giga chat",
+  "description": "Made-up description of ADE-54 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T11:17:10.988Z",
+  "updatedAt": "2026-10-20T21:11:20.827Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "In Review"
+    },
+    {
+     "name": "instance:1"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:24.639Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:1"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:36.463Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:33.553Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:33.528Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T15:00:57.198Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T15:00:55.486Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": [
+      {
+       "name": "In Review"
+      }
+     ]
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-50"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-52"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "712f6930-35a1-4ac4-986e-1182ce358cdb",
+  "identifier": "ADE-53",
+  "title": "ADE-14 S4 (UI): approvals board page and decide actions",
+  "description": "Made-up description of ADE-53 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T11:17:08.645Z",
+  "updatedAt": "2026-10-20T19:53:56.974Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "In Review"
+    },
+    {
+     "name": "instance:1"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T19:53:56.974Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:04:22.479Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:1"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:36.494Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:30.764Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T03:23:04.103Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T21:44:03.272Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T21:44:02.900Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T21:44:02.845Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T21:44:02.822Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T21:44:02.754Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T21:44:02.703Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T21:44:01.349Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": [
+      {
+       "name": "In Review"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-19T13:47:58.638Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-52"
+     }
+    },
+    {
+     "type": "related",
+     "issue": {
+      "identifier": "ADE-56"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "229a3d06-790f-47c1-a891-c65879e7c7e6",
+  "identifier": "ADE-52",
+  "title": "ADE-14 S3: deliver a decision to the filing Giga, queued",
+  "description": "Made-up description of ADE-52 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T11:17:06.318Z",
+  "updatedAt": "2026-10-20T13:04:20.392Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "In Review"
+    },
+    {
+     "name": "instance:1"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:20.369Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:1"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:36.475Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:33.528Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:30.764Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:27.279Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T14:45:49.188Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T14:45:47.397Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": [
+      {
+       "name": "In Review"
+      }
+     ]
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-50"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "4cf4b3c9-7bef-4909-8a34-448fd158905a",
+  "identifier": "ADE-51",
+  "title": "ADE-14 S2: approvals_board tool for Gigas (CLI, MCP, omp)",
+  "description": "Made-up description of ADE-51 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T11:17:04.015Z",
+  "updatedAt": "2026-10-20T13:04:18.272Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "In Review"
+    },
+    {
+     "name": "instance:1"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:18.249Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:1"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:39.501Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:36.482Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:24.019Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T16:25:20.372Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T16:25:20.291Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T16:25:18.474Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": [
+      {
+       "name": "In Review"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-19T13:04:59.382Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-50"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "e515e976-6caf-475a-a69e-06550169c6af",
+  "identifier": "ADE-50",
+  "title": "ADE-14 S1: approvals table in monocode.db and its store",
+  "description": "Made-up description of ADE-50 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T11:17:01.669Z",
+  "updatedAt": "2026-10-20T13:04:16.091Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "In Review"
+    },
+    {
+     "name": "instance:1"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:16.061Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:1"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:36.478Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:33.553Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:27.279Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:24.019Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T13:04:59.357Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T11:57:22.097Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T11:57:20.676Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": [
+      {
+       "name": "In Review"
+      }
+     ]
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "related",
+     "issue": {
+      "identifier": "ADE-56"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "b71b41fc-8a84-492d-ba95-f6ce967ad2b1",
+  "identifier": "ADE-46",
+  "title": "Completion groups are lost when the app relaunches while a group waits",
+  "description": "Made-up description of ADE-46 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:38:24.429Z",
+  "updatedAt": "2026-10-22T08:17:32.479Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:11.742Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:54:08.101Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:20.682Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T08:39:04.531Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T08:38:25.317Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-15"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "2b195755-dffe-411d-bcfa-0aeb709b6605",
+  "identifier": "ADE-45",
+  "title": "F1: Finish-gate run and real-data runs",
+  "description": "Made-up description of ADE-45 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:23:23.148Z",
+  "updatedAt": "2026-10-20T13:04:09.526Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:09.500Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.944Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.692Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.625Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.330Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.313Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.298Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.297Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.289Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.286Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-44"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-43"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-40"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-25"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-38"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-30"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-34"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-18"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-31"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "19c47285-f57c-4559-abef-6461baa26cd8",
+  "identifier": "ADE-44",
+  "title": "D4: Claude Code deny rules on the app data folder",
+  "description": "Made-up description of ADE-44 for the ready-issues tests.\n\nFiles: `src/integrations/harness/providers/claude/claudeProtocol.ts`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:23:20.882Z",
+  "updatedAt": "2026-10-22T09:56:09.123Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T09:53:19.247Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-22T09:53:10.003Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:04:07.182Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.944Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:14.302Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-84"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "a3219e53-149e-4c1e-b015-87cf7210e748",
+  "identifier": "ADE-43",
+  "title": "D3: Migrate the plaintext database on launch",
+  "description": "Made-up description of ADE-43 for the ready-issues tests.\n\nFiles: `src-tauri/src/db_key.rs`, `src-tauri/src/session_store.rs`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:23:18.741Z",
+  "updatedAt": "2026-10-20T13:04:04.989Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:04:04.961Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.692Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:11.619Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-42"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "1c0b61ea-0d44-4538-a221-dde8763cd43e",
+  "identifier": "ADE-42",
+  "title": "D2: SQLCipher with the key in the login keychain",
+  "description": "Made-up description of ADE-42 for the ready-issues tests.\n\nFiles: `src-tauri/Cargo.toml`, `src-tauri/src/db_key.rs`, `src-tauri/src/session_store.rs`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:23:16.523Z",
+  "updatedAt": "2026-10-22T09:56:10.583Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T09:53:22.415Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-22T09:53:10.000Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:04:02.830Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:11.619Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:08.743Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-84"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "c735c7ef-04ef-4c85-a472-bf20ca775956",
+  "identifier": "ADE-41",
+  "title": "D1: Sandbox every spawned agent",
+  "description": "Made-up description of ADE-41 for the ready-issues tests.\n\nFiles: `src-tauri/src/harness.rs`, `src-tauri/src/agent_sandbox.rs`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:23:14.285Z",
+  "updatedAt": "2026-10-22T09:55:56.168Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T09:53:13.032Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-22T09:53:09.976Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:04:00.483Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:14.302Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:08.743Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:05.965Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-84"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "a226cc72-a157-40c8-ae3c-848b0a00405e",
+  "identifier": "ADE-40",
+  "title": "E2: Eval baseline runs V1 to V4",
+  "description": "Made-up description of ADE-40 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:23:12.095Z",
+  "updatedAt": "2026-10-20T13:03:58.254Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:03:58.232Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.625Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:03.139Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-39"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "409ff223-c15b-459b-8882-9d2d1e27266b",
+  "identifier": "ADE-39",
+  "title": "E1: Eval harness for V1 to V4",
+  "description": "Made-up description of ADE-39 for the ready-issues tests.\n\nFiles: `evals/fixture.mjs`, `evals/provider.mjs`, `evals/cases/r*.yaml`, `evals/graders/asks.mjs`, `evals/graders/recorded/`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:23:09.878Z",
+  "updatedAt": "2026-10-22T09:55:58.527Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T09:53:16.435Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:03:56.007Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:03.139Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:00.361Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:52:00.359Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-21"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "db335b13-fe6c-4fb7-9b37-4399234a98d1",
+  "identifier": "ADE-38",
+  "title": "R20: Approvals board hookup (waits on ADE-14)",
+  "description": "Made-up description of ADE-38 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:23:07.689Z",
+  "updatedAt": "2026-10-20T13:03:53.886Z",
+  "state": {
+   "type": "backlog"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:03:53.864Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.313Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:57.509Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:57.508Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-37"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-14"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "a0fbc336-061d-4114-8c82-5d4f77cfedec",
+  "identifier": "ADE-37",
+  "title": "R19: A question reaches the Giga with its ask id",
+  "description": "Made-up description of ADE-37 for the ready-issues tests.\n\nFiles: `src-tauri/src/asks.rs`, `src/features/monos/model/monoFiles.ts`, `docs/agent-access.md`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:23:04.799Z",
+  "updatedAt": "2026-10-20T13:03:51.712Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:03:51.685Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:51:57.509Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:54.765Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-32"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "0645ecef-060e-4a2b-aeef-60be34a8178d",
+  "identifier": "ADE-36",
+  "title": "R18: Retire reply, handles and wanting_reply",
+  "description": "Made-up description of ADE-36 for the ready-issues tests.\n\nFiles: `src-tauri/src/mono_gate.rs`, `src-tauri/src/mono_messages.rs`, `src-tauri/src/control_cli.rs`, `src/features/monos/model/monoMessages.ts`, `src/features/monos/model/monoRoute.ts`, `src/features/agent-app/model/agentApp.ts`, `src/features/monos/model/monoFiles.ts`, `docs/agent-access.md`, `CHANGELOG.md`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:23:02.612Z",
+  "updatedAt": "2026-10-22T09:53:13.060Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T09:53:13.032Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:03:49.461Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:05.965Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:52.040Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-35"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "41b4a96c-8b90-48d3-9dbf-cdd5ec30563f",
+  "identifier": "ADE-35",
+  "title": "R17: Upward speech needs an open ask",
+  "description": "Made-up description of ADE-35 for the ready-issues tests.\n\nFiles: `src-tauri/src/mono_gate.rs`, `src-tauri/src/mono_messages.rs`, `src-tauri/src/control_cli.rs`, `src/features/monos/model/monoMessages.ts`, `src/features/monos/model/monoFiles.ts`, `docs/agent-access.md`, `CHANGELOG.md`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:23:00.475Z",
+  "updatedAt": "2026-10-22T09:53:16.469Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T09:53:16.435Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:03:46.472Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:00.361Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:52.040Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:49.210Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:49.205Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-32"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-33"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "65f1be44-8a73-4870-a47c-a70a6d534b30",
+  "identifier": "ADE-34",
+  "title": "R16: Interrupted agents are woken to resume",
+  "description": "Made-up description of ADE-34 for the ready-issues tests.\n\nFiles: `src-tauri/src/control.rs`, `src-tauri/src/asks.rs`, `src-tauri/src/ask_scheduler.rs`, `src/features/monos/model/monoRoute.ts`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:22:58.265Z",
+  "updatedAt": "2026-10-20T13:03:43.674Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:03:43.639Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.297Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:46.459Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-27"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "7d53cef5-721a-4d14-857b-23290a0e9b8a",
+  "identifier": "ADE-33",
+  "title": "R15: Blocked path reaches the parent at once",
+  "description": "Made-up description of ADE-33 for the ready-issues tests.\n\nFiles: `src-tauri/src/ask_gate.rs`, `src-tauri/src/asks.rs`, `src/features/monos/model/monoRoute.ts`, `src/features/monos/model/monoFiles.ts`, `docs/agent-access.md`, `CHANGELOG.md`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:22:55.963Z",
+  "updatedAt": "2026-10-20T13:03:41.494Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:03:41.463Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:51:49.205Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:43.322Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:43.284Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-32"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-27"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "a6b263f3-311a-4b06-b821-4eb78ba58c49",
+  "identifier": "ADE-32",
+  "title": "R14: Question, answer and one update",
+  "description": "Made-up description of ADE-32 for the ready-issues tests.\n\nFiles: `src-tauri/src/ask_gate.rs`, `src-tauri/src/asks.rs`, `src-tauri/src/ask_scheduler.rs`, `src-tauri/src/control_cli.rs`, `src/features/agent-app/model/agentApp.ts`, `src/features/monos/model/monoMessages.ts`, `src/features/monos/model/monoFiles.ts`, `docs/agent-access.md`, `CHANGELOG.md`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:22:53.783Z",
+  "updatedAt": "2026-10-20T13:03:39.308Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:03:39.281Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:51:54.765Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:49.210Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:43.322Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:40.542Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-29"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "96088f36-b7e3-40d4-9a2f-9405e03f7f15",
+  "identifier": "ADE-31",
+  "title": "R13: Catch-up reminders are spaced out",
+  "description": "Made-up description of ADE-31 for the ready-issues tests.\n\nFiles: `src-tauri/src/ask_scheduler.rs`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:22:51.357Z",
+  "updatedAt": "2026-10-20T13:03:37.073Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:03:37.044Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.286Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:03.131Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-29"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "e6c96a6b-59bc-428b-beb6-163a54cf5f5c",
+  "identifier": "ADE-30",
+  "title": "R12: Miss report",
+  "description": "Made-up description of ADE-30 for the ready-issues tests.\n\nFiles: `src-tauri/src/asks.rs`, `src-tauri/src/control_cli.rs`, `src/features/agent-app/model/agentApp.ts`, `docs/agent-access.md`, `CHANGELOG.md`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:22:49.251Z",
+  "updatedAt": "2026-10-20T13:03:34.926Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:03:34.898Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.298Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:00.225Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-29"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "86fb7a9e-6ceb-4633-9b79-252b8a564115",
+  "identifier": "ADE-29",
+  "title": "R11: Deadline reminder, parent asks why, miss with reason",
+  "description": "Made-up description of ADE-29 for the ready-issues tests.\n\nFiles: `src-tauri/src/ask_scheduler.rs`, `src-tauri/src/ask_gate.rs`, `src-tauri/src/asks.rs`, `src-tauri/src/control_cli.rs`, `src/features/agent-app/model/agentApp.ts`, `src/features/monos/model/monoRoute.ts`, `src/features/monos/model/monoFiles.ts`, `docs/agent-access.md`, `CHANGELOG.md`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:22:47.029Z",
+  "updatedAt": "2026-10-20T13:03:32.791Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:03:32.769Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:51:40.542Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:03.131Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:00.225Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:57.369Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-28"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "16614ae1-4a60-4214-b425-513caf81067c",
+  "identifier": "ADE-28",
+  "title": "R10: The 5-minute reminder offers one extension",
+  "description": "Made-up description of ADE-28 for the ready-issues tests.\n\nFiles: `src-tauri/src/ask_gate.rs`, `src-tauri/src/asks.rs`, `src-tauri/src/control_cli.rs`, `src/features/agent-app/model/agentApp.ts`, `src/features/monos/model/monoRoute.ts`, `src/features/monos/model/monoFiles.ts`, `docs/agent-access.md`, `CHANGELOG.md`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:22:16.204Z",
+  "updatedAt": "2026-10-20T13:03:30.610Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:03:30.587Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:50:57.369Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:53.972Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-27"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "34aeea84-95e9-4441-8729-9f7f1d3c64c5",
+  "identifier": "ADE-27",
+  "title": "R9: Reminder delivery, steer if busy, wake if idle",
+  "description": "Made-up description of ADE-27 for the ready-issues tests.\n\nFiles: `src-tauri/src/ask_gate.rs`, `src-tauri/src/ask_scheduler.rs`, `src-tauri/src/lib.rs`, `src/features/monos/model/monoRoute.ts`, `src/features/sessions/model/messageQueue.ts`, `src/app/App.tsx`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:22:13.999Z",
+  "updatedAt": "2026-10-20T13:03:27.674Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:03:27.657Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:51:46.459Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:51:43.284Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:53.972Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:51.191Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:51.186Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-26"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-21"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "84ef7695-e683-48b9-a045-6ccdd3e36e65",
+  "identifier": "ADE-26",
+  "title": "R8: Scheduler and reminder outbox",
+  "description": "Made-up description of ADE-26 for the ready-issues tests.\n\nFiles: `src-tauri/src/ask_scheduler.rs`, `src-tauri/src/active_clock.rs`, `src-tauri/src/asks.rs`, `src-tauri/src/mono_messages.rs`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:22:11.854Z",
+  "updatedAt": "2026-10-22T08:44:20.880Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T08:44:20.838Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:03:25.493Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:50:51.191Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:48.248Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T08:39:04.531Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-23"
+     }
+    },
+    {
+     "type": "related",
+     "issue": {
+      "identifier": "ADE-46"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "4741c714-6356-42d4-821c-f2d8f2b52551",
+  "identifier": "ADE-25",
+  "title": "R7: A start is an ask",
+  "description": "Made-up description of ADE-25 for the ready-issues tests.\n\nFiles: `src-tauri/src/mono_messages.rs`, `src-tauri/src/asks.rs`, `src-tauri/src/control_cli.rs`, `src/features/agent-app/model/agentApp.ts`, `src/features/monos/model/monoFiles.ts`, `docs/agent-access.md`, `CHANGELOG.md`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:22:09.600Z",
+  "updatedAt": "2026-10-20T13:03:23.351Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:03:23.330Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:17.330Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:45.433Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-24"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "64240db9-a9e0-4032-8afc-5750156b4edf",
+  "identifier": "ADE-24",
+  "title": "R6: Agents can ask and ack",
+  "description": "Made-up description of ADE-24 for the ready-issues tests.\n\nFiles: `src-tauri/src/control_cli.rs`, `src/features/agent-app/model/agentApp.ts`, `src/features/monos/model/monoMessages.ts`, `src/features/monos/model/monoRoute.ts`, `src/features/monos/model/monoFiles.ts`, `docs/agent-access.md`, `CHANGELOG.md`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:22:07.364Z",
+  "updatedAt": "2026-10-22T08:44:18.581Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-22T08:44:18.554Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:03:21.153Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:50:45.433Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:42.527Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:42.508Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-23"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-63"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "9d5ecf14-a9c1-416a-9332-39aebdb42057",
+  "identifier": "ADE-23",
+  "title": "R5: Ask and ack ledger",
+  "description": "Made-up description of ADE-23 for the ready-issues tests.\n\nFiles: `src-tauri/src/ask_gate.rs`, `src-tauri/src/asks.rs`, `src-tauri/src/mono_messages.rs`, `src-tauri/src/session_store.rs`, `src-tauri/src/lib.rs`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:22:05.010Z",
+  "updatedAt": "2026-10-22T03:54:22.961Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    },
+    {
+     "name": "code-complete"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T20:58:22.535Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "code-complete"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T13:53:02.275Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:03:18.946Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:48.388Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:48.248Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:42.527Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:38.985Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:38.963Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T08:18:59.318Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T05:18:06.591Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T05:18:04.275Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "In Review"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T00:24:24.749Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-22"
+     }
+    },
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-20"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "77a89a5e-5d46-47c4-aa49-172586adb221",
+  "identifier": "ADE-14",
+  "title": "Approvals board: Gigas file approval cards, Tyler decides, the decision queues back to the filing Giga",
+  "description": "Made-up description of ADE-14 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T01:26:10.626Z",
+  "updatedAt": "2026-10-20T13:03:14.626Z",
+  "state": {
+   "type": "started"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:1"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:03:14.606Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:1"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:51:57.508Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T11:16:20.483Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "74ec69ab-738d-4584-a63e-c63b093f81c2",
+  "identifier": "ADE-13",
+  "title": "First launch starts with one Giga Mono, one Mono and the MonoCode project",
+  "description": "Made-up description of ADE-13 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T00:53:46.927Z",
+  "updatedAt": "2026-10-20T13:03:12.369Z",
+  "state": {
+   "type": "backlog"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:03:12.345Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "f1f1d649-5a05-485c-95f4-f0bde1bfc400",
+  "identifier": "ADE-11",
+  "title": "Tabs in a second window are never saved",
+  "description": "Made-up description of ADE-11 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-18T22:20:28.943Z",
+  "updatedAt": "2026-10-20T14:18:06.883Z",
+  "state": {
+   "type": "unstarted"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T16:20:21.400Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T14:18:06.883Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T14:18:06.040Z",
+     "toState": {
+      "type": "unstarted"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:03:09.587Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:52:45.724Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T11:03:41.241Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T10:38:24.718Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T10:38:23.098Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "In Review"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T08:20:23.514Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T10:23:44.059Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T01:17:06.661Z",
+     "toState": {
+      "type": "unstarted"
+     },
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-57"
+     }
+    },
+    {
+     "type": "related",
+     "issue": {
+      "identifier": "ADE-48"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "d2cbb905-f5df-4293-b21b-f346a0056a67",
+  "identifier": "ADE-48",
+  "title": "Tabs pinned to a worktree are dropped from the saved workspace and lost on restart",
+  "description": "Made-up description of ADE-48 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T10:23:43.431Z",
+  "updatedAt": "2026-10-20T07:32:48.515Z",
+  "state": {
+   "type": "completed"
+  },
+  "labels": {
+   "nodes": []
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T12:52:42.325Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T07:32:48.481Z",
+     "toState": {
+      "type": "completed"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T18:19:21.532Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T14:17:02.133Z",
+     "toState": {
+      "type": "completed"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T10:52:28.304Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T10:23:44.059Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T10:23:44.059Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T10:23:44.044Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "7ba9590c-27ef-484f-8bad-b7f56b97d60e",
+  "identifier": "ADE-22",
+  "title": "R4: Levels come only from the database",
+  "description": "Made-up description of ADE-22 for the ready-issues tests.\n\nFiles: `src-tauri/src/mono_gate.rs`, `src-tauri/src/mono_messages.rs`, `src/features/monos/model/monoCaller.ts`, `src/features/monos/model/monoMessages.ts`, `src/features/agent-app/model/agentApp.ts`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:22:02.738Z",
+  "updatedAt": "2026-10-20T13:53:02.166Z",
+  "state": {
+   "type": "completed"
+  },
+  "labels": {
+   "nodes": [
+    {
+     "name": "instance:2"
+    }
+   ]
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T13:53:02.275Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:53:02.131Z",
+     "toState": {
+      "type": "completed"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T13:03:16.756Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "code-complete"
+      },
+      {
+       "name": "instance:2"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-20T12:50:38.985Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:36.006Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T07:18:28.923Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T07:17:52.773Z",
+     "toState": {
+      "type": "completed"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T05:46:44.112Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T20:02:51.655Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T20:02:49.616Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "In Review"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-19T18:32:24.727Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "blocks",
+     "issue": {
+      "identifier": "ADE-19"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "id": "1347fe11-d1ef-4cc6-87e6-737078881ac5",
+  "identifier": "ADE-21",
+  "title": "R3: Real-app harness with a puppet agent",
+  "description": "Made-up description of ADE-21 for the ready-issues tests.\n\nFiles: `src-tauri/Cargo.toml`, `src-tauri/src/active_clock.rs`, `scripts/giga-eval/instance.sh`, `scripts/scenarios/app.sh`, `scripts/scenarios/puppet/puppet.mjs`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:22:00.448Z",
+  "updatedAt": "2026-10-20T00:23:40.063Z",
+  "state": {
+   "type": "completed"
+  },
+  "labels": {
+   "nodes": []
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T12:52:00.359Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T12:50:51.186Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T00:23:40.030Z",
+     "toState": {
+      "type": "completed"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T00:16:56.898Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-20T00:16:55.099Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "In Review"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-19T20:03:29.744Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "7fc4509e-8448-47c3-b34e-9bdc51613e4b",
+  "identifier": "ADE-20",
+  "title": "R2: Active clock from CLOCK_UPTIME_RAW",
+  "description": "Made-up description of ADE-20 for the ready-issues tests.\n\nFiles: `src-tauri/src/active_clock.rs`, `src-tauri/src/lib.rs`, `src-tauri/src/session_store.rs`, `src-tauri/Cargo.toml`, `src-tauri/src/scenario/clock.rs`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:21:57.534Z",
+  "updatedAt": "2026-10-19T19:18:20.731Z",
+  "state": {
+   "type": "completed"
+  },
+  "labels": {
+   "nodes": []
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T12:50:38.963Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T19:18:20.681Z",
+     "toState": {
+      "type": "completed"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T17:41:51.450Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "In Review"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-19T16:30:27.627Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "62c5c480-50d2-4d26-8cf5-b16fe67a86f6",
+  "identifier": "ADE-18",
+  "title": "G3: Agent review verdict as a commit status",
+  "description": "Made-up description of ADE-18 for the ready-issues tests.\n\nFiles: `scripts/gate/review-status.sh`, `scripts/gate/ruleset.json`\n",
+  "priority": 0,
+  "createdAt": "2026-10-19T08:21:52.948Z",
+  "updatedAt": "2026-10-19T18:04:19.728Z",
+  "state": {
+   "type": "completed"
+  },
+  "labels": {
+   "nodes": []
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T12:52:17.289Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T16:59:56.195Z",
+     "toState": {
+      "type": "completed"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T16:16:50.078Z",
+     "toState": null,
+     "addedLabels": [
+      {
+       "name": "In Review"
+      }
+     ]
+    },
+    {
+     "createdAt": "2026-10-19T14:52:26.168Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T12:22:34.789Z",
+     "toState": null,
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": []
+  }
+ },
+ {
+  "id": "6a58d8fe-a088-4710-948b-5fa3ff3f2707",
+  "identifier": "ADE-15",
+  "title": "Completion notices from Mono-started sessions sometimes never reach the Mono",
+  "description": "Made-up description of ADE-15 for the ready-issues tests.",
+  "priority": 0,
+  "createdAt": "2026-10-19T04:17:41.226Z",
+  "updatedAt": "2026-10-20T12:52:20.719Z",
+  "state": {
+   "type": "completed"
+  },
+  "labels": {
+   "nodes": []
+  },
+  "history": {
+   "nodes": [
+    {
+     "createdAt": "2026-10-20T12:52:20.682Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T10:17:43.012Z",
+     "toState": {
+      "type": "completed"
+     },
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T09:08:02.287Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T08:38:25.317Z",
+     "toState": null,
+     "addedLabels": null
+    },
+    {
+     "createdAt": "2026-10-19T08:19:20.804Z",
+     "toState": {
+      "type": "started"
+     },
+     "addedLabels": null
+    }
+   ]
+  },
+  "inverseRelations": {
+   "nodes": [
+    {
+     "type": "related",
+     "issue": {
+      "identifier": "ADE-47"
+     }
+    }
+   ]
+  }
+ }
+]
