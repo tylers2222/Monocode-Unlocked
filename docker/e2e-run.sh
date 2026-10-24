@@ -57,7 +57,21 @@ not_ported() {
   echo "== $1: not ported yet"
   row "$1" "$1 suite" skipped 0 "not ported yet (ADE-107 later part)"
 }
-suite_milestones() { not_ported milestones; }
+
+# Builds the GigaEval binary and runs every case on Xvfb, the held turns on
+# the fx puppet (see scripts/milestones-e2e/run.sh). One row per case from
+# run.sh's results.tsv, plus the run itself; its logs go to milestones/.
+suite_milestones() {
+  local code=0 out=/tmp/milestones-e2e
+  step milestones "run.sh --build" \
+    xvfb-run -a -s "-screen 0 1280x800x24" bash scripts/milestones-e2e/run.sh --build || code=1
+  mkdir -p "$OUT/milestones"
+  cp "$out"/*.log "$out/results.tsv" "$OUT/milestones/" 2>/dev/null
+  [[ -f "$out/results.tsv" ]] && awk -F'\t' -v OFS='\t' '{
+    status = $4 == "PASS" ? "passed" : $4 == "SKIP" ? "skipped" : "failed"
+    print "milestones", $3 ": " $2, status, 0, $5 }' "$out/results.tsv" >>"$ROWS"
+  return "$code"
+}
 suite_scenarios() { not_ported scenarios; }
 
 if [[ "${1:-}" == --check ]]; then
