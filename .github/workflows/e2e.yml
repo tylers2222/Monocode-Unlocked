@@ -22,6 +22,10 @@ on:
         description: Runs of each scenario
         type: number
         default: 1
+      scenario_env:
+        description: Switches the scenarios read, space-separated NAME=value, for example R6_KEEP_LEAD_LOADED=1
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -34,6 +38,7 @@ env:
   SUITE: ${{ inputs.suite || 'all' }}
   SCENARIO: ${{ inputs.scenario }}
   REPEAT: ${{ inputs.repeat || 1 }}
+  SCENARIO_ENV: ${{ inputs.scenario_env }}
 
 jobs:
   e2e-linux:
@@ -131,7 +136,7 @@ jobs:
 
       # Builds the instance each scenario needs, then runs it on the runner's screen.
       - name: Run the scenarios
-        run: bash scripts/e2e-macos.sh e2e-results/macos "$SUITE" "$SCENARIO" "$REPEAT"
+        run: bash scripts/e2e-macos.sh e2e-results/macos "$SUITE" "$SCENARIO" "$REPEAT" "$SCENARIO_ENV"
 
       - name: Collect the build and app logs
         if: always()

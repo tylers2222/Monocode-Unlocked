@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # The e2e-macos job of .github/workflows/e2e.yml, on a hosted macOS runner.
-#   e2e-macos.sh <out> <all|scenarios|milestones> [scenario] [repeat]
+#   e2e-macos.sh <out> <all|scenarios|milestones> [scenario] [repeat] [env]
 # Runs every scenario of SCENARIOS that app.sh in this checkout has, or only
 # [scenario] (an app.sh command line), each [repeat] times (default 1), and
-# builds the instance each one needs. Writes one log and one screen recording
-# per run, a screenshot of each failure, and results.tsv and junit.xml in the
-# row format of docker/e2e-run.sh. Exits 1 when a row failed.
+# builds the instance each one needs. [env] holds space-separated switches
+# that a scenario reads, NAME=value with a scenario prefix such as R6_.
+# Writes one log and one screen recording per run, a screenshot of each
+# failure, and results.tsv and junit.xml in the row format of
+# docker/e2e-run.sh. Exits 1 when a row failed.
 set -uo pipefail
 trap '' PIPE
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,6 +21,7 @@ SCENARIOS=(
   "d1|build|"
   "d4|build|"
   "d4 d1|build|"
+  "r6|build|"
   "ade89 kill|build|"
   "ade89 term|build|"
   "approvals|build|reads a copy of the real app database, which a CI runner does not have"
@@ -120,10 +123,17 @@ suite_milestones() {
 case ${2:-} in
   all) suites="scenarios milestones" ;;
   scenarios | milestones) suites=$2 ;;
-  *) sed -n '2,8p' "$0"; exit 2 ;;
+  *) sed -n '2,10p' "$0"; exit 2 ;;
 esac
 ONLY=${3:-}
 REPEAT=${4:-1}
+read -ra switches <<<"${5:-}"
+for switch in ${switches[@]+"${switches[@]}"}; do
+  [[ $switch =~ ^[A-Z][A-Z0-9]*[0-9]_[A-Z0-9_]+=[A-Za-z0-9._/-]*$ ]] \
+    || { echo "e2e-macos: $switch is not NAME=value with a scenario prefix such as R6_" >&2; exit 2; }
+  echo "e2e-macos: scenarios run with $switch"
+  export "$switch"
+done
 mkdir -p "$OUT"
 printf 'suite\ttest\tstatus\tseconds\tnote\n' >"$ROWS"
 code=0
