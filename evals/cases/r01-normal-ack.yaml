@@ -1,0 +1,7 @@
+id: r01-normal-ack
+version: 1
+pending: [ADE-24]
+description: A lead asked for the release codename in NOTES.md acks the ask once with the answer and sends nothing else upward (V1 normal work).
+grader: asks:r01
+fixture: { agent: lead, projects: { A: atlas }, files: { A: { NOTES.md: "Release codename: heron\n" } } }
+events: [{ ask: "Read NOTES.md in {{A}} and tell me the release codename.", due_minutes: 60 }]

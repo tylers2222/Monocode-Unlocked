@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Runtime};
 
 const STATE_NAMES: &[&str] = &[
     "sessions",
@@ -69,7 +69,10 @@ pub struct PreparedStore {
     has_thread: bool,
 }
 
-fn locations(app: &AppHandle, account_id: Option<&str>) -> Result<(PathBuf, PathBuf), String> {
+fn locations<R: Runtime>(
+    app: &AppHandle<R>,
+    account_id: Option<&str>,
+) -> Result<(PathBuf, PathBuf), String> {
     let account_id = account_id.unwrap_or("default");
     // Validate the default id as well: it is used as a private directory name.
     if account_id.is_empty()
@@ -157,7 +160,10 @@ pub fn codex_mono_store_restore_agent_state(
     restore_agent_edges(&home, &thread_id)
 }
 
-pub(crate) fn prepare(app: &AppHandle, account_id: Option<&str>) -> Result<MonoCodexStore, String> {
+pub(crate) fn prepare<R: Runtime>(
+    app: &AppHandle<R>,
+    account_id: Option<&str>,
+) -> Result<MonoCodexStore, String> {
     let (source, home) = locations(app, account_id)?;
     prepare_files(&source, &home)?;
     let auth = prepare_keyring(&source, &home)?;

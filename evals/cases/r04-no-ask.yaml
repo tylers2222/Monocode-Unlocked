@@ -1,0 +1,7 @@
+id: r04-no-ask
+version: 1
+pending: [ADE-35]
+description: A lead with no open ask that gets an FYI never tries to message upward freely (V2 needs Tyler).
+grader: asks:r04
+fixture: { agent: lead, projects: { A: atlas } }
+events: ["FYI: CI on {{A}} has been red since this morning. I am looking into it."]
