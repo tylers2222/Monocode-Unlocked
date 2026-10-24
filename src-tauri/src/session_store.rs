@@ -4591,8 +4591,8 @@ mod tests {
     /// (workspaceSnapshotJoin.realdb.test.ts).
     #[cfg(not(windows))]
     fn each_window_keeps_its_tabs_through_a_relaunch(path: &std::path::Path, opened: [&str; 4]) {
-        let seed: Value = Connection::open(path)
-            .unwrap()
+        let db = Connection::open(path).unwrap();
+        let seed: Value = db
             .query_row(
                 "SELECT snapshot_json FROM workspace_snapshot WHERE id = 1",
                 [],
@@ -4600,6 +4600,14 @@ mod tests {
             )
             .map(|raw| serde_json::from_str(&raw).unwrap())
             .unwrap();
+        // A copy of a running app's database can hold a save newer than the
+        // reads below, and a newer row an older build saved wins over them.
+        db.execute(
+            "UPDATE workspace_snapshot SET updated_at = ?1 WHERE id = 1",
+            params![now_millis() - 200_000],
+        )
+        .unwrap();
+        drop(db);
         let [main_saved, second_saved] = two_windows_save_their_own_tabs(path, &seed, opened);
         for relaunch in [
             "the relaunch",
@@ -4790,12 +4798,13 @@ mod tests {
     }
 
     /// ADE-11 review M1. `workspaceSnapshotJoin.realdb.json` holds what the
-    /// web app's real `workspaceSnapshot` saves for each window, and the rows
-    /// a relaunch then reads; workspaceSnapshotJoin.realdb.test.ts writes and
-    /// checks the saves and restores the rows through the real boot. With
-    /// WRITE_WINDOW_ROWS_FIXTURE=1 this test writes the rows instead of
-    /// comparing. Defect: the rows drop or change a field the web app saved,
-    /// or come in another order than newest first.
+    /// web app's real `workspaceSnapshot` saves for each window and the chats
+    /// each quit left running, and the rows and running chats a relaunch then
+    /// reads; workspaceSnapshotJoin.realdb.test.ts writes and checks the saves
+    /// and restores the rows through the real boot. With
+    /// WRITE_WINDOW_ROWS_FIXTURE=1 this test writes what the relaunch reads
+    /// instead of comparing. Defect: the rows drop or change a field the web
+    /// app saved, or come in another order than newest first.
     #[cfg(not(windows))]
     #[test]
     fn the_rows_a_relaunch_restores_are_the_ones_the_web_app_joins() {
@@ -4808,21 +4817,42 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         for scenario in fixture["scenarios"].as_array_mut().unwrap() {
             let db = DbFile(temp_db("window-snapshots-join"));
-            let (app, windows) = launch_two_windows(&db);
+            let (app, windows) = launch_windows(&db, ["main", "window-1", "window-2"]);
             for save in scenario["saves"].as_array().unwrap() {
                 let window = windows
                     .iter()
                     .find(|window| save["window"] == window.label())
                     .unwrap();
                 save_snapshot(window, &save["snapshot"], save["readAt"].as_i64().unwrap());
+                if let Some(sessions) = save.get("inFlight") {
+                    crate::mono_messages::tests::invoke_command(
+                        window,
+                        "session_set_in_flight",
+                        &json!({ "sessions": sessions }),
+                    )
+                    .unwrap();
+                }
             }
             drop(app);
             let (_app, [main]) = launch_windows(&db, ["main"]);
-            let rows = json!(restored_rows(&main));
-            if write {
-                scenario["rows"] = rows;
-            } else {
-                assert_eq!(rows, scenario["rows"], "{}", scenario["name"]);
+            let read = [
+                ("rows", json!(restored_rows(&main))),
+                (
+                    "inFlight",
+                    crate::mono_messages::tests::invoke_command(
+                        &main,
+                        "session_list_in_flight",
+                        &json!({}),
+                    )
+                    .unwrap(),
+                ),
+            ];
+            for (key, value) in read {
+                if write {
+                    scenario[key] = value;
+                } else {
+                    assert_eq!(value, scenario[key], "{} {key}", scenario["name"]);
+                }
             }
         }
         if write {

@@ -58,7 +58,8 @@ import type { OrchestrationSummary } from "../../orchestration/model/orchestrati
 
 import {
   joinWorkspaceSnapshots,
-  type JoinedWorkspaceSnapshot,
+  type SaveSiteFields,
+  type SavedWorkspaceSnapshot,
 } from "../../workspace/model/workspaceSnapshotJoin";
 
 export type SessionSummary = {
@@ -928,7 +929,7 @@ let workspaceWrite: Promise<unknown> = Promise.resolve();
  * The store keeps a snapshot only over one read no later (ADE-46).
  */
 export async function saveWorkspaceSnapshot(
-  snapshot: unknown,
+  snapshot: SavedWorkspaceSnapshot,
   readAt: number,
 ): Promise<void> {
   const run = workspaceWrite
@@ -938,8 +939,12 @@ export async function saveWorkspaceSnapshot(
   await run;
 }
 
-export async function loadWorkspaceSnapshot(): Promise<JoinedWorkspaceSnapshot | null> {
-  return joinWorkspaceSnapshots(await invoke<unknown[]>("workspace_get_snapshot"));
+export async function loadWorkspaceSnapshot(): Promise<
+  SavedWorkspaceSnapshot | SaveSiteFields | null
+> {
+  return joinWorkspaceSnapshots(
+    await invoke<SaveSiteFields[]>("workspace_get_snapshot"),
+  );
 }
 
 function sanitizeBlock(
