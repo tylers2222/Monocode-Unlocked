@@ -6,7 +6,7 @@
 //! `claude`, D4 off, on, and on inside D1's srt. `scripts/scenarios/app.sh d4`
 //! proves what the rules stop, with the real CLI.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
@@ -173,7 +173,10 @@ fn d4_marker_decides_and_bad_input_fails_the_spawn() {
     a_folder_link_on_the_way_is_denied_to_srt(&root, &data, &home);
     a_script_a_project_hook_runs_is_denied_to_srt(&root, &data, &home);
     a_dangling_settings_link_is_denied_where_it_points(&root, &data, &home);
-    every_link_and_real_path_on_the_list_is_covered(&root, &data);
+    // The temp folder real, then as given (on macOS behind `/var`, a link in `/`).
+    let real_root = root.canonicalize().unwrap();
+    every_link_and_real_path_on_the_list_is_covered(&real_root.join("links-real"), &data);
+    every_link_and_real_path_on_the_list_is_covered(&root.join("links"), &data);
     every_command_key_is_read(&root, &data);
     agent_skill_and_command_folders_are_denied(&root, &data);
     let root_text = root.to_str().unwrap();
@@ -353,33 +356,44 @@ fn a_dangling_settings_link_is_denied_where_it_points(root: &Path, data: &Path, 
     );
 }
 
-/// The links from `path`'s own name on, every link inside a link target, and
-/// the real path, spelled as the kernel sees them (its folders resolved), worked
-/// out apart from `link_chain`. Links in `/` are not listed: only root can
-/// replace them.
-fn links_and_real(path: &Path, links: &mut Vec<String>) -> String {
-    fn walk(path: &Path, theirs: bool, links: &mut Vec<String>) -> PathBuf {
-        let names: Vec<_> = path.components().skip(1).collect();
-        let mut at = PathBuf::from("/");
-        for (i, name) in names.iter().enumerate() {
-            if *name == Component::ParentDir {
-                at.pop();
-                continue;
-            }
-            let here = at.join(name);
-            let Ok(target) = here.read_link() else {
-                at = here;
-                continue;
-            };
-            if (theirs || i + 1 == names.len()) && at != Path::new("/") {
-                links.push(here.to_string_lossy().into_owned());
-            }
-            at = walk(&at.join(target), true, links);
+/// How the kernel resolves `path`, worked out apart from `link_chain`: one name
+/// at a time from `/`; at a link, its target is spliced in where the link was
+/// (after the folders before it if relative) and the walk starts again from
+/// `/`. Returns each link it meets outside `/`, spelled where it lives (the
+/// folders before it resolved), and the real path.
+fn resolve(path: &Path) -> (Vec<String>, String) {
+    let name = |part: Component| part.as_os_str().to_owned();
+    let mut names: Vec<OsString> = path.components().skip(1).map(name).collect();
+    let (mut at, mut i, mut hops, mut links) = (PathBuf::from("/"), 0, 0, Vec::new());
+    while i < names.len() {
+        if names[i] == ".." {
+            at.pop();
+            i += 1;
+            continue;
         }
-        at
+        let here = at.join(&names[i]);
+        let Ok(target) = here.read_link() else {
+            at = here;
+            i += 1;
+            continue;
+        };
+        hops += 1;
+        assert!(hops <= 40, "a link loop on the way to {path:?}");
+        if at != Path::new("/") {
+            links.push(here.to_string_lossy().into_owned());
+        }
+        let kept = if target.is_absolute() { 0 } else { i };
+        let spliced = target
+            .components()
+            .filter(|part| matches!(part, Component::Normal(_) | Component::ParentDir))
+            .map(name);
+        names = (names[..kept].iter().cloned())
+            .chain(spliced)
+            .chain(names[i + 1..].iter().cloned())
+            .collect();
+        (at, i) = (PathBuf::from("/"), 0);
     }
-    let real = walk(path, false, links);
-    real.to_string_lossy().into_owned()
+    (links, at.to_string_lossy().into_owned())
 }
 
 /// Whether a rule in `deny` matches `path` the way Claude Code reads it: `**`
@@ -402,40 +416,48 @@ fn matched(deny: &[String], path: &str) -> bool {
     })
 }
 
-/// Defect (reviews r3 to r8: one link layout per round): a protected path as
-/// written, a link on the way to it, or its real path has no Edit rule or is
-/// not on the srt list, so the Write tool writes through it or Bash inside srt
-/// retargets it. One fixture with a link at each level: a folder above the
-/// config folder, the config folder, its settings file, a folder inside
-/// `.claude` that a hook script is reached through (`~/.claude/hooks`), one
-/// with a link inside its target (`<work>/.claude/hooks -> ../tools/hooks`,
-/// `<work>/tools -> vendor/tools`), a skills folder, and a project settings
-/// file through a folder link on the way. Every protected path must be covered
-/// as written, at each link and at its real path. srt blocks moving each folder
-/// of a path it denies (macOS), so the written spelling also keeps the links
-/// among a path's own folders in place there.
-fn every_link_and_real_path_on_the_list_is_covered(root: &Path, data: &Path) {
-    let at = root.join("links");
+/// Under `at`, a link at each level: a folder above the config folder, the
+/// config folder, its settings file, a folder inside `.claude` that a hook
+/// script is reached through (`~/.claude/hooks`), one with a link inside its
+/// target (`<work>/.claude/hooks -> ../tools/hooks`, `<work>/tools ->
+/// vendor/tools`) and a link of the hook's own folders behind it
+/// (`tools/hooks/lib -> ../../shared/lib`), three folder links each inside the
+/// one before, a relative link whose `..` climbs past the folder an earlier
+/// link points at, a skills folder, and a project settings file through a
+/// folder link on the way. Returns HOME, the workdir and the config folder.
+fn link_layouts(at: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let (home, work) = (at.join("home"), at.join("work"));
     link_to(&at.join("above-real"), &at.join("above"), true);
     link_to(&at.join("config-real"), &at.join("above-real/config"), true);
+    std::fs::create_dir_all(at.join("config-real/agents")).unwrap();
     let config = at.join("above/config");
     link_to(
         &at.join("dotfiles/config.json"),
         &config.join("settings.json"),
         false,
     );
-    let hook = r#"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/a.sh"}]}]}}"#;
-    std::fs::write(at.join("dotfiles/config.json"), hook).unwrap();
+    let scripts = "~/.claude/hooks/a.sh; ~/.claude/hooks/up/b.sh; ~/.claude/deep/one/two/c.sh";
+    let hook = json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": scripts}]}]}});
+    std::fs::write(at.join("dotfiles/config.json"), hook.to_string()).unwrap();
     link_to(&at.join("tools/hooks"), &home.join(".claude/hooks"), true);
     std::fs::write(at.join("tools/hooks/a.sh"), "true\n").unwrap();
+    std::fs::create_dir_all(at.join("above-real/up-real")).unwrap();
+    symlink("../../above/up-real", at.join("tools/hooks/up")).unwrap();
+    std::fs::write(at.join("above-real/up-real/b.sh"), "true\n").unwrap();
+    for nest in ["nest1", "nest2", "nest3"] {
+        std::fs::create_dir_all(home.join(nest)).unwrap();
+    }
+    symlink("../nest1", home.join(".claude/deep")).unwrap();
+    symlink("../nest2", home.join("nest1/one")).unwrap();
+    symlink("../nest3", home.join("nest2/two")).unwrap();
+    std::fs::write(home.join("nest3/c.sh"), "true\n").unwrap();
     link_to(
         &at.join("shared/skills"),
         &work.join(".claude/skills"),
         true,
     );
     link_to(&at.join("hop-v1"), &at.join("hop"), true);
-    let fmt = r#"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": ".claude/hooks/fmt.sh"}]}]}}"#;
+    let fmt = r#"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": ".claude/hooks/fmt.sh .claude/hooks/lib/fmt.sh"}]}]}}"#;
     std::fs::write(at.join("hop-v1/settings.json"), fmt).unwrap();
     symlink(
         at.join("hop/settings.json"),
@@ -443,32 +465,60 @@ fn every_link_and_real_path_on_the_list_is_covered(root: &Path, data: &Path) {
     )
     .unwrap();
     std::fs::create_dir_all(work.join("vendor/tools/hooks")).unwrap();
+    std::fs::create_dir_all(work.join("vendor/shared/lib")).unwrap();
     symlink("vendor/tools", work.join("tools")).unwrap();
     symlink("../tools/hooks", work.join(".claude/hooks")).unwrap();
+    symlink("../../shared/lib", work.join("tools/hooks/lib")).unwrap();
     std::fs::write(work.join("vendor/tools/hooks/fmt.sh"), "true\n").unwrap();
+    std::fs::write(work.join("vendor/shared/lib/fmt.sh"), "true\n").unwrap();
+    (home, work, config)
+}
 
+/// Defect (reviews r3 to r9: one link layout per round): a protected path as
+/// written, a link on the way to it, or its real path has no Edit rule or is
+/// not on the srt list, so the Write tool writes through it or Bash inside srt
+/// retargets it. `resolve` names every link the kernel meets on the way to each
+/// path of `link_layouts`; each must be covered, as must the path as written
+/// and its real path. srt (macOS) blocks moving each folder of a path it
+/// denies as written, so a link at one of those folders needs no entry of its
+/// own.
+fn every_link_and_real_path_on_the_list_is_covered(at: &Path, data: &Path) {
+    let (home, work, config) = link_layouts(at);
     let config_dir = Some(config.as_os_str());
     let srt = srt_deny_in(data, config_dir, &home, &work).unwrap();
     let deny = deny_of(&args_in(data, config_dir, &home, &work, false, spawn_args("{}")).unwrap());
+    let pinned = |link: &str| {
+        srt.iter()
+            .any(|entry| entry.starts_with(&format!("{link}/")))
+    };
     let files = [
         config.join("settings.json"),
         home.join(".claude/hooks/a.sh"),
+        home.join(".claude/hooks/up/b.sh"),
+        home.join(".claude/deep/one/two/c.sh"),
         work.join(".claude/settings.json"),
         work.join(".claude/hooks/fmt.sh"),
+        work.join(".claude/hooks/lib/fmt.sh"),
     ];
     let folders = [config.join("agents"), work.join(".claude/skills")];
     for (path, folder) in
         (files.iter().map(|file| (file, false))).chain(folders.iter().map(|dir| (dir, true)))
     {
-        let mut links = vec![path.to_string_lossy().into_owned()];
-        let real = links_and_real(path, &mut links);
-        for link in &links {
+        let (links, real) = resolve(path);
+        assert_eq!(
+            Path::new(&real),
+            path.canonicalize().unwrap(),
+            "the model resolves {path:?} as the kernel does"
+        );
+        let written = path.to_string_lossy().into_owned();
+        let unpinned = links.into_iter().filter(|link| !pinned(link));
+        for link in std::iter::once(written).chain(unpinned) {
             assert!(
-                srt.contains(link),
+                srt.contains(&link),
                 "on: srt denies the link {link} on the way to {path:?}: {srt:?}"
             );
             assert!(
-                matched(&deny, link),
+                matched(&deny, &link),
                 "on: an Edit rule matches the link {link}: {deny:?}"
             );
         }
@@ -486,9 +536,12 @@ fn every_link_and_real_path_on_the_list_is_covered(root: &Path, data: &Path) {
             "on: an Edit rule matches {inside}: {deny:?}"
         );
     }
-    let config_real = links_and_real(&config, &mut Vec::new());
+    let config_real = config.canonicalize().unwrap();
     assert!(
-        matched(&deny, &format!("{config_real}/settings.local.json")),
+        matched(
+            &deny,
+            &format!("{}/settings.local.json", config_real.display())
+        ),
         "on: the real config folder is denied: {deny:?}"
     );
     // The link targets above are spelled through the temp folder, which on

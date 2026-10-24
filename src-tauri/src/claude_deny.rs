@@ -299,8 +299,8 @@ fn setting_commands(file: &Path) -> Vec<String> {
         .collect()
 }
 
-/// `path` where its name lives (its own folders resolved), then each link it
-/// or a link target goes through, ending at its real path.
+/// `path` where its name lives (its own folders resolved) if its last name is
+/// a link, every link the walk meets after the first one, and its real path.
 /// Past a name that is not there, the rest is spelled as written with `..`
 /// folded: Claude Code matches a rule's path as written.
 fn link_chain(path: &Path) -> Result<Vec<String>, String> {
@@ -315,15 +315,15 @@ fn link_chain(path: &Path) -> Result<Vec<String>, String> {
             .map(str::to_owned)
             .ok_or_else(|| failed(&"not UTF-8"))
     };
-    let names = |at: &Path, theirs: bool| -> Vec<(OsString, bool)> {
+    let names = |at: &Path| -> Vec<OsString> {
         at.components()
             .rev()
-            .map(|name| (name.as_os_str().to_owned(), theirs))
+            .map(|name| name.as_os_str().to_owned())
             .collect()
     };
-    let mut todo = names(&std::path::absolute(path).map_err(|e| failed(&e))?, false);
+    let mut todo = names(&std::path::absolute(path).map_err(|e| failed(&e))?);
     let (mut at, mut chain, mut links) = (PathBuf::new(), Vec::new(), 0);
-    while let Some((name, theirs)) = todo.pop() {
+    while let Some(name) = todo.pop() {
         if name == "." || name == ".." {
             if name == ".." {
                 at.pop();
@@ -344,12 +344,12 @@ fn link_chain(path: &Path) -> Result<Vec<String>, String> {
         if links > 40 {
             return Err(failed(&"too many links"));
         }
-        // `path`'s own folders are not listed: srt keeps them in place through
-        // `path` as written (macOS). Only root can replace a link in `/`.
-        if (todo.is_empty() || theirs) && at != Path::new("/") {
+        // srt (macOS) pins `path`'s own folders through `path` as written only up
+        // to its first link, one in `/` too. Only root can replace a link in `/`.
+        if (todo.is_empty() || links > 1) && at != Path::new("/") {
             chain.push(utf8(&here)?);
         }
-        todo.extend(names(&target, true));
+        todo.extend(names(&target));
     }
     chain.push(utf8(&at)?);
     Ok(chain)
