@@ -140,6 +140,15 @@ function runExecs(execs) {
   }
 }
 
+/** Never settles while `rule` holds this turn: one of its first `hold` turns. */
+function heldOpen(rule) {
+  if (!rule?.hold) return undefined;
+  const turns = readFileSync(join(dir, "log.jsonl"), "utf8")
+    .split("\n")
+    .filter((line) => line && JSON.parse(line).rule === rule.match).length;
+  return turns <= rule.hold ? new Promise(() => {}) : undefined;
+}
+
 async function runTurn(text, steer) {
   const script = JSON.parse(readFileSync(join(dir, "script.json"), "utf8"));
   const rule = script.rules.find((candidate) => text.includes(candidate.match));
@@ -150,15 +159,7 @@ async function runTurn(text, steer) {
   const server = mcp(script.app);
   const who = script.whoami ? { who: you(await server.call("get_monos", {})) } : {};
   log({ prompt: text, rule: rule?.match ?? null, steer, ...who });
-  if (rule?.hold) {
-    const held = readFileSync(join(dir, "log.jsonl"), "utf8")
-      .split("\n")
-      .filter((line) => line && JSON.parse(line).rule === rule.match).length;
-    if (held <= rule.hold) {
-      server.close();
-      return new Promise(() => {});
-    }
-  }
+  await heldOpen(rule);
   runExecs(rule?.exec ?? []);
   for (const call of rule?.calls ?? []) {
     const input = withCardIds(call.arguments);
