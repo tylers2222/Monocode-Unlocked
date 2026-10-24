@@ -1,0 +1,51 @@
+{
+  "source": "Made-up session in the shape session_store.rs saves for an omp turn where omp's own run answered a finished background job: the opener with its turn fields, reasoning, a tool, the turn's answer, omp's async-result notice and the reply of omp's own run. The real-state run uses a local .backup copy of the app database instead and is not committed.",
+  "record": {
+    "id": "app-ade82-idle-run",
+    "harness": "omp",
+    "model": "omp:default",
+    "runtimeMode": "auto",
+    "title": "omp · Check the deploy",
+    "blocks": [
+      {
+        "id": "ade82-opener",
+        "role": "user",
+        "text": "Check the deploy.",
+        "startedAt": 1000,
+        "durationMs": 60000,
+        "turnMetrics": {
+          "cacheHitPercent": 90,
+          "cacheReadTokens": 120000,
+          "cacheWriteTokens": 5000,
+          "inputTokens": 100,
+          "outputTokens": 1100
+        },
+        "turnModel": { "harness": "omp", "id": "omp:default", "name": "Default" }
+      },
+      { "id": "ade82-reasoning", "role": "reasoning", "text": "Looking at the deploy log." },
+      {
+        "id": "ade82-tool",
+        "role": "tool",
+        "text": "",
+        "tool": {
+          "callId": "call_ade82_1",
+          "kind": "execute",
+          "status": "completed",
+          "title": "Read deploy.log"
+        }
+      },
+      {
+        "id": "ade82-answer",
+        "role": "assistant",
+        "text": "The deploy is running; I will report when it ends."
+      },
+      {
+        "id": "ade82-job-result",
+        "role": "system",
+        "text": "Background job bg_1 has completed.",
+        "interjection": { "customType": "async-result" }
+      },
+      { "id": "ade82-own-run-reply", "role": "assistant", "text": "The deploy finished." }
+    ]
+  }
+}
