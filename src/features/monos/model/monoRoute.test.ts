@@ -1534,7 +1534,8 @@ it("never lists a session whose worktree was removed", async () => {
 // R6. Exists only for gate/mutation (R6 one-off); app.sh r6 proves ask and
 // ack end to end. Defect: an ask or ack reaches Rust as another tool, a send
 // stops being send_message, or an ask to a session no window has loaded
-// leaves it out of `live`, so the gate cannot see it.
+// leaves it out of `live`, so the gate cannot see it. An ack names no
+// session: Rust lists the ask's parent itself (R6b review r1 M1).
 it("submits messages.ask and messages.ack as their own tools", async () => {
   const { host, send, run } = world([], [], { stored: [chat("lead-9")] });
   const stored = vi.spyOn(host, "stored");
@@ -1546,17 +1547,19 @@ it("submits messages.ask and messages.ack as their own tools", async () => {
     { ask_id: "m_aaaaaaaaaaaa", message: "Done" },
     "r-ack",
   );
-  expect(
-    rust.state.submitted.map(({ tool, live }) => [
-      tool,
-      (live as { sessionId: string }[]).map((entry) => entry.sessionId),
-    ]),
-  ).toEqual([
-    ["send_message", []],
-    ["ask", ["lead-9"]],
-    ["ask", []],
-    ["ack", []],
+  expect(rust.state.submitted.map(({ tool }) => tool)).toEqual([
+    "send_message",
+    "ask",
+    "ask",
+    "ack",
   ]);
+  expect(
+    rust.state.submitted
+      .slice(0, 3)
+      .map(({ live }) =>
+        (live as { sessionId: string }[]).map((entry) => entry.sessionId),
+      ),
+  ).toEqual([[], ["lead-9"], []]);
   expect(stored.mock.calls).toEqual([["mono-a"], ["lead-9"]]);
 });
 

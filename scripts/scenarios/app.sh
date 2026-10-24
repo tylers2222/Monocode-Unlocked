@@ -306,7 +306,9 @@ answer() {
 
 # R6: the Giga asks the Mono, the Mono starts a lead and asks it with a
 # 30-minute deadline, and each acks through MCP. The lead acks twice and the
-# Mono acks its own ask; both refusals reach the puppet.
+# Mono acks its own ask; both refusals reach the puppet. Then the lead starts
+# a worker and asks it; the worker acks once the lead is idle and out of the
+# window (R6b review r1 M1).
 R6_RULES='[
   {"match": "R6-HABIT", "calls": [{"tool": "ask", "arguments":
     {"message": "R6-PROJECT Run the project.", "send_to": "r6-mono"}}], "reply": "Asked."},
@@ -320,8 +322,26 @@ R6_RULES='[
     {"tool": "ack", "arguments": {"ask_id": "$ask_id", "message": "R6-REPORT The project runs."}}], "reply": "Started."},
   {"match": "R6-TASK", "calls": [
     {"tool": "ack", "arguments": {"ask_id": "$ask_id", "message": "R6-DONE The task is done."}},
-    {"tool": "ack", "arguments": {"ask_id": "$ask_id", "message": "R6-AGAIN The task is done."}}], "reply": "Done."},
+    {"tool": "ack", "arguments": {"ask_id": "$ask_id", "message": "R6-AGAIN The task is done."}},
+    {"action": "sessions.start", "arguments":
+      {"prompt": "R6-WBRIEF You work on the task.", "harness": "fx", "model": "fx:zai/glm-5.2-fast", "notifyOnComplete": false}},
+    {"tool": "ask", "arguments": {"message": "R6-WORK Do the work.", "send_to": "$prev.id"}}], "reply": "Done."},
+  {"match": "R6-WORKED", "reply": "Noted."},
+  {"match": "R6-WORK", "exec": [["sleep", "3"]], "calls": [
+    {"tool": "ack", "arguments": {"ask_id": "$ask_id", "message": "R6-WORKED The work is done."}}], "reply": "Worked."},
+  {"match": "R6-WBRIEF", "reply": "Ready."},
   {"match": "R6-BRIEF", "reply": "Ready."}]'
+
+# The working-agents card off, a user setting (localStorage, read at start):
+# then an idle session that no tab shows leaves the window 250 ms after its
+# turn, instead of staying until the user looks at it.
+live_agents_off() {
+  local db
+  db="$(find "$EVAL_HOME/Library/WebKit" -name localstorage.sqlite3 | head -1)"
+  [[ -n "$db" ]] || die "no localStorage database under the temp HOME"
+  # WebKit stores each value as UTF-16LE: X'3000' is "0".
+  sqlite3 "$db" "INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('monocode.liveAgentsEnabled', X'3000')"
+}
 
 run_r6() {
   FAILED=0
@@ -331,31 +351,42 @@ run_r6() {
   "$INSTANCE" start
   advance 60000
   "$INSTANCE" stop
+  live_agents_off
   jq -n --arg app "$(target_bin instance)" --argjson rules "$R6_RULES" '{app: $app, rules: $rules}' >"$PUPPET/script.json"
   request_habit r6-giga "Ask for the project" "R6-HABIT: ask R6 Mono to run the project."
   "$INSTANCE" start
-  wait_until 120 "both asks are acked" holds "SELECT count(*) = 2 FROM mono_asks WHERE state = 'acked'"
+  wait_until 120 "the Giga's and the Mono's asks are acked" holds "SELECT count(*) >= 2 FROM mono_asks WHERE state = 'acked'"
   wait_until 60 "the Giga gets the Mono's ack" saw R6-REPORT
   wait_until 60 "the Mono tries to ack its own ask" \
     holds_log '[.[] | select(.input.message == "R6-MINE Acking my own ask.")] | length == 1'
-  local giga_ask mono_ask lead
+  wait_until 60 "the worker acks its idle lead" \
+    holds_log '[.[] | select(.input.message == "R6-WORKED The work is done.")] | length == 1'
+  local giga_ask mono_ask lead_ask lead worker
   giga_ask="$(q "SELECT id FROM mono_asks WHERE parent_actor = 'mono:r6-giga'")"
   mono_ask="$(q "SELECT id FROM mono_asks WHERE parent_actor = 'mono:r6-mono'")"
   lead="$(q "SELECT to_session_id FROM mono_messages WHERE tool = 'start_session' AND from_mono_id = 'r6-mono'")"
-  echo "R6 readings (Giga ask $giga_ask, Mono ask $mono_ask, lead $lead):"
+  lead_ask="$(q "SELECT id FROM mono_asks WHERE parent_actor = 'session:$lead'")"
+  worker="$(q "SELECT to_session_id FROM mono_messages WHERE tool = 'start_session' AND from_session_id = '$lead'")"
+  echo "R6 readings (Giga ask $giga_ask, Mono ask $mono_ask, lead $lead, lead ask $lead_ask, worker $worker):"
+  expect "worker acks its idle lead: ok, code" \
+    "$(answer "R6-WORKED The work is done." ok) $(answer "R6-WORKED The work is done." code)" "true null"
+  wait_until 60 "the lead gets the worker's ack" saw R6-WORKED
   expect "Giga ask: child, deadline, state" \
     "$(q "SELECT child_actor || ' ' || ifnull(due_active_ms, 'none') || ' ' || state FROM mono_asks WHERE id = '$giga_ask'")" \
     "mono:r6-mono none acked"
   expect "Mono ask: child, active ms left, state" \
     "$(q "SELECT child_actor || ' ' || (due_active_ms - (SELECT active_ms FROM mono_clock)) || ' ' || state FROM mono_asks WHERE id = '$mono_ask'")" \
     "session:$lead 1800000 acked"
-  expect "ack events" "$(q "SELECT count(*) FROM mono_ask_events WHERE kind = 'ack' AND ask_id IN ('$giga_ask', '$mono_ask')")" 2
+  expect "lead ask: child, state" \
+    "$(q "SELECT child_actor || ' ' || state FROM mono_asks WHERE id = '$lead_ask'")" "session:$worker acked"
+  expect "ack events" "$(q "SELECT count(*) FROM mono_ask_events WHERE kind = 'ack'")" 3
   expect "Mono's ask arrives with ask_id" "$(attribute R6-PROJECT ask_id)" "$giga_ask"
   expect "Mono's ask from a Giga has no due_in" "$(attribute R6-PROJECT due_in)" ""
   expect "lead's ask arrives with ask_id" "$(attribute R6-TASK ask_id)" "$mono_ask"
   expect "lead's ask arrives with due_in" "$(attribute R6-TASK due_in)" "30m"
   expect "Mono gets the lead's ack with ack_of" "$(attribute R6-DONE ack_of)" "$mono_ask"
   expect "Giga gets the Mono's ack with ack_of" "$(attribute R6-REPORT ack_of)" "$giga_ask"
+  expect "lead gets the worker's ack with ack_of" "$(attribute R6-WORKED ack_of)" "$lead_ask"
   expect "lead's ack" "$(answer "R6-DONE The task is done." ok)" true
   expect "lead's second ack: code" "$(answer "R6-AGAIN The task is done." code)" ack_refused
   expect "lead's second ack: hint" "$(answer "R6-AGAIN The task is done." hint)" \
@@ -364,6 +395,7 @@ run_r6() {
   expect "Mono acks its own ask: hint" "$(answer "R6-MINE Acking my own ask." hint)" \
     "This ask is not yours: only the Mono or session it was sent to can ack it."
   expect "lead prompts with the ask" "$(prompts R6-TASK)" 1
+  expect "worker prompts with the ask" "$(prompts R6-WORK)" 1
   expect "calls that failed" "$(jq -s '[.[] | select((.tool or .action) and .result.ok != true)] | length' "$PUPPET/log.jsonl")" 2
   expect "steers" "$(jq -s '[.[] | select(.steer == true)] | length' "$PUPPET/log.jsonl")" 0
   q "SELECT '  ask ' || id || ' ' || parent_actor || ' -> ' || child_actor || ' ' || state FROM mono_asks ORDER BY created_wall_ms"

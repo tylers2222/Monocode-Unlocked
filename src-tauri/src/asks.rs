@@ -12,8 +12,8 @@ use crate::ask_gate::{self, AckRefused, Actor, AskState, Party, State};
 use crate::ask_scheduler;
 use crate::mono_gate::{self, Caller, Input, Refusal, Speaker};
 use crate::mono_messages::{
-    self, Live, MessageId, MonoId, MonoMessage, RequestId, SessionId, Status, Submitted, Tool,
-    ToolError,
+    self, Live, MessageId, MonoId, MonoMessage, PayloadHash, RequestId, SessionId, Status,
+    Submitted, Tool, ToolError,
 };
 
 /// The ask table under `name`, so the R5c rebuild copies into the same
@@ -246,6 +246,19 @@ fn carrier(send_to: &str, message: &str) -> Result<Input, String> {
     )
 }
 
+/// What names an ask for dedupe by request id: its carrier and its
+/// `due_minutes`, the default filled in. A repeat with another deadline is
+/// another call (R6b review r1 m2).
+fn ask_hash(carrier: &Input, due_minutes: Option<u32>) -> PayloadHash {
+    mono_gate::action_hash(
+        "ask",
+        &json!({
+            "carrier": carrier.payload_hash().as_str(),
+            "due_minutes": due_minutes.unwrap_or(ask_gate::DEFAULT_DUE_MINUTES),
+        }),
+    )
+}
+
 fn failed(code: &'static str, hint: impl Into<String>) -> Submitted {
     Submitted::Failed {
         error: ToolError {
@@ -296,7 +309,9 @@ pub fn ask(
             }
         }
     }
-    let mut submitted = mono_messages::submit_in(&tx, caller, request_id, carrier, live, now)?;
+    let hash = ask_hash(&carrier, input.due_minutes);
+    let mut submitted =
+        mono_messages::submit_in(&tx, caller, request_id, carrier, hash, live, now)?;
     if let Submitted::Accepted {
         messages,
         duplicate: false,
@@ -364,6 +379,7 @@ pub fn ack(
         Err(hint) => return Ok(failed(Refusal::InvalidInput.as_str(), hint)),
     };
     let me = caller_party(&tx, caller)?.map(Party::into_actor);
+    let mut parent_listed = None;
     // Decided before the send, as `ask` is: an ack that is not this caller's
     // to give never reaches the send gate. A repeat or a retried refusal
     // (a row under this request id) answers its first outcome instead.
@@ -372,9 +388,18 @@ pub fn ack(
             if let Err(reason) = ask_gate::decide_ack(&ask, me) {
                 return refused(reason);
             }
+            if let Actor::Session(parent) = &ask.parent {
+                parent_listed = Some(mono_messages::with_own_session(&tx, live, parent)?);
+            }
         }
     }
-    let mut submitted = mono_messages::submit_in(&tx, caller, request_id, carrier, live, now)?;
+    let live = Live {
+        sessions: parent_listed.as_deref().unwrap_or(live.sessions),
+        ..*live
+    };
+    let hash = carrier.payload_hash();
+    let mut submitted =
+        mono_messages::submit_in(&tx, caller, request_id, carrier, hash, &live, now)?;
     if let Submitted::Accepted {
         messages,
         duplicate: false,

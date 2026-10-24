@@ -1343,3 +1343,78 @@ fn an_ask_or_ack_refusal_names_its_field_and_an_ack_stores_one_event() {
     );
     assert!(second.is_err(), "{second:?}");
 }
+
+/// R6b review r1 M1. Defect: an ack names no session, so when no window
+/// lists the ask's parent (an idle lead the window unloaded) the send gate
+/// refuses the ack with `direction_forbidden` and the ask stays open.
+#[test]
+fn a_worker_acks_its_lead_when_no_window_lists_the_lead() {
+    let world = World::new("r6b-unlisted-lead");
+    let tree = tree(&world);
+    let lead = session_caller(&tree.lead, P);
+    let worker = session_caller(&tree.worker, P);
+    let id = written(ask(
+        &world,
+        &tree,
+        &lead,
+        "l-ask",
+        tree.worker.as_str(),
+        None,
+    ));
+    let got = world.tool(
+        &worker,
+        "w-ack",
+        "ack",
+        json!({"ask_id": id.as_str(), "message": "Done"}),
+        &[&tree.worker],
+    );
+    assert_eq!(carried(got).1, acks(&id));
+    assert_eq!(ask_row(&world, &id).0, "acked");
+    assert_eq!(
+        count(
+            &world,
+            &format!(
+                "SELECT count(*) FROM mono_messages
+                  WHERE request_id = 'w-ack' AND to_session_id = '{}' AND status <> 'rejected'",
+                tree.lead.as_str()
+            )
+        ),
+        1,
+        "the ack goes to the lead"
+    );
+}
+
+/// R6b review r1 m2. Defect: a repeat of an ask's request id with another
+/// `due_minutes` answers the first ask as its duplicate, so the caller
+/// believes its new deadline holds.
+#[test]
+fn an_ask_repeated_with_another_due_is_another_call() {
+    let world = World::new("r6b-due-repeat");
+    let tree = tree(&world);
+    let lead = session_caller(&tree.lead, P);
+    let to = tree.worker.as_str();
+    let id = written(ask(&world, &tree, &lead, "same", to, Some(30)));
+    assert_eq!(
+        refusal(ask(&world, &tree, &lead, "same", to, Some(480))).0,
+        "request_id_reused"
+    );
+    assert!(matches!(
+        ask(&world, &tree, &lead, "same", to, Some(30)),
+        Submitted::Accepted {
+            duplicate: true,
+            ..
+        }
+    ));
+    assert_eq!(ask_row(&world, &id).1, Some(30 * 60_000));
+    written(ask(&world, &tree, &lead, "default", to, None));
+    assert!(
+        matches!(
+            ask(&world, &tree, &lead, "default", to, Some(60)),
+            Submitted::Accepted {
+                duplicate: true,
+                ..
+            }
+        ),
+        "60 is the default, so it is the same call"
+    );
+}

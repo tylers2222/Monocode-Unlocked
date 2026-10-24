@@ -1584,6 +1584,25 @@ fn target(conn: &Connection, session: SessionId, live: &Live) -> rusqlite::Resul
     })
 }
 
+/// `live` with `session` first, as a session in the caller's own project,
+/// steerable as `target` reads it. An ack goes to its ask's parent, which
+/// `ask_gate::decide_ack` has proved is the caller's own (R6b review r1
+/// M1): an idle lead that no window lists still gets it.
+pub(crate) fn with_own_session(
+    conn: &Connection,
+    live: &Live,
+    session: &SessionId,
+) -> rusqlite::Result<Vec<LiveSession>> {
+    let own = LiveSession {
+        session_id: session.as_str().into(),
+        steerable: target(conn, session.clone(), live)?.steerable,
+        own_project: true,
+    };
+    Ok(std::iter::once(own)
+        .chain(live.sessions.iter().cloned())
+        .collect())
+}
+
 fn recipient(conn: &Connection, send_to: &str, live: &Live) -> rusqlite::Result<Recipient> {
     if let Some(mono_id) = MonoId::parse(send_to) {
         if let Some(row) = mono_row(conn, &mono_id)? {
@@ -1738,22 +1757,24 @@ pub fn submit(
         Err(hint) => return Ok(refused(Refusal::InvalidInput, hint)),
     };
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let submitted = submit_in(&tx, caller, request_id, input, live, now)?;
+    let hash = input.payload_hash();
+    let submitted = submit_in(&tx, caller, request_id, input, hash, live, now)?;
     tx.commit()?;
     Ok(submitted)
 }
 
 /// `submit` inside a transaction the caller holds: an ask or ack (R5)
-/// writes its row this way, in its own `BEGIN IMMEDIATE`.
+/// writes its row this way, in its own `BEGIN IMMEDIATE`. `hash` names the
+/// call for dedupe by request id: an ask's covers its `due_minutes` too.
 pub(crate) fn submit_in(
     tx: &Connection,
     caller: &Caller,
     request_id: &RequestId,
     input: Input,
+    hash: PayloadHash,
     live: &Live,
     now: i64,
 ) -> rusqlite::Result<Submitted> {
-    let hash = input.payload_hash();
     // Design 7 (PR 6 review r1 m1): the control host let this call through
     // before the clear forgot its session, and it reaches here after the clear
     // committed. A row written now would never be dropped.
