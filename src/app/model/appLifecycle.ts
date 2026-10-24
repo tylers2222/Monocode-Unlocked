@@ -46,7 +46,10 @@ import {
 import { worktreeDeletedExternally } from "../../features/source-control/model/worktrees";
 import { lastProjectPath, normalizeProjectPath, sameProjectPath } from "../../features/projects/model/recents";
 import type { SavedMonoCompletion } from "../../features/monos/model/monoSessionCompletion";
-import { claimMonoCompletions } from "../../features/sessions/data/monoCompletionStore";
+import {
+  claimMonoCompletions,
+  monoCompletionWrites,
+} from "../../features/sessions/data/monoCompletionStore";
 
 export { hasInFlightSessions };
 
@@ -366,6 +369,7 @@ export async function persistQuitState(
       await write(upsertSession(payload));
     }),
   );
+  await monoCompletionWrites();
   await write(saveWorkspaceSnapshot(workspaceSnapshot([workspace]), readAt));
   // Vite/webview reload must not wipe a restored snapshot: those chats are idle
   // in this process until Continue runs.

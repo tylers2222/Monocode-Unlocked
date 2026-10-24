@@ -154,28 +154,28 @@ type CompletionBatch = {
 /**
  * A monitored request whose end the Mono has not been given, kept in the
  * window's `mono_completions` rows (ADE-89). `result` is set when the
- * request's turn had already ended.
+ * request's turn had already ended, and `notice` once that result is in the
+ * notice with that id.
  */
 export type SavedMonoCompletion = {
   origin: MonoCompletionOrigin;
   request: MonoCompletionRequest;
   result?: MonoSessionCompletionResult;
+  notice?: string;
 };
 
 /**
  * The window's rows in mono_completions.rs. `hold` sets them to what the
- * window owes. `deliver` deletes a group's rows in the commit that marks it
- * delivered, once its notice is in the Mono's queue, so a stop before that
- * keeps the rows and the notice comes again with the same id.
+ * window owes; a row in a notice stays until the save of the Mono chat that
+ * holds the notice marks it delivered and deletes it, in one commit.
  */
 export type MonoCompletionStore = {
   hold(saved: SavedMonoCompletion[]): void;
-  deliver(groupId: string, requestIds: string[]): void;
 };
 
 /**
  * Results handed to `onReady`; a dismissal can still remove one before it is
- * queued. `kept` stays in the store until the delivery is marked.
+ * queued. `kept` is in the store from the hold that follows the release.
  */
 type CompletionDelivery = {
   monoId: string;
@@ -221,6 +221,8 @@ export class MonoSessionCompletionBatches {
   private deliveries = new Set<CompletionDelivery>();
   /** The session ends each Mono was given a report of. */
   private reportedEnds = new Map<string, WeakSet<ControlOutcome>>();
+  /** The rows the store was last given, as JSON. */
+  private held: string | undefined;
 
   constructor(
     private onReady: (
@@ -318,12 +320,18 @@ export class MonoSessionCompletionBatches {
     );
   }
 
-  /** The store holds what a stop must keep, and what is still being queued. */
+  /**
+   * The store holds what a stop must keep, and what is still being queued.
+   * A render that changes neither writes nothing.
+   */
   private hold() {
-    this.store.hold([
+    const saved = [
       ...this.undelivered(),
       ...[...this.deliveries].flatMap(({ kept }) => kept),
-    ]);
+    ];
+    const held = JSON.stringify(saved);
+    if (held !== this.held) this.store.hold(saved);
+    this.held = held;
   }
 
   /**
@@ -433,10 +441,16 @@ export class MonoSessionCompletionBatches {
       group.phase,
       this.reportedEnds.get(monoId),
     );
+    // A member is released once, so its first id names this group alone.
+    const requestIds = send.map(({ requestId }) => requestId).sort();
+    const id =
+      send.length === 1
+        ? `mono-completion-${requestIds[0]}`
+        : `mono-completion-batch-${requestIds[0]}`;
     const kept = send.map(({ requestId, result }): SavedMonoCompletion => {
       const { sessionId, project, prompt } = group.results.get(requestId)!;
       const request = { requestId, sessionId, project, prompt };
-      return { origin: group.origin, request, result };
+      return { origin: group.origin, request, result, notice: id };
     });
     // Removing before delivery prevents reentrant or repeated callbacks from replaying it.
     for (const requestId of release) group.results.delete(requestId);
@@ -449,29 +463,14 @@ export class MonoSessionCompletionBatches {
       send.map(({ requestId, result }) => [requestId, result]),
     );
     const delivery: CompletionDelivery = { monoId, results, kept };
-    // A member is released once, so its first id names this group alone, and
-    // a notice sent again after a stop keeps its id.
-    const requestIds = [...results.keys()].sort();
-    const id =
-      results.size === 1
-        ? `mono-completion-${requestIds[0]}`
-        : `mono-completion-batch-${requestIds[0]}`;
     const current = () => {
       const values = [...delivery.results.values()];
       return values.length ? completionMessage(id, values) : undefined;
     };
     this.deliveries.add(delivery);
-    const delivered = this.onReady(delivery.monoId, current()!, current);
-    const mark = () => this.store.deliver(id, requestIds);
-    if (delivered) {
-      void delivered
-        .then(mark)
-        .finally(() => this.deliveries.delete(delivery))
-        .catch(console.error);
-    } else {
-      this.deliveries.delete(delivery);
-      mark();
-    }
+    void Promise.resolve(this.onReady(delivery.monoId, current()!, current))
+      .finally(() => this.deliveries.delete(delivery))
+      .catch(console.error);
   }
 }
 

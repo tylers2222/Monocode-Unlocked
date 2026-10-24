@@ -2,9 +2,11 @@
 //! window boots from the one saved workspace row, so a result kept there
 //! would reach each window that opens. Here each result is a row that one
 //! window owns: a boot claims the rows no live window holds, in one
-//! `BEGIN IMMEDIATE` transaction, and a delivery deletes its rows in the
-//! transaction that marks the notice delivered. The row is the result's
-//! `SavedMonoCompletion` JSON, opaque to Rust except for its request id.
+//! `BEGIN IMMEDIATE` transaction. A row whose result is in a notice names
+//! that notice; the transaction that saves a Mono chat holding the notice
+//! marks it delivered and deletes its rows. The row is the result's
+//! `SavedMonoCompletion` JSON, opaque to Rust except for its request id, its
+//! Mono and its notice.
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::Value;
@@ -57,7 +59,7 @@ fn request_id(saved: &Value) -> Result<&str, String> {
 /// A window's boot: it takes every row of an earlier run, of a window that
 /// is no longer open (`live` names the open ones), and of its own earlier
 /// boot, and returns all it now holds. Rows another open window holds stay
-/// its own.
+/// its own. A row whose notice a Mono chat already saved is delivered first.
 pub(crate) fn claim(
     conn: &Connection,
     owner: Owner,
@@ -67,6 +69,11 @@ pub(crate) fn claim(
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     adopt_workspace_row(&tx)?;
     tx.execute(
+        "DELETE FROM mono_completion_deliveries WHERE delivered_at < ?1",
+        params![now - DELIVERY_MARK_MS],
+    )?;
+    settle(&tx, None, now)?;
+    tx.execute(
         "UPDATE mono_completions SET window_label = ?1, window_run = ?2
          WHERE window_run <> ?2 OR window_label = ?1
            OR window_label NOT IN (SELECT value FROM json_each(?3))",
@@ -75,10 +82,6 @@ pub(crate) fn claim(
             owner.run,
             serde_json::to_string(live).unwrap_or_default()
         ],
-    )?;
-    tx.execute(
-        "DELETE FROM mono_completion_deliveries WHERE delivered_at < ?1",
-        params![now - DELIVERY_MARK_MS],
     )?;
     let held: Vec<String> = tx
         .prepare(
@@ -92,6 +95,32 @@ pub(crate) fn claim(
         .iter()
         .filter_map(|json| serde_json::from_str(json).ok())
         .collect())
+}
+
+/// The rows of Mono chat `mono` (every Mono when None) whose notice that
+/// chat's saved queue or transcript holds: the notice is delivered, marked
+/// and the rows deleted in the caller's transaction.
+pub(crate) fn settle(conn: &Connection, mono: Option<&str>, now: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO mono_completion_deliveries (group_id, delivered_at)
+         SELECT DISTINCT c.notice, ?2 FROM (
+           SELECT json_extract(saved_json, '$.notice') AS notice,
+                  json_extract(saved_json, '$.origin.monoId') AS mono
+           FROM mono_completions) c
+         WHERE c.notice IS NOT NULL AND (?1 IS NULL OR c.mono = ?1)
+           AND (EXISTS (SELECT 1 FROM sessions s, json_each(s.queued_messages_json) q
+                        WHERE s.id = c.mono AND json_extract(q.value, '$.id') = c.notice)
+             OR EXISTS (SELECT 1 FROM mono_blocks b
+                        WHERE b.session_id = c.mono
+                          AND json_extract(b.block_json, '$.appRequestId') = c.notice))",
+        params![mono, now],
+    )?;
+    conn.execute(
+        "DELETE FROM mono_completions
+         WHERE json_extract(saved_json, '$.notice') IN (SELECT group_id FROM mono_completion_deliveries)",
+        [],
+    )?;
+    Ok(())
 }
 
 /// Before ADE-89 a quit kept the results in the workspace row under
@@ -132,19 +161,22 @@ fn adopt_workspace_row(tx: &Transaction) -> rusqlite::Result<()> {
 }
 
 /// What the window owes now: its rows become exactly `saved`, in one
-/// commit. A row another window holds is left as it is.
+/// commit, except that a row already in a notice stays until a Mono chat
+/// saves that notice. A row another window holds is left as it is.
 pub(crate) fn hold(conn: &Connection, owner: Owner, saved: &[Value]) -> Result<(), String> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     tx.execute(
-        "DELETE FROM mono_completions WHERE window_label = ?1 AND window_run = ?2",
+        "DELETE FROM mono_completions WHERE window_label = ?1 AND window_run = ?2
+           AND json_extract(saved_json, '$.notice') IS NULL",
         params![owner.window, owner.run],
     )
     .map_err(|e| e.to_string())?;
     for entry in saved {
         tx.execute(
             "INSERT INTO mono_completions (request_id, saved_json, window_label, window_run)
-             VALUES (?1, ?2, ?3, ?4) ON CONFLICT (request_id) DO NOTHING",
+             VALUES (?1, ?2, ?3, ?4) ON CONFLICT (request_id) DO UPDATE SET saved_json = excluded.saved_json
+             WHERE window_label = excluded.window_label AND window_run = excluded.window_run",
             params![
                 request_id(entry)?,
                 entry.to_string(),
@@ -155,42 +187,6 @@ pub(crate) fn hold(conn: &Connection, owner: Owner, saved: &[Value]) -> Result<(
         .map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())
-}
-
-/// The notice `group_id` carries `request_ids`. True when this call
-/// delivers it: no other window holds one of them, and no earlier call
-/// marked the group delivered. The mark and the deletion are one commit.
-pub(crate) fn deliver(
-    conn: &Connection,
-    owner: Owner,
-    now: i64,
-    group_id: &str,
-    request_ids: &[String],
-) -> rusqlite::Result<bool> {
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    for id in request_ids {
-        let elsewhere: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM mono_completions WHERE request_id = ?1
-               AND NOT (window_label = ?2 AND window_run = ?3))",
-            params![id, owner.window, owner.run],
-            |row| row.get(0),
-        )?;
-        if elsewhere {
-            return Ok(false);
-        }
-    }
-    let marked = tx.execute(
-        "INSERT OR IGNORE INTO mono_completion_deliveries (group_id, delivered_at) VALUES (?1, ?2)",
-        params![group_id, now],
-    )? == 1;
-    for id in request_ids {
-        tx.execute(
-            "DELETE FROM mono_completions WHERE request_id = ?1 AND window_label = ?2 AND window_run = ?3",
-            params![id, owner.window, owner.run],
-        )?;
-    }
-    tx.commit()?;
-    Ok(marked)
 }
 
 #[tauri::command(async)]
@@ -223,26 +219,4 @@ pub fn mono_completions_hold<R: Runtime>(
         run: &run.0,
     };
     hold(&*store.lock_conn()?, owner, &saved)
-}
-
-#[tauri::command(async)]
-pub fn mono_completions_deliver<R: Runtime>(
-    window: WebviewWindow<R>,
-    store: State<'_, SessionStore>,
-    run: State<'_, Run>,
-    group_id: String,
-    request_ids: Vec<String>,
-) -> Result<bool, String> {
-    let owner = Owner {
-        window: window.label(),
-        run: &run.0,
-    };
-    deliver(
-        &*store.lock_conn()?,
-        owner,
-        crate::mono_messages::now_ms(),
-        &group_id,
-        &request_ids,
-    )
-    .map_err(|e| e.to_string())
 }

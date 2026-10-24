@@ -554,4 +554,37 @@ describe("claiming the Mono completion results at boot", () => {
     });
     expect(logged).toHaveBeenCalledWith(new Error("store busy"));
   });
+
+  it("a quit, close or reload save waits for the results the window owes to reach the store", async () => {
+    const core = await import("@tauri-apps/api/core");
+    let held!: () => void;
+    vi.mocked(core.invoke).mockImplementation(async (command) => {
+      if (command === "mono_completions_hold")
+        await new Promise<void>((resolve) => (held = resolve));
+    });
+    const { monoCompletionStore } = await import(
+      "../../features/sessions/data/monoCompletionStore"
+    );
+    const { persistQuitState } = await import("./appLifecycle");
+    monoCompletionStore.hold([]);
+    const save = persistQuitState(
+      {
+        tabs: [],
+        sessions: [],
+        activeTabId: "",
+        projectCwd: "/alpha",
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      },
+      "unload",
+    ).then(() => "saved");
+    // Every other write resolves in microtasks, so one macrotask outlasts them.
+    const nextTask = new Promise<string>((resolve) =>
+      setTimeout(() => resolve("waiting")),
+    );
+    expect(await Promise.race([save, nextTask])).toBe("waiting");
+    held();
+    expect(await save).toBe("saved");
+  });
 });

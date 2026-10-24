@@ -107,10 +107,33 @@ export type FakeStore = {
   /** session_store.rs `in_flight_sessions`: what the last window had running. */
   inFlight: { sessionId: string; cwd: string }[];
   /** mono_completions.rs rows by request id: the results the window owes. */
-  completions: Record<string, { request: { requestId: string } }>;
+  completions: Record<string, FakeCompletion>;
   /** mono_completion_deliveries: the groups already delivered. */
   deliveredGroups: string[];
 };
+
+type FakeCompletion = {
+  origin: { monoId: string };
+  request: { requestId: string };
+  notice?: string;
+};
+
+/** mono_completions.rs settle: the save of Mono chat `chat` delivers each
+ * notice its queue or transcript holds, and deletes that notice's rows. */
+function settleCompletions(
+  store: FakeStore,
+  chat: { id: string; queuedMessages?: { id: string }[]; blocks: { appRequestId?: string }[] },
+) {
+  const held = new Set([
+    ...(chat.queuedMessages ?? []).map((message) => message.id),
+    ...chat.blocks.map((block) => block.appRequestId),
+  ]);
+  for (const row of Object.values(store.completions)) {
+    if (row.origin.monoId !== chat.id || !row.notice || !held.has(row.notice)) continue;
+    if (!store.deliveredGroups.includes(row.notice)) store.deliveredGroups.push(row.notice);
+    delete store.completions[row.request.requestId];
+  }
+}
 
 /** What a test seeds. `installBackend` fills in what Rust would add. */
 export type FakeSeed = Partial<{
@@ -463,7 +486,9 @@ const HANDLERS: Record<string, Handler> = {
       kept = saved.slice(0, afterBlockId ? at + 1 : at);
     }
     const blocks = blocksChanged ? [...kept, ...session.blocks] : saved;
-    return upsertSession(store, { session: { ...session, blocks } });
+    const summary = upsertSession(store, { session: { ...session, blocks } });
+    settleCompletions(store, { ...session, blocks });
+    return summary;
   },
   // mono.rs load: SOUL.md as the app seeds it, an empty memory, no topics.
   mono_load: async (store, { mono }) => {
