@@ -211,32 +211,25 @@ pub enum Carries {
 }
 
 /// What row `id` carries: `mono_asks` by id, else the `ack` event that
-/// names the row.
+/// names the row. One statement, as `targeted()` reads it for every row.
 pub fn carries(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<Carries>> {
-    let due: Option<Option<i64>> = conn
-        .query_row(
-            "SELECT due_active_ms FROM mono_asks WHERE id = ?1",
-            [id.as_str()],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if let Some(due) = due {
-        let due_in_ms = due.map(|due| active_ms(conn).map(|active| due - active));
-        return Ok(Some(Carries::Ask {
-            due_in_ms: due_in_ms.transpose()?,
-        }));
-    }
-    conn.query_row(
-        "SELECT ask_id FROM mono_ask_events WHERE kind = 'ack' AND message_id = ?1",
+    let (ask, due_in_ms, ack_of): (bool, Option<i64>, Option<String>) = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM mono_asks WHERE id = ?1),
+           (SELECT due_active_ms - ifnull((SELECT active_ms FROM mono_clock WHERE id = 1), 0)
+              FROM mono_asks WHERE id = ?1),
+           (SELECT ask_id FROM mono_ask_events WHERE kind = 'ack' AND message_id = ?1)",
         [id.as_str()],
-        |row| {
-            let ask_id = MessageId::parse(&row.get::<_, String>(0)?);
-            Ok(Carries::Ack {
-                ask_id: ask_id.ok_or(rusqlite::Error::InvalidQuery)?,
-            })
-        },
-    )
-    .optional()
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if ask {
+        return Ok(Some(Carries::Ask { due_in_ms }));
+    }
+    ack_of
+        .map(|ask_id| {
+            let ask_id = MessageId::parse(&ask_id).ok_or(rusqlite::Error::InvalidQuery)?;
+            Ok(Carries::Ack { ask_id })
+        })
+        .transpose()
 }
 
 /// A `send_message` of `message` to `send_to`: what carries an ask or ack.
@@ -290,9 +283,9 @@ pub fn ask(
                 (Some(mono), Actor::Session(lead)) => started_by(&tx, mono, lead)?,
                 _ => false,
             };
-            let (due, active) = (input.due_minutes, active_ms(&tx)?);
-            match ask_gate::decide_ask(&parent, &child, started, due, active) {
-                Ok(due) => new = Some((due, active, parent, child)),
+            let due = input.due_minutes;
+            match ask_gate::decide_ask(&parent, &child, started, due, active_ms(&tx)?) {
+                Ok(due) => new = Some((due, parent, child)),
                 Err(refused) => return Ok(failed(refused.code(), refused.hint())),
             }
         }
@@ -306,7 +299,7 @@ pub fn ask(
     {
         // The gate let through a party with no saved row (a session the
         // window lists): no child of the caller. Dropping `tx` undoes the row.
-        let Some((due, active, parent, child)) = new else {
+        let Some((due, parent, child)) = new else {
             let refused = ask_gate::AskRefused::NotDirectChild;
             return Ok(failed(refused.code(), refused.hint()));
         };
@@ -325,9 +318,7 @@ pub fn ask(
                 now
             ],
         )?;
-        messages[0].carries = Some(Carries::Ask {
-            due_in_ms: due.map(|due| due - active),
-        });
+        messages[0].carries = carries(&tx, &messages[0].message.id)?;
     }
     tx.commit()?;
     Ok(submitted)
@@ -415,7 +406,7 @@ pub fn ack(
                 now
             ],
         )?;
-        messages[0].carries = Some(Carries::Ack { ask_id });
+        messages[0].carries = carries(&tx, &messages[0].message.id)?;
     }
     tx.commit()?;
     Ok(submitted)
