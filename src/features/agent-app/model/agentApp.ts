@@ -181,6 +181,8 @@ export type AppMonoListing = {
   busy: boolean;
   /** Messages waiting in its queue. */
   queued: number;
+  /** Its queue sends nothing until someone resumes it. */
+  queuePaused: boolean;
   /** False until the Mono's chat exists. */
   hasConversation: boolean;
   /** Epoch ms of the last change to its chat, if known. */
@@ -1239,6 +1241,7 @@ function monoListing(
     projects: mono.projects,
     busy: !!chat?.busy,
     queued: chat?.queuedMessages?.length ?? 0,
+    queuePaused: chat?.queueStatus === "paused",
     hasConversation: !!mono.sessionId,
     ...(updatedAt ? { updatedAt } : {}),
     self: mono.id === self,
