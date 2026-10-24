@@ -1584,23 +1584,27 @@ fn target(conn: &Connection, session: SessionId, live: &Live) -> rusqlite::Resul
     })
 }
 
-/// `live` with `session` first, as a session in the caller's own project,
-/// steerable as `target` reads it. An ack goes to its ask's parent, which
-/// `ask_gate::decide_ack` has proved is the caller's own (R6b review r1
-/// M1): an idle lead that no window lists still gets it.
+/// `live` with `session` first if `target` finds it with no listing: an ack
+/// goes to its ask's parent, which `ask_gate::decide_ack` proved is the
+/// caller's own, so an idle lead no window lists gets it (R6b review r1 M1)
+/// and an ended or removed one gets `target_gone`, as a send does (r2 M1).
 pub(crate) fn with_own_session(
     conn: &Connection,
     live: &Live,
     session: &SessionId,
 ) -> rusqlite::Result<Vec<LiveSession>> {
-    let own = LiveSession {
-        session_id: session.as_str().into(),
-        steerable: target(conn, session.clone(), live)?.steerable,
-        own_project: true,
+    let unlisted = Live {
+        sessions: &[],
+        ..*live
     };
-    Ok(std::iter::once(own)
-        .chain(live.sessions.iter().cloned())
-        .collect())
+    let parent = target(conn, session.clone(), &unlisted)?;
+    let own = parent.exists.then(|| LiveSession {
+        session_id: session.as_str().into(),
+        steerable: parent.steerable,
+        own_project: true,
+    });
+    let listed = live.sessions.iter().cloned();
+    Ok(own.into_iter().chain(listed).collect())
 }
 
 fn recipient(conn: &Connection, send_to: &str, live: &Live) -> rusqlite::Result<Recipient> {

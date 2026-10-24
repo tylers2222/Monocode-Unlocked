@@ -853,9 +853,10 @@ fn a_failed_ack_event_insert_leaves_the_ask_open_and_no_row() {
     );
 }
 
-/// Review r1 m1. Defect: an ack under a request id that a plain send, or the
-/// ack of another ask, already used is answered with that call's row as a
-/// repeat, and its own ask stays open.
+/// Review r1 m1 and R6b review r2 m1. Defect: an ack under a request id
+/// that a plain send, or the ack of another ask, already used is answered
+/// with that call's row as a repeat, and its own ask stays open; a send
+/// under an ack's request id is answered as the ack's repeat.
 #[test]
 fn an_ack_reusing_another_calls_request_id_is_refused() {
     let world = World::new("r5-ack-reuse");
@@ -880,7 +881,7 @@ fn an_ack_reusing_another_calls_request_id_is_refused() {
     ));
     // Same fields as the ack's row: same parent, same text.
     let send = json!({"message": "Done", "send_to": tree.lead.as_str(), "wanting_reply": false, "intent": "new"});
-    written(world.tool(&worker, "sent", "send_message", send, &tree.live()));
+    written(world.tool(&worker, "sent", "send_message", send.clone(), &tree.live()));
     assert_eq!(
         refusal(ack(&world, &tree, &worker, "sent", &a)).0,
         "request_id_reused"
@@ -888,6 +889,10 @@ fn an_ack_reusing_another_calls_request_id_is_refused() {
     written(ack(&world, &tree, &worker, "w-ack", &a));
     assert_eq!(
         refusal(ack(&world, &tree, &worker, "w-ack", &b)).0,
+        "request_id_reused"
+    );
+    assert_eq!(
+        refusal(world.tool(&worker, "w-ack", "send_message", send, &tree.live())).0,
         "request_id_reused"
     );
     assert_eq!(
@@ -1382,6 +1387,51 @@ fn a_worker_acks_its_lead_when_no_window_lists_the_lead() {
         1,
         "the ack goes to the lead"
     );
+}
+
+/// R6b review r2 M1. Defect: the parent listed for an ack also counts as
+/// existing, so an ack to a lead whose worktree was removed is accepted
+/// and spends the ask, while a send to that lead gets `target_gone`.
+#[test]
+fn an_ack_to_a_lead_that_is_gone_is_refused_like_a_send() {
+    let world = World::new("r6b-gone-lead");
+    let tree = tree(&world);
+    let lead = session_caller(&tree.lead, P);
+    let worker = session_caller(&tree.worker, P);
+    let other = session_caller(&tree.other, P);
+    let a = written(ask(&world, &tree, &lead, "l-a", tree.worker.as_str(), None));
+    let b = written(ask(&world, &tree, &lead, "l-b", tree.other.as_str(), None));
+    let lead_id = tree.lead.as_str();
+    let to_lead = || {
+        count(
+            &world,
+            &format!(
+                "SELECT count(*) FROM mono_messages
+                  WHERE to_session_id = '{lead_id}' AND status <> 'rejected'"
+            ),
+        )
+    };
+    let before = to_lead();
+    let removed = format!("UPDATE sessions SET worktree_removed = 1 WHERE id = '{lead_id}'");
+    world.conn().execute(&removed, []).unwrap();
+    let send =
+        json!({"message": "Done", "send_to": lead_id, "wanting_reply": false, "intent": "new"});
+    let sent = world.tool(&worker, "w-send", "send_message", send, &[&tree.worker]);
+    assert_eq!(refusal(sent).0, "target_gone");
+    let input = json!({"ask_id": a.as_str(), "message": "Done"});
+    let got = world.tool(&worker, "w-ack", "ack", input, &[&tree.worker]);
+    assert_eq!(refusal(got).0, "target_gone", "removed worktree");
+    assert_eq!(ask_row(&world, &a).0, "open");
+    let restored = format!("UPDATE sessions SET worktree_removed = 0 WHERE id = '{lead_id}'");
+    world.conn().execute(&restored, []).unwrap();
+    let ended =
+        format!("INSERT INTO mono_session_ends (session_id, ended_at) VALUES ('{lead_id}', 1)");
+    world.conn().execute(&ended, []).unwrap();
+    let input = json!({"ask_id": b.as_str(), "message": "Done"});
+    let got = world.tool(&other, "o-ack", "ack", input, &[&tree.other]);
+    assert_eq!(refusal(got).0, "target_gone", "ended");
+    assert_eq!(ask_row(&world, &b).0, "open");
+    assert_eq!(to_lead(), before, "no row to the gone lead");
 }
 
 /// R6b review r1 m2. Defect: a repeat of an ask's request id with another

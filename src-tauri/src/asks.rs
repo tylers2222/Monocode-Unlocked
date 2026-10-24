@@ -397,7 +397,11 @@ pub fn ack(
         sessions: parent_listed.as_deref().unwrap_or(live.sessions),
         ..*live
     };
-    let hash = carrier.payload_hash();
+    // Its own call, as `ask_hash` makes an ask (R6b review r2 m1).
+    let hash = mono_gate::action_hash(
+        "ack",
+        &json!({"carrier": carrier.payload_hash().as_str(), "ask_id": ask_id.as_str()}),
+    );
     let mut submitted =
         mono_messages::submit_in(&tx, caller, request_id, carrier, hash, &live, now)?;
     if let Submitted::Accepted {

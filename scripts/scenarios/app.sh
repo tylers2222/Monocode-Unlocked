@@ -306,9 +306,8 @@ answer() {
 
 # R6: the Giga asks the Mono, the Mono starts a lead and asks it with a
 # 30-minute deadline, and each acks through MCP. The lead acks twice and the
-# Mono acks its own ask; both refusals reach the puppet. Then the lead starts
-# a worker and asks it; the worker acks once the lead is idle and out of the
-# window (R6b review r1 M1).
+# Mono acks its own ask; both refusals reach the puppet. The lead's worker acks
+# once the lead has left the window (R6b review r1 M1).
 R6_RULES='[
   {"match": "R6-HABIT", "calls": [{"tool": "ask", "arguments":
     {"message": "R6-PROJECT Run the project.", "send_to": "r6-mono"}}], "reply": "Asked."},
@@ -332,9 +331,8 @@ R6_RULES='[
   {"match": "R6-WBRIEF", "reply": "Ready."},
   {"match": "R6-BRIEF", "reply": "Ready."}]'
 
-# The working-agents card off, a user setting (localStorage, read at start):
-# then an idle session that no tab shows leaves the window 250 ms after its
-# turn, instead of staying until the user looks at it.
+# The working-agents card off (a user setting, read at start): an idle session
+# that no tab shows then leaves the window 250 ms after its turn.
 live_agents_off() {
   local db
   db="$(find "$EVAL_HOME/Library/WebKit" -name localstorage.sqlite3 | head -1)"
@@ -371,6 +369,8 @@ run_r6() {
   expect "worker acks its idle lead: ok, code" \
     "$(answer "R6-WORKED The work is done." ok) $(answer "R6-WORKED The work is done." code)" "true null"
   wait_until 60 "the lead gets the worker's ack" saw R6-WORKED
+  expect "the lead left the window before the ack: agent processes of R6-TASK and R6-WORKED" \
+    "$(jq -s '[.[] | select(.rule == "R6-TASK" or .rule == "R6-WORKED") | .pid] | unique | length' "$PUPPET/log.jsonl")" 2
   expect "Giga ask: child, deadline, state" \
     "$(q "SELECT child_actor || ' ' || ifnull(due_active_ms, 'none') || ' ' || state FROM mono_asks WHERE id = '$giga_ask'")" \
     "mono:r6-mono none acked"
