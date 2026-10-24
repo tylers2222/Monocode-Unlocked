@@ -1,18 +1,22 @@
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
-import type { ApprovalRow } from "./app/backend";
+import { cardOf, type CardRow } from "./app/approvals";
 import { expect, test, type FakeSeed, type MountOptions } from "./app/fixture";
 
-const REAL_DB: Required<Pick<FakeSeed, "monos" | "projects" | "approvals">> =
-  JSON.parse(
-    readFileSync(
-      new URL("./approvals-badge.realdb.json", import.meta.url),
-      "utf8",
-    ),
-  );
+const REAL_DB: Required<Pick<FakeSeed, "monos" | "projects">> & {
+  approvals: CardRow[];
+} = JSON.parse(
+  readFileSync(
+    new URL("./approvals-badge.realdb.json", import.meta.url),
+    "utf8",
+  ),
+);
+const GIGA = REAL_DB.monos.find((mono) => mono.role === "giga")!;
+const card = (row: CardRow) =>
+  cardOf(row, { id: GIGA.id, name: String(GIGA.data.name) });
 const OPEN = REAL_DB.approvals.filter((row) => row.status === "open");
 const CLOSED = REAL_DB.approvals.filter((row) => row.status !== "open");
-const CLOSING: ApprovalRow["status"][] = [
+const CLOSING: CardRow["status"][] = [
   "approved",
   "rejected",
   "changes_requested",
@@ -35,26 +39,27 @@ test.beforeEach(async ({ page }) => {
 
 async function setCards(
   page: Page,
-  rows: ApprovalRow[],
+  rows: CardRow[],
   trigger: "focus" | "visible" | "changed",
 ) {
   await page.evaluate(
-    ({ rows, trigger }) => {
-      window.appBackend!.store.approvals = rows;
+    ({ cards, trigger }) => {
+      window.appBackend!.store.approvals = cards;
       if (trigger === "focus") window.dispatchEvent(new Event("focus"));
       else if (trigger === "visible")
         document.dispatchEvent(new Event("visibilitychange"));
       else return window.appBackend!.emit("approvals-changed");
     },
-    { rows, trigger },
+    { cards: rows.map(card), trigger },
   );
 }
 
 const openInStore = (page: Page) =>
   page.evaluate(
     () =>
-      window.appBackend!.store.approvals.filter((row) => row.status === "open")
-        .length,
+      window.appBackend!.store.approvals.filter(
+        (card) => card.status.state === "open",
+      ).length,
   );
 
 const countLoads = (page: Page) =>
@@ -111,7 +116,7 @@ test("the Approvals row counts the open cards of a copy of the app database", as
   page,
 }) => {
   await app.mount(
-    { ...REAL_DB, approvals: CLOSED },
+    { ...REAL_DB, approvals: CLOSED.map(card) },
     { handlers: allowReservedNameDialog },
   );
   await firstCountAnswered(page);
@@ -183,13 +188,13 @@ test("a count reply that lands after a newer one does not replace it", async ({
   page,
 }) => {
   await app.mount(
-    { ...REAL_DB, approvals: [...CLOSED, ...OPEN.slice(0, 3)] },
+    { ...REAL_DB, approvals: [...CLOSED, ...OPEN.slice(0, 3)].map(card) },
     {
       handlers: {
         ...allowReservedNameDialog,
         approvals_open_counts: async (store) => {
           const total = store.approvals.filter(
-            (row) => row.status === "open",
+            (row) => row.status.state === "open",
           ).length;
           const held = window as unknown as HeldReply;
           const hold = held.hold;
@@ -240,7 +245,7 @@ for (const mode of ["compact", "hidden"] as const) {
       localStorage.setItem("monocode.collapsedProjectRailMode", mode);
     }, mode);
     await app.mount(
-      { ...REAL_DB, approvals: [...CLOSED, ...OPEN.slice(0, 3)] },
+      { ...REAL_DB, approvals: [...CLOSED, ...OPEN.slice(0, 3)].map(card) },
       { handlers: allowReservedNameDialog },
     );
     expect(await openInStore(page), "matches open cards").toBe(3);
