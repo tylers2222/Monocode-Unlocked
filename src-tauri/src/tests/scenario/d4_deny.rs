@@ -474,23 +474,55 @@ fn link_layouts(at: &Path) -> (PathBuf, PathBuf, PathBuf) {
     (home, work, config)
 }
 
+/// What `srt` and the Edit rules `deny` miss of `path` (a folder if `folder`):
+/// the path as written, each link `resolve` meets on the way to it, and its
+/// real path. srt (macOS) blocks moving each folder of a path it denies as
+/// written, so a link at one of those folders needs no entry of its own.
+fn link_misses(path: &Path, folder: bool, srt: &[String], deny: &[String]) -> Vec<String> {
+    let (links, real) = resolve(path);
+    assert_eq!(
+        Path::new(&real),
+        path.canonicalize().unwrap(),
+        "the model resolves {path:?} as the kernel does"
+    );
+    let pinned = |link: &str| {
+        srt.iter()
+            .any(|entry| entry.starts_with(&format!("{link}/")))
+    };
+    let written = path.to_string_lossy().into_owned();
+    let unpinned = links.into_iter().filter(|link| !pinned(link));
+    let mut misses = Vec::new();
+    for link in std::iter::once(written).chain(unpinned) {
+        if !srt.contains(&link) {
+            misses.push(format!("srt misses {link} on the way to {path:?}"));
+        }
+        if !matched(deny, &link) {
+            misses.push(format!(
+                "no Edit rule matches {link} on the way to {path:?}"
+            ));
+        }
+    }
+    if !srt.contains(&real) {
+        misses.push(format!("srt misses {real}, the real {path:?}"));
+    }
+    let inside = if folder { format!("{real}/x.md") } else { real };
+    if !matched(deny, &inside) {
+        misses.push(format!(
+            "no Edit rule matches {inside}, in the real {path:?}"
+        ));
+    }
+    misses
+}
+
 /// Defect (reviews r3 to r9: one link layout per round): a protected path as
 /// written, a link on the way to it, or its real path has no Edit rule or is
 /// not on the srt list, so the Write tool writes through it or Bash inside srt
-/// retargets it. `resolve` names every link the kernel meets on the way to each
-/// path of `link_layouts`; each must be covered, as must the path as written
-/// and its real path. srt (macOS) blocks moving each folder of a path it
-/// denies as written, so a link at one of those folders needs no entry of its
-/// own.
+/// retargets it. Each path of `link_layouts` must have no `link_misses`.
 fn every_link_and_real_path_on_the_list_is_covered(at: &Path, data: &Path) {
     let (home, work, config) = link_layouts(at);
     let config_dir = Some(config.as_os_str());
     let srt = srt_deny_in(data, config_dir, &home, &work).unwrap();
     let deny = deny_of(&args_in(data, config_dir, &home, &work, false, spawn_args("{}")).unwrap());
-    let pinned = |link: &str| {
-        srt.iter()
-            .any(|entry| entry.starts_with(&format!("{link}/")))
-    };
     let files = [
         config.join("settings.json"),
         home.join(".claude/hooks/a.sh"),
@@ -501,41 +533,15 @@ fn every_link_and_real_path_on_the_list_is_covered(at: &Path, data: &Path) {
         work.join(".claude/hooks/lib/fmt.sh"),
     ];
     let folders = [config.join("agents"), work.join(".claude/skills")];
-    for (path, folder) in
-        (files.iter().map(|file| (file, false))).chain(folders.iter().map(|dir| (dir, true)))
-    {
-        let (links, real) = resolve(path);
-        assert_eq!(
-            Path::new(&real),
-            path.canonicalize().unwrap(),
-            "the model resolves {path:?} as the kernel does"
-        );
-        let written = path.to_string_lossy().into_owned();
-        let unpinned = links.into_iter().filter(|link| !pinned(link));
-        for link in std::iter::once(written).chain(unpinned) {
-            assert!(
-                srt.contains(&link),
-                "on: srt denies the link {link} on the way to {path:?}: {srt:?}"
-            );
-            assert!(
-                matched(&deny, &link),
-                "on: an Edit rule matches the link {link}: {deny:?}"
-            );
-        }
-        assert!(
-            srt.contains(&real),
-            "on: srt denies {real}, the real {path:?}: {srt:?}"
-        );
-        let inside = if folder {
-            format!("{real}/x.md")
-        } else {
-            real.clone()
-        };
-        assert!(
-            matched(&deny, &inside),
-            "on: an Edit rule matches {inside}: {deny:?}"
-        );
-    }
+    let misses: Vec<String> = (files.iter().map(|file| (file, false)))
+        .chain(folders.iter().map(|dir| (dir, true)))
+        .flat_map(|(path, folder)| link_misses(path, folder, &srt, &deny))
+        .collect();
+    assert!(
+        misses.is_empty(),
+        "on: {}\nsrt: {srt:?}\ndeny: {deny:?}",
+        misses.join("\n")
+    );
     let config_real = config.canonicalize().unwrap();
     assert!(
         matched(
@@ -558,6 +564,135 @@ fn every_link_and_real_path_on_the_list_is_covered(at: &Path, data: &Path) {
             .is_some_and(|rule| in_root(rule.trim_end_matches(')')))),
         "on: no Edit rule on a link in /: {deny:?}"
     );
+}
+
+/// A folder link slot of `grid_misses`: no link (a real folder), or a link
+/// with an absolute or a relative target.
+#[derive(Clone, Copy, Debug)]
+enum Slot {
+    Folder,
+    Absolute,
+    Relative,
+}
+
+/// Defect (reviews r3 to r10: each round found one more link layout that the
+/// hand-built ones missed): a path, link or real path of some layout is not
+/// covered. Every layout of the grid, built under the temp folder real and as
+/// given (on macOS behind `/var`, a link in `/`): a folder link or none above
+/// `.claude` (`work`), in it (`.claude/hooks`) and inside that one's target
+/// (`hooks/lib`), each absolute or relative; a hook script spelled with
+/// `sub/..` at each place before, between and after them, or with none; and
+/// the script spelled without `..` as a second source, or not. Lists every
+/// miss of every layout.
+#[test]
+fn every_generated_link_layout_is_covered() {
+    let root = root();
+    let data = root.join("com.monocode.desktop");
+    turn_on(&data);
+    let slots = [Slot::Folder, Slot::Absolute, Slot::Relative];
+    let triples = slots.iter().flat_map(|&a| {
+        slots
+            .iter()
+            .flat_map(move |&b| slots.map(move |c| [a, b, c]))
+    });
+    let (mut misses, mut layouts) = (Vec::new(), 0);
+    for (spelled, base) in [
+        ("real", root.canonicalize().unwrap()),
+        ("given", root.clone()),
+    ] {
+        for links in triples.clone() {
+            for dots in 0..6 {
+                for plain in [false, true] {
+                    layouts += 1;
+                    let at = base.join(format!("grid{layouts}"));
+                    let label = format!(
+                        "temp {spelled}, links {links:?}, `sub/..` at {dots}, plain source {plain}"
+                    );
+                    let found = grid_misses(&at, links, dots, plain, &data);
+                    misses.extend(found.into_iter().map(|miss| format!("{label}: {miss}")));
+                }
+            }
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "on: {} misses in {layouts} layouts:\n{}",
+        misses.len(),
+        misses.join("\n")
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Builds one layout under `at` and returns its `link_misses`. `links` are the
+/// slots of `work`, `work/.claude/hooks` and `hooks/lib`; the hook script
+/// `work/.claude/hooks/lib/x.sh` is spelled with `sub/..` before name `dots`
+/// (1 to 5; 0: none).
+fn grid_misses(at: &Path, links: [Slot; 3], dots: usize, plain: bool, data: &Path) -> Vec<String> {
+    let (home, work) = (at.join("home"), at.join("work"));
+    std::fs::create_dir_all(&home).unwrap();
+    // `link` is a real folder, or a link to the new folder `real`.
+    let place = |slot: Slot, link: &Path, absolute: &Path, relative: &str, real: &Path| {
+        let folder = if matches!(slot, Slot::Folder) {
+            link
+        } else {
+            real
+        };
+        std::fs::create_dir_all(folder).unwrap();
+        match slot {
+            Slot::Folder => {}
+            Slot::Absolute => symlink(absolute, link).unwrap(),
+            Slot::Relative => symlink(relative, link).unwrap(),
+        }
+        folder.to_owned()
+    };
+    let real_work = at.join("work-real");
+    let real_work = place(links[0], &work, &real_work, "work-real", &real_work);
+    let claude = real_work.join(".claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    let hooks = place(
+        links[1],
+        &claude.join("hooks"),
+        &work.join("tools/hooks"),
+        "../tools/hooks",
+        &real_work.join("tools/hooks"),
+    );
+    let lib = place(
+        links[2],
+        &hooks.join("lib"),
+        &work.join("shared/lib"),
+        "../../shared/lib",
+        &real_work.join("shared/lib"),
+    );
+    let dirs: [&Path; 5] = [at, &real_work, &claude, &hooks, &lib];
+    for dir in dirs {
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+    }
+    std::fs::write(lib.join("x.sh"), "true\n").unwrap();
+    let mut names = vec!["work", ".claude", "hooks", "lib", "x.sh"];
+    if dots > 0 {
+        names.insert(dots - 1, "sub/..");
+    }
+    let mut scripts = vec![PathBuf::from(format!(
+        "{}/{}",
+        at.display(),
+        names.join("/")
+    ))];
+    if plain && dots > 0 {
+        scripts.push(work.join(".claude/hooks/lib/x.sh"));
+    }
+    let command = scripts
+        .iter()
+        .map(|path| path.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let hook = json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}});
+    std::fs::write(claude.join("settings.json"), hook.to_string()).unwrap();
+    let srt = srt_deny_in(data, None, &home, &work).unwrap();
+    let deny = deny_of(&args_in(data, None, &home, &work, false, spawn_args("{}")).unwrap());
+    std::iter::once(work.join(".claude/settings.json"))
+        .chain(scripts)
+        .flat_map(|path| link_misses(&path, false, &srt, &deny))
+        .collect()
 }
 
 /// Defect (reviews r6 m3, r7 m1): a key in which Claude Code 2.1.309 keeps a

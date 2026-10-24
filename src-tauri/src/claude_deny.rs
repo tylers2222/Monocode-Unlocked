@@ -300,7 +300,7 @@ fn setting_commands(file: &Path) -> Vec<String> {
 }
 
 /// `path` where its name lives (its own folders resolved) if its last name is
-/// a link, every link the walk meets after the first one, and its real path.
+/// a link, every link the walk meets past the first one or a `..`, and its real path.
 /// Past a name that is not there, the rest is spelled as written with `..`
 /// folded: Claude Code matches a rule's path as written.
 fn link_chain(path: &Path) -> Result<Vec<String>, String> {
@@ -322,11 +322,12 @@ fn link_chain(path: &Path) -> Result<Vec<String>, String> {
             .collect()
     };
     let mut todo = names(&std::path::absolute(path).map_err(|e| failed(&e))?);
-    let (mut at, mut chain, mut links) = (PathBuf::new(), Vec::new(), 0);
+    let (mut at, mut chain, mut links, mut folded) = (PathBuf::new(), Vec::new(), 0, false);
     while let Some(name) = todo.pop() {
         if name == "." || name == ".." {
             if name == ".." {
                 at.pop();
+                folded |= links == 0;
             }
             continue;
         }
@@ -344,9 +345,9 @@ fn link_chain(path: &Path) -> Result<Vec<String>, String> {
         if links > 40 {
             return Err(failed(&"too many links"));
         }
-        // srt (macOS) pins `path`'s own folders through `path` as written only up
-        // to its first link, one in `/` too. Only root can replace a link in `/`.
-        if (todo.is_empty() || links > 1) && at != Path::new("/") {
+        // srt (macOS) pins `path`'s own folders as written up to its first link (one
+        // in `/` too) or `..`, which it keeps. Only root can replace a link in `/`.
+        if (todo.is_empty() || links > 1 || folded) && at != Path::new("/") {
             chain.push(utf8(&here)?);
         }
         todo.extend(names(&target));
