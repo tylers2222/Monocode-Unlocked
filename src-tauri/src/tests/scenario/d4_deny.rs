@@ -172,6 +172,8 @@ fn d4_marker_decides_and_bad_input_fails_the_spawn() {
     a_folder_link_on_the_way_is_denied_to_srt(&root, &data, &home);
     a_script_a_project_hook_runs_is_denied_to_srt(&root, &data, &home);
     a_dangling_settings_link_is_denied_where_it_points(&root, &data, &home);
+    a_config_folder_behind_a_folder_link_is_denied_where_it_is(&root, &data, &home, &work);
+    a_script_a_helper_or_mcp_server_runs_is_denied_to_srt(&root, &data);
     let root_text = root.to_str().unwrap();
     for bad in [
         "claude-config".to_owned(),
@@ -349,6 +351,65 @@ fn a_dangling_settings_link_is_denied_where_it_points(root: &Path, data: &Path, 
     );
 }
 
+/// Defect (review r6 m2): a config folder reached through a folder link gets an
+/// Edit rule only as written, so the Write tool plants a hook through its real
+/// path.
+fn a_config_folder_behind_a_folder_link_is_denied_where_it_is(
+    root: &Path,
+    data: &Path,
+    home: &Path,
+    work: &Path,
+) {
+    link_to(&root.join("m2-real"), &root.join("m2-link"), true);
+    let config = root.join("m2-link/claude-config");
+    std::fs::create_dir_all(&config).unwrap();
+    let rule = format!(
+        "Edit(/{}/m2-real/claude-config/**)",
+        root.canonicalize().unwrap().display()
+    );
+    let on = args_in(
+        data,
+        Some(config.as_os_str()),
+        home,
+        work,
+        false,
+        spawn_args("{}"),
+    );
+    let deny = deny_of(&on.unwrap());
+    assert!(
+        deny.contains(&rule),
+        "on: a config folder behind a folder link denies {rule}: {deny:?}"
+    );
+}
+
+/// Defect (review r6 m3): a script under `.claude` that a helper key or an MCP
+/// server names is not denied to srt, so Bash inside srt rewrites what the next
+/// spawn runs.
+fn a_script_a_helper_or_mcp_server_runs_is_denied_to_srt(root: &Path, data: &Path) {
+    let (home, work) = (root.join("m3-home"), root.join("m3"));
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    let settings = serde_json::json!({"apiKeyHelper": "~/.claude/key.sh",
+        "statusLine": {"type": "command", "command": "sh .claude/status.sh"}});
+    std::fs::write(home.join(".claude/settings.json"), settings.to_string()).unwrap();
+    let mcp = serde_json::json!({"mcpServers": {"tools": {"command": "node",
+        "args": ["${CLAUDE_PROJECT_DIR}/.claude/mcp/server.js"]}}});
+    std::fs::write(work.join(".mcp.json"), mcp.to_string()).unwrap();
+    let srt = srt_deny_in(data, None, &home, &work).unwrap();
+    let [home, work] = [home, work].map(|dir| dir.canonicalize().unwrap());
+    for script in [
+        home.join(".claude/key.sh"),
+        work.join(".claude/status.sh"),
+        work.join(".claude/mcp/server.js"),
+    ] {
+        let script = script.to_string_lossy().into_owned();
+        assert!(
+            srt.contains(&script),
+            "on: srt denies writes to {script}: {srt:?}"
+        );
+    }
+}
+
 const SPAWN_ROOT: &str = "MC_ADE44_SPAWN_ROOT";
 
 /// Defect: `harness_spawn` starts Claude Code without the rules while D4 is on,
@@ -405,7 +466,7 @@ fn harness_spawn_child() {
     let data = root.join("com.monocode.d4");
     let app = mock_app(&data);
     std::fs::create_dir_all(&data).unwrap();
-    let spawn = |session: &str| {
+    let spawn = |session: &str, account: Option<crate::harness::HarnessAccount>| {
         let workdir = root.join(session);
         std::fs::create_dir_all(&workdir).unwrap();
         crate::harness::harness_spawn(
@@ -415,7 +476,7 @@ fn harness_spawn_child() {
             claude.clone(),
             spawn_args("{}"),
             workdir.to_string_lossy().into_owned(),
-            None,
+            account,
             Some("claude".into()),
             Some(claude.clone()),
             None,
@@ -428,18 +489,18 @@ fn harness_spawn_child() {
             .collect::<Vec<_>>()
     };
 
-    assert_eq!(spawn("off"), spawn_args("{}"), "off: args unchanged");
+    assert_eq!(spawn("off", None), spawn_args("{}"), "off: args unchanged");
     turn_on(&data);
-    assert!(has_rules(&spawn("on")), "on: rules and sandbox block");
+    assert!(has_rules(&spawn("on", None)), "on: rules and sandbox block");
     std::fs::write(data.join("agent-sandbox-on"), "").unwrap();
     let work = root.join("in-srt");
     let chain = two_link_chain(&work.join(".claude/settings.local.json"), &work.join("cfg"));
-    let in_srt = settings_of(&spawn("in-srt"));
+    let in_srt = settings_of(&spawn("in-srt", None));
     assert!(
         in_srt["permissions"]["deny"].is_array() && in_srt.get("sandbox").is_none(),
         "inside srt: rules, no sandbox block"
     );
-    spawn("in-srt-later");
+    spawn("in-srt-later", None);
     let given = std::fs::read_to_string(work.join("srt-settings")).unwrap();
     let srt: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(given).unwrap()).unwrap();
@@ -454,6 +515,42 @@ fn harness_spawn_child() {
         assert!(
             deny.contains(path),
             "inside srt: srt denies writes to {path}, also after a later spawn wrote its own settings"
+        );
+    }
+    a_claude_account_spawn_is_denied_its_own_config(root, &data, &spawn);
+}
+
+/// Defect (review r6 m1): a spawn on a Claude account gets the rules of
+/// `$HOME/.claude`, not of the account's config folder, so the account's
+/// symlinked settings and the script its hook runs stay writable.
+fn a_claude_account_spawn_is_denied_its_own_config(
+    root: &Path,
+    data: &Path,
+    spawn: &dyn Fn(&str, Option<crate::harness::HarnessAccount>) -> Vec<String>,
+) {
+    let dotfile = root.join("dotfiles/account-settings.json");
+    let config = data.join("provider-accounts/claude/work-b");
+    link_to(&dotfile, &config.join("settings.json"), false);
+    let hook = "sh ~/.claude/hooks/account.sh";
+    let settings = serde_json::json!({"hooks": {"Stop": [
+        {"hooks": [{"type": "command", "command": hook}]}]}});
+    std::fs::write(&dotfile, settings.to_string()).unwrap();
+    let account = serde_json::from_value(serde_json::json!({"provider": "claude", "id": "work-b"}));
+    let deny = deny_of(&spawn("account", Some(account.unwrap())));
+    let rule = format!("Edit(/{})", dotfile.display());
+    assert!(
+        deny.contains(&rule),
+        "account: the account's symlinked settings deny {rule}: {deny:?}"
+    );
+    let given = std::fs::read_to_string(root.join("account/srt-settings")).unwrap();
+    let srt: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(given).unwrap()).unwrap();
+    let srt: Vec<String> = serde_json::from_value(srt["filesystem"]["denyWrite"].clone()).unwrap();
+    for path in [dotfile, root.join("home/.claude/hooks/account.sh")] {
+        let path = path.to_string_lossy().into_owned();
+        assert!(
+            srt.contains(&path),
+            "account: srt denies writes to {path}: {srt:?}"
         );
     }
 }

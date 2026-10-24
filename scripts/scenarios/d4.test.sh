@@ -191,6 +191,10 @@ run_d4() {
   # source also gets a rule on its target.
   [[ ! -L "$EVAL_HOME/.claude.json" ]] || links+=", \"Edit(/$(realpath "$EVAL_HOME/.claude.json"))\""
   [[ ! -L "$EVAL_HOME/.claude" ]] || links+=", \"Edit(/$(realpath "$EVAL_HOME/.claude")/**)\""
+  local config="${CLAUDE_CONFIG_DIR:-$EVAL_HOME/.claude}" real_config
+  # A folder link above the config folder (macOS /tmp) gets its real spelling too.
+  real_config="$(realpath "$(dirname "$config")")/$(basename "$config")"
+  [[ "$real_config" == "$config" ]] || links+=", \"Edit(/$real_config/**)\""
   off="$(d4_starts "$PUPPET/off")"; on="$(d4_starts "$PUPPET/on")"
   interactive="$(d4_jq '[.[] | select(interactive)] | length' "$off")"
   echo "D4 readings:"
@@ -207,7 +211,7 @@ run_d4() {
     "$(jq -S -c '.permissions.deny |= sort' <<JSON
 {"permissions": {"deny": ["Read(/$D4_SUPPORT/com.monocode.*/**)", "Edit(/$D4_SUPPORT/com.monocode.*/**)",
    "Edit(//**/.claude/**)", "Edit(//**/.claude.json)", "Edit(//**/.mcp.json)",
-   "Edit(/${CLAUDE_CONFIG_DIR:-$EVAL_HOME/.claude}/**)", "Edit(/$(realpath "$D4_WORK")/cfg/current.json)",
+   "Edit(/$config/**)", "Edit(/$(realpath "$D4_WORK")/cfg/current.json)",
    "Edit(/$(realpath "$D4_DOTFILE"))"$links]}, "sandbox": $sandbox}
 JSON
 )"
