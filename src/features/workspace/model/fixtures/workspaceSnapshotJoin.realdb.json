@@ -2386,6 +2386,171 @@
     },
     {
       "inFlight": [],
+      "name": "one window remembers the chat it last had open in a project it is not in",
+      "rows": [
+        {
+          "activeTabId": "tab-a",
+          "monoCompletions": [],
+          "projectCwd": "/tmp/acme",
+          "projectReturnTargets": [
+            {
+              "projectPath": "/tmp/notes",
+              "tabId": "n2"
+            }
+          ],
+          "projectTerminals": [],
+          "sessions": [
+            {
+              "cwd": "/tmp/acme",
+              "harness": "codex",
+              "id": "a",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": "a"
+            },
+            {
+              "cwd": "/tmp/notes",
+              "harness": "codex",
+              "id": "n1",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": "n1"
+            },
+            {
+              "cwd": "/tmp/notes",
+              "harness": "codex",
+              "id": "n2",
+              "model": "gpt-5-codex",
+              "modelSettings": {},
+              "runtimeMode": "supervised",
+              "title": "n2"
+            }
+          ],
+          "tabs": [
+            {
+              "editorPanes": [],
+              "focusedId": "a",
+              "id": "tab-a",
+              "kind": "session",
+              "layout": {
+                "id": "a",
+                "type": "leaf"
+              },
+              "terminalPanes": []
+            },
+            {
+              "editorPanes": [],
+              "focusedId": "n1",
+              "id": "tab-n1",
+              "kind": "session",
+              "layout": {
+                "id": "n1",
+                "type": "leaf"
+              },
+              "terminalPanes": []
+            },
+            {
+              "editorPanes": [],
+              "focusedId": "n2",
+              "id": "tab-n2",
+              "kind": "session",
+              "layout": {
+                "id": "n2",
+                "type": "leaf"
+              },
+              "terminalPanes": []
+            }
+          ],
+          "windowRows": true
+        }
+      ],
+      "saves": [
+        {
+          "readAt": 2000,
+          "snapshot": {
+            "activeTabId": "tab-a",
+            "monoCompletions": [],
+            "projectCwd": "/tmp/acme",
+            "projectReturnTargets": [
+              {
+                "projectPath": "/tmp/notes",
+                "tabId": "n2"
+              }
+            ],
+            "projectTerminals": [],
+            "sessions": [
+              {
+                "cwd": "/tmp/acme",
+                "harness": "codex",
+                "id": "a",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": "a"
+              },
+              {
+                "cwd": "/tmp/notes",
+                "harness": "codex",
+                "id": "n1",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": "n1"
+              },
+              {
+                "cwd": "/tmp/notes",
+                "harness": "codex",
+                "id": "n2",
+                "model": "gpt-5-codex",
+                "modelSettings": {},
+                "runtimeMode": "supervised",
+                "title": "n2"
+              }
+            ],
+            "tabs": [
+              {
+                "editorPanes": [],
+                "focusedId": "a",
+                "id": "tab-a",
+                "kind": "session",
+                "layout": {
+                  "id": "a",
+                  "type": "leaf"
+                },
+                "terminalPanes": []
+              },
+              {
+                "editorPanes": [],
+                "focusedId": "n1",
+                "id": "tab-n1",
+                "kind": "session",
+                "layout": {
+                  "id": "n1",
+                  "type": "leaf"
+                },
+                "terminalPanes": []
+              },
+              {
+                "editorPanes": [],
+                "focusedId": "n2",
+                "id": "tab-n2",
+                "kind": "session",
+                "layout": {
+                  "id": "n2",
+                  "type": "leaf"
+                },
+                "terminalPanes": []
+              }
+            ]
+          },
+          "window": "main"
+        }
+      ]
+    },
+    {
+      "inFlight": [],
       "name": "nothing was saved",
       "rows": [],
       "saves": []

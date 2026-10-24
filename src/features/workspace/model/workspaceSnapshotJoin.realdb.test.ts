@@ -47,6 +47,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   ),
 }));
 
+import { planProjectReturn } from "../../projects/model/projectReturn";
 import type { ProjectTerminalDock } from "../../projects/model/projectTerminal";
 import { newSession, type Session } from "../../sessions/model/session";
 import { pathKey } from "../../../shared/lib/paths";
@@ -174,6 +175,7 @@ const WORKTREE_NEWEST = "main saved only a worktree tab, window-1 a project tab"
 const LOST_CHAT = "window-1's copy of a worktree tab lost its worktree chat to main";
 const RENAMED_PIN = "window-1's copy of a worktree tab lost a chat and keeps its worktree";
 const THREE = "three windows open chats in a copy of one tab";
+const RETURN = "one window remembers the chat it last had open in a project it is not in";
 const NOTHING = "nothing was saved";
 
 const SCENARIOS: Record<string, Save[]> = {
@@ -420,6 +422,19 @@ const SCENARIOS: Record<string, Save[]> = {
       monoCompletions: [],
     },
   ],
+  [RETURN]: [
+    {
+      window: "main",
+      readAt: 2_000,
+      workspace: windowWorkspace({
+        tabs: [tab("tab-a", "a"), tab("tab-n1", "n1"), tab("tab-n2", "n2")],
+        sessions: [chat("a", "a"), chat("n1", "n1", NOTES), chat("n2", "n2", NOTES)],
+        activeTabId: "tab-a",
+        projectReturnMemory: new Map([[pathKey(NOTES), "n2"]]),
+      }),
+      monoCompletions: [],
+    },
+  ],
   [NOTHING]: [],
 };
 
@@ -635,6 +650,22 @@ describe("a relaunch restores every window's tabs from the rows Rust answers", (
       { id: expect.stringMatching(UUID), leaves: ["z", "w"] },
       { id: expect.stringMatching(UUID), leaves: ["v"] },
     ]);
+  });
+
+  it("switching back to a project the window is not in opens the chat it last had open there", async () => {
+    const { restored } = await relaunch(RETURN);
+    if (!restored) throw new Error("the rows do not restore");
+
+    expect(
+      planProjectReturn({
+        memory: restored.projectReturnMemory,
+        tabs: restored.tabs,
+        sessions: restored.sessions,
+        activeTabId: restored.activeTabId,
+        excludedIds: new Set(),
+        projectPath: NOTES,
+      }),
+    ).toEqual({ action: "activate", tabId: "tab-n2", paneId: "n2" });
   });
 
   it("the restoring window's next save is no larger than the rows it joined", async () => {
