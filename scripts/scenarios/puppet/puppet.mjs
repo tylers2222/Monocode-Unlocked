@@ -4,22 +4,27 @@
 // the first rule of $HOME/.puppet/script.json whose `match` the prompt
 // contains, and ends the turn.
 //
-// script.json: {"app": "<monocode binary>", "rules": [{"match": "...",
+// script.json: {"app": "<monocode binary>", "whoami": false, "rules": [{"match": "...",
 //   "exec": [["sqlite3", "x.db", ".tables"]],
 //   "calls": [{"tool": "send_message", "arguments": {...}}], "reply": "...",
 //   "hold": 1}]}
-// A `tool` call goes through `<app> app-mcp`, the app's MCP server, and an
-// `action` call ({"action": "sessions.start", "arguments": {...}}) through
-// `<app> app <action>`, both with the app token this process got from the app.
-// A rule with `hold: n` never ends its first n turns. log.jsonl gets one line
-// per prompt ({"prompt", "rule", "steer"}) and per call ({"tool" or "action",
-// "input", "result"}). Each exec runs in the agent's folder without a shell and
-// logs {"exec", "code", "stdout", "bytes", "stderr"}.
-import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+// A rule with `hold: n` never ends its first n turns.
+// Each tool call goes through `<app> app-mcp`, the app's MCP server, and each
+// `{"action": "sessions.start", "arguments": {...}}` call through the CLI
+// `<app> app <action>`, both with the app token this process got from the
+// app. A string argument "$card:<heading>" is the id of the card that an
+// earlier logged call filed or updated under that heading. log.jsonl gets
+// one line per prompt ({"prompt", "rule", "steer"}, plus "who", the Mono
+// that get_monos marks `you`, when `whoami` is set) and per call ({"tool"
+// or "action", "input", "result"}).
+// Each exec runs in the agent's folder without a shell and logs {"exec", "code",
+// "stdout", "bytes", "stderr"}.
+import { execFile, spawn, spawnSync } from "node:child_process";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { promisify } from "node:util";
 
 const dir = join(homedir(), ".puppet");
 const args = process.argv.slice(2);
@@ -77,30 +82,52 @@ function mcp(app) {
   };
 }
 
-function appAction(app, action, input) {
-  return new Promise((resolve) => {
-    const child = spawn(app, ["app", action, "--json", JSON.stringify(input)], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let output = "";
-    child.stdout.on("data", (chunk) => (output += chunk));
-    child.stderr.on("data", (chunk) => (output += chunk));
-    child.on("close", (code) => resolve({ ok: code === 0, output }));
-  });
+/** What a call answered: the app's `{ok, result}` envelope opened. */
+const payload = (result) => result?.result ?? result;
+
+/** Each card id an earlier call answered, by the card's heading. */
+function cardIds() {
+  const path = join(dir, "log.jsonl");
+  const ids = new Map();
+  if (!existsSync(path)) return ids;
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const card = line ? payload(JSON.parse(line).result) : undefined;
+    if (card?.id && card.heading) ids.set(card.heading, card.id);
+  }
+  return ids;
 }
 
-async function runTurn(text, steer) {
-  const script = JSON.parse(readFileSync(join(dir, "script.json"), "utf8"));
-  const rule = script.rules.find((candidate) => text.includes(candidate.match));
-  log({ prompt: text, rule: rule?.match ?? null, steer });
-  if (!rule) return "";
-  if (rule.hold) {
-    const prompts = readFileSync(join(dir, "log.jsonl"), "utf8")
-      .split("\n")
-      .filter((line) => line && JSON.parse(line).rule === rule.match).length;
-    if (prompts <= rule.hold) return new Promise(() => {});
+function withCardIds(input) {
+  const ids = cardIds();
+  return JSON.parse(JSON.stringify(input ?? {}), (_key, value) =>
+    typeof value === "string" && value.startsWith("$card:")
+      ? (ids.get(value.slice(6)) ?? value)
+      : value,
+  );
+}
+
+/** The mono_id that get_monos marks as this caller, or null. */
+function you(value) {
+  if (Array.isArray(value)) return value.map(you).find(Boolean) ?? null;
+  if (value && typeof value === "object")
+    return value.you === true ? value.mono_id : you(Object.values(value));
+  return null;
+}
+
+async function cli(app, action, input, requestId) {
+  try {
+    const { stdout } = await promisify(execFile)(app, [
+      "app", action, "--json", JSON.stringify(input),
+      ...(requestId ? ["--request-id", requestId] : []),
+    ]);
+    return JSON.parse(stdout);
+  } catch (error) {
+    return error.stdout ? JSON.parse(error.stdout) : { ok: false, error: String(error) };
   }
-  for (const [program, ...rest] of rule.exec ?? []) {
+}
+
+function runExecs(execs) {
+  for (const [program, ...rest] of execs) {
     const run = spawnSync(program, rest, { encoding: "latin1" });
     const stdout = run.stdout ?? "";
     log({
@@ -111,13 +138,36 @@ async function runTurn(text, steer) {
       stderr: (run.stderr ?? String(run.error)).slice(0, 400),
     });
   }
+}
+
+async function runTurn(text, steer) {
+  const script = JSON.parse(readFileSync(join(dir, "script.json"), "utf8"));
+  const rule = script.rules.find((candidate) => text.includes(candidate.match));
+  if (!rule && !script.whoami) {
+    log({ prompt: text, rule: null, steer });
+    return "";
+  }
   const server = mcp(script.app);
-  for (const { tool, action, arguments: input } of rule.calls ?? []) {
-    if (action) log({ action, input, result: await appAction(script.app, action, input) });
-    else log({ tool, input, result: await server.call(tool, input) });
+  const who = script.whoami ? { who: you(await server.call("get_monos", {})) } : {};
+  log({ prompt: text, rule: rule?.match ?? null, steer, ...who });
+  if (rule?.hold) {
+    const held = readFileSync(join(dir, "log.jsonl"), "utf8")
+      .split("\n")
+      .filter((line) => line && JSON.parse(line).rule === rule.match).length;
+    if (held <= rule.hold) {
+      server.close();
+      return new Promise(() => {});
+    }
+  }
+  runExecs(rule?.exec ?? []);
+  for (const call of rule?.calls ?? []) {
+    const input = withCardIds(call.arguments);
+    if (call.action)
+      log({ action: call.action, input, result: await cli(script.app, call.action, input, call.request_id) });
+    else log({ tool: call.tool, input, result: await server.call(call.tool, input) });
   }
   server.close();
-  return rule.reply ?? "";
+  return rule?.reply ?? "";
 }
 
 let turns = 0;

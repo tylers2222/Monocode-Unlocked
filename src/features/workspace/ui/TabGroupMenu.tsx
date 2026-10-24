@@ -1,11 +1,7 @@
 import {
-  AppWindow,
   ChevronRight,
   ImagePlus,
-  SquarePlus,
   Trash2,
-  Ungroup,
-  X,
   type IconComponent,
 } from "../../../shared/ui/icons";
 import {
@@ -26,15 +22,7 @@ import { ColorPickerPopover, ColorSwatchRow } from "../../../shared/ui/ColorPick
 import { Popover } from "../../../shared/ui/Popover";
 import { ProjectLogoIcon } from "../../projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
-import { MOD } from "../../../platform/tauri/platform";
 import { ExplorerMenu, type ExplorerMenuItem } from "../../files/ui/ExplorerMenu";
-
-export type TabGroupMenuAction =
-  | "new-tab"
-  | "new-window"
-  | "close-group"
-  | "ungroup"
-  | "delete-group";
 
 export type TabGroupMenuExtraItem = {
   id: string;
@@ -68,11 +56,8 @@ type Props = {
   onCustomColorChange: (groupId: string, color: string) => void;
   onMascotChange: (groupId: string, name: string | null) => void;
   onLogoChange: () => void;
-  onPick: (action: TabGroupMenuAction) => void;
   onClose: () => void;
   ariaLabel?: string;
-  /** When false, only name / logo / color controls are shown. */
-  showActions?: boolean;
   /** Active state action shown before the name and appearance controls. */
   leadingAction?: Pick<TabGroupMenuExtraItem, "id" | "label" | "description" | "icon">;
   extraItems?: TabGroupMenuExtraItem[];
@@ -82,45 +67,6 @@ type Props = {
 };
 
 const MENU_WIDTH = 260;
-
-type MenuItem = {
-  id: string;
-  label: string;
-  shortcut?: string;
-  danger?: boolean;
-  icon: IconComponent;
-};
-
-const ITEMS: MenuItem[] = [
-  {
-    id: "new-tab",
-    label: "New tab in group",
-    shortcut: `${MOD}T`,
-    icon: SquarePlus,
-  },
-  {
-    id: "new-window",
-    label: "Move group to new window",
-    icon: AppWindow,
-  },
-  {
-    id: "close-group",
-    label: "Close group",
-    shortcut: `${MOD}W`,
-    icon: X,
-  },
-  {
-    id: "ungroup",
-    label: "Ungroup",
-    icon: Ungroup,
-  },
-  {
-    id: "delete-group",
-    label: "Delete group",
-    danger: true,
-    icon: Trash2,
-  },
-];
 
 export function TabGroupMenu({
   x,
@@ -139,10 +85,8 @@ export function TabGroupMenu({
   onCustomColorChange,
   onMascotChange,
   onLogoChange,
-  onPick,
   onClose,
   ariaLabel = "Tab group actions",
-  showActions = true,
   leadingAction,
   extraItems,
   onExtraPick,
@@ -326,43 +270,6 @@ export function TabGroupMenu({
           </div>
         </div>
 
-        {showActions ? (
-          <>
-            <div className="my-1 h-px bg-content/10" />
-
-            {ITEMS.slice(0, 2).map((item) => (
-              <MenuRow
-                key={item.id}
-                item={item}
-                onHover={() => setSubmenu(null)}
-                onPick={() => onPick(item.id as TabGroupMenuAction)}
-              />
-            ))}
-
-            <div className="my-1 h-px bg-content/10" />
-
-            {ITEMS.slice(2, 4).map((item) => (
-              <MenuRow
-                key={item.id}
-                item={item}
-                onHover={() => setSubmenu(null)}
-                onPick={() => onPick(item.id as TabGroupMenuAction)}
-              />
-            ))}
-
-            <div className="my-1 h-px bg-content/10" />
-
-            {ITEMS.slice(4).map((item) => (
-              <MenuRow
-                key={item.id}
-                item={item}
-                onHover={() => setSubmenu(null)}
-                onPick={() => onPick(item.id as TabGroupMenuAction)}
-              />
-            ))}
-          </>
-        ) : null}
-
         {extraItems && extraItems.length > 0 ? (
           <>
             <div className="my-1 h-px bg-content/10" />
@@ -441,7 +348,10 @@ function MenuRow({
   onHover,
   expanded,
 }: {
-  item: MenuItem & Pick<TabGroupMenuExtraItem, "disabled" | "submenu" | "description">;
+  item: Pick<
+    TabGroupMenuExtraItem,
+    "label" | "icon" | "danger" | "disabled" | "submenu" | "description"
+  >;
   onPick: (anchor: HTMLButtonElement) => void;
   onHover?: (anchor: HTMLButtonElement) => void;
   expanded?: boolean;
@@ -484,11 +394,6 @@ function MenuRow({
       </span>
       {item.submenu ? (
         <ChevronRight className="size-3.5 shrink-0 text-content/50" strokeWidth={1.75} />
-      ) : null}
-      {item.shortcut ? (
-        <span className="shrink-0 text-[11px] text-content/40">
-          {item.shortcut}
-        </span>
       ) : null}
     </button>
   );
