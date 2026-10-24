@@ -41,9 +41,13 @@ import {
 import { sendPiTurn, steerPiTurn, forgetPiSession } from "../pi/pi";
 import { ompCommandProvider, respondQuestion } from "../pi/piFamily";
 import { OMP_FLAVOR } from "../pi/piFlavor";
-import type { HarnessEvent, SendTurnInput } from "../../core/types";
+import {
+  TurnNotReadyError,
+  type HarnessEvent,
+  type SendTurnInput,
+} from "../../core/types";
 import type { MonoTools } from "../../core/monoTools";
-import { applyHarnessEvent } from "../../core/apply";
+import { appendUser, applyHarnessEvent } from "../../core/apply";
 import { newSession } from "../../../../features/sessions/model/session";
 import { ATTACHMENT_ONLY_PROMPT } from "../../../../features/sessions/model/attachments";
 
@@ -794,6 +798,53 @@ describe("Pi-family turn result", () => {
         (r) => r.sessionId === "omp-model" && r.command.type === "prompt",
       ),
     ).toHaveLength(1);
+  });
+});
+
+// ADE-82. A run omp starts on its own, after the app turn ended, streams
+// with no app turn open; only its own settle can seal what it streamed.
+describe("OMP run started by omp itself", () => {
+  async function afterAppTurn(): Promise<number> {
+    const running = await started(input("omp-test", "hello"));
+    frame("omp-test", { type: "agent_end" });
+    await running.turn;
+    return events.length;
+  }
+  function idleReasoningRun() {
+    frame("omp-test", {
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "thinking_delta",
+        delta: "Weighing the job result.",
+      },
+    });
+    frame("omp-test", { type: "agent_end" });
+  }
+
+  it("seals reasoning that ends the run", async () => {
+    const before = await afterAppTurn();
+    idleReasoningRun();
+    let session = newSession("omp", "/repo");
+    for (const event of events.slice(before))
+      session = applyHarnessEvent(session, event);
+    const reasoning = session.blocks.filter((b) => b.role === "reasoning");
+    expect(reasoning).toHaveLength(1);
+    expect(reasoning[0].streaming).toBeFalsy();
+  });
+
+  it("leaves a refused steer deferred when the run only reasons", async () => {
+    const before = await afterAppTurn();
+    await expect(
+      steerOmpTurn({ ...input(), text: "also this" }),
+    ).rejects.toBeInstanceOf(TurnNotReadyError);
+    let session = {
+      ...appendUser(newSession("omp", "/repo"), "hello"),
+      turnReadiness: "deferred" as const,
+    };
+    idleReasoningRun();
+    for (const event of events.slice(before))
+      session = applyHarnessEvent(session, event);
+    expect(session.turnReadiness).toBe("deferred");
   });
 });
 

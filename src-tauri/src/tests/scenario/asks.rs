@@ -48,7 +48,7 @@ impl Tree {
 }
 
 /// The ask row a call wrote; panics on anything else.
-fn written(submitted: Submitted) -> MessageId {
+pub(super) fn written(submitted: Submitted) -> MessageId {
     match submitted {
         Submitted::Accepted {
             mut messages,

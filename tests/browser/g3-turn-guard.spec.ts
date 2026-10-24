@@ -1,8 +1,15 @@
+import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
 import { TURN_GUARD_STEER } from "../../src/features/monos/model/gigaWorkspace";
 import type { SessionSummary } from "../../src/features/sessions/data/sessionStore";
 import type { Block } from "../../src/features/sessions/model/session";
-import { type AppShell, expect, type MountOptions, test } from "./app/fixture";
+import {
+  type AppShell,
+  expect,
+  type FakeSeed,
+  type MountOptions,
+  test,
+} from "./app/fixture";
 
 const HOME = "/Users/test";
 const PROJECT = `${HOME}/acme`;
@@ -23,12 +30,14 @@ const chat = (id: string, cwd: string, title: string): SessionSummary => ({
 });
 
 /**
- * Pi in RPC mode (piFamily.ts). Every request is answered at once except a
- * prompt, which the test accepts with `acceptPrompt`, and a steer while
- * `window.piRejectsSteers` is set, whose write fails.
+ * Pi in RPC mode (piFamily.ts), and omp, which speaks the same RPC. Every
+ * request is answered at once except a prompt, which the test accepts with
+ * `acceptPrompt`, and a steer while `window.piRejectsSteers` is set, whose
+ * write fails.
  */
 const fakePi: MountOptions["handlers"] = {
   harness_resolve_pi: () => ({ path: "/usr/local/bin/pi" }),
+  harness_resolve_omp: () => ({ path: "/usr/local/bin/omp" }),
   harness_spawn: () => 4242,
   harness_write: (_store, { sessionId, line }) => {
     const request = JSON.parse(line as string) as { id: string; type: string };
@@ -296,14 +305,38 @@ test("a Giga turn stopped at 2:00 is not steered", async ({ app, page }) => {
   await expect(shownSteers(page)).toHaveCount(0);
 });
 
-test("a plain Mono's chat and a project session are never steered", async ({
+test("a Mono turn still running at 3:00 is steered once into that turn", async ({
   app,
   page,
 }) => {
   await mountGiga(page, app);
-  await startTurn(page, app, "Review the login flow", PIP);
+  const at = await startTurn(page, app, "Review the login flow", PIP);
 
-  await page.getByRole("button", { name: "acme", exact: true }).click();
+  await at(3 * MINUTE - 1_000);
+  expect(await steers(page, MONO_CHAT)).toEqual([]);
+
+  await at(3 * MINUTE);
+  expect(await steers(page, MONO_CHAT)).toEqual([
+    expect.objectContaining({ message: TURN_GUARD_STEER }),
+  ]);
+  await expect(shownSteers(page)).toHaveCount(1);
+  await expect
+    .poll(() => savedSteers(page, MONO_CHAT))
+    .toEqual([{ role: "user", joins: "Review the login flow" }]);
+
+  await at(13 * MINUTE);
+  expect(await steers(page, MONO_CHAT)).toHaveLength(1);
+  expect(await steers(page, GIGA_CHAT)).toEqual([]);
+});
+
+test("a project session is never steered", async ({ app, page }) => {
+  await mountGiga(page, app);
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
+
+  await page
+    .getByRole("navigation", { name: "Projects" })
+    .getByRole("button", { name: "acme", exact: true })
+    .click();
   await page.getByText("Fix the login redirect").click();
   const composer = page.getByRole("textbox").last();
   await composer.fill("Add a test for the redirect");
@@ -314,10 +347,53 @@ test("a plain Mono's chat and a project session are never steered", async ({
   // one by one. One 10-minute jump missed a guard armed for a project
   // session; 30-second jumps fire it at 3:00.
   for (let jump = 0; jump < 20; jump++) await page.clock.fastForward(30_000);
-  expect(await steers(page, MONO_CHAT)).toEqual([]);
   expect(await steers(page, PROJECT_SESSION)).toEqual([]);
-  await expect(
-    page.getByRole("button", { name: /^Pip, Thinking/ }),
-  ).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+});
+
+// ADE-74. `ade74-monos.realdb.json` holds the MonoCode Fork Orchestrator
+// (role mono), whose 18 to 27 minute turns held back its completion notices,
+// and Monocode General (role giga), reduced from a .backup copy of the app
+// database. Both chats run on omp.
+type RealMono = Required<FakeSeed>["monos"][number] & {
+  data: { name: string; sessionId: string };
+};
+const realDb = JSON.parse(
+  readFileSync(
+    new URL("./fixtures/ade74-monos.realdb.json", import.meta.url),
+    "utf8",
+  ),
+) as { monos: RealMono[]; chats: SessionSummary[] };
+const realChat = (role: RealMono["role"]) => {
+  const { data } = realDb.monos.find((mono) => mono.role === role)!;
+  return { name: data.name, sessionId: data.sessionId };
+};
+
+test("on the real roster, the Fork Orchestrator and the Giga are each steered at 3:00", async ({
+  app,
+  page,
+}) => {
+  const fork = realChat("mono");
+  await page.clock.install({ time: new Date("2026-10-18T09:00:00Z") });
+  await app.mount(
+    { sessions: realDb.chats, monos: realDb.monos },
+    { handlers: fakePi },
+  );
+
+  for (const [mono, opener] of [
+    [fork, "Watch the CI run"],
+    [realChat("giga"), "Plan the wave"],
+  ] as const) {
+    const at = await startTurn(page, app, opener, mono);
+    await at(3 * MINUTE - 1_000);
+    expect(await steers(page, mono.sessionId)).toEqual([]);
+    await at(3 * MINUTE);
+    expect(await steers(page, mono.sessionId)).toEqual([
+      expect.objectContaining({ message: TURN_GUARD_STEER }),
+    ]);
+    await expect
+      .poll(() => savedSteers(page, mono.sessionId))
+      .toEqual([{ role: "user", joins: opener }]);
+  }
+  expect(await steers(page, fork.sessionId)).toHaveLength(1);
 });

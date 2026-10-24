@@ -1,0 +1,6 @@
+id: r05-whole-project
+version: 1
+description: A Mono asked to build a project of two independent pieces starts a team lead for each piece rather than doing the work itself (V3 whole project).
+grader: asks:r05
+fixture: { agent: mono, projects: { A: atlas }, mono_projects: [A] }
+events: ["Build {{A}}. It has two independent pieces: a command-line tool in cli/ that converts CSV files to JSON, and a documentation site in docs/ that explains how to use it."]
