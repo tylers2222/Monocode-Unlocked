@@ -106,7 +106,34 @@ export type FakeStore = {
   workspaceReadAt?: number;
   /** session_store.rs `in_flight_sessions`: what the last window had running. */
   inFlight: { sessionId: string; cwd: string }[];
+  /** mono_completions.rs rows by request id: the results the window owes. */
+  completions: Record<string, FakeCompletion>;
+  /** mono_completion_deliveries: the groups already delivered. */
+  deliveredGroups: string[];
 };
+
+type FakeCompletion = {
+  origin: { monoId: string };
+  request: { requestId: string };
+  notice?: string;
+};
+
+/** mono_completions.rs settle: the save of Mono chat `chat` delivers each
+ * notice its queue or transcript holds, and deletes that notice's rows. */
+function settleCompletions(
+  store: FakeStore,
+  chat: { id: string; queuedMessages?: { id: string }[]; blocks: { appRequestId?: string }[] },
+) {
+  const held = new Set([
+    ...(chat.queuedMessages ?? []).map((message) => message.id),
+    ...chat.blocks.map((block) => block.appRequestId),
+  ]);
+  for (const row of Object.values(store.completions)) {
+    if (row.origin.monoId !== chat.id || !row.notice || !held.has(row.notice)) continue;
+    if (!store.deliveredGroups.includes(row.notice)) store.deliveredGroups.push(row.notice);
+    delete store.completions[row.request.requestId];
+  }
+}
 
 /** What a test seeds. `installBackend` fills in what Rust would add. */
 export type FakeSeed = Partial<{
@@ -355,6 +382,23 @@ const HANDLERS: Record<string, Handler> = {
     return null;
   },
   session_list_in_flight: (store) => store.inFlight,
+  // mono_completions.rs. One window, so it holds every row it claims.
+  mono_completions_claim: (store) => Object.values(store.completions),
+  mono_completions_hold: (store, { saved }) => {
+    store.completions = Object.fromEntries(
+      (saved as FakeStore["completions"][string][]).map((row) => [
+        row.request.requestId,
+        row,
+      ]),
+    );
+    return null;
+  },
+  mono_completions_deliver: (store, { groupId, requestIds }) => {
+    const fresh = !store.deliveredGroups.includes(groupId as string);
+    if (fresh) store.deliveredGroups.push(groupId as string);
+    for (const id of requestIds as string[]) delete store.completions[id];
+    return fresh;
+  },
   // session_store.rs list_by_project: ORDER BY updated_at DESC, id ASC, and
   // `branch` is the stored one, else the repo's, unless the worktree is gone.
   session_list_by_project: (store, { cwd }) =>
@@ -442,7 +486,9 @@ const HANDLERS: Record<string, Handler> = {
       kept = saved.slice(0, afterBlockId ? at + 1 : at);
     }
     const blocks = blocksChanged ? [...kept, ...session.blocks] : saved;
-    return upsertSession(store, { session: { ...session, blocks } });
+    const summary = upsertSession(store, { session: { ...session, blocks } });
+    settleCompletions(store, { ...session, blocks });
+    return summary;
   },
   // mono.rs load: SOUL.md as the app seeds it, an empty memory, no topics.
   mono_load: async (store, { mono }) => {
@@ -837,6 +883,8 @@ function storeFrom(seed: FakeSeed): FakeStore {
     approvals: seed.approvals ?? [],
     workspace: seed.workspace ?? null,
     inFlight: seed.inFlight ?? [],
+    completions: {},
+    deliveredGroups: [],
   };
 }
 

@@ -1,5 +1,6 @@
 //! ADE-89: a Mono completion result a window owes survives a kill, a reload
-//! and a closed window, reaches one window only, and is delivered once.
+//! and a closed window, reaches one window only, and is delivered once: by
+//! the save of the Mono chat that holds its notice.
 
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
@@ -15,6 +16,13 @@ fn saved(request: &str, result: Option<&str>) -> Value {
     if let Some(text) = result {
         entry["result"] = json!({ "sessionId": request, "status": "completed", "result": text });
     }
+    entry
+}
+
+/// A result already sent in notice `notice`.
+fn sent(request: &str, notice: &str) -> Value {
+    let mut entry = saved(request, Some("done"));
+    entry["notice"] = json!(notice);
     entry
 }
 
@@ -49,17 +57,24 @@ fn hold(world: &World, window: &str, run: &str, entries: &[Value]) {
 
 const BOTH: &[&str] = &["main", "window-2"];
 
-fn deliver(world: &World, window: &str, run: &str, requests: &[&str]) -> bool {
-    let requests: Vec<String> = requests.iter().map(ToString::to_string).collect();
-    let group = format!("mono-completion-{}", requests.join("+"));
-    completions::deliver(
-        &world.conn(),
-        Owner { window, run },
-        world.now(),
-        &group,
-        &requests,
-    )
-    .unwrap()
+/// The Mono chat's row with `queue` as its saved queue, written as a crash
+/// left it: no Mono chat save ran after it.
+fn chat_row(world: &World, queue: &Value) {
+    world
+        .conn()
+        .execute(
+            "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at, queued_messages_json)
+             VALUES ('mono-chat', '/p', 'fx', 'm', 'auto', 'Mono', 0, 0, ?1)
+             ON CONFLICT (id) DO UPDATE SET queued_messages_json = excluded.queued_messages_json",
+            params![queue.to_string()],
+        )
+        .unwrap();
+}
+
+/// The Mono chat is saved with `queue`, and the save settles its notices.
+fn save_chat(world: &World, queue: &Value) {
+    chat_row(world, queue);
+    completions::settle(&world.conn(), Some("mono-chat"), world.now()).unwrap();
 }
 
 fn marks(world: &World) -> i64 {
@@ -112,34 +127,38 @@ fn a_waiting_result_reaches_one_window_once_across_kills_and_reloads() {
         held[0].get("result").is_none(),
         "another window cannot rewrite a held result"
     );
-    assert!(
-        !deliver(&world, "main", "run-2", &["a", "b"]),
-        "another window cannot deliver it"
+
+    hold(
+        &world,
+        "window-2",
+        "run-2",
+        &[sent("a", "notice-ab"), sent("b", "notice-ab")],
     );
-    assert_eq!(marks(&world), 0, "a refused delivery leaves no mark");
-    assert!(
-        deliver(&world, "window-2", "run-2", &["a", "b"]),
-        "the holder delivers it"
+    hold(&world, "window-2", "run-2", &[]);
+    assert_eq!(
+        rows(&world),
+        2,
+        "a result in a notice stays once the window drops it"
     );
+    save_chat(&world, &json!([{ "id": "notice-other" }]));
+    assert_eq!(
+        (rows(&world), marks(&world)),
+        (2, 0),
+        "nothing is marked while the Mono chat does not hold the notice"
+    );
+    save_chat(&world, &json!([{ "id": "notice-ab" }]));
     assert_eq!(
         (rows(&world), marks(&world)),
         (0, 1),
-        "the delivery deletes the results and marks the group in one commit"
+        "the save that holds the notice marks it and deletes its results"
     );
-    assert!(
-        !deliver(&world, "window-2", "run-2", &["a", "b"]),
-        "the same group is delivered once"
-    );
+    hold(&world, "window-2", "run-2", &[sent("a", "notice-ab")]);
 
     world.kill();
     world.restart();
     assert!(
         claim(&world, "main", "run-3", &["main"]).is_empty(),
         "a delivered result does not come back"
-    );
-    assert!(
-        !deliver(&world, "main", "run-3", &["a", "b"]),
-        "a claim keeps a recent delivery mark"
     );
     world
         .conn()
@@ -150,6 +169,49 @@ fn a_waiting_result_reaches_one_window_once_across_kills_and_reloads() {
         .unwrap();
     claim(&world, "main", "run-3", &["main"]);
     assert_eq!(marks(&world), 0, "a claim drops marks older than 30 days");
+}
+
+/// Review r1 M2: a and b went out in one notice that the Mono chat saved,
+/// c still ran, and the app died before that save settled them. The boot
+/// delivers a and b and gives back only c, so c is reported once and a and
+/// b are not sent again.
+#[test]
+fn a_claim_delivers_what_the_mono_chat_saved_and_returns_the_rest() {
+    let mut world = World::new("ade89-part-release");
+    hold(
+        &world,
+        "main",
+        "run-1",
+        &[
+            sent("a", "notice-ab"),
+            sent("b", "notice-ab"),
+            saved("c", None),
+        ],
+    );
+    chat_row(&world, &json!([{ "id": "notice-ab" }]));
+    world.kill();
+    world.restart();
+    assert_eq!(ids(&claim(&world, "main", "run-2", &["main"])), ["c"]);
+    assert_eq!((rows(&world), marks(&world)), (1, 1));
+}
+
+/// A boot that finds a notice in the Mono's transcript, not its queue,
+/// delivers it too: the queue ran it before the save that settles it.
+#[test]
+fn a_claim_delivers_a_notice_the_mono_transcript_holds() {
+    let world = World::new("ade89-transcript");
+    hold(&world, "main", "run-1", &[sent("a", "notice-a")]);
+    chat_row(&world, &json!([]));
+    world
+        .conn()
+        .execute_batch(
+            "INSERT INTO mono_transcripts (session_id) VALUES ('mono-chat');
+             INSERT INTO mono_blocks (session_id, seq, block_id, block_json, search_text, is_user, is_draft)
+             VALUES ('mono-chat', 1, 'u1', '{\"id\":\"u1\",\"appRequestId\":\"notice-a\"}', '', 1, 0);",
+        )
+        .unwrap();
+    assert!(claim(&world, "main", "run-2", &["main"]).is_empty());
+    assert_eq!(marks(&world), 1);
 }
 
 #[test]
@@ -308,8 +370,18 @@ fn two_windows_booting_at_once_take_each_result_once() {
     );
 }
 
-/// The three commands as a window calls them, through Tauri's argument
-/// binding. The other window's claim sees `main` open, so it takes nothing.
+/// `mono_session_upsert`'s arguments: the Mono chat saved with `notice` queued.
+fn chat_save(notice: &str) -> Value {
+    let session = json!({
+        "id": "mono-chat", "cwd": "/p", "harness": "fx", "model": "m", "modelSettings": {},
+        "runtimeMode": "auto", "title": "Mono", "blocks": [],
+        "queuedMessages": [{ "id": notice, "text": "MonoCode completion notification", "attachments": [] }],
+    });
+    json!({ "session": session, "afterBlockId": null, "fromBlockId": null, "blocksChanged": false, "appendOnly": false })
+}
+
+/// The commands as a window calls them, through Tauri's argument binding.
+/// The other window's claim sees `main` open, so it takes nothing.
 #[cfg(not(windows))]
 #[test]
 fn each_window_claims_holds_and_delivers_its_own_results_through_the_commands() {
@@ -324,7 +396,7 @@ fn each_window_claims_holds_and_delivers_its_own_results_through_the_commands() 
         .invoke_handler(tauri::generate_handler![
             completions::mono_completions_claim,
             completions::mono_completions_hold,
-            completions::mono_completions_deliver
+            crate::mono_transcript::mono_session_upsert
         ])
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
@@ -342,12 +414,6 @@ fn each_window_claims_holds_and_delivers_its_own_results_through_the_commands() 
             .map(str::to_owned)
             .collect::<Vec<_>>()
     };
-    let deliver = |window, request: &str| {
-        let args =
-            json!({ "groupId": format!("mono-completion-{request}"), "requestIds": [request] });
-        call(window, "mono_completions_deliver", args) == json!(true)
-    };
-
     call(
         &main,
         "mono_completions_hold",
@@ -359,9 +425,21 @@ fn each_window_claims_holds_and_delivers_its_own_results_through_the_commands() 
         "the holding window claims its result back"
     );
     assert!(held(&other).is_empty(), "the other window gets nothing");
-    assert!(!deliver(&other, "a"), "the other window cannot deliver it");
-    assert!(deliver(&main, "a"), "the holder delivers it");
-    assert!(!deliver(&main, "a"), "once");
+    call(
+        &main,
+        "mono_completions_hold",
+        json!({ "saved": [sent("a", "mono-completion-a")] }),
+    );
+    call(
+        &other,
+        "mono_session_upsert",
+        chat_save("mono-completion-a"),
+    );
+    assert_eq!(
+        (rows(&world), marks(&world)),
+        (0, 1),
+        "the Mono chat save that holds the notice delivers it, from any window"
+    );
 
     call(
         &main,
@@ -410,5 +488,5 @@ fn each_window_claims_holds_and_delivers_its_own_results_through_the_commands() 
         0,
         "a claim that waited on the lock leaves the window that opened meanwhile its rows"
     );
-    assert!(deliver(&booted, "w"), "that window delivers its own result");
+    assert_eq!(held(&booted), ["w"], "that window keeps its own result");
 }

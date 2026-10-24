@@ -123,6 +123,7 @@ describe("Mono database pagination and writes", () => {
       },
       vi.fn(),
       () => undefined,
+      { hold() {}, deliver() {} },
     );
     for (const id of ["first", "second"]) {
       batches.watch(

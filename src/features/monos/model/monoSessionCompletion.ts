@@ -152,19 +152,35 @@ type CompletionBatch = {
 };
 
 /**
- * A monitored request whose end the Mono has not been given, kept across a
- * quit (ADE-46). `result` is set when the request's turn had already ended.
+ * A monitored request whose end the Mono has not been given, kept in the
+ * window's `mono_completions` rows (ADE-89). `result` is set when the
+ * request's turn had already ended, and `notice` once that result is in the
+ * notice with that id.
  */
 export type SavedMonoCompletion = {
   origin: MonoCompletionOrigin;
   request: MonoCompletionRequest;
   result?: MonoSessionCompletionResult;
+  notice?: string;
 };
 
-/** Results handed to `onReady`; a dismissal can still remove one before it is queued. */
+/**
+ * The window's rows in mono_completions.rs. `hold` sets them to what the
+ * window owes; a row in a notice stays until the save of the Mono chat that
+ * holds the notice marks it delivered and deletes it, in one commit.
+ */
+export type MonoCompletionStore = {
+  hold(saved: SavedMonoCompletion[]): void;
+};
+
+/**
+ * Results handed to `onReady`; a dismissal can still remove one before it is
+ * queued. `kept` is in the store from the hold that follows the release.
+ */
 type CompletionDelivery = {
   monoId: string;
   results: Map<string, MonoSessionCompletionResult>;
+  kept: SavedMonoCompletion[];
 };
 
 export const MONO_COMPLETION_HOLD_MS = 60_000;
@@ -205,6 +221,8 @@ export class MonoSessionCompletionBatches {
   private deliveries = new Set<CompletionDelivery>();
   /** The session ends each Mono was given a report of. */
   private reportedEnds = new Map<string, WeakSet<ControlOutcome>>();
+  /** The rows the store was last given, as JSON. */
+  private held: string | undefined;
 
   constructor(
     private onReady: (
@@ -214,6 +232,7 @@ export class MonoSessionCompletionBatches {
     ) => void | Promise<void>,
     private schedule: (run: () => void, ms: number) => void,
     private session: (sessionId: string) => Session | undefined,
+    private store: MonoCompletionStore,
   ) {}
 
   /** Returns the watcher of `request`'s turn, called with that turn's outcome. */
@@ -235,6 +254,7 @@ export class MonoSessionCompletionBatches {
       result = { ...request, accepted: !options.awaitAcceptance };
       batch.results.set(request.requestId, result);
     }
+    this.hold();
     return this.watcher(key, batch, result);
   }
 
@@ -256,6 +276,7 @@ export class MonoSessionCompletionBatches {
           end: outcome,
         };
         this.release(key, group);
+        this.hold();
       },
       {
         // A terminal event can arrive before the CLI knows whether a launch
@@ -264,20 +285,22 @@ export class MonoSessionCompletionBatches {
           if (group.results.get(requestId) !== entry) return;
           entry.accepted = true;
           this.release(key, group);
+          this.hold();
         },
         // A rejected CLI launch was already reported in the calling turn.
         discard: () => {
           if (group.results.get(requestId) !== entry) return;
           group.results.delete(requestId);
           this.release(key, group);
+          this.hold();
         },
       },
     );
   }
 
   /**
-   * What a quit keeps (ADE-46): each accepted member whose end the Mono was
-   * not given, once per end. A steer and the request it joined share an end,
+   * What a stop keeps (ADE-46, ADE-89): each accepted member whose end the
+   * Mono was not given, once per end. A steer and the request it joined share an end,
    * so a held steer whose end another group already reported is left out.
    */
   undelivered(): SavedMonoCompletion[] {
@@ -295,6 +318,20 @@ export class MonoSessionCompletionBatches {
         return [{ origin, request, result: settled.result }];
       }),
     );
+  }
+
+  /**
+   * The store holds what a stop must keep, and what is still being queued.
+   * A render that changes neither writes nothing.
+   */
+  private hold() {
+    const saved = [
+      ...this.undelivered(),
+      ...[...this.deliveries].flatMap(({ kept }) => kept),
+    ];
+    const held = JSON.stringify(saved);
+    if (held !== this.held) this.store.hold(saved);
+    this.held = held;
   }
 
   /**
@@ -378,6 +415,7 @@ export class MonoSessionCompletionBatches {
       dismiss(batch.results);
       this.release(key, batch);
     }
+    this.hold();
   }
 
   closeInactive(isActive: (origin: MonoCompletionOrigin) => boolean) {
@@ -387,10 +425,12 @@ export class MonoSessionCompletionBatches {
         this.schedule(() => {
           batch.phase = "open";
           this.release(key, batch);
+          this.hold();
         }, MONO_COMPLETION_HOLD_MS);
       }
       this.release(key, batch);
     }
+    this.hold();
   }
 
   private release(key: string, group: CompletionBatch) {
@@ -401,6 +441,17 @@ export class MonoSessionCompletionBatches {
       group.phase,
       this.reportedEnds.get(monoId),
     );
+    // A member is released once, so its first id names this group alone.
+    const requestIds = send.map(({ requestId }) => requestId).sort();
+    const id =
+      send.length === 1
+        ? `mono-completion-${requestIds[0]}`
+        : `mono-completion-batch-${requestIds[0]}`;
+    const kept = send.map(({ requestId, result }): SavedMonoCompletion => {
+      const { sessionId, project, prompt } = group.results.get(requestId)!;
+      const request = { requestId, sessionId, project, prompt };
+      return { origin: group.origin, request, result, notice: id };
+    });
     // Removing before delivery prevents reentrant or repeated callbacks from replaying it.
     for (const requestId of release) group.results.delete(requestId);
     if (!group.results.size) this.batches.delete(key);
@@ -411,24 +462,15 @@ export class MonoSessionCompletionBatches {
     const results = new Map(
       send.map(({ requestId, result }) => [requestId, result]),
     );
-    const delivery: CompletionDelivery = { monoId, results };
-    const id =
-      results.size === 1
-        ? `mono-completion-${[...results.keys()][0]}`
-        : `mono-completion-batch-${crypto.randomUUID()}`;
+    const delivery: CompletionDelivery = { monoId, results, kept };
     const current = () => {
       const values = [...delivery.results.values()];
       return values.length ? completionMessage(id, values) : undefined;
     };
     this.deliveries.add(delivery);
-    const delivered = this.onReady(delivery.monoId, current()!, current);
-    if (delivered) {
-      void delivered
-        .finally(() => this.deliveries.delete(delivery))
-        .catch(console.error);
-    } else {
-      this.deliveries.delete(delivery);
-    }
+    void Promise.resolve(this.onReady(delivery.monoId, current()!, current))
+      .finally(() => this.deliveries.delete(delivery))
+      .catch(console.error);
   }
 }
 
@@ -483,12 +525,8 @@ function isCompletionResult(
   );
 }
 
-/** What `undelivered` kept in a saved workspace snapshot; malformed entries are dropped. */
-export function savedMonoCompletions(snapshot: unknown): SavedMonoCompletion[] {
-  const raw =
-    snapshot && typeof snapshot === "object" && "monoCompletions" in snapshot
-      ? snapshot.monoCompletions
-      : undefined;
+/** The rows a claim returned; malformed entries are dropped. */
+export function savedMonoCompletions(raw: unknown): SavedMonoCompletion[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((entry): entry is SavedMonoCompletion => {
     const { origin, request, result } = (entry ?? {}) as Record<
