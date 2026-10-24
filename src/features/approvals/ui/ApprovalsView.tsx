@@ -15,7 +15,7 @@ import {
   useProjectLook,
   type ProjectLook,
 } from "../../projects/ui/ProjectList";
-import { useApprovalList } from "../hooks/useApprovalList";
+import { reloadApprovalLists, useApprovalList } from "../hooks/useApprovalList";
 import { useOpenCounts } from "../hooks/useApprovalsBadge";
 import { board } from "../model/approvals";
 import { OpenCard } from "./ApprovalCard";
@@ -115,6 +115,7 @@ function Board({
 }) {
   const list = useApprovalList(project);
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
+  const [notSaved, setNotSaved] = useState<ReadonlySet<string>>(new Set());
   if (!list)
     return (
       <div className="grid h-full place-items-center text-content/35">
@@ -141,29 +142,44 @@ function Board({
       <div className="mt-1.5 flex flex-col gap-2.5">
         {open.length > 0 ? <Group title="Open" count={open.length} /> : null}
         {open.map((card) => (
-          <OpenCard key={card.id} card={card} look={look} now={now} />
+          <OpenCard
+            key={card.id}
+            card={card}
+            look={look}
+            now={now}
+            onNotSaved={(id) => {
+              setNotSaved((ids) => new Set(ids).add(id));
+              reloadApprovalLists();
+            }}
+            onOpenMono={onOpenMono}
+          />
         ))}
         {closed.length > 0 ? (
           <Group title="Decided" count={closed.length} />
         ) : null}
-        {closed.map((card) =>
-          opened.has(card.id) ? (
-            <ClosedCard
-              key={card.id}
-              card={card}
-              look={look}
-              now={now}
-              onOpenMono={onOpenMono}
-            />
-          ) : (
-            <ClosedRow
-              key={card.id}
-              card={card}
-              now={now}
-              onOpen={() => setOpened((ids) => new Set(ids).add(card.id))}
-            />
-          ),
-        )}
+        {closed.map((card) => (
+          <div key={card.id}>
+            {opened.has(card.id) ? (
+              <ClosedCard
+                card={card}
+                look={look}
+                now={now}
+                onOpenMono={onOpenMono}
+              />
+            ) : (
+              <ClosedRow
+                card={card}
+                now={now}
+                onOpen={() => setOpened((ids) => new Set(ids).add(card.id))}
+              />
+            )}
+            {notSaved.has(card.id) ? (
+              <p role="alert" className="mt-1.5 px-3.5 text-xs text-red-400">
+                Already decided. Your decision was not saved.
+              </p>
+            ) : null}
+          </div>
+        ))}
       </div>
     </div>
   );

@@ -619,8 +619,11 @@ const HANDLERS: Record<string, Handler> = {
     if (verdict === "approved" && labels.length > 0 && picked.length === 0)
       throw "invalid_input: approving a card with options needs at least one chosen option";
     const text = note === null ? null : String(note).trim();
-    if (text !== null && (text.length < 1 || text.length > 8000))
-      throw "invalid_input: decision note must be 1 to 8000 characters";
+    if (text === "") throw "invalid_input: decision note must not be blank";
+    // decide.rs decision_text: the message the Giga gets, counted in characters.
+    const body = `The user decided approval card APR-${card.number} "${card.heading}".\ncard_id: ${card.id}\ndecision: ${String(verdict)}\nchosen_options: ${JSON.stringify(picked)}${text === null ? "" : `\ncomment: ${text}`}`;
+    const chars = [...body].length;
+    if (chars > 8000) throw `decision_too_long:${chars}:8000`;
     const filer = card.requestedBy.id;
     if (filer && !store.monos.find((mono) => mono.id === filer)?.data.sessionId)
       throw "filer_has_no_chat";
