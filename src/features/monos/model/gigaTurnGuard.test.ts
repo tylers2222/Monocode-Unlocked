@@ -151,13 +151,34 @@ it("steers a Giga chat turn once it runs 3 minutes", async () => {
   ]);
 });
 
-// Defect: the guard steers Mono chats or sessions that are no Mono's chat
-// (project sessions, habit runs, orchestration workers).
-it("leaves a Mono chat and other sessions alone past 3 minutes", async () => {
+// Defect: a long Mono turn (not a Giga) is never told to move its work, so
+// the notices of its monitored sessions wait behind it, or it is steered
+// more than once.
+it("steers a Mono chat turn once it runs 3 minutes", async () => {
   const mono = chat(false);
   app.start(mono, T1);
-  app.start("project-session", T2);
-  app.start(habitRunSessionId(chat(true)), T3);
+  await app.advance(TURN_GUARD_LIMIT_MS - 1);
+  expect(app.steers).toEqual([]);
+  await app.advance(1);
+  expect(app.steers).toEqual([
+    {
+      sessionId: mono,
+      turnId: T1,
+      text: "Move this work to a session in the MonoCode project and end your turn.",
+      requestId: turnGuardRequestId(T1),
+    },
+  ]);
+  await app.advance(TURN_GUARD_LIMIT_MS * 3);
+  expect(app.steers).toHaveLength(1);
+  expect(app.pending()).toBe(0);
+});
+
+// Defect: the guard steers sessions that are no Mono's own chat (project
+// sessions, habit runs of Monos and Gigas, orchestration workers).
+it("leaves project sessions and habit runs alone past 3 minutes", async () => {
+  app.start("project-session", T1);
+  app.start(habitRunSessionId(chat(true)), T2);
+  app.start(habitRunSessionId(chat(false)), T3);
   expect(app.pending()).toBe(0);
   await app.advance(TURN_GUARD_LIMIT_MS * 3);
   expect(app.steers).toEqual([]);

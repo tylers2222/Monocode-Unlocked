@@ -18,6 +18,7 @@ export function resumeUsageLimitedSession(session: Session): Session {
     ...session,
     usageLimit: undefined,
     queueStatus: session.queuedMessages?.length ? "active" : undefined,
+    queuePause: undefined,
     queuedMessages: resumeQueuedMessages(session.queuedMessages),
   };
 }

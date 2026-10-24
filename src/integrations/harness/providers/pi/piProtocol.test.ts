@@ -130,7 +130,7 @@ describe("buildPiPrompt", () => {
   it("attaches vision images and steers while streaming", () => {
     const prompt = buildPiPrompt({
       text: "look",
-      streaming: true,
+      streamingBehavior: "steer",
       attachments: [
         {
           id: "a",

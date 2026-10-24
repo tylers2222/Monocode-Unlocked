@@ -7,9 +7,7 @@
 // grades the recorded real transcripts in graders/recorded/. Each one pins
 // the exact checks it fails (`fails`), and every check is the only failure of
 // some transcript, so removing or weakening any one check fails the self-test.
-import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { grade, selfTest } from "./grade.mjs";
 
 const okCalls = (meta, action) => meta.toolCalls.filter((c) => c.action === action && c.ok);
 const rowsIn = (meta, project) => meta.rows.filter((r) => r.project_path === project);
@@ -44,53 +42,15 @@ export const CHECKS = {
   ],
 };
 
-/** Grades one trial. `skip` drops named checks (used by the self-test's mutation check). */
-export function grade(grader, meta, skip = []) {
-  const results = CHECKS[grader].filter(([name]) => !skip.includes(name)).map(([name, check]) => ({ name, pass: check(meta) }));
-  const failed = results.filter((r) => !r.pass).map((r) => r.name);
-  return {
-    pass: failed.length === 0,
-    score: failed.length === 0 ? 1 : 0,
-    reason: failed.length === 0 ? `passed: ${results.map((r) => r.name).join(", ")}` : `failed: ${failed.join(", ")}`,
-    namedScores: Object.fromEntries(results.map((r) => [r.name, r.pass ? 1 : 0])),
-  };
-}
-
-const assertion = (grader) => (_output, context) => grade(grader, context.metadata);
+const assertion = (grader) => (_output, context) => grade(CHECKS[grader], context.metadata);
 export const m01 = assertion("m01");
 export const m02 = assertion("m02");
 export const m03 = assertion("m03");
 
-function selfTest() {
-  const dir = join(dirname(fileURLToPath(import.meta.url)), "recorded");
-  const files = readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
-  let failures = 0;
-  const expect = (ok, line) => {
-    console.log(`${ok ? "ok  " : "FAIL"} ${line}`);
-    if (!ok) failures++;
-  };
-  const seen = new Set();
-  for (const file of files) {
-    const { grader, expect: want, fails, metadata } = JSON.parse(readFileSync(join(dir, file), "utf8"));
-    const got = grade(grader, metadata);
-    const failed = Object.keys(got.namedScores).filter((name) => got.namedScores[name] === 0);
-    seen.add(`${grader}:${want}`);
-    if (failed.length === 1) seen.add(`${grader}:only:${failed[0]}`);
-    expect(got.pass === (want === "pass") && failed.join() === fails.join(), `${file}: ${grader} ${got.reason} (pinned: ${fails.join(", ") || "none"})`);
+if (process.argv.includes("--self-test")) {
+  selfTest(CHECKS, ({ name, grader, metadata: m }, expect) => {
     // Its own filter, not the rowsIn under test: rows the Mono wrote to B.
-    const wroteB = metadata.rows.some((r) => r.project_path === metadata.projects.B && r.created_by === `mono:${metadata.mono}`);
-    if (wroteB) {
-      for (const [name] of CHECKS[grader]) {
-        expect(!grade(grader, metadata, [name]).pass, `${file}: wrote to B, still fails with "${name}" removed`);
-      }
-    }
-  }
-  for (const [grader, checks] of Object.entries(CHECKS)) {
-    for (const want of ["pass", "fail"]) expect(seen.has(`${grader}:${want}`), `a recorded ${want}ing transcript exists for ${grader}`);
-    for (const [name] of checks) expect(seen.has(`${grader}:only:${name}`), `a recorded transcript fails ${grader} on "${name}" alone`);
-  }
-  console.log(failures === 0 ? `self-test passed (${files.length} transcripts)` : `self-test FAILED (${failures})`);
-  process.exit(failures === 0 ? 0 : 1);
+    if (!m.rows.some((r) => r.project_path === m.projects.B && r.created_by === `mono:${m.mono}`)) return;
+    for (const [check] of CHECKS[grader]) expect(!grade(CHECKS[grader], m, [check]).pass, `${name}: wrote to B, still fails with "${check}" removed`);
+  });
 }
-
-if (process.argv.includes("--self-test")) selfTest();

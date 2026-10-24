@@ -1715,8 +1715,13 @@ fn started_lead_may(action: &str, own_worker: bool) -> bool {
     match action {
         "models.list" | "sessions.list" | "sessions.start" | "worktrees.list"
         | "worktrees.create" => true,
-        "sessions.read" | "sessions.send" | "sessions.draft" | "sessions.stop"
-        | "sessions.archive" | "sessions.delete" => own_worker,
+        "sessions.read"
+        | "sessions.send"
+        | "sessions.draft"
+        | "sessions.stop"
+        | "sessions.queue.clear"
+        | "sessions.archive"
+        | "sessions.delete" => own_worker,
         _ => false,
     }
 }

@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use crate::dirs_home;
 use crate::fs::expand_home;
@@ -955,8 +955,8 @@ pub fn harness_free_port() -> Result<u16, String> {
 #[tauri::command(async)]
 #[expect(clippy::too_many_arguments, reason = "baseline 2026-10")]
 #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
-pub fn harness_spawn(
-    app: AppHandle,
+pub fn harness_spawn<R: Runtime>(
+    app: AppHandle<R>,
     host: State<'_, HarnessHost>,
     session_id: String,
     command: String,
@@ -987,6 +987,8 @@ pub fn harness_spawn(
         }
         Some(true) => return Err("Edit approvals are only supported for `devin acp`".into()),
     };
+    let crate::agent_sandbox::Spawn { mut cmd, sandboxed } =
+        crate::agent_sandbox::command(&app, &command)?;
 
     let _reservation = crate::worktree_lifecycle::reserve_spawn(&workdir)?;
     let (epoch, kill_all, prev) = host.begin_spawn(&session_id);
@@ -994,7 +996,6 @@ pub fn harness_spawn(
         terminate(prev.pid);
     }
 
-    let mut cmd = Command::new(&command);
     cmd.args(&devin_config)
         .args(&args)
         .current_dir(&workdir)
@@ -1034,8 +1035,13 @@ pub fn harness_spawn(
         &mut cmd,
     );
 
+    let place = if sandboxed {
+        " in the agent sandbox (srt)"
+    } else {
+        ""
+    };
     let mut child =
-        spawn_managed(&mut cmd).map_err(|e| format!("Failed to start {command}: {e}"))?;
+        spawn_managed(&mut cmd).map_err(|e| format!("Failed to start {command}{place}: {e}"))?;
     let pid = child.id();
 
     let stdin = child
@@ -1142,8 +1148,8 @@ pub fn harness_spawn(
     Ok(pid)
 }
 
-pub(crate) fn provider_account_dir(
-    app: &AppHandle,
+pub(crate) fn provider_account_dir<R: Runtime>(
+    app: &AppHandle<R>,
     provider: &str,
     account_id: Option<&str>,
 ) -> Result<Option<PathBuf>, String> {
@@ -1160,8 +1166,8 @@ pub(crate) fn provider_account_dir(
     Ok(Some(dir))
 }
 
-pub(crate) fn provider_account_path(
-    app: &AppHandle,
+pub(crate) fn provider_account_path<R: Runtime>(
+    app: &AppHandle<R>,
     provider: &str,
     account_id: &str,
 ) -> Result<PathBuf, String> {
@@ -1226,8 +1232,8 @@ pub fn provider_account_remove(
     })
 }
 
-fn apply_provider_account(
-    app: &AppHandle,
+fn apply_provider_account<R: Runtime>(
+    app: &AppHandle<R>,
     cmd: &mut Command,
     account: Option<&HarnessAccount>,
 ) -> Result<(), String> {
