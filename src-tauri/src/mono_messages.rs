@@ -1584,26 +1584,24 @@ fn target(conn: &Connection, session: SessionId, live: &Live) -> rusqlite::Resul
     })
 }
 
-/// `live` with `session` first if `target` finds it with no listing: an ack
-/// goes to its ask's parent, which `ask_gate::decide_ack` proved is the
-/// caller's own, so an idle lead no window lists gets it (R6b review r1 M1)
-/// and an ended or removed one gets `target_gone`, as a send does (r2 M1).
+/// `live` with `session`, an ack's parent, first if no window lists it and
+/// `target` finds it, so an idle lead gets it and a gone one does not
+/// (R6b review r1 M1, r2 M1).
 pub(crate) fn with_own_session(
     conn: &Connection,
     live: &Live,
     session: &SessionId,
 ) -> rusqlite::Result<Vec<LiveSession>> {
-    let unlisted = Live {
-        sessions: &[],
-        ..*live
-    };
-    let parent = target(conn, session.clone(), &unlisted)?;
+    let listed = live.sessions.to_vec();
+    if listed.iter().any(|e| e.session_id == session.as_str()) {
+        return Ok(listed);
+    }
+    let parent = target(conn, session.clone(), live)?;
     let own = parent.exists.then(|| LiveSession {
         session_id: session.as_str().into(),
         steerable: parent.steerable,
         own_project: true,
     });
-    let listed = live.sessions.iter().cloned();
     Ok(own.into_iter().chain(listed).collect())
 }
 
