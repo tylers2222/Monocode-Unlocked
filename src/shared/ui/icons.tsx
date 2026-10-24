@@ -5,7 +5,6 @@ import {
   type IconSvgElement,
 } from "@hugeicons/react";
 import Add01Icon from "@hugeicons/core-free-icons/Add01Icon";
-import AddSquareIcon from "@hugeicons/core-free-icons/AddSquareIcon";
 import AlertCircleIcon from "@hugeicons/core-free-icons/AlertCircleIcon";
 import Calendar03Icon from "@hugeicons/core-free-icons/Calendar03Icon";
 import AppWindowIcon from "@hugeicons/core-free-icons/AppWindowIcon";
@@ -107,7 +106,6 @@ import Tick02Icon from "@hugeicons/core-free-icons/Tick02Icon";
 import TickDouble02Icon from "@hugeicons/core-free-icons/TickDouble02Icon";
 import UndoIcon from "@hugeicons/core-free-icons/UndoIcon";
 import UserRemove01Icon from "@hugeicons/core-free-icons/UserRemove01Icon";
-import UngroupItemsIcon from "@hugeicons/core-free-icons/UngroupItemsIcon";
 import ViewIcon from "@hugeicons/core-free-icons/ViewIcon";
 import WholeWordIcon from "@hugeicons/core-free-icons/WholeWordIcon";
 import Wrench01Icon from "@hugeicons/core-free-icons/Wrench01Icon";
@@ -278,14 +276,12 @@ export const SlidersHorizontal = wrap(
 export const SmilePlus = wrap(SmilePlusIcon, "SmilePlus");
 export const Sparkles = wrap(SparklesIcon, "Sparkles");
 export const Square = wrap(SquareIcon, "Square");
-export const SquarePlus = wrap(AddSquareIcon, "SquarePlus");
 export const Star = wrap(StarIcon, "Star");
 export const StickyNote = wrap(Note01Icon, "StickyNote");
 export const Terminal = wrap(ComputerTerminal01Icon, "Terminal");
 export const Trash2 = wrap(Delete02Icon, "Trash2");
 export const Undo2 = wrap(UndoIcon, "Undo2");
 export const UnfoldVertical = wrap(UnfoldVerticalIcon, "UnfoldVertical");
-export const Ungroup = wrap(UngroupItemsIcon, "Ungroup");
 export const UserRemove = wrap(UserRemove01Icon, "UserRemove");
 export const WandSparkles = wrap(MagicWand01Icon, "WandSparkles");
 export const WholeWord = wrap(WholeWordIcon, "WholeWord");
