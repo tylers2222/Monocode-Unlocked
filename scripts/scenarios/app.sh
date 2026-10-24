@@ -5,6 +5,7 @@
 #   app.sh build [checkout]   build the instance (under heavy-lock.sh)
 #   app.sh s0 [runs]          S0 through the real app, `runs` times (default 1)
 #   app.sh d1                 D1: the agent sandbox on, off, and on without srt
+#   app.sh list               every scenario, one per line (CI runs each: scripts/e2e-macos.sh)
 #
 # GIGA_EVAL_OUT and GIGA_EVAL_HOME default to their own /tmp folders, apart
 # from other GigaEval runs. The installed apps and their data are never used.
@@ -289,6 +290,7 @@ run_d1() {
 
 case "${1:-}" in
   build) "$INSTANCE" build "${2:-$SCENARIOS/../..}" scenario ;;
+  list) printf '%s\n' s0 d1 ;;
   # One run per process: a run called in `||` would run with errexit off.
   s0-run) run_s0 "$2" ;;
   d1) run_d1 ;;
@@ -297,5 +299,5 @@ case "${1:-}" in
     for run in $(seq 1 "${2:-1}"); do "$0" s0-run "$run" || failed=$((failed + 1)); done
     log "S0: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
-  *) sed -n '2,10p' "$0"; exit 2 ;;
+  *) sed -n '2,11p' "$0"; exit 2 ;;
 esac

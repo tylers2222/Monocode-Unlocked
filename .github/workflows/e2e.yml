@@ -1,0 +1,135 @@
+name: E2E
+
+# E2E runs here and never on a developer's machine. e2e-linux runs the suites of
+# the Docker image (make e2e); e2e-macos runs the real-app scenarios on a hosted
+# Mac. Every agent is the fx puppet: no model, no secrets.
+on:
+  pull_request:
+  push:
+    branches: [tyler/main]
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Suite to run
+        type: choice
+        options: [all, browser, milestones, scenarios, evals]
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  SUITE: ${{ inputs.suite || 'all' }}
+
+jobs:
+  e2e-linux:
+    name: e2e-linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # The image, its load into Docker and the release build of the milestones
+      # suite need more disk than the runner has free.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      # The same context make e2e sends (git archive of the commit) and the same
+      # tag, so make e2e below finds the image and does not build it again.
+      - name: Image context
+        id: image
+        run: |
+          rev=$(git rev-parse HEAD)
+          mkdir "$RUNNER_TEMP/e2e-context"
+          git archive "$rev" | tar -x -C "$RUNNER_TEMP/e2e-context"
+          echo "tag=monocode-e2e:${rev:0:12}" >>"$GITHUB_OUTPUT"
+
+      - name: Build the E2E image (layers cached in the GitHub cache)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ${{ runner.temp }}/e2e-context
+          file: ${{ runner.temp }}/e2e-context/docker/e2e.Dockerfile
+          tags: ${{ steps.image.outputs.tag }}
+          load: true
+          cache-from: type=gha,scope=e2e-image
+          cache-to: type=gha,scope=e2e-image,mode=max
+
+      - name: Run the suites
+        run: make e2e WAIT=1 SUITE="$SUITE" CPUS=4 MEMORY=12g
+
+      - name: Collect the results
+        if: always()
+        run: for run in e2e-results/*/; do make e2e-status RUN="$(basename "$run")"; done
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-linux-results
+          path: e2e-results/
+          retention-days: 14
+          if-no-files-found: warn
+
+  e2e-macos:
+    name: e2e-macos
+    if: contains(fromJSON('["all", "scenarios", "milestones"]'), inputs.suite || 'all')
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      GIGA_EVAL_OUT: /tmp/e2e-app
+      GIGA_EVAL_HOME: /tmp/e2e-app-home
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - id: rust-version
+        run: echo "version=$(cat .github/rust-version)" >>"$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ steps.rust-version.outputs.version }}
+
+      # The omp release ci.yml installs, checked against its SHA256SUMS.txt.
+      - name: Install omp 18.2.11 (sha256-checked release binary)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/omp" https://github.com/can1357/oh-my-pi/releases/download/v18.2.11/omp-darwin-arm64
+          echo "faeffd57674cffa253e2f127d72ddfe6dcd81e1eb91eb5d2148913e62a010a28  $RUNNER_TEMP/omp" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/omp-bin"
+          install -m 0755 "$RUNNER_TEMP/omp" "$RUNNER_TEMP/omp-bin/omp"
+          echo "$RUNNER_TEMP/omp-bin" >>"$GITHUB_PATH"
+      - run: omp --version
+
+      - name: Build the GigaEval instance
+        run: bash scripts/scenarios/app.sh build
+
+      - name: Run the scenarios on the runner's screen
+        run: bash scripts/e2e-macos.sh e2e-results/macos "$SUITE"
+
+      - name: Collect the build and app logs
+        if: always()
+        run: mkdir -p e2e-results/macos && cp "$GIGA_EVAL_OUT"/*.log e2e-results/macos/ || true
+
+      - name: Upload the results, screenshots and screen recording
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-macos-results
+          path: e2e-results/
+          retention-days: 14
+          if-no-files-found: warn
