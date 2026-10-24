@@ -21,6 +21,7 @@ import {
 } from "../../../app/model/appSessionSend";
 import { acknowledgeMonoMessage } from "./monoMessaging";
 import {
+  agentMessages,
   createLoadReconciles,
   createOwnerDeliveries,
   createReportedDeliveries,
@@ -30,13 +31,10 @@ import {
   listenForMonoRoutes,
   ensureQueued,
   getMessage,
-  getMonos,
   handOff,
   reconcile,
   removeQueued,
-  replyMessage,
   routeMessages,
-  sendMessage,
   type HandedOff,
   type MonoMessagingHost,
 } from "./monoRoute";
@@ -559,16 +557,7 @@ function world(
     steerProject,
   };
   const loads = createLoadReconciles(host);
-  const app = {
-    messages: {
-      getMonos: () => getMonos(host),
-      send: (requestId: string, input: never) =>
-        sendMessage(host, requestId, input),
-      reply: (requestId: string, input: never) =>
-        replyMessage(host, requestId, input),
-      get: (input: never) => getMessage(host, input),
-    },
-  } as unknown as AgentAppHost;
+  const app = { messages: agentMessages(host) } as unknown as AgentAppHost;
   const source = chat(
     typeof caller === "object"
       ? caller.sessionId
@@ -1536,6 +1525,35 @@ it("never lists a session whose worktree was removed", async () => {
   await send({ ...ask(), send_to: "old-wt" });
   const live = rust.state.submitted[0].live as { sessionId: string }[];
   expect(live.map((entry) => entry.sessionId)).toEqual([]);
+});
+
+// R6. Exists only for gate/mutation (R6 one-off); app.sh r6 proves ask and
+// ack end to end. Defect: an ask or ack reaches Rust as another tool, a send
+// stops being send_message, or an ask to a session no window has loaded
+// leaves it out of `live`, so the gate cannot see it.
+it("submits messages.ask and messages.ack as their own tools", async () => {
+  const { host, send, run } = world([], [], { stored: [chat("lead-9")] });
+  const stored = vi.spyOn(host, "stored");
+  await send(ask());
+  await run("messages.ask", { message: "Go", send_to: "lead-9" }, "r-ask");
+  await run("messages.ask", { message: "Go", send_to: 42 }, "r-odd");
+  await run(
+    "messages.ack",
+    { ask_id: "m_aaaaaaaaaaaa", message: "Done" },
+    "r-ack",
+  );
+  expect(
+    rust.state.submitted.map(({ tool, live }) => [
+      tool,
+      (live as { sessionId: string }[]).map((entry) => entry.sessionId),
+    ]),
+  ).toEqual([
+    ["send_message", []],
+    ["ask", ["lead-9"]],
+    ["ask", []],
+    ["ack", []],
+  ]);
+  expect(stored.mock.calls).toEqual([["mono-a"], ["lead-9"]]);
 });
 
 // R4: Rust reads a session's level only from its stored row. Defect: the

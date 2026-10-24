@@ -10,21 +10,16 @@ import {
   enqueueMonoMessage,
 } from "../features/monos/model/monoMessaging";
 import {
-  ackMessage,
-  askMessage,
+  agentMessages,
   createLoadReconciles,
   createOwnerDeliveries,
   createReportedDeliveries,
-  getMessage,
-  getMonos,
   dispatchOpener,
   handOff,
   listenForMonoNotices,
   listenForMonoRoutes,
   opensTurn,
   removeQueued,
-  replyMessage,
-  sendMessage,
   type MonoMessagingHost,
   type MonoQueueHost,
   type MonoRouteHost,
@@ -11761,18 +11756,7 @@ function Workspace({
                     ),
                 }),
             },
-            messages: {
-              getMonos: () => getMonos(messaging),
-              send: (requestId, input) =>
-                sendMessage(messaging, requestId, input),
-              ask: (requestId, input) =>
-                askMessage(messaging, requestId, input),
-              ack: (requestId, input) =>
-                ackMessage(messaging, requestId, input),
-              reply: (requestId, input) =>
-                replyMessage(messaging, requestId, input),
-              get: (input) => getMessage(messaging, input),
-            },
+            messages: agentMessages(messaging),
             levels: levelGate(source, payload.turnId),
             milestones,
             approvals,

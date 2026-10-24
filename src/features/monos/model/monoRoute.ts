@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import type { AgentAppHost } from "../../agent-app/model/agentApp";
 import {
   AppActionError,
   type ToolErrorDetails,
@@ -676,19 +677,19 @@ type Submitted =
       } & ToolErrorDetails;
     };
 
+/** A call's input. Rust parses an ask or ack as the model gave it (R6). */
+type RawInput = Record<string, unknown>;
+
 async function submit(
   host: MonoMessagingHost,
   tool: "send_message" | "reply" | "ask" | "ack",
   requestId: string,
-  input: SendInput | ReplyInput | RawInput,
+  input: RawInput,
 ): Promise<Accepted> {
   const resolved = await host.caller();
   if (!resolved.ok) throw new AppActionError(resolved.code, resolved.hint);
   const loaded = host.sessions();
-  const sendTo =
-    "send_to" in input && typeof input.send_to === "string"
-      ? input.send_to
-      : undefined;
+  const sendTo = typeof input.send_to === "string" ? input.send_to : undefined;
   const addressed =
     sendTo && !loaded.some((session) => session.id === sendTo)
       ? await host.stored(sendTo)
@@ -870,38 +871,18 @@ export async function getMessage(host: MonoMessagingHost, input: GetInput) {
   return { message: got.message };
 }
 
-/** `messages.send` (design 3.2). */
+/**
+ * `messages.send` (design 3.2), and `messages.ask` and `messages.ack` (R6):
+ * an ask is a send that is also a key on the asked child, an ack a send to
+ * the asker that spends it.
+ */
 export async function sendMessage(
   host: MonoMessagingHost,
   requestId: string,
-  input: SendInput,
+  input: SendInput | RawInput,
+  tool: "send_message" | "ask" | "ack" = "send_message",
 ) {
-  return sendAnswer(host, await submit(host, "send_message", requestId, input));
-}
-
-/** An `ask` or `ack` call as the model gave it: Rust parses it (R6). */
-type RawInput = Record<string, unknown>;
-
-/** `messages.ask` (R6): a send that is also a key on the asked child. */
-export async function askMessage(
-  host: MonoMessagingHost,
-  requestId: string,
-  input: RawInput,
-) {
-  return sendAnswer(host, await submit(host, "ask", requestId, input));
-}
-
-/** `messages.ack` (R6): a send to the asker that spends the ask's key. */
-export async function ackMessage(
-  host: MonoMessagingHost,
-  requestId: string,
-  input: RawInput,
-) {
-  return sendAnswer(host, await submit(host, "ack", requestId, input));
-}
-
-/** What `messages.send`, `messages.ask` and `messages.ack` answer. */
-async function sendAnswer(host: MonoMessagingHost, submitted: Accepted) {
+  const submitted = await submit(host, tool, requestId, input);
   const [{ message }] = submitted.messages;
   const delivery = await sendDelivery(host, submitted, message);
   // A steer that could not join its turn is dropped; the answer says so
@@ -950,5 +931,19 @@ export async function replyMessage(
     message_ids: submitted.messages.map((row) => row.message.id),
     answered: submitted.answered,
     ...(submitted.duplicate ? { duplicate: true as const } : {}),
+  };
+}
+
+/** The agent app's `messages.*` host: each action on `host`. */
+export function agentMessages(
+  host: MonoMessagingHost,
+): NonNullable<AgentAppHost["messages"]> {
+  return {
+    getMonos: () => getMonos(host),
+    send: (requestId, input) => sendMessage(host, requestId, input),
+    ask: (requestId, input) => sendMessage(host, requestId, input, "ask"),
+    ack: (requestId, input) => sendMessage(host, requestId, input, "ack"),
+    reply: (requestId, input) => replyMessage(host, requestId, input),
+    get: (input) => getMessage(host, input),
   };
 }
