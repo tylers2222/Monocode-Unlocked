@@ -124,17 +124,8 @@ async function cli(app, action, input, requestId) {
   }
 }
 
-async function runTurn(text, steer) {
-  const script = JSON.parse(readFileSync(join(dir, "script.json"), "utf8"));
-  const rule = script.rules.find((candidate) => text.includes(candidate.match));
-  if (!rule && !script.whoami) {
-    log({ prompt: text, rule: null, steer });
-    return "";
-  }
-  const server = mcp(script.app);
-  const who = script.whoami ? { who: you(await server.call("get_monos", {})) } : {};
-  log({ prompt: text, rule: rule?.match ?? null, steer, ...who });
-  for (const [program, ...rest] of rule?.exec ?? []) {
+function runExecs(execs) {
+  for (const [program, ...rest] of execs) {
     const run = spawnSync(program, rest, { encoding: "latin1" });
     const stdout = run.stdout ?? "";
     log({
@@ -145,6 +136,19 @@ async function runTurn(text, steer) {
       stderr: (run.stderr ?? String(run.error)).slice(0, 400),
     });
   }
+}
+
+async function runTurn(text, steer) {
+  const script = JSON.parse(readFileSync(join(dir, "script.json"), "utf8"));
+  const rule = script.rules.find((candidate) => text.includes(candidate.match));
+  if (!rule && !script.whoami) {
+    log({ prompt: text, rule: null, steer });
+    return "";
+  }
+  const server = mcp(script.app);
+  const who = script.whoami ? { who: you(await server.call("get_monos", {})) } : {};
+  log({ prompt: text, rule: rule?.match ?? null, steer, ...who });
+  runExecs(rule?.exec ?? []);
   for (const call of rule?.calls ?? []) {
     const input = withCardIds(call.arguments);
     if (call.action)

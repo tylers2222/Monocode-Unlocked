@@ -5,8 +5,8 @@
 #   app.sh build [checkout]   build the instance (under heavy-lock.sh)
 #   app.sh s0 [runs]          S0 through the real app, `runs` times (default 1)
 #   app.sh d1                 D1: the agent sandbox on, off, and on without srt
-#   app.sh approvals [runs]   ADE-55 approvals board on a copy of the real
-#                             app database, `runs` times (default 1)
+#   app.sh approvals [runs]   ADE-55 approvals board, macOS only, on a copy
+#                             of the real app database, `runs` times (default 1)
 #
 # GIGA_EVAL_OUT and GIGA_EVAL_HOME default to their own /tmp folders, apart
 # from other GigaEval runs. The installed apps are never used; `approvals`
@@ -84,15 +84,21 @@ expect() {
   if [[ "$got" == "$want" ]]; then echo "  ok   $what: $got"; else echo "  FAIL $what: $got, expected $want"; FAILED=1; fi
 }
 
-# fresh_pair <scenario>: a fresh temp HOME with the puppet as fx, launched
-# once so the DB is created and migrated, then a Giga `<scenario>-giga` and a
-# Mono `<scenario>-mono` on the scratch project, each with an fx chat.
-fresh_pair() {
+# fresh_home: the instance stopped, a fresh temp HOME and the fake clock at
+# uptime 0.
+fresh_home() {
   "$INSTANCE" stop
   "$INSTANCE" home --fresh
   mkdir -p "$APP_DATA"
   UPTIME=0; WALL="$(date +%s)000"; BOOT_MS=$((WALL - 3600000))
   clock_write "$UPTIME" "$WALL"
+}
+
+# fresh_pair <scenario>: a fresh temp HOME with the puppet as fx, launched
+# once so the DB is created and migrated, then a Giga `<scenario>-giga` and a
+# Mono `<scenario>-mono` on the scratch project, each with an fx chat.
+fresh_pair() {
+  fresh_home
   install_puppet
   "$INSTANCE" start
   wait_until 30 "the first launch writes mono_clock" holds "SELECT count(*) = 1 FROM mono_clock"
@@ -122,11 +128,16 @@ request_habit() {
     >"$APP_DATA/monos/$1/habits.json"
 }
 
-install_puppet() {
+# install_puppet_bin: the puppet as the temp HOME's fx, with an empty log.
+install_puppet_bin() {
   mkdir -p "$EVAL_HOME/.local/bin" "$PUPPET"
   cp "$SCENARIOS/puppet/puppet.mjs" "$EVAL_HOME/.local/bin/fx"
   chmod +x "$EVAL_HOME/.local/bin/fx"
   : >"$PUPPET/log.jsonl"
+}
+
+install_puppet() {
+  install_puppet_bin
   # The answer rule goes first: a prompt carrying the answer may quote the ask.
   jq -n --arg app "$(target_bin instance)" '{app: $app, rules: [
     {match: "S0-HABIT", calls: [{tool: "send_message", arguments:
@@ -291,6 +302,8 @@ run_d1() {
 }
 
 source "$SCENARIOS/approvals.sh"
+
+[[ "${1:-}" != approvals* || "$EVAL_OS" == macos ]] || die "approvals is macOS only (GIGA_EVAL_SANDBOX, sandbox-exec)"
 
 case "${1:-}" in
   build) "$INSTANCE" build "${2:-$SCENARIOS/../..}" scenario ;;

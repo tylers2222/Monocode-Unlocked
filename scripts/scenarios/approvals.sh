@@ -47,14 +47,8 @@ approvals_seed() {
       ('$id-chat', '$scratch', 'fx', '$FX_MODEL', 'auto', '$name', $now, $now);"
   done
   sqlite3 "$DB" "$sql"
-  local giga habit
-  for giga in "$GA:ADE55-A1" "$GC:ADE55-C1"; do
-    habit="${giga#*:}"; giga="${giga%%:*}"
-    mkdir -p "$APP_DATA/monos/$giga"
-    jq -n --argjson now "$now" --arg habit "$habit" '[{id: "ade55", name: "ADE55", instructions: "\($habit): file the cards.",
-      schedule: {scheduleKind: "daily"}, enabled: true, createdAt: $now, nextRunAt: ($now + 86400000), runRequested: true}]' \
-      >"$APP_DATA/monos/$giga/habits.json"
-  done
+  local giga
+  for giga in "$GA:ADE55-A1" "$GC:ADE55-C1"; do request_habit "${giga%%:*}" ADE55 "${giga#*:}: file the cards."; done
 }
 
 # The cards each Giga files, as file_approval takes them, in the instance's
@@ -75,10 +69,7 @@ start_session() {
 }
 
 install_approvals_puppet() {
-  mkdir -p "$EVAL_HOME/.local/bin" "$PUPPET"
-  cp "$SCENARIOS/puppet/puppet.mjs" "$EVAL_HOME/.local/bin/fx"
-  chmod +x "$EVAL_HOME/.local/bin/fx"
-  : >"$PUPPET/log.jsonl"
+  install_puppet_bin
   local host_update; host_update="$(approval "ADE55 Choose a host" "Updated by A" '["Fly","Railway"]' | jq 'del(.project) + {id: "$card:ADE55 Choose a host"}')"
   jq -n --arg app "$(target_bin instance)" \
     --argjson a1 "$(jq -s . <(file "ADE55 Ship the importer" "Ready to ship") <(file "ADE55 Drop the cache" "Cache is stale") \
@@ -146,11 +137,7 @@ run_approvals() {
   local run="$1"
   FAILED=0
   log "approvals run $run"
-  "$INSTANCE" stop
-  "$INSTANCE" home --fresh
-  mkdir -p "$APP_DATA"
-  UPTIME=0; WALL="$(date +%s)000"; BOOT_MS=$((WALL - 3600000))
-  clock_write "$UPTIME" "$WALL"
+  fresh_home
   sqlite3 "file:$REAL_APP_DATA/monocode.db?mode=ro" ".backup '$DB'"
   install_approvals_puppet
   "$INSTANCE" scrub "$FX_MODEL"
