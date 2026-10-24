@@ -3,7 +3,8 @@
 #
 #   instance.sh build <checkout> [label]   copy the checkout's working tree, build a release .app
 #                                          (Linux: a release binary) with cargo features
-#                                          $GIGA_EVAL_FEATURES (default fake-clock)
+#                                          $GIGA_EVAL_FEATURES (default fake-clock); a checkout
+#                                          without .git (the E2E image) needs $GIGA_EVAL_REV
 #   instance.sh home [--fresh]             create the temp HOME (symlinks to real logins, no copies;
 #                                          none on Linux)
 #   instance.sh start [--fresh-home]       launch the last build under the temp HOME
@@ -82,11 +83,17 @@ cmd_build() {
   checkout="$(cd "$checkout" && pwd)"
   local src="$SRC_ROOT/$label" logf="$EVAL_OUT/build-$label.log"
   mkdir -p "$src" "$TARGET_DIR"
-  log "copying $checkout ($(git -C "$checkout" rev-parse --short HEAD), $(git -C "$checkout" status --porcelain | wc -l | tr -d ' ') dirty paths) -> $src"
+  local rev dirty
+  if rev="$(git -C "$checkout" rev-parse HEAD 2>/dev/null)"; then
+    dirty="$(git -C "$checkout" status --porcelain | wc -l | tr -d ' ') dirty paths"
+  else
+    rev="${GIGA_EVAL_REV:?$checkout is not a git checkout; set GIGA_EVAL_REV to its commit}" dirty="no .git"
+  fi
+  log "copying $checkout (${rev:0:10}, $dirty) -> $src"
   # Build from a copy so this script never writes into the checkout under test.
   rsync -a --delete --exclude node_modules --exclude target --exclude dist --exclude .git \
     "$checkout/" "$src/"
-  git -C "$checkout" rev-parse HEAD >"$src/.giga-eval-rev"
+  echo "$rev" >"$src/.giga-eval-rev"
   local override="$src/tauri.gigaeval.json"
   printf '%s\n' "{\"productName\":\"$EVAL_PRODUCT\",\"identifier\":\"$EVAL_ID\",\"bundle\":{\"createUpdaterArtifacts\":false,\"macOS\":{\"signingIdentity\":\"-\",\"hardenedRuntime\":false}}}" >"$override"
   local lock_hash; lock_hash="$(shasum -a 256 "$src/package-lock.json" | cut -c1-16)"

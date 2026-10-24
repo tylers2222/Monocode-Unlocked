@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { notificationMuteActions } from "../../notifications/ui/notificationMuteActions";
 import { TabGroupMenu } from "./TabGroupMenu";
-import { BellOff } from "../../../shared/ui/icons";
+import { BellOff, Pin } from "../../../shared/ui/icons";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -59,7 +59,6 @@ function renderMenu(onExtraPick = vi.fn()) {
         onCustomColorChange: vi.fn(),
         onMascotChange: vi.fn(),
         onLogoChange: vi.fn(),
-        onPick: vi.fn(),
         onClose: vi.fn(),
         leadingAction: {
           id: "notifications-resume",
@@ -67,6 +66,7 @@ function renderMenu(onExtraPick = vi.fn()) {
           icon: BellOff,
         },
         extraItems: [
+          { id: "pin", label: "Pin project", icon: Pin },
           {
             id: "notifications-mute",
             label: "Mute notifications",
@@ -93,6 +93,16 @@ it("fully expands the context menu without an internal scroll region", () => {
   expect(menu.dataset.popoverSide).toBe("right");
 });
 
+it("shows only the rows its caller passes", () => {
+  renderMenu();
+
+  expect(
+    [...document.querySelectorAll('[aria-label="Tab group actions"] [role="menuitem"]')].map(
+      (row) => row.textContent,
+    ),
+  ).toEqual(["Resume notifications", "Pin project", "Mute notifications"]);
+});
+
 it("closes the mute submenu when the pointer enters the leading action", () => {
   renderMenu();
 
@@ -111,7 +121,7 @@ it("closes the mute submenu on a standard action and allows reopening it", () =>
   const onExtraPick = renderMenu();
 
   hover("Mute notifications");
-  hover("New tab in group");
+  hover("Pin project");
   expect(
     document.querySelector('[role="menu"][aria-label="Mute notifications"]'),
   ).toBeNull();

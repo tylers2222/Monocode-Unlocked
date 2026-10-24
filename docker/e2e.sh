@@ -28,7 +28,8 @@ start() {
   id="$(date -u +%Y%m%d-%H%M%S)-${rev:0:8}-$suite"
   mkdir -p "$RESULTS/$id"
   printf 'context=%s\ncommit=%s\nsuite=%s\nimage=%s\n' "$(docker context show)" "$rev" "$suite" "$tag" >"$RESULTS/$id/run.env"
-  local run=(--init --name "$IMAGE-$id" --cpus "$cpus" --memory "$memory" --shm-size 1g "$tag" "$suite")
+  local run=(--init --name "$IMAGE-$id" --cpus "$cpus" --memory "$memory" --shm-size 1g
+    --env GIGA_EVAL_REV="$rev" "$tag" "$suite")
   if [[ $wait == 1 ]]; then
     echo "$id"
     docker run "${run[@]}"

@@ -5,8 +5,8 @@
 ##       already built, start the suites detached, and print the run id.
 ##       WAIT=1 prints the id, then runs attached and exits with the suites'
 ##       code (CI: .github/workflows/e2e.yml). SUITE is all, browser, evals,
-##       milestones or scenarios; milestones and scenarios are not ported yet
-##       and record a skipped row. CPUS and MEMORY cap the container.
+##       milestones or scenarios; scenarios is not ported yet and records a
+##       skipped row. CPUS and MEMORY cap the container.
 ##   make e2e-status RUN=<id>
 ##       Say if the run is still going. Once it ends, copy its results to
 ##       e2e-results/<id>/ (results.tsv, junit.xml, run.log, browser/ with
