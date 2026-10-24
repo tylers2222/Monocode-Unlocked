@@ -332,6 +332,9 @@ exit_unsaved() {
 
 rows() { q "SELECT count(*) FROM mono_completions"; }
 queued_notices() { q "SELECT (length(queued_messages_json) - length(replace(queued_messages_json, '$NOTICE', ''))) / length('$NOTICE') FROM sessions WHERE id = '$1'"; }
+# The notices the Mono's agent got plus those in its saved queue: a kill
+# while the Mono's turn ran leaves its queue paused until the user resumes.
+notices() { echo $(($(prompts "$NOTICE") + $(queued_notices "$1"))); }
 # reports <session id>: the notices that reached the Mono's agent or wait in
 # its saved queue, counted per session they report on.
 reports() {
@@ -400,10 +403,10 @@ run_ade89() {
   kill9
 
   "$INSTANCE" start
-  for _ in $(seq 1 60); do saw "$NOTICE" && break; sleep 1; done
-  # A second copy would follow the first within the same second or two.
-  sleep 5
-  expect "notices to the Mono after a kill after the mark" "$(prompts "$NOTICE")" 1
+  for _ in $(seq 1 60); do (($(notices "$mono_chat") > 0)) && break; sleep 1; done
+  # A copy the boot sends again would follow within the boot's first seconds.
+  sleep 10
+  expect "notices to the Mono after a kill after the mark" "$(notices "$mono_chat")" 1
   expect "rows once it is delivered" "$(rows)" 0
   expect "delivered groups" "$(q "SELECT count(*) FROM mono_completion_deliveries")" 1
   echo "  Continue prompts: $(prompts "Continue from where you left off.")"
@@ -441,7 +444,7 @@ crash_before_the_mark() {
     holds "SELECT (SELECT count(*) FROM mono_completions) = 0 AND (SELECT count(*) FROM mono_completion_deliveries) = 1"
   # A second copy would follow the first within the same second or two.
   sleep 5
-  expect "notices after a kill between the queue and the mark" "$(prompts "$NOTICE")" 1
+  expect "notices after a row outlived its notice's save" "$(notices "$1")" 1
 }
 
 # Review r1 M2: one Mono turn watched three sessions. Two ended and their
