@@ -275,10 +275,7 @@ it("adds the thinking and tool rows to monos.read only with work: true", async (
   });
   expect(
     await failure(run("monos.read", { monoId: "mono-2", work: 1 })),
-  ).toMatchObject({
-    code: "invalid_input",
-    hint: "work must be true or false",
-  });
+  ).toMatchObject({ code: "invalid_input", hint: "work must be true or false" });
 });
 
 it("answers monos.read with a before that is not a turn ID with invalid_input", async () => {
