@@ -121,7 +121,7 @@ function Board({ project, look }: { project: string; look: ProjectLook }) {
       <div className="mt-1.5 flex flex-col gap-2.5">
         {open.length > 0 ? <Group title="Open" count={open.length} /> : null}
         {open.map((card) => (
-          <OpenCard key={card.id} card={card} now={now} />
+          <OpenCard key={card.id} card={card} look={look} now={now} />
         ))}
       </div>
     </div>
