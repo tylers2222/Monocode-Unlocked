@@ -115,6 +115,11 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
     get: vi.mocked(messages.get),
     ask: vi.mocked(messages.ask),
     ack: vi.mocked(messages.ack),
+    talk: {
+      question: vi.mocked(messages.question),
+      answer: vi.mocked(messages.answer),
+      update: vi.mocked(messages.update),
+    },
     shroomChat,
   };
 }
@@ -440,16 +445,26 @@ it("passes messages.get with a handle or a message id to the store", async () =>
   ]);
 });
 
-// R6. Exists only for gate/mutation (R6 one-off); app.sh r6 proves ask and
-// ack end to end. Defect: a field of messages.ask or messages.ack is refused
-// as unknown, or one action reaches the other's host call or none.
-it("passes messages.ask and messages.ack with every field to their own call", async () => {
-  const { run, send, ask, ack } = fixture();
+// R6, R14. Exists only for gate/mutation (R6 one-off); app.sh r6 proves ask
+// and ack end to end, the S4 scenario the rest in Rust. Defect: a field of a
+// call on an ask's key is refused as unknown, or one action reaches another
+// action's host call or none.
+it("passes each call on an ask's key with every field to its own call", async () => {
+  const { run, send, ask, ack, talk } = fixture();
   const asked = { message: "Run it", send_to: "mono-2", due_minutes: 30 };
   const acked = { ask_id: "m_aaaaaaaaaaaa", message: "Done" };
+  const questioned = { ask_id: "m_aaaaaaaaaaaa", message: "Which branch?" };
+  const answered = { ask_id: "m_aaaaaaaaaaaa", seq: 1, message: "main" };
+  const updated = { ask_id: "m_aaaaaaaaaaaa", message: "Still working" };
   await run("messages.ask", asked, "req-ask");
   await run("messages.ack", acked, "req-ack");
+  await run("messages.question", questioned, "req-q");
+  await run("messages.answer", answered, "req-a");
+  await run("messages.update", updated, "req-u");
   expect(ask.mock.calls).toEqual([["req-ask", asked]]);
   expect(ack.mock.calls).toEqual([["req-ack", acked]]);
+  expect(talk.question.mock.calls).toEqual([["req-q", questioned]]);
+  expect(talk.answer.mock.calls).toEqual([["req-a", answered]]);
+  expect(talk.update.mock.calls).toEqual([["req-u", updated]]);
   expect(send).not.toHaveBeenCalled();
 });
