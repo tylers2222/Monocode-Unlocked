@@ -195,7 +195,7 @@ pub(crate) fn start<C: Clock>(
 }
 
 /// Starts the 1 s clock thread, beside `reminders::init`.
-pub(crate) fn init(app: &AppHandle) -> Result<(), String> {
+pub(crate) fn init<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let data = app
         .path()
         .app_data_dir()

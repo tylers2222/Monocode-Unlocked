@@ -201,3 +201,132 @@ fn close_and_boot_free_unsent_claims(
         .unwrap();
     assert_eq!(sent_rows, 3, "each reminder sent once");
 }
+
+/// The three R9 commands as windows call them, through Tauri's argument
+/// binding on the World's database. Defect: a command that drops what the
+/// store answers: the due reminder is not listed, no window gets the claim,
+/// or the sent mark is taken always or never.
+#[cfg(not(windows))]
+#[test]
+fn windows_list_claim_and_mark_a_reminder_through_the_commands() {
+    use crate::mono_messages::tests::invoke_command;
+    use crate::session_store::SessionStore;
+    use serde_json::{json, Value};
+
+    let mut world = World::new("s5d-commands");
+    let mono = world.add_mono_in("s5dc-mono", MonoRole::Mono, &[P]);
+    let lead = world.start_lead(&mono, "s5dc-lead", P);
+    let worker = world.add_session("s5dc-worker", P, Some("s5dc-lead"));
+    let b = ask(
+        &world,
+        &[&lead, &worker],
+        &session_caller(&lead, P),
+        "s5dc-b",
+        worker.as_str(),
+        10,
+    );
+    let kb = t5_key(&b);
+    let at = due(&world, &b) - T5_LEAD;
+    advance_to(&mut world, at);
+
+    let app = tauri::test::mock_builder()
+        .manage(SessionStore::open(world.path().to_path_buf()).unwrap())
+        .manage(crate::control::tests::host())
+        .invoke_handler(tauri::generate_handler![
+            ask_scheduler::mono_outbox_pending,
+            ask_scheduler::mono_outbox_claim,
+            ask_scheduler::mono_outbox_sent
+        ])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let window = |label: &str| {
+        tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
+            .build()
+            .unwrap()
+    };
+    let (main, other) = (window("main"), window("window-1"));
+    let call = |window, command: &str, args: Value| invoke_command(window, command, &args).unwrap();
+    let pending = |chat: &SessionId| -> Vec<String> {
+        let listed = call(
+            &main,
+            "mono_outbox_pending",
+            json!({ "sessionId": chat.as_str() }),
+        );
+        serde_json::from_value::<Vec<Value>>(listed)
+            .unwrap()
+            .iter()
+            .map(|reminder| reminder["key"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let claim = |window| {
+        call(
+            window,
+            "mono_outbox_claim",
+            json!({ "key": kb, "steerable": false }),
+        )
+    };
+    let sent = |window| call(window, "mono_outbox_sent", json!({ "key": kb }));
+
+    assert_eq!(pending(&worker), [kb.as_str()]);
+    assert!(
+        pending(&lead).is_empty(),
+        "only its recipient's chat lists it"
+    );
+    assert_eq!(claim(&main), json!("wake"), "the idle chat wakes");
+    assert_eq!(claim(&other), Value::Null, "one claim");
+    assert_eq!(sent(&other), json!(false), "only the holder marks it sent");
+    assert_eq!(sent(&main), json!(true));
+    assert_eq!(sent(&main), json!(false), "sent once");
+}
+
+/// The app's own launch path (`active_clock::init`) on a killed World's data
+/// folder. Defect: a launch that skips the active clock: the lease stays
+/// free for a second process, and the stored clock and the downtime log
+/// stay as the killed app left them.
+#[cfg(not(windows))]
+#[test]
+fn the_app_launch_takes_the_lease_and_carries_the_clock_on() {
+    use crate::session_store::SessionStore;
+    use tauri::Manager;
+
+    let mut world = World::new("s5d-init");
+    world.advance(10_000);
+    let clock = |conn: &rusqlite::Connection| -> (i64, i64) {
+        conn.query_row(
+            "SELECT active_ms, last_wall_ms FROM mono_clock WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    };
+    let downtime = |conn: &rusqlite::Connection| -> Vec<(i64, i64)> {
+        let mut rows = conn
+            .prepare("SELECT start_wall_ms, active_ms FROM mono_downtime ORDER BY id")
+            .unwrap();
+        rows.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let (active_ms, last_wall_ms) = clock(&world.conn());
+    assert!(active_ms > 0, "the killed app stored its active time");
+    let mut logged = downtime(&world.conn());
+    world.kill();
+
+    // An absolute identifier makes the app's data folder the World's folder.
+    let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+    context.config_mut().identifier = world.path().parent().unwrap().display().to_string();
+    let app = tauri::test::mock_builder()
+        .manage(SessionStore::open(world.path().to_path_buf()).unwrap())
+        .build(context)
+        .unwrap();
+    crate::active_clock::init(app.handle()).unwrap();
+
+    let store = app.state::<SessionStore>();
+    let conn = store.lock_conn().unwrap();
+    assert_eq!(clock(&conn).0, active_ms, "the clock goes on, not from 0");
+    logged.push((last_wall_ms, active_ms));
+    assert_eq!(downtime(&conn), logged, "the time down is logged once");
+    drop(conn);
+    assert!(!world.second_launch(), "the launched app holds the lease");
+}
