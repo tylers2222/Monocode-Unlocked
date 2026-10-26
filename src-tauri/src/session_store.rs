@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewWindow};
@@ -681,12 +681,14 @@ pub fn session_set_in_flight<R: Runtime>(
         .map_err(|e| e.to_string())
 }
 
-/// The chats this window resumes when it boots or reloads. The read clears
-/// no row: a Vite/dev reload must not consume the only copy. It lists this
-/// window's own rows of this run, and the earlier run's rows whose turn no
-/// other window holds. Another window's rows of this run are that window's
-/// live chats, with or without an authorized turn (turn start, compaction,
-/// and the time between a turn's end and that window's next save).
+/// The chats this window resumes when it boots or reloads. The call claims
+/// the earlier run's rows for this window, so a window that boots at the
+/// same moment gets none of them (ADE-116), and returns every row this
+/// window holds in this run, less a chat whose turn another window runs. It
+/// clears no row: a Vite/dev reload must not consume the only copy. Another
+/// window's rows of this run are that window's live chats, with or without
+/// an authorized turn (turn start, compaction, and the time between a
+/// turn's end and that window's next save).
 #[tauri::command(async)]
 pub fn session_list_in_flight<R: Runtime>(
     store: State<'_, SessionStore>,
@@ -696,7 +698,7 @@ pub fn session_list_in_flight<R: Runtime>(
     let running = control.sessions_running_outside(window.label());
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     let mut sessions =
-        list_in_flight(&conn, &store.run_id, window.label()).map_err(|e| e.to_string())?;
+        claim_in_flight(&conn, &store.run_id, window.label()).map_err(|e| e.to_string())?;
     sessions.retain(|session| !running.contains(&session.session_id));
     Ok(sessions)
 }
@@ -723,15 +725,6 @@ fn open_workspace_windows<R: Runtime>(window: &WebviewWindow<R>) -> Vec<String> 
         .iter()
         .map(|open| open.label().to_owned())
         .collect()
-}
-
-/// Read and clear the quit snapshot so a restored window cannot take it twice.
-#[tauri::command(async)]
-pub fn session_take_in_flight(
-    store: State<'_, SessionStore>,
-) -> Result<Vec<InFlightSession>, String> {
-    let mut conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    take_in_flight(&mut conn).map_err(|e| e.to_string())
 }
 
 const WORKSPACE_SNAPSHOT_MAX_BYTES: usize = 2_000_000;
@@ -2263,22 +2256,35 @@ fn get_session_record(
     .optional()
 }
 
-fn list_in_flight(
+/// One `BEGIN IMMEDIATE` transaction, the shape of
+/// [`crate::mono_completions::claim`]: the earlier run's rows become this
+/// window's, then it reads the rows it holds. Unlike a completion, a row of
+/// a window closed in this run is a stopped chat (ADE-62), so no window
+/// takes it.
+fn claim_in_flight(
     conn: &Connection,
     run_id: &str,
     window: &str,
 ) -> rusqlite::Result<Vec<InFlightSession>> {
-    let mut statement = conn.prepare(
-        "SELECT session_id, cwd FROM in_flight_sessions WHERE window_label = ?1 OR run_id <> ?2
-         ORDER BY sort_index ASC, session_id ASC",
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    tx.execute(
+        "UPDATE in_flight_sessions SET window_label = ?1, run_id = ?2 WHERE run_id <> ?2",
+        params![window, run_id],
     )?;
-    let rows = statement.query_map(params![window, run_id], |row| {
-        Ok(InFlightSession {
-            session_id: row.get(0)?,
-            cwd: row.get(1)?,
-        })
-    })?;
-    rows.collect()
+    let held = tx
+        .prepare(
+            "SELECT session_id, cwd FROM in_flight_sessions WHERE window_label = ?1 AND run_id = ?2
+             ORDER BY sort_index ASC, session_id ASC",
+        )?
+        .query_map(params![window, run_id], |row| {
+            Ok(InFlightSession {
+                session_id: row.get(0)?,
+                cwd: row.get(1)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    tx.commit()?;
+    Ok(held)
 }
 
 /// Also drops this run's rows of every window that is gone: a close whose
@@ -2317,25 +2323,6 @@ fn replace_in_flight(
     }
     tx.commit()?;
     Ok(())
-}
-
-fn take_in_flight(conn: &mut Connection) -> rusqlite::Result<Vec<InFlightSession>> {
-    let tx = conn.transaction()?;
-    let sessions = {
-        let mut statement = tx.prepare(
-            "SELECT session_id, cwd FROM in_flight_sessions ORDER BY sort_index ASC, session_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok(InFlightSession {
-                session_id: row.get(0)?,
-                cwd: row.get(1)?,
-            })
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
-    tx.execute("DELETE FROM in_flight_sessions", [])?;
-    tx.commit()?;
-    Ok(sessions)
 }
 
 /// Whether a snapshot read at `incoming` replaces the one stored at `stored`
@@ -3911,35 +3898,13 @@ mod tests {
             ],
         )
         .unwrap();
-        let first = take_in_flight(&mut conn).unwrap();
+        let first = claim_in_flight(&conn, "run", "main").unwrap();
         assert_eq!(first.len(), 2);
         assert_eq!(first[0].session_id, "s2");
         assert_eq!(first[0].cwd, "/tmp/b");
         assert_eq!(first[1].session_id, "s1");
-        let second = take_in_flight(&mut conn).unwrap();
-        assert!(second.is_empty());
-    }
-
-    #[test]
-    fn in_flight_list_does_not_clear() {
-        let store = SessionStore::open_in_memory().unwrap();
-        let mut conn = store.conn.lock().unwrap();
-        replace_in_flight(
-            &mut conn,
-            "run",
-            "main",
-            &["main".to_owned()],
-            &[InFlightSession {
-                session_id: "s1".into(),
-                cwd: "/tmp/a".into(),
-            }],
-        )
-        .unwrap();
-        let listed = list_in_flight(&conn, "run", "main").unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].session_id, "s1");
-        let listed_again = list_in_flight(&conn, "run", "main").unwrap();
-        assert_eq!(listed_again.len(), 1);
+        let second = claim_in_flight(&conn, "run", "main").unwrap();
+        assert_eq!(second.len(), 2, "a reload's claim reads the rows again");
     }
 
     /// The app `builder` makes, with one webview window per label.
@@ -4163,25 +4128,26 @@ mod tests {
         path
     }
 
+    /// The three sessions the user touched last, in the database at `path`.
+    #[cfg(not(windows))]
+    fn newest_sessions(path: &std::path::Path) -> [(String, String); 3] {
+        let conn = Connection::open(path).unwrap();
+        let mut statement = conn
+            .prepare("SELECT id, cwd FROM sessions ORDER BY updated_at DESC LIMIT 3")
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap();
+        let newest: Vec<_> = rows.collect::<rusqlite::Result<_>>().unwrap();
+        newest.try_into().unwrap()
+    }
+
     #[cfg(not(windows))]
     #[test]
     #[ignore = "needs MONOCODE_DB_COPY, a fresh copy of the app's monocode.db"]
     fn each_window_keeps_its_running_sessions_on_a_copy_of_the_app_database() {
         let path = private_copy_of_the_app_database();
-        let newest: Vec<(String, String)> = {
-            let conn = Connection::open(&*path).unwrap();
-            let mut statement = conn
-                .prepare("SELECT id, cwd FROM sessions ORDER BY updated_at DESC LIMIT 3")
-                .unwrap();
-            let rows = statement
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-                .unwrap();
-            rows.collect::<rusqlite::Result<_>>().unwrap()
-        };
-        each_window_keeps_its_running_sessions_through_a_relaunch(
-            &path,
-            newest.try_into().unwrap(),
-        );
+        each_window_keeps_its_running_sessions_through_a_relaunch(&path, newest_sessions(&path));
     }
 
     /// ADE-62 review M2. Defect: a window closed while other windows stay open
@@ -4472,6 +4438,93 @@ mod tests {
             )
             .unwrap();
         a_new_window_leaves_out_the_turns_another_window_runs(&path, &own);
+    }
+
+    /// ADE-116. Defect: the boot read hands the earlier run's rows to every
+    /// window that asks before one of them starts a turn, so two windows that
+    /// boot at the same moment both Continue the same chat.
+    #[cfg(not(windows))]
+    fn windows_booting_at_once_resume_each_earlier_chat_in_one_window(
+        path: &std::path::Path,
+        [a, b, c]: [(String, String); 3],
+    ) {
+        {
+            let store = SessionStore::open(path.to_path_buf()).unwrap();
+            let conn = store.lock_conn().unwrap();
+            for (index, ((id, cwd), window)) in [(&a, "main"), (&b, "main"), (&c, "window-1")]
+                .into_iter()
+                .enumerate()
+            {
+                conn.execute(
+                    "INSERT OR REPLACE INTO in_flight_sessions (session_id, cwd, sort_index, window_label, run_id)
+                     VALUES (?1, ?2, ?3, ?4, 'earlier')",
+                    params![id, cwd, index as i64, window],
+                )
+                .unwrap();
+            }
+        }
+        let earlier = ids(&in_flight_rows(path));
+
+        let (app, windows) = launch_two_windows(path);
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(windows.len()));
+        let boots = windows.clone().map(|window| {
+            let gate = gate.clone();
+            std::thread::spawn(move || {
+                gate.wait();
+                resumed(&window)
+            })
+        });
+        let booted = boots.map(|boot| boot.join().unwrap());
+        let mut each: Vec<String> = booted.iter().flatten().cloned().collect();
+        each.sort();
+        assert_eq!(
+            each, earlier,
+            "each earlier chat resumes in exactly one window"
+        );
+        for (window, boot) in windows.iter().zip(&booted) {
+            assert_eq!(
+                &resumed(window),
+                boot,
+                "a reload of {} keeps the chats its boot took",
+                window.label()
+            );
+        }
+        drop(app);
+
+        let (_app, [main, second]) = launch_two_windows(path);
+        assert_eq!(
+            resumed(&main),
+            earlier,
+            "a relaunch before any save resumes the chats the crashed run took"
+        );
+        assert_eq!(
+            resumed(&second),
+            Vec::<String>::new(),
+            "and resumes them once"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn windows_booting_at_once_resume_each_earlier_chat_in_one_window_on_a_new_database() {
+        let path = DbFile(temp_db("in-flight-claim"));
+        let running = |id: &str| (id.to_owned(), format!("/tmp/{id}"));
+        windows_booting_at_once_resume_each_earlier_chat_in_one_window(
+            &path,
+            [running("a"), running("b"), running("c")],
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "needs MONOCODE_DB_COPY, a fresh copy of the app's monocode.db"]
+    fn windows_booting_at_once_resume_each_earlier_chat_in_one_window_on_a_copy_of_the_app_database(
+    ) {
+        let path = private_copy_of_the_app_database();
+        windows_booting_at_once_resume_each_earlier_chat_in_one_window(
+            &path,
+            newest_sessions(&path),
+        );
     }
 
     #[test]
@@ -4980,7 +5033,7 @@ mod tests {
         assert_eq!(record["cwd"], "/repo");
         assert_eq!(record["worktreeCwd"], "/repo-worktrees/feature");
         assert_eq!(record["blocks"][0]["startedAt"], 1_792_360_319_663_i64);
-        let in_flight = list_in_flight(&conn, "run", "main").unwrap();
+        let in_flight = claim_in_flight(&conn, "run", "main").unwrap();
         assert_eq!(
             in_flight
                 .iter()
