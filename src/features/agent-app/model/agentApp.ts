@@ -181,6 +181,8 @@ export type AppMonoListing = {
   busy: boolean;
   /** Messages waiting in its queue. */
   queued: number;
+  /** Its queue sends nothing until someone resumes it. */
+  queuePaused: boolean;
   /** False until the Mono's chat exists. */
   hasConversation: boolean;
   /** Epoch ms of the last change to its chat, if known. */
@@ -295,6 +297,8 @@ export type AgentAppHost = {
   messages?: {
     getMonos(): Promise<unknown>;
     send(requestId: string, input: SendInput): Promise<unknown>;
+    ask(requestId: string, input: Record<string, unknown>): Promise<unknown>;
+    ack(requestId: string, input: Record<string, unknown>): Promise<unknown>;
     reply(requestId: string, input: ReplyInput): Promise<unknown>;
     get(input: GetInput): Promise<unknown>;
   };
@@ -422,6 +426,8 @@ export const FIELDS = new Map<string, readonly string[]>([
     "messages.send",
     ["message", "send_to", "wanting_reply", "intent", "reply_to", "scope"],
   ],
+  ["messages.ask", ["message", "send_to", "due_minutes"]],
+  ["messages.ack", ["ask_id", "message"]],
   ["messages.reply", ["message", "wanting_reply", "to"]],
   ["messages.get", ["handle"]],
   ["milestones.list", ["project"]],
@@ -1239,6 +1245,7 @@ function monoListing(
     projects: mono.projects,
     busy: !!chat?.busy,
     queued: chat?.queuedMessages?.length ?? 0,
+    queuePaused: chat?.queueStatus === "paused",
     hasConversation: !!mono.sessionId,
     ...(updatedAt ? { updatedAt } : {}),
     self: mono.id === self,
@@ -1706,6 +1713,10 @@ export async function handleAgentApp(
         requestId,
         checked(() => parseSendInput(input)),
       );
+    // FIELDS checked the names; Rust parses the values of an ask or ack and
+    // names the bad field in its invalid_input hint.
+    if (action === "messages.ask") return messages.ask(requestId, input);
+    if (action === "messages.ack") return messages.ack(requestId, input);
     if (action === "messages.reply")
       return messages.reply(
         requestId,

@@ -82,6 +82,8 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
   const messages: NonNullable<AgentAppHost["messages"]> = {
     getMonos: vi.fn(async () => ({ monos: [] })),
     send: vi.fn(async () => ({ message_id: "m_aaaaaaaaaaaa" })),
+    ask: vi.fn(async () => ({ message_id: "m_aaaaaaaaaaaa" })),
+    ack: vi.fn(async () => ({ message_id: "m_bbbbbbbbbbbb" })),
     reply: vi.fn(async () => ({ message_ids: [] })),
     get: vi.fn(async () => ({ message: {} })),
   };
@@ -104,7 +106,14 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
     input: Record<string, unknown> = {},
     requestId = "req-1",
   ) => handleAgentApp(source, requestId, action, input, host);
-  return { run, send: vi.mocked(messages.send), get: vi.mocked(messages.get) };
+  return {
+    run,
+    send: vi.mocked(messages.send),
+    get: vi.mocked(messages.get),
+    ask: vi.mocked(messages.ask),
+    ack: vi.mocked(messages.ack),
+    shroomChat,
+  };
 }
 
 /** What the CLI prints for a call that fails. */
@@ -138,6 +147,7 @@ const captainListing = {
   projects: [],
   busy: false,
   queued: 0,
+  queuePaused: false,
   hasConversation: true,
   self: true,
 };
@@ -148,6 +158,7 @@ const shroomListing = {
   projects: ["/code/app"],
   busy: true,
   queued: 1,
+  queuePaused: false,
   hasConversation: true,
   updatedAt: 1_760_000_000_000,
   self: false,
@@ -166,6 +177,7 @@ it("lists every Mono with its role to a Mono with no projects and marks only its
         projects: [],
         busy: false,
         queued: 0,
+        queuePaused: false,
         hasConversation: false,
         self: false,
       },
@@ -187,6 +199,26 @@ it("gets one Mono as monos.list shows it, with the harness and model its chat ru
     hasConversation: false,
     harness: null,
     model: null,
+  });
+});
+
+// ADE-78. Defect: after a relaunch paused a Mono's queue, monos.get showed
+// an idle Mono with queued messages, and nothing said they wait for Resume.
+it("reports which Mono's queue is paused in monos.get and monos.list", async () => {
+  const { run, shroomChat } = fixture();
+  shroomChat.busy = false;
+  shroomChat.queueStatus = "paused";
+  expect(await run("monos.get", { monoId: "mono-2" })).toMatchObject({
+    busy: false,
+    queued: 1,
+    queuePaused: true,
+  });
+  expect(await run("monos.list")).toMatchObject({
+    monos: [
+      { id: "mono-1", queuePaused: false },
+      { id: "mono-2", queuePaused: true },
+      { id: "mono-3", queuePaused: false },
+    ],
   });
 });
 
@@ -403,4 +435,18 @@ it("passes messages.get with a handle or a message id to the store", async () =>
     [{ handle: "#2" }],
     [{ handle: "m_aaaaaaaaaaaa" }],
   ]);
+});
+
+// R6. Exists only for gate/mutation (R6 one-off); app.sh r6 proves ask and
+// ack end to end. Defect: a field of messages.ask or messages.ack is refused
+// as unknown, or one action reaches the other's host call or none.
+it("passes messages.ask and messages.ack with every field to their own call", async () => {
+  const { run, send, ask, ack } = fixture();
+  const asked = { message: "Run it", send_to: "mono-2", due_minutes: 30 };
+  const acked = { ask_id: "m_aaaaaaaaaaaa", message: "Done" };
+  await run("messages.ask", asked, "req-ask");
+  await run("messages.ack", acked, "req-ack");
+  expect(ask.mock.calls).toEqual([["req-ask", asked]]);
+  expect(ack.mock.calls).toEqual([["req-ack", acked]]);
+  expect(send).not.toHaveBeenCalled();
 });

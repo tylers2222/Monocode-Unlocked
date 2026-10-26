@@ -1584,6 +1584,27 @@ fn target(conn: &Connection, session: SessionId, live: &Live) -> rusqlite::Resul
     })
 }
 
+/// `live` with `session`, an ack's parent, first if no window lists it and
+/// `target` finds it, so an idle lead gets it and a gone one does not
+/// (R6b review r1 M1, r2 M1).
+pub(crate) fn with_own_session(
+    conn: &Connection,
+    live: &Live,
+    session: &SessionId,
+) -> rusqlite::Result<Vec<LiveSession>> {
+    let listed = live.sessions.to_vec();
+    if listed.iter().any(|e| e.session_id == session.as_str()) {
+        return Ok(listed);
+    }
+    let parent = target(conn, session.clone(), live)?;
+    let own = parent.exists.then(|| LiveSession {
+        session_id: session.as_str().into(),
+        steerable: parent.steerable,
+        own_project: true,
+    });
+    Ok(own.into_iter().chain(listed).collect())
+}
+
 fn recipient(conn: &Connection, send_to: &str, live: &Live) -> rusqlite::Result<Recipient> {
     if let Some(mono_id) = MonoId::parse(send_to) {
         if let Some(row) = mono_row(conn, &mono_id)? {
@@ -1738,22 +1759,24 @@ pub fn submit(
         Err(hint) => return Ok(refused(Refusal::InvalidInput, hint)),
     };
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let submitted = submit_in(&tx, caller, request_id, input, live, now)?;
+    let hash = input.payload_hash();
+    let submitted = submit_in(&tx, caller, request_id, input, hash, live, now)?;
     tx.commit()?;
     Ok(submitted)
 }
 
 /// `submit` inside a transaction the caller holds: an ask or ack (R5)
-/// writes its row this way, in its own `BEGIN IMMEDIATE`.
+/// writes its row this way, in its own `BEGIN IMMEDIATE`. `hash` names the
+/// call for dedupe by request id: an ask's covers its `due_minutes` too.
 pub(crate) fn submit_in(
     tx: &Connection,
     caller: &Caller,
     request_id: &RequestId,
     input: Input,
+    hash: PayloadHash,
     live: &Live,
     now: i64,
 ) -> rusqlite::Result<Submitted> {
-    let hash = input.payload_hash();
     // Design 7 (PR 6 review r1 m1): the control host let this call through
     // before the clear forgot its session, and it reaches here after the clear
     // committed. A row written now would never be dropped.
@@ -2276,12 +2299,14 @@ pub fn reply_target(conn: &Connection, id: &MessageId) -> rusqlite::Result<Reply
 
 /// A row and the message its line names: `None` for `new` and for a
 /// whole-turn steer (design 16.7, 16.12.5). A hand-off reads it for the
-/// line, a queue for its bubble's link (PR I5).
+/// line, a queue for its bubble's link (PR I5). `carries` is the row's ask
+/// or ack in the ledger (R6), `None` for any other row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Targeted {
     pub message: MonoMessage,
     pub target: Option<ReplyTarget>,
+    pub carries: Option<asks::Carries>,
 }
 
 fn targeted(conn: &Connection, message: MonoMessage) -> rusqlite::Result<Targeted> {
@@ -2289,7 +2314,12 @@ fn targeted(conn: &Connection, message: MonoMessage) -> rusqlite::Result<Targete
         Some(target) => Some(reply_target(conn, target)?),
         None => None,
     };
-    Ok(Targeted { message, target })
+    let carries = asks::carries(conn, &message.id)?;
+    Ok(Targeted {
+        message,
+        target,
+        carries,
+    })
 }
 
 /// Design 5.5 rule 3: before a hand-off removes a queue item or sends its

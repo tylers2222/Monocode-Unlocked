@@ -1917,9 +1917,6 @@
     }
   },
   "src/features/workspace/ui/TabGroupMenu.tsx": {
-    "complexity": {
-      "count": 1
-    },
     "max-lines-per-function": {
       "count": 1
     }

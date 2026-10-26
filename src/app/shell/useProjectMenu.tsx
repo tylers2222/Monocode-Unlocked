@@ -437,12 +437,10 @@ export function useProjectMenu({
         onCustomColorChange={saveTabGroupCustomColor}
         onMascotChange={saveTabGroupMascot}
         onLogoChange={() => {}}
-        onPick={() => {}}
         onClose={() => {
           setProjectMenu(null);
           restoreFocus();
         }}
-        showActions={false}
         leadingAction={
           menuMuteStatus
             ? {
@@ -524,12 +522,10 @@ export function useProjectMenu({
           }))
         }
         onLogoChange={() => {}}
-        onPick={() => {}}
         onClose={() => {
           setGroupMenu(null);
           restoreFocus();
         }}
-        showActions={false}
         ariaLabel="Project group actions"
         extraItems={[
           {

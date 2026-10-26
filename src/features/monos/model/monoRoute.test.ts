@@ -21,6 +21,7 @@ import {
 } from "../../../app/model/appSessionSend";
 import { acknowledgeMonoMessage } from "./monoMessaging";
 import {
+  agentMessages,
   createLoadReconciles,
   createOwnerDeliveries,
   createReportedDeliveries,
@@ -30,13 +31,10 @@ import {
   listenForMonoRoutes,
   ensureQueued,
   getMessage,
-  getMonos,
   handOff,
   reconcile,
   removeQueued,
-  replyMessage,
   routeMessages,
-  sendMessage,
   type HandedOff,
   type MonoMessagingHost,
 } from "./monoRoute";
@@ -44,6 +42,7 @@ import {
   renderMonoMessage,
   renderMonoNotice,
   type Caller,
+  type Carries,
   type Handle,
   type MessageId,
   type MonoId,
@@ -558,16 +557,7 @@ function world(
     steerProject,
   };
   const loads = createLoadReconciles(host);
-  const app = {
-    messages: {
-      getMonos: () => getMonos(host),
-      send: (requestId: string, input: never) =>
-        sendMessage(host, requestId, input),
-      reply: (requestId: string, input: never) =>
-        replyMessage(host, requestId, input),
-      get: (input: never) => getMessage(host, input),
-    },
-  } as unknown as AgentAppHost;
+  const app = { messages: agentMessages(host) } as unknown as AgentAppHost;
   const source = chat(
     typeof caller === "object"
       ? caller.sessionId
@@ -660,6 +650,30 @@ it("queues a message for a busy Mono behind its running turn", async () => {
   expect(
     steerableQueuedMessage(get("a-chat"), "run-a-chat" as TurnId),
   ).toBeUndefined();
+});
+
+// ADE-78. Defect: a message for a Mono whose queue the relaunch paused
+// answers "queue", as if the turn end would send it; it waits for Resume.
+it("tells the sender a message joined a paused queue, and keeps it for Resume", async () => {
+  const { send, get } = world([
+    chat("a-chat", {
+      queueStatus: "paused",
+      queuedMessages: [
+        {
+          id: "before",
+          text: "Before the quit",
+          attachments: [],
+          pausedBy: "quit",
+        },
+      ],
+    }),
+  ]);
+  expect(await send(ask())).toMatchObject({
+    status: "delivered",
+    delivery: "paused",
+  });
+  expect(get("a-chat")).toMatchObject({ queueStatus: "paused" });
+  expect(ids(get("a-chat"))).toEqual(["before", "m_aaaaaaaaaaaa"]);
 });
 
 // Defect: a Mono steer waits for the turn end (it never reaches the running
@@ -1241,6 +1255,7 @@ it("renders the tags the agents read", () => {
     intent: "new" as const,
     replyTo: null,
     scope: null,
+    carries: null,
   };
   const sender = {
     kind: "mono" as const,
@@ -1268,6 +1283,62 @@ it("renders the tags the agents read", () => {
   );
 });
 
+const ledgerRow = (carries: Carries | null) => ({
+  id: "m_aaaaaaaaaaaa" as MessageId,
+  fromMonoId: "mono-a" as MonoId,
+  fromSessionId: "mono-chat" as SessionId,
+  body: "Go",
+  wantingReply: false,
+  intent: "new" as const,
+  replyTo: null,
+  scope: null,
+  carries,
+});
+const agentReading = {
+  sessionId: "worker-1" as SessionId,
+  turnId: "t-1" as TurnId,
+  target: null,
+};
+
+// Exists only for gate/mutation (R6 one-off): the real-app scenario proves the
+// tags reach the agent; this pins the rounding and each kind's attributes.
+it("gives the agent an ask's ask_id and due_in, and an ack's ack_of", () => {
+  const tags = (carries: Carries | null) =>
+    renderMonoMessage(ledgerRow(carries), undefined, undefined, agentReading)
+      .split("\n")[0]
+      .replace(/^.*wanting_reply="false"/, "");
+  const ask = (dueInMs: number | null) => tags({ kind: "ask", dueInMs });
+  expect(ask(29 * 60_000 + 1)).toBe(' ask_id="m_aaaaaaaaaaaa" due_in="30m">');
+  expect(ask(30 * 60_000)).toBe(' ask_id="m_aaaaaaaaaaaa" due_in="30m">');
+  expect(ask(-90_000)).toBe(' ask_id="m_aaaaaaaaaaaa" due_in="0m">');
+  expect(ask(null)).toBe(' ask_id="m_aaaaaaaaaaaa">');
+  expect(tags({ kind: "ack", askId: "m_bbbbbbbbbbbb" as MessageId })).toBe(
+    ' ack_of="m_bbbbbbbbbbbb">',
+  );
+  expect(tags(null)).toBe(">");
+});
+
+// R6a (Tyler 2026-10-24). Defect: the chat keeps the copy rendered at the
+// hand-off, so an ask's bubble still reads due_in="30m" after its deadline
+// passed, and repeats message_id as ask_id.
+it("shows an ask in the chat with no countdown and no ask_id as its deadline passes", () => {
+  const due = 30 * 60_000;
+  const chatCopy = (activeMs: number) =>
+    renderMonoMessage(
+      ledgerRow({ kind: "ask", dueInMs: due - activeMs }),
+      undefined,
+    );
+  const plain = renderMonoMessage(ledgerRow(null), undefined);
+  expect(chatCopy(0)).toBe(plain);
+  expect(chatCopy(due + 60 * 60_000)).toBe(plain);
+  expect(
+    renderMonoMessage(
+      ledgerRow({ kind: "ack", askId: "m_bbbbbbbbbbbb" as MessageId }),
+      undefined,
+    ),
+  ).toContain(' ack_of="m_bbbbbbbbbbbb">');
+});
+
 // Design 13. Defect: a lead's or worker's message reads as a deleted Mono's,
 // with no session_id to send an answer to and no level; or a deleted Mono's
 // message reads as a session's.
@@ -1281,6 +1352,7 @@ it("names a lead or worker sender by its title, session id and level", () => {
     intent: "new" as const,
     replyTo: null,
     scope: null,
+    carries: null,
   };
   expect(
     renderMonoMessage(message, {
@@ -1439,6 +1511,7 @@ it("starts a reply with a line that names the question by its message id", () =>
         intent: "reply",
         replyTo: question,
         scope: null,
+        carries: null,
       },
       { kind: "mono", name: "A", role: "mono" },
       undefined,
@@ -1470,6 +1543,7 @@ it("refuses to render a hand-off whose target is not the row's reply_to", () => 
     intent: "steer" as const,
     replyTo: "m_bbbbbbbbbbbb" as MessageId,
     scope: null,
+    carries: null,
   };
   const reading = {
     sessionId: "a-chat" as SessionId,
@@ -1504,6 +1578,38 @@ it("never lists a session whose worktree was removed", async () => {
   await send({ ...ask(), send_to: "old-wt" });
   const live = rust.state.submitted[0].live as { sessionId: string }[];
   expect(live.map((entry) => entry.sessionId)).toEqual([]);
+});
+
+// R6. Exists only for gate/mutation (R6 one-off); app.sh r6 proves ask and
+// ack end to end. Defect: an ask or ack reaches Rust as another tool, a send
+// stops being send_message, or an ask to a session no window has loaded
+// leaves it out of `live`, so the gate cannot see it. An ack names no
+// session: Rust lists the ask's parent itself (R6b review r1 M1).
+it("submits messages.ask and messages.ack as their own tools", async () => {
+  const { host, send, run } = world([], [], { stored: [chat("lead-9")] });
+  const stored = vi.spyOn(host, "stored");
+  await send(ask());
+  await run("messages.ask", { message: "Go", send_to: "lead-9" }, "r-ask");
+  await run("messages.ask", { message: "Go", send_to: 42 }, "r-odd");
+  await run(
+    "messages.ack",
+    { ask_id: "m_aaaaaaaaaaaa", message: "Done" },
+    "r-ack",
+  );
+  expect(rust.state.submitted.map(({ tool }) => tool)).toEqual([
+    "send_message",
+    "ask",
+    "ask",
+    "ack",
+  ]);
+  expect(
+    rust.state.submitted
+      .slice(0, 3)
+      .map(({ live }) =>
+        (live as { sessionId: string }[]).map((entry) => entry.sessionId),
+      ),
+  ).toEqual([[], ["lead-9"], []]);
+  expect(stored.mock.calls).toEqual([["mono-a"], ["lead-9"]]);
 });
 
 // R4: Rust reads a session's level only from its stored row. Defect: the
@@ -1849,7 +1955,13 @@ it("names a late answer's target by its message id in the Giga's turn", async ()
   ];
   const { host } = world([chat("giga-chat", { busy: true }), chat("a-chat")]);
   const deliver = vi.fn((_: HandedOff) => true);
-  await handOff(host, "giga-chat", "m_bbbbbbbbbbbb" as MessageId, "steer", deliver);
+  await handOff(
+    host,
+    "giga-chat",
+    "m_bbbbbbbbbbbb" as MessageId,
+    "steer",
+    deliver,
+  );
   expect(deliver.mock.calls[0][0].turnId).toBe("run-giga-chat");
   expect(deliver.mock.calls[0][0].text).toContain(
     `\n[steer → ${target.id} · "Is CI green?"]\nIt is green now\n`,

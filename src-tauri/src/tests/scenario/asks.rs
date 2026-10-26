@@ -9,9 +9,11 @@ use serde_json::json;
 use super::agents::{mono_caller, session_caller, Mono};
 use super::world::World;
 use crate::ask_gate::AckRefused;
-use crate::asks;
+use crate::asks::{self, AckInput, AskInput, Carries};
 use crate::mono_gate::Caller;
-use crate::mono_messages::{Live, LiveSession, MessageId, RequestId, SessionId, Submitted};
+use crate::mono_messages::{
+    Live, LiveSession, MessageId, RequestId, SessionId, Submitted, Targeted,
+};
 use crate::mono_roster::{self, MonoRole};
 
 const P: &str = "/p";
@@ -47,16 +49,45 @@ impl Tree {
     }
 }
 
-/// The ask row a call wrote; panics on anything else.
-pub(super) fn written(submitted: Submitted) -> MessageId {
+/// The row a call wrote and what it carries (R6); panics on anything else.
+fn carried(submitted: Submitted) -> (MessageId, Option<Carries>) {
     match submitted {
         Submitted::Accepted {
             mut messages,
             duplicate: false,
             ..
-        } => messages.remove(0).message.id,
+        } => {
+            let row = messages.remove(0);
+            (row.message.id, row.carries)
+        }
         other => panic!("not a new accept: {other:?}"),
     }
+}
+
+/// The ask row a call wrote; panics on anything else.
+pub(super) fn written(submitted: Submitted) -> MessageId {
+    carried(submitted).0
+}
+
+/// Each row a turn was handed, with what it carries.
+fn handed(rows: Vec<Targeted>) -> Vec<(MessageId, Option<Carries>)> {
+    rows.into_iter()
+        .map(|row| (row.message.id, row.carries))
+        .collect()
+}
+
+/// What an ask row carries with `minutes` of active time left.
+fn due_in(minutes: i64) -> Option<Carries> {
+    Some(Carries::Ask {
+        due_in_ms: Some(minutes * 60_000),
+    })
+}
+
+/// What the ack row of ask `ask` carries.
+fn acks(ask: &MessageId) -> Option<Carries> {
+    Some(Carries::Ack {
+        ask_id: ask.clone(),
+    })
 }
 
 fn refusal(submitted: Submitted) -> (&'static str, String) {
@@ -350,10 +381,7 @@ fn a_failed_ask_insert_leaves_no_carrier_row() {
             &world.conn(),
             &session_caller(&tree.lead, P),
             &RequestId::parse("fault").unwrap(),
-            Ok(
-                serde_json::from_value(json!({"message": "Do y", "send_to": tree.worker.as_str()}))
-                    .unwrap(),
-            ),
+            AskInput::parse(&json!({"message": "Do y", "send_to": tree.worker.as_str()})),
             live,
             world.now(),
         )
@@ -371,21 +399,27 @@ fn a_failed_ask_insert_leaves_no_carrier_row() {
 /// S1 "Each ack() reaches only the direct parent, and the ask is ticked off
 /// in the database". Defect: an ack goes to someone other than the asker, or
 /// an acked ask stays open or has no ack event, or its event loses the
-/// active time it happened at.
+/// active time it happened at. R6: a row does not tell its reader the ask
+/// it carries with the active time left at hand-off, or the ack it carries,
+/// or a plain message claims one.
 #[test]
 fn s1_each_ack_reaches_only_its_direct_parent_and_ticks_the_ask() {
     let mut world = World::new("r5-s1");
     let tree = tree(&world);
+    let giga = mono_caller(&tree.giga, "g1");
+    let note = json!({"message": "CI is red", "send_to": tree.lead.as_str(), "wanting_reply": false, "intent": "new"});
+    let note = written(world.tool(&giga, "g-note", "send_message", note, &tree.live()));
     world.advance(20_000);
     let lead = session_caller(&tree.lead, P);
-    let giga_ask = written(ask(
+    let (giga_ask, carries) = carried(ask(
         &world,
         &tree,
-        &mono_caller(&tree.giga, "g1"),
+        &giga,
         "g-ask",
         tree.mono.id.as_str(),
         None,
     ));
+    assert_eq!(carries, Some(Carries::Ask { due_in_ms: None }));
     let mono_ask = written(ask(
         &world,
         &tree,
@@ -394,7 +428,7 @@ fn s1_each_ack_reaches_only_its_direct_parent_and_ticks_the_ask() {
         tree.lead.as_str(),
         None,
     ));
-    let lead_ask = written(ask(
+    let (lead_ask, carries) = carried(ask(
         &world,
         &tree,
         &lead,
@@ -402,13 +436,29 @@ fn s1_each_ack_reaches_only_its_direct_parent_and_ticks_the_ask() {
         tree.worker.as_str(),
         None,
     ));
-    written(ack(
+    assert_eq!(carries, due_in(60));
+    // A turn reads the time left when it takes the ask.
+    world.advance(60_000);
+    assert_eq!(
+        handed(world.start_turn(&tree.worker, "t1")),
+        [(lead_ask.clone(), due_in(59))]
+    );
+    let (worker_ack, carries) = carried(ack(
         &world,
         &tree,
         &session_caller(&tree.worker, P),
         "w-ack",
         &lead_ask,
     ));
+    assert_eq!(carries, acks(&lead_ask));
+    assert_eq!(
+        handed(world.start_turn(&tree.lead, "t1")),
+        [
+            (note, None),
+            (mono_ask.clone(), due_in(59)),
+            (worker_ack, acks(&lead_ask))
+        ]
+    );
     written(ack(&world, &tree, &lead, "l-ack", &mono_ask));
     written(ack(
         &world,
@@ -570,10 +620,7 @@ fn s2_two_acks_at_the_same_instant_one_gets_through() {
                     &conn,
                     &session_caller(&worker, P),
                     &RequestId::parse(key).unwrap(),
-                    Ok(
-                        serde_json::from_value(json!({"ask_id": id.as_str(), "message": "Done"}))
-                            .unwrap(),
-                    ),
+                    AckInput::parse(&json!({"ask_id": id.as_str(), "message": "Done"})),
                     &live,
                     now,
                 )
@@ -790,7 +837,7 @@ fn a_failed_ack_event_insert_leaves_the_ask_open_and_no_row() {
             &world.conn(),
             &session_caller(&tree.worker, P),
             &RequestId::parse("fault").unwrap(),
-            Ok(serde_json::from_value(json!({"ask_id": id.as_str(), "message": "Done"})).unwrap()),
+            AckInput::parse(&json!({"ask_id": id.as_str(), "message": "Done"})),
             live,
             world.now(),
         )
@@ -806,9 +853,10 @@ fn a_failed_ack_event_insert_leaves_the_ask_open_and_no_row() {
     );
 }
 
-/// Review r1 m1. Defect: an ack under a request id that a plain send, or the
-/// ack of another ask, already used is answered with that call's row as a
-/// repeat, and its own ask stays open.
+/// Review r1 m1 and R6b review r2 m1. Defect: an ack under a request id
+/// that a plain send, or the ack of another ask, already used is answered
+/// with that call's row as a repeat, and its own ask stays open; a send
+/// under an ack's request id is answered as the ack's repeat.
 #[test]
 fn an_ack_reusing_another_calls_request_id_is_refused() {
     let world = World::new("r5-ack-reuse");
@@ -833,7 +881,7 @@ fn an_ack_reusing_another_calls_request_id_is_refused() {
     ));
     // Same fields as the ack's row: same parent, same text.
     let send = json!({"message": "Done", "send_to": tree.lead.as_str(), "wanting_reply": false, "intent": "new"});
-    written(world.tool(&worker, "sent", "send_message", send, &tree.live()));
+    written(world.tool(&worker, "sent", "send_message", send.clone(), &tree.live()));
     assert_eq!(
         refusal(ack(&world, &tree, &worker, "sent", &a)).0,
         "request_id_reused"
@@ -841,6 +889,10 @@ fn an_ack_reusing_another_calls_request_id_is_refused() {
     written(ack(&world, &tree, &worker, "w-ack", &a));
     assert_eq!(
         refusal(ack(&world, &tree, &worker, "w-ack", &b)).0,
+        "request_id_reused"
+    );
+    assert_eq!(
+        refusal(world.tool(&worker, "w-ack", "send_message", send, &tree.live())).0,
         "request_id_reused"
     );
     assert_eq!(
@@ -1222,9 +1274,10 @@ fn ack_after_migration(world: &World, tree: &Tree, reset: &Mono, asks: [&Message
 }
 
 /// Review r1 n3. Defect: an ack with a field the tool does not have is
-/// taken, or a second ack event of one ask can be stored.
+/// taken, or a second ack event of one ask can be stored. R6b: a refusal
+/// of a bad ask or ack value does not name the field the agent has to fix.
 #[test]
-fn an_ack_takes_only_its_fields_and_stores_one_event() {
+fn an_ask_or_ack_refusal_names_its_field_and_an_ack_stores_one_event() {
     let world = World::new("r5-ack-shape");
     let tree = tree(&world);
     let worker = session_caller(&tree.worker, P);
@@ -1236,9 +1289,56 @@ fn an_ack_takes_only_its_fields_and_stores_one_event() {
         tree.worker.as_str(),
         None,
     ));
-    let input = json!({"ask_id": id.as_str(), "message": "Done", "due_minutes": 5});
-    let got = world.tool(&worker, "w-extra", "ack", input, &tree.live());
-    assert_eq!(refusal(got).0, "invalid_input");
+    let lead = session_caller(&tree.lead, P);
+    let to = tree.worker.as_str();
+    for (n, (from, tool, input, field)) in [
+        (
+            &worker,
+            "ack",
+            json!({"ask_id": id.as_str(), "message": "Done", "due_minutes": 5}),
+            "due_minutes",
+        ),
+        (&worker, "ack", json!({"message": "Done"}), "ask_id"),
+        (
+            &worker,
+            "ack",
+            json!({"ask_id": 7, "message": "Done"}),
+            "ask_id",
+        ),
+        (
+            &worker,
+            "ack",
+            json!({"ask_id": id.as_str(), "message": 5}),
+            "message",
+        ),
+        (
+            &lead,
+            "ask",
+            json!({"send_to": to, "message": "Do y", "due_minutes": 1.5}),
+            "due_minutes",
+        ),
+        (
+            &lead,
+            "ask",
+            json!({"send_to": to, "message": "Do y", "due_minutes": -5}),
+            "due_minutes",
+        ),
+        (
+            &lead,
+            "ask",
+            json!({"send_to": to, "message": 5}),
+            "message",
+        ),
+        (&lead, "ask", json!({"message": "Do y"}), "send_to"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (code, hint) =
+            refusal(world.tool(from, &format!("bad-{n}"), tool, input, &tree.live()));
+        assert_eq!(code, "invalid_input", "{tool} {field}: {hint}");
+        assert!(hint.contains(field), "{tool} {field}: {hint}");
+    }
     assert_eq!(ask_row(&world, &id).0, "open");
     written(ack(&world, &tree, &worker, "w-ack", &id));
     let second = world.conn().execute(
@@ -1247,4 +1347,124 @@ fn an_ack_takes_only_its_fields_and_stores_one_event() {
         [id.as_str()],
     );
     assert!(second.is_err(), "{second:?}");
+}
+
+/// R6b review r1 M1. Defect: an ack names no session, so when no window
+/// lists the ask's parent (an idle lead the window unloaded) the send gate
+/// refuses the ack with `direction_forbidden` and the ask stays open.
+#[test]
+fn a_worker_acks_its_lead_when_no_window_lists_the_lead() {
+    let world = World::new("r6b-unlisted-lead");
+    let tree = tree(&world);
+    let lead = session_caller(&tree.lead, P);
+    let worker = session_caller(&tree.worker, P);
+    let id = written(ask(
+        &world,
+        &tree,
+        &lead,
+        "l-ask",
+        tree.worker.as_str(),
+        None,
+    ));
+    let got = world.tool(
+        &worker,
+        "w-ack",
+        "ack",
+        json!({"ask_id": id.as_str(), "message": "Done"}),
+        &[&tree.worker],
+    );
+    assert_eq!(carried(got).1, acks(&id));
+    assert_eq!(ask_row(&world, &id).0, "acked");
+    assert_eq!(
+        count(
+            &world,
+            &format!(
+                "SELECT count(*) FROM mono_messages
+                  WHERE request_id = 'w-ack' AND to_session_id = '{}' AND status <> 'rejected'",
+                tree.lead.as_str()
+            )
+        ),
+        1,
+        "the ack goes to the lead"
+    );
+}
+
+/// R6b review r2 M1. Defect: the parent listed for an ack also counts as
+/// existing, so an ack to a lead whose worktree was removed is accepted
+/// and spends the ask, while a send to that lead gets `target_gone`.
+#[test]
+fn an_ack_to_a_lead_that_is_gone_is_refused_like_a_send() {
+    let world = World::new("r6b-gone-lead");
+    let tree = tree(&world);
+    let lead = session_caller(&tree.lead, P);
+    let worker = session_caller(&tree.worker, P);
+    let other = session_caller(&tree.other, P);
+    let a = written(ask(&world, &tree, &lead, "l-a", tree.worker.as_str(), None));
+    let b = written(ask(&world, &tree, &lead, "l-b", tree.other.as_str(), None));
+    let lead_id = tree.lead.as_str();
+    let to_lead = || {
+        count(
+            &world,
+            &format!(
+                "SELECT count(*) FROM mono_messages
+                  WHERE to_session_id = '{lead_id}' AND status <> 'rejected'"
+            ),
+        )
+    };
+    let before = to_lead();
+    let removed = format!("UPDATE sessions SET worktree_removed = 1 WHERE id = '{lead_id}'");
+    world.conn().execute(&removed, []).unwrap();
+    let send =
+        json!({"message": "Done", "send_to": lead_id, "wanting_reply": false, "intent": "new"});
+    let sent = world.tool(&worker, "w-send", "send_message", send, &[&tree.worker]);
+    assert_eq!(refusal(sent).0, "target_gone");
+    let input = json!({"ask_id": a.as_str(), "message": "Done"});
+    let got = world.tool(&worker, "w-ack", "ack", input, &[&tree.worker]);
+    assert_eq!(refusal(got).0, "target_gone", "removed worktree");
+    assert_eq!(ask_row(&world, &a).0, "open");
+    let restored = format!("UPDATE sessions SET worktree_removed = 0 WHERE id = '{lead_id}'");
+    world.conn().execute(&restored, []).unwrap();
+    let ended =
+        format!("INSERT INTO mono_session_ends (session_id, ended_at) VALUES ('{lead_id}', 1)");
+    world.conn().execute(&ended, []).unwrap();
+    let input = json!({"ask_id": b.as_str(), "message": "Done"});
+    let got = world.tool(&other, "o-ack", "ack", input, &[&tree.other]);
+    assert_eq!(refusal(got).0, "target_gone", "ended");
+    assert_eq!(ask_row(&world, &b).0, "open");
+    assert_eq!(to_lead(), before, "no row to the gone lead");
+}
+
+/// R6b review r1 m2. Defect: a repeat of an ask's request id with another
+/// `due_minutes` answers the first ask as its duplicate, so the caller
+/// believes its new deadline holds.
+#[test]
+fn an_ask_repeated_with_another_due_is_another_call() {
+    let world = World::new("r6b-due-repeat");
+    let tree = tree(&world);
+    let lead = session_caller(&tree.lead, P);
+    let to = tree.worker.as_str();
+    let id = written(ask(&world, &tree, &lead, "same", to, Some(30)));
+    assert_eq!(
+        refusal(ask(&world, &tree, &lead, "same", to, Some(480))).0,
+        "request_id_reused"
+    );
+    assert!(matches!(
+        ask(&world, &tree, &lead, "same", to, Some(30)),
+        Submitted::Accepted {
+            duplicate: true,
+            ..
+        }
+    ));
+    assert_eq!(ask_row(&world, &id).1, Some(30 * 60_000));
+    written(ask(&world, &tree, &lead, "default", to, None));
+    assert!(
+        matches!(
+            ask(&world, &tree, &lead, "default", to, Some(60)),
+            Submitted::Accepted {
+                duplicate: true,
+                ..
+            }
+        ),
+        "60 is the default, so it is the same call"
+    );
 }

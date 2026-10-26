@@ -3,11 +3,16 @@
 # GigaEval instance whose monocode.db starts from fixtures/pre-m.sql.
 #
 #   npm run e2e:milestones [-- --build]
-#   MILESTONES_E2E_APP=<path to .app>   run that build instead of the last one
+#   MILESTONES_E2E_APP=<.app on macOS, binary on Linux>   run that build instead of the last one
 #
 # Alpha owns project A, Beta owns project B. Each holds an app token through a
 # requested habit run that sleeps (no screen input). One row per case goes to
-# /tmp/milestones-e2e/results.tsv; exit 0 only when every case passes.
+# /tmp/milestones-e2e/results.tsv; exit 0 only when no case fails.
+#
+# On macOS the held turns run on omp with the real logins. On Linux (the E2E
+# image: no model, no logins) they run on the fx puppet
+# (scripts/scenarios/puppet), and MODEL_CASES, which test omp itself, are
+# recorded as SKIP.
 if [[ "${GIGA_EVAL_TARGET:-instance}" != instance ]]; then
   echo "milestones-e2e: refusing GIGA_EVAL_TARGET=$GIGA_EVAL_TARGET; only instance is allowed" >&2
   exit 2
@@ -18,7 +23,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 G="$ROOT/scripts/giga-eval"
 source "$G/lib.sh"
 
-DATA="$EVAL_HOME/Library/Application Support/$EVAL_ID"
+DATA="$EVAL_APP_DATA"
 DB="$DATA/monocode.db"
 A="$EVAL_HOME/projA"
 B="$EVAL_HOME/projB"
@@ -31,6 +36,9 @@ ALPHA_CASES=(empty_list add_list edit_reorder_status_delete empty_target_cli emp
 # M-11 adds its page cases to these two lists.
 PAGE_CASES=()
 PAGE_RESTART_CASES=()
+MODEL_CASES=(omp_empty_target)
+if [[ "$EVAL_OS" == macos ]]; then HOLD_AGENT=omp; else HOLD_AGENT=puppet; fi
+PUPPET="$EVAL_HOME/.puppet"
 
 q() { sqlite3 "file:$DB?mode=ro" "$1" 2>>"$RUN_LOG" || true; }
 rows() { sqlite3 -json "file:$DB?mode=ro" "$1" 2>>"$RUN_LOG" || true; }
@@ -61,6 +69,18 @@ hold() {
   cat >"$DATA/monos/$1/habits.json" <<EOF
 [{"id":"hold-$1-$RUN_ID","name":"Hold","instructions":"${first:-Run} exactly this shell command and nothing else: sleep $2. When it finishes, reply with the single word held.","schedule":{"scheduleKind":"daily","time":"09:00","minute":0,"dayOfWeek":1},"enabled":false,"createdAt":0,"nextRunAt":0,"runRequested":true}]
 EOF
+  [[ "$HOLD_AGENT" == puppet ]] || return 0
+  jq --arg s "$2" '.rules += [{match: "sleep \($s).", exec: [["sleep", $s]], reply: "held"}]' \
+    "$PUPPET/script.json" >"$PUPPET/script.json.tmp"
+  mv "$PUPPET/script.json.tmp" "$PUPPET/script.json"
+}
+
+# Every session on fx, which resolves to the puppet ($HOME/.local/bin/fx comes first).
+use_puppet() {
+  "$G/instance.sh" scrub fx:zai/glm-5.2-fast >>"$RUN_LOG" 2>&1
+  mkdir -p "$EVAL_HOME/.local/bin" "$PUPPET"
+  install -m 755 "$ROOT/scripts/scenarios/puppet/puppet.mjs" "$EVAL_HOME/.local/bin/fx"
+  jq -n --arg app "$(target_bin instance)" '{app: $app, rules: []}' >"$PUPPET/script.json"
 }
 
 wait_turn() {
@@ -100,13 +120,14 @@ reset_state() {
   git_repo "$A"
   git_repo "$B"
   sed -e "s|@HOME@|$EVAL_HOME|g" -e "s|@A@|$A|g" -e "s|@B@|$B|g" "$HERE/fixtures/pre-m.sql" | sqlite3 "$DB"
+  [[ "$HOLD_AGENT" == omp ]] || use_puppet
   hold beta 30 'call your add_milestone tool with title \"Omp dated\" and target \"2026-12-12\", then call your update_milestone tool with the id it returned and target set to the empty string \"\". Do not retry a refused call.'
   hold alpha 900
 }
 
 pick_app() {
   if [[ -n "${MILESTONES_E2E_APP:-}" ]]; then
-    [[ -x "$MILESTONES_E2E_APP/Contents/MacOS/monocode" ]] || die "no app at $MILESTONES_E2E_APP"
+    [[ -x "$(app_bin "$MILESTONES_E2E_APP")" ]] || die "no app at $MILESTONES_E2E_APP"
     echo "$MILESTONES_E2E_APP" >"$EVAL_OUT/instance.app"
   elif [[ "${1:-}" == --build || ! -s "$EVAL_OUT/instance.app" ]]; then
     "$G/instance.sh" build "$ROOT" head
@@ -285,7 +306,9 @@ case_restart() {
 # run_case <kind> <name>: one results.tsv row per case.
 run_case() {
   EV=""
-  if [[ -n "$SKIP" ]]; then
+  if [[ "$HOLD_AGENT" == puppet && " ${MODEL_CASES[*]} " == *" $2 "* ]]; then
+    record "$2" "$1" SKIP "needs omp and a real model; runs on macOS only"
+  elif [[ -n "$SKIP" ]]; then
     record "$2" "$1" FAIL "$SKIP"
   elif "case_$2"; then
     record "$2" "$1" PASS "$EV"
@@ -321,10 +344,11 @@ main() {
   run_case backend restart
   for name in ${PAGE_RESTART_CASES[@]+"${PAGE_RESTART_CASES[@]}"}; do run_case page "$name"; done
   "$G/instance.sh" stop >>"$RUN_LOG" 2>&1 || true
-  local total failed
+  local total failed skipped
   total="$(wc -l <"$RESULTS" | tr -d ' ')"
-  failed="$(awk -F'\t' '$4 != "PASS"' "$RESULTS" | wc -l | tr -d ' ')"
-  echo "milestones-e2e: $((total - failed))/$total cases passed in $((SECONDS - started))s; results $RESULTS"
+  failed="$(awk -F'\t' '$4 != "PASS" && $4 != "SKIP"' "$RESULTS" | wc -l | tr -d ' ')"
+  skipped="$(awk -F'\t' '$4 == "SKIP"' "$RESULTS" | wc -l | tr -d ' ')"
+  echo "milestones-e2e: $((total - failed - skipped))/$total cases passed, $skipped skipped, in $((SECONDS - started))s; results $RESULTS"
   [[ "$failed" == 0 ]]
 }
 

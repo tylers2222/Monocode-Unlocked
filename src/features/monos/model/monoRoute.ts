@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import type { AgentAppHost } from "../../agent-app/model/agentApp";
 import {
   AppActionError,
   type ToolErrorDetails,
@@ -29,6 +30,7 @@ import {
   renderMonoNotice,
   type CallErrorCode,
   type Caller,
+  type Carries,
   type Delivery,
   type GetInput,
   type Handle,
@@ -41,7 +43,6 @@ import {
   type NoticeStatus,
   type RejectCode,
   type ReplyInput,
-  type SendInput,
   type SessionId,
   type ToolError,
   type TurnId,
@@ -49,10 +50,14 @@ import {
 
 /** A row that a session handles: the only kind `submit` accepts or lists. */
 type Routed = Extract<MonoMessage, { handledBySession: unknown }>;
-/** A row and the message its line names (Rust `Targeted`, design 16.7). */
+/**
+ * A row, the message its line names and its ask or ack, if any (Rust
+ * `Targeted`, design 16.7, R6).
+ */
 type Targeted<M extends MonoMessage> = {
   message: M;
   target: ReplyTarget | null;
+  carries: Carries | null;
 };
 /** A row `assign_slot` takes: it refuses every other status. */
 type Waiting = Extract<MonoMessage, { status: "open" | "delivered" }>;
@@ -158,13 +163,13 @@ async function rowSender(
 }
 
 function queueItem(
-  { message, target }: Targeted<Routed>,
+  { message, target, carries }: Targeted<Routed>,
   sender: MessageSender | undefined,
   decision?: BoardDecision,
 ) {
   return {
     id: message.id,
-    text: renderMonoMessage(message, sender),
+    text: renderMonoMessage({ ...message, carries }, sender),
     link: rowLink(message, target),
     decision,
   };
@@ -298,8 +303,9 @@ export function createLoadReconciles(host: MonoQueueHost) {
 /**
  * What a hand-off gives the provider: the row with its handle and its
  * inference line (`text`), and the turn. `shown` is the same row without
- * the line, for a transcript block (design 16.7: the line goes to the agent
- * only), and `link` is what that block names (design 16.3).
+ * the line and an ask's `ask_id` and `due_in`, for a transcript block
+ * (design 16.7: the line goes to the agent only), and `link` is what that
+ * block names (design 16.3).
  */
 export type HandedOff = {
   text: string;
@@ -344,7 +350,7 @@ export async function handOff(
     host.update(sessionId, (session) => dequeueQueuedMessage(session, id));
     return false;
   }
-  const row = assigned.message;
+  const row = { ...assigned.message, carries: assigned.carries };
   const handle = row.status === "open" ? row.slot?.handle : undefined;
   let sender: MessageSender | undefined;
   let accepted = false;
@@ -518,10 +524,12 @@ export type MonoRouteEvent = {
 };
 
 /**
- * What a route did: the delivery, or `dropped` when a steer could not join
- * its turn and Rust dropped the row with a notice (PR I2 review r1 M2).
+ * What a route did: the delivery, `dropped` when a steer could not join
+ * its turn and Rust dropped the row with a notice (PR I2 review r1 M2), or
+ * `paused` when the row joined a queue that sends nothing until a Resume
+ * (ADE-78).
  */
-export type RouteOutcome = Delivery | "dropped";
+export type RouteOutcome = Delivery | "dropped" | "paused";
 
 /** `mono-message-routed`: the owner's answer to the caller window. */
 export type MonoRoutedEvent = { messageId: MessageId; delivery: RouteOutcome };
@@ -674,16 +682,19 @@ type Submitted =
       } & ToolErrorDetails;
     };
 
+/** A call's input. Rust parses an ask or ack as the model gave it (R6). */
+type RawInput = Record<string, unknown>;
+
 async function submit(
   host: MonoMessagingHost,
-  tool: "send_message" | "reply",
+  tool: "send_message" | "reply" | "ask" | "ack",
   requestId: string,
-  input: SendInput | ReplyInput,
+  input: RawInput,
 ): Promise<Accepted> {
   const resolved = await host.caller();
   if (!resolved.ok) throw new AppActionError(resolved.code, resolved.hint);
   const loaded = host.sessions();
-  const sendTo = "send_to" in input ? input.send_to : undefined;
+  const sendTo = typeof input.send_to === "string" ? input.send_to : undefined;
   const addressed =
     sendTo && !loaded.some((session) => session.id === sendTo)
       ? await host.stored(sendTo)
@@ -741,6 +752,7 @@ export async function routeMessages(
     host.update(sessionId, (session) =>
       ensureQueued(session, item, kind, bubble),
     );
+  if (target.queueStatus === "paused") return "paused";
   return kind === "steer" ? "steer" : idle ? "submit" : "queue";
 }
 
@@ -827,7 +839,7 @@ function route(
 }
 
 /** `messages.get_monos` (design 3.1). */
-export async function getMonos(host: MonoMessagingHost) {
+async function getMonos(host: MonoMessagingHost) {
   const resolved = await host.caller();
   if (!resolved.ok) throw new AppActionError(resolved.code, resolved.hint);
   return {
@@ -865,13 +877,18 @@ export async function getMessage(host: MonoMessagingHost, input: GetInput) {
   return { message: got.message };
 }
 
-/** `messages.send` (design 3.2). */
-export async function sendMessage(
+/**
+ * `messages.send` (design 3.2), and `messages.ask` and `messages.ack` (R6):
+ * an ask is a send that is also a key on the asked child, an ack a send to
+ * the asker that spends it.
+ */
+async function sendMessage(
   host: MonoMessagingHost,
+  tool: "send_message" | "ask" | "ack",
   requestId: string,
-  input: SendInput,
+  input: RawInput,
 ) {
-  const submitted = await submit(host, "send_message", requestId, input);
+  const submitted = await submit(host, tool, requestId, input);
   const [{ message }] = submitted.messages;
   const delivery = await sendDelivery(host, submitted, message);
   // A steer that could not join its turn is dropped; the answer says so
@@ -909,7 +926,7 @@ async function sendDelivery(
 }
 
 /** `messages.reply` (design 3.3). */
-export async function replyMessage(
+async function replyMessage(
   host: MonoMessagingHost,
   requestId: string,
   input: ReplyInput,
@@ -920,5 +937,20 @@ export async function replyMessage(
     message_ids: submitted.messages.map((row) => row.message.id),
     answered: submitted.answered,
     ...(submitted.duplicate ? { duplicate: true as const } : {}),
+  };
+}
+
+/** The agent app's `messages.*` host: each action on `host`. */
+export function agentMessages(
+  host: MonoMessagingHost,
+): NonNullable<AgentAppHost["messages"]> {
+  return {
+    getMonos: () => getMonos(host),
+    send: (requestId, input) =>
+      sendMessage(host, "send_message", requestId, input),
+    ask: (requestId, input) => sendMessage(host, "ask", requestId, input),
+    ack: (requestId, input) => sendMessage(host, "ack", requestId, input),
+    reply: (requestId, input) => replyMessage(host, requestId, input),
+    get: (input) => getMessage(host, input),
   };
 }
