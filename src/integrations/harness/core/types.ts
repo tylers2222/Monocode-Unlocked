@@ -183,6 +183,8 @@ export type HarnessSessionInput = {
   appAccess?: boolean;
   /** Mono messaging tools this harness registers for the session (design 4). */
   monoTools?: MonoTools;
+  /** `"none"`: omp starts without MCP servers; other harnesses ignore it. */
+  mcp?: "none";
   onEvent: (event: HarnessEvent) => void;
 };
 

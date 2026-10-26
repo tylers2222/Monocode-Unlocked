@@ -14,6 +14,8 @@ mod clock;
 mod completions;
 #[cfg(unix)]
 mod d4_deny;
+#[cfg(unix)]
+mod omp_mcp;
 mod s0_baseline;
 mod s1_levels;
 mod s2_approvals;

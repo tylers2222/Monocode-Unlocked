@@ -590,6 +590,9 @@ async function startLive(
     input.cwd,
     undefined,
     flavor.id,
+    undefined,
+    undefined,
+    flavor.id === "omp" ? input.mcp : undefined,
   );
 
   liveByThread.set(input.sessionId, live);

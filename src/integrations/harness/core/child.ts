@@ -341,6 +341,8 @@ export async function spawnChild(
   codexStore?: "mono",
   /** `devin acp` only: start with an approval rule for every edit. */
   devinAskEdits?: boolean,
+  /** omp only: `"none"` starts it without MCP servers (ADE-117). */
+  ompMcp?: "none",
 ): Promise<void> {
   livePid.delete(sessionId);
   pendingExit.delete(sessionId);
@@ -358,6 +360,7 @@ export async function spawnChild(
     binaryPath,
     ...(codexStore ? { codexStore } : {}),
     ...(devinAskEdits ? { devinAskEdits } : {}),
+    ...(ompMcp ? { ompMcp } : {}),
   });
   if (typeof pid !== "number" || pid <= 0) return;
   livePid.set(sessionId, pid);
