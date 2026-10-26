@@ -7,7 +7,6 @@ use serde_json::{json, Value};
 use super::agents::{mono_caller, session_caller};
 use super::asks::written;
 use super::world::World;
-use crate::ask_gate::{Talk, TalkRefused};
 use crate::asks::Carries;
 use crate::mono_gate::Caller;
 use crate::mono_messages::{MessageId, MonoId, SessionId, Submitted};
@@ -43,16 +42,25 @@ fn said(world: &World, submitted: Submitted) -> Said {
     (row.carries, mono, session)
 }
 
-fn refused(submitted: Submitted, talk: Talk, reason: TalkRefused) {
+/// A refusal the caller reads: its exact code, and a hint naming the fix.
+fn refused(submitted: Submitted, code: &str, fix: &str) {
     match submitted {
         Submitted::Failed { error } => {
-            assert_eq!(
-                (error.code, error.hint),
-                (talk.refused_code(), reason.hint())
-            );
+            assert_eq!(error.code, code, "{}", error.hint);
+            assert!(error.hint.contains(fix), "{code}: {}", error.hint);
         }
         other => panic!("not refused: {other:?}"),
     }
+}
+
+fn repeated(submitted: &Submitted) -> bool {
+    matches!(
+        submitted,
+        Submitted::Accepted {
+            duplicate: true,
+            ..
+        }
+    )
 }
 
 /// `(state, due, paused_at, next_due)` of ask `id`.
@@ -151,20 +159,33 @@ fn questions_pause_and_go_up(world: &World, a: &Asked, due: i64, start_ask: &Mes
         clock(world, ask),
         ("open".into(), Some(due), Some(paused_at), None)
     );
-    let waits = TalkRefused::QuestionWaits { seq: 1 };
-    refused(a.question(world, 2), Talk::Question, waits);
-    let first = Talk::Answer { seq: 1 };
+    refused(a.question(world, 2), "question_refused", "after it comes");
     refused(
         a.answer(world, &a.w, "w-a", 1),
-        first,
-        TalkRefused::NotYourAsk,
+        "answer_refused",
+        "Only the one who asked",
     );
-    let other = TalkRefused::AnswerOtherSeq { seq: 1 };
     refused(
         a.answer(world, &a.l, "l-a2", 2),
-        Talk::Answer { seq: 2 },
-        other,
+        "answer_refused",
+        "Answer it with seq 1.",
     );
+    // An answer names its ask: the lead's own open ask is not guessed.
+    let unnamed = json!({"seq": 1, "message": "Use main"});
+    let got = a.call(world, &a.l, "l-a-unnamed", "answer", unnamed);
+    refused(got, "invalid_input", "ask_id must be");
+    for (key, seq) in [
+        ("l-a0", json!(0)),
+        ("l-a-neg", json!(-1)),
+        ("l-a-none", Value::Null),
+    ] {
+        let mut input = json!({"ask_id": ask.as_str(), "message": "Use main"});
+        if !seq.is_null() {
+            input["seq"] = seq;
+        }
+        let got = a.call(world, &a.l, key, "answer", input);
+        refused(got, "invalid_input", "seq must be the seq (1 to 3)");
+    }
 
     let input = json!({"message": "Which branch?"});
     let up = a.call(world, &a.l, "l-q1", "question", input);
@@ -192,7 +213,9 @@ fn answers_come_down(
         ask_id: start_ask.clone(),
         seq: 1,
     };
-    let got = said(world, a.call(world, m, "m-a1", "answer", down));
+    // The Mono's window lists no session: the idle lead it started still
+    // gets the answer.
+    let got = said(world, world.tool(m, "m-a1", "answer", down, &[]));
     assert_eq!(got, a.to_lead(down_carries));
     assert_eq!(clock(world, start_ask).2, None, "the lead's clock resumes");
     let answer = Carries::Answer {
@@ -209,11 +232,18 @@ fn answers_come_down(
         ("open".into(), Some(resumed), None, Some(resumed - T5_LEAD)),
         "the clock resumes where it paused: the same active time is left"
     );
-    let none_waits = TalkRefused::NoQuestionWaits;
     refused(
         a.answer(world, &a.l, "l-a1-again", 1),
-        Talk::Answer { seq: 1 },
-        none_waits,
+        "answer_refused",
+        "No question on this ask waits",
+    );
+    // The seq is part of the call: the same request id replays its answer,
+    // and with another seq it is another call.
+    assert!(repeated(&a.answer(world, &a.l, "l-a1", 1)));
+    refused(
+        a.answer(world, &a.l, "l-a1", 2),
+        "request_id_reused",
+        "Use a new request id.",
     );
     resumed
 }
@@ -231,17 +261,21 @@ fn one_update_and_three_questions(world: &World, a: &Asked, due: i64) {
     );
     refused(
         a.update(world, "w-u2"),
-        Talk::Update,
-        TalkRefused::UpdateSent,
+        "update_refused",
+        "Ack it when the work is done.",
     );
+    // A request id the question used is that call's, not this update's,
+    // even before its message is read.
+    let reused = a.call(world, &a.w, "w-q1", "update", json!({"message": ""}));
+    refused(reused, "request_id_reused", "Use a new request id.");
     for seq in 2..=3 {
         said(world, a.question(world, seq));
         said(world, a.answer(world, &a.l, &format!("l-a{seq}"), seq));
     }
     refused(
         a.question(world, 4),
-        Talk::Question,
-        TalkRefused::NoQuestionsLeft,
+        "question_refused",
+        "already had its 3 questions",
     );
 }
 
@@ -254,6 +288,10 @@ fn one_update_and_three_questions(world: &World, a: &Asked, due: i64) {
 /// comes while it waits; an answer resumes the clock from the answer's time
 /// instead of where it paused, or answers a question that does not wait;
 /// a 4th question or a 2nd update gets through; or the wrong party answers.
+/// Also: a refusal loses its code or its hint; an answer guesses its ask,
+/// or its request id ignores the seq; an idle lead no window lists misses
+/// the Mono's answer; a call with no open ask, or two, is misread; or
+/// another call's request id is taken as this one's.
 #[test]
 fn s4_a_question_pauses_the_clock_and_its_answer_resumes_it() {
     let mut world = World::new("s4-questions");
@@ -301,6 +339,9 @@ fn s4_a_question_pauses_the_clock_and_its_answer_resumes_it() {
     assert_eq!(clock(&world, &a.ask).3, None);
 
     let m = mono_caller(&mono, "m1");
+    // No ask was sent to the Mono, so a question naming none has no ask.
+    let none = world.tool(&m, "m-q", "question", json!({"message": "Why?"}), &[]);
+    refused(none, "question_refused", "Name it with ask_id.");
     let resumed = answers_come_down(&world, &a, (due, paused_at), (&m, &start_ask));
     one_update_and_three_questions(&world, &a, resumed);
 
@@ -315,4 +356,20 @@ fn s4_a_question_pauses_the_clock_and_its_answer_resumes_it() {
     world.advance(1);
     let key = format!("reminder:{}:t5", a.ask.as_str());
     assert_eq!(reminders(&world, &a.ask), [(key, t5)]);
+
+    // A second open ask to the worker: a question must name which one.
+    let input = json!({"message": "Fix the docs", "send_to": a.worker.as_str(), "due_minutes": 30});
+    written(world.tool(&a.l, "ask-2", "ask", input, &[&a.lead, &a.worker]));
+    let unnamed = a.call(
+        &world,
+        &a.w,
+        "w-q-two",
+        "question",
+        json!({"message": "Which?"}),
+    );
+    refused(
+        unnamed,
+        "invalid_input",
+        "name the one you mean with ask_id",
+    );
 }
