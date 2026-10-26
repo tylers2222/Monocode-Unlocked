@@ -34,7 +34,6 @@ import {
   type HarnessId,
   type Session,
 } from "../../sessions/model/session";
-import { canPersistCwd } from "../../sessions/data/sessionStore";
 import {
   addSessionToFolder,
   createFolderWithSessions,
@@ -1941,12 +1940,7 @@ export async function handleAgentApp(
             source.id);
       // The id the level check was sent (appLaunchId is pure).
       const id = appLaunchId(source, requestId);
-      // R7: the ask row needs the started session's saved row
-      // (`asks::ask_on_start`), and MonoCode never saves one in `~` or a
-      // remote project, so such a start asks nothing.
-      const startAsk = canPersistCwd(launch.cwd) ? ask : null;
-      if (startAsk)
-        launch.firstTurn = askTurn(source, mono, id, launch.prompt, startAsk);
+      if (ask) launch.firstTurn = askTurn(source, mono, id, launch.prompt, ask);
       if (besideSessionId)
         await host.start(
           launch,
@@ -1979,7 +1973,7 @@ export async function handleAgentApp(
         draft: !!launch.draft,
         ...(notifyMonoId ? { notifyOnComplete: true } : {}),
         ...(messageId ? { message_id: messageId } : {}),
-        ...(startAsk ? { ask_id: startAsk.askId } : {}),
+        ...(ask ? { ask_id: ask.askId } : {}),
       };
     }
     case "worktrees.list":

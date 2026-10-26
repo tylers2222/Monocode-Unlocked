@@ -119,8 +119,8 @@ function fill(input, text, prev) {
   const value = (raw) => {
     if (typeof raw !== "string" || !raw.startsWith("$") || raw.startsWith("$card:")) return raw;
     if (raw.startsWith("$prev.")) return payload(prev)?.[raw.slice(6)];
-    const [name, body] = raw.slice(1).split("@");
-    return attribute(name, body);
+    const at = raw.indexOf("@");
+    return at < 0 ? attribute(raw.slice(1)) : attribute(raw.slice(1, at), raw.slice(at + 1));
   };
   return Object.fromEntries(
     Object.entries(input).map(([key, raw]) => [key, value(raw)]),

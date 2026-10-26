@@ -162,12 +162,11 @@ export function shouldPersistSession(session: Session): boolean {
 
 /** Whether MonoCode ever saves this session: never in `~` or a remote project. */
 export function canPersistSession(session: Session): boolean {
-  return !session.ephemeral && canPersistCwd(session.cwd);
-}
-
-/** Whether MonoCode ever saves a session that works in `cwd`. */
-export function canPersistCwd(cwd: string): boolean {
-  return !isRemoteProjectPath(cwd) && cwd !== "~";
+  return (
+    !session.ephemeral &&
+    !isRemoteProjectPath(session.cwd) &&
+    session.cwd !== "~"
+  );
 }
 
 /** Matches Rust `validate_id` — a path here fails the whole upsert. */
