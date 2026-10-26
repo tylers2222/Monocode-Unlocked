@@ -901,7 +901,7 @@ function handleFrame(
   if (status) live.onEvent({ type: "status", text: status });
 
   const turnError = turnErrorFromEvent(rec);
-  if (turnError !== null) live.turnError = turnError;
+  if (turnError !== undefined) live.turnError = turnError;
 
   const context = contextFromUsage(rec, live.contextWindow);
   if (context) live.onEvent({ type: "context", ...context });
