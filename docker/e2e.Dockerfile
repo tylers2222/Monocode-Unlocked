@@ -7,17 +7,25 @@ ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
 
 # WebKitGTK and the other Tauri build libraries come from the script CI uses.
-# Xvfb is for running the Linux app headless.
+# Xvfb is for running the Linux app headless. The second line holds the tools
+# scripts/giga-eval and scripts/milestones-e2e call.
 COPY scripts/install-linux-deps-debian.sh /tmp/install-linux-deps-debian.sh
 RUN bash /tmp/install-linux-deps-debian.sh \
  && apt-get install -y --no-install-recommends ca-certificates xauth xvfb xz-utils \
+      git jq lsof procps python3 rsync sqlite3 uuid-runtime xdotool \
  && rm -rf /var/lib/apt/lists/* /tmp/install-linux-deps-debian.sh
 
+# The suites run as e2e and cargo writes its registry under CARGO_HOME, so e2e
+# owns the toolchain folders.
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
-COPY .github/rust-version /tmp/rust-version
+RUN useradd --create-home e2e && mkdir "$RUSTUP_HOME" "$CARGO_HOME" \
+ && chown e2e:e2e "$RUSTUP_HOME" "$CARGO_HOME"
+USER e2e
+COPY --chown=e2e:e2e .github/rust-version /tmp/rust-version
 RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
   | sh -s -- -y --no-modify-path --profile minimal --default-toolchain "$(cat /tmp/rust-version)" \
  && rm /tmp/rust-version
+USER root
 
 # .nvmrc holds the Node major; the newest release of it is checked against
 # nodejs.org's SHASUMS256.txt.
@@ -43,7 +51,7 @@ RUN set -eu; case "$TARGETARCH" in \
     omp --version
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
-RUN useradd --create-home e2e && mkdir /repo /results "$PLAYWRIGHT_BROWSERS_PATH" \
+RUN mkdir /repo /results "$PLAYWRIGHT_BROWSERS_PATH" \
  && chown e2e:e2e /repo /results "$PLAYWRIGHT_BROWSERS_PATH"
 WORKDIR /repo
 

@@ -3,8 +3,8 @@
 ##   make e2e [SUITE=all] [REV=HEAD] [CPUS=4] [MEMORY=6g]
 ##       Build the image for commit REV (committed files only), start the
 ##       suites detached, and print the run id. SUITE is all, browser, evals,
-##       milestones or scenarios; milestones and scenarios are not ported yet
-##       and record a skipped row. CPUS and MEMORY cap the container.
+##       milestones or scenarios; scenarios is not ported yet
+##       and records a skipped row. CPUS and MEMORY cap the container.
 ##   make e2e-status RUN=<id>
 ##       Say if the run is still going. Once it ends, copy its results to
 ##       e2e-results/<id>/ (results.tsv, junit.xml, run.log, browser/ with

@@ -215,6 +215,7 @@ function projectFixture(projects: string[], cwd = "/Users/me") {
     monoOf: (id: string) =>
       id === "agent" ? { id: "mono-1", projects } : undefined,
     sessions,
+    appIdentifier: async () => "com.monocode.desktop",
   } as unknown as AgentAppHost;
   const run = (action: string, input: Record<string, unknown> = {}) =>
     handleAgentApp(source, `req-${Math.random()}`, action, input, host);

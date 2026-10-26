@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 51] = [
+const APP_ACTIONS: [&str; 53] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -98,6 +98,8 @@ const APP_ACTIONS: [&str; 51] = [
     "monos.read",
     "messages.get_monos",
     "messages.send",
+    "messages.ask",
+    "messages.ack",
     "messages.reply",
     "messages.get",
     "monos.create",
@@ -171,7 +173,8 @@ A Mono chat or habit run whose Mono is gone gets not_a_mono.
 
 Actions:
   models.list    {}  Available providers, models, settings and permission modes.
-  sessions.list  {}  Project sessions with IDs, busy status, hasDraft and archived.
+  sessions.list  {}  Project sessions with IDs, branch, busy status, hasDraft
+                  and archived, and the appIdentifier of the app that answered.
   sessions.read  {"sessionId":"...","before":"<turnId>","limit":3,"maxChars":1200}
                   Read up to 3 recent user/assistant exchanges. Tools and
                   reasoning are omitted. Omit before for the newest page;
@@ -334,6 +337,28 @@ Actions:
                   habit_cannot_wait, target_gone, nothing_running,
                   target_no_conversation, cannot_steer, hop_limit,
                   rate_limited.
+  messages.ask   {"message":"...","send_to":"<mono_id or session id>",
+                  "due_minutes":60}
+                  Ask your direct child for work: a Giga asks a Mono, a Mono
+                  asks a lead it started, a lead asks its own worker. The ask
+                  is a key that the child spends with messages.ack when the
+                  work is done. due_minutes is the active time the child has,
+                  10 to 480, default 60. Active time counts only while
+                  MonoCode runs and the Mac is awake. A Giga's ask has no
+                  deadline. The child gets a <mono_message> with ask_id, and
+                  due_in (such as due_in="60m") when the ask has a deadline.
+                  Returns what messages.send returns. message_id is the
+                  ask_id. Codes: invalid_input, request_id_reused,
+                  not_direct_child, and the codes of messages.send.
+  messages.ack   {"ask_id":"m_...","message":"..."}
+                  Report that the work of an ask is done, to the one who
+                  asked. Only the Mono or session the ask went to can ack it,
+                  and only once. message says what you did. The asker gets a
+                  <mono_message> with ack_of set to the ask_id. Returns what
+                  messages.send returns. Codes: invalid_input,
+                  request_id_reused, ack_refused (no open ask has this id,
+                  already acked, or not yours; the hint says which), and the
+                  codes of messages.send.
   messages.reply {"message":"...","to":"#1","wanting_reply":false}
                   Answer a <mono_message> that waits for your reply (it says
                   wanting_reply="true" and has a handle such as
@@ -840,6 +865,35 @@ pub fn app_tools() -> Value {
                     "handle": {"type": "string", "minLength": 1, "description": "The message_id, or a handle such as \"#1\" from this turn."}
                 },
                 "required": ["handle"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "ask",
+            "action": "messages.ask",
+            "description": "Ask your direct child for work: a Giga asks a Mono, a Mono asks a lead it started, a lead asks its own worker. The ask is a key that the child spends with ack when the work is done. due_minutes is the active time the child has (10 to 480, default 60); it counts only while MonoCode runs and the Mac is awake. A Giga's ask has no deadline. The child gets a <mono_message> with ask_id, and due_in when the ask has a deadline. Returns what send_message returns; message_id is the ask_id. A refusal has code and hint; follow the hint.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "minLength": 1, "description": "The work to do."},
+                    "send_to": {"type": "string", "minLength": 1, "description": "Your direct child: a mono_id from get_monos, or the session id of a lead you started or of your worker."},
+                    "due_minutes": {"type": "integer", "minimum": 10, "maximum": 480, "description": "Active minutes the child has. Default 60."}
+                },
+                "required": ["message", "send_to"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "ack",
+            "action": "messages.ack",
+            "description": "Report that the work of an ask is done, to the one who asked. Only the Mono or session the ask went to can ack it, and only once. The asker gets a <mono_message> with ack_of set to the ask_id. Returns what send_message returns. A refusal has code and hint; follow the hint.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ask_id": {"type": "string", "minLength": 1, "description": "The ask_id of the <mono_message> that asked you."},
+                    "message": {"type": "string", "minLength": 1, "description": "What you did."}
+                },
+                "required": ["ask_id", "message"],
                 "additionalProperties": false
             }
         },
@@ -1481,6 +1535,14 @@ mod tests {
                 "messages.send",
                 r#"{"message":"Check CI","send_to":"other","wanting_reply":true,"intent":"steer","reply_to":"m_aaaaaaaaaaaa"}"#,
             ),
+            (
+                "messages.ask",
+                r#"{"message":"Fix CI","send_to":"other","due_minutes":60}"#,
+            ),
+            (
+                "messages.ack",
+                r#"{"ask_id":"m_aaaaaaaaaaaa","message":"CI is fixed"}"#,
+            ),
             ("messages.reply", r#"{"message":"CI is green"}"#),
             ("messages.get", r##"{"handle":"#1"}"##),
         ] {
@@ -1683,23 +1745,30 @@ mod tests {
 
     const TOKEN: &str = "tok3n-never-printed";
 
+    /// The next connection to `listener` within `wait`, or none. A test whose
+    /// app-mcp never connects fails instead of hanging.
+    fn accept_within(
+        listener: &std::net::TcpListener,
+        wait: Duration,
+    ) -> Option<std::net::TcpStream> {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + wait;
+        while std::time::Instant::now() < deadline {
+            if let Ok((stream, _)) = listener.accept() {
+                stream.set_nonblocking(false).unwrap();
+                return Some(stream);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        None
+    }
+
     /// A loopback app that answers each connection with the next reply and
     /// returns the requests it read. It stops once no call comes for a second.
     fn fake_app(replies: Vec<Value>) -> (String, std::thread::JoinHandle<Vec<Value>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
         let endpoint = listener.local_addr().unwrap().to_string();
-        let accept = move || {
-            let deadline = std::time::Instant::now() + Duration::from_secs(1);
-            while std::time::Instant::now() < deadline {
-                if let Ok((stream, _)) = listener.accept() {
-                    stream.set_nonblocking(false).unwrap();
-                    return Some(stream);
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            None
-        };
+        let accept = move || accept_within(&listener, Duration::from_secs(1));
         let app = std::thread::spawn(move || {
             replies
                 .into_iter()
@@ -1748,7 +1817,7 @@ mod tests {
     // Defect: an MCP client cannot start (unsupported version, missing
     // capabilities) or sees tools that accept fields the gate refuses.
     #[test]
-    fn app_mcp_initializes_and_lists_the_twelve_strict_tools() {
+    fn app_mcp_initializes_and_lists_the_fourteen_strict_tools() {
         let out = mcp(
             None,
             &[
@@ -1775,6 +1844,8 @@ mod tests {
                 "send_message",
                 "reply",
                 "get_message",
+                "ask",
+                "ack",
                 "list_milestones",
                 "add_milestone",
                 "update_milestone",
@@ -2172,14 +2243,11 @@ mod tests {
             let first = late.clone();
             let app = std::thread::spawn(move || {
                 let mut applied = std::collections::HashMap::<String, Value>::new();
-                listener.set_nonblocking(true).unwrap();
-                let deadline = std::time::Instant::now() + Duration::from_secs(2);
-                while std::time::Instant::now() < deadline {
-                    let Ok((stream, _)) = listener.accept() else {
-                        std::thread::sleep(Duration::from_millis(5));
-                        continue;
-                    };
-                    stream.set_nonblocking(false).unwrap();
+                let started = std::time::Instant::now();
+                let wait = Duration::from_secs(2);
+                while let Some(stream) =
+                    accept_within(&listener, wait.saturating_sub(started.elapsed()))
+                {
                     let mut line = String::new();
                     BufReader::new(&stream).read_line(&mut line).unwrap();
                     let request: Value = serde_json::from_str(&line).unwrap();
@@ -2236,7 +2304,8 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = listener.local_addr().unwrap().to_string();
         let app = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
+            let stream =
+                accept_within(&listener, Duration::from_secs(10)).expect("app-mcp never connected");
             let mut line = String::new();
             BufReader::new(&stream).read_line(&mut line).unwrap();
             // No answer, and the app is gone before the retry.

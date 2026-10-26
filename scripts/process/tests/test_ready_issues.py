@@ -6,11 +6,12 @@ fixtures/linear-issues.json is the script's two Linear queries (the open ADE
 issues, then the closed issues that block one), recorded before the query asked
 for description and priority; the tests add them as null and 0 (no priority).
 fixtures/merged-prs.json is 5 PRs of the script's gh query; none had a
-Ticket-part line yet. fixtures/app-dbs.json holds, for each app database, the
-CREATE TABLE statements of `sessions` and `in_flight_sessions`, and the
-in-flight rows with their session rows plus a few idle ones, with made-up titles
-under /Users/test. The tests build two SQLite files from it and read them with
-the script's own reader.
+Ticket-part line yet. fixtures/app-sessions.json holds, for each instance, the
+`monocode app sessions.list` reply for the app's data at that time: the app's
+identifier, then the monocode project's in-flight sessions plus a few idle
+ones. Busy and archived flags and which branches name a ticket are as
+recorded; ids, titles, the home folder and branch names are made up. The tests
+read it through a fake `monocode` that prints the reply and logs each call.
 
 Recorded 2026-10-22: fixtures/linear-issues-2026-10-22.json (the same Linear
 queries with description and priority; each description is made up and keeps
@@ -27,12 +28,11 @@ import importlib.util
 import json
 import os
 import shutil
-import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -42,6 +42,19 @@ SCRIPT = HERE.parent / "ready-issues.py"
 _spec = importlib.util.spec_from_file_location("ready_issues", SCRIPT)
 ri = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ri)
+# The made-up project of fixtures/app-sessions.json.
+PROJECT = "/Users/test/Desktop/monocode"
+# ready-issues reads its project from MONOCODE_PROJECT before it asks git.
+MADE_UP_PROJECT = mock.patch.dict("os.environ", {"MONOCODE_PROJECT": PROJECT})
+
+
+def setUpModule():
+    MADE_UP_PROJECT.start()
+
+
+def tearDownModule():
+    MADE_UP_PROJECT.stop()
+
 
 RECORDED_AT = datetime(2026, 10, 20, 14, 1, tzinfo=timezone.utc)
 ISSUES = json.loads((HERE / "fixtures/linear-issues.json").read_text())
@@ -51,25 +64,43 @@ ISSUES_1022 = json.loads((HERE / "fixtures/linear-issues-2026-10-22.json").read_
 OPEN_PRS_1022 = json.loads((HERE / "fixtures/open-prs-2026-10-22.json").read_text())
 PLAN = HERE / "fixtures/plan-v2.md"
 PRS = json.loads((HERE / "fixtures/merged-prs.json").read_text())
-APP = json.loads((HERE / "fixtures/app-dbs.json").read_text())
+APP = json.loads((HERE / "fixtures/app-sessions.json").read_text())
+FAKE_CLI = """\
+#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+me = Path(__file__)
+with open(me.with_name("calls"), "a") as log:
+    print(json.dumps(sys.argv[1:]), file=log)
+replies = json.loads(me.with_name("replies.json").read_text())
+payload = sys.argv[sys.argv.index("--json") + 1]
+print(replies.get(payload, replies[""]))
+"""
 
 
 def at(text):
     return datetime.fromisoformat(text).replace(tzinfo=timezone.utc)
 
 
-def build_dbs(directory):
-    paths = {}
-    for name, recorded in APP["dbs"].items():
-        path = paths[name] = Path(directory) / f"instance-{name}.db"
-        with closing(sqlite3.connect(path)) as db, db:
-            for sql in recorded["schema"]:
-                db.execute(sql)
-            columns = recorded["columns"]
-            db.executemany(f"INSERT INTO sessions ({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))})",
-                           recorded["sessions"])
-            db.executemany("INSERT INTO in_flight_sessions VALUES (?, ?, ?)", recorded["in_flight"])
-    return paths
+def fake_cli(directory, replies):
+    """A `monocode` that prints replies[its --json payload], else replies[""], and logs its argv to `calls`."""
+    cli = Path(directory) / "monocode"
+    cli.write_text(FAKE_CLI)
+    cli.chmod(cli.stat().st_mode | stat.S_IEXEC)
+    (cli.parent / "replies.json").write_text(json.dumps(replies))
+    return cli
+
+
+def calls(cli):
+    log = cli.with_name("calls")
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def recorded_cli(directory, instance):
+    """A fake CLI answering the sessions.list that the app of this instance recorded."""
+    folder = Path(directory) / f"instance-{instance}"
+    folder.mkdir(exist_ok=True)
+    return fake_cli(folder, {"": json.dumps(APP[instance])})
 
 
 class EditIssues:
@@ -92,8 +123,10 @@ class ReadyIssues(EditIssues, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.dbs = build_dbs(cls.tmp.name)
-        cls.SESSIONS = ri.app_sessions(cls.dbs)
+        cls.SESSIONS = []
+        for instance in APP:
+            with mock.patch.object(ri, "APP_CLI", recorded_cli(cls.tmp.name, instance)):
+                cls.SESSIONS += ri.app_sessions(instance)
 
     @classmethod
     def tearDownClass(cls):
@@ -115,7 +148,7 @@ class ReadyIssues(EditIssues, unittest.TestCase):
         return next(pr for pr in self.prs if pr["number"] == number)
 
     def session(self, branch, busy=True, archived=0, instance="2", title="omp · a builder"):
-        row = {"id": f"app-test-{len(self.sessions)}", "title": title, "branch": branch, "worktree_cwd": None,
+        row = {"id": f"app-test-{len(self.sessions)}", "title": title, "branch": branch,
                "archived": archived, "instance": instance, "busy": busy}
         self.sessions.append(row)
         return row
@@ -130,35 +163,39 @@ class ReadyIssues(EditIssues, unittest.TestCase):
         self.assertEqual(code, 1, "four issues with no blocker wait for a human to add a Files list")
         no_files = lines[lines.index(next(line for line in lines if line.startswith("no Files list (blockers merged"))) + 1:][:4]
         self.assertEqual([line.split()[0] for line in no_files], ["ADE-61", "ADE-64", "ADE-65", "ADE-66"])
-        self.assertIn("ready-issues: 0 start now, 0 waiting more than 60 min, 4 with no Files list, 27 wait, 0 unlabelled, 16 unattributed.", lines)
+        self.assertIn("ready-issues: 0 start now, 0 waiting more than 60 min, 4 with no Files list, 27 wait, 0 unlabelled, 15 unattributed.", lines)
 
-    def test_reads_both_databases(self):
-        self.assertEqual(ri.builder_tickets(self.sessions), {"ADE-52", "ADE-53"},
+    def test_lists_the_builders_in_the_reply_of_its_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cli = recorded_cli(tmp, "1")
+            with mock.patch.object(ri, "APP_CLI", cli):
+                sessions = ri.app_sessions("1")
+            self.assertEqual(calls(cli), [["app", "sessions.list", "--json", json.dumps({"project": PROJECT})]])
+        self.assertEqual({s["instance"] for s in sessions}, {"1"})
+        self.assertEqual(ri.builder_tickets(sessions), {"ADE-52", "ADE-53"},
                          "instance 1's in-flight builders on feat/ade-52-* and feat/ade-53-*")
-        self.assertEqual({s["instance"] for s in self.sessions}, {"1", "2"})
+        self.assertEqual({s["id"] for s in ri.busy(sessions)},
+                         {s["id"] for s in APP["1"]["result"]["sessions"] if s["busy"]})
 
-    def test_reader_never_creates_a_database(self):
-        missing = Path(self.tmp.name) / "absent.db"
-        with self.assertRaises(sqlite3.OperationalError):
-            ri.read_db(missing)
-        self.assertFalse(missing.exists())
-
-    def test_reader_connection_refuses_writes(self):
-        with closing(ri.connect_ro(self.dbs["2"])) as db:
-            for sql in ["DELETE FROM in_flight_sessions", "UPDATE sessions SET archived = 1", "CREATE TABLE x (y)"]:
-                with self.subTest(sql=sql), self.assertRaisesRegex(sqlite3.OperationalError, "attempt to write a readonly database"):
-                    db.execute(sql)
-
-    def test_each_instance_is_busy_from_its_own_in_flight_table(self):
-        sessions = ri.app_sessions(self.dbs)
-        for name, recorded in APP["dbs"].items():
-            with self.subTest(instance=name):
-                busy = {s["id"] for s in ri.busy(sessions) if s["instance"] == name}
-                self.assertEqual(busy, {row[0] for row in recorded["in_flight"]})
-        with mock.patch.dict(os.environ, {"MONOCODE_APP_ENDPOINT": "127.0.0.1:1", "MONOCODE_APP_TOKEN": "x"}):
-            self.assertEqual(ri.app_sessions(self.dbs), sessions, "the environment picks nothing")
-        self.assertEqual(ri.builder_tickets([s for s in sessions if s["instance"] == "1"]), {"ADE-52", "ADE-53"})
-        self.assertEqual(ri.builder_tickets([s for s in sessions if s["instance"] == "2"]), set())
+    def test_a_session_lists_its_own_project_and_only_the_monocode_one_counts(self):
+        listed = APP["2"]
+        refused = {"ok": False, "error": "project is only for a Mono"}
+        other = {"ok": True, "result": {"appIdentifier": "com.monocode.second", "cwd": "/tmp/vibtra", "sessions": []}}
+        slashed = copy.deepcopy(listed)
+        slashed["result"]["cwd"] += "/"
+        for case, reply, error in [
+            ("a session, refused a project, lists its own", listed, None),
+            ("the app's path of the project ends in a slash", slashed, None),
+            ("a session in another project", other, f"listed /tmp/vibtra, not {PROJECT}"),
+        ]:
+            with self.subTest(case), tempfile.TemporaryDirectory() as tmp:
+                cli = fake_cli(tmp, {json.dumps({"project": PROJECT}): json.dumps(refused), "": json.dumps(reply)})
+                with mock.patch.object(ri, "APP_CLI", cli):
+                    if error:
+                        self.assertRaisesRegex(RuntimeError, error, ri.app_sessions, "2")
+                    else:
+                        self.assertEqual(len(ri.app_sessions("2")), len(listed["result"]["sessions"]))
+                self.assertEqual([call[-1] for call in calls(cli)], [json.dumps({"project": PROJECT}), "{}"])
 
     def test_builder_is_a_busy_session_on_the_ticket_branch(self):
         cases = [
@@ -195,7 +232,7 @@ class ReadyIssues(EditIssues, unittest.TestCase):
         for blocker in ["ADE-50", "ADE-51", "ADE-52", "ADE-53", "ADE-54"]:
             self.set_state(blocker, "completed", "2026-10-20T13:00:00")
         self.assertNotIn("ADE-55", self.ready("1"), "ADE-52 and ADE-53 have busy builders on instance 1")
-        self.sessions = [s for s in self.sessions if s["id"][-8:] not in ("904afb7b", "fee699bc")]
+        self.sessions = [s for s in self.sessions if s["id"] not in ("app-test-1-03", "app-test-1-07")]
         self.assertEqual(self.ready("1")["ADE-55"].since, at("2026-10-20T13:00:00"))
 
     def test_final_part_needs_the_exact_line_and_n_equal_to_n(self):
@@ -313,26 +350,114 @@ class ReadyIssues(EditIssues, unittest.TestCase):
         self.session("fix/ade-61-x")
         self.session("main", busy=False)
         found = ri.unattributed(self.sessions)
-        self.assertEqual(len(found), 17, "16 recorded busy sessions on main, plus the one with no branch")
+        self.assertEqual(len(found), 16, "15 recorded busy sessions on main, plus the one with no branch")
         self.assertTrue(all(s["busy"] and (s["branch"] or "main") == "main" for s in found))
         lines, code = ri.report([], [], found, RECORDED_AT)
         self.assertEqual(code, 0, "informational only")
         self.assertIn(f"instance 2  {no_branch['id'][-8:]}  <no branch>  omp · no branch", lines)
 
+
+class Main(unittest.TestCase):
+    """main() as checkin runs it, with no app database readable."""
+
+    def setUp(self):
+        self.prs = copy.deepcopy(PRS)
+        next(pr for pr in self.prs if pr["number"] == 161)["body"] += "\nTicket-part: 3/3\n"
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        self.cli = recorded_cli(tmp.name, "2")
+
+    def run_main(self, *args, cli=None, instance="2"):
+        return run_main(*args, issues=ISSUES, merged=self.prs, cli=cli or self.cli, instance=instance)
+
     def test_dry_run_prints_and_writes_nothing(self):
-        self.pr(161)["body"] += "\nTicket-part: 3/3\n"
-        code, out, writes = run_main("--dry-run", issues=ISSUES, merged=self.prs, dbs=self.dbs)
+        code, out, writes = self.run_main("--dry-run")
         self.assertEqual(writes, [])
         self.assertIn("would label ADE-11 code-complete", out)
-        code, out, writes = run_main(issues=ISSUES, merged=self.prs, dbs=self.dbs)
+        code, out, writes = self.run_main()
         self.assertEqual(writes, ["ADE-11"])
         self.assertIn("ADE-11  labelled code-complete (PR #161 is its last part)", out)
 
+    def test_builders_come_from_the_app_cli_when_no_database_opens(self):
+        code, out, _ = self.run_main("--dry-run")
+        self.assertEqual(code, 1, out)
+        self.assertIn("ready-issues: 0 start now, 0 waiting more than 60 min, 5 with no Files list, 27 wait, 0 unlabelled, 11 unattributed.", out)
+        self.assertEqual(calls(self.cli),
+                         [["app", "sessions.list", "--json", json.dumps({"project": PROJECT})]])
 
-def run_main(*args, issues, merged, dbs, open_prs=(), repo=None, now=None):
-    """ri.main() on recorded sources, worktrees of repo (none without it) and a fixed clock: (exit code, stdout, labelled)."""
+    def test_a_reply_from_the_other_instance_exits_2(self):
+        for instance, answered in [("2", "1"), ("1", "2")]:
+            with self.subTest(instance=instance, answered=answered):
+                cli = recorded_cli(self.tmp, answered)
+                code, out, writes = self.run_main(cli=cli, instance=instance)
+                self.assertEqual((code, writes), (2, []), out)
+                self.assertIn(f"answered by {APP[answered]['result']['appIdentifier']}, not instance {instance}", out)
+
+    def test_a_reply_from_an_app_built_before_268_exits_2(self):
+        old = copy.deepcopy(APP["2"])
+        del old["result"]["appIdentifier"]
+        for session in old["result"]["sessions"]:
+            del session["branch"]
+        cli = fake_cli(Path(self.tmp) / "instance-2", {"": json.dumps(old)})
+        code, out, writes = self.run_main("--dry-run", cli=cli)
+        self.assertEqual((code, writes), (2, []), out)
+        self.assertIn("no appIdentifier", out)
+        self.assertNotIn("start now", out)
+
+    def test_an_app_cli_that_fails_exits_2(self):
+        not_json = "ready-issues: JSONDecodeError: Expecting value: line {} column 1 (char {})"
+        for case, reply, line in [
+            ("no token", json.dumps({"ok": False, "error": "MONOCODE_APP_TOKEN is not set."}),
+             "ready-issues: RuntimeError: app sessions.list: MONOCODE_APP_TOKEN is not set."),
+            ("no JSON", "Cannot connect to MonoCode", not_json.format(1, 0)),
+            ("no output", "", not_json.format(2, 1)),
+        ]:
+            with self.subTest(case):
+                cli = fake_cli(Path(self.tmp) / "instance-2", {"": reply})
+                code, out, writes = self.run_main(cli=cli)
+                self.assertEqual((code, writes), (2, []), out)
+                self.assertIn(line, out.splitlines())
+        code, out, _ = self.run_main(cli="/nonexistent/monocode")
+        self.assertEqual(code, 2, out)
+
+
+class Project(unittest.TestCase):
+    """The monocode project ready-issues asks the app for, on any account or clone."""
+
+    def load(self, script):
+        spec = importlib.util.spec_from_file_location("ready_issues_copy", script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    # Defect: the project is a fixed home path, or the worktree the script runs from.
+    def test_the_project_is_the_main_checkout_of_the_scripts_repo(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict("os.environ"):
+            del os.environ["MONOCODE_PROJECT"]
+            main, worktree, loose = Path(tmp) / "clone", Path(tmp) / "clone-worktree", Path(tmp) / "loose"
+            git = ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"]
+            subprocess.run([*git, "init", "-q", main], check=True)
+            (main / "ready-issues.py").write_text(SCRIPT.read_text())
+            subprocess.run([*git, "-C", main, "add", "ready-issues.py"], check=True)
+            subprocess.run([*git, "-C", main, "commit", "-qm", "script"], check=True)
+            subprocess.run([*git, "-C", main, "worktree", "add", "-q", worktree], check=True, capture_output=True)
+            for copy_in in (main, worktree):
+                with self.subTest(copy_in.name):
+                    project = self.load(copy_in / "ready-issues.py").monocode_project()
+                    self.assertEqual(os.path.realpath(project), os.path.realpath(main))
+            os.environ["MONOCODE_PROJECT"] = "/Users/test/elsewhere"
+            self.assertEqual(self.load(worktree / "ready-issues.py").monocode_project(), "/Users/test/elsewhere")
+            del os.environ["MONOCODE_PROJECT"]
+            loose.mkdir()
+            (loose / "ready-issues.py").write_text(SCRIPT.read_text())
+            self.assertRaises(subprocess.CalledProcessError, self.load(loose / "ready-issues.py").monocode_project)
+
+
+def run_main(*args, issues, merged, cli, instance="2", open_prs=(), repo=None, now=None):
+    """ri.main() on recorded sources, worktrees of repo (none without it) and a fixed clock: (exit code, stdout and stderr, labelled)."""
     writes = []
-    sources = dict(APP_DBS=dbs, PLAN=PLAN, linear_key=lambda: "key", open_issues_and_blockers=lambda key: copy.deepcopy(issues),
+    sources = dict(APP_CLI=cli, PLAN=PLAN, linear_key=lambda: "key", open_issues_and_blockers=lambda key: copy.deepcopy(issues),
                    merged_prs=lambda: merged, open_prs=lambda instance: list(open_prs),
                    add_code_complete=lambda key, found: writes.extend(i["identifier"] for i in found))
     if repo:
@@ -341,11 +466,14 @@ def run_main(*args, issues, merged, dbs, open_prs=(), repo=None, now=None):
         sources["worktree_claims"] = lambda path, pr_branches: []
     if now:
         sources["datetime"] = type("Clock", (datetime,), {"now": classmethod(lambda cls, tz=None: now)})
+    # The sandbox of D1 denies the app data folder: no database opens.
     with mock.patch.multiple(ri, **sources), \
-            mock.patch.object(sys, "argv", ["ready-issues.py", "--instance", "2", *args]), \
-            mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            mock.patch("sqlite3.connect", side_effect=PermissionError("Operation not permitted")), \
+            mock.patch.object(sys, "argv", ["ready-issues.py", "--instance", instance, *args]), \
+            mock.patch("sys.stdout", new_callable=io.StringIO) as out, \
+            mock.patch("sys.stderr", new_callable=io.StringIO) as err:
         code = ri.main()
-    return code, out.getvalue(), writes
+    return code, out.getvalue() + err.getvalue(), writes
 
 
 GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "t",
@@ -412,7 +540,7 @@ class StartNow(EditIssues, unittest.TestCase):
         self.files("ADE-74", "`src-tauri/src/{ask_scheduler,control}.{rs,ts}`")
         ade31 = self.issue("ADE-31")
         ade31["description"] = ade31["description"].replace("`src-tauri/src/ask_scheduler.rs`", "`src/features/unrelated.ts`")
-        self.dbs = build_dbs(root)
+        self.cli = recorded_cli(root, "2")
 
     def commit(self, cwd, message):
         git(cwd, "add", "-A")
@@ -427,7 +555,9 @@ class StartNow(EditIssues, unittest.TestCase):
 
     def todo(self):
         claims = ri.pr_claims(OPEN_PRS_1022) + ri.worktree_claims(self.main, {pr["headRefName"] for pr in OPEN_PRS_1022})
-        todo, _ = ri.ready_issues(self.issues, ri.app_sessions(self.dbs), {}, "2", ri.plan_files(PLAN.read_text()), claims)
+        with mock.patch.object(ri, "APP_CLI", self.cli):
+            sessions = ri.app_sessions("2")
+        todo, _ = ri.ready_issues(self.issues, sessions, {}, "2", ri.plan_files(PLAN.read_text()), claims)
         return {issue.id: issue.waits for issue in todo}
 
     def test_start_now_needs_merged_blockers_and_no_overlap(self):
@@ -461,7 +591,7 @@ class StartNow(EditIssues, unittest.TestCase):
         shutil.rmtree(self.scratch)
         ade78 = self.issue("ADE-78")
         ade78["description"] = ade78["description"].replace(PI_PROTOCOL, "src/features/monos/model/monoSettings.ts")
-        code, out, _ = run_main(issues=self.issues, merged=[], dbs=self.dbs, open_prs=OPEN_PRS_1022, repo=self.main,
+        code, out, _ = run_main(issues=self.issues, merged=[], cli=self.cli, open_prs=OPEN_PRS_1022, repo=self.main,
                                 now=at("2026-10-22T10:03:00"))
         start = out[out.index("START NOW"):out.index("WAIT:")].splitlines()[1:]
         self.assertEqual([line.split()[0] for line in start], ["ADE-30", "ADE-31", "ADE-78", "ADE-79", "ADE-64", "ADE-65", "ADE-69", "ADE-82"],
@@ -511,25 +641,9 @@ class OpenPrs(unittest.TestCase):
 
 
 class CommandLine(unittest.TestCase):
-    def run_script(self, *args, db_bytes=None):
-        with tempfile.TemporaryDirectory() as home:
-            if db_bytes is not None:
-                for bundle in ["com.monocode.desktop", "com.monocode.second"]:
-                    path = Path(home) / "Library/Application Support" / bundle / "monocode.db"
-                    path.parent.mkdir(parents=True)
-                    path.write_bytes(db_bytes)
-            env = {**os.environ, "HOME": home, "LINEAR_API_KEY": "lin_api_unused"}
-            return subprocess.run([sys.executable, SCRIPT, *args], env=env, capture_output=True, text=True)
-
     def test_instance_is_required(self):
-        self.assertEqual(self.run_script().returncode, 2)
-
-    def test_unreadable_app_database_exits_2(self):
-        for db_bytes in [None, b"not a database at all, just bytes", b""]:
-            with self.subTest(db_bytes=db_bytes):
-                result = self.run_script("--instance", "2", db_bytes=db_bytes)
-                self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertNotIn("Traceback", result.stderr)
+        result = subprocess.run([sys.executable, SCRIPT], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
 
 
 if __name__ == "__main__":

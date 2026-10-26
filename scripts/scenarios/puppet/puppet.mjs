@@ -13,7 +13,9 @@
 // `{"action": "sessions.start", "arguments": {...}}` call through the CLI
 // `<app> app <action>`, both with the app token this process got from the
 // app. A string argument "$card:<heading>" is the id of the card that an
-// earlier logged call filed or updated under that heading. log.jsonl gets
+// earlier logged call filed or updated under that heading, "$prev.<field>" is
+// that field of the previous call's answer, and "$<name>" is attribute <name>
+// of the prompt's <mono_message>. log.jsonl gets
 // one line per prompt ({"prompt", "rule", "steer"}, plus "who", the Mono
 // that get_monos marks `you`, when `whoami` is set) and per call ({"tool"
 // or "action", "input", "result"}).
@@ -106,6 +108,19 @@ function withCardIds(input) {
   );
 }
 
+function fill(input, text, prev) {
+  const attribute = (name) =>
+    text.match(new RegExp(`<mono_message [^>]*\\b${name}="([^"]*)"`))?.[1];
+  const value = (raw) => {
+    if (typeof raw !== "string" || !raw.startsWith("$") || raw.startsWith("$card:")) return raw;
+    if (raw.startsWith("$prev.")) return payload(prev)?.[raw.slice(6)];
+    return attribute(raw.slice(1));
+  };
+  return Object.fromEntries(
+    Object.entries(input).map(([key, raw]) => [key, value(raw)]),
+  );
+}
+
 /** The mono_id that get_monos marks as this caller, or null. */
 function you(value) {
   if (Array.isArray(value)) return value.map(you).find(Boolean) ?? null;
@@ -161,11 +176,13 @@ async function runTurn(text, steer) {
   log({ prompt: text, rule: rule?.match ?? null, steer, ...who });
   await heldOpen(rule);
   runExecs(rule?.exec ?? []);
+  let prev;
   for (const call of rule?.calls ?? []) {
-    const input = withCardIds(call.arguments);
-    if (call.action)
-      log({ action: call.action, input, result: await cli(script.app, call.action, input, call.request_id) });
-    else log({ tool: call.tool, input, result: await server.call(call.tool, input) });
+    const input = fill(withCardIds(call.arguments), text, prev);
+    prev = call.action
+      ? await cli(script.app, call.action, input, call.request_id)
+      : await server.call(call.tool, input);
+    log({ ...(call.action ? { action: call.action } : { tool: call.tool }), input, result: prev });
   }
   server.close();
   return rule?.reply ?? "";

@@ -39,11 +39,19 @@ unblocked, or, with no blockers, since it entered Todo (history, else createdAt)
 
 Builders. A session builds ticket ADE-<id> when it is busy, not archived, and
 the branch the app recorded for it matches `(^|/)ade-<id>(-|$)` (any case,
-the exact id with no leading zero). Both app databases are read the same way,
-read-only: a session is busy when its id is in that app's in_flight_sessions
-table. The app CLI is not used, because it answers for whichever instance the
-environment points at. Titles are never matched. Busy sessions on `main` or
-with no branch are listed as "unattributed".
+the exact id with no leading zero). The sessions are the monocode project's,
+from `monocode app sessions.list`. The project is $MONOCODE_PROJECT, else the
+main checkout of the git repo that holds this script (also when it runs from a
+worktree). The CLI answers for the app its environment points at, whichever
+binary runs it, so the reply names that app (`appIdentifier`) and the script
+exits 2 unless it is the app of --instance.
+Run the script in a session or Mono of that instance. The other instance is not
+read: the lead accepted this one-instance scope on 2026-10-23 (decisions.md,
+ADE-84 #268 r1 m2), because the CLI answers only for its own app and D1 denies
+direct database reads. A closed or code-complete blocker that a builder of the
+other instance still works on counts as unblocked. A reply from an app built
+before #268 has no `appIdentifier` and exits 2. Titles are never matched. Busy
+sessions on `main` or with no branch are listed as "unattributed".
 
 --dry-run prints `would label ADE-<n>` for each code-complete label it would
 add, and writes nothing.
@@ -58,11 +66,9 @@ import argparse
 import json
 import os
 import re
-import sqlite3
 import subprocess
 import sys
 import urllib.request
-from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -71,11 +77,8 @@ REPO = "tylers2222/Monocode-Unlocked"
 MAX_WAIT = timedelta(minutes=60)
 CLOSED = ("completed", "canceled", "duplicate")
 CODE_COMPLETE = "code-complete"
-INSTANCES = ("1", "2")
-APP_DBS = {
-    "1": Path.home() / "Library/Application Support/com.monocode.desktop/monocode.db",
-    "2": Path.home() / "Library/Application Support/com.monocode.second/monocode.db",
-}
+INSTANCE_APPS = {"1": "com.monocode.desktop", "2": "com.monocode.second"}
+APP_CLI = "/Applications/MonoCode.app/Contents/MacOS/monocode"
 PLAN = Path.home() / "MonoCode/gigas/monocode-general-2/projects/change-r/plan-v2.md"
 REPO_DIR = Path(__file__).resolve().parent
 BASE = "refs/remotes/tyler/tyler/main"
@@ -405,35 +408,51 @@ def worktree_claims(repo, pr_branches):
     return claims
 
 
-def connect_ro(path):
-    return sqlite3.connect(f"{Path(path).as_uri()}?mode=ro", uri=True)
+def sessions_list(payload):
+    run = subprocess.run([APP_CLI, "app", "sessions.list", "--json", json.dumps(payload)],
+                         capture_output=True, text=True, timeout=60)
+    return json.loads(run.stdout)
 
 
-def read_db(path):
-    """(session rows, in-flight session ids) of one app database, opened read-only."""
-    with closing(connect_ro(path)) as db:
-        db.row_factory = sqlite3.Row
-        rows = [dict(row) for row in db.execute("SELECT id, title, branch, worktree_cwd, archived FROM sessions")]
-        in_flight = {row[0] for row in db.execute("SELECT session_id FROM in_flight_sessions")}
-    return rows, in_flight
+def monocode_project():
+    """$MONOCODE_PROJECT, else the main checkout of the git repo that holds this script, from a worktree too."""
+    if os.environ.get("MONOCODE_PROJECT"):
+        return os.environ["MONOCODE_PROJECT"]
+    common_dir = subprocess.run(
+        ["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    return str(Path(common_dir).parent)
 
 
-def app_sessions(dbs):
-    """Sessions of both instances; busy when the app lists the id in its own in_flight_sessions."""
-    sessions = []
-    for name, path in dbs.items():
-        rows, in_flight = read_db(path)
-        sessions += [{**row, "instance": name, "busy": row["id"] in in_flight} for row in rows]
-    return sessions
+def app_sessions(instance):
+    """The monocode project's sessions, from `sessions.list` in the app of this instance."""
+    project = monocode_project()
+    reply = sessions_list({"project": project})
+    # A Mono names the project; a session lists its own and may not name one.
+    if reply.get("error") == "project is only for a Mono":
+        reply = sessions_list({})
+    if not reply.get("ok"):
+        raise RuntimeError(f"app sessions.list: {reply.get('error')}")
+    result = reply["result"]
+    if "appIdentifier" not in result:
+        raise RuntimeError("app sessions.list has no appIdentifier: the app was built before #268 and sends no branch")
+    if result["appIdentifier"] != INSTANCE_APPS[instance]:
+        raise RuntimeError(f"app sessions.list was answered by {result['appIdentifier']}, not instance {instance} "
+                           f"({INSTANCE_APPS[instance]}); run it in a session of instance {instance}")
+    if os.path.realpath(result["cwd"]) != os.path.realpath(project):
+        raise RuntimeError(f"app sessions.list listed {result['cwd']}, not {project}")
+    return [{"id": s["id"], "title": s["title"], "branch": s["branch"], "archived": s["archived"],
+             "busy": s["busy"], "instance": instance} for s in result["sessions"]]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--instance", required=True, choices=INSTANCES)
+    parser.add_argument("--instance", required=True, choices=list(INSTANCE_APPS))
     parser.add_argument("--dry-run", action="store_true", help="print the labels it would add; write nothing")
     args = parser.parse_args()
     try:
-        sessions = app_sessions(APP_DBS)
+        sessions = app_sessions(args.instance)
         key = linear_key()
         issues = open_issues_and_blockers(key)
         finals = final_parts(merged_prs())

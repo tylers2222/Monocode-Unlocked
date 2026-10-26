@@ -82,6 +82,8 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
   const messages: NonNullable<AgentAppHost["messages"]> = {
     getMonos: vi.fn(async () => ({ monos: [] })),
     send: vi.fn(async () => ({ message_id: "m_aaaaaaaaaaaa" })),
+    ask: vi.fn(async () => ({ message_id: "m_aaaaaaaaaaaa" })),
+    ack: vi.fn(async () => ({ message_id: "m_bbbbbbbbbbbb" })),
     reply: vi.fn(async () => ({ message_ids: [] })),
     get: vi.fn(async () => ({ message: {} })),
   };
@@ -108,6 +110,8 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
     run,
     send: vi.mocked(messages.send),
     get: vi.mocked(messages.get),
+    ask: vi.mocked(messages.ask),
+    ack: vi.mocked(messages.ack),
     shroomChat,
   };
 }
@@ -431,4 +435,18 @@ it("passes messages.get with a handle or a message id to the store", async () =>
     [{ handle: "#2" }],
     [{ handle: "m_aaaaaaaaaaaa" }],
   ]);
+});
+
+// R6. Exists only for gate/mutation (R6 one-off); app.sh r6 proves ask and
+// ack end to end. Defect: a field of messages.ask or messages.ack is refused
+// as unknown, or one action reaches the other's host call or none.
+it("passes messages.ask and messages.ack with every field to their own call", async () => {
+  const { run, send, ask, ack } = fixture();
+  const asked = { message: "Run it", send_to: "mono-2", due_minutes: 30 };
+  const acked = { ask_id: "m_aaaaaaaaaaaa", message: "Done" };
+  await run("messages.ask", asked, "req-ask");
+  await run("messages.ack", acked, "req-ack");
+  expect(ask.mock.calls).toEqual([["req-ask", asked]]);
+  expect(ack.mock.calls).toEqual([["req-ack", acked]]);
+  expect(send).not.toHaveBeenCalled();
 });

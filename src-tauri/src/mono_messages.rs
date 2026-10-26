@@ -1584,6 +1584,27 @@ fn target(conn: &Connection, session: SessionId, live: &Live) -> rusqlite::Resul
     })
 }
 
+/// `live` with `session`, an ack's parent, first if no window lists it and
+/// `target` finds it, so an idle lead gets it and a gone one does not
+/// (R6b review r1 M1, r2 M1).
+pub(crate) fn with_own_session(
+    conn: &Connection,
+    live: &Live,
+    session: &SessionId,
+) -> rusqlite::Result<Vec<LiveSession>> {
+    let listed = live.sessions.to_vec();
+    if listed.iter().any(|e| e.session_id == session.as_str()) {
+        return Ok(listed);
+    }
+    let parent = target(conn, session.clone(), live)?;
+    let own = parent.exists.then(|| LiveSession {
+        session_id: session.as_str().into(),
+        steerable: parent.steerable,
+        own_project: true,
+    });
+    Ok(own.into_iter().chain(listed).collect())
+}
+
 fn recipient(conn: &Connection, send_to: &str, live: &Live) -> rusqlite::Result<Recipient> {
     if let Some(mono_id) = MonoId::parse(send_to) {
         if let Some(row) = mono_row(conn, &mono_id)? {
@@ -1738,22 +1759,24 @@ pub fn submit(
         Err(hint) => return Ok(refused(Refusal::InvalidInput, hint)),
     };
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let submitted = submit_in(&tx, caller, request_id, input, live, now)?;
+    let hash = input.payload_hash();
+    let submitted = submit_in(&tx, caller, request_id, input, hash, live, now)?;
     tx.commit()?;
     Ok(submitted)
 }
 
 /// `submit` inside a transaction the caller holds: an ask or ack (R5)
-/// writes its row this way, in its own `BEGIN IMMEDIATE`.
+/// writes its row this way, in its own `BEGIN IMMEDIATE`. `hash` names the
+/// call for dedupe by request id: an ask's covers its `due_minutes` too.
 pub(crate) fn submit_in(
     tx: &Connection,
     caller: &Caller,
     request_id: &RequestId,
     input: Input,
+    hash: PayloadHash,
     live: &Live,
     now: i64,
 ) -> rusqlite::Result<Submitted> {
-    let hash = input.payload_hash();
     // Design 7 (PR 6 review r1 m1): the control host let this call through
     // before the clear forgot its session, and it reaches here after the clear
     // committed. A row written now would never be dropped.

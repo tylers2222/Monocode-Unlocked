@@ -127,6 +127,7 @@ export type AppSessionListing = {
   title: string;
   harness: HarnessId;
   model: string;
+  branch: string | null;
   busy: boolean;
   hasDraft: boolean;
   archived: boolean;
@@ -217,6 +218,8 @@ export type AgentAppHost = {
     notifyMonoId?: string,
   ): Promise<void>;
   sessions(cwd: string): Promise<AppSessionListing[]>;
+  /** The app's bundle identifier, which tells one MonoCode instance from another. */
+  appIdentifier(): Promise<string>;
   session(id: string): Promise<Session | null>;
   readConversation?(
     session: Session,
@@ -297,6 +300,8 @@ export type AgentAppHost = {
   messages?: {
     getMonos(): Promise<unknown>;
     send(requestId: string, input: SendInput): Promise<unknown>;
+    ask(requestId: string, input: Record<string, unknown>): Promise<unknown>;
+    ack(requestId: string, input: Record<string, unknown>): Promise<unknown>;
     reply(requestId: string, input: ReplyInput): Promise<unknown>;
     get(input: GetInput): Promise<unknown>;
   };
@@ -424,6 +429,8 @@ export const FIELDS = new Map<string, readonly string[]>([
     "messages.send",
     ["message", "send_to", "wanting_reply", "intent", "reply_to", "scope"],
   ],
+  ["messages.ask", ["message", "send_to", "due_minutes"]],
+  ["messages.ack", ["ask_id", "message"]],
   ["messages.reply", ["message", "wanting_reply", "to"]],
   ["messages.get", ["handle"]],
   ["milestones.list", ["project"]],
@@ -1709,6 +1716,10 @@ export async function handleAgentApp(
         requestId,
         checked(() => parseSendInput(input)),
       );
+    // FIELDS checked the names; Rust parses the values of an ask or ack and
+    // names the bad field in its invalid_input hint.
+    if (action === "messages.ask") return messages.ask(requestId, input);
+    if (action === "messages.ack") return messages.ack(requestId, input);
     if (action === "messages.reply")
       return messages.reply(
         requestId,
@@ -1759,7 +1770,11 @@ export async function handleAgentApp(
       };
     case "sessions.list": {
       const cwd = requireProject(source, input, host);
-      return { cwd, sessions: await host.sessions(cwd) };
+      return {
+        appIdentifier: await host.appIdentifier(),
+        cwd,
+        sessions: await host.sessions(cwd),
+      };
     }
     case "sessions.read": {
       const id = requiredString(input.sessionId, "sessionId", 256);
