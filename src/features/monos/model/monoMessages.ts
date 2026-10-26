@@ -465,14 +465,18 @@ function fromAttributes(
   }
 }
 
-/** What a row carries in the ask ledger (R6), from Rust's `Targeted.carries`. */
+/** What a row carries in the ask ledger (R6, R14), from Rust's `Targeted.carries`. */
 export type Carries =
-  { kind: "ask"; dueInMs: number | null } | { kind: "ack"; askId: MessageId };
+  | { kind: "ask"; dueInMs: number | null }
+  | { kind: "ack"; askId: MessageId }
+  | { kind: "question" | "answer"; askId: MessageId; seq: number }
+  | { kind: "update"; askId: MessageId };
 
 /**
  * Only the agent reads an ask's attributes: `ask_id` repeats `message_id`,
  * and `due_in` counts active time at the hand-off, so the chat copy would
- * keep a countdown that stops being true.
+ * keep a countdown that stops being true. A question, answer or update
+ * names its ask for the agent that answers it (R14).
  */
 function ledgerAttributes(
   id: MessageId,
@@ -490,6 +494,12 @@ function ledgerAttributes(
       ];
     case "ack":
       return [`ack_of="${carries.askId}"`];
+    case "question":
+    case "answer":
+      if (!toAgent) return [];
+      return [`${carries.kind}_of="${carries.askId}"`, `seq="${carries.seq}"`];
+    case "update":
+      return toAgent ? [`update_of="${carries.askId}"`] : [];
     default:
       return [];
   }

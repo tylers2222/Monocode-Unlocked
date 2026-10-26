@@ -685,9 +685,12 @@ type Submitted =
 /** A call's input. Rust parses an ask or ack as the model gave it (R6). */
 type RawInput = Record<string, unknown>;
 
+/** The calls on an ask's key: R6's ask and ack, R14's question, answer and update. */
+type KeyTool = "ask" | "ack" | "question" | "answer" | "update";
+
 async function submit(
   host: MonoMessagingHost,
-  tool: "send_message" | "reply" | "ask" | "ack",
+  tool: "send_message" | "reply" | KeyTool,
   requestId: string,
   input: RawInput,
 ): Promise<Accepted> {
@@ -880,11 +883,12 @@ export async function getMessage(host: MonoMessagingHost, input: GetInput) {
 /**
  * `messages.send` (design 3.2), and `messages.ask` and `messages.ack` (R6):
  * an ask is a send that is also a key on the asked child, an ack a send to
- * the asker that spends it.
+ * the asker that spends it. A question, answer or update (R14) is a send
+ * on the key that keeps it.
  */
 async function sendMessage(
   host: MonoMessagingHost,
-  tool: "send_message" | "ask" | "ack",
+  tool: "send_message" | KeyTool,
   requestId: string,
   input: RawInput,
 ) {
@@ -950,6 +954,10 @@ export function agentMessages(
       sendMessage(host, "send_message", requestId, input),
     ask: (requestId, input) => sendMessage(host, "ask", requestId, input),
     ack: (requestId, input) => sendMessage(host, "ack", requestId, input),
+    question: (requestId, input) =>
+      sendMessage(host, "question", requestId, input),
+    answer: (requestId, input) => sendMessage(host, "answer", requestId, input),
+    update: (requestId, input) => sendMessage(host, "update", requestId, input),
     reply: (requestId, input) => replyMessage(host, requestId, input),
     get: (input) => getMessage(host, input),
   };

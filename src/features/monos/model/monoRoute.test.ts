@@ -1315,6 +1315,16 @@ it("gives the agent an ask's ask_id and due_in, and an ack's ack_of", () => {
   expect(tags({ kind: "ack", askId: "m_bbbbbbbbbbbb" as MessageId })).toBe(
     ' ack_of="m_bbbbbbbbbbbb">',
   );
+  const ask2 = "m_bbbbbbbbbbbb" as MessageId;
+  expect(tags({ kind: "question", askId: ask2, seq: 2 })).toBe(
+    ' question_of="m_bbbbbbbbbbbb" seq="2">',
+  );
+  expect(tags({ kind: "answer", askId: ask2, seq: 3 })).toBe(
+    ' answer_of="m_bbbbbbbbbbbb" seq="3">',
+  );
+  expect(tags({ kind: "update", askId: ask2 })).toBe(
+    ' update_of="m_bbbbbbbbbbbb">',
+  );
   expect(tags(null)).toBe(">");
 });
 
@@ -1337,6 +1347,13 @@ it("shows an ask in the chat with no countdown and no ask_id as its deadline pas
       undefined,
     ),
   ).toContain(' ack_of="m_bbbbbbbbbbbb">');
+  const ask2 = "m_bbbbbbbbbbbb" as MessageId;
+  for (const carries of [
+    { kind: "question", askId: ask2, seq: 1 },
+    { kind: "answer", askId: ask2, seq: 1 },
+    { kind: "update", askId: ask2 },
+  ] as const)
+    expect(renderMonoMessage(ledgerRow(carries), undefined)).toBe(plain);
 });
 
 // Design 13. Defect: a lead's or worker's message reads as a deleted Mono's,
