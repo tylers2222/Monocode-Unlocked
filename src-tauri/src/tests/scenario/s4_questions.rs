@@ -279,6 +279,44 @@ fn one_update_and_three_questions(world: &World, a: &Asked, due: i64) {
     );
 }
 
+/// A reminder queued before a question is withdrawn while it waits, and
+/// its rung runs again from the moved deadline.
+fn a_queued_reminder_waits_out_the_question(world: &mut World, a: &Asked, docs: &MessageId) {
+    let (_, Some(docs_due), None, Some(docs_t5)) = clock(world, docs) else {
+        panic!("the second ask runs its clock");
+    };
+    world.advance(docs_t5 - world.active_ms());
+    assert_eq!(reminders(world, docs).len(), 1, "t5 is queued");
+    let question = json!({"ask_id": docs.as_str(), "message": "Which docs?"});
+    said(world, a.call(world, &a.w, "w-dq1", "question", question));
+    assert!(
+        reminders(world, docs).is_empty(),
+        "no reminder while paused"
+    );
+    assert_eq!(
+        reminders(world, &a.ask).len(),
+        1,
+        "another ask's reminder stays"
+    );
+    let paused_at = at(world, docs, "question", 1);
+    world.advance(HOUR);
+    let answer = json!({"ask_id": docs.as_str(), "seq": 1, "message": "All"});
+    said(world, a.call(world, &a.l, "l-da1", "answer", answer));
+    let resumed = docs_due + at(world, docs, "answer", 1) - paused_at;
+    assert_eq!(
+        clock(world, docs),
+        ("open".into(), Some(resumed), None, Some(resumed - T5_LEAD)),
+        "t5 falls due again from the moved deadline"
+    );
+    // It paused in its t5 window, so the rung falls due again at once.
+    world.advance(MINUTE);
+    let keys: Vec<String> = reminders(world, docs)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    assert_eq!(keys, [format!("reminder:{}:t5", docs.as_str())]);
+}
+
 /// S4 "question() keeps the key and pauses the clock", "the clock jumps 3
 /// hours while it waits: no reminder", "the answer comes down and the clock
 /// resumes where it paused", "one update() keeps the key and the clock
@@ -290,8 +328,10 @@ fn one_update_and_three_questions(world: &World, a: &Asked, due: i64) {
 /// a 4th question or a 2nd update gets through; or the wrong party answers.
 /// Also: a refusal loses its code or its hint; an answer guesses its ask,
 /// or its request id ignores the seq; an idle lead no window lists misses
-/// the Mono's answer; a call with no open ask, or two, is misread; or
-/// another call's request id is taken as this one's.
+/// the Mono's answer; a call with no open ask, or two, is misread; another
+/// call's request id is taken as this one's; a repeat that named no ask is
+/// refused once a second ask is open; or a reminder queued before a
+/// question goes out while it waits, or never runs again after the answer.
 #[test]
 fn s4_a_question_pauses_the_clock_and_its_answer_resumes_it() {
     let mut world = World::new("s4-questions");
@@ -357,9 +397,11 @@ fn s4_a_question_pauses_the_clock_and_its_answer_resumes_it() {
     let key = format!("reminder:{}:t5", a.ask.as_str());
     assert_eq!(reminders(&world, &a.ask), [(key, t5)]);
 
-    // A second open ask to the worker: a question must name which one.
+    // A second open ask to the worker: a repeat of the first question
+    // still replays its outcome, and a new question must name its ask.
     let input = json!({"message": "Fix the docs", "send_to": a.worker.as_str(), "due_minutes": 30});
-    written(world.tool(&a.l, "ask-2", "ask", input, &[&a.lead, &a.worker]));
+    let docs = written(world.tool(&a.l, "ask-2", "ask", input, &[&a.lead, &a.worker]));
+    assert!(repeated(&a.question(&world, 1)), "w-q1 replays");
     let unnamed = a.call(
         &world,
         &a.w,
@@ -372,4 +414,5 @@ fn s4_a_question_pauses_the_clock_and_its_answer_resumes_it() {
         "invalid_input",
         "name the one you mean with ask_id",
     );
+    a_queued_reminder_waits_out_the_question(&mut world, &a, &docs);
 }
