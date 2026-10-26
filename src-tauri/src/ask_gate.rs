@@ -190,6 +190,72 @@ pub fn decide_ack(ask: &AskState, caller: &Actor) -> Result<(), AckRefused> {
     }
 }
 
+/// Plan section 2: the one extension moves the deadline by 15 active minutes.
+pub const EXTENSION_MS: i64 = 15 * 60_000;
+
+/// An ask as `extend` reads it: `due` is its deadline (none for a Giga's
+/// ask), `reminded` that its `t5` stage fell due, `extended` that its one
+/// `extension` event exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtendState {
+    pub ask: AskState,
+    pub due: Option<i64>,
+    pub reminded: bool,
+    pub extended: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtendRefused {
+    NoOpenAsk,
+    NotYours,
+    AlreadyAcked,
+    NoDeadline,
+    BeforeReminder,
+    AlreadyExtended,
+}
+
+impl ExtendRefused {
+    pub fn hint(self) -> &'static str {
+        match self {
+            ExtendRefused::NoOpenAsk => {
+                "No open ask of yours has this id. Pass the ask_id of the <mono_reminder>; you may leave it out when you have exactly one open ask."
+            }
+            ExtendRefused::NotYours => {
+                "This ask is not yours: only the Mono or session it was sent to can extend it."
+            }
+            ExtendRefused::AlreadyAcked => "This ask was already acked, so it has no deadline left.",
+            ExtendRefused::NoDeadline => "A Giga's ask has no deadline to extend.",
+            ExtendRefused::BeforeReminder => {
+                "The extension opens with the reminder 5 active minutes before the deadline. Work on, or ask your parent a question."
+            }
+            ExtendRefused::AlreadyExtended => {
+                "This ask was already extended once; its deadline moves only once. Finish the work and ack it."
+            }
+        }
+    }
+}
+
+/// Plan R10: only the child extends, only an open ask with a deadline, only
+/// once its `t5` stage fell due, and only once. `Ok` is the new deadline.
+pub fn decide_extend(ask: &ExtendState, caller: &Actor) -> Result<i64, ExtendRefused> {
+    if &ask.ask.child != caller {
+        return Err(ExtendRefused::NotYours);
+    }
+    if ask.ask.state == State::Acked {
+        return Err(ExtendRefused::AlreadyAcked);
+    }
+    let Some(due) = ask.due else {
+        return Err(ExtendRefused::NoDeadline);
+    };
+    if ask.extended {
+        return Err(ExtendRefused::AlreadyExtended);
+    }
+    if !ask.reminded {
+        return Err(ExtendRefused::BeforeReminder);
+    }
+    Ok(due + EXTENSION_MS)
+}
+
 /// How a reminder reaches its chat (plan R9): into the running turn, as a
 /// new turn, or not yet. `mono_outbox_claim` answers it to the web app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

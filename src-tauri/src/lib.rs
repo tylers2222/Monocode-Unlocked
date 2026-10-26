@@ -589,6 +589,7 @@ pub fn run() {
             ask_scheduler::mono_outbox_pending,
             ask_scheduler::mono_outbox_claim,
             ask_scheduler::mono_outbox_sent,
+            asks::mono_ask_extend,
             session_store::session_delete,
             session_store::session_set_archived,
             session_store::session_set_pinned,
