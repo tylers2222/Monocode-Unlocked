@@ -356,6 +356,11 @@ const QUEUE_WAKE_LIMIT = 3;
  * turn paused it, at most `QUEUE_WAKE_LIMIT` times in a row without a turn
  * that ends well. A pause the user made (Stop, a reset) or a refused delivery
  * waits for Resume, and a usage limit waits for its reset.
+ *
+ * No known state reaches `busy` with a wakeable pause: `session.error` ends
+ * the turn as it pauses the queue, a quit pause exists only on restore (idle),
+ * and a new user turn clears an error pause. The `busy` check stays so a wake
+ * can never steer queued messages into a running turn.
  */
 export function wakesQueue(session: Session, mono: boolean): boolean {
   return (
