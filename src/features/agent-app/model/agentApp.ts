@@ -1723,8 +1723,8 @@ export async function handleAgentApp(
     action === "sessions.start" ? appLaunchId(source, requestId) : null;
   // Design 6.6: Rust decides every app action once, before it runs.
   // messages.* get their own gate in mono_message_submit.
-  const { leadSessionId, ask } = action.startsWith("messages.")
-    ? { leadSessionId: null, ask: undefined }
+  const { leadSessionId, ask }: { leadSessionId: string | null; ask?: StartAsk } = action.startsWith("messages.")
+    ? { leadSessionId: null }
     : await host.levels.check(requestId, {
         action,
         target: typeof input.sessionId === "string" ? input.sessionId : null,
