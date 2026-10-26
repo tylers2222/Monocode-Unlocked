@@ -378,6 +378,14 @@ export function wakeQueue(session: Session): Session {
   return { ...resumeQueue(session), queueWakes: (session.queueWakes ?? 0) + 1 };
 }
 
+/** At a turn's end: a turn without a provider failure clears the wake count. */
+export function endTurnWakes(
+  session: Session,
+  providerFailed: boolean,
+): Session {
+  return providerFailed ? session : { ...session, queueWakes: undefined };
+}
+
 /** Why a paused queue is not sending, when the user did not pause it. */
 export function queuePauseNotice(session: Session): string | undefined {
   return session.queuedMessages?.some((message) => message.pausedBy === "quit")

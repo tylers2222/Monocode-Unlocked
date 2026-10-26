@@ -541,6 +541,7 @@ import {
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
+  endTurnWakes,
   enqueueQueuedMessage,
   failQueuedMessage,
   nextQueuedSend,
@@ -8484,10 +8485,7 @@ function Workspace({
               const providerFailed =
                 providerFailureSeen ||
                 isProviderFailureText(lastAssistantTextInTurn(ended));
-              // A turn that ends well lets the app wake the queue again.
-              const stopped = providerFailed
-                ? ended
-                : { ...ended, queueWakes: undefined };
+              const stopped = endTurnWakes(ended, providerFailed);
               const finalized =
                 proposalDraft && proposalId
                   ? withOrchestrationProposal(
