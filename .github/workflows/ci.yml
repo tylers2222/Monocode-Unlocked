@@ -25,7 +25,10 @@ jobs:
       - run: node --test scripts/release-channel.test.cjs
 
   browser:
-    runs-on: ubuntu-latest
+    # Pinned: on ubuntu-26.04 (the new ubuntu-latest) 11 WebKit real-omp specs time out
+    # (tyler/main 93094e67 run 40314640829, PR #361 run 40316396180);
+    # the same suite passed on ubuntu-24.04 (runs 40300536386, 40293333880).
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
