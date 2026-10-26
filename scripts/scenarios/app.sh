@@ -323,15 +323,18 @@ answer() {
 # 30-minute deadline, and each acks through MCP. The lead acks twice and the
 # Mono acks its own ask; both refusals reach the puppet. The lead's worker acks
 # once the lead has left the window (R6b review r1 M1). R7: the lead and the
-# worker ack their start asks with the ask_id their first prompt carries. No
-# rule matches those acks, so a turn that takes one with R6-DONE or
-# R6-WORKED still runs that rule.
+# worker ack their start asks with the ask_id their first prompt carries. A
+# session's tag names it by its first prompt, so its start ack carries
+# R6-BRIEF or R6-WBRIEF too: the no-call R6-LED and R6-WLED rules come before
+# those, and after R6-DONE and R6-WORKED, so a turn that takes a start ack
+# with one of those still runs it. R6-DONE reads ack_of from its own tag.
 R6_RULES='[
   {"match": "R6-HABIT", "calls": [{"tool": "ask", "arguments":
     {"message": "R6-PROJECT Run the project.", "send_to": "r6-mono"}}], "reply": "Asked."},
   {"match": "R6-REPORT", "reply": "Noted."},
   {"match": "R6-DONE", "calls": [{"tool": "ack", "arguments":
-    {"ask_id": "$ack_of", "message": "R6-MINE Acking my own ask."}}], "reply": "Checked."},
+    {"ask_id": "$ack_of@R6-DONE", "message": "R6-MINE Acking my own ask."}}], "reply": "Checked."},
+  {"match": "R6-LED", "reply": "Noted."},
   {"match": "R6-PROJECT", "calls": [
     {"action": "sessions.start", "arguments":
       {"prompt": "R6-BRIEF You lead the task.", "harness": "fx", "model": "fx:zai/glm-5.2-fast", "notifyOnComplete": false}},
@@ -344,6 +347,7 @@ R6_RULES='[
       {"prompt": "R6-WBRIEF You work on the task.", "harness": "fx", "model": "fx:zai/glm-5.2-fast", "notifyOnComplete": false}},
     {"tool": "ask", "arguments": {"message": "R6-WORK Do the work.", "send_to": "$prev.id"}}], "reply": "Done."},
   {"match": "R6-WORKED", "reply": "Noted."},
+  {"match": "R6-WLED", "reply": "Noted."},
   {"match": "R6-WORK", "exec": [["sleep", "3"]], "calls": [
     {"tool": "ack", "arguments": {"ask_id": "$ask_id", "message": "R6-WORKED The work is done."}}], "reply": "Worked."},
   {"match": "R6-WBRIEF", "calls": [
@@ -424,6 +428,8 @@ run_r6() {
   expect "lead's second ack: code" "$(answer "R6-AGAIN The task is done." code)" ack_refused
   expect "lead's second ack: hint" "$(answer "R6-AGAIN The task is done." hint)" \
     "This ask was already acked. A new ask from your parent has a new id."
+  expect "Mono acks its own ask: ask_id" \
+    "$(jq -rs 'first(.[] | select(.input.message == "R6-MINE Acking my own ask.") | .input.ask_id)' "$PUPPET/log.jsonl")" "$mono_ask"
   expect "Mono acks its own ask: code" "$(answer "R6-MINE Acking my own ask." code)" ack_refused
   expect "Mono acks its own ask: hint" "$(answer "R6-MINE Acking my own ask." hint)" \
     "This ask is not yours: only the Mono or session it was sent to can ack it."
