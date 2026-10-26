@@ -22,6 +22,7 @@ import {
   type WorkspaceTab,
 } from "../../features/workspace/model/layout";
 import type { SubmissionAcceptance } from "./submissionAcceptance";
+import type { TurnId } from "../../features/monos/model/monoMessages";
 
 /**
  * Whether the launch of session `id` with `launch` already happened: the one
@@ -88,6 +89,8 @@ export async function acceptQuickLaunch(
         intent?: "plan" | "orchestrate";
         appRequestId?: string;
         startedBy?: string;
+        agentText?: string;
+        turnId?: TurnId;
       },
     ) => SubmissionAcceptance;
     saveDraft?: (
@@ -174,6 +177,7 @@ export async function acceptQuickLaunch(
               ...(launch.startedBy
                 ? { appRequestId: deliveryId, startedBy: launch.startedBy }
                 : {}),
+              ...launch.firstTurn,
             },
           ]
         : []),

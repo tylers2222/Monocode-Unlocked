@@ -6,16 +6,16 @@
 //
 // script.json: {"app": "<monocode binary>", "whoami": false, "rules": [{"match": "...",
 //   "exec": [["sqlite3", "x.db", ".tables"]],
-//   "calls": [{"tool": "send_message", "arguments": {...}}], "reply": "...",
-//   "hold": 1}]}
-// A rule with `hold: n` never ends its first n turns.
+//   "calls": [{"tool": "send_message", "arguments": {...}}], "reply": "..."}]}
 // Each tool call goes through `<app> app-mcp`, the app's MCP server, and each
 // `{"action": "sessions.start", "arguments": {...}}` call through the CLI
 // `<app> app <action>`, both with the app token this process got from the
 // app. A string argument "$card:<heading>" is the id of the card that an
 // earlier logged call filed or updated under that heading, "$prev.<field>" is
-// that field of the previous call's answer, and "$<name>" is attribute <name>
-// of the prompt's <mono_message>. log.jsonl gets
+// that field of the previous call's answer, "$<name>" is attribute <name>
+// of the prompt's first <mono_message>, and "$<name>@<text>" is attribute
+// <name> of the <mono_message> whose body starts with <text> (a turn can take
+// several messages, in either order). log.jsonl gets
 // one line per prompt ({"prompt", "rule", "steer"}, plus "who", the Mono
 // that get_monos marks `you`, when `whoami` is set) and per call ({"tool"
 // or "action", "input", "result"}).
@@ -109,12 +109,18 @@ function withCardIds(input) {
 }
 
 function fill(input, text, prev) {
-  const attribute = (name) =>
-    text.match(new RegExp(`<mono_message [^>]*\\b${name}="([^"]*)"`))?.[1];
+  const escape = (raw) => raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const attribute = (name, body) =>
+    text.match(
+      new RegExp(
+        `<mono_message [^>]*\\b${name}="([^"]*)"${body === undefined ? "" : `[^>]*>\\n${escape(body)}`}`,
+      ),
+    )?.[1];
   const value = (raw) => {
     if (typeof raw !== "string" || !raw.startsWith("$") || raw.startsWith("$card:")) return raw;
     if (raw.startsWith("$prev.")) return payload(prev)?.[raw.slice(6)];
-    return attribute(raw.slice(1));
+    const at = raw.indexOf("@");
+    return at < 0 ? attribute(raw.slice(1)) : attribute(raw.slice(1, at), raw.slice(at + 1));
   };
   return Object.fromEntries(
     Object.entries(input).map(([key, raw]) => [key, value(raw)]),
@@ -155,15 +161,6 @@ function runExecs(execs) {
   }
 }
 
-/** Never settles while `rule` holds this turn: one of its first `hold` turns. */
-function heldOpen(rule) {
-  if (!rule?.hold) return undefined;
-  const turns = readFileSync(join(dir, "log.jsonl"), "utf8")
-    .split("\n")
-    .filter((line) => line && JSON.parse(line).rule === rule.match).length;
-  return turns <= rule.hold ? new Promise(() => {}) : undefined;
-}
-
 async function runTurn(text, steer) {
   const script = JSON.parse(readFileSync(join(dir, "script.json"), "utf8"));
   const rule = script.rules.find((candidate) => text.includes(candidate.match));
@@ -174,7 +171,6 @@ async function runTurn(text, steer) {
   const server = mcp(script.app);
   const who = script.whoami ? { who: you(await server.call("get_monos", {})) } : {};
   log({ prompt: text, rule: rule?.match ?? null, steer, ...who });
-  await heldOpen(rule);
   runExecs(rule?.exec ?? []);
   let prev;
   for (const call of rule?.calls ?? []) {

@@ -1,7 +1,10 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import type { SessionSummary } from "../../src/features/sessions/data/sessionStore";
 import { type AppShell, expect, type MountOptions, test } from "./app/fixture";
+import { bridgeOmp, type ModelReply, needsOmp, ompHandlers } from "./app/ompBridge";
 
 // ADE-78. The ship 6 swap (MonoCode 2, 2026-10-21 08:49) quit the app while
 // the Fork Orchestrator ran a turn with General's messages queued behind it.
@@ -14,6 +17,12 @@ import { type AppShell, expect, type MountOptions, test } from "./app/fixture";
 // and message text are made up. The model was not the cause: a
 // chat on a model id the catalog does not list still runs, so no send to it
 // is held.
+//
+// ADE-108 then makes the app wake that queue itself: a pause the quit or a
+// failed turn made lifts with no click, a few times in a row at most, and a
+// pause the user made still waits for Resume. ADE-111 is the stall that
+// paused the same chat on 2026-10-23: omp retried it in the same turn, which
+// ended well, but the app still paused the queue for it.
 
 type Mono = {
   id: string;
@@ -45,8 +54,6 @@ declare global {
     controlReplies?: { id: string; response: ControlResponse }[];
     /** The real id of the next row mono_message_submit writes. */
     nextRowId?: string;
-    /** The row mono_message_submit wrote last. */
-    lastRow?: Record<string, unknown>;
     /** Each send_to Mono's chat, as mono_gate.rs reads it from `monos`. */
     monoChats?: Record<string, string>;
   }
@@ -96,7 +103,8 @@ const handlers: MountOptions["handlers"] = {
     return null;
   },
   // mono_messages.rs for one accepted send from a Mono to a Mono's chat. The
-  // gate is tested in mono_gate.rs.
+  // gate is tested in mono_gate.rs. Rows stay in sessionStorage, as Rust
+  // keeps them in monocode.db, so a relaunch still hands them off.
   mono_message_submit: (_store, { caller, requestId, input }) => {
     const from = caller as { monoId: string; sessionId: string };
     const send = input as { message: string; send_to: string };
@@ -123,7 +131,11 @@ const handlers: MountOptions["handlers"] = {
       delivery: "queue",
       slot: null,
     };
-    window.lastRow = row;
+    const rows = JSON.parse(sessionStorage.getItem("ade78-rows") ?? "{}");
+    sessionStorage.setItem(
+      "ade78-rows",
+      JSON.stringify({ ...rows, [row.id!]: row }),
+    );
     return {
       outcome: "accepted",
       messages: [{ message: row, target: null }],
@@ -135,9 +147,9 @@ const handlers: MountOptions["handlers"] = {
   mono_messages_unqueued: () => [],
   mono_messages_pending_notices: () => [],
   // The idle receiver's queue pump opens a turn with the row it was sent.
-  mono_message_assign_slot: (_store, { turnId, kind }) => ({
+  mono_message_assign_slot: (_store, { id, turnId, kind }) => ({
     message: {
-      ...window.lastRow,
+      ...JSON.parse(sessionStorage.getItem("ade78-rows") ?? "{}")[id as string],
       delivery: kind,
       slot: { turnId, deliveredAt: null },
     },
@@ -152,7 +164,10 @@ const handlers: MountOptions["handlers"] = {
 async function mountMonos(
   app: AppShell,
   page: Page,
-  forkModel = FORK.chat.summary.model,
+  {
+    forkModel = FORK.chat.summary.model,
+    omp = false,
+  }: { forkModel?: string; omp?: boolean } = {},
 ) {
   await page.addInitScript(
     (chats) => {
@@ -169,7 +184,7 @@ async function mountMonos(
       ].map((summary) => ({ ...summary, createdAt: 1, updatedAt: 1 })),
       monos: [FORK, GENERAL].map(({ id, role, data }) => ({ id, role, data })),
     },
-    { handlers },
+    { handlers: omp ? { ...handlers, ...ompHandlers } : handlers },
   );
 }
 
@@ -238,82 +253,295 @@ const forkPrompts = (page: Page) =>
     FORK.data.sessionId,
   );
 
-test("ship 6: a Mono queue the relaunch paused is reported to its senders and in monos.get and monos.list", async ({
-  app,
-  page,
-}) => {
-  await mountMonos(app, page);
-  await openMono(page, FORK);
-  await page
-    .getByPlaceholder(`Message ${FORK.data.name}`)
-    .fill("Run the ship 6 swap.");
-  await page.getByPlaceholder(`Message ${FORK.data.name}`).press("Enter");
-  await expect.poll(() => forkPrompts(page)).toHaveLength(1);
+let calls = 0;
 
-  await openMono(page, GENERAL);
-  for (const message of db.beforeQuit)
-    expect(
-      await send(app, page, message),
-      "a message for a busy Mono waits for its turn end, as before",
-    ).toEqual({
-      message_id: message.id,
-      status: "delivered",
-      delivery: "queue",
-      hop: 0,
-    });
-  expect(
-    await fromGeneral(app, page, "get-before", "monos.get", {
-      monoId: FORK.id,
-    }),
-  ).toMatchObject({
-    busy: true,
-    queued: db.beforeQuit.length,
-    model: "omp:default",
-  });
+/** The Fork Orchestrator as monos.get shows it to General. */
+const forkState = (app: AppShell, page: Page) =>
+  fromGeneral(app, page, `get-${++calls}`, "monos.get", { monoId: FORK.id });
 
-  await app.restart();
-  await openMono(page, GENERAL);
-  expect(
-    await send(app, page, db.afterRelaunch),
-    "General is told the message waits for a Resume",
-  ).toEqual({
-    message_id: db.afterRelaunch.id,
-    status: "delivered",
-    delivery: "paused",
-    hop: 0,
-  });
-  expect(
-    await fromGeneral(app, page, "get-after", "monos.get", {
-      monoId: FORK.id,
-    }),
-  ).toMatchObject({ busy: false, queuePaused: true, model: "omp:default" });
+/** Which Monos monos.list reports with a paused queue. */
+async function pausedQueues(app: AppShell, page: Page) {
   const { monos } = (await fromGeneral(
     app,
     page,
-    "list-after",
+    `list-${++calls}`,
     "monos.list",
     {},
-  )) as {
-    monos: { id: string; queuePaused: boolean }[];
-  };
-  expect(
-    monos.map(({ id, queuePaused }) => [id, queuePaused]),
-    "only the paused Mono's queue is reported paused",
-  ).toEqual([
-    [FORK.id, true],
-    [GENERAL.id, false],
-  ]);
-  expect(
-    await forkPrompts(page),
-    "the paused queue holds the interrupted turn's Continue and every message",
-  ).toEqual([]);
+  )) as { monos: { id: string; queuePaused: boolean }[] };
+  return monos.map(({ id, queuePaused }) => [id, queuePaused]);
+}
+
+/** A real omp starts, and a turn reaches its model, in a few seconds on CI. */
+const OMP = { timeout: 30_000 };
+
+/**
+ * Real omp for every chat, on a local model that `reply` answers from the
+ * text of the last user message omp sends it. Title jobs run without tools.
+ * Returns that text for each agent request, in order.
+ */
+async function realOmp(
+  page: Page,
+  app: AppShell,
+  reply: (prompt: string) => ModelReply | Promise<ModelReply>,
+  env: NodeJS.ProcessEnv = {},
+): Promise<string[]> {
+  const prompts: string[] = [];
+  await bridgeOmp(page, app, {
+    dir: mkdtempSync(join(tmpdir(), "ade108-")),
+    env,
+    model: ({ messages, tools }) => {
+      if (tools.length === 0) return { text: "Fork chat" };
+      const content = messages.findLast(({ role }) => role === "user")?.content;
+      const prompt =
+        typeof content === "string"
+          ? content
+          : (content as { text?: string }[]).map(({ text }) => text ?? "").join("");
+      prompts.push(prompt);
+      return reply(prompt);
+    },
+  });
+  return prompts;
+}
+
+const sent = (prompts: string[], message: Message) =>
+  prompts.some((prompt) => prompt.includes(message.body.slice(0, 40)));
+
+test.describe("on a real omp", () => {
+  needsOmp();
+  test.setTimeout(120_000);
+
+  test("ship 6: the queue the relaunch paused sends with no click; a queue the user paused waits for Resume and is reported paused", async ({
+    app,
+    page,
+  }) => {
+    const opener = "Run the ship 6 swap.";
+    // Made-up messages; ids are base32, as Rust mints them.
+    const later = { id: "m_wakelaterqqq", body: "Queue this behind the running turn." };
+    const last = { id: "m_wakelastqqqq", body: "Send this when the queue resumes." };
+    const again = { id: "m_wakeagainqqq", body: "One more after the second relaunch." };
+    // The quit cuts the opener's turn short, and the user stops the next one.
+    const prompts = await realOmp(page, app, (prompt) =>
+      prompt.includes(opener) || sent([prompt], db.afterRelaunch)
+        ? new Promise<ModelReply>(() => {})
+        : { text: "Done." },
+    );
+    await mountMonos(app, page, { omp: true });
+    await openMono(page, FORK);
+    await page.getByPlaceholder(`Message ${FORK.data.name}`).fill(opener);
+    await page.getByPlaceholder(`Message ${FORK.data.name}`).press("Enter");
+    await expect.poll(() => prompts.length, OMP).toBe(1);
+
+    await openMono(page, GENERAL);
+    for (const queued of db.beforeQuit)
+      expect(
+        await send(app, page, queued),
+        "a message for a busy Mono waits for its turn end, as before",
+      ).toEqual({
+        message_id: queued.id,
+        status: "delivered",
+        delivery: "queue",
+        hop: 0,
+      });
+    expect(await forkState(app, page)).toMatchObject({
+      busy: true,
+      queued: db.beforeQuit.length,
+      model: "omp:default",
+    });
+
+    // Rust stops the harnesses before the app exits.
+    await app.restart(() =>
+      page.evaluate((chat) => window.ompKill(chat), FORK.data.sessionId),
+    );
+    await openMono(page, GENERAL);
+    await expect
+      .poll(
+        () => db.beforeQuit.every((queued) => sent(prompts, queued)),
+        { message: "the queue the relaunch paused sends with no click", ...OMP },
+      )
+      .toBe(true);
+    await expect
+      .poll(() => forkState(app, page), OMP)
+      .toMatchObject({ busy: false, queued: 0, queuePaused: false });
+
+    expect(await send(app, page, db.afterRelaunch)).toMatchObject({
+      delivery: "submit",
+    });
+    await expect.poll(() => sent(prompts, db.afterRelaunch), OMP).toBe(true);
+    expect(await send(app, page, later)).toMatchObject({ delivery: "queue" });
+    await openMono(page, FORK);
+    // A Mono's composer has no Stop button; Escape stops its running turn.
+    await page.getByPlaceholder(`Message ${FORK.data.name}`).press("Escape");
+    await openMono(page, GENERAL);
+    expect(
+      await send(app, page, last),
+      "General is told the message waits for a Resume",
+    ).toEqual({
+      message_id: last.id,
+      status: "delivered",
+      delivery: "paused",
+      hop: 0,
+    });
+    expect(await forkState(app, page)).toMatchObject({
+      busy: false,
+      queued: 2,
+      queuePaused: true,
+    });
+    expect(
+      await pausedQueues(app, page),
+      "only the paused Mono's queue is reported paused",
+    ).toEqual([
+      [FORK.id, true],
+      [GENERAL.id, false],
+    ]);
+
+    await app.restart();
+    await openMono(page, GENERAL);
+    expect(
+      await send(app, page, again),
+      "the pause the user made outlives the relaunch",
+    ).toMatchObject({ delivery: "paused" });
+    await openMono(page, FORK);
+    expect(
+      [later, last, again].filter((queued) => sent(prompts, queued)),
+      "nothing the user paused is sent before Resume",
+    ).toEqual([]);
+    // Every waiting bubble has a Resume, and each resumes the whole queue.
+    await page.getByRole("button", { name: "Resume", exact: true }).first().click();
+    await expect
+      .poll(() => [later, last, again].every((queued) => sent(prompts, queued)), OMP)
+      .toBe(true);
+  });
+
+  test("ADE-111: a stream stall omp retries in the same turn leaves the queue sending", async ({
+    app,
+    page,
+  }) => {
+    const opener = "Check the stalled build.";
+    const queued = { id: "m_stallqueuedq", body: "Read the logs once the turn ends." };
+    const release = Promise.withResolvers<void>();
+    let stalled = false;
+    const prompts = await realOmp(
+      page,
+      app,
+      async (prompt) => {
+        if (!prompt.includes(opener)) return { text: "Done." };
+        if (!stalled) {
+          stalled = true;
+          return { stall: true };
+        }
+        await release.promise;
+        return { text: "The build is fine." };
+      },
+      // As the Anthropic stream stalled on 2026-10-23, but in half a second.
+      { PI_STREAM_IDLE_TIMEOUT_MS: "500" },
+    );
+    await mountMonos(app, page, { omp: true });
+    await openMono(page, FORK);
+    await page.getByPlaceholder(`Message ${FORK.data.name}`).fill(opener);
+    await page.getByPlaceholder(`Message ${FORK.data.name}`).press("Enter");
+    await expect
+      .poll(() => prompts.filter((prompt) => prompt.includes(opener)).length, {
+        message: "omp ends the stalled attempt and retries it in the same turn",
+        ...OMP,
+      })
+      .toBe(2);
+
+    await openMono(page, GENERAL);
+    expect(await send(app, page, queued)).toMatchObject({ delivery: "queue" });
+    release.resolve();
+    await expect
+      .poll(() => sent(prompts, queued), {
+        message: "the message queued behind the stalled turn runs at its end, with no Resume",
+        ...OMP,
+      })
+      .toBe(true);
+    await expect
+      .poll(() => forkState(app, page), OMP)
+      .toMatchObject({ busy: false, queued: 0, queuePaused: false });
+    await openMono(page, FORK);
+    await expect(
+      page.getByText(/stream stalled/),
+      "the turn that recovered shows no error",
+    ).toHaveCount(0);
+  });
+
+  test("ADE-108: a Mono whose turns all fail is woken three times, then waits for Resume; a turn that ends well lets it wake again", async ({
+    app,
+    page,
+  }) => {
+    // Made-up messages A to I; the model refuses A to E and H.
+    const steps = [..."abcdefghi"].map((step) => ({
+      id: `m_wakeupstepq${step}`,
+      body: `Run check ${step.toUpperCase()} now.`,
+    }));
+    const failing = new Set([0, 1, 2, 3, 4, 7]);
+    // A and H hold until the messages behind them are queued.
+    const holds = new Map([0, 7].map((step) => [step, Promise.withResolvers<void>()]));
+    const which = (prompt: string) =>
+      steps.findIndex((step) => sent([prompt], step));
+    const prompts = await realOmp(page, app, async (prompt) => {
+      await holds.get(which(prompt))?.promise;
+      return failing.has(which(prompt))
+        ? { refuse: "The model is down." }
+        : { text: "Done." };
+    });
+    await mountMonos(app, page, { omp: true });
+    await openMono(page, GENERAL);
+    expect(await send(app, page, steps[0])).toMatchObject({ delivery: "submit" });
+    await expect.poll(() => prompts.length, OMP).toBe(1);
+    for (const step of steps.slice(1, 6))
+      expect(await send(app, page, step)).toMatchObject({ delivery: "queue" });
+
+    holds.get(0)!.resolve();
+    await expect
+      .poll(() => forkState(app, page), {
+        message: "each failed turn pauses the queue and the app wakes it, three times",
+        ...OMP,
+      })
+      .toMatchObject({ busy: false, queued: 2, queuePaused: true });
+    expect(prompts.map(which), "the first turn and three woken turns").toEqual([
+      0, 1, 2, 3,
+    ]);
+
+    await openMono(page, FORK);
+    await page.getByRole("button", { name: "Resume", exact: true }).first().click();
+    await expect
+      .poll(() => forkState(app, page), OMP)
+      .toMatchObject({ busy: false, queued: 1, queuePaused: true });
+    await openMono(page, GENERAL);
+    expect(
+      await send(app, page, steps[6]),
+      "the turn Resume ran failed too, and the app does not wake the queue again",
+    ).toMatchObject({ delivery: "paused" });
+    expect(prompts.map(which), "Resume sends one more turn").toEqual([0, 1, 2, 3, 4]);
+
+    await openMono(page, FORK);
+    await page.getByRole("button", { name: "Resume", exact: true }).first().click();
+    await expect
+      .poll(() => forkState(app, page), OMP)
+      .toMatchObject({ busy: false, queued: 0, queuePaused: false });
+    await openMono(page, GENERAL);
+    expect(await send(app, page, steps[7])).toMatchObject({ delivery: "submit" });
+    await expect.poll(() => prompts.map(which).at(-1), OMP).toBe(7);
+    expect(await send(app, page, steps[8])).toMatchObject({ delivery: "queue" });
+    holds.get(7)!.resolve();
+    await expect
+      .poll(() => prompts.map(which), {
+        message: "after turns that ended well, the next failed turn's pause is woken again",
+        ...OMP,
+      })
+      .toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    await expect
+      .poll(() => forkState(app, page), OMP)
+      .toMatchObject({ busy: false, queued: 0, queuePaused: false });
+  });
 });
 
 test("a Mono whose saved model the catalog does not list still runs the messages it is sent", async ({
   app,
   page,
 }) => {
-  await mountMonos(app, page, "omp:anthropic/claude-gone-1");
+  await mountMonos(app, page, { forkModel: "omp:anthropic/claude-gone-1" });
   await openMono(page, GENERAL);
   const { harnesses } = (await fromGeneral(
     app,

@@ -19,6 +19,7 @@ mod devin_supervised;
 #[cfg(unix)]
 mod omp_mcp;
 mod s0_baseline;
+mod s1_asks;
 mod s1_levels;
 mod s2_approvals;
 mod s5_scheduler;

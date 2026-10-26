@@ -602,7 +602,7 @@ describe("turnErrorFromEvent", () => {
     ).toBe("");
   });
 
-  it("ignores healthy messages, other roles, and other frames", () => {
+  it("reads a healthy assistant message as no error, and skips other roles and frames", () => {
     expect(
       turnErrorFromEvent({
         type: "message_end",
@@ -622,7 +622,7 @@ describe("turnErrorFromEvent", () => {
           errorMessage: "tool failed",
         },
       }),
-    ).toBeNull();
+    ).toBeUndefined();
     expect(
       turnErrorFromEvent({
         type: "turn_end",
@@ -632,6 +632,6 @@ describe("turnErrorFromEvent", () => {
           errorMessage: "boom",
         },
       }),
-    ).toBeNull();
+    ).toBeUndefined();
   });
 });

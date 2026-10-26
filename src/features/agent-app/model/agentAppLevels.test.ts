@@ -8,7 +8,12 @@ import { levelGate, type ActionChecked } from "../../monos/model/monoCaller";
 import { setHarnessModels } from "../../sessions/model/models";
 import { newSession, type Session } from "../../sessions/model/session";
 import fixture from "./appActionCheck.fixtures.json";
-import { FIELDS, handleAgentApp, type AgentAppHost } from "./agentApp";
+import {
+  FIELDS,
+  handleAgentApp,
+  type AgentAppHost,
+  type StartAsk,
+} from "./agentApp";
 import { AppActionError } from "./appActionError";
 
 // appActionCheck.fixtures.json is the contract with Rust, and it is
@@ -24,7 +29,7 @@ import { AppActionError } from "./appActionError";
 
 const WRITE = process.env.WRITE_APP_ACTION_FIXTURE === "1";
 const PROJECT = "/code/app";
-const ALLOWED = { outcome: "allowed", leadSessionId: null };
+const ALLOWED = { outcome: "allowed", leadSessionId: null, ask: null };
 
 /** The sessions and Monos both sides set up: `saved` ones have a `sessions` row in Rust. */
 const WORLD = vi.hoisted(() => ({
@@ -58,6 +63,8 @@ const SCENARIOS: Scenario[] = [
   { name: "A6: a lead's start makes a worker of it", caller: "lead", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" }, requestId: "a6-start", ran: "start" },
   { name: "A7: a Mono's start makes a lead", caller: "a-chat", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" }, requestId: "a7-start", ran: "start" },
   { name: "A7: a Mono's repeated start answers its first row", caller: "a-chat", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" }, requestId: "a7-again", ran: "start", then: [{ action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" } }] },
+  { name: "R7: a Mono's start sets its ask's due_minutes", caller: "a-chat", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test", due_minutes: 30 }, requestId: "r7-due", ran: "start" },
+  { name: "R7: a start's due_minutes out of range is refused before the launch", caller: "a-chat", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test", due_minutes: 5 }, requestId: "r7-due-5", ran: null },
   { name: "A1: a refused start again answers its first refusal", caller: "worker", action: "sessions.start", input: { ...CHOICE, prompt: "Spawn a helper" }, requestId: "a1-refused", ran: null, then: [{ action: "sessions.start", input: { ...CHOICE, prompt: "Spawn a helper" } }] },
   { name: "A2: a lead's start again with other input is refused before the launch", caller: "lead", action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" }, requestId: "a2-other", ran: "start", then: [{ action: "sessions.start", input: { ...CHOICE, prompt: "Fix the tests" } }] },
   { name: "A2: a Mono's start under the request id of its refused send is refused", caller: "a-chat", action: "sessions.send", input: { sessionId: "worker", prompt: "Stop" }, requestId: "a2-send", ran: null, then: [{ action: "sessions.start", input: { ...CHOICE, prompt: "Fix the flaky test" } }] },
@@ -306,6 +313,23 @@ it.skipIf(WRITE)("holds every scenario and the world in the fixture", () => {
   );
 });
 
+/** Fields `keys` of `value`, `undefined` where it has none. */
+function fieldsOf(value: unknown, keys: string[]): unknown[] {
+  const fields: Record<string, unknown> =
+    value && typeof value === "object" ? Object.fromEntries(Object.entries(value)) : {};
+  return keys.map((key) => fields[key]);
+}
+
+/** R6's ask tag around `prompt`, from WORLD's lead, else from its Mono. */
+function askTag(ask: StartAsk, prompt: string, source: Session | null): string {
+  const from =
+    source?.id === "lead"
+      ? `from="${source.title}" session_id="lead" level="lead"`
+      : 'from="mono-a" mono_id="mono-a" role="mono"';
+  const due = ask.dueInMs === null ? "" : ` due_in="${ask.dueInMs / 60_000}m"`;
+  return `<mono_message message_id="${ask.askId}" ${from} wanting_reply="false" ask_id="${ask.askId}"${due}>\n${prompt}\n</mono_message>`;
+}
+
 // Design 6.6, 13.3 and 16.2, the Rust contract. Defect: an app action runs
 // with no level check, or with a check that names another action, target,
 // lead copy, launch id or input than Rust reads; Rust's refusal (A3-A5 and
@@ -313,7 +337,10 @@ it.skipIf(WRITE)("holds every scenario and the world in the fixture", () => {
 // stop the action or loses its code, hint, row id or duplicate flag; the
 // web app decides the new session's lead itself instead of taking Rust's
 // answer; or a submitted start writes no start row, sends another key or
-// input than the check, or answers another message_id than its row's.
+// input than the check, or answers another message_id than its row's; or
+// (R7) the started session's agent does not read the check's ask as R6's
+// tag, its transcript does not keep the prompt, or the answer's ask_id is
+// not the check's.
 it.skipIf(WRITE).each(cases.map((entry) => [entry.name, entry] as const))(
   "%s: sends the fixture's calls and acts on their replies",
   async (_name, entry) => {
@@ -337,13 +364,22 @@ it.skipIf(WRITE).each(cases.map((entry) => [entry.name, entry] as const))(
         continue;
       }
       allowed += 1;
-      expect(
-        (outcome as { value: { message_id?: string } }).value.message_id,
-      ).toBe((record?.reply as { messageId?: string } | undefined)?.messageId);
-      if (entry.action === "sessions.start" && allowed === 1)
-        expect(vi.mocked(host.start).mock.calls[0][0].leadSessionId).toBe(
-          reply.leadSessionId ?? undefined,
+      expect(fieldsOf("value" in outcome ? outcome.value : null, ["message_id", "ask_id"])).toEqual([
+        fieldsOf(record?.reply, ["messageId"])[0],
+        reply.ask?.askId,
+      ]);
+      if (entry.action === "sessions.start" && allowed === 1) {
+        const launch = vi.mocked(host.start).mock.calls[0][0];
+        expect(launch.leadSessionId).toBe(reply.leadSessionId ?? undefined);
+        expect(launch.prompt).toBe(entry.input.prompt);
+        const source = await host.session(entry.caller);
+        // It also hands submit the id of the turn it opens.
+        expect(launch.firstTurn).toEqual(
+          reply.ask
+            ? { agentText: askTag(reply.ask, launch.prompt, source), turnId: expect.any(String) }
+            : undefined,
         );
+      }
     }
     if (entry.ran) expect(actions[entry.ran]).toHaveBeenCalledTimes(allowed);
     if (!allowed)
@@ -481,7 +517,7 @@ it("answers a coded record failure after the launch with its code and the starte
           outcome: "failed",
           error: { code: "request_id_reused", hint: "Use a new request id." },
         }
-      : { outcome: "allowed", leadSessionId: "lead" };
+      : { outcome: "allowed", leadSessionId: "lead", ask: null };
   await expect(
     run("sessions.start", { ...CHOICE, prompt: "Fix the flaky test" }, "r9"),
   ).rejects.toMatchObject({
@@ -523,7 +559,7 @@ it.each([
   const { run, actions } = world("lead");
   command.answer = (name) => {
     if (name !== "mono_message_record_start")
-      return { outcome: "allowed", leadSessionId: "lead" };
+      return { outcome: "allowed", leadSessionId: "lead", ask: null };
     if (typeof reply === "string") throw reply;
     return reply;
   };
