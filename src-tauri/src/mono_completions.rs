@@ -4,9 +4,11 @@
 //! window owns: a boot claims the rows no live window holds, in one
 //! `BEGIN IMMEDIATE` transaction. A row whose result is in a notice names
 //! that notice; the transaction that saves a Mono chat holding the notice
-//! marks it delivered and deletes its rows. The row is the result's
-//! `SavedMonoCompletion` JSON, opaque to Rust except for its request id, its
-//! Mono and its notice.
+//! marks it delivered and deletes its rows. A row lives only while a Mono
+//! chat save can still settle it: the window deletes the rows of a session
+//! its Mono stopped watching, and a claim deletes the rows of a Mono that has
+//! no chat. The row is the result's `SavedMonoCompletion` JSON, opaque to
+//! Rust except for its request id, its Mono, its session and its notice.
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::Value;
@@ -59,7 +61,8 @@ fn request_id(saved: &Value) -> Result<&str, String> {
 /// A window's boot: it takes every row of an earlier run, of a window that
 /// is no longer open (`live` names the open ones), and of its own earlier
 /// boot, and returns all it now holds. Rows another open window holds stay
-/// its own. A row whose notice a Mono chat already saved is delivered first.
+/// its own. A row whose notice a Mono chat already saved is delivered first,
+/// and a taken row whose Mono has no chat is deleted.
 pub(crate) fn claim(
     conn: &Connection,
     owner: Owner,
@@ -82,6 +85,11 @@ pub(crate) fn claim(
             owner.run,
             serde_json::to_string(live).unwrap_or_default()
         ],
+    )?;
+    tx.execute(
+        "DELETE FROM mono_completions WHERE window_label = ?1 AND window_run = ?2
+           AND json_extract(saved_json, '$.origin.monoId') NOT IN (SELECT id FROM sessions)",
+        params![owner.window, owner.run],
     )?;
     let held: Vec<String> = tx
         .prepare(
@@ -189,6 +197,23 @@ pub(crate) fn hold(conn: &Connection, owner: Owner, saved: &[Value]) -> Result<(
     tx.commit().map_err(|e| e.to_string())
 }
 
+/// The window's Mono `mono` stopped watching `session`: no save of the
+/// Mono chat will hold a result for it, so its rows go.
+pub(crate) fn dismiss(
+    conn: &Connection,
+    owner: Owner,
+    mono: &str,
+    session: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM mono_completions WHERE window_label = ?1 AND window_run = ?2
+           AND json_extract(saved_json, '$.origin.monoId') = ?3
+           AND json_extract(saved_json, '$.request.sessionId') = ?4",
+        params![owner.window, owner.run, mono, session],
+    )?;
+    Ok(())
+}
+
 #[tauri::command(async)]
 pub fn mono_completions_claim<R: Runtime>(
     window: WebviewWindow<R>,
@@ -219,4 +244,19 @@ pub fn mono_completions_hold<R: Runtime>(
         run: &run.0,
     };
     hold(&*store.lock_conn()?, owner, &saved)
+}
+
+#[tauri::command(async)]
+pub fn mono_completions_dismiss<R: Runtime>(
+    window: WebviewWindow<R>,
+    store: State<'_, SessionStore>,
+    run: State<'_, Run>,
+    mono_id: String,
+    session_id: String,
+) -> Result<(), String> {
+    let owner = Owner {
+        window: window.label(),
+        run: &run.0,
+    };
+    dismiss(&*store.lock_conn()?, owner, &mono_id, &session_id).map_err(|e| e.to_string())
 }

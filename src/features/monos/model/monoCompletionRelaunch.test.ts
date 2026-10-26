@@ -28,7 +28,7 @@ function batchesOver(sessions: Map<string, Session> = new Map()) {
     ready,
     (run, ms) => setTimeout(run, ms),
     (id) => sessions.get(id),
-    { hold() {}, deliver() {} },
+    { hold() {}, dismiss() {} },
   );
   const reported = () =>
     ready.mock.calls.map(([, message]) =>
@@ -210,7 +210,7 @@ describe("Mono completions across a relaunch", () => {
     function batchesWithStore(
       ready: ConstructorParameters<typeof MonoSessionCompletionBatches>[0],
     ) {
-      const store = { hold: vi.fn() };
+      const store = { hold: vi.fn(), dismiss: vi.fn() };
       const batches = new MonoSessionCompletionBatches(
         ready,
         (run, ms) => setTimeout(run, ms),
@@ -228,9 +228,13 @@ describe("Mono completions across a relaunch", () => {
 
     it("hold each result in the notice named by its group's first request id until it is queued", async () => {
       let queued!: () => void;
+      let heldAtReady: unknown;
       const ready = vi.fn<
         ConstructorParameters<typeof MonoSessionCompletionBatches>[0]
-      >(() => new Promise<void>((resolve) => (queued = resolve)));
+      >(() => {
+        heldAtReady = store.hold.mock.lastCall;
+        return new Promise<void>((resolve) => (queued = resolve));
+      });
       const { batches, store } = batchesWithStore(ready);
       const b = batches.watch(origin, request("b", "s-b"));
       const a = batches.watch(origin, request("a", "s-a"));
@@ -241,10 +245,12 @@ describe("Mono completions across a relaunch", () => {
       b(end("B"));
       a(end("A"));
       batches.closeInactive(() => false);
-      expect(store.hold).toHaveBeenLastCalledWith([
+      const noticed = [
         owed("b", "B", "mono-completion-batch-a"),
         owed("a", "A", "mono-completion-batch-a"),
-      ]);
+      ];
+      expect(heldAtReady).toEqual([noticed]);
+      expect(store.hold).toHaveBeenLastCalledWith(noticed);
       expect(ready.mock.calls[0][1].id).toBe("mono-completion-batch-a");
       queued();
       await vi.runAllTimersAsync();
@@ -268,6 +274,28 @@ describe("Mono completions across a relaunch", () => {
       for (let render = 0; render < 3; render++)
         batches.closeInactive(() => true);
       expect(store.hold).toHaveBeenCalledOnce();
+    });
+
+    // Review r2 M1: a stopped session's row stays in no hold, and the store
+    // deletes it, also once its notice is queued and the window forgot it.
+    it("a session the Mono stops keeps no row, before or after its notice is queued", async () => {
+      let queued!: () => void;
+      const { batches, store } = batchesWithStore(
+        () => new Promise<void>((resolve) => (queued = resolve)),
+      );
+      batches.watch(origin, request("a", "s-a"))(end("A"));
+      batches.watch(origin, request("b", "s-b"))(end("B"));
+      batches.closeInactive(() => false);
+      batches.dismissSession("mono", "s-a");
+      expect(store.dismiss).toHaveBeenLastCalledWith("mono", "s-a");
+      expect(store.hold).toHaveBeenLastCalledWith([
+        owed("b", "B", "mono-completion-batch-a"),
+      ]);
+      queued();
+      await vi.runAllTimersAsync();
+      batches.dismissSession("mono", "s-b");
+      expect(store.dismiss).toHaveBeenLastCalledWith("mono", "s-b");
+      expect(store.hold).toHaveBeenLastCalledWith([]);
     });
   });
 });

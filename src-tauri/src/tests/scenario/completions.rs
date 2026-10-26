@@ -91,6 +91,7 @@ fn marks(world: &World) -> i64 {
 #[test]
 fn a_waiting_result_reaches_one_window_once_across_kills_and_reloads() {
     let mut world = World::new("ade89-completions");
+    chat_row(&world, &json!([]));
     assert!(
         claim(&world, "main", "run-1", &["main"]).is_empty(),
         "a new database holds nothing"
@@ -135,11 +136,6 @@ fn a_waiting_result_reaches_one_window_once_across_kills_and_reloads() {
         &[sent("a", "notice-ab"), sent("b", "notice-ab")],
     );
     hold(&world, "window-2", "run-2", &[]);
-    assert_eq!(
-        rows(&world),
-        2,
-        "a result in a notice stays once the window drops it"
-    );
     save_chat(&world, &json!([{ "id": "notice-other" }]));
     assert_eq!(
         (rows(&world), marks(&world)),
@@ -169,6 +165,104 @@ fn a_waiting_result_reaches_one_window_once_across_kills_and_reloads() {
         .unwrap();
     claim(&world, "main", "run-3", &["main"]);
     assert_eq!(marks(&world), 0, "a claim drops marks older than 30 days");
+}
+
+/// Review r2 M1: the Mono stopped watching a session, before or after its
+/// notice was queued. No save will hold a result for it, so its rows go,
+/// and only that Mono's, that session's and that window's.
+#[test]
+fn a_session_the_mono_stopped_watching_keeps_no_row() {
+    let mut world = World::new("ade89-dismiss");
+    chat_row(&world, &json!([]));
+    let other_session = json!({
+        "origin": { "monoId": "mono-chat", "turn": 3 },
+        "request": { "requestId": "c", "sessionId": "b", "project": "/p", "prompt": "Build it." },
+    });
+    hold(
+        &world,
+        "main",
+        "run-1",
+        &[
+            sent("a", "notice-ab"),
+            sent("b", "notice-ab"),
+            other_session,
+        ],
+    );
+    hold(&world, "window-2", "run-1", &[saved("d", None)]);
+    let owner = Owner {
+        window: "main",
+        run: "run-1",
+    };
+    completions::dismiss(&world.conn(), owner, "other-mono", "a").unwrap();
+    completions::dismiss(
+        &world.conn(),
+        Owner {
+            window: "main",
+            run: "run-0",
+        },
+        "mono-chat",
+        "a",
+    )
+    .unwrap();
+    assert_eq!(
+        rows(&world),
+        4,
+        "another Mono's or another run's dismissal deletes nothing"
+    );
+    completions::dismiss(&world.conn(), owner, "mono-chat", "a").unwrap();
+    completions::dismiss(&world.conn(), owner, "mono-chat", "d").unwrap();
+    assert_eq!(
+        rows(&world),
+        3,
+        "only the stopped session's row in that window goes"
+    );
+    completions::dismiss(&world.conn(), owner, "mono-chat", "b").unwrap();
+    world.kill();
+    world.restart();
+    assert_eq!(
+        ids(&claim(&world, "main", "run-2", BOTH)),
+        ["d"],
+        "a relaunch gives the Mono no result on a session it stopped"
+    );
+}
+
+/// Review r2 M1: a removed Mono's rows, in a notice or still owed, come back
+/// to no boot: a claim deletes the rows it takes whose Mono has no chat.
+#[test]
+fn a_claim_deletes_the_rows_of_a_mono_with_no_chat() {
+    let mut world = World::new("ade89-no-chat");
+    chat_row(&world, &json!([]));
+    let gone = json!({
+        "origin": { "monoId": "removed-mono", "turn": 1 },
+        "request": { "requestId": "g", "sessionId": "g", "project": "/p", "prompt": "Build it." },
+        "notice": "mono-completion-g",
+    });
+    hold(&world, "main", "run-1", &[saved("a", None), gone.clone()]);
+    hold(
+        &world,
+        "window-2",
+        "run-1",
+        &[json!({ "origin": { "monoId": "removed-mono", "turn": 1 },
+        "request": { "requestId": "h", "sessionId": "h", "project": "/p", "prompt": "Build it." } })],
+    );
+    assert_eq!(
+        ids(&claim(&world, "main", "run-1", BOTH)),
+        ["a"],
+        "the claiming window keeps only the rows of a Mono that has a chat"
+    );
+    assert_eq!(
+        rows(&world),
+        2,
+        "a row another open window holds stays its own"
+    );
+    world.kill();
+    world.restart();
+    assert_eq!(ids(&claim(&world, "main", "run-2", &["main"])), ["a"]);
+    assert_eq!(
+        rows(&world),
+        1,
+        "no boot gets a removed Mono's results back"
+    );
 }
 
 /// Review r1 M2: a and b went out in one notice that the Mono chat saved,
@@ -217,6 +311,7 @@ fn a_claim_delivers_a_notice_the_mono_transcript_holds() {
 #[test]
 fn a_closed_windows_results_go_to_the_next_window_that_boots() {
     let world = World::new("ade89-closed-window");
+    chat_row(&world, &json!([]));
     let open = ["main", "window-4"];
     assert!(claim(&world, "window-4", "run-1", &open).is_empty());
     hold(&world, "window-4", "run-1", &[saved("c", None)]);
@@ -253,6 +348,7 @@ fn a_closed_windows_results_go_to_the_next_window_that_boots() {
 #[test]
 fn the_first_claim_moves_the_results_a_quit_kept_in_the_workspace_row() {
     let mut world = World::new("ade89-workspace-row");
+    chat_row(&world, &json!([]));
     let row = json!({
         "tabs": [{ "id": "t1" }],
         "activeTabId": "t1",
@@ -314,6 +410,7 @@ fn the_first_claim_moves_the_results_a_quit_kept_in_the_workspace_row() {
 #[test]
 fn two_windows_booting_at_once_take_each_result_once() {
     let world = World::new("ade89-race");
+    chat_row(&world, &json!([]));
     let many: Vec<Value> = (0..40).map(|n| saved(&format!("r{n}"), None)).collect();
     completions::hold(
         &world.conn(),
@@ -381,40 +478,137 @@ fn chat_save(notice: &str) -> Value {
     json!({ "session": session, "afterBlockId": null, "fromBlockId": null, "blocksChanged": false, "appendOnly": false })
 }
 
+#[cfg(not(windows))]
+type Window = tauri::WebviewWindow<tauri::test::MockRuntime>;
+
+/// One app process on `world`'s database, with the commands a window calls:
+/// each launch is a new run.
+#[cfg(not(windows))]
+fn launch(world: &World) -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(crate::session_store::SessionStore::open(world.path().to_path_buf()).unwrap())
+        .manage(completions::Run::default())
+        .invoke_handler(tauri::generate_handler![
+            completions::mono_completions_claim,
+            completions::mono_completions_hold,
+            completions::mono_completions_dismiss,
+            crate::mono_transcript::mono_session_upsert
+        ])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap()
+}
+
+#[cfg(not(windows))]
+fn window(app: &tauri::App<tauri::test::MockRuntime>, label: &str) -> Window {
+    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::default())
+        .build()
+        .unwrap()
+}
+
+/// `command`'s answer through Tauri's argument binding, as the web app calls it.
+#[cfg(not(windows))]
+fn call(window: &Window, command: &str, args: Value) -> Value {
+    crate::mono_messages::tests::invoke_command(window, command, &args).unwrap()
+}
+
+/// The request ids `window`'s boot claims.
+#[cfg(not(windows))]
+fn held(window: &Window) -> Vec<String> {
+    let claimed = call(window, "mono_completions_claim", json!({}));
+    ids(claimed.as_array().unwrap())
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Review r2 M1, as the window calls the commands: a's result went out in a
+/// notice, then the Mono stopped a's session before that notice was queued.
+/// The window deletes a's row with the hold that drops it, so the relaunch
+/// gives the Mono no second report of a.
+#[cfg(not(windows))]
+#[test]
+fn a_result_the_window_drops_is_not_reported_again_after_a_relaunch() {
+    let world = World::new("ade89-drop");
+    chat_row(&world, &json!([]));
+    let app = launch(&world);
+    let main = window(&app, "main");
+    assert!(held(&main).is_empty());
+    call(
+        &main,
+        "mono_completions_hold",
+        json!({ "saved": [sent("a", "mono-completion-a"), saved("b", None)] }),
+    );
+    call(
+        &main,
+        "mono_completions_dismiss",
+        json!({ "monoId": "mono-chat", "sessionId": "a" }),
+    );
+    call(
+        &main,
+        "mono_completions_hold",
+        json!({ "saved": [saved("b", None)] }),
+    );
+    drop(app);
+
+    let relaunched = launch(&world);
+    assert_eq!(
+        held(&window(&relaunched, "main")),
+        ["b"],
+        "the relaunch gives back only the result the Mono still waits for"
+    );
+}
+
+/// Review r2 m1, as the window calls the commands: the hold that names a's
+/// notice reaches Rust before the Mono chat save that holds the notice. A
+/// kill between the two leaves a's row and no save, so the relaunch gives a
+/// back once, and the save after it delivers a for good.
+#[cfg(not(windows))]
+#[test]
+fn a_kill_between_the_noticed_hold_and_the_mono_chat_save_loses_nothing() {
+    let world = World::new("ade89-hold-then-save");
+    chat_row(&world, &json!([]));
+    let app = launch(&world);
+    let main = window(&app, "main");
+    assert!(held(&main).is_empty());
+    let noticed = json!({ "saved": [sent("a", "mono-completion-a")] });
+    call(&main, "mono_completions_hold", noticed.clone());
+    drop(app);
+
+    let app = launch(&world);
+    let main = window(&app, "main");
+    assert_eq!(
+        held(&main),
+        ["a"],
+        "the relaunch gives back the result no Mono chat save holds"
+    );
+    call(&main, "mono_completions_hold", noticed);
+    call(&main, "mono_session_upsert", chat_save("mono-completion-a"));
+    assert_eq!(
+        (rows(&world), marks(&world)),
+        (0, 1),
+        "the save that holds the notice delivers it"
+    );
+    drop(app);
+
+    let app = launch(&world);
+    assert!(
+        held(&window(&app, "main")).is_empty(),
+        "a delivered result does not come back"
+    );
+}
+
 /// The commands as a window calls them, through Tauri's argument binding.
 /// The other window's claim sees `main` open, so it takes nothing.
 #[cfg(not(windows))]
 #[test]
 fn each_window_claims_holds_and_delivers_its_own_results_through_the_commands() {
-    use crate::mono_messages::tests::invoke_command;
     use crate::session_store::SessionStore;
     use tauri::Manager;
 
     let world = World::new("ade89-commands");
-    let app = tauri::test::mock_builder()
-        .manage(SessionStore::open(world.path().to_path_buf()).unwrap())
-        .manage(completions::Run::default())
-        .invoke_handler(tauri::generate_handler![
-            completions::mono_completions_claim,
-            completions::mono_completions_hold,
-            crate::mono_transcript::mono_session_upsert
-        ])
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
-    let window = |label: &str| {
-        tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
-            .build()
-            .unwrap()
-    };
-    let (main, other) = (window("main"), window("window-1"));
-    let call = |window, command: &str, args: Value| invoke_command(window, command, &args).unwrap();
-    let held = |window| {
-        let claimed = call(window, "mono_completions_claim", json!({}));
-        ids(claimed.as_array().unwrap())
-            .into_iter()
-            .map(str::to_owned)
-            .collect::<Vec<_>>()
-    };
+    chat_row(&world, &json!([]));
+    let app = launch(&world);
+    let (main, other) = (window(&app, "main"), window(&app, "window-1"));
     call(
         &main,
         "mono_completions_hold",
@@ -468,14 +662,13 @@ fn each_window_claims_holds_and_delivers_its_own_results_through_the_commands() 
     let racing = other.clone();
     let waited = std::thread::spawn(move || {
         started.send(()).unwrap();
-        let claimed = invoke_command(&racing, "mono_completions_claim", &json!({})).unwrap();
-        ids(claimed.as_array().unwrap()).len()
+        held(&racing).len()
     });
     waiting.recv().unwrap();
     // Time for a claim that read the windows before the lock to read them
     // now, before window-2 exists. The fixed claim passes without it.
     std::thread::sleep(std::time::Duration::from_millis(200));
-    let booted = window("window-2");
+    let booted = window(&app, "window-2");
     let owner = Owner {
         window: "window-2",
         run: &run,

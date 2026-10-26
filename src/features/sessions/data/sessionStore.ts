@@ -5,6 +5,7 @@ import { sanitizeMonoSpawnedSessions } from "../../monos/model/monoSpawnedSessio
 import { parseMessageId, parseTurnId } from "../../monos/model/monoMessages";
 import { parseMessageLink, parseTargetLink } from "../model/messageIntent";
 import { missedTurn } from "../model/messageQueue";
+import { monoCompletionWrites } from "./monoCompletionStore";
 import {
   isWeakToolTitle,
   titleFromToolInput,
@@ -462,6 +463,7 @@ export async function upsertSession(
       }
       const changed =
         !previous || same !== previous.length || same !== snapshot.length;
+      await monoCompletionWrites();
       const summary = await invoke<SessionSummary>("mono_session_upsert", {
         session: {
           ...payload,

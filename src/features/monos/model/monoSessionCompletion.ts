@@ -168,14 +168,17 @@ export type SavedMonoCompletion = {
  * The window's rows in mono_completions.rs. `hold` sets them to what the
  * window owes; a row in a notice stays until the save of the Mono chat that
  * holds the notice marks it delivered and deletes it, in one commit.
+ * `dismiss` deletes the rows of a session the Mono stopped watching.
  */
 export type MonoCompletionStore = {
   hold(saved: SavedMonoCompletion[]): void;
+  dismiss(monoId: string, sessionId: string): void;
 };
 
 /**
  * Results handed to `onReady`; a dismissal can still remove one before it is
- * queued. `kept` is in the store from the hold that follows the release.
+ * queued. `kept` is held, for each request still in `results`, before
+ * `onReady` runs.
  */
 type CompletionDelivery = {
   monoId: string;
@@ -327,7 +330,9 @@ export class MonoSessionCompletionBatches {
   private hold() {
     const saved = [
       ...this.undelivered(),
-      ...[...this.deliveries].flatMap(({ kept }) => kept),
+      ...[...this.deliveries].flatMap(({ kept, results }) =>
+        kept.filter(({ request }) => results.has(request.requestId)),
+      ),
     ];
     const held = JSON.stringify(saved);
     if (held !== this.held) this.store.hold(saved);
@@ -400,7 +405,10 @@ export class MonoSessionCompletionBatches {
     };
   }
 
-  /** The calling Mono already knows the outcome of its own lifecycle command. */
+  /**
+   * The calling Mono already knows the outcome of its own lifecycle command,
+   * so no result for the session is kept, sent or stored.
+   */
   dismissSession(monoId: string, sessionId: string) {
     const dismiss = (results: Map<string, { sessionId: string }>) => {
       for (const [requestId, result] of results) {
@@ -415,6 +423,7 @@ export class MonoSessionCompletionBatches {
       dismiss(batch.results);
       this.release(key, batch);
     }
+    this.store.dismiss(monoId, sessionId);
     this.hold();
   }
 
@@ -441,7 +450,6 @@ export class MonoSessionCompletionBatches {
       group.phase,
       this.reportedEnds.get(monoId),
     );
-    // A member is released once, so its first id names this group alone.
     const requestIds = send.map(({ requestId }) => requestId).sort();
     const id =
       send.length === 1
@@ -468,6 +476,9 @@ export class MonoSessionCompletionBatches {
       return values.length ? completionMessage(id, values) : undefined;
     };
     this.deliveries.add(delivery);
+    // A Mono chat save waits for this write (`monoCompletionWrites`), so the
+    // rows carry the notice before any save can hold it.
+    this.hold();
     void Promise.resolve(this.onReady(delivery.monoId, current()!, current))
       .finally(() => this.deliveries.delete(delivery))
       .catch(console.error);

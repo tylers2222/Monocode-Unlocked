@@ -114,7 +114,7 @@ export type FakeStore = {
 
 type FakeCompletion = {
   origin: { monoId: string };
-  request: { requestId: string };
+  request: { requestId: string; sessionId: string };
   notice?: string;
 };
 
@@ -122,10 +122,12 @@ type FakeCompletion = {
  * notice its queue or transcript holds, and deletes that notice's rows. */
 function settleCompletions(
   store: FakeStore,
-  chat: { id: string; queuedMessages?: { id: string }[]; blocks: { appRequestId?: string }[] },
+  chat: { id: string; queuedMessages?: unknown[]; blocks: { appRequestId?: string }[] },
 ) {
   const held = new Set([
-    ...(chat.queuedMessages ?? []).map((message) => message.id),
+    ...(chat.queuedMessages ?? []).flatMap((message) =>
+      message && typeof message === "object" && "id" in message ? [message.id] : [],
+    ),
     ...chat.blocks.map((block) => block.appRequestId),
   ]);
   for (const row of Object.values(store.completions)) {
@@ -382,22 +384,37 @@ const HANDLERS: Record<string, Handler> = {
     return null;
   },
   session_list_in_flight: (store) => store.inFlight,
-  // mono_completions.rs. One window, so it holds every row it claims.
-  mono_completions_claim: (store) => Object.values(store.completions),
+  // mono_completions.rs. One window, so it holds every row it claims. The
+  // claim first delivers what each Mono chat's save holds, and drops the rows
+  // of a Mono that has no chat.
+  mono_completions_claim: (store) => {
+    const chats = new Set(store.sessions.map((session) => session.id));
+    for (const id of chats)
+      settleCompletions(store, {
+        id,
+        queuedMessages: store.queues[id]?.queuedMessages,
+        blocks: store.blocks[id] ?? [],
+      });
+    for (const row of Object.values(store.completions))
+      if (!chats.has(row.origin.monoId))
+        delete store.completions[row.request.requestId];
+    return Object.values(store.completions);
+  },
+  // A row in a notice stays until a Mono chat save holds that notice.
   mono_completions_hold: (store, { saved }) => {
     store.completions = Object.fromEntries(
-      (saved as FakeStore["completions"][string][]).map((row) => [
-        row.request.requestId,
-        row,
-      ]),
+      [
+        ...Object.values(store.completions).filter((row) => row.notice),
+        ...(saved as FakeCompletion[]),
+      ].map((row) => [row.request.requestId, row]),
     );
     return null;
   },
-  mono_completions_deliver: (store, { groupId, requestIds }) => {
-    const fresh = !store.deliveredGroups.includes(groupId as string);
-    if (fresh) store.deliveredGroups.push(groupId as string);
-    for (const id of requestIds as string[]) delete store.completions[id];
-    return fresh;
+  mono_completions_dismiss: (store, { monoId, sessionId }) => {
+    for (const row of Object.values(store.completions))
+      if (row.origin.monoId === monoId && row.request.sessionId === sessionId)
+        delete store.completions[row.request.requestId];
+    return null;
   },
   // session_store.rs list_by_project: ORDER BY updated_at DESC, id ASC, and
   // `branch` is the stored one, else the repo's, unless the worktree is gone.

@@ -30,7 +30,7 @@ function batchesOf(
 ) {
   return new MonoSessionCompletionBatches(ready, later, () => undefined, {
     hold() {},
-    deliver() {},
+    dismiss() {},
   });
 }
 function request(requestId: string, sessionId = requestId) {
@@ -635,7 +635,7 @@ describe("Mono completion batches", () => {
         },
         schedule,
         (sessionId) => (sessionId === s.id ? s : undefined),
-        { hold() {}, deliver() {} },
+        { hold() {}, dismiss() {} },
       );
       const turnWatchers = createTurnWatchers();
       // The steer's receipt `send-s` is not its session id `s`.

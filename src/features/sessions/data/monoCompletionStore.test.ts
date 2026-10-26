@@ -18,23 +18,25 @@ const owed = {
 };
 
 describe("the Mono completion store commands", () => {
-  it("reach Rust in call order, and a failed hold does not stop the hold after it", async () => {
+  it("reach Rust in call order, and a failed write does not stop the writes after it", async () => {
     let fail!: (error: Error) => void;
     vi.mocked(invoke)
       .mockImplementationOnce(() => new Promise((_, reject) => (fail = reject)))
       .mockResolvedValue(undefined);
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     monoCompletionStore.hold([owed]);
+    monoCompletionStore.dismiss("mono", "s-a");
     monoCompletionStore.hold([]);
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledOnce());
     expect(invoke).toHaveBeenCalledWith("mono_completions_hold", {
       saved: [owed],
     });
     fail(new Error("store busy"));
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
-    expect(invoke).toHaveBeenLastCalledWith("mono_completions_hold", {
-      saved: [],
-    });
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(invoke).mock.calls.slice(1)).toEqual([
+      ["mono_completions_dismiss", { monoId: "mono", sessionId: "s-a" }],
+      ["mono_completions_hold", { saved: [] }],
+    ]);
     expect(logged).toHaveBeenCalledWith(new Error("store busy"));
   });
 

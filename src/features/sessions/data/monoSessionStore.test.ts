@@ -15,6 +15,7 @@ import {
 import { steerableQueuedMessage } from "../model/messageQueue";
 import { monoMessageDeliveries } from "../../monos/model/monoMessaging";
 import { recordArtifactCard } from "../../artifacts/artifacts";
+import { monoCompletionStore } from "./monoCompletionStore";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("../../monos/model/mono", () => ({
@@ -67,6 +68,30 @@ describe("Mono database pagination and writes", () => {
         blocksChanged: true,
       }),
     );
+  });
+  // Review r2 m1, for gate/mutation only (ADE-89 unit-test exception): a save
+  // that held a notice before its rows carry it, then a kill, would leave rows
+  // a claim regroups and a result the Mono never gets.
+  it("saves a Mono chat only once the completion rows written before it are in the store", async () => {
+    const session = await load();
+    const order: string[] = [];
+    const written = Promise.withResolvers<void>();
+    call.mockImplementation(async (command) => {
+      order.push(command);
+      if (command !== "mono_completions_hold") return saved(session);
+      await written.promise;
+      order.push("written");
+    });
+    monoCompletionStore.hold([]);
+    const save = upsertSession({ ...session, title: "Renamed" });
+    await vi.waitFor(() => expect(order).toContain("mono_completions_hold"));
+    written.resolve();
+    await save;
+    expect(order).toEqual([
+      "mono_completions_hold",
+      "written",
+      "mono_session_upsert",
+    ]);
   });
   it("keeps a Mono chat's reasoning and tool blocks through a save and a page read", async () => {
     const session = await load();
@@ -123,7 +148,7 @@ describe("Mono database pagination and writes", () => {
       },
       vi.fn(),
       () => undefined,
-      { hold() {}, deliver() {} },
+      { hold() {}, dismiss() {} },
     );
     for (const id of ["first", "second"]) {
       batches.watch(
