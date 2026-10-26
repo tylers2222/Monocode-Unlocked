@@ -161,8 +161,8 @@ run_d4() {
   log "D4 $d1"
   # A real model turn needs a real login; on a Mac with real home links it
   # would write Claude session state into the real ~/.claude.
-  if [[ -n "${D4_CLAUDE:-}" && "${CI:-}" != true && "${GIGA_EVAL_SANDBOX:-}" != 1 ]]; then
-    die "D4_CLAUDE runs only in CI (CI=true) or with GIGA_EVAL_SANDBOX=1"
+  if [[ -n "${D4_CLAUDE:-}" && "${CI:-}" != true ]]; then
+    die "D4_CLAUDE runs only in CI (CI=true)"
   fi
   local claude
   # Resolved before the recorder goes on PATH, or the recorder would exec itself.

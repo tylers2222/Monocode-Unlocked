@@ -6,8 +6,8 @@
 #   app.sh s0 [runs]          S0 through the real app, `runs` times (default 1)
 #   app.sh d4 [d1]            D4 deny rules (d4.test.sh), off then on, with the
 #                             claude CLI on PATH against puppet/fake-model.py;
-#                             d1: with D1's srt too. D4_CLAUDE=<real claude>
-#                             runs one real model turn instead
+#                             d1: with D1's srt too. In CI only,
+#                             D4_CLAUDE=<real claude> runs one real model turn
 #   app.sh d1                 D1: the agent sandbox on, off, and on without srt
 #   app.sh r6                 R6: agents ask and ack through MCP in the real app
 #   app.sh approvals [runs]   ADE-55 approvals board, macOS only, on a copy
@@ -448,5 +448,5 @@ case "${1:-}" in
     for run in $(seq 1 "${2:-1}"); do "$0" approvals-run "$run" || failed=$((failed + 1)); done
     log "approvals: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
-  *) sed -n '2,14p' "$0"; exit 2 ;;
+  *) sed -n '2,18p' "$0"; exit 2 ;;
 esac
