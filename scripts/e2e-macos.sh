@@ -33,38 +33,39 @@ row() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" >>"$ROWS"; }
 # True when app.sh has a case label for the command's first word.
 has() { grep -qE "^  ${1%% *}\)" "$APP"; }
 
-# screencapture -v records until a key arrives on its terminal. A pipe on its
-# stdin is not enough (run 40095797823 hung on it until the job timed out, and
-# SIGTERM in run 40248124930 left no .mov), so python's pty.spawn gives it a
-# pty and copies the fifo's newline into it (script(1) refuses a fifo stdin).
-# If it still runs, record_stop sends SIGTERM and last SIGKILL, each after
-# 10 s. Not SIGINT: a background job of a script starts with SIGINT ignored.
+# screencapture -v records until a key arrives on its terminal or it gets
+# SIGINT ("type any character (or ctrl-c) to stop"). CI has no terminal: a
+# newline on a fifo stdin left it running until the job timed out (run
+# 40095797823), and one copied into a pty did not stop it either (run
+# 40251294281). So record_stop sends SIGINT and gives it 30 s to write the
+# .mov, then SIGTERM and SIGKILL, 10 s each. The fifo only holds stdin open.
 record_start() {
   rm -f "$OUT/.stop"
   mkfifo "$OUT/.stop"
-  python3 -c 'import pty, sys; sys.exit(pty.spawn(sys.argv[1:]) >> 8)' \
-    screencapture -v -C "$1" <"$OUT/.stop" >"${1%.mov}-recorder.log" 2>&1 &
+  screencapture -v -C "$1" <"$OUT/.stop" >"${1%.mov}-recorder.log" 2>&1 &
   RECORDER=$!
   exec 3>"$OUT/.stop"
 }
+# exited <pid> <seconds>: true once <pid> is gone, false after <seconds>.
 exited() {
   local i
-  for i in {1..20}; do
+  for ((i = 0; i < $2 * 2; i++)); do
     kill -0 "$1" 2>/dev/null || return 0
     sleep 0.5
   done
   return 1
 }
 record_stop() {
-  local signal
-  echo >&3 2>/dev/null
+  local started=$SECONDS
+  kill -INT "$RECORDER" 2>/dev/null
+  if ! exited "$RECORDER" 30; then
+    echo "e2e-macos: screencapture ignored SIGINT for 30 s; sending SIGTERM" >&2
+    kill -TERM "$RECORDER" 2>/dev/null
+    exited "$RECORDER" 10 || kill -KILL "$RECORDER" 2>/dev/null
+  fi
   exec 3>&-
-  for signal in TERM KILL; do
-    exited "$RECORDER" && break
-    echo "e2e-macos: screencapture still running; sending SIG$signal" >&2
-    kill "-$signal" "$RECORDER" 2>/dev/null
-  done
   wait "$RECORDER" || echo "e2e-macos: screencapture exited $?" >&2
+  echo "e2e-macos: recorder stopped in $((SECONDS - started)) s"
 }
 
 # run <suite> <name> <log> <command...>: one row; a screenshot when it fails.
