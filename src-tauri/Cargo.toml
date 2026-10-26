@@ -19,6 +19,10 @@ workspace = true
 # GigaEval builds only (`scripts/giga-eval/instance.sh build`): the active
 # clock reads `fake-clock.json` in the data folder.
 fake-clock = []
+# GigaEval builds only (`scripts/giga-eval/instance.sh build`): with database
+# encryption on, the key is the file `test-db-key` in the data folder, not a
+# login keychain item, because a keychain dialog needs a human (db_key.rs).
+test-db-key = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -34,6 +38,7 @@ sha2 = "0.10"
 zstd = "0.13"
 unicode-normalization = "0.1"
 uuid = { version = "1", features = ["v4"] }
+getrandom = "0.3"
 base64 = "0.22"
 tauri-plugin-dialog = "2"
 rusqlite = { version = "0.40.2", features = ["bundled", "hooks"], default-features = false }
@@ -71,6 +76,9 @@ windows = { version = "0.62", features = ["UI_Notifications"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6", default-features = false, features = ["apple-native"] }
+# SQLCipher on CommonCrypto, no OpenSSL build, for database encryption
+# (db_key.rs). Without a key it reads and writes plaintext databases.
+rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher"], default-features = false }
 tauri = { version = "2", features = ["tray-icon"] }
 block2 = "0.6.2"
 objc2 = { version = "0.6", features = ["exception"] }

@@ -12,6 +12,7 @@ mod agents;
 mod asks;
 mod clock;
 mod completions;
+mod d2_db_key;
 #[cfg(unix)]
 mod d4_deny;
 mod s0_baseline;

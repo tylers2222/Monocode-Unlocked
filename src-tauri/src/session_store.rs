@@ -47,13 +47,14 @@ impl SessionStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+        let key = crate::db_key::key_for(&path)?;
+        let conn = crate::db_key::connect(&path, key.as_ref())?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
             .map_err(|e| e.to_string())?;
         migrate(&conn).map_err(|e| e.to_string())?;
         crate::worktrees::reconcile_removals(&conn)?;
         crate::mono_messages::startup(&conn, now).map_err(|e| e.to_string())?;
-        let read_conn = Connection::open(&path).map_err(|e| e.to_string())?;
+        let read_conn = crate::db_key::connect(&path, key.as_ref())?;
         read_conn
             .execute_batch("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;")
             .map_err(|e| e.to_string())?;

@@ -3,7 +3,7 @@
 #
 #   instance.sh build <checkout> [label]   copy the checkout's working tree, build a release .app
 #                                          (Linux: a release binary) with cargo features
-#                                          $GIGA_EVAL_FEATURES (default fake-clock), and the
+#                                          $GIGA_EVAL_FEATURES (default fake-clock,test-db-key), and the
 #                                          tauri config in $GIGA_EVAL_CONFIG merged over its own;
 #                                          a checkout without .git (the E2E image) needs $GIGA_EVAL_REV
 #   instance.sh home [--fresh]             create the temp HOME (symlinks to real logins, no copies;
@@ -105,7 +105,7 @@ cmd_build() {
     (cd "$src" && npm ci --no-audit --no-fund) >"$logf" 2>&1 || die "npm ci failed, see $logf"
     echo "$lock_hash" >"$src/node_modules/.giga-eval-lock"
   fi
-  local features="${GIGA_EVAL_FEATURES-fake-clock}"
+  local features="${GIGA_EVAL_FEATURES-fake-clock,test-db-key}"
   log "tauri build, features '$features' ($logf)"
   (cd "$src" && CARGO_TARGET_DIR="$TARGET_DIR" npx tauri build "${BUNDLE[@]}" --config tauri.gigaeval.json \
     ${features:+--features "$features"}) >>"$logf" 2>&1 \
