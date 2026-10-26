@@ -198,76 +198,66 @@ function queueItems(host: MonoQueueHost, rows: Targeted<Routed>[]) {
 
 /**
  * Design 5.3 and R9: an app prompt (a sender notice or a reminder) enters
- * the chat once, as a queue item whose request id is its id. That id in the
- * queue or the transcript means it was queued or sent before, so a pump that
- * runs again adds nothing.
+ * the chat once, as a queue row; it waits for the turn end unless it says
+ * otherwise. Its request id in the queue or the transcript means it was
+ * queued or sent before, so a pump that runs again adds nothing.
  */
-function ensureAppPrompt(session: Session, item: QueuedMessage): Session {
+function ensureNotice(
+  session: Session,
+  notice: Pick<QueuedMessage, "id" | "text" | "monoReminder" | "waitForIdle">,
+): Session {
   if (
     session.queuedMessages?.some(
-      (queued) => queued.appRequestId === item.appRequestId,
+      (queued) => queued.appRequestId === notice.id,
     ) ||
-    session.blocks.some((block) => block.appRequestId === item.appRequestId)
+    session.blocks.some((block) => block.appRequestId === notice.id)
   )
     return session;
-  return enqueueQueuedMessage(session, item);
+  return enqueueQueuedMessage(session, {
+    appRequestId: notice.id,
+    attachments: [],
+    waitForIdle: true,
+    ...notice,
+  });
 }
 
-/** A sender notice waits for the turn end; it gets its bubble when it is sent. */
-function noticeItem(host: MonoQueueHost, message: Noticed): QueuedMessage {
+function noticeItem(host: MonoQueueHost, message: Noticed) {
   const recipient =
     message.to?.kind === "session"
       ? message.addressed
       : (host.sender(message.to?.monoId ?? null)?.name ?? "a deleted Mono");
-  const id = noticeRequestId(message.id, message.status);
   return {
-    id,
-    appRequestId: id,
+    id: noticeRequestId(message.id, message.status),
     text: renderMonoNotice(message, recipient),
-    attachments: [],
-    waitForIdle: true,
   };
 }
 
-/** A `mono_outbox` row that waits for a chat (R9, Rust `Reminder`). */
-type Reminder = { key: string; askId: MessageId | null; stage: string };
-/** Rust `ask_gate::Delivery`: how a claimed reminder reaches its chat. */
-type ReminderDelivery = "steer" | "wake" | "after_turn";
-
-/** What the agent reads at each reminder stage this build sends. */
-const REMINDER_TEXT: Record<string, (askId: string) => string> = {
-  t5: (askId) =>
-    `Ask ${askId} is due in 5 active minutes. When its work is done, ack it with this ask_id. If you need more time, app messages.extend {"ask_id":"${askId}"} (the extend tool) moves the deadline 15 active minutes, once.`,
-};
+/** Rust `ask_scheduler::Claimed`: the prompt of a reminder this window took. */
+type Claimed = { text: string; wake: boolean };
 
 /**
- * R9: each reminder that waits for the chat. This window claims it with the
- * chat's live state; a reminder for a busy turn that cannot take a steer
- * stays unclaimed until the turn end names the chat again. A claimed one is
- * a hidden app prompt whose id is its outbox key: a wake waits for the turn
- * end, a steer may join the running turn. A stage with no text here waits
- * for the build that sends it.
+ * R9: each reminder that waits for the chat, claimed with the chat's live
+ * state. Rust picks its prompt and its delivery: a wake waits for the turn
+ * end, a steer joins the running turn; a reminder for a busy turn that
+ * cannot take a steer stays unclaimed until the turn end names the chat
+ * again. A claimed one is a hidden app prompt
+ * whose id is its outbox key.
  */
 async function queueReminders(host: MonoQueueHost, sessionId: string) {
-  const reminders = await invoke<Reminder[]>("mono_outbox_pending", {
-    sessionId,
-  });
-  for (const { key, askId, stage } of reminders) {
-    const text = REMINDER_TEXT[stage];
-    if (!text || !askId || !host.session(sessionId)) continue;
-    const delivery = await invoke<ReminderDelivery | null>(
-      "mono_outbox_claim",
-      { key, steerable: host.steersNow(sessionId) },
-    );
-    if (delivery !== "steer" && delivery !== "wake") continue;
+  const keys = await invoke<string[]>("mono_outbox_pending", { sessionId });
+  for (const key of keys) {
+    if (!host.session(sessionId)) continue;
+    const claimed = await invoke<Claimed | null>("mono_outbox_claim", {
+      key,
+      steerable: host.steersNow(sessionId),
+    });
+    if (!claimed) continue;
     host.update(sessionId, (session) =>
-      ensureAppPrompt(session, {
+      ensureNotice(session, {
         id: key,
-        appRequestId: key,
+        text: claimed.text,
         monoReminder: true,
-        text: `<mono_reminder ask_id="${askId}" stage="${stage}">\n${text(askId)}\n</mono_reminder>`,
-        attachments: [],
-        ...(delivery === "wake" ? { waitForIdle: true } : {}),
+        waitForIdle: claimed.wake,
       }),
     );
   }
@@ -333,7 +323,7 @@ export async function reconcile(
     });
     if (!claimed) continue;
     const notice = noticeItem(host, message);
-    host.update(sessionId, (session) => ensureAppPrompt(session, notice));
+    host.update(sessionId, (session) => ensureNotice(session, notice));
   }
 }
 

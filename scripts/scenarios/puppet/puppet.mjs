@@ -150,6 +150,19 @@ async function cli(app, action, input, requestId) {
   }
 }
 
+// acceptQuickLaunch (quickLaunchSession.ts) refuses a start whose session row
+// the workspace could not save yet, and the CLI hands back its request id as
+// `retryWith`. A real agent retries that start once with the same id; every
+// other refusal stands, so the scenario still fails on it.
+function unsavedStart(action, result) {
+  return (
+    action === "sessions.start" &&
+    result?.ok === false &&
+    typeof result.retryWith === "string" &&
+    String(result.error).includes("The workspace could not save the session yet.")
+  );
+}
+
 function runExecs(execs) {
   for (const [program, ...rest] of execs) {
     const run = spawnSync(program, rest, { encoding: "latin1" });
@@ -181,6 +194,10 @@ async function runTurn(text, steer) {
     prev = call.action
       ? await cli(script.app, call.action, input, call.request_id)
       : await server.call(call.tool, input);
+    if (unsavedStart(call.action, prev)) {
+      log({ action: call.action, input, result: prev, retry: prev.requestId });
+      prev = await cli(script.app, call.action, input, prev.requestId);
+    }
     log({ ...(call.action ? { action: call.action } : { tool: call.tool }), input, result: prev });
   }
   server.close();

@@ -3,8 +3,6 @@
 
 use std::fmt;
 
-use serde::Serialize;
-
 use crate::mono_gate::{Level, SessionLevel};
 use crate::mono_messages::{MonoId, SessionId};
 use crate::mono_roster::MonoRole;
@@ -257,9 +255,8 @@ pub fn decide_extend(ask: &ExtendState, caller: &Actor) -> Result<i64, ExtendRef
 }
 
 /// How a reminder reaches its chat (plan R9): into the running turn, as a
-/// new turn, or not yet. `mono_outbox_claim` answers it to the web app.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+/// new turn, or not yet. `ask_scheduler::claim` turns it into `Claimed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Delivery {
     Steer,
     Wake,

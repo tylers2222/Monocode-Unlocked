@@ -1005,14 +1005,6 @@ type HandOffOptions = Pick<
   "providerTook" | "turnId" | "agentText"
 >;
 
-/**
- * Design 16.6: only a Mono chat whose harness can steer has its queue pump
- * steer a busy turn. R9 claims a reminder as a steer by the same rule.
- */
-function queueSteers(session: Session): boolean {
-  return !!monoForSession(session.id) && canSteerHarness(session.harness);
-}
-
 type Submit = (
   sessionId: string,
   text: string,
@@ -1782,9 +1774,15 @@ function Workspace({
       },
       turnId: (id) => currentTurnIds.current.get(id),
       owns: (id) => invoke<boolean>("control_owns_session", { sessionId: id }),
+      // The queue pump would steer an item into this turn now (design 16.6).
       steersNow: (id) => {
         const session = sessionsRef.current.find((entry) => entry.id === id);
-        return !!session && queueSteers(session) && canSteerNow(session);
+        return (
+          !!session &&
+          !!monoForSession(id) &&
+          canSteerHarness(session.harness) &&
+          canSteerNow(session)
+        );
       },
     }),
     [],
@@ -7516,7 +7514,6 @@ function Workspace({
               return appendSteerUser(next, submittedText, visible, {
                 ...cards,
                 ...queuedAppDelivery(queuedItem),
-                ...(queuedItem?.monoReminder ? { internal: true } : {}),
                 ...block,
               });
             });
@@ -7698,10 +7695,8 @@ function Workspace({
           ? { appRequestId: options.appRequestId }
           : queuedAppDelivery(queuedItem)),
         ...(options?.startedBy ? { startedBy: options.startedBy } : {}),
-        // The orchestrator and the app write these turns, not the user; hide them.
-        ...(options?.managed ||
-        options?.monoSessionCompletion ||
-        queuedItem?.monoReminder
+        // The orchestrator writes these turns, not the user; hide them.
+        ...(options?.managed || options?.monoSessionCompletion
           ? { internal: true }
           : {}),
         ...(options?.monoSessionCompletion
@@ -9327,7 +9322,11 @@ function Workspace({
     // An idle session starts its head as a new turn. A busy Mono steers its
     // first steerable message; messages that wait for the turn end keep their place.
     const nextSend = (session: Session) =>
-      nextQueuedSend(session, currentTurnIds.current, queueSteers(session));
+      nextQueuedSend(
+        session,
+        currentTurnIds.current,
+        !!monoForSession(session.id) && canSteerHarness(session.harness),
+      );
     for (const session of sessions) {
       const queued = session.queuedMessages ?? [];
       if (queued.length === 0) continue;

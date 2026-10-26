@@ -5,7 +5,10 @@
 use serde_json::{json, Value};
 
 use super::agents::{mono_caller, session_caller};
-use super::s5_scheduler::{advance_to, ask, due, ladder, reminders, t5, MINUTE, P, T5_LEAD};
+use super::s5_delivery::{claim, t5_text};
+use super::s5_scheduler::{
+    advance_to, ask, due, ladder, reminders, t5, t5_key, MINUTE, P, T5_LEAD,
+};
 use super::world::World;
 use crate::ask_scheduler;
 use crate::asks::{self, ExtendInput, Extension};
@@ -45,8 +48,9 @@ fn extensions(world: &World, ask: &MessageId) -> i64 {
 }
 
 /// S3 "At 5 minutes before the deadline: a reminder that offers one
-/// extension" (the row; `app.sh r9` reads its offer text and delivery) and
-/// S3 "The extension is used: the deadline moves once." Defect: an extend
+/// extension" (the row and its exact prompt through `claim`; `app.sh r9`
+/// reads its delivery) and S3 "The extension is used: the deadline moves
+/// once." Defect: the t5 prompt drops or changes the offer; an extend
 /// before the `t5` reminder, by the parent or another session, or a second
 /// one moves the deadline; the deadline moves by anything but 15 minutes;
 /// the scheduler's next stage is left at the old deadline or re-arms `t5`;
@@ -81,6 +85,12 @@ fn s3_the_t5_reminder_offers_one_extension_that_moves_the_deadline_once() {
     let offer = t5(&a, &format!("session:{}", lead.as_str()), old_due - T5_LEAD);
     assert_eq!(reminders(&world, &a), offer);
     assert_eq!(ladder(&world, &a), (1, None));
+    let claimed = claim(&world, &t5_key(&a), "main", &[], false).map(|c| c.text);
+    assert_eq!(
+        claimed,
+        Some(t5_text(&a)),
+        "the t5 prompt offers the extension"
+    );
 
     // Only the child extends: not its parent, not another session.
     for other in [parent, session_caller(&worker, P)] {
