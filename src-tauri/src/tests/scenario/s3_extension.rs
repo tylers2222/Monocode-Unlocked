@@ -80,7 +80,7 @@ fn s3_the_t5_reminder_offers_one_extension_that_moves_the_deadline_once() {
     world.advance(1);
     let offer = t5(&a, &format!("session:{}", lead.as_str()), old_due - T5_LEAD);
     assert_eq!(reminders(&world, &a), offer);
-    assert_eq!(ladder(&world, &a), (1, None));
+    assert_eq!(ladder(&world, &a), (1, Some(old_due)));
 
     // Only the child extends: not its parent, not another session.
     for other in [parent, session_caller(&worker, P)] {
@@ -115,7 +115,10 @@ fn s3_the_t5_reminder_offers_one_extension_that_moves_the_deadline_once() {
 
     // Past the old deadline and up to the new one, the ladder sends nothing
     // more: no second offer, no stage at the old deadline.
-    advance_to(&mut world, new_due);
+    advance_to(&mut world, new_due - 1);
     assert_eq!(reminders(&world, &a), offer);
     assert_eq!(ladder(&world, &a), (1, ask_scheduler::next_due(new_due, 1)));
+
+    // S3 second half (R11).
+    super::s3_miss::the_new_deadline_passes(&mut world, &mono, &lead, &worker, &a);
 }

@@ -156,7 +156,7 @@ impl<C: Clock> ActiveClock<C> {
             )?;
             self.persisted_ns = self.active_ns;
         }
-        crate::ask_scheduler::run(conn, self.active_ms())
+        crate::ask_scheduler::run(conn, self.active_ms(), now.wall_ms)
     }
 
     pub(crate) fn active_ms(&self) -> i64 {
