@@ -484,23 +484,37 @@ it("does not submit an accepted prompt again after a lost ACK", async () => {
 });
 
 // Design 13.3. Defect: a worker's first save carries no lead id, so it is
-// stored as a lead for good.
+// stored as a lead for good. ADE-117: the same holds for its mcp choice, or
+// the first turn starts omp with MCP servers; a reused session keeps its own.
 it("writes a worker's lead id before its first save", async () => {
   const { state, request, workspace } = setup();
   const lead = state.sessions[0].id;
   request.leadSessionId = lead;
+  request.mcp = "none";
   const original = workspace.submit.getMockImplementation()!;
   workspace.submit.mockImplementation((...args) => {
-    expect(
-      state.sessions.find((session) => session.id === args[0])?.leadSessionId,
-    ).toBe(lead);
+    const worker = state.sessions.find((session) => session.id === args[0]);
+    expect(worker?.leadSessionId).toBe(lead);
+    expect(worker?.mcp).toBe("none");
     return original(...args);
   });
   await acceptQuickLaunch(request, "worker", workspace);
   expect(workspace.submit).toHaveBeenCalledOnce();
+  const worker = state.sessions.find((session) => session.id === "worker");
+  expect(worker?.leadSessionId).toBe(lead);
+  expect(worker?.mcp).toBe("none");
+
+  const reuse = setup();
+  const reused = reuse.state.sessions[0].id;
+  await acceptQuickLaunch(
+    { ...reuse.request, mcp: "none" },
+    reused,
+    reuse.workspace,
+  );
+  expect(reuse.workspace.submit).toHaveBeenCalledOnce();
   expect(
-    state.sessions.find((session) => session.id === "worker")?.leadSessionId,
-  ).toBe(lead);
+    reuse.state.sessions.find((session) => session.id === reused)?.mcp,
+  ).toBeUndefined();
 });
 
 // Design 13.2. Defect: the worker's first save runs before its lead's row
