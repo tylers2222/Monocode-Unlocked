@@ -305,11 +305,12 @@ run_d1() {
 # A jq filter over the puppet log that prints true.
 holds_log() { jq -se "$1" "$PUPPET/log.jsonl" >/dev/null; }
 
-# The <mono_message ...> tag of the first prompt that rule `$1` took, and
-# attribute `$2` of it (empty when the tag has none).
+# Attribute `$2` of the <mono_message ...> tag whose body starts with `$1`, in
+# any prompt (empty when no tag has it). A turn can take several messages at
+# once, in either order, so the tag is found by its body, not its place.
 attribute() {
-  jq -rs --arg rule "$1" 'first(.[] | select(.rule == $rule) | .prompt)' "$PUPPET/log.jsonl" \
-    | grep -o '<mono_message [^>]*>' | head -1 | sed -n "s/.* $2=\"\([^\"]*\)\".*/\1/p"
+  jq -rs --arg key "$1" '[.[] | .prompt // empty | scan("<mono_message [^>]*>\n" + $key)] | first // ""' "$PUPPET/log.jsonl" \
+    | grep -o '<mono_message [^>]*>' | sed -n "s/.* $2=\"\([^\"]*\)\".*/\1/p"
 }
 
 # Field `$2` of the answer to the call whose input message is `$1`.
@@ -322,12 +323,13 @@ answer() {
 # 30-minute deadline, and each acks through MCP. The lead acks twice and the
 # Mono acks its own ask; both refusals reach the puppet. The lead's worker acks
 # once the lead has left the window (R6b review r1 M1). R7: the lead and the
-# worker ack their start asks with the ask_id their first prompt carries.
+# worker ack their start asks with the ask_id their first prompt carries. No
+# rule matches those acks, so a turn that takes one with R6-DONE or
+# R6-WORKED still runs that rule.
 R6_RULES='[
   {"match": "R6-HABIT", "calls": [{"tool": "ask", "arguments":
     {"message": "R6-PROJECT Run the project.", "send_to": "r6-mono"}}], "reply": "Asked."},
   {"match": "R6-REPORT", "reply": "Noted."},
-  {"match": "R6-LED", "reply": "Noted."},
   {"match": "R6-DONE", "calls": [{"tool": "ack", "arguments":
     {"ask_id": "$ack_of", "message": "R6-MINE Acking my own ask."}}], "reply": "Checked."},
   {"match": "R6-PROJECT", "calls": [
@@ -342,7 +344,6 @@ R6_RULES='[
       {"prompt": "R6-WBRIEF You work on the task.", "harness": "fx", "model": "fx:zai/glm-5.2-fast", "notifyOnComplete": false}},
     {"tool": "ask", "arguments": {"message": "R6-WORK Do the work.", "send_to": "$prev.id"}}], "reply": "Done."},
   {"match": "R6-WORKED", "reply": "Noted."},
-  {"match": "R6-WLED", "reply": "Noted."},
   {"match": "R6-WORK", "exec": [["sleep", "3"]], "calls": [
     {"tool": "ack", "arguments": {"ask_id": "$ask_id", "message": "R6-WORKED The work is done."}}], "reply": "Worked."},
   {"match": "R6-WBRIEF", "calls": [
