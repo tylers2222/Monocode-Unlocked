@@ -455,7 +455,8 @@ function fromAttributes(
         `session_id="${message.fromSessionId}"`,
         `level="${sender.level}"`,
       ];
-    default:
+    case "mono":
+    case undefined:
       return [
         `from="${attribute(sender?.name ?? "a deleted Mono")}"`,
         ...(message.fromMonoId ? [`mono_id="${message.fromMonoId}"`] : []),

@@ -577,7 +577,7 @@ function startedAnyway(error: unknown, id: string): Error {
  */
 function askTurn(
   source: Session,
-  host: AgentAppHost,
+  mono: AppMono | undefined,
   started: string,
   prompt: string,
   ask: StartAsk,
@@ -585,7 +585,6 @@ function askTurn(
   // Ids Rust just checked: the caller's session, and appLaunchId's.
   const fromSessionId = source.id as SessionId;
   const reading = { sessionId: started as SessionId, turnId: newTurnId(), target: null };
-  const mono = host.monoOf?.(source.id);
   const sender: MessageSender = mono
     ? { kind: "mono", name: mono.name ?? mono.id, role: "mono" }
     : { kind: "session", title: source.title, level: "lead" };
@@ -802,7 +801,7 @@ function startLaunch(
   input: Record<string, unknown>,
   host: AgentAppHost,
   leadSessionId: string | null,
-): { launch: QuickLaunch; listedWorktree?: string } {
+): { launch: QuickLaunch; listedWorktree?: string; mono?: AppMono } {
   const cwd = requireProject(source, input, host);
   const prompt = agentPrompt(input.prompt);
   const draft = input.draft ?? false;
@@ -900,7 +899,7 @@ function startLaunch(
     startedBy: source.id,
     ...(leadSessionId ? { leadSessionId } : {}),
   };
-  return { launch, listedWorktree };
+  return { launch, listedWorktree, mono };
 }
 
 function memoryPath(topic: unknown): AgentFilePath {
@@ -1908,7 +1907,7 @@ export async function handleAgentApp(
       };
     }
     case "sessions.start": {
-      const { launch, listedWorktree } = startLaunch(
+      const { launch, listedWorktree, mono } = startLaunch(
         source,
         input,
         host,
@@ -1941,7 +1940,7 @@ export async function handleAgentApp(
             source.id);
       // The id the level check was sent (appLaunchId is pure).
       const id = appLaunchId(source, requestId);
-      if (ask) launch.firstTurn = askTurn(source, host, id, launch.prompt, ask);
+      if (ask) launch.firstTurn = askTurn(source, mono, id, launch.prompt, ask);
       if (besideSessionId)
         await host.start(
           launch,

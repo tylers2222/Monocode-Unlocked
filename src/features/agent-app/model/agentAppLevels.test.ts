@@ -373,8 +373,11 @@ it.skipIf(WRITE).each(cases.map((entry) => [entry.name, entry] as const))(
         expect(launch.leadSessionId).toBe(reply.leadSessionId ?? undefined);
         expect(launch.prompt).toBe(entry.input.prompt);
         const source = await host.session(entry.caller);
-        expect(launch.firstTurn?.agentText).toBe(
-          reply.ask ? askTag(reply.ask, launch.prompt, source) : undefined,
+        // It also hands submit the id of the turn it opens.
+        expect(launch.firstTurn).toEqual(
+          reply.ask
+            ? { agentText: askTag(reply.ask, launch.prompt, source), turnId: expect.any(String) }
+            : undefined,
         );
       }
     }
