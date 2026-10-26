@@ -118,4 +118,25 @@ fn s3_the_t5_reminder_offers_one_extension_that_moves_the_deadline_once() {
     advance_to(&mut world, new_due);
     assert_eq!(reminders(&world, &a), offer);
     assert_eq!(ladder(&world, &a), (1, ask_scheduler::next_due(new_due, 1)));
+
+    // Unnamed, with no open ask, the extend is refused; with exactly one,
+    // it extends that ask. The worker has no start ask, only the lead's.
+    let worker_caller = session_caller(&worker, P);
+    assert!(refused(extend(&world, &worker_caller, json!({}))).contains("exactly one open ask"));
+    let b = ask(
+        &world,
+        &[&lead, &worker],
+        &child,
+        "s3x-b",
+        worker.as_str(),
+        10,
+    );
+    let b_due = due(&world, &b);
+    advance_to(&mut world, b_due - T5_LEAD);
+    let Extension::Extended { ask_id, .. } = extend(&world, &worker_caller, json!({})) else {
+        panic!("the worker's unnamed extend of its one open ask was refused");
+    };
+    assert_eq!(ask_id, b);
+    assert_eq!(due(&world, &b), b_due + EXTENSION);
+    assert_eq!(extensions(&world, &b), 1);
 }
