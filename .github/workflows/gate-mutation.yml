@@ -21,7 +21,10 @@ permissions: {}
 jobs:
   mutation:
     name: gate/mutation
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to ubuntu-26.04, whose /tmp quota is too small for the cargo-mutants
+    # baseline ("Disk quota exceeded (os error 122)", PR #352 run 40302201704 attempt 2). Every green
+    # mutation run on 2026-10-26 used ubuntu-24.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
       PR: ${{ github.event.pull_request.number }}
