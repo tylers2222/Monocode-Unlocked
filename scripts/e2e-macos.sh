@@ -33,7 +33,11 @@ row() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" >>"$ROWS"; }
 # True when app.sh has a case label for the command's first word.
 has() { grep -qE "^  ${1%% *}\)" "$APP"; }
 
-# screencapture -v records until a character arrives on its stdin.
+# screencapture -v records until a character arrives on its stdin; the fifo
+# keeps that stdin open. On a hosted runner it can ignore the character (run
+# 40095797823 waited on it until the job timed out), so record_stop then sends
+# SIGTERM and last SIGKILL, each after 10 s. Not SIGINT: a background job of a
+# script starts with SIGINT ignored.
 record_start() {
   rm -f "$OUT/.stop"
   mkfifo "$OUT/.stop"
@@ -41,9 +45,23 @@ record_start() {
   RECORDER=$!
   exec 3>"$OUT/.stop"
 }
+exited() {
+  local i
+  for i in {1..20}; do
+    kill -0 "$1" 2>/dev/null || return 0
+    sleep 0.5
+  done
+  return 1
+}
 record_stop() {
-  echo >&3
+  local signal
+  echo >&3 2>/dev/null
   exec 3>&-
+  for signal in TERM KILL; do
+    exited "$RECORDER" && break
+    echo "e2e-macos: screencapture still running; sending SIG$signal" >&2
+    kill "-$signal" "$RECORDER" 2>/dev/null
+  done
   wait "$RECORDER" || echo "e2e-macos: screencapture exited $?" >&2
 }
 

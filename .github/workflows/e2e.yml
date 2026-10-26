@@ -45,6 +45,11 @@ jobs:
     name: e2e-linux
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      # ci.yml's browser job runs the browser specs headless on every PR. Headed
+      # in this image, three webkit specs fail on timing (ADE-113, ADE-114,
+      # ADE-115), so the browser suite runs here only when a dispatch asks.
+      SUITES: ${{ inputs.suite == 'all' && 'browser evals milestones scenarios' || inputs.suite || 'evals milestones scenarios' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -80,7 +85,10 @@ jobs:
           cache-to: type=gha,scope=e2e-image,mode=max
 
       - name: Run the suites
-        run: make e2e WAIT=1 SUITE="$SUITE" CPUS=4 MEMORY=12g
+        run: |
+          code=0
+          for suite in $SUITES; do make e2e WAIT=1 SUITE="$suite" CPUS=4 MEMORY=12g || code=1; done
+          exit "$code"
 
       - name: Collect the results
         if: always()
