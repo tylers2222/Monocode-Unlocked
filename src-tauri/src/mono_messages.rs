@@ -18,6 +18,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use crate::approvals::decide;
+use crate::ask_talk;
 use crate::asks::{self, Call};
 use crate::control::ControlHost;
 use crate::mono_gate::{
@@ -3279,6 +3280,7 @@ pub(crate) fn submit_and_recheck(
             Call::Message(input) => submit(&conn, caller, request_id, input, &live, now),
             Call::Ask(input) => asks::ask(&conn, caller, request_id, input, &live, now),
             Call::Ack(input) => asks::ack(&conn, caller, request_id, input, &live, now),
+            Call::Talk(input) => ask_talk::talk(&conn, caller, request_id, input, &live, now),
         }
         .map_err(|error| error.to_string())?
     };

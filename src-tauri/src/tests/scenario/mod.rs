@@ -18,5 +18,6 @@ mod s0_baseline;
 mod s1_asks;
 mod s1_levels;
 mod s2_approvals;
+mod s4_questions;
 mod s5_scheduler;
 mod world;

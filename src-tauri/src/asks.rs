@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 
 use crate::ask_gate::{self, AckRefused, Actor, AskState, Party, State};
 use crate::ask_scheduler;
+use crate::ask_talk::TalkInput;
 use crate::mono_gate::{self, Caller, Input, Refusal, SessionLevel, Speaker};
 use crate::mono_messages::{
     self, Live, MessageId, MonoId, MonoMessage, PayloadHash, RequestId, SessionId, Status,
@@ -61,8 +62,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            CHECK (kind NOT IN ('question', 'answer') OR seq <= 3),
            CHECK (kind NOT IN ('ack', 'update', 'extension', 'miss') OR seq = 1)
          );
-         CREATE INDEX IF NOT EXISTS mono_ask_events_ack_message
-           ON mono_ask_events (message_id) WHERE kind = 'ack';",
+         DROP INDEX IF EXISTS mono_ask_events_ack_message;
+         CREATE INDEX IF NOT EXISTS mono_ask_events_message ON mono_ask_events (message_id);",
     )
 }
 
@@ -117,6 +118,8 @@ pub enum Call {
     Message(Result<Input, String>),
     Ask(Result<AskInput, String>),
     Ack(Result<AckInput, String>),
+    /// R14: a question, an answer or an update.
+    Talk(Result<TalkInput, String>),
 }
 
 impl From<Result<Input, String>> for Call {
@@ -130,6 +133,7 @@ pub fn call(tool: &str, input: &Value) -> Option<Call> {
     Some(match tool {
         "ask" => Call::Ask(AskInput::parse(input)),
         "ack" => Call::Ack(AckInput::parse(input)),
+        "question" | "answer" | "update" => Call::Talk(TalkInput::parse(tool, input)),
         _ => Call::Message(mono_gate::parse(Tool::parse(tool)?, input)),
     })
 }
@@ -152,7 +156,7 @@ pub struct AckInput {
 // unknown field first; `known_fields` keeps that rule at this boundary too.
 // `message` and `send_to` go on to the carrier's `mono_gate::parse`, which
 // names them; a value that is not a string reads as empty there.
-fn text(raw: &Value, name: &str) -> String {
+pub(crate) fn text(raw: &Value, name: &str) -> String {
     raw.get(name)
         .and_then(Value::as_str)
         .unwrap_or_default()
@@ -218,32 +222,52 @@ pub enum Carries {
     /// The row is the ack of ask `ask_id`.
     #[serde(rename_all = "camelCase")]
     Ack { ask_id: MessageId },
+    /// R14: the row is question `seq` on ask `ask_id`, or its answer.
+    #[serde(rename_all = "camelCase")]
+    Question { ask_id: MessageId, seq: i64 },
+    #[serde(rename_all = "camelCase")]
+    Answer { ask_id: MessageId, seq: i64 },
+    #[serde(rename_all = "camelCase")]
+    Update { ask_id: MessageId },
 }
 
-/// What row `id` carries: `mono_asks` by id, else the `ack` event that
-/// names the row. One statement, as `targeted()` reads it for every row.
+/// What row `id` carries: `mono_asks` by id, else the event that names the
+/// row. One statement, as `targeted()` reads it for every row.
 pub fn carries(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<Carries>> {
-    let (ask, due_in_ms, ack_of): (bool, Option<i64>, Option<String>) = conn.query_row(
+    type Event = (Option<String>, Option<String>, Option<i64>);
+    let (ask, due_in_ms, (kind, ask_id, seq)): (bool, Option<i64>, Event) = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM mono_asks WHERE id = ?1),
            (SELECT due_active_ms - ifnull((SELECT active_ms FROM mono_clock WHERE id = 1), 0)
               FROM mono_asks WHERE id = ?1),
-           (SELECT ask_id FROM mono_ask_events WHERE kind = 'ack' AND message_id = ?1)",
+           e.kind, e.ask_id, e.seq
+         FROM (SELECT 1) LEFT JOIN mono_ask_events e ON e.message_id = ?1",
         [id.as_str()],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                (row.get(2)?, row.get(3)?, row.get(4)?),
+            ))
+        },
     )?;
     if ask {
         return Ok(Some(Carries::Ask { due_in_ms }));
     }
-    ack_of
-        .map(|ask_id| {
-            let ask_id = MessageId::parse(&ask_id).ok_or(rusqlite::Error::InvalidQuery)?;
-            Ok(Carries::Ack { ask_id })
-        })
-        .transpose()
+    let (Some(kind), Some(ask_id), Some(seq)) = (kind, ask_id, seq) else {
+        return Ok(None);
+    };
+    let ask_id = MessageId::parse(&ask_id).ok_or(rusqlite::Error::InvalidQuery)?;
+    Ok(match kind.as_str() {
+        "ack" => Some(Carries::Ack { ask_id }),
+        "question" => Some(Carries::Question { ask_id, seq }),
+        "answer" => Some(Carries::Answer { ask_id, seq }),
+        "update" => Some(Carries::Update { ask_id }),
+        _ => None,
+    })
 }
 
 /// A `send_message` of `message` to `send_to`: what carries an ask or ack.
-fn carrier(send_to: &str, message: &str) -> Result<Input, String> {
+pub(crate) fn carrier(send_to: &str, message: &str) -> Result<Input, String> {
     mono_gate::parse(
         Tool::SendMessage,
         &json!({"message": message, "send_to": send_to, "wanting_reply": false, "intent": "new"}),
@@ -263,7 +287,7 @@ fn ask_hash(carrier: &Input, due_minutes: Option<u32>) -> PayloadHash {
     )
 }
 
-fn failed(code: &'static str, hint: impl Into<String>) -> Submitted {
+pub(crate) fn failed(code: &'static str, hint: impl Into<String>) -> Submitted {
     Submitted::Failed {
         error: ToolError {
             code,
@@ -464,7 +488,7 @@ pub fn ack(
         return refused(AckRefused::NoOpenAsk);
     };
     let prior = mono_messages::get_by_request(&tx, &caller.session_id, request_id)?;
-    if another_calls(prior.first(), |id| acked_with(&tx, &ask_id, id))? {
+    if another_calls(prior.first(), |id| said_with(&tx, &ask_id, "ack", id))? {
         return Ok(reused());
     }
     let carrier = match carrier(ask.parent.send_to(), &input.message) {
@@ -540,7 +564,7 @@ pub fn ack(
     Ok(submitted)
 }
 
-fn reused() -> Submitted {
+pub(crate) fn reused() -> Submitted {
     failed(
         Refusal::RequestIdReused.as_str(),
         mono_gate::REQUEST_ID_REUSED,
@@ -550,7 +574,7 @@ fn reused() -> Submitted {
 /// Whether `prior`, the first row already under this call's request id, is
 /// another call's: an accepted row that `own` says this call did not write.
 /// No row, or a rejected one whose refusal `submit_in` replays, is not.
-fn another_calls(
+pub(crate) fn another_calls(
     prior: Option<&MonoMessage>,
     own: impl FnOnce(&MessageId) -> rusqlite::Result<bool>,
 ) -> rusqlite::Result<bool> {
@@ -561,7 +585,7 @@ fn another_calls(
 }
 
 /// The stored active time (R2), at most one persist interval behind.
-fn active_ms(conn: &Connection) -> rusqlite::Result<i64> {
+pub(crate) fn active_ms(conn: &Connection) -> rusqlite::Result<i64> {
     Ok(conn
         .query_row("SELECT active_ms FROM mono_clock WHERE id = 1", [], |row| {
             row.get(0)
@@ -580,7 +604,7 @@ fn session_party(conn: &Connection, session: &SessionId) -> rusqlite::Result<Opt
 }
 
 /// The caller, from saved rows: a Mono is its mono id, whichever chat calls.
-fn caller_party(conn: &Connection, caller: &Caller) -> rusqlite::Result<Option<Party>> {
+pub(crate) fn caller_party(conn: &Connection, caller: &Caller) -> rusqlite::Result<Option<Party>> {
     match &caller.speaker {
         Speaker::Mono { mono_id, .. } => mono_party(conn, mono_id),
         Speaker::Session { .. } => session_party(conn, &caller.session_id),
@@ -619,17 +643,23 @@ fn started_by(conn: &Connection, mono: &MonoId, session: &SessionId) -> rusqlite
     )
 }
 
-/// Whether row `id` carried the ack of ask `ask`.
-fn acked_with(conn: &Connection, ask: &MessageId, id: &MessageId) -> rusqlite::Result<bool> {
+/// Whether row `id` carried event `kind` (an ack, or an R14 question,
+/// answer or update) of ask `ask`.
+pub(crate) fn said_with(
+    conn: &Connection,
+    ask: &MessageId,
+    kind: &str,
+    id: &MessageId,
+) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM mono_ask_events
-           WHERE kind = 'ack' AND ask_id = ?1 AND message_id = ?2)",
-        params![ask.as_str(), id.as_str()],
+           WHERE kind = ?2 AND ask_id = ?1 AND message_id = ?3)",
+        params![ask.as_str(), kind, id.as_str()],
         |row| row.get(0),
     )
 }
 
-fn load(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<AskState>> {
+pub(crate) fn load(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<AskState>> {
     conn.query_row(
         "SELECT state, parent_actor, child_actor FROM mono_asks WHERE id = ?1",
         [id.as_str()],

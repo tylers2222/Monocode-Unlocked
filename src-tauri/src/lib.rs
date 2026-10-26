@@ -7,6 +7,7 @@ mod approvals;
 mod artifacts;
 mod ask_gate;
 mod ask_scheduler;
+mod ask_talk;
 mod asks;
 mod automations;
 mod azure_devops;
