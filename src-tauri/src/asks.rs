@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use crate::ask_gate::{self, AckRefused, Actor, AskState, Party, State};
 use crate::ask_scheduler;
-use crate::mono_gate::{self, Caller, Input, Refusal, Speaker};
+use crate::mono_gate::{self, Caller, Input, Refusal, SessionLevel, Speaker};
 use crate::mono_messages::{
     self, Live, MessageId, MonoId, MonoMessage, PayloadHash, RequestId, SessionId, Status,
     Submitted, Tool, ToolError,
@@ -168,18 +168,22 @@ fn due_rule() -> String {
     )
 }
 
+/// `due_minutes` of an ask or a `sessions.start` (R7); `None` when left out.
+pub(crate) fn due_minutes(raw: &Value) -> Result<Option<u32>, String> {
+    raw.get("due_minutes")
+        .map(|due| {
+            due.as_u64()
+                .and_then(|due| u32::try_from(due).ok())
+                .filter(|due| ask_gate::DUE_MINUTES.contains(due))
+                .ok_or_else(due_rule)
+        })
+        .transpose()
+}
+
 impl AskInput {
     pub fn parse(raw: &Value) -> Result<Self, String> {
         mono_gate::known_fields("ask", raw, &["message", "send_to", "due_minutes"])?;
-        let due_minutes = raw
-            .get("due_minutes")
-            .map(|due| {
-                due.as_u64()
-                    .and_then(|due| u32::try_from(due).ok())
-                    .filter(|due| ask_gate::DUE_MINUTES.contains(due))
-                    .ok_or_else(due_rule)
-            })
-            .transpose()?;
+        let due_minutes = due_minutes(raw)?;
         Ok(AskInput {
             message: text(raw, "message"),
             send_to: text(raw, "send_to"),
@@ -271,6 +275,110 @@ fn failed(code: &'static str, hint: impl Into<String>) -> Submitted {
     }
 }
 
+/// A new ask as saved rows decide it: who asks, who is asked, and its
+/// `due_active_ms` (`None` for a Giga's ask).
+pub(crate) struct NewAsk {
+    parent: Party,
+    child: Party,
+    due: Option<i64>,
+}
+
+/// What saved rows decide of an ask from a caller (review r1 N1).
+pub(crate) enum Decided {
+    Ask(NewAsk),
+    /// The caller or the child has no saved row.
+    NoRow,
+    NotDirectChild,
+}
+
+impl NewAsk {
+    /// An ask from `caller` to `child` with `due_minutes`. `is_start`: the
+    /// ask is `caller`'s start of `child`, so the start row is what
+    /// `started_by` would read.
+    fn decide(
+        conn: &Connection,
+        caller: &Caller,
+        child: Option<Party>,
+        is_start: bool,
+        due_minutes: Option<u32>,
+    ) -> rusqlite::Result<Decided> {
+        let (Some(parent), Some(child)) = (caller_party(conn, caller)?, child) else {
+            return Ok(Decided::NoRow);
+        };
+        let started = match (caller.mono_id(), child.actor()) {
+            (Some(mono), Actor::Session(lead)) => started_by(conn, mono, lead)?,
+            _ => false,
+        };
+        let started = is_start || started;
+        let decided = ask_gate::decide_ask(&parent, &child, started, due_minutes, active_ms(conn)?);
+        Ok(match decided {
+            Ok(due) => Decided::Ask(NewAsk { parent, child, due }),
+            Err(ask_gate::AskRefused::NotDirectChild) => Decided::NotDirectChild,
+        })
+    }
+
+    /// The active time left now, `None` for a Giga's ask.
+    pub(crate) fn due_in_ms(&self, conn: &Connection) -> rusqlite::Result<Option<i64>> {
+        let active = active_ms(conn)?;
+        Ok(self.due.map(|due| due - active))
+    }
+
+    /// The open ask, keyed by `id`, the row that carries it.
+    fn insert(&self, conn: &Connection, id: &MessageId, now: i64) -> rusqlite::Result<()> {
+        conn.execute(
+            "INSERT INTO mono_asks (id, parent_actor, child_actor, parent_level,
+               child_level, state, due_active_ms, next_due_active_ms, created_wall_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'open', ?6, ?7, ?8)",
+            params![
+                id.as_str(),
+                self.parent.actor().to_string(),
+                self.child.actor().to_string(),
+                self.parent.level().rank(),
+                self.child.level().rank(),
+                self.due,
+                self.due.and_then(|due| ask_scheduler::next_due(due, 0)),
+                now
+            ],
+        )?;
+        Ok(())
+    }
+}
+
+/// R7, before the launch: the ask `caller`'s `sessions.start` of `started`
+/// carries, when `started` will be the caller's direct child. `lead` is the
+/// lead the level check writes on `started`, so it is the level its saved
+/// row will have.
+pub(crate) fn decide_start(
+    conn: &Connection,
+    caller: &Caller,
+    started: &SessionId,
+    lead: Option<SessionId>,
+    due_minutes: Option<u32>,
+) -> rusqlite::Result<Decided> {
+    let level = lead.map_or(SessionLevel::Lead, |lead| SessionLevel::Worker { lead });
+    let child = Party::session(level, started.clone());
+    NewAsk::decide(conn, caller, Some(child), true, due_minutes)
+}
+
+/// R7: the `start_session` row `id` that `caller`'s `sessions.start` of
+/// `started` just wrote is also an ask, when `started` is the caller's direct
+/// child: a Mono's lead or a lead's worker. A Giga's start, or one whose
+/// session MonoCode never saves (so it could never ack), asks nothing.
+pub(crate) fn ask_on_start(
+    tx: &Connection,
+    caller: &Caller,
+    started: &SessionId,
+    id: &MessageId,
+    due_minutes: Option<u32>,
+    now: i64,
+) -> rusqlite::Result<()> {
+    let child = session_party(tx, started)?;
+    match NewAsk::decide(tx, caller, child, true, due_minutes)? {
+        Decided::Ask(new) => new.insert(tx, id, now),
+        Decided::NoRow | Decided::NotDirectChild => Ok(()),
+    }
+}
+
 /// `ask` from `caller` (design R5): a new key on its direct child, with a
 /// deadline in active time unless the caller is a Giga. A repeat of the
 /// call (same request id) answers what the first one did.
@@ -289,23 +397,22 @@ pub fn ask(
         };
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let prior = mono_messages::get_by_request(&tx, &caller.session_id, request_id)?;
+    // A start row is an ask too (R7), so this passes an ask sent under an
+    // earlier start's request id; `submit_in`'s hash check then refuses it
+    // with the same `request_id_reused` (review r1 N2).
     if another_calls(prior.first(), |id| is_ask(&tx, id))? {
         return Ok(reused());
     }
     let mut new = None;
     if prior.is_empty() {
-        let parent = caller_party(&tx, caller)?;
-        let child = addressed_party(&tx, &input.send_to)?;
         // A party with no saved row: the send gate below answers it.
-        if let (Some(parent), Some(child)) = (parent, child) {
-            let started = match (caller.mono_id(), child.actor()) {
-                (Some(mono), Actor::Session(lead)) => started_by(&tx, mono, lead)?,
-                _ => false,
-            };
-            let due = input.due_minutes;
-            match ask_gate::decide_ask(&parent, &child, started, due, active_ms(&tx)?) {
-                Ok(due) => new = Some((due, parent, child)),
-                Err(refused) => return Ok(failed(refused.code(), refused.hint())),
+        let child = addressed_party(&tx, &input.send_to)?;
+        match NewAsk::decide(&tx, caller, child, false, input.due_minutes)? {
+            Decided::Ask(decided) => new = Some(decided),
+            Decided::NoRow => {}
+            Decided::NotDirectChild => {
+                let refused = ask_gate::AskRefused::NotDirectChild;
+                return Ok(failed(refused.code(), refused.hint()));
             }
         }
     }
@@ -320,25 +427,11 @@ pub fn ask(
     {
         // The gate let through a party with no saved row (a session the
         // window lists): no child of the caller. Dropping `tx` undoes the row.
-        let Some((due, parent, child)) = new else {
+        let Some(new) = new else {
             let refused = ask_gate::AskRefused::NotDirectChild;
             return Ok(failed(refused.code(), refused.hint()));
         };
-        tx.execute(
-            "INSERT INTO mono_asks (id, parent_actor, child_actor, parent_level,
-               child_level, state, due_active_ms, next_due_active_ms, created_wall_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'open', ?6, ?7, ?8)",
-            params![
-                messages[0].message.id.as_str(),
-                parent.actor().to_string(),
-                child.actor().to_string(),
-                parent.level().rank(),
-                child.level().rank(),
-                due,
-                due.and_then(|due| ask_scheduler::next_due(due, 0)),
-                now
-            ],
-        )?;
+        new.insert(&tx, &messages[0].message.id, now)?;
         messages[0].carries = carries(&tx, &messages[0].message.id)?;
     }
     tx.commit()?;

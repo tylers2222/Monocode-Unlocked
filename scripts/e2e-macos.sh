@@ -20,7 +20,7 @@ SCENARIOS=(
   "d1|build|"
   "d2|build|"
   "d4|build|"
-  "d4 d1|build|a Local Network prompt for Python blocks its fake model on a hosted runner (ADE-120)"
+  "d4 d1|build|"
   "r6|build|"
   "approvals|build|reads a copy of the real app database, which a CI runner does not have"
 )

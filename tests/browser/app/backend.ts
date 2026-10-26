@@ -408,9 +408,13 @@ const HANDLERS: Record<string, Handler> = {
     return { revision: store.rosterRevision, monos: store.monos };
   },
   // The level rules and start rows live in Rust (appActionCheck.fixtures.json
-  // pins them); every gated call the specs make is allowed and starts no
-  // worker, and a start's row is one fixed id.
-  mono_app_action_check: () => ({ outcome: "allowed", leadSessionId: null }),
+  // pins them); every gated call the specs make is allowed, starts no worker
+  // and carries no start ask, and a start's row is one fixed id.
+  mono_app_action_check: () => ({
+    outcome: "allowed",
+    leadSessionId: null,
+    ask: null,
+  }),
   mono_message_record_start: () => ({
     outcome: "recorded",
     messageId: "m_aaaaaaaaaaaa",
