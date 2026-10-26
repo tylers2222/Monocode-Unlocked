@@ -369,6 +369,8 @@ run_r6() {
   FAILED=0
   log "R6 run"
   fresh_pair r6
+  # The e2e job uploads $GIGA_EVAL_OUT/*.log: every prompt and call, pass or fail.
+  trap 'cp "$PUPPET/log.jsonl" "$EVAL_OUT/r6-puppet.log"' EXIT
   # Active time before the asks, so a due_in that forgets to subtract it shows.
   "$INSTANCE" start
   advance 60000
@@ -377,7 +379,10 @@ run_r6() {
   jq -n --arg app "$(target_bin instance)" --argjson rules "$R6_RULES" '{app: $app, rules: $rules}' >"$PUPPET/script.json"
   request_habit r6-giga "Ask for the project" "R6-HABIT: ask R6 Mono to run the project."
   "$INSTANCE" start
-  wait_until 120 "the Giga's and the Mono's asks are acked" holds "SELECT count(*) >= 2 FROM mono_asks WHERE state = 'acked'"
+  # R7: each start is an ask too; these are the asks the puppets sent.
+  local sent="id NOT IN (SELECT id FROM mono_messages WHERE tool = 'start_session')"
+  wait_until 120 "the Giga's and the Mono's asks are acked" \
+    holds "SELECT count(*) = 2 FROM mono_asks WHERE state = 'acked' AND parent_actor IN ('mono:r6-giga', 'mono:r6-mono') AND $sent"
   wait_until 60 "the Giga gets the Mono's ack" saw R6-REPORT
   wait_until 60 "the Mono tries to ack its own ask" \
     holds_log '[.[] | select(.input.message == "R6-MINE Acking my own ask.")] | length == 1'
@@ -386,8 +391,6 @@ run_r6() {
   wait_until 60 "the lead and the worker ack their start asks" \
     holds "SELECT count(*) = 2 FROM mono_asks WHERE state = 'acked' AND id IN (SELECT id FROM mono_messages WHERE tool = 'start_session')"
   local giga_ask mono_ask lead_ask lead worker lead_start worker_start
-  # R7: each start is an ask too; these are the asks the puppets sent.
-  local sent="id NOT IN (SELECT id FROM mono_messages WHERE tool = 'start_session')"
   giga_ask="$(q "SELECT id FROM mono_asks WHERE parent_actor = 'mono:r6-giga'")"
   mono_ask="$(q "SELECT id FROM mono_asks WHERE parent_actor = 'mono:r6-mono' AND $sent")"
   lead="$(q "SELECT to_session_id FROM mono_messages WHERE tool = 'start_session' AND from_mono_id = 'r6-mono'")"
@@ -438,7 +441,6 @@ run_r6() {
   expect "calls that failed" "$(jq -s '[.[] | select((.tool or .action) and .result.ok != true)] | length' "$PUPPET/log.jsonl")" 2
   expect "steers" "$(jq -s '[.[] | select(.steer == true)] | length' "$PUPPET/log.jsonl")" 0
   q "SELECT '  ask ' || id || ' ' || parent_actor || ' -> ' || child_actor || ' ' || state FROM mono_asks ORDER BY created_wall_ms"
-  cp "$PUPPET/log.jsonl" "$EVAL_OUT/r6.puppet.jsonl"
   "$INSTANCE" stop
   return "$FAILED"
 }
