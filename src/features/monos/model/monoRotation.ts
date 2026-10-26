@@ -3,8 +3,9 @@ import { contextRatio } from "../../sessions/model/contextUsage";
 
 /**
  * A Mono's chat never ends, but the provider session behind it does. Every
- * turn resends the whole native context, so once it fills most of the model's
- * context window, the next turn quietly starts a fresh provider session.
+ * turn resends the whole native context, so once it passes a fixed token
+ * budget or fills most of the model's context window, the next turn quietly
+ * starts a fresh provider session.
  * That session gets the soul and memory (see `monoFiles`)
  * plus a brief of where the conversation was: recent exchanges word for word
  * and a line for each earlier one. Nothing is summarized by a model, so a
@@ -14,6 +15,11 @@ import { contextRatio } from "../../sessions/model/contextUsage";
 
 /** Rotate at 80% of the reported window, leaving room for the next turn. */
 export const ROTATE_RATIO = 0.8;
+/**
+ * Rotate at this many tokens even in a larger window: every turn resends the
+ * whole context, so turns past it cost more and run slower.
+ */
+export const ROTATE_TOKENS = 250_000;
 
 /** Recent exchanges carried word for word. */
 const VERBATIM_EXCHANGES = 2;
@@ -52,7 +58,11 @@ export function rotationReason(
 ): RotationReason | undefined {
   // Nothing to rotate: the next turn already starts a new session.
   if (!session.providerSessionId) return undefined;
-  // With no reported window, leave compaction to the provider.
+  // The level describes the transcript, not the model, so the budget holds
+  // even before a window is reported.
+  const used = session.context?.used ?? 0;
+  if (Number.isFinite(used) && used >= ROTATE_TOKENS) return "context";
+  // Below the budget with no reported window, leave compaction to the provider.
   const ratio = contextRatio(session.context);
   return ratio !== null && ratio >= ROTATE_RATIO ? "context" : undefined;
 }

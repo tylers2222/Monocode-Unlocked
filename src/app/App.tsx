@@ -36,9 +36,7 @@ import {
   enqueueMonoSessionCompletion,
   MonoSessionCompletionBatches,
   type MonoCompletionRequest,
-  type SavedMonoCompletion,
 } from "../features/monos/model/monoSessionCompletion";
-import { monoCompletionStore } from "../features/sessions/data/monoCompletionStore";
 import {
   acceptQuickLaunch,
   appLaunchRepeat,
@@ -545,6 +543,7 @@ import {
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
+  endTurnWakes,
   enqueueQueuedMessage,
   failQueuedMessage,
   nextQueuedSend,
@@ -552,8 +551,10 @@ import {
   queuedHead,
   queuedMessageForSubmit,
   queuedSteer,
-  resumeQueuedMessages,
+  resumeQueue,
   runningTurnMap,
+  wakeQueue,
+  wakesQueue,
   withoutPauseReason,
 } from "../features/sessions/model/messageQueue";
 import {
@@ -896,6 +897,7 @@ import {
   persistQuitState,
   reapWindowRuntime,
   setQuitWorkspace,
+  type QuitWorkspace,
 } from "./model/appLifecycle";
 
 const SearchView = lazySurface(
@@ -1177,9 +1179,7 @@ function titleTabsEqual(a: TitleTab[], b: TitleTab[]): boolean {
 registerBuiltinHarnesses();
 
 type AppProps = {
-  resumed?: WindowWorkspace | null;
-  /** The Mono completion results this window claimed at boot (ADE-89). */
-  monoCompletions: SavedMonoCompletion[];
+  resumed?: QuitWorkspace | null;
   installedUpdate?: InstalledUpdate | null;
   history?: SessionSummary[];
   historyCwd?: string | null;
@@ -1205,7 +1205,6 @@ export default function App(props: AppProps) {
 
 function Workspace({
   resumed = null,
-  monoCompletions,
   installedUpdate = null,
   history: bootHistory = [],
   historyCwd: bootHistoryCwd = null,
@@ -1709,11 +1708,14 @@ function Workspace({
     }),
     [readProjectReturnMemory, workspacePins],
   );
-  /**
-   * This window as a quit, reload or close saves it (ADE-46). The Mono
-   * completion results it owes live in their own store rows (ADE-89).
-   */
-  const readQuitWorkspace = readWindowWorkspace;
+  /** This window as a quit, reload or close saves it (ADE-46). */
+  const readQuitWorkspace = useCallback(
+    (): QuitWorkspace => ({
+      ...readWindowWorkspace(),
+      monoCompletions: monoCompletionBatches.current!.undelivered(),
+    }),
+    [readWindowWorkspace],
+  );
 
   const tabVisitRef = useRef(emptyTabVisitHistory(activeTabId));
   const tabVisitFromHistoryRef = useRef(false);
@@ -8481,10 +8483,11 @@ function Workspace({
           setSessions((prev) =>
             prev.map((s) => {
               if (s.id !== sessionId) return s;
-              const stopped = stopStreaming(s);
+              const ended = stopStreaming(s);
               const providerFailed =
                 providerFailureSeen ||
-                isProviderFailureText(lastAssistantTextInTurn(stopped));
+                isProviderFailureText(lastAssistantTextInTurn(ended));
+              const stopped = endTurnWakes(ended, providerFailed);
               const finalized =
                 proposalDraft && proposalId
                   ? withOrchestrationProposal(
@@ -9008,10 +9011,9 @@ function Workspace({
       scheduleAfter,
       (sessionId) =>
         sessionsRef.current.find((session) => session.id === sessionId),
-      monoCompletionStore,
     );
     monoCompletionBatches.current.restore(
-      monoCompletions,
+      resumed?.monoCompletions ?? [],
       (sessionId) =>
         sessionsRef.current.some(
           (session) =>
@@ -9327,6 +9329,17 @@ function Workspace({
         );
         continue;
       }
+      const mono = !!monoForSession(session.id);
+      if (wakesQueue(session, mono)) {
+        setSessions((prev) =>
+          prev.map((entry) =>
+            entry.id === session.id && wakesQueue(entry, mono)
+              ? wakeQueue(entry)
+              : entry,
+          ),
+        );
+        continue;
+      }
       const next = nextSend(session);
       if (!next || queueDispatchingRef.current.has(session.id)) continue;
       queueDispatchingRef.current.add(session.id);
@@ -9586,12 +9599,7 @@ function Workspace({
             entry.id === sessionId
               ? entry.usageLimit
                 ? resumeMonoUsageLimit(entry)
-                : {
-                    ...entry,
-                    queueStatus: "active",
-                    queuePause: undefined,
-                    queuedMessages: resumeQueuedMessages(entry.queuedMessages),
-                  }
+                : resumeQueue(entry)
               : entry,
           ),
         );

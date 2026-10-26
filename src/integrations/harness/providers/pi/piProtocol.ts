@@ -603,16 +603,18 @@ export function toolExecutionEndFromEvent(rec: Record<string, unknown>): {
 }
 
 /**
- * A failed turn is reported inside the assistant message, not as an error
- * frame: `stopReason: "error"` with the reason in `errorMessage`. Empty string
- * means "failed, no reason".
+ * How an assistant message ended. A failed turn is reported inside the
+ * assistant message, not as an error frame: `stopReason: "error"` with the
+ * reason in `errorMessage` (empty string means "failed, no reason"). null is
+ * a message that ended well; undefined is any other frame. omp retries a
+ * failed message within the same turn, so the last one says how it ended.
  */
 export function turnErrorFromEvent(
   rec: Record<string, unknown>,
-): string | null {
-  if (stringField(rec, "type") !== "message_end") return null;
+): string | null | undefined {
+  if (stringField(rec, "type") !== "message_end") return undefined;
   const message = asRecord(rec.message);
-  if (stringField(message, "role") !== "assistant") return null;
+  if (stringField(message, "role") !== "assistant") return undefined;
   if (stringField(message, "stopReason") !== "error") return null;
   return stringField(message, "errorMessage") ?? "";
 }

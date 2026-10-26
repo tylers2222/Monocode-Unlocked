@@ -29,10 +29,15 @@ export type ModelRequest = {
   tools: unknown[];
 };
 
-/** The model's answer: text that ends the turn, or one tool call. */
-export type ModelReply =
-  | { text: string }
-  | { tool: string; arguments: Record<string, unknown> };
+type Answer = { text: string } | { tool: string; arguments: Record<string, unknown> };
+
+/**
+ * The model's answer: text that ends the turn, or one tool call. `stall`
+ * starts a reply and sends nothing more, so omp ends the attempt with
+ * "stream stalled" once `PI_STREAM_IDLE_TIMEOUT_MS` (in `env`) passes and
+ * retries it. `refuse` answers HTTP 400 with that message; omp does not retry.
+ */
+export type ModelReply = Answer | { stall: true } | { refuse: string };
 
 declare global {
   interface Window {
@@ -57,8 +62,11 @@ export const ompHandlers = {
     window.ompKill(sessionId).then(() => null),
 };
 
+const chunk = (choice: object) =>
+  `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 1, model: "offline-model", choices: [{ index: 0, ...choice }] })}\n\n`;
+
 /** One OpenAI-completions stream that carries `reply` and ends it. */
-function sse(reply: ModelReply): string {
+function sse(reply: Answer): string {
   const delta =
     "text" in reply
       ? { role: "assistant", content: reply.text }
@@ -73,8 +81,6 @@ function sse(reply: ModelReply): string {
             },
           ],
         };
-  const chunk = (choice: object) =>
-    `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 1, model: "offline-model", choices: [{ index: 0, ...choice }] })}\n\n`;
   return (
     chunk({ delta, finish_reason: null }) +
     chunk({ delta: {}, finish_reason: "text" in reply ? "stop" : "tool_calls" }) +
@@ -86,9 +92,11 @@ function sse(reply: ModelReply): string {
  * Pipes the app's harness IPC (harness_spawn / harness_write / harness_kill
  * and the harness-stdout / harness-exit events) to a real omp whose only
  * model is a local server answering with `model`. omp runs in `dir` with its
- * login there (spawnRealHarness), with `args` added after the app's own. The
- * processes and the server close with the page. `ready(sessionId)` resolves
- * on the first `ready` frame of the omp the app starts for that session.
+ * login there (spawnRealHarness), with `args` added after the app's own. omp
+ * keeps no session here (`--no-session`), so a chat the app resumes after a
+ * relaunch starts a fresh omp session. The processes and the server close
+ * with the page. `ready(sessionId)` resolves on the first `ready` frame of
+ * the omp the app starts for that session.
  */
 export async function bridgeOmp(
   page: Page,
@@ -111,7 +119,18 @@ export async function bridgeOmp(
     request.on("end", async () => {
       const { messages = [], tools = [] } = JSON.parse(body || "{}") as Partial<ModelRequest>;
       const reply = await model({ messages, tools });
+      if ("refuse" in reply) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: { message: reply.refuse } }));
+        return;
+      }
       response.writeHead(200, { "content-type": "text/event-stream" });
+      if ("stall" in reply) {
+        response.write(
+          chunk({ delta: { role: "assistant", reasoning_content: "Thinking" }, finish_reason: null }),
+        );
+        return;
+      }
       response.end(sse(reply));
     });
   });
@@ -145,13 +164,17 @@ export async function bridgeOmp(
   const spawned: ChildProcess[] = [];
   page.once("close", () => {
     for (const child of spawned) child.kill("SIGKILL");
+    server.closeAllConnections();
     server.close();
   });
   const emit = (event: string, payload: unknown) => {
     if (!page.isClosed()) void app.emit(event, payload).catch(() => undefined);
   };
   await page.exposeFunction("ompSpawn", (sessionId: string, appArgs: string[]) => {
-    const child = spawnRealHarness(OMP, [...appArgs, "--no-session", ...args], {
+    const fresh = appArgs.filter(
+      (arg, index) => arg !== "--resume" && appArgs[index - 1] !== "--resume",
+    );
+    const child = spawnRealHarness(OMP, [...fresh, "--no-session", ...args], {
       cwd: dir,
       ownDir: dir,
       env,

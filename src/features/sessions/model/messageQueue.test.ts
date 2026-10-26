@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { applyHarnessEvent } from "../../../integrations/harness/core/apply";
 import type { MessageId, TurnId } from "../../monos/model/monoMessages";
 import { appendPreparingHandoff } from "./handoff";
 import {
@@ -13,6 +14,7 @@ import {
   failQueuedMessage,
   pauseQueue,
   queuePauseNotice,
+  wakesQueue,
 } from "./messageQueue";
 import { newSession, type QueuedMessage, type Session } from "./session";
 
@@ -287,6 +289,36 @@ describe("queue pause reason", () => {
     expect(
       queuePauseNotice(failQueuedMessage(restarted, "a", "Offline")),
     ).toBeUndefined();
+  });
+});
+
+describe("wakesQueue", () => {
+  it("wakes a Mono's queue that the quit paused, never a project session's", () => {
+    const restarted = chat({
+      queuedMessages: [{ ...queued("a"), pausedBy: "quit" }],
+      queueStatus: "paused",
+    });
+    expect(wakesQueue(restarted, true)).toBe(true);
+    expect(wakesQueue(restarted, false)).toBe(false);
+  });
+
+  it("wakes a Mono after a failed turn, but not one stopped at a usage limit", () => {
+    const [failed, limited] = [
+      "Provider returned 500",
+      "You have hit your usage limit.",
+    ].map((message) =>
+      applyHarnessEvent(
+        { ...chat(), busy: true },
+        { type: "session.error", message },
+      ),
+    );
+    expect(wakesQueue(failed, true)).toBe(true);
+    expect(limited).toMatchObject({
+      busy: false,
+      queueStatus: "paused",
+      queuePause: "error",
+    });
+    expect(wakesQueue(limited, true)).toBe(false);
   });
 });
 
