@@ -194,14 +194,14 @@ function queueItems(host: MonoQueueHost, rows: Targeted<Routed>[]) {
 }
 
 /**
- * Design 5.3: a sender notice enters the chat once, as a queue row that
- * waits for the turn end; it gets its bubble when it is sent. Its request id
- * in the queue or the transcript means it was queued or sent before, so a
- * pump that runs again adds nothing.
+ * Design 5.3 and R9: an app prompt (a sender notice or a reminder) enters
+ * the chat once, as a queue row; it waits for the turn end unless it says
+ * otherwise. Its request id in the queue or the transcript means it was
+ * queued or sent before, so a pump that runs again adds nothing.
  */
 function ensureNotice(
   session: Session,
-  notice: { id: string; text: string },
+  notice: Pick<QueuedMessage, "id" | "text" | "monoReminder" | "waitForIdle">,
 ): Session {
   if (
     session.queuedMessages?.some(
@@ -211,11 +211,10 @@ function ensureNotice(
   )
     return session;
   return enqueueQueuedMessage(session, {
-    id: notice.id,
     appRequestId: notice.id,
-    text: notice.text,
     attachments: [],
     waitForIdle: true,
+    ...notice,
   });
 }
 
@@ -230,11 +229,58 @@ function noticeItem(host: MonoQueueHost, message: Noticed) {
   };
 }
 
+/** Rust `ask_scheduler::Claimed`: the prompt of a reminder this window took. */
+type Claimed = { text: string; wake: boolean };
+
+/**
+ * R9: each reminder that waits for the chat, claimed with the chat's live
+ * state. Rust picks its prompt and its delivery: a wake waits for the turn
+ * end; a reminder for a busy turn that cannot take it stays unclaimed until
+ * the turn end names the chat again. A claimed one is a hidden app prompt
+ * whose id is its outbox key.
+ */
+async function queueReminders(host: MonoQueueHost, sessionId: string) {
+  const keys = await invoke<string[]>("mono_outbox_pending", { sessionId });
+  for (const key of keys) {
+    if (!host.session(sessionId)) continue;
+    const claimed = await invoke<Claimed | null>("mono_outbox_claim", {
+      key,
+      steerable: false,
+    });
+    if (!claimed) continue;
+    host.update(sessionId, (session) =>
+      ensureNotice(session, {
+        id: key,
+        text: claimed.text,
+        monoReminder: true,
+        waitForIdle: claimed.wake,
+      }),
+    );
+  }
+}
+
+/**
+ * R9: the submit options of queue item `item`. The provider taking a
+ * reminder marks its outbox row sent, once.
+ */
+export function reminderSubmit(item: QueuedMessage): {
+  providerTook?: (accepted: boolean) => void;
+} {
+  if (!item.monoReminder) return {};
+  return {
+    providerTook: (accepted) => {
+      if (accepted)
+        void invoke("mono_outbox_sent", { key: item.id }).catch(console.error);
+    },
+  };
+}
+
 /**
  * Design 5.5 rule 6, only in the window that owns the session (PR 4a review
- * m19): queue every row of the session that no item and no slot holds. Then
- * the notice pump of design 5.3: the session is a Mono's chat, and each of
- * that Mono's messages that ended unanswered or dropped gets one notice.
+ * m19): queue every row of the session that no item and no slot holds, and
+ * its reminders (R9). Then the notice pump of design 5.3: the session is a
+ * Mono's chat, and each of that Mono's messages that ended unanswered or
+ * dropped gets one notice.
  */
 export async function reconcile(
   host: MonoQueueHost,
@@ -257,6 +303,7 @@ export async function reconcile(
       ),
     ),
   );
+  await queueReminders(host, sessionId);
   const notices = await invoke<Noticed[]>("mono_messages_pending_notices", {
     sessionId,
   });

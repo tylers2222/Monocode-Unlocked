@@ -19,6 +19,7 @@ import {
   listenForMonoNotices,
   listenForMonoRoutes,
   opensTurn,
+  reminderSubmit,
   removeQueued,
   type MonoMessagingHost,
   type MonoQueueHost,
@@ -9396,7 +9397,7 @@ function Workspace({
                     ({ text, turnId }, providerTook) =>
                       submit({ agentText: text, turnId, providerTook }),
                   )
-              : await submit();
+              : await submit(reminderSubmit(head));
             // A preflight rejection must not repeatedly retry or hide the message.
             if (!accepted && monoForSession(session.id)) {
               const current = sessionsRef.current.find(
