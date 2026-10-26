@@ -7,7 +7,7 @@ use std::sync::MutexGuard;
 use rusqlite::Connection;
 
 use crate::active_clock::{self, ActiveClock, Clock, Reading};
-use crate::mono_messages::{self, SessionId, Targeted};
+use crate::mono_messages::{self, Notices, SessionId, Targeted};
 use crate::session_store::SessionStore;
 
 /// Names a `.backup` copy of a real `monocode.db` under `/tmp` that a World
@@ -204,13 +204,13 @@ impl World {
     }
 
     /// `ms` of awake time pass and one tick runs; its result, for a fault
-    /// a scenario puts on the store's connection.
-    pub(crate) fn try_advance(&mut self, ms: i64) -> rusqlite::Result<()> {
+    /// a scenario puts on the store's connection, or the chats it names.
+    pub(crate) fn try_advance(&mut self, ms: i64) -> rusqlite::Result<Notices> {
         self.clock.run(ms);
         self.try_tick()
     }
 
-    fn try_tick(&mut self) -> rusqlite::Result<()> {
+    fn try_tick(&mut self) -> rusqlite::Result<Notices> {
         let app = self.app.as_mut().expect("the app is not running");
         app.active.tick(&app.store.lock_conn().unwrap())
     }
@@ -324,12 +324,13 @@ impl World {
     /// provider took the turn's text (`sent`) it confirms the openers
     /// (`mono_message_confirm_openers`), then the turn ends (`turn_ended`).
     /// A messaging call bound to the turn also confirms them (`submit`).
-    pub(crate) fn end_turn(&mut self, session: &SessionId, turn: &str, sent: bool) {
+    /// Returns the chats the turn end names.
+    pub(crate) fn end_turn(&mut self, session: &SessionId, turn: &str, sent: bool) -> Notices {
         self.running.remove(session.as_str());
         if sent {
             mono_messages::confirm_openers(&self.conn(), session, turn, self.now()).unwrap();
         }
-        mono_messages::turn_ended(&self.conn(), session, turn, self.now()).unwrap();
+        mono_messages::turn_ended(&self.conn(), session, turn, self.now()).unwrap()
     }
 }
 

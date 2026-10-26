@@ -3,6 +3,8 @@
 
 use std::fmt;
 
+use serde::Serialize;
+
 use crate::mono_gate::{Level, SessionLevel};
 use crate::mono_messages::{MonoId, SessionId};
 use crate::mono_roster::MonoRole;
@@ -185,6 +187,28 @@ pub fn decide_ack(ask: &AskState, caller: &Actor) -> Result<(), AckRefused> {
     match ask.state {
         State::Open => Ok(()),
         State::Acked => Err(AckRefused::AlreadyAcked),
+    }
+}
+
+/// How a reminder reaches its chat (plan R9): into the running turn, as a
+/// new turn, or not yet. `mono_outbox_claim` answers it to the web app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Delivery {
+    Steer,
+    Wake,
+    AfterTurn,
+}
+
+/// Plan R9: an idle chat wakes with a new turn; a busy one takes the
+/// reminder as a steer when its window can steer the running turn now, and
+/// otherwise waits for the turn end. `running` comes from `ControlHost`,
+/// `steerable` from the window that would deliver it.
+pub fn delivery_for(running: bool, steerable: bool) -> Delivery {
+    match (running, steerable) {
+        (false, _) => Delivery::Wake,
+        (true, true) => Delivery::Steer,
+        (true, false) => Delivery::AfterTurn,
     }
 }
 
