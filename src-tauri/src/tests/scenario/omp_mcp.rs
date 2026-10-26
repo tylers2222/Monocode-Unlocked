@@ -9,7 +9,7 @@ use tauri::Manager;
 
 use super::agent_sandbox::{mock_app, script, wait_for};
 
-fn argv(workdir: &Path) -> Vec<String> {
+pub(super) fn argv(workdir: &Path) -> Vec<String> {
     wait_for(&workdir.join("argv"))
         .split_terminator('\0')
         .map(String::from)

@@ -15,6 +15,8 @@ mod completions;
 #[cfg(unix)]
 mod d4_deny;
 #[cfg(unix)]
+mod devin_supervised;
+#[cfg(unix)]
 mod omp_mcp;
 mod s0_baseline;
 mod s1_levels;
