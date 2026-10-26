@@ -268,6 +268,123 @@
     },
     {
       "action": "sessions.start",
+      "caller": "a-chat",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.start",
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "due_minutes": 30,
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Fix the flaky test"
+              },
+              "requestId": "r7-due",
+              "startedSessionId": "app-a-chat-r7-due",
+              "target": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "leadSessionId": null,
+            "outcome": "allowed"
+          }
+        },
+        {
+          "args": {
+            "call": {
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "due_minutes": 30,
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Fix the flaky test"
+              },
+              "requestId": "r7-due",
+              "sessionId": "app-a-chat-r7-due"
+            }
+          },
+          "command": "mono_message_record_start",
+          "reply": {
+            "messageId": "m_aaaaaaaaaaaa",
+            "outcome": "recorded"
+          }
+        }
+      ],
+      "input": {
+        "due_minutes": 30,
+        "harness": "codex",
+        "model": "codex:test",
+        "notifyOnComplete": false,
+        "prompt": "Fix the flaky test"
+      },
+      "name": "R7: a Mono's start sets its ask's due_minutes",
+      "ran": "start",
+      "requestId": "r7-due"
+    },
+    {
+      "action": "sessions.start",
+      "caller": "a-chat",
+      "calls": [
+        {
+          "args": {
+            "call": {
+              "action": "sessions.start",
+              "caller": {
+                "kind": "mono_chat",
+                "monoId": "mono-a",
+                "sessionId": "a-chat",
+                "turnId": "turn-1"
+              },
+              "input": {
+                "due_minutes": 5,
+                "harness": "codex",
+                "model": "codex:test",
+                "notifyOnComplete": false,
+                "prompt": "Fix the flaky test"
+              },
+              "requestId": "r7-due-5",
+              "startedSessionId": "app-a-chat-r7-due-5",
+              "target": null
+            }
+          },
+          "command": "mono_app_action_check",
+          "reply": {
+            "error": {
+              "code": "invalid_input",
+              "hint": "due_minutes must be a whole number of active minutes, 10 to 480. Leave it out for 60."
+            },
+            "outcome": "failed"
+          }
+        }
+      ],
+      "input": {
+        "due_minutes": 5,
+        "harness": "codex",
+        "model": "codex:test",
+        "notifyOnComplete": false,
+        "prompt": "Fix the flaky test"
+      },
+      "name": "R7: a start's due_minutes out of range is refused before the launch",
+      "ran": null,
+      "requestId": "r7-due-5"
+    },
+    {
+      "action": "sessions.start",
       "caller": "worker",
       "calls": [
         {
