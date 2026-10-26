@@ -8,6 +8,9 @@
 #                             claude CLI on PATH against puppet/fake-model.py;
 #                             d1: with D1's srt too. In CI only,
 #                             D4_CLAUDE=<real claude> runs one real model turn
+#   app.sh d2                 D2 database encryption (d2.test.sh): off, on with
+#                             the build's test key, then a wrong key, no key and
+#                             a plaintext database on, each stopping the app
 #   app.sh d1                 D1: the agent sandbox on, off, and on without srt
 #   app.sh r6                 R6: agents ask and ack through MCP in the real app
 #   app.sh r9                 R9: reminders reach an idle and a busy lead once,
@@ -648,6 +651,7 @@ case "${1:-}" in
     log "S0: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
   d4) source "$SCENARIOS/d4.test.sh"; run_d4 "${2:-}" ;;
+  d2) source "$SCENARIOS/d2.test.sh"; run_d2 ;;
   approvals-run) export GIGA_EVAL_SANDBOX=1 GIGA_EVAL_WATCH_NOTIFY=$$; run_approvals "$2" ;;
   approvals)
     APPROVALS_USER_BIN="${APPROVALS_USER_BIN:-$(user_bin)}"
@@ -657,5 +661,5 @@ case "${1:-}" in
     for run in $(seq 1 "${2:-1}"); do "$0" approvals-run "$run" || failed=$((failed + 1)); done
     log "approvals: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
-  *) sed -n '2,20p' "$0"; exit 2 ;;
+  *) sed -n '2,26p' "$0"; exit 2 ;;
 esac

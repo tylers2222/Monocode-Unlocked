@@ -17,6 +17,7 @@ mod codex_mono_store;
 mod control;
 pub mod control_cli;
 mod cursor_store;
+mod db_key;
 mod devin_config;
 mod devin_usage;
 mod external_editor;
