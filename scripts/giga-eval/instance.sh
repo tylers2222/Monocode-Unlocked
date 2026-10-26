@@ -3,8 +3,9 @@
 #
 #   instance.sh build <checkout> [label]   copy the checkout's working tree, build a release .app
 #                                          (Linux: a release binary) with cargo features
-#                                          $GIGA_EVAL_FEATURES (default fake-clock); a checkout
-#                                          without .git (the E2E image) needs $GIGA_EVAL_REV
+#                                          $GIGA_EVAL_FEATURES (default fake-clock), and the
+#                                          tauri config in $GIGA_EVAL_CONFIG merged over its own;
+#                                          a checkout without .git (the E2E image) needs $GIGA_EVAL_REV
 #   instance.sh home [--fresh]             create the temp HOME (symlinks to real logins, no copies;
 #                                          none on Linux)
 #   instance.sh start [--fresh-home]       launch the last build under the temp HOME
@@ -95,7 +96,9 @@ cmd_build() {
     "$checkout/" "$src/"
   echo "$rev" >"$src/.giga-eval-rev"
   local override="$src/tauri.gigaeval.json"
-  printf '%s\n' "{\"productName\":\"$EVAL_PRODUCT\",\"identifier\":\"$EVAL_ID\",\"bundle\":{\"createUpdaterArtifacts\":false,\"macOS\":{\"signingIdentity\":\"-\",\"hardenedRuntime\":false}}}" >"$override"
+  jq -n --arg product "$EVAL_PRODUCT" --arg id "$EVAL_ID" --argjson extra "${GIGA_EVAL_CONFIG:-null}" \
+    '{productName: $product, identifier: $id,
+      bundle: {createUpdaterArtifacts: false, macOS: {signingIdentity: "-", hardenedRuntime: false}}} * ($extra // {})' >"$override"
   local lock_hash; lock_hash="$(shasum -a 256 "$src/package-lock.json" | cut -c1-16)"
   if [[ ! -f "$src/node_modules/.giga-eval-lock" || "$(cat "$src/node_modules/.giga-eval-lock")" != "$lock_hash" ]]; then
     log "npm ci ($logf)"

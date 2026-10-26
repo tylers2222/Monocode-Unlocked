@@ -28,6 +28,7 @@ function batchesOver(sessions: Map<string, Session> = new Map()) {
     ready,
     (run, ms) => setTimeout(run, ms),
     (id) => sessions.get(id),
+    { hold() {}, dismiss() {} },
   );
   const reported = () =>
     ready.mock.calls.map(([, message]) =>
@@ -183,25 +184,116 @@ describe("Mono completions across a relaunch", () => {
     expect(batches.undelivered()).toEqual(saved);
   });
 
-  it("reads kept results from a saved snapshot and drops malformed ones", () => {
+  it("reads the claimed results and drops malformed ones", () => {
     const good: SavedMonoCompletion = {
       origin: { monoId: "mono", turn: 1 },
       request: request("a"),
     };
     expect(
-      savedMonoCompletions({
-        tabs: [],
-        monoCompletions: [
-          good,
-          { origin: { monoId: "mono" }, request: request("no-turn") },
-          { origin: { monoId: "mono", turn: 1 }, request: { requestId: "x" } },
-          { ...good, result: { sessionId: "a" } },
-          null,
-        ],
-      }),
+      savedMonoCompletions([
+        good,
+        { origin: { monoId: "mono" }, request: request("no-turn") },
+        { origin: { monoId: "mono", turn: 1 }, request: { requestId: "x" } },
+        { ...good, result: { sessionId: "a" } },
+        null,
+      ]),
     ).toEqual([good]);
-    expect(savedMonoCompletions({ tabs: [] })).toEqual([]);
     expect(savedMonoCompletions(null)).toEqual([]);
-    expect(savedMonoCompletions({ monoCompletions: "x" })).toEqual([]);
+    expect(savedMonoCompletions({ monoCompletions: [good] })).toEqual([]);
+  });
+
+  // ADE-89, for gate/mutation only (one-off unit-test exception, 2026-10-24):
+  // the store rows a kill leaves are what the window owes, and each released
+  // result names its notice, which the Mono chat's save settles in Rust.
+  describe("the store rows a kill leaves", () => {
+    const origin = { monoId: "mono", turn: 1 };
+    function batchesWithStore(
+      ready: ConstructorParameters<typeof MonoSessionCompletionBatches>[0],
+    ) {
+      const store = { hold: vi.fn(), dismiss: vi.fn() };
+      const batches = new MonoSessionCompletionBatches(
+        ready,
+        (run, ms) => setTimeout(run, ms),
+        () => undefined,
+        store,
+      );
+      return { batches, store };
+    }
+    const owed = (id: string, text: string, notice: string) => ({
+      origin,
+      request: request(id, `s-${id}`),
+      result: expect.objectContaining({ sessionId: `s-${id}`, result: text }),
+      notice,
+    });
+
+    it("hold each result in the notice named by its group's first request id before it is queued", async () => {
+      let queued!: () => void;
+      let heldAtReady: unknown;
+      const ready = vi.fn<
+        ConstructorParameters<typeof MonoSessionCompletionBatches>[0]
+      >(() => {
+        heldAtReady = store.hold.mock.lastCall;
+        return new Promise<void>((resolve) => (queued = resolve));
+      });
+      const { batches, store } = batchesWithStore(ready);
+      const b = batches.watch(origin, request("b", "s-b"));
+      const a = batches.watch(origin, request("a", "s-a"));
+      expect(store.hold).toHaveBeenLastCalledWith([
+        { origin, request: request("b", "s-b") },
+        { origin, request: request("a", "s-a") },
+      ]);
+      b(end("B"));
+      a(end("A"));
+      batches.closeInactive(() => false);
+      const noticed = [
+        owed("b", "B", "mono-completion-batch-a"),
+        owed("a", "A", "mono-completion-batch-a"),
+      ];
+      expect(heldAtReady).toEqual([noticed]);
+      expect(ready.mock.calls[0][1].id).toBe("mono-completion-batch-a");
+      queued();
+      await vi.runAllTimersAsync();
+      batches.watch(origin, request("c", "s-c"));
+      expect(store.hold).toHaveBeenLastCalledWith([
+        { origin, request: request("c", "s-c") },
+      ]);
+    });
+
+    it("a lone result is in the notice named by its own id", () => {
+      const ready = vi.fn();
+      const { batches } = batchesWithStore(ready);
+      batches.watch(origin, request("c", "s-c"))(end("C"));
+      batches.closeInactive(() => false);
+      expect(ready.mock.calls[0][1].id).toBe("mono-completion-c");
+    });
+
+    it("a render that changes nothing owed writes nothing", () => {
+      const { batches, store } = batchesWithStore(vi.fn());
+      batches.watch(origin, request("c", "s-c"));
+      for (let render = 0; render < 3; render++)
+        batches.closeInactive(() => true);
+      expect(store.hold).toHaveBeenCalledOnce();
+    });
+
+    // Review r2 M1: the store deletes a stopped session's rows, also once its
+    // notice is queued and the window forgot it, and no later hold writes
+    // them back.
+    it("a session the Mono stops keeps no row, before or after its notice is queued", async () => {
+      let queued!: () => void;
+      const { batches, store } = batchesWithStore(
+        () => new Promise<void>((resolve) => (queued = resolve)),
+      );
+      batches.watch(origin, request("a", "s-a"))(end("A"));
+      batches.watch(origin, request("b", "s-b"))(end("B"));
+      batches.closeInactive(() => false);
+      const held = store.hold.mock.calls.length;
+      batches.dismissSession("mono", "s-a");
+      expect(store.dismiss).toHaveBeenLastCalledWith("mono", "s-a");
+      queued();
+      await vi.runAllTimersAsync();
+      batches.dismissSession("mono", "s-b");
+      expect(store.dismiss).toHaveBeenLastCalledWith("mono", "s-b");
+      expect(store.hold.mock.calls.slice(held).flat(2)).toEqual([]);
+    });
   });
 });
