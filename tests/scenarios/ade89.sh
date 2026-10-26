@@ -61,6 +61,9 @@ reports() {
   echo $((agent + queued))
 }
 
+# started <n>: the puppet logged n sessions.start calls.
+started() { (($(jq -s '[.[] | select(.action == "sessions.start")] | length' "$PUPPET/log.jsonl") == $1)); }
+
 # each_once <mono chat> <when> <work session...>: each session's result is a
 # row or a report to the Mono, never both and never twice.
 each_once() {
@@ -79,7 +82,7 @@ each_once() {
 # `two` runs the build-two instance: main and window-0 boot together at every
 # launch and both claim, and the Mono owes two results, each reported once.
 run_ade89() {
-  local mode="$1" run="$2" owed=1 giga_chat mono_chat work works early _
+  local mode="$1" run="$2" owed=1 mono_chat work works early _
   FAILED=0
   log "ADE-89 run $run, exit by $mode"
   [[ "$mode" != two || "$(cat "$EVAL_OUT/instance.app")" == *scenario-two* ]] || die "mode two needs app.sh build-two"
@@ -88,13 +91,17 @@ run_ade89() {
   fresh_pair ade89
   ade89_script "$owed"
   request_habit ade89-giga "Start the work" "ADE89-HABIT: ask ADE89 Mono to start the work."
-  giga_chat="$(chat_of ade89-giga)"; mono_chat="$(chat_of ade89-mono)"
+  mono_chat="$(chat_of ade89-mono)"
   mark_after_the_notice "$mono_chat"
   "$INSTANCE" start
-  wait_until 90 "the Mono's sessions run, alone in flight" \
-    holds "SELECT count(*) = $owed AND sum(session_id IN ('$giga_chat', '$mono_chat')) = 0 FROM in_flight_sessions"
-  work="$(q "SELECT session_id FROM in_flight_sessions ORDER BY session_id")"
-  works="$(q "SELECT group_concat(quote(session_id)) FROM in_flight_sessions")"
+  # The Mono's sessions are the ids its sessions.start calls answered. The
+  # Giga's habit run is in flight too, alone before the Mono's turn starts,
+  # so in_flight_sessions cannot name them (ADE-124).
+  wait_until 90 "the Mono starts its sessions" started "$owed"
+  work="$(jq -rs '[.[] | select(.action == "sessions.start") | (.result.result // .result).id] | sort | .[]' "$PUPPET/log.jsonl")"
+  works="$(printf "'%s'," $work)"; works="${works%,}"
+  wait_until 30 "the Mono's sessions run, alone in flight" \
+    holds "SELECT count(*) = $owed AND sum(session_id IN ($works)) = $owed FROM in_flight_sessions"
   wait_until 30 "the Mono's turn ends" holds "SELECT count(*) = 0 FROM in_flight_sessions WHERE session_id = '$mono_chat'"
   wait_until 30 "each waiting result is a row" holds "SELECT count(*) = $owed FROM mono_completions WHERE request_id IN ($works)"
   echo "ade89 ($mode) run $run readings:"
