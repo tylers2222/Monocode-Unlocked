@@ -399,7 +399,8 @@ for (const mutant of [undefined, ...MUTANTS]) test.describe(mutant?.name ?? "on 
     await expect.poll(() => sent(prompts, db.afterRelaunch), OMP).toBe(true);
     expect(await send(app, page, later)).toMatchObject({ delivery: "queue" });
     await openMono(page, FORK);
-    await page.getByRole("button", { name: "Stop", exact: true }).click();
+    // A Mono's composer has no Stop button; Escape stops its running turn.
+    await page.getByPlaceholder(`Message ${FORK.data.name}`).press("Escape");
     await openMono(page, GENERAL);
     expect(
       await send(app, page, last),
@@ -434,7 +435,8 @@ for (const mutant of [undefined, ...MUTANTS]) test.describe(mutant?.name ?? "on 
       [later, last, again].filter((queued) => sent(prompts, queued)),
       "nothing the user paused is sent before Resume",
     ).toEqual([]);
-    await page.getByRole("button", { name: "Resume", exact: true }).click();
+    // Every waiting bubble has a Resume, and each resumes the whole queue.
+    await page.getByRole("button", { name: "Resume", exact: true }).first().click();
     await expect
       .poll(() => [later, last, again].every((queued) => sent(prompts, queued)), OMP)
       .toBe(true);
@@ -532,7 +534,7 @@ for (const mutant of [undefined, ...MUTANTS]) test.describe(mutant?.name ?? "on 
     ]);
 
     await openMono(page, FORK);
-    await page.getByRole("button", { name: "Resume", exact: true }).click();
+    await page.getByRole("button", { name: "Resume", exact: true }).first().click();
     await expect
       .poll(() => forkState(app, page), OMP)
       .toMatchObject({ busy: false, queued: 1, queuePaused: true });
@@ -544,7 +546,7 @@ for (const mutant of [undefined, ...MUTANTS]) test.describe(mutant?.name ?? "on 
     expect(prompts.map(which), "Resume sends one more turn").toEqual([0, 1, 2, 3, 4]);
 
     await openMono(page, FORK);
-    await page.getByRole("button", { name: "Resume", exact: true }).click();
+    await page.getByRole("button", { name: "Resume", exact: true }).first().click();
     await expect
       .poll(() => forkState(app, page), OMP)
       .toMatchObject({ busy: false, queued: 0, queuePaused: false });
