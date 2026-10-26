@@ -444,9 +444,6 @@ export const FIELDS = new Map<string, readonly string[]>([
   ],
   ["messages.ask", ["message", "send_to", "due_minutes"]],
   ["messages.ack", ["ask_id", "message"]],
-  ["messages.question", ["ask_id", "message"]],
-  ["messages.answer", ["ask_id", "seq", "message"]],
-  ["messages.update", ["ask_id", "message"]],
   ["messages.reply", ["message", "wanting_reply", "to"]],
   ["messages.get", ["handle"]],
   ["milestones.list", ["project"]],
@@ -1761,14 +1758,10 @@ export async function handleAgentApp(
         requestId,
         checked(() => parseSendInput(input)),
       );
-    // FIELDS checked the names; Rust parses the values of a call on an
-    // ask's key and names the bad field in its invalid_input hint.
+    // FIELDS checked the names; Rust parses the values of an ask or ack and
+    // names the bad field in its invalid_input hint.
     if (action === "messages.ask") return messages.ask(requestId, input);
     if (action === "messages.ack") return messages.ack(requestId, input);
-    if (action === "messages.question")
-      return messages.question(requestId, input);
-    if (action === "messages.answer") return messages.answer(requestId, input);
-    if (action === "messages.update") return messages.update(requestId, input);
     if (action === "messages.reply")
       return messages.reply(
         requestId,
