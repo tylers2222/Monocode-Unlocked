@@ -10,7 +10,7 @@
 use std::io::{ErrorKind, Read};
 use std::path::Path;
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
 const ON_MARKER: &str = "db-encryption-on";
 const PLAIN_HEADER: &[u8; 16] = b"SQLite format 3\0";
@@ -81,7 +81,17 @@ pub(crate) fn key_for(db: &Path) -> Result<Option<DbKey>, String> {
     if !on {
         return Ok(None);
     }
-    require_sqlcipher()?;
+    // Plain SQLite takes `PRAGMA key` and writes plaintext anyway, so on stops
+    // unless the linked library is SQLCipher (the macOS build).
+    let cipher: Option<String> = Connection::open_in_memory()
+        .and_then(|conn| {
+            conn.query_row("PRAGMA cipher_version", [], |row| row.get(0))
+                .optional()
+        })
+        .map_err(|e| e.to_string())?;
+    if cipher.is_none() {
+        return Err(format!("Database encryption needs SQLCipher, which only the macOS build has. Remove {ON_MARKER} from the app data folder to open the database."));
+    }
     match header(db)? {
         Header::Plain => Err(format!(
             "Database encryption is on, but {} is a plaintext database, and moving it over is not built yet (ADE-43). Remove {ON_MARKER} from the app data folder to open it.",
@@ -95,13 +105,17 @@ pub(crate) fn key_for(db: &Path) -> Result<Option<DbKey>, String> {
                 Ok(Some(key))
             }
         },
-        Header::Encrypted => stored_key(db)?.map(Some).ok_or_else(|| {
-            format!(
-                "Database encryption: {} is encrypted, but its key is not in {}. The app never makes a new key for a database that exists.",
-                db.display(),
-                store::NAME
-            )
-        }),
+        Header::Encrypted => {
+            let key = stored_key(db)?.ok_or_else(|| {
+                format!(
+                    "Database encryption: {} is encrypted, but its key is not in {}. The app never makes a new key for a database that exists.",
+                    db.display(),
+                    store::NAME
+                )
+            })?;
+            prove(db, &key)?;
+            Ok(Some(key))
+        }
     }
 }
 
@@ -109,31 +123,26 @@ fn stored_key(db: &Path) -> Result<Option<DbKey>, String> {
     store::read(db)?.map(DbKey::parse).transpose()
 }
 
-/// Plain SQLite takes `PRAGMA key` and writes plaintext anyway, so on stops
-/// unless the linked library is SQLCipher (the macOS build).
-fn require_sqlcipher() -> Result<(), String> {
-    let version: Option<String> = Connection::open_in_memory()
-        .and_then(|conn| {
-            conn.query_row("PRAGMA cipher_version", [], |row| row.get(0))
-                .optional()
-        })
-        .map_err(|e| e.to_string())?;
-    if version.is_some() {
-        Ok(())
-    } else {
-        Err(format!("Database encryption needs SQLCipher, which only the macOS build has. Remove {ON_MARKER} from the app data folder to open the database."))
-    }
-}
-
-/// Opens `db`, keyed when `key` is set; a key that does not open it is an
-/// error, never a plaintext connection.
-pub(crate) fn connect(db: &Path, key: Option<&DbKey>) -> Result<Connection, String> {
-    let conn = Connection::open(db).map_err(|e| e.to_string())?;
-    let Some(DbKey(hex)) = key else {
-        return Ok(conn);
-    };
-    conn.execute_batch(&format!("PRAGMA key = \"x'{hex}'\";"))
-        .map_err(|e| format!("Database encryption: {e}"))?;
+/// Checks that `key` opens the existing file `db` on a read-only, immutable
+/// connection, which reads only the main file: it never opens `-wal` or
+/// `-shm` and never checkpoints, so a wrong key leaves all three files as they
+/// were. A read-write connection would open a leftover `-wal` and, on close,
+/// checkpoint it into `db` and delete it.
+fn prove(db: &Path, key: &DbKey) -> Result<(), String> {
+    let uri = format!(
+        "file:{}?mode=ro&immutable=1",
+        db.display()
+            .to_string()
+            .replace('%', "%25")
+            .replace('?', "%3f")
+            .replace('#', "%23")
+    );
+    let conn = Connection::open_with_flags(
+        uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(|e| format!("Database encryption: {}: {e}", db.display()))?;
+    use_key(&conn, key)?;
     conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
         .map_err(|e| {
             format!(
@@ -141,7 +150,21 @@ pub(crate) fn connect(db: &Path, key: Option<&DbKey>) -> Result<Connection, Stri
                 store::NAME,
                 db.display()
             )
-        })?;
+        })
+}
+
+fn use_key(conn: &Connection, DbKey(hex): &DbKey) -> Result<(), String> {
+    conn.execute_batch(&format!("PRAGMA key = \"x'{hex}'\";"))
+        .map_err(|e| format!("Database encryption: {e}"))
+}
+
+/// Opens `db`, keyed when `key` is set. `key_for` has already proved the key
+/// on an existing file, so a wrong key never reaches a read-write connection.
+pub(crate) fn connect(db: &Path, key: Option<&DbKey>) -> Result<Connection, String> {
+    let conn = Connection::open(db).map_err(|e| e.to_string())?;
+    if let Some(key) = key {
+        use_key(&conn, key)?;
+    }
     Ok(conn)
 }
 
@@ -159,8 +182,14 @@ pub(crate) mod keychain {
             .and_then(Path::file_name)
             .and_then(|name| name.to_str())
             .ok_or("Database encryption: the data folder has no name")?;
-        keyring::Entry::new(SERVICE, account)
-            .map_err(|e| format!("Database encryption: {NAME}: {e}"))
+        // Linux CI has no Secret Service, so Linux test builds keep the item in
+        // the kernel keyring and gate/mutation still runs `read` and `write`.
+        #[cfg(all(test, target_os = "linux"))]
+        let entry = keyring::keyutils::KeyutilsCredential::new_with_target(None, SERVICE, account)
+            .map(|credential| keyring::Entry::new_with_credential(Box::new(credential)));
+        #[cfg(not(all(test, target_os = "linux")))]
+        let entry = keyring::Entry::new(SERVICE, account);
+        entry.map_err(|e| format!("Database encryption: {NAME}: {e}"))
     }
 
     pub(crate) fn read(db: &Path) -> Result<Option<String>, String> {

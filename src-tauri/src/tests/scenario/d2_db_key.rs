@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
+use sha2::Digest;
 
 use crate::session_store::SessionStore;
 
@@ -62,6 +63,37 @@ fn key_file(data: &Path) -> PathBuf {
     data.join("test-db-key")
 }
 
+/// Size and SHA-256 of `monocode.db`, its `-wal` and its `-shm`.
+fn disk(db: &Path) -> [String; 3] {
+    ["", "-wal", "-shm"].map(
+        |suffix| match std::fs::read(format!("{}{suffix}", db.display())) {
+            Ok(bytes) => format!("{} bytes {:x}", bytes.len(), sha2::Sha256::digest(&bytes)),
+            Err(_) => "absent".into(),
+        },
+    )
+}
+
+/// An encrypted data folder as a killed app leaves it: the files are copied
+/// while the store is open, so the last commit is only in `-wal`.
+fn crash_image() -> PathBuf {
+    let live = data_folder();
+    turn_on(&live);
+    let store = open(&live.join("monocode.db")).unwrap();
+    add_session(&store, "crash-chat");
+    let image = data_folder();
+    for name in [
+        "db-encryption-on",
+        "test-db-key",
+        "monocode.db",
+        "monocode.db-wal",
+        "monocode.db-shm",
+    ] {
+        std::fs::copy(live.join(name), image.join(name)).unwrap();
+    }
+    drop(store);
+    image
+}
+
 #[test]
 fn d2_the_marker_decides_and_on_never_opens_without_its_key() {
     let off = data_folder();
@@ -86,11 +118,13 @@ fn d2_the_marker_decides_and_on_never_opens_without_its_key() {
     );
     assert!(!key_file(&off).exists(), "off: a reopen makes no key");
 
-    if cfg!(target_os = "macos") {
-        on_encrypts_and_fails_closed();
-        on_refuses_a_plaintext_database(&off, &db);
-    } else {
+    if cfg!(windows) {
         on_refuses_without_sqlcipher();
+    } else {
+        on_encrypts_and_fails_closed();
+        on_encrypts_an_empty_file();
+        on_refuses_a_plaintext_database(&off, &db);
+        a_refused_open_leaves_the_files_as_they_were();
     }
 }
 
@@ -175,6 +209,8 @@ fn on_encrypts_and_fails_closed() {
         "off on an encrypted database: nothing is written"
     );
 
+    on_refuses_a_malformed_key(&data, &db, &bytes);
+
     let flipped = data_folder();
     turn_on(&flipped);
     std::fs::write(key_file(&flipped), &key).unwrap();
@@ -187,6 +223,52 @@ fn on_encrypts_and_fails_closed() {
     assert!(
         error.contains("does not open"),
         "one flipped byte: the page HMAC fails: {error}"
+    );
+}
+
+fn on_refuses_a_malformed_key(data: &Path, db: &Path, bytes: &[u8]) {
+    turn_on(data);
+    for (bad, case) in [
+        ("0".repeat(63), "63 hex digits"),
+        (format!("g{}", "0".repeat(63)), "a digit that is not hex"),
+    ] {
+        std::fs::write(key_file(data), &bad).unwrap();
+        let error = open(db).err().expect("a malformed key: the open fails");
+        assert!(
+            error.contains("is not 64 hex digits"),
+            "a malformed key ({case}): {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(key_file(data)).unwrap(),
+            bad,
+            "a malformed key ({case}): the key is not replaced"
+        );
+        assert_eq!(
+            std::fs::read(db).unwrap(),
+            bytes,
+            "a malformed key ({case}): nothing is written"
+        );
+    }
+}
+
+fn on_encrypts_an_empty_file() {
+    let data = data_folder();
+    let db = data.join("monocode.db");
+    turn_on(&data);
+    std::fs::write(&db, "").unwrap();
+    let store = open(&db).expect("an empty file: on makes a new database");
+    add_session(&store, "empty-chat");
+    drop(store);
+    assert_eq!(
+        std::fs::read_to_string(key_file(&data)).unwrap().len(),
+        64,
+        "an empty file: it gets a new key"
+    );
+    assert_ne!(header(&db), PLAIN_HEADER, "an empty file: it is encrypted");
+    assert_eq!(
+        sessions(&open(&db).unwrap()),
+        ["empty-chat"],
+        "an empty file: the app reads it back with the key"
     );
 }
 
@@ -223,10 +305,84 @@ fn on_refuses_without_sqlcipher() {
     );
 }
 
+/// A refused open leaves `monocode.db`, `-wal` and `-shm` byte-identical, 20
+/// times of 20, from the state a killed app leaves and from a clean close.
+/// Off over an encrypted crash image leaves `monocode.db` and `-wal` as they
+/// were; its read-write connection rebuilds the `-shm` index from `-wal`, as
+/// SQLite does on every first open, and off never reads the file beforehand.
+fn a_refused_open_leaves_the_files_as_they_were() {
+    let wrong = format!("{:064x}", 1);
+    for run in 1..=20 {
+        let image = crash_image();
+        let db = image.join("monocode.db");
+        let key = std::fs::read_to_string(key_file(&image)).unwrap();
+        let before = disk(&db);
+        assert_ne!(before[1], "absent", "run {run}: the crash image has a -wal");
+
+        std::fs::write(key_file(&image), &wrong).unwrap();
+        let error = open(&db).err().expect("a wrong key: the open fails");
+        assert!(error.contains("does not open"), "run {run}: {error}");
+        assert_eq!(
+            disk(&db),
+            before,
+            "run {run}: a wrong key leaves monocode.db, -wal and -shm as they were"
+        );
+
+        std::fs::remove_file(image.join("db-encryption-on")).unwrap();
+        assert!(
+            open(&db).is_err(),
+            "run {run}: off over an encrypted crash image fails"
+        );
+        let after = disk(&db);
+        assert_eq!(
+            after[..2],
+            before[..2],
+            "run {run}: off over an encrypted crash image leaves monocode.db and -wal as they were"
+        );
+        assert_ne!(
+            after[2], "absent",
+            "run {run}: off over an encrypted crash image deletes no -shm"
+        );
+
+        turn_on(&image);
+        std::fs::write(key_file(&image), &key).unwrap();
+        assert_eq!(
+            sessions(&open(&db).unwrap()),
+            ["crash-chat"],
+            "run {run}: the right key reads the commit that was only in -wal"
+        );
+    }
+
+    let data = data_folder();
+    let db = data.join("monocode.db");
+    turn_on(&data);
+    drop(open(&db).unwrap());
+    let before = disk(&db);
+    assert_eq!(
+        before[1..],
+        ["absent", "absent"],
+        "a clean close leaves no -wal or -shm"
+    );
+    std::fs::write(key_file(&data), &wrong).unwrap();
+    for run in 1..=20 {
+        assert!(open(&db).is_err(), "clean run {run}: a wrong key fails");
+        assert_eq!(
+            disk(&db),
+            before,
+            "clean run {run}: monocode.db is unchanged and no -wal or -shm appears"
+        );
+    }
+}
+
 /// The keychain store on its own, with a test item it deletes again: the item
-/// a test build never writes, since it keeps the key in `test-db-key`.
+/// a test build never writes, since it keeps the key in `test-db-key`. Linux
+/// test builds use the kernel keyring (db_key.rs), so it runs there by default;
+/// the macOS CI job runs it on the runner's login keychain with `--ignored`.
 #[test]
-#[ignore = "writes a test item to the login keychain, then deletes it"]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "writes a test item to the login keychain, then deletes it"
+)]
 fn the_login_keychain_keeps_a_key() {
     use crate::db_key::keychain;
 

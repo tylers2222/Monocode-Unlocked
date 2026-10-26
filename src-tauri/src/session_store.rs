@@ -49,8 +49,16 @@ impl SessionStore {
         }
         let key = crate::db_key::key_for(&path)?;
         let conn = crate::db_key::connect(&path, key.as_ref())?;
-        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
+        if let Err(e) = conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;") {
+            // A file this connection cannot read (an encrypted database with
+            // encryption off) must not get a leftover -wal checkpointed into it.
+            conn.set_db_config(
+                rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+                true,
+            )
             .map_err(|e| e.to_string())?;
+            return Err(e.to_string());
+        }
         migrate(&conn).map_err(|e| e.to_string())?;
         crate::worktrees::reconcile_removals(&conn)?;
         crate::mono_messages::startup(&conn, now).map_err(|e| e.to_string())?;

@@ -60,6 +60,12 @@ regex = "1"
 [target.'cfg(not(windows))'.dev-dependencies]
 tauri = { version = "2", features = ["test"] }
 
+# Linux test builds link SQLCipher on the system OpenSSL (libssl-dev, from
+# install-linux-deps-debian.sh), so gate/mutation, which runs on Linux, runs
+# the encrypted path of db_key.rs. Linux app builds keep plain `bundled`.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher"], default-features = false }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

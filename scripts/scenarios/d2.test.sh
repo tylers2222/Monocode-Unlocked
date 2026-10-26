@@ -13,18 +13,28 @@ d2_kind() {
   elif [[ "$(head -c 15 "$DB")" == "SQLite format 3" ]]; then echo plaintext
   else echo encrypted; fi
 }
-d2_sum() { shasum -a 256 "$DB" | cut -d' ' -f1; }
+# Size and SHA-256 of monocode.db, -wal and -shm, or "absent" for each.
+d2_files() {
+  local file
+  for file in "$DB" "$DB-wal" "$DB-shm"; do
+    if [[ -e "$file" ]]; then
+      printf '%s:%s:%s ' "${file##*/}" "$(wc -c <"$file" | tr -d ' ')" "$(shasum -a 256 "$file" | cut -d' ' -f1)"
+    else
+      printf '%s:absent ' "${file##*/}"
+    fi
+  done
+}
 d2_key() { if [[ -e "$D2_KEY" ]]; then echo made; else echo none; fi; }
 d2_up() { sleep 2; if [[ -n "$(target_pid instance)" ]]; then echo running; else echo stopped; fi; }
 
 # d2_refused <case> <text the log must hold>: a start that stops on the
-# database error and leaves the file as it was.
+# database error and leaves monocode.db, -wal and -shm as they were.
 d2_refused() {
-  local before; before="$(d2_sum)"
+  local before; before="$(d2_files)"
   "$INSTANCE" start || true
   expect "$1: the app stops" "$(d2_up)" stopped
   expect "$1: the log names the cause" "$(grep -q -- "$2" "$EVAL_OUT/instance.log" && echo yes || echo no)" yes
-  expect "$1: the database is unchanged" "$(d2_sum)" "$before"
+  expect "$1: monocode.db, -wal and -shm are unchanged" "$(d2_files)" "$before"
   "$INSTANCE" stop
 }
 
@@ -51,6 +61,9 @@ run_d2() {
   "$INSTANCE" start
   expect "on: the app opens it again with the key" "$(d2_up)" running
   "$INSTANCE" stop
+  # instance.sh stop sends SIGTERM: the app does not close the database, so
+  # its last commit stays in -wal, the state a wrong key must not touch.
+  expect "on: SIGTERM leaves a -wal" "$([[ -s "$DB-wal" ]] && echo yes || echo no)" yes
   printf '%064x' 1 >"$D2_KEY"
   d2_refused "wrong key" "does not open"
   rm "$D2_KEY"
