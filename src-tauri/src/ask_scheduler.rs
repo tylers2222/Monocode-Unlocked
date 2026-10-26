@@ -120,13 +120,33 @@ pub(crate) fn startup(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// A reminder a window may deliver (R9), as `mono_outbox_pending` lists it.
+/// What a window delivers for a reminder it claimed (R9): the hidden prompt
+/// the agent reads, and whether it waits for the turn end as a new turn
+/// (`wake`) or joins the running turn as a steer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Reminder {
-    pub key: String,
-    pub ask_id: Option<String>,
-    pub stage: String,
+pub struct Claimed {
+    pub text: String,
+    pub wake: bool,
+}
+
+/// The prompt of reminder `stage` of ask `ask_id`; `None` for a stage this
+/// build does not send, which waits for the build that sends it.
+fn reminder_text(ask_id: &str, stage: &str) -> Option<String> {
+    let body = match stage {
+        "t5" => format!(
+            "Ask {ask_id} is due in 5 active minutes. When its work is done, ack it with this ask_id."
+        ),
+        _ => return None,
+    };
+    Some(format!(
+        "<mono_reminder ask_id=\"{ask_id}\" stage=\"{stage}\">\n{body}\n</mono_reminder>"
+    ))
+}
+
+/// The text of an outbox row: only a row with an ask, at a stage this
+/// build sends, has one.
+fn row_text(ask_id: Option<String>, stage: &str) -> Option<String> {
+    reminder_text(&ask_id?, stage)
 }
 
 /// The chat a reminder to `recipient` reaches: a lead's or worker's
@@ -146,26 +166,31 @@ fn name_chat(conn: &Connection, notices: &mut Notices, recipient: &str) -> rusql
     Ok(())
 }
 
-/// The reminders for chat `session` that wait and no window holds, in the
-/// order they were enqueued: its own and, when it is a Mono's current chat,
-/// that Mono's.
-pub(crate) fn pending(conn: &Connection, session: &SessionId) -> rusqlite::Result<Vec<Reminder>> {
+/// The keys of the reminders for chat `session` that this build sends, that
+/// wait and that no window holds, in the order they were enqueued: its own
+/// and, when it is a Mono's current chat, that Mono's.
+pub(crate) fn pending(conn: &Connection, session: &SessionId) -> rusqlite::Result<Vec<String>> {
     let own = Actor::Session(session.clone()).to_string();
     let mono = mono_messages::mono_of_chat(conn, session)?
         .map_or_else(|| own.clone(), |mono| Actor::Mono(mono).to_string());
-    conn.prepare(
-        "SELECT key, ask_id, stage FROM mono_outbox
-          WHERE recipient IN (?1, ?2) AND sent_at IS NULL AND claimed_by IS NULL
-          ORDER BY at_active_ms, key",
-    )?
-    .query_map(params![own, mono], |row| {
-        Ok(Reminder {
-            key: row.get(0)?,
-            ask_id: row.get(1)?,
-            stage: row.get(2)?,
-        })
-    })?
-    .collect()
+    let rows = conn
+        .prepare(
+            "SELECT key, ask_id, stage FROM mono_outbox
+              WHERE recipient IN (?1, ?2) AND sent_at IS NULL AND claimed_by IS NULL
+              ORDER BY at_active_ms, key",
+        )?
+        .query_map(params![own, mono], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(key, ask_id, stage)| row_text(ask_id, &stage).map(|_| key))
+        .collect())
 }
 
 /// Whether a reminder waits for chat `session`.
@@ -174,39 +199,44 @@ pub(crate) fn waits(conn: &Connection, session: &SessionId) -> rusqlite::Result<
 }
 
 /// Plan R9, one compare-and-set: window `window` takes reminder `key` with
-/// the delivery `delivery_for` picks, unless a window holds it or it was
-/// sent (`None`). `running` is each session's turn as `ControlHost` held it
-/// before the store lock (design 5.3 lock order). An `AfterTurn` reminder
-/// stays unclaimed: the turn end names its chat again.
+/// the delivery `delivery_for` picks and gets its prompt, unless a window
+/// holds it, it was sent, or this build does not send it (`None`).
+/// `running` is each session's turn as `ControlHost` held it before the
+/// store lock (design 5.3 lock order). An `AfterTurn` reminder stays
+/// unclaimed (`None`): the turn end names its chat again.
 pub(crate) fn claim(
     conn: &Connection,
     key: &str,
     window: &str,
     running: &HashMap<String, String>,
     steerable: bool,
-) -> rusqlite::Result<Option<Delivery>> {
-    let recipient: Option<String> = conn
+) -> rusqlite::Result<Option<Claimed>> {
+    let row: Option<(String, Option<String>, String)> = conn
         .query_row(
-            "SELECT recipient FROM mono_outbox WHERE key = ?1",
+            "SELECT recipient, ask_id, stage FROM mono_outbox WHERE key = ?1",
             [key],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    let Some(chat) = recipient
-        .map(|recipient| chat_of(conn, &recipient))
-        .transpose()?
-        .flatten()
-    else {
+    let Some((recipient, ask_id, stage)) = row else {
+        return Ok(None);
+    };
+    let (Some(text), Some(chat)) = (row_text(ask_id, &stage), chat_of(conn, &recipient)?) else {
         return Ok(None);
     };
     let delivery = ask_gate::delivery_for(running.contains_key(chat.as_str()), steerable);
-    let holder = (delivery != Delivery::AfterTurn).then_some(window);
+    if delivery == Delivery::AfterTurn {
+        return Ok(None);
+    }
     let free = conn.execute(
         "UPDATE mono_outbox SET claimed_by = ?2
           WHERE key = ?1 AND claimed_by IS NULL AND sent_at IS NULL",
-        params![key, holder],
+        params![key, window],
     )? == 1;
-    Ok(free.then_some(delivery))
+    Ok(free.then(|| Claimed {
+        text,
+        wake: delivery == Delivery::Wake,
+    }))
 }
 
 /// The provider took reminder `key` from window `window`: it is sent, once.
@@ -241,7 +271,7 @@ pub(crate) fn release(conn: &Connection, label: &str) -> rusqlite::Result<Notice
 pub fn mono_outbox_pending(
     store: State<'_, SessionStore>,
     session_id: String,
-) -> Result<Vec<Reminder>, String> {
+) -> Result<Vec<String>, String> {
     let session = SessionId::parse(&session_id).ok_or("Invalid session id")?;
     pending(&*store.lock_conn()?, &session).map_err(|error| error.to_string())
 }
@@ -253,7 +283,7 @@ pub fn mono_outbox_claim<R: Runtime>(
     store: State<'_, SessionStore>,
     key: String,
     steerable: bool,
-) -> Result<Option<Delivery>, String> {
+) -> Result<Option<Claimed>, String> {
     // Design 5.3 lock order: the control lock is read and let go before the
     // store lock.
     let running = control.running_sessions();
