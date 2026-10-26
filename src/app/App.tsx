@@ -19,6 +19,7 @@ import {
   listenForMonoNotices,
   listenForMonoRoutes,
   opensTurn,
+  reminderSubmit,
   removeQueued,
   type MonoMessagingHost,
   type MonoQueueHost,
@@ -542,6 +543,7 @@ import {
 
 import {
   canDispatchQueuedHead,
+  canSteerNow,
   dequeueQueuedMessage,
   endTurnWakes,
   enqueueQueuedMessage,
@@ -1002,6 +1004,14 @@ type HandOffOptions = Pick<
   SubmitOptions,
   "providerTook" | "turnId" | "agentText"
 >;
+
+/**
+ * Design 16.6: only a Mono chat whose harness can steer has its queue pump
+ * steer a busy turn. R9 claims a reminder as a steer by the same rule.
+ */
+function queueSteers(session: Session): boolean {
+  return !!monoForSession(session.id) && canSteerHarness(session.harness);
+}
 
 type Submit = (
   sessionId: string,
@@ -1772,6 +1782,10 @@ function Workspace({
       },
       turnId: (id) => currentTurnIds.current.get(id),
       owns: (id) => invoke<boolean>("control_owns_session", { sessionId: id }),
+      steersNow: (id) => {
+        const session = sessionsRef.current.find((entry) => entry.id === id);
+        return !!session && queueSteers(session) && canSteerNow(session);
+      },
     }),
     [],
   );
@@ -7502,6 +7516,7 @@ function Workspace({
               return appendSteerUser(next, submittedText, visible, {
                 ...cards,
                 ...queuedAppDelivery(queuedItem),
+                ...(queuedItem?.monoReminder ? { internal: true } : {}),
                 ...block,
               });
             });
@@ -7683,8 +7698,10 @@ function Workspace({
           ? { appRequestId: options.appRequestId }
           : queuedAppDelivery(queuedItem)),
         ...(options?.startedBy ? { startedBy: options.startedBy } : {}),
-        // The orchestrator writes these turns, not the user; hide them.
-        ...(options?.managed || options?.monoSessionCompletion
+        // The orchestrator and the app write these turns, not the user; hide them.
+        ...(options?.managed ||
+        options?.monoSessionCompletion ||
+        queuedItem?.monoReminder
           ? { internal: true }
           : {}),
         ...(options?.monoSessionCompletion
@@ -9310,11 +9327,7 @@ function Workspace({
     // An idle session starts its head as a new turn. A busy Mono steers its
     // first steerable message; messages that wait for the turn end keep their place.
     const nextSend = (session: Session) =>
-      nextQueuedSend(
-        session,
-        currentTurnIds.current,
-        !!monoForSession(session.id) && canSteerHarness(session.harness),
-      );
+      nextQueuedSend(session, currentTurnIds.current, queueSteers(session));
     for (const session of sessions) {
       const queued = session.queuedMessages ?? [];
       if (queued.length === 0) continue;
@@ -9396,7 +9409,7 @@ function Workspace({
                     ({ text, turnId }, providerTook) =>
                       submit({ agentText: text, turnId, providerTook }),
                   )
-              : await submit();
+              : await submit(reminderSubmit(head));
             // A preflight rejection must not repeatedly retry or hide the message.
             if (!accepted && monoForSession(session.id)) {
               const current = sessionsRef.current.find(

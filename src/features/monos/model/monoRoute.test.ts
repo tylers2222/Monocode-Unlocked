@@ -285,6 +285,8 @@ const rust = vi.hoisted(() => {
               (entry.status === "open" || entry.status === "delivered"),
           )
           .map(targeted);
+      case "mono_outbox_pending":
+        return [];
       case "mono_messages_pending_notices":
         return state.rows.filter(
           (entry) =>
@@ -527,6 +529,7 @@ function world(
         sessionId: id,
         window: label,
       } as never),
+    steersNow: () => false,
     reconciled: (id) =>
       loaded.some((session) => session.id === id)
         ? Promise.resolve()
