@@ -150,7 +150,7 @@ jobs:
         if: always()
         run: mkdir -p e2e-results/macos/app && cp "$GIGA_EVAL_OUT"/*.log e2e-results/macos/app/ || true
 
-      - name: Upload the results, screenshots and screen recording
+      - name: Upload the results and screenshots
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

@@ -5,9 +5,8 @@
 # [scenario] (an app.sh command line), each [repeat] times (default 1), and
 # builds the instance each one needs. [env] holds space-separated switches
 # that a scenario reads, NAME=value with a scenario prefix such as R6_.
-# Writes one log and one screen recording per run, a screenshot of each
-# failure, and results.tsv and junit.xml in the row format of
-# docker/e2e-run.sh. Exits 1 when a row failed.
+# Writes one log per run, a screenshot of each failure, and results.tsv and
+# junit.xml in the row format of docker/e2e-run.sh. Exits 1 when a row failed.
 set -uo pipefail
 trap '' PIPE
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -33,41 +32,6 @@ row() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" >>"$ROWS"; }
 # True when app.sh has a case label for the command's first word.
 has() { grep -qE "^  ${1%% *}\)" "$APP"; }
 
-# screencapture -v records until a key arrives on its terminal or it gets
-# SIGINT ("type any character (or ctrl-c) to stop"). CI has no terminal: a
-# newline on a fifo stdin left it running until the job timed out (run
-# 40095797823), and one copied into a pty did not stop it either (run
-# 40251294281). So record_stop sends SIGINT and gives it 30 s to write the
-# .mov, then SIGTERM and SIGKILL, 10 s each. The fifo only holds stdin open.
-record_start() {
-  rm -f "$OUT/.stop"
-  mkfifo "$OUT/.stop"
-  screencapture -v -C "$1" <"$OUT/.stop" >"${1%.mov}-recorder.log" 2>&1 &
-  RECORDER=$!
-  exec 3>"$OUT/.stop"
-}
-# exited <pid> <seconds>: true once <pid> is gone, false after <seconds>.
-exited() {
-  local i
-  for ((i = 0; i < $2 * 2; i++)); do
-    kill -0 "$1" 2>/dev/null || return 0
-    sleep 0.5
-  done
-  return 1
-}
-record_stop() {
-  local started=$SECONDS
-  kill -INT "$RECORDER" 2>/dev/null
-  if ! exited "$RECORDER" 30; then
-    echo "e2e-macos: screencapture ignored SIGINT for 30 s; sending SIGTERM" >&2
-    kill -TERM "$RECORDER" 2>/dev/null
-    exited "$RECORDER" 10 || kill -KILL "$RECORDER" 2>/dev/null
-  fi
-  exec 3>&-
-  wait "$RECORDER" || echo "e2e-macos: screencapture exited $?" >&2
-  echo "e2e-macos: recorder stopped in $((SECONDS - started)) s"
-}
-
 # run <suite> <name> <log> <command...>: one row; a screenshot when it fails.
 run() {
   local suite=$1 name=$2 log=$3 started=$SECONDS status
@@ -79,7 +43,9 @@ run() {
     row "$suite" "$name" passed $((SECONDS - started)) ""
     return 0
   fi
-  screencapture -x "${log%.log}-failed.png"
+  # screencapture -v never stopped on a hosted runner (run 40095797823 hung
+  # until the job timed out; ADE-119), so this shot gets 20 s before SIGALRM.
+  perl -e 'alarm 20; exec @ARGV' screencapture -x "${log%.log}-failed.png"
   row "$suite" "$name" failed $((SECONDS - started)) \
     "exit $status: $(grep -m1 -E 'FAIL|ERROR' "$log" | tr '\t' ' ')"
   return 1
@@ -121,9 +87,7 @@ suite_scenarios() {
     read -ra args <<<"$command"
     for i in $(seq 1 "$REPEAT"); do
       slug="${command// /-}-$i"
-      record_start "$OUT/$slug.mov"
       run scenarios "$command #$i" "$OUT/$slug.log" bash "$APP" "${args[@]}" || code=1
-      record_stop
       # A scenario that stops early leaves its instance running.
       bash "$ROOT/scripts/giga-eval/instance.sh" stop
     done
@@ -159,6 +123,5 @@ mkdir -p "$OUT"
 printf 'suite\ttest\tstatus\tseconds\tnote\n' >"$ROWS"
 code=0
 for suite in $suites; do "suite_$suite" || code=1; done
-rm -f "$OUT/.stop"
 node "$ROOT/docker/e2e-report.mjs" junit "$ROWS" >"$OUT/junit.xml" || code=1
 exit "$code"
