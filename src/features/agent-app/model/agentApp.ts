@@ -19,6 +19,7 @@ import {
   type MessageSender,
   type ReplyInput,
   type SendInput,
+  type SessionId,
 } from "../../monos/model/monoMessages";
 import {
   AppActionError,
@@ -570,8 +571,9 @@ function startedAnyway(error: unknown, id: string): Error {
 /**
  * R7: the first turn of session `started`, whose start is `ask`. Its agent
  * reads the prompt as R6 hands over an ask: the `<mono_message>` with
- * `ask_id` and `due_in`, from the Mono, or else the lead (a worker starts
- * nothing). The transcript keeps the prompt as given.
+ * `ask_id` and `due_in`. Rust answers an ask only for a Mono's or a lead's
+ * start (a Giga's is none, a worker starts nothing), so one of those sent
+ * it. The transcript keeps the prompt as given.
  */
 function askTurn(
   source: Session,
@@ -580,22 +582,20 @@ function askTurn(
   prompt: string,
   ask: StartAsk,
 ): NonNullable<QuickLaunch["firstTurn"]> {
-  const sessionId = parseSessionId(started);
-  const fromSessionId = parseSessionId(source.id);
-  if (!sessionId || !fromSessionId)
-    throw new Error("A start's ask needs saved session ids");
+  // Ids Rust just checked: the caller's session, and appLaunchId's.
+  const fromSessionId = source.id as SessionId;
+  const reading = { sessionId: started as SessionId, turnId: newTurnId(), target: null };
   const mono = host.monoOf?.(source.id);
   const sender: MessageSender = mono
-    ? { kind: "mono", name: mono.name ?? mono.id, role: mono.giga ? "giga" : "mono" }
+    ? { kind: "mono", name: mono.name ?? mono.id, role: "mono" }
     : { kind: "session", title: source.title, level: "lead" };
-  const turnId = newTurnId();
   const message = {
     id: ask.askId, fromMonoId: parseMonoId(mono?.id) ?? null, fromSessionId, body: prompt,
     intent: "new", replyTo: null, scope: null, wantingReply: false,
     carries: { kind: "ask", dueInMs: ask.dueInMs },
   } as const;
-  const reading = { sessionId, turnId, target: null };
-  return { agentText: renderMonoMessage(message, sender, undefined, reading), turnId };
+  const agentText = renderMonoMessage(message, sender, undefined, reading);
+  return { agentText, turnId: reading.turnId };
 }
 
 function agentPrompt(value: unknown): string {

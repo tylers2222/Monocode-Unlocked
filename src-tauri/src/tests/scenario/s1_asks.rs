@@ -10,7 +10,7 @@ use super::asks::{ack_went_to, written};
 use super::world::World;
 use crate::asks::Carries;
 use crate::mono_gate::Caller;
-use crate::mono_messages::{MessageId, SessionId, ToolError};
+use crate::mono_messages::{MessageId, SessionId, Submitted, ToolError};
 use crate::mono_roster::MonoRole;
 
 const P: &str = "/s1";
@@ -107,6 +107,18 @@ fn received(started: &Started) -> (MessageId, Option<i64>) {
     (ask.ask_id.clone(), ask.due_in_ms.map(|due| due / MINUTE))
 }
 
+/// Review r1 N2: an ask under the request id of `by`'s earlier start `key` is
+/// another call.
+fn ask_under_start_key(world: &World, by: &Caller, key: &str) {
+    let input = json!({"message": "Again", "send_to": "s1-lead-a"});
+    let live = the_live();
+    let reused = world.tool(by, key, "ask", input, &live.iter().collect::<Vec<_>>());
+    assert!(
+        matches!(&reused, Submitted::Failed { error } if error.code == "request_id_reused"),
+        "{reused:?}"
+    );
+}
+
 /// The S1 tree: the Giga asks the Mono with no clock, the Mono starts two
 /// leads, each lead a worker. Each ask's id is the one its child was
 /// handed. Its asks bottom up, and the Giga's start.
@@ -135,6 +147,7 @@ fn grow(world: &mut World, giga: &Caller, mono: &Mono) -> ([Asked; 5], Started) 
         Ok(&lead_a),
         "a repeat answers its first row"
     );
+    ask_under_start_key(world, &mono_turn, "start-s1-lead-a-30");
     let lead_b = start(world, &mono_turn, "s1-lead-b", None).unwrap();
     // Plan section 2: due_minutes is 10 to 480, refused before the launch.
     for due in [9, 481] {

@@ -254,6 +254,7 @@ it("checks a Mono's app action without the roster", async () => {
     undefined,
     { askId: "not an id", dueInMs: null },
     { askId: "m_cccccccccccc", dueInMs: "30m" },
+    { askId: "m_cccccccccccc", dueInMs: 1.5 },
   ]) {
     db.check = { outcome: "allowed", leadSessionId: null, ask: bad };
     await expect(checkStart()).rejects.toThrow("answered in an unknown form");

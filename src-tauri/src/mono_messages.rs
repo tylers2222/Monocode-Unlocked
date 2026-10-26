@@ -3110,11 +3110,12 @@ pub fn check_action(
         prior_start_ended,
     };
     let checked = match mono_gate::decide_action(caller, action, &hash, &facts) {
+        // `started` is set only for a `sessions.start` (`appLaunchId`).
         ActionDecision::Allow { lead_session_id } => match started {
-            Some(started) if action == START_ACTION => {
+            Some(started) => {
                 start_allowed(&tx, caller, started, request_id, lead_session_id, input)?
             }
-            _ => ActionChecked::Allowed {
+            None => ActionChecked::Allowed {
                 lead_session_id,
                 ask: None,
             },

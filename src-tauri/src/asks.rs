@@ -397,11 +397,10 @@ pub fn ask(
         };
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let prior = mono_messages::get_by_request(&tx, &caller.session_id, request_id)?;
-    // A start row is an ask too (R7), but another call's (review r1 N2).
-    let sent = prior
-        .first()
-        .is_some_and(|row| row.tool == Tool::SendMessage);
-    if another_calls(prior.first(), |id| Ok(sent && is_ask(&tx, id)?))? {
+    // A start row is an ask too (R7), so this passes an ask sent under an
+    // earlier start's request id; `submit_in`'s hash check then refuses it
+    // with the same `request_id_reused` (review r1 N2).
+    if another_calls(prior.first(), |id| is_ask(&tx, id))? {
         return Ok(reused());
     }
     let mut new = None;
