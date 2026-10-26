@@ -85,7 +85,6 @@ const handlers: MountOptions["handlers"] = {
     return rows;
   },
   mono_messages_pending_notices: () => [],
-  mono_outbox_pending: () => [],
   mono_message_assign_slot: (_store, { id, turnId, kind }) => {
     if (window.refuseSlots) throw "database is locked";
     const row = window.chatLine!.rows.find((row) => row.message.id === id)!;

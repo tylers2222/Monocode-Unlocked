@@ -146,7 +146,6 @@ const handlers: MountOptions["handlers"] = {
   },
   mono_messages_unqueued: () => [],
   mono_messages_pending_notices: () => [],
-  mono_outbox_pending: () => [],
   // The idle receiver's queue pump opens a turn with the row it was sent.
   mono_message_assign_slot: (_store, { id, turnId, kind }) => ({
     message: {

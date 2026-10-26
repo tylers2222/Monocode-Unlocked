@@ -60,7 +60,6 @@ const handlers: MountOptions["handlers"] = {
   control_owns_session: () => true,
   mono_messages_unqueued: () => [],
   mono_messages_pending_notices: () => [],
-  mono_outbox_pending: () => [],
   // reservedProjectName.ts tells the user once that a project named
   // "monocode" shares the app's name; the dialog answers with nothing.
   "plugin:dialog|message": () => null,

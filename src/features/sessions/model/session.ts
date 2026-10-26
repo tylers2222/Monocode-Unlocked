@@ -337,12 +337,6 @@ export type QueuedMessage = {
   appRequestId?: string;
   /** The Mono message this item delivers. The item's id is that message id. */
   monoMessageId?: MessageId;
-  /**
-   * A reminder from `mono_outbox` (R9): a hidden app prompt whose id is the
-   * outbox key. Its key is no persistable id, so the item is never saved;
-   * the outbox row is its record.
-   */
-  monoReminder?: true;
   /** What the user's message refers to. A Mono row's link is on its bubble only. */
   link?: TargetLink;
   /** Delivery failed; the message remains available to retry or edit. */
