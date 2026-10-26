@@ -24,12 +24,16 @@ fn reason(world: &World, caller: &Caller, input: Value) -> Reasoned {
     asks::reason(&world.conn(), caller, ReasonInput::parse(&input)).unwrap()
 }
 
-/// The hint of a refused reason; panics on any other answer.
-fn refused(reasoned: Reasoned) -> String {
+/// The hint of a reason failed with `code`; panics on any other answer.
+fn failed(reasoned: Reasoned, code: &str) -> String {
     match reasoned {
-        Reasoned::Failed { error } if error.code == "reason_refused" => error.hint,
-        other => panic!("expected reason_refused, got {other:?}"),
+        Reasoned::Failed { error } if error.code == code => error.hint,
+        other => panic!("expected {code}, got {other:?}"),
     }
+}
+
+fn refused(reasoned: Reasoned) -> String {
+    failed(reasoned, "reason_refused")
 }
 
 /// The reason of each `miss` event of `ask`.
@@ -69,8 +73,10 @@ fn row(ask: &MessageId, stage: &str, recipient: &str, at: i64) -> (String, Strin
 /// comes at any time but 5 active minutes later or to anyone but the
 /// parent, or does not name the child; the miss is not written, written
 /// twice, or loses its reason when a stage write is lost; a reason before
-/// the miss, from anyone but the child, or a second one is stored; the miss
-/// closes the ask or the ladder goes on; a paused ask is reminded or missed.
+/// the miss, from anyone but the child, or a second one is stored; a blank
+/// reason or one over 8000 characters is stored, or one of exactly 8000 is
+/// invalid; the miss closes the ask or the ladder goes on; a paused ask is
+/// reminded or missed.
 pub(super) fn the_new_deadline_passes(
     world: &mut World,
     mono: &Mono,
@@ -94,6 +100,10 @@ pub(super) fn the_new_deadline_passes(
     );
     assert_eq!(ladder(world, a), (2, Some(new_due + WHY_AFTER)));
     assert!(refused(reason(world, &child, by_id.clone())).contains("has not missed"));
+    // A reason of exactly 8000 characters is valid input: only the timing
+    // refuses it.
+    let at_limit = json!({"ask_id": a.as_str(), "message": "x".repeat(8000)});
+    assert!(refused(reason(world, &child, at_limit)).contains("has not missed"));
 
     // 5 active minutes later the parent is told, naming the child to ask,
     // and the ask has one miss with no reason yet.
@@ -125,6 +135,14 @@ pub(super) fn the_new_deadline_passes(
     for other in [&parent, &session_caller(worker, P)] {
         assert!(refused(reason(world, other, by_id.clone())).contains("not yours"));
     }
+    // A blank reason, or one of 8001 characters, is invalid input and stores
+    // nothing.
+    for message in [" \n ".to_string(), "x".repeat(8001)] {
+        let input = json!({"ask_id": a.as_str(), "message": message});
+        let hint = failed(reason(world, &child, input), "invalid_input");
+        assert!(hint.contains("at most 8000 characters"), "{hint}");
+    }
+    assert_eq!(misses(world, a), [None]);
     let Reasoned::Stored { ask_id } = reason(world, &child, by_id.clone()) else {
         panic!("the child's reason was refused");
     };
