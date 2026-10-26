@@ -33,15 +33,17 @@ row() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" >>"$ROWS"; }
 # True when app.sh has a case label for the command's first word.
 has() { grep -qE "^  ${1%% *}\)" "$APP"; }
 
-# screencapture -v records until a character arrives on its stdin; the fifo
-# keeps that stdin open. On a hosted runner it can ignore the character (run
-# 40095797823 waited on it until the job timed out), so record_stop then sends
-# SIGTERM and last SIGKILL, each after 10 s. Not SIGINT: a background job of a
-# script starts with SIGINT ignored.
+# screencapture -v records until a key arrives on its terminal. A pipe on its
+# stdin is not enough (run 40095797823 hung on it until the job timed out, and
+# SIGTERM in run 40248124930 left no .mov), so python's pty.spawn gives it a
+# pty and copies the fifo's newline into it (script(1) refuses a fifo stdin).
+# If it still runs, record_stop sends SIGTERM and last SIGKILL, each after
+# 10 s. Not SIGINT: a background job of a script starts with SIGINT ignored.
 record_start() {
   rm -f "$OUT/.stop"
   mkfifo "$OUT/.stop"
-  screencapture -v -C "$1" <"$OUT/.stop" &
+  python3 -c 'import pty, sys; sys.exit(pty.spawn(sys.argv[1:]) >> 8)' \
+    screencapture -v -C "$1" <"$OUT/.stop" >"${1%.mov}-recorder.log" 2>&1 &
   RECORDER=$!
   exec 3>"$OUT/.stop"
 }
