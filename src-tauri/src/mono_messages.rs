@@ -1414,7 +1414,6 @@ fn route_groups(messages: &[MonoMessage], routes: Vec<Route>) -> Vec<RouteGroup>
 
 /// `m_` and 12 random base32 characters.
 pub(crate) fn new_message_id() -> MessageId {
-    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
     let bytes = *uuid::Uuid::new_v4().as_bytes();
     // Bytes 9 to 15 and the low half of byte 0 are random in a v4 uuid.
     let bits = bytes[9..]
@@ -1422,6 +1421,21 @@ pub(crate) fn new_message_id() -> MessageId {
         .fold(u64::from(bytes[0] & 0x0f), |bits, byte| {
             bits << 8 | u64::from(*byte)
         });
+    message_id_of(bits)
+}
+
+/// R7: the id of the start row of `caller`'s `sessions.start` under
+/// `request_id`, a function of the call, so the level check names it on the
+/// first prompt before the launch and `record_start` writes the row after.
+fn start_message_id(caller: &SessionId, request_id: &RequestId) -> MessageId {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("{}\0{}", caller.as_str(), request_id.as_str()));
+    message_id_of(u64::from_be_bytes(digest[..8].try_into().expect("8 bytes")))
+}
+
+/// `m_` and 12 base32 characters of `bits`.
+fn message_id_of(bits: u64) -> MessageId {
+    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
     let tail: String = (0..12)
         .map(|index| char::from(ALPHABET[((bits >> (5 * index)) & 31) as usize]))
         .collect();
@@ -2860,14 +2874,25 @@ pub fn drop_message(
 #[serde(tag = "outcome", rename_all = "camelCase")]
 pub enum ActionChecked {
     /// The action runs. A start writes `lead_session_id` on the new session
-    /// (design 13.3).
+    /// (design 13.3), and puts `ask` on its first prompt (R7).
     #[serde(rename_all = "camelCase")]
     Allowed {
         lead_session_id: Option<SessionId>,
+        ask: Option<StartAsk>,
     },
     Failed {
         error: ToolError,
     },
+}
+
+/// R7: the ask a submitted `sessions.start` gives the session it starts,
+/// which the web app puts on its first prompt as R6's `<mono_message>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartAsk {
+    pub ask_id: MessageId,
+    /// Active time left; `None` for a Giga's ask.
+    pub due_in_ms: Option<i64>,
 }
 
 /// `input.prompt`, or `''` for an action without one.
@@ -2932,7 +2957,7 @@ pub fn record_start(
         .then_some(prior),
         None => {
             let row = MonoMessage {
-                id: new_message_id(),
+                id: start_message_id(&caller.session_id, request_id),
                 request_id: request_id.clone(),
                 part: Part::FIRST,
                 payload_hash: hash.clone(),
@@ -2975,6 +3000,47 @@ pub fn record_start(
     })
 }
 
+/// R7 and review r1 N3: an allowed `sessions.start` of `started`, with the
+/// ask its first prompt carries. `due_minutes` is checked here, after the
+/// level gate and the replay of a prior row: out of range, or on a start
+/// that asks nothing (a Giga's, or a draft), it is `invalid_input`.
+fn start_allowed(
+    tx: &Connection,
+    caller: &Caller,
+    started: &SessionId,
+    request_id: &RequestId,
+    lead_session_id: Option<SessionId>,
+    input: &Value,
+) -> rusqlite::Result<ActionChecked> {
+    let invalid = |hint: String| ActionChecked::Failed {
+        error: refusal(Refusal::InvalidInput, hint),
+    };
+    let due_minutes = match asks::due_minutes(input) {
+        Ok(due) => due,
+        Err(hint) => return Ok(invalid(hint)),
+    };
+    let draft = input.get("draft") == Some(&Value::Bool(true));
+    let decided = (!draft)
+        .then(|| asks::decide_start(tx, caller, started, lead_session_id.clone(), due_minutes))
+        .transpose()?;
+    let ask = match decided {
+        Some(asks::Decided::Ask(new)) => Some(StartAsk {
+            ask_id: start_message_id(&caller.session_id, request_id),
+            due_in_ms: new.due_in_ms(tx)?,
+        }),
+        _ if due_minutes.is_some() => {
+            return Ok(invalid(
+                "due_minutes is the deadline of a start's ask, and this start asks nothing: a Giga's start and a draft are no ask. Leave due_minutes out.".into(),
+            ))
+        }
+        _ => None,
+    };
+    Ok(ActionChecked::Allowed {
+        lead_session_id,
+        ask,
+    })
+}
+
 /// Design 6.6: the A rows for one app action of `caller`, and the one
 /// rejected row they may write, in one `BEGIN IMMEDIATE` transaction, as
 /// `submit` does. `target` is the session id the action names; `started` is
@@ -3005,12 +3071,6 @@ pub fn check_action(
             })
         }
     };
-    // R7: a start's ask deadline, refused before anything launches.
-    if let Some(Err(hint)) = (action == START_ACTION).then(|| asks::due_minutes(input)) {
-        return Ok(ActionChecked::Failed {
-            error: refusal(Refusal::InvalidInput, hint),
-        });
-    }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     if session_ended(&tx, &caller.session_id)? {
         return Ok(ActionChecked::Failed {
@@ -3050,7 +3110,15 @@ pub fn check_action(
         prior_start_ended,
     };
     let checked = match mono_gate::decide_action(caller, action, &hash, &facts) {
-        ActionDecision::Allow { lead_session_id } => ActionChecked::Allowed { lead_session_id },
+        ActionDecision::Allow { lead_session_id } => match started {
+            Some(started) if action == START_ACTION => {
+                start_allowed(&tx, caller, started, request_id, lead_session_id, input)?
+            }
+            _ => ActionChecked::Allowed {
+                lead_session_id,
+                ask: None,
+            },
+        },
         ActionDecision::Refuse { code, hint } => ActionChecked::Failed {
             error: refusal(code, hint),
         },
@@ -9635,7 +9703,8 @@ pub(crate) mod tests {
             )
             .unwrap(),
             ActionChecked::Allowed {
-                lead_session_id: None
+                lead_session_id: None,
+                ask: None
             },
             "unsaved target"
         );
@@ -9670,7 +9739,8 @@ pub(crate) mod tests {
             )
             .unwrap(),
             ActionChecked::Allowed {
-                lead_session_id: None
+                lead_session_id: None,
+                ask: None
             },
             "Mono chat with a sessions row"
         );
@@ -9948,7 +10018,8 @@ pub(crate) mod tests {
         assert_eq!(
             check("operator"),
             ActionChecked::Allowed {
-                lead_session_id: None
+                lead_session_id: None,
+                ask: None
             }
         );
     }
@@ -10195,6 +10266,10 @@ pub(crate) mod tests {
         };
         let allowed = ActionChecked::Allowed {
             lead_session_id: Some(session("lead")),
+            ask: Some(StartAsk {
+                ask_id: start_message_id(&session("lead"), &key),
+                due_in_ms: Some(3_600_000),
+            }),
         };
         assert_eq!(check(&start_input("Fix the build")), allowed);
         start_row(
@@ -10263,14 +10338,16 @@ pub(crate) mod tests {
         let store = messaging_store();
         seed_levels(&store.lock_conn().unwrap());
         let ended = refusal(Refusal::RequestIdReused, mono_gate::START_ENDED.into());
-        for (caller, lead, started) in [
+        for (caller, from, lead, started) in [
             (
                 serde_json::json!({"kind": "mono_chat", "monoId": "mono-a", "sessionId": "a-chat", "turnId": "turn-1"}),
+                "a-chat",
                 None,
                 "app-a-chat-r1",
             ),
             (
                 serde_json::json!({"kind": "session", "access": "started", "cwd": "/p", "sessionId": "lead", "turnId": "turn-1"}),
+                "lead",
                 Some(session("lead")),
                 "app-lead-r1",
             ),
@@ -10289,7 +10366,11 @@ pub(crate) mod tests {
             assert_eq!(
                 check(),
                 ActionChecked::Allowed {
-                    lead_session_id: lead
+                    lead_session_id: lead,
+                    ask: Some(StartAsk {
+                        ask_id: start_message_id(&session(from), &RequestId::parse("r1").unwrap()),
+                        due_in_ms: Some(3_600_000),
+                    }),
                 }
             );
             clear(&store.lock_conn().unwrap(), started, 200);
@@ -10468,11 +10549,13 @@ pub(crate) mod tests {
                     other => panic!("{name}: unknown command {other}"),
                 }
                 .unwrap();
-                for pointer in ["/error/message_id", "/messageId"] {
+                // A check's start ask names the row its record writes next.
+                for pointer in ["/error/message_id", "/messageId", "/ask/askId"] {
                     if let Some(id) = answer.pointer_mut(pointer) {
                         let written = MessageId::parse(id.as_str().unwrap()).unwrap();
                         let conn = store.lock_conn().unwrap();
-                        assert!(get(&conn, &written).unwrap().is_some(), "{name}");
+                        let row = get(&conn, &written).unwrap();
+                        assert!(row.is_some() || pointer == "/ask/askId", "{name}");
                         let index = match ids.iter().position(|seen| *seen == written) {
                             Some(index) => index,
                             None => {

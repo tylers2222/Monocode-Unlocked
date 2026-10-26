@@ -28,6 +28,10 @@
           },
           "command": "mono_app_action_check",
           "reply": {
+            "ask": {
+              "askId": "m_aaaaaaaaaaaa",
+              "dueInMs": 3600000
+            },
             "leadSessionId": "lead",
             "outcome": "allowed"
           }
@@ -96,6 +100,10 @@
           },
           "command": "mono_app_action_check",
           "reply": {
+            "ask": {
+              "askId": "m_aaaaaaaaaaaa",
+              "dueInMs": 3600000
+            },
             "leadSessionId": null,
             "outcome": "allowed"
           }
@@ -163,6 +171,10 @@
           },
           "command": "mono_app_action_check",
           "reply": {
+            "ask": {
+              "askId": "m_aaaaaaaaaaaa",
+              "dueInMs": 3600000
+            },
             "leadSessionId": null,
             "outcome": "allowed"
           }
@@ -215,6 +227,10 @@
           },
           "command": "mono_app_action_check",
           "reply": {
+            "ask": {
+              "askId": "m_aaaaaaaaaaaa",
+              "dueInMs": 3600000
+            },
             "leadSessionId": null,
             "outcome": "allowed"
           }
@@ -294,6 +310,10 @@
           },
           "command": "mono_app_action_check",
           "reply": {
+            "ask": {
+              "askId": "m_aaaaaaaaaaaa",
+              "dueInMs": 1800000
+            },
             "leadSessionId": null,
             "outcome": "allowed"
           }
@@ -502,6 +522,10 @@
           },
           "command": "mono_app_action_check",
           "reply": {
+            "ask": {
+              "askId": "m_aaaaaaaaaaaa",
+              "dueInMs": 3600000
+            },
             "leadSessionId": "lead",
             "outcome": "allowed"
           }
@@ -694,6 +718,7 @@
           },
           "command": "mono_app_action_check",
           "reply": {
+            "ask": null,
             "leadSessionId": null,
             "outcome": "allowed"
           }
@@ -731,6 +756,7 @@
           },
           "command": "mono_app_action_check",
           "reply": {
+            "ask": null,
             "leadSessionId": null,
             "outcome": "allowed"
           }
@@ -851,6 +877,7 @@
           },
           "command": "mono_app_action_check",
           "reply": {
+            "ask": null,
             "leadSessionId": null,
             "outcome": "allowed"
           }
@@ -887,6 +914,7 @@
           },
           "command": "mono_app_action_check",
           "reply": {
+            "ask": null,
             "leadSessionId": null,
             "outcome": "allowed"
           }

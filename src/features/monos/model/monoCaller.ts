@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentAppHost } from "../../agent-app/model/agentApp";
+import type { AgentAppHost, StartAsk } from "../../agent-app/model/agentApp";
 import {
   AppActionError,
   type AppErrorCode,
@@ -101,7 +101,7 @@ export async function resolveCaller(
 
 /** What `mono_app_action_check` answers (Rust `ActionChecked`). */
 export type ActionChecked =
-  | { outcome: "allowed"; leadSessionId: string | null }
+  | { outcome: "allowed"; leadSessionId: string | null; ask: StartAsk | null }
   | {
       outcome: "failed";
       error: { code: RejectCode | AppErrorCode; hint: string } & ToolErrorDetails;
@@ -124,13 +124,27 @@ function parseFailed(error: unknown): Failed | undefined {
   };
 }
 
+/** R7: the start's ask, as `mono_app_action_check` answers it; `null` for none. */
+function parseStartAsk(raw: unknown): StartAsk | null | undefined {
+  if (raw === null) return null;
+  if (typeof raw !== "object") return undefined;
+  const { askId, dueInMs } = raw as Record<string, unknown>;
+  const id = parseMessageId(askId);
+  const safe = typeof dueInMs === "number" && Number.isSafeInteger(dueInMs);
+  const due = dueInMs === null || safe ? dueInMs : undefined;
+  return id && due !== undefined ? { askId: id, dueInMs: due } : undefined;
+}
+
 /** The reply of `mono_app_action_check`, parsed; undefined for any other shape. */
 function parseActionChecked(reply: unknown): ActionChecked | undefined {
   if (typeof reply !== "object" || reply === null) return undefined;
-  const { outcome, leadSessionId, error } = reply as Record<string, unknown>;
+  const { outcome, leadSessionId, ask, error } = reply as Record<string, unknown>;
   if (outcome === "allowed") {
     const lead = leadSessionId === null ? null : parseSessionId(leadSessionId);
-    return lead === undefined ? undefined : { outcome, leadSessionId: lead };
+    const startAsk = parseStartAsk(ask);
+    return lead === undefined || startAsk === undefined
+      ? undefined
+      : { outcome, leadSessionId: lead, ask: startAsk };
   }
   return outcome === "failed" ? parseFailed(error) : undefined;
 }
@@ -195,7 +209,10 @@ export function levelGate(
         parseActionChecked(await invoke("mono_app_action_check", { call })),
         "The level check answered in an unknown form, so the action did not run.",
       );
-      return { leadSessionId: answer.leadSessionId };
+      return {
+        leadSessionId: answer.leadSessionId,
+        ...(answer.ask ? { ask: answer.ask } : {}),
+      };
     },
     async recordStart(requestId, sessionId, input) {
       const call = { caller: caller(), sessionId, requestId, input };

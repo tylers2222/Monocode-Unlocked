@@ -321,11 +321,13 @@ answer() {
 # R6: the Giga asks the Mono, the Mono starts a lead and asks it with a
 # 30-minute deadline, and each acks through MCP. The lead acks twice and the
 # Mono acks its own ask; both refusals reach the puppet. The lead's worker acks
-# once the lead has left the window (R6b review r1 M1).
+# once the lead has left the window (R6b review r1 M1). R7: the lead and the
+# worker ack their start asks with the ask_id their first prompt carries.
 R6_RULES='[
   {"match": "R6-HABIT", "calls": [{"tool": "ask", "arguments":
     {"message": "R6-PROJECT Run the project.", "send_to": "r6-mono"}}], "reply": "Asked."},
   {"match": "R6-REPORT", "reply": "Noted."},
+  {"match": "R6-LED", "reply": "Noted."},
   {"match": "R6-DONE", "calls": [{"tool": "ack", "arguments":
     {"ask_id": "$ack_of", "message": "R6-MINE Acking my own ask."}}], "reply": "Checked."},
   {"match": "R6-PROJECT", "calls": [
@@ -340,10 +342,13 @@ R6_RULES='[
       {"prompt": "R6-WBRIEF You work on the task.", "harness": "fx", "model": "fx:zai/glm-5.2-fast", "notifyOnComplete": false}},
     {"tool": "ask", "arguments": {"message": "R6-WORK Do the work.", "send_to": "$prev.id"}}], "reply": "Done."},
   {"match": "R6-WORKED", "reply": "Noted."},
+  {"match": "R6-WLED", "reply": "Noted."},
   {"match": "R6-WORK", "exec": [["sleep", "3"]], "calls": [
     {"tool": "ack", "arguments": {"ask_id": "$ask_id", "message": "R6-WORKED The work is done."}}], "reply": "Worked."},
-  {"match": "R6-WBRIEF", "reply": "Ready."},
-  {"match": "R6-BRIEF", "reply": "Ready."}]'
+  {"match": "R6-WBRIEF", "calls": [
+    {"tool": "ack", "arguments": {"ask_id": "$ask_id", "message": "R6-WLED Ready to work."}}], "reply": "Ready."},
+  {"match": "R6-BRIEF", "calls": [
+    {"tool": "ack", "arguments": {"ask_id": "$ask_id", "message": "R6-LED Ready to lead."}}], "reply": "Ready."}]'
 
 # The working-agents card off (a user setting, read at start): an idle session
 # that no tab shows then leaves the window 250 ms after its turn.
@@ -373,7 +378,9 @@ run_r6() {
     holds_log '[.[] | select(.input.message == "R6-MINE Acking my own ask.")] | length == 1'
   wait_until 60 "the worker acks its idle lead" \
     holds_log '[.[] | select(.input.message == "R6-WORKED The work is done.")] | length == 1'
-  local giga_ask mono_ask lead_ask lead worker
+  wait_until 60 "the lead and the worker ack their start asks" \
+    holds "SELECT count(*) = 2 FROM mono_asks WHERE state = 'acked' AND id IN (SELECT id FROM mono_messages WHERE tool = 'start_session')"
+  local giga_ask mono_ask lead_ask lead worker lead_start worker_start
   # R7: each start is an ask too; these are the asks the puppets sent.
   local sent="id NOT IN (SELECT id FROM mono_messages WHERE tool = 'start_session')"
   giga_ask="$(q "SELECT id FROM mono_asks WHERE parent_actor = 'mono:r6-giga'")"
@@ -381,7 +388,9 @@ run_r6() {
   lead="$(q "SELECT to_session_id FROM mono_messages WHERE tool = 'start_session' AND from_mono_id = 'r6-mono'")"
   lead_ask="$(q "SELECT id FROM mono_asks WHERE parent_actor = 'session:$lead' AND $sent")"
   worker="$(q "SELECT to_session_id FROM mono_messages WHERE tool = 'start_session' AND from_session_id = '$lead'")"
-  echo "R6 readings (Giga ask $giga_ask, Mono ask $mono_ask, lead $lead, lead ask $lead_ask, worker $worker):"
+  lead_start="$(q "SELECT id FROM mono_messages WHERE tool = 'start_session' AND to_session_id = '$lead'")"
+  worker_start="$(q "SELECT id FROM mono_messages WHERE tool = 'start_session' AND to_session_id = '$worker'")"
+  echo "R6 readings (Giga ask $giga_ask, Mono ask $mono_ask, lead $lead, lead ask $lead_ask, worker $worker, start asks $lead_start $worker_start):"
   expect "worker acks its idle lead: ok, code" \
     "$(answer "R6-WORKED The work is done." ok) $(answer "R6-WORKED The work is done." code)" "true null"
   wait_until 60 "the lead gets the worker's ack" saw R6-WORKED
@@ -397,8 +406,12 @@ run_r6() {
     "$(q "SELECT child_actor || ' ' || state FROM mono_asks WHERE id = '$lead_ask'")" "session:$worker acked"
   expect "start asks: child, active ms left, state" \
     "$(q "SELECT group_concat(child_actor || ' ' || (due_active_ms - (SELECT active_ms FROM mono_clock)) || ' ' || state, ', ') FROM (SELECT * FROM mono_asks WHERE NOT ($sent) ORDER BY parent_level)")" \
-    "session:$lead 3600000 open, session:$worker 3600000 open"
-  expect "ack events" "$(q "SELECT count(*) FROM mono_ask_events WHERE kind = 'ack'")" 3
+    "session:$lead 3600000 acked, session:$worker 3600000 acked"
+  expect "lead's first prompt carries its start ask" "$(attribute R6-BRIEF ask_id) $(attribute R6-BRIEF due_in)" "$lead_start 60m"
+  expect "worker's first prompt carries its start ask" "$(attribute R6-WBRIEF ask_id) $(attribute R6-WBRIEF due_in)" "$worker_start 60m"
+  expect "Mono gets the lead's start ack with ack_of" "$(attribute R6-LED ack_of)" "$lead_start"
+  expect "lead gets the worker's start ack with ack_of" "$(attribute R6-WLED ack_of)" "$worker_start"
+  expect "ack events" "$(q "SELECT count(*) FROM mono_ask_events WHERE kind = 'ack'")" 5
   expect "Mono's ask arrives with ask_id" "$(attribute R6-PROJECT ask_id)" "$giga_ask"
   expect "Mono's ask from a Giga has no due_in" "$(attribute R6-PROJECT due_in)" ""
   expect "lead's ask arrives with ask_id" "$(attribute R6-TASK ask_id)" "$mono_ask"

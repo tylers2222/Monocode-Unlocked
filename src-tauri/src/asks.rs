@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use crate::ask_gate::{self, AckRefused, Actor, AskState, Party, State};
 use crate::ask_scheduler;
-use crate::mono_gate::{self, Caller, Input, Refusal, Speaker};
+use crate::mono_gate::{self, Caller, Input, Refusal, SessionLevel, Speaker};
 use crate::mono_messages::{
     self, Live, MessageId, MonoId, MonoMessage, PayloadHash, RequestId, SessionId, Status,
     Submitted, Tool, ToolError,
@@ -277,30 +277,50 @@ fn failed(code: &'static str, hint: impl Into<String>) -> Submitted {
 
 /// A new ask as saved rows decide it: who asks, who is asked, and its
 /// `due_active_ms` (`None` for a Giga's ask).
-struct NewAsk {
+pub(crate) struct NewAsk {
     parent: Party,
     child: Party,
     due: Option<i64>,
 }
 
+/// What saved rows decide of an ask from a caller (review r1 N1).
+pub(crate) enum Decided {
+    Ask(NewAsk),
+    /// The caller or the child has no saved row.
+    NoRow,
+    NotDirectChild,
+}
+
 impl NewAsk {
-    /// An ask from `caller` to `child` with `due_minutes`, or why not.
-    /// `Ok(None)` when the caller or the child has no saved row.
+    /// An ask from `caller` to `child` with `due_minutes`. `is_start`: the
+    /// ask is `caller`'s start of `child`, so the start row is what
+    /// `started_by` would read.
     fn decide(
         conn: &Connection,
         caller: &Caller,
         child: Option<Party>,
+        is_start: bool,
         due_minutes: Option<u32>,
-    ) -> rusqlite::Result<Result<Option<Self>, ask_gate::AskRefused>> {
+    ) -> rusqlite::Result<Decided> {
         let (Some(parent), Some(child)) = (caller_party(conn, caller)?, child) else {
-            return Ok(Ok(None));
+            return Ok(Decided::NoRow);
         };
         let started = match (caller.mono_id(), child.actor()) {
             (Some(mono), Actor::Session(lead)) => started_by(conn, mono, lead)?,
             _ => false,
         };
+        let started = is_start || started;
         let decided = ask_gate::decide_ask(&parent, &child, started, due_minutes, active_ms(conn)?);
-        Ok(decided.map(|due| Some(NewAsk { parent, child, due })))
+        Ok(match decided {
+            Ok(due) => Decided::Ask(NewAsk { parent, child, due }),
+            Err(ask_gate::AskRefused::NotDirectChild) => Decided::NotDirectChild,
+        })
+    }
+
+    /// The active time left now, `None` for a Giga's ask.
+    pub(crate) fn due_in_ms(&self, conn: &Connection) -> rusqlite::Result<Option<i64>> {
+        let active = active_ms(conn)?;
+        Ok(self.due.map(|due| due - active))
     }
 
     /// The open ask, keyed by `id`, the row that carries it.
@@ -324,6 +344,22 @@ impl NewAsk {
     }
 }
 
+/// R7, before the launch: the ask `caller`'s `sessions.start` of `started`
+/// carries, when `started` will be the caller's direct child. `lead` is the
+/// lead the level check writes on `started`, so it is the level its saved
+/// row will have.
+pub(crate) fn decide_start(
+    conn: &Connection,
+    caller: &Caller,
+    started: &SessionId,
+    lead: Option<SessionId>,
+    due_minutes: Option<u32>,
+) -> rusqlite::Result<Decided> {
+    let level = lead.map_or(SessionLevel::Lead, |lead| SessionLevel::Worker { lead });
+    let child = Party::session(level, started.clone());
+    NewAsk::decide(conn, caller, Some(child), true, due_minutes)
+}
+
 /// R7: the `start_session` row `id` that `caller`'s `sessions.start` of
 /// `started` just wrote is also an ask, when `started` is the caller's direct
 /// child: a Mono's lead or a lead's worker. A Giga's start, or one whose
@@ -337,10 +373,10 @@ pub(crate) fn ask_on_start(
     now: i64,
 ) -> rusqlite::Result<()> {
     let child = session_party(tx, started)?;
-    if let Ok(Some(new)) = NewAsk::decide(tx, caller, child, due_minutes)? {
-        new.insert(tx, id, now)?;
+    match NewAsk::decide(tx, caller, child, true, due_minutes)? {
+        Decided::Ask(new) => new.insert(tx, id, now),
+        Decided::NoRow | Decided::NotDirectChild => Ok(()),
     }
-    Ok(())
 }
 
 /// `ask` from `caller` (design R5): a new key on its direct child, with a
@@ -361,16 +397,24 @@ pub fn ask(
         };
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let prior = mono_messages::get_by_request(&tx, &caller.session_id, request_id)?;
-    if another_calls(prior.first(), |id| is_ask(&tx, id))? {
+    // A start row is an ask too (R7), but another call's (review r1 N2).
+    let sent = prior
+        .first()
+        .is_some_and(|row| row.tool == Tool::SendMessage);
+    if another_calls(prior.first(), |id| Ok(sent && is_ask(&tx, id)?))? {
         return Ok(reused());
     }
     let mut new = None;
     if prior.is_empty() {
         // A party with no saved row: the send gate below answers it.
         let child = addressed_party(&tx, &input.send_to)?;
-        match NewAsk::decide(&tx, caller, child, input.due_minutes)? {
-            Ok(decided) => new = decided,
-            Err(refused) => return Ok(failed(refused.code(), refused.hint())),
+        match NewAsk::decide(&tx, caller, child, false, input.due_minutes)? {
+            Decided::Ask(decided) => new = Some(decided),
+            Decided::NoRow => {}
+            Decided::NotDirectChild => {
+                let refused = ask_gate::AskRefused::NotDirectChild;
+                return Ok(failed(refused.code(), refused.hint()));
+            }
         }
     }
     let hash = ask_hash(&carrier, input.due_minutes);

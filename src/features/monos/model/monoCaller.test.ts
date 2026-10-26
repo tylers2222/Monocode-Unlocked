@@ -201,11 +201,12 @@ it("waits for queued roster writes before it answers", async () => {
 // messaging does, so a Mono cannot steer, stop or start sessions while
 // roster_unavailable holds; the window sends its copy of a target's lead,
 // which Rust must not read (R4); or Rust misses the session id a start would launch, so a
-// retry after that session ended launches again.
+// retry after that session ended launches again; or a start's ask (R7) is
+// lost, or one this window cannot read lets the start run.
 it("checks a Mono's app action without the roster", async () => {
   const mono = createMono();
   saveMonoSessionId(mono.id, "memory-chat");
-  db.check = { outcome: "allowed", leadSessionId: null };
+  db.check = { outcome: "allowed", leadSessionId: null, ask: null };
   const input = { sessionId: "worker", prompt: "Stop and rebase" };
   const gate = levelGate(session("memory-chat"), turn);
   expect(
@@ -232,12 +233,16 @@ it("checks a Mono's app action without the roster", async () => {
     },
   });
   const start = { prompt: "Build" };
-  await gate.check("r2", {
-    action: "sessions.start",
-    target: null,
-    startedSessionId: "app-memory-chat-r2",
-    input: start,
-  });
+  const ask = { askId: "m_cccccccccccc", dueInMs: 1_800_000 };
+  db.check = { outcome: "allowed", leadSessionId: null, ask };
+  const checkStart = () =>
+    gate.check("r2", {
+      action: "sessions.start",
+      target: null,
+      startedSessionId: "app-memory-chat-r2",
+      input: start,
+    });
+  expect(await checkStart()).toEqual({ leadSessionId: null, ask });
   expect(invoke).toHaveBeenLastCalledWith("mono_app_action_check", {
     call: expect.objectContaining({
       action: "sessions.start",
@@ -245,6 +250,14 @@ it("checks a Mono's app action without the roster", async () => {
       requestId: "r2",
     }),
   });
+  for (const bad of [
+    undefined,
+    { askId: "not an id", dueInMs: null },
+    { askId: "m_cccccccccccc", dueInMs: "30m" },
+  ]) {
+    db.check = { outcome: "allowed", leadSessionId: null, ask: bad };
+    await expect(checkStart()).rejects.toThrow("answered in an unknown form");
+  }
 });
 
 // Design 2 step 4, #87 review r1 n3. Defect: a call with no turn reaches

@@ -4,7 +4,7 @@ use super::world::World;
 use crate::asks::{self, Call};
 use crate::mono_gate::{self, Access, Caller, CallerKind, Speaker};
 use crate::mono_messages::{
-    self, ActionChecked, CallerArg, LiveSession, MessageId, MonoId, RequestId, SessionId,
+    self, ActionChecked, CallerArg, LiveSession, MessageId, MonoId, RequestId, SessionId, StartAsk,
     StartRecorded, Submitted, Tool, ToolError,
 };
 use crate::mono_roster::{self, MonoCreate, MonoRole};
@@ -15,6 +15,16 @@ use crate::session_store::{self, SessionUpsert};
 pub(crate) struct Mono {
     pub(crate) id: MonoId,
     pub(crate) chat: SessionId,
+}
+
+/// A submitted `sessions.start` as each side sees it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Started {
+    /// The starter's answer.
+    pub(crate) message_id: MessageId,
+    /// What the started session's first prompt carries: the ask the level
+    /// check answered, which the web app renders as R6's `<mono_message>`.
+    pub(crate) received: Option<StartAsk>,
 }
 
 impl World {
@@ -83,9 +93,9 @@ impl World {
 
     /// `caller`'s submitted `sessions.start` of session `id` in `cwd`, as the
     /// web app runs it: the level check (`mono_app_action_check`), the new
-    /// session saved with the lead the check names (`acceptQuickLaunch`),
-    /// then its start row (`mono_message_record_start`). The row's id, or
-    /// the refusal.
+    /// session saved with the lead the check names (`acceptQuickLaunch`)
+    /// and the check's ask on its first prompt, then its start row
+    /// (`mono_message_record_start`). What each side got, or the refusal.
     pub(crate) fn start(
         &self,
         caller: &Caller,
@@ -93,7 +103,7 @@ impl World {
         cwd: &str,
         request_id: &str,
         input: &Value,
-    ) -> Result<MessageId, ToolError> {
+    ) -> Result<Started, ToolError> {
         let session = SessionId::parse(id).unwrap();
         let request_id = RequestId::parse(request_id).unwrap();
         let action = "sessions.start";
@@ -108,15 +118,21 @@ impl World {
             input,
             now,
         );
-        let lead = match checked.unwrap() {
-            ActionChecked::Allowed { lead_session_id } => lead_session_id,
+        let (lead, received) = match checked.unwrap() {
+            ActionChecked::Allowed {
+                lead_session_id,
+                ask,
+            } => (lead_session_id, ask),
             ActionChecked::Failed { error } => return Err(error),
         };
         self.add_session(id, cwd, lead.as_ref().map(SessionId::as_str));
         let recorded =
             mono_messages::record_start(&self.conn(), caller, &session, &request_id, input, now);
         match recorded.unwrap() {
-            StartRecorded::Recorded { message_id } => Ok(message_id),
+            StartRecorded::Recorded { message_id } => Ok(Started {
+                message_id,
+                received,
+            }),
             StartRecorded::Failed { error } => Err(error),
         }
     }

@@ -251,11 +251,13 @@ Actions:
                   messages.send to change the work it started. A draft has
                   no message_id. A lead session's start makes a worker of
                   that lead; a Mono's start makes a lead. A submitted start
-                  from a Mono or a lead is also an ask to the new session,
-                  and message_id is its ask_id: the new session acks it with
-                  messages.ack when the work is done. due_minutes is its
-                  active time, 10 to 480, default 60, as for messages.ask; a
-                  Giga's start is no ask. The same start
+                  from a Mono or a lead is also an ask to the new session:
+                  its first prompt is a <mono_message> with the ask_id, and
+                  the start also returns ask_id (the same id as message_id).
+                  The new session acks it with messages.ack when the work is
+                  done. due_minutes is its active time, 10 to 480, default
+                  60, as for messages.ask. A Giga's start and a draft are no
+                  ask and take no due_minutes. The same start
                   again with the same --request-id answers the same session
                   and asks nothing more.
                   The id used again with other input, or for a start whose
