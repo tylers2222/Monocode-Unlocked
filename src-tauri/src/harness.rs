@@ -978,6 +978,21 @@ pub fn harness_spawn<R: Runtime>(
     if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref()) {
         return Err("harness_spawn: not a resolved harness CLI".to_string());
     }
+    // `apply_provider_account` gives a Claude account's child its own config folder.
+    let account_id = account
+        .as_ref()
+        .filter(|account| account.provider == "claude" && account.id != DEFAULT_PROVIDER_ACCOUNT_ID)
+        .map(|account| account.id.as_str());
+    let srt_deny = match binary_provider.as_deref() {
+        Some("claude") => crate::claude_deny::srt_deny(&app, &workdir, account_id)?,
+        _ => Vec::new(),
+    };
+    let crate::agent_sandbox::Spawn { mut cmd, sandboxed } =
+        crate::agent_sandbox::command(&app, &command, &srt_deny)?;
+    let args = match binary_provider.as_deref() {
+        Some("claude") => crate::claude_deny::args(&app, &workdir, account_id, sandboxed, args)?,
+        _ => args,
+    };
 
     // `--config` is a global option, so it precedes the `acp` subcommand.
     let devin_config = match devin_ask_edits {
@@ -987,8 +1002,6 @@ pub fn harness_spawn<R: Runtime>(
         }
         Some(true) => return Err("Edit approvals are only supported for `devin acp`".into()),
     };
-    let crate::agent_sandbox::Spawn { mut cmd, sandboxed } =
-        crate::agent_sandbox::command(&app, &command)?;
 
     let _reservation = crate::worktree_lifecycle::reserve_spawn(&workdir)?;
     let (epoch, kill_all, prev) = host.begin_spawn(&session_id);
