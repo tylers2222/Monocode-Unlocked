@@ -897,22 +897,15 @@ export async function replaceInFlightSessions(
   await run;
 }
 
-/** Kept across Vite reloads; boot must not delete the only copy. */
+/**
+ * Claims the earlier run's chats for this window, so one window resumes
+ * each. Kept across Vite reloads; boot must not delete the only copy.
+ */
 export async function listInFlightSessions(): Promise<
   { sessionId: string; cwd: string }[]
 > {
   const rows = await invoke<{ sessionId: string; cwd: string }[]>(
     "session_list_in_flight",
-  );
-  return Array.isArray(rows) ? rows : [];
-}
-
-/** Destructive: the first window to boot after a quit owns these chats. */
-export async function takeInFlightSessions(): Promise<
-  { sessionId: string; cwd: string }[]
-> {
-  const rows = await invoke<{ sessionId: string; cwd: string }[]>(
-    "session_take_in_flight",
   );
   return Array.isArray(rows) ? rows : [];
 }
