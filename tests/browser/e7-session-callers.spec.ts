@@ -490,6 +490,33 @@ test("an Inbox Ask is no project session for the gate or sessions.list", async (
   expect(ids).not.toContain(askId);
 });
 
+// ADE-84 #268 r1 M1, M2, m1. ready-issues.py finds builders by `branch` and
+// refuses a reply from the wrong app by `appIdentifier`. Defect: either field
+// is missing from the reply, or a session with no branch drops the key.
+test("sessions.list names the app that answered and each session's branch", async ({
+  page,
+  app,
+}) => {
+  await mountSessions(page, app, ["lead"], {}, [
+    session("builder", "Build ADE-84", { branch: "fix/ade-84-x" }),
+    // session_store.rs lists no branch once the worktree is gone.
+    session("gone", "Worktree deleted", { worktreeRemoved: true }),
+  ]);
+  await page.getByText("Fix login").click();
+  const listed = await callFrom(page, app, "lead", "sessions.list", {});
+  expect(listed).toMatchObject({
+    ok: true,
+    result: {
+      appIdentifier: "com.monocode.desktop",
+      cwd: PROJECT,
+      sessions: expect.arrayContaining([
+        expect.objectContaining({ id: "builder", branch: "fix/ade-84-x" }),
+        expect.objectContaining({ id: "gone", branch: null }),
+      ]),
+    },
+  });
+});
+
 /** `sessions.start` from the lead's running turn under request id r1. */
 async function startFromLead(page: Page, app: AppShell, id: string) {
   await app.emit("monocode-control-request", {

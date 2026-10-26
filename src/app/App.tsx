@@ -55,6 +55,7 @@ import {
   type AppSessionListing,
   type AppSessionPlacement,
 } from "../features/agent-app/model/agentApp";
+import { appSessionListings } from "../features/agent-app/model/sessionListing";
 import {
   appErrorResponse,
   monoError,
@@ -120,6 +121,7 @@ import {
 import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getIdentifier } from "@tauri-apps/api/app";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import {
   startTransition,
@@ -11335,46 +11337,9 @@ function Workspace({
             },
             sessions: async (cwd): Promise<AppSessionListing[]> => {
               const stored = await listSessionsByProject(cwd);
-              const byId = new Map<string, AppSessionListing>();
-              for (const session of stored) {
-                // A habit run belongs to its Mono until it ends.
-                if (session.orchestrationLeadId || isHabitRun(session.id))
-                  continue;
-                byId.set(session.id, {
-                  id: session.id,
-                  title: session.title,
-                  harness: session.harness,
-                  model: session.model,
-                  busy: false,
-                  hasDraft: !!session.draft,
-                  archived: !!session.archived,
-                });
-              }
-              for (const session of sessionsRef.current) {
-                // An Inbox Ask is no project session, as in `ownProject`; its
-                // saved record lists as a hidden session (PR 7 review r2 n5).
-                if (session.inboxAsk) {
-                  byId.delete(session.id);
-                  continue;
-                }
-                if (
-                  session.orchestrationLeadId ||
-                  isHabitRun(session.id) ||
-                  !sameProjectPath(session.cwd, cwd)
-                )
-                  continue;
-                byId.set(session.id, {
-                  id: session.id,
-                  title: session.title,
-                  harness: session.harness,
-                  model: session.model,
-                  busy: !!session.busy,
-                  hasDraft: !!sessionDraftBlock(session),
-                  archived: byId.get(session.id)?.archived ?? false,
-                });
-              }
-              return [...byId.values()];
+              return appSessionListings(cwd, stored, sessionsRef.current);
             },
+            appIdentifier: getIdentifier,
             session: async (id) => {
               const target =
                 sessionsRef.current.find((session) => session.id === id) ??
