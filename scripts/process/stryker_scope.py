@@ -6,6 +6,8 @@ node_modules/vitest at that vitest. So the PR's overrides and lockfile cannot ch
 module Stryker core loads. Each changed file gets its own Stryker run with per-test
 coverage. The job then reads Stryker's JSON report: a file that no test covers, or any
 mutant that is not Killed or Timeout (Survived, NoCoverage, Ignored, an error), fails.
+A Killed static mutant (module-level code, which runs once at import, so Stryker records
+no per-test coverage for it) counts as covered.
 More than MAX_TS_MUTANTS mutants fails before any run: split the PR.
 
 Usage: stryker_scope.py <job node_modules> <specs>
@@ -89,7 +91,8 @@ def report_problems(report, path):
     # sample, so an equivalent mutant has to be rewritten away, not disabled.
     ignored = [f'{where(mutant)} (Stryker disable is not accepted)' for mutant in mutants if mutant['status'] == 'Ignored']
     tested = [mutant for mutant in mutants if mutant['status'] != 'Ignored']
-    if tested and not any(mutant.get('coveredBy') for mutant in tested):
+    covered = lambda mutant: mutant.get('coveredBy') or (mutant.get('static') and mutant['status'] == 'Killed')
+    if tested and not any(covered(mutant) for mutant in tested):
         return ignored + [f'{path}: no test covers it; add a test that runs the changed lines']
     return ignored + [where(mutant) for mutant in tested if mutant['status'] not in PASSING]
 
