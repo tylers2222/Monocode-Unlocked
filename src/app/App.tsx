@@ -543,6 +543,7 @@ import {
 
 import {
   canDispatchQueuedHead,
+  canSteerNow,
   dequeueQueuedMessage,
   endTurnWakes,
   enqueueQueuedMessage,
@@ -1773,6 +1774,16 @@ function Workspace({
       },
       turnId: (id) => currentTurnIds.current.get(id),
       owns: (id) => invoke<boolean>("control_owns_session", { sessionId: id }),
+      // The queue pump would steer an item into this turn now (design 16.6).
+      steersNow: (id) => {
+        const session = sessionsRef.current.find((entry) => entry.id === id);
+        return (
+          !!session &&
+          !!monoForSession(id) &&
+          canSteerHarness(session.harness) &&
+          canSteerNow(session)
+        );
+      },
     }),
     [],
   );

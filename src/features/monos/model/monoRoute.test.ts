@@ -522,6 +522,8 @@ function world(
     opening = Promise.resolve(),
     /** The lead and worker sessions `sessionSender` knows, by id. */
     senders = {} as Record<string, { title: string; level: "lead" | "worker" }>,
+    /** The sessions whose running turn the queue pump would steer now. */
+    steering = [] as string[],
   } = {},
 ) {
   let sessions = loaded;
@@ -559,6 +561,7 @@ function world(
         sessionId: id,
         window: label,
       } as never),
+    steersNow: (id) => steering.includes(id),
     reconciled: (id) =>
       loaded.some((session) => session.id === id)
         ? Promise.resolve()
@@ -1022,7 +1025,7 @@ it("reconciles a row no item holds once, as an item that waits for the turn end"
 
 // R9. Defects: a reminder that reaches its chat twice, in another text than
 // the one Rust's claim hands out, as the user's visible turn, or as a steer
-// in R9b; one claimed for a chat this window does not hold, or queued when
+// into a turn the pump would not steer; one claimed for a chat this window does not hold, or queued when
 // Rust leaves it for the turn end; a sent mark for a turn the provider
 // refused, or for an item that is no reminder.
 it("queues each reminder Rust hands this window once, as a hidden prompt, and marks it sent when the provider takes it", async () => {
@@ -1086,6 +1089,25 @@ it("queues each reminder Rust hands this window once, as a hidden prompt, and ma
     appRequestId: "n",
     appDelivery: { via: "queued", queuedMessageId: "n" },
   });
+});
+
+// R9c. Defect: a busy Mono chat that can steer now gets its reminder only
+// after its turn, or as an item that waits for the turn end.
+it("hands a reminder to a running turn that can steer now, as a steer", async () => {
+  const { get, host } = world([chat("a-chat", { busy: true })], [], {
+    steering: ["a-chat"],
+  });
+  const key = "reminder:m_aaaaaaaaaaaa:t5";
+  rust.state.reminders = [{ key, chat: "a-chat", text: "A", wake: false }];
+  await reconcile(host, "a-chat");
+  expect(rust.state.claims).toEqual([{ key, steerable: true }]);
+  expect(get("a-chat").queuedMessages).toEqual([
+    expect.objectContaining({
+      id: key,
+      monoReminder: true,
+      waitForIdle: false,
+    }),
+  ]);
 });
 
 // Defect: an opener that failed after its dequeue is lost, or comes back as

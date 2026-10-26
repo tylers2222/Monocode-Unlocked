@@ -89,6 +89,8 @@ export type MonoQueueHost = {
   turnId(id: string): TurnId | undefined;
   /** `control_owns_session`: this window runs the routes of session `id`. */
   owns(id: string): Promise<boolean>;
+  /** R9: the queue pump would steer an item into session `id`'s turn now. */
+  steersNow(id: string): boolean;
 };
 
 /**
@@ -235,8 +237,9 @@ type Claimed = { text: string; wake: boolean };
 /**
  * R9: each reminder that waits for the chat, claimed with the chat's live
  * state. Rust picks its prompt and its delivery: a wake waits for the turn
- * end; a reminder for a busy turn that cannot take it stays unclaimed until
- * the turn end names the chat again. A claimed one is a hidden app prompt
+ * end, a steer joins the running turn; a reminder for a busy turn that
+ * cannot take a steer stays unclaimed until the turn end names the chat
+ * again. A claimed one is a hidden app prompt
  * whose id is its outbox key.
  */
 async function queueReminders(host: MonoQueueHost, sessionId: string) {
@@ -245,7 +248,7 @@ async function queueReminders(host: MonoQueueHost, sessionId: string) {
     if (!host.session(sessionId)) continue;
     const claimed = await invoke<Claimed | null>("mono_outbox_claim", {
       key,
-      steerable: false,
+      steerable: host.steersNow(sessionId),
     });
     if (!claimed) continue;
     host.update(sessionId, (session) =>
