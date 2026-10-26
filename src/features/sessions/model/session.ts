@@ -557,6 +557,12 @@ export type Session = {
    * outlives the pause it names.
    */
   queuePause?: "error";
+  /**
+   * How many times in a row the app resumed this Mono's paused queue on its
+   * own (`wakeQueue`) since a turn last ended without a provider failure.
+   * In-memory only, so a relaunch starts the count again.
+   */
+  queueWakes?: number;
   /** Prevent auto-dispatch while this queued row is being edited. In-memory only. */
   editingQueuedMessageId?: string;
   /** Pending delivery locks this row against edits and deletion. Not persisted. */

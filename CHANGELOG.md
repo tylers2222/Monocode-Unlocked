@@ -41,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A message that waits for a Mono's turn to end, such as a message from another Mono queued until the turn ends, no longer holds back the messages you type after it. While the Mono works, your messages steer the running turn in the order you sent them, and the waiting message keeps its place and starts a new turn when the current one ends. Its bubble says "Sends when this turn ends". After a restart, messages that were not sent say "Paused when MonoCode quit" next to Resume. A follow-up that the provider refused for a moment no longer stops later follow-ups for the rest of the turn; the next tool call or reply lets them through again.
+- A Mono whose queue MonoCode paused sends it again on its own. A queue that a quit paused sends at relaunch with no click. A queue that a failed turn paused resumes after that turn, up to three times in a row; a turn that ends well starts the count again. A queue you paused with Stop still waits for Resume.
+- An omp turn that recovers from a stream stall in the same turn no longer shows an error at its end or pauses the queue behind it.
 
 ## [0.13.0] - 2026-10-12
 
