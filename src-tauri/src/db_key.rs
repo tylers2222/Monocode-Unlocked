@@ -6,11 +6,16 @@
 //! that key. On never opens a plaintext database (moving one over is ADE-43)
 //! and never makes a new key for a database that exists: a wrong or missing
 //! key stops the app.
+//!
+//! A refused open leaves the user data files, `monocode.db` and its `-wal`,
+//! byte-identical. Accepted exception, `-shm` only. OFF over an encrypted
+//! crash image: SQLite rebuilds the -shm shared-memory index, which holds no
+//! user data. This case exists only after D2 was turned ON.
 
 use std::io::{ErrorKind, Read};
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension};
 
 const ON_MARKER: &str = "db-encryption-on";
 const PLAIN_HEADER: &[u8; 16] = b"SQLite format 3\0";
@@ -127,7 +132,8 @@ fn stored_key(db: &Path) -> Result<Option<DbKey>, String> {
 /// connection, which reads only the main file: it never opens `-wal` or
 /// `-shm` and never checkpoints, so a wrong key leaves all three files as they
 /// were. A read-write connection would open a leftover `-wal` and, on close,
-/// checkpoint it into `db` and delete it.
+/// checkpoint it into `db` and delete it. The URI's `mode=ro` makes the
+/// connection read-only; rusqlite's default open flags accept URIs.
 fn prove(db: &Path, key: &DbKey) -> Result<(), String> {
     let uri = format!(
         "file:{}?mode=ro&immutable=1",
@@ -137,11 +143,8 @@ fn prove(db: &Path, key: &DbKey) -> Result<(), String> {
             .replace('?', "%3f")
             .replace('#', "%23")
     );
-    let conn = Connection::open_with_flags(
-        uri,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-    )
-    .map_err(|e| format!("Database encryption: {}: {e}", db.display()))?;
+    let conn =
+        Connection::open(uri).map_err(|e| format!("Database encryption: {}: {e}", db.display()))?;
     use_key(&conn, key)?;
     conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
         .map_err(|e| {

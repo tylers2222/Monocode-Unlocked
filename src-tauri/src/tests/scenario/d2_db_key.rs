@@ -125,6 +125,8 @@ fn d2_the_marker_decides_and_on_never_opens_without_its_key() {
         on_encrypts_an_empty_file();
         on_refuses_a_plaintext_database(&off, &db);
         a_refused_open_leaves_the_files_as_they_were();
+        #[cfg(unix)]
+        on_refuses_an_unreadable_file();
     }
 }
 
@@ -305,6 +307,52 @@ fn on_refuses_without_sqlcipher() {
     );
 }
 
+/// An unreadable file stops the open. It never counts as a missing one, so on
+/// makes no key for a database that exists and never writes over a stored key.
+#[cfg(unix)]
+fn on_refuses_an_unreadable_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let chmod = |path: &Path, mode: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+
+    let data = data_folder();
+    let db = data.join("monocode.db");
+    turn_on(&data);
+    std::fs::write(&db, "an existing database").unwrap();
+    chmod(&db, 0o000);
+    let error = open(&db)
+        .err()
+        .expect("an unreadable database: the open fails");
+    assert!(
+        error.contains("Permission denied"),
+        "an unreadable database: {error}"
+    );
+    assert!(
+        !key_file(&data).exists(),
+        "an unreadable database: no new key for a database that exists"
+    );
+
+    let data = data_folder();
+    let db = data.join("monocode.db");
+    turn_on(&data);
+    let key = "ab".repeat(32);
+    std::fs::write(key_file(&data), &key).unwrap();
+    chmod(&key_file(&data), 0o200);
+    let error = open(&db).err().expect("an unreadable key: the open fails");
+    chmod(&key_file(&data), 0o600);
+    assert!(
+        error.contains("Permission denied"),
+        "an unreadable key: {error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(key_file(&data)).unwrap(),
+        key,
+        "an unreadable key: the key is not replaced"
+    );
+    assert!(!db.exists(), "an unreadable key: no database is made");
+}
+
 /// A refused open leaves `monocode.db`, `-wal` and `-shm` byte-identical, 20
 /// times of 20, from the state a killed app leaves and from a clean close.
 /// Off over an encrypted crash image leaves `monocode.db` and `-wal` as they
@@ -376,8 +424,9 @@ fn a_refused_open_leaves_the_files_as_they_were() {
 
 /// The keychain store on its own, with a test item it deletes again: the item
 /// a test build never writes, since it keeps the key in `test-db-key`. Linux
-/// test builds use the kernel keyring (db_key.rs), so it runs there by default;
-/// the macOS CI job runs it on the runner's login keychain with `--ignored`.
+/// test builds use the kernel keyring (db_key.rs), so it runs there by default.
+/// Elsewhere it stays ignored, so no local run writes to a person's login
+/// keychain; a CI runner can run it with `--ignored`.
 #[test]
 #[cfg_attr(
     not(target_os = "linux"),

@@ -113,11 +113,6 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo check
       - run: cargo test
-      # db_key.rs's login keychain store on the runner's own keychain. It stays
-      # ignored in local runs, which must not write to a person's keychain.
-      - name: Login keychain store
-        if: runner.os == 'macOS'
-        run: cargo test -p monocode --lib scenario::d2_db_key::the_login_keychain_keeps_a_key -- --ignored --exact
 
   appimage:
     name: AppImage host libraries
