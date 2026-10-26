@@ -40,7 +40,6 @@ function groupedMessage() {
     },
     vi.fn(),
     () => undefined,
-    { hold() {}, dismiss() {} },
   );
   for (const [sessionId, status] of [
     ["stopped", "cancelled"],

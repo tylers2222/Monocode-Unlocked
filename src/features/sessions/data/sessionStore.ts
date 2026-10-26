@@ -5,7 +5,6 @@ import { sanitizeMonoSpawnedSessions } from "../../monos/model/monoSpawnedSessio
 import { parseMessageId, parseTurnId } from "../../monos/model/monoMessages";
 import { parseMessageLink, parseTargetLink } from "../model/messageIntent";
 import { missedTurn } from "../model/messageQueue";
-import { monoCompletionWrites } from "./monoCompletionStore";
 import {
   isWeakToolTitle,
   titleFromToolInput,
@@ -57,8 +56,11 @@ import { restoreOrchestrationProposal } from "../../orchestration/model/orchestr
 
 import type { OrchestrationSummary } from "../../orchestration/model/orchestrationSummary";
 
-import { joinWorkspaceSnapshots } from "../../workspace/model/workspaceSnapshotJoin";
-import type { WorkspaceSnapshot } from "../../workspace/model/workspaceSnapshot";
+import {
+  joinWorkspaceSnapshots,
+  type SaveSiteFields,
+  type SavedWorkspaceSnapshot,
+} from "../../workspace/model/workspaceSnapshotJoin";
 
 export type SessionSummary = {
   sidebarHidden?: boolean;
@@ -463,7 +465,6 @@ export async function upsertSession(
       }
       const changed =
         !previous || same !== previous.length || same !== snapshot.length;
-      await monoCompletionWrites();
       const summary = await invoke<SessionSummary>("mono_session_upsert", {
         session: {
           ...payload,
@@ -921,7 +922,7 @@ let workspaceWrite: Promise<unknown> = Promise.resolve();
  * The store keeps a snapshot only over one read no later (ADE-46).
  */
 export async function saveWorkspaceSnapshot(
-  snapshot: WorkspaceSnapshot,
+  snapshot: SavedWorkspaceSnapshot,
   readAt: number,
 ): Promise<void> {
   const run = workspaceWrite
@@ -931,9 +932,11 @@ export async function saveWorkspaceSnapshot(
   await run;
 }
 
-export async function loadWorkspaceSnapshot(): Promise<WorkspaceSnapshot | null> {
+export async function loadWorkspaceSnapshot(): Promise<
+  SavedWorkspaceSnapshot | SaveSiteFields | null
+> {
   return joinWorkspaceSnapshots(
-    await invoke<unknown[]>("workspace_get_snapshot"),
+    await invoke<SaveSiteFields[]>("workspace_get_snapshot"),
   );
 }
 

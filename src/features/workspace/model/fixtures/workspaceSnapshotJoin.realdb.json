@@ -7,6 +7,20 @@
         {
           "activeTabId": "tab-blank",
           "lastDockSide": "bottom",
+          "monoCompletions": [
+            {
+              "origin": {
+                "monoId": "mono-1",
+                "turn": 1
+              },
+              "request": {
+                "project": "/tmp/acme",
+                "prompt": "Sum up the notes",
+                "requestId": "req-main",
+                "sessionId": "x"
+              }
+            }
+          ],
           "projectCwd": "/tmp/acme",
           "projectReturnTargets": [],
           "projectTerminals": [
@@ -164,6 +178,20 @@
         {
           "activeTabId": "tab-n",
           "lastDockSide": "left",
+          "monoCompletions": [
+            {
+              "origin": {
+                "monoId": "mono-1",
+                "turn": 1
+              },
+              "request": {
+                "project": "/tmp/acme",
+                "prompt": "Sum up the notes",
+                "requestId": "req-window-1",
+                "sessionId": "x"
+              }
+            }
+          ],
           "projectCwd": "/tmp/notes",
           "projectReturnTargets": [
             {
@@ -393,6 +421,20 @@
           "snapshot": {
             "activeTabId": "tab-n",
             "lastDockSide": "left",
+            "monoCompletions": [
+              {
+                "origin": {
+                  "monoId": "mono-1",
+                  "turn": 1
+                },
+                "request": {
+                  "project": "/tmp/acme",
+                  "prompt": "Sum up the notes",
+                  "requestId": "req-window-1",
+                  "sessionId": "x"
+                }
+              }
+            ],
             "projectCwd": "/tmp/notes",
             "projectReturnTargets": [
               {
@@ -621,6 +663,20 @@
           "snapshot": {
             "activeTabId": "tab-blank",
             "lastDockSide": "bottom",
+            "monoCompletions": [
+              {
+                "origin": {
+                  "monoId": "mono-1",
+                  "turn": 1
+                },
+                "request": {
+                  "project": "/tmp/acme",
+                  "prompt": "Sum up the notes",
+                  "requestId": "req-main",
+                  "sessionId": "x"
+                }
+              }
+            ],
             "projectCwd": "/tmp/acme",
             "projectReturnTargets": [],
             "projectTerminals": [
@@ -784,6 +840,7 @@
       "rows": [
         {
           "activeTabId": "tab-j",
+          "monoCompletions": [],
           "projectCwd": "/tmp/acme",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -815,6 +872,7 @@
         },
         {
           "activeTabId": "tab-k",
+          "monoCompletions": [],
           "projectCwd": "/tmp/acme",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -850,6 +908,7 @@
           "readAt": 1000,
           "snapshot": {
             "activeTabId": "tab-k",
+            "monoCompletions": [],
             "projectCwd": "/tmp/acme",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -884,6 +943,7 @@
           "readAt": 2000,
           "snapshot": {
             "activeTabId": "tab-j",
+            "monoCompletions": [],
             "projectCwd": "/tmp/acme",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -922,6 +982,20 @@
       "rows": [
         {
           "activeTabId": "",
+          "monoCompletions": [
+            {
+              "origin": {
+                "monoId": "mono-1",
+                "turn": 1
+              },
+              "request": {
+                "project": "/tmp/acme",
+                "prompt": "Sum up the notes",
+                "requestId": "req-main",
+                "sessionId": "x"
+              }
+            }
+          ],
           "projectCwd": "/tmp/acme",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -931,6 +1005,20 @@
         },
         {
           "activeTabId": "tab-k",
+          "monoCompletions": [
+            {
+              "origin": {
+                "monoId": "mono-1",
+                "turn": 1
+              },
+              "request": {
+                "project": "/tmp/acme",
+                "prompt": "Sum up the notes",
+                "requestId": "req-window-1",
+                "sessionId": "x"
+              }
+            }
+          ],
           "projectCwd": "/tmp/notes",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -966,6 +1054,20 @@
           "readAt": 1000,
           "snapshot": {
             "activeTabId": "tab-k",
+            "monoCompletions": [
+              {
+                "origin": {
+                  "monoId": "mono-1",
+                  "turn": 1
+                },
+                "request": {
+                  "project": "/tmp/acme",
+                  "prompt": "Sum up the notes",
+                  "requestId": "req-window-1",
+                  "sessionId": "x"
+                }
+              }
+            ],
             "projectCwd": "/tmp/notes",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -1000,6 +1102,20 @@
           "readAt": 2000,
           "snapshot": {
             "activeTabId": "",
+            "monoCompletions": [
+              {
+                "origin": {
+                  "monoId": "mono-1",
+                  "turn": 1
+                },
+                "request": {
+                  "project": "/tmp/acme",
+                  "prompt": "Sum up the notes",
+                  "requestId": "req-main",
+                  "sessionId": "x"
+                }
+              }
+            ],
             "projectCwd": "/tmp/acme",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -1017,10 +1133,24 @@
           "sessionId": "s"
         }
       ],
-      "name": "no window saved a tab, but a chat runs",
+      "name": "no window saved a tab, but a chat runs and a Mono completion is owed",
       "rows": [
         {
           "activeTabId": "",
+          "monoCompletions": [
+            {
+              "origin": {
+                "monoId": "mono-1",
+                "turn": 1
+              },
+              "request": {
+                "project": "/tmp/acme",
+                "prompt": "Sum up the notes",
+                "requestId": "req-1",
+                "sessionId": "x"
+              }
+            }
+          ],
           "projectCwd": "/tmp/acme",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -1050,6 +1180,20 @@
           "readAt": 2000,
           "snapshot": {
             "activeTabId": "",
+            "monoCompletions": [
+              {
+                "origin": {
+                  "monoId": "mono-1",
+                  "turn": 1
+                },
+                "request": {
+                  "project": "/tmp/acme",
+                  "prompt": "Sum up the notes",
+                  "requestId": "req-1",
+                  "sessionId": "x"
+                }
+              }
+            ],
             "projectCwd": "/tmp/acme",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -1076,6 +1220,7 @@
       "rows": [
         {
           "activeTabId": "tab-1",
+          "monoCompletions": [],
           "projectCwd": "~",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -1131,6 +1276,7 @@
           "readAt": 2000,
           "snapshot": {
             "activeTabId": "tab-1",
+            "monoCompletions": [],
             "projectCwd": "~",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -1189,6 +1335,7 @@
       "rows": [
         {
           "activeTabId": "tab-1",
+          "monoCompletions": [],
           "projectCwd": "~",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -1220,6 +1367,7 @@
         },
         {
           "activeTabId": "tab-n",
+          "monoCompletions": [],
           "projectCwd": "/tmp/notes",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -1255,6 +1403,7 @@
           "readAt": 1000,
           "snapshot": {
             "activeTabId": "tab-n",
+            "monoCompletions": [],
             "projectCwd": "/tmp/notes",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -1289,6 +1438,7 @@
           "readAt": 2000,
           "snapshot": {
             "activeTabId": "tab-1",
+            "monoCompletions": [],
             "projectCwd": "~",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -1327,6 +1477,7 @@
       "rows": [
         {
           "activeTabId": "",
+          "monoCompletions": [],
           "projectCwd": "/tmp/acme",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -1365,6 +1516,7 @@
         },
         {
           "activeTabId": "tab-k",
+          "monoCompletions": [],
           "projectCwd": "/tmp/acme",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -1400,6 +1552,7 @@
           "readAt": 1000,
           "snapshot": {
             "activeTabId": "tab-k",
+            "monoCompletions": [],
             "projectCwd": "/tmp/acme",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -1434,6 +1587,7 @@
           "readAt": 2000,
           "snapshot": {
             "activeTabId": "",
+            "monoCompletions": [],
             "projectCwd": "/tmp/acme",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -1479,6 +1633,7 @@
       "rows": [
         {
           "activeTabId": "",
+          "monoCompletions": [],
           "projectCwd": "/tmp/acme",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -1517,6 +1672,7 @@
         },
         {
           "activeTabId": "",
+          "monoCompletions": [],
           "projectCwd": "/tmp/acme",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -1584,6 +1740,7 @@
           "readAt": 1000,
           "snapshot": {
             "activeTabId": "",
+            "monoCompletions": [],
             "projectCwd": "/tmp/acme",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -1650,6 +1807,7 @@
           "readAt": 2000,
           "snapshot": {
             "activeTabId": "",
+            "monoCompletions": [],
             "projectCwd": "/tmp/acme",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -1695,6 +1853,7 @@
       "rows": [
         {
           "activeTabId": "tab-c",
+          "monoCompletions": [],
           "projectCwd": "/tmp/acme",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -1726,6 +1885,7 @@
         },
         {
           "activeTabId": "",
+          "monoCompletions": [],
           "projectCwd": "/tmp/acme",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -1806,6 +1966,7 @@
           "readAt": 1000,
           "snapshot": {
             "activeTabId": "",
+            "monoCompletions": [],
             "projectCwd": "/tmp/acme",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -1885,6 +2046,7 @@
           "readAt": 2000,
           "snapshot": {
             "activeTabId": "tab-c",
+            "monoCompletions": [],
             "projectCwd": "/tmp/acme",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -1923,6 +2085,7 @@
       "rows": [
         {
           "activeTabId": "tab-c",
+          "monoCompletions": [],
           "projectCwd": "/tmp/acme",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -1954,6 +2117,7 @@
         },
         {
           "activeTabId": "tab-c",
+          "monoCompletions": [],
           "projectCwd": "/tmp/acme",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -2009,6 +2173,7 @@
         },
         {
           "activeTabId": "tab-c",
+          "monoCompletions": [],
           "projectCwd": "/tmp/acme",
           "projectReturnTargets": [],
           "projectTerminals": [],
@@ -2068,6 +2233,7 @@
           "readAt": 1000,
           "snapshot": {
             "activeTabId": "tab-c",
+            "monoCompletions": [],
             "projectCwd": "/tmp/acme",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -2126,6 +2292,7 @@
           "readAt": 1500,
           "snapshot": {
             "activeTabId": "tab-c",
+            "monoCompletions": [],
             "projectCwd": "/tmp/acme",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -2184,6 +2351,7 @@
           "readAt": 2000,
           "snapshot": {
             "activeTabId": "tab-c",
+            "monoCompletions": [],
             "projectCwd": "/tmp/acme",
             "projectReturnTargets": [],
             "projectTerminals": [],
@@ -2222,6 +2390,7 @@
       "rows": [
         {
           "activeTabId": "tab-a",
+          "monoCompletions": [],
           "projectCwd": "/tmp/acme",
           "projectReturnTargets": [
             {
@@ -2302,6 +2471,7 @@
           "readAt": 2000,
           "snapshot": {
             "activeTabId": "tab-a",
+            "monoCompletions": [],
             "projectCwd": "/tmp/acme",
             "projectReturnTargets": [
               {
