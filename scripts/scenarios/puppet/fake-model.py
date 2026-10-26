@@ -8,7 +8,8 @@ is app.sh's list (fields `name` and `input` are used). Others get text.
 import json
 import sys
 from pathlib import Path
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from socketserver import ThreadingTCPServer
 
 PROBES = json.loads(Path(sys.argv[2]).read_text())
 
@@ -64,6 +65,9 @@ class Handler(BaseHTTPRequestHandler):
                   "".join(f"event: {name}\ndata: {json.dumps({'type': name, **data})}\n\n" for name, data in events).encode())
 
 
-server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+# Not http.server's HTTPServer: its server_bind calls socket.getfqdn, a PTR
+# lookup through mDNSResponder that macOS gates behind the Local Network
+# prompt, which blocks this server on a hosted runner (ADE-120).
+server = ThreadingTCPServer(("127.0.0.1", 0), Handler)
 Path(sys.argv[1]).write_text(str(server.server_address[1]))
 server.serve_forever()
