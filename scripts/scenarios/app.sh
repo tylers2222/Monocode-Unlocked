@@ -11,7 +11,8 @@
 #   app.sh d1                 D1: the agent sandbox on, off, and on without srt
 #   app.sh r6                 R6: agents ask and ack through MCP in the real app
 #   app.sh r9                 R9: reminders reach an idle and a busy lead once,
-#                             across a kill before and after the claim
+#                             across a kill before and after the claim; R10:
+#                             each offers one extension, used once
 #   app.sh approvals [runs]   ADE-55 approvals board, macOS only, on a copy
 #                             of the real app database, `runs` times (default 1)
 #
@@ -455,10 +456,13 @@ run_r6() {
 
 # R9: the Giga asks the Mono, which starts two leads with a 10-minute start
 # ask each and never acks. The idle lead's turn ends at once; the busy lead's
-# first turn waits while $PUPPET/hold exists. The reminder rule comes first.
+# first turn waits while $PUPPET/hold exists. The reminder rule comes first:
+# each lead extends its one open ask twice (R10).
 r9_rules() {
   jq -n --arg hold "$PUPPET/hold" '[
-    {match: "<mono_reminder", reply: "Noted."},
+    {match: "<mono_reminder", calls: [
+      {tool: "extend", arguments: {}}, {tool: "extend", arguments: {}}],
+      reply: "Noted."},
     {match: "R9-HABIT", calls: [{tool: "ask", arguments:
       {message: "R9-PROJECT Start the leads.", send_to: "r9-mono"}}], reply: "Asked."},
     {match: "R9-PROJECT", calls: [
@@ -499,6 +503,8 @@ run_r9() {
   busy="$(q "SELECT id FROM mono_messages WHERE tool = 'start_session' AND body LIKE 'R9-BUSY%'")"
   idle_key="reminder:$idle:t5"; busy_key="reminder:$busy:t5"
   echo "R9 readings (idle lead's ask $idle, busy lead's ask $busy):"
+  local dues
+  dues="$(q "SELECT group_concat(due_active_ms, ' ') FROM (SELECT due_active_ms FROM mono_asks WHERE id IN ('$idle', '$busy') ORDER BY id)")"
   advance $((5 * 60000))
   wait_until 60 "both reminders are enqueued" \
     holds "SELECT count(*) = 2 FROM mono_outbox WHERE key IN ('$idle_key', '$busy_key')"
@@ -508,6 +514,7 @@ run_r9() {
     "$(reminded "$idle") $(jq -s '[.[] | select(.rule == "<mono_reminder")] | first | .steer' "$PUPPET/log.jsonl")" "1 false"
   expect "busy lead: reminder waits for the turn end, unclaimed" \
     "$(q "SELECT ifnull(claimed_by, 'none') || ' ' || ifnull(sent_at, 'unsent') FROM mono_outbox WHERE key = '$busy_key'")" "none unsent"
+  wait_until 60 "the idle lead extends twice" holds_log '[.[] | select(.tool == "extend")] | length == 2'
   # Killed after the enqueue and before any claim. The next agent reads no
   # request while hold-start exists.
   touch "$PUPPET/hold-start"
@@ -526,6 +533,18 @@ run_r9() {
   expect "busy lead: reminder prompts" "$(reminded "$busy")" 1
   expect "idle lead: reminder prompts after both restarts" "$(reminded "$idle")" 1
   expect "reminders sent" "$(q "SELECT count(*) FROM mono_outbox WHERE sent_at IS NOT NULL")" 2
+  # R10: each reminder offers the extension; each lead's first extend moves
+  # its deadline 15 active minutes, its second is refused.
+  wait_until 60 "the busy lead extends twice" holds_log '[.[] | select(.tool == "extend")] | length == 4'
+  expect "reminders that offer the extension" \
+    "$(jq -s '[.[] | select(.rule == "<mono_reminder" and (.prompt | contains("app messages.extend")))] | length' "$PUPPET/log.jsonl")" 2
+  expect "extends: answers" \
+    "$(jq -rs '[.[] | select(.tool == "extend") | .result.code // "ok"] | sort | join(" ")' "$PUPPET/log.jsonl")" \
+    "extend_refused extend_refused ok ok"
+  expect "deadlines moved once by 15 active minutes" \
+    "$(q "SELECT group_concat(due_active_ms, ' ') FROM (SELECT due_active_ms FROM mono_asks WHERE id IN ('$idle', '$busy') ORDER BY id)")" \
+    "$(for due in $dues; do printf '%s ' $((due + 15 * 60000)); done | sed 's/ $//')"
+  expect "extension events" "$(q "SELECT count(*) FROM mono_ask_events WHERE kind = 'extension'")" 2
   expect "steers" "$(jq -s '[.[] | select(.steer == true)] | length' "$PUPPET/log.jsonl")" 0
   q "SELECT '  outbox ' || key || ' ' || ifnull(claimed_by, '-') || ' ' || ifnull(sent_at, '-') FROM mono_outbox ORDER BY key"
   "$INSTANCE" stop
