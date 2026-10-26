@@ -144,7 +144,7 @@ type SessionUpsertPayload = {
   worktreeRemoved?: boolean;
   linkedWorkItem?: LinkedWorkItem;
   automationId?: string;
-  mcp?: "none";
+  mcp?: Session["mcp"];
 };
 
 /**

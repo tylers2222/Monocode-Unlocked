@@ -4,6 +4,7 @@ import {
   runtimeProviderBinaryPath,
   type ConfigurableBinaryProvider,
 } from "../../../features/providers/model/providerBinaryPaths";
+import type { Session } from "../../../features/sessions/model/session";
 
 /** Process I/O is supplied by the desktop or a headless host. Provider
  * protocols never need to know which process owns their children. */
@@ -342,7 +343,7 @@ export async function spawnChild(
   /** `devin acp` only: start with an approval rule for every edit. */
   devinAskEdits?: boolean,
   /** omp only: `"none"` starts it without MCP servers (ADE-117). */
-  ompMcp?: "none",
+  ompMcp?: Session["mcp"],
 ): Promise<void> {
   livePid.delete(sessionId);
   pendingExit.delete(sessionId);
