@@ -10,14 +10,32 @@ use rusqlite::params;
 use super::agents::{mono_caller, session_caller};
 use super::s5_scheduler::{advance_to, ask, due, t5_key, MINUTE, P, T5_LEAD};
 use super::world::World;
-use crate::ask_gate::Delivery;
-use crate::ask_scheduler::{self, Reminder};
-use crate::mono_messages::{self, Notices, SessionId};
+use crate::ask_scheduler::{self, Claimed};
+use crate::mono_messages::{self, MessageId, Notices, SessionId};
 use crate::mono_roster::MonoRole;
 
-/// A later stage's row to a Mono (R15 writes `blocked:<ask>:<seq>`), so a
-/// Mono's reminder is checked to reach its current chat.
+/// A later stage's row to a Mono (R15 writes `blocked:<ask>:<seq>`) that
+/// this build does not send: no window lists or claims it.
 const BLOCKED: &str = "blocked:s5d:1";
+/// A t5 row to a Mono, so a Mono's reminder is checked to reach its current
+/// chat.
+const MONO_T5: &str = "reminder:s5d-mono:t5";
+
+/// The exact prompt a claimed t5 reminder of ask `ask` hands the agent,
+/// with R10's one extension offer.
+pub(super) fn t5_text(ask: &MessageId) -> String {
+    let id = ask.as_str();
+    format!(
+        "<mono_reminder ask_id=\"{id}\" stage=\"t5\">\nAsk {id} is due in 5 active minutes. When its work is done, ack it with this ask_id. If you need more time, app messages.extend {{\"ask_id\":\"{id}\"}} (the extend tool) moves the deadline 15 active minutes, once.\n</mono_reminder>"
+    )
+}
+
+fn wake(ask: &MessageId) -> Option<Claimed> {
+    Some(Claimed {
+        text: t5_text(ask),
+        wake: true,
+    })
+}
 
 /// The chats `notices` names, sorted.
 fn named(notices: &Notices) -> Vec<String> {
@@ -28,20 +46,16 @@ fn named(notices: &Notices) -> Vec<String> {
 }
 
 fn keys(world: &World, chat: &SessionId) -> Vec<String> {
-    let pending = ask_scheduler::pending(&world.conn(), chat).unwrap();
-    pending
-        .into_iter()
-        .map(|Reminder { key, .. }| key)
-        .collect()
+    ask_scheduler::pending(&world.conn(), chat).unwrap()
 }
 
-fn claim(
+pub(super) fn claim(
     world: &World,
     key: &str,
     window: &str,
     running: &[&SessionId],
     steerable: bool,
-) -> Option<Delivery> {
+) -> Option<Claimed> {
     let running: HashMap<String, String> = running
         .iter()
         .map(|session| (session.as_str().to_string(), "t1".to_string()))
@@ -68,7 +82,8 @@ fn row(world: &World, key: &str) -> (Option<String>, Option<i64>) {
 /// S5.5 "a kill in the middle of sending a reminder: after restart it is
 /// sent exactly once". Defect: a tick or a turn end that leaves a reminder's
 /// chat unnamed; a busy chat that cannot steer gets the reminder in its
-/// turn, or one that can is made to wait; two windows both claim one
+/// turn, or one that can is made to wait; a claim that hands the agent
+/// another text, or a stage this build does not send; two windows both claim one
 /// reminder; a window that does not hold a reminder marks it sent, or one
 /// reminder is marked twice; a closed window or a killed app keeps its
 /// unsent claim, so the reminder never goes out, or frees a sent one, so it
@@ -101,8 +116,13 @@ fn s5_reminders_are_claimed_once_sent_once_and_freed_by_close_and_boot() {
         .conn()
         .execute(
             "INSERT INTO mono_outbox (key, ask_id, stage, recipient, at_active_ms)
-             VALUES (?1, NULL, 'blocked', ?2, 0)",
-            params![BLOCKED, format!("mono:{}", mono.id.as_str())],
+             VALUES (?1, NULL, 'blocked', ?3, 0), (?2, ?4, 't5', ?3, 0)",
+            params![
+                BLOCKED,
+                MONO_T5,
+                format!("mono:{}", mono.id.as_str()),
+                a.as_str()
+            ],
         )
         .unwrap();
 
@@ -114,8 +134,13 @@ fn s5_reminders_are_claimed_once_sent_once_and_freed_by_close_and_boot() {
     assert_eq!(named(&tick), [lead.as_str(), worker.as_str()]);
     assert_eq!(keys(&world, &lead), [ka.as_str()]);
     assert_eq!(keys(&world, &worker), [kb.as_str()]);
-    assert_eq!(keys(&world, &mono.chat), [BLOCKED]);
-    delivery_follows_the_chat(&mut world, &ka, (&lead, &worker, &mono.chat));
+    assert_eq!(
+        keys(&world, &mono.chat),
+        [MONO_T5],
+        "a stage not sent waits unlisted"
+    );
+    assert_eq!(claim(&world, BLOCKED, "main", &[], false), None);
+    delivery_follows_the_chat(&mut world, (&ka, &a), (&lead, &worker, &mono.chat));
     only_the_holder_marks_it_sent(&world, &ka);
     close_and_boot_free_unsent_claims(&mut world, (&ka, &kb), (&lead, &worker, &mono.chat));
 }
@@ -125,13 +150,10 @@ fn s5_reminders_are_claimed_once_sent_once_and_freed_by_close_and_boot() {
 /// and of two windows only the first gets the reminder.
 fn delivery_follows_the_chat(
     world: &mut World,
-    ka: &str,
+    (ka, a): (&str, &MessageId),
     (lead, worker, mono_chat): (&SessionId, &SessionId, &SessionId),
 ) {
-    assert_eq!(
-        claim(world, ka, "main", &[lead], false),
-        Some(Delivery::AfterTurn)
-    );
+    assert_eq!(claim(world, ka, "main", &[lead], false), None);
     assert_eq!(
         row(world, ka),
         (None, None),
@@ -139,13 +161,14 @@ fn delivery_follows_the_chat(
     );
     assert_eq!(named(&world.end_turn(lead, "t1", false)), [lead.as_str()]);
     assert_eq!(
-        claim(world, BLOCKED, "main", &[mono_chat], true),
-        Some(Delivery::Steer)
+        claim(world, MONO_T5, "main", &[mono_chat], true),
+        Some(Claimed {
+            text: t5_text(a),
+            wake: false
+        }),
+        "a steer joins the running turn"
     );
-    assert_eq!(
-        claim(world, ka, "main", &[worker], true),
-        Some(Delivery::Wake)
-    );
+    assert_eq!(claim(world, ka, "main", &[worker], true), wake(a));
     assert_eq!(claim(world, ka, "second", &[], false), None, "one claim");
     assert!(keys(world, lead).is_empty());
     assert!(
@@ -170,7 +193,7 @@ fn close_and_boot_free_unsent_claims(
     (ka, kb): (&str, &str),
     (lead, worker, mono_chat): (&SessionId, &SessionId, &SessionId),
 ) {
-    assert_eq!(claim(world, kb, "main", &[], false), Some(Delivery::Wake));
+    assert!(claim(world, kb, "main", &[], false).is_some());
     let closed = mono_messages::release_window_slots(&world.conn(), "main", world.now()).unwrap();
     assert_eq!(named(&closed), [mono_chat.as_str(), worker.as_str()]);
     assert_eq!(keys(world, worker), [kb]);
@@ -180,15 +203,15 @@ fn close_and_boot_free_unsent_claims(
     );
     assert_eq!(row(world, ka), (Some("main".into()), Some(world.now())));
 
-    for key in [kb, BLOCKED] {
-        assert_eq!(claim(world, key, "main", &[], false), Some(Delivery::Wake));
+    for key in [kb, MONO_T5] {
+        assert!(claim(world, key, "main", &[], false).is_some());
     }
     world.down(MINUTE);
     assert_eq!(keys(world, worker), [kb]);
-    assert_eq!(keys(world, mono_chat), [BLOCKED]);
+    assert_eq!(keys(world, mono_chat), [MONO_T5]);
     assert!(keys(world, lead).is_empty(), "a sent reminder stays sent");
-    for key in [kb, BLOCKED] {
-        assert_eq!(claim(world, key, "main", &[], false), Some(Delivery::Wake));
+    for key in [kb, MONO_T5] {
+        assert!(claim(world, key, "main", &[], false).is_some());
         assert!(sent(world, key, "main"));
     }
     let sent_rows: i64 = world
@@ -246,17 +269,12 @@ fn windows_list_claim_and_mark_a_reminder_through_the_commands() {
     };
     let (main, other) = (window("main"), window("window-1"));
     let call = |window, command: &str, args: Value| invoke_command(window, command, &args).unwrap();
-    let pending = |chat: &SessionId| -> Vec<String> {
-        let listed = call(
+    let pending = |chat: &SessionId| {
+        call(
             &main,
             "mono_outbox_pending",
             json!({ "sessionId": chat.as_str() }),
-        );
-        serde_json::from_value::<Vec<Value>>(listed)
-            .unwrap()
-            .iter()
-            .map(|reminder| reminder["key"].as_str().unwrap().to_owned())
-            .collect()
+        )
     };
     let claim = |window| {
         call(
@@ -267,12 +285,17 @@ fn windows_list_claim_and_mark_a_reminder_through_the_commands() {
     };
     let sent = |window| call(window, "mono_outbox_sent", json!({ "key": kb }));
 
-    assert_eq!(pending(&worker), [kb.as_str()]);
-    assert!(
-        pending(&lead).is_empty(),
+    assert_eq!(pending(&worker), json!([kb]));
+    assert_eq!(
+        pending(&lead),
+        json!([]),
         "only its recipient's chat lists it"
     );
-    assert_eq!(claim(&main), json!("wake"), "the idle chat wakes");
+    assert_eq!(
+        claim(&main),
+        json!({ "text": t5_text(&b), "wake": true }),
+        "the idle chat wakes with the reminder's prompt"
+    );
     assert_eq!(claim(&other), Value::Null, "one claim");
     assert_eq!(sent(&other), json!(false), "only the holder marks it sent");
     assert_eq!(sent(&main), json!(true));
