@@ -472,9 +472,14 @@ export class MonoSessionCompletionBatches {
         return { origin: group.origin, request, result, notice: id };
       }),
     );
-    void Promise.resolve(this.onReady(delivery.monoId, current()!, current))
-      .finally(() => this.deliveries.delete(delivery))
-      .catch(console.error);
+    const delivered = this.onReady(delivery.monoId, current()!, current);
+    if (delivered) {
+      void delivered
+        .finally(() => this.deliveries.delete(delivery))
+        .catch(console.error);
+    } else {
+      this.deliveries.delete(delivery);
+    }
   }
 }
 
