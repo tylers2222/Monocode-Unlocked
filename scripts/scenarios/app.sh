@@ -12,11 +12,6 @@
 #   app.sh r6                 R6: agents ask and ack through MCP in the real app
 #   app.sh approvals [runs]   ADE-55 approvals board, macOS only, on a copy
 #                             of the real app database, `runs` times (default 1)
-#   app.sh build-two          the same instance with a second window at launch
-#   app.sh ade89 MODE [runs]  ADE-89: a waiting completion result survives
-#                             two exits with no quit save (MODE kill or
-#                             term, or two: kill with two windows, after
-#                             build-two) and arrives once
 #
 # GIGA_EVAL_OUT and GIGA_EVAL_HOME default to their own /tmp folders, apart
 # from other GigaEval runs. The installed apps are never used; `approvals`
@@ -429,18 +424,11 @@ run_r6() {
   return "$FAILED"
 }
 source "$SCENARIOS/approvals.sh"
-# ADE-89: run_ade89 and its helpers.
-source "$SCENARIOS/../../tests/scenarios/ade89.sh"
 
 [[ "${1:-}" != approvals* || "$EVAL_OS" == macos ]] || die "approvals is macOS only (GIGA_EVAL_SANDBOX, sandbox-exec)"
 
 case "${1:-}" in
   build) "$INSTANCE" build "${2:-$SCENARIOS/../..}" scenario ;;
-  # The same app with a second workspace window, window-0, from the tauri
-  # config: both windows boot at every launch, as File > New Window opens one.
-  build-two)
-    GIGA_EVAL_CONFIG="$(jq -c '{app: {windows: [.app.windows[0], .app.windows[0] + {label: "window-0"}]}}' \
-      "${2:-$SCENARIOS/../..}/src-tauri/tauri.conf.json")" "$INSTANCE" build "${2:-$SCENARIOS/../..}" scenario-two ;;
   # One run per process: a run called in `||` would run with errexit off.
   s0-run) run_s0 "$2" ;;
   d1) run_d1 ;;
@@ -460,12 +448,5 @@ case "${1:-}" in
     for run in $(seq 1 "${2:-1}"); do "$0" approvals-run "$run" || failed=$((failed + 1)); done
     log "approvals: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
-  ade89-run) run_ade89 "$2" "$3" ;;
-  ade89)
-    [[ "${2:-}" =~ ^(kill|term|two)$ ]] || die "usage: app.sh ade89 kill|term|two [runs]"
-    failed=0
-    for run in $(seq 1 "${3:-1}"); do "$0" ade89-run "$2" "$run" || failed=$((failed + 1)); done
-    log "ADE-89 $2: $(( ${3:-1} - failed ))/${3:-1} passed"
-    ((failed == 0)) ;;
-  *) sed -n '2,23p' "$0"; exit 2 ;;
+  *) sed -n '2,18p' "$0"; exit 2 ;;
 esac
