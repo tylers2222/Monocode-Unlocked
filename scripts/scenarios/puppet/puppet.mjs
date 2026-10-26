@@ -12,8 +12,10 @@
 // `<app> app <action>`, both with the app token this process got from the
 // app. A string argument "$card:<heading>" is the id of the card that an
 // earlier logged call filed or updated under that heading, "$prev.<field>" is
-// that field of the previous call's answer, and "$<name>" is attribute <name>
-// of the prompt's <mono_message>. log.jsonl gets
+// that field of the previous call's answer, "$<name>" is attribute <name>
+// of the prompt's first <mono_message>, and "$<name>@<text>" is attribute
+// <name> of the <mono_message> whose body starts with <text> (a turn can take
+// several messages, in either order). log.jsonl gets
 // one line per prompt ({"prompt", "rule", "steer"}, plus "who", the Mono
 // that get_monos marks `you`, when `whoami` is set) and per call ({"tool"
 // or "action", "input", "result"}).
@@ -107,12 +109,18 @@ function withCardIds(input) {
 }
 
 function fill(input, text, prev) {
-  const attribute = (name) =>
-    text.match(new RegExp(`<mono_message [^>]*\\b${name}="([^"]*)"`))?.[1];
+  const escape = (raw) => raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const attribute = (name, body) =>
+    text.match(
+      new RegExp(
+        `<mono_message [^>]*\\b${name}="([^"]*)"${body === undefined ? "" : `[^>]*>\\n${escape(body)}`}`,
+      ),
+    )?.[1];
   const value = (raw) => {
     if (typeof raw !== "string" || !raw.startsWith("$") || raw.startsWith("$card:")) return raw;
     if (raw.startsWith("$prev.")) return payload(prev)?.[raw.slice(6)];
-    return attribute(raw.slice(1));
+    const at = raw.indexOf("@");
+    return at < 0 ? attribute(raw.slice(1)) : attribute(raw.slice(1, at), raw.slice(at + 1));
   };
   return Object.fromEntries(
     Object.entries(input).map(([key, raw]) => [key, value(raw)]),

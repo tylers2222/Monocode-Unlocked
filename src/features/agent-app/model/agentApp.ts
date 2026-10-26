@@ -7,13 +7,19 @@ import {
 } from "../../sessions/model/models";
 import { requireHarnessModel } from "./agentModelChoice";
 import {
+  newTurnId,
   parseGetInput,
+  parseMonoId,
   parseReplyInput,
   parseSendInput,
   parseSessionId,
+  renderMonoMessage,
   type GetInput,
+  type MessageId,
+  type MessageSender,
   type ReplyInput,
   type SendInput,
+  type SessionId,
 } from "../../monos/model/monoMessages";
 import {
   AppActionError,
@@ -137,6 +143,9 @@ export type AppSessionPlacement = {
   direction: SplitDir;
   besideSessionId: string;
 };
+
+/** R7: the ask a submitted start gives the session it starts (Rust `StartAsk`). */
+export type StartAsk = { askId: MessageId; dueInMs: number | null };
 
 /** A Mono as app calls from its chat or habit runs see it. */
 export type AppMono = {
@@ -310,7 +319,7 @@ export type AgentAppHost = {
    * `mono_app_action_check`. Required, so a host cannot run app actions with
    * no level rule. Throws the refusal or rejection as an `AppActionError`;
    * allowed, it answers the lead id `sessions.start` writes on the new
-   * session.
+   * session, and the ask the start gives it (R7).
    */
   levels: {
     check(
@@ -323,7 +332,7 @@ export type AgentAppHost = {
         startedSessionId: string | null;
         input: Record<string, unknown>;
       },
-    ): Promise<{ leadSessionId: string | null }>;
+    ): Promise<{ leadSessionId: string | null; ask: StartAsk | null }>;
     /**
      * `mono_message_record_start`: the accepted start row of session
      * `sessionId`, which this submitted start launched, as its message id.
@@ -392,6 +401,7 @@ export const FIELDS = new Map<string, readonly string[]>([
       "besideSessionId",
       "project",
       "notifyOnComplete",
+      "due_minutes",
     ],
   ],
   ["worktrees.list", ["project"]],
@@ -556,6 +566,35 @@ function startedAnyway(error: unknown, id: string): Error {
   return error instanceof AppActionError
     ? new AppActionError(error.code, text, error.details)
     : new Error(text);
+}
+
+/**
+ * R7: the first turn of session `started`, whose start is `ask`. Its agent
+ * reads the prompt as R6 hands over an ask: the `<mono_message>` with
+ * `ask_id` and `due_in`. Rust answers an ask only for a Mono's or a lead's
+ * start (a Giga's is none, a worker starts nothing), so one of those sent
+ * it. The transcript keeps the prompt as given.
+ */
+function askTurn(
+  source: Session,
+  mono: AppMono | undefined,
+  started: string,
+  prompt: string,
+  ask: StartAsk,
+): NonNullable<QuickLaunch["firstTurn"]> {
+  // Ids Rust just checked: the caller's session, and appLaunchId's.
+  const fromSessionId = source.id as SessionId;
+  const reading = { sessionId: started as SessionId, turnId: newTurnId(), target: null };
+  const sender: MessageSender = mono
+    ? { kind: "mono", name: mono.name ?? mono.id, role: "mono" }
+    : { kind: "session", title: source.title, level: "lead" };
+  const message = {
+    id: ask.askId, fromMonoId: parseMonoId(mono?.id) ?? null, fromSessionId, body: prompt,
+    intent: "new", replyTo: null, scope: null, wantingReply: false,
+    carries: { kind: "ask", dueInMs: ask.dueInMs },
+  } as const;
+  const agentText = renderMonoMessage(message, sender, undefined, reading);
+  return { agentText, turnId: reading.turnId };
 }
 
 function agentPrompt(value: unknown): string {
@@ -762,7 +801,7 @@ function startLaunch(
   input: Record<string, unknown>,
   host: AgentAppHost,
   leadSessionId: string | null,
-): { launch: QuickLaunch; listedWorktree?: string } {
+): { launch: QuickLaunch; listedWorktree?: string; mono?: AppMono } {
   const cwd = requireProject(source, input, host);
   const prompt = agentPrompt(input.prompt);
   const draft = input.draft ?? false;
@@ -860,7 +899,7 @@ function startLaunch(
     startedBy: source.id,
     ...(leadSessionId ? { leadSessionId } : {}),
   };
-  return { launch, listedWorktree };
+  return { launch, listedWorktree, mono };
 }
 
 function memoryPath(topic: unknown): AgentFilePath {
@@ -1680,18 +1719,18 @@ export async function handleAgentApp(
 ): Promise<unknown> {
   fields(action, rawInput);
   const input = boundaryInput(action, rawInput);
+  // messages.* get their own gate in mono_message_submit.
+  if (action.startsWith("messages."))
+    return handleMessages();
   const launchId =
     action === "sessions.start" ? appLaunchId(source, requestId) : null;
   // Design 6.6: Rust decides every app action once, before it runs.
-  // messages.* get their own gate in mono_message_submit.
-  const { leadSessionId } = action.startsWith("messages.")
-    ? { leadSessionId: null }
-    : await host.levels.check(requestId, {
-        action,
-        target: typeof input.sessionId === "string" ? input.sessionId : null,
-        startedSessionId: launchId,
-        input,
-      });
+  const { leadSessionId, ask } = await host.levels.check(requestId, {
+    action,
+    target: typeof input.sessionId === "string" ? input.sessionId : null,
+    startedSessionId: launchId,
+    input,
+  });
   if (action.startsWith("artifacts."))
     return handleArtifacts(source, requestId, action, input, host);
   if (action.startsWith("soul."))
@@ -1708,7 +1747,7 @@ export async function handleAgentApp(
     return handleGigaMonos(source, action, input, host);
   if (action.startsWith("monos."))
     return handleMonos(source, action, input, host);
-  if (action.startsWith("messages.")) {
+  function handleMessages() {
     const messages = host.messages;
     if (!messages) throw new Error("Mono messaging is unavailable here");
     if (action === "messages.send")
@@ -1868,7 +1907,7 @@ export async function handleAgentApp(
       };
     }
     case "sessions.start": {
-      const { launch, listedWorktree } = startLaunch(
+      const { launch, listedWorktree, mono } = startLaunch(
         source,
         input,
         host,
@@ -1901,6 +1940,7 @@ export async function handleAgentApp(
             source.id);
       // The id the level check was sent (appLaunchId is pure).
       const id = appLaunchId(source, requestId);
+      if (ask) launch.firstTurn = askTurn(source, mono, id, launch.prompt, ask);
       if (besideSessionId)
         await host.start(
           launch,
@@ -1913,9 +1953,10 @@ export async function handleAgentApp(
       const folder = host.monoOf?.(source.id)?.folder;
       if (folder && !launch.sidebarHidden)
         fileInMonoFolder(launch.cwd, id, folder);
-      // The start row names this work for steers (design 16.2). It takes
-      // the input as the caller gave it, the input the level check hashed.
-      // A draft runs no work, so it has none.
+      // The start row names this work for steers (design 16.2) and is the
+      // ask to the started session (R7), after host.start saved its row. It
+      // takes the input as the caller gave it, the input the level check
+      // hashed. A draft runs no work, so it has none.
       const messageId = launch.draft
         ? undefined
         : await host.levels
@@ -1932,6 +1973,7 @@ export async function handleAgentApp(
         draft: !!launch.draft,
         ...(notifyMonoId ? { notifyOnComplete: true } : {}),
         ...(messageId ? { message_id: messageId } : {}),
+        ...(ask ? { ask_id: ask.askId } : {}),
       };
     }
     case "worktrees.list":

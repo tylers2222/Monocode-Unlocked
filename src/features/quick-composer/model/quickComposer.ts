@@ -30,6 +30,7 @@ import {
   harnessSupportsAttachments,
   type HarnessId,
 } from "../../sessions/model/session";
+import type { TurnId } from "../../monos/model/monoMessages";
 
 /** Workspace windows hear this when the panel has a session for them. */
 export const QUICK_COMPOSER_LAUNCH_EVENT = "quick_composer_launch";
@@ -77,6 +78,8 @@ export type QuickLaunch = {
   leadSessionId?: string;
   /** An app launch: the session whose `sessions.start` made it. Its first user block keeps it (design 13.4). */
   startedBy?: string;
+  /** R7: what the agent reads in its first turn `turnId`, in place of `prompt`, which the transcript shows. */
+  firstTurn?: { agentText: string; turnId: TurnId };
 };
 
 /** The panel exists on macOS only; elsewhere the shortcut is never claimed. */

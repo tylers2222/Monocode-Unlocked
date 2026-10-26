@@ -117,6 +117,19 @@ fn count(world: &World, sql: &str) -> i64 {
     world.conn().query_row(sql, [], |row| row.get(0)).unwrap()
 }
 
+/// The `start_session` row of `session`, which is also its start ask (R7).
+fn start_of(world: &World, session: &SessionId) -> MessageId {
+    let id: String = world
+        .conn()
+        .query_row(
+            "SELECT id FROM mono_messages WHERE tool = 'start_session' AND to_session_id = ?1",
+            [session.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    MessageId::parse(&id).unwrap()
+}
+
 fn stored_active(world: &World) -> i64 {
     count(world, "SELECT active_ms FROM mono_clock WHERE id = 1")
 }
@@ -173,7 +186,7 @@ fn fail_inserts(world: &World, table: &str) {
 }
 
 /// Where the ack row `id` went: its Mono or its session.
-fn ack_went_to(world: &World, id: &MessageId) -> (Option<String>, Option<String>) {
+pub(super) fn ack_went_to(world: &World, id: &MessageId) -> (Option<String>, Option<String>) {
     world
         .conn()
         .query_row(
@@ -274,8 +287,8 @@ fn an_ask_goes_only_to_a_direct_child_with_its_due_in_active_time() {
             &world,
             "SELECT count(*) FROM mono_asks WHERE state = 'open'"
         ),
-        5,
-        "asks outlive a kill"
+        7,
+        "asks outlive a kill, the two start asks (R7) too"
     );
 }
 
@@ -297,7 +310,8 @@ fn an_ask_reusing_a_sends_request_id_is_refused() {
         &tree.live(),
     ));
     assert_eq!(reused.0, "request_id_reused");
-    assert_eq!(count(&world, "SELECT count(*) FROM mono_asks"), 0);
+    let start_ask = 1;
+    assert_eq!(count(&world, "SELECT count(*) FROM mono_asks"), start_ask);
 }
 
 /// Review r2 m1. Defect: a retried ask that was rejected (here an unknown
@@ -319,7 +333,8 @@ fn a_retried_rejected_ask_gets_its_first_refusal() {
         (first, again),
         (("unknown_target", false), ("unknown_target", true))
     );
-    assert_eq!(count(&world, "SELECT count(*) FROM mono_asks"), 0);
+    let start_ask = 1;
+    assert_eq!(count(&world, "SELECT count(*) FROM mono_asks"), start_ask);
 }
 
 /// Review r1 m3. Defect: a caller or target with no saved row is told
@@ -358,7 +373,8 @@ fn an_ask_from_or_to_no_saved_row_gets_the_send_gates_answer() {
         &live,
     ));
     assert_eq!(to_ghost.0, "not_direct_child");
-    assert_eq!(count(&world, "SELECT count(*) FROM mono_asks"), 0);
+    let start_ask = 1;
+    assert_eq!(count(&world, "SELECT count(*) FROM mono_asks"), start_ask);
     assert_eq!(
         count(
             &world,
@@ -1206,6 +1222,12 @@ fn r5c_a_restart_moves_asks_from_chats_to_actors_once() {
         ask_actors(&mono_ask, &mono, "session:r5-lead", "open"),
         ask_actors(&lead_ask, "session:r5-lead", "session:r5-worker", "acked"),
         ask_actors(&other_ask, "session:r5-lead", "session:r5-other", "open"),
+        ask_actors(
+            &start_of(&world, &tree.lead),
+            &mono,
+            "session:r5-lead",
+            "open",
+        ),
     ];
     expected.sort();
     assert_eq!(
