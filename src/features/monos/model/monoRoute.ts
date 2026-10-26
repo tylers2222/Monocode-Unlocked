@@ -229,15 +229,30 @@ function noticeItem(host: MonoQueueHost, message: Noticed): QueuedMessage {
   };
 }
 
-/** A `mono_outbox` row that waits for a chat (R9, Rust `Reminder`). */
-type Reminder = { key: string; askId: MessageId | null; stage: string };
+/**
+ * A `mono_outbox` row that waits for a chat (R9, Rust `Reminder`). `child`
+ * is the ask's child when the reminder goes to its parent (R11 `why`).
+ */
+type Reminder = {
+  key: string;
+  askId: MessageId | null;
+  stage: string;
+  child: string | null;
+};
 /** Rust `ask_gate::Delivery`: how a claimed reminder reaches its chat. */
 type ReminderDelivery = "steer" | "wake" | "after_turn";
 
 /** What the agent reads at each reminder stage this build sends. */
-const REMINDER_TEXT: Record<string, (askId: string) => string> = {
+const REMINDER_TEXT: Record<
+  string,
+  (askId: string, child: string | null) => string
+> = {
   t5: (askId) =>
     `Ask ${askId} is due in 5 active minutes. When its work is done, ack it with this ask_id. If you need more time, app messages.extend {"ask_id":"${askId}"} (the extend tool) moves the deadline 15 active minutes, once.`,
+  deadline: (askId) =>
+    `Ask ${askId} is due now. Finish its work and ack it with this ask_id. In 5 active minutes your parent is told you missed it and will ask you why.`,
+  why: (askId, child) =>
+    `${child} has not acked ${askId}. Ask it why: send it a message with send_to "${child}". It stores its reason with app messages.reason (the reason tool); the ask stays open until it acks.`,
 };
 
 /**
@@ -252,7 +267,7 @@ async function queueReminders(host: MonoQueueHost, sessionId: string) {
   const reminders = await invoke<Reminder[]>("mono_outbox_pending", {
     sessionId,
   });
-  for (const { key, askId, stage } of reminders) {
+  for (const { key, askId, stage, child } of reminders) {
     const text = REMINDER_TEXT[stage];
     if (!text || !askId || !host.session(sessionId)) continue;
     const delivery = await invoke<ReminderDelivery | null>(
@@ -265,7 +280,7 @@ async function queueReminders(host: MonoQueueHost, sessionId: string) {
         id: key,
         appRequestId: key,
         monoReminder: true,
-        text: `<mono_reminder ask_id="${askId}" stage="${stage}">\n${text(askId)}\n</mono_reminder>`,
+        text: `<mono_reminder ask_id="${askId}" stage="${stage}"${child ? ` child="${child}"` : ""}>\n${text(askId, child)}\n</mono_reminder>`,
         attachments: [],
         ...(delivery === "wake" ? { waitForIdle: true } : {}),
       }),
@@ -938,27 +953,59 @@ export async function getMessage(host: MonoMessagingHost, input: GetInput) {
   return { message: got.message };
 }
 
-type Extended =
-  | { outcome: "extended"; askId: MessageId; dueInMs: number }
-  | {
-      outcome: "failed";
-      error: { code: "invalid_input" | "extend_refused"; hint: string };
-    };
+type AskCallFailed = {
+  outcome: "failed";
+  error: {
+    code: "invalid_input" | "extend_refused" | "reason_refused";
+    hint: string;
+  };
+};
 
-/** `messages.extend` (R10): Rust decides and moves the deadline; no message. */
-async function extendAsk(host: MonoMessagingHost, input: RawInput) {
+function askCallFailed(answer: { outcome: string }): answer is AskCallFailed {
+  return answer.outcome === "failed";
+}
+
+/**
+ * An ask call that writes no message (R10 `extend`, R11 `reason`): Rust
+ * decides and writes; a refusal throws its code and hint.
+ */
+async function askCall<T extends { outcome: string }>(
+  host: MonoMessagingHost,
+  command: "mono_ask_extend" | "mono_ask_reason",
+  input: RawInput,
+): Promise<T> {
   const resolved = await host.caller();
   if (!resolved.ok) throw new AppActionError(resolved.code, resolved.hint);
-  const extended = await invoke<Extended>("mono_ask_extend", {
+  const answer = await invoke<T | AskCallFailed>(command, {
     caller: resolved.caller,
     input,
   });
-  if (extended.outcome === "failed")
-    throw new AppActionError(extended.error.code, extended.error.hint);
+  if (askCallFailed(answer))
+    throw new AppActionError(answer.error.code, answer.error.hint);
+  return answer;
+}
+
+/** `messages.extend` (R10): moves the deadline once. */
+async function extendAsk(host: MonoMessagingHost, input: RawInput) {
+  const extended = await askCall<{
+    outcome: "extended";
+    askId: MessageId;
+    dueInMs: number;
+  }>(host, "mono_ask_extend", input);
   return {
     ask_id: extended.askId,
     due_in: dueIn(extended.dueInMs),
   };
+}
+
+/** `messages.reason` (R11): stores why the ask is late on its miss, once. */
+async function reasonAsk(host: MonoMessagingHost, input: RawInput) {
+  const stored = await askCall<{ outcome: "stored"; askId: MessageId }>(
+    host,
+    "mono_ask_reason",
+    input,
+  );
+  return { ask_id: stored.askId };
 }
 
 /**
@@ -1035,6 +1082,7 @@ export function agentMessages(
     ask: (requestId, input) => sendMessage(host, "ask", requestId, input),
     ack: (requestId, input) => sendMessage(host, "ack", requestId, input),
     extend: (input) => extendAsk(host, input),
+    reason: (input) => reasonAsk(host, input),
     reply: (requestId, input) => replyMessage(host, requestId, input),
     get: (input) => getMessage(host, input),
   };

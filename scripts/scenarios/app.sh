@@ -13,6 +13,8 @@
 #   app.sh r9                 R9: reminders reach an idle and a busy lead once,
 #                             across a kill before and after the claim; R10:
 #                             each offers one extension, used once
+#   app.sh r11                R11: the deadline reminder, the parent's why
+#                             notice and the lead's reason on its miss
 #   app.sh approvals [runs]   ADE-55 approvals board, macOS only, on a copy
 #                             of the real app database, `runs` times (default 1)
 #
@@ -550,6 +552,84 @@ run_r9() {
   "$INSTANCE" stop
   return "$FAILED"
 }
+
+# R11 (S3 second half): the Mono starts one lead with a 10-minute start ask.
+# The lead extends at its t5 reminder; at the new deadline its reason is
+# refused (no miss yet). 5 active minutes later the Mono gets the why notice
+# and asks the lead (send_to from the notice's child attribute); the lead
+# stores its reason and acks with the ask_id the reason answered. The
+# stage rules come first; R11-DONE before R11-LEAD, whose text names the
+# lead in the tag of its ack.
+R11_RULES='[
+  {"match": "stage=\"why\"", "calls": [{"tool": "send_message", "arguments":
+    {"message": "R11-WHY Why is the task late?", "send_to": "$child", "wanting_reply": false, "intent": "new"}}],
+    "reply": "Asked why."},
+  {"match": "stage=\"deadline\"", "calls": [{"tool": "reason", "arguments": {"message": "R11-EARLY Not missed yet."}}],
+    "reply": "Noted."},
+  {"match": "stage=\"t5\"", "calls": [{"tool": "extend", "arguments": {}}], "reply": "Noted."},
+  {"match": "R11-DONE", "reply": "Noted."},
+  {"match": "R11-WHY", "calls": [
+    {"tool": "reason", "arguments": {"message": "R11-REASON The fixture build was slow."}},
+    {"tool": "ack", "arguments": {"ask_id": "$prev.ask_id", "message": "R11-DONE The task is done."}}],
+    "reply": "Answered."},
+  {"match": "R11-HABIT", "calls": [{"tool": "ask", "arguments":
+    {"message": "R11-PROJECT Start the lead.", "send_to": "r11-mono"}}], "reply": "Asked."},
+  {"match": "R11-PROJECT", "calls": [{"action": "sessions.start", "arguments": {"prompt": "R11-LEAD You lead the task.",
+    "harness": "fx", "model": "fx:zai/glm-5.2-fast", "notifyOnComplete": false, "due_minutes": 10}}],
+    "reply": "Started."},
+  {"match": "R11-LEAD", "reply": "Ready."}]'
+
+run_r11() {
+  FAILED=0
+  log "R11 run"
+  fresh_pair r11
+  trap 'cp "$PUPPET/log.jsonl" "$EVAL_OUT/r11-puppet.log"' EXIT
+  jq -n --arg app "$(target_bin instance)" --argjson rules "$R11_RULES" '{app: $app, rules: $rules}' >"$PUPPET/script.json"
+  request_habit r11-giga "Ask for the lead" "R11-HABIT: ask R11 Mono to start the lead."
+  "$INSTANCE" start
+  wait_until 120 "the Mono starts the lead" \
+    holds "SELECT count(*) = 1 FROM mono_asks WHERE parent_actor = 'mono:r11-mono' AND due_active_ms IS NOT NULL"
+  wait_until 60 "the lead's turn" saw R11-LEAD
+  local ask lead left
+  ask="$(q "SELECT id FROM mono_asks WHERE parent_actor = 'mono:r11-mono'")"
+  lead="$(q "SELECT to_session_id FROM mono_messages WHERE id = '$ask'")"
+  echo "R11 readings (lead $lead, ask $ask):"
+  advance $((5 * 60000))
+  wait_until 60 "the lead extends at its t5 reminder" \
+    holds "SELECT count(*) = 1 FROM mono_ask_events WHERE ask_id = '$ask' AND kind = 'extension'"
+  left="$(q "SELECT due_active_ms - (SELECT active_ms FROM mono_clock WHERE id = 1) FROM mono_asks WHERE id = '$ask'")"
+  expect "active ms to the extended deadline" "$left" 1200000
+  # S3.3: at the new deadline, a second reminder to the lead.
+  advance "$left"
+  wait_until 60 "the lead's deadline reminder is sent" \
+    holds "SELECT recipient = 'session:$lead' AND sent_at IS NOT NULL FROM mono_outbox WHERE key = 'reminder:$ask:deadline'"
+  wait_until 60 "the lead tries a reason at the deadline" \
+    holds_log '[.[] | select(.input.message == "R11-EARLY Not missed yet.")] | length == 1'
+  expect "a reason before the miss: code" "$(answer "R11-EARLY Not missed yet." code)" reason_refused
+  expect "misses before the why stage" "$(q "SELECT count(*) FROM mono_ask_events WHERE kind = 'miss'")" 0
+  # S3.4: 5 active minutes later the Mono is told and asks why.
+  advance $((5 * 60000))
+  wait_until 60 "the Mono gets the why notice" saw 'stage="why"'
+  # S3.5: still open after the miss; the lead's ack closes it.
+  wait_until 60 "the lead acks after its reason" holds "SELECT state = 'acked' FROM mono_asks WHERE id = '$ask'"
+  expect "why notice: recipient, sent" \
+    "$(q "SELECT recipient || ' ' || (sent_at IS NOT NULL) FROM mono_outbox WHERE key = 'reminder:$ask:why'")" "mono:r11-mono 1"
+  expect "why notice: names the lead, as a new turn" \
+    "$(jq -rs --arg child "child=\"$lead\"" '[.[] | select(.rule == "stage=\"why\"")] | [length, (first | .prompt | contains($child)), (first | .steer)] | map(tostring) | join(" ")' "$PUPPET/log.jsonl")" \
+    "1 true false"
+  expect "the Mono's why message reaches the lead" "$(prompts R11-WHY)" 1
+  expect "the lead's reason: ok" "$(answer "R11-REASON The fixture build was slow." ok)" true
+  expect "miss: rows, reason" \
+    "$(q "SELECT count(*) || ' ' || group_concat(reason) FROM mono_ask_events WHERE ask_id = '$ask' AND kind = 'miss'")" \
+    "1 R11-REASON The fixture build was slow."
+  expect "the lead's ack: ok" "$(answer "R11-DONE The task is done." ok)" true
+  expect "reminders, each sent once" \
+    "$(q "SELECT group_concat(stage || ':' || (sent_at IS NOT NULL), ' ') FROM (SELECT * FROM mono_outbox WHERE ask_id = '$ask' ORDER BY at_active_ms)")" \
+    "t5:1 deadline:1 why:1"
+  q "SELECT '  outbox ' || key || ' ' || recipient || ' ' || ifnull(sent_at, '-') FROM mono_outbox ORDER BY at_active_ms"
+  "$INSTANCE" stop
+  return "$FAILED"
+}
 source "$SCENARIOS/approvals.sh"
 
 [[ "${1:-}" != approvals* || "$EVAL_OS" == macos ]] || die "approvals is macOS only (GIGA_EVAL_SANDBOX, sandbox-exec)"
@@ -561,6 +641,7 @@ case "${1:-}" in
   d1) run_d1 ;;
   r6) run_r6 ;;
   r9) run_r9 ;;
+  r11) run_r11 ;;
   s0)
     failed=0
     for run in $(seq 1 "${2:-1}"); do "$0" s0-run "$run" || failed=$((failed + 1)); done
