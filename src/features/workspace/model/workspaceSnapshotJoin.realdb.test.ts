@@ -126,6 +126,11 @@ const dock = (projectPath: string, id: string): ProjectTerminalDock => ({
   open: true,
 });
 
+const completion = (requestId: string) => ({
+  origin: { monoId: "mono-1", turn: 1 },
+  request: { requestId, sessionId: "x", project: ACME, prompt: "Sum up the notes" },
+});
+
 const windowWorkspace = (fields: Partial<WindowWorkspace>): WindowWorkspace => ({
   tabs: [],
   sessions: [],
@@ -154,6 +159,7 @@ type Save = {
   window: "main" | "window-1" | "window-2";
   readAt: number;
   workspace: WindowWorkspace;
+  monoCompletions: unknown[];
   /** The chats the window's quit left running. */
   inFlight?: InFlight[];
 };
@@ -162,7 +168,7 @@ const COPIES =
   "New Window copies the tabs, each window changes its copy, main saves last";
 const NO_WORKTREE = "two windows that pin no tab to a worktree";
 const EMPTY_NEWEST = "main closed every tab and saves last";
-const RUNNING_ONLY = "no window saved a tab, but a chat runs";
+const OWED_ONLY = "no window saved a tab, but a chat runs and a Mono completion is owed";
 const HOME_ONE = "one window in ~ with chats in two projects";
 const HOME_TWO = "two windows, the newest in ~";
 const WORKTREE_NEWEST = "main saved only a worktree tab, window-1 a project tab";
@@ -209,6 +215,7 @@ const SCENARIOS: Record<string, Save[]> = {
           ["tab-u", TREE],
         ]),
       }),
+      monoCompletions: [completion("req-window-1")],
     },
     {
       window: "main",
@@ -226,6 +233,7 @@ const SCENARIOS: Record<string, Save[]> = {
         lastDockSide: "bottom",
         pins: new Map([["tab-tree", ACME]]),
       }),
+      monoCompletions: [completion("req-main")],
     },
   ],
   [NO_WORKTREE]: [
@@ -237,6 +245,7 @@ const SCENARIOS: Record<string, Save[]> = {
         sessions: [chat("k", "k")],
         activeTabId: "tab-k",
       }),
+      monoCompletions: [],
     },
     {
       window: "main",
@@ -246,6 +255,7 @@ const SCENARIOS: Record<string, Save[]> = {
         sessions: [chat("j", "j")],
         activeTabId: "tab-j",
       }),
+      monoCompletions: [],
     },
   ],
   [EMPTY_NEWEST]: [
@@ -258,18 +268,21 @@ const SCENARIOS: Record<string, Save[]> = {
         activeTabId: "tab-k",
         projectCwd: NOTES,
       }),
+      monoCompletions: [completion("req-window-1")],
     },
     {
       window: "main",
       readAt: 2_000,
       workspace: windowWorkspace({}),
+      monoCompletions: [completion("req-main")],
     },
   ],
-  [RUNNING_ONLY]: [
+  [OWED_ONLY]: [
     {
       window: "main",
       readAt: 2_000,
       workspace: windowWorkspace({ sessions: [chat("s", "s")] }),
+      monoCompletions: [completion("req-1")],
       inFlight: [{ sessionId: "s", cwd: ACME }],
     },
   ],
@@ -283,6 +296,7 @@ const SCENARIOS: Record<string, Save[]> = {
         activeTabId: "tab-1",
         projectCwd: "~",
       }),
+      monoCompletions: [],
     },
   ],
   [HOME_TWO]: [
@@ -295,6 +309,7 @@ const SCENARIOS: Record<string, Save[]> = {
         activeTabId: "tab-n",
         projectCwd: NOTES,
       }),
+      monoCompletions: [],
     },
     {
       window: "main",
@@ -305,6 +320,7 @@ const SCENARIOS: Record<string, Save[]> = {
         activeTabId: "tab-1",
         projectCwd: "~",
       }),
+      monoCompletions: [],
     },
   ],
   [WORKTREE_NEWEST]: [
@@ -316,6 +332,7 @@ const SCENARIOS: Record<string, Save[]> = {
         sessions: [chat("k", "k")],
         activeTabId: "tab-k",
       }),
+      monoCompletions: [],
     },
     {
       window: "main",
@@ -326,6 +343,7 @@ const SCENARIOS: Record<string, Save[]> = {
         activeTabId: "tab-t",
         pins: new Map([["tab-t", TREE]]),
       }),
+      monoCompletions: [],
     },
   ],
   [LOST_CHAT]: [
@@ -337,6 +355,7 @@ const SCENARIOS: Record<string, Save[]> = {
         sessions: [chat("s1", "s1", ACME, TREE), chat("s2", "s2", ACME, BUG)],
         pins: new Map([["tab-s", TREE]]),
       }),
+      monoCompletions: [],
     },
     {
       window: "main",
@@ -346,6 +365,7 @@ const SCENARIOS: Record<string, Save[]> = {
         sessions: [chat("s1", "s1", ACME, TREE)],
         pins: new Map([["tab-s", TREE]]),
       }),
+      monoCompletions: [],
     },
   ],
   [RENAMED_PIN]: [
@@ -357,6 +377,7 @@ const SCENARIOS: Record<string, Save[]> = {
         sessions: [chat("x", "x"), chat("w", "w"), chat("z", "z", ACME, BUG)],
         pins: new Map([["tab-c", BUG]]),
       }),
+      monoCompletions: [],
     },
     {
       window: "main",
@@ -366,6 +387,7 @@ const SCENARIOS: Record<string, Save[]> = {
         sessions: [chat("x", "x")],
         activeTabId: "tab-c",
       }),
+      monoCompletions: [],
     },
   ],
   [THREE]: [
@@ -377,6 +399,7 @@ const SCENARIOS: Record<string, Save[]> = {
         sessions: [chat("z", "z"), chat("v", "v")],
         activeTabId: "tab-c",
       }),
+      monoCompletions: [],
     },
     {
       window: "window-1",
@@ -386,6 +409,7 @@ const SCENARIOS: Record<string, Save[]> = {
         sessions: [chat("z", "z"), chat("w", "w")],
         activeTabId: "tab-c",
       }),
+      monoCompletions: [],
     },
     {
       window: "main",
@@ -395,6 +419,7 @@ const SCENARIOS: Record<string, Save[]> = {
         sessions: [chat("x", "x")],
         activeTabId: "tab-c",
       }),
+      monoCompletions: [],
     },
   ],
   [RETURN]: [
@@ -407,6 +432,7 @@ const SCENARIOS: Record<string, Save[]> = {
         activeTabId: "tab-a",
         projectReturnMemory: new Map([[pathKey(NOTES), "n2"]]),
       }),
+      monoCompletions: [],
     },
   ],
   [NOTHING]: [],
@@ -415,10 +441,10 @@ const SCENARIOS: Record<string, Save[]> = {
 const saves = (name: string) =>
   JSON.parse(
     JSON.stringify(
-      SCENARIOS[name].map(({ window, readAt, workspace, inFlight }) => ({
+      SCENARIOS[name].map(({ window, readAt, workspace, monoCompletions, inFlight }) => ({
         window,
         readAt,
-        snapshot: workspaceSnapshot([workspace]),
+        snapshot: { ...workspaceSnapshot([workspace]), monoCompletions },
         ...(inFlight ? { inFlight } : {}),
       })),
     ),
@@ -504,6 +530,7 @@ describe("a relaunch restores every window's tabs from the rows Rust answers", (
       uTab: restored.pins.get("tab-u"),
       docks: restored.projectTerminals.map((entry) => entry.pane.id),
       returnTargets: [...restored.projectReturnMemory],
+      monoCompletions: restored.monoCompletions,
     }).toEqual({
       activeTabId: "tab-blank",
       projectCwd: ACME,
@@ -514,6 +541,7 @@ describe("a relaunch restores every window's tabs from the rows Rust answers", (
       uTab: TREE,
       docks: ["dock-main"],
       returnTargets: [[pathKey(ACME), "blank"]],
+      monoCompletions: [completion("req-main")],
     });
     expect(joined.tabWorkspaces).toEqual([{ tabId: "tab-u", path: TREE }]);
     expect(joined.sessions.map((stub) => stub.id)).toEqual(
@@ -528,16 +556,18 @@ describe("a relaunch restores every window's tabs from the rows Rust answers", (
     expect(joined?.tabWorkspaces).toBeUndefined();
   });
 
-  it("a window with no tab adds nothing", async () => {
+  it("a window with no tab adds nothing, and the newest row's Mono completions are the ones delivered", async () => {
     const { joined, restored } = await relaunch(EMPTY_NEWEST);
 
     expect(joined?.tabs.map((entry) => entry.id)).toEqual(["tab-k"]);
     expect({
       tabs: restored?.tabs.map((entry) => entry.id),
       projectCwd: restored?.projectCwd,
+      monoCompletions: restored?.monoCompletions,
     }).toEqual({
       tabs: ["tab-k"],
       projectCwd: NOTES,
+      monoCompletions: [completion("req-main")],
     });
   });
 
@@ -546,12 +576,15 @@ describe("a relaunch restores every window's tabs from the rows Rust answers", (
     expect(await relaunch(NOTHING)).toEqual({ joined: null, restored: null });
   });
 
-  it("with no tab to restore, a chat still running comes back", async () => {
-    const { joined, restored } = await relaunch(RUNNING_ONLY);
+  it("with no tab to restore, a chat still running comes back with the Mono completions its quit owed", async () => {
+    const { joined, restored } = await relaunch(OWED_ONLY);
 
-    expect(inFlightOf(RUNNING_ONLY)).toEqual([{ sessionId: "s", cwd: ACME }]);
+    expect(inFlightOf(OWED_ONLY)).toEqual([{ sessionId: "s", cwd: ACME }]);
     expect(joined).toBeNull();
-    expect(restored?.tabs.map((entry) => leafIds(entry.layout))).toEqual([["s"]]);
+    expect({
+      leaves: restored?.tabs.map((entry) => leafIds(entry.layout)),
+      monoCompletions: restored?.monoCompletions,
+    }).toEqual({ leaves: [["s"]], monoCompletions: [completion("req-1")] });
   });
 
   it("a restore in ~ opens the project of the newest window's first chat", async () => {
@@ -645,7 +678,11 @@ describe("a relaunch restores every window's tabs from the rows Rust answers", (
     for (const name of joining) {
       const { restored } = await relaunch(name);
       if (!restored) throw new Error(`${name} does not restore`);
-      expect(bytes(workspaceSnapshot([restored])), name).toBeLessThanOrEqual(
+      const next = {
+        ...workspaceSnapshot([restored]),
+        monoCompletions: restored.monoCompletions,
+      };
+      expect(bytes(next), name).toBeLessThanOrEqual(
         rowsOf(name).reduce((sum: number, row) => sum + bytes(row), 0),
       );
     }

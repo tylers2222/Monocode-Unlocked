@@ -38,8 +38,6 @@ vi.mock("@tauri-apps/api/core", () => ({
         return store.records[String(args.sessionId)] ?? null;
       case "session_list_by_project":
         return [];
-      case "mono_completions_claim":
-        return [];
       case "resolve_project_location":
         return store.onDisk(String(args.path));
       case "session_upsert":
