@@ -175,15 +175,10 @@ export type MonoCompletionStore = {
   dismiss(monoId: string, sessionId: string): void;
 };
 
-/**
- * Results handed to `onReady`; a dismissal can still remove one before it is
- * queued. `kept` is held, for each request still in `results`, before
- * `onReady` runs.
- */
+/** Results handed to `onReady`; a dismissal can still remove one before it is queued. */
 type CompletionDelivery = {
   monoId: string;
   results: Map<string, MonoSessionCompletionResult>;
-  kept: SavedMonoCompletion[];
 };
 
 export const MONO_COMPLETION_HOLD_MS = 60_000;
@@ -324,16 +319,13 @@ export class MonoSessionCompletionBatches {
   }
 
   /**
-   * The store holds what a stop must keep, and what is still being queued.
-   * A render that changes neither writes nothing.
+   * The store holds what a stop must keep, and `noticed`: a release's rows,
+   * written with their notice before `onReady` can queue it. Rust keeps a row
+   * in a notice until a Mono chat save settles it, so later holds leave it
+   * out. A render that changes nothing owed writes nothing.
    */
-  private hold() {
-    const saved = [
-      ...this.undelivered(),
-      ...[...this.deliveries].flatMap(({ kept, results }) =>
-        kept.filter(({ request }) => results.has(request.requestId)),
-      ),
-    ];
+  private hold(...noticed: SavedMonoCompletion[]) {
+    const saved = [...this.undelivered(), ...noticed];
     const held = JSON.stringify(saved);
     if (held !== this.held) this.store.hold(saved);
     this.held = held;
@@ -450,16 +442,7 @@ export class MonoSessionCompletionBatches {
       group.phase,
       this.reportedEnds.get(monoId),
     );
-    const requestIds = send.map(({ requestId }) => requestId).sort();
-    const id =
-      send.length === 1
-        ? `mono-completion-${requestIds[0]}`
-        : `mono-completion-batch-${requestIds[0]}`;
-    const kept = send.map(({ requestId, result }): SavedMonoCompletion => {
-      const { sessionId, project, prompt } = group.results.get(requestId)!;
-      const request = { requestId, sessionId, project, prompt };
-      return { origin: group.origin, request, result, notice: id };
-    });
+    const members = new Map(group.results);
     // Removing before delivery prevents reentrant or repeated callbacks from replaying it.
     for (const requestId of release) group.results.delete(requestId);
     if (!group.results.size) this.batches.delete(key);
@@ -470,7 +453,11 @@ export class MonoSessionCompletionBatches {
     const results = new Map(
       send.map(({ requestId, result }) => [requestId, result]),
     );
-    const delivery: CompletionDelivery = { monoId, results, kept };
+    const delivery: CompletionDelivery = { monoId, results };
+    const id =
+      results.size === 1
+        ? `mono-completion-${[...results.keys()][0]}`
+        : `mono-completion-batch-${[...results.keys()].sort()[0]}`;
     const current = () => {
       const values = [...delivery.results.values()];
       return values.length ? completionMessage(id, values) : undefined;
@@ -478,7 +465,13 @@ export class MonoSessionCompletionBatches {
     this.deliveries.add(delivery);
     // A Mono chat save waits for this write (`monoCompletionWrites`), so the
     // rows carry the notice before any save can hold it.
-    this.hold();
+    this.hold(
+      ...send.map(({ requestId, result }): SavedMonoCompletion => {
+        const { sessionId, project, prompt } = members.get(requestId)!;
+        const request = { requestId, sessionId, project, prompt };
+        return { origin: group.origin, request, result, notice: id };
+      }),
+    );
     void Promise.resolve(this.onReady(delivery.monoId, current()!, current))
       .finally(() => this.deliveries.delete(delivery))
       .catch(console.error);

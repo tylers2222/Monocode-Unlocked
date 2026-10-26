@@ -226,7 +226,7 @@ describe("Mono completions across a relaunch", () => {
       notice,
     });
 
-    it("hold each result in the notice named by its group's first request id until it is queued", async () => {
+    it("hold each result in the notice named by its group's first request id before it is queued", async () => {
       let queued!: () => void;
       let heldAtReady: unknown;
       const ready = vi.fn<
@@ -250,7 +250,6 @@ describe("Mono completions across a relaunch", () => {
         owed("a", "A", "mono-completion-batch-a"),
       ];
       expect(heldAtReady).toEqual([noticed]);
-      expect(store.hold).toHaveBeenLastCalledWith(noticed);
       expect(ready.mock.calls[0][1].id).toBe("mono-completion-batch-a");
       queued();
       await vi.runAllTimersAsync();
@@ -276,8 +275,9 @@ describe("Mono completions across a relaunch", () => {
       expect(store.hold).toHaveBeenCalledOnce();
     });
 
-    // Review r2 M1: a stopped session's row stays in no hold, and the store
-    // deletes it, also once its notice is queued and the window forgot it.
+    // Review r2 M1: the store deletes a stopped session's rows, also once its
+    // notice is queued and the window forgot it, and no later hold writes
+    // them back.
     it("a session the Mono stops keeps no row, before or after its notice is queued", async () => {
       let queued!: () => void;
       const { batches, store } = batchesWithStore(
@@ -286,16 +286,14 @@ describe("Mono completions across a relaunch", () => {
       batches.watch(origin, request("a", "s-a"))(end("A"));
       batches.watch(origin, request("b", "s-b"))(end("B"));
       batches.closeInactive(() => false);
+      const held = store.hold.mock.calls.length;
       batches.dismissSession("mono", "s-a");
       expect(store.dismiss).toHaveBeenLastCalledWith("mono", "s-a");
-      expect(store.hold).toHaveBeenLastCalledWith([
-        owed("b", "B", "mono-completion-batch-a"),
-      ]);
       queued();
       await vi.runAllTimersAsync();
       batches.dismissSession("mono", "s-b");
       expect(store.dismiss).toHaveBeenLastCalledWith("mono", "s-b");
-      expect(store.hold).toHaveBeenLastCalledWith([]);
+      expect(store.hold.mock.calls.slice(held).flat(2)).toEqual([]);
     });
   });
 });

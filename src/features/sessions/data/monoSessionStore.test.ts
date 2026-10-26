@@ -75,17 +75,19 @@ describe("Mono database pagination and writes", () => {
   it("saves a Mono chat only once the completion rows written before it are in the store", async () => {
     const session = await load();
     const order: string[] = [];
-    const written = Promise.withResolvers<void>();
+    // Not Promise.withResolvers: CI runs Node 20, which does not have it.
+    let write!: () => void;
+    const written = new Promise<void>((resolve) => (write = resolve));
     call.mockImplementation(async (command) => {
       order.push(command);
       if (command !== "mono_completions_hold") return saved(session);
-      await written.promise;
+      await written;
       order.push("written");
     });
     monoCompletionStore.hold([]);
     const save = upsertSession({ ...session, title: "Renamed" });
     await vi.waitFor(() => expect(order).toContain("mono_completions_hold"));
-    written.resolve();
+    write();
     await save;
     expect(order).toEqual([
       "mono_completions_hold",
