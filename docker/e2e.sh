@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Host side of the make e2e targets (see `make help`).
-#   e2e.sh start <suite> <rev> <cpus> <memory>   build the image for <rev>, start the run detached, print its id
+#   e2e.sh start <suite> <rev> <cpus> <memory> [wait]
+#                                               build the image for <rev> unless it exists, start the run,
+#                                               print its id; detached, or attached when wait is 1
 #   e2e.sh status <run-id>                      running, or copy the results back and summarise them
 #   e2e.sh logs <run-id>                        the run's output so far
 # Every docker call follows DOCKER_CONTEXT, so a remote daemon needs no change
@@ -13,20 +15,28 @@ IMAGE=monocode-e2e
 die() { echo "e2e: $*" >&2; exit 2; }
 
 start() {
-  local suite=$1 rev cpus=$3 memory=$4
+  local suite=$1 rev cpus=$3 memory=$4 wait=${5:-}
   bash docker/e2e-run.sh --check "$suite"
   rev=$(git rev-parse --verify "$2^{commit}")
   if [[ $2 == HEAD && -n "$(git status --porcelain)" ]]; then
     echo "e2e: uncommitted changes are not in the run; it uses commit ${rev:0:12}" >&2
   fi
+  # The image holds only committed files, so one tag per commit is safe to reuse.
   local tag="$IMAGE:${rev:0:12}" id
-  git archive --format=tar "$rev" | docker build --file docker/e2e.Dockerfile --tag "$tag" - >&2
+  docker image inspect "$tag" >/dev/null 2>&1 \
+    || git archive --format=tar "$rev" | docker build --file docker/e2e.Dockerfile --tag "$tag" - >&2
   id="$(date -u +%Y%m%d-%H%M%S)-${rev:0:8}-$suite"
   mkdir -p "$RESULTS/$id"
   printf 'context=%s\ncommit=%s\nsuite=%s\nimage=%s\n' "$(docker context show)" "$rev" "$suite" "$tag" >"$RESULTS/$id/run.env"
-  docker run --detach --init --name "$IMAGE-$id" --cpus "$cpus" --memory "$memory" --shm-size 1g \
-    --env GIGA_EVAL_REV="$rev" "$tag" "$suite" >/dev/null
-  echo "$id"
+  local run=(--init --name "$IMAGE-$id" --cpus "$cpus" --memory "$memory" --shm-size 1g
+    --env GIGA_EVAL_REV="$rev" "$tag" "$suite")
+  if [[ $wait == 1 ]]; then
+    echo "$id"
+    docker run "${run[@]}"
+  else
+    docker run --detach "${run[@]}" >/dev/null
+    echo "$id"
+  fi
 }
 
 open_run() {
@@ -71,5 +81,5 @@ cmd=${1:-}
 shift || true
 case "$cmd" in
   start | status | logs) "$cmd" "$@" ;;
-  *) sed -n '2,5p' "$0"; exit 2 ;;
+  *) sed -n '2,7p' "$0"; exit 2 ;;
 esac
