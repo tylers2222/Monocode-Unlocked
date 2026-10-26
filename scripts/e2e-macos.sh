@@ -21,6 +21,7 @@ SCENARIOS=(
   "d4|build|"
   "d4 d1|build|"
   "r6|build|"
+  "r9|build|"
   "approvals|build|reads a copy of the real app database, which a CI runner does not have"
 )
 

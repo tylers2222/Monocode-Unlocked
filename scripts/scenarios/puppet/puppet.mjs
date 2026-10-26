@@ -42,6 +42,9 @@ if (args[0] === "--help") {
   process.exit(0);
 }
 if (args[0] !== "acp") process.exit(1);
+// While $HOME/.puppet/hold-start exists, a new agent reads no request, so the
+// app's prompt stays unread (app.sh r9 kills the app in that gap).
+while (existsSync(join(dir, "hold-start"))) spawnSync("sleep", ["0.2"]);
 
 const log = (entry) =>
   appendFileSync(
