@@ -18,6 +18,7 @@ ROWS="$OUT/results.tsv"
 SCENARIOS=(
   "s0|build|"
   "d1|build|"
+  "d2|build|"
   "d4|build|"
   "d4 d1|build|"
   "r6|build|"
