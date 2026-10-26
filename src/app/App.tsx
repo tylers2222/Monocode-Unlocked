@@ -8036,6 +8036,7 @@ function Workspace({
                 model: pendingSwitch.fromModel,
                 modelSettings: pendingSwitch.fromSettings,
                 providerAccountId: pendingSwitch.fromProviderAccountId,
+                mcp: current.mcp,
                 userRequest: text,
               });
             } catch {
