@@ -99,6 +99,9 @@ run_ade89() {
   wait_until 30 "each waiting result is a row" holds "SELECT count(*) = $owed FROM mono_completions WHERE request_id IN ($works)"
   echo "ade89 ($mode) run $run readings:"
   expect "sessions.start calls that failed" "$(jq -s '[.[] | select(.action and .result.ok != true)] | length' "$PUPPET/log.jsonl")" 0
+  # #284 r2: a home from an earlier head keeps `claimed_at`, and every hold
+  # fails there. fresh_pair wipes GIGA_EVAL_HOME; this proves it did.
+  expect "store columns from an earlier head" "$(q "SELECT count(*) FROM pragma_table_info('mono_completions') WHERE name = 'claimed_at'")" 0
   expect "workspace rows that carry results" "$(q "SELECT (SELECT count(*) FROM workspace_snapshot WHERE json_type(snapshot_json, '$.monoCompletions') IS NOT NULL)
     + (SELECT count(*) FROM workspace_window_snapshots WHERE json_type(snapshot_json, '$.monoCompletions') IS NOT NULL)")" 0
   kill9

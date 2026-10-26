@@ -587,4 +587,37 @@ describe("claiming the Mono completion results at boot", () => {
     held();
     expect(await save).toBe("saved");
   });
+
+  // #284 r2 condition: a claim after Destroyed takes this window's rows, so
+  // the last hold, also one made while the close waits, lands first.
+  it("a closing window is destroyed only after its last completion hold reaches the store", async () => {
+    const core = await import("@tauri-apps/api/core");
+    const order: string[] = [];
+    const answers: (() => void)[] = [];
+    vi.mocked(core.invoke).mockImplementation(async (command) => {
+      order.push(command);
+      if (command !== "mono_completions_hold") return;
+      await new Promise<void>((resolve) => answers.push(resolve));
+      order.push("held");
+    });
+    const { monoCompletionStore } = await import(
+      "../../features/sessions/data/monoCompletionStore"
+    );
+    const { closeCurrentWindow } = await import("./appLifecycle");
+    monoCompletionStore.hold([]);
+    const closed = closeCurrentWindow();
+    monoCompletionStore.hold([]);
+    await vi.waitFor(() => expect(answers).toHaveLength(1));
+    answers[0]();
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    answers[1]();
+    await closed;
+    expect(order).toEqual([
+      "mono_completions_hold",
+      "held",
+      "mono_completions_hold",
+      "held",
+      "destroy_window",
+    ]);
+  });
 });

@@ -322,7 +322,13 @@ export async function hideCurrentWindow(): Promise<void> {
   await invoke("hide_window");
 }
 
+/**
+ * Another window's claim takes this window's rows once it is destroyed, so
+ * its last completion hold must be in the store first (`monoCompletionWrites`
+ * also waits for a hold made while it waits).
+ */
 export async function closeCurrentWindow(): Promise<void> {
+  await monoCompletionWrites();
   await invoke("destroy_window");
 }
 

@@ -20,11 +20,18 @@ export const monoCompletionStore: MonoCompletionStore = {
 };
 
 /**
- * Settles once every write made so far has reached Rust. A Mono chat save
- * waits for it, so a notice's rows carry that notice before a save can hold it.
+ * Settles once no write is pending: every write made so far, and every write
+ * made while it waits, has reached Rust. A Mono chat save waits for it, so a
+ * notice's rows carry that notice before a save can hold it, and a closing
+ * window waits for it, so its last hold is in the store before it is
+ * destroyed and another window's claim can take its rows.
  */
-export function monoCompletionWrites(): Promise<void> {
-  return writes;
+export async function monoCompletionWrites(): Promise<void> {
+  let pending: Promise<void>;
+  do {
+    pending = writes;
+    await pending;
+  } while (pending !== writes);
 }
 
 /** This window's boot takes the results no live window holds. */
