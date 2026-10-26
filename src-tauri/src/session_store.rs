@@ -4474,6 +4474,101 @@ mod tests {
         a_new_window_leaves_out_the_turns_another_window_runs(&path, &own);
     }
 
+    /// ADE-116. Defect: the boot read hands the earlier run's rows to every
+    /// window that asks before one of them starts a turn, so two windows that
+    /// boot at the same moment both Continue the same chat.
+    #[cfg(not(windows))]
+    fn windows_booting_at_once_resume_each_earlier_chat_in_one_window(
+        path: &std::path::Path,
+        [a, b, c]: [(String, String); 3],
+    ) {
+        {
+            let store = SessionStore::open(path.to_path_buf()).unwrap();
+            let conn = store.lock_conn().unwrap();
+            for (index, ((id, cwd), window)) in [(&a, "main"), (&b, "main"), (&c, "window-1")]
+                .into_iter()
+                .enumerate()
+            {
+                conn.execute(
+                    "INSERT OR REPLACE INTO in_flight_sessions (session_id, cwd, sort_index, window_label, run_id)
+                     VALUES (?1, ?2, ?3, ?4, 'earlier')",
+                    params![id, cwd, index as i64, window],
+                )
+                .unwrap();
+            }
+        }
+        let earlier = ids(&in_flight_rows(path));
+
+        let (app, windows) = launch_two_windows(path);
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(windows.len()));
+        let boots = windows.clone().map(|window| {
+            let gate = gate.clone();
+            std::thread::spawn(move || {
+                gate.wait();
+                resumed(&window)
+            })
+        });
+        let booted = boots.map(|boot| boot.join().unwrap());
+        let mut each: Vec<String> = booted.iter().flatten().cloned().collect();
+        each.sort();
+        assert_eq!(
+            each, earlier,
+            "each earlier chat resumes in exactly one window"
+        );
+        for (window, boot) in windows.iter().zip(&booted) {
+            assert_eq!(
+                &resumed(window),
+                boot,
+                "a reload of {} keeps the chats its boot took",
+                window.label()
+            );
+        }
+        drop(app);
+
+        let (_app, [main, second]) = launch_two_windows(path);
+        assert_eq!(
+            resumed(&main),
+            earlier,
+            "a relaunch before any save resumes the chats the crashed run took"
+        );
+        assert_eq!(
+            resumed(&second),
+            Vec::<String>::new(),
+            "and resumes them once"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn windows_booting_at_once_resume_each_earlier_chat_in_one_window_on_a_new_database() {
+        let path = DbFile(temp_db("in-flight-claim"));
+        let running = |id: &str| (id.to_owned(), format!("/tmp/{id}"));
+        windows_booting_at_once_resume_each_earlier_chat_in_one_window(
+            &path,
+            [running("a"), running("b"), running("c")],
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    #[ignore = "needs MONOCODE_DB_COPY, a fresh copy of the app's monocode.db"]
+    fn windows_booting_at_once_resume_each_earlier_chat_in_one_window_on_a_copy_of_the_app_database(
+    ) {
+        let path = private_copy_of_the_app_database();
+        let newest: Vec<(String, String)> = Connection::open(&*path)
+            .unwrap()
+            .prepare("SELECT id, cwd FROM sessions ORDER BY updated_at DESC LIMIT 3")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        windows_booting_at_once_resume_each_earlier_chat_in_one_window(
+            &path,
+            newest.try_into().unwrap(),
+        );
+    }
+
     #[test]
     fn migration_v5_creates_workspace_snapshot_table() {
         let store = SessionStore::open_in_memory().unwrap();
