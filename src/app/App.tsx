@@ -543,6 +543,7 @@ import {
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
+  endTurnWakes,
   enqueueQueuedMessage,
   failQueuedMessage,
   nextQueuedSend,
@@ -550,8 +551,10 @@ import {
   queuedHead,
   queuedMessageForSubmit,
   queuedSteer,
-  resumeQueuedMessages,
+  resumeQueue,
   runningTurnMap,
+  wakeQueue,
+  wakesQueue,
   withoutPauseReason,
 } from "../features/sessions/model/messageQueue";
 import {
@@ -8480,10 +8483,11 @@ function Workspace({
           setSessions((prev) =>
             prev.map((s) => {
               if (s.id !== sessionId) return s;
-              const stopped = stopStreaming(s);
+              const ended = stopStreaming(s);
               const providerFailed =
                 providerFailureSeen ||
-                isProviderFailureText(lastAssistantTextInTurn(stopped));
+                isProviderFailureText(lastAssistantTextInTurn(ended));
+              const stopped = endTurnWakes(ended, providerFailed);
               const finalized =
                 proposalDraft && proposalId
                   ? withOrchestrationProposal(
@@ -9325,6 +9329,17 @@ function Workspace({
         );
         continue;
       }
+      const mono = !!monoForSession(session.id);
+      if (wakesQueue(session, mono)) {
+        setSessions((prev) =>
+          prev.map((entry) =>
+            entry.id === session.id && wakesQueue(entry, mono)
+              ? wakeQueue(entry)
+              : entry,
+          ),
+        );
+        continue;
+      }
       const next = nextSend(session);
       if (!next || queueDispatchingRef.current.has(session.id)) continue;
       queueDispatchingRef.current.add(session.id);
@@ -9584,12 +9599,7 @@ function Workspace({
             entry.id === sessionId
               ? entry.usageLimit
                 ? resumeMonoUsageLimit(entry)
-                : {
-                    ...entry,
-                    queueStatus: "active",
-                    queuePause: undefined,
-                    queuedMessages: resumeQueuedMessages(entry.queuedMessages),
-                  }
+                : resumeQueue(entry)
               : entry,
           ),
         );

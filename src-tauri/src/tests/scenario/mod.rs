@@ -12,6 +12,8 @@ mod agents;
 mod asks;
 mod clock;
 mod completions;
+#[cfg(unix)]
+mod d4_deny;
 mod s0_baseline;
 mod s1_asks;
 mod s1_levels;

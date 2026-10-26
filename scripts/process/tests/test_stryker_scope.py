@@ -17,8 +17,9 @@ PIN = '9.6.1'
 CLEAN = [(name, PIN, False) for name in sorted(S.STRYKER_PACKAGES)]
 
 
-def mutant(status, line=1, covered=('t1',), mutator='ArithmeticOperator'):
-    return {'mutatorName': mutator, 'status': status, 'location': {'start': {'line': line}}, 'coveredBy': list(covered)}
+def mutant(status, line=1, covered=('t1',), mutator='ArithmeticOperator', static=False):
+    return {'mutatorName': mutator, 'status': status, 'location': {'start': {'line': line}}, 'coveredBy': list(covered),
+            'static': static}
 
 
 def report(files):
@@ -111,6 +112,19 @@ class ReportProblems(unittest.TestCase):
 
     def test_a_file_missing_from_the_report_fails(self):
         self.assertEqual(S.report_problems(report({'src/add.ts': [mutant('Killed')]}), 'src/b.ts'), ['src/b.ts: not in the Stryker report'])
+
+    def test_pr_342_a_killed_static_mutant_counts_as_covered(self):
+        """#342: the only mutant sat in a module-level list. Stryker ran every test against it
+        (static, so coveredBy is empty) and a test killed it. The file passes."""
+        killed = report({'src/agent.ts': [mutant('Killed', covered=(), static=True)]})
+        self.assertEqual(S.report_problems(killed, 'src/agent.ts'), [])
+
+    def test_a_survived_static_mutant_and_an_uncovered_mutant_still_fail(self):
+        untested = ['src/agent.ts: no test covers it; add a test that runs the changed lines']
+        for name, only in (('survived static', mutant('Survived', covered=(), static=True)),
+                           ('no-coverage', mutant('NoCoverage', covered=()))):
+            with self.subTest(name):
+                self.assertEqual(S.report_problems(report({'src/agent.ts': [only]}), 'src/agent.ts'), untested)
 
 
 # Stands in for stryker.js: a count config prints FAKE_COUNT mutants; a run config logs the

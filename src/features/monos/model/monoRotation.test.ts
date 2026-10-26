@@ -31,14 +31,16 @@ function turn(user: string, reply: string, at: number, extra: Block[] = []) {
   ] as Block[];
 }
 
-it.each([128_000, 200_000, 1_000_000])(
+const native = (context?: { used: number; window?: number }) => ({
+  providerSessionId: "native",
+  context,
+  blocks: [],
+});
+
+it.each([128_000, 200_000])(
   "rotates at 80% of a %i-token context window",
   (window) => {
-    const session = (used: number) => ({
-      providerSessionId: "native",
-      context: { used, window },
-      blocks: [],
-    });
+    const session = (used: number) => native({ used, window });
     expect(rotationReason(session(window * 0.8 - 1))).toBeUndefined();
     expect(rotationReason(session(window * 0.8))).toBe("context");
     expect(rotationReason(session(window))).toBe("context");
@@ -51,7 +53,18 @@ it.each([128_000, 200_000, 1_000_000])(
   },
 );
 
-it.each([45_000, 600_000])(
+it("rotates a 1M-token window at 250k tokens, long before 80%", () => {
+  const session = (used: number) => native({ used, window: 1_000_000 });
+  expect(rotationReason(session(240_000))).toBeUndefined();
+  expect(rotationReason(session(249_999))).toBeUndefined();
+  expect(rotationReason(session(250_000))).toBe("context");
+  expect(rotationReason(session(260_000))).toBe("context");
+  expect(
+    rotationReason({ ...session(260_000), providerSessionId: undefined }),
+  ).toBeUndefined();
+});
+
+it.each([45_000, 240_000])(
   "keeps a %i-token conversation in a large window across a long break",
   (used) => {
     vi.useFakeTimers();
@@ -71,17 +84,24 @@ it.each([45_000, 600_000])(
 
 it.each([
   undefined,
-  { used: 900_000 },
-  { used: 900_000, window: 0 },
-  { used: 900_000, window: -1 },
-  { used: 900_000, window: Number.NaN },
+  { used: 240_000 },
+  { used: 240_000, window: 0 },
+  { used: 240_000, window: -1 },
+  { used: 240_000, window: Number.NaN },
   { used: Number.NaN, window: 1_000_000 },
+  { used: Number.POSITIVE_INFINITY },
   { used: Number.POSITIVE_INFINITY, window: 1_000_000 },
   { used: -1, window: 1_000_000 },
-])("does not rotate without a usable context percentage (%#)", (context) => {
-  expect(
-    rotationReason({ providerSessionId: "native", context, blocks: [] }),
-  ).toBeUndefined();
+])("does not rotate below the budget without a usable context percentage (%#)", (context) => {
+  expect(rotationReason(native(context))).toBeUndefined();
+});
+
+it.each([
+  { used: 260_000 },
+  { used: 260_000, window: 0 },
+  { used: 260_000, window: Number.NaN },
+])("rotates at the token budget before a window is reported (%#)", (context) => {
+  expect(rotationReason(native(context))).toBe("context");
 });
 
 it("briefs the fresh session with recent turns word for word and earlier ones as lines", () => {
