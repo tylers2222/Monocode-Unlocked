@@ -306,39 +306,9 @@ async function realOmp(
 const sent = (prompts: string[], message: Message) =>
   prompts.some((prompt) => prompt.includes(message.body.slice(0, 40)));
 
-// TEMPORARY mutant run for PR #341 (removed in the next commit). Each mutant
-// rewrites one rule in the module Vite serves; the scenario named in `kills`
-// must then fail (expected failure). A mutant with no `kills` runs every
-// scenario, and each one that passes shows as an unexpected pass: a survivor.
-type Mutant = { name: string; path: string; from: RegExp; to: string; kills?: string };
-const QUEUE = "/src/features/sessions/model/messageQueue.ts";
-const MUTANTS: Mutant[] = [
-  { name: "M1 ADE-111 reverted: a healthy end keeps the held error", path: "/src/integrations/harness/providers/pi/piFamily.ts", from: /if \(turnError !== (?:void 0|undefined)\)/, to: "if (turnError != null)", kills: "ADE-111" },
-  { name: "M2 the quit pause is not woken", path: QUEUE, from: /!!queuePauseNotice\(session\)/, to: "false", kills: "ship 6" },
-  { name: "M3 the error pause is not woken", path: QUEUE, from: /session\.queuePause === "error" \|\|/, to: "false ||", kills: "ADE-108" },
-  { name: "M4 a pause the user made is woken", path: QUEUE, from: /\(session\.queuePause === "error" \|\| !!queuePauseNotice\(session\)\)/, to: "true", kills: "ship 6" },
-  { name: "M5 no wake limit", path: QUEUE, from: /\(session\.queueWakes \?\? 0\) < QUEUE_WAKE_LIMIT/, to: "true", kills: "ADE-108" },
-  { name: "M6 a good turn does not clear the count", path: "/src/app/App.tsx", from: /queueWakes: (?:void 0|undefined)/, to: "queueWakes: ended.queueWakes", kills: "ADE-108" },
-  { name: "M7 project sessions wake too", path: QUEUE, from: /mono &&\s*!session\.busy/, to: "!session.busy" },
-  { name: "M8 a busy session wakes", path: QUEUE, from: /!session\.busy &&\s*!session\.usageLimit/, to: "!session.usageLimit" },
-  { name: "M9 a usage-limited session wakes", path: QUEUE, from: /!session\.usageLimit &&\s*session\.queueStatus/, to: "session.queueStatus" },
-];
-
-for (const mutant of [undefined, ...MUTANTS]) test.describe(mutant?.name ?? "on a real omp", () => {
+test.describe("on a real omp", () => {
   needsOmp();
   test.setTimeout(120_000);
-  if (mutant)
-    test.beforeEach(async ({ page, browserName }, testInfo) => {
-      test.skip(browserName !== "chromium", "mutants run on one browser");
-      test.skip(!!mutant.kills && !testInfo.title.startsWith(mutant.kills), `${mutant.kills} kills this mutant`);
-      const source = await (await page.request.get(mutant.path)).text();
-      test.skip(!mutant.from.test(source), `the pattern does not match ${mutant.path}`);
-      testInfo.fail();
-      await page.route(`**${mutant.path}*`, async (route) => {
-        const response = await route.fetch();
-        await route.fulfill({ response, body: (await response.text()).replace(mutant.from, mutant.to) });
-      });
-    });
 
   test("ship 6: the queue the relaunch paused sends with no click; a queue the user paused waits for Resume and is reported paused", async ({
     app,
