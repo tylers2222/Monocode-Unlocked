@@ -207,7 +207,7 @@ Actions:
                   "effort":"high","reveal":false,
                   "workspaceMode":"current","worktreeCwd":"<path>","draft":false,
                   "placement":"right",
-                  "besideSessionId":"<visible session ID>"}
+                  "besideSessionId":"<visible session ID>","due_minutes":60}
                   "harness" and "model" are required: copy exact IDs from
                   models.list. There is no default; a missing or unknown
                   harness or model returns an error. Create a tab with the
@@ -250,12 +250,18 @@ Actions:
                   message: pass it as reply_to with intent "steer" in
                   messages.send to change the work it started. A draft has
                   no message_id. A lead session's start makes a worker of
-                  that lead; a Mono's start makes a lead. The same start
-                  again with the same --request-id answers the same session.
+                  that lead; a Mono's start makes a lead. A submitted start
+                  from a Mono or a lead is also an ask to the new session,
+                  and message_id is its ask_id: the new session acks it with
+                  messages.ack when the work is done. due_minutes is its
+                  active time, 10 to 480, default 60, as for messages.ask; a
+                  Giga's start is no ask. The same start
+                  again with the same --request-id answers the same session
+                  and asks nothing more.
                   The id used again with other input, or for a start whose
                   session was archived or deleted, gets request_id_reused
                   before anything launches. Codes: worker_cannot_spawn,
-                  request_id_reused.
+                  request_id_reused, invalid_input.
   sessions.stop {"sessionId":"..."}
                   Stop a session's current turn and pause its queued messages.
                   The conversation and checkout are kept. Idle sessions are

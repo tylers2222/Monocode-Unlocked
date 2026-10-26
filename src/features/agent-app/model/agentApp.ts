@@ -392,6 +392,7 @@ export const FIELDS = new Map<string, readonly string[]>([
       "besideSessionId",
       "project",
       "notifyOnComplete",
+      "due_minutes",
     ],
   ],
   ["worktrees.list", ["project"]],
@@ -1913,9 +1914,10 @@ export async function handleAgentApp(
       const folder = host.monoOf?.(source.id)?.folder;
       if (folder && !launch.sidebarHidden)
         fileInMonoFolder(launch.cwd, id, folder);
-      // The start row names this work for steers (design 16.2). It takes
-      // the input as the caller gave it, the input the level check hashed.
-      // A draft runs no work, so it has none.
+      // The start row names this work for steers (design 16.2) and is the
+      // ask to the started session (R7), after host.start saved its row. It
+      // takes the input as the caller gave it, the input the level check
+      // hashed. A draft runs no work, so it has none.
       const messageId = launch.draft
         ? undefined
         : await host.levels

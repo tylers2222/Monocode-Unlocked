@@ -4,7 +4,8 @@ use super::world::World;
 use crate::asks::{self, Call};
 use crate::mono_gate::{self, Access, Caller, CallerKind, Speaker};
 use crate::mono_messages::{
-    self, CallerArg, LiveSession, MonoId, RequestId, SessionId, Submitted, Tool,
+    self, ActionChecked, CallerArg, LiveSession, MessageId, MonoId, RequestId, SessionId,
+    StartRecorded, Submitted, Tool, ToolError,
 };
 use crate::mono_roster::{self, MonoCreate, MonoRole};
 use crate::session_store::{self, SessionUpsert};
@@ -71,20 +72,53 @@ impl World {
         SessionId::parse(id).unwrap()
     }
 
-    /// `mono` starts lead `id` in `cwd`: its `start_session` row, written by
-    /// `record_start` as `mono_message_record_start` does, then the lead's row.
+    /// `mono` starts lead `id` in `cwd`, as [`World::start`] runs it.
     pub(crate) fn start_lead(&self, mono: &Mono, id: &str, cwd: &str) -> SessionId {
-        let lead = SessionId::parse(id).unwrap();
-        mono_messages::record_start(
+        let input = json!({"prompt": "Lead this", "harness": "codex", "model": "codex:default"});
+        let caller = mono_caller(mono, "start");
+        self.start(&caller, id, cwd, &format!("start-{id}"), &input)
+            .unwrap();
+        SessionId::parse(id).unwrap()
+    }
+
+    /// `caller`'s submitted `sessions.start` of session `id` in `cwd`, as the
+    /// web app runs it: the level check (`mono_app_action_check`), the new
+    /// session saved with the lead the check names (`acceptQuickLaunch`),
+    /// then its start row (`mono_message_record_start`). The row's id, or
+    /// the refusal.
+    pub(crate) fn start(
+        &self,
+        caller: &Caller,
+        id: &str,
+        cwd: &str,
+        request_id: &str,
+        input: &Value,
+    ) -> Result<MessageId, ToolError> {
+        let session = SessionId::parse(id).unwrap();
+        let request_id = RequestId::parse(request_id).unwrap();
+        let action = "sessions.start";
+        let now = self.now();
+        let checked = mono_messages::check_action(
             &self.conn(),
-            &mono_caller(mono, "start"),
-            &lead,
-            &RequestId::parse(&format!("start-{id}")).unwrap(),
-            &json!({"prompt": "Lead this", "harness": "codex", "model": "codex:default"}),
-            self.now(),
-        )
-        .unwrap();
-        self.add_session(id, cwd, None)
+            caller,
+            action,
+            None,
+            Some(&session),
+            &request_id,
+            input,
+            now,
+        );
+        let lead = match checked.unwrap() {
+            ActionChecked::Allowed { lead_session_id } => lead_session_id,
+            ActionChecked::Failed { error } => return Err(error),
+        };
+        self.add_session(id, cwd, lead.as_ref().map(SessionId::as_str));
+        let recorded =
+            mono_messages::record_start(&self.conn(), caller, &session, &request_id, input, now);
+        match recorded.unwrap() {
+            StartRecorded::Recorded { message_id } => Ok(message_id),
+            StartRecorded::Failed { error } => Err(error),
+        }
     }
 
     /// `mono` resets its chat as the app's `resetMonoSession` does: the old

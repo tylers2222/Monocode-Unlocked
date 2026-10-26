@@ -374,10 +374,12 @@ run_r6() {
   wait_until 60 "the worker acks its idle lead" \
     holds_log '[.[] | select(.input.message == "R6-WORKED The work is done.")] | length == 1'
   local giga_ask mono_ask lead_ask lead worker
+  # R7: each start is an ask too; these are the asks the puppets sent.
+  local sent="id NOT IN (SELECT id FROM mono_messages WHERE tool = 'start_session')"
   giga_ask="$(q "SELECT id FROM mono_asks WHERE parent_actor = 'mono:r6-giga'")"
-  mono_ask="$(q "SELECT id FROM mono_asks WHERE parent_actor = 'mono:r6-mono'")"
+  mono_ask="$(q "SELECT id FROM mono_asks WHERE parent_actor = 'mono:r6-mono' AND $sent")"
   lead="$(q "SELECT to_session_id FROM mono_messages WHERE tool = 'start_session' AND from_mono_id = 'r6-mono'")"
-  lead_ask="$(q "SELECT id FROM mono_asks WHERE parent_actor = 'session:$lead'")"
+  lead_ask="$(q "SELECT id FROM mono_asks WHERE parent_actor = 'session:$lead' AND $sent")"
   worker="$(q "SELECT to_session_id FROM mono_messages WHERE tool = 'start_session' AND from_session_id = '$lead'")"
   echo "R6 readings (Giga ask $giga_ask, Mono ask $mono_ask, lead $lead, lead ask $lead_ask, worker $worker):"
   expect "worker acks its idle lead: ok, code" \
@@ -393,6 +395,9 @@ run_r6() {
     "session:$lead 1800000 acked"
   expect "lead ask: child, state" \
     "$(q "SELECT child_actor || ' ' || state FROM mono_asks WHERE id = '$lead_ask'")" "session:$worker acked"
+  expect "start asks: child, active ms left, state" \
+    "$(q "SELECT group_concat(child_actor || ' ' || (due_active_ms - (SELECT active_ms FROM mono_clock)) || ' ' || state, ', ') FROM (SELECT * FROM mono_asks WHERE NOT ($sent) ORDER BY parent_level)")" \
+    "session:$lead 3600000 open, session:$worker 3600000 open"
   expect "ack events" "$(q "SELECT count(*) FROM mono_ask_events WHERE kind = 'ack'")" 3
   expect "Mono's ask arrives with ask_id" "$(attribute R6-PROJECT ask_id)" "$giga_ask"
   expect "Mono's ask from a Giga has no due_in" "$(attribute R6-PROJECT due_in)" ""

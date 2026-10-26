@@ -2893,8 +2893,9 @@ pub enum StartRecorded {
 /// Design 16.2 and 9: the accepted `start_session` row of session `started`,
 /// which a submitted `sessions.start` of `caller` launched, so a steer can
 /// name its work. Body: the prompt as given; hash: the one `check_action`
-/// writes. A repeat answers its first row; any other row under the key
-/// answers `request_id_reused`.
+/// writes. R7: the row is also the ask to `started` (`asks::ask_on_start`)
+/// with the input's `due_minutes`. A repeat answers its first row and asks
+/// nothing more; any other row under the key answers `request_id_reused`.
 pub fn record_start(
     conn: &Connection,
     caller: &Caller,
@@ -2904,6 +2905,15 @@ pub fn record_start(
     now: i64,
 ) -> rusqlite::Result<StartRecorded> {
     let hash = mono_gate::action_hash(START_ACTION, input);
+    // `check_action` refused a bad value before the launch.
+    let due_minutes = match asks::due_minutes(input) {
+        Ok(due) => due,
+        Err(hint) => {
+            return Ok(StartRecorded::Failed {
+                error: refusal(Refusal::InvalidInput, hint),
+            })
+        }
+    };
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     // A clear of the caller ran during the launch.
     if session_ended(&tx, &caller.session_id)? {
@@ -2947,6 +2957,7 @@ pub fn record_start(
                 },
             };
             insert(&tx, &row)?;
+            asks::ask_on_start(&tx, caller, started, &row.id, due_minutes, now)?;
             Some(row)
         }
     };
@@ -2994,6 +3005,12 @@ pub fn check_action(
             })
         }
     };
+    // R7: a start's ask deadline, refused before anything launches.
+    if let Some(Err(hint)) = (action == START_ACTION).then(|| asks::due_minutes(input)) {
+        return Ok(ActionChecked::Failed {
+            error: refusal(Refusal::InvalidInput, hint),
+        });
+    }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     if session_ended(&tx, &caller.session_id)? {
         return Ok(ActionChecked::Failed {
