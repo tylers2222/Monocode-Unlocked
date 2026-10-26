@@ -124,27 +124,15 @@ function parseFailed(error: unknown): Failed | undefined {
   };
 }
 
-/** R7: the start's ask, as `mono_app_action_check` answers it; `null` for none. */
-function parseStartAsk(raw: unknown): StartAsk | null | undefined {
-  if (raw === null) return null;
-  if (typeof raw !== "object") return undefined;
-  const { askId, dueInMs } = raw as Record<string, unknown>;
-  const id = parseMessageId(askId);
-  const safe = typeof dueInMs === "number" && Number.isSafeInteger(dueInMs);
-  const due = dueInMs === null || safe ? dueInMs : undefined;
-  return id && due !== undefined ? { askId: id, dueInMs: due } : undefined;
-}
-
 /** The reply of `mono_app_action_check`, parsed; undefined for any other shape. */
 function parseActionChecked(reply: unknown): ActionChecked | undefined {
   if (typeof reply !== "object" || reply === null) return undefined;
   const { outcome, leadSessionId, ask, error } = reply as Record<string, unknown>;
   if (outcome === "allowed") {
     const lead = leadSessionId === null ? null : parseSessionId(leadSessionId);
-    const startAsk = parseStartAsk(ask);
-    return lead === undefined || startAsk === undefined
-      ? undefined
-      : { outcome, leadSessionId: lead, ask: startAsk };
+    // Rust's `StartAsk` (R7), read as a hand-off reads `Targeted.carries`.
+    const start = (ask ?? null) as StartAsk | null;
+    return lead === undefined ? undefined : { outcome, leadSessionId: lead, ask: start };
   }
   return outcome === "failed" ? parseFailed(error) : undefined;
 }
@@ -209,10 +197,7 @@ export function levelGate(
         parseActionChecked(await invoke("mono_app_action_check", { call })),
         "The level check answered in an unknown form, so the action did not run.",
       );
-      return {
-        leadSessionId: answer.leadSessionId,
-        ...(answer.ask ? { ask: answer.ask } : {}),
-      };
+      return { leadSessionId: answer.leadSessionId, ask: answer.ask ?? undefined };
     },
     async recordStart(requestId, sessionId, input) {
       const call = { caller: caller(), sessionId, requestId, input };
