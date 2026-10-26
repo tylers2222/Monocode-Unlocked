@@ -349,7 +349,7 @@ export function resumeQueue(session: Session): Session {
 }
 
 /** Wakes in a row before a Mono's paused queue waits for Resume again. */
-export const QUEUE_WAKE_LIMIT = 3;
+const QUEUE_WAKE_LIMIT = 3;
 
 /**
  * The app resumes an idle Mono's queue on its own when the quit or a failed
