@@ -32,11 +32,12 @@ step() {
   fi
 }
 
+# Headed browsers on Xvfb, as on a desktop.
 suite_browser() {
-  echo "== browser: npx playwright test"
+  echo "== browser: npx playwright test --headed"
   mkdir -p "$OUT/browser"
-  PLAYWRIGHT_JSON_OUTPUT_NAME="$OUT/browser/report.json" \
-    npx playwright test --reporter=list,json --output="$OUT/browser/test-results"
+  PLAYWRIGHT_JSON_OUTPUT_NAME="$OUT/browser/report.json" xvfb-run -a -s "-screen 0 1280x1024x24" \
+    npx playwright test --headed --reporter=list,json --output="$OUT/browser/test-results"
   local code=$?
   node docker/e2e-report.mjs playwright "$OUT/browser/report.json" >>"$ROWS" || code=1
   return "$code"

@@ -126,10 +126,12 @@ function fixture() {
         harness: "codex",
         model: "codex:test",
         busy: false,
+        branch: null,
         hasDraft: false,
         archived: false,
       },
     ]),
+    appIdentifier: async () => "com.monocode.desktop",
     session: vi.fn(async (id) =>
       id === "other" ? { ...newSession("codex", source.cwd), id } : null,
     ),

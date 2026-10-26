@@ -154,8 +154,8 @@ class Checkin(unittest.TestCase):
 {self.no_rows}checkin: ok (ready-issues=0 pr-cap=0 notice-gap=0 missing=0 unmatched=0)
 """)
         self.assertEqual(result.stderr, """\
-ready-issues ['--instance', '2']
-pr-cap ['--instance', '2']
+ready-issues ['--instance', '1']
+pr-cap ['--instance', '1']
 notice-gap ['--hours', '2']
 """)
 

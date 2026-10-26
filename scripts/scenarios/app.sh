@@ -4,6 +4,10 @@
 #
 #   app.sh build [checkout]   build the instance (under heavy-lock.sh)
 #   app.sh s0 [runs]          S0 through the real app, `runs` times (default 1)
+#   app.sh d4 [d1]            D4 deny rules (d4.test.sh), off then on, with the
+#                             claude CLI on PATH against puppet/fake-model.py;
+#                             d1: with D1's srt too. In CI only,
+#                             D4_CLAUDE=<real claude> runs one real model turn
 #   app.sh d1                 D1: the agent sandbox on, off, and on without srt
 #   app.sh r6                 R6: agents ask and ack through MCP in the real app
 #   app.sh approvals [runs]   ADE-55 approvals board, macOS only, on a copy
@@ -95,12 +99,14 @@ fresh_home() {
   clock_write "$UPTIME" "$WALL"
 }
 
-# fresh_pair <scenario>: a fresh temp HOME with the puppet as fx, launched
-# once so the DB is created and migrated, then a Giga `<scenario>-giga` and a
-# Mono `<scenario>-mono` on the scratch project, each with an fx chat.
+# fresh_pair <scenario> [installer...]: a fresh temp HOME with the puppet as
+# fx (and the installer's agent), launched once so the DB is created and
+# migrated, then a Giga `<scenario>-giga` and a Mono `<scenario>-mono` on the
+# scratch project, each with an fx chat.
 fresh_pair() {
   fresh_home
   install_puppet
+  "${@:2}"
   "$INSTANCE" start
   wait_until 30 "the first launch writes mono_clock" holds "SELECT count(*) = 1 FROM mono_clock"
   "$INSTANCE" stop
@@ -432,6 +438,7 @@ case "${1:-}" in
     for run in $(seq 1 "${2:-1}"); do "$0" s0-run "$run" || failed=$((failed + 1)); done
     log "S0: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
+  d4) source "$SCENARIOS/d4.test.sh"; run_d4 "${2:-}" ;;
   approvals-run) export GIGA_EVAL_SANDBOX=1 GIGA_EVAL_WATCH_NOTIFY=$$; run_approvals "$2" ;;
   approvals)
     APPROVALS_USER_BIN="${APPROVALS_USER_BIN:-$(user_bin)}"
@@ -441,5 +448,5 @@ case "${1:-}" in
     for run in $(seq 1 "${2:-1}"); do "$0" approvals-run "$run" || failed=$((failed + 1)); done
     log "approvals: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
-  *) sed -n '2,14p' "$0"; exit 2 ;;
+  *) sed -n '2,18p' "$0"; exit 2 ;;
 esac
