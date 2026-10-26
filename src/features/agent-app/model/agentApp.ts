@@ -760,11 +760,17 @@ function launchMcp(
   value: unknown,
   harness: HarnessId,
 ): Session["mcp"] {
-  if (value === undefined || value === "default") return undefined;
-  if (value !== "none") throw new Error('mcp must be "default" or "none"');
-  if (harness !== "omp")
-    throw new Error('mcp "none" is supported for omp sessions only');
-  return value;
+  switch (value) {
+    case undefined:
+    case "default":
+      return undefined;
+    case "none":
+      if (harness !== "omp")
+        throw new Error('mcp "none" is supported for omp sessions only');
+      return value;
+    default:
+      throw new Error('mcp must be "default" or "none"');
+  }
 }
 
 /**
