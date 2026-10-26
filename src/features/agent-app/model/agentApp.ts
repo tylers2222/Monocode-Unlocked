@@ -1719,18 +1719,18 @@ export async function handleAgentApp(
 ): Promise<unknown> {
   fields(action, rawInput);
   const input = boundaryInput(action, rawInput);
+  // messages.* get their own gate in mono_message_submit.
+  if (action.startsWith("messages."))
+    return handleMessages();
   const launchId =
     action === "sessions.start" ? appLaunchId(source, requestId) : null;
   // Design 6.6: Rust decides every app action once, before it runs.
-  // messages.* get their own gate in mono_message_submit.
-  const { leadSessionId, ask } = action.startsWith("messages.")
-    ? { leadSessionId: null, ask: null }
-    : await host.levels.check(requestId, {
-        action,
-        target: typeof input.sessionId === "string" ? input.sessionId : null,
-        startedSessionId: launchId,
-        input,
-      });
+  const { leadSessionId, ask } = await host.levels.check(requestId, {
+    action,
+    target: typeof input.sessionId === "string" ? input.sessionId : null,
+    startedSessionId: launchId,
+    input,
+  });
   if (action.startsWith("artifacts."))
     return handleArtifacts(source, requestId, action, input, host);
   if (action.startsWith("soul."))
@@ -1747,7 +1747,7 @@ export async function handleAgentApp(
     return handleGigaMonos(source, action, input, host);
   if (action.startsWith("monos."))
     return handleMonos(source, action, input, host);
-  if (action.startsWith("messages.")) {
+  function handleMessages() {
     const messages = host.messages;
     if (!messages) throw new Error("Mono messaging is unavailable here");
     if (action === "messages.send")
