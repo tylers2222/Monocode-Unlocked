@@ -197,7 +197,7 @@ export function levelGate(
         parseActionChecked(await invoke("mono_app_action_check", { call })),
         "The level check answered in an unknown form, so the action did not run.",
       );
-      return { leadSessionId: answer.leadSessionId, ask: answer.ask ?? undefined };
+      return { leadSessionId: answer.leadSessionId, ask: answer.ask };
     },
     async recordStart(requestId, sessionId, input) {
       const call = { caller: caller(), sessionId, requestId, input };

@@ -34,6 +34,7 @@ import {
   type HarnessId,
   type Session,
 } from "../../sessions/model/session";
+import { canPersistCwd } from "../../sessions/data/sessionStore";
 import {
   addSessionToFolder,
   createFolderWithSessions,
@@ -332,7 +333,7 @@ export type AgentAppHost = {
         startedSessionId: string | null;
         input: Record<string, unknown>;
       },
-    ): Promise<{ leadSessionId: string | null; ask?: StartAsk }>;
+    ): Promise<{ leadSessionId: string | null; ask: StartAsk | null }>;
     /**
      * `mono_message_record_start`: the accepted start row of session
      * `sessionId`, which this submitted start launched, as its message id.
@@ -1723,8 +1724,8 @@ export async function handleAgentApp(
     action === "sessions.start" ? appLaunchId(source, requestId) : null;
   // Design 6.6: Rust decides every app action once, before it runs.
   // messages.* get their own gate in mono_message_submit.
-  const { leadSessionId, ask }: { leadSessionId: string | null; ask?: StartAsk } = action.startsWith("messages.")
-    ? { leadSessionId: null }
+  const { leadSessionId, ask } = action.startsWith("messages.")
+    ? { leadSessionId: null, ask: null }
     : await host.levels.check(requestId, {
         action,
         target: typeof input.sessionId === "string" ? input.sessionId : null,
@@ -1940,7 +1941,12 @@ export async function handleAgentApp(
             source.id);
       // The id the level check was sent (appLaunchId is pure).
       const id = appLaunchId(source, requestId);
-      if (ask) launch.firstTurn = askTurn(source, mono, id, launch.prompt, ask);
+      // R7: the ask row needs the started session's saved row
+      // (`asks::ask_on_start`), and MonoCode never saves one in `~` or a
+      // remote project, so such a start asks nothing.
+      const startAsk = canPersistCwd(launch.cwd) ? ask : null;
+      if (startAsk)
+        launch.firstTurn = askTurn(source, mono, id, launch.prompt, startAsk);
       if (besideSessionId)
         await host.start(
           launch,
@@ -1973,7 +1979,7 @@ export async function handleAgentApp(
         draft: !!launch.draft,
         ...(notifyMonoId ? { notifyOnComplete: true } : {}),
         ...(messageId ? { message_id: messageId } : {}),
-        ...(ask ? { ask_id: ask.askId } : {}),
+        ...(startAsk ? { ask_id: startAsk.askId } : {}),
       };
     }
     case "worktrees.list":

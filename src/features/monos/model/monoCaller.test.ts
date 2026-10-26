@@ -216,7 +216,7 @@ it("checks a Mono's app action without the roster", async () => {
       startedSessionId: null,
       input,
     }),
-  ).toEqual({ leadSessionId: null });
+  ).toEqual({ leadSessionId: null, ask: null });
   expect(invoke).toHaveBeenCalledWith("mono_app_action_check", {
     call: {
       caller: {
