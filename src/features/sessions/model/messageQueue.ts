@@ -338,6 +338,41 @@ export function resumeQueuedMessages(
   }));
 }
 
+/** Resume a Mono's queue: it sends again now, and every message is retried. */
+export function resumeQueue(session: Session): Session {
+  return {
+    ...session,
+    queueStatus: "active",
+    queuePause: undefined,
+    queuedMessages: resumeQueuedMessages(session.queuedMessages),
+  };
+}
+
+/** Wakes in a row before a Mono's paused queue waits for Resume again. */
+export const QUEUE_WAKE_LIMIT = 3;
+
+/**
+ * The app resumes an idle Mono's queue on its own when the quit or a failed
+ * turn paused it, at most `QUEUE_WAKE_LIMIT` times in a row without a turn
+ * that ends well. A pause the user made (Stop, a reset) or a refused delivery
+ * waits for Resume, and a usage limit waits for its reset.
+ */
+export function wakesQueue(session: Session, mono: boolean): boolean {
+  return (
+    mono &&
+    !session.busy &&
+    !session.usageLimit &&
+    session.queueStatus === "paused" &&
+    (session.queueWakes ?? 0) < QUEUE_WAKE_LIMIT &&
+    (session.queuePause === "error" || !!queuePauseNotice(session))
+  );
+}
+
+/** The app's own Resume of a queue that `wakesQueue` lets it wake. */
+export function wakeQueue(session: Session): Session {
+  return { ...resumeQueue(session), queueWakes: (session.queueWakes ?? 0) + 1 };
+}
+
 /** Why a paused queue is not sending, when the user did not pause it. */
 export function queuePauseNotice(session: Session): string | undefined {
   return session.queuedMessages?.some((message) => message.pausedBy === "quit")
