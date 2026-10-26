@@ -159,12 +159,18 @@ run_d4() {
   local d1="$1" sandbox='{"enabled": true, "allowUnsandboxedCommands": false,
    "filesystem": {"denyRead": ["'"$D4_SUPPORT"'/com.monocode.*"], "denyWrite": ["'"$D4_SUPPORT"'/com.monocode.*"]}}'
   log "D4 $d1"
+  # A real model turn needs a real login; on a Mac with real home links it
+  # would write Claude session state into the real ~/.claude.
+  if [[ -n "${D4_CLAUDE:-}" && "${CI:-}" != true && "${GIGA_EVAL_SANDBOX:-}" != 1 ]]; then
+    die "D4_CLAUDE runs only in CI (CI=true) or with GIGA_EVAL_SANDBOX=1"
+  fi
   local claude
   # Resolved before the recorder goes on PATH, or the recorder would exec itself.
   claude="${D4_CLAUDE:-$(realpath "$(command -v claude)")}" || die "d4 needs the claude CLI on PATH"
   PATH="$EVAL_HOME/.local/bin:$PATH"
-  # The app starts with a Claude config folder not named .claude; the child inherits it.
-  [[ -n "${D4_CLAUDE:-}" ]] || export CLAUDE_CONFIG_DIR="$PUPPET/claude-config"
+  # The app starts with a Claude config folder not named .claude; the child
+  # inherits it, so the CLI never resolves ~/.claude or ~/.claude.json.
+  export CLAUDE_CONFIG_DIR="$PUPPET/claude-config"
   fresh_pair d4 install_claude_recorder
   seed_d4
   d4_phase off
