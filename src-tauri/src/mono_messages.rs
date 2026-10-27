@@ -3261,7 +3261,8 @@ fn drop_steers_of_ended_turns(
 /// `mono_message_submit` without Tauri (PR I2 review r2 m1): reads
 /// `running`, submits, then reads `running` again with no store lock held
 /// and drops a steer whose turn ended in between (design 16.12.3.3). The
-/// control lock is never held inside a store transaction (5.3).
+/// control lock is never held inside a store transaction (5.3). It names
+/// the chat of each parent a blocked question reached (R15).
 #[expect(clippy::too_many_arguments, reason = "baseline 2026-10")]
 pub(crate) fn submit_and_recheck(
     store: &SessionStore,
@@ -3291,8 +3292,12 @@ pub(crate) fn submit_and_recheck(
     };
     let again = running();
     let conn = store.lock_conn()?;
-    let notices = drop_steers_of_ended_turns(&conn, &mut submitted, &first, &again, now)
+    let mut notices = drop_steers_of_ended_turns(&conn, &mut submitted, &first, &again, now)
         .map_err(|error| error.to_string())?;
+    notices.merge(
+        crate::ask_scheduler::blocked_notices(&conn, &submitted)
+            .map_err(|error| error.to_string())?,
+    );
     Ok((submitted, notices))
 }
 

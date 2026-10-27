@@ -6,10 +6,12 @@ use serde_json::{json, Value};
 
 use super::agents::{mono_caller, session_caller};
 use super::asks::written;
+use super::s5_delivery::{claim, named};
 use super::world::World;
+use crate::ask_scheduler::{self, Claimed};
 use crate::asks::Carries;
 use crate::mono_gate::Caller;
-use crate::mono_messages::{MessageId, MonoId, SessionId, Submitted};
+use crate::mono_messages::{MessageId, MonoId, Notices, SessionId, Submitted};
 use crate::mono_roster::MonoRole;
 
 const P: &str = "/p";
@@ -530,4 +532,204 @@ fn s4_a_refused_call_that_named_no_ask_replays_after_a_second_ask() {
     for call in calls {
         assert_eq!(outcome(&world, call), ("rate_limited", true), "{call:?}");
     }
+}
+
+/// The prompt the parent gets for blocked question `seq` (`text`) of
+/// `child` on ask `ask`.
+fn blocked_text(ask: &str, child: &str, seq: i64, text: &str) -> String {
+    format!(
+        "<mono_reminder ask_id=\"{ask}\" stage=\"blocked\" child=\"{child}\">\n{child} is blocked on ask {ask} and cannot go on until you answer its question {seq}:\n{text}\nAnswer it now with app messages.answer {{\"ask_id\":\"{ask}\",\"seq\":{seq},\"message\":\"...\"}} (the answer tool). If you cannot, ask your own asker with messages.question, or ask the user.\n</mono_reminder>"
+    )
+}
+
+/// `(key, recipient)` of each blocked row of ask `id`, and the `blocked`
+/// flag of each of its questions.
+fn blocked_rows(world: &World, id: &MessageId) -> (Vec<(String, String)>, Vec<bool>) {
+    let conn = world.conn();
+    let rows = conn
+        .prepare(
+            "SELECT key, recipient FROM mono_outbox
+              WHERE ask_id = ?1 AND stage = 'blocked' ORDER BY key",
+        )
+        .unwrap()
+        .query_map([id.as_str()], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let flags = conn
+        .prepare(
+            "SELECT blocked FROM mono_ask_events
+              WHERE ask_id = ?1 AND kind = 'question' ORDER BY seq",
+        )
+        .unwrap()
+        .query_map([id.as_str()], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    (rows, flags)
+}
+
+impl Asked {
+    /// Blocked question `seq`, with the chats its call names.
+    fn blocked(&self, world: &World, seq: i64) -> (Submitted, Notices) {
+        let input = json!({"message": format!("Question {seq}"), "blocked": true});
+        let live = [&self.lead, &self.worker];
+        world.tool_noticed(&self.w, &format!("w-b{seq}"), "question", input, &live)
+    }
+
+    /// The blocked rows of questions `seqs`, each to the lead.
+    fn rows_to_lead(&self, seqs: &[i64]) -> Vec<(String, String)> {
+        let lead = format!("session:{}", self.lead.as_str());
+        let id = self.ask.as_str();
+        seqs.iter()
+            .map(|seq| (format!("blocked:{id}:{seq}"), lead.clone()))
+            .collect()
+    }
+
+    /// The lead claims blocked row `seq`, with a turn `running` or not and
+    /// its harness `steerable` or not.
+    fn claim_blocked(
+        &self,
+        world: &World,
+        seq: i64,
+        running: bool,
+        steerable: bool,
+    ) -> Option<Claimed> {
+        let key = format!("blocked:{}:{seq}", self.ask.as_str());
+        let running: &[&SessionId] = if running { &[&self.lead] } else { &[] };
+        claim(world, &key, "main", running, steerable)
+    }
+
+    fn prompt(&self, seq: i64, wake: bool) -> Option<Claimed> {
+        let text = format!("Question {seq}");
+        Some(Claimed {
+            text: blocked_text(self.ask.as_str(), self.worker.as_str(), seq, &text),
+            wake,
+        })
+    }
+}
+
+/// A busy lead hears at once, as a steer. The clock pauses as for any
+/// question; a repeat of the call writes and names nothing more, and the
+/// same request id without `blocked` is another call.
+fn a_busy_parent_steers(world: &World, a: &Asked) {
+    let (submitted, notices) = a.blocked(world, 1);
+    let question = Carries::Question {
+        ask_id: a.ask.clone(),
+        seq: 1,
+    };
+    assert_eq!(said(world, submitted), a.to_lead(question, "Question 1"));
+    assert_eq!(
+        named(&notices),
+        [a.lead.as_str()],
+        "the lead's chat is named"
+    );
+    let (_, Some(_), paused, None) = clock(world, &a.ask) else {
+        panic!("a blocked question pauses the clock");
+    };
+    assert_eq!(paused, Some(at(world, &a.ask, "question", 1)));
+    let one = a.rows_to_lead(&[1]);
+    assert_eq!(blocked_rows(world, &a.ask), (one.clone(), vec![true]));
+    let pending = ask_scheduler::pending(&world.conn(), &a.lead).unwrap();
+    assert_eq!(pending, [one[0].0.clone()]);
+    let (again, notices) = a.blocked(world, 1);
+    assert!(repeated(&again) && named(&notices).is_empty(), "{again:?}");
+    assert_eq!(blocked_rows(world, &a.ask).0, one, "one row");
+    let plain = a.call(
+        world,
+        &a.w,
+        "w-b1",
+        "question",
+        json!({"message": "Question 1"}),
+    );
+    refused(plain, "request_id_reused", "Use a new request id.");
+    assert_eq!(a.claim_blocked(world, 1, true, true), a.prompt(1, false));
+    said(world, a.answer(world, &a.l, "l-a1", 1));
+    assert_eq!(clock(world, &a.ask).2, None, "the answer resumes the clock");
+}
+
+/// An idle lead is woken and a busy one that cannot steer waits. Each
+/// answer withdraws its unsent row, claimed or not, and a 4th question is
+/// refused, blocked or not, and writes no row.
+fn an_idle_parent_wakes(world: &World, a: &Asked) {
+    a.blocked(world, 2);
+    let two = a.rows_to_lead(&[2]);
+    assert_eq!(blocked_rows(world, &a.ask).0, two);
+    assert_eq!(a.claim_blocked(world, 2, true, false), None);
+    let pending = ask_scheduler::pending(&world.conn(), &a.lead).unwrap();
+    assert_eq!(
+        pending,
+        [two[0].0.clone()],
+        "a busy lead that cannot steer waits"
+    );
+    assert_eq!(a.claim_blocked(world, 2, false, false), a.prompt(2, true));
+    said(world, a.answer(world, &a.l, "l-a2", 2));
+    a.blocked(world, 3);
+    assert_eq!(blocked_rows(world, &a.ask).0, a.rows_to_lead(&[3]));
+    said(world, a.answer(world, &a.l, "l-a3", 3));
+    assert_eq!(blocked_rows(world, &a.ask), (vec![], vec![true; 3]));
+    let full = "already had its 3 questions";
+    refused(a.blocked(world, 4).0, "question_refused", full);
+    refused(a.question(world, 4), "question_refused", full);
+    assert_eq!(blocked_rows(world, &a.ask).0, []);
+}
+
+/// S4.7 "A worker that can't continue at all uses the blocked path, and
+/// its parent hears at once." Defect: a blocked question writes no outbox
+/// row, two, or one to another party; its call leaves the parent's chat
+/// unnamed, so the row waits for the parent's next turn end; a busy parent
+/// does not get it as a steer, or an idle one is not woken; the prompt
+/// lacks the question's seq or text; a blocked question skips the clock
+/// pause or the limit of 3; its repeat writes a second row; an answer
+/// leaves its unsent row, claimed or not, so after a window close the
+/// parent is told to answer again.
+#[test]
+fn s4_7_a_blocked_question_reaches_the_parent_at_once() {
+    let mut world = World::new("s4-blocked");
+    let mono = world.add_mono_in("s4b-mono", MonoRole::Mono, &[P]);
+    let lead = world.start_lead(&mono, "s4b-lead", P);
+    let worker = world.add_session("s4b-worker", P, Some("s4b-lead"));
+    world.advance(MINUTE);
+    let l = session_caller(&lead, P);
+    let input = json!({"message": "Ship it", "send_to": worker.as_str(), "due_minutes": 30});
+    let ask = written(world.tool(&l, "ask", "ask", input, &[&lead, &worker]));
+    let a = Asked {
+        mono: mono.id.clone(),
+        w: session_caller(&worker, P),
+        l,
+        lead,
+        worker,
+        ask,
+    };
+    a_busy_parent_steers(&world, &a);
+    // The lead's window closes after its claimed row 1 was answered: the
+    // row does not come back.
+    ask_scheduler::release(&world.conn(), "main").unwrap();
+    let pending = ask_scheduler::pending(&world.conn(), &a.lead).unwrap();
+    assert!(
+        pending.is_empty(),
+        "an answered question waits again: {pending:?}"
+    );
+    an_idle_parent_wakes(&world, &a);
+
+    // The lead's own blocked question goes one hop up, to the Mono's chat.
+    let start: String = world
+        .conn()
+        .query_row(
+            "SELECT id FROM mono_asks WHERE child_actor = 'session:s4b-lead'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let input = json!({"ask_id": start.as_str(), "message": "Which repo?", "blocked": true});
+    let (_, notices) = world.tool_noticed(&a.l, "l-b1", "question", input, &[&a.lead]);
+    assert_eq!(named(&notices), [mono.chat.as_str()], "the Mono hears");
+    let key = format!("blocked:{start}:1");
+    assert_eq!(
+        claim(&world, &key, "main", &[&mono.chat], true),
+        Some(Claimed {
+            text: blocked_text(&start, a.lead.as_str(), 1, "Which repo?"),
+            wake: false
+        })
+    );
 }

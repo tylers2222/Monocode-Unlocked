@@ -447,7 +447,7 @@ export const FIELDS = new Map<string, readonly string[]>([
   ],
   ["messages.ask", ["message", "send_to", "due_minutes"]],
   ["messages.ack", ["ask_id", "message"]],
-  ["messages.question", ["ask_id", "message"]],
+  ["messages.question", ["ask_id", "message", "blocked"]],
   ["messages.answer", ["ask_id", "seq", "message"]],
   ["messages.update", ["ask_id", "message"]],
   ["messages.extend", ["ask_id"]],
