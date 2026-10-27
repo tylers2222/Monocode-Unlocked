@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 55] = [
+const APP_ACTIONS: [&str; 58] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -100,6 +100,9 @@ const APP_ACTIONS: [&str; 55] = [
     "messages.send",
     "messages.ask",
     "messages.ack",
+    "messages.question",
+    "messages.answer",
+    "messages.update",
     "messages.extend",
     "messages.reason",
     "messages.reply",
@@ -372,6 +375,34 @@ Actions:
                   request_id_reused, ack_refused (no open ask has this id,
                   already acked, or not yours; the hint says which), and the
                   codes of messages.send.
+  messages.question {"ask_id":"m_...","message":"..."}
+                  Ask the one who asked you a question about its ask, up to
+                  3 per ask, one at a time. Keeps the key and pauses the
+                  ask's clock until the answer comes. Without ask_id it is
+                  your one open ask. The asker gets a <mono_message> with
+                  question_of and seq. If you cannot answer a question you
+                  were asked and you have an open ask of your own, ask your
+                  own asker with messages.question on that ask, and pass its
+                  answer down; otherwise answer from what you know, or ask
+                  the user. Codes: invalid_input, request_id_reused,
+                  question_refused (no open ask has this id, not yours,
+                  acked, a question waits, or 3 asked; the hint says which),
+                  and the codes of messages.send.
+  messages.answer {"ask_id":"m_...","seq":1,"message":"..."}
+                  Answer the question that waits on your ask: ask_id is its
+                  question_of, seq its seq. The asked one gets a
+                  <mono_message> with answer_of and seq, and its clock
+                  resumes where it paused. Codes: invalid_input,
+                  request_id_reused, answer_refused (no open ask has this
+                  id, not your ask, acked, no question waits, or another
+                  seq; the hint says which), and the codes of messages.send.
+  messages.update {"ask_id":"m_...","message":"..."}
+                  Tell the one who asked how the work goes, once per ask.
+                  Keeps the key; the clock runs on. Without ask_id it is
+                  your one open ask. Codes: invalid_input, request_id_reused,
+                  update_refused (no open ask has this id, not yours, acked,
+                  or already updated; the hint says which), and the codes of
+                  messages.send.
   messages.extend {"ask_id":"m_..."}
                   Move the deadline of an ask you were asked 15 active
                   minutes later, once. It opens with the <mono_reminder> 5
@@ -925,6 +956,49 @@ pub fn app_tools() -> Value {
                     "message": {"type": "string", "minLength": 1, "description": "What you did."}
                 },
                 "required": ["ask_id", "message"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "question",
+            "action": "messages.question",
+            "description": "Ask the one who asked you a question about its ask: up to 3 per ask, one at a time. Keeps the key and pauses the ask's clock until the answer comes. The asker gets a <mono_message> with question_of and seq. If you cannot answer a question you were asked and you have an open ask of your own, ask your own asker with this tool on that ask and pass its answer down; otherwise answer from what you know, or ask the user. A refusal has code and hint; follow the hint.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ask_id": {"type": "string", "minLength": 1, "description": "The ask_id of the ask. Leave it out when you have one open ask."},
+                    "message": {"type": "string", "minLength": 1, "description": "Your question."}
+                },
+                "required": ["message"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "answer",
+            "action": "messages.answer",
+            "description": "Answer the question that waits on your ask. The asked one gets a <mono_message> with answer_of and seq, and the ask's clock resumes where it paused. A refusal has code and hint; follow the hint.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ask_id": {"type": "string", "minLength": 1, "description": "The question_of of the question."},
+                    "seq": {"type": "integer", "minimum": 1, "maximum": 3, "description": "The seq of the question."},
+                    "message": {"type": "string", "minLength": 1, "description": "Your answer."}
+                },
+                "required": ["ask_id", "seq", "message"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "update",
+            "action": "messages.update",
+            "description": "Tell the one who asked you how the work goes, once per ask. Keeps the key; the ask's clock runs on. A refusal has code and hint; follow the hint.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ask_id": {"type": "string", "minLength": 1, "description": "The ask_id of the ask. Leave it out when you have one open ask."},
+                    "message": {"type": "string", "minLength": 1, "description": "How the work goes."}
+                },
+                "required": ["message"],
                 "additionalProperties": false
             }
         },
@@ -1600,6 +1674,15 @@ mod tests {
                 "messages.ack",
                 r#"{"ask_id":"m_aaaaaaaaaaaa","message":"CI is fixed"}"#,
             ),
+            (
+                "messages.question",
+                r#"{"ask_id":"m_aaaaaaaaaaaa","message":"Which branch?"}"#,
+            ),
+            (
+                "messages.answer",
+                r#"{"ask_id":"m_aaaaaaaaaaaa","seq":1,"message":"main"}"#,
+            ),
+            ("messages.update", r#"{"message":"Still working"}"#),
             ("messages.extend", r#"{"ask_id":"m_aaaaaaaaaaaa"}"#),
             (
                 "messages.reason",
@@ -1908,6 +1991,9 @@ mod tests {
                 "get_message",
                 "ask",
                 "ack",
+                "question",
+                "answer",
+                "update",
                 "extend",
                 "reason",
                 "list_milestones",
