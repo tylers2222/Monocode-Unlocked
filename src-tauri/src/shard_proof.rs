@@ -14,5 +14,6 @@ mod tests {
     fn scores_both_branches() {
         assert_eq!(proof_score(5, 2), 3);
         assert_eq!(proof_score(2, 5), 12);
+        assert_eq!(proof_score(3, 3), 9);
     }
 }
