@@ -78,7 +78,8 @@ impl OnAsk for TalkInput {
         self.talk.answers()
     }
 
-    /// The ask the call names, else the ask a repeat's first row carried,
+    /// The ask the call names, else the ask a repeat's first row is on (the
+    /// one its event names, or for a refused row the one its hash names),
     /// else the one open ask sent to `me`. A repeat is settled before the
     /// guess, so a second ask that came since cannot turn it into a refusal.
     fn ask_id(
@@ -99,6 +100,9 @@ impl OnAsk for TalkInput {
             ) = asks::carries(conn, &row.id)?
             {
                 return Ok(Ok(ask_id));
+            }
+            if let Some(settled) = asks::refused_on(conn, self, row, me)? {
+                return Ok(settled);
             }
         }
         let Some(me) = me else {
@@ -158,19 +162,23 @@ impl OnAsk for TalkInput {
         match (self.talk, clock.paused_at) {
             (Talk::Question, _) => {
                 // A reminder already queued would still go out while paused:
-                // withdraw it and step the ladder back by the rows withdrawn
-                // (`changes()`), so the answer re-runs that rung from the moved
-                // deadline. A claimed row is mid-send and goes out, as one sent
-                // just before the question would.
-                tx.execute(
+                // withdraw it and step the ladder back by the rows withdrawn,
+                // so the answer re-runs that rung from the moved deadline. A
+                // claimed row is mid-send and goes out, as one sent just
+                // before the question would.
+                let withdrawn = tx.execute(
                     "DELETE FROM mono_outbox
                       WHERE ask_id = ?1 AND sent_at IS NULL AND claimed_by IS NULL",
                     [ask_id.as_str()],
                 )?;
                 tx.execute(
                     "UPDATE mono_asks SET paused_at_active_ms = ?2, next_due_active_ms = NULL,
-                       stage = stage - changes() WHERE id = ?1",
-                    params![ask_id.as_str(), active],
+                       stage = stage - ?3 WHERE id = ?1",
+                    params![
+                        ask_id.as_str(),
+                        active,
+                        i64::try_from(withdrawn).unwrap_or(i64::MAX)
+                    ],
                 )?
             }
             (Talk::Answer { .. }, Some(paused_at)) => {

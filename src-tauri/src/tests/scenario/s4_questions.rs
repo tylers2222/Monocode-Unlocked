@@ -317,6 +317,45 @@ fn a_queued_reminder_waits_out_the_question(world: &mut World, a: &Asked, docs: 
     assert_eq!(keys, [format!("reminder:{}:t5", docs.as_str())]);
 }
 
+/// A reminder a window claimed before the question is mid-send: it stays,
+/// its rung counts, and the answer queues no second one.
+fn a_claimed_reminder_goes_out_once(world: &mut World, a: &Asked, review: &MessageId) {
+    let (_, Some(_), None, Some(t5)) = clock(world, review) else {
+        panic!("the third ask runs its clock");
+    };
+    world.advance(t5 - world.active_ms());
+    world
+        .conn()
+        .execute(
+            "UPDATE mono_outbox SET claimed_by = 'main' WHERE ask_id = ?1",
+            [review.as_str()],
+        )
+        .unwrap();
+    let queued = reminders(world, review);
+    assert_eq!(queued.len(), 1, "t5 is queued");
+    let stage = |world: &World| -> i64 {
+        world
+            .conn()
+            .query_row(
+                "SELECT stage FROM mono_asks WHERE id = ?1",
+                [review.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    let question = json!({"ask_id": review.as_str(), "message": "Which review?"});
+    said(world, a.call(world, &a.w, "w-rq1", "question", question));
+    assert_eq!(reminders(world, review), queued, "a claimed reminder stays");
+    assert_eq!(stage(world), 1, "its rung counts");
+    world.advance(HOUR);
+    let answer = json!({"ask_id": review.as_str(), "seq": 1, "message": "Mine"});
+    said(world, a.call(world, &a.l, "l-ra1", "answer", answer));
+    assert_eq!(stage(world), 1);
+    assert_eq!(clock(world, review).3, None, "no rung after t5");
+    world.advance(MINUTE);
+    assert_eq!(reminders(world, review), queued, "no second t5");
+}
+
 /// S4 "question() keeps the key and pauses the clock", "the clock jumps 3
 /// hours while it waits: no reminder", "the answer comes down and the clock
 /// resumes where it paused", "one update() keeps the key and the clock
@@ -331,7 +370,9 @@ fn a_queued_reminder_waits_out_the_question(world: &mut World, a: &Asked, docs: 
 /// the Mono's answer; a call with no open ask, or two, is misread; another
 /// call's request id is taken as this one's; a repeat that named no ask is
 /// refused once a second ask is open; or a reminder queued before a
-/// question goes out while it waits, or never runs again after the answer.
+/// question goes out while it waits, or never runs again after the answer;
+/// or a reminder claimed mid-send is withdrawn, so the answer queues it
+/// again.
 #[test]
 fn s4_a_question_pauses_the_clock_and_its_answer_resumes_it() {
     let mut world = World::new("s4-questions");
@@ -415,4 +456,52 @@ fn s4_a_question_pauses_the_clock_and_its_answer_resumes_it() {
         "name the one you mean with ask_id",
     );
     a_queued_reminder_waits_out_the_question(&mut world, &a, &docs);
+    let input = json!({"message": "Review it", "send_to": a.worker.as_str(), "due_minutes": 30});
+    let review = written(world.tool(&a.l, "ask-3", "ask", input, &[&a.lead, &a.worker]));
+    a_claimed_reminder_goes_out_once(&mut world, &a, &review);
+}
+
+/// Review r2 m1. Defect: a question or update that named no ask and that
+/// the send gate refused is guessed again on its repeat, so once a second
+/// ask is open the repeat is told `invalid_input` instead of its first
+/// refusal.
+#[test]
+fn s4_a_refused_call_that_named_no_ask_replays_after_a_second_ask() {
+    let mut world = World::new("s4-refused-repeat");
+    let mono = world.add_mono_in("s4r-mono", MonoRole::Mono, &[P]);
+    let lead = world.start_lead(&mono, "s4r-lead", P);
+    let worker = world.add_session("s4r-worker", P, Some("s4r-lead"));
+    let (l, w) = (session_caller(&lead, P), session_caller(&worker, P));
+    let ask = |world: &World, key: &str| {
+        let input = json!({"message": key, "send_to": worker.as_str(), "due_minutes": 30});
+        written(world.tool(&l, key, "ask", input, &[&lead, &worker]))
+    };
+    ask(&world, "ask-1");
+    for n in 0..6 {
+        let input = json!({"message": "Note", "send_to": lead.as_str(), "wanting_reply": false, "intent": "new"});
+        let note = world.tool(
+            &w,
+            &format!("note-{n}"),
+            "send_message",
+            input,
+            &[&lead, &worker],
+        );
+        assert!(matches!(note, Submitted::Accepted { .. }), "{note:?}");
+    }
+    let calls = [("w-rq", "question"), ("w-ru", "update")];
+    let outcome = |world: &World, (key, tool): (&str, &str)| {
+        let input = json!({"message": "Blocked"});
+        match world.tool(&w, key, tool, input, &[&lead, &worker]) {
+            Submitted::Failed { error } => (error.code, error.duplicate),
+            other => panic!("not refused: {other:?}"),
+        }
+    };
+    for call in calls {
+        assert_eq!(outcome(&world, call), ("rate_limited", false), "{call:?}");
+    }
+    ask(&world, "ask-2");
+    world.jump_wall(700_000);
+    for call in calls {
+        assert_eq!(outcome(&world, call), ("rate_limited", true), "{call:?}");
+    }
 }
