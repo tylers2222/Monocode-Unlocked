@@ -33,12 +33,12 @@ import {
   getMessage,
   handOff,
   reconcile,
-  reminderSubmit,
   removeQueued,
   routeMessages,
   type HandedOff,
   type MonoMessagingHost,
 } from "./monoRoute";
+import { submitQueued } from "./monoReminders";
 import {
   renderMonoMessage,
   renderMonoNotice,
@@ -1023,8 +1023,9 @@ it("reconciles a row no item holds once, as an item that waits for the turn end"
 // R9. Defects: a reminder that reaches its chat twice, in another text than
 // the one Rust's claim hands out, as the user's visible turn, or as a steer
 // in R9b; one claimed for a chat this window does not hold, or queued when
-// Rust leaves it for the turn end; a sent mark for a turn the provider
-// refused, or for an item that is no reminder.
+// Rust leaves it for the turn end; one sent into a turn no provider can take
+// (it leaves the queue and keeps its claim); a sent mark for a turn the
+// provider refused, or for an item that is no reminder.
 it("queues each reminder Rust hands this window once, as a hidden prompt, and marks it sent when the provider takes it", async () => {
   const { get, host } = world([chat("lead-1"), chat("lead-2", { busy: true })]);
   const [idle, busy, gone] = [
@@ -1071,9 +1072,14 @@ it("queues each reminder Rust hands this window once, as a hidden prompt, and ma
     internal: true,
   });
 
-  reminderSubmit(item).providerTook!(false);
+  const submits: { providerTook?: (accepted: boolean) => void }[] = [];
+  const submit = (options: (typeof submits)[number]) => submits.push(options);
+  expect(submitQueued(item, false, submit)).toBe(false);
+  expect(submits).toEqual([]);
+  submitQueued(item, true, submit);
+  submits[0].providerTook!(false);
   expect(rust.state.sentReminders).toEqual([]);
-  reminderSubmit(item).providerTook!(true);
+  submits[0].providerTook!(true);
   await vi.waitFor(() => expect(rust.state.sentReminders).toEqual([key]));
   const notice = {
     ...item,
@@ -1081,7 +1087,8 @@ it("queues each reminder Rust hands this window once, as a hidden prompt, and ma
     appRequestId: "n",
     monoReminder: undefined,
   };
-  expect(reminderSubmit(notice)).toEqual({});
+  submitQueued(notice, false, submit);
+  expect(submits[1]).toEqual({});
   expect(queuedAppDelivery(notice)).toEqual({
     appRequestId: "n",
     appDelivery: { via: "queued", queuedMessageId: "n" },
