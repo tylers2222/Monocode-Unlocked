@@ -595,6 +595,11 @@ export type Session = {
    * explorer keep using the working copy.
    */
   workFolder?: string;
+  /**
+   * `"none"` starts this session's omp without MCP servers (ADE-117), on
+   * every start including resumes. Absent: the harness's own MCP servers.
+   */
+  mcp?: "none";
   /** Blank-composer choice; consumed when the first turn starts. */
   workspaceMode?: WorkspaceMode;
   /** Base ref for a worktree that will be created on first send. */

@@ -47,13 +47,22 @@ impl SessionStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let conn = Connection::open(&path).map_err(|e| e.to_string())?;
-        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
+        let key = crate::db_key::key_for(&path)?;
+        let conn = crate::db_key::connect(&path, key.as_ref())?;
+        if let Err(e) = conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;") {
+            // A file this connection cannot read (an encrypted database with
+            // encryption off) must not get a leftover -wal checkpointed into it.
+            conn.set_db_config(
+                rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+                true,
+            )
             .map_err(|e| e.to_string())?;
+            return Err(e.to_string());
+        }
         migrate(&conn).map_err(|e| e.to_string())?;
         crate::worktrees::reconcile_removals(&conn)?;
         crate::mono_messages::startup(&conn, now).map_err(|e| e.to_string())?;
-        let read_conn = Connection::open(&path).map_err(|e| e.to_string())?;
+        let read_conn = crate::db_key::connect(&path, key.as_ref())?;
         read_conn
             .execute_batch("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;")
             .map_err(|e| e.to_string())?;
@@ -150,6 +159,9 @@ pub struct SessionUpsert {
     /// The session whose `sessions.start` made this one; written on insert only.
     #[serde(default)]
     pub lead_session_id: Option<String>,
+    /// `"none"`: omp starts without MCP servers (ADE-117). Absent: the default.
+    #[serde(default)]
+    pub mcp: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +252,8 @@ pub struct SessionRecord {
     /// The session whose `sessions.start` made this one; written on insert only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lead_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -935,6 +949,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("queue_pause", "TEXT"),
         ("sidebar_hidden", "INTEGER NOT NULL DEFAULT 0"),
         ("work_folder", "TEXT"),
+        ("mcp", "TEXT"),
     ] {
         ensure_session_column(conn, column, decl)?;
     }
@@ -1428,9 +1443,9 @@ pub(crate) fn upsert_session(
            context_used, context_window, worktree_cwd, has_user_message,
            linked_work_item_json, provider_account_id, worktree_removed, is_draft,
            automation_id, queued_messages_json, queue_status, sidebar_hidden, work_folder,
-           lead_session_id, queue_pause
+           lead_session_id, queue_pause, mcp
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-           (SELECT id FROM sessions WHERE id = ?26), ?27)
+           (SELECT id FROM sessions WHERE id = ?26), ?27, ?28)
          ON CONFLICT(id) DO UPDATE SET
            cwd = excluded.cwd,
            harness = excluded.harness,
@@ -1455,7 +1470,8 @@ pub(crate) fn upsert_session(
            queue_status = excluded.queue_status,
            queue_pause = excluded.queue_pause,
            sidebar_hidden = excluded.sidebar_hidden,
-           work_folder = excluded.work_folder
+           work_folder = excluded.work_folder,
+           mcp = excluded.mcp
          RETURNING lead_session_id",
         params![
             session.id,
@@ -1485,6 +1501,7 @@ pub(crate) fn upsert_session(
             work_folder,
             session.lead_session_id,
             session.queue_pause,
+            session.mcp,
         ],
         |row| row.get(0),
     )?;
@@ -2195,7 +2212,7 @@ fn get_session_record(
                 context_used, context_window, branch, worktree_cwd,
                 linked_work_item_json, provider_account_id, worktree_removed,
                 automation_id, queued_messages_json, queue_status, sidebar_hidden,
-                work_folder, lead_session_id, queue_pause
+                work_folder, lead_session_id, queue_pause, mcp
          FROM sessions
          WHERE id = ?1 AND inbox_ask IS NULL"
         ),
@@ -2248,6 +2265,7 @@ fn get_session_record(
                 provider_account_id: row.get(16)?,
                 automation_id: nonempty(row.get(18)?),
                 lead_session_id: row.get(23)?,
+                mcp: row.get(25)?,
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
             })
@@ -2583,6 +2601,7 @@ mod tests {
             linked_work_item: None,
             automation_id: None,
             lead_session_id: None,
+            mcp: None,
         }
     }
 
@@ -3096,6 +3115,23 @@ mod tests {
         row.work_folder = None;
         upsert_session(&conn, &row).unwrap();
         assert_eq!(get_session(&conn, "s1").unwrap().unwrap().work_folder, None);
+    }
+
+    // ADE-117. Defect: a session started without MCP servers loses the
+    // choice on save, so its omp starts with them after an app restart.
+    #[test]
+    fn mcp_choice_round_trips() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let mut row = sample("s1", "/tmp/a", "Plan");
+        row.mcp = Some("none".into());
+        upsert_session(&conn, &row).unwrap();
+        assert_eq!(
+            get_session(&conn, "s1").unwrap().unwrap().mcp.as_deref(),
+            Some("none")
+        );
+        upsert_session(&conn, &sample("s2", "/tmp/a", "Plan")).unwrap();
+        assert_eq!(get_session(&conn, "s2").unwrap().unwrap().mcp, None);
     }
 
     #[test]
