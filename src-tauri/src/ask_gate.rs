@@ -205,6 +205,7 @@ pub struct ExtendState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtendRefused {
     NoOpenAsk,
+    NoSingleOpenAsk,
     NotYours,
     AlreadyAcked,
     NoDeadline,
@@ -217,6 +218,9 @@ impl ExtendRefused {
         match self {
             ExtendRefused::NoOpenAsk => {
                 "No open ask of yours has this id. Pass the ask_id of the <mono_reminder>; you may leave it out when you have exactly one open ask."
+            }
+            ExtendRefused::NoSingleOpenAsk => {
+                "You have no open ask or more than one. Pass the ask_id of the <mono_reminder>."
             }
             ExtendRefused::NotYours => {
                 "This ask is not yours: only the Mono or session it was sent to can extend it."
