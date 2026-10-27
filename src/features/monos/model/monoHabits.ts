@@ -634,11 +634,15 @@ export function takeRelayedApproval(
   return relay;
 }
 
+function runRelay(runId: string, requestId: number): ApprovalRelay | undefined {
+  for (const relay of relays.values())
+    if (relay.runId === runId && relay.requestId === requestId) return relay;
+  return undefined;
+}
+
 /** Whether a run's request has already been put to the user. */
 export function isRelayed(runId: string, requestId: number): boolean {
-  for (const relay of relays.values())
-    if (relay.runId === runId && relay.requestId === requestId) return true;
-  return false;
+  return runRelay(runId, requestId) !== undefined;
 }
 
 /**
@@ -659,10 +663,8 @@ export function questionRoute(
       requestId: relayed.requestId,
       card: relayed,
     };
-  for (const relay of relays.values())
-    if (relay.runId === sessionId && relay.requestId === requestId)
-      return { sessionId, requestId, card: relay };
-  return { sessionId, requestId };
+  const card = runRelay(sessionId, requestId);
+  return card ? { sessionId, requestId, card } : { sessionId, requestId };
 }
 
 /** Relays still open when their run ended, to withdraw from the chat. */

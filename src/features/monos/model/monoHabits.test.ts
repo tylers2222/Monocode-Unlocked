@@ -212,6 +212,9 @@ it("routes an answer in the Mono's chat back to the run that asked", () => {
   // Its own id, so it cannot collide with the Mono's own requests.
   expect(id).not.toBe(7);
   expect(isRelayed("run", 7)).toBe(true);
+  // Only that request of that run: the next one still gets asked.
+  expect(isRelayed("run", 8)).toBe(false);
+  expect(isRelayed("other-run", 7)).toBe(false);
   expect(takeRelayedApproval("other-mono", id)).toBeUndefined();
   expect(takeRelayedApproval("mono", id)).toMatchObject({
     runId: "run",
