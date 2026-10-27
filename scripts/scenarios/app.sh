@@ -463,10 +463,12 @@ run_r6() {
 # ask each and never acks. The idle lead's turn ends at once; the busy and
 # late leads' first turns wait while $PUPPET/hold and $PUPPET/hold-late
 # exist. The reminder rule comes first: each lead extends its one open ask
-# twice (R10).
+# twice (R10). R9_REMINDER is the real tag's prefix: the Mono rules text names
+# a bare `<mono_reminder>`, so a looser match would answer every Mono prompt.
+R9_REMINDER='<mono_reminder ask_id="'
 r9_rules() {
-  jq -n --arg hold "$PUPPET/hold" --arg late "$PUPPET/hold-late" '[
-    {match: "<mono_reminder", calls: [
+  jq -n --arg hold "$PUPPET/hold" --arg late "$PUPPET/hold-late" --arg reminder "$R9_REMINDER" '[
+    {match: $reminder, calls: [
       {tool: "extend", arguments: {}}, {tool: "extend", arguments: {}}],
       reply: "Noted."},
     {match: "R9-HABIT", calls: [{tool: "ask", arguments:
@@ -486,16 +488,16 @@ r9_rules() {
 
 # Reminder prompts in the puppet log that name ask `$1`.
 reminded() {
-  jq -s --arg ask "ask_id=\"$1\"" '[.[] | select(.rule == "<mono_reminder" and (.prompt | contains($ask)))] | length' "$PUPPET/log.jsonl"
+  jq -s --arg ask "ask_id=\"$1\"" --arg reminder "$R9_REMINDER" '[.[] | select(.rule == $reminder and (.prompt | contains($ask)))] | length' "$PUPPET/log.jsonl"
 }
 
 # 1 when the reminder prompt for ask `$1` is logged after the hold loop on
 # file `$2` ended, that is after the lead's first turn replied.
 reminded_after() {
-  jq -s --arg ask "ask_id=\"$1\"" --arg hold "$2" '
+  jq -s --arg ask "ask_id=\"$1\"" --arg hold "$2" --arg reminder "$R9_REMINDER" '
     (to_entries | map(select(.value.exec and (.value.exec | any(. == $hold))))[0].key) as $replied
-    | (to_entries | map(select(.value.rule == "<mono_reminder" and (.value.prompt | contains($ask))))[0].key) as $reminder
-    | if $replied != null and $reminder != null and $reminder > $replied then 1 else 0 end' "$PUPPET/log.jsonl"
+    | (to_entries | map(select(.value.rule == $reminder and (.value.prompt | contains($ask))))[0].key) as $reminder_at
+    | if $replied != null and $reminder_at != null and $reminder_at > $replied then 1 else 0 end' "$PUPPET/log.jsonl"
 }
 
 # S5.5: an idle lead wakes with its reminder as a new turn. A busy lead's
@@ -532,7 +534,7 @@ run_r9() {
   wait_until 60 "the idle lead's reminder is sent" \
     holds "SELECT sent_at IS NOT NULL FROM mono_outbox WHERE key = '$idle_key'"
   expect "idle lead: reminder prompts, as a new turn" \
-    "$(reminded "$idle") $(jq -s '[.[] | select(.rule == "<mono_reminder")] | first | .steer' "$PUPPET/log.jsonl")" "1 false"
+    "$(reminded "$idle") $(jq -s --arg reminder "$R9_REMINDER" '[.[] | select(.rule == $reminder)] | first | .steer' "$PUPPET/log.jsonl")" "1 false"
   expect "busy lead: reminder waits for the turn end, unclaimed" \
     "$(q "SELECT ifnull(claimed_by, 'none') || ' ' || ifnull(sent_at, 'unsent') FROM mono_outbox WHERE key = '$busy_key'")" "none unsent"
   wait_until 60 "the idle lead extends twice" holds_log '[.[] | select(.tool == "extend")] | length == 2'
@@ -568,7 +570,7 @@ run_r9() {
   # its deadline 15 active minutes, its second is refused.
   wait_until 60 "the busy lead extends twice" holds_log '[.[] | select(.tool == "extend")] | length == 6'
   expect "reminders that offer the extension" \
-    "$(jq -s '[.[] | select(.rule == "<mono_reminder" and (.prompt | contains("app messages.extend")))] | length' "$PUPPET/log.jsonl")" 3
+    "$(jq -s --arg reminder "$R9_REMINDER" '[.[] | select(.rule == $reminder and (.prompt | contains("app messages.extend")))] | length' "$PUPPET/log.jsonl")" 3
   expect "extends: answers" \
     "$(jq -rs '[.[] | select(.tool == "extend") | .result.code // "ok"] | sort | join(" ")' "$PUPPET/log.jsonl")" \
     "extend_refused extend_refused extend_refused ok ok ok"
