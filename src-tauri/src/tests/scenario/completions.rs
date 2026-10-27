@@ -412,3 +412,201 @@ fn each_window_claims_holds_and_delivers_its_own_results_through_the_commands() 
     );
     assert!(deliver(&booted, "w"), "that window delivers its own result");
 }
+
+#[cfg(not(windows))]
+type Window = tauri::WebviewWindow<tauri::test::MockRuntime>;
+
+/// A launch of the app on `world`'s database, a new run, with a window per
+/// label and the commands a window's boot and save call.
+#[cfg(not(windows))]
+fn launch(world: &World, labels: &[&str]) -> (tauri::App<tauri::test::MockRuntime>, Vec<Window>) {
+    use crate::session_store::{self as store, SessionStore};
+    let app = tauri::test::mock_builder()
+        .manage(SessionStore::open(world.path().to_path_buf()).unwrap())
+        .manage(crate::control::tests::host())
+        .invoke_handler(tauri::generate_handler![
+            store::session_set_in_flight,
+            store::session_list_in_flight,
+            store::workspace_set_snapshot,
+            store::workspace_get_snapshot
+        ])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let windows = labels.iter().map(|label| open(&app, label)).collect();
+    (app, windows)
+}
+
+#[cfg(not(windows))]
+fn open(app: &tauri::App<tauri::test::MockRuntime>, label: &str) -> Window {
+    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::default())
+        .build()
+        .unwrap()
+}
+
+#[cfg(not(windows))]
+fn call(window: &Window, command: &str, args: Value) -> Value {
+    crate::mono_messages::tests::invoke_command(window, command, &args).unwrap()
+}
+
+/// A window's snapshot: one tab showing `tab`, and the chats it holds.
+#[cfg(not(windows))]
+fn workspace(tab: &str, chats: &[&str]) -> Value {
+    json!({
+        "tabs": [{ "id": format!("tab-{tab}"), "layout": { "type": "leaf", "id": tab } }],
+        "sessions": chats.iter().map(|id| json!({ "id": id })).collect::<Vec<_>>(),
+        "activeTabId": format!("tab-{tab}"),
+        "projectCwd": "/p",
+    })
+}
+
+#[cfg(not(windows))]
+fn save(window: &Window, snapshot: &Value, read_at: i64) {
+    let args = json!({ "snapshot": snapshot, "readAt": read_at });
+    call(window, "workspace_set_snapshot", args);
+}
+
+/// The chats a window's boot holds: its snapshot rows' stubs and its
+/// in-flight chats, which it binds.
+#[cfg(not(windows))]
+fn holds(rows: &Value, in_flight: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|row| row["sessions"].as_array().unwrap().iter())
+        .chain(in_flight.as_array().unwrap())
+        .map(|chat| {
+            let id = chat.get("id").or_else(|| chat.get("sessionId"));
+            id.and_then(Value::as_str).unwrap().to_owned()
+        })
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// ADE-93. After a relaunch, main and window-0 boot before either saves, and
+/// each restores through the real commands, the two reads interleaved. A
+/// window binds every chat it restores, and its turn on one (a Continue, a
+/// queued notice) starts a second harness child for the chat, which ends the
+/// first window's turn (`harness.rs`, one child per session). So one window
+/// holds the Mono chat; the other copies the tabs, as New Window does.
+#[cfg(not(windows))]
+#[test]
+fn a_relaunch_gives_the_mono_chat_to_one_window() {
+    use crate::session_store::now_millis;
+    let world = World::new("ade93-one-owner");
+    let chat = world
+        .add_mono("ade93-mono", crate::mono_roster::MonoRole::Mono)
+        .chat;
+    let chat = chat.as_str();
+    let restored = |window: &Window| call(window, "workspace_get_snapshot", json!({}));
+    let in_flight = |window: &Window| call(window, "session_list_in_flight", json!({}));
+
+    let start = now_millis() - 100_000;
+    let (app, windows) = launch(&world, &["main", "window-0"]);
+    let mut second_saved = workspace("side", &[chat, "side"]);
+    second_saved["monoCompletions"] = json!([{ "origin": { "monoId": "ade93-mono", "turn": 1 } }]);
+    save(&windows[0], &workspace("work", &[chat, "work"]), start);
+    save(&windows[1], &second_saved, start + 10);
+    let running = json!([{ "sessionId": chat, "cwd": "/" }, { "sessionId": "work", "cwd": "/p" }]);
+    call(
+        &windows[0],
+        "session_set_in_flight",
+        json!({ "sessions": running }),
+    );
+    call(
+        &windows[1],
+        "session_set_in_flight",
+        json!({ "sessions": [{ "sessionId": "side", "cwd": "/p" }] }),
+    );
+    drop((windows, app));
+
+    let (app, windows) = launch(&world, &["main", "window-0"]);
+    let [main, second] = [&windows[0], &windows[1]];
+    let main_rows = restored(main);
+    let second_in_flight = in_flight(second);
+    let second_rows = restored(second);
+    assert_eq!(
+        main_rows[0]["monoCompletions"], second_saved["monoCompletions"],
+        "the first window to boot restores the Mono's completion batches"
+    );
+    assert!(
+        !holds(&second_rows, &second_in_flight).contains(&chat.to_owned()),
+        "the other window does not hold the Mono chat the first one restored"
+    );
+    assert_eq!(
+        second_rows[0].get("monoCompletions"),
+        None,
+        "the other window's copy holds no Mono completion batch, which would load the Mono chat there"
+    );
+    assert_eq!(
+        second_rows[0]["tabs"], second_saved["tabs"],
+        "the other window copies the newest tabs, as New Window does"
+    );
+
+    save(second, &second_rows[0], now_millis() - 100);
+    call(second, "session_set_in_flight", json!({ "sessions": [] }));
+    let none = json!([]);
+    assert_eq!(
+        holds(&restored(main), &none),
+        [chat, "side", "work"],
+        "the first window to boot restores the last run's tabs whole, also on a reload after the other window saved first"
+    );
+    assert_eq!(
+        holds(&none, &in_flight(main)),
+        [chat, "side", "work"],
+        "the other window's save leaves the last run's running chats, its own too, to the first window"
+    );
+    let relaunched = workspace("work", &[chat, "side", "work"]);
+    save(main, &relaunched, now_millis() - 50);
+    assert_eq!(
+        holds(&restored(main), &in_flight(main)),
+        [chat, "side", "work"],
+        "a reload of the first window keeps its Mono chat"
+    );
+    let opened = open(&app, "window-1");
+    let copied = restored(&opened);
+    assert_eq!(
+        holds(&copied, &in_flight(&opened)),
+        ["side", "work"],
+        "a window opened later copies the chats but not the Mono chat another window holds"
+    );
+    assert_eq!(copied[0]["tabs"], relaunched["tabs"]);
+}
+
+/// ADE-93 r1. An older build saved last, so its shared row (no `windowRows`)
+/// is what every window restores. The first window to boot restores it
+/// whole, with the Mono chat and its completion batch; the other window
+/// copies it without them.
+#[cfg(not(windows))]
+#[test]
+fn an_older_builds_row_gives_the_mono_chat_to_one_window() {
+    let world = World::new("ade93-older-row");
+    let chat = world
+        .add_mono("ade93-older-mono", crate::mono_roster::MonoRole::Mono)
+        .chat;
+    let chat = chat.as_str();
+    let mut older = workspace("work", &[chat, "work"]);
+    older["monoCompletions"] = json!([{ "origin": { "monoId": "ade93-older-mono", "turn": 1 } }]);
+    world
+        .conn()
+        .execute(
+            "INSERT INTO workspace_snapshot (id, snapshot_json, updated_at) VALUES (1, ?1, 1)",
+            [older.to_string()],
+        )
+        .unwrap();
+
+    let (_app, windows) = launch(&world, &["main", "window-0"]);
+    let restored = |window: &Window| call(window, "workspace_get_snapshot", json!({}));
+    assert_eq!(
+        restored(&windows[0]),
+        json!([older]),
+        "the first window to boot restores the older build's row whole"
+    );
+    assert_eq!(
+        restored(&windows[1]),
+        json!([workspace("work", &["work"])]),
+        "the other window copies it without the Mono chat or its completion batch"
+    );
+}

@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -34,6 +34,8 @@ pub struct SessionStore {
     conn: Mutex<Connection>,
     read_conn: Mutex<Option<Connection>>,
     run_id: String,
+    /// The window that restores what the earlier run left (ADE-93).
+    restorer: OnceLock<String>,
 }
 
 impl SessionStore {
@@ -70,6 +72,7 @@ impl SessionStore {
             conn: Mutex::new(conn),
             read_conn: Mutex::new(Some(read_conn)),
             run_id: uuid::Uuid::new_v4().simple().to_string(),
+            restorer: OnceLock::new(),
         })
     }
 
@@ -83,6 +86,7 @@ impl SessionStore {
             conn: Mutex::new(conn),
             read_conn: Mutex::new(None),
             run_id: uuid::Uuid::new_v4().simple().to_string(),
+            restorer: OnceLock::new(),
         })
     }
 
@@ -90,6 +94,24 @@ impl SessionStore {
         self.conn
             .lock()
             .map_err(|_| "Session store is locked".into())
+    }
+
+    /// Claims the earlier run's snapshot rows and in-flight chats for `window`
+    /// when no window has claimed them yet, and returns whether `window` holds
+    /// them: the first window that asks in this run does, on every
+    /// ask. A second window that restored them too would bind the same chats,
+    /// and its turn on one would end the first window's turn (ADE-93).
+    fn claim_earlier_run(&self, window: &str) -> bool {
+        self.restorer.get_or_init(|| window.to_owned()) == window
+    }
+
+    /// Whether `window` already claimed the earlier run; never claims it. Only that window's
+    /// saves drop the earlier run's rows: another window's save before the
+    /// restorer's first one must leave them for the restorer's reload.
+    fn restored_earlier_run(&self, window: &str) -> bool {
+        self.restorer
+            .get()
+            .is_some_and(|restorer| restorer == window)
     }
 }
 
@@ -691,14 +713,22 @@ pub fn session_set_in_flight<R: Runtime>(
     // saves while this save waits must be in the list, or its rows are swept.
     let mut conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     let open = open_workspace_windows(&window);
-    replace_in_flight(&mut conn, &store.run_id, window.label(), &open, &sessions)
-        .map_err(|e| e.to_string())
+    let earlier = store.restored_earlier_run(window.label());
+    replace_in_flight(
+        &mut conn,
+        &store.run_id,
+        window.label(),
+        earlier,
+        &open,
+        &sessions,
+    )
+    .map_err(|e| e.to_string())
 }
 
-/// The chats this window resumes when it boots or reloads. The call claims
-/// the earlier run's rows for this window, so a window that boots at the
-/// same moment gets none of them (ADE-116), and returns every row this
-/// window holds in this run, less a chat whose turn another window runs. It
+/// The chats this window resumes when it boots or reloads. The window that
+/// restores the earlier run claims that run's rows, so a window that boots
+/// at the same moment gets none of them (ADE-116, ADE-93). Every window gets
+/// the rows it holds in this run, less a chat whose turn another window runs. It
 /// clears no row: a Vite/dev reload must not consume the only copy. Another
 /// window's rows of this run are that window's live chats, with or without
 /// an authorized turn (turn start, compaction, and the time between a
@@ -711,8 +741,9 @@ pub fn session_list_in_flight<R: Runtime>(
 ) -> Result<Vec<InFlightSession>, String> {
     let running = control.sessions_running_outside(window.label());
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let mut sessions =
-        claim_in_flight(&conn, &store.run_id, window.label()).map_err(|e| e.to_string())?;
+    let earlier = store.claim_earlier_run(window.label());
+    let mut sessions = claim_in_flight(&conn, &store.run_id, window.label(), earlier)
+        .map_err(|e| e.to_string())?;
     sessions.retain(|session| !running.contains(&session.session_id));
     Ok(sessions)
 }
@@ -769,10 +800,10 @@ pub fn workspace_set_snapshot<R: Runtime>(
         &mut conn,
         &store.run_id,
         window.label(),
+        store.restored_earlier_run(window.label()),
         &open,
         &json,
         read_at,
-        now_millis(),
     )
     .map_err(|e| e.to_string())
 }
@@ -785,7 +816,8 @@ pub fn workspace_get_snapshot<R: Runtime>(
     window: WebviewWindow<R>,
 ) -> Result<Vec<Value>, String> {
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    get_workspace_snapshot(&conn, &store.run_id, window.label())
+    let earlier = store.claim_earlier_run(window.label());
+    get_workspace_snapshot(&conn, &store.run_id, window.label(), earlier)
 }
 
 /// Add a `sessions` column when it is absent, so a half-applied history cannot
@@ -2275,20 +2307,23 @@ fn get_session_record(
 }
 
 /// One `BEGIN IMMEDIATE` transaction, the shape of
-/// [`crate::mono_completions::claim`]: the earlier run's rows become this
-/// window's, then it reads the rows it holds. Unlike a completion, a row of
-/// a window closed in this run is a stopped chat (ADE-62), so no window
-/// takes it.
+/// [`crate::mono_completions::claim`]: when `earlier` (the window restores the
+/// earlier run), that run's rows become this window's, then it reads the
+/// rows it holds. Unlike a completion, a row of a window closed in this run
+/// is a stopped chat (ADE-62), so no window takes it.
 fn claim_in_flight(
     conn: &Connection,
     run_id: &str,
     window: &str,
+    earlier: bool,
 ) -> rusqlite::Result<Vec<InFlightSession>> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    tx.execute(
-        "UPDATE in_flight_sessions SET window_label = ?1, run_id = ?2 WHERE run_id <> ?2",
-        params![window, run_id],
-    )?;
+    if earlier {
+        tx.execute(
+            "UPDATE in_flight_sessions SET window_label = ?1, run_id = ?2 WHERE run_id <> ?2",
+            params![window, run_id],
+        )?;
+    }
     let held = tx
         .prepare(
             "SELECT session_id, cwd FROM in_flight_sessions WHERE window_label = ?1 AND run_id = ?2
@@ -2306,18 +2341,21 @@ fn claim_in_flight(
 }
 
 /// Also drops this run's rows of every window that is gone: a close whose
-/// delete failed must not leave its stopped chats for the next launch.
+/// delete failed must not leave its stopped chats for the next launch. Only
+/// the window that restored the earlier run (`earlier`) drops that run's rows.
 fn replace_in_flight(
     conn: &mut Connection,
     run_id: &str,
     window: &str,
+    earlier: bool,
     open_windows: &[String],
     sessions: &[InFlightSession],
 ) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     tx.execute(
-        "DELETE FROM in_flight_sessions WHERE window_label = ?1 OR run_id <> ?2",
-        params![window, run_id],
+        "DELETE FROM in_flight_sessions
+         WHERE (window_label = ?1 AND run_id = ?2) OR (?3 AND run_id <> ?2)",
+        params![window, run_id, earlier],
     )?;
     tx.execute(
         "DELETE FROM in_flight_sessions
@@ -2358,18 +2396,19 @@ fn snapshot_supersedes(stored: Option<i64>, incoming: i64, now: i64) -> bool {
 /// every window. The shared row (`id = 1`, `updated_at` = its read time)
 /// keeps the newest-read snapshot of any window: New Window opens a copy of
 /// it, and an older build reads only it. The window's own row keeps the
-/// window's newest-read snapshot (ADE-11). Like `replace_in_flight`, a save
-/// drops the rows an earlier run left, which this run's windows restored, and
-/// this run's rows of windows that closed.
+/// window's newest-read snapshot (ADE-11). A save drops this run's rows of
+/// windows that closed. Like `replace_in_flight`, only the window that
+/// restored the earlier run (`earlier`) drops the rows that run left.
 fn set_workspace_snapshot(
     conn: &mut Connection,
     run_id: &str,
     window: &str,
+    earlier: bool,
     open_windows: &[String],
     json: &str,
     read_at: i64,
-    now: i64,
 ) -> rusqlite::Result<()> {
+    let now = now_millis();
     let tx = conn.transaction()?;
     let shared = tx
         .query_row(
@@ -2407,22 +2446,26 @@ fn set_workspace_snapshot(
     }
     tx.execute(
         "DELETE FROM workspace_window_snapshots
-         WHERE run_id <> ?1 OR window_label NOT IN (SELECT value FROM json_each(?2))",
-        params![run_id, json!(open_windows).to_string()],
+         WHERE (?3 AND run_id <> ?1)
+            OR (run_id = ?1 AND window_label NOT IN (SELECT value FROM json_each(?2)))",
+        params![run_id, json!(open_windows).to_string(), earlier],
     )?;
     tx.commit()
 }
 
 /// What a window restores (ADE-11), newest first. A reload gets the window's
-/// own row of this run. A relaunch, or a window that opens before this run's
-/// first save, gets every row the earlier run left. Otherwise, or when an
-/// older build saved last, it gets the shared row. The rows stop before their
-/// total passes `WORKSPACE_SNAPSHOT_MAX_BYTES`, so the oldest drop first: their
-/// join holds no more than they do, and the window that restores it can save it.
+/// own row of this run. The window that restores the earlier run (`earlier`)
+/// gets every row that run left, or with none, the shared row. Any other
+/// window gets a copy of the shared row less the Mono chats (ADE-93), as does
+/// every window when an older build saved last, except the one that restores
+/// it. The rows stop before their total passes `WORKSPACE_SNAPSHOT_MAX_BYTES`,
+/// so the oldest drop first: their join holds no more than they do, and the
+/// window that restores it can save it.
 fn get_workspace_snapshot(
     conn: &Connection,
     run_id: &str,
     window: &str,
+    earlier: bool,
 ) -> Result<Vec<Value>, String> {
     let shared: Option<Value> = conn
         .query_row(
@@ -2439,17 +2482,19 @@ fn get_workspace_snapshot(
         .as_ref()
         .is_some_and(|row| row.get(WINDOW_ROWS_KEY).is_none())
     {
-        return Ok(shared.into_iter().collect());
+        return shared_row(conn, shared, earlier);
     }
     let mut statement = conn
         .prepare(
             "SELECT snapshot_json FROM workspace_window_snapshots
-             WHERE window_label = ?1 OR run_id <> ?2
+             WHERE (window_label = ?1 AND run_id = ?2) OR (?3 AND run_id <> ?2)
              ORDER BY read_at DESC, window_label ASC",
         )
         .map_err(|e| e.to_string())?;
     let rows = statement
-        .query_map(params![window, run_id], |row| row.get::<_, String>(0))
+        .query_map(params![window, run_id, earlier], |row| {
+            row.get::<_, String>(0)
+        })
         .map_err(|e| e.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| e.to_string())?;
@@ -2463,11 +2508,53 @@ fn get_workspace_snapshot(
         .map(|raw| serde_json::from_str(&raw))
         .collect::<Result<Vec<Value>, _>>()
         .map_err(|e| e.to_string())?;
-    Ok(if rows.is_empty() {
-        shared.into_iter().collect()
+    if rows.is_empty() {
+        shared_row(conn, shared, earlier)
     } else {
-        rows
-    })
+        Ok(rows)
+    }
+}
+
+/// The shared row as a window restores it: whole for the window that
+/// restores the earlier run, else a copy less the stubs of every Mono chat
+/// and less the Mono completion batches. The window that holds a Mono chat
+/// runs its turns, so a copy must not hold it too, and a restored batch
+/// loads the Mono chat to queue its notice. A current build never saves a
+/// Mono chat as a tab (`detachMonoTabs`), so the copy shows the same tabs,
+/// and opening the Mono loads its chat.
+fn shared_row(
+    conn: &Connection,
+    shared: Option<Value>,
+    earlier: bool,
+) -> Result<Vec<Value>, String> {
+    let mut copy = match shared {
+        Some(row) if !earlier => row,
+        whole => return Ok(whole.into_iter().collect()),
+    };
+    let mut statement = conn
+        .prepare(
+            "SELECT json_extract(data_json, '$.sessionId') FROM monos
+             WHERE CASE WHEN json_valid(data_json)
+                        THEN json_type(data_json, '$.sessionId') END = 'text'",
+        )
+        .map_err(|e| e.to_string())?;
+    let chats = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<HashSet<_>>>()
+        .map_err(|e| e.to_string())?;
+    if let Some(row) = copy.as_object_mut() {
+        row.remove("monoCompletions");
+    }
+    if let Some(stubs) = copy.get_mut("sessions").and_then(Value::as_array_mut) {
+        stubs.retain(|stub| {
+            !stub
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| chats.contains(id))
+        });
+    }
+    Ok(vec![copy])
 }
 
 pub(crate) fn validate_id(value: &str, label: &str) -> Result<(), String> {
@@ -3921,6 +4008,7 @@ mod tests {
             &mut conn,
             "run",
             "main",
+            false,
             &["main".to_owned()],
             &[
                 InFlightSession {
@@ -3934,12 +4022,12 @@ mod tests {
             ],
         )
         .unwrap();
-        let first = claim_in_flight(&conn, "run", "main").unwrap();
+        let first = claim_in_flight(&conn, "run", "main", true).unwrap();
         assert_eq!(first.len(), 2);
         assert_eq!(first[0].session_id, "s2");
         assert_eq!(first[0].cwd, "/tmp/b");
         assert_eq!(first[1].session_id, "s1");
-        let second = claim_in_flight(&conn, "run", "main").unwrap();
+        let second = claim_in_flight(&conn, "run", "main", true).unwrap();
         assert_eq!(second.len(), 2, "a reload's claim reads the rows again");
     }
 
@@ -4344,7 +4432,7 @@ mod tests {
             session_id: "live".into(),
             cwd: "/tmp/live".into(),
         };
-        replace_in_flight(&mut held, &store.run_id, "window-1", &open, &[live]).unwrap();
+        replace_in_flight(&mut held, &store.run_id, "window-1", false, &open, &[live]).unwrap();
         drop(held);
         saver.join().unwrap();
         assert_eq!(resumed(&second), ["live"], "window-1 reloads its live chat");
@@ -4710,7 +4798,7 @@ mod tests {
                 "{relaunch} restores each window's row of the last run whole, newest first"
             );
         }
-        closed_windows_leave_their_tabs_out(path, &seed, opened);
+        closed_windows_leave_their_tabs_out(path, &seed, opened, [&main_saved, &second_saved]);
 
         let older = with_tabs(&seed, &[saved_tab("tab-older", &[opened[3]])]);
         Connection::open(path)
@@ -4773,18 +4861,26 @@ mod tests {
     /// After a relaunch, main closes the last run's tabs but one. A window
     /// that closes beside another, by `destroy_window` or with its delete
     /// failed, leaves its tabs out of the next relaunch; the last window's
-    /// close keeps them.
+    /// close keeps them. `main_saved` and `second_saved` are what main and
+    /// New Window saved in the last run. With no Mono chat in them, New
+    /// Window's copy is the stored shared row.
     #[cfg(not(windows))]
     fn closed_windows_leave_their_tabs_out(
         path: &std::path::Path,
         seed: &Value,
         [m, w, ..]: [&str; 4],
+        [main_saved, second_saved]: [&Value; 2],
     ) {
         let (app, [main, second]) = launch_two_windows(path);
         assert_eq!(
-            restored_rows(&second),
             restored_rows(&main),
-            "a window that opens before this run's first save gets the last run's rows too"
+            [stored(second_saved), stored(main_saved)],
+            "the first window to ask restores the last run's rows"
+        );
+        assert_eq!(
+            restored_rows(&second),
+            [stored(second_saved)],
+            "a window that opens before this run's first save copies the shared row, as New Window does (ADE-93)"
         );
         let relaunched = with_tabs(seed, &[saved_tab("tab-w", &[w])]);
         save_snapshot(&main, &relaunched, now_millis() - 50);
@@ -5057,6 +5153,7 @@ mod tests {
             &mut conn,
             "run",
             "main",
+            false,
             &["main".to_owned()],
             &[InFlightSession {
                 session_id: id.into(),
@@ -5069,7 +5166,7 @@ mod tests {
         assert_eq!(record["cwd"], "/repo");
         assert_eq!(record["worktreeCwd"], "/repo-worktrees/feature");
         assert_eq!(record["blocks"][0]["startedAt"], 1_792_360_319_663_i64);
-        let in_flight = claim_in_flight(&conn, "run", "main").unwrap();
+        let in_flight = claim_in_flight(&conn, "run", "main", true).unwrap();
         assert_eq!(
             in_flight
                 .iter()
