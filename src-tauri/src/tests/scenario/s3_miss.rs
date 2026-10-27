@@ -62,7 +62,7 @@ fn refused(reasoned: Reasoned) -> String {
 }
 
 /// The reason of each `miss` event of `ask`.
-fn misses(world: &World, ask: &MessageId) -> Vec<Option<String>> {
+pub(super) fn misses(world: &World, ask: &MessageId) -> Vec<Option<String>> {
     world
         .conn()
         .prepare("SELECT reason FROM mono_ask_events WHERE ask_id = ?1 AND kind = 'miss'")
