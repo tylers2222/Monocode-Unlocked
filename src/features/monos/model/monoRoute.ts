@@ -10,7 +10,6 @@ import { excerpt, type ReplyTarget } from "../../sessions/model/messageIntent";
 import {
   dequeueQueuedMessage,
   enqueueQueuedMessage,
-  steersQueuedNow,
 } from "../../sessions/model/messageQueue";
 import {
   WHOLE_TURN,
@@ -19,6 +18,7 @@ import {
   type Session,
 } from "../../sessions/model/session";
 import { enqueueMonoMessage } from "./monoMessaging";
+import { queueReminders } from "./monoReminders";
 import {
   boardDecision,
   type BoardDecision,
@@ -200,7 +200,7 @@ function queueItems(host: MonoQueueHost, rows: Targeted<Routed>[]) {
  * otherwise. Its request id in the queue or the transcript means it was
  * queued or sent before, so a pump that runs again adds nothing.
  */
-function ensureNotice(
+export function ensureNotice(
   session: Session,
   notice: Pick<QueuedMessage, "id" | "text" | "monoReminder" | "waitForIdle">,
 ): Session {
@@ -227,54 +227,6 @@ function noticeItem(host: MonoQueueHost, message: Noticed) {
   return {
     id: noticeRequestId(message.id, message.status),
     text: renderMonoNotice(message, recipient),
-  };
-}
-
-/** Rust `ask_scheduler::Claimed`: the prompt of a reminder this window took. */
-type Claimed = { text: string; wake: boolean };
-
-/**
- * R9: each reminder that waits for the chat, claimed with the chat's live
- * state. Rust picks its prompt and its delivery: a wake waits for the turn
- * end, a steer joins the running turn; a reminder for a busy turn that
- * cannot take a steer stays unclaimed until the turn end names the chat
- * again. A claimed one is a hidden app prompt
- * whose id is its outbox key.
- */
-async function queueReminders(host: MonoQueueHost, sessionId: string) {
-  const keys = await invoke<string[]>("mono_outbox_pending", { sessionId });
-  for (const key of keys) {
-    const session = host.session(sessionId);
-    if (!session) continue;
-    const claimed = await invoke<Claimed | null>("mono_outbox_claim", {
-      key,
-      steerable: steersQueuedNow(session, host.isMonoChat(sessionId)),
-    });
-    if (!claimed) continue;
-    host.update(sessionId, (session) =>
-      ensureNotice(session, {
-        id: key,
-        text: claimed.text,
-        monoReminder: true,
-        waitForIdle: claimed.wake,
-      }),
-    );
-  }
-}
-
-/**
- * R9: the submit options of queue item `item`. The provider taking a
- * reminder marks its outbox row sent, once.
- */
-export function reminderSubmit(item: QueuedMessage): {
-  providerTook?: (accepted: boolean) => void;
-} {
-  if (!item.monoReminder) return {};
-  return {
-    providerTook: (accepted) => {
-      if (accepted)
-        void invoke("mono_outbox_sent", { key: item.id }).catch(console.error);
-    },
   };
 }
 
