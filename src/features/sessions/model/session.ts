@@ -8,6 +8,7 @@ import type { NoteCardMeta, NoteComposerCard } from "../../notes";
 import type { OrchestrationProposal } from "../../orchestration/model/orchestrationPlan";
 import type { LinkedWorkItemUpdateCard } from "../../inbox/model/linkedWorkItemActivity";
 import type { MessageId, TurnId } from "../../monos/model/monoMessages";
+import type { HabitQuestion } from "../../monos/model/habitQuestion";
 import {
   defaultSessionChoice,
   firstEnabledHarness,
@@ -470,6 +471,8 @@ export type Block = {
   statusKey?: string;
   /** Posted to a Mono's chat by one of its habits, outside any turn. */
   monoHabit?: { id: string; name: string; at: number };
+  /** A habit run's question, put to the user in its Mono's chat. */
+  habitQuestion?: HabitQuestion;
   /** A card a Mono put in its chat; see `features/monos/model/monoCards`. */
   monoCard?: import("../../monos/model/monoCards").MonoCard;
   /** An approvals-board decision this user block delivers to its Giga (frame A·7). */
