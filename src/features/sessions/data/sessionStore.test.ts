@@ -29,6 +29,49 @@ it("persists sidebar visibility without making the session ephemeral", () => {
   expect(persistFingerprint(hidden)).not.toBe(persistFingerprint(session));
 });
 
+it("saves a settled habit question card and drops one still open", () => {
+  const asked = {
+    runId: "run-1",
+    runAt: 1_000,
+    prompt: {
+      requestId: 7,
+      questions: [
+        {
+          id: "steps",
+          prompt: "Which steps should the run take?",
+          multiSelect: false,
+          allowCustom: false,
+          options: [{ id: "build", label: "Build" }],
+        },
+      ],
+    },
+  };
+  const monoHabit = { id: "h1", name: "Morning check", at: 1_000 };
+  const card = (id: string, end?: { kind: "skipped" }): Block => ({
+    id,
+    role: "assistant",
+    text: "",
+    monoHabit,
+    habitQuestion: end ? { ...asked, end } : asked,
+  });
+  const session = newSession("codex", "/tmp");
+  session.blocks = [
+    { id: "u", role: "user", text: "Morning" },
+    card("open"),
+    card("settled", { kind: "skipped" }),
+  ];
+  expect(sanitizeSessionForPersist(session).blocks).toEqual([
+    { id: "u", role: "user", text: "Morning" },
+    {
+      id: "settled",
+      role: "assistant",
+      text: "",
+      monoHabit,
+      habitQuestion: { ...asked, end: { kind: "skipped" } },
+    },
+  ]);
+});
+
 it("fingerprints queued message edits, ordering, errors and pause state", () => {
   const session = newSession("codex", "/tmp");
   const first = { id: "first", text: "One", attachments: [] };

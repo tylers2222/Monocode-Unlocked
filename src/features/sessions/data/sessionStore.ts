@@ -975,6 +975,9 @@ function sanitizeBlock(
       at: block.monoHabit.at,
     };
   }
+  // Like a live approval, an open question's request id dies with the app.
+  if (block.habitQuestion?.end) next.habitQuestion = block.habitQuestion;
+  else if (block.habitQuestion) return null;
   if (block.role === "user" && typeof block.sentAt === "number")
     next.sentAt = block.sentAt;
   if (block.role === "user") {

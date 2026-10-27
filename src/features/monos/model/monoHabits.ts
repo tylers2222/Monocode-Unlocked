@@ -602,9 +602,10 @@ export function habitRunLaunches(sessionId: string): MonoSpawnedSession[] {
 }
 
 /**
- * An approval a habit run asked for, put to the user in the Mono's chat
- * under an id of its own: the run's request ids would collide with the
- * Mono's. In memory only; a relay outlives neither its run nor the app.
+ * An approval or question a habit run asked for, put to the user in the
+ * Mono's chat under an id of its own: the run's request ids would collide
+ * with the Mono's. In memory only; a relay outlives neither its run nor the
+ * app.
  */
 export type ApprovalRelay = {
   monoId: string;
@@ -633,11 +634,37 @@ export function takeRelayedApproval(
   return relay;
 }
 
+function runRelay(runId: string, requestId: number): ApprovalRelay | undefined {
+  for (const relay of relays.values())
+    if (relay.runId === runId && relay.requestId === requestId) return relay;
+  return undefined;
+}
+
 /** Whether a run's request has already been put to the user. */
 export function isRelayed(runId: string, requestId: number): boolean {
-  for (const relay of relays.values())
-    if (relay.runId === runId && relay.requestId === requestId) return true;
-  return false;
+  return runRelay(runId, requestId) !== undefined;
+}
+
+/**
+ * Where an answer to a question goes: the session that asked, its own
+ * request id, and the habit's card in a Mono's chat that settles with it.
+ * The Mono's card answers under the relay's id, the run's card under the
+ * run's. A question's relay stays until the run ends, so the next check does
+ * not ask again before the run's own card clears.
+ */
+export function questionRoute(
+  sessionId: string,
+  requestId: number,
+): { sessionId: string; requestId: number; card?: ApprovalRelay } {
+  const relayed = relays.get(requestId);
+  if (relayed?.monoId === sessionId)
+    return {
+      sessionId: relayed.runId,
+      requestId: relayed.requestId,
+      card: relayed,
+    };
+  const card = runRelay(sessionId, requestId);
+  return card ? { sessionId, requestId, card } : { sessionId, requestId };
 }
 
 /** Relays still open when their run ended, to withdraw from the chat. */
