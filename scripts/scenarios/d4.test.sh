@@ -159,8 +159,7 @@ run_d4() {
   local d1="$1" sandbox='{"enabled": true, "allowUnsandboxedCommands": false,
    "filesystem": {"denyRead": ["'"$D4_SUPPORT"'/com.monocode.*"], "denyWrite": ["'"$D4_SUPPORT"'/com.monocode.*"]}}'
   log "D4 $d1"
-  # A real model turn needs a real login; on a Mac with real home links it
-  # would write Claude session state into the real ~/.claude.
+  # A real model turn costs money and needs a login: CI only.
   if [[ -n "${D4_CLAUDE:-}" && "${CI:-}" != true ]]; then
     die "D4_CLAUDE runs only in CI (CI=true)"
   fi
@@ -193,10 +192,6 @@ run_d4() {
   # A new spawn loads the user settings, so a hook the ON turn planted would run.
   [[ -n "${D4_CLAUDE:-}" ]] || d4_phase next
   local off on interactive links=""
-  # GigaEval links the real home's login files into the temp home. Their real
-  # paths keep the .claude and .claude.json names, so the fixed rules match them;
-  # the ~/.claude link itself gets a rule.
-  [[ ! -L "$EVAL_HOME/.claude" ]] || links+=", \"Edit(/$(realpath "$EVAL_HOME")/.claude)\""
   local config="${CLAUDE_CONFIG_DIR:-$EVAL_HOME/.claude}" real_config
   # A folder link above the config folder (macOS /tmp) gets its real spelling too.
   real_config="$(realpath "$(dirname "$config")")/$(basename "$config")"

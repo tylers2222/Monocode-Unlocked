@@ -23,19 +23,32 @@ case "$(uname -s)" in
 esac
 SCRATCH_NAME="giga-eval-scratch"
 
-# Prints `path` as the OS resolves it when that is under /tmp, else fails:
-# its deepest existing folder through `cd -P` (symlinks and `..`), plus the
-# part not made yet, which may hold no `..` because `cd -P` cannot see it.
-# A relative path fails: the scripts `cd` before they use it.
-under_tmp() {
-  local path="$1" tail=""
-  [[ "$path" == /* ]] || return 1
+# Prints `path` as a write to it would resolve: links followed, dangling ones
+# too, then its deepest existing folder through `cd -P` (symlinks and `..`),
+# plus the part not made yet. Fails on a link loop.
+resolve() {
+  local path="$1" tail="" link hops=0
   while [[ ! -d "$path" ]]; do
-    tail="/$(basename "$path")$tail"
-    path="$(dirname "$path")"
+    if [[ -L "$path" ]]; then
+      ((++hops <= 40)) || return 1
+      link="$(readlink "$path")"
+      [[ "$link" == /* ]] || link="$(dirname "$path")/$link"
+      path="$link"
+    else
+      tail="/$(basename "$path")$tail"
+      path="$(dirname "$path")"
+    fi
   done
-  [[ "$tail/" != *"/../"* ]] || return 1
-  path="$(cd -P "$path" && pwd)$tail"
+  printf '%s\n' "$(cd -P "$path" && pwd)$tail"
+}
+
+# Prints `path` resolved when that is under /tmp, else fails. The part not
+# made yet may hold no `..` because `cd -P` cannot see it. A relative path
+# fails: the scripts `cd` before they use it.
+under_tmp() {
+  [[ "$1" == /* ]] || return 1
+  local path; path="$(resolve "$1")" || return 1
+  [[ "$path/" != *"/../"* ]] || return 1
   case "$path" in
     /tmp/?*|/private/tmp/?*) printf '%s\n' "$path" ;;
     *) return 1 ;;

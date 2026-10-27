@@ -27,6 +27,8 @@ if [[ "$TARGET" == "installed" && "${GIGA_EVAL_CONFIRM_INSTALLED:-}" != "yes" ]]
 fi
 
 export GIGA_EVAL_TARGET="$TARGET"
+# The cases' Monos run on omp with a real model: copies of the real logins.
+export GIGA_EVAL_LOGINS=1
 export RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
 HOME_T="$(target_home "$TARGET")"
 ROOT="$HOME_T/MonoCode"

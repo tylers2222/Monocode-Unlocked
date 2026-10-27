@@ -97,7 +97,7 @@ sandbox_home_ok() {
   local link target bad=""
   [[ -f "$SANDBOX_HOME_MARK" ]] || { log "sandbox start needs a fresh home: instance.sh home --fresh"; return 1; }
   while IFS= read -r link; do
-    target="$(realpath "$link" 2>/dev/null || readlink "$link")"
+    target="$(resolve "$link")" || target="a link loop"
     case "$target" in /tmp/* | /private/tmp/*) ;; *) bad+=" $link->$target" ;; esac
   done < <(find "$EVAL_HOME" -type l 2>/dev/null)
   [[ -z "$bad" ]] || { log "temp HOME links outside /tmp:$bad"; return 1; }

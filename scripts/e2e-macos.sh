@@ -16,6 +16,7 @@ ROWS="$OUT/results.tsv"
 
 # command | the app.sh build it runs on | why CI skips it (empty: CI runs it)
 SCENARIOS=(
+  "home-isolation|build|"
   "s0|build|"
   "d1|build|"
   "d2|build|"
