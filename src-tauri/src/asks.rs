@@ -569,6 +569,11 @@ pub(crate) trait OnAsk {
     fn seq(&self) -> Option<i64> {
         None
     }
+    /// R15: a question the child cannot go on without. Part of the call,
+    /// for dedupe by request id, and stored on its event.
+    fn blocked(&self) -> bool {
+        false
+    }
     /// The ask the call is on. `prior` is the first row already under this
     /// request id.
     fn ask_id(
@@ -657,7 +662,7 @@ pub(crate) fn on_ask<C: OnAsk>(
         sessions: listed.as_deref().unwrap_or(live.sessions),
         ..*live
     };
-    let kind = call.kind();
+    let (kind, blocked) = (call.kind(), call.blocked());
     let mut submitted =
         mono_messages::submit_in(&tx, caller, request_id, carrier, hash, &live, now)?;
     if let Submitted::Accepted {
@@ -678,9 +683,18 @@ pub(crate) fn on_ask<C: OnAsk>(
         };
         let id = &messages[0].message.id;
         tx.execute(
-            "INSERT INTO mono_ask_events (ask_id, kind, seq, message_id, at_active_ms, at_wall_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![ask_id.as_str(), kind, seq, id.as_str(), active, now],
+            "INSERT INTO mono_ask_events
+               (ask_id, kind, seq, blocked, message_id, at_active_ms, at_wall_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                ask_id.as_str(),
+                kind,
+                seq,
+                blocked,
+                id.as_str(),
+                active,
+                now
+            ],
         )?;
         messages[0].carries = carries(&tx, id)?;
     }
@@ -700,6 +714,9 @@ fn named<C: OnAsk>(
     let mut named = json!({"carrier": carrier.payload_hash().as_str(), "ask_id": ask_id.as_str()});
     if let Some(seq) = call.seq() {
         named["seq"] = seq.into();
+    }
+    if call.blocked() {
+        named["blocked"] = true.into();
     }
     let hash = mono_gate::action_hash(call.kind(), &named);
     Ok((carrier, hash))

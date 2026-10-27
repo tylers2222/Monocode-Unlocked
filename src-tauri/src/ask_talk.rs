@@ -21,13 +21,14 @@ pub struct TalkInput {
 
 impl TalkInput {
     /// `tool` is `question`, `answer` or `update`. Only an answer must name
-    /// its ask and the `seq` of the question it answers.
+    /// its ask and the `seq` of the question it answers; only a question
+    /// may be `blocked`.
     pub fn parse(tool: &str, raw: &Value) -> Result<Self, String> {
         let answer = tool == "answer";
-        let fields: &[&str] = if answer {
-            &["ask_id", "seq", "message"]
-        } else {
-            &["ask_id", "message"]
+        let fields: &[&str] = match tool {
+            "answer" => &["ask_id", "seq", "message"],
+            "question" => &["ask_id", "message", "blocked"],
+            _ => &["ask_id", "message"],
         };
         mono_gate::known_fields(tool, raw, fields)?;
         let ask_id = match raw.get("ask_id") {
@@ -44,7 +45,13 @@ impl TalkInput {
                     .ok_or("seq must be the seq (1 to 3) of the question you answer.")?,
             },
             "update" => Talk::Update,
-            _ => Talk::Question,
+            _ => Talk::Question {
+                blocked: raw
+                    .get("blocked")
+                    .map(|blocked| blocked.as_bool().ok_or(BLOCKED))
+                    .transpose()?
+                    .unwrap_or(false),
+            },
         };
         Ok(TalkInput {
             talk,
@@ -55,6 +62,7 @@ impl TalkInput {
 }
 
 const ASK_ID: &str = "ask_id must be the ask_id (m_…) of an ask: the one you were sent, or for an answer the question_of of the question.";
+const BLOCKED: &str = "blocked must be true or false. Set it to true only when you cannot go on at all without the answer.";
 
 fn refusal(talk: Talk, reason: TalkRefused) -> Refused {
     Refused(talk.refused_code(), reason.hint())
@@ -76,6 +84,10 @@ impl OnAsk for TalkInput {
 
     fn seq(&self) -> Option<i64> {
         self.talk.answers()
+    }
+
+    fn blocked(&self) -> bool {
+        self.talk.blocked()
     }
 
     /// The ask the call names, else the ask a repeat's first row is on (the
@@ -149,28 +161,34 @@ impl OnAsk for TalkInput {
 
     /// A question pauses the clock: no next due, so the scheduler skips the
     /// ask. Its answer resumes it where it paused, and the ladder goes on
-    /// from the moved deadline. An update leaves the clock running.
+    /// from the moved deadline. An update leaves the clock running. A
+    /// blocked question also queues its row to the parent (R15).
     fn write(
         self,
         tx: &Connection,
         ask_id: &MessageId,
-        _: &AskState,
+        ask: &AskState,
         _: &Actor,
         (seq, clock): (i64, Clock),
         active: i64,
     ) -> rusqlite::Result<Result<i64, Refused>> {
         match (self.talk, clock.paused_at) {
-            (Talk::Question, _) => {
+            (Talk::Question { blocked }, _) => {
                 // A reminder already queued would still go out while paused:
                 // withdraw it and step the ladder back by the rows withdrawn,
                 // so the answer re-runs that rung from the moved deadline. A
                 // claimed row is mid-send and goes out, as one sent just
-                // before the question would.
+                // before the question would. An earlier blocked row is no
+                // rung, so it stays.
                 let withdrawn = tx.execute(
                     "DELETE FROM mono_outbox
-                      WHERE ask_id = ?1 AND sent_at IS NULL AND claimed_by IS NULL",
+                      WHERE ask_id = ?1 AND key LIKE 'reminder:%'
+                        AND sent_at IS NULL AND claimed_by IS NULL",
                     [ask_id.as_str()],
                 )?;
+                if blocked {
+                    ask_scheduler::enqueue_blocked(tx, ask_id, seq, &ask.parent, active)?;
+                }
                 tx.execute(
                     "UPDATE mono_asks SET paused_at_active_ms = ?2, next_due_active_ms = NULL,
                        stage = stage - ?3 WHERE id = ?1",
@@ -182,6 +200,9 @@ impl OnAsk for TalkInput {
                 )?
             }
             (Talk::Answer { .. }, Some(paused_at)) => {
+                // Answered before a window took its blocked row: the row
+                // would only make the parent answer again.
+                ask_scheduler::withdraw_blocked(tx, ask_id, seq)?;
                 let due = ask_gate::resumed_due(clock.due, paused_at, active);
                 tx.execute(
                     "UPDATE mono_asks SET due_active_ms = ?2, paused_at_active_ms = NULL,
