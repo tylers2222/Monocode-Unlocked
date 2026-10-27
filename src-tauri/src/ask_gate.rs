@@ -192,7 +192,8 @@ pub fn decide_ack(ask: &AskState, caller: &Actor) -> Result<(), AckRefused> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Talk {
     /// The child asks its parent; the ask's clock pauses until the answer.
-    Question,
+    /// A `blocked` question also reaches the parent at once (R15).
+    Question { blocked: bool },
     /// The parent answers question `seq`; the clock resumes.
     Answer { seq: i64 },
     /// The child reports progress, once; the clock runs on.
@@ -206,7 +207,7 @@ impl Talk {
     /// The tool and the `mono_ask_events.kind`.
     pub fn kind(self) -> &'static str {
         match self {
-            Talk::Question => "question",
+            Talk::Question { .. } => "question",
             Talk::Answer { .. } => "answer",
             Talk::Update => "update",
         }
@@ -214,7 +215,7 @@ impl Talk {
 
     pub fn refused_code(self) -> &'static str {
         match self {
-            Talk::Question => "question_refused",
+            Talk::Question { .. } => "question_refused",
             Talk::Answer { .. } => "answer_refused",
             Talk::Update => "update_refused",
         }
@@ -225,7 +226,7 @@ impl Talk {
     pub fn parties(self, ask: &AskState) -> (&Actor, &Actor) {
         match self {
             Talk::Answer { .. } => (&ask.parent, &ask.child),
-            Talk::Question | Talk::Update => (&ask.child, &ask.parent),
+            Talk::Question { .. } | Talk::Update => (&ask.child, &ask.parent),
         }
     }
 
@@ -233,7 +234,7 @@ impl Talk {
     pub fn not_a_party(self) -> TalkRefused {
         match self {
             Talk::Answer { .. } => TalkRefused::NotYourAsk,
-            Talk::Question | Talk::Update => TalkRefused::NotYours,
+            Talk::Question { .. } | Talk::Update => TalkRefused::NotYours,
         }
     }
 
@@ -241,8 +242,13 @@ impl Talk {
     pub fn answers(self) -> Option<i64> {
         match self {
             Talk::Answer { seq } => Some(seq),
-            Talk::Question | Talk::Update => None,
+            Talk::Question { .. } | Talk::Update => None,
         }
+    }
+
+    /// R15: a question the child cannot go on without.
+    pub fn blocked(self) -> bool {
+        matches!(self, Talk::Question { blocked: true })
     }
 }
 
@@ -354,11 +360,13 @@ pub fn decide_talk(
         return Err(TalkRefused::AlreadyAcked);
     }
     match talk {
-        Talk::Question if said.paused => Err(TalkRefused::QuestionWaits {
+        Talk::Question { .. } if said.paused => Err(TalkRefused::QuestionWaits {
             seq: said.questions,
         }),
-        Talk::Question if said.questions >= MAX_QUESTIONS => Err(TalkRefused::NoQuestionsLeft),
-        Talk::Question => Ok(said.questions + 1),
+        Talk::Question { .. } if said.questions >= MAX_QUESTIONS => {
+            Err(TalkRefused::NoQuestionsLeft)
+        }
+        Talk::Question { .. } => Ok(said.questions + 1),
         Talk::Answer { .. } if !said.paused => Err(TalkRefused::NoQuestionWaits),
         Talk::Answer { seq } if seq != said.questions => Err(TalkRefused::AnswerOtherSeq {
             seq: said.questions,

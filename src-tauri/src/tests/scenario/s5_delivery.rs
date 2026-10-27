@@ -14,8 +14,8 @@ use crate::ask_scheduler::{self, Claimed};
 use crate::mono_messages::{self, MessageId, Notices, SessionId};
 use crate::mono_roster::MonoRole;
 
-/// A later stage's row to a Mono (R15 writes `blocked:<ask>:<seq>`) that
-/// this build does not send: no window lists or claims it.
+/// A blocked row to a Mono with no ask (R15 writes `blocked:<ask>:<seq>`
+/// with its ask): it has no prompt, so no window lists or claims it.
 const BLOCKED: &str = "blocked:s5d:1";
 /// A t5 row to a Mono, so a Mono's reminder is checked to reach its current
 /// chat.
@@ -38,7 +38,7 @@ fn wake(ask: &MessageId) -> Option<Claimed> {
 }
 
 /// The chats `notices` names, sorted.
-fn named(notices: &Notices) -> Vec<String> {
+pub(super) fn named(notices: &Notices) -> Vec<String> {
     let value = serde_json::to_value(notices).unwrap();
     let mut chats: Vec<String> = serde_json::from_value(value["sessions"].clone()).unwrap();
     chats.sort();

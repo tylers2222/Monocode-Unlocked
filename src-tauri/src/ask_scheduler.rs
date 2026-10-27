@@ -4,7 +4,8 @@
 //! in memory, so a restart finds the pending reminders in the database.
 //! R9: the window that owns a reminder's chat claims it, queues it and
 //! marks it sent once its provider took it. R11: the `why` stage tells the
-//! parent and writes the ask's `miss`; the ask stays open.
+//! parent and writes the ask's `miss`; the ask stays open. R15: a blocked
+//! question writes `blocked:<ask>:<seq>` to the parent, delivered the same way.
 
 use std::collections::HashMap;
 
@@ -13,8 +14,9 @@ use serde::Serialize;
 use tauri::{Runtime, State, WebviewWindow};
 
 use crate::ask_gate::{self, Actor, Delivery};
+use crate::asks::Carries;
 use crate::control::ControlHost;
-use crate::mono_messages::{self, Notices, SessionId};
+use crate::mono_messages::{self, MessageId, Notices, SessionId, Submitted};
 use crate::session_store::SessionStore;
 
 /// Who a rung's outbox row goes to.
@@ -178,8 +180,14 @@ pub struct Claimed {
 
 /// The prompt of reminder `stage` of ask `ask_id`, whose child is `send_to`
 /// `child`; `None` for a stage this build does not send, which waits for
-/// the build that sends it. The parent's `why` names the child (R11).
-fn reminder_text(ask_id: &str, stage: &str, child: &str) -> Option<String> {
+/// the build that sends it. The parent's `why` names the child (R11), and
+/// its `blocked` the question that waits, by seq and text (R15).
+fn reminder_text(
+    ask_id: &str,
+    stage: &str,
+    child: &str,
+    question: Option<(i64, String)>,
+) -> Option<String> {
     let (body, names_child) = match stage {
         "t5" => (
             format!(
@@ -201,6 +209,15 @@ fn reminder_text(ask_id: &str, stage: &str, child: &str) -> Option<String> {
             ),
             true,
         ),
+        "blocked" => {
+            let (seq, text) = question?;
+            (
+                format!(
+                    "{child} is blocked on ask {ask_id} and cannot go on until you answer its question {seq}:\n{text}\nAnswer it now with app messages.answer {{\"ask_id\":\"{ask_id}\",\"seq\":{seq},\"message\":\"...\"}} (the answer tool). If you cannot, ask your own asker with messages.question, or ask the user."
+                ),
+                true,
+            )
+        }
         _ => return None,
     };
     let child_attr = if names_child {
@@ -213,11 +230,102 @@ fn reminder_text(ask_id: &str, stage: &str, child: &str) -> Option<String> {
     ))
 }
 
-/// The text of an outbox row: only a row with an ask, at a stage this
-/// build sends, has one. `child_actor` is the ask's stored child.
-fn row_text(ask_id: Option<String>, stage: &str, child_actor: Option<String>) -> Option<String> {
-    let child = Actor::parse(&child_actor?)?;
-    reminder_text(&ask_id?, stage, child.send_to())
+/// An outbox row as a window reads it: who it goes to, and what its prompt
+/// names. Only a blocked row joins its question's seq and text (R15).
+const ROW: &str = "SELECT o.key, o.recipient, o.ask_id, o.stage, a.child_actor, e.seq, m.body
+     FROM mono_outbox o LEFT JOIN mono_asks a ON a.id = o.ask_id
+     LEFT JOIN mono_ask_events e ON o.stage = 'blocked' AND e.ask_id = o.ask_id
+       AND e.kind = 'question' AND o.key = 'blocked:' || e.ask_id || ':' || e.seq
+     LEFT JOIN mono_messages m ON m.id = e.message_id";
+
+/// The key, recipient and prompt of a `ROW`; no prompt for a row with no
+/// ask, or at a stage this build does not send.
+fn row_text(row: &rusqlite::Row) -> rusqlite::Result<(String, String, Option<String>)> {
+    let (ask_id, stage): (Option<String>, String) = (row.get(2)?, row.get(3)?);
+    let child = row.get::<_, Option<String>>(4)?;
+    let question = match (row.get(5)?, row.get(6)?) {
+        (Some(seq), Some(text)) => Some((seq, text)),
+        _ => None,
+    };
+    let text = ask_id
+        .zip(child.as_deref().and_then(Actor::parse))
+        .and_then(|(ask_id, child)| reminder_text(&ask_id, &stage, child.send_to(), question));
+    Ok((row.get(0)?, row.get(1)?, text))
+}
+
+/// R15: the outbox key of blocked question `seq` on ask `ask_id`.
+fn blocked_key(ask_id: &MessageId, seq: i64) -> String {
+    format!("blocked:{}:{seq}", ask_id.as_str())
+}
+
+/// R15: blocked question `seq` on ask `ask_id` goes to the ask's `parent`
+/// at once, as one outbox row that R9 delivers: a steer into a busy turn,
+/// a wake to an idle chat. The question's transaction writes it.
+pub(crate) fn enqueue_blocked(
+    tx: &Connection,
+    ask_id: &MessageId,
+    seq: i64,
+    parent: &Actor,
+    active_ms: i64,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO mono_outbox (key, ask_id, stage, recipient, at_active_ms)
+         VALUES (?1, ?2, 'blocked', ?3, ?4)",
+        params![
+            blocked_key(ask_id, seq),
+            ask_id.as_str(),
+            parent.to_string(),
+            active_ms
+        ],
+    )?;
+    Ok(())
+}
+
+/// R15: question `seq` on ask `ask_id` was answered, so its blocked row
+/// that no window took goes. A claimed one is mid-send and goes out.
+pub(crate) fn withdraw_blocked(
+    tx: &Connection,
+    ask_id: &MessageId,
+    seq: i64,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "DELETE FROM mono_outbox WHERE key = ?1 AND claimed_by IS NULL AND sent_at IS NULL",
+        [blocked_key(ask_id, seq)],
+    )?;
+    Ok(())
+}
+
+/// R15: the chat of each parent a call `submitted` just told it is blocked,
+/// so the window that owns it claims the row now, not at its next turn end.
+pub(crate) fn blocked_notices(
+    conn: &Connection,
+    submitted: &Submitted,
+) -> rusqlite::Result<Notices> {
+    let mut notices = Notices::default();
+    let Submitted::Accepted {
+        messages,
+        duplicate: false,
+        ..
+    } = submitted
+    else {
+        return Ok(notices);
+    };
+    for targeted in messages {
+        let Some(Carries::Question { ask_id, seq }) = &targeted.carries else {
+            continue;
+        };
+        let recipient: Option<String> = conn
+            .query_row(
+                "SELECT recipient FROM mono_outbox WHERE key = ?1",
+                [blocked_key(ask_id, *seq)],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(recipient) = recipient {
+            name_chat(conn, &mut notices, &recipient)?;
+        }
+    }
+    Ok(notices)
 }
 
 /// The chat a reminder to `recipient` reaches: a lead's or worker's
@@ -245,24 +353,15 @@ pub(crate) fn pending(conn: &Connection, session: &SessionId) -> rusqlite::Resul
     let mono = mono_messages::mono_of_chat(conn, session)?
         .map_or_else(|| own.clone(), |mono| Actor::Mono(mono).to_string());
     let rows = conn
-        .prepare(
-            "SELECT o.key, o.ask_id, o.stage, a.child_actor
-               FROM mono_outbox o LEFT JOIN mono_asks a ON a.id = o.ask_id
-              WHERE o.recipient IN (?1, ?2) AND o.sent_at IS NULL AND o.claimed_by IS NULL
-              ORDER BY o.at_active_ms, o.key",
-        )?
-        .query_map(params![own, mono], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get(1)?,
-                row.get::<_, String>(2)?,
-                row.get(3)?,
-            ))
-        })?
+        .prepare(&format!(
+            "{ROW} WHERE o.recipient IN (?1, ?2) AND o.sent_at IS NULL AND o.claimed_by IS NULL
+              ORDER BY o.at_active_ms, o.key"
+        ))?
+        .query_map(params![own, mono], row_text)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows
         .into_iter()
-        .filter_map(|(key, ask_id, stage, child)| row_text(ask_id, &stage, child).map(|_| key))
+        .filter_map(|(key, _, text)| text.map(|_| key))
         .collect())
 }
 
@@ -284,20 +383,13 @@ pub(crate) fn claim(
     running: &HashMap<String, String>,
     steerable: bool,
 ) -> rusqlite::Result<Option<Claimed>> {
-    let row: Option<(String, Option<String>, String, Option<String>)> = conn
-        .query_row(
-            "SELECT o.recipient, o.ask_id, o.stage, a.child_actor
-               FROM mono_outbox o LEFT JOIN mono_asks a ON a.id = o.ask_id
-              WHERE o.key = ?1",
-            [key],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
+    let row = conn
+        .query_row(&format!("{ROW} WHERE o.key = ?1"), [key], row_text)
         .optional()?;
-    let Some((recipient, ask_id, stage, child)) = row else {
+    let Some((_, recipient, Some(text))) = row else {
         return Ok(None);
     };
-    let (Some(text), Some(chat)) = (row_text(ask_id, &stage, child), chat_of(conn, &recipient)?)
-    else {
+    let Some(chat) = chat_of(conn, &recipient)? else {
         return Ok(None);
     };
     let delivery = ask_gate::delivery_for(running.contains_key(chat.as_str()), steerable);
