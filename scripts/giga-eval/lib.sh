@@ -22,12 +22,15 @@ case "$(uname -s)" in
   *) echo "giga-eval runs on macOS or Linux, not $(uname -s)" >&2; exit 2 ;;
 esac
 SCRATCH_NAME="giga-eval-scratch"
+# Where `instance.sh home` copies the logins from. The home-isolation scenario
+# seeds one under /tmp.
+LOGIN_HOME="${GIGA_EVAL_LOGIN_HOME:-$REAL_HOME}"
 
 # Prints `path` as a write to it would resolve: links followed, dangling ones
 # too, then its deepest existing folder through `cd -P` (symlinks and `..`),
-# plus the part not made yet. Fails on a link loop.
+# plus the part not made yet. Fails on a link loop or a folder `cd` cannot enter.
 resolve() {
-  local path="$1" tail="" link hops=0
+  local path="$1" tail="" link hops=0 base
   while [[ ! -d "$path" ]]; do
     if [[ -L "$path" ]]; then
       ((++hops <= 40)) || return 1
@@ -39,7 +42,8 @@ resolve() {
       path="$(dirname "$path")"
     fi
   done
-  printf '%s\n' "$(cd -P "$path" && pwd)$tail"
+  base="$(cd -P "$path" && pwd)" || return 1
+  printf '%s\n' "$base$tail"
 }
 
 # Prints `path` resolved when that is under /tmp, else fails. The part not
@@ -53,6 +57,35 @@ under_tmp() {
     /tmp/?*|/private/tmp/?*) printf '%s\n' "$path" ;;
     *) return 1 ;;
   esac
+}
+
+# The one rule for links in the temp HOME (ADE-112), in both modes: prints the
+# first link a write must not go through and fails, or prints nothing. A link
+# must resolve under /tmp, outside the login source, with no `..` in the part
+# not made yet. A folder a link reaches outside the HOME is scanned by the same
+# rule, so a second hop through /tmp cannot reach the real HOME; its links are
+# named by the path a write takes through the HOME. `find -H` enters a
+# GIGA_EVAL_HOME that is itself a link.
+unsafe_home_link() {
+  local login home dirs=("$EVAL_HOME") vias=("$EVAL_HOME") seen dir via link name target s
+  login="$(resolve "$LOGIN_HOME")" || { echo "$LOGIN_HOME does not resolve"; return 1; }
+  home="$(resolve "$EVAL_HOME")" || { echo "$EVAL_HOME does not resolve"; return 1; }
+  seen=("$home")
+  while ((${#dirs[@]})); do
+    dir="${dirs[0]}" via="${vias[0]}"; dirs=("${dirs[@]:1}") vias=("${vias[@]:1}")
+    while IFS= read -r -d '' link; do
+      name="$via${link#"$dir"}"
+      target="$(resolve "$link")" || { echo "$name does not resolve (a link loop, or a folder it cannot enter)"; return 1; }
+      case "$target/" in
+        */../* | "$login"/*) ;;
+        /tmp/* | /private/tmp/*)
+          [[ -d "$target" ]] || continue
+          for s in "${seen[@]}"; do [[ "$target/" != "$s/"* ]] || continue 2; done
+          seen+=("$target") dirs+=("$target") vias+=("$name"); continue ;;
+      esac
+      echo "$name resolves to $target"; return 1
+    done < <(find -H "$dir" -type l -print0 2>/dev/null)
+  done
 }
 
 # Before any write: every GigaEval script writes only under these two.

@@ -6,7 +6,7 @@
 #                                          $GIGA_EVAL_FEATURES (default fake-clock,test-db-key); a checkout
 #                                          without .git (the E2E image) needs $GIGA_EVAL_REV
 #   instance.sh home [--fresh]             create the temp HOME; refuse one where a link
-#                                          resolves into the real HOME
+#                                          resolves outside /tmp or into the login source
 #   instance.sh start [--fresh-home]       launch the last build under the temp HOME
 #                                          (Linux: on the X server in $DISPLAY, e.g. Xvfb)
 #   instance.sh lsof-check                 prove no open file under the real app data or ~/MonoCode
@@ -35,8 +35,6 @@ APP_DATA="$EVAL_APP_DATA"
 # (token refreshes too) stays in the temp HOME. Claude Code keeps its login in
 # the macOS keychain, which no temp HOME shares, so it has none here.
 LOGINS=(.omp/agent/agent.db .omp/agent/config.yml .codex/auth.json .gitconfig)
-# Where they come from. The home-isolation scenario seeds one under /tmp.
-LOGIN_HOME="${GIGA_EVAL_LOGIN_HOME:-$REAL_HOME}"
 
 # What differs per OS. install_build <label> <src> copies the build to
 # apps/<label>, records it in instance.app and checks its identifier.
@@ -118,36 +116,42 @@ cmd_build() {
   install_build "$label" "$src"
 }
 
-# Refuses a temp HOME where a link resolves into the real HOME or the login
-# source: a write through it would land in the user's own files (ADE-112).
-home_guard() {
-  local link target home homes=()
-  for home in "$REAL_HOME" "$LOGIN_HOME"; do
-    target="$(resolve "$home")" || die "$home is a link loop"
-    homes+=("$target")
-  done
-  while IFS= read -r -d '' link; do
-    target="$(resolve "$link")" || die "$link is a link loop"
-    for home in "${homes[@]}"; do
-      [[ "$target/" != "$home/"* ]] \
-        || die "$link resolves into $home ($target); make a fresh one: instance.sh home --fresh"
-    done
-  done < <(find "$EVAL_HOME" -type l -print0)
+# A consistent copy of a live database, -wal included, or a die: never a part
+# copy. A read-only open of a WAL database needs its -shm, which the last
+# connection's close removes. Then no connection is open, so a plain copy of
+# the file and its -wal is consistent, and the backup reads that copy.
+copy_db() {
+  local src="$1" part="$2.part" snap
+  rm -f "$part"
+  if ! sqlite3 "file:$src?mode=ro" ".backup '$part'" 2>/dev/null; then
+    rm -f "$part"
+    [[ ! -e "$src-shm" ]] || die "could not copy $src"
+    snap="$(mktemp -d "$EVAL_OUT/login-db.XXXXXX")"
+    if cp "$src" "$snap/db" && { [[ ! -e "$src-wal" ]] || cp "$src-wal" "$snap/db-wal"; } \
+      && sqlite3 "$snap/db" ".backup '$part'" 2>/dev/null; then
+      rm -rf "$snap"
+    else
+      rm -rf "$snap" "$part"; die "could not copy $src"
+    fi
+  fi
+  mv "$part" "$2"
 }
 
-copy_logins() {
-  local rel src dst copied=0
+# In a subshell under umask 077: no folder or copy is ever readable by others.
+copy_logins() (
+  umask 077
+  local rel src dst copied=0 missing=""
   for rel in ${LOGINS[@]+"${LOGINS[@]}"}; do
     src="$LOGIN_HOME/$rel" dst="$EVAL_HOME/$rel"
-    [[ -f "$src" && ! -e "$dst" && ! -L "$dst" ]] || continue
+    [[ -f "$src" ]] || { missing+=" $rel"; continue; }
+    [[ ! -e "$dst" && ! -L "$dst" ]] || continue
     mkdir -p "$(dirname "$dst")"
-    # A backup is a consistent copy of a live database, -wal included.
-    if [[ "$rel" == *.db ]]; then sqlite3 "file:$src?mode=ro" ".backup '$dst'"; else cp "$src" "$dst"; fi
+    if [[ "$rel" == *.db ]]; then copy_db "$src" "$dst"; else cp "$src" "$dst"; fi
     chmod 600 "$dst"
     copied=$((copied + 1))
   done
-  log "copied $copied login files from $LOGIN_HOME"
-}
+  log "copied $copied login files from $LOGIN_HOME; not there:${missing:- none}"
+)
 
 cmd_home() {
   if [[ "${1:-}" == "--fresh" ]]; then
@@ -157,7 +161,7 @@ cmd_home() {
     [[ "${GIGA_EVAL_SANDBOX:-}" != 1 ]] || { touch "$SANDBOX_HOME_MARK"; : >"$EVAL_OUT/preflight.pids"; }
   fi
   mkdir -p "$EVAL_HOME/Library"
-  home_guard
+  local bad; bad="$(unsafe_home_link)" || die "$bad; make a fresh one: instance.sh home --fresh"
   [[ "${GIGA_EVAL_LOGINS:-}" != 1 || "${GIGA_EVAL_SANDBOX:-}" == 1 ]] || copy_logins
   log "temp HOME $EVAL_HOME ready"
 }

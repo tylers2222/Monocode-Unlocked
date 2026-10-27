@@ -94,13 +94,9 @@ sandbox_guard() {
 }
 
 sandbox_home_ok() {
-  local link target bad=""
+  local bad
   [[ -f "$SANDBOX_HOME_MARK" ]] || { log "sandbox start needs a fresh home: instance.sh home --fresh"; return 1; }
-  while IFS= read -r link; do
-    target="$(resolve "$link")" || target="a link loop"
-    case "$target" in /tmp/* | /private/tmp/*) ;; *) bad+=" $link->$target" ;; esac
-  done < <(find "$EVAL_HOME" -type l 2>/dev/null)
-  [[ -z "$bad" ]] || { log "temp HOME links outside /tmp:$bad"; return 1; }
+  bad="$(unsafe_home_link)" || { log "unsafe temp HOME link: $bad"; return 1; }
 }
 
 # One NAME=value per line: the whole environment the sandboxed app gets. PATH
