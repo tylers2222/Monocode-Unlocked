@@ -19,8 +19,8 @@ hi_changed() {
 }
 
 # omp's agent.db is WAL. Closed, it has no -wal and no -shm (macOS's sqlite3
-# keeps both, so they go here), and a read-only open of it fails: the copy
-# must still work.
+# keeps both, so they go here). Any sqlite open of it, even read-only, can make
+# both beside it, so the copy must not open it with sqlite.
 hi_seed() {
   local rel
   rm -rf "$HI_LOGIN_HOME"

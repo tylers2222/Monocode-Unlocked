@@ -116,25 +116,45 @@ cmd_build() {
   install_build "$label" "$src"
 }
 
-# A consistent copy of a live database, -wal included, or a die: never a part
-# copy. A read-only open of a WAL database needs its -shm, which the last
-# connection's close removes. Then no connection is open, so a plain copy of
-# the file and its -wal is consistent, and the backup reads that copy.
+# A consistent copy of omp's WAL agent.db, or a die: never a part copy, and
+# never a file made, changed or removed beside the source. sqlite never opens
+# the source: a read-only open of a closed one can make its -wal and -shm (CI
+# run 40578398068), and a reader writes its read mark into a live -shm. The
+# backup reads a private cp of the db and its -wal, kept only if the source and
+# the cp hold the same bytes after the cp as before it, and no -shm appeared.
+# A changed source, or a copy that fails quick_check, gets one more try.
 copy_db() {
-  local src="$1" part="$2.part" snap
-  rm -f "$part"
-  if ! sqlite3 "file:$src?mode=ro" ".backup '$part'" 2>/dev/null; then
+  local part="$2.part" _
+  for _ in 1 2; do
     rm -f "$part"
-    [[ ! -e "$src-shm" ]] || die "could not copy $src"
-    snap="$(mktemp -d "$EVAL_OUT/login-db.XXXXXX")"
-    if cp "$src" "$snap/db" && { [[ ! -e "$src-wal" ]] || cp "$src-wal" "$snap/db-wal"; } \
-      && sqlite3 "$snap/db" ".backup '$part'" 2>/dev/null; then
-      rm -rf "$snap"
-    else
-      rm -rf "$snap" "$part"; die "could not copy $src"
-    fi
-  fi
-  mv "$part" "$2"
+    if backup_db "$1" "$part" && db_ok "$part"; then mv "$part" "$2"; return; fi
+  done
+  rm -f "$part"
+  die "could not copy $1: it changed during both tries, or it is not a good database"
+}
+
+# db_ok <db>: quick_check passes. The -wal is checkpointed into the db first,
+# so the -wal and -shm that macOS's sqlite3 keeps after a close can go.
+db_ok() {
+  local check
+  check="$(sqlite3 "$1" 'PRAGMA wal_checkpoint(TRUNCATE)' 'PRAGMA quick_check' 2>/dev/null | tail -n 1)"
+  rm -f "$1-wal" "$1-shm"
+  [[ "$check" == ok ]]
+}
+
+# The SHA-256 of the db and of its -wal if there is one, a line each.
+db_sums() { local f; for f in "$1" "$1-wal"; do [[ ! -e "$f" ]] || shasum -a 256 <"$f"; done; }
+
+# backup_db <src> <dst>: one try at the copy, as copy_db describes.
+backup_db() {
+  local src="$1" sums shm=0 snap rc=1
+  [[ ! -e "$src-shm" ]] || shm=1
+  sums="$(db_sums "$src")" snap="$(mktemp -d "$EVAL_OUT/login-db.XXXXXX")"
+  cp "$src" "$snap/db" && { [[ ! -e "$src-wal" ]] || cp "$src-wal" "$snap/db-wal"; } \
+    && [[ $shm == 1 || ! -e "$src-shm" ]] \
+    && [[ "$(db_sums "$src")" == "$sums" && "$(db_sums "$snap/db")" == "$sums" ]] \
+    && sqlite3 "$snap/db" ".backup '$2'" 2>/dev/null && rc=0
+  rm -rf "$snap"; return "$rc"
 }
 
 # In a subshell under umask 077: no folder or copy is ever readable by others.

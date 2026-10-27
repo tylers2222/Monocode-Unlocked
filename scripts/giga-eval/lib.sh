@@ -61,11 +61,11 @@ under_tmp() {
 
 # The one rule for links in the temp HOME (ADE-112), in both modes: prints the
 # first link a write must not go through and fails, or prints nothing. A link
-# must resolve under /tmp, outside the login source, with no `..` in the part
-# not made yet. A folder a link reaches outside the HOME is scanned by the same
-# rule, so a second hop through /tmp cannot reach the real HOME; its links are
-# named by the path a write takes through the HOME. `find -H` enters a
-# GIGA_EVAL_HOME that is itself a link.
+# must resolve under /tmp, outside the login source and not above it, with no
+# `..` in the part not made yet. A folder a link reaches outside the HOME is
+# scanned by the same rule, so a second hop through /tmp cannot reach the real
+# HOME; its links are named by the path a write takes through the HOME.
+# `find -H` enters a GIGA_EVAL_HOME that is itself a link.
 unsafe_home_link() {
   local login home dirs=("$EVAL_HOME") vias=("$EVAL_HOME") seen dir via link name target s
   login="$(resolve "$LOGIN_HOME")" || { echo "$LOGIN_HOME does not resolve"; return 1; }
@@ -79,6 +79,7 @@ unsafe_home_link() {
       case "$target/" in
         */../* | "$login"/*) ;;
         /tmp/* | /private/tmp/*)
+          [[ "$login/" != "$target/"* ]] || { echo "$name resolves to $target, above the login source"; return 1; }
           [[ -d "$target" ]] || continue
           for s in "${seen[@]}"; do [[ "$target/" != "$s/"* ]] || continue 2; done
           seen+=("$target") dirs+=("$target") vias+=("$name"); continue ;;
