@@ -38,6 +38,7 @@ import {
   type HandedOff,
   type MonoMessagingHost,
 } from "./monoRoute";
+import { submitQueued } from "./monoReminders";
 import {
   renderMonoMessage,
   renderMonoNotice,
@@ -107,6 +108,20 @@ const rust = vi.hoisted(() => {
     chats: {} as Record<string, string>,
     /** The sessions each window has loaded (`control_loaded_sessions`). */
     loaded: {} as Record<string, string[]>,
+    /**
+     * `mono_outbox` (R9): each reminder's chat and the prompt and delivery
+     * Rust's claim hands out; `afterTurn` is a busy turn that cannot take it.
+     */
+    reminders: [] as {
+      key: string;
+      chat: string;
+      text: string;
+      wake: boolean;
+      afterTurn?: boolean;
+      claimed?: boolean;
+    }[],
+    claims: [] as Record<string, unknown>[],
+    sentReminders: [] as string[],
     commands: [] as string[],
     submitted: [] as Record<string, unknown>[],
     gets: [] as Record<string, unknown>[],
@@ -285,6 +300,20 @@ const rust = vi.hoisted(() => {
               (entry.status === "open" || entry.status === "delivered"),
           )
           .map(targeted);
+      case "mono_outbox_pending":
+        return state.reminders
+          .filter((entry) => entry.chat === args.sessionId && !entry.claimed)
+          .map((entry) => entry.key);
+      case "mono_outbox_claim": {
+        state.claims.push(args);
+        const entry = state.reminders.find((r) => r.key === args.key);
+        if (!entry || entry.claimed || entry.afterTurn) return null;
+        entry.claimed = true;
+        return { text: entry.text, wake: entry.wake };
+      }
+      case "mono_outbox_sent":
+        state.sentReminders.push(args.key);
+        return true;
       case "mono_messages_pending_notices":
         return state.rows.filter(
           (entry) =>
@@ -463,6 +492,9 @@ beforeEach(() => {
   rust.state.chats = { giga: "giga-chat", "mono-a": "a-chat" };
   rust.state.loaded = {};
   rust.state.commands = [];
+  rust.state.reminders = [];
+  rust.state.claims = [];
+  rust.state.sentReminders = [];
   rust.state.submitted = [];
   rust.state.gets = [];
 });
@@ -986,6 +1018,81 @@ it("reconciles a row no item holds once, as an item that waits for the turn end"
   expect(
     get("a-chat").blocks.filter((block) => block.id === "m_aaaaaaaaaaaa"),
   ).toHaveLength(1);
+});
+
+// R9. Defects: a reminder that reaches its chat twice, in another text than
+// the one Rust's claim hands out, as the user's visible turn, or as a steer
+// in R9b; one claimed for a chat this window does not hold, or queued when
+// Rust leaves it for the turn end; one sent into a turn no provider can take
+// (it leaves the queue and keeps its claim); a sent mark for a turn the
+// provider refused, or for an item that is no reminder.
+it("queues each reminder Rust hands this window once, as a hidden prompt, and marks it sent when the provider takes it", async () => {
+  const { get, host } = world([chat("lead-1"), chat("lead-2", { busy: true })]);
+  const [idle, busy, gone] = [
+    "m_aaaaaaaaaaaa",
+    "m_bbbbbbbbbbbb",
+    "m_cccccccccccc",
+  ];
+  const text = `<mono_reminder ask_id="${idle}" stage="t5">\nAsk ${idle} is due.\n</mono_reminder>`;
+  rust.state.reminders = [
+    { key: `reminder:${idle}:t5`, chat: "lead-1", text, wake: true },
+    {
+      key: `reminder:${busy}:t5`,
+      chat: "lead-2",
+      text: "B",
+      wake: true,
+      afterTurn: true,
+    },
+    { key: `reminder:${gone}:t5`, chat: "lead-3", text: "C", wake: true },
+  ];
+  for (const id of ["lead-1", "lead-1", "lead-2", "lead-3"])
+    await reconcile(host, id);
+
+  const key = `reminder:${idle}:t5`;
+  const item = get("lead-1").queuedMessages![0];
+  expect(get("lead-1").queuedMessages).toEqual([
+    {
+      id: key,
+      appRequestId: key,
+      text,
+      attachments: [],
+      monoReminder: true,
+      waitForIdle: true,
+      queuedAt: expect.any(Number),
+    },
+  ]);
+  expect(get("lead-2").queuedMessages ?? []).toEqual([]);
+  expect(rust.state.claims).toEqual([
+    { key, steerable: false },
+    { key: `reminder:${busy}:t5`, steerable: false },
+  ]);
+  expect(queuedAppDelivery(item)).toEqual({
+    appRequestId: key,
+    appDelivery: { via: "queued", queuedMessageId: key },
+    internal: true,
+  });
+
+  const submits: { providerTook?: (accepted: boolean) => void }[] = [];
+  const submit = (options: (typeof submits)[number]) => submits.push(options);
+  expect(submitQueued(item, false, submit)).toBe(false);
+  expect(submits).toEqual([]);
+  submitQueued(item, true, submit);
+  submits[0].providerTook!(false);
+  expect(rust.state.sentReminders).toEqual([]);
+  submits[0].providerTook!(true);
+  await vi.waitFor(() => expect(rust.state.sentReminders).toEqual([key]));
+  const notice = {
+    ...item,
+    id: "n",
+    appRequestId: "n",
+    monoReminder: undefined,
+  };
+  submitQueued(notice, false, submit);
+  expect(submits[1]).toEqual({});
+  expect(queuedAppDelivery(notice)).toEqual({
+    appRequestId: "n",
+    appDelivery: { via: "queued", queuedMessageId: "n" },
+  });
 });
 
 // Defect: an opener that failed after its dequeue is lost, or comes back as

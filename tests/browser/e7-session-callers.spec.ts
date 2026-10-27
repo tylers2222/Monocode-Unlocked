@@ -124,6 +124,7 @@ const handlers: MountOptions["handlers"] = {
     return rows;
   },
   mono_messages_pending_notices: () => [],
+  mono_outbox_pending: () => [],
   mono_message_assign_slot: (_store, { id, turnId, kind }) => {
     const row = window.rows![id as string];
     return {

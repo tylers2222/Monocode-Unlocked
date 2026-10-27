@@ -70,6 +70,7 @@ const handlers: MountOptions["handlers"] = {
   // mono_messages.rs: no message waits for any session.
   mono_messages_unqueued: () => [],
   mono_messages_pending_notices: () => [],
+  mono_outbox_pending: () => [],
   control_reply: () => null,
   "plugin:dialog|open": () => "/Users/test/acme",
   // session_store.rs search_sessions, as far as the one saved chat at home.
