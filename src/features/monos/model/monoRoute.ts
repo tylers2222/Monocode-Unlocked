@@ -25,6 +25,7 @@ import {
 } from "../../approvals/model/boardDecision";
 import {
   APPROVALS_SENDER,
+  dueIn,
   newTurnId,
   noticeRequestId,
   renderMonoMessage,
@@ -879,6 +880,29 @@ export async function getMessage(host: MonoMessagingHost, input: GetInput) {
   return { message: got.message };
 }
 
+type Extended =
+  | { outcome: "extended"; askId: MessageId; dueInMs: number }
+  | {
+      outcome: "failed";
+      error: { code: "invalid_input" | "extend_refused"; hint: string };
+    };
+
+/** `messages.extend` (R10): Rust decides and moves the deadline; no message. */
+async function extendAsk(host: MonoMessagingHost, input: RawInput) {
+  const resolved = await host.caller();
+  if (!resolved.ok) throw new AppActionError(resolved.code, resolved.hint);
+  const extended = await invoke<Extended>("mono_ask_extend", {
+    caller: resolved.caller,
+    input,
+  });
+  if (extended.outcome === "failed")
+    throw new AppActionError(extended.error.code, extended.error.hint);
+  return {
+    ask_id: extended.askId,
+    due_in: dueIn(extended.dueInMs),
+  };
+}
+
 /**
  * `messages.send` (design 3.2), and `messages.ask` and `messages.ack` (R6):
  * an ask is a send that is also a key on the asked child, an ack a send to
@@ -952,6 +976,7 @@ export function agentMessages(
       sendMessage(host, "send_message", requestId, input),
     ask: (requestId, input) => sendMessage(host, "ask", requestId, input),
     ack: (requestId, input) => sendMessage(host, "ack", requestId, input),
+    extend: (input) => extendAsk(host, input),
     reply: (requestId, input) => replyMessage(host, requestId, input),
     get: (input) => getMessage(host, input),
   };

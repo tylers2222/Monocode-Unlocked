@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 53] = [
+const APP_ACTIONS: [&str; 54] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -100,6 +100,7 @@ const APP_ACTIONS: [&str; 53] = [
     "messages.send",
     "messages.ask",
     "messages.ack",
+    "messages.extend",
     "messages.reply",
     "messages.get",
     "monos.create",
@@ -370,6 +371,15 @@ Actions:
                   request_id_reused, ack_refused (no open ask has this id,
                   already acked, or not yours; the hint says which), and the
                   codes of messages.send.
+  messages.extend {"ask_id":"m_..."}
+                  Move the deadline of an ask you were asked 15 active
+                  minutes later, once. It opens with the <mono_reminder> 5
+                  active minutes before the deadline. ask_id may be left out
+                  when you have exactly one open ask. Returns ask_id and
+                  due_in, the active time now left. Codes: invalid_input,
+                  extend_refused (not yours, already acked, no deadline,
+                  before the reminder, or already extended; the hint says
+                  which).
   messages.reply {"message":"...","to":"#1","wanting_reply":false}
                   Answer a <mono_message> that waits for your reply (it says
                   wanting_reply="true" and has a handle such as
@@ -905,6 +915,18 @@ pub fn app_tools() -> Value {
                     "message": {"type": "string", "minLength": 1, "description": "What you did."}
                 },
                 "required": ["ask_id", "message"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "extend",
+            "action": "messages.extend",
+            "description": "Move the deadline of an ask you were asked 15 active minutes later, once. It opens with the <mono_reminder> 5 active minutes before the deadline. Returns ask_id and due_in. A refusal has code and hint; follow the hint.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ask_id": {"type": "string", "minLength": 1, "description": "The ask_id of the <mono_reminder>. May be left out when you have exactly one open ask."}
+                },
                 "additionalProperties": false
             }
         },
@@ -1554,6 +1576,7 @@ mod tests {
                 "messages.ack",
                 r#"{"ask_id":"m_aaaaaaaaaaaa","message":"CI is fixed"}"#,
             ),
+            ("messages.extend", r#"{"ask_id":"m_aaaaaaaaaaaa"}"#),
             ("messages.reply", r#"{"message":"CI is green"}"#),
             ("messages.get", r##"{"handle":"#1"}"##),
         ] {
@@ -1857,6 +1880,7 @@ mod tests {
                 "get_message",
                 "ask",
                 "ack",
+                "extend",
                 "list_milestones",
                 "add_milestone",
                 "update_milestone",

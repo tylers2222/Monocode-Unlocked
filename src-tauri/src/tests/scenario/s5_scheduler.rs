@@ -37,7 +37,7 @@ pub(super) fn ask(
     written(world.tool(from, key, "ask", input, live))
 }
 
-fn ack(world: &World, live: &[&SessionId], child: &SessionId, ask: &MessageId) {
+pub(super) fn ack(world: &World, live: &[&SessionId], child: &SessionId, ask: &MessageId) {
     let input = json!({"ask_id": ask.as_str(), "message": "Done"});
     let key = format!("ack-{}", ask.as_str());
     written(world.tool(&session_caller(child, P), &key, "ack", input, live));
@@ -55,7 +55,7 @@ pub(super) fn due(world: &World, ask: &MessageId) -> i64 {
 }
 
 /// The scheduler's state of `ask`: its stage and next due.
-fn ladder(world: &World, ask: &MessageId) -> (i64, Option<i64>) {
+pub(super) fn ladder(world: &World, ask: &MessageId) -> (i64, Option<i64>) {
     world
         .conn()
         .query_row(
@@ -71,7 +71,7 @@ pub(super) fn t5_key(ask: &MessageId) -> String {
 }
 
 /// The outbox rows of `ask` as `(key, stage, recipient, at_active_ms)`.
-fn reminders(world: &World, ask: &MessageId) -> Vec<Reminder> {
+pub(super) fn reminders(world: &World, ask: &MessageId) -> Vec<Reminder> {
     world
         .conn()
         .prepare(
@@ -87,7 +87,7 @@ fn reminders(world: &World, ask: &MessageId) -> Vec<Reminder> {
         .unwrap()
 }
 
-fn t5(ask: &MessageId, recipient: &str, at: i64) -> Vec<Reminder> {
+pub(super) fn t5(ask: &MessageId, recipient: &str, at: i64) -> Vec<Reminder> {
     vec![(t5_key(ask), "t5".into(), recipient.into(), at)]
 }
 

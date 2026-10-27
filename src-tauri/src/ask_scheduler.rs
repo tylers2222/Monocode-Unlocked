@@ -134,7 +134,8 @@ pub struct Claimed {
 fn reminder_text(ask_id: &str, stage: &str) -> Option<String> {
     let body = match stage {
         "t5" => format!(
-            "Ask {ask_id} is due in 5 active minutes. When its work is done, ack it with this ask_id."
+            "Ask {ask_id} is due in 5 active minutes. When its work is done, ack it with this ask_id. If you need more time, app messages.extend {{\"ask_id\":\"{ask_id}\"}} (the extend tool) moves the deadline {} active minutes, once.",
+            ask_gate::EXTENSION_MS / 60_000
         ),
         _ => return None,
     };
