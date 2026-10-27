@@ -40,7 +40,52 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium webkit
+      # The browser builds and the apt package list depend only on the OS image
+      # and the exact playwright-core version, so a Playwright bump makes new
+      # keys and a miss. apt downloads its .deb files into a runner-owned folder,
+      # so the cache can save them; dpkg still unpacks and configures each one.
+      - name: Playwright cache keys and apt archive folder
+        id: playwright
+        run: |
+          set -euo pipefail
+          version="$(jq -er '.packages["node_modules/playwright-core"].version' package-lock.json)"
+          echo "key=playwright-$ImageOS-$RUNNER_ARCH-$version" >> "$GITHUB_OUTPUT"
+          echo "apt-key=apt-$ImageOS-$RUNNER_ARCH-$version" >> "$GITHUB_OUTPUT"
+          mkdir -p ~/apt-archives/partial
+          printf 'Dir::Cache::Archives "%s";\nAPT::Keep-Downloaded-Packages "true";\n' "$HOME/apt-archives" \
+            | sudo tee /etc/apt/apt.conf.d/99ci-archives
+      - name: Restore Playwright browsers
+        id: playwright-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.playwright.outputs.key }}
+      # Only the .deb files: apt's root-only lock and partial/ stay out.
+      - name: Restore apt archives
+        id: apt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives/*.deb
+          key: ${{ steps.playwright.outputs.apt-key }}
+      # On a cache hit playwright skips a browser whose INSTALLATION_COMPLETE
+      # marker is already in the cache, and apt fetches only the index. apt
+      # writes the .deb files as root, so hand them to the runner for the save.
+      - run: |
+          npx playwright install --with-deps chromium webkit
+          sudo chown -R "$USER" ~/apt-archives
+      # Saved right after the download, so a failing test run still fills them.
+      - name: Save Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.playwright.outputs.key }}
+      - name: Save apt archives
+        if: steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives/*.deb
+          key: ${{ steps.playwright.outputs.apt-key }}
       # Real-harness specs (tests/browser/ade67-question-card.spec.ts) drive a
       # real omp. It is the standalone v18.2.11 release binary, checked against
       # the sha256 in the release's SHA256SUMS.txt; it bundles its dependencies.
@@ -95,16 +140,19 @@ jobs:
           persist-credentials: false
 
       # A pull request runs check and the packaging jobs only when their files
-      # change; a push or a ci.yml change runs them all. A job whose output is
-      # 'false' is skipped at job level and takes no runner. The dependants
-      # fail open: their `if:` holds a status function (`!cancelled()`), so
-      # they still start when this job fails; its outputs are then empty, and
-      # an empty output is not 'false', so they run.
+      # change; a ci.yml change runs them all. A push runs check and packaging
+      # always, and appimage only when its files changed since the commit
+      # before the push. A job whose output is 'false' is skipped at job level
+      # and takes no runner. The dependants fail open: their `if:` holds a
+      # status function (`!cancelled()`), so they still start when this job
+      # fails; its outputs are then empty, and an empty output is not 'false',
+      # so they run.
       - name: Decide which jobs run
         id: paths
         env:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
           HEAD: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -115,17 +163,19 @@ jobs:
           # asserts host-library linking, which only these files can change.
           appimage_paths='^(scripts/(repack-appimage|assert-appimage-host-libs|install-linux-deps-debian)\.sh|package(-lock)?\.json|Cargo\.lock|src-tauri/(tauri(\.linux)?\.conf\.json|Cargo\.toml)|\.github/workflows/release\.yml)$'
           decide() { printf 'check=%s\npackaging=%s\nappimage=%s\n' "$1" "$2" "$3" | tee -a "$GITHUB_OUTPUT"; exit 0; }
-          [ "$EVENT" = pull_request ] || decide true true true
+          [ "$EVENT" = pull_request ] || BASE="$BEFORE"
+          # Empty, all zeros (a new branch) or unknown (a force push): run all.
           git cat-file -e "${BASE}^{commit}" 2>/dev/null || decide true true true
           changed="$(git -c core.quotePath=false diff --name-only --no-renames "$BASE" "$HEAD")"
           printf '%s\n' "$changed"
           grep -qx '\.github/workflows/ci\.yml' <<<"$changed" && decide true true true
+          appimage=false
+          grep -Eq "$appimage_paths" <<<"$changed" && appimage=true
+          [ "$EVENT" = pull_request ] || decide true true "$appimage"
           check=false
           packaging=false
-          appimage=false
           grep -Evq "$check_skip" <<<"$changed" && check=true
           grep -Eq "$packaging_paths" <<<"$changed" && packaging=true
-          grep -Eq "$appimage_paths" <<<"$changed" && appimage=true
           decide "$check" "$packaging" "$appimage"
 
   check:
