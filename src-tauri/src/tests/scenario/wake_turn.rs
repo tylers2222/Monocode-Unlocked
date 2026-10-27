@@ -135,8 +135,10 @@ fn web_app(world: &World, mono: &SessionId, event: &Value, sent: &mut Vec<Messag
 /// its background job cannot message its Mono or start a session
 /// (`turn_inactive`), also when the run starts while a MonoCode turn ends;
 /// or the fix lets the token work outside any turn, past the run's end, or
-/// lets the run take over a MonoCode turn; or Mono delivery treats the woken
-/// lead as running a turn the window can steer.
+/// lets the run take over a MonoCode turn; or a turn the window sent with no
+/// app access gets it; or another window's run waits for the MonoCode turn
+/// and outlives that window; or Mono delivery treats the woken lead as
+/// running a turn the window can steer.
 #[test]
 fn a_lead_woken_by_its_harness_messages_its_mono_and_starts_a_session() {
     let mut world = World::new("wake-turn");
@@ -144,10 +146,13 @@ fn a_lead_woken_by_its_harness_messages_its_mono_and_starts_a_session() {
     let lead = world.start_lead(&mono, "wk-lead", P);
     let (app, main, events) = app_with_window(&world);
     let cwd = world.path().parent().unwrap().to_str().unwrap().to_string();
-    let authorize = |command: &str, turn_id: &str| {
+    let authorize_in = |window: &WebviewWindow<_>, command: &str, turn_id: &str, access: bool| {
         let args =
-            json!({"sessionId": lead.as_str(), "cwd": cwd, "appAccess": true, "turnId": turn_id});
-        invoke_command(&main, command, &args).unwrap();
+            json!({"sessionId": lead.as_str(), "cwd": cwd, "appAccess": access, "turnId": turn_id});
+        invoke_command(window, command, &args)
+    };
+    let authorize = |command: &str, turn_id: &str| {
+        authorize_in(&main, command, turn_id, true).unwrap();
     };
     let finish = |turn_id: &str| {
         let args = json!({"sessionId": lead.as_str(), "turnId": turn_id});
@@ -215,6 +220,35 @@ fn a_lead_woken_by_its_harness_messages_its_mono_and_starts_a_session() {
     finish("lead-t3");
     let (refused, _) = call("messages.send", &report, "after-t3");
     assert_eq!(refused["code"], "turn_inactive", "no turn outlives its run");
+
+    // A turn the window sent with no app access gets none, though the
+    // session is eligible: a MonoCode turn and a harness-started turn.
+    for (command, turn_id) in [
+        ("control_authorize_turn", "lead-t4"),
+        ("control_authorize_harness_turn", "lead-wake-4"),
+    ] {
+        authorize_in(&main, command, turn_id, false).unwrap();
+        let (refused, _) = call("messages.send", &report, &format!("in-{turn_id}"));
+        assert_eq!(refused["code"], "turn_inactive", "{turn_id} has no access");
+        finish(turn_id);
+    }
+
+    // Another window's run does not wait for this window's MonoCode turn:
+    // that window's close or reload would never end it.
+    let other = tauri::WebviewWindowBuilder::new(&app, "other", tauri::WebviewUrl::default())
+        .build()
+        .unwrap();
+    authorize("control_authorize_turn", "lead-t5");
+    let wake = authorize_in(
+        &other,
+        "control_authorize_harness_turn",
+        "lead-wake-5",
+        true,
+    );
+    assert!(wake.is_err(), "another window's run is refused");
+    finish("lead-t5");
+    let (refused, _) = call("messages.send", &report, "after-t5");
+    assert_eq!(refused["code"], "turn_inactive", "nothing waited for t5");
 
     // The Mono's next turn takes the lead's reports, in either order: the
     // sends can share a millisecond, and ids are random.

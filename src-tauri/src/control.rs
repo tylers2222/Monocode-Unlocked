@@ -226,12 +226,17 @@ impl Inner {
         mut turn: ActiveTurn,
     ) -> Result<Option<ActiveTurn>, String> {
         // A MonoCode turn the window already ended: the run waits for its end.
+        // Only that window may queue it: its close or reload never looks at
+        // `next`, so a turn queued from another window would outlive it.
         if turn.started_by == StartedBy::Harness {
             if let Some(running) = self
                 .active
                 .get_mut(session)
                 .filter(|running| running.started_by == StartedBy::MonoCode)
             {
+                if running.window != turn.window {
+                    return Err("Another window runs this session's turn.".into());
+                }
                 running.next = Some(Box::new(turn));
                 return Ok(None);
             }
@@ -719,7 +724,8 @@ pub fn control_authorize_turn<R: Runtime>(
 /// session. The window asks with that turn's `cwd` and `app_access`, so the
 /// run gets the same access under the same checks, and
 /// `control_turn_finished` ends it. A run that starts while a MonoCode turn
-/// ends gets its turn when that turn ends (`Inner::finish_turn`).
+/// of the same window ends gets its turn when that turn ends
+/// (`Inner::finish_turn`); another window's run is refused.
 #[tauri::command(async)]
 pub fn control_authorize_harness_turn<R: Runtime>(
     window: WebviewWindow<R>,
