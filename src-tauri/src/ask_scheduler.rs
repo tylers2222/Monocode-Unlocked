@@ -197,7 +197,7 @@ fn reminder_text(ask_id: &str, stage: &str, child: &str) -> Option<String> {
         ),
         "why" => (
             format!(
-                "{child} has not acked {ask_id}. Ask it why: send it a message with send_to \"{child}\". The ask stays open until it acks."
+                "{child} has not acked {ask_id}. Ask it why: send it a message with send_to \"{child}\". It stores its reason with app messages.reason (the reason tool); the ask stays open until it acks."
             ),
             true,
         ),
