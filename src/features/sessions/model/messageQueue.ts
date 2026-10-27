@@ -71,6 +71,17 @@ export function canDispatchQueuedHead(session: Session): boolean {
 }
 
 /**
+ * True when the app sends the queued head with no user action: it can send
+ * now, or the pump turns a `resuming` queue active on its next pass.
+ */
+export function autoSendsQueuedHead(session: Session): boolean {
+  return (
+    canDispatchQueuedHead(session) ||
+    (session.queueStatus === "resuming" && queuedHead(session) !== undefined)
+  );
+}
+
+/**
  * A message that can only start a new turn; it never steers a running one.
  * It waits by choice, so it never misses a turn and holds nothing behind it.
  */

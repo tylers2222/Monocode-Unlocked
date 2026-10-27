@@ -10,6 +10,7 @@ import type { OrchestrationRun } from "../../features/orchestration/model/orches
 import { rememberLoadedSession } from "../../features/sessions/data/sessionCache";
 import { shouldPersistSession } from "../../features/sessions/data/sessionStore";
 import { sessionChildHarnesses } from "../../features/sessions/model/handoff";
+import { autoSendsQueuedHead } from "../../features/sessions/model/messageQueue";
 import type { Session } from "../../features/sessions/model/session";
 import {
   leafIds,
@@ -21,6 +22,27 @@ import { isHabitRun } from "../../features/monos/model/monoHabits";
 import { isLaunchAccepting } from "../model/quickLaunchSession";
 
 const SESSION_DETACH_DELAY_MS = 250;
+
+type KeepContext = {
+  visibleIds: ReadonlySet<string>;
+  /** A session being opened or launched; nothing may detach it mid-open. */
+  isOpening: (sessionId: string) => boolean;
+  unseenFinishedIds: ReadonlySet<string>;
+  keepUnseen: boolean;
+};
+
+/** Whether an idle-detach pass leaves `session` loaded in the window. */
+function keeps(session: Session, ctx: KeepContext): boolean {
+  return (
+    ctx.visibleIds.has(session.id) ||
+    session.busy ||
+    // The queue pump sends only for loaded sessions, so a head it would send
+    // with no user action would be stranded by a detach.
+    autoSendsQueuedHead(session) ||
+    ctx.isOpening(session.id) ||
+    (ctx.keepUnseen && ctx.unseenFinishedIds.has(session.id))
+  );
+}
 
 export function useIdleSessionDetach({
   sessions,
@@ -92,15 +114,15 @@ export function useIdleSessionDetach({
       openingSessionIds.current.delete(sessionId);
       loadedSessionCache.current.delete(sessionId);
     }
-    const keepUnseen = liveAgentsEnabled;
-    const idleDetached = sessions.filter(
-      (session) =>
-        !visibleIds.has(session.id) &&
-        !session.busy &&
-        !openingSessionIds.current.has(session.id) &&
-        !isLaunchAccepting(session.id) &&
-        !(keepUnseen && unseenFinishedRef.current.has(session.id)),
-    );
+    const ctx: KeepContext = {
+      visibleIds,
+      isOpening: (sessionId) =>
+        openingSessionIds.current.has(sessionId) ||
+        isLaunchAccepting(sessionId),
+      unseenFinishedIds: unseenFinishedRef.current,
+      keepUnseen: liveAgentsEnabled,
+    };
+    const idleDetached = sessions.filter((session) => !keeps(session, ctx));
     if (idleDetached.length === 0) return;
     for (const session of idleDetached) {
       if (skipForgetSessionIds.current.has(session.id)) continue;
@@ -115,12 +137,7 @@ export function useIdleSessionDetach({
     setSessions((prev) =>
       prev.filter(
         (session) =>
-          visibleIds.has(session.id) ||
-          session.busy ||
-          openingSessionIds.current.has(session.id) ||
-          isLaunchAccepting(session.id) ||
-          (keepUnseen && unseenFinishedRef.current.has(session.id)) ||
-          skipForgetSessionIds.current.has(session.id),
+          keeps(session, ctx) || skipForgetSessionIds.current.has(session.id),
       ),
     );
   }, [
