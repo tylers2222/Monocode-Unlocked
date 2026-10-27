@@ -14,6 +14,7 @@ use std::time::Duration;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use tauri::{AppHandle, Manager};
 
+use crate::mono_messages::Notices;
 use crate::session_store::SessionStore;
 
 /// The clocks the active clock reads. `uptime_ns` stops while the computer
@@ -129,8 +130,8 @@ impl<C: Clock> ActiveClock<C> {
     /// Adds the uptime since the last tick, at most 30 s; logs a sleep when
     /// the monotonic clock moved further than uptime; writes the row every
     /// 5 s of active time and after a sleep. Then it enqueues the reminders
-    /// that fell due (`ask_scheduler::run`).
-    pub(crate) fn tick(&mut self, conn: &Connection) -> rusqlite::Result<()> {
+    /// that fell due (`ask_scheduler::run`) and names their chats.
+    pub(crate) fn tick(&mut self, conn: &Connection) -> rusqlite::Result<Notices> {
         let now = self.clock.now();
         let (uptime, monotonic) = (now.uptime_ns, now.monotonic_ns);
         let awake = uptime.saturating_sub(self.uptime_ns);
@@ -155,8 +156,7 @@ impl<C: Clock> ActiveClock<C> {
             )?;
             self.persisted_ns = self.active_ns;
         }
-        crate::ask_scheduler::run(conn, self.active_ms())?;
-        Ok(())
+        crate::ask_scheduler::run(conn, self.active_ms())
     }
 
     pub(crate) fn active_ms(&self) -> i64 {
@@ -195,7 +195,7 @@ pub(crate) fn start<C: Clock>(
 }
 
 /// Starts the 1 s clock thread, beside `reminders::init`.
-pub(crate) fn init(app: &AppHandle) -> Result<(), String> {
+pub(crate) fn init<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let data = app
         .path()
         .app_data_dir()
@@ -220,8 +220,10 @@ pub(crate) fn init(app: &AppHandle) -> Result<(), String> {
             .state::<SessionStore>()
             .lock_conn()
             .and_then(|conn| clock.tick(&conn).map_err(|error| error.to_string()));
-        if let Err(error) = ticked {
-            eprintln!("Could not tick the active clock: {error}");
+        // After the store lock is let go, as every command emits (design 5.3).
+        match ticked {
+            Ok(notices) => notices.emit(&app),
+            Err(error) => eprintln!("Could not tick the active clock: {error}"),
         }
     });
     Ok(())

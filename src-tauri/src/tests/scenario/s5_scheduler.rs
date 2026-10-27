@@ -13,19 +13,19 @@ use crate::mono_gate::Caller;
 use crate::mono_messages::{MessageId, SessionId};
 use crate::mono_roster::MonoRole;
 
-const P: &str = "/p";
+pub(super) const P: &str = "/p";
 const SECOND: i64 = 1_000;
-const MINUTE: i64 = 60 * SECOND;
+pub(super) const MINUTE: i64 = 60 * SECOND;
 const HOUR: i64 = 60 * MINUTE;
 /// Plan section 2: the first reminder goes out 5 active minutes before the
 /// deadline.
-const T5_LEAD: i64 = 5 * MINUTE;
+pub(super) const T5_LEAD: i64 = 5 * MINUTE;
 /// R2: the active time a kill may lose, the clock row's persist interval.
 const PERSIST: i64 = 5 * SECOND;
 
 type Reminder = (String, String, String, i64);
 
-fn ask(
+pub(super) fn ask(
     world: &World,
     live: &[&SessionId],
     from: &Caller,
@@ -43,7 +43,7 @@ fn ack(world: &World, live: &[&SessionId], child: &SessionId, ask: &MessageId) {
     written(world.tool(&session_caller(child, P), &key, "ack", input, live));
 }
 
-fn due(world: &World, ask: &MessageId) -> i64 {
+pub(super) fn due(world: &World, ask: &MessageId) -> i64 {
     world
         .conn()
         .query_row(
@@ -66,7 +66,7 @@ fn ladder(world: &World, ask: &MessageId) -> (i64, Option<i64>) {
         .unwrap()
 }
 
-fn t5_key(ask: &MessageId) -> String {
+pub(super) fn t5_key(ask: &MessageId) -> String {
     format!("reminder:{}:t5", ask.as_str())
 }
 
@@ -139,7 +139,7 @@ fn schema(world: &World) -> Vec<(String, String)> {
     )
 }
 
-fn advance_to(world: &mut World, at: i64) {
+pub(super) fn advance_to(world: &mut World, at: i64) {
     let left = at - world.active_ms();
     assert!(left >= 0, "active time is already past {at}");
     world.advance(left);

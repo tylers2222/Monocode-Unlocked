@@ -2,8 +2,19 @@
 //! the open asks that fell due in active time into rows of `mono_outbox`,
 //! one row per ask and stage, keyed `reminder:<ask>:<stage>`. Nothing lives
 //! in memory, so a restart finds the pending reminders in the database.
+//! R9: the window that owns a reminder's chat claims it, queues it and
+//! marks it sent once its provider took it.
 
-use rusqlite::{params, Connection, Transaction, TransactionBehavior};
+use std::collections::HashMap;
+
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use serde::Serialize;
+use tauri::{Runtime, State, WebviewWindow};
+
+use crate::ask_gate::{self, Actor, Delivery};
+use crate::control::ControlHost;
+use crate::mono_messages::{self, Notices, SessionId};
+use crate::session_store::SessionStore;
 
 /// One stage of an open ask's ladder: its outbox name and when it falls
 /// due, relative to the ask's deadline. Every rung here goes to the child.
@@ -64,8 +75,9 @@ pub(crate) fn next_due(due_active_ms: i64, done: i64) -> Option<i64> {
 /// `active_ms`, and moves the ask to the rung after it. A paused or untimed
 /// ask has no next due, so it is never selected. A key enqueued before (its
 /// stage write lost) keeps its one row; an ask that a later build moved past
-/// the end of this ladder is left alone.
-pub(crate) fn run(conn: &Connection, active_ms: i64) -> rusqlite::Result<()> {
+/// the end of this ladder is left alone. Names the chat of each recipient,
+/// so the window that owns it delivers the reminder (R9).
+pub(crate) fn run(conn: &Connection, active_ms: i64) -> rusqlite::Result<Notices> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let fell_due: Vec<(String, i64, i64, String)> = tx
         .prepare(
@@ -76,6 +88,7 @@ pub(crate) fn run(conn: &Connection, active_ms: i64) -> rusqlite::Result<()> {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
+    let mut notices = Notices::default();
     for (id, done, due_active_ms, child) in fell_due {
         let Some(rung) = next_rung(done) else {
             continue;
@@ -90,8 +103,10 @@ pub(crate) fn run(conn: &Connection, active_ms: i64) -> rusqlite::Result<()> {
             "UPDATE mono_asks SET stage = ?1, next_due_active_ms = ?2 WHERE id = ?3",
             params![done + 1, next_due(due_active_ms, done + 1), id],
         )?;
+        name_chat(&tx, &mut notices, &child)?;
     }
-    tx.commit()
+    tx.commit()?;
+    Ok(notices)
 }
 
 /// Plan R8, when `SessionStore` opens: no window outlives the app, so a
@@ -103,4 +118,196 @@ pub(crate) fn startup(conn: &Connection) -> rusqlite::Result<()> {
         [],
     )?;
     Ok(())
+}
+
+/// What a window delivers for a reminder it claimed (R9): the hidden prompt
+/// the agent reads, and whether it waits for the turn end as a new turn
+/// (`wake`) or joins the running turn as a steer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Claimed {
+    pub text: String,
+    pub wake: bool,
+}
+
+/// The prompt of reminder `stage` of ask `ask_id`; `None` for a stage this
+/// build does not send, which waits for the build that sends it.
+fn reminder_text(ask_id: &str, stage: &str) -> Option<String> {
+    let body = match stage {
+        "t5" => format!(
+            "Ask {ask_id} is due in 5 active minutes. When its work is done, ack it with this ask_id."
+        ),
+        _ => return None,
+    };
+    Some(format!(
+        "<mono_reminder ask_id=\"{ask_id}\" stage=\"{stage}\">\n{body}\n</mono_reminder>"
+    ))
+}
+
+/// The text of an outbox row: only a row with an ask, at a stage this
+/// build sends, has one.
+fn row_text(ask_id: Option<String>, stage: &str) -> Option<String> {
+    reminder_text(&ask_id?, stage)
+}
+
+/// The chat a reminder to `recipient` reaches: a lead's or worker's
+/// session, or a Mono's current chat; `None` for a Mono with no chat.
+fn chat_of(conn: &Connection, recipient: &str) -> rusqlite::Result<Option<SessionId>> {
+    Ok(match Actor::parse(recipient) {
+        Some(Actor::Session(session)) => Some(session),
+        Some(Actor::Mono(mono)) => mono_messages::mono_row(conn, &mono)?.and_then(|row| row.chat),
+        None => None,
+    })
+}
+
+fn name_chat(conn: &Connection, notices: &mut Notices, recipient: &str) -> rusqlite::Result<()> {
+    if let Some(chat) = chat_of(conn, recipient)? {
+        notices.name(chat);
+    }
+    Ok(())
+}
+
+/// The keys of the reminders for chat `session` that this build sends, that
+/// wait and that no window holds, in the order they were enqueued: its own
+/// and, when it is a Mono's current chat, that Mono's.
+pub(crate) fn pending(conn: &Connection, session: &SessionId) -> rusqlite::Result<Vec<String>> {
+    let own = Actor::Session(session.clone()).to_string();
+    let mono = mono_messages::mono_of_chat(conn, session)?
+        .map_or_else(|| own.clone(), |mono| Actor::Mono(mono).to_string());
+    let rows = conn
+        .prepare(
+            "SELECT key, ask_id, stage FROM mono_outbox
+              WHERE recipient IN (?1, ?2) AND sent_at IS NULL AND claimed_by IS NULL
+              ORDER BY at_active_ms, key",
+        )?
+        .query_map(params![own, mono], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(key, ask_id, stage)| row_text(ask_id, &stage).map(|_| key))
+        .collect())
+}
+
+/// Whether a reminder waits for chat `session`.
+pub(crate) fn waits(conn: &Connection, session: &SessionId) -> rusqlite::Result<bool> {
+    Ok(!pending(conn, session)?.is_empty())
+}
+
+/// Plan R9, one compare-and-set: window `window` takes reminder `key` with
+/// the delivery `delivery_for` picks and gets its prompt, unless a window
+/// holds it, it was sent, or this build does not send it (`None`).
+/// `running` is each session's turn as `ControlHost` held it before the
+/// store lock (design 5.3 lock order). An `AfterTurn` reminder stays
+/// unclaimed (`None`): the turn end names its chat again.
+pub(crate) fn claim(
+    conn: &Connection,
+    key: &str,
+    window: &str,
+    running: &HashMap<String, String>,
+    steerable: bool,
+) -> rusqlite::Result<Option<Claimed>> {
+    let row: Option<(String, Option<String>, String)> = conn
+        .query_row(
+            "SELECT recipient, ask_id, stage FROM mono_outbox WHERE key = ?1",
+            [key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((recipient, ask_id, stage)) = row else {
+        return Ok(None);
+    };
+    let (Some(text), Some(chat)) = (row_text(ask_id, &stage), chat_of(conn, &recipient)?) else {
+        return Ok(None);
+    };
+    let delivery = ask_gate::delivery_for(running.contains_key(chat.as_str()), steerable);
+    if delivery == Delivery::AfterTurn {
+        return Ok(None);
+    }
+    let free = conn.execute(
+        "UPDATE mono_outbox SET claimed_by = ?2
+          WHERE key = ?1 AND claimed_by IS NULL AND sent_at IS NULL",
+        params![key, window],
+    )? == 1;
+    Ok(free.then(|| Claimed {
+        text,
+        wake: delivery == Delivery::Wake,
+    }))
+}
+
+/// The provider took reminder `key` from window `window`: it is sent, once.
+/// False when the window holds it no more (its claim was freed) or it was
+/// sent before.
+pub(crate) fn sent(conn: &Connection, key: &str, window: &str, now: i64) -> rusqlite::Result<bool> {
+    Ok(conn.execute(
+        "UPDATE mono_outbox SET sent_at = ?3
+          WHERE key = ?1 AND claimed_by = ?2 AND sent_at IS NULL",
+        params![key, window, now],
+    )? == 1)
+}
+
+/// Window `label` closed: the reminders it claimed and did not send wait
+/// again, for the window that next owns their chats.
+pub(crate) fn release(conn: &Connection, label: &str) -> rusqlite::Result<Notices> {
+    let recipients = conn
+        .prepare(
+            "UPDATE mono_outbox SET claimed_by = NULL
+              WHERE claimed_by = ?1 AND sent_at IS NULL RETURNING recipient",
+        )?
+        .query_map([label], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut notices = Notices::default();
+    for recipient in recipients {
+        name_chat(conn, &mut notices, &recipient)?;
+    }
+    Ok(notices)
+}
+
+#[tauri::command(async)]
+pub fn mono_outbox_pending(
+    store: State<'_, SessionStore>,
+    session_id: String,
+) -> Result<Vec<String>, String> {
+    let session = SessionId::parse(&session_id).ok_or("Invalid session id")?;
+    pending(&*store.lock_conn()?, &session).map_err(|error| error.to_string())
+}
+
+#[tauri::command(async)]
+pub fn mono_outbox_claim<R: Runtime>(
+    window: WebviewWindow<R>,
+    control: State<'_, ControlHost>,
+    store: State<'_, SessionStore>,
+    key: String,
+    steerable: bool,
+) -> Result<Option<Claimed>, String> {
+    // Design 5.3 lock order: the control lock is read and let go before the
+    // store lock.
+    let running = control.running_sessions();
+    claim(
+        &*store.lock_conn()?,
+        &key,
+        window.label(),
+        &running,
+        steerable,
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command(async)]
+pub fn mono_outbox_sent<R: Runtime>(
+    window: WebviewWindow<R>,
+    store: State<'_, SessionStore>,
+    key: String,
+) -> Result<bool, String> {
+    sent(
+        &*store.lock_conn()?,
+        &key,
+        window.label(),
+        mono_messages::now_ms(),
+    )
+    .map_err(|error| error.to_string())
 }

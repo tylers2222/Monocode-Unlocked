@@ -1494,7 +1494,10 @@ fn chat_of(data: &Value) -> Option<SessionId> {
 }
 
 /// The Mono whose current chat is `chat`.
-fn mono_of_chat(conn: &Connection, chat: &SessionId) -> rusqlite::Result<Option<MonoId>> {
+pub(crate) fn mono_of_chat(
+    conn: &Connection,
+    chat: &SessionId,
+) -> rusqlite::Result<Option<MonoId>> {
     let monos = conn
         .prepare("SELECT id, data_json FROM monos")?
         .query_map([], |row| {
@@ -2662,7 +2665,8 @@ pub fn turn_ended(
         params![now, session.as_str(), turn_id],
     )?;
     let mut notices = Notices::default();
-    if changed + waiting.len() > 0 {
+    // R9: a reminder that waited for this turn's end goes out now.
+    if changed + waiting.len() > 0 || crate::ask_scheduler::waits(&tx, session)? {
         notices.name(session.clone());
     }
     notices.name_senders(&tx, &waiting)?;
@@ -2672,7 +2676,8 @@ pub fn turn_ended(
 }
 
 /// Design 2 (review r5): window `label` runs no turn any more, so the slots
-/// it set that no provider took are free again. Names their sessions.
+/// it set that no provider took are free again, and so are the reminders it
+/// claimed and did not send (R9). Names their sessions.
 pub fn release_window_slots(conn: &Connection, label: &str, now: i64) -> rusqlite::Result<Notices> {
     let sessions = conn
         .prepare(
@@ -2690,6 +2695,7 @@ pub fn release_window_slots(conn: &Connection, label: &str, now: i64) -> rusqlit
     {
         notices.name(session);
     }
+    notices.merge(crate::ask_scheduler::release(conn, label)?);
     Ok(notices)
 }
 

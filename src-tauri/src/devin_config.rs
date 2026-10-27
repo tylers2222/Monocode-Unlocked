@@ -4,10 +4,8 @@
 //! replaces the user config rather than layering on it, so the copy keeps the
 //! user's own settings.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::io::{ErrorKind, Write};
-use std::path::{Path, PathBuf};
+use std::io::ErrorKind;
+use std::path::PathBuf;
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, Runtime};
@@ -24,7 +22,7 @@ pub(crate) fn supervised_args<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<Stri
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("devin");
-    let path = write_once(&dir, &config)?;
+    let path = crate::private_file::write_once(&dir, "supervised", &config)?;
     Ok(vec!["--config".into(), path.to_string_lossy().into_owned()])
 }
 
@@ -84,42 +82,6 @@ pub(crate) fn ask_before_edits(user: Option<&str>) -> Result<String, String> {
         ask.push(json!(ASK_EDITS_RULE));
     }
     serde_json::to_string_pretty(&config).map_err(|e| e.to_string())
-}
-
-/// Named by content so a running child's file is never rewritten in place.
-fn write_once(dir: &Path, contents: &str) -> Result<PathBuf, String> {
-    let mut hasher = DefaultHasher::new();
-    contents.hash(&mut hasher);
-    let path = dir.join(format!("supervised-{:016x}.json", hasher.finish()));
-    if path.is_file() {
-        return Ok(path);
-    }
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or_default();
-    let temp = dir.join(format!(".{}-{stamp}.tmp", std::process::id()));
-    // The copy can hold whatever the user keeps in config.json: owner-only.
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options
-        .open(&temp)
-        .and_then(|mut file| file.write_all(contents.as_bytes()))
-        .map_err(|e| format!("{}: {e}", temp.display()))?;
-    if let Err(error) = std::fs::rename(&temp, &path) {
-        let _ = std::fs::remove_file(&temp);
-        // Another spawn wrote the same content first.
-        if !path.is_file() {
-            return Err(format!("{}: {error}", path.display()));
-        }
-    }
-    Ok(path)
 }
 
 #[cfg(test)]
@@ -217,16 +179,5 @@ mod tests {
         ] {
             assert!(ask_before_edits(Some(user)).is_err(), "Accepted {user}");
         }
-    }
-
-    #[test]
-    fn writes_each_config_once_by_content() {
-        let dir =
-            std::env::temp_dir().join(format!("monocode-devin-config-{}", std::process::id()));
-        let first = write_once(&dir, "{}").unwrap();
-        assert_eq!(write_once(&dir, "{}").unwrap(), first);
-        assert_eq!(std::fs::read_to_string(&first).unwrap(), "{}");
-        assert_ne!(write_once(&dir, "{\"a\":1}").unwrap(), first);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
