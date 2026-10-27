@@ -43,8 +43,9 @@ const HINTS = {
  * Every code an app action answers with. The one list in code: design 1.4's
  * `CallErrorCode` (PR 3) is this type. `unknown_token` and `turn_inactive`
  * come from `control.rs`, `no_token` from the CLI and `roster_unavailable`
- * from `resolveCaller`. `not_direct_child`, `ack_refused` and
- * `extend_refused` come from `ask_gate.rs` with their hints (R6, R10).
+ * from `resolveCaller`. `not_direct_child`, `ack_refused`, `extend_refused`
+ * and `reason_refused` come from `ask_gate.rs` with their hints (R6, R10,
+ * R11).
  */
 export type AppErrorCode =
   | keyof typeof HINTS
@@ -58,7 +59,8 @@ export type AppErrorCode =
   | "roster_unavailable"
   | "not_direct_child"
   | "ack_refused"
-  | "extend_refused";
+  | "extend_refused"
+  | "reason_refused";
 
 /** What a messaging failure adds to its code and hint (design 1.4 `ToolError`). */
 export type ToolErrorDetails = {

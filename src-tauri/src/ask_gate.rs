@@ -233,7 +233,7 @@ impl ExtendRefused {
                 "The extension opens with the reminder 5 active minutes before the deadline. Work on, or ask your parent a question."
             }
             ExtendRefused::PastDeadline => {
-                "The deadline has passed, so the extension is closed. Finish the work and ack it."
+                "The deadline has passed, so the extension is closed. Finish the work and ack it; when your parent asks why, give your reason with messages.reason."
             }
             ExtendRefused::AlreadyExtended => {
                 "This ask was already extended once; its deadline moves only once. Finish the work and ack it."
@@ -263,6 +263,66 @@ pub fn decide_extend(ask: &ExtendState, caller: &Actor) -> Result<i64, ExtendRef
         1 => Ok(due + EXTENSION_MS),
         _ => Err(ExtendRefused::PastDeadline),
     }
+}
+
+/// An ask as `reason` reads it: `missed` that its `miss` event exists,
+/// `reasoned` that the miss already holds a reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReasonState {
+    pub ask: AskState,
+    pub missed: bool,
+    pub reasoned: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasonRefused {
+    NoOpenAsk,
+    NoSingleOpenAsk,
+    NotYours,
+    AlreadyAcked,
+    NoMiss,
+    AlreadyGiven,
+}
+
+impl ReasonRefused {
+    pub fn hint(self) -> &'static str {
+        match self {
+            ReasonRefused::NoOpenAsk => {
+                "No open ask of yours has this id. Pass the ask_id of the <mono_reminder>; you may leave it out when you have exactly one open ask."
+            }
+            ReasonRefused::NoSingleOpenAsk => {
+                "You have no open ask or more than one. Pass the ask_id of the <mono_reminder>."
+            }
+            ReasonRefused::NotYours => {
+                "This ask is not yours: only the Mono or session it was sent to can give its reason."
+            }
+            ReasonRefused::AlreadyAcked => "This ask was already acked; it needs no reason.",
+            ReasonRefused::NoMiss => {
+                "This ask has not missed its deadline. A reason opens once your parent is told of the miss; until then, finish the work and ack it."
+            }
+            ReasonRefused::AlreadyGiven => {
+                "This miss already has its reason; it is stored once. Finish the work and ack the ask."
+            }
+        }
+    }
+}
+
+/// Plan R11: only the child gives the reason, only for an open ask whose
+/// `miss` exists, and only once. The key stays: a later `ack` closes the ask.
+pub fn decide_reason(ask: &ReasonState, caller: &Actor) -> Result<(), ReasonRefused> {
+    if &ask.ask.child != caller {
+        return Err(ReasonRefused::NotYours);
+    }
+    if ask.ask.state == State::Acked {
+        return Err(ReasonRefused::AlreadyAcked);
+    }
+    if !ask.missed {
+        return Err(ReasonRefused::NoMiss);
+    }
+    if ask.reasoned {
+        return Err(ReasonRefused::AlreadyGiven);
+    }
+    Ok(())
 }
 
 /// How a reminder reaches its chat (plan R9): into the running turn, as a
