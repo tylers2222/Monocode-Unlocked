@@ -65,7 +65,7 @@ const ASK_ID: &str = "ask_id must be the ask_id (m_…) of an ask: the one you w
 const BLOCKED: &str = "blocked must be true or false. Set it to true only when you cannot go on at all without the answer.";
 
 fn refusal(talk: Talk, reason: TalkRefused) -> Refused {
-    Refused(talk.refused_code(), reason.hint())
+    Refused(reason.code(talk), reason.hint())
 }
 
 /// `question`, `answer` or `update` from the caller on ask `ask_id`, or on

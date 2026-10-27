@@ -69,7 +69,7 @@ fn s1_levels_come_from_the_database_not_from_the_agent() {
     );
 
     // Without the claim it is judged by its stored row: a worker of lead-a,
-    // which may message only lead-a.
+    // which may message only lead-a, and only on an ask from lead-a (R17).
     let caller = session_caller(&worker, json!({}));
     let to_b = world.session_call(
         caller.clone(),
@@ -86,13 +86,7 @@ fn s1_levels_come_from_the_database_not_from_the_agent() {
         report(&lead_a),
         &live,
     );
-    assert!(matches!(
-        to_a.unwrap(),
-        Submitted::Accepted {
-            duplicate: false,
-            ..
-        }
-    ));
+    assert_eq!(refusal(to_a.unwrap()), ("upward_needs_ask", true));
 
     // The stored row still decides after a restart.
     world.down(60_000);

@@ -22,9 +22,9 @@ use crate::asks::{self, Call};
 use crate::control::ControlHost;
 use crate::mono_gate::{
     self, Access, ActionDecision, ActionFacts, Caller, CallerFacts, CallerKind, CallerMono,
-    Closure, Decision, Facts, HandleState, Handled, Input, Level, MessageRef, OpenHandle,
-    PairCount, Recipient, Referenced, Refusal, ReplyFacts, Route, SendFacts, SessionLevel, Speaker,
-    Target, TargetSession,
+    Closure, Decision, Facts, HandleState, Handled, Input, MessageRef, OpenHandle, PairCount,
+    Recipient, Referenced, Refusal, ReplyFacts, Route, SendFacts, SessionLevel, Speaker, Target,
+    TargetSession,
 };
 use crate::mono_roster::{validate_mono_id, MonoRole};
 use crate::session_store::{validate_id, SessionStore};
@@ -53,8 +53,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// Rule (b) (review r1 m1): the turn of the Giga's chat that a late answer
-/// was accepted for. Only that turn takes it, and only its end drops it.
+/// Review r1 m1: the turn a steer through a start row was accepted for.
+/// Only that turn takes it, and only its end drops it.
 const PIN_TURN_ID: &str = "pin_turn_id TEXT CHECK (pin_turn_id IS NULL OR
   (length(pin_turn_id) BETWEEN 1 AND 128 AND intent = 'steer' AND reply_to IS NOT NULL))";
 
@@ -319,9 +319,8 @@ pub enum SteerTarget {
     /// The work `reply_to` started.
     Message(MessageId),
     /// A steer whose `message` started no turn of its own, pinned to turn
-    /// `turn_id`, the turn its session ran when the gate accepted it: rule
-    /// (b)'s late answer to the Giga's question (into the Giga's chat), or a
-    /// steer through a `start_session` row (into the session it started).
+    /// `turn_id`, the turn its session ran when the gate accepted it: a steer
+    /// through a `start_session` row (into the session it started).
     Pinned { message: MessageId, turn_id: String },
     /// Everything the recipient's session does in turn `turn_id`, the turn
     /// that ran when the gate accepted the steer.
@@ -426,6 +425,7 @@ text_enum!(all RejectCode {
     SelfSend = "self_send",
     TargetNoConversation = "target_no_conversation",
     DirectionForbidden = "direction_forbidden",
+    UpwardNeedsAsk = "upward_needs_ask",
     UpwardSteerForbidden = "upward_steer_forbidden",
     ReplyUnsupportedTarget = "reply_unsupported_target",
     HabitCannotWait = "habit_cannot_wait",
@@ -1819,18 +1819,17 @@ pub(crate) fn submit_in(
     let decision = match &input {
         Input::Send(send) => {
             let recipient = recipient(tx, &send.send_to, live)?;
-            // Without its `monos` row a Mono caller has no level to resolve
-            // `reply_to` with; the gate refuses it with `not_a_mono` first.
+            // A caller without its row is refused first (`not_a_mono`,
+            // `unknown_caller`), so nothing it names is resolved.
             let reply_to = match (send.reply_to(), &caller_row) {
-                (Some(id), Some(row)) => resolve_ref(tx, id)?
-                    .map(|message| {
-                        referenced(tx, caller, &row.level(), &recipient, message, live, now)
-                    })
+                (Some(id), Some(_)) => resolve_ref(tx, id)?
+                    .map(|message| referenced(tx, caller, &recipient, message, live))
                     .transpose()?,
                 _ => None,
             };
             referenced_id = reply_to.as_ref().map(|found| found.message.id.clone());
             let pair = pair_count(tx, caller, &recipient, now)?;
+            let asked_by_recipient = crate::asks::asked_by(tx, caller, &recipient)?;
             mono_gate::decide_send(
                 caller,
                 send,
@@ -1842,6 +1841,7 @@ pub(crate) fn submit_in(
                         recipient,
                         reply_to,
                         pair,
+                        asked_by_recipient,
                     },
                 },
                 now,
@@ -1930,24 +1930,18 @@ fn pair_count(
     )
 }
 
-/// `message` with the session target_session gives for it, the receiver's
-/// or rule (b)'s Giga chat, as live sees it.
+/// `message` with the receiver's session target_session gives for it, as
+/// live sees it.
 fn referenced(
     conn: &Connection,
     caller: &Caller,
-    level: &Level,
     recipient: &Recipient,
     message: MonoMessage,
     live: &Live,
-    now: i64,
 ) -> rusqlite::Result<Referenced> {
-    let session = match mono_gate::target_session(caller, level, recipient, &message, now) {
+    let session = match mono_gate::target_session(caller, recipient, &message) {
         TargetSession::Receiver {
             session: Some(session),
-            ..
-        }
-        | TargetSession::Giga {
-            chat: Some(session),
             ..
         } => Some(target(conn, session, live)?),
         _ => None,
@@ -2376,7 +2370,7 @@ pub fn assign_slot(
     };
     if let (None, Some(Intent::Steer(target))) = (slot, message.status.intent()) {
         // The turn the steer may join: its target's for a targeted steer,
-        // its pin for a whole-turn one (design 16.12.3.3) or a late answer.
+        // its pin for a whole-turn one (design 16.12.3.3) or a start row's.
         let joins: Option<String> = match target {
             SteerTarget::Message(target) => tx.query_row(
                 "SELECT turn_id FROM mono_messages WHERE id = ?1",
@@ -2632,9 +2626,9 @@ fn end_turn_rows(
 /// owed a notice. Design 16.6 (PR I2 review r1): a steer accepted for this
 /// turn that no hand-off slotted yet, also one in a paused queue, names work
 /// that is over, so it is dropped too: a targeted one through its target's
-/// turn, a late answer through `pin_turn_id` (review r1 m1) and a whole-turn
-/// one through `scope_turn_id` (design 16.12.3.3). Only steers into
-/// `session`: a late answer names a row of another session.
+/// turn, one through a start row by `pin_turn_id` (review r1 m1) and a
+/// whole-turn one through `scope_turn_id` (design 16.12.3.3). Only steers
+/// into `session`.
 pub fn turn_ended(
     conn: &Connection,
     session: &SessionId,
@@ -5102,7 +5096,8 @@ pub(crate) mod tests {
     }
 
     /// The Giga `giga` (chat `giga-chat`), the Mono `mono-a` (chat `a-chat`)
-    /// and the project session `project`, all on codex.
+    /// and the project session `project`, all on codex. `mono-a` holds an
+    /// open ask from the Giga, so it may speak up to it (R17).
     fn seed(conn: &Connection) {
         conn.execute_batch(
             r#"INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
@@ -5111,7 +5106,10 @@ pub(crate) mod tests {
                INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
                VALUES ('giga-chat', '/', 'codex', 'm', 'default', 'G', 1, 1),
                       ('a-chat', '/', 'codex', 'm', 'default', 'A', 1, 1),
-                      ('project', '/p', 'codex', 'm', 'default', 'P', 1, 1);"#,
+                      ('project', '/p', 'codex', 'm', 'default', 'P', 1, 1);
+               INSERT INTO mono_asks (id, parent_actor, child_actor, parent_level,
+                                      child_level, state, created_wall_ms)
+               VALUES ('m_gigaaskseed', 'mono:giga', 'mono:mono-a', 1, 2, 'open', 1);"#,
         )
         .unwrap();
     }
@@ -5260,6 +5258,8 @@ pub(crate) mod tests {
         (lead, report)
     }
 
+    /// Each also holds its parent's open ask (R17), as a start writes it,
+    /// so it may speak up to that parent.
     fn seed_levels(conn: &Connection) {
         conn.execute_batch(
             r#"UPDATE monos SET data_json = '{"sessionId":"a-chat","projects":["/p"]}'
@@ -5267,7 +5267,11 @@ pub(crate) mod tests {
                INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at,
                                      updated_at, lead_session_id)
                VALUES ('lead', '/p', 'codex', 'm', 'default', 'L', 1, 1, NULL),
-                      ('worker', '/p', 'codex', 'm', 'default', 'W', 1, 1, 'lead');"#,
+                      ('worker', '/p', 'codex', 'm', 'default', 'W', 1, 1, 'lead');
+               INSERT INTO mono_asks (id, parent_actor, child_actor, parent_level,
+                                      child_level, state, due_active_ms, created_wall_ms)
+               VALUES ('m_leadaskseed', 'mono:mono-a', 'session:lead', 2, 3, 'open', 1, 1),
+                      ('m_workaskseed', 'session:lead', 'session:worker', 3, 4, 'open', 1, 1);"#,
         )
         .unwrap();
     }
@@ -5560,8 +5564,9 @@ pub(crate) mod tests {
     }
 
     // Design 13.1, R4. Defect: a worker whose lead was deleted (which cleared
-    // its stored link) is still refused as a worker; or a caller that
-    // `sessions` lacks gets a level anyway (a lead's, or one it claims).
+    // its stored link) is still refused as a worker (`worker_scope`, not a
+    // lead's `upward_needs_ask`); or a caller that `sessions` lacks gets a
+    // level anyway (a lead's, or one it claims).
     #[test]
     fn a_session_caller_is_judged_by_its_stored_row_and_refused_without_one() {
         let store = messaging_store();
@@ -5580,13 +5585,18 @@ pub(crate) mod tests {
             )
         };
         let before = rows(&conn);
-        accepted_ids(&report(&session_caller("worker", "/p")));
+        let as_lead = failed(report(&session_caller("worker", "/p")));
+        assert_eq!(as_lead.code, "upward_needs_ask");
         let unpersisted = failed(report(&session_caller("remote", "/p")));
         assert_eq!(
             (unpersisted.code, unpersisted.message_id),
             ("unknown_caller", None)
         );
-        assert_eq!(rows(&conn), before + 1, "the refusal writes no row");
+        assert_eq!(
+            rows(&conn),
+            before + 1,
+            "only the gate's refusal writes a row"
+        );
     }
 
     // Design 13.1, R4. Defect: a recipient's level comes from anything but
@@ -5674,11 +5684,13 @@ pub(crate) mod tests {
         for request_id in ["r1", "r2", "r3", "r4", "r5", "r6"] {
             accepted_ids(&report(&worker, request_id));
         }
-        conn.execute(
+        conn.execute_batch(
             "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at,
                                    updated_at, lead_session_id)
-             VALUES ('remote', '/p', 'codex', 'm', 'default', 'R', 1, 1, 'lead')",
-            [],
+             VALUES ('remote', '/p', 'codex', 'm', 'default', 'R', 1, 1, 'lead');
+             INSERT INTO mono_asks (id, parent_actor, child_actor, parent_level,
+                                    child_level, state, due_active_ms, created_wall_ms)
+             VALUES ('m_remoteaskseed', 'session:lead', 'session:remote', 3, 4, 'open', 1, 1);",
         )
         .unwrap();
         accepted_ids(&report(&session_caller("remote", "/p"), "r1"));
@@ -7799,119 +7811,36 @@ pub(crate) mod tests {
         assert_eq!(get(&conn, &second).unwrap().unwrap().hop, 2);
     }
 
-    /// Rule (b): the Giga's question, unanswered once `a-chat`'s turn-1
-    /// ended, and the Mono's late answer, accepted while the Giga's chat ran
-    /// `giga_turn`.
-    pub(crate) fn late_answer(conn: &Connection, giga_turn: &str) -> (MessageId, MessageId) {
-        let asked = ask_delivered(conn, "ask", "turn-1");
-        turn_ended(conn, &session("a-chat"), "turn-1", 100).unwrap();
-        let late = call_in_turns(
-            conn,
-            &caller_in_turn("mono-a", "a-chat", "turn-2"),
-            "late",
-            Tool::SendMessage,
-            steering("giga", asked.as_str()),
-            &[],
-            &[("giga-chat", giga_turn)],
-        );
-        assert_eq!(
-            route_of(&late),
-            Some(Routing {
-                session_id: session("giga-chat"),
-                via: Delivery::Steer
-            })
-        );
-        (asked, accepted_ids(&late).remove(0))
-    }
-
-    // Design 6.1 rule (b), PR 7 review r1 B2. Defect: the late answer may
-    // join only the turn of the Mono's chat that held the question, so the
-    // hand-off into the Giga's running turn drops it. PR I4 review n3: its
-    // target holds #1 in the Mono's chat, not in the Giga's turn, so the
-    // reader must name it by message id.
+    // Design 16.12.3.3, review r2 m1. Defect: the lead's turn-4 ends after
+    // the gate read `running` and before the insert, the recheck skips the
+    // steer pinned to turn-4, and no later turn end drops it: the caller gets
+    // a route into an ended turn and no notice.
     #[test]
-    fn a_monos_late_answer_is_delivered_in_the_gigas_running_turn() {
+    fn the_submit_recheck_drops_a_pinned_steer_whose_turn_ended_meanwhile() {
         let store = messaging_store();
-        let conn = store.lock_conn().unwrap();
-        let (asked, late) = late_answer(&conn, "turn-4");
-        let (slot, notices) =
-            assign_slot(&conn, &late, "turn-4", "main", Delivery::Steer, 150).unwrap();
-        assert_eq!(notices, Notices::default());
-        let target = slot.expect("the late answer joins turn-4").target.unwrap();
-        assert_eq!(
-            (target.message_id, target.handled_by_session, target.slot),
-            (
-                asked,
-                Some(session("a-chat")),
-                Some(TargetSlot {
-                    turn_id: "turn-1".into(),
-                    handle: Handle::parse("#1").unwrap()
-                })
-            )
-        );
-        mark_delivery(&conn, &late, "turn-4", 151).unwrap();
-        assert_eq!(stored_row(&conn, &late).0, "delivered");
-    }
-
-    // Design 16.6, PR 7 review r1 B2. Defect: a waiting late answer
-    // outlives the Giga's turn, or the end of a turn of the Mono's chat with
-    // the same turn id drops it.
-    #[test]
-    fn a_late_answer_still_waiting_when_the_gigas_turn_ends_is_dropped() {
-        let store = messaging_store();
-        let conn = store.lock_conn().unwrap();
-        let (_, late) = late_answer(&conn, "turn-4");
-        turn_ended(&conn, &session("a-chat"), "turn-4", 200).unwrap();
-        assert_eq!(stored_row(&conn, &late).0, "delivered");
-        let notices = turn_ended(&conn, &session("giga-chat"), "turn-4", 201).unwrap();
-        assert_eq!(stored_row(&conn, &late).0, "dropped");
-        assert!(notices.sessions.contains(&session("a-chat")), "{notices:?}");
-    }
-
-    // Design 16.6, PR 7 review r2 m6. Defect: after Stop or a switch the web
-    // app's next turn takes a late answer accepted in the turn that is still
-    // ending, whose end then no longer drops it.
-    #[test]
-    fn a_late_answer_joins_only_the_turn_it_was_accepted_for() {
-        let store = messaging_store();
-        let conn = store.lock_conn().unwrap();
-        let (_, late) = late_answer(&conn, "turn-4");
-        let (slot, notices) =
-            assign_slot(&conn, &late, "turn-5", "main", Delivery::Steer, 150).unwrap();
-        assert!(slot.is_none());
-        assert!(notices.sessions.contains(&session("a-chat")), "{notices:?}");
-        assert_eq!(stored_row(&conn, &late).0, "dropped");
-    }
-
-    // Design 16.12.3.3 and rule (b), review r2 m1. Defect: the Giga's turn-4
-    // ends after the gate read `running` and before the insert, the recheck
-    // skips the late answer pinned to turn-4, and no later turn end drops
-    // it: the caller gets a route into an ended turn and no notice.
-    #[test]
-    fn the_submit_recheck_drops_a_late_answer_whose_turn_ended_meanwhile() {
-        let store = messaging_store();
-        let asked = {
+        let mono = caller_in("mono-a", "a-chat");
+        let start = {
             let conn = store.lock_conn().unwrap();
-            let asked = ask_delivered(&conn, "ask", "turn-1");
-            turn_ended(&conn, &session("a-chat"), "turn-1", 100).unwrap();
-            turn_ended(&conn, &session("giga-chat"), "turn-4", 105).unwrap();
-            asked
+            seed_levels(&conn);
+            let start = start_row(&conn, &mono, "lead", "start", "Build");
+            turn_ended(&conn, &session("lead"), "turn-4", 105).unwrap();
+            start
         };
         let reads = std::cell::Cell::new(0);
         let running = || {
             reads.set(reads.get() + 1);
             if reads.get() == 1 {
-                return HashMap::from([("giga-chat".to_string(), "turn-4".to_string())]);
+                return HashMap::from([("lead".to_string(), "turn-4".to_string())]);
             }
             HashMap::new()
         };
         let (first, notices) = submit_and_recheck(
             &store,
             running,
-            &caller_in_turn("mono-a", "a-chat", "turn-2"),
+            &mono,
             &RequestId::parse("c0").unwrap(),
-            mono_gate::parse(Tool::SendMessage, &steering("giga", asked.as_str())),
-            &[],
+            mono_gate::parse(Tool::SendMessage, &steering("lead", start.as_str())),
+            &[listed("lead", true, true)],
             &["codex".to_string()],
             110,
         )
@@ -7922,17 +7851,16 @@ pub(crate) mod tests {
         assert!(notices.sessions.contains(&session("a-chat")), "{notices:?}");
     }
 
-    // Review r1 m1 (store level). Defect: the end of the Giga's turn-4,
+    // Review r1 m1 (store level). Defect: the end of the lead's turn-4,
     // recorded after turn-5 runs (Stop, then the next queued turn), drops a
-    // late answer accepted for turn-5, and the Mono gets a false `dropped`
-    // notice.
+    // steer pinned to turn-5, and the Mono gets a false `dropped` notice.
     #[test]
-    fn an_old_turns_end_leaves_a_late_answer_accepted_for_the_next_turn() {
+    fn an_old_turns_end_leaves_a_steer_pinned_to_the_next_turn() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
-        let (_, late) = late_answer(&conn, "turn-5");
-        let notices = turn_ended(&conn, &session("giga-chat"), "turn-4", 120).unwrap();
-        assert_eq!(stored_row(&conn, &late).0, "delivered", "{notices:?}");
+        let (_, steer) = steer_through_start_row(&conn, "turn-5");
+        let notices = turn_ended(&conn, &session("lead"), "turn-4", 120).unwrap();
+        assert_eq!(stored_row(&conn, &steer).0, "delivered", "{notices:?}");
     }
 
     // Design E25 and 6 (`Reject { code, hop, to }`), PR 7 review r1 m1 and
@@ -10177,20 +10105,23 @@ pub(crate) mod tests {
         assert_eq!(failed(steer("ended", &["lead"])).code, "unknown_target");
     }
 
-    /// The Mono's accepted steer into `lead`, running turn-1, through its
-    /// start row.
-    fn steer_through_start_row(conn: &Connection) -> (MessageId, MessageId) {
+    /// The Mono's accepted steer into `lead`, running `lead_turn`, through
+    /// its start row.
+    pub(crate) fn steer_through_start_row(
+        conn: &Connection,
+        lead_turn: &str,
+    ) -> (MessageId, MessageId) {
         seed_levels(conn);
         let mono = caller_in("mono-a", "a-chat");
         let start = start_row(conn, &mono, "lead", "start", "Build");
-        let steer = accepted_ids(&call_with(
+        let steer = accepted_ids(&call_in_turns(
             conn,
             &mono,
             "steer",
             Tool::SendMessage,
             steering("lead", start.as_str()),
             &[listed("lead", true, true)],
-            &["lead"],
+            &[("lead", lead_turn)],
         ))
         .remove(0);
         (start, steer)
@@ -10204,7 +10135,7 @@ pub(crate) mod tests {
         {
             let store = messaging_store();
             let conn = store.lock_conn().unwrap();
-            let (_, steer) = steer_through_start_row(&conn);
+            let (_, steer) = steer_through_start_row(&conn, "turn-1");
             let (slot, notices) =
                 assign_slot(&conn, &steer, "turn-2", "main", Delivery::Steer, 150).unwrap();
             assert!(slot.is_none());
@@ -10213,7 +10144,7 @@ pub(crate) mod tests {
         }
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
-        let (start, steer) = steer_through_start_row(&conn);
+        let (start, steer) = steer_through_start_row(&conn, "turn-1");
         let (slot, notices) =
             assign_slot(&conn, &steer, "turn-1", "main", Delivery::Steer, 150).unwrap();
         assert_eq!(notices, Notices::default());
@@ -10232,12 +10163,15 @@ pub(crate) mod tests {
 
     // Design 16.6. Defect: the turn end selects waiting steers only through
     // their target's turn, so a steer through a start row outlives the
-    // lead's turn and the next turn's hand-off takes it.
+    // lead's turn and the next turn's hand-off takes it; or the end of
+    // another session's turn with the same id drops it.
     #[test]
     fn a_steer_through_a_start_row_still_waiting_when_the_leads_turn_ends_is_dropped() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
-        let (_, steer) = steer_through_start_row(&conn);
+        let (_, steer) = steer_through_start_row(&conn, "turn-1");
+        turn_ended(&conn, &session("a-chat"), "turn-1", 150).unwrap();
+        assert_eq!(stored_row(&conn, &steer).0, "delivered");
         let notices = turn_ended(&conn, &session("lead"), "turn-1", 200).unwrap();
         assert_eq!(stored_row(&conn, &steer).0, "dropped");
         assert!(notices.sessions.contains(&session("a-chat")), "{notices:?}");

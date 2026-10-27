@@ -1231,7 +1231,7 @@ pub fn control_scopes(cwd: String, files: Vec<String>) -> Result<Vec<String>, St
 pub(crate) mod tests {
     use super::*;
     use crate::mono_messages::tests::{
-        hand_off, handed_off, late_answer, messaging_store, sent, stored_row,
+        hand_off, handed_off, messaging_store, sent, steer_through_start_row, stored_row,
     };
     use crate::mono_messages::{get, MessageId, Status};
 
@@ -1285,42 +1285,33 @@ pub(crate) mod tests {
         finish_turn(&host.inner, store, session, &format!("turn-{session}"));
     }
 
-    // Review r1 m1 (control level). Stop takes the Giga's turn-4 out of
+    // Review r1 m1 (control level). Stop takes the lead's turn-4 out of
     // `active` before its end reaches the store; the next queued turn-5 is
-    // authorized in between, and a late answer is accepted for it. Defect:
-    // the kill's turn end drops that late answer, and the Mono gets a false
-    // `dropped` notice.
+    // authorized in between, and a steer through the start row is accepted
+    // for it. Defect: the kill's turn end drops that steer, and the Mono
+    // gets a false `dropped` notice.
     #[test]
-    fn a_kill_ends_its_turn_after_the_next_turn_takes_a_late_answer() {
+    fn a_kill_ends_its_turn_after_the_next_turn_takes_a_pinned_steer() {
         let store = messaging_store();
         let inner = Mutex::new(Inner::default());
-        run(&inner, "giga-chat", "main", "turn-4");
+        run(&inner, "lead", "main", "turn-4");
         let harness = HarnessHost::new();
-        let late = std::thread::scope(|scope| {
+        let steer = std::thread::scope(|scope| {
             let held = store.lock_conn().unwrap();
-            let killing = scope.spawn(|| kill_session(&inner, &store, "giga-chat", &harness));
-            while inner.lock().unwrap().active.contains_key("giga-chat") {
+            let killing = scope.spawn(|| kill_session(&inner, &store, "lead", &harness));
+            while inner.lock().unwrap().active.contains_key("lead") {
                 assert!(!killing.is_finished(), "the kill left turn-4 running");
                 std::thread::yield_now();
             }
-            authorize_turn(
-                &inner,
-                &store,
-                "giga-chat",
-                "main",
-                "/giga-chat".into(),
-                false,
-                "turn-5",
-            )
-            .unwrap();
-            let (_, late) = late_answer(&held, "turn-5");
+            authorize_turn(&inner, &store, "lead", "main", "/p".into(), false, "turn-5").unwrap();
+            let (_, steer) = steer_through_start_row(&held, "turn-5");
             drop(held);
             killing.join().unwrap();
-            late
+            steer
         });
-        assert_eq!(inner.lock().unwrap().active["giga-chat"].turn_id, "turn-5");
+        assert_eq!(inner.lock().unwrap().active["lead"].turn_id, "turn-5");
         assert_eq!(
-            stored_row(&store.lock_conn().unwrap(), &late).0,
+            stored_row(&store.lock_conn().unwrap(), &steer).0,
             "delivered"
         );
     }

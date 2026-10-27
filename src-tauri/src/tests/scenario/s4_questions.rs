@@ -172,7 +172,7 @@ fn questions_pause_and_go_up(world: &World, a: &Asked, due: i64, start_ask: &Mes
     refused(a.question(world, 2), "question_refused", "after it comes");
     refused(
         a.answer(world, &a.w, "w-a", 1),
-        "answer_refused",
+        "not_direct_child",
         "Only the one who asked",
     );
     refused(

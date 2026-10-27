@@ -115,10 +115,7 @@ it("resolves a lead and a worker with app access to session callers", async () =
     },
   });
   expect(
-    await resolveCaller(
-      session("worker", { blocks: operator }),
-      turn,
-    ),
+    await resolveCaller(session("worker", { blocks: operator }), turn),
   ).toEqual({
     ok: true,
     caller: {
@@ -276,7 +273,7 @@ it("refuses a check with no turn as turn_inactive and calls nothing", async () =
 it("throws the level check's refusal with its code, hint and row id", async () => {
   await loadMonoRoster();
   const hint =
-    'A worker can message only its lead. Message your lead (lead): messages.send with send_to "lead".';
+    "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.";
   db.check = {
     outcome: "failed",
     error: { code: "worker_scope", hint, message_id: "m_aaaaaaaaaaaa" },

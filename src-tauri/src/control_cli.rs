@@ -159,13 +159,18 @@ of that lead. Every other session is a lead. A Mono chat, a habit run, or a
 session with app access (/operator, or started by sessions.start) may call
 messages.*. A worker may call only messages.*, and it messages only its lead:
 sessions.start gets worker_cannot_spawn and its other calls get worker_scope.
-A lead messages its own workers and the Monos that have its project; another
-lead or a user session gets lead_scope. A Mono messages a lead in one of its
-projects and never a worker. Only a worker's lead may message it or use
-sessions.send or sessions.draft on it; other callers get steer_via_lead. A
-lead or worker always sends wanting_reply false (else session_cannot_wait)
-and sends only intent "new" to its lead or a Mono (a steer with reply_to gets
-upward_steer_forbidden, one with scope steer_scope_not_allowed). Until
+A lead messages its own workers and, on its open ask, the Mono that started
+it; another lead or a user session gets lead_scope. A Mono messages a lead in
+one of its projects and never a worker. Only a worker's lead may message it
+or use sessions.send or sessions.draft on it; other callers get
+steer_via_lead. A lead or worker always sends wanting_reply false (else
+session_cannot_wait). Speech upward (a worker to its lead, a lead to a Mono,
+a Mono to a Giga) needs an open ask from that recipient: without one, an
+upward send gets upward_needs_ask, before steer_scope_not_allowed or
+session_cannot_wait. On that ask it is only intent "new" (a steer with
+reply_to gets upward_steer_forbidden, one with scope steer_scope_not_allowed);
+use messages.question (blocked true when you cannot go on), messages.update
+and messages.ack. Until
 /operator is typed in it, a session that sessions.start started cannot start
 a session with a more permissive runtimeMode, and as a lead it may only list
 models, sessions and worktrees, create worktrees, start workers, and read,
@@ -317,11 +322,11 @@ Actions:
                   any regular Mono. Two Gigas, or two regular Monos, need a
                   project they share, or one of them in the other's
                   messageAllowlist (see monos.update); else
-                  direction_forbidden. A regular Mono sends a Giga only
-                  intent "new" or steers it with reply_to set to an
-                  unanswered message that Giga sent it in the last 24 hours
-                  (else upward_steer_forbidden), while the Giga chat that
-                  sent it runs (else target_gone).
+                  direction_forbidden. Upward (see Levels) you send only on
+                  an open ask from that recipient (else upward_needs_ask),
+                  and only intent "new" (else upward_steer_forbidden); on
+                  that ask, prefer messages.question, messages.update and
+                  messages.ack.
                   wanting_reply and intent are required. wanting_reply is
                   true only when you need an answer. The answer arrives later
                   as a new message, so do not poll. A project session cannot
@@ -347,8 +352,8 @@ Actions:
                   intent_mismatch, steer_needs_target, intent_not_allowed,
                   worker_scope, unknown_target, self_send,
                   direction_forbidden, steer_via_lead, lead_scope,
-                  steer_scope_not_allowed, session_cannot_wait,
-                  upward_steer_forbidden, unknown_message,
+                  upward_needs_ask, steer_scope_not_allowed,
+                  session_cannot_wait, upward_steer_forbidden, unknown_message,
                   steer_target_mismatch, reply_unsupported_target,
                   habit_cannot_wait, target_gone, nothing_running,
                   target_no_conversation, cannot_steer, hop_limit,
@@ -397,9 +402,10 @@ Actions:
                   question_of, seq its seq. The asked one gets a
                   <mono_message> with answer_of and seq, and its clock
                   resumes where it paused. Codes: invalid_input,
-                  request_id_reused, answer_refused (no open ask has this
-                  id, not your ask, acked, no question waits, or another
-                  seq; the hint says which), and the codes of messages.send.
+                  request_id_reused, not_direct_child (not your ask: you
+                  answer only your direct child), answer_refused (no open
+                  ask has this id, acked, no question waits, or another seq;
+                  the hint says which), and the codes of messages.send.
   messages.update {"ask_id":"m_...","message":"..."}
                   Tell the one who asked how the work goes, once per ask.
                   Keeps the key; the clock runs on. Without ask_id it is
@@ -892,7 +898,7 @@ pub fn app_tools() -> Value {
         {
             "name": "send_message",
             "action": "messages.send",
-            "description": "Send a message to another Mono's chat (send_to is its mono_id) or to a session in one of your projects (its session id). MonoCode decides the sender and the route. Set wanting_reply true only when you need an answer; the answer arrives later as a new message, so do not poll. A project session cannot answer. intent \"new\" starts new work and waits until the receiver's turn ends; intent \"steer\" with reply_to changes the work that message started, while it runs. Messages are limited to 8000 characters. A refusal has code and hint; follow the hint.",
+            "description": "Send a message to another Mono's chat (send_to is its mono_id) or to a session in one of your projects (its session id). MonoCode decides the sender and the route. Set wanting_reply true only when you need an answer; the answer arrives later as a new message, so do not poll. A project session cannot answer. intent \"new\" starts new work and waits until the receiver's turn ends; intent \"steer\" with reply_to changes the work that message started, while it runs. Up to a parent (a worker to its lead, a lead to a Mono, a Mono to a Giga) you send only intent \"new\" on an open ask it gave you; there, prefer question, update and ack. Messages are limited to 8000 characters. A refusal has code and hint; follow the hint.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -981,7 +987,7 @@ pub fn app_tools() -> Value {
         {
             "name": "answer",
             "action": "messages.answer",
-            "description": "Answer the question that waits on your ask. The asked one gets a <mono_message> with answer_of and seq, and the ask's clock resumes where it paused. A refusal has code and hint; follow the hint.",
+            "description": "Answer the question that waits on an ask you sent; you answer only your direct child. The asked one gets a <mono_message> with answer_of and seq, and the ask's clock resumes where it paused. A refusal has code and hint; follow the hint.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

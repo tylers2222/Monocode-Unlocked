@@ -116,7 +116,7 @@ impl AskRefused {
     }
 
     pub fn hint(self) -> &'static str {
-        "You can ask only your direct child: a Giga asks a Mono, a Mono asks a lead it started, a lead asks its own worker. Send others a message instead."
+        "You can ask or answer only your direct child: a Giga asks a Mono, a Mono asks a lead it started, a lead asks its own worker. To reach your own parent, use messages.question on the ask it gave you."
     }
 }
 
@@ -275,12 +275,21 @@ pub enum TalkRefused {
 }
 
 impl TalkRefused {
+    /// An answer on an ask the caller did not send goes to someone other
+    /// than its direct child (R17).
+    pub fn code(self, talk: Talk) -> &'static str {
+        match self {
+            TalkRefused::NotYourAsk => AskRefused::NotDirectChild.code(),
+            _ => talk.refused_code(),
+        }
+    }
+
     pub fn hint(self) -> String {
         match self {
             TalkRefused::NoOpenAsk => "No open ask has this id. Name it with ask_id.".into(),
             TalkRefused::AlreadyAcked => "This ask was already acked.".into(),
             TalkRefused::NotYours => "This ask is not yours: only the Mono or session it was sent to can ask a question or send an update on it.".into(),
-            TalkRefused::NotYourAsk => "Only the one who asked can answer its questions.".into(),
+            TalkRefused::NotYourAsk => "Only the one who asked can answer its questions: you answer only your direct child, on an ask you sent it.".into(),
             TalkRefused::QuestionWaits { seq } => format!("Question {seq} on this ask waits for its answer. Ask the next one after it comes."),
             TalkRefused::AnswerOtherSeq { seq } => format!("The question that waits is seq {seq}. Answer it with seq {seq}."),
             TalkRefused::NoQuestionsLeft => format!("This ask already had its {MAX_QUESTIONS} questions. Decide, or ack and say what is missing."),

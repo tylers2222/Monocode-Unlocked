@@ -4,8 +4,8 @@
 //!
 //! PR I2 has rows S1-S7, I1, I2, S9, S10, S13-S17, S20, W1-W3 (whole-turn)
 //! and R1-R8, R10, R11, the hop limit (S18, R9) and the rate limit (S19).
-//! The level rows L1-L7 (design 13) come with session callers, then the peer
-//! rule (S8), upward steers (S12) and rule (b).
+//! The level rows L1-L7 (design 13) come with session callers, then the
+//! upward rule (U1, R17) and the peer rule (S8).
 
 use std::borrow::Cow;
 
@@ -460,14 +460,13 @@ fn may_steer_turn(caller: &Level, recipient: &Recipient) -> bool {
 pub enum TurnPin {
     Turn(String),
     /// M started no turn of its own, so the steer joins the turn its session
-    /// runs now, and the accepted row keeps it (`SteerTarget::Pinned`): rule
-    /// (b)'s late answer, or a start row (design 16.2).
+    /// runs now, and the accepted row keeps it (`SteerTarget::Pinned`): a
+    /// start row (design 16.2).
     Live(String),
     NotStarted,
 }
 
-/// Where a steer that names M goes (design 16.6): the receiver side, or
-/// rule (b)'s `Giga` variant.
+/// Where a steer that names M goes (design 16.6): the receiver side.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TargetSession {
     /// M is not a message from the caller to the recipient.
@@ -477,60 +476,12 @@ pub enum TargetSession {
         session: Option<SessionId>,
         pin: TurnPin,
     },
-    /// Rule (b): a Mono's late answer to a Giga goes to the Giga's current
-    /// chat, `None` when M came from another session of the Giga (a habit
-    /// run never takes a steer). Pin: the turn that chat runs now, which the
-    /// accepted answer keeps (review r1 m1).
-    Giga {
-        chat: Option<SessionId>,
-        pin: TurnPin,
-    },
 }
-
-/// Rule (b) (design 6.1): how long a Giga's question to a Mono stays open to
-/// a late answer, 24 h.
-const ANSWER_WINDOW_MS: i64 = 86_400_000;
 
 /// Design 16.6: where a steer that names M goes. The receiver side when M
 /// is the caller's message to the recipient (from a session caller: a row
-/// with no Mono that its session wrote); the `Giga` variant when M
-/// qualifies rule (b).
-pub fn target_session(
-    caller: &Caller,
-    level: &Level,
-    recipient: &Recipient,
-    m: &MonoMessage,
-    now: i64,
-) -> TargetSession {
-    if let (
-        Level::Mono,
-        Recipient::Mono {
-            mono_id: giga,
-            role: MonoRole::Giga,
-            chat,
-            ..
-        },
-        Some(me),
-    ) = (level, recipient, caller.mono_id())
-    {
-        // Only an unanswered M: an open one is answered with reply, which
-        // closes its handle (intents review r1).
-        let qualifies = m.from_mono_id.as_ref() == Some(giga)
-            && matches!(&m.to, Some(Party::Mono { mono_id }) if mono_id == me)
-            && matches!(m.status, Status::Unanswered { .. })
-            && now - m.created_at <= ANSWER_WINDOW_MS;
-        if qualifies {
-            let chat = chat
-                .as_ref()
-                .filter(|chat| chat.session == m.from_session_id);
-            return TargetSession::Giga {
-                chat: chat.map(|chat| chat.session.clone()),
-                pin: chat
-                    .and_then(|chat| chat.turn.clone())
-                    .map_or(TurnPin::NotStarted, TurnPin::Live),
-            };
-        }
-    }
+/// with no Mono that its session wrote).
+pub fn target_session(caller: &Caller, recipient: &Recipient, m: &MonoMessage) -> TargetSession {
     let from_caller = match caller.mono_id() {
         Some(mono_id) => m.from_mono_id.as_ref() == Some(mono_id),
         None => m.from_mono_id.is_none() && m.from_session_id == caller.session_id,
@@ -568,8 +519,7 @@ pub fn target_session(
 }
 
 /// The accepted row `reply_to` named, and the session target_session gives
-/// for it (the receiver's session, or rule (b)'s Giga chat) as the live
-/// list and `ControlHost` see it.
+/// for it (the receiver's session) as the live list and `ControlHost` see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Referenced {
     pub message: MonoMessage,
@@ -585,6 +535,8 @@ pub struct SendFacts {
     /// S19 (design 6.1): the caller's accepted sends to this recipient in the
     /// last 10 minutes.
     pub pair: PairCount,
+    /// U1 (R17): the caller is the child of an open ask from the recipient.
+    pub asked_by_recipient: bool,
 }
 
 /// Design 6.1 "pair count": accepted `send_message` rows with the caller's
@@ -848,7 +800,8 @@ impl RejectCode {
             RejectCode::SelfSend => "You cannot message yourself.",
             RejectCode::TargetNoConversation => "That Mono has no chat yet. Ask the user to open it once. Use a new request id when you retry.",
             RejectCode::DirectionForbidden => "That session is not in one of your projects.",
-            RejectCode::UpwardSteerForbidden => "You can steer a Giga only about a message it sent you in the last 24 h. Answer an open handle with reply, or send with intent \"new\"; it is queued.",
+            RejectCode::UpwardNeedsAsk => "You speak to a parent only on an open ask it gave you, and you hold none from this recipient. On an open ask, use messages.question (with blocked true when you cannot go on), messages.update or messages.ack; otherwise wait until you are asked.",
+            RejectCode::UpwardSteerForbidden => "You cannot steer your parent's work. Use messages.question on the open ask it gave you, with blocked true when you cannot go on: that reaches it at once.",
             RejectCode::ReplyUnsupportedTarget => "Project sessions cannot reply. Send with wanting_reply false; their completion report comes back to you.",
             RejectCode::HabitCannotWait => "A habit run ends before an answer can arrive. Send with wanting_reply false, or ask from your chat.",
             RejectCode::UnknownMessage => "No message you can refer to has that id. Use the message_id your send_message returned.",
@@ -866,12 +819,12 @@ impl RejectCode {
             RejectCode::SteerNeedsTarget => "name a message or use scope turn",
             RejectCode::NothingRunning => "send it as a new message",
             RejectCode::SteerScopeNotAllowed => "You cannot steer this recipient's whole turn. A Giga may steer a Mono's whole turn, and a Mono one of its leads. Steer one message with reply_to, or send with intent \"new\".",
-            RejectCode::WorkerCannotSpawn => "Only lead sessions can start sessions. Ask your lead: messages.send with send_to set to your lead's session id.",
-            RejectCode::WorkerScope => "A worker can message only its lead. Message your lead: messages.send with send_to set to your lead's session id.",
+            RejectCode::WorkerCannotSpawn => "Only lead sessions can start sessions. If you need more hands, ask your lead with messages.question on its open ask, with blocked true when you cannot go on.",
+            RejectCode::WorkerScope => "A worker can use only messages.* and speaks only to its lead, on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
             RejectCode::SteerViaLead => "That session is a worker of a lead session. Message the lead; only its lead steers its workers.",
             RejectCode::SessionCannotWait => "A lead or worker session cannot wait for an answer. Send with wanting_reply false. The recipient answers with a new message if it needs to.",
-            RejectCode::LeadScope => "A lead acts only on its own workers. Start workers with sessions.start, steer or stop only sessions you started, and report to your Mono with messages.send.",
-            RejectCode::NotAGiga => "Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: a Mono messages its Giga with messages.send, and a lead or worker reports to its lead or Mono.",
+            RejectCode::LeadScope => "A lead acts only on its own workers. Start workers with sessions.start and steer or stop only sessions you started. To reach your Mono, use messages.question on the ask it gave you, with blocked true when you cannot go on.",
+            RejectCode::NotAGiga => "Only a Giga can file, update or withdraw approval cards. To raise a decision, use messages.question on the open ask from your parent, with blocked true when you cannot go on.",
         }
     }
 
@@ -1001,9 +954,6 @@ fn send_hint(
                 CallerFacts::Session { .. },
                 Recipient::Mono { .. },
             ) => "That Mono has none of your project folders.".into(),
-            (RejectCode::UpwardSteerForbidden, CallerFacts::Session { .. }, _) => {
-                r#"Messages to your lead or to a Mono are queued. Send with intent "new"."#.into()
-            }
             (RejectCode::RateLimited, ..) => rate_hint(about.pair, now),
             _ => code.hint().into(),
         },
@@ -1015,10 +965,10 @@ fn with_lead(code: RejectCode, lead: &SessionId) -> String {
     let lead = lead.as_str();
     match code {
         RejectCode::WorkerCannotSpawn => format!(
-            r#"Only lead sessions can start sessions. Ask your lead ({lead}): messages.send with send_to "{lead}"."#
+            "Only lead sessions can start sessions. If you need more hands, ask your lead ({lead}) with messages.question on its open ask, with blocked true when you cannot go on."
         ),
         RejectCode::WorkerScope => format!(
-            r#"A worker can message only its lead. Message your lead ({lead}): messages.send with send_to "{lead}"."#
+            "A worker can use only messages.* and speaks only to its lead ({lead}), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack."
         ),
         RejectCode::SteerViaLead => format!(
             "That session is a worker of lead {lead}. Message the lead ({lead}); only its lead steers its workers."
@@ -1027,7 +977,7 @@ fn with_lead(code: RejectCode, lead: &SessionId) -> String {
             "Your lead ({lead}) is archived or no longer exists. It cannot get messages until the user restores it. Use a new request id when you retry."
         ),
         RejectCode::NotAGiga => format!(
-            r#"Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: message your lead ({lead}) with messages.send with send_to "{lead}"."#
+            "Only a Giga can file, update or withdraw approval cards. Raise it with your lead ({lead}): messages.question on its open ask, with blocked true when you cannot go on."
         ),
         _ => code.hint().into(),
     }
@@ -1168,24 +1118,26 @@ pub fn decide_send(
         }
         _ => {}
     }
+    // U1 (R17): a caller speaks up only to the parent whose ask it holds
+    // open. It runs before W2 and L5, whose hints would send an unasked
+    // child upward again.
+    let level = row.level();
+    let upward = recipient.level().is_some_and(|to| to.rank() < level.rank());
+    if upward && !about.asked_by_recipient {
+        return reject(RejectCode::UpwardNeedsAsk, to);
+    }
     // W2: the sender learns it may not send this before anything about the
     // recipient's state.
-    let level = row.level();
     if matches!(asked, Asked::WholeTurn) && !may_steer_turn(&level, recipient) {
         return reject(RejectCode::SteerScopeNotAllowed, to);
     }
-    if let CallerFacts::Session { .. } = row {
-        // L5: no notice can reach a session caller (design 13.4).
-        if input.wanting_reply {
-            return reject(RejectCode::SessionCannotWait, to);
-        }
-        // L6: a session holds no handle, so it never answers upward by steer.
-        let upward = recipient
-            .level()
-            .is_some_and(|to| to.rank() < row.level().rank());
-        if upward && !matches!(asked, Asked::New) {
-            return reject(RejectCode::UpwardSteerForbidden, to);
-        }
+    // L5: no notice can reach a session caller (design 13.4).
+    if matches!(row, CallerFacts::Session { .. }) && input.wanting_reply {
+        return reject(RejectCode::SessionCannotWait, to);
+    }
+    // L6: even on that ask, a caller never steers its parent.
+    if upward && !matches!(asked, Asked::New) {
+        return reject(RejectCode::UpwardSteerForbidden, to);
     }
     // S8, the peer rule: two Monos of one role talk when they share a
     // project or one allowlists the other.
@@ -1208,26 +1160,14 @@ pub fn decide_send(
         }
     }
     let steered = if let Asked::Steer = asked {
-        // S9, S12, then S10: an upward steer names a message on the Giga's
-        // side, so S10 would hide the S12 hint that names reply.
+        // S9, then S10.
         let Some(referenced) = &about.reply_to else {
             return reject(RejectCode::UnknownMessage, to);
         };
-        let upward = level == Level::Mono
-            && matches!(
-                recipient,
-                Recipient::Mono {
-                    role: MonoRole::Giga,
-                    ..
-                }
-            );
-        let (session, pin) =
-            match target_session(caller, &level, recipient, &referenced.message, now) {
-                TargetSession::Giga { chat, pin } => (chat, pin),
-                _ if upward => return reject(RejectCode::UpwardSteerForbidden, to),
-                TargetSession::NotBetween => return reject(RejectCode::SteerTargetMismatch, to),
-                TargetSession::Receiver { session, pin } => (session, pin),
-            };
+        let (session, pin) = match target_session(caller, recipient, &referenced.message) {
+            TargetSession::NotBetween => return reject(RejectCode::SteerTargetMismatch, to),
+            TargetSession::Receiver { session, pin } => (session, pin),
+        };
         Some((referenced, session, pin))
     } else {
         None
@@ -1789,7 +1729,7 @@ pub fn path_key(path: &str) -> String {
 mod tests {
     use super::*;
     use crate::mono_messages::{
-        Body, DeliveredSlot, Part, PlainSlot, RequestId, Routed, Status, WaitingSlot, Wanting,
+        Body, Part, PlainSlot, RequestId, Routed, Status, WaitingSlot, Wanting,
     };
 
     fn mono(id: &str) -> MonoId {
@@ -1881,16 +1821,18 @@ mod tests {
     }
 
     const NOW: i64 = 1_000_000_000;
-    const DAY_MS: i64 = 86_400_000;
     const SCOPE: &str = "You cannot steer this recipient's whole turn. A Giga may steer a Mono's whole turn, and a Mono one of its leads. Steer one message with reply_to, or send with intent \"new\".";
-    const UPWARD: &str = "You can steer a Giga only about a message it sent you in the last 24 h. Answer an open handle with reply, or send with intent \"new\"; it is queued.";
     const TARGET_GONE: &str = r#"The work that reply_to started is not running now: it finished, it has not started, or its session is idle, cleared or deleted. Send it with intent "new"."#;
 
+    /// The facts of a send. An upward caller in these unit tests holds the
+    /// recipient's open ask, so the rows after U1 decide; the scenario
+    /// `s2_upward_speech_needs_an_open_ask_from_that_parent` covers U1.
     fn sends(recipient: Recipient) -> Facts<SendFacts> {
         facts(SendFacts {
             recipient,
             reply_to: None,
             pair: PairCount::default(),
+            asked_by_recipient: true,
         })
     }
 
@@ -1904,6 +1846,7 @@ mod tests {
             recipient,
             reply_to: Some(Referenced { message, session }),
             pair: PairCount::default(),
+            asked_by_recipient: true,
         })
     }
 
@@ -2995,9 +2938,8 @@ mod tests {
     }
 
     // S18 (a steer's hop is M.hop + 1), after S15 and S17. Defect: a chain
-    // of steers or late answers grows past hop 4, the limit cuts one hop
-    // early, or a hop-4 steer that S15 or S17 refuses is told to stop the
-    // chain instead.
+    // of steers grows past hop 4, the limit cuts one hop early, or a hop-4
+    // steer that S15 or S17 refuses is told to stop the chain instead.
     #[test]
     fn s18_a_steer_past_hop_4_is_hop_limit() {
         let steer_at = |hop: u32, handling: Target| {
@@ -3035,15 +2977,6 @@ mod tests {
                 r#"That session's provider cannot steer a running turn. Send it with intent "new"; it waits for the turn to end."#
             )
         );
-        assert_eq!(
-            answer_late(
-                question("giga-chat", 4, NOW - 1_000, unanswered()),
-                live("giga-chat", true, true),
-            ),
-            hop_limited(Some(Party::Mono {
-                mono_id: mono("giga")
-            }))
-        );
     }
 
     // S19 (design 6.1 pair count). Defect: one path lets a pair flood past 6
@@ -3056,6 +2989,7 @@ mod tests {
                 recipient: mono_a(Some(a_chat.clone())),
                 reply_to,
                 pair,
+                asked_by_recipient: true,
             });
             decide_send(&caller(CallerKind::MonoChat), &input, &hash(), &facts, NOW)
         };
@@ -3125,6 +3059,7 @@ mod tests {
                 count: 6,
                 oldest: Some(NOW - 1_000),
             },
+            asked_by_recipient: true,
         });
         assert_eq!(
             decide_send(
@@ -3566,7 +3501,7 @@ mod tests {
         assert_eq!(decide(live("giga-chat", true, false)), accept(Via::Queue));
     }
 
-    const LEAD_SCOPE: &str = "A lead acts only on its own workers. Start workers with sessions.start, steer or stop only sessions you started, and report to your Mono with messages.send.";
+    const LEAD_SCOPE: &str = "A lead acts only on its own workers. Start workers with sessions.start and steer or stop only sessions you started. To reach your Mono, use messages.question on the ask it gave you, with blocked true when you cannot go on.";
 
     fn strings(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| item.to_string()).collect()
@@ -3662,6 +3597,7 @@ mod tests {
             recipient,
             reply_to: None,
             pair: PairCount::default(),
+            asked_by_recipient: true,
         }
     }
 
@@ -3699,7 +3635,7 @@ mod tests {
 
     fn worker_scope(lead: &str) -> String {
         format!(
-            r#"A worker can message only its lead. Message your lead ({lead}): messages.send with send_to "{lead}"."#
+            r#"A worker can use only messages.* and speaks only to its lead ({lead}), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack."#
         )
     }
 
@@ -3998,11 +3934,11 @@ mod tests {
     }
 
     // L6 before S9. Defect: a worker steers its lead's work or a lead its
-    // Mono's, though a session holds no handle to answer with, or new work
-    // upward is refused.
+    // Mono's on an open ask, though steering a parent is never allowed, or
+    // new work upward on that ask is refused.
     #[test]
     fn l6_a_session_caller_sends_upward_only_new_work() {
-        let hint = r#"Messages to your lead or to a Mono are queued. Send with intent "new"."#;
+        let hint = RejectCode::UpwardSteerForbidden.hint();
         for (who, caller_row, send_to, recipient, chat) in [
             (
                 "w1",
@@ -4177,153 +4113,11 @@ mod tests {
         }
     }
 
-    /// mono-a's late answer to `m`, accepted into turn `turn` of the Giga's
-    /// chat and pinned to it.
-    fn answered_late(m: &MonoMessage, turn: &str) -> Decision {
-        Decision::Accept {
-            hop: m.hop + 1,
-            rows: vec![Outgoing {
-                to: Party::Mono {
-                    mono_id: mono("giga"),
-                },
-                route: Route {
-                    session: session("giga-chat"),
-                    via: Via::Steer,
-                },
-                intent: Intent::Steer(SteerTarget::Pinned {
-                    message: m.id.clone(),
-                    turn_id: turn.into(),
-                }),
-            }],
-        }
-    }
-
-    /// The Giga's question to mono-a from the Giga's session `from`, asked at
-    /// `created_at`.
-    fn question(from: &str, hop: u32, created_at: i64, status: Status) -> MonoMessage {
-        MonoMessage {
-            from_session_id: session(from),
-            created_at,
-            ..row('q', Some("giga"), hop, status)
-        }
-    }
-
-    /// A question that a-chat held in `turn-1`, and that turn ended.
-    fn unanswered() -> Status {
-        Status::Unanswered {
-            wanting_reply: Wanting,
-            intent: Intent::New,
-            routed: Routed {
-                handled_by_session: session("a-chat"),
-                delivery: Delivery::Submit,
-            },
-            slot: DeliveredSlot {
-                turn_id: "turn-1".into(),
-                handle: Handle::new(1).unwrap(),
-                delivered_at: 2,
-                window: "main".into(),
-            },
-            closed_at: 3,
-            notified_at: None,
-        }
-    }
-
-    /// mono-a steers the Giga about `m`, with the Giga's chat as `chat`.
-    fn answer_late(m: MonoMessage, chat: Target) -> Decision {
-        let input = at("giga", steer(m.id.as_str()));
-        decide_as(
-            &mono_a_caller(),
-            mono_a_row(),
-            &input,
-            SendFacts {
-                recipient: mono_with_role("giga", MonoRole::Giga, chat.clone()),
-                reply_to: Some(Referenced {
-                    message: m,
-                    session: Some(chat),
-                }),
-                pair: PairCount::default(),
-            },
-        )
-    }
-
-    // S12 before S10 (intents review r1). Defect: a Mono steers a Giga about
-    // anything but its late answer to the Giga's question, answers an open
-    // handle by steer (the handle stays open), or is refused with
-    // steer_target_mismatch, which never names reply.
+    // A Giga's steer to another Giga is no upward speech (review r2 n2).
+    // Defect: it gets upward_steer_forbidden instead of S10's
+    // steer_target_mismatch.
     #[test]
-    fn s12_a_monos_steer_to_a_giga_needs_the_gigas_unanswered_question_of_the_last_24_h() {
-        let own = MonoMessage {
-            from_session_id: session("a-chat"),
-            to: Some(Party::Mono {
-                mono_id: mono("giga"),
-            }),
-            status: Status::Delivered {
-                wanting_reply: Wanting,
-                intent: Intent::New,
-                routed: Routed {
-                    handled_by_session: session("giga-chat"),
-                    delivery: Delivery::Submit,
-                },
-                slot: Some(PlainSlot {
-                    turn_id: "turn-1".into(),
-                    delivered_at: Some(2),
-                    window: "main".into(),
-                }),
-            },
-            ..row('m', Some("mono-a"), 0, open(1))
-        };
-        let wants_no_reply = sent('q', 0, Some("turn-1")).status;
-        for (case, m) in [
-            (
-                "an open question",
-                question("giga-chat", 0, NOW - 1_000, open(1)),
-            ),
-            (
-                "a question a day and 1 ms old",
-                question("giga-chat", 0, NOW - DAY_MS - 1, unanswered()),
-            ),
-            (
-                "a message that wants no reply",
-                question("giga-chat", 0, NOW - 1_000, wants_no_reply),
-            ),
-            ("its own message to the Giga", own),
-            (
-                "the Giga's question to another Mono",
-                MonoMessage {
-                    to: Some(Party::Mono {
-                        mono_id: mono("mono-b"),
-                    }),
-                    ..question("giga-chat", 0, NOW - 1_000, unanswered())
-                },
-            ),
-            (
-                "another Giga's question",
-                MonoMessage {
-                    from_mono_id: Some(mono("giga-2")),
-                    ..question("giga-chat", 0, NOW - 1_000, unanswered())
-                },
-            ),
-        ] {
-            assert_eq!(
-                answer_late(m, live("giga-chat", true, true)),
-                send_rejected(
-                    RejectCode::UpwardSteerForbidden,
-                    Some(Party::Mono {
-                        mono_id: mono("giga")
-                    }),
-                    UPWARD
-                ),
-                "{case}"
-            );
-        }
-    }
-
-    // S12 binds a Mono caller only (review r2 n2). Defect: a Giga's steer to
-    // another Giga about a message not between them gets S12's
-    // upward_steer_forbidden, whose hint names a late answer, instead of
-    // S10's steer_target_mismatch.
-    #[test]
-    fn s12_leaves_a_gigas_steer_to_another_giga_to_s10() {
+    fn a_gigas_steer_to_another_giga_is_left_to_s10() {
         let a_chat = Some(live("a-chat", true, true));
         assert_eq!(
             decide_send(
@@ -4349,34 +4143,6 @@ mod tests {
                     mono_id: mono("giga-2")
                 })
             )
-        );
-    }
-
-    // Rule (b) (design 16.6, intents review r1). Defect: a Mono's late answer
-    // never reaches the Giga, lands in its idle chat as new work, reaches a
-    // finished habit run, or closes the question as answered (only reply
-    // closes a message).
-    #[test]
-    fn rule_b_a_late_answer_steers_the_gigas_running_chat_and_leaves_the_question_open_to_reply() {
-        let giga = Some(Party::Mono {
-            mono_id: mono("giga"),
-        });
-        let running = Target {
-            turn: Some("turn-4".into()),
-            ..live("giga-chat", true, true)
-        };
-        let a_day_old = question("giga-chat", 2, NOW - DAY_MS, unanswered());
-        assert_eq!(
-            answer_late(a_day_old.clone(), running.clone()),
-            answered_late(&a_day_old, "turn-4")
-        );
-        assert_eq!(
-            answer_late(a_day_old, live("giga-chat", false, true)),
-            send_rejected(RejectCode::TargetGone, giga.clone(), TARGET_GONE)
-        );
-        assert_eq!(
-            answer_late(question("giga-run", 2, NOW - DAY_MS, unanswered()), running),
-            send_rejected(RejectCode::TargetGone, giga, TARGET_GONE)
         );
     }
 
@@ -4418,6 +4184,7 @@ mod tests {
                         session: Some(live("w1", true, true)),
                     }),
                     pair: PairCount::default(),
+                    asked_by_recipient: true,
                 },
             ),
             send_rejected(
@@ -4859,7 +4626,7 @@ mod tests {
         );
     }
 
-    const WORKER_CANNOT_SPAWN_L1: &str = r#"Only lead sessions can start sessions. Ask your lead (l1): messages.send with send_to "l1"."#;
+    const WORKER_CANNOT_SPAWN_L1: &str = r#"Only lead sessions can start sessions. If you need more hands, ask your lead (l1) with messages.question on its open ask, with blocked true when you cannot go on."#;
 
     // A3. Defect: a worker starts a session, so the tree grows past two
     // levels, or is refused with a code that does not say who may start one.
@@ -5080,6 +4847,7 @@ mod tests {
                         session: Some(l1),
                     }),
                     pair: PairCount::default(),
+                    asked_by_recipient: true,
                 },
             )
         };
@@ -5140,6 +4908,7 @@ mod tests {
                         session: Some(w1),
                     }),
                     pair: PairCount::default(),
+                    asked_by_recipient: true,
                 },
             ),
             pinned_steer(&start, "w1", "turn-1")

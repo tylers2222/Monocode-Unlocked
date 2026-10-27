@@ -680,6 +680,151 @@ fn s2_two_acks_at_the_same_instant_one_gets_through() {
     assert_eq!(carriers, 1, "one ack row to the lead");
 }
 
+/// A `messages.send` from `from` to `to`: intent `new`, or a steer of
+/// `reply_to`.
+fn send(
+    world: &World,
+    tree: &Tree,
+    from: &Caller,
+    key: &str,
+    to: &str,
+    reply_to: Option<&MessageId>,
+) -> Submitted {
+    let mut input = json!({"message": format!("Say {key}"), "send_to": to, "wanting_reply": false, "intent": "new"});
+    if let Some(id) = reply_to {
+        input["intent"] = json!("steer");
+        input["reply_to"] = json!(id.as_str());
+    }
+    world.tool(from, key, "send_message", input, &tree.live())
+}
+
+/// S2 "Upward with no open ask" and "A worker skipping its lead to reach
+/// the Mono or Giga" (R17). Defect: a worker, lead or Mono speaks up (new
+/// or steer) to a parent whose ask it does not hold open, or after it
+/// acked it; a worker reaches the Mono or Giga past its lead, a lead the
+/// Giga past its Mono, or a Mono a Giga that never asked it; an unasked
+/// child gets `steer_scope_not_allowed` or `session_cannot_wait`, whose
+/// hints send it upward again; a refusal is not on record. And the rule
+/// overreaches: a child on an open ask cannot
+/// send up, question or ack it; a peer Mono or Giga send, or any downward
+/// send, is refused; or someone other than the asker answers a question.
+#[test]
+fn s2_upward_speech_needs_an_open_ask_from_that_parent() {
+    let world = World::new("r17-s2-upward");
+    let tree = tree(&world);
+    let giga_b = world.add_mono_in("r17-giga-b", MonoRole::Giga, &[P]);
+    let mono_b = world.add_mono_in("r17-mono-b", MonoRole::Mono, &[P]);
+    let giga = mono_caller(&tree.giga, "t1");
+    let mono = mono_caller(&tree.mono, "t1");
+    let lead = session_caller(&tree.lead, P);
+    let worker = session_caller(&tree.worker, P);
+    let (g, m, l) = (
+        tree.giga.id.as_str(),
+        tree.mono.id.as_str(),
+        tree.lead.as_str(),
+    );
+    let start = start_of(&world, &tree.lead);
+    let code = |submitted: Submitted| refusal(submitted).0;
+    let no_ask = "upward_needs_ask";
+    let unasked = |from: &Caller, key: &str, to: &str, extra: serde_json::Value| {
+        let mut input =
+            json!({"message": key, "send_to": to, "wanting_reply": false, "intent": "new"});
+        for (field, value) in extra.as_object().unwrap() {
+            input[field] = value.clone();
+        }
+        code(world.tool(from, key, "send_message", input, &tree.live()))
+    };
+    let whole_turn = || json!({"intent": "steer", "scope": "turn"});
+
+    // S2.1: nobody asked the worker or the Mono, so neither speaks up.
+    assert_eq!(code(send(&world, &tree, &worker, "w-l", l, None)), no_ask);
+    assert_eq!(
+        code(send(&world, &tree, &worker, "w-l-steer", l, Some(&start))),
+        no_ask
+    );
+    assert_eq!(code(send(&world, &tree, &mono, "m-g", g, None)), no_ask);
+    assert_eq!(
+        code(send(&world, &tree, &mono, "m-g-steer", g, Some(&start))),
+        no_ask
+    );
+    assert_eq!(unasked(&mono, "m-g-turn", g, whole_turn()), no_ask);
+    // S2.3: past the lead the worker gets worker_scope; the lead's open ask
+    // is from its Mono, not the Giga.
+    assert_eq!(
+        code(send(&world, &tree, &worker, "w-m", m, None)),
+        "worker_scope"
+    );
+    assert_eq!(
+        code(send(&world, &tree, &worker, "w-g", g, None)),
+        "worker_scope"
+    );
+    assert_eq!(code(send(&world, &tree, &lead, "l-g", g, None)), no_ask);
+
+    // On an open ask the child speaks up to that parent with intent new,
+    // never by steer.
+    let up = written(send(&world, &tree, &lead, "l-m", m, None));
+    assert_eq!(
+        code(send(&world, &tree, &lead, "l-m-steer", m, Some(&up))),
+        "upward_steer_forbidden"
+    );
+    let worker_ask = written(ask(
+        &world,
+        &tree,
+        &lead,
+        "l-ask",
+        tree.worker.as_str(),
+        None,
+    ));
+    written(send(&world, &tree, &worker, "w-l-asked", l, None));
+    written(ask(&world, &tree, &giga, "g-ask", m, None));
+    written(send(&world, &tree, &mono, "m-g-asked", g, None));
+    assert_eq!(
+        code(send(&world, &tree, &mono, "m-gb", giga_b.id.as_str(), None)),
+        no_ask
+    );
+
+    // Only the asker answers a question on its ask (R17 not_direct_child).
+    let question = json!({"ask_id": start.as_str(), "message": "Which branch?"});
+    written(world.tool(&lead, "l-q", "question", question, &tree.live()));
+    let answer = json!({"ask_id": start.as_str(), "seq": 1, "message": "main"});
+    let by_giga = world.tool(&giga, "g-ans", "answer", answer.clone(), &tree.live());
+    assert_eq!(code(by_giga), "not_direct_child");
+    written(world.tool(&mono, "m-ans", "answer", answer, &tree.live()));
+
+    // An ack spends the key: after it the worker cannot speak up again.
+    written(ack(&world, &tree, &worker, "w-ack", &worker_ask));
+    assert_eq!(
+        code(send(&world, &tree, &worker, "w-l-after", l, None)),
+        no_ask
+    );
+    written(ack(&world, &tree, &lead, "l-ack", &start));
+    let wait = json!({"wanting_reply": true});
+    assert_eq!(unasked(&lead, "l-m-wait", m, wait), no_ask);
+    assert_eq!(unasked(&lead, "l-m-turn", m, whole_turn()), no_ask);
+
+    // Peers and every downward send are unchanged.
+    written(send(&world, &tree, &mono, "m-mb", mono_b.id.as_str(), None));
+    written(send(&world, &tree, &giga, "g-gb", giga_b.id.as_str(), None));
+    written(send(&world, &tree, &giga, "g-m", m, None));
+    written(send(&world, &tree, &mono, "m-l", l, None));
+    written(send(
+        &world,
+        &tree,
+        &lead,
+        "l-w",
+        tree.worker.as_str(),
+        None,
+    ));
+
+    assert_eq!(
+        count(
+            &world,
+            "SELECT count(*) FROM mono_messages WHERE gate_result = 'upward_needs_ask'"
+        ),
+        10
+    );
+}
+
 /// S4 "The worker acks. Then the parent says "redo it": that is a new ask
 /// with a new key". Defect: the redo reopens or reuses the spent key, or
 /// cannot be acked.
@@ -808,7 +953,6 @@ fn a_rate_limited_ack_of_an_acked_ask_is_told_already_acked() {
         tree.worker.as_str(),
         None,
     ));
-    written(ack(&world, &tree, &worker, "w-ack", &id));
     for n in 0..5 {
         let input = json!({"message": "Update", "send_to": tree.lead.as_str(), "wanting_reply": false, "intent": "new"});
         written(world.tool(
@@ -819,6 +963,7 @@ fn a_rate_limited_ack_of_an_acked_ask_is_told_already_acked() {
             &tree.live(),
         ));
     }
+    written(ack(&world, &tree, &worker, "w-ack", &id));
     assert_eq!(
         refusal(ack(&world, &tree, &worker, "w-ack-2", &id)),
         ack_refused(AckRefused::AlreadyAcked)

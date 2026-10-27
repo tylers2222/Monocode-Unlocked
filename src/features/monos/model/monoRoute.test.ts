@@ -1880,7 +1880,7 @@ it("tells the gate no live session's lead", async () => {
 // goes as a Mono.
 it("answers a session caller's send with the level refusal Rust gave it", async () => {
   const hint =
-    'A worker can message only its lead. Message your lead (lead-1): messages.send with send_to "lead-1".';
+    "A worker can use only messages.* and speaks only to its lead (lead-1), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.";
   rust.state.failure = {
     code: "worker_scope",
     hint,
@@ -2160,50 +2160,6 @@ it("names a steer's target by its message id when its handle is from an earlier 
   expect(deliver.mock.calls[0][0].turnId).toBe("run-a-chat");
   expect(deliver.mock.calls[0][0].text).toBe(
     `<mono_message message_id="${steer}" from="Boss" mono_id="giga" role="giga" wanting_reply="false" reply_to="${target.id}">\n[steer → ${target.id} · "Is CI green?"]\nUse the cached result\n</mono_message>`,
-  );
-});
-
-// PR 7 review r1 B2, and the PR I4 n3 re-check. A rule (b) late answer
-// joins the Giga's running turn, while its target holds #1 in the Mono's
-// chat; the turn ids here are equal, so only the session tells them apart.
-// Defect: the line names the target by a handle the Giga's turn does not
-// hold, because the hand-off reads the target's session as the reader's.
-it("names a late answer's target by its message id in the Giga's turn", async () => {
-  const target = ended({
-    slot: { turnId: "run-giga-chat", handle: "#1", deliveredAt: 1 },
-  });
-  rust.state.rows = [
-    target,
-    ended({
-      id: "m_bbbbbbbbbbbb",
-      requestId: "late",
-      fromMonoId: "mono-a",
-      fromSessionId: "a-chat",
-      to: { kind: "mono", monoId: "giga" },
-      addressed: "giga",
-      body: "It is green now",
-      hop: 1,
-      intent: "steer",
-      replyTo: target.id,
-      status: "delivered",
-      wantingReply: false,
-      handledBySession: "giga-chat",
-      delivery: "steer",
-      slot: null,
-    }),
-  ];
-  const { host } = world([chat("giga-chat", { busy: true }), chat("a-chat")]);
-  const deliver = vi.fn((_: HandedOff) => true);
-  await handOff(
-    host,
-    "giga-chat",
-    "m_bbbbbbbbbbbb" as MessageId,
-    "steer",
-    deliver,
-  );
-  expect(deliver.mock.calls[0][0].turnId).toBe("run-giga-chat");
-  expect(deliver.mock.calls[0][0].text).toContain(
-    `\n[steer → ${target.id} · "Is CI green?"]\nIt is green now\n`,
   );
 });
 

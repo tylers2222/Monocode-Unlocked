@@ -251,6 +251,7 @@ export type RejectCode =
   | "self_send"
   | "target_no_conversation"
   | "direction_forbidden"
+  | "upward_needs_ask"
   | "upward_steer_forbidden"
   | "reply_unsupported_target"
   | "habit_cannot_wait"

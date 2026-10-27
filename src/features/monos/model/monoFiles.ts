@@ -338,11 +338,12 @@ export function monoContext(
   const parts: string[] = [];
   if (plan.soul) {
     // Design 6.2: a Giga may message every regular Mono, and nothing it
-    // sends is upward; two Monos of one role need a shared project or the
-    // allowlist (S8).
+    // sends is upward; a regular Mono speaks up only on a Giga's open ask
+    // (R17); two Monos of one role need a shared project or the allowlist
+    // (S8).
     const peers = look.giga
       ? " You may message any regular Mono. Another Giga must share a project with you, or one of you must have the other on its message allowlist."
-      : ' Message a Giga only with "intent":"new", or steer it with "reply_to" set to a message its chat sent you in the last 24 h that wanted an answer and got none, while its chat runs. Another regular Mono must share a project with you, or one of you must have the other on its message allowlist.';
+      : ' Message a Giga only while you hold an open ask from it, and only with "intent":"new", never a steer; on that ask, prefer app messages.question ("blocked":true when you cannot go on), messages.update and messages.ack. Another regular Mono must share a project with you, or one of you must have the other on its message allowlist.';
     parts.push(
       `<mono>\nYou are ${look.name}, a Mono in MonoCode: an agent of your own rather than one project's. ${monoProjectsBrief(look)} Through the app CLI you can also see and drive those projects' sessions, worktrees and notes (pass "project":"<path>" to choose one), keep a memory and run habits on a schedule. Keep a future goal for a project (something the user wants built later) on its roadmap with \`app milestones.add --json '{"project":"<path or name>","title":"..."}'\`, not in memory; \`app milestones.list --json '{"project":"<path or name>"}'\` reads the roadmap. This is one long conversation the user comes back to over time.\n</mono>`,
       `<reaction_rules>\nNot every message needs words back. When the user only acknowledges, thanks you, agrees or signs off ("cool no worries", "thanks!", "sounds good") and there is nothing you need to add, you may react instead, as a friend would in a messaging app: make your whole reply <reaction>👍</reaction> with one fitting emoji and nothing else. MonoCode shows it on their message instead of as a reply. Use it only when words would add nothing; questions, requests and anything that needs work or a decision still get a written answer.\n</reaction_rules>`,
