@@ -12,12 +12,18 @@ mod agents;
 mod asks;
 mod clock;
 mod completions;
+mod d2_db_key;
 #[cfg(unix)]
 mod d4_deny;
+#[cfg(unix)]
+mod devin_supervised;
+#[cfg(unix)]
+mod omp_mcp;
 mod s0_baseline;
 mod s1_asks;
 mod s1_levels;
 mod s2_approvals;
 mod s4_questions;
+mod s5_delivery;
 mod s5_scheduler;
 mod world;

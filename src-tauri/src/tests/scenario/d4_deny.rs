@@ -863,6 +863,7 @@ fn harness_spawn_child() {
             Some(claude.clone()),
             None,
             None,
+            None,
         )
         .unwrap();
         let argv = wait_for(&workdir.join("argv"));
