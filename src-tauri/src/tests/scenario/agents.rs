@@ -4,8 +4,8 @@ use super::world::World;
 use crate::asks::{self, Call};
 use crate::mono_gate::{self, Access, Caller, CallerKind, Speaker};
 use crate::mono_messages::{
-    self, ActionChecked, CallerArg, LiveSession, MessageId, MonoId, RequestId, SessionId, StartAsk,
-    StartRecorded, Submitted, Tool, ToolError,
+    self, ActionChecked, CallerArg, LiveSession, MessageId, MonoId, Notices, RequestId, SessionId,
+    StartAsk, StartRecorded, Submitted, Tool, ToolError,
 };
 use crate::mono_roster::{self, MonoCreate, MonoRole};
 use crate::session_store::{self, SessionUpsert};
@@ -166,6 +166,18 @@ impl World {
         input: Value,
         live: &[&SessionId],
     ) -> Submitted {
+        self.tool_noticed(caller, request_id, tool, input, live).0
+    }
+
+    /// `tool`, with the chats its `mono-message-notices` event names.
+    pub(crate) fn tool_noticed(
+        &self,
+        caller: &Caller,
+        request_id: &str,
+        tool: &str,
+        input: Value,
+        live: &[&SessionId],
+    ) -> (Submitted, Notices) {
         self.submit(caller, request_id, asks::call(tool, &input).unwrap(), live)
     }
 
@@ -183,6 +195,7 @@ impl World {
     ) -> Submitted {
         let input = mono_gate::parse(tool, &input).into();
         self.submit(&mono_caller(from, turn), request_id, input, &[&to.chat])
+            .0
     }
 
     /// A call from a session, with `caller` as the web app sends it
@@ -200,7 +213,7 @@ impl World {
             .map_err(|error| error.to_string())?
             .parse()?;
         let input = mono_gate::parse(tool, &input).into();
-        Ok(self.submit(&caller, request_id, input, live))
+        Ok(self.submit(&caller, request_id, input, live).0)
     }
 
     fn submit(
@@ -209,7 +222,7 @@ impl World {
         request_id: &str,
         input: Call,
         live: &[&SessionId],
-    ) -> Submitted {
+    ) -> (Submitted, Notices) {
         let live: Vec<LiveSession> = live
             .iter()
             .map(|session| LiveSession {
@@ -218,7 +231,7 @@ impl World {
                 own_project: true,
             })
             .collect();
-        let (submitted, _) = mono_messages::submit_and_recheck(
+        mono_messages::submit_and_recheck(
             self.store(),
             || self.running(),
             caller,
@@ -228,8 +241,7 @@ impl World {
             &["codex".to_string()],
             self.now(),
         )
-        .unwrap();
-        submitted
+        .unwrap()
     }
 }
 
