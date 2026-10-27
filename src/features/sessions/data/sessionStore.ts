@@ -116,6 +116,7 @@ type SessionRecord = {
   worktreeRemoved?: boolean;
   linkedWorkItem?: LinkedWorkItem | null;
   automationId?: string | null;
+  mcp?: string | null;
   createdAt: number;
   updatedAt: number;
 };
@@ -145,6 +146,7 @@ type SessionUpsertPayload = {
   worktreeRemoved?: boolean;
   linkedWorkItem?: LinkedWorkItem;
   automationId?: string;
+  mcp?: Session["mcp"];
 };
 
 /**
@@ -217,6 +219,7 @@ function persistableMeta(
     ...(session.branch ? { branch: session.branch } : {}),
     ...(session.worktreeCwd ? { worktreeCwd: session.worktreeCwd } : {}),
     ...(session.workFolder ? { workFolder: session.workFolder } : {}),
+    ...(session.mcp ? { mcp: session.mcp } : {}),
     ...(session.worktreeRemoved ? { worktreeRemoved: true } : {}),
     ...(linkedWorkItem ? { linkedWorkItem } : {}),
     ...(session.automationId && isPersistableId(session.automationId)
@@ -1563,6 +1566,7 @@ function recordToSession(
     ...(record.branch ? { branch: record.branch } : {}),
     ...(record.worktreeCwd ? { worktreeCwd: record.worktreeCwd } : {}),
     ...(record.workFolder ? { workFolder: record.workFolder } : {}),
+    ...(record.mcp === "none" ? { mcp: "none" as const } : {}),
     ...(record.worktreeRemoved ? { worktreeRemoved: true } : {}),
     ...(linkedWorkItem ? { linkedWorkItem } : {}),
     ...(record.automationId && isPersistableId(record.automationId)

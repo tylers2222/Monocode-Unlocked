@@ -451,9 +451,8 @@ it("workspace.status refuses a project session", async () => {
   );
 });
 
-it("refuses a folder named MonoCode other than the workspace as a Mono's project", async () => {
+it("refuses a folder named MonoCode that is not a project yet, and takes one that is", async () => {
   setHomeDir("/home/u");
-  rememberProject("/tmp/x/MonoCode");
   rememberProject("/home/u/MonoCode");
   const recents = localStorage.getItem("monocode.recentProjects");
   const { run, monos, shroom } = fixture();
@@ -480,6 +479,19 @@ it("refuses a folder named MonoCode other than the workspace as a Mono's project
       projects: ["/home/u/MonoCode"],
     });
     expect(findMono(shroom.id)!.projects).toEqual(["/home/u/MonoCode"]);
+
+    // ADE-127: a project already on the rail is taken whatever its folder is named.
+    rememberProject("/tmp/x/MonoCode");
+    const created = await run("monos.create", {
+      ...create,
+      projects: ["/tmp/x/MonoCode"],
+    });
+    expect(created).toMatchObject({ projects: ["/tmp/x/MonoCode"] });
+    await run("monos.update", {
+      monoId: shroom.id,
+      projects: ["/tmp/x/MonoCode"],
+    });
+    expect(findMono(shroom.id)!.projects).toEqual(["/tmp/x/MonoCode"]);
   } finally {
     setHomeDir(undefined);
   }
