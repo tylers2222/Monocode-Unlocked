@@ -9,8 +9,9 @@ use serde_json::{json, Value};
 
 use super::agents::{mono_caller, session_caller, Mono};
 use super::asks::written;
+use super::s3_extension::{extend, extensions, refused as extend_refused};
 use super::s5_delivery::claim;
-use super::s5_scheduler::{advance_to, ask, due, ladder, reminders, MINUTE, P};
+use super::s5_scheduler::{advance_to, ask, due, ladder, reminders, MINUTE, P, T5_LEAD};
 use super::world::World;
 use crate::ask_scheduler;
 use crate::asks::{self, ReasonInput, Reasoned};
@@ -20,6 +21,8 @@ use crate::mono_messages::{MessageId, SessionId};
 /// Plan section 2: the parent hears 5 active minutes after the deadline.
 const WHY_AFTER: i64 = 5 * MINUTE;
 const REASON: &str = "The build cache was cold.";
+const NO_SINGLE_OPEN_ASK: &str = "You have no open ask or more than one.";
+const PAST_DEADLINE: &str = "The deadline has passed";
 
 /// An outbox row as `(key, stage, recipient, at_active_ms)`.
 type Row = (String, String, String, i64);
@@ -119,8 +122,10 @@ fn why_text(ask: &MessageId, child: &SessionId) -> String {
 /// is not written, written twice, or loses its reason when a stage write is
 /// lost; a reason before the miss, from anyone but the child, or a second
 /// one is stored; a blank reason or one over 8000 characters is stored, or
-/// one of exactly 8000 is invalid; the miss closes the ask or the ladder
-/// goes on; a paused ask is reminded or missed.
+/// one of exactly 8000 is invalid; a reason with no single open ask or an
+/// unknown id is stored or gets a false hint; the miss closes the ask or the
+/// ladder goes on; a paused ask is reminded or missed; an extend at or after
+/// the deadline reminder moves the deadline.
 pub(super) fn the_new_deadline_passes(
     world: &mut World,
     mono: &Mono,
@@ -143,6 +148,7 @@ pub(super) fn the_new_deadline_passes(
     a_lost_stage_write_replays_why(world, &missed, &sent, &stored);
     nothing_expires_until_the_child_acks(world, &missed, &sent, &stored);
     a_paused_ask_gets_no_reminder_or_miss(world, &missed);
+    the_extension_closes_at_the_deadline(world, &missed);
 }
 
 /// At the new deadline, to the millisecond: a second reminder, to the
@@ -240,7 +246,8 @@ fn a_lost_stage_write_replays_why(
 
 /// Nothing expires: across a restart and 10 active minutes, the ask is open
 /// and nothing more is sent. The child finally acks, and the ask closes; a
-/// reason after that is refused.
+/// reason after that is refused, as is one with no single open ask (the
+/// worker has none) or with an unknown id, and no miss changes.
 fn nothing_expires_until_the_child_acks(
     world: &mut World,
     missed: &Missed,
@@ -262,6 +269,16 @@ fn nothing_expires_until_the_child_acks(
     assert_eq!(state(world, a), "acked");
     let late = reason(world, &missed.child, missed.reason_input(REASON));
     assert!(refused(late).contains("already acked"));
+    let worker = session_caller(missed.worker, P);
+    let unnamed = refused(reason(world, &worker, json!({"message": REASON})));
+    assert!(unnamed.starts_with(NO_SINGLE_OPEN_ASK), "{unnamed}");
+    let unknown = json!({"ask_id": "m_aaaaaaaaaaaa", "message": REASON});
+    let unknown = refused(reason(world, &missed.child, unknown));
+    assert!(
+        unknown.starts_with("No open ask of yours has this id."),
+        "{unknown}"
+    );
+    assert_eq!(misses(world, a), stored);
 }
 
 /// A paused ask (R14 pauses it while a question waits) gets no reminder and
@@ -286,4 +303,33 @@ fn a_paused_ask_gets_no_reminder_or_miss(world: &mut World, missed: &Missed) {
     advance_to(world, due(world, &b) + WHY_AFTER + MINUTE);
     assert!(reminders(world, &b).is_empty());
     assert!(misses(world, &b).is_empty());
+}
+
+/// The extension window closes with the deadline reminder: an ask never
+/// extended is refused at its `deadline` rung and after its `why` rung,
+/// and its deadline, ladder and extension count stay.
+fn the_extension_closes_at_the_deadline(world: &mut World, missed: &Missed) {
+    let sessions = [missed.lead, missed.worker];
+    let c = ask(
+        world,
+        &sessions,
+        &missed.parent,
+        "s3-closed",
+        missed.lead.as_str(),
+        10,
+    );
+    let c_due = due(world, &c);
+    advance_to(world, c_due - T5_LEAD);
+    assert_eq!(ladder(world, &c).0, 1);
+    let by_id = json!({"ask_id": c.as_str()});
+    for (at, rungs) in [
+        (c_due, (2, Some(c_due + WHY_AFTER))),
+        (c_due + WHY_AFTER, (3, None)),
+    ] {
+        advance_to(world, at);
+        assert_eq!(ladder(world, &c), rungs);
+        extend_refused(extend(world, &missed.child, by_id.clone()), PAST_DEADLINE);
+        let after = (due(world, &c), ladder(world, &c), extensions(world, &c));
+        assert_eq!(after, (c_due, rungs, 0));
+    }
 }

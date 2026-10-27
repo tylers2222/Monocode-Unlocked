@@ -19,7 +19,7 @@ use crate::mono_roster::MonoRole;
 const EXTENSION: i64 = 15 * MINUTE;
 const NO_SINGLE_OPEN_ASK: &str = "You have no open ask or more than one.";
 
-fn extend(world: &World, caller: &Caller, input: Value) -> Extension {
+pub(super) fn extend(world: &World, caller: &Caller, input: Value) -> Extension {
     asks::extend(
         &world.conn(),
         caller,
@@ -31,7 +31,7 @@ fn extend(world: &World, caller: &Caller, input: Value) -> Extension {
 
 /// Panics unless `extension` is an `extend_refused` whose hint starts with
 /// `start`.
-fn refused(extension: Extension, start: &str) {
+pub(super) fn refused(extension: Extension, start: &str) {
     match extension {
         Extension::Failed { error } if error.code == "extend_refused" => {
             assert!(error.hint.starts_with(start), "hint: {}", error.hint);
@@ -40,7 +40,7 @@ fn refused(extension: Extension, start: &str) {
     }
 }
 
-fn extensions(world: &World, ask: &MessageId) -> i64 {
+pub(super) fn extensions(world: &World, ask: &MessageId) -> i64 {
     world
         .conn()
         .query_row(
