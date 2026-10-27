@@ -103,6 +103,15 @@ impl SessionStore {
     fn restores_earlier_run(&self, window: &str) -> bool {
         self.restorer.get_or_init(|| window.to_owned()) == window
     }
+
+    /// Whether `window` already restored the earlier run. Only that window's
+    /// saves drop the earlier run's rows: another window's save before the
+    /// restorer's first one must leave them for the restorer's reload.
+    fn restored_earlier_run(&self, window: &str) -> bool {
+        self.restorer
+            .get()
+            .is_some_and(|restorer| restorer == window)
+    }
 }
 
 pub fn init(app: &AppHandle) -> Result<(), String> {
@@ -703,8 +712,16 @@ pub fn session_set_in_flight<R: Runtime>(
     // saves while this save waits must be in the list, or its rows are swept.
     let mut conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     let open = open_workspace_windows(&window);
-    replace_in_flight(&mut conn, &store.run_id, window.label(), &open, &sessions)
-        .map_err(|e| e.to_string())
+    let earlier = store.restored_earlier_run(window.label());
+    replace_in_flight(
+        &mut conn,
+        &store.run_id,
+        window.label(),
+        earlier,
+        &open,
+        &sessions,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// The chats this window resumes when it boots or reloads. The window that
@@ -782,10 +799,10 @@ pub fn workspace_set_snapshot<R: Runtime>(
         &mut conn,
         &store.run_id,
         window.label(),
+        store.restored_earlier_run(window.label()),
         &open,
         &json,
         read_at,
-        now_millis(),
     )
     .map_err(|e| e.to_string())
 }
@@ -2323,18 +2340,21 @@ fn claim_in_flight(
 }
 
 /// Also drops this run's rows of every window that is gone: a close whose
-/// delete failed must not leave its stopped chats for the next launch.
+/// delete failed must not leave its stopped chats for the next launch. Only
+/// the window that restored the earlier run (`earlier`) drops that run's rows.
 fn replace_in_flight(
     conn: &mut Connection,
     run_id: &str,
     window: &str,
+    earlier: bool,
     open_windows: &[String],
     sessions: &[InFlightSession],
 ) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     tx.execute(
-        "DELETE FROM in_flight_sessions WHERE window_label = ?1 OR run_id <> ?2",
-        params![window, run_id],
+        "DELETE FROM in_flight_sessions
+         WHERE (window_label = ?1 AND run_id = ?2) OR (?3 AND run_id <> ?2)",
+        params![window, run_id, earlier],
     )?;
     tx.execute(
         "DELETE FROM in_flight_sessions
@@ -2375,18 +2395,19 @@ fn snapshot_supersedes(stored: Option<i64>, incoming: i64, now: i64) -> bool {
 /// every window. The shared row (`id = 1`, `updated_at` = its read time)
 /// keeps the newest-read snapshot of any window: New Window opens a copy of
 /// it, and an older build reads only it. The window's own row keeps the
-/// window's newest-read snapshot (ADE-11). Like `replace_in_flight`, a save
-/// drops the rows an earlier run left, which this run's windows restored, and
-/// this run's rows of windows that closed.
+/// window's newest-read snapshot (ADE-11). A save drops this run's rows of
+/// windows that closed. Like `replace_in_flight`, only the window that
+/// restored the earlier run (`earlier`) drops the rows that run left.
 fn set_workspace_snapshot(
     conn: &mut Connection,
     run_id: &str,
     window: &str,
+    earlier: bool,
     open_windows: &[String],
     json: &str,
     read_at: i64,
-    now: i64,
 ) -> rusqlite::Result<()> {
+    let now = now_millis();
     let tx = conn.transaction()?;
     let shared = tx
         .query_row(
@@ -2424,8 +2445,9 @@ fn set_workspace_snapshot(
     }
     tx.execute(
         "DELETE FROM workspace_window_snapshots
-         WHERE run_id <> ?1 OR window_label NOT IN (SELECT value FROM json_each(?2))",
-        params![run_id, json!(open_windows).to_string()],
+         WHERE (?3 AND run_id <> ?1)
+            OR (run_id = ?1 AND window_label NOT IN (SELECT value FROM json_each(?2)))",
+        params![run_id, json!(open_windows).to_string(), earlier],
     )?;
     tx.commit()
 }
@@ -2493,10 +2515,12 @@ fn get_workspace_snapshot(
 }
 
 /// The shared row as a window restores it: whole for the window that
-/// restores the earlier run, else a copy less the stubs of every Mono chat.
-/// The window that holds a Mono chat runs its turns, so a copy must not hold
-/// it too. A Mono chat is never a tab (`detachMonoTabs`), so the copy shows
-/// the same tabs, and opening the Mono loads its chat.
+/// restores the earlier run, else a copy less the stubs of every Mono chat
+/// and less the Mono completion batches. The window that holds a Mono chat
+/// runs its turns, so a copy must not hold it too, and a restored batch
+/// loads the Mono chat to queue its notice. A current build never saves a
+/// Mono chat as a tab (`detachMonoTabs`), so the copy shows the same tabs,
+/// and opening the Mono loads its chat.
 fn shared_row(
     conn: &Connection,
     shared: Option<Value>,
@@ -2509,7 +2533,8 @@ fn shared_row(
     let mut statement = conn
         .prepare(
             "SELECT json_extract(data_json, '$.sessionId') FROM monos
-             WHERE json_type(data_json, '$.sessionId') = 'text'",
+             WHERE CASE WHEN json_valid(data_json)
+                        THEN json_type(data_json, '$.sessionId') END = 'text'",
         )
         .map_err(|e| e.to_string())?;
     let chats = statement
@@ -2517,6 +2542,9 @@ fn shared_row(
         .map_err(|e| e.to_string())?
         .collect::<rusqlite::Result<HashSet<_>>>()
         .map_err(|e| e.to_string())?;
+    if let Some(row) = copy.as_object_mut() {
+        row.remove("monoCompletions");
+    }
     if let Some(stubs) = copy.get_mut("sessions").and_then(Value::as_array_mut) {
         stubs.retain(|stub| {
             !stub
@@ -3979,6 +4007,7 @@ mod tests {
             &mut conn,
             "run",
             "main",
+            false,
             &["main".to_owned()],
             &[
                 InFlightSession {
@@ -4402,7 +4431,7 @@ mod tests {
             session_id: "live".into(),
             cwd: "/tmp/live".into(),
         };
-        replace_in_flight(&mut held, &store.run_id, "window-1", &open, &[live]).unwrap();
+        replace_in_flight(&mut held, &store.run_id, "window-1", false, &open, &[live]).unwrap();
         drop(held);
         saver.join().unwrap();
         assert_eq!(resumed(&second), ["live"], "window-1 reloads its live chat");
@@ -4768,7 +4797,7 @@ mod tests {
                 "{relaunch} restores each window's row of the last run whole, newest first"
             );
         }
-        closed_windows_leave_their_tabs_out(path, &seed, opened);
+        closed_windows_leave_their_tabs_out(path, &seed, opened, [&main_saved, &second_saved]);
 
         let older = with_tabs(&seed, &[saved_tab("tab-older", &[opened[3]])]);
         Connection::open(path)
@@ -4831,31 +4860,25 @@ mod tests {
     /// After a relaunch, main closes the last run's tabs but one. A window
     /// that closes beside another, by `destroy_window` or with its delete
     /// failed, leaves its tabs out of the next relaunch; the last window's
-    /// close keeps them.
+    /// close keeps them. `main_saved` and `second_saved` are what main and
+    /// New Window saved in the last run. With no Mono chat in them, New
+    /// Window's copy is the stored shared row.
     #[cfg(not(windows))]
     fn closed_windows_leave_their_tabs_out(
         path: &std::path::Path,
         seed: &Value,
         [m, w, ..]: [&str; 4],
+        [main_saved, second_saved]: [&Value; 2],
     ) {
         let (app, [main, second]) = launch_two_windows(path);
-        let db = Connection::open(path).unwrap();
-        let shared: Value = db
-            .query_row(
-                "SELECT snapshot_json FROM workspace_snapshot WHERE id = 1",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .map(|raw| serde_json::from_str(&raw).unwrap())
-            .unwrap();
         assert_eq!(
-            restored_rows(&main).len(),
-            2,
+            restored_rows(&main),
+            [stored(second_saved), stored(main_saved)],
             "the first window to ask restores the last run's rows"
         );
         assert_eq!(
             restored_rows(&second),
-            shared_row(&db, Some(shared), false).unwrap(),
+            [stored(second_saved)],
             "a window that opens before this run's first save copies the shared row, as New Window does (ADE-93)"
         );
         let relaunched = with_tabs(seed, &[saved_tab("tab-w", &[w])]);
@@ -5129,6 +5152,7 @@ mod tests {
             &mut conn,
             "run",
             "main",
+            false,
             &["main".to_owned()],
             &[InFlightSession {
                 session_id: id.into(),

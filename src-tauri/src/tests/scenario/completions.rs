@@ -505,7 +505,8 @@ fn a_relaunch_gives_the_mono_chat_to_one_window() {
 
     let start = now_millis() - 100_000;
     let (app, windows) = launch(&world, &["main", "window-0"]);
-    let second_saved = workspace("side", &[chat, "side"]);
+    let mut second_saved = workspace("side", &[chat, "side"]);
+    second_saved["monoCompletions"] = json!([{ "origin": { "monoId": "ade93-mono", "turn": 1 } }]);
     save(&windows[0], &workspace("work", &[chat, "work"]), start);
     save(&windows[1], &second_saved, start + 10);
     let running = json!([{ "sessionId": chat, "cwd": "/" }, { "sessionId": "work", "cwd": "/p" }]);
@@ -522,19 +523,36 @@ fn a_relaunch_gives_the_mono_chat_to_one_window() {
     let second_in_flight = in_flight(second);
     let second_rows = restored(second);
     assert_eq!(
-        holds(&main_rows, &in_flight(main)),
-        [chat, "side", "work"],
-        "the first window to boot restores the last run whole"
+        main_rows[0]["monoCompletions"], second_saved["monoCompletions"],
+        "the first window to boot restores the Mono's completion batches"
     );
     assert!(
         !holds(&second_rows, &second_in_flight).contains(&chat.to_owned()),
         "the other window does not hold the Mono chat the first one restored"
     );
     assert_eq!(
+        second_rows[0].get("monoCompletions"),
+        None,
+        "the other window's copy holds no Mono completion batch, which would load the Mono chat there"
+    );
+    assert_eq!(
         second_rows[0]["tabs"], second_saved["tabs"],
         "the other window copies the newest tabs, as New Window does"
     );
 
+    save(second, &second_rows[0], now_millis() - 100);
+    call(second, "session_set_in_flight", json!({ "sessions": [] }));
+    let none = json!([]);
+    assert_eq!(
+        holds(&restored(main), &none),
+        [chat, "side", "work"],
+        "the first window to boot restores the last run's tabs whole, also on a reload after the other window saved first"
+    );
+    assert_eq!(
+        holds(&none, &in_flight(main)),
+        [chat, "work"],
+        "the other window's save leaves the last run's running chats to the first window"
+    );
     let relaunched = workspace("work", &[chat, "side", "work"]);
     save(main, &relaunched, now_millis() - 50);
     assert_eq!(
@@ -550,4 +568,40 @@ fn a_relaunch_gives_the_mono_chat_to_one_window() {
         "a window opened later copies the chats but not the Mono chat another window holds"
     );
     assert_eq!(copied[0]["tabs"], relaunched["tabs"]);
+}
+
+/// ADE-93 r1. An older build saved last, so its shared row (no `windowRows`)
+/// is what every window restores. The first window to boot restores it
+/// whole, with the Mono chat and its completion batch; the other window
+/// copies it without them.
+#[cfg(not(windows))]
+#[test]
+fn an_older_builds_row_gives_the_mono_chat_to_one_window() {
+    let world = World::new("ade93-older-row");
+    let chat = world
+        .add_mono("ade93-older-mono", crate::mono_roster::MonoRole::Mono)
+        .chat;
+    let chat = chat.as_str();
+    let mut older = workspace("work", &[chat, "work"]);
+    older["monoCompletions"] = json!([{ "origin": { "monoId": "ade93-older-mono", "turn": 1 } }]);
+    world
+        .conn()
+        .execute(
+            "INSERT INTO workspace_snapshot (id, snapshot_json, updated_at) VALUES (1, ?1, 1)",
+            [older.to_string()],
+        )
+        .unwrap();
+
+    let (_app, windows) = launch(&world, &["main", "window-0"]);
+    let restored = |window: &Window| call(window, "workspace_get_snapshot", json!({}));
+    assert_eq!(
+        restored(&windows[0]),
+        json!([older]),
+        "the first window to boot restores the older build's row whole"
+    );
+    assert_eq!(
+        restored(&windows[1]),
+        json!([workspace("work", &["work"])]),
+        "the other window copies it without the Mono chat or its completion batch"
+    );
 }
