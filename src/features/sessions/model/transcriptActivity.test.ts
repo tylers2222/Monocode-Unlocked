@@ -452,6 +452,24 @@ describe("groupTurnItems", () => {
     expect(items[0].blocks.map((block) => block.id)).toEqual(["a", "b", "c"]);
   });
 
+  it("keeps a habit question card, which has no text, in its turn", () => {
+    const card: Block = {
+      id: "card",
+      role: "assistant",
+      text: "",
+      monoHabit: { id: "h", name: "Morning", at: 1_000 },
+      habitQuestion: {
+        runId: "run",
+        runAt: 1_000,
+        prompt: { requestId: 7, questions: [] },
+      },
+    };
+    expect(groupTurnItems([shell("a"), card])).toMatchObject([
+      { type: "activity", blocks: [{ id: "a" }] },
+      { type: "block", block: { id: "card" } },
+    ]);
+  });
+
   it("hides provider todo calls in favor of the shared tasks block", () => {
     const tasks: Block = {
       id: "tasks",

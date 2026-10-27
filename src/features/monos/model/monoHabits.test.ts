@@ -14,6 +14,7 @@ import {
   dropRelays,
   isRelayed,
   relayApproval,
+  questionRoute,
   takeRelayedApproval,
   dueHabits,
   habitPostsContext,
@@ -220,6 +221,52 @@ it("routes an answer in the Mono's chat back to the run that asked", () => {
   relayApproval({ monoId: "mono", runId: "run", requestId: 8, blockId: "c" });
   expect(dropRelays("run").map((relay) => relay.blockId)).toEqual(["c"]);
   expect(isRelayed("run", 8)).toBe(false);
+});
+
+it("routes a question's answer to the run, and its card, from either chat", () => {
+  const relay = {
+    monoId: "mono-q",
+    runId: "run-q",
+    requestId: 7,
+    blockId: "card",
+  };
+  const id = relayApproval(relay);
+  // From the Mono's card: to the run's own request, with the card to settle.
+  expect(questionRoute("mono-q", id)).toEqual({
+    sessionId: "run-q",
+    requestId: 7,
+    card: relay,
+  });
+  // From the run's own card: same request, and the Mono's card settles too.
+  expect(questionRoute("run-q", 7)).toEqual({
+    sessionId: "run-q",
+    requestId: 7,
+    card: relay,
+  });
+  // The relay stays until the run ends, so the next check does not ask again.
+  expect(isRelayed("run-q", 7)).toBe(true);
+  // Another Mono, request or run passes straight through, with no card.
+  expect(questionRoute("other-mono", id)).toEqual({
+    sessionId: "other-mono",
+    requestId: id,
+  });
+  expect(questionRoute("run-q", 8)).toEqual({
+    sessionId: "run-q",
+    requestId: 8,
+  });
+  expect(questionRoute("other-run", 7)).toEqual({
+    sessionId: "other-run",
+    requestId: 7,
+  });
+  expect(questionRoute("mono-q", 3)).toEqual({
+    sessionId: "mono-q",
+    requestId: 3,
+  });
+  dropRelays("run-q");
+  expect(questionRoute("mono-q", id)).toEqual({
+    sessionId: "mono-q",
+    requestId: id,
+  });
 });
 
 it("keeps a short history of runs, newest first", () => {
