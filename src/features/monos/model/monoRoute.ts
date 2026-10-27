@@ -10,6 +10,7 @@ import { excerpt, type ReplyTarget } from "../../sessions/model/messageIntent";
 import {
   dequeueQueuedMessage,
   enqueueQueuedMessage,
+  steersQueuedNow,
 } from "../../sessions/model/messageQueue";
 import {
   WHOLE_TURN,
@@ -89,8 +90,6 @@ export type MonoQueueHost = {
   turnId(id: string): TurnId | undefined;
   /** `control_owns_session`: this window runs the routes of session `id`. */
   owns(id: string): Promise<boolean>;
-  /** R9: the queue pump would steer an item into session `id`'s turn now. */
-  steersNow(id: string): boolean;
 };
 
 /**
@@ -245,10 +244,11 @@ type Claimed = { text: string; wake: boolean };
 async function queueReminders(host: MonoQueueHost, sessionId: string) {
   const keys = await invoke<string[]>("mono_outbox_pending", { sessionId });
   for (const key of keys) {
-    if (!host.session(sessionId)) continue;
+    const session = host.session(sessionId);
+    if (!session) continue;
     const claimed = await invoke<Claimed | null>("mono_outbox_claim", {
       key,
-      steerable: host.steersNow(sessionId),
+      steerable: steersQueuedNow(session, host.isMonoChat(sessionId)),
     });
     if (!claimed) continue;
     host.update(sessionId, (session) =>

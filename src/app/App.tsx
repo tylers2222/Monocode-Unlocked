@@ -71,7 +71,6 @@ import {
   QUEUED_FOLLOW_UP_ARCHIVED,
   QUEUED_FOLLOW_UP_REMOVED,
   queueAppFollowUp,
-  queuedAppDelivery,
   recordAppSteer,
   steerBlockReason,
   steerRunningTurn,
@@ -543,13 +542,13 @@ import {
 
 import {
   canDispatchQueuedHead,
-  canSteerNow,
   dequeueQueuedMessage,
   endTurnWakes,
   enqueueQueuedMessage,
   failQueuedMessage,
   nextQueuedSend,
   pauseQueue,
+  queuedAppDelivery,
   queuedHead,
   queuedMessageForSubmit,
   queuedSteer,
@@ -1774,16 +1773,6 @@ function Workspace({
       },
       turnId: (id) => currentTurnIds.current.get(id),
       owns: (id) => invoke<boolean>("control_owns_session", { sessionId: id }),
-      // The queue pump would steer an item into this turn now (design 16.6).
-      steersNow: (id) => {
-        const session = sessionsRef.current.find((entry) => entry.id === id);
-        return (
-          !!session &&
-          !!monoForSession(id) &&
-          canSteerHarness(session.harness) &&
-          canSteerNow(session)
-        );
-      },
     }),
     [],
   );
@@ -9325,7 +9314,7 @@ function Workspace({
       nextQueuedSend(
         session,
         currentTurnIds.current,
-        !!monoForSession(session.id) && canSteerHarness(session.harness),
+        isMonoSession(session.id),
       );
     for (const session of sessions) {
       const queued = session.queuedMessages ?? [];
