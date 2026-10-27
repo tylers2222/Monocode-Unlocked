@@ -5,9 +5,11 @@ The reviewer posts its verdict as the commit status review/agent on the commit i
 (scripts/gate/review-status.sh), so a push leaves the new head without a verdict. The
 head may merge only when the latest verdict posted for this PR is clean and on the
 head; a T3 head also needs a green gate/mutation check run on it from the
-gate-mutation workflow. For a minors-only verdict the reason names each minor (m1 to
-mK) that has no fixer-proof comment line by a collaborator yet; with every proof in, the
-head still needs a re-review verdict. A verdict is never carried to a newer head.
+gate-mutation workflow, unless its title's ticket is in mutation-exempt-tickets.txt
+(read beside this script, so from the gate's default-branch checkout). For a
+minors-only verdict the reason names each minor (m1 to mK) that has no fixer-proof
+comment line by a collaborator yet; with every proof in, the head still needs a
+re-review verdict. A verdict is never carried to a newer head.
 
 Usage: python3 scripts/process/merge_rule.py <pr> <T1|T2|T3>
 Prints "merge-rule: <reason>" and exits 0 when the head may merge, 1 when it may not and
@@ -24,6 +26,9 @@ import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
+
+from pr_body import ADE_TITLE
 
 REPO = os.environ.get("GATE_REPO") or "tylers2222/Monocode-Unlocked"
 TIERS = ("T1", "T2", "T3")
@@ -31,6 +36,7 @@ REVIEW_CONTEXT = "review/agent"
 TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 # gate/mutation counts only from this check name, app (GitHub Actions) and workflow file.
 MUTATION_CHECK, MUTATION_APP, MUTATION_WORKFLOW = "gate/mutation", 15368, ".github/workflows/gate-mutation.yml"
+EXEMPT_LIST = Path(__file__).with_name("mutation-exempt-tickets.txt")
 
 VERDICT = re.compile(r"^r(\d+) (clean|changes needed)\b(?::\s*(\d+)B/(\d+)M/(\d+)m)?")
 _TEST = r"[^\s|](?:[^|]*[^\s|])?"
@@ -131,9 +137,19 @@ def refuse(reason: str) -> Decision:
     return Decision(False, reason)
 
 
-def decide(tier: str, head: str, verdicts: Sequence[Verdict], proofs: Iterable[Proof], mutation: str | None = None) -> Decision:
+def exempt_ticket(title: str, listed: str) -> str | None:
+    """The PR's ticket (ADE-<n> at the start of its title, as pr_body.py reads it) when
+    listed, the text of the exempt list, holds it on a line of its own."""
+    match = ADE_TITLE.match(title)
+    tickets = {line.strip() for line in listed.splitlines() if not line.startswith("#")}
+    return match[0] if match and match[0] in tickets else None
+
+
+def decide(tier: str, head: str, verdicts: Sequence[Verdict], proofs: Iterable[Proof],
+           mutation: str | None = None, exempt: str | None = None) -> Decision:
     """Decides on the latest verdict. mutation is mutation_result() for the head: a
-    conclusion, "pending", or None when there is no trusted gate/mutation run."""
+    conclusion, "pending", or None when there is no trusted gate/mutation run. exempt is
+    exempt_ticket() for the PR: a T3 head of that ticket needs no green gate/mutation."""
     verdict = latest(verdicts)
     if verdict is None:
         return refuse("no review verdict yet")
@@ -141,7 +157,9 @@ def decide(tier: str, head: str, verdicts: Sequence[Verdict], proofs: Iterable[P
     where = f"on head {head7}" if verdict.sha == head else f"on {sha7}, not the head {head7}"
     if verdict.clean and verdict.sha == head:
         if tier == "T3" and mutation != "success":
-            return refuse(f"T3 needs a green gate/mutation on the head (it is {mutation or 'missing'})")
+            if exempt is None:
+                return refuse(f"T3 needs a green gate/mutation on the head (it is {mutation or 'missing'})")
+            return Decision(True, f"{name} on head {head7}; {exempt} is exempt from gate/mutation until F1 (it is {mutation or 'missing'})")
         return Decision(True, f"{name} on head {head7}")
     if verdict.clean:
         return refuse(f"{name} {where}: the head has new commits; it needs a new review verdict")
@@ -188,7 +206,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("tier", choices=TIERS)
     args = parser.parse_args(argv)
 
-    head = json.loads(gh("pr", "view", str(args.pr), "-R", REPO, "--json", "headRefOid"))["headRefOid"]
+    pr = json.loads(gh("pr", "view", str(args.pr), "-R", REPO, "--json", "headRefOid,title"))
+    head = pr["headRefOid"]
     review_statuses = f'.[] | select(.context == "{REVIEW_CONTEXT}") | {{state, description, created_at, target_url}}'
     statuses_by_sha = {sha: api(f"repos/{REPO}/commits/{sha}/statuses", review_statuses)
                        for sha in api(f"repos/{REPO}/pulls/{args.pr}/commits", ".[].sha")}
@@ -198,7 +217,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     runs = api(f"repos/{REPO}/commits/{head}/check-runs", ".check_runs[] | {id, name, status, conclusion, details_url, head_sha, app_id: .app.id}")
     workflow_paths = {run["id"]: workflow_path(run["details_url"]) for run in runs if run["name"] == MUTATION_CHECK}
 
-    decision = decide(args.tier, head, verdicts, proofs, mutation_result(runs, head, workflow_paths))
+    exempt = exempt_ticket(pr["title"], EXEMPT_LIST.read_text())
+    decision = decide(args.tier, head, verdicts, proofs, mutation_result(runs, head, workflow_paths), exempt)
     for line in [*errors, decision.reason]:
         print(f"merge-rule: {line}")
     return 0 if decision.ok else 1
