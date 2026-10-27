@@ -65,8 +65,32 @@ export function appLaunchRepeat(
   return false;
 }
 
-/** Complete the workspace handoff before the receiver acknowledges the launch. */
+/** Sessions whose launch is being accepted. Idle detach keeps them loaded. */
+const acceptingLaunches = new Set<string>();
+
+/** Whether the launch of session `id` is still being accepted. */
+export function isLaunchAccepting(id: string): boolean {
+  return acceptingLaunches.has(id);
+}
+
+/**
+ * Complete the workspace handoff before the receiver acknowledges the launch.
+ * The session stays loaded until then: its submit can wait for the project
+ * sync, and an idle detach in that wait would leave the submit no session.
+ */
 export async function acceptQuickLaunch(
+  ...args: Parameters<typeof handOffQuickLaunch>
+): Promise<void> {
+  const [, deliveryId] = args;
+  acceptingLaunches.add(deliveryId);
+  try {
+    await handOffQuickLaunch(...args);
+  } finally {
+    acceptingLaunches.delete(deliveryId);
+  }
+}
+
+async function handOffQuickLaunch(
   launch: QuickLaunch,
   deliveryId: string,
   workspace: {
@@ -183,6 +207,12 @@ export async function acceptQuickLaunch(
         : []),
     ))
   ) {
+    // submitSession refuses with a bare false; name the guard a row shows.
+    console.warn(
+      workspace.getSessions().some((item) => item.id === deliveryId)
+        ? `Quick launch ${deliveryId}: a submitSession guard refused the loaded session`
+        : `Quick launch ${deliveryId}: submitSession's !storedCurrent guard refused it; the session left the workspace`,
+    );
     throw new Error("The workspace could not accept the queued session yet.");
   }
   // R4: the caller gets its answer once the session's row exists, so its
