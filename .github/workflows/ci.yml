@@ -40,30 +40,52 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      # The browser builds depend only on the OS image and the exact
-      # playwright-core version, so a Playwright bump makes a new key and a miss.
-      - name: Playwright browser cache key
+      # The browser builds and the apt package list depend only on the OS image
+      # and the exact playwright-core version, so a Playwright bump makes new
+      # keys and a miss. apt downloads its .deb files into a runner-owned folder,
+      # so the cache can save them; dpkg still unpacks and configures each one.
+      - name: Playwright cache keys and apt archive folder
         id: playwright
         run: |
           set -euo pipefail
           version="$(jq -er '.packages["node_modules/playwright-core"].version' package-lock.json)"
           echo "key=playwright-$ImageOS-$RUNNER_ARCH-$version" >> "$GITHUB_OUTPUT"
+          echo "apt-key=apt-$ImageOS-$RUNNER_ARCH-$version" >> "$GITHUB_OUTPUT"
+          mkdir -p ~/apt-archives/partial
+          printf 'Dir::Cache::Archives "%s";\nAPT::Keep-Downloaded-Packages "true";\n' "$HOME/apt-archives" \
+            | sudo tee /etc/apt/apt.conf.d/99ci-archives
       - name: Restore Playwright browsers
         id: playwright-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: ${{ steps.playwright.outputs.key }}
-      # On a cache hit this installs only the OS packages: playwright skips a
-      # browser whose INSTALLATION_COMPLETE marker is already in the cache.
-      - run: npx playwright install --with-deps chromium webkit
-      # Saved right after the download, so a failing test run still fills it.
+      # Only the .deb files: apt's root-only lock and partial/ stay out.
+      - name: Restore apt archives
+        id: apt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives/*.deb
+          key: ${{ steps.playwright.outputs.apt-key }}
+      # On a cache hit playwright skips a browser whose INSTALLATION_COMPLETE
+      # marker is already in the cache, and apt fetches only the index. apt
+      # writes the .deb files as root, so hand them to the runner for the save.
+      - run: |
+          npx playwright install --with-deps chromium webkit
+          sudo chown -R "$USER" ~/apt-archives
+      # Saved right after the download, so a failing test run still fills them.
       - name: Save Playwright browsers
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: ${{ steps.playwright.outputs.key }}
+      - name: Save apt archives
+        if: steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives/*.deb
+          key: ${{ steps.playwright.outputs.apt-key }}
       # Real-harness specs (tests/browser/ade67-question-card.spec.ts) drive a
       # real omp. It is the standalone v18.2.11 release binary, checked against
       # the sha256 in the release's SHA256SUMS.txt; it bundles its dependencies.
