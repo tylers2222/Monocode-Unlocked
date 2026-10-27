@@ -1880,7 +1880,7 @@ it("tells the gate no live session's lead", async () => {
 // goes as a Mono.
 it("answers a session caller's send with the level refusal Rust gave it", async () => {
   const hint =
-    'A worker can message only its lead. Message your lead (lead-1): messages.send with send_to "lead-1".';
+    "A worker can use only messages.* and speaks only to its lead (lead-1), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.";
   rust.state.failure = {
     code: "worker_scope",
     hint,

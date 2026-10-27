@@ -344,8 +344,10 @@ it("tells a Mono the upward and peer rules, every Mono the limits, and a Giga th
     expect(mono).toMatch(new RegExp(`\\b${limit}\\b`));
     expect(giga).toMatch(new RegExp(`\\b${limit}\\b`));
   }
-  expect(mono).toContain("24 h");
-  expect(giga).not.toContain("24 h");
+  expect(mono).toContain(
+    "Message a Giga only while you hold an open ask from it",
+  );
+  expect(giga).not.toContain("Message a Giga only while");
   expect(mono).toContain("Another regular Mono must share a project");
   expect(giga).toContain("Another Giga must share a project");
   // Design 13.3 and W2 (review r1 m1): every Mono learns that only a

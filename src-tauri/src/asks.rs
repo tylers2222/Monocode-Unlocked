@@ -14,7 +14,7 @@ use crate::ask_gate::{
 };
 use crate::ask_scheduler;
 use crate::ask_talk::TalkInput;
-use crate::mono_gate::{self, Caller, Input, Refusal, SessionLevel, Speaker};
+use crate::mono_gate::{self, Caller, Input, Recipient, Refusal, SessionLevel, Speaker};
 use crate::mono_messages::{
     self, Live, MessageId, MonoId, MonoMessage, PayloadHash, RequestId, SessionId, Status,
     Submitted, Tool, ToolError,
@@ -1023,6 +1023,30 @@ fn addressed_party(conn: &Connection, send_to: &str) -> rusqlite::Result<Option<
         return Ok(Some(party));
     }
     SessionId::parse(send_to).map_or(Ok(None), |session| session_party(conn, &session))
+}
+
+/// U1 (R17): whether `caller` is the child of an open ask from `recipient`,
+/// so it may speak up to it. A Mono is its mono id, whichever chat calls.
+pub(crate) fn asked_by(
+    conn: &Connection,
+    caller: &Caller,
+    recipient: &Recipient,
+) -> rusqlite::Result<bool> {
+    let parent = match recipient {
+        Recipient::Unknown => return Ok(false),
+        Recipient::Mono { mono_id, .. } => Actor::Mono(mono_id.clone()),
+        Recipient::Session { target, .. } => Actor::Session(target.session.clone()),
+    };
+    let child = caller.mono_id().map_or_else(
+        || Actor::Session(caller.session_id.clone()),
+        |mono| Actor::Mono(mono.clone()),
+    );
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM mono_asks
+          WHERE state = 'open' AND child_actor = ?1 AND parent_actor = ?2)",
+        [child.to_string(), parent.to_string()],
+        |row| row.get(0),
+    )
 }
 
 /// Whether `mono_messages` row `id` carried an ask.

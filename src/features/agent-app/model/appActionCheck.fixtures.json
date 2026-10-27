@@ -433,7 +433,7 @@
           "reply": {
             "error": {
               "code": "worker_cannot_spawn",
-              "hint": "Only lead sessions can start sessions. Ask your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "Only lead sessions can start sessions. If you need more hands, ask your lead (lead) with messages.question on its open ask, with blocked true when you cannot go on.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -466,7 +466,7 @@
             "error": {
               "code": "worker_cannot_spawn",
               "duplicate": true,
-              "hint": "Only lead sessions can start sessions. Ask your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "Only lead sessions can start sessions. If you need more hands, ask your lead (lead) with messages.question on its open ask, with blocked true when you cannot go on.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -954,7 +954,7 @@
           "reply": {
             "error": {
               "code": "not_a_giga",
-              "hint": "Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: a Mono messages its Giga with messages.send, and a lead or worker reports to its lead or Mono.",
+              "hint": "Only a Giga can file, update or withdraw approval cards. To raise a decision, use messages.question on the open ask from your parent, with blocked true when you cannot go on.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -996,7 +996,7 @@
           "reply": {
             "error": {
               "code": "not_a_giga",
-              "hint": "Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: a Mono messages its Giga with messages.send, and a lead or worker reports to its lead or Mono.",
+              "hint": "Only a Giga can file, update or withdraw approval cards. To raise a decision, use messages.question on the open ask from your parent, with blocked true when you cannot go on.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1035,7 +1035,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1072,7 +1072,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1111,7 +1111,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1152,7 +1152,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1193,7 +1193,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1234,7 +1234,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1275,7 +1275,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1316,7 +1316,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1357,7 +1357,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1396,7 +1396,7 @@
           "reply": {
             "error": {
               "code": "worker_cannot_spawn",
-              "hint": "Only lead sessions can start sessions. Ask your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "Only lead sessions can start sessions. If you need more hands, ask your lead (lead) with messages.question on its open ask, with blocked true when you cannot go on.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1433,7 +1433,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1470,7 +1470,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1507,7 +1507,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1546,7 +1546,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1585,7 +1585,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1622,7 +1622,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1659,7 +1659,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1696,7 +1696,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1733,7 +1733,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1770,7 +1770,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1807,7 +1807,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1844,7 +1844,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1881,7 +1881,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1918,7 +1918,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1955,7 +1955,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -1992,7 +1992,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2029,7 +2029,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2066,7 +2066,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2103,7 +2103,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2140,7 +2140,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2177,7 +2177,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2214,7 +2214,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2251,7 +2251,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2288,7 +2288,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2325,7 +2325,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2362,7 +2362,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2399,7 +2399,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2436,7 +2436,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2473,7 +2473,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2510,7 +2510,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2547,7 +2547,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2584,7 +2584,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2621,7 +2621,7 @@
           "reply": {
             "error": {
               "code": "not_a_giga",
-              "hint": "Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: message your lead (lead) with messages.send with send_to \"lead\".",
+              "hint": "Only a Giga can file, update or withdraw approval cards. Raise it with your lead (lead): messages.question on its open ask, with blocked true when you cannot go on.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2658,7 +2658,7 @@
           "reply": {
             "error": {
               "code": "not_a_giga",
-              "hint": "Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: message your lead (lead) with messages.send with send_to \"lead\".",
+              "hint": "Only a Giga can file, update or withdraw approval cards. Raise it with your lead (lead): messages.question on its open ask, with blocked true when you cannot go on.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2695,7 +2695,7 @@
           "reply": {
             "error": {
               "code": "not_a_giga",
-              "hint": "Only a Giga can file, update or withdraw approval cards. Escalate to your Giga: message your lead (lead) with messages.send with send_to \"lead\".",
+              "hint": "Only a Giga can file, update or withdraw approval cards. Raise it with your lead (lead): messages.question on its open ask, with blocked true when you cannot go on.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2732,7 +2732,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
@@ -2769,7 +2769,7 @@
           "reply": {
             "error": {
               "code": "worker_scope",
-              "hint": "A worker can message only its lead. Message your lead (lead): messages.send with send_to \"lead\".",
+              "hint": "A worker can use only messages.* and speaks only to its lead (lead), on the ask it gave you: messages.question (blocked true when you cannot go on), messages.update or messages.ack.",
               "message_id": "m_aaaaaaaaaaaa"
             },
             "outcome": "failed"
