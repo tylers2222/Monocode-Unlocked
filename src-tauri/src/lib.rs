@@ -64,6 +64,7 @@ mod remote_ssh;
 #[path = "tests/scenario/mod.rs"]
 mod scenario;
 mod search;
+pub mod shard_proof;
 mod session_store;
 mod skills;
 pub mod ssh_askpass;
