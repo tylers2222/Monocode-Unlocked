@@ -128,6 +128,10 @@ type Live = {
   /** Output streamed by a run omp started while no app turn was open. */
   idleAssistant: boolean;
   idleReasoning: boolean;
+  /** From the last app turn: authorizes a run omp starts by itself. */
+  startHarnessTurn?: () => () => void;
+  /** Ends the turn of the run omp started by itself, while it runs. */
+  endHarnessTurn: (() => void) | null;
   /** Reason the turn failed, held until we know it is not being retried. */
   turnError: string | null;
   turnUsage: PiTurnUsage;
@@ -251,6 +255,7 @@ export async function sendTurn(
   let sent = false;
 
   live.onEvent = input.onEvent;
+  live.startHarnessTurn = input.startHarnessTurn;
   live.turns = live.turns
     .catch(() => undefined)
     .then(async () => {
@@ -397,13 +402,7 @@ export async function cancelTurn(
     return;
   }
   live.cancelled = true;
-  live.muteUpdates = true;
-  live.settleToken += 1;
-  for (const [, pending] of live.approvals) pending.resolve("deny");
-  live.approvals.clear();
-  for (const question of live.questions.values())
-    question.resolve({ kind: "skipped" });
-  live.questions.clear();
+  silenceLive(live);
   await live.rpc.request({ type: "abort" }, 5_000).catch(() => undefined);
   finishActiveTurn(live, SEAL_EVENTS);
 }
@@ -417,13 +416,7 @@ export async function stopSession(
   const live = liveByThread.get(sessionId);
   liveByThread.delete(sessionId);
   if (live) {
-    live.muteUpdates = true;
-    live.settleToken += 1;
-    for (const [, pending] of live.approvals) pending.resolve("deny");
-    live.approvals.clear();
-    for (const question of live.questions.values())
-      question.resolve({ kind: "skipped" });
-    live.questions.clear();
+    silenceLive(live);
     live.activeTurn = false;
     live.turnDone?.();
     live.turnDone = null;
@@ -432,6 +425,21 @@ export async function stopSession(
   }
   unwatchChild(sessionId);
   await killChild(sessionId).catch(() => undefined);
+}
+
+/**
+ * Cancel and stop: no update of the run reaches the app, its turn's access
+ * ends, and what it waits on is answered.
+ */
+function silenceLive(live: Live): void {
+  live.muteUpdates = true;
+  live.settleToken += 1;
+  endHarnessTurn(live);
+  for (const [, pending] of live.approvals) pending.resolve("deny");
+  live.approvals.clear();
+  for (const question of live.questions.values())
+    question.resolve({ kind: "skipped" });
+  live.questions.clear();
 }
 
 export async function forgetSession(
@@ -547,6 +555,7 @@ async function startLive(
     emittedReasoning: "",
     idleAssistant: false,
     idleReasoning: false,
+    endHarnessTurn: null,
     turnError: null,
     turnUsage: { done: {}, open: {} },
   };
@@ -559,6 +568,7 @@ async function startLive(
       rpc.close(new Error(`${flavor.label} exited`));
       liveByThread.delete(input.sessionId);
       const current = liveRef.current;
+      if (current) endHarnessTurn(current);
       if (!current?.muteUpdates) {
         (current?.onEvent ?? input.onEvent)({ type: "session.ended", code });
       }
@@ -648,6 +658,7 @@ async function runTurn(
   live.retrying = false;
   live.settleToken += 1;
   live.settling = false;
+  endHarnessTurn(live);
   const promptId = `mc_turn_${crypto.randomUUID()}`;
   live.promptId = promptId;
 
@@ -800,6 +811,8 @@ function handleFrame(
   if (live.muteUpdates) return;
 
   const type = stringField(rec, "type");
+  if (type === "agent_start" && !live.activeTurn && !live.turnDone)
+    live.endHarnessTurn ??= live.startHarnessTurn?.() ?? null;
   if (flavor.id === "omp") {
     // OMP emits persisted custom_message entries on the live RPC stream as a
     // message_start/message_end pair. Render the start once; consume the end
@@ -1072,6 +1085,7 @@ async function settleTurn(live: Live): Promise<void> {
     if (live.idleReasoning) live.onEvent({ type: "reasoning.completed" });
     live.idleAssistant = false;
     live.idleReasoning = false;
+    endHarnessTurn(live);
     return;
   }
   live.settling = true;
@@ -1092,6 +1106,13 @@ async function settleTurn(live: Live): Promise<void> {
     finishActiveTurn(live, SEAL_EVENTS);
   }
   if (live.settleToken === token) live.settling = false;
+}
+
+/** Ends the turn of the run omp started by itself (ADE-138). */
+function endHarnessTurn(live: Live): void {
+  const end = live.endHarnessTurn;
+  live.endHarnessTurn = null;
+  end?.();
 }
 
 async function handleExtensionUi(

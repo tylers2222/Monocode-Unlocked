@@ -864,6 +864,38 @@ describe("OMP run started by omp itself", () => {
       session = applyHarnessEvent(session, event);
     expect(session.turnReadiness).toBe("deferred");
   });
+
+  // ADE-138. Defect: a run omp starts by itself opens no turn, so its app
+  // calls are refused; the app turn's own run opens one; or the run's turn
+  // outlives the run's settle or the process.
+  it("opens one turn per run it starts and ends it with the run", async () => {
+    const ends: Array<() => void> = [];
+    const startHarnessTurn = vi.fn(() => {
+      const end = vi.fn();
+      ends.push(end);
+      return end;
+    });
+    const running = await started({
+      ...input("omp-test", "hello"),
+      startHarnessTurn,
+    });
+    frame("omp-test", { type: "agent_start" });
+    frame("omp-test", { type: "agent_end" });
+    await running.turn;
+    expect(startHarnessTurn).not.toHaveBeenCalled();
+
+    frame("omp-test", { type: "agent_start" });
+    frame("omp-test", { type: "agent_start" });
+    expect(startHarnessTurn).toHaveBeenCalledTimes(1);
+    expect(ends[0]).not.toHaveBeenCalled();
+    frame("omp-test", { type: "agent_end" });
+    await vi.waitFor(() => expect(ends[0]).toHaveBeenCalledTimes(1));
+
+    frame("omp-test", { type: "agent_start" });
+    await forgetOmpSession("omp-test");
+    expect(ends[1]).toHaveBeenCalledTimes(1);
+    expect(ends[0]).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("OMP live command inventories", () => {

@@ -347,6 +347,7 @@ pub fn run() {
             control::control_write_path,
             control::control_attach_worker,
             control::control_authorize_turn,
+            control::control_authorize_harness_turn,
             control::control_turn_finished,
             control::control_kill_session,
             control::control_window_booted,

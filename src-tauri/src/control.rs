@@ -98,6 +98,16 @@ struct Pending {
     window: String,
     reply: mpsc::Sender<Value>,
 }
+/// Who started a turn (ADE-138).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartedBy {
+    /// MonoCode sent the turn's prompt.
+    MonoCode,
+    /// The harness ran again by itself: omp wakes when a background job
+    /// ends. The window knows no turn there, so it can steer nothing into
+    /// it, and Mono message delivery treats the session as idle.
+    Harness,
+}
 struct ActiveTurn {
     window: String,
     cwd: String,
@@ -105,6 +115,7 @@ struct ActiveTurn {
     /// The web app's id for this turn (design 5.2). Mono messages handed to
     /// it carry it, and its end closes their handles.
     turn_id: String,
+    started_by: StartedBy,
 }
 #[derive(Default)]
 struct Inner {
@@ -202,38 +213,38 @@ impl Inner {
             .min()
             .map_or_else(|| caller.to_string(), Clone::clone)
     }
-    /// Authorizes turn `turn_id` of `session` in `window`. Returns the turn
-    /// it replaces when that is another turn, which no one finished: its
-    /// window reloaded (design 5.3).
+    /// Authorizes `turn` of `session`. Returns the turn it replaces when that
+    /// is another turn, which no one finished: its window reloaded (design
+    /// 5.3), or it was a harness-started turn that a MonoCode turn takes over.
     fn authorize_turn(
         &mut self,
         session: &str,
-        window: &str,
-        cwd: String,
-        app_access: bool,
-        turn_id: &str,
+        mut turn: ActiveTurn,
     ) -> Result<Option<ActiveTurn>, String> {
+        // A harness run inside a MonoCode turn is part of that turn.
+        if turn.started_by == StartedBy::Harness
+            && self
+                .active
+                .get(session)
+                .is_some_and(|running| running.started_by == StartedBy::MonoCode)
+        {
+            return Ok(None);
+        }
         if let Some(lead) = self
             .grants
             .values()
-            .find(|grant| paths_overlap(&grant.cwd, &cwd))
+            .find(|grant| paths_overlap(&grant.cwd, &turn.cwd))
         {
-            if lead.window != window
+            if lead.window != turn.window
                 || (lead.session != session && self.workers.get(session) != Some(&lead.session))
             {
                 return Err("This checkout is controlled by an orchestrator. Stop that run before starting independent work.".into());
             }
         }
-        let eligible = self.prepare_app_grant(session, window, &cwd);
-        let replaced = self.active.insert(
-            session.to_string(),
-            ActiveTurn {
-                window: window.to_string(),
-                cwd,
-                app_allowed: app_access && eligible,
-                turn_id: turn_id.to_string(),
-            },
-        );
+        let eligible = self.prepare_app_grant(session, &turn.window, &turn.cwd);
+        turn.app_allowed &= eligible;
+        let turn_id = turn.turn_id.clone();
+        let replaced = self.active.insert(session.to_string(), turn);
         Ok(replaced.filter(|turn| turn.turn_id != turn_id))
     }
     /// Ends turn `turn_id` of `session` only if it is the turn that runs: a
@@ -302,8 +313,9 @@ impl ControlHost {
             .unwrap_or_else(|_| caller.to_string())
     }
 
-    /// Sessions with an authorized turn, each with that turn's id: the gate's
-    /// `running` (design 6, 16.6).
+    /// Sessions with an authorized MonoCode turn, each with that turn's id:
+    /// the gate's `running` (design 6, 16.6). A harness-started turn is not
+    /// one: the window cannot steer into it (ADE-138).
     pub(crate) fn running_sessions(&self) -> HashMap<String, String> {
         self.inner
             .lock()
@@ -311,6 +323,7 @@ impl ControlHost {
                 inner
                     .active
                     .iter()
+                    .filter(|(_, turn)| turn.started_by == StartedBy::MonoCode)
                     .map(|(session, turn)| (session.clone(), turn.turn_id.clone()))
                     .collect()
             })
@@ -476,7 +489,7 @@ fn dispatch(
     result
 }
 
-pub fn init(app: &AppHandle) -> Result<(), String> {
+pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
     let endpoint = listener
         .local_addr()
@@ -512,7 +525,7 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn serve(mut stream: TcpStream, app: &AppHandle, inner: &Arc<Mutex<Inner>>) {
+fn serve<R: Runtime>(mut stream: TcpStream, app: &AppHandle<R>, inner: &Arc<Mutex<Inner>>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
     let result = (|| -> Result<Value, Failure> {
@@ -674,30 +687,76 @@ fn configure_worker_scratch(cmd: &mut Command, path: &Path) {
 
 // Async: a replaced turn runs a store transaction, never on the main thread.
 #[tauri::command(async)]
-pub fn control_authorize_turn(
-    app: AppHandle,
-    window: WebviewWindow,
-    host: State<'_, ControlHost>,
+pub fn control_authorize_turn<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
     session_id: String,
     cwd: String,
     app_access: bool,
     turn_id: String,
 ) -> Result<(), String> {
-    let turn_id = mono_messages::parse_turn_id(&turn_id)?;
-    let workdir = crate::fs::expand_home(&cwd);
+    authorize_window_turn(
+        &app,
+        &window,
+        &session_id,
+        &cwd,
+        app_access,
+        &turn_id,
+        StartedBy::MonoCode,
+    )
+}
+
+/// ADE-138: the harness ran again by itself after a MonoCode turn of the
+/// session. The window asks with that turn's `cwd` and `app_access`, so the
+/// run gets the same access under the same checks, and
+/// `control_turn_finished` ends it.
+#[tauri::command(async)]
+pub fn control_authorize_harness_turn<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    session_id: String,
+    cwd: String,
+    app_access: bool,
+    turn_id: String,
+) -> Result<(), String> {
+    authorize_window_turn(
+        &app,
+        &window,
+        &session_id,
+        &cwd,
+        app_access,
+        &turn_id,
+        StartedBy::Harness,
+    )
+}
+
+fn authorize_window_turn<R: Runtime>(
+    app: &AppHandle<R>,
+    window: &WebviewWindow<R>,
+    session: &str,
+    cwd: &str,
+    app_access: bool,
+    turn_id: &str,
+    started_by: StartedBy,
+) -> Result<(), String> {
+    let turn_id = mono_messages::parse_turn_id(turn_id)?;
+    let workdir = crate::fs::expand_home(cwd);
     let cwd = std::fs::canonicalize(&workdir)
         .map_err(|e| format!("Working directory {}: {e}", workdir.display()))?;
-    let cwd = comparison_path(&cwd);
+    let turn = ActiveTurn {
+        window: window.label().into(),
+        cwd: comparison_path(&cwd),
+        app_allowed: app_access,
+        turn_id: turn_id.into(),
+        started_by,
+    };
     authorize_turn(
-        &host.inner,
+        &app.state::<ControlHost>().inner,
         &app.state::<SessionStore>(),
-        &session_id,
-        window.label(),
-        cwd,
-        app_access,
-        turn_id,
+        session,
+        turn,
     )?
-    .emit(&app);
+    .emit(app);
     Ok(())
 }
 
@@ -705,15 +764,12 @@ fn authorize_turn(
     inner: &Mutex<Inner>,
     store: &SessionStore,
     session: &str,
-    window: &str,
-    cwd: String,
-    app_access: bool,
-    turn_id: &str,
+    turn: ActiveTurn,
 ) -> Result<Notices, String> {
     let replaced = inner
         .lock()
         .map_err(|_| "Control service unavailable")?
-        .authorize_turn(session, window, cwd, app_access, turn_id)?;
+        .authorize_turn(session, turn)?;
     Ok(end_turns(
         store,
         replaced.map(|turn| (session.to_string(), turn)),
@@ -736,8 +792,8 @@ pub fn control_loaded_sessions(
 
 /// The registry's `finally` for turn `turn_id` of the session.
 #[tauri::command(async)]
-pub fn control_turn_finished(
-    app: AppHandle,
+pub fn control_turn_finished<R: Runtime>(
+    app: AppHandle<R>,
     host: State<'_, ControlHost>,
     session_id: String,
     turn_id: String,
@@ -1100,8 +1156,8 @@ fn host_call(
 }
 
 #[tauri::command]
-pub fn control_reply(
-    window: WebviewWindow,
+pub fn control_reply<R: Runtime>(
+    window: WebviewWindow<R>,
     host: State<'_, ControlHost>,
     id: String,
     response: Value,
@@ -1235,15 +1291,21 @@ pub(crate) mod tests {
     };
     use crate::mono_messages::{get, MessageId, Status};
 
+    /// A MonoCode turn with no app access.
+    fn monocode_turn(window: &str, cwd: &str, turn_id: &str) -> ActiveTurn {
+        ActiveTurn {
+            window: window.into(),
+            cwd: cwd.into(),
+            app_allowed: false,
+            turn_id: turn_id.into(),
+            started_by: StartedBy::MonoCode,
+        }
+    }
+
     fn run(inner: &Mutex<Inner>, session: &str, window: &str, turn_id: &str) {
         inner.lock().unwrap().active.insert(
             session.into(),
-            ActiveTurn {
-                window: window.into(),
-                cwd: format!("/{session}"),
-                app_allowed: false,
-                turn_id: turn_id.into(),
-            },
+            monocode_turn(window, &format!("/{session}"), turn_id),
         );
     }
 
@@ -1266,10 +1328,7 @@ pub(crate) mod tests {
             &host.inner,
             store,
             session,
-            window,
-            cwd.clone(),
-            false,
-            &turn_id,
+            monocode_turn(window, cwd, &turn_id),
         )
         .unwrap();
     }
@@ -1303,7 +1362,13 @@ pub(crate) mod tests {
                 assert!(!killing.is_finished(), "the kill left turn-4 running");
                 std::thread::yield_now();
             }
-            authorize_turn(&inner, &store, "lead", "main", "/p".into(), false, "turn-5").unwrap();
+            authorize_turn(
+                &inner,
+                &store,
+                "lead",
+                monocode_turn("main", "/p", "turn-5"),
+            )
+            .unwrap();
             let (_, steer) = steer_through_start_row(&held, "turn-5");
             drop(held);
             killing.join().unwrap();
@@ -1380,10 +1445,7 @@ pub(crate) mod tests {
                 &inner,
                 &store,
                 "a-chat",
-                "main",
-                "/a".into(),
-                false,
-                turn_id,
+                monocode_turn("main", "/a", turn_id),
             )
             .unwrap()
         };
@@ -1650,6 +1712,7 @@ pub(crate) mod tests {
                 cwd: "/repo".into(),
                 app_allowed: true,
                 turn_id: "turn-1".into(),
+                started_by: StartedBy::MonoCode,
             },
         );
         assert_eq!(inner.route_owner("s", "caller"), "runner");
@@ -1699,6 +1762,7 @@ pub(crate) mod tests {
                 cwd: "/repo".into(),
                 app_allowed: true,
                 turn_id: "turn-1".into(),
+                started_by: StartedBy::MonoCode,
             },
         );
         assert!(request_grant(&inner, "app", "app-token").is_ok());
@@ -1718,6 +1782,7 @@ pub(crate) mod tests {
                 cwd: "/repo".into(),
                 app_allowed: true,
                 turn_id: "turn-1".into(),
+                started_by: StartedBy::MonoCode,
             },
         );
         inner.app_grants[session].token.clone()
@@ -2092,6 +2157,7 @@ pub(crate) mod tests {
                 cwd: "/repo".into(),
                 app_allowed: false,
                 turn_id: "turn-1".into(),
+                started_by: StartedBy::MonoCode,
             },
         );
         assert!(request_grant(&inner, "app", &token).is_err());
@@ -2193,6 +2259,7 @@ pub(crate) mod tests {
                     cwd: format!("/{id}"),
                     app_allowed: false,
                     turn_id: "turn-1".into(),
+                    started_by: StartedBy::MonoCode,
                 },
             );
         }
