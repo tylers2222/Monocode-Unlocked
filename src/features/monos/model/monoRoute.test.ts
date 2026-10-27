@@ -3,11 +3,11 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { newSession, type Session } from "../../sessions/model/session";
 import {
   dequeueQueuedMessage,
-  nextQueuedSend,
   queuedAppDelivery,
   runningTurnMap,
   steerableQueuedMessage,
 } from "../../sessions/model/messageQueue";
+import { nextQueuedSend } from "../../sessions/model/queueSteerRule";
 import {
   deliverQueuedFollowUp,
   planQueuedSteer,

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { QueuedMessage } from "../../sessions/model/session";
-import { steersQueuedNow } from "../../sessions/model/messageQueue";
+import { steersQueuedNow } from "../../sessions/model/queueSteerRule";
 import { ensureNotice, type MonoQueueHost } from "./monoRoute";
 
 /** Rust `ask_scheduler::Claimed`: the prompt of a reminder this window took. */

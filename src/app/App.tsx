@@ -546,7 +546,6 @@ import {
   endTurnWakes,
   enqueueQueuedMessage,
   failQueuedMessage,
-  nextQueuedSend,
   pauseQueue,
   queuedAppDelivery,
   queuedHead,
@@ -558,6 +557,7 @@ import {
   wakesQueue,
   withoutPauseReason,
 } from "../features/sessions/model/messageQueue";
+import { nextQueuedSend } from "../features/sessions/model/queueSteerRule";
 import {
   deliverQueuedFollowUp,
   planQueuedSteer,
@@ -9310,12 +9310,8 @@ function Workspace({
     const scheduled = new Set<string>();
     // An idle session starts its head as a new turn. A busy Mono steers its
     // first steerable message; messages that wait for the turn end keep their place.
-    const nextSend = (session: Session) =>
-      nextQueuedSend(
-        session,
-        currentTurnIds.current,
-        isMonoSession(session.id),
-      );
+    const nextSend = (session: Session, mono: boolean) =>
+      nextQueuedSend(session, currentTurnIds.current, mono);
     for (const session of sessions) {
       const queued = session.queuedMessages ?? [];
       if (queued.length === 0) continue;
@@ -9341,7 +9337,7 @@ function Workspace({
         );
         continue;
       }
-      const next = nextSend(session);
+      const next = nextSend(session, mono);
       if (!next || queueDispatchingRef.current.has(session.id)) continue;
       queueDispatchingRef.current.add(session.id);
       scheduled.add(session.id);
@@ -9351,7 +9347,7 @@ function Workspace({
           const latest = sessionsRef.current.find(
             (entry) => entry.id === session.id,
           );
-          const head = latest ? nextSend(latest) : undefined;
+          const head = latest ? nextSend(latest, mono) : undefined;
           if (!latest || !head || head.id !== next.id) {
             queueDispatchingRef.current.delete(session.id);
             return;

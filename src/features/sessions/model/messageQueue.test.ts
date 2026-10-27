@@ -10,7 +10,6 @@ import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
   isEditingQueuedHead,
-  nextQueuedSend,
   queuedHead,
   queuedMessageForSubmit,
   runningTurnMap,
@@ -20,6 +19,7 @@ import {
   queuePauseNotice,
   wakesQueue,
 } from "./messageQueue";
+import { nextQueuedSend } from "./queueSteerRule";
 import { newSession, type QueuedMessage, type Session } from "./session";
 
 const T1 = "turn-1" as TurnId;
@@ -265,6 +265,16 @@ describe("nextQueuedSend", () => {
     ).toBeUndefined();
     expect(
       nextQueuedSend(busy, runningTurnMap([["other", T1]]), true),
+    ).toBeUndefined();
+    // Defect: the pump steers into a harness that cannot steer (codex is not registered here).
+    const codex = chat({
+      harness: "codex",
+      busy: true,
+      turnReadiness: "ready",
+      queuedMessages: [queued("plain")],
+    });
+    expect(
+      nextQueuedSend(codex, runningTurnMap([[codex.id, T1]]), true),
     ).toBeUndefined();
   });
 });
