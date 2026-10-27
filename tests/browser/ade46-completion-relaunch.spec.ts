@@ -96,6 +96,7 @@ const handlers: MountOptions["handlers"] = {
   control_owns_session: () => true,
   mono_messages_unqueued: () => [],
   mono_messages_pending_notices: () => [],
+  mono_outbox_pending: () => [],
   control_reply: (_store, { id, response }) => {
     (window.controlReplies ??= []).push({
       id: id as string,

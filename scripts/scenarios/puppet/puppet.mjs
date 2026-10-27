@@ -42,6 +42,9 @@ if (args[0] === "--help") {
   process.exit(0);
 }
 if (args[0] !== "acp") process.exit(1);
+// While $HOME/.puppet/hold-start exists, a new agent reads no request, so the
+// app's prompt stays unread (app.sh r9 kills the app in that gap).
+while (existsSync(join(dir, "hold-start"))) spawnSync("sleep", ["0.2"]);
 
 const log = (entry) =>
   appendFileSync(
@@ -147,6 +150,26 @@ async function cli(app, action, input, requestId) {
   }
 }
 
+// acceptQuickLaunch (quickLaunchSession.ts) refuses a start whose session row
+// the workspace could not save yet, and the CLI hands back its request id as
+// `retryWith`. A real agent retries that start once with the same id; every
+// other refusal stands, so the scenario still fails on it.
+function unsavedStart(action, result) {
+  return (
+    action === "sessions.start" &&
+    result?.ok === false &&
+    typeof result.retryWith === "string" &&
+    String(result.error).includes("The workspace could not save the session yet.")
+  );
+}
+
+async function act(app, action, input, requestId) {
+  const result = await cli(app, action, input, requestId);
+  if (!unsavedStart(action, result)) return result;
+  log({ action, input, result, retry: result.requestId });
+  return cli(app, action, input, result.requestId);
+}
+
 function runExecs(execs) {
   for (const [program, ...rest] of execs) {
     const run = spawnSync(program, rest, { encoding: "latin1" });
@@ -176,7 +199,7 @@ async function runTurn(text, steer) {
   for (const call of rule?.calls ?? []) {
     const input = fill(withCardIds(call.arguments), text, prev);
     prev = call.action
-      ? await cli(script.app, call.action, input, call.request_id)
+      ? await act(script.app, call.action, input, call.request_id)
       : await server.call(call.tool, input);
     log({ ...(call.action ? { action: call.action } : { tool: call.tool }), input, result: prev });
   }

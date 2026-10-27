@@ -90,6 +90,7 @@ const handlers: Record<string, Handler> = {
   control_owns_session: () => true,
   mono_messages_unqueued: () => [],
   mono_messages_pending_notices: () => [],
+  mono_outbox_pending: () => [],
 };
 
 async function mount(

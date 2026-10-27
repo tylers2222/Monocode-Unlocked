@@ -13,6 +13,8 @@
 #                             a plaintext database on, each stopping the app
 #   app.sh d1                 D1: the agent sandbox on, off, and on without srt
 #   app.sh r6                 R6: agents ask and ack through MCP in the real app
+#   app.sh r9                 R9: reminders reach an idle lead, a lead at its
+#                             turn end and a lead across two kills, once each
 #   app.sh approvals [runs]   ADE-55 approvals board, macOS only, on a copy
 #                             of the real app database, `runs` times (default 1)
 #
@@ -453,6 +455,110 @@ run_r6() {
   "$INSTANCE" stop
   return "$FAILED"
 }
+
+# R9: the Giga asks the Mono, which starts three leads with a 10-minute start
+# ask each and never acks. The idle lead's turn ends at once; the busy and
+# late leads' first turns wait while $PUPPET/hold and $PUPPET/hold-late
+# exist. The reminder rule comes first.
+r9_rules() {
+  jq -n --arg hold "$PUPPET/hold" --arg late "$PUPPET/hold-late" '[
+    {match: "<mono_reminder", reply: "Noted."},
+    {match: "R9-HABIT", calls: [{tool: "ask", arguments:
+      {message: "R9-PROJECT Start the leads.", send_to: "r9-mono"}}], reply: "Asked."},
+    {match: "R9-PROJECT", calls: [
+      {action: "sessions.start", arguments: {prompt: "R9-IDLE You lead the first task.",
+        harness: "fx", model: "fx:zai/glm-5.2-fast", notifyOnComplete: false, due_minutes: 10}},
+      {action: "sessions.start", arguments: {prompt: "R9-BUSY You lead the second task.",
+        harness: "fx", model: "fx:zai/glm-5.2-fast", notifyOnComplete: false, due_minutes: 10}},
+      {action: "sessions.start", arguments: {prompt: "R9-LATE You lead the third task.",
+        harness: "fx", model: "fx:zai/glm-5.2-fast", notifyOnComplete: false, due_minutes: 10}}],
+      reply: "Started."},
+    {match: "R9-IDLE", reply: "Ready."},
+    {match: "R9-BUSY", exec: [["sh", "-c", "while [ -e \"$1\" ]; do sleep 0.2; done", "sh", $hold]], reply: "Ready."},
+    {match: "R9-LATE", exec: [["sh", "-c", "while [ -e \"$1\" ]; do sleep 0.2; done", "sh", $late]], reply: "Ready."}]'
+}
+
+# Reminder prompts in the puppet log that name ask `$1`.
+reminded() {
+  jq -s --arg ask "ask_id=\"$1\"" '[.[] | select(.rule == "<mono_reminder" and (.prompt | contains($ask)))] | length' "$PUPPET/log.jsonl"
+}
+
+# 1 when the reminder prompt for ask `$1` is logged after the hold loop on
+# file `$2` ended, that is after the lead's first turn replied.
+reminded_after() {
+  jq -s --arg ask "ask_id=\"$1\"" --arg hold "$2" '
+    (to_entries | map(select(.value.exec and (.value.exec | any(. == $hold))))[0].key) as $replied
+    | (to_entries | map(select(.value.rule == "<mono_reminder" and (.value.prompt | contains($ask))))[0].key) as $reminder
+    | if $replied != null and $reminder != null and $reminder > $replied then 1 else 0 end' "$PUPPET/log.jsonl"
+}
+
+# S5.5: an idle lead wakes with its reminder as a new turn. A busy lead's
+# reminder waits unclaimed (fx cannot take a steer): the late lead's turn
+# ends while the app runs and its turn end delivers it. A kill on the busy
+# lead, after the enqueue and before any claim, and a kill after the
+# restart's claim and before the provider read the prompt, still give one
+# delivery and one sent_at.
+run_r9() {
+  FAILED=0
+  log "R9 run"
+  fresh_pair r9
+  trap 'cp "$PUPPET/log.jsonl" "$EVAL_OUT/r9-puppet.log"' EXIT
+  jq -n --arg app "$(target_bin instance)" --argjson rules "$(r9_rules)" '{app: $app, rules: $rules}' >"$PUPPET/script.json"
+  request_habit r9-giga "Ask for the leads" "R9-HABIT: ask R9 Mono to start the leads."
+  touch "$PUPPET/hold" "$PUPPET/hold-late"
+  "$INSTANCE" start
+  wait_until 120 "the Mono starts three leads" \
+    holds "SELECT count(*) = 3 FROM mono_asks WHERE parent_actor = 'mono:r9-mono' AND due_active_ms IS NOT NULL"
+  wait_until 60 "the idle lead's turn" saw R9-IDLE
+  wait_until 60 "the busy lead's turn" saw R9-BUSY
+  wait_until 60 "the late lead's turn" saw R9-LATE
+  local idle busy late idle_key busy_key late_key
+  idle="$(q "SELECT id FROM mono_messages WHERE tool = 'start_session' AND body LIKE 'R9-IDLE%'")"
+  busy="$(q "SELECT id FROM mono_messages WHERE tool = 'start_session' AND body LIKE 'R9-BUSY%'")"
+  late="$(q "SELECT id FROM mono_messages WHERE tool = 'start_session' AND body LIKE 'R9-LATE%'")"
+  idle_key="reminder:$idle:t5"; busy_key="reminder:$busy:t5"; late_key="reminder:$late:t5"
+  echo "R9 readings (idle lead's ask $idle, busy lead's ask $busy, late lead's ask $late):"
+  advance $((5 * 60000))
+  wait_until 60 "the three reminders are enqueued" \
+    holds "SELECT count(*) = 3 FROM mono_outbox WHERE key IN ('$idle_key', '$busy_key', '$late_key')"
+  wait_until 60 "the idle lead's reminder is sent" \
+    holds "SELECT sent_at IS NOT NULL FROM mono_outbox WHERE key = '$idle_key'"
+  expect "idle lead: reminder prompts, as a new turn" \
+    "$(reminded "$idle") $(jq -s '[.[] | select(.rule == "<mono_reminder")] | first | .steer' "$PUPPET/log.jsonl")" "1 false"
+  expect "busy lead: reminder waits for the turn end, unclaimed" \
+    "$(q "SELECT ifnull(claimed_by, 'none') || ' ' || ifnull(sent_at, 'unsent') FROM mono_outbox WHERE key = '$busy_key'")" "none unsent"
+  expect "late lead: reminder waits for the turn end, unclaimed" \
+    "$(q "SELECT ifnull(claimed_by, 'none') || ' ' || ifnull(sent_at, 'unsent') FROM mono_outbox WHERE key = '$late_key'")" "none unsent"
+  # The late lead's turn ends while the app runs: its turn end delivers it.
+  rm -f "$PUPPET/hold-late"
+  wait_until 60 "the late lead's reminder is sent at its turn end" \
+    holds "SELECT sent_at IS NOT NULL FROM mono_outbox WHERE key = '$late_key'"
+  expect "late lead: reminder prompts" "$(reminded "$late")" 1
+  expect "late lead: reminder after its first turn's reply" "$(reminded_after "$late" "$PUPPET/hold-late")" 1
+  # Killed after the enqueue and before any claim. The next agent reads no
+  # request while hold-start exists.
+  touch "$PUPPET/hold-start"
+  kill9
+  rm -f "$PUPPET/hold"
+  "$INSTANCE" start
+  wait_until 60 "after the restart a window claims the busy lead's reminder" \
+    holds "SELECT claimed_by IS NOT NULL AND sent_at IS NULL FROM mono_outbox WHERE key = '$busy_key'"
+  expect "busy lead: no reminder read before the second kill" "$(reminded "$busy")" 0
+  # Killed after the claim and before the provider read the prompt.
+  kill9
+  rm -f "$PUPPET/hold-start"
+  "$INSTANCE" start
+  wait_until 90 "the busy lead's reminder is sent" \
+    holds "SELECT sent_at IS NOT NULL FROM mono_outbox WHERE key = '$busy_key'"
+  expect "busy lead: reminder prompts" "$(reminded "$busy")" 1
+  expect "idle lead: reminder prompts after both restarts" "$(reminded "$idle")" 1
+  expect "late lead: reminder prompts after both restarts" "$(reminded "$late")" 1
+  expect "reminders sent" "$(q "SELECT count(*) FROM mono_outbox WHERE sent_at IS NOT NULL")" 3
+  expect "steers" "$(jq -s '[.[] | select(.steer == true)] | length' "$PUPPET/log.jsonl")" 0
+  q "SELECT '  outbox ' || key || ' ' || ifnull(claimed_by, '-') || ' ' || ifnull(sent_at, '-') FROM mono_outbox ORDER BY key"
+  "$INSTANCE" stop
+  return "$FAILED"
+}
 source "$SCENARIOS/approvals.sh"
 
 [[ "${1:-}" != approvals* || "$EVAL_OS" == macos ]] || die "approvals is macOS only (GIGA_EVAL_SANDBOX, sandbox-exec)"
@@ -463,6 +569,7 @@ case "${1:-}" in
   s0-run) run_s0 "$2" ;;
   d1) run_d1 ;;
   r6) run_r6 ;;
+  r9) run_r9 ;;
   s0)
     failed=0
     for run in $(seq 1 "${2:-1}"); do "$0" s0-run "$run" || failed=$((failed + 1)); done
@@ -479,5 +586,5 @@ case "${1:-}" in
     for run in $(seq 1 "${2:-1}"); do "$0" approvals-run "$run" || failed=$((failed + 1)); done
     log "approvals: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
-  *) sed -n '2,21p' "$0"; exit 2 ;;
+  *) sed -n '2,23p' "$0"; exit 2 ;;
 esac

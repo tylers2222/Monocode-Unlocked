@@ -18,6 +18,7 @@ import {
   type Session,
 } from "../../sessions/model/session";
 import { enqueueMonoMessage } from "./monoMessaging";
+import { queueReminders } from "./monoReminders";
 import {
   boardDecision,
   type BoardDecision,
@@ -194,14 +195,14 @@ function queueItems(host: MonoQueueHost, rows: Targeted<Routed>[]) {
 }
 
 /**
- * Design 5.3: a sender notice enters the chat once, as a queue row that
- * waits for the turn end; it gets its bubble when it is sent. Its request id
- * in the queue or the transcript means it was queued or sent before, so a
- * pump that runs again adds nothing.
+ * Design 5.3 and R9: an app prompt (a sender notice or a reminder) enters
+ * the chat once, as a queue row; it waits for the turn end unless it says
+ * otherwise. Its request id in the queue or the transcript means it was
+ * queued or sent before, so a pump that runs again adds nothing.
  */
-function ensureNotice(
+export function ensureNotice(
   session: Session,
-  notice: { id: string; text: string },
+  notice: Pick<QueuedMessage, "id" | "text" | "monoReminder" | "waitForIdle">,
 ): Session {
   if (
     session.queuedMessages?.some(
@@ -211,11 +212,10 @@ function ensureNotice(
   )
     return session;
   return enqueueQueuedMessage(session, {
-    id: notice.id,
     appRequestId: notice.id,
-    text: notice.text,
     attachments: [],
     waitForIdle: true,
+    ...notice,
   });
 }
 
@@ -232,9 +232,10 @@ function noticeItem(host: MonoQueueHost, message: Noticed) {
 
 /**
  * Design 5.5 rule 6, only in the window that owns the session (PR 4a review
- * m19): queue every row of the session that no item and no slot holds. Then
- * the notice pump of design 5.3: the session is a Mono's chat, and each of
- * that Mono's messages that ended unanswered or dropped gets one notice.
+ * m19): queue every row of the session that no item and no slot holds, and
+ * its reminders (R9). Then the notice pump of design 5.3: the session is a
+ * Mono's chat, and each of that Mono's messages that ended unanswered or
+ * dropped gets one notice.
  */
 export async function reconcile(
   host: MonoQueueHost,
@@ -257,6 +258,7 @@ export async function reconcile(
       ),
     ),
   );
+  await queueReminders(host, sessionId);
   const notices = await invoke<Noticed[]>("mono_messages_pending_notices", {
     sessionId,
   });

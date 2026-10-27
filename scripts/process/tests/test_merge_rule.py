@@ -1,4 +1,6 @@
+import json
 import sys
+import tempfile
 import unittest
 import unittest.mock
 from datetime import datetime, timedelta, timezone
@@ -13,6 +15,7 @@ from merge_rule import (
     Verdict,
     collect_verdicts,
     decide,
+    exempt_ticket,
     parse_proofs,
     parse_verdict,
     mutation_result,
@@ -177,6 +180,51 @@ class DecideTest(unittest.TestCase):
         self.assertRefused(decide_fix(proofs=proven("m1", at=AT - timedelta(minutes=5))), "no fixer-proof", "m1")
         self.assertRefused(decide_fix(proofs=proven("m1", at=AT)), "no fixer-proof", "m1")
 
+    def test_an_exempt_ticket_passes_t3_with_a_failed_gate_mutation(self):
+        clean = [verdict(CLEAN_R1, sha=FIX)]
+        for result in ("failure", "timed_out", "cancelled"):
+            with self.subTest(result=result):
+                decision = decide_fix(tier="T3", verdicts=clean, mutation=result, exempt="ADE-27")
+                self.assertTrue(decision.ok, decision.reason)
+                self.assertIn(f"ADE-27 is exempt from gate/mutation until F1 (it is {result})", decision.reason)
+
+    def test_an_exempt_ticket_passes_t3_with_gate_mutation_pending_or_missing(self):
+        clean = [verdict(CLEAN_R1, sha=FIX)]
+        for result in ("pending", None):
+            with self.subTest(result=result):
+                decision = decide_fix(tier="T3", verdicts=clean, mutation=result, exempt="ADE-32")
+                self.assertTrue(decision.ok, decision.reason)
+                self.assertIn(f"ADE-32 is exempt from gate/mutation until F1 (it is {result or 'missing'})", decision.reason)
+
+    def test_an_exempt_ticket_still_needs_a_clean_verdict_on_the_head(self):
+        exempt = {"tier": "T3", "mutation": "failure", "exempt": "ADE-27"}
+        self.assertEqual(decide_fix(verdicts=[], **exempt), Decision(False, "no review verdict yet"))
+        self.assertRefused(decide_fix(verdicts=[verdict(MAJOR, sha=FIX)], **exempt), "fix the findings")
+        self.assertRefused(decide_fix(verdicts=[verdict(CLEAN_R1)], **exempt), "new commits")
+
+
+class ExemptTicketTest(unittest.TestCase):
+    LISTED = "# Remove this exemption in the F1 (ADE-45) report PR.\nADE-27\nADE-32\n"
+
+    def test_only_a_listed_ticket_at_the_start_of_the_title_is_exempt(self):
+        cases = {
+            "ADE-27: steer a reminder into a Mono chat's running turn (R9c)": "ADE-27",
+            "ADE-32: question, answer and one update": "ADE-32",
+            "ADE-270: a different ticket": None,
+            "ADE-45: F1 report": None,
+            "Fix ADE-27 follow-up": None,
+            "Remove this exemption in the F1 (ADE-45) report PR.": None,
+        }
+        for title, want in cases.items():
+            with self.subTest(title=title):
+                self.assertEqual(exempt_ticket(title, self.LISTED), want)
+
+    def test_the_committed_list_names_the_change_r_core_tickets(self):
+        listed = merge_rule.EXEMPT_LIST.read_text()
+        core = {f"ADE-{n}" for n in (27, 28, 29, 32, 33, 35)}
+        self.assertEqual({ticket for ticket in core if exempt_ticket(f"{ticket}: core", listed)}, core)
+        self.assertIn("Remove this exemption in the F1 (ADE-45) report PR or in the PR directly after it.", listed)
+
 
 class MutationResultTest(unittest.TestCase):
     WORKFLOW = ".github/workflows/gate-mutation.yml"
@@ -201,17 +249,19 @@ class MainTest(unittest.TestCase):
     """main() on recorded-shape API answers for PR 160: REVIEWED, then the head FIX. gh
     may only read the PR; any other gh call is a write and fails the test."""
 
-    def run_main(self, statuses, comments=(), tier="T2", check_runs=()):
+    def run_main(self, statuses, comments=(), tier="T2", check_runs=(), title="ADE-5: fix a thing", head_list=None):
         answers = {
             "repos/tylers2222/Monocode-Unlocked/pulls/160/commits": [REVIEWED, FIX],
             f"repos/tylers2222/Monocode-Unlocked/commits/{REVIEWED}/statuses": statuses.get(REVIEWED, []),
             f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/statuses": statuses.get(FIX, []),
             "repos/tylers2222/Monocode-Unlocked/issues/160/comments": list(comments),
             f"repos/tylers2222/Monocode-Unlocked/commits/{FIX}/check-runs": list(check_runs),
+            # The PR head's copy of the list, for a main() that wrongly reads it.
+            f"repos/tylers2222/Monocode-Unlocked/contents/scripts/process/{merge_rule.EXEMPT_LIST.name}?ref={FIX}": head_list,
         }
         def gh(*args):
             self.assertEqual(args[:2], ("pr", "view"), "merge_rule.py only reads")
-            return f'{{"headRefOid": "{FIX}"}}'
+            return json.dumps({"headRefOid": FIX, "title": title})
         with unittest.mock.patch.object(merge_rule, "api", lambda path, jq, paginate=True: answers[path]), \
                 unittest.mock.patch.object(merge_rule, "workflow_path", lambda url: url), \
                 unittest.mock.patch.object(merge_rule, "gh", gh), unittest.mock.patch("builtins.print"):
@@ -238,6 +288,31 @@ class MainTest(unittest.TestCase):
         self.assertEqual(self.run_main(statuses, tier="T3", check_runs=[run]), 0)
         self.assertEqual(self.run_main(statuses, tier="T3"), 1, "no run")
         self.assertEqual(self.run_main(statuses, tier="T3", check_runs=[{**run, "details_url": ".github/workflows/ci.yml"}]), 1)
+
+    FAILED_MUTATION = {"id": 5, "name": "gate/mutation", "status": "completed", "conclusion": "failure", "head_sha": FIX,
+                       "app_id": 15368, "details_url": ".github/workflows/gate-mutation.yml"}
+
+    def test_a_core_ticket_passes_t3_with_gate_mutation_failed_or_missing(self):
+        statuses = {FIX: [self.CLEAN_STATUS]}
+        title = "ADE-32: question, answer and one update on an ask (R14 part 2)"
+        self.assertEqual(self.run_main(statuses, tier="T3", title=title, check_runs=[self.FAILED_MUTATION]), 0)
+        self.assertEqual(self.run_main(statuses, tier="T3", title=title), 0, "no run")
+
+    def test_a_t3_ticket_off_the_list_still_needs_a_green_gate_mutation(self):
+        statuses = {FIX: [self.CLEAN_STATUS]}
+        title = "ADE-130: a T3 change that is not Change R core"
+        self.assertEqual(self.run_main(statuses, tier="T3", title=title, check_runs=[self.FAILED_MUTATION]), 1)
+        self.assertEqual(self.run_main(statuses, tier="T3", title=title), 1, "no run")
+
+    def test_a_ticket_only_in_the_head_copy_of_the_list_is_not_exempt(self):
+        """The head adds ADE-999 to its list; the gate's checkout (the base) does not hold it."""
+        with tempfile.TemporaryDirectory() as folder:
+            base_list = Path(folder) / merge_rule.EXEMPT_LIST.name
+            base_list.write_text("# base copy\nADE-27\n")
+            with unittest.mock.patch.object(merge_rule, "EXEMPT_LIST", base_list):
+                code = self.run_main({FIX: [self.CLEAN_STATUS]}, tier="T3", title="ADE-999: exempt myself",
+                                     check_runs=[self.FAILED_MUTATION], head_list="ADE-27\nADE-999\n")
+        self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":
