@@ -10,7 +10,7 @@ import type { OrchestrationRun } from "../../features/orchestration/model/orches
 import { rememberLoadedSession } from "../../features/sessions/data/sessionCache";
 import { shouldPersistSession } from "../../features/sessions/data/sessionStore";
 import { sessionChildHarnesses } from "../../features/sessions/model/handoff";
-import { canDispatchQueuedHead } from "../../features/sessions/model/messageQueue";
+import { autoSendsQueuedHead } from "../../features/sessions/model/messageQueue";
 import type { Session } from "../../features/sessions/model/session";
 import {
   leafIds,
@@ -36,9 +36,9 @@ function keeps(session: Session, ctx: KeepContext): boolean {
   return (
     ctx.visibleIds.has(session.id) ||
     session.busy ||
-    // The queue pump sends only for loaded sessions, so a head that can send
-    // now would be stranded by a detach.
-    canDispatchQueuedHead(session) ||
+    // The queue pump sends only for loaded sessions, so a head it would send
+    // with no user action would be stranded by a detach.
+    autoSendsQueuedHead(session) ||
     ctx.isOpening(session.id) ||
     (ctx.keepUnseen && ctx.unseenFinishedIds.has(session.id))
   );

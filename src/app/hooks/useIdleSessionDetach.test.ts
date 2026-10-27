@@ -402,44 +402,46 @@ describe("orchestration worker detachment", () => {
     );
   });
 
-  it("keeps an idle tabless chat whose queued head can send, and detaches it once the queue pauses", async () => {
-    const queued = chat("lead", {
-      queuedMessages: [
-        {
-          id: "task",
-          text: "Run the task",
-          attachments: [],
-          waitForIdle: true,
-        },
-      ],
-      queueStatus: "active",
-    });
-    const workspace = mountWorkspace({
-      sessions: [queued, chat("other")],
-      tabs: [newTab("other")],
-      orchestrationRuns: [],
-      busySessionIds: new Set(),
-      liveAgentsEnabled: false,
-    });
-    await advance();
-    expect(workspace.snapshot().sessions.map((session) => session.id)).toEqual([
-      "lead",
-      "other",
-    ]);
-    expect(mocks.forgetHarnessSession).not.toHaveBeenCalled();
+  it.each(["active", "resuming"] as const)(
+    "keeps an idle tabless chat whose %s queue the pump will send, and detaches it once the queue pauses",
+    async (queueStatus) => {
+      const queued = chat("lead", {
+        queuedMessages: [
+          {
+            id: "task",
+            text: "Run the task",
+            attachments: [],
+            waitForIdle: true,
+          },
+        ],
+        queueStatus,
+      });
+      const workspace = mountWorkspace({
+        sessions: [queued, chat("other")],
+        tabs: [newTab("other")],
+        orchestrationRuns: [],
+        busySessionIds: new Set(),
+        liveAgentsEnabled: false,
+      });
+      await advance();
+      expect(
+        workspace.snapshot().sessions.map((session) => session.id),
+      ).toEqual(["lead", "other"]);
+      expect(mocks.forgetHarnessSession).not.toHaveBeenCalled();
 
-    workspace.update({
-      sessions: [{ ...queued, queueStatus: "paused" }, chat("other")],
-    });
-    await advance();
-    expect(workspace.snapshot().sessions.map((session) => session.id)).toEqual([
-      "other",
-    ]);
-    expect(mocks.forgetHarnessSession).toHaveBeenCalledExactlyOnceWith(
-      "claude",
-      "lead",
-    );
-  });
+      workspace.update({
+        sessions: [{ ...queued, queueStatus: "paused" }, chat("other")],
+      });
+      await advance();
+      expect(
+        workspace.snapshot().sessions.map((session) => session.id),
+      ).toEqual(["other"]);
+      expect(mocks.forgetHarnessSession).toHaveBeenCalledExactlyOnceWith(
+        "claude",
+        "lead",
+      );
+    },
+  );
 
   it("keeps inbox discussions mounted without marking them unseen", async () => {
     const workspace = mountWorkspace({
