@@ -10,6 +10,7 @@ import {
 } from "../../features/sessions/model/messageIntent";
 import {
   dequeueQueuedMessage,
+  queuedAppDelivery,
   runningTurnMap,
 } from "../../features/sessions/model/messageQueue";
 import type { TurnId } from "../../features/monos/model/monoMessages";
@@ -32,7 +33,6 @@ import {
   QUEUED_FOLLOW_UP_ARCHIVED,
   QUEUED_FOLLOW_UP_REMOVED,
   queueAppFollowUp,
-  queuedAppDelivery,
   recordAppSteer,
   SESSION_BUSY_ERROR,
   steerBlockReason,

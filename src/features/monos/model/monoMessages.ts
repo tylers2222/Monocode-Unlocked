@@ -469,6 +469,11 @@ function fromAttributes(
 export type Carries =
   { kind: "ask"; dueInMs: number | null } | { kind: "ack"; askId: MessageId };
 
+/** Active milliseconds left as the agent reads them, such as `60m`. */
+export function dueIn(ms: number): string {
+  return `${Math.max(0, Math.ceil(ms / 60_000))}m`;
+}
+
 /**
  * Only the agent reads an ask's attributes: `ask_id` repeats `message_id`,
  * and `due_in` counts active time at the hand-off, so the chat copy would
@@ -486,7 +491,7 @@ function ledgerAttributes(
         `ask_id="${id}"`,
         ...(carries.dueInMs === null
           ? []
-          : [`due_in="${Math.max(0, Math.ceil(carries.dueInMs / 60_000))}m"`]),
+          : [`due_in="${dueIn(carries.dueInMs)}"`]),
       ];
     case "ack":
       return [`ack_of="${carries.askId}"`];
