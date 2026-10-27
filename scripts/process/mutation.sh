@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # gate/mutation for a T3 PR (.github/workflows/gate-mutation.yml): mutates only the lines
 # the PR changed and fails when a mutant survives.
-#   mutation.sh rust <diff-file>   cargo mutants --in-diff on the changed Rust lines;
-#                                  more than MAX_MUTANTS fails at once (split the PR)
+#   mutation.sh rust <diff-file> <k/n>
+#                                  cargo mutants --in-diff on shard k of n of the changed
+#                                  Rust lines; more than MAX_MUTANTS in the whole diff
+#                                  fails at once (split the PR). A missed or timed-out
+#                                  mutant exits non-zero, which fails the shard's job.
 #   mutation.sh ts <specs>         Stryker on the changed TypeScript lines; specs are
 #                                  mutation_targets.py's comma-separated path:start-end;
 #                                  stryker_scope.py decides (one run per file)
-# The workflow's 55-minute step timeouts are the last bound: a timed-out step fails.
+# The workflow's step timeouts (110 minutes per Rust shard, 55 for Stryker) are the last
+# bound: a timed-out step fails.
 set -euo pipefail
 MAX_MUTANTS=150
 here=$(cd "$(dirname "$0")" && pwd)
@@ -21,8 +25,11 @@ case ${1-} in
       echo "::error::$count Rust mutants, more than $MAX_MUTANTS; split the PR so each part mutates fewer"
       exit 1
     fi
+    # Every shard lists the same mutants and runs its round-robin share, so one file's
+    # mutants spread over all shards.
     # run builds the real app event loop: only app.sh can call it, cargo test cannot (#284 review r1, CI run 39825194390).
-    "$CARGO_MUTANTS" mutants --no-config --in-diff "$2" --jobs 2 --timeout-multiplier 3 \
+    "$CARGO_MUTANTS" mutants --no-config --in-diff "$2" --shard "${3:?k/n}" --sharding round-robin \
+      --jobs 2 --timeout-multiplier 3 \
       --exclude-re '^src-tauri/src/lib\.rs:[0-9]+:[0-9]+: replace run with \(\)$'
     ;;
   ts)
@@ -41,7 +48,7 @@ case ${1-} in
     python3 "$here/stryker_scope.py" "$tools/node_modules" "$2"
     ;;
   *)
-    echo "usage: mutation.sh rust <diff-file> | ts <specs>" >&2
+    echo "usage: mutation.sh rust <diff-file> <k/n> | ts <specs>" >&2
     exit 2
     ;;
 esac
