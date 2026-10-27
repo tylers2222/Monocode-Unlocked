@@ -469,7 +469,7 @@ r9_rules() {
       {action: "sessions.start", arguments: {prompt: "R9-IDLE You lead the first task.",
         harness: "fx", model: "fx:zai/glm-5.2-fast", notifyOnComplete: false, due_minutes: 10}},
       {action: "sessions.start", arguments: {prompt: "R9-BUSY You lead the second task.",
-        harness: "fx", model: "fx:zai/glm-5.2-fast", notifyOnComplete: false, due_minutes: 10},
+        harness: "fx", model: "fx:zai/glm-5.2-fast", notifyOnComplete: false, due_minutes: 10}},
       {action: "sessions.start", arguments: {prompt: "R9-LATE You lead the third task.",
         harness: "fx", model: "fx:zai/glm-5.2-fast", notifyOnComplete: false, due_minutes: 10}}],
       reply: "Started."},
