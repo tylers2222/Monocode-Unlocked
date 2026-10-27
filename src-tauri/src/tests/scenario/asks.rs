@@ -872,7 +872,9 @@ fn a_failed_ack_event_insert_leaves_the_ask_open_and_no_row() {
 /// Review r1 m1 and R6b review r2 m1. Defect: an ack under a request id
 /// that a plain send, or the ack of another ask, already used is answered
 /// with that call's row as a repeat, and its own ask stays open; a send
-/// under an ack's request id is answered as the ack's repeat.
+/// under an ack's request id is answered as the ack's repeat. An ack under
+/// a used request id is told `request_id_reused` before its text is checked
+/// (R14 p1 mutation: `said_with` always true answered `invalid_input`).
 #[test]
 fn an_ack_reusing_another_calls_request_id_is_refused() {
     let world = World::new("r5-ack-reuse");
@@ -900,6 +902,11 @@ fn an_ack_reusing_another_calls_request_id_is_refused() {
     written(world.tool(&worker, "sent", "send_message", send.clone(), &tree.live()));
     assert_eq!(
         refusal(ack(&world, &tree, &worker, "sent", &a)).0,
+        "request_id_reused"
+    );
+    let blank = json!({"ask_id": a.as_str(), "message": " "});
+    assert_eq!(
+        refusal(world.tool(&worker, "sent", "ack", blank, &tree.live())).0,
         "request_id_reused"
     );
     written(ack(&world, &tree, &worker, "w-ack", &a));
