@@ -172,7 +172,7 @@ it("says how to keep memory and update the soul only at the user's request", () 
     'messages.answer {"ask_id":"<question_of>","seq"',
     "question_of and seq",
     'Once per ask, app messages.update {"ask_id"',
-    "get_message, ask, ack, question, answer and update",
+    "get_message, ask, ack, question, answer, update, extend and reason",
   ])
     expect(messaging).toContain(tool);
   expect(full).not.toContain("monos.send");

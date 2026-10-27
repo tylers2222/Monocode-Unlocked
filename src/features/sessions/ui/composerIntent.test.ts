@@ -29,11 +29,11 @@ import {
 import { appendPreparingHandoff, planComposerSwitch } from "../model/handoff";
 import {
   dequeueQueuedMessage,
-  nextQueuedSend,
   pauseQueue,
   resumeQueuedMessages,
   runningTurnMap,
 } from "../model/messageQueue";
+import { nextQueuedSend } from "../model/queueSteerRule";
 import { typedMonoMessage } from "../model/queuedFollowUp";
 import {
   newSession,

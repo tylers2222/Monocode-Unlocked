@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 56] = [
+const APP_ACTIONS: [&str; 58] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -103,6 +103,8 @@ const APP_ACTIONS: [&str; 56] = [
     "messages.question",
     "messages.answer",
     "messages.update",
+    "messages.extend",
+    "messages.reason",
     "messages.reply",
     "messages.get",
     "monos.create",
@@ -395,6 +397,24 @@ Actions:
                   Keeps the key; the clock runs on. Without ask_id it is
                   your one open ask. Codes: invalid_input, request_id_reused,
                   update_refused, and the codes of messages.send.
+  messages.extend {"ask_id":"m_..."}
+                  Move the deadline of an ask you were asked 15 active
+                  minutes later, once. It opens with the <mono_reminder> 5
+                  active minutes before the deadline and closes at the
+                  deadline. ask_id may be left out when you have exactly one
+                  open ask. Returns ask_id and due_in, the active time now
+                  left. Codes: invalid_input, extend_refused (not yours,
+                  already acked, no deadline, before the reminder, past the
+                  deadline, or already extended; the hint says which).
+  messages.reason {"ask_id":"m_...","message":"..."}
+                  Say why an ask you were asked is late. It opens once your
+                  parent is told you missed the deadline (5 active minutes
+                  after the deadline reminder). The reason is stored with
+                  the miss, once; the ask stays open, so ack it when the
+                  work is done. ask_id may be left out when you have exactly
+                  one open ask. Returns ask_id. Codes: invalid_input,
+                  reason_refused (not yours, already acked, no miss yet, or
+                  a reason already given; the hint says which).
   messages.reply {"message":"...","to":"#1","wanting_reply":false}
                   Answer a <mono_message> that waits for your reply (it says
                   wanting_reply="true" and has a handle such as
@@ -971,6 +991,32 @@ pub fn app_tools() -> Value {
                 "properties": {
                     "ask_id": {"type": "string", "minLength": 1, "description": "The ask_id of the ask. Leave it out when you have one open ask."},
                     "message": {"type": "string", "minLength": 1, "description": "How the work goes."}
+                },
+                "required": ["message"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "extend",
+            "action": "messages.extend",
+            "description": "Move the deadline of an ask you were asked 15 active minutes later, once. It opens with the <mono_reminder> 5 active minutes before the deadline and closes at the deadline. Returns ask_id and due_in. A refusal has code and hint; follow the hint.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ask_id": {"type": "string", "minLength": 1, "description": "The ask_id of the <mono_reminder>. May be left out when you have exactly one open ask."}
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "reason",
+            "action": "messages.reason",
+            "description": "Say why an ask you were asked is late. It opens once your parent is told you missed the deadline. The reason is stored with the miss, once; the ask stays open, so ack it when the work is done. Returns ask_id. A refusal has code and hint; follow the hint.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ask_id": {"type": "string", "minLength": 1, "description": "The ask_id of the <mono_reminder>. May be left out when you have exactly one open ask."},
+                    "message": {"type": "string", "minLength": 1, "maxLength": 8000, "description": "Why the ask is late."}
                 },
                 "required": ["message"],
                 "additionalProperties": false
@@ -1631,6 +1677,11 @@ mod tests {
                 r#"{"ask_id":"m_aaaaaaaaaaaa","seq":1,"message":"main"}"#,
             ),
             ("messages.update", r#"{"message":"Still working"}"#),
+            ("messages.extend", r#"{"ask_id":"m_aaaaaaaaaaaa"}"#),
+            (
+                "messages.reason",
+                r#"{"ask_id":"m_aaaaaaaaaaaa","message":"CI was slow"}"#,
+            ),
             ("messages.reply", r#"{"message":"CI is green"}"#),
             ("messages.get", r##"{"handle":"#1"}"##),
         ] {
@@ -1937,6 +1988,8 @@ mod tests {
                 "question",
                 "answer",
                 "update",
+                "extend",
+                "reason",
                 "list_milestones",
                 "add_milestone",
                 "update_milestone",

@@ -307,10 +307,17 @@ fn a_queued_reminder_waits_out_the_question(world: &mut World, a: &Asked, docs: 
         reminders(world, docs).is_empty(),
         "no reminder while paused"
     );
+    // R11: the first ask's ladder ran on past its deadline meanwhile, so it
+    // holds its t5, deadline and why rungs; the question withdraws none.
+    let other: Vec<String> = reminders(world, &a.ask)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    let other_ask = a.ask.as_str();
     assert_eq!(
-        reminders(world, &a.ask).len(),
-        1,
-        "another ask's reminder stays"
+        other,
+        ["deadline", "t5", "why"].map(|stage| format!("reminder:{other_ask}:{stage}")),
+        "another ask's reminders stay"
     );
     let paused_at = at(world, docs, "question", 1);
     world.advance(HOUR);
@@ -365,7 +372,11 @@ fn a_claimed_reminder_goes_out_once(world: &mut World, a: &Asked, review: &Messa
     let answer = json!({"ask_id": review.as_str(), "seq": 1, "message": "Mine"});
     said(world, a.call(world, &a.l, "l-ra1", "answer", answer));
     assert_eq!(stage(world), 1);
-    assert_eq!(clock(world, review).3, None, "no rung after t5");
+    // R11: after t5 the next rung is the deadline, at the moved due.
+    let (_, Some(due), None, next) = clock(world, review) else {
+        panic!("the third ask runs its clock");
+    };
+    assert_eq!(next, Some(due), "the deadline rung follows t5");
     world.advance(MINUTE);
     assert_eq!(reminders(world, review), queued, "no second t5");
 }

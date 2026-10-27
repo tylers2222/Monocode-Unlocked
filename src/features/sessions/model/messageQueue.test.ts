@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { applyHarnessEvent } from "../../../integrations/harness/core/apply";
+import {
+  registerHarness,
+  type HarnessAdapter,
+} from "../../../integrations/harness/core/registry";
 import type { MessageId, TurnId } from "../../monos/model/monoMessages";
 import { appendPreparingHandoff } from "./handoff";
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
   isEditingQueuedHead,
-  nextQueuedSend,
   queuedHead,
   queuedMessageForSubmit,
   runningTurnMap,
@@ -16,10 +19,13 @@ import {
   queuePauseNotice,
   wakesQueue,
 } from "./messageQueue";
+import { nextQueuedSend } from "./queueSteerRule";
 import { newSession, type QueuedMessage, type Session } from "./session";
 
 const T1 = "turn-1" as TurnId;
 const T2 = "turn-2" as TurnId;
+
+registerHarness({ id: "claude", live: true } as unknown as HarnessAdapter);
 
 function queued(id: string, text = id): QueuedMessage {
   return { id, text, attachments: [] };
@@ -259,6 +265,16 @@ describe("nextQueuedSend", () => {
     ).toBeUndefined();
     expect(
       nextQueuedSend(busy, runningTurnMap([["other", T1]]), true),
+    ).toBeUndefined();
+    // Defect: the pump steers into a harness that cannot steer (codex is not registered here).
+    const codex = chat({
+      harness: "codex",
+      busy: true,
+      turnReadiness: "ready",
+      queuedMessages: [queued("plain")],
+    });
+    expect(
+      nextQueuedSend(codex, runningTurnMap([[codex.id, T1]]), true),
     ).toBeUndefined();
   });
 });

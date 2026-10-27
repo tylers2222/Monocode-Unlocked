@@ -3,7 +3,8 @@
 //! one row per ask and stage, keyed `reminder:<ask>:<stage>`. Nothing lives
 //! in memory, so a restart finds the pending reminders in the database.
 //! R9: the window that owns a reminder's chat claims it, queues it and
-//! marks it sent once its provider took it.
+//! marks it sent once its provider took it. R11: the `why` stage tells the
+//! parent and writes the ask's `miss`; the ask stays open.
 
 use std::collections::HashMap;
 
@@ -16,19 +17,46 @@ use crate::control::ControlHost;
 use crate::mono_messages::{self, Notices, SessionId};
 use crate::session_store::SessionStore;
 
-/// One stage of an open ask's ladder: its outbox name and when it falls
-/// due, relative to the ask's deadline. Every rung here goes to the child.
+/// Who a rung's outbox row goes to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum To {
+    Child,
+    /// The child missed its deadline: the parent is told, and the rung
+    /// writes the ask's `miss` event.
+    Parent,
+}
+
+/// One stage of an open ask's ladder: its outbox name, when it falls due
+/// relative to the ask's deadline, and who it goes to.
 struct Rung {
     stage: &'static str,
     from_due_ms: i64,
+    to: To,
 }
 
+/// Plan section 2: the parent hears of a miss 5 active minutes after the
+/// deadline reminder.
+const WHY_AFTER_MS: i64 = 5 * 60_000;
+
 /// The ladder in order. `mono_asks.stage` counts the rungs already enqueued:
-/// 0 is no reminder yet, 1 is `t5` enqueued.
-const LADDER: &[Rung] = &[Rung {
-    stage: "t5",
-    from_due_ms: -5 * 60_000,
-}];
+/// 0 is no reminder yet, 1 is `t5`, 2 is `deadline` and 3 is `why`.
+const LADDER: &[Rung] = &[
+    Rung {
+        stage: "t5",
+        from_due_ms: -5 * 60_000,
+        to: To::Child,
+    },
+    Rung {
+        stage: "deadline",
+        from_due_ms: 0,
+        to: To::Child,
+    },
+    Rung {
+        stage: "why",
+        from_due_ms: WHY_AFTER_MS,
+        to: To::Parent,
+    },
+];
 
 /// `ask_id` is nullable: a later `resume:<session>:<boot>` row has no ask.
 /// Then every open, unpaused, timed ask with no next due and a rung left
@@ -71,39 +99,58 @@ pub(crate) fn next_due(due_active_ms: i64, done: i64) -> Option<i64> {
     next_rung(done).map(|rung| due_active_ms + rung.from_due_ms)
 }
 
-/// Enqueues the reminder of each open ask whose next rung fell due by
-/// `active_ms`, and moves the ask to the rung after it. A paused or untimed
-/// ask has no next due, so it is never selected. A key enqueued before (its
-/// stage write lost) keeps its one row; an ask that a later build moved past
-/// the end of this ladder is left alone. Names the chat of each recipient,
-/// so the window that owns it delivers the reminder (R9).
-pub(crate) fn run(conn: &Connection, active_ms: i64) -> rusqlite::Result<Notices> {
+/// Enqueues the reminder of each open, unpaused ask whose next rung fell due
+/// by `active_ms`, and moves the ask to the rung after it. A paused or
+/// untimed ask is never selected. A key enqueued before (its stage write
+/// lost) keeps its one row; an ask that a later build moved past the end of
+/// this ladder is left alone. The `why` rung goes to the parent and writes
+/// the ask's one `miss` event, with no reason yet (R11). Names the chat of
+/// each recipient, so the window that owns it delivers the reminder (R9).
+pub(crate) fn run(conn: &Connection, active_ms: i64, wall_ms: i64) -> rusqlite::Result<Notices> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let fell_due: Vec<(String, i64, i64, String)> = tx
+    let fell_due: Vec<(String, i64, i64, String, String)> = tx
         .prepare(
-            "SELECT id, stage, due_active_ms, child_actor FROM mono_asks
-              WHERE state = 'open' AND next_due_active_ms <= ?1",
+            "SELECT id, stage, due_active_ms, child_actor, parent_actor FROM mono_asks
+              WHERE state = 'open' AND paused_at_active_ms IS NULL
+                AND next_due_active_ms <= ?1",
         )?
         .query_map([active_ms], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })?
         .collect::<rusqlite::Result<_>>()?;
     let mut notices = Notices::default();
-    for (id, done, due_active_ms, child) in fell_due {
+    for (id, done, due_active_ms, child, parent) in fell_due {
         let Some(rung) = next_rung(done) else {
             continue;
+        };
+        let recipient = match rung.to {
+            To::Child => child,
+            To::Parent => parent,
         };
         let key = format!("reminder:{id}:{}", rung.stage);
         tx.execute(
             "INSERT INTO mono_outbox (key, ask_id, stage, recipient, at_active_ms)
              VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (key) DO NOTHING",
-            params![key, id, rung.stage, child, active_ms],
+            params![key, id, rung.stage, recipient, active_ms],
         )?;
+        if rung.to == To::Parent {
+            tx.execute(
+                "INSERT INTO mono_ask_events (ask_id, kind, seq, at_active_ms, at_wall_ms)
+                 VALUES (?1, 'miss', 1, ?2, ?3) ON CONFLICT (ask_id, kind, seq) DO NOTHING",
+                params![id, active_ms, wall_ms],
+            )?;
+        }
         tx.execute(
             "UPDATE mono_asks SET stage = ?1, next_due_active_ms = ?2 WHERE id = ?3",
             params![done + 1, next_due(due_active_ms, done + 1), id],
         )?;
-        name_chat(&tx, &mut notices, &child)?;
+        name_chat(&tx, &mut notices, &recipient)?;
     }
     tx.commit()?;
     Ok(notices)
@@ -129,24 +176,48 @@ pub struct Claimed {
     pub wake: bool,
 }
 
-/// The prompt of reminder `stage` of ask `ask_id`; `None` for a stage this
-/// build does not send, which waits for the build that sends it.
-fn reminder_text(ask_id: &str, stage: &str) -> Option<String> {
-    let body = match stage {
-        "t5" => format!(
-            "Ask {ask_id} is due in 5 active minutes. When its work is done, ack it with this ask_id."
+/// The prompt of reminder `stage` of ask `ask_id`, whose child is `send_to`
+/// `child`; `None` for a stage this build does not send, which waits for
+/// the build that sends it. The parent's `why` names the child (R11).
+fn reminder_text(ask_id: &str, stage: &str, child: &str) -> Option<String> {
+    let (body, names_child) = match stage {
+        "t5" => (
+            format!(
+                "Ask {ask_id} is due in 5 active minutes. When its work is done, ack it with this ask_id. If you need more time, app messages.extend {{\"ask_id\":\"{ask_id}\"}} (the extend tool) moves the deadline {} active minutes, once.",
+                ask_gate::EXTENSION_MS / 60_000
+            ),
+            false,
+        ),
+        "deadline" => (
+            format!(
+                "Ask {ask_id} is due now. Finish its work and ack it with this ask_id. In {} active minutes your parent is told you missed it and will ask you why.",
+                WHY_AFTER_MS / 60_000
+            ),
+            false,
+        ),
+        "why" => (
+            format!(
+                "{child} has not acked {ask_id}. Ask it why: send it a message with send_to \"{child}\". It stores its reason with app messages.reason (the reason tool); the ask stays open until it acks."
+            ),
+            true,
         ),
         _ => return None,
     };
+    let child_attr = if names_child {
+        format!(" child=\"{child}\"")
+    } else {
+        String::new()
+    };
     Some(format!(
-        "<mono_reminder ask_id=\"{ask_id}\" stage=\"{stage}\">\n{body}\n</mono_reminder>"
+        "<mono_reminder ask_id=\"{ask_id}\" stage=\"{stage}\"{child_attr}>\n{body}\n</mono_reminder>"
     ))
 }
 
 /// The text of an outbox row: only a row with an ask, at a stage this
-/// build sends, has one.
-fn row_text(ask_id: Option<String>, stage: &str) -> Option<String> {
-    reminder_text(&ask_id?, stage)
+/// build sends, has one. `child_actor` is the ask's stored child.
+fn row_text(ask_id: Option<String>, stage: &str, child_actor: Option<String>) -> Option<String> {
+    let child = Actor::parse(&child_actor?)?;
+    reminder_text(&ask_id?, stage, child.send_to())
 }
 
 /// The chat a reminder to `recipient` reaches: a lead's or worker's
@@ -175,21 +246,23 @@ pub(crate) fn pending(conn: &Connection, session: &SessionId) -> rusqlite::Resul
         .map_or_else(|| own.clone(), |mono| Actor::Mono(mono).to_string());
     let rows = conn
         .prepare(
-            "SELECT key, ask_id, stage FROM mono_outbox
-              WHERE recipient IN (?1, ?2) AND sent_at IS NULL AND claimed_by IS NULL
-              ORDER BY at_active_ms, key",
+            "SELECT o.key, o.ask_id, o.stage, a.child_actor
+               FROM mono_outbox o LEFT JOIN mono_asks a ON a.id = o.ask_id
+              WHERE o.recipient IN (?1, ?2) AND o.sent_at IS NULL AND o.claimed_by IS NULL
+              ORDER BY o.at_active_ms, o.key",
         )?
         .query_map(params![own, mono], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get(1)?,
                 row.get::<_, String>(2)?,
+                row.get(3)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows
         .into_iter()
-        .filter_map(|(key, ask_id, stage)| row_text(ask_id, &stage).map(|_| key))
+        .filter_map(|(key, ask_id, stage, child)| row_text(ask_id, &stage, child).map(|_| key))
         .collect())
 }
 
@@ -211,17 +284,20 @@ pub(crate) fn claim(
     running: &HashMap<String, String>,
     steerable: bool,
 ) -> rusqlite::Result<Option<Claimed>> {
-    let row: Option<(String, Option<String>, String)> = conn
+    let row: Option<(String, Option<String>, String, Option<String>)> = conn
         .query_row(
-            "SELECT recipient, ask_id, stage FROM mono_outbox WHERE key = ?1",
+            "SELECT o.recipient, o.ask_id, o.stage, a.child_actor
+               FROM mono_outbox o LEFT JOIN mono_asks a ON a.id = o.ask_id
+              WHERE o.key = ?1",
             [key],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()?;
-    let Some((recipient, ask_id, stage)) = row else {
+    let Some((recipient, ask_id, stage, child)) = row else {
         return Ok(None);
     };
-    let (Some(text), Some(chat)) = (row_text(ask_id, &stage), chat_of(conn, &recipient)?) else {
+    let (Some(text), Some(chat)) = (row_text(ask_id, &stage, child), chat_of(conn, &recipient)?)
+    else {
         return Ok(None);
     };
     let delivery = ask_gate::delivery_for(running.contains_key(chat.as_str()), steerable);

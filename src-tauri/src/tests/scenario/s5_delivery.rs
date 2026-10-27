@@ -21,11 +21,12 @@ const BLOCKED: &str = "blocked:s5d:1";
 /// chat.
 const MONO_T5: &str = "reminder:s5d-mono:t5";
 
-/// The exact prompt a claimed t5 reminder of ask `ask` hands the agent.
-fn t5_text(ask: &MessageId) -> String {
+/// The exact prompt a claimed t5 reminder of ask `ask` hands the agent,
+/// with R10's one extension offer.
+pub(super) fn t5_text(ask: &MessageId) -> String {
     let id = ask.as_str();
     format!(
-        "<mono_reminder ask_id=\"{id}\" stage=\"t5\">\nAsk {id} is due in 5 active minutes. When its work is done, ack it with this ask_id.\n</mono_reminder>"
+        "<mono_reminder ask_id=\"{id}\" stage=\"t5\">\nAsk {id} is due in 5 active minutes. When its work is done, ack it with this ask_id. If you need more time, app messages.extend {{\"ask_id\":\"{id}\"}} (the extend tool) moves the deadline 15 active minutes, once.\n</mono_reminder>"
     )
 }
 
@@ -48,7 +49,7 @@ fn keys(world: &World, chat: &SessionId) -> Vec<String> {
     ask_scheduler::pending(&world.conn(), chat).unwrap()
 }
 
-fn claim(
+pub(super) fn claim(
     world: &World,
     key: &str,
     window: &str,

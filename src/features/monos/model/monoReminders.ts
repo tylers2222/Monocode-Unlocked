@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { QueuedMessage } from "../../sessions/model/session";
+import { steersQueuedNow } from "../../sessions/model/queueSteerRule";
 import { ensureNotice, type MonoQueueHost } from "./monoRoute";
 
 /** Rust `ask_scheduler::Claimed`: the prompt of a reminder this window took. */
@@ -8,18 +9,19 @@ type Claimed = { text: string; wake: boolean };
 /**
  * R9: each reminder that waits for the chat, claimed with the chat's live
  * state. Rust picks its prompt and its delivery: a wake waits for the turn
- * end; a reminder for a busy turn that cannot take it stays unclaimed until
- * the turn end names the chat again. A claimed one is a hidden app prompt
- * whose id is its outbox key.
+ * end, a steer joins the running turn; a reminder for a busy turn that
+ * cannot take a steer stays unclaimed until the turn end names the chat
+ * again. A claimed one is a hidden app prompt whose id is its outbox key.
  */
 export async function queueReminders(host: MonoQueueHost, sessionId: string) {
   const keys = await invoke<string[]>("mono_outbox_pending", { sessionId });
   for (const key of keys) {
     // A chat this window closed meanwhile gets its reminders at its next load.
-    if (!host.session(sessionId)) return;
+    const session = host.session(sessionId);
+    if (!session) return;
     const claimed = await invoke<Claimed | null>("mono_outbox_claim", {
       key,
-      steerable: false,
+      steerable: steersQueuedNow(session, host.isMonoChat(sessionId)),
     });
     if (!claimed) continue;
     host.update(sessionId, (session) =>

@@ -8,7 +8,10 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, Transact
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::ask_gate::{self, AckRefused, Actor, AskState, Party, State};
+use crate::ask_gate::{
+    self, AckRefused, Actor, AskState, ExtendRefused, ExtendState, Party, ReasonRefused,
+    ReasonState, State,
+};
 use crate::ask_scheduler;
 use crate::ask_talk::TalkInput;
 use crate::mono_gate::{self, Caller, Input, Refusal, SessionLevel, Speaker};
@@ -211,6 +214,91 @@ impl AckInput {
     }
 }
 
+#[derive(Debug)]
+pub struct ExtendInput {
+    ask_id: Option<MessageId>,
+}
+
+/// `ask_id` of a call that follows a reminder: left out, the caller's one
+/// open ask (R10, R11).
+fn reminded_ask_id(raw: &Value) -> Result<Option<MessageId>, String> {
+    raw.get("ask_id")
+        .map(|id| {
+            id.as_str().and_then(MessageId::parse).ok_or(
+                "ask_id must be the ask_id (m_…) of the <mono_reminder>, or left out when you have one open ask."
+                    .to_string(),
+            )
+        })
+        .transpose()
+}
+
+impl ExtendInput {
+    pub fn parse(raw: &Value) -> Result<Self, String> {
+        mono_gate::known_fields("extend", raw, &["ask_id"])?;
+        Ok(ExtendInput {
+            ask_id: reminded_ask_id(raw)?,
+        })
+    }
+}
+
+/// A reason is a message: at most as long as one.
+const REASON_MAX_CHARS: usize = 8000;
+
+#[derive(Debug)]
+pub struct ReasonInput {
+    ask_id: Option<MessageId>,
+    message: String,
+}
+
+impl ReasonInput {
+    pub fn parse(raw: &Value) -> Result<Self, String> {
+        mono_gate::known_fields("reason", raw, &["ask_id", "message"])?;
+        let ask_id = reminded_ask_id(raw)?;
+        let message = text(raw, "message").trim().to_string();
+        if message.is_empty() || message.chars().count() > REASON_MAX_CHARS {
+            return Err(format!(
+                "message must be why the ask is late, in words, at most {REASON_MAX_CHARS} characters."
+            ));
+        }
+        Ok(ReasonInput { ask_id, message })
+    }
+}
+
+/// What `messages.extend` answers: the ask and its active time left now.
+#[derive(Debug, Serialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum Extension {
+    #[serde(rename_all = "camelCase")]
+    Extended {
+        ask_id: MessageId,
+        due_in_ms: i64,
+    },
+    Failed {
+        error: ToolError,
+    },
+}
+
+impl Extension {
+    fn failed(code: &'static str, hint: impl Into<String>) -> Self {
+        Extension::Failed {
+            error: tool_error(code, hint),
+        }
+    }
+}
+
+/// What `messages.reason` answers: the ask whose miss now holds the reason.
+#[derive(Debug, Serialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum Reasoned {
+    #[serde(rename_all = "camelCase")]
+    Stored {
+        ask_id: MessageId,
+    },
+    Failed {
+        error: ToolError,
+    },
+}
+
 /// What a `mono_messages` row carries in the ledger (R6), for its reader.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -287,15 +375,19 @@ fn ask_hash(carrier: &Input, due_minutes: Option<u32>) -> PayloadHash {
     )
 }
 
+fn tool_error(code: &'static str, hint: impl Into<String>) -> ToolError {
+    ToolError {
+        code,
+        hint: hint.into(),
+        message_id: None,
+        open_handles: None,
+        duplicate: false,
+    }
+}
+
 fn failed(code: &'static str, hint: impl Into<String>) -> Submitted {
     Submitted::Failed {
-        error: ToolError {
-            code,
-            hint: hint.into(),
-            message_id: None,
-            open_handles: None,
-            duplicate: false,
-        },
+        error: tool_error(code, hint),
     }
 }
 
@@ -740,6 +832,123 @@ pub fn ack(
     on_ask(conn, caller, request_id, input, live, now)
 }
 
+/// `extend` from `caller` (plan R10): `decide_extend` and its writes in one
+/// `BEGIN IMMEDIATE`, so of two extends of one ask exactly one moves the
+/// deadline. The scheduler's next stage moves with it, unless a question
+/// paused the clock. Without `ask_id` it extends the caller's one open ask.
+pub fn extend(
+    conn: &Connection,
+    caller: &Caller,
+    input: Result<ExtendInput, String>,
+    now: i64,
+) -> rusqlite::Result<Extension> {
+    let input = match input {
+        Ok(input) => input,
+        Err(hint) => return Ok(Extension::failed(Refusal::InvalidInput.as_str(), hint)),
+    };
+    let refused = |reason: ExtendRefused| Ok(Extension::failed("extend_refused", reason.hint()));
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let Some((me, ask_id)) = caller_and_ask(&tx, caller, input.ask_id)? else {
+        return refused(ExtendRefused::NotYours);
+    };
+    let Some(ask_id) = ask_id else {
+        return refused(ExtendRefused::NoSingleOpenAsk);
+    };
+    let Some(ask) = load_extend(&tx, &ask_id)? else {
+        return refused(ExtendRefused::NoOpenAsk);
+    };
+    let due = match ask_gate::decide_extend(&ask, &me) {
+        Ok(due) => due,
+        Err(reason) => return refused(reason),
+    };
+    let next_due = ask_scheduler::next_due(due, ask.stage);
+    tx.execute(
+        "UPDATE mono_asks SET due_active_ms = ?1,
+           next_due_active_ms = CASE WHEN paused_at_active_ms IS NULL THEN ?2 END
+         WHERE id = ?3",
+        params![due, next_due, ask_id.as_str()],
+    )?;
+    let active = active_ms(&tx)?;
+    tx.execute(
+        "INSERT INTO mono_ask_events (ask_id, kind, seq, at_active_ms, at_wall_ms)
+         VALUES (?1, 'extension', 1, ?2, ?3)",
+        params![ask_id.as_str(), active, now],
+    )?;
+    tx.commit()?;
+    Ok(Extension::Extended {
+        ask_id,
+        due_in_ms: due - active,
+    })
+}
+
+#[tauri::command(async)]
+pub fn mono_ask_extend(
+    store: tauri::State<'_, crate::session_store::SessionStore>,
+    caller: mono_messages::CallerArg,
+    input: Value,
+) -> Result<Extension, String> {
+    let caller = caller.parse()?;
+    let conn = store.lock_conn()?;
+    extend(
+        &conn,
+        &caller,
+        ExtendInput::parse(&input),
+        mono_messages::now_ms(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// `reason` from `caller` (plan R11): `decide_reason` and the write in one
+/// `BEGIN IMMEDIATE`, so of two reasons for one miss exactly one is stored.
+/// The key stays: the ask is still open, and a later `ack` closes it.
+/// Without `ask_id` it names the caller's one open ask.
+pub fn reason(
+    conn: &Connection,
+    caller: &Caller,
+    input: Result<ReasonInput, String>,
+) -> rusqlite::Result<Reasoned> {
+    let failed = |code: &'static str, hint: &str| {
+        Ok(Reasoned::Failed {
+            error: tool_error(code, hint),
+        })
+    };
+    let input = match input {
+        Ok(input) => input,
+        Err(hint) => return failed(Refusal::InvalidInput.as_str(), &hint),
+    };
+    let refused = |reason: ReasonRefused| failed("reason_refused", reason.hint());
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let Some((me, ask_id)) = caller_and_ask(&tx, caller, input.ask_id)? else {
+        return refused(ReasonRefused::NotYours);
+    };
+    let Some(ask_id) = ask_id else {
+        return refused(ReasonRefused::NoSingleOpenAsk);
+    };
+    let Some(ask) = load_reason(&tx, &ask_id)? else {
+        return refused(ReasonRefused::NoOpenAsk);
+    };
+    if let Err(reason) = ask_gate::decide_reason(&ask, &me) {
+        return refused(reason);
+    }
+    tx.execute(
+        "UPDATE mono_ask_events SET reason = ?2 WHERE ask_id = ?1 AND kind = 'miss'",
+        params![ask_id.as_str(), input.message],
+    )?;
+    tx.commit()?;
+    Ok(Reasoned::Stored { ask_id })
+}
+
+#[tauri::command(async)]
+pub fn mono_ask_reason(
+    store: tauri::State<'_, crate::session_store::SessionStore>,
+    caller: mono_messages::CallerArg,
+    input: Value,
+) -> Result<Reasoned, String> {
+    let caller = caller.parse()?;
+    let conn = store.lock_conn()?;
+    reason(&conn, &caller, ReasonInput::parse(&input)).map_err(|error| error.to_string())
+}
+
 fn reused() -> Submitted {
     failed(
         Refusal::RequestIdReused.as_str(),
@@ -835,23 +1044,94 @@ fn said_with(
     )
 }
 
+/// The ask's state and parties from columns 0 to 2 of `row`.
+fn ask_state(row: &Row) -> rusqlite::Result<AskState> {
+    Ok(AskState {
+        state: match row.get::<_, String>(0)?.as_str() {
+            "open" => State::Open,
+            "acked" => State::Acked,
+            _ => return Err(rusqlite::Error::InvalidQuery),
+        },
+        parent: actor(row, 1)?,
+        child: actor(row, 2)?,
+    })
+}
+
 fn load(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<AskState>> {
     conn.query_row(
         "SELECT state, parent_actor, child_actor FROM mono_asks WHERE id = ?1",
         [id.as_str()],
+        ask_state,
+    )
+    .optional()
+}
+
+/// Ask `id` as `decide_extend` reads it.
+fn load_extend(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<ExtendState>> {
+    conn.query_row(
+        "SELECT state, parent_actor, child_actor, due_active_ms, stage,
+           EXISTS (SELECT 1 FROM mono_ask_events WHERE ask_id = ?1 AND kind = 'extension')
+         FROM mono_asks WHERE id = ?1",
+        [id.as_str()],
         |row| {
-            Ok(AskState {
-                state: match row.get::<_, String>(0)?.as_str() {
-                    "open" => State::Open,
-                    "acked" => State::Acked,
-                    _ => return Err(rusqlite::Error::InvalidQuery),
-                },
-                parent: actor(row, 1)?,
-                child: actor(row, 2)?,
+            Ok(ExtendState {
+                ask: ask_state(row)?,
+                due: row.get(3)?,
+                stage: row.get(4)?,
+                extended: row.get(5)?,
             })
         },
     )
     .optional()
+}
+
+/// Ask `id` as `decide_reason` reads it.
+fn load_reason(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<ReasonState>> {
+    conn.query_row(
+        "SELECT state, parent_actor, child_actor,
+           EXISTS (SELECT 1 FROM mono_ask_events WHERE ask_id = ?1 AND kind = 'miss'),
+           EXISTS (SELECT 1 FROM mono_ask_events
+                    WHERE ask_id = ?1 AND kind = 'miss' AND reason IS NOT NULL)
+         FROM mono_asks WHERE id = ?1",
+        [id.as_str()],
+        |row| {
+            Ok(ReasonState {
+                ask: ask_state(row)?,
+                missed: row.get(3)?,
+                reasoned: row.get(4)?,
+            })
+        },
+    )
+    .optional()
+}
+
+/// The caller as an actor, and the ask it names: `ask_id`, or else its one
+/// open ask. `None` for a caller with no saved row.
+fn caller_and_ask(
+    conn: &Connection,
+    caller: &Caller,
+    ask_id: Option<MessageId>,
+) -> rusqlite::Result<Option<(Actor, Option<MessageId>)>> {
+    let Some(me) = caller_party(conn, caller)?.map(Party::into_actor) else {
+        return Ok(None);
+    };
+    let ask_id = match ask_id {
+        Some(id) => Some(id),
+        None => only_open_ask(conn, &me)?,
+    };
+    Ok(Some((me, ask_id)))
+}
+
+/// The caller's one open ask, `None` when it has none or several.
+fn only_open_ask(conn: &Connection, child: &Actor) -> rusqlite::Result<Option<MessageId>> {
+    let open: Vec<String> = conn
+        .prepare("SELECT id FROM mono_asks WHERE state = 'open' AND child_actor = ?1 LIMIT 2")?
+        .query_map([child.to_string()], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    match open.as_slice() {
+        [id] => Ok(MessageId::parse(id)),
+        _ => Ok(None),
+    }
 }
 
 fn actor(row: &Row, index: usize) -> rusqlite::Result<Actor> {

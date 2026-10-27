@@ -3,8 +3,19 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { newSession, type Session } from "../../sessions/model/session";
 import {
   dequeueQueuedMessage,
+  queuedAppDelivery,
+  runningTurnMap,
   steerableQueuedMessage,
 } from "../../sessions/model/messageQueue";
+import { nextQueuedSend } from "../../sessions/model/queueSteerRule";
+import {
+  deliverQueuedFollowUp,
+  planQueuedSteer,
+} from "../../sessions/model/queuedFollowUp";
+import {
+  registerHarness,
+  type HarnessAdapter,
+} from "../../../integrations/harness/core/registry";
 import {
   deleteSession,
   sanitizeSessionForPersist,
@@ -15,7 +26,6 @@ import {
 } from "../../agent-app/model/agentApp";
 import { appErrorResponse } from "../../agent-app/model/appActionError";
 import {
-  queuedAppDelivery,
   recordAppSteer,
   TURN_FINISHED_ERROR,
 } from "../../../app/model/appSessionSend";
@@ -479,6 +489,8 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
     };
   },
 }));
+
+registerHarness({ id: "claude", live: true } as unknown as HarnessAdapter);
 
 beforeEach(() => {
   bus.listeners.length = 0;
@@ -1022,10 +1034,11 @@ it("reconciles a row no item holds once, as an item that waits for the turn end"
 
 // R9. Defects: a reminder that reaches its chat twice, in another text than
 // the one Rust's claim hands out, as the user's visible turn, or as a steer
-// in R9b; one claimed for a chat this window does not hold, or queued when
-// Rust leaves it for the turn end; one sent into a turn no provider can take
-// (it leaves the queue and keeps its claim); a sent mark for a turn the
-// provider refused, or for an item that is no reminder.
+// into a turn the pump would not steer; one claimed for a chat this window
+// does not hold, or queued when Rust leaves it for the turn end; one sent
+// into a turn no provider can take (it leaves the queue and keeps its claim);
+// a sent mark for a turn the provider refused, or for an item that is no
+// reminder; an app request recorded on a user's turn.
 it("queues each reminder Rust hands this window once, as a hidden prompt, and marks it sent when the provider takes it", async () => {
   const { get, host } = world([chat("lead-1"), chat("lead-2", { busy: true })]);
   const [idle, busy, gone] = [
@@ -1093,6 +1106,88 @@ it("queues each reminder Rust hands this window once, as a hidden prompt, and ma
     appRequestId: "n",
     appDelivery: { via: "queued", queuedMessageId: "n" },
   });
+  expect(queuedAppDelivery({ ...item, appRequestId: undefined })).toEqual({});
+  expect(queuedAppDelivery(undefined)).toEqual({});
+});
+
+// R9c. Defects: a reminder for a busy Mono chat the pump would steer now
+// waits for the turn end; one claims a steer for a chat the pump would not
+// steer (no Mono chat, a harness that cannot steer, a turn that takes no steer
+// now); a steered reminder shows as the user's visible steer or without its
+// outbox key; the provider taking the steer does not mark it sent, once.
+it("steers a reminder into a Mono chat's turn only when the pump would, as a hidden turn marked sent once", async () => {
+  const ready = { busy: true, turnReadiness: "ready" as const };
+  const { get, host } = world([
+    chat("a-chat", ready),
+    chat("lead-1", ready),
+    chat("b-chat", { ...ready, harness: "codex" }),
+    chat("c-chat", { ...ready, queueStatus: "paused" }),
+  ]);
+  const key = "reminder:m_aaaaaaaaaaaa:t5";
+  const waiting = ["lead-1", "b-chat", "c-chat"];
+  rust.state.reminders = [
+    { key, chat: "a-chat", text: "A", wake: false },
+    ...waiting.map((id) => ({
+      key: `reminder:${id}:t5`,
+      chat: id,
+      text: "B",
+      wake: true,
+      afterTurn: true,
+    })),
+  ];
+  for (const id of ["a-chat", ...waiting]) await reconcile(host, id);
+  expect(rust.state.claims).toEqual([
+    { key, steerable: true },
+    ...waiting.map((id) => ({ key: `reminder:${id}:t5`, steerable: false })),
+  ]);
+
+  const turns = runningTurnMap([["a-chat", host.turnId("a-chat")!]]);
+  const item = nextQueuedSend(get("a-chat"), turns, true)!;
+  expect(item).toMatchObject({
+    id: key,
+    monoReminder: true,
+    waitForIdle: false,
+  });
+  const joined = planQueuedSteer({
+    session: get("a-chat"),
+    turns,
+    message: item,
+    origin: {},
+    text: item.text,
+  });
+  if (joined?.kind !== "join") throw new Error(`planned ${joined?.kind}`);
+  const submitted = submitQueued(item, true, (options) => options);
+  if (!submitted) throw new Error("a live steer was not submitted");
+  const { providerTook } = submitted;
+  const delivered = await deliverQueuedFollowUp({
+    message: item,
+    joined,
+    turns,
+    current: () => get("a-chat"),
+    isCurrentTurn: () => true,
+    prepare: async (text) => text,
+    steer: async () => {},
+    delivered: (block) =>
+      host.update("a-chat", (session) =>
+        acknowledgeMonoMessage(session, item, {
+          mode: "follow-up",
+          cards: block,
+        }),
+      ),
+    deferred: vi.fn(),
+    failed: vi.fn(),
+  });
+  providerTook!(delivered);
+  expect(delivered).toBe(true);
+  expect(get("a-chat").queuedMessages ?? []).toEqual([]);
+  expect(get("a-chat").blocks.at(-1)).toMatchObject({
+    id: key,
+    role: "user",
+    internal: true,
+    appRequestId: key,
+    turnId: host.turnId("a-chat"),
+  });
+  await vi.waitFor(() => expect(rust.state.sentReminders).toEqual([key]));
 });
 
 // Defect: an opener that failed after its dequeue is lost, or comes back as

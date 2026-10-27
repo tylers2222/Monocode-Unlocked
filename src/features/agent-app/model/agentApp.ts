@@ -314,6 +314,8 @@ export type AgentAppHost = {
     question(requestId: string, input: Record<string, unknown>): Promise<unknown>;
     answer(requestId: string, input: Record<string, unknown>): Promise<unknown>;
     update(requestId: string, input: Record<string, unknown>): Promise<unknown>;
+    extend(input: Record<string, unknown>): Promise<unknown>;
+    reason(input: Record<string, unknown>): Promise<unknown>;
     reply(requestId: string, input: ReplyInput): Promise<unknown>;
     get(input: GetInput): Promise<unknown>;
   };
@@ -448,6 +450,8 @@ export const FIELDS = new Map<string, readonly string[]>([
   ["messages.question", ["ask_id", "message"]],
   ["messages.answer", ["ask_id", "seq", "message"]],
   ["messages.update", ["ask_id", "message"]],
+  ["messages.extend", ["ask_id"]],
+  ["messages.reason", ["ask_id", "message"]],
   ["messages.reply", ["message", "wanting_reply", "to"]],
   ["messages.get", ["handle"]],
   ["milestones.list", ["project"]],
@@ -1786,13 +1790,16 @@ export async function handleAgentApp(
         checked(() => parseSendInput(input)),
       );
     // FIELDS checked the names; Rust parses the values of a call on an
-    // ask's key and names the bad field in its invalid_input hint.
+    // ask's key, an extend or a reason and names the bad field in its
+    // invalid_input hint.
     if (action === "messages.ask") return messages.ask(requestId, input);
     if (action === "messages.ack") return messages.ack(requestId, input);
     if (action === "messages.question")
       return messages.question(requestId, input);
     if (action === "messages.answer") return messages.answer(requestId, input);
     if (action === "messages.update") return messages.update(requestId, input);
+    if (action === "messages.extend") return messages.extend(input);
+    if (action === "messages.reason") return messages.reason(input);
     if (action === "messages.reply")
       return messages.reply(
         requestId,
