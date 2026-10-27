@@ -746,18 +746,19 @@ pub fn extend(
     let Some(ask_id) = ask_id else {
         return refused(ExtendRefused::NoSingleOpenAsk);
     };
-    let Some((ask, stage)) = load_extend(&tx, &ask_id)? else {
+    let Some(ask) = load_extend(&tx, &ask_id)? else {
         return refused(ExtendRefused::NoOpenAsk);
     };
     let due = match ask_gate::decide_extend(&ask, &me) {
         Ok(due) => due,
         Err(reason) => return refused(reason),
     };
+    let next_due = ask_scheduler::next_due(due, ask.stage);
     tx.execute(
         "UPDATE mono_asks SET due_active_ms = ?1,
            next_due_active_ms = CASE WHEN paused_at_active_ms IS NULL THEN ?2 END
          WHERE id = ?3",
-        params![due, ask_scheduler::next_due(due, stage), ask_id.as_str()],
+        params![due, next_due, ask_id.as_str()],
     )?;
     let active = active_ms(&tx)?;
     tx.execute(
@@ -906,22 +907,20 @@ fn load(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<AskState>>
     .optional()
 }
 
-/// Ask `id` as `decide_extend` reads it, with its scheduler stage.
-fn load_extend(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<(ExtendState, i64)>> {
+/// Ask `id` as `decide_extend` reads it.
+fn load_extend(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<ExtendState>> {
     conn.query_row(
         "SELECT state, parent_actor, child_actor, due_active_ms, stage,
            EXISTS (SELECT 1 FROM mono_ask_events WHERE ask_id = ?1 AND kind = 'extension')
          FROM mono_asks WHERE id = ?1",
         [id.as_str()],
         |row| {
-            let stage: i64 = row.get(4)?;
-            let ask = ExtendState {
+            Ok(ExtendState {
                 ask: ask_state(row)?,
                 due: row.get(3)?,
-                reminded: stage >= 1,
+                stage: row.get(4)?,
                 extended: row.get(5)?,
-            };
-            Ok((ask, stage))
+            })
         },
     )
     .optional()

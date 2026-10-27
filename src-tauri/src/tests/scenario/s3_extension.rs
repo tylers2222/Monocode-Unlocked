@@ -19,7 +19,7 @@ use crate::mono_roster::MonoRole;
 const EXTENSION: i64 = 15 * MINUTE;
 const NO_SINGLE_OPEN_ASK: &str = "You have no open ask or more than one.";
 
-fn extend(world: &World, caller: &Caller, input: Value) -> Extension {
+pub(super) fn extend(world: &World, caller: &Caller, input: Value) -> Extension {
     asks::extend(
         &world.conn(),
         caller,
@@ -31,7 +31,7 @@ fn extend(world: &World, caller: &Caller, input: Value) -> Extension {
 
 /// Panics unless `extension` is an `extend_refused` whose hint starts with
 /// `start`.
-fn refused(extension: Extension, start: &str) {
+pub(super) fn refused(extension: Extension, start: &str) {
     match extension {
         Extension::Failed { error } if error.code == "extend_refused" => {
             assert!(error.hint.starts_with(start), "hint: {}", error.hint);
@@ -40,7 +40,7 @@ fn refused(extension: Extension, start: &str) {
     }
 }
 
-fn extensions(world: &World, ask: &MessageId) -> i64 {
+pub(super) fn extensions(world: &World, ask: &MessageId) -> i64 {
     world
         .conn()
         .query_row(
@@ -92,7 +92,7 @@ fn s3_the_t5_reminder_offers_one_extension_that_moves_the_deadline_once() {
     world.advance(1);
     let offer = t5(&a, &format!("session:{}", lead.as_str()), old_due - T5_LEAD);
     assert_eq!(reminders(&world, &a), offer);
-    assert_eq!(ladder(&world, &a), (1, None));
+    assert_eq!(ladder(&world, &a), (1, Some(old_due)));
     let claimed = claim(&world, &t5_key(&a), "main", &[], false).map(|c| c.text);
     assert_eq!(
         claimed,
@@ -145,9 +145,12 @@ fn s3_the_t5_reminder_offers_one_extension_that_moves_the_deadline_once() {
 
     // Past the old deadline and up to the new one, the ladder sends nothing
     // more: no second offer, no stage at the old deadline.
-    advance_to(&mut world, new_due);
+    advance_to(&mut world, new_due - 1);
     assert_eq!(reminders(&world, &a), offer);
     assert_eq!(ladder(&world, &a), (1, ask_scheduler::next_due(new_due, 1)));
+
+    // S3 second half (R11).
+    super::s3_miss::the_new_deadline_passes(&mut world, &mono, &lead, &worker, &a);
     worker_extends_its_one_open_ask_until_acked(&mut world, &lead, &worker);
 }
 

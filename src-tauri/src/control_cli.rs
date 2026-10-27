@@ -374,12 +374,12 @@ Actions:
   messages.extend {"ask_id":"m_..."}
                   Move the deadline of an ask you were asked 15 active
                   minutes later, once. It opens with the <mono_reminder> 5
-                  active minutes before the deadline. ask_id may be left out
-                  when you have exactly one open ask. Returns ask_id and
-                  due_in, the active time now left. Codes: invalid_input,
-                  extend_refused (not yours, already acked, no deadline,
-                  before the reminder, or already extended; the hint says
-                  which).
+                  active minutes before the deadline and closes at the
+                  deadline. ask_id may be left out when you have exactly one
+                  open ask. Returns ask_id and due_in, the active time now
+                  left. Codes: invalid_input, extend_refused (not yours,
+                  already acked, no deadline, before the reminder, past the
+                  deadline, or already extended; the hint says which).
   messages.reply {"message":"...","to":"#1","wanting_reply":false}
                   Answer a <mono_message> that waits for your reply (it says
                   wanting_reply="true" and has a handle such as
@@ -921,7 +921,7 @@ pub fn app_tools() -> Value {
         {
             "name": "extend",
             "action": "messages.extend",
-            "description": "Move the deadline of an ask you were asked 15 active minutes later, once. It opens with the <mono_reminder> 5 active minutes before the deadline. Returns ask_id and due_in. A refusal has code and hint; follow the hint.",
+            "description": "Move the deadline of an ask you were asked 15 active minutes later, once. It opens with the <mono_reminder> 5 active minutes before the deadline and closes at the deadline. Returns ask_id and due_in. A refusal has code and hint; follow the hint.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

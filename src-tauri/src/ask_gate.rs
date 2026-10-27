@@ -192,13 +192,14 @@ pub fn decide_ack(ask: &AskState, caller: &Actor) -> Result<(), AckRefused> {
 pub const EXTENSION_MS: i64 = 15 * 60_000;
 
 /// An ask as `extend` reads it: `due` is its deadline (none for a Giga's
-/// ask), `reminded` that its `t5` stage fell due, `extended` that its one
+/// ask), `stage` the ladder rungs already enqueued (`ask_scheduler`: 0
+/// none, 1 `t5`, 2 `deadline`, 3 `why`), `extended` that its one
 /// `extension` event exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtendState {
     pub ask: AskState,
     pub due: Option<i64>,
-    pub reminded: bool,
+    pub stage: i64,
     pub extended: bool,
 }
 
@@ -210,6 +211,7 @@ pub enum ExtendRefused {
     AlreadyAcked,
     NoDeadline,
     BeforeReminder,
+    PastDeadline,
     AlreadyExtended,
 }
 
@@ -230,6 +232,9 @@ impl ExtendRefused {
             ExtendRefused::BeforeReminder => {
                 "The extension opens with the reminder 5 active minutes before the deadline. Work on, or ask your parent a question."
             }
+            ExtendRefused::PastDeadline => {
+                "The deadline has passed, so the extension is closed. Finish the work and ack it."
+            }
             ExtendRefused::AlreadyExtended => {
                 "This ask was already extended once; its deadline moves only once. Finish the work and ack it."
             }
@@ -237,8 +242,9 @@ impl ExtendRefused {
     }
 }
 
-/// Plan R10: only the child extends, only an open ask with a deadline, only
-/// once its `t5` stage fell due, and only once. `Ok` is the new deadline.
+/// Plan R10, R11: only the child extends, only an open ask with a deadline,
+/// only once, and only between its `t5` and `deadline` reminders. `Ok` is
+/// the new deadline.
 pub fn decide_extend(ask: &ExtendState, caller: &Actor) -> Result<i64, ExtendRefused> {
     if &ask.ask.child != caller {
         return Err(ExtendRefused::NotYours);
@@ -252,10 +258,11 @@ pub fn decide_extend(ask: &ExtendState, caller: &Actor) -> Result<i64, ExtendRef
     if ask.extended {
         return Err(ExtendRefused::AlreadyExtended);
     }
-    if !ask.reminded {
-        return Err(ExtendRefused::BeforeReminder);
+    match ask.stage {
+        ..=0 => Err(ExtendRefused::BeforeReminder),
+        1 => Ok(due + EXTENSION_MS),
+        _ => Err(ExtendRefused::PastDeadline),
     }
-    Ok(due + EXTENSION_MS)
 }
 
 /// How a reminder reaches its chat (plan R9): into the running turn, as a
