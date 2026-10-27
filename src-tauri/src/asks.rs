@@ -542,11 +542,11 @@ pub(crate) fn on_ask<C: OnAsk>(
     if another_calls(prior.first(), |id| said_with(&tx, &ask_id, call.kind(), id))? {
         return Ok(reused());
     }
-    let to = call.to(&ask);
-    let carrier = match carrier(to.send_to(), call.message()) {
-        Ok(carrier) => carrier,
+    let (carrier, hash) = match named(&call, &ask_id, &ask) {
+        Ok(named) => named,
         Err(hint) => return Ok(failed(Refusal::InvalidInput.as_str(), hint)),
     };
+    let to = call.to(&ask);
     // A repeat or a retried refusal (a row under this request id) answers
     // its first outcome, and the send gate a caller no saved row names, so
     // neither is decided.
@@ -565,13 +565,7 @@ pub(crate) fn on_ask<C: OnAsk>(
         sessions: listed.as_deref().unwrap_or(live.sessions),
         ..*live
     };
-    // Its own call, as `ask_hash` makes an ask (R6b review r2 m1).
-    let mut named = json!({"carrier": carrier.payload_hash().as_str(), "ask_id": ask_id.as_str()});
-    if let Some(seq) = call.seq() {
-        named["seq"] = seq.into();
-    }
     let kind = call.kind();
-    let hash = mono_gate::action_hash(kind, &named);
     let mut submitted =
         mono_messages::submit_in(&tx, caller, request_id, carrier, hash, &live, now)?;
     if let Submitted::Accepted {
@@ -600,6 +594,60 @@ pub(crate) fn on_ask<C: OnAsk>(
     }
     tx.commit()?;
     Ok(submitted)
+}
+
+/// The row that carries `call` on ask `ask_id`, and the hash that names the
+/// call for dedupe by request id: its own call, as `ask_hash` makes an ask
+/// (R6b review r2 m1).
+fn named<C: OnAsk>(
+    call: &C,
+    ask_id: &MessageId,
+    ask: &AskState,
+) -> Result<(Input, PayloadHash), String> {
+    let carrier = carrier(call.to(ask).send_to(), call.message())?;
+    let mut named = json!({"carrier": carrier.payload_hash().as_str(), "ask_id": ask_id.as_str()});
+    if let Some(seq) = call.seq() {
+        named["seq"] = seq.into();
+    }
+    let hash = mono_gate::action_hash(call.kind(), &named);
+    Ok((carrier, hash))
+}
+
+/// The ask of a retried refusal, or `None` when `row` is not one. `row` is
+/// the first row under the call's request id; the send gate refused it, so
+/// it carries no event. Its ask is the one `me` is the child of whose call
+/// hashes as `row` does, as `submit_in` matches it, so a second ask that
+/// came since cannot turn its replay into another refusal. No such ask
+/// makes `row` another call's.
+pub(crate) fn refused_on<C: OnAsk>(
+    conn: &Connection,
+    call: &C,
+    row: &MonoMessage,
+    me: Option<&Actor>,
+) -> rusqlite::Result<Option<Result<MessageId, Refused>>> {
+    if !matches!(row.status, Status::Rejected { .. }) {
+        return Ok(None);
+    }
+    let mine: Vec<String> = match me {
+        Some(me) => conn
+            .prepare("SELECT id FROM mono_asks WHERE child_actor = ?1")?
+            .query_map([me.to_string()], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?,
+        None => Vec::new(),
+    };
+    for id in mine {
+        let id = MessageId::parse(&id).ok_or(rusqlite::Error::InvalidQuery)?;
+        let Some(ask) = load(conn, &id)? else {
+            continue;
+        };
+        if named(call, &id, &ask).is_ok_and(|(_, hash)| hash == row.payload_hash) {
+            return Ok(Some(Ok(id)));
+        }
+    }
+    Ok(Some(Err(Refused(
+        Refusal::RequestIdReused.as_str(),
+        mono_gate::REQUEST_ID_REUSED.into(),
+    ))))
 }
 
 fn ack_refused(reason: AckRefused) -> Refused {
