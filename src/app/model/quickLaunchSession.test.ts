@@ -16,7 +16,11 @@ import {
   type WorkspaceTab,
 } from "../../features/workspace/model/layout";
 import { filterTabsForProject } from "../../features/workspace/model/workspaceTabGroups";
-import { acceptQuickLaunch, appLaunchRepeat } from "./quickLaunchSession";
+import {
+  acceptQuickLaunch,
+  appLaunchRepeat,
+  isLaunchAccepting,
+} from "./quickLaunchSession";
 import {
   submitAfterProjectSync,
   type SubmissionAcceptance,
@@ -383,6 +387,59 @@ it("does not acknowledge or mark accepted while project synchronization is pendi
     state.sessions.find((s) => s.id === "quick-session")?.quickLaunchAccepted,
   ).toBe(true);
 });
+
+// ADE-135. Defect: idle detach drops a tabless session while its submit waits
+// for the project sync, or the hold outlives the acceptance and the session
+// is never detached.
+it("holds a session only while its launch is being accepted", async () => {
+  const { request, workspace } = setup();
+  let resolveSubmit!: (accepted: boolean) => void;
+  workspace.submit.mockImplementationOnce(
+    () => new Promise<boolean>((resolve) => (resolveSubmit = resolve)),
+  );
+  const pending = acceptQuickLaunch(request, "quick-session", workspace);
+  await vi.waitFor(() => expect(workspace.submit).toHaveBeenCalledOnce());
+  expect(isLaunchAccepting("quick-session")).toBe(true);
+  resolveSubmit(true);
+  await pending;
+  expect(isLaunchAccepting("quick-session")).toBe(false);
+
+  workspace.submit.mockImplementationOnce(() => false);
+  await expect(
+    acceptQuickLaunch(request, "refused-session", workspace),
+  ).rejects.toThrow("could not accept");
+  expect(isLaunchAccepting("refused-session")).toBe(false);
+});
+
+// ADE-135. Defect: a refused launch logs no guard, or names the wrong one.
+it.each([
+  ["still loaded", false, "a submitSession guard refused the loaded session"],
+  [
+    "gone from the workspace",
+    true,
+    "submitSession's !storedCurrent guard refused it; the session left the workspace",
+  ],
+])(
+  "names the guard when a submit refuses a session %s",
+  async (_case, removed, guard) => {
+    const { request, workspace } = setup();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    workspace.submit.mockImplementationOnce((id) => {
+      if (removed)
+        workspace.updateSessions((sessions) =>
+          sessions.filter((session) => session.id !== id),
+        );
+      return false;
+    });
+    await expect(
+      acceptQuickLaunch(request, "quick-session", workspace),
+    ).rejects.toThrow("could not accept");
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      `Quick launch quick-session: ${guard}`,
+    );
+    warn.mockRestore();
+  },
+);
 
 it.each(["sync failure", "deferred rejection", "deferred exception"])(
   "retains the prompt after %s and retries the same session",
