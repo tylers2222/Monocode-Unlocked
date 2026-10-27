@@ -87,6 +87,7 @@ jobs:
     outputs:
       check: ${{ steps.paths.outputs.check }}
       packaging: ${{ steps.paths.outputs.packaging }}
+      appimage: ${{ steps.paths.outputs.appimage }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,9 +95,11 @@ jobs:
           persist-credentials: false
 
       # A pull request runs check and the packaging jobs only when their files
-      # change; a push or a ci.yml change runs them all. The jobs skip per step,
-      # not per job: a skipped job reports SKIPPED, which merge-when-green.sh
-      # refuses, while a job whose steps all skip reports SUCCESS.
+      # change; a push or a ci.yml change runs them all. A job whose output is
+      # 'false' is skipped at job level and takes no runner. The dependants
+      # fail open: their `if:` holds a status function (`!cancelled()`), so
+      # they still start when this job fails; its outputs are then empty, and
+      # an empty output is not 'false', so they run.
       - name: Decide which jobs run
         id: paths
         env:
@@ -108,20 +111,26 @@ jobs:
           # check runs unless every changed file is one it never reads.
           check_skip='^(docs/|[^/]+\.md$|LICENSE$|NOTICE$|scripts/(scenarios|giga-eval|milestones-e2e)/|evals/|docker/|\.github/(ISSUE_TEMPLATE/|[^/]+\.md$|workflows/))'
           packaging_paths='^(src-tauri/|vendor/|Cargo\.(toml|lock)$|package(-lock)?\.json$|scripts/(repack-appimage|assert-appimage-host-libs|install-linux-deps-debian|install-linux-deps-fedora)\.sh$|\.github/workflows/release\.yml$)'
-          decide() { printf 'check=%s\npackaging=%s\n' "$1" "$2" | tee -a "$GITHUB_OUTPUT"; exit 0; }
-          [ "$EVENT" = pull_request ] || decide true true
-          git cat-file -e "${BASE}^{commit}" 2>/dev/null || decide true true
-          changed="$(git diff --name-only --no-renames "$BASE" "$HEAD")"
+          # The AppImage build keeps its narrower set from before this job: it
+          # asserts host-library linking, which only these files can change.
+          appimage_paths='^(scripts/(repack-appimage|assert-appimage-host-libs|install-linux-deps-debian)\.sh|package(-lock)?\.json|Cargo\.lock|src-tauri/(tauri(\.linux)?\.conf\.json|Cargo\.toml)|\.github/workflows/release\.yml)$'
+          decide() { printf 'check=%s\npackaging=%s\nappimage=%s\n' "$1" "$2" "$3" | tee -a "$GITHUB_OUTPUT"; exit 0; }
+          [ "$EVENT" = pull_request ] || decide true true true
+          git cat-file -e "${BASE}^{commit}" 2>/dev/null || decide true true true
+          changed="$(git -c core.quotePath=false diff --name-only --no-renames "$BASE" "$HEAD")"
           printf '%s\n' "$changed"
-          grep -qx '\.github/workflows/ci\.yml' <<<"$changed" && decide true true
+          grep -qx '\.github/workflows/ci\.yml' <<<"$changed" && decide true true true
           check=false
           packaging=false
+          appimage=false
           grep -Evq "$check_skip" <<<"$changed" && check=true
           grep -Eq "$packaging_paths" <<<"$changed" && packaging=true
-          decide "$check" "$packaging"
+          grep -Eq "$appimage_paths" <<<"$changed" && appimage=true
+          decide "$check" "$packaging" "$appimage"
 
   check:
     needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.check != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -129,16 +138,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-        if: needs.changes.outputs.check == 'true'
       - run: bash scripts/process/heavy-lock.test.sh
-        if: needs.changes.outputs.check == 'true'
 
       - name: Install Linux system dependencies
-        if: runner.os == 'Linux' && needs.changes.outputs.check == 'true'
+        if: runner.os == 'Linux'
         run: bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
 
       - uses: actions/setup-node@v4
-        if: needs.changes.outputs.check == 'true'
         with:
           node-version: 20
           cache: npm
@@ -146,72 +152,58 @@ jobs:
       # Same pinned version as gate/lint: clippy here checks the same baseline
       # #[expect] markers, three of them only on macOS or Windows.
       - id: rust-version
-        if: needs.changes.outputs.check == 'true'
         shell: bash
         run: echo "version=$(cat .github/rust-version)" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@master
-        if: needs.changes.outputs.check == 'true'
         with:
           toolchain: ${{ steps.rust-version.outputs.version }}
           components: rustfmt, clippy
 
       - run: npm ci
-        if: needs.changes.outputs.check == 'true'
       - run: npm test
-        if: needs.changes.outputs.check == 'true'
       - run: npx tsc --noEmit
-        if: needs.changes.outputs.check == 'true'
       - run: cargo fmt --check
-        if: needs.changes.outputs.check == 'true'
       - run: cargo clippy --workspace --all-targets -- -D warnings
-        if: needs.changes.outputs.check == 'true'
       - run: cargo check
-        if: needs.changes.outputs.check == 'true'
       - run: cargo test
-        if: needs.changes.outputs.check == 'true'
 
   appimage:
     name: AppImage host libraries
     needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.appimage != 'false' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: read
     # A full tauri release build is too expensive for every PR. Run when
-    # packaging inputs change; the release linux job still always asserts.
+    # its packaging inputs change; the release linux job still always asserts.
     steps:
       - uses: actions/checkout@v4
-        if: needs.changes.outputs.packaging == 'true'
         with:
           persist-credentials: false
 
       - uses: actions/setup-node@v4
-        if: needs.changes.outputs.packaging == 'true'
         with:
           node-version: 20
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
-        if: needs.changes.outputs.packaging == 'true'
 
       - name: Install Linux system dependencies
-        if: needs.changes.outputs.packaging == 'true'
         run: bash scripts/install-linux-deps-debian.sh
 
       - run: npm ci
-        if: needs.changes.outputs.packaging == 'true'
 
       - name: Build Linux packages
-        if: needs.changes.outputs.packaging == 'true'
         run: npm run build:linux
 
       - name: Assert AppImage uses host libraries
-        if: needs.changes.outputs.packaging == 'true'
         run: bash scripts/assert-appimage-host-libs.sh
 
   rpm:
     name: RPM build (${{ matrix.image }})
     needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.packaging != 'false' }}
     runs-on: ubuntu-latest
     container: ${{ matrix.image }}
     strategy:
@@ -227,7 +219,6 @@ jobs:
       # run, but a new dnf run does, and it usually gets working mirrors.
       - &dnf-retry
         name: Wrap every dnf call in the job with retries
-        if: needs.changes.outputs.packaging == 'true'
         run: |
           cat > /usr/local/bin/dnf <<'EOF'
           #!/bin/sh
@@ -243,34 +234,26 @@ jobs:
       # Neither fedora:43 nor almalinux:10 ships git, which actions/checkout
       # otherwise has to work around with a REST API tarball download.
       - name: Install git
-        if: needs.changes.outputs.packaging == 'true'
         run: dnf install -y git
 
       - uses: actions/checkout@v4
-        if: needs.changes.outputs.packaging == 'true'
         with:
           persist-credentials: false
 
       - name: Install system dependencies
-        if: needs.changes.outputs.packaging == 'true'
         run: bash scripts/install-linux-deps-fedora.sh
 
       - uses: actions/setup-node@v4
-        if: needs.changes.outputs.packaging == 'true'
         with:
           node-version: 20
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
-        if: needs.changes.outputs.packaging == 'true'
 
       - run: npm ci
-        if: needs.changes.outputs.packaging == 'true'
       - run: npm run build:fedora
-        if: needs.changes.outputs.packaging == 'true'
 
       - name: Install the generated rpm
-        if: needs.changes.outputs.packaging == 'true'
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -298,7 +281,7 @@ jobs:
       - name: Upload rpm for the clean install check
         # Ship and test the EL 10 build. Fedora 43's glibc is newer, so a
         # fedora:43 rpm can dnf-install on AlmaLinux 10 and still fail to load.
-        if: matrix.image == 'almalinux:10' && needs.changes.outputs.packaging == 'true'
+        if: matrix.image == 'almalinux:10'
         uses: actions/upload-artifact@v4
         with:
           name: rpm-package
@@ -307,7 +290,10 @@ jobs:
 
   rpm-clean-install:
     name: Clean rpm install
-    needs: [changes, rpm]
+    needs: rpm
+    # Runs when rpm passed. The status function keeps a failed `changes` job
+    # (an ancestor through rpm) from skipping it.
+    if: ${{ !cancelled() && needs.rpm.result == 'success' }}
     runs-on: ubuntu-latest
     # Deliberately no setup script: this is the only job that can catch an rpm
     # whose Requires are missing, since everywhere else the -devel packages are
@@ -319,26 +305,21 @@ jobs:
       - *dnf-retry
 
       - name: Install git
-        if: needs.changes.outputs.packaging == 'true'
         run: dnf install -y git
 
       - uses: actions/checkout@v4
-        if: needs.changes.outputs.packaging == 'true'
         with:
           persist-credentials: false
 
       - name: Enable EPEL 10
-        if: needs.changes.outputs.packaging == 'true'
         run: dnf install -y epel-release
 
       - uses: actions/download-artifact@v4
-        if: needs.changes.outputs.packaging == 'true'
         with:
           name: rpm-package
           path: rpm
 
       - name: Install the rpm on a clean image
-        if: needs.changes.outputs.packaging == 'true'
         run: |
           set -euo pipefail
           shopt -s nullglob
