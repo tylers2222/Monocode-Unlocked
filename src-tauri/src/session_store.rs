@@ -96,15 +96,16 @@ impl SessionStore {
             .map_err(|_| "Session store is locked".into())
     }
 
-    /// Whether `window` restores the earlier run's snapshot rows and
-    /// in-flight chats: the first window that asks in this run does, on every
+    /// Claims the earlier run's snapshot rows and in-flight chats for `window`
+    /// when no window has claimed them yet, and returns whether `window` holds
+    /// them: the first window that asks in this run does, on every
     /// ask. A second window that restored them too would bind the same chats,
     /// and its turn on one would end the first window's turn (ADE-93).
-    fn restores_earlier_run(&self, window: &str) -> bool {
+    fn claim_earlier_run(&self, window: &str) -> bool {
         self.restorer.get_or_init(|| window.to_owned()) == window
     }
 
-    /// Whether `window` already restored the earlier run. Only that window's
+    /// Whether `window` already claimed the earlier run; never claims it. Only that window's
     /// saves drop the earlier run's rows: another window's save before the
     /// restorer's first one must leave them for the restorer's reload.
     fn restored_earlier_run(&self, window: &str) -> bool {
@@ -740,7 +741,7 @@ pub fn session_list_in_flight<R: Runtime>(
 ) -> Result<Vec<InFlightSession>, String> {
     let running = control.sessions_running_outside(window.label());
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let earlier = store.restores_earlier_run(window.label());
+    let earlier = store.claim_earlier_run(window.label());
     let mut sessions = claim_in_flight(&conn, &store.run_id, window.label(), earlier)
         .map_err(|e| e.to_string())?;
     sessions.retain(|session| !running.contains(&session.session_id));
@@ -815,7 +816,7 @@ pub fn workspace_get_snapshot<R: Runtime>(
     window: WebviewWindow<R>,
 ) -> Result<Vec<Value>, String> {
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let earlier = store.restores_earlier_run(window.label());
+    let earlier = store.claim_earlier_run(window.label());
     get_workspace_snapshot(&conn, &store.run_id, window.label(), earlier)
 }
 

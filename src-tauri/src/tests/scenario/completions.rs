@@ -515,6 +515,11 @@ fn a_relaunch_gives_the_mono_chat_to_one_window() {
         "session_set_in_flight",
         json!({ "sessions": running }),
     );
+    call(
+        &windows[1],
+        "session_set_in_flight",
+        json!({ "sessions": [{ "sessionId": "side", "cwd": "/p" }] }),
+    );
     drop((windows, app));
 
     let (app, windows) = launch(&world, &["main", "window-0"]);
@@ -550,8 +555,8 @@ fn a_relaunch_gives_the_mono_chat_to_one_window() {
     );
     assert_eq!(
         holds(&none, &in_flight(main)),
-        [chat, "work"],
-        "the other window's save leaves the last run's running chats to the first window"
+        [chat, "side", "work"],
+        "the other window's save leaves the last run's running chats, its own too, to the first window"
     );
     let relaunched = workspace("work", &[chat, "side", "work"]);
     save(main, &relaunched, now_millis() - 50);
