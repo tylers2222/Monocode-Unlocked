@@ -247,6 +247,9 @@ Actions:
                   session's permission mode; set it to override (see Levels
                   for a session that sessions.start started). Run
                   models.list for allowed IDs. cwd is your project; no attachments.
+                  Set mcp:"none" (omp only) to start the session without the
+                  MCP servers omp would load, also when it resumes; the default
+                  "default" keeps them. Other harnesses refuse mcp:"none".
                   A submitted start also returns message_id, the start's
                   message: pass it as reply_to with intent "steer" in
                   messages.send to change the work it started. A draft has

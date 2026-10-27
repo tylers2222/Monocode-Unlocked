@@ -19,13 +19,13 @@ import {
   dequeueQueuedMessage,
   failQueuedMessage,
   missedTurn,
-  nextQueuedSend,
   resumeQueuedMessages,
   runningTurnMap,
   userTextHeld,
   type RunningTurnMap,
   type RunningTurns,
 } from "./messageQueue";
+import { nextQueuedSend } from "./queueSteerRule";
 import {
   deliverQueuedFollowUp,
   planQueuedSteer,

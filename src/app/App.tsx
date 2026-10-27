@@ -19,12 +19,12 @@ import {
   listenForMonoNotices,
   listenForMonoRoutes,
   opensTurn,
-  reminderSubmit,
   removeQueued,
   type MonoMessagingHost,
   type MonoQueueHost,
   type MonoRouteHost,
 } from "../features/monos/model/monoRoute";
+import { submitQueued } from "../features/monos/model/monoReminders";
 import { levelGate, resolveCaller } from "../features/monos/model/monoCaller";
 import {
   newTurnId,
@@ -71,7 +71,6 @@ import {
   QUEUED_FOLLOW_UP_ARCHIVED,
   QUEUED_FOLLOW_UP_REMOVED,
   queueAppFollowUp,
-  queuedAppDelivery,
   recordAppSteer,
   steerBlockReason,
   steerRunningTurn,
@@ -543,13 +542,12 @@ import {
 
 import {
   canDispatchQueuedHead,
-  canSteerNow,
   dequeueQueuedMessage,
   endTurnWakes,
   enqueueQueuedMessage,
   failQueuedMessage,
-  nextQueuedSend,
   pauseQueue,
+  queuedAppDelivery,
   queuedHead,
   queuedMessageForSubmit,
   queuedSteer,
@@ -559,6 +557,7 @@ import {
   wakesQueue,
   withoutPauseReason,
 } from "../features/sessions/model/messageQueue";
+import { nextQueuedSend } from "../features/sessions/model/queueSteerRule";
 import {
   deliverQueuedFollowUp,
   planQueuedSteer,
@@ -1774,16 +1773,6 @@ function Workspace({
       },
       turnId: (id) => currentTurnIds.current.get(id),
       owns: (id) => invoke<boolean>("control_owns_session", { sessionId: id }),
-      // The queue pump would steer an item into this turn now (design 16.6).
-      steersNow: (id) => {
-        const session = sessionsRef.current.find((entry) => entry.id === id);
-        return (
-          !!session &&
-          !!monoForSession(id) &&
-          canSteerHarness(session.harness) &&
-          canSteerNow(session)
-        );
-      },
     }),
     [],
   );
@@ -8050,6 +8039,7 @@ function Workspace({
                 model: pendingSwitch.fromModel,
                 modelSettings: pendingSwitch.fromSettings,
                 providerAccountId: pendingSwitch.fromProviderAccountId,
+                mcp: current.mcp,
                 userRequest: text,
               });
             } catch {
@@ -8236,6 +8226,7 @@ function Workspace({
                 runtimeMode: current.runtimeMode,
                 ephemeral: current.ephemeral === true,
                 codexStore: mono ? "mono" : undefined,
+                mcp: current.mcp,
                 ...turnAccess(
                   access,
                   mono,
@@ -8292,6 +8283,7 @@ function Workspace({
               runtimeMode: current.runtimeMode,
               ephemeral: current.ephemeral === true,
               codexStore: mono ? "mono" : undefined,
+              mcp: current.mcp,
               intent: intent === "orchestrate" ? "plan" : intent,
               ...turnAccess(
                 access,
@@ -9321,12 +9313,8 @@ function Workspace({
     const scheduled = new Set<string>();
     // An idle session starts its head as a new turn. A busy Mono steers its
     // first steerable message; messages that wait for the turn end keep their place.
-    const nextSend = (session: Session) =>
-      nextQueuedSend(
-        session,
-        currentTurnIds.current,
-        !!monoForSession(session.id) && canSteerHarness(session.harness),
-      );
+    const nextSend = (session: Session, mono: boolean) =>
+      nextQueuedSend(session, currentTurnIds.current, mono);
     for (const session of sessions) {
       const queued = session.queuedMessages ?? [];
       if (queued.length === 0) continue;
@@ -9352,7 +9340,7 @@ function Workspace({
         );
         continue;
       }
-      const next = nextSend(session);
+      const next = nextSend(session, mono);
       if (!next || queueDispatchingRef.current.has(session.id)) continue;
       queueDispatchingRef.current.add(session.id);
       scheduled.add(session.id);
@@ -9362,7 +9350,7 @@ function Workspace({
           const latest = sessionsRef.current.find(
             (entry) => entry.id === session.id,
           );
-          const head = latest ? nextSend(latest) : undefined;
+          const head = latest ? nextSend(latest, mono) : undefined;
           if (!latest || !head || head.id !== next.id) {
             queueDispatchingRef.current.delete(session.id);
             return;
@@ -9408,7 +9396,11 @@ function Workspace({
                     ({ text, turnId }, providerTook) =>
                       submit({ agentText: text, turnId, providerTook }),
                   )
-              : await submit(reminderSubmit(head));
+              : await submitQueued(
+                  head,
+                  isLiveHarness(latest.harness),
+                  submit,
+                );
             // A preflight rejection must not repeatedly retry or hide the message.
             if (!accepted && monoForSession(session.id)) {
               const current = sessionsRef.current.find(
@@ -10560,6 +10552,7 @@ function Workspace({
             runtimeMode: current.runtimeMode,
             ephemeral: current.ephemeral === true,
             codexStore: isMonoSession(sessionId) ? "mono" : undefined,
+            mcp: current.mcp,
             ...turnAccess(
               appAccess(current.blocks),
               isMonoSession(sessionId),

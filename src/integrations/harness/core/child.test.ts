@@ -144,6 +144,28 @@ describe("child bridge", () => {
     spawned.resolve(42);
     await spawning;
     expect(onExit).toHaveBeenCalledWith(1);
+    // ADE-117: a default spawn sends no ompMcp; a "none" spawn sends it, so
+    // Rust starts omp without MCP servers.
+    expect(
+      mocks.invoke.mock.calls.find(
+        ([command]) => command === "harness_spawn",
+      )?.[1],
+    ).not.toHaveProperty("ompMcp");
+    await child.spawnChild(
+      "probe",
+      "omp",
+      ["--mode", "rpc"],
+      "/repo",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "none",
+    );
+    expect(mocks.invoke).toHaveBeenLastCalledWith(
+      "harness_spawn",
+      expect.objectContaining({ ompMcp: "none" }),
+    );
     release();
   });
 
