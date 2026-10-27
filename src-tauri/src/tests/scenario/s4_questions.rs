@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 
 use super::agents::{mono_caller, session_caller};
 use super::asks::written;
+use super::s3_miss::misses;
 use super::s5_delivery::{claim, named};
 use super::world::World;
 use crate::ask_scheduler::{self, Claimed};
@@ -384,12 +385,12 @@ fn a_claimed_reminder_goes_out_once(world: &mut World, a: &Asked, review: &Messa
 }
 
 /// S4 "question() keeps the key and pauses the clock", "the clock jumps 3
-/// hours while it waits: no reminder", "the answer comes down and the clock
+/// hours while it waits: no reminder and no miss", "the answer comes down and the clock
 /// resumes where it paused", "one update() keeps the key and the clock
 /// runs", and S2 "a 4th question(); a 2nd update()". A question the lead
 /// cannot answer goes up as the lead's own question on its own ask. Defect:
 /// a question spends the key or leaves the clock running, so a reminder
-/// comes while it waits; an answer resumes the clock from the answer's time
+/// or a miss comes while it waits; an answer resumes the clock from the answer's time
 /// instead of where it paused, or answers a question that does not wait;
 /// a 4th question or a 2nd update gets through; or the wrong party answers.
 /// Also: a refusal loses its code or its hint; an answer guesses its ask,
@@ -435,7 +436,7 @@ fn s4_a_question_pauses_the_clock_and_its_answer_resumes_it() {
     world.advance(2 * MINUTE);
     let paused_at = questions_pause_and_go_up(&world, &a, due, &start_ask);
 
-    // S4.3: three hours of active time while both wait: no reminder.
+    // S4.3: three hours of active time while both wait: no reminder and no miss.
     world.advance(3 * HOUR);
     assert!(
         reminders(&world, &a.ask).is_empty(),
@@ -444,6 +445,11 @@ fn s4_a_question_pauses_the_clock_and_its_answer_resumes_it() {
     assert!(
         reminders(&world, &start_ask).is_empty(),
         "no reminder while paused"
+    );
+    assert!(misses(&world, &a.ask).is_empty(), "no miss while paused");
+    assert!(
+        misses(&world, &start_ask).is_empty(),
+        "no miss while paused"
     );
     assert_eq!(clock(&world, &a.ask).3, None);
 
