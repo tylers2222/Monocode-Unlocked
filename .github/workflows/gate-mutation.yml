@@ -5,7 +5,10 @@ name: gate-mutation
 # pull_request, with no token permissions and no secrets. gate/integrity trusts its result
 # only from this file, on the exact head (scripts/process/merge_rule.py
 # mutation_result), and a PR that edits this file or scripts/process/ fails
-# gate/integrity as a gate edit. The mutation tools are pinned and installed by the job.
+# gate/integrity as a gate edit. The mutation tools are pinned and installed by the jobs.
+# plan picks the targets, the rust shards and ts mutate, and the gate/mutation job is
+# the one check merge_rule.py reads: green only when every job the plan needed succeeded.
+# Every job's name starts with "gate/mutation"; only the aggregate is exactly that name.
 on:
   pull_request:
     branches: [tyler/main]
@@ -18,19 +21,21 @@ concurrency:
 # token scope. Only the Tier step gets the token; no step that runs PR code has it.
 permissions: {}
 
+env:
+  PR: ${{ github.event.pull_request.number }}
+  BASE_SHA: ${{ github.event.pull_request.base.sha }}
+  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  GATE_REPO: ${{ github.repository }}
+
 jobs:
-  mutation:
-    name: gate/mutation
-    # Pinned: ubuntu-latest moved to ubuntu-26.04, whose /tmp quota is too small for the cargo-mutants
-    # baseline ("Disk quota exceeded (os error 122)", PR #352 run 40302201704 attempt 2). Every green
-    # mutation run on 2026-10-26 used ubuntu-24.04.
+  plan:
+    name: gate/mutation plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    env:
-      PR: ${{ github.event.pull_request.number }}
-      BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      GATE_REPO: ${{ github.repository }}
+    timeout-minutes: 10
+    outputs:
+      base: ${{ steps.targets.outputs.base }}
+      rust: ${{ steps.targets.outputs.rust }}
+      stryker: ${{ steps.targets.outputs.stryker }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,23 +53,43 @@ jobs:
         id: targets
         if: ${{ steps.tier.outputs.tier == 'T3' }}
         run: |
-          merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
-          git diff "$merge_base" "$HEAD_SHA" > "$RUNNER_TEMP/pr.diff"
-          git diff --unified=0 "$merge_base" "$HEAD_SHA" | python3 scripts/process/mutation_targets.py | tee -a "$GITHUB_OUTPUT"
+          base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          git diff --unified=0 "$base" "$HEAD_SHA" | python3 scripts/process/mutation_targets.py | tee -a "$GITHUB_OUTPUT"
+
+  rust:
+    # No matrix value in the name: GitHub appends it per leg ("gate/mutation rust (0)"), and a
+    # skipped job then shows the plain name, not the raw expression.
+    name: gate/mutation rust
+    needs: plan
+    if: ${{ needs.plan.outputs.rust == 'yes' }}
+    # Pinned: ubuntu-latest moved to ubuntu-26.04, whose /tmp quota is too small for the cargo-mutants
+    # baseline ("Disk quota exceeded (os error 122)", PR #352 run 40302201704 attempt 2). Every green
+    # mutation run on 2026-10-26 used ubuntu-24.04.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      # Every shard runs to the end, so one push lists every surviving mutant.
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
 
       - id: rust-version
-        if: ${{ steps.targets.outputs.rust == 'yes' }}
         run: echo "version=$(cat .github/rust-version)" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@master
-        if: ${{ steps.targets.outputs.rust == 'yes' }}
         with:
           toolchain: ${{ steps.rust-version.outputs.version }}
 
       # A job-owned CARGO_HOME with a config the job writes, and a pinned cargo-mutants
       # built from crates.io into a job-owned directory, called by its absolute path.
       - name: Install cargo-mutants 27.1.0
-        if: ${{ steps.targets.outputs.rust == 'yes' }}
         env:
           CARGO_HOME: ${{ runner.temp }}/cargo-home
         run: |
@@ -73,24 +98,56 @@ jobs:
           cargo install cargo-mutants --version 27.1.0 --locked --root "$RUNNER_TEMP/tools"
 
       # Step timeouts fail the step; gate/integrity reads any result but success as a failure.
-      - name: cargo mutants on the changed Rust lines
-        if: ${{ steps.targets.outputs.rust == 'yes' }}
-        timeout-minutes: 55
+      - name: cargo mutants on this shard of the changed Rust lines
+        timeout-minutes: 110
         env:
           CARGO_HOME: ${{ runner.temp }}/cargo-home
           CARGO_MUTANTS: ${{ runner.temp }}/tools/bin/cargo-mutants
+          SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+          MERGE_BASE: ${{ needs.plan.outputs.base }}
         run: |
+          git diff "$MERGE_BASE" "$HEAD_SHA" > "$RUNNER_TEMP/pr.diff"
           bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
-          bash scripts/process/mutation.sh rust "$RUNNER_TEMP/pr.diff"
+          bash scripts/process/mutation.sh rust "$RUNNER_TEMP/pr.diff" "$SHARD"
+
+  ts:
+    name: gate/mutation ts
+    needs: plan
+    if: ${{ needs.plan.outputs.stryker != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
-        if: ${{ steps.targets.outputs.stryker != '' }}
         with:
           node-version: 24
 
       - name: Stryker on the changed TypeScript lines
-        if: ${{ steps.targets.outputs.stryker != '' }}
         timeout-minutes: 55
         env:
-          SPECS: ${{ steps.targets.outputs.stryker }}
+          SPECS: ${{ needs.plan.outputs.stryker }}
         run: bash scripts/process/mutation.sh ts "$SPECS"
+
+  gate:
+    name: gate/mutation
+    needs: [plan, rust, ts]
+    # always(): a failed, cancelled or skipped job must still give a failing gate/mutation,
+    # never a skipped one. A job the plan did not need must be skipped, not run.
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PLAN: ${{ needs.plan.result }}
+      RUST: ${{ needs.rust.result }}
+      RUST_WANTED: ${{ needs.plan.outputs.rust == 'yes' && 'success' || 'skipped' }}
+      TS: ${{ needs.ts.result }}
+      TS_WANTED: ${{ needs.plan.outputs.stryker != '' && 'success' || 'skipped' }}
+    steps:
+      - name: Every needed job succeeded
+        run: |
+          echo "plan $PLAN; rust shards $RUST (needs $RUST_WANTED); stryker $TS (needs $TS_WANTED)"
+          [ "$PLAN" = success ] && [ "$RUST" = "$RUST_WANTED" ] && [ "$TS" = "$TS_WANTED" ]
