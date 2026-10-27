@@ -188,6 +188,102 @@ pub fn decide_ack(ask: &AskState, caller: &Actor) -> Result<(), AckRefused> {
     }
 }
 
+/// R14: what is said on an open ask while its key stays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Talk {
+    /// The child asks its parent; the ask's clock pauses until the answer.
+    Question,
+    /// The parent answers question `seq`; the clock resumes.
+    Answer { seq: i64 },
+    /// The child reports progress, once; the clock runs on.
+    Update,
+}
+
+/// Questions one ask may carry (`mono_ask_events` CHECKs the same).
+pub const MAX_QUESTIONS: i64 = 3;
+
+impl Talk {
+    /// The tool and the `mono_ask_events.kind`.
+    pub fn kind(self) -> &'static str {
+        match self {
+            Talk::Question => "question",
+            Talk::Answer { .. } => "answer",
+            Talk::Update => "update",
+        }
+    }
+
+    pub fn refused_code(self) -> &'static str {
+        match self {
+            Talk::Question => "question_refused",
+            Talk::Answer { .. } => "answer_refused",
+            Talk::Update => "update_refused",
+        }
+    }
+
+    /// Who may say it and who hears it: the child asks and updates its
+    /// asker, and the asker answers its child.
+    pub fn parties(self, ask: &AskState) -> (&Actor, &Actor) {
+        match self {
+            Talk::Answer { .. } => (&ask.parent, &ask.child),
+            Talk::Question | Talk::Update => (&ask.child, &ask.parent),
+        }
+    }
+
+    /// The refusal for a caller that may not say it on an ask.
+    pub fn not_a_party(self) -> TalkRefused {
+        match self {
+            Talk::Answer { .. } => TalkRefused::NotYourAsk,
+            Talk::Question | Talk::Update => TalkRefused::NotYours,
+        }
+    }
+
+    /// The seq an answer names: part of the call, for dedupe by request id.
+    pub fn answers(self) -> Option<i64> {
+        match self {
+            Talk::Answer { seq } => Some(seq),
+            Talk::Question | Talk::Update => None,
+        }
+    }
+}
+
+/// What an ask already carries, as `decide_talk` reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Said {
+    pub questions: i64,
+    /// A question waits for its answer: `paused_at_active_ms` is set.
+    pub paused: bool,
+    pub updated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TalkRefused {
+    NoOpenAsk,
+    AlreadyAcked,
+    NotYours,
+    NotYourAsk,
+    QuestionWaits { seq: i64 },
+    AnswerOtherSeq { seq: i64 },
+    NoQuestionsLeft,
+    NoQuestionWaits,
+    UpdateSent,
+}
+
+impl TalkRefused {
+    pub fn hint(self) -> String {
+        match self {
+            TalkRefused::NoOpenAsk => "No open ask has this id. Name it with ask_id.".into(),
+            TalkRefused::AlreadyAcked => "This ask was already acked.".into(),
+            TalkRefused::NotYours => "This ask is not yours: only the Mono or session it was sent to can ask a question or send an update on it.".into(),
+            TalkRefused::NotYourAsk => "Only the one who asked can answer its questions.".into(),
+            TalkRefused::QuestionWaits { seq } => format!("Question {seq} on this ask waits for its answer. Ask the next one after it comes."),
+            TalkRefused::AnswerOtherSeq { seq } => format!("The question that waits is seq {seq}. Answer it with seq {seq}."),
+            TalkRefused::NoQuestionsLeft => format!("This ask already had its {MAX_QUESTIONS} questions. Decide, or ack and say what is missing."),
+            TalkRefused::NoQuestionWaits => "No question on this ask waits for an answer.".into(),
+            TalkRefused::UpdateSent => "This ask already had its one update. Ack it when the work is done.".into(),
+        }
+    }
+}
+
 /// Plan section 2: the one extension moves the deadline by 15 active minutes.
 pub const EXTENSION_MS: i64 = 15 * 60_000;
 
@@ -240,6 +336,43 @@ impl ExtendRefused {
             }
         }
     }
+}
+
+/// R14: whether `caller` may say `talk` on `ask`, and the event's `seq`.
+/// The child asks up to 3 questions, one at a time, and sends one update;
+/// the parent answers the question that waits, by its seq.
+pub fn decide_talk(
+    ask: &AskState,
+    said: Said,
+    talk: Talk,
+    caller: &Actor,
+) -> Result<i64, TalkRefused> {
+    if talk.parties(ask).0 != caller {
+        return Err(talk.not_a_party());
+    }
+    if ask.state == State::Acked {
+        return Err(TalkRefused::AlreadyAcked);
+    }
+    match talk {
+        Talk::Question if said.paused => Err(TalkRefused::QuestionWaits {
+            seq: said.questions,
+        }),
+        Talk::Question if said.questions >= MAX_QUESTIONS => Err(TalkRefused::NoQuestionsLeft),
+        Talk::Question => Ok(said.questions + 1),
+        Talk::Answer { .. } if !said.paused => Err(TalkRefused::NoQuestionWaits),
+        Talk::Answer { seq } if seq != said.questions => Err(TalkRefused::AnswerOtherSeq {
+            seq: said.questions,
+        }),
+        Talk::Answer { seq } => Ok(seq),
+        Talk::Update if said.updated => Err(TalkRefused::UpdateSent),
+        Talk::Update => Ok(1),
+    }
+}
+
+/// R14: the deadline once an answer resumes the clock where the question
+/// paused it, moved by the active time the question waited.
+pub fn resumed_due(due: Option<i64>, paused_at: i64, active_ms: i64) -> Option<i64> {
+    due.map(|due| due + active_ms - paused_at)
 }
 
 /// Plan R10, R11: only the child extends, only an open ask with a deadline,
