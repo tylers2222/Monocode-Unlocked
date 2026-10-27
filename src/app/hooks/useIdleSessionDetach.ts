@@ -18,6 +18,7 @@ import {
 import { forgetHarnessSession } from "../../integrations/harness/core/registry";
 import { isMonoSession } from "../../features/monos/model/mono";
 import { isHabitRun } from "../../features/monos/model/monoHabits";
+import { isLaunchAccepting } from "../model/quickLaunchSession";
 
 const SESSION_DETACH_DELAY_MS = 250;
 
@@ -97,6 +98,7 @@ export function useIdleSessionDetach({
         !visibleIds.has(session.id) &&
         !session.busy &&
         !openingSessionIds.current.has(session.id) &&
+        !isLaunchAccepting(session.id) &&
         !(keepUnseen && unseenFinishedRef.current.has(session.id)),
     );
     if (idleDetached.length === 0) return;
@@ -116,6 +118,7 @@ export function useIdleSessionDetach({
           visibleIds.has(session.id) ||
           session.busy ||
           openingSessionIds.current.has(session.id) ||
+          isLaunchAccepting(session.id) ||
           (keepUnseen && unseenFinishedRef.current.has(session.id)) ||
           skipForgetSessionIds.current.has(session.id),
       ),
