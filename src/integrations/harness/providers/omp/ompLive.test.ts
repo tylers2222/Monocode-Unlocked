@@ -468,14 +468,32 @@ describe("OMP command lifecycle over the real RPC multiplexer", () => {
     expect(events.filter((e) => e.type === "message.completed")).toHaveLength(
       1,
     );
-    expect(transport.spawnChild).toHaveBeenCalledWith(
+    expect(transport.spawnChild.mock.calls[0].slice(0, 6)).toEqual([
       "omp-test",
       "/fake/omp",
       ["--mode", "rpc"],
       "/repo",
       undefined,
       "omp",
-    );
+    ]);
+  });
+
+  // ADE-117. Defect: a session that chose mcp "none" starts omp with its MCP
+  // servers, a default session's start changes, or Pi gets an omp-only choice.
+  it("starts omp without MCP servers only for a session that chose none", async () => {
+    for (const turn of [
+      sendOmpTurn({ ...input("omp-none"), mcp: "none" }),
+      sendOmpTurn(input("omp-default")),
+      sendPiTurn({ ...input("pi-none"), model: "pi:default", mcp: "none" }),
+    ])
+      void turn.catch(() => undefined);
+    await vi.waitFor(() => expect(transport.spawnChild).toHaveBeenCalledTimes(3));
+    const calls = transport.spawnChild.mock.calls;
+    expect(calls.map((call) => [call[0], call[2], call[8]])).toEqual([
+      ["omp-none", ["--mode", "rpc"], "none"],
+      ["omp-default", ["--mode", "rpc"], undefined],
+      ["pi-none", ["--mode", "rpc"], undefined],
+    ]);
   });
 
   it("reports when OMP accepts a turn", async () => {

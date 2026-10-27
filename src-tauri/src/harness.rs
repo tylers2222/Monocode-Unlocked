@@ -967,6 +967,7 @@ pub fn harness_spawn<R: Runtime>(
     binary_path: Option<String>,
     codex_store: Option<String>,
     devin_ask_edits: Option<bool>,
+    omp_mcp: Option<String>,
 ) -> Result<u32, String> {
     let workdir = expand_home(&cwd);
     if !workdir.is_dir() {
@@ -1002,6 +1003,14 @@ pub fn harness_spawn<R: Runtime>(
         }
         Some(true) => return Err("Edit approvals are only supported for `devin acp`".into()),
     };
+    let omp_mcp = match omp_mcp.as_deref() {
+        None => Vec::new(),
+        Some("none") if binary_provider.as_deref() == Some("omp") => {
+            crate::omp_mcp::no_mcp_args(&app, &command, &workdir)?
+        }
+        Some("none") => return Err("mcp \"none\" is only supported for omp".into()),
+        Some(other) => return Err(format!("Unknown mcp choice: {other}")),
+    };
 
     let _reservation = crate::worktree_lifecycle::reserve_spawn(&workdir)?;
     let (epoch, kill_all, prev) = host.begin_spawn(&session_id);
@@ -1010,6 +1019,7 @@ pub fn harness_spawn<R: Runtime>(
     }
 
     cmd.args(&devin_config)
+        .args(&omp_mcp)
         .args(&args)
         .current_dir(&workdir)
         .stdin(Stdio::piped())
@@ -1572,7 +1582,7 @@ fn exec_capture(command: &str, args: &[String], cwd: Option<&str>) -> Result<Str
     Err(stderr.trim().to_string())
 }
 
-const EXEC_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const EXEC_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub(crate) fn exec_output(
     command: &str,

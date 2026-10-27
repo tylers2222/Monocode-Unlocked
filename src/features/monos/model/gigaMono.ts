@@ -64,8 +64,9 @@ function monoSettings(
 
 /**
  * A Mono's projects, each named by path or by name, as the projects on the
- * rail: the same ones its settings offer. A folder named MonoCode other than
- * the workspace at `<home>/MonoCode` is refused.
+ * rail: the same ones its settings offer. A project already on the rail is
+ * accepted whatever its folder is named; only a folder that is not one yet is
+ * refused under the reserved name MonoCode.
  */
 export function resolveMonoProjects(
   value: unknown,
@@ -87,16 +88,14 @@ export function resolveMonoProjects(
     const byPath = rail.find((path) => pathKey(path) === pathKey(named));
     const byName = rail.filter((path) => projectName(path) === named.trim());
     const match = byPath ?? (byName.length === 1 ? byName[0] : undefined);
-    const reserved = reservedProjectNameError(match ?? named, home);
-    if (reserved) throw new Error(reserved);
-    if (!match)
-      throw new Error(
+    if (match) return match;
+    throw new Error(
+      reservedProjectNameError(named, home) ??
         `Not a project in MonoCode: ${named}. Projects: ${
           rail.map((path) => `${projectName(path)} (${path})`).join(", ") ||
           "none yet"
         }`,
-      );
-    return match;
+    );
   });
 }
 
