@@ -880,59 +880,27 @@ export async function getMessage(host: MonoMessagingHost, input: GetInput) {
   return { message: got.message };
 }
 
-type AskCallFailed = {
-  outcome: "failed";
-  error: {
-    code: "invalid_input" | "extend_refused" | "reason_refused";
-    hint: string;
-  };
-};
+type Extended =
+  | { outcome: "extended"; askId: MessageId; dueInMs: number }
+  | {
+      outcome: "failed";
+      error: { code: "invalid_input" | "extend_refused"; hint: string };
+    };
 
-function askCallFailed(answer: { outcome: string }): answer is AskCallFailed {
-  return answer.outcome === "failed";
-}
-
-/**
- * An ask call that writes no message (R10 `extend`, R11 `reason`): Rust
- * decides and writes; a refusal throws its code and hint.
- */
-async function askCall<T extends { outcome: string }>(
-  host: MonoMessagingHost,
-  command: "mono_ask_extend" | "mono_ask_reason",
-  input: RawInput,
-): Promise<T> {
+/** `messages.extend` (R10): Rust decides and moves the deadline; no message. */
+async function extendAsk(host: MonoMessagingHost, input: RawInput) {
   const resolved = await host.caller();
   if (!resolved.ok) throw new AppActionError(resolved.code, resolved.hint);
-  const answer = await invoke<T | AskCallFailed>(command, {
+  const extended = await invoke<Extended>("mono_ask_extend", {
     caller: resolved.caller,
     input,
   });
-  if (askCallFailed(answer))
-    throw new AppActionError(answer.error.code, answer.error.hint);
-  return answer;
-}
-
-/** `messages.extend` (R10): moves the deadline once. */
-async function extendAsk(host: MonoMessagingHost, input: RawInput) {
-  const extended = await askCall<{
-    outcome: "extended";
-    askId: MessageId;
-    dueInMs: number;
-  }>(host, "mono_ask_extend", input);
+  if (extended.outcome === "failed")
+    throw new AppActionError(extended.error.code, extended.error.hint);
   return {
     ask_id: extended.askId,
     due_in: dueIn(extended.dueInMs),
   };
-}
-
-/** `messages.reason` (R11): stores why the ask is late on its miss, once. */
-async function reasonAsk(host: MonoMessagingHost, input: RawInput) {
-  const stored = await askCall<{ outcome: "stored"; askId: MessageId }>(
-    host,
-    "mono_ask_reason",
-    input,
-  );
-  return { ask_id: stored.askId };
 }
 
 /**
@@ -1009,7 +977,6 @@ export function agentMessages(
     ask: (requestId, input) => sendMessage(host, "ask", requestId, input),
     ack: (requestId, input) => sendMessage(host, "ack", requestId, input),
     extend: (input) => extendAsk(host, input),
-    reason: (input) => reasonAsk(host, input),
     reply: (requestId, input) => replyMessage(host, requestId, input),
     get: (input) => getMessage(host, input),
   };
