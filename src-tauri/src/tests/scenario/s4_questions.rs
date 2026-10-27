@@ -17,10 +17,11 @@ const MINUTE: i64 = 60_000;
 const HOUR: i64 = 60 * MINUTE;
 const T5_LEAD: i64 = 5 * MINUTE;
 
-type Said = (Option<Carries>, Option<String>, Option<String>);
+type Said = (Option<Carries>, Option<String>, Option<String>, String);
 type Clock = (String, Option<i64>, Option<i64>, Option<i64>);
 
-/// What the row a call wrote carries, and the Mono or session it went to.
+/// What the row a call wrote carries, the Mono or session it went to, and
+/// the text that party reads.
 fn said(world: &World, submitted: Submitted) -> Said {
     let Submitted::Accepted {
         mut messages,
@@ -31,15 +32,15 @@ fn said(world: &World, submitted: Submitted) -> Said {
         panic!("not a new accept: {submitted:?}");
     };
     let row = messages.remove(0);
-    let (mono, session) = world
+    let (mono, session, body) = world
         .conn()
         .query_row(
-            "SELECT to_mono_id, to_session_id FROM mono_messages WHERE id = ?1",
+            "SELECT to_mono_id, to_session_id, body FROM mono_messages WHERE id = ?1",
             [row.message.id.as_str()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    (row.carries, mono, session)
+    (row.carries, mono, session, body)
 }
 
 /// A refusal the caller reads: its exact code, and a hint naming the fix.
@@ -138,8 +139,13 @@ impl Asked {
         self.call(world, &self.w, key, "update", input)
     }
 
-    fn to_lead(&self, carries: Carries) -> Said {
-        (Some(carries), None, Some(self.lead.as_str().into()))
+    fn to_lead(&self, carries: Carries, text: &str) -> Said {
+        (
+            Some(carries),
+            None,
+            Some(self.lead.as_str().into()),
+            text.into(),
+        )
     }
 }
 
@@ -153,7 +159,8 @@ fn questions_pause_and_go_up(world: &World, a: &Asked, due: i64, start_ask: &Mes
         ask_id: ask.clone(),
         seq: 1,
     };
-    assert_eq!(said(world, a.question(world, 1)), a.to_lead(question));
+    let got = said(world, a.question(world, 1));
+    assert_eq!(got, a.to_lead(question, "Question 1"));
     let paused_at = at(world, ask, "question", 1);
     assert_eq!(
         clock(world, ask),
@@ -194,7 +201,8 @@ fn questions_pause_and_go_up(world: &World, a: &Asked, due: i64, start_ask: &Mes
         seq: 1,
     };
     let mono = a.mono.as_str().to_string();
-    assert_eq!(said(world, up), (Some(up_carries), Some(mono), None));
+    let to_mono = (Some(up_carries), Some(mono), None, "Which branch?".into());
+    assert_eq!(said(world, up), to_mono);
     paused_at
 }
 
@@ -216,13 +224,18 @@ fn answers_come_down(
     // The Mono's window lists no session: the idle lead it started still
     // gets the answer.
     let got = said(world, world.tool(m, "m-a1", "answer", down, &[]));
-    assert_eq!(got, a.to_lead(down_carries));
+    assert_eq!(got, a.to_lead(down_carries, "main"));
     assert_eq!(clock(world, start_ask).2, None, "the lead's clock resumes");
     let answer = Carries::Answer {
         ask_id: ask.clone(),
         seq: 1,
     };
-    let to_worker = (Some(answer), None, Some(a.worker.as_str().into()));
+    let to_worker = (
+        Some(answer),
+        None,
+        Some(a.worker.as_str().into()),
+        "Use main".into(),
+    );
     assert_eq!(said(world, a.answer(world, &a.l, "l-a1", 1)), to_worker);
     let resumed_at = at(world, ask, "answer", 1);
     assert!(resumed_at - paused_at >= 3 * HOUR);
@@ -254,7 +267,8 @@ fn one_update_and_three_questions(world: &World, a: &Asked, due: i64) {
     let update = Carries::Update {
         ask_id: a.ask.clone(),
     };
-    assert_eq!(said(world, a.update(world, "w-u1")), a.to_lead(update));
+    let got = said(world, a.update(world, "w-u1"));
+    assert_eq!(got, a.to_lead(update, "Still working"));
     assert_eq!(
         clock(world, &a.ask),
         ("open".into(), Some(due), None, Some(due - T5_LEAD))
@@ -372,7 +386,8 @@ fn a_claimed_reminder_goes_out_once(world: &mut World, a: &Asked, review: &Messa
 /// refused once a second ask is open; or a reminder queued before a
 /// question goes out while it waits, or never runs again after the answer;
 /// or a reminder claimed mid-send is withdrawn, so the answer queues it
-/// again.
+/// again; or a question, answer or update reaches its party without its
+/// text.
 #[test]
 fn s4_a_question_pauses_the_clock_and_its_answer_resumes_it() {
     let mut world = World::new("s4-questions");
