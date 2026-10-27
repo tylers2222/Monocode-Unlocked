@@ -145,8 +145,8 @@ it("says how to keep memory and update the soul only at the user's request", () 
   // A Mono learns every messaging tool and field it can use, the notice it
   // can get, the inference line that can start a message (design 16.10 I4
   // row), and not the removed tool. R14: one waiting question at a time, an
-  // answer by the asker with the question's seq, one update per ask, and all
-  // nine tool names.
+  // answer by the asker with the question's seq, one update per ask, asking
+  // up only with an open ask of your own, and all eleven tool names.
   const messaging = rules("mono_messaging_rules");
   for (const tool of [
     "messages.get_monos",
@@ -172,7 +172,9 @@ it("says how to keep memory and update the soul only at the user's request", () 
     'messages.answer {"ask_id":"<question_of>","seq"',
     "question_of and seq",
     'Once per ask, app messages.update {"ask_id"',
-    "get_message, ask, ack, question, answer, update, extend and reason",
+    "you have an open ask of your own, ask your own asker with messages.question",
+    "otherwise answer from what you know, or ask the user",
+    "get_monos, send_message, reply, get_message, ask, ack, question, answer, update, extend and reason",
   ])
     expect(messaging).toContain(tool);
   expect(full).not.toContain("monos.send");

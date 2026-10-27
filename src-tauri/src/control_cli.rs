@@ -381,22 +381,28 @@ Actions:
                   ask's clock until the answer comes. Without ask_id it is
                   your one open ask. The asker gets a <mono_message> with
                   question_of and seq. If you cannot answer a question you
-                  were asked, ask your own parent on your own ask, and pass
-                  its answer down. Codes: invalid_input, request_id_reused,
-                  question_refused (the hint says why), and the codes of
-                  messages.send.
+                  were asked and you have an open ask of your own, ask your
+                  own asker with messages.question on that ask, and pass its
+                  answer down; otherwise answer from what you know, or ask
+                  the user. Codes: invalid_input, request_id_reused,
+                  question_refused (no open ask has this id, not yours,
+                  acked, a question waits, or 3 asked; the hint says which),
+                  and the codes of messages.send.
   messages.answer {"ask_id":"m_...","seq":1,"message":"..."}
                   Answer the question that waits on your ask: ask_id is its
                   question_of, seq its seq. The asked one gets a
                   <mono_message> with answer_of and seq, and its clock
                   resumes where it paused. Codes: invalid_input,
-                  request_id_reused, answer_refused, and the codes of
-                  messages.send.
+                  request_id_reused, answer_refused (no open ask has this
+                  id, not your ask, acked, no question waits, or another
+                  seq; the hint says which), and the codes of messages.send.
   messages.update {"ask_id":"m_...","message":"..."}
                   Tell the one who asked how the work goes, once per ask.
                   Keeps the key; the clock runs on. Without ask_id it is
                   your one open ask. Codes: invalid_input, request_id_reused,
-                  update_refused, and the codes of messages.send.
+                  update_refused (no open ask has this id, not yours, acked,
+                  or already updated; the hint says which), and the codes of
+                  messages.send.
   messages.extend {"ask_id":"m_..."}
                   Move the deadline of an ask you were asked 15 active
                   minutes later, once. It opens with the <mono_reminder> 5
@@ -956,7 +962,7 @@ pub fn app_tools() -> Value {
         {
             "name": "question",
             "action": "messages.question",
-            "description": "Ask the one who asked you a question about its ask: up to 3 per ask, one at a time. Keeps the key and pauses the ask's clock until the answer comes. The asker gets a <mono_message> with question_of and seq. If you cannot answer a question you were asked, ask your own parent on your own ask and pass its answer down. A refusal has code and hint; follow the hint.",
+            "description": "Ask the one who asked you a question about its ask: up to 3 per ask, one at a time. Keeps the key and pauses the ask's clock until the answer comes. The asker gets a <mono_message> with question_of and seq. If you cannot answer a question you were asked and you have an open ask of your own, ask your own asker with this tool on that ask and pass its answer down; otherwise answer from what you know, or ask the user. A refusal has code and hint; follow the hint.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
