@@ -23,6 +23,8 @@ case "$tier" in smoke) filter=(--filter-metadata tier=core) ;; full) filter=() ;
 
 export GIGA_EVAL_OUT="${GIGA_EVAL_OUT:-/tmp/monocode-evals}"
 export GIGA_EVAL_HOME="${GIGA_EVAL_HOME:-/tmp/monocode-evals-home}"
+# The Mono under test runs on a real model: copies of the real logins.
+export GIGA_EVAL_LOGINS=1
 export EVAL_OUT_DIR="${EVAL_OUT_DIR:-$EVALS/out}"
 export PROMPTFOO_CONFIG_DIR="$EVAL_OUT_DIR/.promptfoo" PROMPTFOO_DISABLE_TELEMETRY=1 PROMPTFOO_DISABLE_UPDATE=1
 export PROMPTFOO_FAILED_TEST_EXIT_CODE=0

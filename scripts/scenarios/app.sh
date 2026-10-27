@@ -20,6 +20,8 @@
 #                             notice and the lead's reason on its miss
 #   app.sh approvals [runs]   ADE-55 approvals board, macOS only, on a copy
 #                             of the real app database, `runs` times (default 1)
+#   app.sh home-isolation     ADE-112: writes in the temp HOME leave the login
+#                             files unchanged, and a link out of it is refused
 #
 # GIGA_EVAL_OUT and GIGA_EVAL_HOME default to their own /tmp folders, apart
 # from other GigaEval runs. The installed apps are never used; `approvals`
@@ -263,8 +265,7 @@ run_d1() {
   echo "on:"
   touch "$SANDBOX_ON"
   # The temp HOME and srt are under /tmp, which the app's defaults allow, so
-  # only the deny lists keep ~/.local/bin and srt's code out. (The temp HOME's
-  # ~/.config and ~/.gitconfig are links to the real ones: no probe writes there.)
+  # only the deny lists keep ~/.local/bin and srt's code out.
   d1_phase on
   "$INSTANCE" start
   wait_until 90 "the Mono gets the Giga's message" saw D1-Q
@@ -680,6 +681,7 @@ case "${1:-}" in
     ((failed == 0)) ;;
   d4) source "$SCENARIOS/d4.test.sh"; run_d4 "${2:-}" ;;
   d2) source "$SCENARIOS/d2.test.sh"; run_d2 ;;
+  home-isolation) source "$SCENARIOS/home-isolation.test.sh"; run_home_isolation ;;
   approvals-run) export GIGA_EVAL_SANDBOX=1 GIGA_EVAL_WATCH_NOTIFY=$$; run_approvals "$2" ;;
   approvals)
     APPROVALS_USER_BIN="${APPROVALS_USER_BIN:-$(user_bin)}"
@@ -689,5 +691,5 @@ case "${1:-}" in
     for run in $(seq 1 "${2:-1}"); do "$0" approvals-run "$run" || failed=$((failed + 1)); done
     log "approvals: $(( ${2:-1} - failed ))/${2:-1} passed"
     ((failed == 0)) ;;
-  *) sed -n '2,26p' "$0"; exit 2 ;;
+  *) sed -n '2,28p' "$0"; exit 2 ;;
 esac

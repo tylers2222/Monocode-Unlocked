@@ -9,15 +9,15 @@
 # requested habit run that sleeps (no screen input). One row per case goes to
 # /tmp/milestones-e2e/results.tsv; exit 0 only when no case fails.
 #
-# On macOS the held turns run on omp with the real logins. On Linux (the E2E
-# image: no model, no logins) they run on the fx puppet
-# (scripts/scenarios/puppet), and MODEL_CASES, which test omp itself, are
-# recorded as SKIP.
+# On macOS the held turns run on omp with copies of the real logins
+# (GIGA_EVAL_LOGINS=1). On Linux (the E2E image: no model, no logins) they
+# run on the fx puppet (scripts/scenarios/puppet), and MODEL_CASES, which
+# test omp itself, are recorded as SKIP.
 if [[ "${GIGA_EVAL_TARGET:-instance}" != instance ]]; then
   echo "milestones-e2e: refusing GIGA_EVAL_TARGET=$GIGA_EVAL_TARGET; only instance is allowed" >&2
   exit 2
 fi
-export GIGA_EVAL_TARGET=instance GIGA_EVAL_OUT=/tmp/milestones-e2e GIGA_EVAL_HOME=/tmp/milestones-e2e-home
+export GIGA_EVAL_TARGET=instance GIGA_EVAL_OUT=/tmp/milestones-e2e GIGA_EVAL_HOME=/tmp/milestones-e2e-home GIGA_EVAL_LOGINS=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 G="$ROOT/scripts/giga-eval"

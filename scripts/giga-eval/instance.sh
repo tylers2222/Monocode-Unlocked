@@ -5,8 +5,8 @@
 #                                          (Linux: a release binary) with cargo features
 #                                          $GIGA_EVAL_FEATURES (default fake-clock,test-db-key); a checkout
 #                                          without .git (the E2E image) needs $GIGA_EVAL_REV
-#   instance.sh home [--fresh]             create the temp HOME (symlinks to real logins, no copies;
-#                                          none on Linux)
+#   instance.sh home [--fresh]             create the temp HOME; refuse one where a link
+#                                          resolves outside /tmp or into the login source
 #   instance.sh start [--fresh-home]       launch the last build under the temp HOME
 #                                          (Linux: on the X server in $DISPLAY, e.g. Xvfb)
 #   instance.sh lsof-check                 prove no open file under the real app data or ~/MonoCode
@@ -17,7 +17,10 @@
 #   instance.sh guard [db]                 fail when a sandboxed start would refuse <db>
 #   instance.sh denied <since>             what the sandbox refused since a `log show` date
 #
-# GIGA_EVAL_SANDBOX=1 (see sandbox.sh, macOS only): `home` links no real logins, and
+# GIGA_EVAL_LOGINS=1 (macOS, for a run on a real model): `home` copies LOGINS
+# from the real HOME. Without it the temp HOME holds no login at all.
+#
+# GIGA_EVAL_SANDBOX=1 (see sandbox.sh, macOS only): `home` copies no logins, and
 # `start` needs a fresh home, refuses an unsafe database, starts the app from
 # `env -i` under sandbox.sh's profile after a preflight, and watches its
 # process tree (GIGA_EVAL_WATCH_NOTIFY: a pid to get USR1 on a stray).
@@ -27,8 +30,11 @@ source "$(dirname "$0")/sandbox.sh"
 SRC_ROOT="$EVAL_OUT/src"
 TARGET_DIR="$EVAL_OUT/target"
 APP_DATA="$EVAL_APP_DATA"
-# Logins the harnesses read. Symlinked, never copied.
-LINKS=(.omp .claude .claude.json .codex .config .gitconfig .ssh Library/Keychains)
+# The files the harnesses log in with: omp's credentials and settings, Codex's
+# auth, git's identity. Copied, never linked, so every write the instance makes
+# (token refreshes too) stays in the temp HOME. Claude Code keeps its login in
+# the macOS keychain, which no temp HOME shares, so it has none here.
+LOGINS=(.omp/agent/agent.db .omp/agent/config.yml .codex/auth.json .gitconfig)
 
 # What differs per OS. install_build <label> <src> copies the build to
 # apps/<label>, records it in instance.app and checks its identifier.
@@ -60,7 +66,7 @@ else
   BUNDLE=(--no-bundle)
   LEAK_DIRS=("$REAL_HOME/.local/share/$EVAL_ID" "$REAL_HOME/.cache/$EVAL_ID" "$REAL_HOME/.config/$EVAL_ID")
   # Linux runs in a container that holds no logins.
-  LINKS=()
+  LOGINS=()
   install_build() {
     local built="$TARGET_DIR/release/monocode" dest="$EVAL_OUT/apps/$1/monocode"
     [[ -x "$built" ]] || die "no binary at $built"
@@ -110,6 +116,63 @@ cmd_build() {
   install_build "$label" "$src"
 }
 
+# A consistent copy of omp's WAL agent.db, or a die: never a part copy, and
+# never a file made, changed or removed beside the source. sqlite never opens
+# the source: a read-only open of a closed one can make its -wal and -shm (CI
+# run 40578398068), and a reader writes its read mark into a live -shm. The
+# backup reads a private cp of the db and its -wal, kept only if the source and
+# the cp hold the same bytes after the cp as before it, and no -shm appeared.
+# A changed source, or a copy that fails quick_check, gets one more try.
+copy_db() {
+  local part="$2.part" _
+  for _ in 1 2; do
+    rm -f "$part"
+    if backup_db "$1" "$part" && db_ok "$part"; then mv "$part" "$2"; return; fi
+  done
+  rm -f "$part"
+  die "could not copy $1: it changed during both tries, or it is not a good database"
+}
+
+# db_ok <db>: quick_check passes. The -wal is checkpointed into the db first,
+# so the -wal and -shm that macOS's sqlite3 keeps after a close can go.
+db_ok() {
+  local check
+  check="$(sqlite3 "$1" 'PRAGMA wal_checkpoint(TRUNCATE)' 'PRAGMA quick_check' 2>/dev/null | tail -n 1)"
+  rm -f "$1-wal" "$1-shm"
+  [[ "$check" == ok ]]
+}
+
+# The SHA-256 of the db and of its -wal if there is one, a line each.
+db_sums() { local f; for f in "$1" "$1-wal"; do [[ ! -e "$f" ]] || shasum -a 256 <"$f"; done; }
+
+# backup_db <src> <dst>: one try at the copy, as copy_db describes.
+backup_db() {
+  local src="$1" sums shm=0 snap rc=1
+  [[ ! -e "$src-shm" ]] || shm=1
+  sums="$(db_sums "$src")" snap="$(mktemp -d "$EVAL_OUT/login-db.XXXXXX")"
+  cp "$src" "$snap/db" && { [[ ! -e "$src-wal" ]] || cp "$src-wal" "$snap/db-wal"; } \
+    && [[ $shm == 1 || ! -e "$src-shm" ]] \
+    && [[ "$(db_sums "$src")" == "$sums" && "$(db_sums "$snap/db")" == "$sums" ]] \
+    && sqlite3 "$snap/db" ".backup '$2'" 2>/dev/null && rc=0
+  rm -rf "$snap"; return "$rc"
+}
+
+# In a subshell under umask 077: no folder or copy is ever readable by others.
+copy_logins() (
+  umask 077
+  local rel src dst copied=0 missing=""
+  for rel in ${LOGINS[@]+"${LOGINS[@]}"}; do
+    src="$LOGIN_HOME/$rel" dst="$EVAL_HOME/$rel"
+    [[ -f "$src" ]] || { missing+=" $rel"; continue; }
+    [[ ! -e "$dst" && ! -L "$dst" ]] || continue
+    mkdir -p "$(dirname "$dst")"
+    if [[ "$rel" == *.db ]]; then copy_db "$src" "$dst"; else cp "$src" "$dst"; fi
+    chmod 600 "$dst"
+    copied=$((copied + 1))
+  done
+  log "copied $copied login files from $LOGIN_HOME; not there:${missing:- none}"
+)
+
 cmd_home() {
   if [[ "${1:-}" == "--fresh" ]]; then
     [[ -z "$(target_pid instance)" ]] || die "stop the instance before --fresh"
@@ -118,16 +181,9 @@ cmd_home() {
     [[ "${GIGA_EVAL_SANDBOX:-}" != 1 ]] || { touch "$SANDBOX_HOME_MARK"; : >"$EVAL_OUT/preflight.pids"; }
   fi
   mkdir -p "$EVAL_HOME/Library"
-  local rel
-  [[ "${GIGA_EVAL_SANDBOX:-}" == 1 ]] && LINKS=()
-  for rel in ${LINKS[@]+"${LINKS[@]}"}; do
-    [[ -e "$REAL_HOME/$rel" ]] || continue
-    if [[ ! -L "$EVAL_HOME/$rel" ]]; then
-      [[ -e "$EVAL_HOME/$rel" ]] && die "$EVAL_HOME/$rel exists and is not a symlink"
-      ln -s "$REAL_HOME/$rel" "$EVAL_HOME/$rel"
-    fi
-  done
-  log "temp HOME $EVAL_HOME ready ($(find "$EVAL_HOME" -maxdepth 2 -type l | wc -l | tr -d ' ') login symlinks)"
+  local bad; bad="$(unsafe_home_link)" || die "$bad; make a fresh one: instance.sh home --fresh"
+  [[ "${GIGA_EVAL_LOGINS:-}" != 1 || "${GIGA_EVAL_SANDBOX:-}" == 1 ]] || copy_logins
+  log "temp HOME $EVAL_HOME ready"
 }
 
 
@@ -261,5 +317,5 @@ case "${1:-}" in
   scrub) sandbox_scrub "$APP_DATA/monocode.db" "${2:?usage: instance.sh scrub <model>}" ;;
   guard) sandbox_guard "${2:-$APP_DATA/monocode.db}" && log "safe: ${2:-$APP_DATA/monocode.db}" ;;
   denied) sandbox_denied "${2:?usage: instance.sh denied <since>}" ;;
-  *) sed -n '2,22p' "$0"; exit 2 ;;
+  *) sed -n '2,26p' "$0"; exit 2 ;;
 esac
