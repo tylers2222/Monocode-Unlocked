@@ -1,7 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from "vitest";
 
 const transport = vi.hoisted(() => ({
   watchers: new Map<string, (line: string) => void>(),
+  exits: new Map<string, (code: number | null) => void>(),
   requests: [] as Array<{
     sessionId: string;
     command: Record<string, unknown>;
@@ -11,6 +20,8 @@ const transport = vi.hoisted(() => ({
   fast: undefined as
     ((sessionId: string, command: Record<string, unknown>) => void) | undefined,
   model: undefined as
+    ((sessionId: string, command: Record<string, unknown>) => void) | undefined,
+  stats: undefined as
     ((sessionId: string, command: Record<string, unknown>) => void) | undefined,
   writeChild: vi.fn(),
   spawnChild: vi.fn(),
@@ -25,14 +36,24 @@ vi.mock("../../core/child", () => ({
   acquireHarnessBridge: async () => () => undefined,
   spawnChild: transport.spawnChild,
   killChild: async () => undefined,
-  unwatchChild: (id: string) => transport.watchers.delete(id),
-  watchChild: (id: string, onLine: (line: string) => void) =>
-    transport.watchers.set(id, onLine),
+  unwatchChild: (id: string) => {
+    transport.watchers.delete(id);
+    transport.exits.delete(id);
+  },
+  watchChild: (
+    id: string,
+    onLine: (line: string) => void,
+    onExit: (code: number | null) => void,
+  ) => {
+    transport.watchers.set(id, onLine);
+    transport.exits.set(id, onExit);
+  },
   writeChild: transport.writeChild,
 }));
 
 import {
   cancelOmpTurn,
+  compactOmpContext,
   rewindOmpLastTurn,
   sendOmpTurn,
   steerOmpTurn,
@@ -86,6 +107,7 @@ beforeEach(() => {
   transport.spawnChild.mockResolvedValue(undefined);
   transport.fast = undefined;
   transport.model = undefined;
+  transport.stats = undefined;
   transport.forkData = undefined;
   transport.stateSessionId = undefined;
   transport.hostToolsUnknown = false;
@@ -101,6 +123,8 @@ beforeEach(() => {
         return transport.fast(sessionId, command);
       if (command.type === "set_model" && transport.model)
         return transport.model(sessionId, command);
+      if (command.type === "get_session_stats" && transport.stats)
+        return transport.stats(sessionId, command);
       if (command.type === "set_host_tools" && transport.hostToolsUnknown)
         return frame(sessionId, {
           type: "response",
@@ -822,11 +846,26 @@ describe("Pi-family turn result", () => {
 // ADE-82. A run omp starts on its own, after the app turn ended, streams
 // with no app turn open; only its own settle can seal what it streamed.
 describe("OMP run started by omp itself", () => {
-  async function afterAppTurn(): Promise<number> {
-    const running = await started(input("omp-test", "hello"));
+  async function afterAppTurn(
+    startHarnessTurn?: SendTurnInput["startHarnessTurn"],
+  ): Promise<number> {
+    const running = await started({
+      ...input("omp-test", "hello"),
+      startHarnessTurn,
+    });
     frame("omp-test", { type: "agent_end" });
     await running.turn;
     return events.length;
+  }
+  /** The registry's side: each call opens a turn, whose end is a spy. */
+  function harnessTurns() {
+    const ends: Array<Mock<() => void>> = [];
+    const start = vi.fn(() => {
+      const end = vi.fn<() => void>();
+      ends.push(end);
+      return end;
+    });
+    return { start, ends };
   }
   function idleReasoningRun() {
     frame("omp-test", {
@@ -863,6 +902,116 @@ describe("OMP run started by omp itself", () => {
     for (const event of events.slice(before))
       session = applyHarnessEvent(session, event);
     expect(session.turnReadiness).toBe("deferred");
+  });
+
+  // ADE-138. Defect: a run omp starts by itself opens no turn, so its app
+  // calls are refused; the app turn's own run, or a frame that starts no
+  // run, opens one; or the run's turn outlives its settle or a stop.
+  it("opens one turn per run it starts and ends it with the run", async () => {
+    const turns = harnessTurns();
+    const running = await started({
+      ...input("omp-test", "hello"),
+      startHarnessTurn: turns.start,
+    });
+    frame("omp-test", { type: "agent_start" });
+    frame("omp-test", { type: "agent_end" });
+    await running.turn;
+    frame("omp-test", { type: "turn_start" });
+    expect(turns.start).not.toHaveBeenCalled();
+
+    frame("omp-test", { type: "agent_start" });
+    frame("omp-test", { type: "agent_start" });
+    expect(turns.start).toHaveBeenCalledTimes(1);
+    expect(turns.ends[0]).not.toHaveBeenCalled();
+    frame("omp-test", { type: "agent_end" });
+    await vi.waitFor(() => expect(turns.ends[0]).toHaveBeenCalledTimes(1));
+
+    frame("omp-test", { type: "agent_start" });
+    await forgetOmpSession("omp-test");
+    expect(turns.ends[1]).toHaveBeenCalledTimes(1);
+    expect(turns.ends[0]).toHaveBeenCalledTimes(1);
+  });
+
+  // Review r1 B3. Defect: a Stop while the app turn settles leaves it
+  // settling, so the settle of a later run omp starts returns early: that
+  // run's turn stays open, and its output is never sealed.
+  it("ends a later run's turn after a Stop during the app turn's settle", async () => {
+    const turns = harnessTurns();
+    const running = await started({
+      ...input("omp-test", "hello"),
+      startHarnessTurn: turns.start,
+    });
+    let stats: unknown;
+    transport.stats = (_sessionId, command) => {
+      stats = command;
+    };
+    frame("omp-test", { type: "agent_end" });
+    await vi.waitFor(() => expect(stats).toBeDefined());
+    await cancelOmpTurn("omp-test");
+    await running.turn;
+    await compactOmpContext(input("omp-test"));
+
+    const before = events.length;
+    frame("omp-test", { type: "agent_start" });
+    idleReasoningRun();
+    await vi.waitFor(() => expect(turns.ends[0]).toHaveBeenCalledTimes(1));
+    let session = newSession("omp", "/repo");
+    for (const event of events.slice(before))
+      session = applyHarnessEvent(session, event);
+    const reasoning = session.blocks.filter((b) => b.role === "reasoning");
+    expect(reasoning).toHaveLength(1);
+    expect(reasoning[0].streaming).toBeFalsy();
+  });
+
+  // Review r1 m3. Defect: omp exits during a run it started by itself and
+  // the run's turn stays open, so a child that outlives omp keeps the token.
+  it("ends a run's turn when omp exits", async () => {
+    const turns = harnessTurns();
+    await afterAppTurn(turns.start);
+    frame("omp-test", { type: "agent_start" });
+    transport.exits.get("omp-test")?.(1);
+    expect(turns.ends[0]).toHaveBeenCalledTimes(1);
+  });
+
+  // Review r1 m3. Defect: the next app turn starts while a run omp started
+  // is open, and that run's turn stays open beside it.
+  it("ends a run's turn when the next app turn starts", async () => {
+    const turns = harnessTurns();
+    await afterAppTurn(turns.start);
+    frame("omp-test", { type: "agent_start" });
+    const next = sendOmpTurn({
+      ...input("omp-test", "again"),
+      startHarnessTurn: turns.start,
+    });
+    await vi.waitFor(() =>
+      expect(
+        transport.requests.filter((r) => r.command.type === "prompt"),
+      ).toHaveLength(2),
+    );
+    expect(turns.ends[0]).toHaveBeenCalledTimes(1);
+    frame("omp-test", { type: "agent_end" });
+    await next;
+    frame("omp-test", { type: "agent_start" });
+    expect(turns.start).toHaveBeenCalledTimes(2);
+  });
+
+  // Review r1 m2. Defect: a rewind can drop the /operator turn, yet a run
+  // omp starts before the next send gets the access of the send before.
+  it("gives a run no turn after a rewind, until the next send", async () => {
+    const turns = harnessTurns();
+    await afterAppTurn(turns.start);
+    frame("omp-test", { type: "agent_start" });
+    await rewindOmpLastTurn({
+      sessionId: "omp-test",
+      cwd: "/repo",
+      model: "omp:default",
+      runtimeMode: "supervised",
+      onEvent: () => undefined,
+    });
+    expect(turns.ends[0]).toHaveBeenCalledTimes(1);
+    frame("omp-test", { type: "agent_end" });
+    frame("omp-test", { type: "agent_start" });
+    expect(turns.start).toHaveBeenCalledTimes(1);
   });
 });
 

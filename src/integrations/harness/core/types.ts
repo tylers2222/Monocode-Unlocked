@@ -196,6 +196,12 @@ export type SendTurnInput = HarnessSessionInput & {
   turnId: string;
   /** Called once the provider has accepted the user turn. */
   onAccepted?: () => void;
+  /**
+   * ADE-138: the harness runs again by itself after this turn (omp wakes
+   * when a background job ends). Called when such a run starts; the call it
+   * returns ends the run's turn.
+   */
+  startHarnessTurn?: () => () => void;
 };
 
 /**

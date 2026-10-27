@@ -11,6 +11,7 @@ import type { PrContent } from "../../../features/source-control/model/gitText";
 import { hasLiveCatalog } from "../../../features/sessions/model/models";
 import type { UserQuestionReply } from "../../../features/sessions/model/userQuestion";
 import { monoToolsFor } from "../../../features/monos/model/monoTools";
+import { newTurnId } from "../../../features/monos/model/monoMessages";
 import type { NativeCommandProvider } from "./nativeCommands";
 import type {
   ApprovalDecision,
@@ -306,6 +307,9 @@ export function sendHarnessTurn(
           input.onEvent({ type: "turn.ready" });
           input.onAccepted?.();
         },
+        startHarnessTurn: controlled
+          ? () => authorizeHarnessTurn(input)
+          : undefined,
       });
       return result;
     } finally {
@@ -324,6 +328,26 @@ export function sendHarnessTurn(
       scheduleIdlePark(input.harness, input.sessionId);
     }
   });
+}
+
+/**
+ * ADE-138: a run the harness started by itself after a turn gets that turn's
+ * app access, as its own turn. Returns the call that ends it.
+ */
+function authorizeHarnessTurn(input: SendTurnInput & AtAgentCwd): () => void {
+  const turn = { sessionId: input.sessionId, turnId: newTurnId() };
+  const authorized = invoke("control_authorize_harness_turn", {
+    ...turn,
+    cwd: input.cwd,
+    appAccess: input.appAccess === true,
+  });
+  // Refused: the run has no access, and no turn to end.
+  void authorized.catch(() => undefined);
+  return () => {
+    void authorized
+      .then(() => invoke("control_turn_finished", turn))
+      .catch(() => undefined);
+  };
 }
 
 export function canCompactHarnessContext(id: HarnessId): boolean {
