@@ -1,7 +1,7 @@
 import { isPreparingHandoff, switchingProviders } from "./handoff";
 import { consumeOperatorCommand } from "./operatorCommand";
 import type { TurnId } from "../../monos/model/monoMessages";
-import type { QueuedMessage, Session } from "./session";
+import type { AppDelivery, QueuedMessage, Session } from "./session";
 
 export function queuedHead(session: Session): QueuedMessage | undefined {
   return session.queuedMessages?.[0];
@@ -260,16 +260,20 @@ export function queuedSteer(
 }
 
 /**
- * What the queue pump sends next: an idle session's head opens a turn; a busy
- * session that `steers` (a Mono whose harness can steer) steers `queuedSteer`.
+ * Block fields for a user turn that sends queued item `message`. A reminder
+ * (R9) is the app's prompt, not the user's, so its turn is hidden.
  */
-export function nextQueuedSend(
-  session: Session,
-  turns: RunningTurns,
-  steers: boolean,
-): QueuedMessage | undefined {
-  if (canDispatchQueuedHead(session)) return queuedHead(session);
-  return steers ? queuedSteer(session, turns) : undefined;
+export function queuedAppDelivery(message: QueuedMessage | undefined): {
+  appRequestId?: string;
+  appDelivery?: AppDelivery;
+  internal?: true;
+} {
+  if (!message?.appRequestId) return {};
+  return {
+    appRequestId: message.appRequestId,
+    appDelivery: { via: "queued", queuedMessageId: message.id },
+    ...(message.monoReminder && { internal: true }),
+  };
 }
 
 /** Drop the quit reason: a later pause or a resume replaces it. */

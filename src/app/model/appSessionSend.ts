@@ -7,11 +7,9 @@ import { switchingProviders } from "../../features/sessions/model/handoff";
 import { enqueueQueuedMessage } from "../../features/sessions/model/messageQueue";
 import { consumeOperatorCommand } from "../../features/sessions/model/operatorCommand";
 import type {
-  AppDelivery,
   Block,
   HarnessId,
   MessageQueueStatus,
-  QueuedMessage,
   Session,
 } from "../../features/sessions/model/session";
 import { appendSteerUser } from "../../integrations/harness/core/apply";
@@ -156,23 +154,6 @@ export function queueAppFollowUp(
     attachments: [],
     appRequestId: item.requestId,
   });
-}
-
-/**
- * Block fields for a user turn that sends queued item `message`. A reminder
- * (R9) is the app's prompt, not the user's, so its turn is hidden.
- */
-export function queuedAppDelivery(message: QueuedMessage | undefined): {
-  appRequestId?: string;
-  appDelivery?: AppDelivery;
-  internal?: true;
-} {
-  if (!message?.appRequestId) return {};
-  return {
-    appRequestId: message.appRequestId,
-    appDelivery: { via: "queued", queuedMessageId: message.id },
-    ...(message.monoReminder && { internal: true }),
-  };
 }
 
 type AcceptedWatcher = CompletionWatcher & {
