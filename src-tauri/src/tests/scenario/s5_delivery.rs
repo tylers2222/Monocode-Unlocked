@@ -160,7 +160,7 @@ fn delivery_follows_the_chat(
     );
     assert_eq!(named(&world.end_turn(lead, "t1", false)), [lead.as_str()]);
     assert_eq!(
-        claim(world, MONO_T5, "main", &[mono_chat], true),
+        claim(world, MONO_T5, "second", &[mono_chat], true),
         Some(Claimed {
             text: t5_text(a),
             wake: false
@@ -183,10 +183,11 @@ fn only_the_holder_marks_it_sent(world: &World, ka: &str) {
     assert_eq!(row(world, ka), (Some("main".into()), Some(world.now())));
 }
 
-/// The window closes before the provider took b: b waits again and a stays
-/// sent. Then the app is killed after the claims of b and the Mono's row
-/// and before their sent marks: after the restart both wait, and each goes
-/// out exactly once.
+/// The window closes before the provider took b: b waits again, a stays
+/// sent, and the Mono's row stays with the window `second` that holds it.
+/// Then the app is killed after the claims of b and the Mono's row and
+/// before their sent marks: after the restart both wait, and each goes out
+/// exactly once.
 fn close_and_boot_free_unsent_claims(
     world: &mut World,
     (ka, kb): (&str, &str),
@@ -194,17 +195,21 @@ fn close_and_boot_free_unsent_claims(
 ) {
     assert!(claim(world, kb, "main", &[], false).is_some());
     let closed = mono_messages::release_window_slots(&world.conn(), "main", world.now()).unwrap();
-    assert_eq!(named(&closed), [mono_chat.as_str(), worker.as_str()]);
+    assert_eq!(named(&closed), [worker.as_str()], "only main's claims");
     assert_eq!(keys(world, worker), [kb]);
     assert!(
         !sent(world, kb, "main"),
         "a freed claim is not the window's"
     );
     assert_eq!(row(world, ka), (Some("main".into()), Some(world.now())));
+    assert_eq!(
+        row(world, MONO_T5),
+        (Some("second".into()), None),
+        "another window's claim stays"
+    );
+    assert!(keys(world, mono_chat).is_empty());
 
-    for key in [kb, MONO_T5] {
-        assert!(claim(world, key, "main", &[], false).is_some());
-    }
+    assert!(claim(world, kb, "main", &[], false).is_some());
     world.down(MINUTE);
     assert_eq!(keys(world, worker), [kb]);
     assert_eq!(keys(world, mono_chat), [MONO_T5]);

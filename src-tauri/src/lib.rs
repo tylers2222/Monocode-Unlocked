@@ -48,8 +48,10 @@ mod mono_roster;
 mod mono_transcript;
 mod notes;
 mod notifications;
+mod omp_mcp;
 mod pasteboard;
 mod pi_usage;
+mod private_file;
 mod project_logo;
 mod pty;
 #[cfg(target_os = "macos")]

@@ -6,7 +6,7 @@ import {
   sendHarnessTurn,
 } from "../../../integrations/harness/core/registry";
 import { mergeStream } from "../../../integrations/harness/core/streamText";
-import type { AgentCwd, HarnessId } from "./session";
+import type { AgentCwd, HarnessId, Session } from "./session";
 
 const HANDOFF_TIMEOUT_MS = 45_000;
 
@@ -17,6 +17,7 @@ export async function requestOutgoingHandoff(input: {
   model: string;
   modelSettings?: Record<string, string>;
   providerAccountId?: string;
+  mcp?: Session["mcp"];
   userRequest: string;
 }): Promise<string> {
   let brief = "";
@@ -31,6 +32,7 @@ export async function requestOutgoingHandoff(input: {
       model: input.model,
       modelSettings: input.modelSettings,
       providerAccountId: input.providerAccountId,
+      mcp: input.mcp,
       runtimeMode: "supervised",
       text: buildOutgoingHandoffPrompt(input.userRequest),
       // Not a window's current turn: a Mono steer for this session waits
