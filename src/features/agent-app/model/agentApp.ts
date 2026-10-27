@@ -403,6 +403,7 @@ export const FIELDS = new Map<string, readonly string[]>([
       "besideSessionId",
       "project",
       "notifyOnComplete",
+      "mcp",
       "due_minutes",
     ],
   ],
@@ -795,6 +796,27 @@ function runtimeCeiling(source: Session, runtimeMode: Session["runtimeMode"]) {
 }
 
 /**
+ * ADE-117: `mcp: "none"` starts omp without MCP servers. omp is the only
+ * harness that honors it, so any other harness refuses it.
+ */
+function launchMcp(
+  value: unknown,
+  harness: HarnessId,
+): Session["mcp"] {
+  switch (value) {
+    case undefined:
+    case "default":
+      return undefined;
+    case "none":
+      if (harness !== "omp")
+        throw new Error('mcp "none" is supported for omp sessions only');
+      return value;
+    default:
+      throw new Error('mcp must be "default" or "none"');
+  }
+}
+
+/**
  * The launch, and the worktree the call named that must be a listed one. A
  * Giga's session started from its chat into the Giga workspace runs in the
  * Giga's own folder (`workFolder`): the project and working copy stay
@@ -856,6 +878,7 @@ function startLaunch(
   const worktreeCwd = optionalString(input.worktreeCwd, "worktreeCwd");
   if (worktreeCwd && workspaceMode !== "current")
     throw new Error("worktreeCwd requires workspaceMode current");
+  const mcp = launchMcp(input.mcp, chosenHarness);
   const home = knownHomeDir();
   const mono = host.monoOf?.(source.id);
   const gigaSlug = host.isMono(source.id) ? mono?.gigaSlug : undefined;
@@ -899,6 +922,7 @@ function startLaunch(
       ? { worktreeCwd: currentWorktree }
       : {}),
     ...(workFolder ? { workFolder } : {}),
+    ...(mcp ? { mcp } : {}),
     ...(worktreeBase ? { worktreeBase } : {}),
     startedBy: source.id,
     ...(leadSessionId ? { leadSessionId } : {}),

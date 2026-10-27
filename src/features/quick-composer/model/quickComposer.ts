@@ -29,6 +29,7 @@ import {
   type Attachment,
   harnessSupportsAttachments,
   type HarnessId,
+  type Session,
 } from "../../sessions/model/session";
 import type { TurnId } from "../../monos/model/monoMessages";
 
@@ -72,6 +73,8 @@ export type QuickLaunch = {
   worktreeCwd?: string;
   /** Folder inside the working copy the agent runs in (`Session.workFolder`). */
   workFolder?: string;
+  /** `Session.mcp`: `"none"` starts omp without MCP servers. */
+  mcp?: Session["mcp"];
   /** Bring the new session forward instead of starting it quietly. */
   reveal: boolean;
   /** The session whose `sessions.start` makes this launch's session (design 13.3). */

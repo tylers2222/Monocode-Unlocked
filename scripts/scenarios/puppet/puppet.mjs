@@ -166,6 +166,13 @@ function unsavedStart(action, result) {
   );
 }
 
+async function act(app, action, input, requestId) {
+  const result = await cli(app, action, input, requestId);
+  if (!unsavedStart(action, result)) return result;
+  log({ action, input, result, retry: result.requestId });
+  return cli(app, action, input, result.requestId);
+}
+
 function runExecs(execs) {
   for (const [program, ...rest] of execs) {
     const run = spawnSync(program, rest, { encoding: "latin1" });
@@ -195,12 +202,8 @@ async function runTurn(text, steer) {
   for (const call of rule?.calls ?? []) {
     const input = fill(withCardIds(call.arguments), text, prev);
     prev = call.action
-      ? await cli(script.app, call.action, input, call.request_id)
+      ? await act(script.app, call.action, input, call.request_id)
       : await server.call(call.tool, input);
-    if (unsavedStart(call.action, prev)) {
-      log({ action: call.action, input, result: prev, retry: prev.requestId });
-      prev = await cli(script.app, call.action, input, prev.requestId);
-    }
     log({ ...(call.action ? { action: call.action } : { tool: call.tool }), input, result: prev });
   }
   server.close();

@@ -6,6 +6,7 @@ import {
   type UserSend,
 } from "./messageIntent";
 import {
+  queuedAppDelivery,
   queuedSteer,
   steersHeld,
   waitsForTurnEnd,
@@ -92,8 +93,16 @@ export async function deliverQueuedFollowUp<T>(options: {
   /** Prepares the provider text `joined` plans. */
   prepare: (text: string) => Promise<T>;
   steer: (prepared: T) => Promise<void>;
-  /** The provider took it; the bubble records `block`. */
-  delivered: (block: JoinedTurn["block"]) => void;
+  /**
+   * The provider took it; the bubble records `block`, with the app request
+   * the item carries, as every path that sends a queued item does.
+   */
+  delivered: (
+    block: Pick<
+      Block,
+      "turnId" | "link" | "appRequestId" | "appDelivery" | "internal"
+    >,
+  ) => void;
   deferred: () => void;
   failed: (error: string) => void;
 }): Promise<boolean> {
@@ -117,6 +126,9 @@ export async function deliverQueuedFollowUp<T>(options: {
     else options.failed(error instanceof Error ? error.message : String(error));
     return false;
   }
-  options.delivered(options.joined.block);
+  options.delivered({
+    ...options.joined.block,
+    ...queuedAppDelivery(options.message),
+  });
   return true;
 }
