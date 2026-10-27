@@ -1118,9 +1118,16 @@ pub fn decide_send(
         }
         _ => {}
     }
+    // U1 (R17): a caller speaks up only to the parent whose ask it holds
+    // open. It runs before W2 and L5, whose hints would send an unasked
+    // child upward again.
+    let level = row.level();
+    let upward = recipient.level().is_some_and(|to| to.rank() < level.rank());
+    if upward && !about.asked_by_recipient {
+        return reject(RejectCode::UpwardNeedsAsk, to);
+    }
     // W2: the sender learns it may not send this before anything about the
     // recipient's state.
-    let level = row.level();
     if matches!(asked, Asked::WholeTurn) && !may_steer_turn(&level, recipient) {
         return reject(RejectCode::SteerScopeNotAllowed, to);
     }
@@ -1128,15 +1135,9 @@ pub fn decide_send(
     if matches!(row, CallerFacts::Session { .. }) && input.wanting_reply {
         return reject(RejectCode::SessionCannotWait, to);
     }
-    // U1 (R17): a caller speaks up only to the parent whose ask it holds
-    // open, and even then never steers it (L6).
-    if recipient.level().is_some_and(|to| to.rank() < level.rank()) {
-        if !about.asked_by_recipient {
-            return reject(RejectCode::UpwardNeedsAsk, to);
-        }
-        if !matches!(asked, Asked::New) {
-            return reject(RejectCode::UpwardSteerForbidden, to);
-        }
+    // L6: even on that ask, a caller never steers its parent.
+    if upward && !matches!(asked, Asked::New) {
+        return reject(RejectCode::UpwardSteerForbidden, to);
     }
     // S8, the peer rule: two Monos of one role talk when they share a
     // project or one allowlists the other.

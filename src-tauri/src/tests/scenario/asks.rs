@@ -702,8 +702,10 @@ fn send(
 /// the Mono or Giga" (R17). Defect: a worker, lead or Mono speaks up (new
 /// or steer) to a parent whose ask it does not hold open, or after it
 /// acked it; a worker reaches the Mono or Giga past its lead, a lead the
-/// Giga past its Mono, or a Mono a Giga that never asked it; a refusal is
-/// not on record. And the rule overreaches: a child on an open ask cannot
+/// Giga past its Mono, or a Mono a Giga that never asked it; an unasked
+/// child gets `steer_scope_not_allowed` or `session_cannot_wait`, whose
+/// hints send it upward again; a refusal is not on record. And the rule
+/// overreaches: a child on an open ask cannot
 /// send up, question or ack it; a peer Mono or Giga send, or any downward
 /// send, is refused; or someone other than the asker answers a question.
 #[test]
@@ -724,6 +726,15 @@ fn s2_upward_speech_needs_an_open_ask_from_that_parent() {
     let start = start_of(&world, &tree.lead);
     let code = |submitted: Submitted| refusal(submitted).0;
     let no_ask = "upward_needs_ask";
+    let unasked = |from: &Caller, key: &str, to: &str, extra: serde_json::Value| {
+        let mut input =
+            json!({"message": key, "send_to": to, "wanting_reply": false, "intent": "new"});
+        for (field, value) in extra.as_object().unwrap() {
+            input[field] = value.clone();
+        }
+        code(world.tool(from, key, "send_message", input, &tree.live()))
+    };
+    let whole_turn = || json!({"intent": "steer", "scope": "turn"});
 
     // S2.1: nobody asked the worker or the Mono, so neither speaks up.
     assert_eq!(code(send(&world, &tree, &worker, "w-l", l, None)), no_ask);
@@ -736,6 +747,7 @@ fn s2_upward_speech_needs_an_open_ask_from_that_parent() {
         code(send(&world, &tree, &mono, "m-g-steer", g, Some(&start))),
         no_ask
     );
+    assert_eq!(unasked(&mono, "m-g-turn", g, whole_turn()), no_ask);
     // S2.3: past the lead the worker gets worker_scope; the lead's open ask
     // is from its Mono, not the Giga.
     assert_eq!(
@@ -785,6 +797,10 @@ fn s2_upward_speech_needs_an_open_ask_from_that_parent() {
         code(send(&world, &tree, &worker, "w-l-after", l, None)),
         no_ask
     );
+    written(ack(&world, &tree, &lead, "l-ack", &start));
+    let wait = json!({"wanting_reply": true});
+    assert_eq!(unasked(&lead, "l-m-wait", m, wait), no_ask);
+    assert_eq!(unasked(&lead, "l-m-turn", m, whole_turn()), no_ask);
 
     // Peers and every downward send are unchanged.
     written(send(&world, &tree, &mono, "m-mb", mono_b.id.as_str(), None));
@@ -805,7 +821,7 @@ fn s2_upward_speech_needs_an_open_ask_from_that_parent() {
             &world,
             "SELECT count(*) FROM mono_messages WHERE gate_result = 'upward_needs_ask'"
         ),
-        7
+        10
     );
 }
 

@@ -155,8 +155,8 @@ install_puppet() {
   install_puppet_bin
   # The answer rule goes first: a prompt carrying the answer may quote the ask.
   jq -n --arg app "$(target_bin instance)" '{app: $app, rules: [
-    {match: "S0-HABIT", calls: [{tool: "send_message", arguments:
-      {message: "S0-Q Is CI green?", send_to: "s0-mono", wanting_reply: false, intent: "new"}}], reply: "Asked."},
+    {match: "S0-HABIT", calls: [{tool: "ask", arguments:
+      {message: "S0-Q Is CI green?", send_to: "s0-mono"}}], reply: "Asked."},
     {match: "S0-A", reply: "Noted."},
     {match: "S0-Q", calls: [{tool: "send_message", arguments:
       {message: "S0-A Yes, CI is green.", send_to: "s0-giga", wanting_reply: false, intent: "new"}}], reply: "Answered."}]}' >"$PUPPET/script.json"

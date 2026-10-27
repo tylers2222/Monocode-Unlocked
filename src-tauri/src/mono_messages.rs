@@ -10163,12 +10163,15 @@ pub(crate) mod tests {
 
     // Design 16.6. Defect: the turn end selects waiting steers only through
     // their target's turn, so a steer through a start row outlives the
-    // lead's turn and the next turn's hand-off takes it.
+    // lead's turn and the next turn's hand-off takes it; or the end of
+    // another session's turn with the same id drops it.
     #[test]
     fn a_steer_through_a_start_row_still_waiting_when_the_leads_turn_ends_is_dropped() {
         let store = messaging_store();
         let conn = store.lock_conn().unwrap();
         let (_, steer) = steer_through_start_row(&conn, "turn-1");
+        turn_ended(&conn, &session("a-chat"), "turn-1", 150).unwrap();
+        assert_eq!(stored_row(&conn, &steer).0, "delivered");
         let notices = turn_ended(&conn, &session("lead"), "turn-1", 200).unwrap();
         assert_eq!(stored_row(&conn, &steer).0, "dropped");
         assert!(notices.sessions.contains(&session("a-chat")), "{notices:?}");

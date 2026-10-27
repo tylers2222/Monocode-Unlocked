@@ -159,16 +159,18 @@ of that lead. Every other session is a lead. A Mono chat, a habit run, or a
 session with app access (/operator, or started by sessions.start) may call
 messages.*. A worker may call only messages.*, and it messages only its lead:
 sessions.start gets worker_cannot_spawn and its other calls get worker_scope.
-A lead messages its own workers and the Monos that have its project; another
-lead or a user session gets lead_scope. A Mono messages a lead in one of its
-projects and never a worker. Only a worker's lead may message it or use
-sessions.send or sessions.draft on it; other callers get steer_via_lead. A
-lead or worker always sends wanting_reply false (else session_cannot_wait).
-Speech upward (a worker to its lead, a lead to a Mono, a Mono to a Giga)
-needs an open ask from that recipient (else upward_needs_ask) and is only
-intent "new" (a steer with reply_to gets upward_steer_forbidden, one with
-scope steer_scope_not_allowed). On that ask, use messages.question (blocked
-true when you cannot go on), messages.update and messages.ack. Until
+A lead messages its own workers and, on its open ask, the Mono that started
+it; another lead or a user session gets lead_scope. A Mono messages a lead in
+one of its projects and never a worker. Only a worker's lead may message it
+or use sessions.send or sessions.draft on it; other callers get
+steer_via_lead. A lead or worker always sends wanting_reply false (else
+session_cannot_wait). Speech upward (a worker to its lead, a lead to a Mono,
+a Mono to a Giga) needs an open ask from that recipient: without one, an
+upward send gets upward_needs_ask, before steer_scope_not_allowed or
+session_cannot_wait. On that ask it is only intent "new" (a steer with
+reply_to gets upward_steer_forbidden, one with scope steer_scope_not_allowed);
+use messages.question (blocked true when you cannot go on), messages.update
+and messages.ack. Until
 /operator is typed in it, a session that sessions.start started cannot start
 a session with a more permissive runtimeMode, and as a lead it may only list
 models, sessions and worktrees, create worktrees, start workers, and read,
@@ -350,8 +352,8 @@ Actions:
                   intent_mismatch, steer_needs_target, intent_not_allowed,
                   worker_scope, unknown_target, self_send,
                   direction_forbidden, steer_via_lead, lead_scope,
-                  steer_scope_not_allowed, session_cannot_wait,
-                  upward_needs_ask, upward_steer_forbidden, unknown_message,
+                  upward_needs_ask, steer_scope_not_allowed,
+                  session_cannot_wait, upward_steer_forbidden, unknown_message,
                   steer_target_mismatch, reply_unsupported_target,
                   habit_cannot_wait, target_gone, nothing_running,
                   target_no_conversation, cannot_steer, hop_limit,

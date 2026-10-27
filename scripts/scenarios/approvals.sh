@@ -1,6 +1,7 @@
 # Sourced by app.sh: ADE-55, the approvals board through the real app on a
 # copy of the real app database. Gigas A, B and C and Mono M are puppets on
-# fx; M starts a lead, the lead starts a worker. Every agent call goes
+# fx; B asks M, so that M may speak up to B on that open ask (R17); M starts
+# a lead, the lead starts a worker. Every agent call goes
 # through app-mcp or the `app` CLI with the identity the app gave it. The
 # user's decisions and the Giga's removal go through the functions their
 # commands call (`s2_user_acts_on_an_instance_database`), with the app
@@ -71,11 +72,13 @@ start_session() {
 install_approvals_puppet() {
   install_puppet_bin
   local host_update; host_update="$(approval "ADE55 Choose a host" "Updated by A" '["Fly","Railway"]' | jq 'del(.project) + {id: "$card:ADE55 Choose a host"}')"
+  # Rule B1 goes before M1: M's answer on B's ask may quote the ask.
   jq -n --arg app "$(target_bin instance)" \
     --argjson a1 "$(jq -s . <(file "ADE55 Ship the importer" "Ready to ship") <(file "ADE55 Drop the cache" "Cache is stale") \
       <(file "ADE55 Rename the CLI" "Name clash") <(file "ADE55 Choose a host" "Fly or Railway" '["Fly","Railway"]') \
       <(file "ADE55 Choose a host" "Fly, Railway or Render" '["Fly","Railway","Render"]') \
-      <(file "ADE55 Withdraw me" "Filed to be withdrawn") <(send "$GM" "ADE55-M1 your turn"))" \
+      <(file "ADE55 Withdraw me" "Filed to be withdrawn") <(send "$GB" "ADE55-B0 your turn"))" \
+    --argjson b0 "$(jq -n --arg to "$GM" '[{tool: "ask", arguments: {message: "ADE55-M1 your turn", send_to: $to}}]')" \
     --argjson m1 "$(jq -s . <(file "ADE55 Mono card" "A Mono files") <(start_session "ADE55-L1 lead" ade55-lead) \
       <(send "$GB" "ADE55-B1 your turn"))" \
     --argjson l1 "$(jq -s . <(file "ADE55 Lead card" "A lead files") <(start_session "ADE55-W1 worker" ade55-worker))" \
@@ -91,10 +94,11 @@ install_approvals_puppet() {
     '{app: $app, whoami: true, rules: [
       {match: "The user decided approval card", reply: "Noted."},
       {match: "ADE55-A1", calls: $a1, reply: "Filed."},
+      {match: "ADE55-B1", calls: ($b1 + $b2), reply: "Filed."},
+      {match: "ADE55-B0", calls: $b0, reply: "Asked."},
       {match: "ADE55-M1", calls: $m1, reply: "Escalated."},
       {match: "ADE55-L1", calls: $l1, reply: "Lead done."},
       {match: "ADE55-W1", calls: $w1, reply: "Worker done."},
-      {match: "ADE55-B1", calls: ($b1 + $b2), reply: "Filed."},
       {match: "ADE55-A2", calls: $a2, reply: "Updated."},
       {match: "ADE55-C1", calls: $c1, reply: "Filed."}]}' >"$PUPPET/script.json"
 }
@@ -161,7 +165,8 @@ run_approvals() {
   expect "A files six cards, one twice, then hands off" "$(codes ADE55-A1)" "ok ok ok ok ok ok ok"
   expect "filing the same heading again updates A's card" \
     "$(jq -rs '[.[] | select(.tool == "file_approval" and .input.heading == "ADE55 Choose a host" and .result.ok == true) | .result.result.id] | unique | length' "$PUPPET/log.jsonl")" 1
-  expect "the Mono is refused, starts a lead, hands off" "$(codes ADE55-M1)" "not_a_giga ok ok"
+  expect "B asks the Mono" "$(codes ADE55-B0)" "ok"
+  expect "the Mono is refused, starts a lead, speaks up on B's ask" "$(codes ADE55-M1)" "not_a_giga ok ok"
   expect "the lead is refused, starts a worker" "$(codes ADE55-L1)" "not_a_giga ok"
   expect "the worker is refused" "$(codes ADE55-W1)" "not_a_giga"
   expect "B cannot take, update or withdraw A's card" "$(codes ADE55-B1)" "heading_taken not_your_approval not_your_approval ok ok"
