@@ -97,6 +97,7 @@ describe("harness registry", () => {
     vi.useRealTimers();
     tauri.inApp = false;
     tauri.calls = [];
+    tauri.answer = () => {};
   });
 
   it("tracks live adapters", () => {
@@ -236,6 +237,71 @@ describe("harness registry", () => {
       }),
     ).rejects.toThrow("cursor exited");
     expect(row).toEqual({ turnId: null, deliveredAt: null });
+  });
+
+  // ADE-138. Defect: a run the harness starts by itself after a turn gets no
+  // turn, or not that turn's session, cwd and app access, or the id of the
+  // turn before; its end reaches Rust before its authorize, or at all for a
+  // run Rust refused.
+  it("authorizes a run the harness starts by itself as its own turn, and ends it", async () => {
+    let wake: SendTurnInput["startHarnessTurn"];
+    registerHarness(
+      stub("pi", {
+        async sendTurn(input) {
+          wake = input.startHarnessTurn;
+          return "sent" as const;
+        },
+      }),
+    );
+    tauri.inApp = true;
+    for (const appAccess of [true, undefined]) {
+      await sendHarnessTurn({
+        harness: "pi",
+        sessionId: "s1",
+        cwd: "/tmp",
+        model: "pi:default",
+        runtimeMode: "supervised",
+        text: "hi",
+        turnId: "t1",
+        appAccess,
+        onEvent: () => undefined,
+      });
+      tauri.calls = [];
+      wake?.()();
+      await vi.waitFor(() => expect(tauri.calls).toHaveLength(2));
+      const [authorize, finished] = tauri.calls;
+      expect(authorize).toEqual([
+        "control_authorize_harness_turn",
+        {
+          sessionId: "s1",
+          turnId: expect.not.stringMatching(/^t1$/),
+          cwd: "/tmp",
+          appAccess: appAccess === true,
+        },
+      ]);
+      expect(finished).toEqual([
+        "control_turn_finished",
+        { sessionId: "s1", turnId: authorize[1]?.turnId },
+      ]);
+    }
+
+    // Rust refuses the first run; the second shows when the first is done.
+    let refuse = true;
+    tauri.answer = (command) => {
+      if (command !== "control_authorize_harness_turn" || !refuse) return;
+      refuse = false;
+      throw new Error("This checkout is controlled by an orchestrator.");
+    };
+    tauri.calls = [];
+    wake?.()();
+    wake?.()();
+    await vi.waitFor(() => expect(tauri.calls).toHaveLength(3));
+    const [refused, allowed, finished] = tauri.calls;
+    expect([refused[0], allowed[0]]).toEqual([
+      "control_authorize_harness_turn",
+      "control_authorize_harness_turn",
+    ]);
+    expect(finished[1]?.turnId).toBe(allowed[1]?.turnId);
   });
 
   it("advertises isolated text prompt support by harness", () => {

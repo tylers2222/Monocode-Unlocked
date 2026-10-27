@@ -308,12 +308,7 @@ export function sendHarnessTurn(
           input.onAccepted?.();
         },
         startHarnessTurn: controlled
-          ? () =>
-              authorizeHarnessTurn(
-                input.sessionId,
-                input.cwd,
-                input.appAccess === true,
-              )
+          ? () => authorizeHarnessTurn(input)
           : undefined,
       });
       return result;
@@ -339,29 +334,18 @@ export function sendHarnessTurn(
  * ADE-138: a run the harness started by itself after a turn gets that turn's
  * app access, as its own turn. Returns the call that ends it.
  */
-function authorizeHarnessTurn(
-  sessionId: string,
-  cwd: string,
-  appAccess: boolean,
-): () => void {
-  const turn = { sessionId, turnId: newTurnId() };
+function authorizeHarnessTurn(input: SendTurnInput & AtAgentCwd): () => void {
+  const turn = { sessionId: input.sessionId, turnId: newTurnId() };
   const authorized = invoke("control_authorize_harness_turn", {
     ...turn,
-    cwd,
-    appAccess,
-  }).then(
-    () => true,
-    (error: unknown) => {
-      console.warn(
-        "[harness] a run the harness started has no app access",
-        error,
-      );
-      return false;
-    },
-  );
+    cwd: input.cwd,
+    appAccess: input.appAccess === true,
+  });
+  // Refused: the run has no access, and no turn to end.
+  void authorized.catch(() => undefined);
   return () => {
     void authorized
-      .then((ok) => ok && invoke("control_turn_finished", turn))
+      .then(() => invoke("control_turn_finished", turn))
       .catch(() => undefined);
   };
 }

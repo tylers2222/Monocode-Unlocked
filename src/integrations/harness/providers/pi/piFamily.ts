@@ -327,6 +327,10 @@ export async function rewindLastTurn(
   if (live.activeTurn) {
     throw new Error("Stop the current turn before editing the last message");
   }
+  // A rewind can drop the /operator turn that gave app access: a run omp
+  // starts before the next send gets none (ADE-138).
+  endHarnessTurn(live);
+  live.startHarnessTurn = undefined;
 
   const forkMessages = await live.rpc.request({ type: "get_fork_messages" });
   const messages = forkMessagesFromRpcData(forkMessages.data);
@@ -402,7 +406,16 @@ export async function cancelTurn(
     return;
   }
   live.cancelled = true;
-  silenceLive(live);
+  live.muteUpdates = true;
+  live.settleToken += 1;
+  // The settle this cuts short never resets it.
+  live.settling = false;
+  endHarnessTurn(live);
+  for (const [, pending] of live.approvals) pending.resolve("deny");
+  live.approvals.clear();
+  for (const question of live.questions.values())
+    question.resolve({ kind: "skipped" });
+  live.questions.clear();
   await live.rpc.request({ type: "abort" }, 5_000).catch(() => undefined);
   finishActiveTurn(live, SEAL_EVENTS);
 }
@@ -416,7 +429,14 @@ export async function stopSession(
   const live = liveByThread.get(sessionId);
   liveByThread.delete(sessionId);
   if (live) {
-    silenceLive(live);
+    live.muteUpdates = true;
+    live.settleToken += 1;
+    endHarnessTurn(live);
+    for (const [, pending] of live.approvals) pending.resolve("deny");
+    live.approvals.clear();
+    for (const question of live.questions.values())
+      question.resolve({ kind: "skipped" });
+    live.questions.clear();
     live.activeTurn = false;
     live.turnDone?.();
     live.turnDone = null;
@@ -425,21 +445,6 @@ export async function stopSession(
   }
   unwatchChild(sessionId);
   await killChild(sessionId).catch(() => undefined);
-}
-
-/**
- * Cancel and stop: no update of the run reaches the app, its turn's access
- * ends, and what it waits on is answered.
- */
-function silenceLive(live: Live): void {
-  live.muteUpdates = true;
-  live.settleToken += 1;
-  endHarnessTurn(live);
-  for (const [, pending] of live.approvals) pending.resolve("deny");
-  live.approvals.clear();
-  for (const question of live.questions.values())
-    question.resolve({ kind: "skipped" });
-  live.questions.clear();
 }
 
 export async function forgetSession(
@@ -568,11 +573,11 @@ async function startLive(
       rpc.close(new Error(`${flavor.label} exited`));
       liveByThread.delete(input.sessionId);
       const current = liveRef.current;
-      if (current) endHarnessTurn(current);
       if (!current?.muteUpdates) {
         (current?.onEvent ?? input.onEvent)({ type: "session.ended", code });
       }
       if (current) {
+        endHarnessTurn(current);
         for (const question of current.questions.values())
           question.resolve({ kind: "skipped" });
         for (const approval of current.approvals.values())
@@ -1079,13 +1084,14 @@ function flushTurnError(flavor: PiFlavor, live: Live): void {
 }
 
 async function settleTurn(live: Live): Promise<void> {
+  // The run ended, and with it the turn of a run omp started (ADE-138).
+  endHarnessTurn(live);
   if (live.settling || live.cancelled || live.muteUpdates) return;
   if (!live.activeTurn && !live.turnDone) {
     if (live.idleAssistant) live.onEvent({ type: "message.completed" });
     if (live.idleReasoning) live.onEvent({ type: "reasoning.completed" });
     live.idleAssistant = false;
     live.idleReasoning = false;
-    endHarnessTurn(live);
     return;
   }
   live.settling = true;

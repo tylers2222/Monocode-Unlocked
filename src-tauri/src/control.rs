@@ -116,6 +116,10 @@ struct ActiveTurn {
     /// it carry it, and its end closes their handles.
     turn_id: String,
     started_by: StartedBy,
+    /// A harness run that started while this MonoCode turn was ending: the
+    /// window had ended the turn, the backend not yet. It gets its own turn
+    /// when this one ends (ADE-138).
+    next: Option<Box<ActiveTurn>>,
 }
 #[derive(Default)]
 struct Inner {
@@ -221,14 +225,16 @@ impl Inner {
         session: &str,
         mut turn: ActiveTurn,
     ) -> Result<Option<ActiveTurn>, String> {
-        // A harness run inside a MonoCode turn is part of that turn.
-        if turn.started_by == StartedBy::Harness
-            && self
+        // A MonoCode turn the window already ended: the run waits for its end.
+        if turn.started_by == StartedBy::Harness {
+            if let Some(running) = self
                 .active
-                .get(session)
-                .is_some_and(|running| running.started_by == StartedBy::MonoCode)
-        {
-            return Ok(None);
+                .get_mut(session)
+                .filter(|running| running.started_by == StartedBy::MonoCode)
+            {
+                running.next = Some(Box::new(turn));
+                return Ok(None);
+            }
         }
         if let Some(lead) = self
             .grants
@@ -248,17 +254,20 @@ impl Inner {
         Ok(replaced.filter(|turn| turn.turn_id != turn_id))
     }
     /// Ends turn `turn_id` of `session` only if it is the turn that runs: a
-    /// later turn of the session may have replaced it.
+    /// later turn of the session may have replaced it. The harness run that
+    /// waits for it gets its turn, under the same checks.
     fn finish_turn(&mut self, session: &str, turn_id: &str) -> Option<ActiveTurn> {
-        if self
-            .active
-            .get(session)
-            .is_some_and(|turn| turn.turn_id == turn_id)
-        {
-            self.active.remove(session)
-        } else {
-            None
+        let running = self.active.get_mut(session)?;
+        if running.turn_id != turn_id {
+            running.next.take_if(|next| next.turn_id == turn_id);
+            return None;
         }
+        let mut ended = self.active.remove(session)?;
+        if let Some(next) = ended.next.take() {
+            // Refused: the run has no access, as a refused authorize leaves it.
+            let _ = self.authorize_turn(session, *next);
+        }
+        Some(ended)
     }
     /// Design 2 (review r3): window `label` reloaded, so the turns it ran are
     /// over, and it has loaded nothing until it reports again (PR 4a review
@@ -688,16 +697,16 @@ fn configure_worker_scratch(cmd: &mut Command, path: &Path) {
 // Async: a replaced turn runs a store transaction, never on the main thread.
 #[tauri::command(async)]
 pub fn control_authorize_turn<R: Runtime>(
-    app: AppHandle<R>,
     window: WebviewWindow<R>,
+    host: State<'_, ControlHost>,
     session_id: String,
     cwd: String,
     app_access: bool,
     turn_id: String,
 ) -> Result<(), String> {
     authorize_window_turn(
-        &app,
         &window,
+        &host,
         &session_id,
         &cwd,
         app_access,
@@ -709,19 +718,20 @@ pub fn control_authorize_turn<R: Runtime>(
 /// ADE-138: the harness ran again by itself after a MonoCode turn of the
 /// session. The window asks with that turn's `cwd` and `app_access`, so the
 /// run gets the same access under the same checks, and
-/// `control_turn_finished` ends it.
+/// `control_turn_finished` ends it. A run that starts while a MonoCode turn
+/// ends gets its turn when that turn ends (`Inner::finish_turn`).
 #[tauri::command(async)]
 pub fn control_authorize_harness_turn<R: Runtime>(
-    app: AppHandle<R>,
     window: WebviewWindow<R>,
+    host: State<'_, ControlHost>,
     session_id: String,
     cwd: String,
     app_access: bool,
     turn_id: String,
 ) -> Result<(), String> {
     authorize_window_turn(
-        &app,
         &window,
+        &host,
         &session_id,
         &cwd,
         app_access,
@@ -730,9 +740,10 @@ pub fn control_authorize_harness_turn<R: Runtime>(
     )
 }
 
+/// Authorizes turn `turn_id` of `session` in `window` and `cwd`.
 fn authorize_window_turn<R: Runtime>(
-    app: &AppHandle<R>,
     window: &WebviewWindow<R>,
+    host: &ControlHost,
     session: &str,
     cwd: &str,
     app_access: bool,
@@ -749,14 +760,10 @@ fn authorize_window_turn<R: Runtime>(
         app_allowed: app_access,
         turn_id: turn_id.into(),
         started_by,
+        next: None,
     };
-    authorize_turn(
-        &app.state::<ControlHost>().inner,
-        &app.state::<SessionStore>(),
-        session,
-        turn,
-    )?
-    .emit(app);
+    let app = window.app_handle();
+    authorize_turn(&host.inner, &app.state::<SessionStore>(), session, turn)?.emit(app);
     Ok(())
 }
 
@@ -1299,6 +1306,7 @@ pub(crate) mod tests {
             app_allowed: false,
             turn_id: turn_id.into(),
             started_by: StartedBy::MonoCode,
+            next: None,
         }
     }
 
@@ -1713,6 +1721,7 @@ pub(crate) mod tests {
                 app_allowed: true,
                 turn_id: "turn-1".into(),
                 started_by: StartedBy::MonoCode,
+                next: None,
             },
         );
         assert_eq!(inner.route_owner("s", "caller"), "runner");
@@ -1763,6 +1772,7 @@ pub(crate) mod tests {
                 app_allowed: true,
                 turn_id: "turn-1".into(),
                 started_by: StartedBy::MonoCode,
+                next: None,
             },
         );
         assert!(request_grant(&inner, "app", "app-token").is_ok());
@@ -1783,6 +1793,7 @@ pub(crate) mod tests {
                 app_allowed: true,
                 turn_id: "turn-1".into(),
                 started_by: StartedBy::MonoCode,
+                next: None,
             },
         );
         inner.app_grants[session].token.clone()
@@ -2158,6 +2169,7 @@ pub(crate) mod tests {
                 app_allowed: false,
                 turn_id: "turn-1".into(),
                 started_by: StartedBy::MonoCode,
+                next: None,
             },
         );
         assert!(request_grant(&inner, "app", &token).is_err());
@@ -2182,6 +2194,39 @@ pub(crate) mod tests {
         assert!(request_grant(&inner, "app", &token).is_ok());
         inner.active.remove("ordinary");
         assert!(request_grant(&inner, "app", &token).is_err());
+    }
+
+    // ADE-138 review r1 B4. Defect: a MonoCode or harness turn starts in a
+    // checkout an orchestrator lead holds from another window, or the lead's
+    // own window is refused.
+    #[test]
+    fn only_the_leads_window_runs_turns_in_its_orchestrated_checkout() {
+        let mut inner = Inner::default();
+        inner.grants.insert(
+            "lead".into(),
+            Grant {
+                window: "main".into(),
+                session: "lead".into(),
+                cwd: "/repo".into(),
+                token: "control-token".into(),
+            },
+        );
+        for started_by in [StartedBy::MonoCode, StartedBy::Harness] {
+            let turn = |window: &str| ActiveTurn {
+                started_by,
+                ..monocode_turn(window, "/repo/src", "turn-1")
+            };
+            let refused = inner.authorize_turn("lead", turn("other"));
+            assert!(refused.is_err(), "{started_by:?} turn from another window");
+            assert!(inner.active.is_empty());
+            let allowed = inner.authorize_turn("lead", turn("main"));
+            assert!(
+                allowed.is_ok(),
+                "{started_by:?} turn from the lead's window"
+            );
+            assert_eq!(inner.active["lead"].started_by, started_by);
+            inner.active.remove("lead");
+        }
     }
     #[cfg(not(windows))]
     #[test]
@@ -2260,6 +2305,7 @@ pub(crate) mod tests {
                     app_allowed: false,
                     turn_id: "turn-1".into(),
                     started_by: StartedBy::MonoCode,
+                    next: None,
                 },
             );
         }

@@ -133,9 +133,10 @@ fn web_app(world: &World, mono: &SessionId, event: &Value, sent: &mut Vec<Messag
 
 /// Defect: a turn omp starts by itself has no app access, so a lead woken by
 /// its background job cannot message its Mono or start a session
-/// (`turn_inactive`); or the fix lets the token work outside any turn, past
-/// the run's end, or lets the run take over a MonoCode turn; or Mono
-/// delivery treats the woken lead as running a turn the window can steer.
+/// (`turn_inactive`), also when the run starts while a MonoCode turn ends;
+/// or the fix lets the token work outside any turn, past the run's end, or
+/// lets the run take over a MonoCode turn; or Mono delivery treats the woken
+/// lead as running a turn the window can steer.
 #[test]
 fn a_lead_woken_by_its_harness_messages_its_mono_and_starts_a_session() {
     let mut world = World::new("wake-turn");
@@ -193,19 +194,37 @@ fn a_lead_woken_by_its_harness_messages_its_mono_and_starts_a_session() {
         "the run's end ends its access"
     );
 
-    // A run inside a MonoCode turn stays part of that turn.
+    // omp starts a run after the window ended a MonoCode turn, before the
+    // backend did: the run waits for that turn's end, then has its own turn.
     authorize("control_authorize_turn", "lead-t2");
     authorize("control_authorize_harness_turn", "lead-wake-2");
-    finish("lead-wake-2");
     let (_, seen) = call("messages.send", &report, "in-t2");
-    assert_eq!(seen[0]["turnId"], "lead-t2");
+    assert_eq!(seen[0]["turnId"], "lead-t2", "the MonoCode turn still runs");
     finish("lead-t2");
+    let (answer, seen) = call("messages.send", &report, "wake-2-send");
+    assert_eq!(answer, json!({"ok": true}), "the run keeps its access");
+    assert_eq!(seen[0]["turnId"], "lead-wake-2");
+    finish("lead-wake-2");
+    let (refused, _) = call("messages.send", &report, "after-wake-2");
+    assert_eq!(refused["code"], "turn_inactive");
 
-    // The Mono's next turn takes the lead's reports.
-    let delivered: Vec<MessageId> = world
+    // Such a run that ends before the MonoCode turn gets no turn after it.
+    authorize("control_authorize_turn", "lead-t3");
+    authorize("control_authorize_harness_turn", "lead-wake-3");
+    finish("lead-wake-3");
+    finish("lead-t3");
+    let (refused, _) = call("messages.send", &report, "after-t3");
+    assert_eq!(refused["code"], "turn_inactive", "no turn outlives its run");
+
+    // The Mono's next turn takes the lead's reports, in either order: the
+    // sends can share a millisecond, and ids are random.
+    let mut delivered: Vec<String> = world
         .start_turn(&mono.chat, "mono-t1")
         .into_iter()
-        .map(|row| row.message.id)
+        .map(|row| row.message.id.as_str().to_string())
         .collect();
+    let mut sent: Vec<String> = sent.iter().map(|id| id.as_str().to_string()).collect();
+    delivered.sort_unstable();
+    sent.sort_unstable();
     assert_eq!(delivered, sent, "the reports reach the Mono");
 }
