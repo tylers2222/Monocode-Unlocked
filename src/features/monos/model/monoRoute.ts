@@ -18,12 +18,14 @@ import {
   type Session,
 } from "../../sessions/model/session";
 import { enqueueMonoMessage } from "./monoMessaging";
+import { queueReminders } from "./monoReminders";
 import {
   boardDecision,
   type BoardDecision,
 } from "../../approvals/model/boardDecision";
 import {
   APPROVALS_SENDER,
+  dueIn,
   newTurnId,
   noticeRequestId,
   renderMonoMessage,
@@ -194,14 +196,14 @@ function queueItems(host: MonoQueueHost, rows: Targeted<Routed>[]) {
 }
 
 /**
- * Design 5.3: a sender notice enters the chat once, as a queue row that
- * waits for the turn end; it gets its bubble when it is sent. Its request id
- * in the queue or the transcript means it was queued or sent before, so a
- * pump that runs again adds nothing.
+ * Design 5.3 and R9: an app prompt (a sender notice or a reminder) enters
+ * the chat once, as a queue row; it waits for the turn end unless it says
+ * otherwise. Its request id in the queue or the transcript means it was
+ * queued or sent before, so a pump that runs again adds nothing.
  */
-function ensureNotice(
+export function ensureNotice(
   session: Session,
-  notice: { id: string; text: string },
+  notice: Pick<QueuedMessage, "id" | "text" | "monoReminder" | "waitForIdle">,
 ): Session {
   if (
     session.queuedMessages?.some(
@@ -211,11 +213,10 @@ function ensureNotice(
   )
     return session;
   return enqueueQueuedMessage(session, {
-    id: notice.id,
     appRequestId: notice.id,
-    text: notice.text,
     attachments: [],
     waitForIdle: true,
+    ...notice,
   });
 }
 
@@ -232,9 +233,10 @@ function noticeItem(host: MonoQueueHost, message: Noticed) {
 
 /**
  * Design 5.5 rule 6, only in the window that owns the session (PR 4a review
- * m19): queue every row of the session that no item and no slot holds. Then
- * the notice pump of design 5.3: the session is a Mono's chat, and each of
- * that Mono's messages that ended unanswered or dropped gets one notice.
+ * m19): queue every row of the session that no item and no slot holds, and
+ * its reminders (R9). Then the notice pump of design 5.3: the session is a
+ * Mono's chat, and each of that Mono's messages that ended unanswered or
+ * dropped gets one notice.
  */
 export async function reconcile(
   host: MonoQueueHost,
@@ -257,6 +259,7 @@ export async function reconcile(
       ),
     ),
   );
+  await queueReminders(host, sessionId);
   const notices = await invoke<Noticed[]>("mono_messages_pending_notices", {
     sessionId,
   });
@@ -880,6 +883,61 @@ export async function getMessage(host: MonoMessagingHost, input: GetInput) {
   return { message: got.message };
 }
 
+type AskCallFailed = {
+  outcome: "failed";
+  error: {
+    code: "invalid_input" | "extend_refused" | "reason_refused";
+    hint: string;
+  };
+};
+
+function askCallFailed(answer: { outcome: string }): answer is AskCallFailed {
+  return answer.outcome === "failed";
+}
+
+/**
+ * An ask call that writes no message (R10 `extend`, R11 `reason`): Rust
+ * decides and writes; a refusal throws its code and hint.
+ */
+async function askCall<T extends { outcome: string }>(
+  host: MonoMessagingHost,
+  command: "mono_ask_extend" | "mono_ask_reason",
+  input: RawInput,
+): Promise<T> {
+  const resolved = await host.caller();
+  if (!resolved.ok) throw new AppActionError(resolved.code, resolved.hint);
+  const answer = await invoke<T | AskCallFailed>(command, {
+    caller: resolved.caller,
+    input,
+  });
+  if (askCallFailed(answer))
+    throw new AppActionError(answer.error.code, answer.error.hint);
+  return answer;
+}
+
+/** `messages.extend` (R10): moves the deadline once. */
+async function extendAsk(host: MonoMessagingHost, input: RawInput) {
+  const extended = await askCall<{
+    outcome: "extended";
+    askId: MessageId;
+    dueInMs: number;
+  }>(host, "mono_ask_extend", input);
+  return {
+    ask_id: extended.askId,
+    due_in: dueIn(extended.dueInMs),
+  };
+}
+
+/** `messages.reason` (R11): stores why the ask is late on its miss, once. */
+async function reasonAsk(host: MonoMessagingHost, input: RawInput) {
+  const stored = await askCall<{ outcome: "stored"; askId: MessageId }>(
+    host,
+    "mono_ask_reason",
+    input,
+  );
+  return { ask_id: stored.askId };
+}
+
 /**
  * `messages.send` (design 3.2), and `messages.ask` and `messages.ack` (R6):
  * an ask is a send that is also a key on the asked child, an ack a send to
@@ -958,6 +1016,8 @@ export function agentMessages(
       sendMessage(host, "question", requestId, input),
     answer: (requestId, input) => sendMessage(host, "answer", requestId, input),
     update: (requestId, input) => sendMessage(host, "update", requestId, input),
+    extend: (input) => extendAsk(host, input),
+    reason: (input) => reasonAsk(host, input),
     reply: (requestId, input) => replyMessage(host, requestId, input),
     get: (input) => getMessage(host, input),
   };

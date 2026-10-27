@@ -37,7 +37,7 @@ pub(super) fn ask(
     written(world.tool(from, key, "ask", input, live))
 }
 
-fn ack(world: &World, live: &[&SessionId], child: &SessionId, ask: &MessageId) {
+pub(super) fn ack(world: &World, live: &[&SessionId], child: &SessionId, ask: &MessageId) {
     let input = json!({"ask_id": ask.as_str(), "message": "Done"});
     let key = format!("ack-{}", ask.as_str());
     written(world.tool(&session_caller(child, P), &key, "ack", input, live));
@@ -55,7 +55,7 @@ pub(super) fn due(world: &World, ask: &MessageId) -> i64 {
 }
 
 /// The scheduler's state of `ask`: its stage and next due.
-fn ladder(world: &World, ask: &MessageId) -> (i64, Option<i64>) {
+pub(super) fn ladder(world: &World, ask: &MessageId) -> (i64, Option<i64>) {
     world
         .conn()
         .query_row(
@@ -71,7 +71,7 @@ pub(super) fn t5_key(ask: &MessageId) -> String {
 }
 
 /// The outbox rows of `ask` as `(key, stage, recipient, at_active_ms)`.
-fn reminders(world: &World, ask: &MessageId) -> Vec<Reminder> {
+pub(super) fn reminders(world: &World, ask: &MessageId) -> Vec<Reminder> {
     world
         .conn()
         .prepare(
@@ -87,8 +87,16 @@ fn reminders(world: &World, ask: &MessageId) -> Vec<Reminder> {
         .unwrap()
 }
 
-fn t5(ask: &MessageId, recipient: &str, at: i64) -> Vec<Reminder> {
+pub(super) fn t5(ask: &MessageId, recipient: &str, at: i64) -> Vec<Reminder> {
     vec![(t5_key(ask), "t5".into(), recipient.into(), at)]
+}
+
+/// The `t5` rows of `ask`: an ask this scenario follows past its deadline
+/// gets the later stages too (R11).
+fn t5_rows(world: &World, ask: &MessageId) -> Vec<Reminder> {
+    let mut rows = reminders(world, ask);
+    rows.retain(|(_, stage, _, _)| stage == "t5");
+    rows
 }
 
 fn claimed_by(world: &World, key: &str) -> Option<String> {
@@ -122,13 +130,18 @@ fn pending(world: &World) -> Vec<(String, String)> {
     )
 }
 
-/// The pending reminders `mono_asks` implies: a `t5` reminder to the child
-/// of every open ask whose ladder is past stage 0.
+/// The pending reminders `mono_asks` implies: each rung of every open ask's
+/// ladder that it passed, `t5` and `deadline` to the child, `why` to the
+/// parent.
 fn derived(world: &World) -> Vec<(String, String)> {
     pairs(
         world,
-        "SELECT 'reminder:' || id || ':t5', child_actor FROM mono_asks
-          WHERE state = 'open' AND stage >= 1 ORDER BY 1",
+        "SELECT 'reminder:' || a.id || ':' || r.stage,
+           CASE r.stage WHEN 'why' THEN a.parent_actor ELSE a.child_actor END
+         FROM mono_asks a
+         JOIN (SELECT 1 AS n, 't5' AS stage UNION ALL SELECT 2, 'deadline'
+               UNION ALL SELECT 3, 'why') r ON a.stage >= r.n
+         WHERE a.state = 'open' ORDER BY 1",
     )
 }
 
@@ -146,7 +159,7 @@ pub(super) fn advance_to(world: &mut World, at: i64) {
 }
 
 /// 1 ms before `at` `ask` has no reminder; at `at` its `t5` reminder to
-/// `recipient` is enqueued and its ladder has no next stage.
+/// `recipient` is enqueued and its next stage is its deadline.
 fn falls_due_at(world: &mut World, ask: &MessageId, at: i64, recipient: &str) {
     advance_to(world, at - 1);
     assert!(
@@ -155,7 +168,7 @@ fn falls_due_at(world: &mut World, ask: &MessageId, at: i64, recipient: &str) {
     );
     world.advance(1);
     assert_eq!(reminders(world, ask), t5(ask, recipient, at));
-    assert_eq!(ladder(world, ask), (1, None));
+    assert_eq!(ladder(world, ask), (1, Some(at + T5_LEAD)));
 }
 
 fn outbox_rows(world: &World) -> i64 {
@@ -194,7 +207,7 @@ fn a_failed_tick_writes_nothing(world: &mut World, a: &MessageId, ta: i64) {
     }
     world.try_advance(0).unwrap();
     assert_eq!(reminders(world, a), t5(a, "session:s5-lead", ta));
-    assert_eq!(ladder(world, a), (1, None));
+    assert_eq!(ladder(world, a), (1, Some(ta + T5_LEAD)));
 }
 
 /// Spending a key withdraws its unsent reminder, and keeps a sent one: a
@@ -251,7 +264,7 @@ fn restarts_40_minutes_later(
     let first_tick = world.active_ms() + SECOND;
     falls_due_at(world, b, tb, "session:s5-w2");
     assert_eq!(
-        reminders(world, legacy),
+        t5_rows(world, legacy),
         t5(legacy, "session:s5-w1", first_tick)
     );
     assert_eq!(
@@ -272,8 +285,8 @@ fn a_lost_stage_write_keeps_one_row(world: &mut World, a: &MessageId, ta: i64) {
         )
         .unwrap();
     world.advance(SECOND);
-    assert_eq!(reminders(world, a), t5(a, "session:s5-lead", ta));
-    assert_eq!(ladder(world, a), (1, None));
+    assert_eq!(t5_rows(world, a), t5(a, "session:s5-lead", ta));
+    assert_eq!(ladder(world, a), (1, Some(ta + T5_LEAD)));
 }
 
 /// S5 "a one-hour sleep": an hour asleep a minute before `c`'s reminder
@@ -312,7 +325,8 @@ fn wall_jumps_leave_reminders_to_active_time(world: &mut World, d: &MessageId, t
 }
 
 /// A later build's ladder has stages past this one's: its next due on an
-/// ask at the end of this ladder is left alone, and the tick goes on.
+/// ask at the end of this ladder (`a` passed its `why`) is left alone, and
+/// the tick goes on.
 fn a_later_builds_stage_is_left_alone(world: &mut World, a: &MessageId) {
     let later = world.active_ms();
     world
@@ -323,8 +337,8 @@ fn a_later_builds_stage_is_left_alone(world: &mut World, a: &MessageId) {
         )
         .unwrap();
     world.advance(SECOND);
-    assert_eq!(reminders(world, a).len(), 1);
-    assert_eq!(ladder(world, a), (1, Some(later)));
+    assert_eq!(reminders(world, a).len(), 3);
+    assert_eq!(ladder(world, a), (3, Some(later)));
 }
 
 /// S5 "killed and restarted 40 minutes later", "a one-hour sleep", "the
@@ -401,12 +415,16 @@ fn s5_reminders_fall_due_in_active_time_across_restarts_sleep_and_wall_jumps() {
     wall_jumps_leave_reminders_to_active_time(&mut world, &d, td);
     a_later_builds_stage_is_left_alone(&mut world, &a);
 
-    // After a reboot the pending set is again what mono_asks implies: one
-    // reminder per timed open ask, none for the Giga's ask.
+    // After a reboot the pending set is again what mono_asks implies: each
+    // rung each timed open ask passed, none for the Giga's ask.
     world.reboot(10 * MINUTE);
     assert_eq!(pending(&world), derived(&world));
     assert_eq!(schema(&world), opened);
-    let keys: Vec<String> = pending(&world).into_iter().map(|(key, _)| key).collect();
+    let keys: Vec<String> = pending(&world)
+        .into_iter()
+        .map(|(key, _)| key)
+        .filter(|key| key.ends_with(":t5"))
+        .collect();
     let mut expected = [&a, &b, &c, &d, &legacy].map(t5_key);
     expected.sort();
     assert_eq!(keys, expected);

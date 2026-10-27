@@ -13,7 +13,7 @@
 // app. A string argument "$card:<heading>" is the id of the card that an
 // earlier logged call filed or updated under that heading, "$prev.<field>" is
 // that field of the previous call's answer, "$<name>" is attribute <name>
-// of the prompt's first <mono_message>, and "$<name>@<text>" is attribute
+// of the prompt's first <mono_message> (else of its <mono_reminder>), and "$<name>@<text>" is attribute
 // <name> of the <mono_message> whose body starts with <text> (a turn can take
 // several messages, in either order). log.jsonl gets
 // one line per prompt ({"prompt", "rule", "steer"}, plus "who", the Mono
@@ -42,6 +42,9 @@ if (args[0] === "--help") {
   process.exit(0);
 }
 if (args[0] !== "acp") process.exit(1);
+// While $HOME/.puppet/hold-start exists, a new agent reads no request, so the
+// app's prompt stays unread (app.sh r9 kills the app in that gap).
+while (existsSync(join(dir, "hold-start"))) spawnSync("sleep", ["0.2"]);
 
 const log = (entry) =>
   appendFileSync(
@@ -110,12 +113,15 @@ function withCardIds(input) {
 
 function fill(input, text, prev) {
   const escape = (raw) => raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const attribute = (name, body) =>
+  const tagged = (tag, name, body) =>
     text.match(
       new RegExp(
-        `<mono_message [^>]*\\b${name}="([^"]*)"${body === undefined ? "" : `[^>]*>\\n${escape(body)}`}`,
+        `<${tag} [^>]*\\b${name}="([^"]*)"${body === undefined ? "" : `[^>]*>\\n${escape(body)}`}`,
       ),
     )?.[1];
+  // A <mono_reminder> has no message, so its attributes come second (R11 `why`).
+  const attribute = (name, body) =>
+    tagged("mono_message", name, body) ?? tagged("mono_reminder", name, body);
   const value = (raw) => {
     if (typeof raw !== "string" || !raw.startsWith("$") || raw.startsWith("$card:")) return raw;
     if (raw.startsWith("$prev.")) return payload(prev)?.[raw.slice(6)];
@@ -147,6 +153,26 @@ async function cli(app, action, input, requestId) {
   }
 }
 
+// acceptQuickLaunch (quickLaunchSession.ts) refuses a start whose session row
+// the workspace could not save yet, and the CLI hands back its request id as
+// `retryWith`. A real agent retries that start once with the same id; every
+// other refusal stands, so the scenario still fails on it.
+function unsavedStart(action, result) {
+  return (
+    action === "sessions.start" &&
+    result?.ok === false &&
+    typeof result.retryWith === "string" &&
+    String(result.error).includes("The workspace could not save the session yet.")
+  );
+}
+
+async function act(app, action, input, requestId) {
+  const result = await cli(app, action, input, requestId);
+  if (!unsavedStart(action, result)) return result;
+  log({ action, input, result, retry: result.requestId });
+  return cli(app, action, input, result.requestId);
+}
+
 function runExecs(execs) {
   for (const [program, ...rest] of execs) {
     const run = spawnSync(program, rest, { encoding: "latin1" });
@@ -176,7 +202,7 @@ async function runTurn(text, steer) {
   for (const call of rule?.calls ?? []) {
     const input = fill(withCardIds(call.arguments), text, prev);
     prev = call.action
-      ? await cli(script.app, call.action, input, call.request_id)
+      ? await act(script.app, call.action, input, call.request_id)
       : await server.call(call.tool, input);
     log({ ...(call.action ? { action: call.action } : { tool: call.tool }), input, result: prev });
   }
