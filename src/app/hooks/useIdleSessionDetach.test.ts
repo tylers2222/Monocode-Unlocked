@@ -443,6 +443,27 @@ describe("orchestration worker detachment", () => {
     },
   );
 
+  it("detaches an idle tabless chat whose resuming queue is empty, since the pump never sends it", async () => {
+    const workspace = mountWorkspace({
+      sessions: [
+        chat("lead", { queuedMessages: [], queueStatus: "resuming" }),
+        chat("other"),
+      ],
+      tabs: [newTab("other")],
+      orchestrationRuns: [],
+      busySessionIds: new Set(),
+      liveAgentsEnabled: false,
+    });
+    await advance();
+    expect(workspace.snapshot().sessions.map((session) => session.id)).toEqual([
+      "other",
+    ]);
+    expect(mocks.forgetHarnessSession).toHaveBeenCalledExactlyOnceWith(
+      "claude",
+      "lead",
+    );
+  });
+
   it("keeps inbox discussions mounted without marking them unseen", async () => {
     const workspace = mountWorkspace({
       sessions: [chat("inbox", { inboxAsk: true, busy: true }), chat("other")],
