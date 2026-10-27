@@ -1,0 +1,10 @@
+# Change R core tickets: a T3 PR whose title starts with one of these needs no green
+# gate/mutation in merge_rule.py (ADE-129). gate/integrity reads this file from its
+# default-branch checkout, so a PR cannot exempt itself by adding its ticket here.
+# Remove this exemption in the F1 (ADE-45) report PR or in the PR directly after it.
+ADE-27
+ADE-28
+ADE-29
+ADE-32
+ADE-33
+ADE-35
