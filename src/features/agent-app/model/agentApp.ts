@@ -311,6 +311,9 @@ export type AgentAppHost = {
     send(requestId: string, input: SendInput): Promise<unknown>;
     ask(requestId: string, input: Record<string, unknown>): Promise<unknown>;
     ack(requestId: string, input: Record<string, unknown>): Promise<unknown>;
+    question(requestId: string, input: Record<string, unknown>): Promise<unknown>;
+    answer(requestId: string, input: Record<string, unknown>): Promise<unknown>;
+    update(requestId: string, input: Record<string, unknown>): Promise<unknown>;
     extend(input: Record<string, unknown>): Promise<unknown>;
     reason(input: Record<string, unknown>): Promise<unknown>;
     reply(requestId: string, input: ReplyInput): Promise<unknown>;

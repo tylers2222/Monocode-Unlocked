@@ -1517,6 +1517,16 @@ it("gives the agent an ask's ask_id and due_in, and an ack's ack_of", () => {
   expect(tags({ kind: "ack", askId: "m_bbbbbbbbbbbb" as MessageId })).toBe(
     ' ack_of="m_bbbbbbbbbbbb">',
   );
+  const ask2 = "m_bbbbbbbbbbbb" as MessageId;
+  expect(tags({ kind: "question", askId: ask2, seq: 2 })).toBe(
+    ' question_of="m_bbbbbbbbbbbb" seq="2">',
+  );
+  expect(tags({ kind: "answer", askId: ask2, seq: 3 })).toBe(
+    ' answer_of="m_bbbbbbbbbbbb" seq="3">',
+  );
+  expect(tags({ kind: "update", askId: ask2 })).toBe(
+    ' update_of="m_bbbbbbbbbbbb">',
+  );
   expect(tags(null)).toBe(">");
 });
 
@@ -1539,6 +1549,13 @@ it("shows an ask in the chat with no countdown and no ask_id as its deadline pas
       undefined,
     ),
   ).toContain(' ack_of="m_bbbbbbbbbbbb">');
+  const ask2 = "m_bbbbbbbbbbbb" as MessageId;
+  for (const carries of [
+    { kind: "question", askId: ask2, seq: 1 },
+    { kind: "answer", askId: ask2, seq: 1 },
+    { kind: "update", askId: ask2 },
+  ] as const)
+    expect(renderMonoMessage(ledgerRow(carries), undefined)).toBe(plain);
 });
 
 // Design 13. Defect: a lead's or worker's message reads as a deleted Mono's,
@@ -1782,12 +1799,14 @@ it("never lists a session whose worktree was removed", async () => {
   expect(live.map((entry) => entry.sessionId)).toEqual([]);
 });
 
-// R6. Exists only for gate/mutation (R6 one-off); app.sh r6 proves ask and
-// ack end to end. Defect: an ask or ack reaches Rust as another tool, a send
-// stops being send_message, or an ask to a session no window has loaded
-// leaves it out of `live`, so the gate cannot see it. An ack names no
-// session: Rust lists the ask's parent itself (R6b review r1 M1).
-it("submits messages.ask and messages.ack as their own tools", async () => {
+// R6 and R14. Exists only for gate/mutation (R6 one-off); app.sh r6 proves
+// ask and ack end to end. Defect: an ask, ack, question, answer or update
+// reaches Rust as another tool or with another call's input, a send stops
+// being send_message, or an ask to a session no window has loaded leaves it
+// out of `live`, so the gate cannot see it. An ack names no session: Rust
+// lists the ask's parent itself (R6b review r1 M1). The agent app cannot
+// dispatch question, answer or update until R14b-2, so they run on the host.
+it("submits messages.ask, ack, question, answer and update as their own tools", async () => {
   const { host, send, run } = world([], [], { stored: [chat("lead-9")] });
   const stored = vi.spyOn(host, "stored");
   await send(ask());
@@ -1798,11 +1817,29 @@ it("submits messages.ask and messages.ack as their own tools", async () => {
     { ask_id: "m_aaaaaaaaaaaa", message: "Done" },
     "r-ack",
   );
-  expect(rust.state.submitted.map(({ tool }) => tool)).toEqual([
-    "send_message",
-    "ask",
-    "ask",
-    "ack",
+  const messages = agentMessages(host);
+  await messages.question("r-q", { message: "Which branch?" });
+  await messages.answer("r-an", {
+    ask_id: "m_aaaaaaaaaaaa",
+    seq: 1,
+    message: "main",
+  });
+  await messages.update("r-up", { message: "Half done" });
+  expect(
+    rust.state.submitted.map(({ tool, requestId }) => [tool, requestId]),
+  ).toEqual([
+    ["send_message", "r1"],
+    ["ask", "r-ask"],
+    ["ask", "r-odd"],
+    ["ack", "r-ack"],
+    ["question", "r-q"],
+    ["answer", "r-an"],
+    ["update", "r-up"],
+  ]);
+  expect(rust.state.submitted.slice(4).map(({ input }) => input)).toEqual([
+    { message: "Which branch?" },
+    { ask_id: "m_aaaaaaaaaaaa", seq: 1, message: "main" },
+    { message: "Half done" },
   ]);
   expect(
     rust.state.submitted

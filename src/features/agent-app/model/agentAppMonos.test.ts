@@ -84,6 +84,9 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
     send: vi.fn(async () => ({ message_id: "m_aaaaaaaaaaaa" })),
     ask: vi.fn(async () => ({ message_id: "m_aaaaaaaaaaaa" })),
     ack: vi.fn(async () => ({ message_id: "m_bbbbbbbbbbbb" })),
+    question: vi.fn(async () => ({ message_id: "m_cccccccccccc" })),
+    answer: vi.fn(async () => ({ message_id: "m_dddddddddddd" })),
+    update: vi.fn(async () => ({ message_id: "m_eeeeeeeeeeee" })),
     reply: vi.fn(async () => ({ message_ids: [] })),
     get: vi.fn(async () => ({ message: {} })),
   };
