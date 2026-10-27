@@ -188,6 +188,27 @@ pub fn decide_ack(ask: &AskState, caller: &Actor) -> Result<(), AckRefused> {
     }
 }
 
+/// How a reminder reaches its chat (plan R9): into the running turn, as a
+/// new turn, or not yet. `ask_scheduler::claim` turns it into `Claimed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    Steer,
+    Wake,
+    AfterTurn,
+}
+
+/// Plan R9: an idle chat wakes with a new turn; a busy one takes the
+/// reminder as a steer when its window can steer the running turn now, and
+/// otherwise waits for the turn end. `running` comes from `ControlHost`,
+/// `steerable` from the window that would deliver it.
+pub fn delivery_for(running: bool, steerable: bool) -> Delivery {
+    match (running, steerable) {
+        (false, _) => Delivery::Wake,
+        (true, true) => Delivery::Steer,
+        (true, false) => Delivery::AfterTurn,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
