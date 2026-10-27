@@ -8,6 +8,7 @@ name: gate-mutation
 # gate/integrity as a gate edit. The mutation tools are pinned and installed by the jobs.
 # plan picks the targets, the rust shards and ts mutate, and the gate/mutation job is
 # the one check merge_rule.py reads: green only when every job the plan needed succeeded.
+# Every job's name starts with "gate/mutation"; only the aggregate is exactly that name.
 on:
   pull_request:
     branches: [tyler/main]
@@ -28,10 +29,11 @@ env:
 
 jobs:
   plan:
-    name: mutation/plan
+    name: gate/mutation plan
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
+      base: ${{ steps.targets.outputs.base }}
       rust: ${{ steps.targets.outputs.rust }}
       stryker: ${{ steps.targets.outputs.stryker }}
     steps:
@@ -50,10 +52,15 @@ jobs:
       - name: Changed lines to mutate
         id: targets
         if: ${{ steps.tier.outputs.tier == 'T3' }}
-        run: git diff --unified=0 "$(git merge-base "$BASE_SHA" "$HEAD_SHA")" "$HEAD_SHA" | python3 scripts/process/mutation_targets.py | tee -a "$GITHUB_OUTPUT"
+        run: |
+          base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          git diff --unified=0 "$base" "$HEAD_SHA" | python3 scripts/process/mutation_targets.py | tee -a "$GITHUB_OUTPUT"
 
   rust:
-    name: mutation/rust shard ${{ matrix.shard }}
+    # No matrix value in the name: GitHub appends it per leg ("gate/mutation rust (0)"), and a
+    # skipped job then shows the plain name, not the raw expression.
+    name: gate/mutation rust
     needs: plan
     if: ${{ needs.plan.outputs.rust == 'yes' }}
     # Pinned: ubuntu-latest moved to ubuntu-26.04, whose /tmp quota is too small for the cargo-mutants
@@ -97,13 +104,14 @@ jobs:
           CARGO_HOME: ${{ runner.temp }}/cargo-home
           CARGO_MUTANTS: ${{ runner.temp }}/tools/bin/cargo-mutants
           SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+          MERGE_BASE: ${{ needs.plan.outputs.base }}
         run: |
-          git diff "$(git merge-base "$BASE_SHA" "$HEAD_SHA")" "$HEAD_SHA" > "$RUNNER_TEMP/pr.diff"
+          git diff "$MERGE_BASE" "$HEAD_SHA" > "$RUNNER_TEMP/pr.diff"
           bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
           bash scripts/process/mutation.sh rust "$RUNNER_TEMP/pr.diff" "$SHARD"
 
   ts:
-    name: mutation/ts
+    name: gate/mutation ts
     needs: plan
     if: ${{ needs.plan.outputs.stryker != '' }}
     runs-on: ubuntu-24.04
