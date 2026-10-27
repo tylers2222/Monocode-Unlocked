@@ -125,6 +125,7 @@ export async function acceptQuickLaunch(
     );
   session.id = deliveryId;
   if (!existing && launch.sidebarHidden) session.sidebarHidden = true;
+  if (!existing && launch.mcp) session.mcp = launch.mcp;
   if (!existing && launch.leadSessionId)
     session.leadSessionId = launch.leadSessionId;
   if (launch.modelSettings) {

@@ -574,6 +574,10 @@ describe("sanitizeSessionForPersist", () => {
       worktreeCwd: "/repo-worktrees/feature",
       worktreeRemoved: true,
     });
+    // ADE-117: the mcp choice survives the save, so a --resume after an app
+    // restart still starts omp without MCP servers.
+    session.mcp = "none";
+    expect(sanitizeSessionForPersist(session)).toMatchObject({ mcp: "none" });
   });
 
   it("preserves an internal worker's lead, hidden turns, and token metrics", () => {

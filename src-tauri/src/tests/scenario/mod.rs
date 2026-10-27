@@ -15,6 +15,10 @@ mod completions;
 mod d2_db_key;
 #[cfg(unix)]
 mod d4_deny;
+#[cfg(unix)]
+mod devin_supervised;
+#[cfg(unix)]
+mod omp_mcp;
 mod s0_baseline;
 mod s1_asks;
 mod s1_levels;

@@ -8038,6 +8038,7 @@ function Workspace({
                 model: pendingSwitch.fromModel,
                 modelSettings: pendingSwitch.fromSettings,
                 providerAccountId: pendingSwitch.fromProviderAccountId,
+                mcp: current.mcp,
                 userRequest: text,
               });
             } catch {
@@ -8224,6 +8225,7 @@ function Workspace({
                 runtimeMode: current.runtimeMode,
                 ephemeral: current.ephemeral === true,
                 codexStore: mono ? "mono" : undefined,
+                mcp: current.mcp,
                 ...turnAccess(
                   access,
                   mono,
@@ -8280,6 +8282,7 @@ function Workspace({
               runtimeMode: current.runtimeMode,
               ephemeral: current.ephemeral === true,
               codexStore: mono ? "mono" : undefined,
+              mcp: current.mcp,
               intent: intent === "orchestrate" ? "plan" : intent,
               ...turnAccess(
                 access,
@@ -10548,6 +10551,7 @@ function Workspace({
             runtimeMode: current.runtimeMode,
             ephemeral: current.ephemeral === true,
             codexStore: isMonoSession(sessionId) ? "mono" : undefined,
+            mcp: current.mcp,
             ...turnAccess(
               appAccess(current.blocks),
               isMonoSession(sessionId),

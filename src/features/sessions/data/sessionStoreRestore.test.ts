@@ -60,6 +60,11 @@ describe("restoring a session whose repair cannot be persisted", () => {
     const session = await getSession(record.id);
     expect(session?.workFolder).toBe("/repo/gigas/alpha");
     expect(session?.worktreeCwd).toBeUndefined();
+    // ADE-117: a default session loads with no mcp, and a "none" session
+    // loads as "none", so a restart flips neither session's MCP servers.
+    expect(session?.mcp).toBeUndefined();
+    record.mcp = "none";
+    expect((await getSession(record.id))?.mcp).toBe("none");
   });
 
   it("restores the turn's launched session links", async () => {
