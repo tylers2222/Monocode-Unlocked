@@ -586,11 +586,18 @@ impl Asked {
             .collect()
     }
 
-    /// The lead claims blocked row `seq`, busy or not.
-    fn claim_blocked(&self, world: &World, seq: i64, busy: bool) -> Option<Claimed> {
+    /// The lead claims blocked row `seq`, with a turn `running` or not and
+    /// its harness `steerable` or not.
+    fn claim_blocked(
+        &self,
+        world: &World,
+        seq: i64,
+        running: bool,
+        steerable: bool,
+    ) -> Option<Claimed> {
         let key = format!("blocked:{}:{seq}", self.ask.as_str());
-        let running: &[&SessionId] = if busy { &[&self.lead] } else { &[] };
-        claim(world, &key, "main", running, busy)
+        let running: &[&SessionId] = if running { &[&self.lead] } else { &[] };
+        claim(world, &key, "main", running, steerable)
     }
 
     fn prompt(&self, seq: i64, wake: bool) -> Option<Claimed> {
@@ -636,27 +643,35 @@ fn a_busy_parent_steers(world: &World, a: &Asked) {
         json!({"message": "Question 1"}),
     );
     refused(plain, "request_id_reused", "Use a new request id.");
-    assert_eq!(a.claim_blocked(world, 1, true), a.prompt(1, false));
+    assert_eq!(a.claim_blocked(world, 1, true, true), a.prompt(1, false));
     said(world, a.answer(world, &a.l, "l-a1", 1));
     assert_eq!(clock(world, &a.ask).2, None, "the answer resumes the clock");
 }
 
-/// An idle lead is woken. A row no window took goes with its answer, and
-/// a 4th question is refused, blocked or not, and writes no row.
+/// An idle lead is woken and a busy one that cannot steer waits. Each
+/// answer withdraws its unsent row, claimed or not, and a 4th question is
+/// refused, blocked or not, and writes no row.
 fn an_idle_parent_wakes(world: &World, a: &Asked) {
     a.blocked(world, 2);
-    assert_eq!(blocked_rows(world, &a.ask).0, a.rows_to_lead(&[1, 2]));
-    assert_eq!(a.claim_blocked(world, 2, false), a.prompt(2, true));
+    let two = a.rows_to_lead(&[2]);
+    assert_eq!(blocked_rows(world, &a.ask).0, two);
+    assert_eq!(a.claim_blocked(world, 2, true, false), None);
+    let pending = ask_scheduler::pending(&world.conn(), &a.lead).unwrap();
+    assert_eq!(
+        pending,
+        [two[0].0.clone()],
+        "a busy lead that cannot steer waits"
+    );
+    assert_eq!(a.claim_blocked(world, 2, false, false), a.prompt(2, true));
     said(world, a.answer(world, &a.l, "l-a2", 2));
     a.blocked(world, 3);
-    assert_eq!(blocked_rows(world, &a.ask).0, a.rows_to_lead(&[1, 2, 3]));
+    assert_eq!(blocked_rows(world, &a.ask).0, a.rows_to_lead(&[3]));
     said(world, a.answer(world, &a.l, "l-a3", 3));
-    let rows = (a.rows_to_lead(&[1, 2]), vec![true; 3]);
-    assert_eq!(blocked_rows(world, &a.ask), rows);
+    assert_eq!(blocked_rows(world, &a.ask), (vec![], vec![true; 3]));
     let full = "already had its 3 questions";
     refused(a.blocked(world, 4).0, "question_refused", full);
     refused(a.question(world, 4), "question_refused", full);
-    assert_eq!(blocked_rows(world, &a.ask).0, a.rows_to_lead(&[1, 2]));
+    assert_eq!(blocked_rows(world, &a.ask).0, []);
 }
 
 /// S4.7 "A worker that can't continue at all uses the blocked path, and
@@ -666,8 +681,8 @@ fn an_idle_parent_wakes(world: &World, a: &Asked) {
 /// does not get it as a steer, or an idle one is not woken; the prompt
 /// lacks the question's seq or text; a blocked question skips the clock
 /// pause or the limit of 3; its repeat writes a second row; an answer
-/// leaves the row no window took, so the parent is told to answer again;
-/// a later question withdraws a freed blocked row as a ladder rung.
+/// leaves its unsent row, claimed or not, so after a window close the
+/// parent is told to answer again.
 #[test]
 fn s4_7_a_blocked_question_reaches_the_parent_at_once() {
     let mut world = World::new("s4-blocked");
@@ -687,9 +702,14 @@ fn s4_7_a_blocked_question_reaches_the_parent_at_once() {
         ask,
     };
     a_busy_parent_steers(&world, &a);
-    // The lead's window closes before its provider took row 1: it waits
-    // again, and the next question leaves it, as it is no ladder rung.
+    // The lead's window closes after its claimed row 1 was answered: the
+    // row does not come back.
     ask_scheduler::release(&world.conn(), "main").unwrap();
+    let pending = ask_scheduler::pending(&world.conn(), &a.lead).unwrap();
+    assert!(
+        pending.is_empty(),
+        "an answered question waits again: {pending:?}"
+    );
     an_idle_parent_wakes(&world, &a);
 
     // The lead's own blocked question goes one hop up, to the Mono's chat.

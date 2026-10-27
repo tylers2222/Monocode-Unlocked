@@ -281,15 +281,14 @@ pub(crate) fn enqueue_blocked(
     Ok(())
 }
 
-/// R15: question `seq` on ask `ask_id` was answered, so its blocked row
-/// that no window took goes. A claimed one is mid-send and goes out.
+/// R15: question `seq` was answered, so its unsent blocked row goes, claimed or not.
 pub(crate) fn withdraw_blocked(
     tx: &Connection,
     ask_id: &MessageId,
     seq: i64,
 ) -> rusqlite::Result<()> {
     tx.execute(
-        "DELETE FROM mono_outbox WHERE key = ?1 AND claimed_by IS NULL AND sent_at IS NULL",
+        "DELETE FROM mono_outbox WHERE key = ?1 AND sent_at IS NULL",
         [blocked_key(ask_id, seq)],
     )?;
     Ok(())

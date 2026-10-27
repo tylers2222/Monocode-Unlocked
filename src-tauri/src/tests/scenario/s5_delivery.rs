@@ -137,7 +137,7 @@ fn s5_reminders_are_claimed_once_sent_once_and_freed_by_close_and_boot() {
     assert_eq!(
         keys(&world, &mono.chat),
         [MONO_T5],
-        "a stage not sent waits unlisted"
+        "a row with no ask waits unlisted"
     );
     assert_eq!(claim(&world, BLOCKED, "main", &[], false), None);
     delivery_follows_the_chat(&mut world, (&ka, &a), (&lead, &worker, &mono.chat));
