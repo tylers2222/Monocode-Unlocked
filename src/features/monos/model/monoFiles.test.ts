@@ -144,7 +144,9 @@ it("says how to keep memory and update the soul only at the user's request", () 
     full.match(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`))?.[0] ?? "";
   // A Mono learns every messaging tool and field it can use, the notice it
   // can get, the inference line that can start a message (design 16.10 I4
-  // row), and not the removed tool.
+  // row), and not the removed tool. R14: one waiting question at a time, an
+  // answer by the asker with the question's seq, one update per ask, and all
+  // nine tool names.
   const messaging = rules("mono_messaging_rules");
   for (const tool of [
     "messages.get_monos",
@@ -165,6 +167,12 @@ it("says how to keep memory and update the soul only at the user's request", () 
     '[steer → #1 · "',
     "[steer → whole turn]",
     "reply_to attribute",
+    'messages.question {"ask_id"',
+    "up to 3 times per ask and one at a time",
+    'messages.answer {"ask_id":"<question_of>","seq"',
+    "question_of and seq",
+    'Once per ask, app messages.update {"ask_id"',
+    "get_message, ask, ack, question, answer and update",
   ])
     expect(messaging).toContain(tool);
   expect(full).not.toContain("monos.send");
