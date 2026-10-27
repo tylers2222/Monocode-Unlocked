@@ -17,6 +17,7 @@ mod codex_mono_store;
 mod control;
 pub mod control_cli;
 mod cursor_store;
+mod db_key;
 mod devin_config;
 mod devin_usage;
 mod external_editor;
@@ -47,8 +48,10 @@ mod mono_roster;
 mod mono_transcript;
 mod notes;
 mod notifications;
+mod omp_mcp;
 mod pasteboard;
 mod pi_usage;
+mod private_file;
 mod project_logo;
 mod pty;
 #[cfg(target_os = "macos")]
@@ -586,6 +589,9 @@ pub fn run() {
             mono_messages::mono_message_drop,
             mono_messages::mono_app_action_check,
             mono_messages::mono_message_record_start,
+            ask_scheduler::mono_outbox_pending,
+            ask_scheduler::mono_outbox_claim,
+            ask_scheduler::mono_outbox_sent,
             session_store::session_delete,
             session_store::session_set_archived,
             session_store::session_set_pinned,

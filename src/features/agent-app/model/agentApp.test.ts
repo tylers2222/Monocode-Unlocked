@@ -38,7 +38,7 @@ import {
 import { appErrorResponse } from "./appActionError";
 
 vi.mock("../../../integrations/harness/core/availability", () => ({
-  isHarnessAvailable: (id: string) => id === "codex",
+  isHarnessAvailable: (id: string) => id === "codex" || id === "omp",
 }));
 
 const note: Note = {
@@ -198,6 +198,35 @@ describe("agent app commands", () => {
       expect.objectContaining({ sidebarHidden: true }),
       "app-lead-habit-launch",
     );
+  });
+
+  // ADE-117. Defect: a start asks for no MCP servers and the session starts
+  // with them, a harness that cannot honor it accepts it, or the default
+  // start changes.
+  it("starts an omp session without MCP servers only when asked", async () => {
+    const { source, host } = fixture();
+    const start = (id: string, input: Record<string, unknown>) =>
+      handleAgentApp(source, id, "sessions.start", {
+        prompt: "Review the project",
+        notifyOnComplete: false,
+        ...input,
+      }, host);
+    const omp = { harness: "omp", model: "omp:default" };
+    await start("none", { ...omp, mcp: "none" });
+    await start("default", { ...omp, mcp: "default" });
+    await start("omitted", omp);
+    expect(vi.mocked(host.start).mock.calls.map(([launch]) => launch.mcp)).toEqual([
+      "none",
+      undefined,
+      undefined,
+    ]);
+    await expect(start("codex", { ...CHOICE, mcp: "none" })).rejects.toThrow(
+      'mcp "none" is supported for omp sessions only',
+    );
+    await expect(start("all", { ...omp, mcp: "all" })).rejects.toThrow(
+      'mcp must be "default" or "none"',
+    );
+    expect(host.start).toHaveBeenCalledTimes(3);
   });
 
   // Design 13.3, 6.6 A6/A7. Defect: the web app decides the new session's
