@@ -37,7 +37,7 @@ pub(super) fn ask(
     written(world.tool(from, key, "ask", input, live))
 }
 
-fn ack(world: &World, live: &[&SessionId], child: &SessionId, ask: &MessageId) {
+pub(super) fn ack(world: &World, live: &[&SessionId], child: &SessionId, ask: &MessageId) {
     let input = json!({"ask_id": ask.as_str(), "message": "Done"});
     let key = format!("ack-{}", ask.as_str());
     written(world.tool(&session_caller(child, P), &key, "ack", input, live));

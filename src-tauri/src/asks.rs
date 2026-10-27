@@ -612,7 +612,7 @@ pub fn extend(
         None => only_open_ask(&tx, &me)?,
     };
     let Some(ask_id) = ask_id else {
-        return refused(ExtendRefused::NoOpenAsk);
+        return refused(ExtendRefused::NoSingleOpenAsk);
     };
     let Some((ask, stage)) = load_extend(&tx, &ask_id)? else {
         return refused(ExtendRefused::NoOpenAsk);
