@@ -369,6 +369,12 @@ describe("HabitQuestionCard", () => {
     );
   });
 
+  it("a skipped card whose prompt has no question still folds to one line", () => {
+    renderCard({ kind: "skipped" }, {}, []);
+
+    expect(card().textContent).toBe("Skipped·Garden round, 7:30 am run");
+  });
+
   it("a card whose run ended stays, dimmed, with the reason and nothing to press", () => {
     const onOpenRun = vi.fn();
     renderCard(undefined, { onOpenRun });

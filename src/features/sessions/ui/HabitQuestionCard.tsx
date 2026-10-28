@@ -13,50 +13,52 @@ import type { UserQuestionReply } from "../model/userQuestion";
 import { QuestionForm } from "./QuestionForm";
 
 type Reason = { Icon: typeof Square; text: string };
+type Open = { kind: "open" };
+/** The card's state: open until the question ends, then its end. */
+type CardState = Open | HabitQuestionEnd;
+/** The ends that fold the card to one line. */
+type Folded = Extract<HabitQuestionEnd, { kind: "answered" | "skipped" }>;
 
-/** Each way a question ends: the card folds to one line, or, if the run
- * ended before anyone answered, it stays, dimmed, with the reason. */
-const END_LOOK: Record<HabitQuestionEnd["kind"], "fold" | Reason> = {
+const OPEN: Open = { kind: "open" };
+
+/** How each state looks: open, folded to one line, or, if the run ended
+ * before anyone answered, dimmed with the reason. Total, and only a `Folded`
+ * kind may fold: a new end kind does not compile until it has a reason. */
+const LOOK: {
+  [K in CardState["kind"]]: K extends "open"
+    ? null
+    : K extends Folded["kind"]
+      ? "fold"
+      : Reason;
+} = {
+  open: null,
   answered: "fold",
   skipped: "fold",
   stopped: { Icon: Square, text: "You stopped the run. Nothing to answer." },
   "timed-out": { Icon: Clock, text: "No answer in 12 h. The run was stopped." },
 };
 
-type CardStatus =
-  | { kind: "open"; look: "open" }
-  /** `answer` is null when the question was skipped. */
-  | { kind: HabitQuestionEnd["kind"]; look: "folded"; answer: string | null }
-  | { kind: HabitQuestionEnd["kind"]; look: "ended"; reason: Reason };
-
-function cardStatus(end: HabitQuestionEnd | undefined): CardStatus {
-  if (!end) return { kind: "open", look: "open" };
-  const look = END_LOOK[end.kind];
-  if (look !== "fold") return { kind: end.kind, look: "ended", reason: look };
-  return {
-    kind: end.kind,
-    look: "folded",
-    answer: end.kind === "answered" ? end.answer : null,
-  };
+/** The one decision, pure: the card's state and the look `LOOK` gives it. */
+function cardStatus(end: HabitQuestionEnd | undefined) {
+  const state: CardState = end ?? OPEN;
+  return { state, look: LOOK[state.kind] };
 }
 
 /** The card once answered or skipped: the question, the answer, and the run. */
 function FoldedCard({
-  kind,
+  end,
   question,
-  answer,
   habit,
   runFrom,
 }: {
-  kind: HabitQuestionEnd["kind"];
+  end: CardState;
   question: string | undefined;
-  answer: string | null;
   habit: string;
   runFrom: string;
 }) {
   return (
     <div
-      data-habit-question={kind}
+      data-habit-question={end.kind}
       className="flex min-w-0 items-center gap-1.5 px-4 pt-1 pb-2 font-sans text-[14px] text-content/50"
     >
       <MessageSquare
@@ -64,10 +66,10 @@ function FoldedCard({
         strokeWidth={1.75}
       />
       <span className="min-w-0 truncate">{question}</span>
-      {answer !== null ? (
+      {"answer" in end ? (
         <span className="inline-flex shrink-0 items-center gap-1 text-content/85">
           <Check className="size-3 text-emerald-400" strokeWidth={1.75} />
-          {answer}
+          {end.answer}
         </span>
       ) : (
         <span className="shrink-0 text-content/60">Skipped</span>
@@ -100,27 +102,26 @@ export function HabitQuestionCard({
   onOpenRun?: (runId: string) => void;
 }) {
   const { prompt } = asked;
-  const status = cardStatus(asked.end);
-  if (status.look === "folded")
+  const { state, look } = cardStatus(asked.end);
+  if (look === "fold")
     return (
       <FoldedCard
-        kind={status.kind}
+        end={state}
         question={prompt.questions[0]?.prompt}
-        answer={status.answer}
         habit={habit}
         runFrom={runFrom}
       />
     );
   return (
     <div
-      data-habit-question={status.kind}
+      data-habit-question={state.kind}
       className="px-2.5 pt-1.5 pb-1 font-sans"
     >
       <QuestionForm
-        key={status.look}
+        key={state.kind}
         prompt={prompt}
         onReply={onReply}
-        disabled={status.look === "ended"}
+        disabled={!!look}
         header={
           <>
             <span className="font-medium text-content/72">{habit}</span> · run
@@ -129,13 +130,10 @@ export function HabitQuestionCard({
         }
         footer={
           <span className="mr-auto flex min-w-0 items-center gap-1.5 text-[11px] text-content/45">
-            {status.look === "ended" ? (
+            {look ? (
               <>
-                <status.reason.Icon
-                  className="size-3 shrink-0"
-                  strokeWidth={1.75}
-                />
-                {status.reason.text}
+                <look.Icon className="size-3 shrink-0" strokeWidth={1.75} />
+                {look.text}
               </>
             ) : onOpenRun ? (
               <button
