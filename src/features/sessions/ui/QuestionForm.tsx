@@ -147,7 +147,11 @@ export function QuestionForm({
             Skip
           </button>
         </div>
-        <div className="mt-2 inert:opacity-45" inert={disabled}>
+        <fieldset
+          className="mt-2 min-w-0 disabled:opacity-45"
+          disabled={disabled}
+          inert={disabled}
+        >
           <QuestionFields
             key={question.id}
             question={question}
@@ -183,7 +187,7 @@ export function QuestionForm({
               });
             }}
           />
-        </div>
+        </fieldset>
         <div className="mt-2.5 flex items-center justify-end gap-2">
           {footer}
           {prompt.autoResolveAt != null ? (
@@ -199,7 +203,8 @@ export function QuestionForm({
           {index > 0 ? (
             <button
               type="button"
-              className="h-6 shrink-0 rounded-md px-1.5 text-[11px] text-content/55 hover:bg-content/10 hover:text-content"
+              className="h-6 shrink-0 rounded-md px-1.5 text-[11px] text-content/55 hover:bg-content/10 hover:text-content disabled:opacity-50"
+              disabled={disabled}
               onClick={goBack}
             >
               Back

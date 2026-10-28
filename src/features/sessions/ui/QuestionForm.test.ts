@@ -201,29 +201,59 @@ describe("QuestionForm steps", () => {
       answers: { colour: ["green"], size: ["large"] },
     });
   });
+
+  it("a form disabled on its second question has nothing to press", () => {
+    const onReply = vi.fn();
+    act(() =>
+      root.render(
+        createElement(QuestionForm, { prompt: twoQuestions(), onReply }),
+      ),
+    );
+    act(() => button("Red").click());
+    act(() => button("Continue").click());
+    expect(button("Back").disabled).toBe(false);
+
+    act(() =>
+      root.render(
+        createElement(QuestionForm, {
+          prompt: twoQuestions(),
+          onReply,
+          disabled: true,
+        }),
+      ),
+    );
+
+    expect(container.textContent).toContain("Pick a size");
+    expect(button("Back").disabled).toBe(true);
+    expect(button("Skip").disabled).toBe(true);
+    expect(button("Continue").disabled).toBe(true);
+    expect(
+      container.querySelector("fieldset[disabled] [aria-pressed]"),
+    ).not.toBeNull();
+  });
 });
 
 describe("HabitQuestionCard", () => {
-  function asked(end?: HabitQuestion["end"]): HabitQuestion {
+  const water = {
+    id: "water",
+    prompt: "Water the plants today?",
+    multiSelect: false,
+    allowCustom: false,
+    options: [
+      { id: "yes", label: "Yes", description: "Do it now." },
+      { id: "no", label: "No", description: "Leave it for later." },
+    ],
+  };
+
+  function asked(
+    end?: HabitQuestion["end"],
+    questions: UserQuestionPrompt["questions"] = [water],
+  ): HabitQuestion {
     return {
       runId: "run-42",
       runAt: 0,
       end,
-      prompt: {
-        requestId: 5,
-        questions: [
-          {
-            id: "water",
-            prompt: "Water the plants today?",
-            multiSelect: false,
-            allowCustom: false,
-            options: [
-              { id: "yes", label: "Yes", description: "Do it now." },
-              { id: "no", label: "No", description: "Leave it for later." },
-            ],
-          },
-        ],
-      },
+      prompt: { requestId: 5, questions },
     };
   }
 
@@ -233,11 +263,12 @@ describe("HabitQuestionCard", () => {
       onReply?: (requestId: number, reply: UserQuestionReply) => void;
       onOpenRun?: (runId: string) => void;
     } = {},
+    questions?: UserQuestionPrompt["questions"],
   ) {
     act(() =>
       root.render(
         createElement(HabitQuestionCard, {
-          asked: asked(end),
+          asked: asked(end, questions),
           habit: "Garden round",
           runFrom: "7:30 am",
           onReply: handlers.onReply ?? vi.fn(),
@@ -245,6 +276,18 @@ describe("HabitQuestionCard", () => {
         }),
       ),
     );
+  }
+
+  function options(): HTMLButtonElement[] {
+    return Array.from(
+      container.querySelectorAll<HTMLButtonElement>("button[aria-pressed]"),
+    );
+  }
+
+  function picked(): string[] {
+    return options()
+      .filter((option) => option.getAttribute("aria-pressed") === "true")
+      .map((option) => option.textContent ?? "");
   }
 
   function card(): HTMLElement {
@@ -316,6 +359,16 @@ describe("HabitQuestionCard", () => {
     );
   });
 
+  it("the fold shows the question, not its header", () => {
+    renderCard({ kind: "answered", answer: "Yes" }, {}, [
+      { ...water, header: "Source", prompt: "Read the external source?" },
+    ]);
+
+    expect(card().textContent).toBe(
+      "Read the external source?Yes·Garden round, 7:30 am run",
+    );
+  });
+
   it("a card whose run ended stays, dimmed, with the reason and nothing to press", () => {
     const onOpenRun = vi.fn();
     renderCard(undefined, { onOpenRun });
@@ -336,7 +389,7 @@ describe("HabitQuestionCard", () => {
     expect(button("Open run")).toBeUndefined();
     expect(button("Skip")!.disabled).toBe(true);
     expect(button("Continue")!.disabled).toBe(true);
-    expect(container.querySelector("[inert] fieldset")).not.toBeNull();
+    expect(container.querySelector("fieldset[disabled][inert]")).not.toBeNull();
 
     renderCard({ kind: "timed-out" }, { onOpenRun });
 
@@ -346,5 +399,47 @@ describe("HabitQuestionCard", () => {
     );
     expect(card().textContent).not.toContain("You stopped the run.");
     expect(button("Continue")!.disabled).toBe(true);
+  });
+
+  it("an option focused before the run ended cannot change the pick by keyboard", () => {
+    renderCard();
+    act(() => options()[0].focus());
+
+    renderCard({ kind: "stopped" });
+    for (const key of ["2", "Enter", " ", "ArrowUp"])
+      keyDown(document.activeElement ?? document.body, key);
+
+    expect(picked()).toEqual([]);
+  });
+
+  it("a two-question card stopped on its second question has no Back to press", () => {
+    const size = {
+      ...water,
+      id: "size",
+      prompt: "How much water?",
+      options: [
+        { id: "little", label: "A little" },
+        { id: "lots", label: "Lots" },
+      ],
+    };
+    renderCard(undefined, {}, [water, size]);
+    act(() => options()[0].click());
+    act(() => button("Continue")!.click());
+    expect(button("Back")!.disabled).toBe(false);
+
+    renderCard({ kind: "stopped" }, {}, [water, size]);
+
+    const back = button("Back");
+    expect(back === undefined || back.disabled).toBe(true);
+  });
+
+  it("a pick made before the run ended is not shown ticked", () => {
+    renderCard();
+    act(() => options()[0].click());
+    expect(picked()).toHaveLength(1);
+
+    renderCard({ kind: "timed-out" });
+
+    expect(picked()).toEqual([]);
   });
 });
