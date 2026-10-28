@@ -1,9 +1,11 @@
+import type { Dispatch, RefObject, SetStateAction } from "react";
+import { updateSessionState } from "../../../app/model/sessionState";
 import type { Block, Session } from "../../sessions/model/session";
 import type { ApprovalRelay } from "./monoHabits";
 
 type Host = {
-  sessions: { current: Session[] };
-  setSessions: (sessions: Session[]) => void;
+  sessions: RefObject<Session[]>;
+  setSessions: Dispatch<SetStateAction<Session[]>>;
   persist: (session: Session | undefined) => void;
   append: (monoId: string, block: Block) => void;
 };
@@ -33,16 +35,18 @@ export function settleHabitCard(
   const mono = host.sessions.current.find(
     (session) => session.id === relay.monoId,
   );
-  const block = mono?.blocks.find((entry) => entry.id === relay.blockId);
-  const next = block && update(block);
-  if (!mono || !next) return;
-  const settled: Session = {
-    ...mono,
-    blocks: mono.blocks.map((entry) => (entry === block ? next : entry)),
-  };
-  host.sessions.current = host.sessions.current.map((session) =>
-    session.id === settled.id ? settled : session,
+  if (!mono?.blocks.some((entry) => entry.id === relay.blockId)) return;
+  const sessions = updateSessionState(host.sessions, host.setSessions, (all) =>
+    all.map((session) =>
+      session.id === relay.monoId
+        ? {
+            ...session,
+            blocks: session.blocks.map((entry) =>
+              entry.id === relay.blockId ? update(entry) : entry,
+            ),
+          }
+        : session,
+    ),
   );
-  host.setSessions(host.sessions.current);
-  host.persist(settled);
+  host.persist(sessions.find((session) => session.id === relay.monoId));
 }
