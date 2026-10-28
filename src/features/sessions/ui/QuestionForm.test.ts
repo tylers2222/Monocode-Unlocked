@@ -2,6 +2,8 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { HabitQuestion } from "../../monos/model/habitQuestion";
+import { HabitQuestionCard } from "./HabitQuestionCard";
 import { QuestionForm } from "./QuestionForm";
 import type {
   UserQuestionPrompt,
@@ -198,5 +200,252 @@ describe("QuestionForm steps", () => {
       kind: "answered",
       answers: { colour: ["green"], size: ["large"] },
     });
+  });
+
+  it("a form disabled on its second question has nothing to press", () => {
+    const onReply = vi.fn();
+    act(() =>
+      root.render(
+        createElement(QuestionForm, { prompt: twoQuestions(), onReply }),
+      ),
+    );
+    act(() => button("Red").click());
+    act(() => button("Continue").click());
+    expect(button("Back").disabled).toBe(false);
+
+    act(() =>
+      root.render(
+        createElement(QuestionForm, {
+          prompt: twoQuestions(),
+          onReply,
+          disabled: true,
+        }),
+      ),
+    );
+
+    expect(container.textContent).toContain("Pick a size");
+    expect(button("Back").disabled).toBe(true);
+    expect(button("Skip").disabled).toBe(true);
+    expect(button("Continue").disabled).toBe(true);
+    expect(
+      container.querySelector("fieldset[disabled] [aria-pressed]"),
+    ).not.toBeNull();
+  });
+});
+
+describe("HabitQuestionCard", () => {
+  const water = {
+    id: "water",
+    prompt: "Water the plants today?",
+    multiSelect: false,
+    allowCustom: false,
+    options: [
+      { id: "yes", label: "Yes", description: "Do it now." },
+      { id: "no", label: "No", description: "Leave it for later." },
+    ],
+  };
+
+  function asked(
+    end?: HabitQuestion["end"],
+    questions: UserQuestionPrompt["questions"] = [water],
+  ): HabitQuestion {
+    return {
+      runId: "run-42",
+      runAt: 0,
+      end,
+      prompt: { requestId: 5, questions },
+    };
+  }
+
+  function renderCard(
+    end?: HabitQuestion["end"],
+    handlers: {
+      onReply?: (requestId: number, reply: UserQuestionReply) => void;
+      onOpenRun?: (runId: string) => void;
+    } = {},
+    questions?: UserQuestionPrompt["questions"],
+  ) {
+    act(() =>
+      root.render(
+        createElement(HabitQuestionCard, {
+          asked: asked(end, questions),
+          habit: "Garden round",
+          runFrom: "7:30 am",
+          onReply: handlers.onReply ?? vi.fn(),
+          onOpenRun: handlers.onOpenRun,
+        }),
+      ),
+    );
+  }
+
+  function options(): HTMLButtonElement[] {
+    return Array.from(
+      container.querySelectorAll<HTMLButtonElement>("button[aria-pressed]"),
+    );
+  }
+
+  function picked(): string[] {
+    return options()
+      .filter((option) => option.getAttribute("aria-pressed") === "true")
+      .map((option) => option.textContent ?? "");
+  }
+
+  function card(): HTMLElement {
+    return container.querySelector<HTMLElement>("[data-habit-question]")!;
+  }
+
+  function button(label: string): HTMLButtonElement | undefined {
+    return Array.from(container.querySelectorAll("button")).find(
+      (item) => item.textContent?.trim() === label,
+    );
+  }
+
+  function topLine(): string | undefined {
+    return container
+      .querySelector("form > div > span")
+      ?.textContent?.replace(/\s+/g, " ")
+      .trim();
+  }
+
+  it("an open card names the habit and the run, opens the run, and answers", () => {
+    const onReply = vi.fn();
+    const onOpenRun = vi.fn();
+    renderCard(undefined, { onReply, onOpenRun });
+
+    expect(card().dataset.habitQuestion).toBe("open");
+    expect(topLine()).toBe("Garden round · run from 7:30 am");
+    expect(container.querySelector("[inert]")).toBeNull();
+    expect(button("Skip")!.disabled).toBe(false);
+
+    act(() => button("Open run")!.click());
+    expect(onOpenRun).toHaveBeenCalledWith("run-42");
+
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>("button[aria-pressed]")!
+        .click(),
+    );
+    expect(button("Continue")!.disabled).toBe(false);
+    act(() => button("Continue")!.click());
+    expect(onReply).toHaveBeenCalledWith(5, {
+      kind: "answered",
+      answers: { water: ["yes"] },
+    });
+  });
+
+  it("an open card has no Open run when nothing can open the run", () => {
+    renderCard();
+
+    expect(card().dataset.habitQuestion).toBe("open");
+    expect(button("Open run")).toBeUndefined();
+    expect(button("Continue")).toBeDefined();
+  });
+
+  it("an answered or skipped card folds to one line with the habit and run", () => {
+    renderCard({ kind: "answered", answer: "Yes, Tomorrow" });
+
+    expect(card().dataset.habitQuestion).toBe("answered");
+    expect(container.querySelector("form")).toBeNull();
+    expect(card().textContent).toBe(
+      "Water the plants today?Yes, Tomorrow·Garden round, 7:30 am run",
+    );
+
+    renderCard({ kind: "skipped" });
+
+    expect(card().dataset.habitQuestion).toBe("skipped");
+    expect(container.querySelector("form")).toBeNull();
+    expect(card().textContent).toBe(
+      "Water the plants today?Skipped·Garden round, 7:30 am run",
+    );
+  });
+
+  it("the fold shows the question, not its header", () => {
+    renderCard({ kind: "answered", answer: "Yes" }, {}, [
+      { ...water, header: "Source", prompt: "Read the external source?" },
+    ]);
+
+    expect(card().textContent).toBe(
+      "Read the external source?Yes·Garden round, 7:30 am run",
+    );
+  });
+
+  it("a skipped card whose prompt has no question still folds to one line", () => {
+    renderCard({ kind: "skipped" }, {}, []);
+
+    expect(card().textContent).toBe("Skipped·Garden round, 7:30 am run");
+  });
+
+  it("a card whose run ended stays, dimmed, with the reason and nothing to press", () => {
+    const onOpenRun = vi.fn();
+    renderCard(undefined, { onOpenRun });
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>("button[aria-pressed]")!
+        .click(),
+    );
+    expect(button("Continue")!.disabled).toBe(false);
+
+    renderCard({ kind: "stopped" }, { onOpenRun });
+
+    expect(card().dataset.habitQuestion).toBe("stopped");
+    expect(topLine()).toBe("Garden round · run from 7:30 am");
+    expect(card().textContent).toContain(
+      "You stopped the run. Nothing to answer.",
+    );
+    expect(button("Open run")).toBeUndefined();
+    expect(button("Skip")!.disabled).toBe(true);
+    expect(button("Continue")!.disabled).toBe(true);
+    expect(container.querySelector("fieldset[disabled][inert]")).not.toBeNull();
+
+    renderCard({ kind: "timed-out" }, { onOpenRun });
+
+    expect(card().dataset.habitQuestion).toBe("timed-out");
+    expect(card().textContent).toContain(
+      "No answer in 12 h. The run was stopped.",
+    );
+    expect(card().textContent).not.toContain("You stopped the run.");
+    expect(button("Continue")!.disabled).toBe(true);
+  });
+
+  it("an option focused before the run ended cannot change the pick by keyboard", () => {
+    renderCard();
+    act(() => options()[0].focus());
+
+    renderCard({ kind: "stopped" });
+    for (const key of ["2", "Enter", " ", "ArrowUp"])
+      keyDown(document.activeElement ?? document.body, key);
+
+    expect(picked()).toEqual([]);
+  });
+
+  it("a two-question card stopped on its second question has no Back to press", () => {
+    const size = {
+      ...water,
+      id: "size",
+      prompt: "How much water?",
+      options: [
+        { id: "little", label: "A little" },
+        { id: "lots", label: "Lots" },
+      ],
+    };
+    renderCard(undefined, {}, [water, size]);
+    act(() => options()[0].click());
+    act(() => button("Continue")!.click());
+    expect(button("Back")!.disabled).toBe(false);
+
+    renderCard({ kind: "stopped" }, {}, [water, size]);
+
+    const back = button("Back");
+    expect(back === undefined || back.disabled).toBe(true);
+  });
+
+  it("a pick made before the run ended is not shown ticked", () => {
+    renderCard();
+    act(() => options()[0].click());
+    expect(picked()).toHaveLength(1);
+
+    renderCard({ kind: "timed-out" });
+
+    expect(picked()).toEqual([]);
   });
 });
