@@ -30,6 +30,8 @@ type Props = {
   disabled?: boolean;
 };
 
+const ignoreReply: NonNullable<Props["onReply"]> = () => {};
+
 export function QuestionForm({
   prompt,
   onReply,
@@ -72,7 +74,8 @@ export function QuestionForm({
   );
 
   const finish = (nextAnswers = answers, nextCustom = custom) => {
-    onReply?.(
+    const send = onReply ?? ignoreReply;
+    send(
       prompt.requestId,
       buildQuestionReply(questions, nextAnswers, nextCustom),
     );
