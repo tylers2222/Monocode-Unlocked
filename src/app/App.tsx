@@ -678,6 +678,10 @@ import {
 import { useMonoHabits } from "./hooks/useMonoHabits";
 import { useFloatingMono } from "./hooks/useFloatingMono";
 import {
+  habitQuestionReply,
+  setHabitQuestionHost,
+} from "../features/monos/model/habitQuestionHost";
+import {
   dropRelays,
   habitPostsContext,
   habitRunMono,
@@ -8689,6 +8693,7 @@ function Workspace({
     );
   };
   decideMonoBlockRef.current = decideMonoBlock;
+  setHabitQuestionHost(sessionsRef, setSessions, persistSession, appendToMono);
   setGigaWorkspacePoster((monoId, text) => {
     const chatId = findMono(monoId)?.sessionId;
     if (chatId)
@@ -10771,6 +10776,7 @@ function Workspace({
     },
     [],
   );
+  const answerQuestion = habitQuestionReply(onQuestionReply);
 
   const onQuestionInteraction = useCallback(
     (sessionId: string, requestId: number) => {
@@ -13116,7 +13122,7 @@ function Workspace({
     submit: onSubmit,
     stop: onStop,
     approval: onApproval,
-    question: onQuestionReply,
+    question: answerQuestion,
     questionInteraction: onQuestionInteraction,
     reveal: onOpenMono,
     openArtifact: async (monoId, id) => {
@@ -13170,7 +13176,7 @@ function Workspace({
     onArchiveSession: onArchiveHistorySession,
     onDeleteSession: onDeleteHistorySession,
     onApproval,
-    onQuestionReply,
+    onQuestionReply: answerQuestion,
     onQuestionInteraction,
     onOpenFile,
     onOpenDiff,
