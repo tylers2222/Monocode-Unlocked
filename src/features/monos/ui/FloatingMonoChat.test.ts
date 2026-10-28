@@ -26,9 +26,11 @@ vi.mock("../../sessions/ui/AgentTranscript", () => ({
   AgentTranscript: ({
     blocks,
     onOpenArtifact,
+    onQuestionReply,
   }: {
     blocks: { text: string }[];
     onOpenArtifact: (id: string) => void;
+    onQuestionReply: (requestId: number, reply: { kind: "skipped" }) => void;
   }) =>
     createElement(
       "div",
@@ -38,6 +40,14 @@ vi.mock("../../sessions/ui/AgentTranscript", () => ({
         "button",
         { "data-open-doc": "", onClick: () => onOpenArtifact("doc-1") },
         "Open document",
+      ),
+      createElement(
+        "button",
+        {
+          "data-skip-question": "",
+          onClick: () => onQuestionReply(7, { kind: "skipped" }),
+        },
+        "Skip question",
       ),
     ),
 }));
@@ -331,6 +341,17 @@ it("ignores a stale initial snapshot after a newer update arrives", async () => 
   await act(async () => initial(snapshot(0)));
   expect(container.querySelector("h1")!.textContent).toBe("Scout");
   expect(container.textContent).toContain("Scout's conversation");
+});
+
+it("sends a card's answer from the chat to the main window as the Mono's question reply", async () => {
+  await render();
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>("[data-skip-question]")!.click(),
+  );
+  expect(native.invoke).toHaveBeenCalledWith("mono_chat_action", {
+    monoId: "first",
+    action: { kind: "question", requestId: 7, reply: { kind: "skipped" } },
+  });
 });
 
 it("reads a Mono's document in a sheet over the chat and slides it away", async () => {

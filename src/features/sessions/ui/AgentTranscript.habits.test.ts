@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, createElement } from "react";
+import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
@@ -60,7 +60,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function render(blocks: Block[], busy = false) {
+function render(
+  blocks: Block[],
+  busy = false,
+  extra: Partial<ComponentProps<typeof AgentTranscript>> = {},
+) {
   act(() =>
     root.render(
       createElement(AgentTranscript, {
@@ -73,6 +77,7 @@ function render(blocks: Block[], busy = false) {
         daySeparators: true,
         hideTurnMetrics: true,
         onSaveNote,
+        ...extra,
       }),
     ),
   );
@@ -338,6 +343,106 @@ it("renders the identity and actions for older standalone reports missing their 
     container.querySelector('[aria-label="Copy response"]'),
   ).not.toBeNull();
   expect(container.querySelector('[aria-label="Save as note"]')).not.toBeNull();
+});
+
+it("puts a habit run's question in the Mono's turn, answers it there and opens the run", () => {
+  const onQuestionReply = vi.fn();
+  const onOpenSession = vi.fn();
+  const runAt = new Date(2026, 9, 6, 20, 15).getTime();
+  const clock = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(runAt);
+  const water = {
+    id: "water",
+    prompt: "Water the plants today?",
+    multiSelect: false,
+    allowCustom: false,
+    options: [
+      { id: "yes", label: "Yes", description: "Do it now." },
+      { id: "no", label: "No", description: "Leave it for later." },
+    ],
+  };
+  const asked = {
+    runId: "run-42",
+    runAt,
+    prompt: { requestId: 7, questions: [water] },
+  };
+  const question: Block = {
+    id: "question",
+    role: "assistant",
+    text: "",
+    monoHabit: { id: "habit", name: "Garden round", at: postedAt },
+    habitQuestion: asked,
+  };
+  const card = () =>
+    container.querySelector<HTMLElement>("[data-habit-question]");
+  const button = (label: string) =>
+    [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (item) => item.textContent?.trim() === label,
+    );
+  const answering = { onQuestionReply, onOpenSession };
+
+  render([report, question], false, answering);
+  expect(container.textContent).toContain(report.text);
+  expect(card()!.dataset.habitQuestion).toBe("open");
+  expect(card()!.closest("[data-transcript-turn]")!.textContent).toContain(
+    "Captain Awesome",
+  );
+  expect(card()!.textContent).toContain(`Garden round · run from ${clock}`);
+  act(() =>
+    container.querySelector<HTMLButtonElement>("button[aria-pressed]")!.click(),
+  );
+  act(() => button("Continue")!.click());
+  expect(onQuestionReply).toHaveBeenCalledWith(7, {
+    kind: "answered",
+    answers: { water: ["yes"] },
+  });
+  act(() => button("Open run")!.click());
+  expect(onOpenSession).toHaveBeenCalledWith(
+    expect.any(String),
+    expect.arrayContaining([question]),
+    "run-42",
+  );
+
+  render(
+    [
+      {
+        ...question,
+        habitQuestion: { ...asked, end: { kind: "answered", answer: "Yes" } },
+      },
+    ],
+    false,
+    answering,
+  );
+  expect(card()!.textContent).toBe(
+    `Water the plants today?Yes·Garden round, ${clock} run`,
+  );
+  render(
+    [{ ...question, habitQuestion: { ...asked, end: { kind: "stopped" } } }],
+    false,
+    answering,
+  );
+  expect(card()!.dataset.habitQuestion).toBe("stopped");
+  expect(card()!.textContent).toContain(
+    "You stopped the run. Nothing to answer.",
+  );
+  expect(button("Open run")).toBeUndefined();
+
+  // No way to open the run: the card answers, without Open run.
+  render([question], false, { onQuestionReply });
+  expect(card()!.dataset.habitQuestion).toBe("open");
+  expect(button("Open run")).toBeUndefined();
+  // No way to answer, or no habit to name: no card.
+  render([report, question], false, { onOpenSession });
+  expect(card()).toBeNull();
+  expect(container.textContent).toContain(report.text);
+  render(
+    [{ id: "unnamed", role: "assistant", text: "", habitQuestion: asked }],
+    false,
+    answering,
+  );
+  expect(card()).toBeNull();
 });
 
 it("shows an emoji-only message large, without a bubble, time or actions", () => {
