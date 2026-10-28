@@ -19,7 +19,8 @@ import {
 
 type Props = {
   prompt: UserQuestionPrompt;
-  onReply: (requestId: number, reply: UserQuestionReply) => void;
+  /** Absent when the chat cannot answer; pass `disabled` with it. */
+  onReply?: (requestId: number, reply: UserQuestionReply) => void;
   onInteraction?: (requestId: number) => void;
   /** Takes the title's place in the top line. */
   header?: ReactNode;
@@ -70,7 +71,10 @@ export function QuestionForm({
   );
 
   const finish = (nextAnswers = answers, nextCustom = custom) => {
-    onReply(prompt.requestId, buildQuestionReply(questions, nextAnswers, nextCustom));
+    onReply?.(
+      prompt.requestId,
+      buildQuestionReply(questions, nextAnswers, nextCustom),
+    );
   };
 
   const skipCurrent = () => {

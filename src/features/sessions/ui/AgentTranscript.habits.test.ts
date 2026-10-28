@@ -345,42 +345,43 @@ it("renders the identity and actions for older standalone reports missing their 
   expect(container.querySelector('[aria-label="Save as note"]')).not.toBeNull();
 });
 
+const runAt = new Date(2026, 9, 6, 20, 15).getTime();
+const clock = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit",
+}).format(runAt);
+const water = {
+  id: "water",
+  prompt: "Water the plants today?",
+  multiSelect: false,
+  allowCustom: false,
+  options: [
+    { id: "yes", label: "Yes", description: "Do it now." },
+    { id: "no", label: "No", description: "Leave it for later." },
+  ],
+};
+const asked = {
+  runId: "run-42",
+  runAt,
+  prompt: { requestId: 7, questions: [water] },
+};
+const question: Block = {
+  id: "question",
+  role: "assistant",
+  text: "",
+  monoHabit: { id: "habit", name: "Garden round", at: postedAt },
+  habitQuestion: asked,
+};
+const card = () =>
+  container.querySelector<HTMLElement>("[data-habit-question]");
+const button = (label: string) =>
+  [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+    (item) => item.textContent?.trim() === label,
+  );
+
 it("puts a habit run's question in the Mono's turn, answers it there and opens the run", () => {
   const onQuestionReply = vi.fn();
   const onOpenSession = vi.fn();
-  const runAt = new Date(2026, 9, 6, 20, 15).getTime();
-  const clock = new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(runAt);
-  const water = {
-    id: "water",
-    prompt: "Water the plants today?",
-    multiSelect: false,
-    allowCustom: false,
-    options: [
-      { id: "yes", label: "Yes", description: "Do it now." },
-      { id: "no", label: "No", description: "Leave it for later." },
-    ],
-  };
-  const asked = {
-    runId: "run-42",
-    runAt,
-    prompt: { requestId: 7, questions: [water] },
-  };
-  const question: Block = {
-    id: "question",
-    role: "assistant",
-    text: "",
-    monoHabit: { id: "habit", name: "Garden round", at: postedAt },
-    habitQuestion: asked,
-  };
-  const card = () =>
-    container.querySelector<HTMLElement>("[data-habit-question]");
-  const button = (label: string) =>
-    [...container.querySelectorAll<HTMLButtonElement>("button")].find(
-      (item) => item.textContent?.trim() === label,
-    );
   const answering = { onQuestionReply, onOpenSession };
 
   render([report, question], false, answering);
@@ -433,16 +434,72 @@ it("puts a habit run's question in the Mono's turn, answers it there and opens t
   render([question], false, { onQuestionReply });
   expect(card()!.dataset.habitQuestion).toBe("open");
   expect(button("Open run")).toBeUndefined();
-  // No way to answer, or no habit to name: no card.
-  render([report, question], false, { onOpenSession });
-  expect(card()).toBeNull();
-  expect(container.textContent).toContain(report.text);
+  // No habit to name: no card.
   render(
     [{ id: "unnamed", role: "assistant", text: "", habitQuestion: asked }],
     false,
     answering,
   );
   expect(card()).toBeNull();
+});
+
+it("keeps a settled card in a chat that cannot answer, as a removed worktree's chat", () => {
+  const readOnly = { onOpenSession: vi.fn() };
+  render(
+    [
+      report,
+      {
+        ...question,
+        habitQuestion: { ...asked, end: { kind: "answered", answer: "Yes" } },
+      },
+    ],
+    false,
+    readOnly,
+  );
+  expect(container.textContent).toContain(report.text);
+  expect(card()!.textContent).toBe(
+    `Water the plants today?Yes·Garden round, ${clock} run`,
+  );
+  render(
+    [{ ...question, habitQuestion: { ...asked, end: { kind: "skipped" } } }],
+    false,
+    readOnly,
+  );
+  expect(card()!.textContent).toBe(
+    `Water the plants today?Skipped·Garden round, ${clock} run`,
+  );
+  render(
+    [{ ...question, habitQuestion: { ...asked, end: { kind: "stopped" } } }],
+    false,
+    readOnly,
+  );
+  expect(card()!.dataset.habitQuestion).toBe("stopped");
+  expect(card()!.textContent).toContain(
+    "You stopped the run. Nothing to answer.",
+  );
+  render(
+    [{ ...question, habitQuestion: { ...asked, end: { kind: "timed-out" } } }],
+    false,
+    readOnly,
+  );
+  expect(card()!.dataset.habitQuestion).toBe("timed-out");
+  expect(card()!.textContent).toContain(
+    "No answer in 12 h. The run was stopped.",
+  );
+});
+
+it("shows an open card with nothing to press in a chat that cannot answer", () => {
+  render([report, question], false, { onOpenSession: vi.fn() });
+  expect(container.textContent).toContain(report.text);
+  expect(card()!.dataset.habitQuestion).toBe("open");
+  expect(card()!.textContent).toContain(`Garden round · run from ${clock}`);
+  expect(card()!.textContent).toContain("Water the plants today?");
+  expect(
+    card()!.querySelector("fieldset[disabled][inert] [aria-pressed]"),
+  ).not.toBeNull();
+  expect(button("Skip")!.disabled).toBe(true);
+  expect(button("Continue")!.disabled).toBe(true);
+  expect(button("Open run")).toBeDefined();
 });
 
 it("shows an emoji-only message large, without a bubble, time or actions", () => {

@@ -98,7 +98,8 @@ export function HabitQuestionCard({
   habit: string;
   /** The run's start, as a clock time. */
   runFrom: string;
-  onReply: (requestId: number, reply: UserQuestionReply) => void;
+  /** Absent when the chat cannot answer: the open card shows, disabled. */
+  onReply?: (requestId: number, reply: UserQuestionReply) => void;
   onOpenRun?: (runId: string) => void;
 }) {
   const { prompt } = asked;
@@ -121,7 +122,7 @@ export function HabitQuestionCard({
         key={state.kind}
         prompt={prompt}
         onReply={onReply}
-        disabled={!!look}
+        disabled={!!look || !onReply}
         header={
           <>
             <span className="font-medium text-content/72">{habit}</span> · run

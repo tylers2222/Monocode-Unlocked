@@ -2381,7 +2381,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
     );
   }
 
-  if (block.habitQuestion && block.monoHabit && onQuestionReply) {
+  if (block.habitQuestion && block.monoHabit) {
     return (
       <HabitQuestionCard
         asked={block.habitQuestion}
