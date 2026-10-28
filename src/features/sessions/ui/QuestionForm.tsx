@@ -19,7 +19,7 @@ import {
 
 type Props = {
   prompt: UserQuestionPrompt;
-  /** Absent when the chat cannot answer; pass `disabled` with it. */
+  /** Absent when the chat cannot answer: the form shows, disabled. */
   onReply?: (requestId: number, reply: UserQuestionReply) => void;
   onInteraction?: (requestId: number) => void;
   /** Takes the title's place in the top line. */
@@ -38,6 +38,7 @@ export function QuestionForm({
   footer,
   disabled,
 }: Props) {
+  const locked = disabled || !onReply;
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
@@ -145,7 +146,7 @@ export function QuestionForm({
           <button
             type="button"
             className="h-6 shrink-0 rounded-md px-1.5 text-[11px] text-content/55 hover:bg-content/10 hover:text-content disabled:opacity-50"
-            disabled={disabled}
+            disabled={locked}
             onClick={skipCurrent}
           >
             Skip
@@ -153,8 +154,8 @@ export function QuestionForm({
         </div>
         <fieldset
           className="mt-2 min-w-0 disabled:opacity-45"
-          disabled={disabled}
-          inert={disabled}
+          disabled={locked}
+          inert={locked}
         >
           <QuestionFields
             key={question.id}
@@ -208,7 +209,7 @@ export function QuestionForm({
             <button
               type="button"
               className="h-6 shrink-0 rounded-md px-1.5 text-[11px] text-content/55 hover:bg-content/10 hover:text-content disabled:opacity-50"
-              disabled={disabled}
+              disabled={locked}
               onClick={goBack}
             >
               Back
@@ -216,7 +217,7 @@ export function QuestionForm({
           ) : null}
           <button
             type="submit"
-            disabled={!ready || disabled}
+            disabled={!ready || locked}
             className="h-6 rounded-md bg-content px-2.5 text-[11px] font-medium text-background-base hover:bg-content/80 disabled:opacity-40"
           >
             Continue

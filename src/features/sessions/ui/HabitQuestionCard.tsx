@@ -122,7 +122,7 @@ export function HabitQuestionCard({
         key={state.kind}
         prompt={prompt}
         onReply={onReply}
-        disabled={!!look || !onReply}
+        disabled={!!look}
         header={
           <>
             <span className="font-medium text-content/72">{habit}</span> · run
