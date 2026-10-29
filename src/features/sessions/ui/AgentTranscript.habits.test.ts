@@ -158,9 +158,7 @@ it.each(["current", "older"])(
     expect(turns).toHaveLength(1);
     expect(turns[0].textContent).toContain("I have started the review.");
     expect(turns[0].textContent).toContain("The API fix passed all tests.");
-    expect(
-      turns[0].querySelectorAll("[data-mono-work]"),
-    ).toHaveLength(1);
+    expect(turns[0].querySelectorAll("[data-mono-work]")).toHaveLength(1);
     expect(container.textContent).not.toContain(notification.text);
     expect(session.queuedMessages).toBeUndefined();
     expect(
@@ -374,6 +372,7 @@ const question: Block = {
 };
 const card = () =>
   container.querySelector<HTMLElement>("[data-habit-question]");
+const cannotAnswer = "This chat can't answer. Answer in the run.";
 const button = (label: string) =>
   [...container.querySelectorAll<HTMLButtonElement>("button")].find(
     (item) => item.textContent?.trim() === label,
@@ -391,6 +390,7 @@ it("puts a habit run's question in the Mono's turn, answers it there and opens t
     "Captain Awesome",
   );
   expect(card()!.textContent).toContain(`Garden round · run from ${clock}`);
+  expect(card()!.textContent).not.toContain(cannotAnswer);
   act(() =>
     container.querySelector<HTMLButtonElement>("button[aria-pressed]")!.click(),
   );
@@ -477,6 +477,7 @@ it("keeps a settled card in a chat that cannot answer, as a removed worktree's c
   expect(card()!.textContent).toContain(
     "You stopped the run. Nothing to answer.",
   );
+  expect(card()!.textContent).not.toContain(cannotAnswer);
   render(
     [{ ...question, habitQuestion: { ...asked, end: { kind: "timed-out" } } }],
     false,
@@ -489,7 +490,8 @@ it("keeps a settled card in a chat that cannot answer, as a removed worktree's c
 });
 
 it("shows an open card with nothing to press in a chat that cannot answer", () => {
-  render([report, question], false, { onOpenSession: vi.fn() });
+  const onOpenSession = vi.fn();
+  render([report, question], false, { onOpenSession });
   expect(container.textContent).toContain(report.text);
   expect(card()!.dataset.habitQuestion).toBe("open");
   expect(card()!.textContent).toContain(`Garden round · run from ${clock}`);
@@ -499,7 +501,13 @@ it("shows an open card with nothing to press in a chat that cannot answer", () =
   ).not.toBeNull();
   expect(button("Skip")!.disabled).toBe(true);
   expect(button("Continue")!.disabled).toBe(true);
-  expect(button("Open run")).toBeDefined();
+  expect(card()!.textContent).toContain(`Open run${cannotAnswer}`);
+  act(() => button("Open run")!.click());
+  expect(onOpenSession).toHaveBeenCalledWith(
+    expect.any(String),
+    expect.arrayContaining([question]),
+    "run-42",
+  );
 });
 
 it("shows an emoji-only message large, without a bubble, time or actions", () => {

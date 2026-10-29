@@ -2,6 +2,7 @@ import {
   ArrowUpRight,
   Check,
   Clock,
+  Info,
   MessageSquare,
   Square,
 } from "../../../shared/ui/icons";
@@ -38,10 +39,26 @@ const LOOK: {
   "timed-out": { Icon: Clock, text: "No answer in 12 h. The run was stopped." },
 };
 
+/** Why an open card has nothing to press: this chat has no reply path. */
+const READ_ONLY: Reason = {
+  Icon: Info,
+  text: "This chat can't answer. Answer in the run.",
+};
+
 /** The one decision, pure: the card's state and the look `LOOK` gives it. */
 function cardStatus(end: HabitQuestionEnd | undefined) {
   const state: CardState = end ?? OPEN;
   return { state, look: LOOK[state.kind] };
+}
+
+/** Why the card has nothing to press, in the footer. */
+function ReasonNote({ reason: { Icon, text } }: { reason: Reason }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <Icon className="size-3 shrink-0" strokeWidth={1.75} />
+      {text}
+    </span>
+  );
 }
 
 /** The card once answered or skipped: the question, the answer, and the run. */
@@ -98,7 +115,8 @@ export function HabitQuestionCard({
   habit: string;
   /** The run's start, as a clock time. */
   runFrom: string;
-  /** Absent when the chat cannot answer: the open card shows, disabled. */
+  /** Absent when the chat cannot answer: the open card shows, disabled,
+   * with the reason. */
   onReply?: (requestId: number, reply: UserQuestionReply) => void;
   onOpenRun?: (runId: string) => void;
 }) {
@@ -113,6 +131,7 @@ export function HabitQuestionCard({
         runFrom={runFrom}
       />
     );
+  const reason = look ?? (onReply ? null : READ_ONLY);
   return (
     <div
       data-habit-question={state.kind}
@@ -130,13 +149,8 @@ export function HabitQuestionCard({
           </>
         }
         footer={
-          <span className="mr-auto flex min-w-0 items-center gap-1.5 text-[11px] text-content/45">
-            {look ? (
-              <>
-                <look.Icon className="size-3 shrink-0" strokeWidth={1.75} />
-                {look.text}
-              </>
-            ) : onOpenRun ? (
+          <span className="mr-auto flex min-w-0 items-center gap-2.5 text-[11px] text-content/45">
+            {!look && onOpenRun && (
               <button
                 type="button"
                 className="-ml-px flex items-center gap-1 rounded-md text-content/55 hover:text-content"
@@ -145,7 +159,8 @@ export function HabitQuestionCard({
                 <ArrowUpRight className="size-3" strokeWidth={1.75} />
                 Open run
               </button>
-            ) : null}
+            )}
+            {reason && <ReasonNote reason={reason} />}
           </span>
         }
       />
