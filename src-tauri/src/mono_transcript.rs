@@ -706,4 +706,68 @@ mod tests {
         let saved = page(&conn, "mono", None, None).unwrap().blocks;
         assert_eq!(Value::Array(saved), session.blocks);
     }
+
+    #[test]
+    fn a_settled_habit_card_is_saved_once_in_place_and_survives_a_reopen() {
+        let settled = json!({"id":"card", "role":"assistant", "text":"", "monoHabit":{"id":"h1", "name":"Morning check", "at":1_000}, "habitQuestion":{"runId":"run-1", "runAt":1_000, "prompt":{"requestId":7, "questions":[{"id":"steps", "prompt":"Which steps should the run take?", "multiSelect":false, "allowCustom":false, "options":[{"id":"build", "label":"Build"}]}]}, "end":{"kind":"answered", "answer":"Build"}}});
+        let rows = |conn: &Connection| -> Vec<(i64, String, String, bool)> {
+            let mut statement = conn.prepare("SELECT b.seq, b.block_id, b.block_json, t.seq IS NOT NULL FROM mono_blocks b LEFT JOIN mono_turns t ON t.session_id = b.session_id AND t.seq = b.seq WHERE b.session_id = 'mono' ORDER BY b.seq").unwrap();
+            let found = statement
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .unwrap();
+            found.collect::<rusqlite::Result<_>>().unwrap()
+        };
+        // The card sits after a11, with no newer turn or with one after it, or
+        // after an earlier habit post, which starts its own turn.
+        for (anchor, newer) in [("a11", 0), ("a11", 1), ("post", 0)] {
+            let dir = std::env::temp_dir().join(format!(
+                "monocode-habit-card-{}-{anchor}-{newer}-{}",
+                std::process::id(),
+                session_store::now_millis()
+            ));
+            let mut session = sample("mono", 12 + newer);
+            let blocks = session.blocks.as_array_mut().unwrap();
+            if anchor == "post" {
+                blocks.push(json!({"id":"post", "role":"assistant", "text":"Done", "monoHabit":{"id":"h1", "name":"Morning check", "at":500}}));
+            }
+            let card_at = blocks
+                .iter()
+                .position(|block| block["id"] == anchor)
+                .unwrap()
+                + 1;
+            // sessionStore.ts drops the open card, so the first save lacks it.
+            // Settling it makes the saved snapshot differ from the card on, so
+            // the app sends the suffix after the block before the card.
+            let suffix: Vec<Value> = std::iter::once(settled.clone())
+                .chain(blocks[card_at..].iter().cloned())
+                .collect();
+            let saved = {
+                let store = SessionStore::open(dir.join("test.db")).unwrap();
+                let conn = store.lock_conn().unwrap();
+                upsert(&conn, &session, None, None, true).unwrap();
+                let saved = rows(&conn);
+                session.blocks = Value::Array(suffix.clone());
+                upsert(&conn, &session, Some(anchor), None, true).unwrap();
+                saved
+            };
+            let store = SessionStore::open(dir.join("test.db")).unwrap();
+            let conn = store.lock_conn().unwrap();
+            let stored = rows(&conn);
+            assert_eq!(
+                stored[..card_at],
+                saved[..card_at],
+                "earlier blocks are unchanged"
+            );
+            assert_eq!(stored.len(), saved.len() + 1);
+            assert_eq!(stored.iter().filter(|row| row.1 == "card").count(), 1);
+            assert!(stored[card_at].3, "the card starts the Mono's turn");
+            let latest = page(&conn, "mono", None, None).unwrap().blocks;
+            assert_eq!(latest[latest.len() - suffix.len()..], suffix[..]);
+            drop(conn);
+            drop(store);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
 }
