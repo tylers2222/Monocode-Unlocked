@@ -9044,8 +9044,7 @@ function Workspace({
       placement?: AppSessionPlacement,
       onSettled?: (outcome: ControlOutcome) => void,
       openTab?: boolean,
-    ) =>
-      acceptQuickLaunch(
+    ) => acceptQuickLaunch(
         launch,
         deliveryId,
         {
@@ -9065,7 +9064,9 @@ function Workspace({
               leafIds(entry.layout).includes(target.besideSessionId),
             );
             if (!anchor || !sameProjectPath(anchor.cwd, cwd) || !tab)
-              throw new Error("The target session must be open in this project");
+              throw new Error(
+                "The target session must be open in this project",
+              );
             const nextTabs = tabsRef.current.map((entry) =>
               entry.id === tab.id
                 ? {
