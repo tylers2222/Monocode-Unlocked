@@ -110,10 +110,13 @@ pub(crate) fn claim(
 }
 
 /// The rows of Mono chat `mono` (every Mono when None) whose notice the
-/// agent took: in that chat's saved transcript an agent block follows the
-/// notice's block (`agentReplyTo` in turnReply.ts). The notice is delivered,
-/// marked and the rows deleted in the caller's transaction. A notice that
-/// waits in the queue, or whose turn has no reply yet, is not delivered.
+/// agent took, by the turn-bounded reply rule (`agentReplyTo` in
+/// turnReply.ts): in that chat's saved transcript an agent block follows the
+/// notice's block before its turn ends, at the next block that opens a turn
+/// (`opensTurn`) or the interrupt note. The notice is delivered, marked and
+/// the rows deleted in the caller's transaction. A notice that waits in the
+/// queue, or whose own turn has no reply, is not delivered, even when a later
+/// turn has one.
 pub(crate) fn settle(conn: &Connection, mono: Option<&str>, now: i64) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO mono_completion_deliveries (group_id, delivered_at)
@@ -127,7 +130,15 @@ pub(crate) fn settle(conn: &Connection, mono: Option<&str>, now: i64) -> rusqlit
                          AND json_extract(b.block_json, '$.appRequestId') = c.notice
                          AND reply.session_id = b.session_id AND reply.seq > b.seq
                          AND json_extract(reply.block_json, '$.role')
-                           NOT IN ('user', 'system', 'handoff'))",
+                           NOT IN ('user', 'system', 'handoff')
+                         AND NOT EXISTS (
+                           SELECT 1 FROM mono_blocks turn_end
+                           WHERE turn_end.session_id = b.session_id
+                             AND turn_end.seq > b.seq AND turn_end.seq < reply.seq
+                             AND ((turn_end.is_user AND NOT turn_end.is_draft
+                                   AND (json_extract(turn_end.block_json, '$.sentAt') IS NULL
+                                        OR json_extract(turn_end.block_json, '$.startedAt') IS NOT NULL))
+                                  OR json_extract(turn_end.block_json, '$.notice') = 'interrupt')))",
         params![mono, now],
     )?;
     conn.execute(

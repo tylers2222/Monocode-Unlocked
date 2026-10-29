@@ -1,4 +1,5 @@
 import {
+  opensTurn,
   turnOpener,
   type Block,
   type BlockRole,
@@ -13,16 +14,21 @@ const NOT_AGENT_OUTPUT: ReadonlySet<BlockRole> = new Set([
 ]);
 
 /**
- * The first block the agent wrote after `prompt`: the proof that the agent
- * took it. mono_completions.rs `settle` reads a saved Mono chat by this rule.
+ * The turn-bounded reply rule: the first block the agent wrote after
+ * `prompt` and before the turn ends, at the next block that opens a turn or
+ * the interrupt note. It is the proof that the agent took `prompt`; a later
+ * turn's reply is not. mono_completions.rs `settle` reads a saved Mono chat
+ * by the same rule.
  */
 export function agentReplyTo(
   blocks: readonly Block[],
   prompt: Block,
 ): Block | undefined {
-  return blocks
-    .slice(blocks.indexOf(prompt) + 1)
-    .find((block) => !NOT_AGENT_OUTPUT.has(block.role));
+  for (const block of blocks.slice(blocks.indexOf(prompt) + 1)) {
+    if (opensTurn(block) || block.notice === "interrupt") return undefined;
+    if (!NOT_AGENT_OUTPUT.has(block.role)) return block;
+  }
+  return undefined;
 }
 
 function turnReplyId(blocks: readonly Block[]): string | undefined {

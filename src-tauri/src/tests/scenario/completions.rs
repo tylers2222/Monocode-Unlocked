@@ -718,6 +718,73 @@ fn a_kill_between_the_noticed_hold_and_the_mono_chat_save_loses_nothing() {
     );
 }
 
+/// #413 review r2 M1, as the window calls the commands: a kill cuts the
+/// notice's turn before the agent writes. On the relaunch the interrupt note
+/// ends that turn and the Mono's auto Continue opens the next one, whose
+/// reply is saved. That reply is not the notice's, so a second kill still
+/// gives the notice back, and only its own turn's reply delivers it.
+#[cfg(not(windows))]
+#[test]
+fn a_later_turns_reply_does_not_deliver_a_cut_notice() {
+    let world = World::new("ade89-later-turn");
+    chat_row(&world, &json!([]));
+    let app = launch(&world);
+    let main = window(&app, "main");
+    assert!(held(&main).is_empty());
+    let noticed = json!({ "saved": [sent("a", "mono-completion-a")] });
+    call(&main, "mono_completions_hold", noticed.clone());
+    let notice = notice_block("mono-completion-a");
+    call(
+        &main,
+        "mono_session_upsert",
+        chat_save(std::slice::from_ref(&notice)),
+    );
+    drop(app);
+
+    let app = launch(&world);
+    let main = window(&app, "main");
+    assert_eq!(held(&main), ["a"], "the first kill loses nothing");
+    call(&main, "mono_completions_hold", noticed.clone());
+    let continued = [
+        notice.clone(),
+        json!({ "id": "cut", "role": "system", "text": "Turn interrupted when MonoCode quit.", "notice": "interrupt" }),
+        json!({ "id": "continue", "role": "user", "text": "Continue from where you left off.", "sentAt": 1, "startedAt": 1 }),
+        reply("continue-reply"),
+    ];
+    call(&main, "mono_session_upsert", chat_save(&continued));
+    assert_eq!(
+        (rows(&world), marks(&world)),
+        (1, 0),
+        "the Continue turn's reply does not deliver the cut notice"
+    );
+    drop(app);
+
+    let app = launch(&world);
+    let main = window(&app, "main");
+    assert_eq!(
+        held(&main),
+        ["a"],
+        "the second kill loses nothing: the notice comes back"
+    );
+    call(&main, "mono_completions_hold", noticed);
+    let mut resent = continued.to_vec();
+    resent.push(json!({ "id": "block-again", "role": "user", "text": "MonoCode completion notification", "appRequestId": "mono-completion-a" }));
+    resent.push(reply("reply"));
+    call(&main, "mono_session_upsert", chat_save(&resent));
+    assert_eq!(
+        (rows(&world), marks(&world)),
+        (0, 1),
+        "the reply in the notice's own turn delivers it"
+    );
+    drop(app);
+
+    let app = launch(&world);
+    assert!(
+        held(&window(&app, "main")).is_empty(),
+        "a delivered result does not come back"
+    );
+}
+
 /// The commands as a window calls them, through Tauri's argument binding.
 /// The other window's claim sees `main` open, so it takes nothing.
 #[cfg(not(windows))]
