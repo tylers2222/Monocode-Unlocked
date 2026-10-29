@@ -681,12 +681,11 @@ import { useMonoHabits } from "./hooks/useMonoHabits";
 import { useFloatingMono } from "./hooks/useFloatingMono";
 import {
   askHabitQuestion,
-  endHabitQuestions,
+  endHabitRun,
   habitQuestionReply,
   setHabitQuestionHost,
 } from "../features/monos/model/habitQuestionHost";
 import {
-  dropRelays,
   habitPostsContext,
   habitRunMono,
   isHabitRun,
@@ -8823,12 +8822,8 @@ function Workspace({
         monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
       });
     },
-    endApprovals: (runId) => {
-      for (const relay of dropRelays(runId))
-        decideMonoBlock(relay.monoId, relay.blockId, "cancelled");
-    },
     askQuestion: askHabitQuestion,
-    endQuestions: endHabitQuestions,
+    endRun: endHabitRun,
   });
 
   const automationSessionReservations = useRef(new Set<string>());

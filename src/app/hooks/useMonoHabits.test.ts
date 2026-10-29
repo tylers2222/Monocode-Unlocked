@@ -178,7 +178,6 @@ function makeHost(reply: string, approve?: { wait: Promise<void> }) {
           blockId: "b",
         }),
     ),
-    endApprovals: vi.fn(),
     askQuestion: vi.fn(
       (
         monoId: string,
@@ -194,7 +193,7 @@ function makeHost(reply: string, approve?: { wait: Promise<void> }) {
           blockId: "q",
         }),
     ),
-    endQuestions: vi.fn(),
+    endRun: vi.fn(),
   };
   return host;
 }
@@ -269,8 +268,8 @@ it("runs a due habit in a kept session and posts what it found", async () => {
   ).toBe(true);
   // Found by tools that list the sessions of the Mono's chat.
   expect(run.id.startsWith("app-mono-habit-")).toBe(true);
-  expect(host.endApprovals).toHaveBeenCalledWith(run.id);
-  expect(host.endQuestions).toHaveBeenCalledWith(run.id, { kind: "stopped" });
+  // No limit was hit, so its open questions end as stopped.
+  expect(host.endRun).toHaveBeenCalledWith(run.id, undefined);
   await vi.waitFor(() => expect(stored[0].lastOutcome).toBe("posted"));
   expect(stored[0].runs?.[0]).toMatchObject({
     outcome: "posted",
@@ -421,9 +420,9 @@ it("stops and records a habit that is still running after one hour", async () =>
       lastOutcome: "failed",
       lastError: "It took too long and was stopped.",
     });
-    expect(host.endQuestions).toHaveBeenCalledWith(
+    expect(host.endRun).toHaveBeenCalledWith(
       host.add.mock.calls[0][0].id,
-      { kind: "stopped" },
+      undefined,
     );
   } finally {
     await act(async () => hold.resolve());
@@ -493,14 +492,8 @@ it(
         await vi.advanceTimersByTimeAsync(12 * 60 * 60 * 1000);
       });
       expect(host.askQuestion).toHaveBeenCalledTimes(1);
-      expect(host.endQuestions).toHaveBeenCalledTimes(1);
-      expect(host.endQuestions).toHaveBeenCalledWith(runId, {
-        kind: "timed-out",
-      });
-      // Its relays are still there to settle: endApprovals drops them.
-      expect(host.endQuestions.mock.invocationCallOrder[0]).toBeLessThan(
-        host.endApprovals.mock.invocationCallOrder[0],
-      );
+      expect(host.endRun).toHaveBeenCalledTimes(1);
+      expect(host.endRun).toHaveBeenCalledWith(runId, { kind: "timed-out" });
       expect(host.stop).toHaveBeenCalledTimes(1);
       expect(stored[0]).toMatchObject({
         lastOutcome: "failed",

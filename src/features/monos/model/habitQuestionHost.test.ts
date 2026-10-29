@@ -96,19 +96,24 @@ const relay = (fields: Partial<ApprovalRelay> = {}): ApprovalRelay => ({
 
 const stop = (block: Block) => endHabitQuestion(block, { kind: "stopped" });
 
+type Append = (monoId: string, block: Block, then?: () => void) => void;
+
 type Store = {
   shown: Session[];
+  /** Every state React rendered, in order. */
+  renders: Session[][];
   sessions: RefObject<Session[]>;
   setSessions: Dispatch<SetStateAction<Session[]>>;
   persist: Mock<(session: Session | undefined) => void>;
-  append: Mock<(monoId: string, block: Block) => void>;
+  append: Mock<Append>;
 };
 
 // Renders a React store and binds it the way the app does on every render.
 function mountStore(initial: Session[] = [otherChat, mono]): Store {
   const store = {
+    renders: [],
     persist: vi.fn<(session: Session | undefined) => void>(),
-    append: vi.fn<(monoId: string, block: Block) => void>(),
+    append: vi.fn<Append>(),
   } as Store;
   function App() {
     const [sessions, setSessions] = useState<Session[]>(initial);
@@ -120,6 +125,7 @@ function mountStore(initial: Session[] = [otherChat, mono]): Store {
       store.persist,
       store.append,
     );
+    store.renders.push(sessions);
     Object.assign(store, {
       shown: sessions,
       sessions: sessionsRef,
@@ -378,9 +384,29 @@ it("asks before the app binds its store without throwing", () => {
   ).not.toThrow();
 });
 
-// Defect: a run's end leaves its open card open, or ends a card another run
-// asked or one the user already answered.
-it("ends only the run's open cards when it ends", () => {
+// Lands a held card the way the app's appendToMono does once the Mono is free:
+// into the runtime snapshot and React in one tick, then `then`.
+function land(store: Store, [monoId, block, then]: Parameters<Append>) {
+  store.sessions.current = store.sessions.current.map((session) =>
+    session.id === monoId
+      ? { ...session, blocks: [...session.blocks, block] }
+      : session,
+  );
+  store.setSessions(store.sessions.current);
+  then?.();
+}
+
+const openCards = (sessions: Session[]) =>
+  sessions.flatMap((session) =>
+    session.blocks.filter(
+      (block) => block.habitQuestion && !block.habitQuestion.end,
+    ),
+  );
+
+// Defect: a run's end leaves its open question or approval open, drops the
+// relays one end needs before it runs, keeps the run's relays, or ends a card
+// another run asked or one the user already answered.
+it("ends the run's open question and approval together, once", () => {
   const answered = answerHabitQuestion({ ...card, id: "card-2" }, yes);
   const otherRun: Block = {
     ...card,
@@ -406,18 +432,62 @@ it("ends only the run's open cards when it ends", () => {
   ])
     habits.relayApproval(relay({ runId, blockId }));
 
-  act(() => hostModule.endHabitQuestions("run-1", { kind: "timed-out" }));
+  act(() => hostModule.endHabitRun("run-1", { kind: "timed-out" }));
 
   const ended = endHabitQuestion(card, { kind: "timed-out" });
   expect(ended.habitQuestion?.end).toEqual({ kind: "timed-out" });
   const settled = {
     ...chat,
-    blocks: [userLine, ended, answered, otherRun, approval],
+    blocks: [
+      userLine,
+      ended,
+      answered,
+      otherRun,
+      { ...approval, approval: { requestId: 9, decided: "cancelled" } },
+    ],
   };
   expect(store.shown).toEqual([otherChat, settled]);
   expect(store.shown[1].blocks[2]).toBe(answered);
   expect(store.shown[1].blocks[3]).toBe(otherRun);
-  expect(store.persist).toHaveBeenCalled();
-  for (const [saved] of store.persist.mock.calls)
-    expect(saved).toEqual(settled);
+  expect(store.persist).toHaveBeenLastCalledWith(settled);
+  expect(habits.isRelayed("run-1", 3)).toBe(false);
+  expect(habits.isRelayed("run-2", 3)).toBe(true);
+});
+
+// Defect: a card a busy Mono held back lands open after its run ended, so its
+// Skip and Continue stay live with no run to answer; or a card that lands
+// while its run is going is settled or saved.
+it("lands a held card settled when its run ended while the Mono was busy", () => {
+  const store = mountStore([otherChat, { ...mono, blocks: [userLine] }, run]);
+  const prompt = { ...card.habitQuestion!.prompt, requestId: 7 };
+
+  act(() => {
+    hostModule.askHabitQuestion("mono-1", garden, "run-1", 1_000, prompt);
+    hostModule.askHabitQuestion("mono-1", garden, "run-1", 1_000, {
+      ...prompt,
+      requestId: 8,
+    });
+  });
+  expect(store.shown[1].blocks).toEqual([userLine]);
+  const [onTime, held] = store.append.mock.calls;
+
+  act(() => land(store, onTime));
+  expect(store.shown[1].blocks).toEqual([userLine, onTime[1]]);
+  expect(store.shown[1].blocks[1]).toBe(onTime[1]);
+  expect(store.persist).not.toHaveBeenCalled();
+
+  // A run that ends with no limit hit ends its questions as stopped.
+  act(() => hostModule.endHabitRun("run-1"));
+  const rendered = store.renders.length;
+  act(() => land(store, held));
+
+  const settled = [userLine, stop(onTime[1]), stop(held[1])];
+  expect(settled[2].habitQuestion?.end).toEqual({ kind: "stopped" });
+  expect(store.shown[1].blocks).toEqual(settled);
+  expect(store.persist).toHaveBeenLastCalledWith({
+    ...store.shown[1],
+    blocks: settled,
+  });
+  expect(store.renders.slice(rendered).flatMap(openCards)).toEqual([]);
+  expect(openCards(store.sessions.current)).toEqual([]);
 });
