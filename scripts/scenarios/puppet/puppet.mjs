@@ -6,7 +6,9 @@
 //
 // script.json: {"app": "<monocode binary>", "whoami": false, "rules": [{"match": "...",
 //   "exec": [["sqlite3", "x.db", ".tables"]],
-//   "calls": [{"tool": "send_message", "arguments": {...}}], "reply": "..."}]}
+//   "calls": [{"tool": "send_message", "arguments": {...}}], "reply": "...",
+//   "hold": 1}]}
+// A rule with `hold: n` never ends its first n turns.
 // Each tool call goes through `<app> app-mcp`, the app's MCP server, and each
 // `{"action": "sessions.start", "arguments": {...}}` call through the CLI
 // `<app> app <action>`, both with the app token this process got from the
@@ -187,6 +189,15 @@ function runExecs(execs) {
   }
 }
 
+/** Never settles while `rule` holds this turn: one of its first `hold` turns. */
+function heldOpen(rule) {
+  if (!rule?.hold) return undefined;
+  const turns = readFileSync(join(dir, "log.jsonl"), "utf8")
+    .split("\n")
+    .filter((line) => line && JSON.parse(line).rule === rule.match).length;
+  return turns <= rule.hold ? new Promise(() => {}) : undefined;
+}
+
 async function runTurn(text, steer) {
   const script = JSON.parse(readFileSync(join(dir, "script.json"), "utf8"));
   const rule = script.rules.find((candidate) => text.includes(candidate.match));
@@ -197,6 +208,7 @@ async function runTurn(text, steer) {
   const server = mcp(script.app);
   const who = script.whoami ? { who: you(await server.call("get_monos", {})) } : {};
   log({ prompt: text, rule: rule?.match ?? null, steer, ...who });
+  await heldOpen(rule);
   runExecs(rule?.exec ?? []);
   let prev;
   for (const call of rule?.calls ?? []) {

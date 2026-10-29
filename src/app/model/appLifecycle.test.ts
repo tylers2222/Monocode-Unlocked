@@ -26,7 +26,6 @@ import {
 } from "../../features/workspace/model/workspaceSnapshot";
 import { loadWorkspaceSnapshot, saveWorkspaceSnapshot } from "../../features/sessions/data/sessionStore";
 import { reconcileProjectReturn } from "../../features/projects/model/projectReturn";
-import { savedMonoCompletions } from "../../features/monos/model/monoSessionCompletion";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
@@ -125,7 +124,6 @@ describe("project choices through lifecycle saves", () => {
         projectReturnMemory: state.memory,
         projectTerminals: [],
         pins: new Map(),
-        monoCompletions: [],
       }),
       vi.fn(),
     );
@@ -160,7 +158,6 @@ describe("project choices through lifecycle saves", () => {
         projectReturnMemory: readMemory(),
         projectTerminals: [],
         pins: new Map(),
-        monoCompletions: [],
       }),
       vi.fn(),
     );
@@ -185,7 +182,6 @@ describe("project choices through lifecycle saves", () => {
         projectReturnMemory: state.memory,
         projectTerminals: [],
         pins: new Map(),
-        monoCompletions: [],
       },
       "unload",
     );
@@ -195,7 +191,7 @@ describe("project choices through lifecycle saves", () => {
   it("preserves choices when closing a busy window", async () => {
     const state = workspace();
     state.sessions[3].busy = true;
-    const release = setQuitWorkspace(() => ({ tabs: state.tabs, sessions: state.sessions, activeTabId: state.activeTabId, projectCwd: state.projectCwd, projectReturnMemory: state.memory, projectTerminals: [], pins: new Map(), monoCompletions: [] }), vi.fn());
+    const release = setQuitWorkspace(() => ({ tabs: state.tabs, sessions: state.sessions, activeTabId: state.activeTabId, projectCwd: state.projectCwd, projectReturnMemory: state.memory, projectTerminals: [], pins: new Map() }), vi.fn());
     try {
       await closeBusyWindow();
       expect([...(lastSavedMemory() ?? [])]).toEqual([...state.memory]);
@@ -243,7 +239,6 @@ describe("closing a busy window", () => {
         projectReturnMemory: new Map(),
         projectTerminals: [],
         pins: new Map(),
-        monoCompletions: [],
       }),
       vi.fn(),
     );
@@ -302,7 +297,6 @@ describe("coordinated quit", () => {
         projectReturnMemory: new Map(),
         projectTerminals: [],
         pins: new Map(),
-        monoCompletions: [],
       }),
       vi.fn(),
     );
@@ -329,7 +323,7 @@ describe("coordinated quit", () => {
     session.busy = true;
     session.inboxAsk = true;
     const tab = newTab(session.id);
-    const release = setQuitWorkspace(() => ({ tabs: [tab], sessions: [session], activeTabId: tab.id, projectCwd: session.cwd, projectReturnMemory: new Map(), projectTerminals: [], pins: new Map(), monoCompletions: [] }), vi.fn());
+    const release = setQuitWorkspace(() => ({ tabs: [tab], sessions: [session], activeTabId: tab.id, projectCwd: session.cwd, projectReturnMemory: new Map(), projectTerminals: [], pins: new Map() }), vi.fn());
     try {
       await reportQuitPoll(1);
       expect(invokedWith("quit_poll_reply")).toEqual({ id: 1, inFlight: 1 });
@@ -474,7 +468,6 @@ describe("remembering the terminal dock side across restarts", () => {
         projectTerminals: [],
         lastDockSide: state.side ?? undefined,
         pins: new Map(),
-        monoCompletions: [],
       }),
       vi.fn(),
     );
@@ -499,7 +492,6 @@ describe("remembering the terminal dock side across restarts", () => {
         projectTerminals: [],
         lastDockSide: "left",
         pins: new Map(),
-        monoCompletions: [],
       },
       "unload",
     );
@@ -529,89 +521,6 @@ describe("remembering the terminal dock side across restarts", () => {
   });
 });
 
-// ADE-46: the Mono completions a quit keeps reach the snapshot on every path
-// that marks running turns interrupted. Each case imports a fresh lifecycle,
-// whose boot resume and live window are module state.
-describe("keeping the Mono's waiting completions", () => {
-  beforeEach(() => {
-    vi.resetModules();
-    vi.clearAllMocks();
-    vi.mocked(ask).mockResolvedValue(true);
-  });
-
-  const kept = [
-    {
-      origin: { monoId: "mono", turn: 2 },
-      request: {
-        requestId: "3e217e0f",
-        sessionId: "s-872c4aa7",
-        project: "/alpha",
-        prompt: "Fix the M-10 wording",
-      },
-    },
-  ];
-
-  async function savedCompletions() {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const args = vi
-      .mocked(invoke)
-      .mock.calls.filter(([command]) => command === "workspace_set_snapshot")
-      .at(-1)?.[1];
-    return args && typeof args === "object" && "snapshot" in args
-      ? savedMonoCompletions(args.snapshot)
-      : undefined;
-  }
-
-  it("saves them when a busy window is closed", async () => {
-    const session = { ...newSession("cursor", "/alpha"), busy: true };
-    session.blocks = [{ id: "user", role: "user", text: "test" }];
-    const tab = newTab(session.id);
-    const lifecycle = await import("./appLifecycle");
-    const release = lifecycle.setQuitWorkspace(
-      () => ({
-        tabs: [tab],
-        sessions: [session],
-        activeTabId: tab.id,
-        projectCwd: "/alpha",
-        projectReturnMemory: new Map(),
-        projectTerminals: [],
-        pins: new Map(),
-        monoCompletions: kept,
-      }),
-      vi.fn(),
-    );
-    try {
-      await lifecycle.closeBusyWindow();
-      expect(await savedCompletions()).toEqual(kept);
-    } finally {
-      release();
-    }
-  });
-
-  it("saves them again when the app quits while it is still booting", async () => {
-    const session = { ...newSession("cursor", "/alpha"), id: "a1" };
-    const tab = newTab(session.id);
-    const store = await import("../../features/sessions/data/sessionStore");
-    vi.mocked(store.loadWorkspaceSnapshot).mockResolvedValue({
-      ...workspaceSnapshot([
-        {
-          tabs: [tab],
-          sessions: [session],
-          activeTabId: tab.id,
-          projectCwd: "/alpha",
-          projectReturnMemory: new Map(),
-          projectTerminals: [],
-          pins: new Map(),
-        },
-      ]),
-      monoCompletions: kept,
-    });
-    const { handleQuitRequested } = await import("./appLifecycle");
-    await handleQuitRequested();
-    expect(await savedCompletions()).toEqual(kept);
-  });
-});
-
 describe("resuming sessions at boot", () => {
   it("binds a Giga's session in the folder its agent ran in", () => {
     vi.mocked(isLiveHarness).mockReturnValue(true);
@@ -622,5 +531,93 @@ describe("resuming sessions at boot", () => {
     };
     bindResumedSessions([session]);
     expect(vi.mocked(bindHarnessSession).mock.calls[0][3]).toBe("/w/gigas/a");
+  });
+});
+
+// ADE-89, for gate/mutation only (one-off unit-test exception, 2026-10-24).
+// Each case imports a fresh lifecycle: the boot runs once per module.
+describe("claiming the Mono completion results at boot", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it("boots with no results when the claim fails", async () => {
+    const core = await import("@tauri-apps/api/core");
+    vi.mocked(core.invoke).mockImplementation(async (command) => {
+      if (command === "mono_completions_claim") throw new Error("store busy");
+    });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { loadBootWorkspace } = await import("./appLifecycle");
+    await expect(loadBootWorkspace()).resolves.toMatchObject({
+      monoCompletions: [],
+    });
+    expect(logged).toHaveBeenCalledWith(new Error("store busy"));
+  });
+
+  it("a quit, close or reload save waits for the results the window owes to reach the store", async () => {
+    const core = await import("@tauri-apps/api/core");
+    let held!: () => void;
+    vi.mocked(core.invoke).mockImplementation(async (command) => {
+      if (command === "mono_completions_hold")
+        await new Promise<void>((resolve) => (held = resolve));
+    });
+    const { monoCompletionStore } = await import(
+      "../../features/sessions/data/monoCompletionStore"
+    );
+    const { persistQuitState } = await import("./appLifecycle");
+    monoCompletionStore.hold([]);
+    const save = persistQuitState(
+      {
+        tabs: [],
+        sessions: [],
+        activeTabId: "",
+        projectCwd: "/alpha",
+        projectReturnMemory: new Map(),
+        projectTerminals: [],
+        pins: new Map(),
+      },
+      "unload",
+    ).then(() => "saved");
+    // Every other write resolves in microtasks, so one macrotask outlasts them.
+    const nextTask = new Promise<string>((resolve) =>
+      setTimeout(() => resolve("waiting")),
+    );
+    expect(await Promise.race([save, nextTask])).toBe("waiting");
+    held();
+    expect(await save).toBe("saved");
+  });
+
+  // #284 r2 condition: a claim after Destroyed takes this window's rows, so
+  // the last hold, also one made while the close waits, lands first.
+  it("a closing window is destroyed only after its last completion hold reaches the store", async () => {
+    const core = await import("@tauri-apps/api/core");
+    const order: string[] = [];
+    const answers: (() => void)[] = [];
+    vi.mocked(core.invoke).mockImplementation(async (command) => {
+      order.push(command);
+      if (command !== "mono_completions_hold") return;
+      await new Promise<void>((resolve) => answers.push(resolve));
+      order.push("held");
+    });
+    const { monoCompletionStore } = await import(
+      "../../features/sessions/data/monoCompletionStore"
+    );
+    const { closeCurrentWindow } = await import("./appLifecycle");
+    monoCompletionStore.hold([]);
+    const closed = closeCurrentWindow();
+    monoCompletionStore.hold([]);
+    await vi.waitFor(() => expect(answers).toHaveLength(1));
+    answers[0]();
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    answers[1]();
+    await closed;
+    expect(order).toEqual([
+      "mono_completions_hold",
+      "held",
+      "mono_completions_hold",
+      "held",
+      "destroy_window",
+    ]);
   });
 });

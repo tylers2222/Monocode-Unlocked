@@ -15,12 +15,6 @@ import {
 /** A field added here does not compile until the join has a rule for it. */
 type EveryField<T> = { [K in keyof Required<T>]: T[K] };
 
-/** What a save path writes beside the window's `workspaceSnapshot`. */
-export type SaveSiteFields = { monoCompletions?: unknown };
-
-/** What every save path writes, and what a relaunch restores. */
-export type SavedWorkspaceSnapshot = WorkspaceSnapshot & SaveSiteFields;
-
 /**
  * The one snapshot boot restores from the rows `workspace_get_snapshot`
  * answers, newest first (ADE-11): a window's own row, every row the last
@@ -30,13 +24,11 @@ export type SavedWorkspaceSnapshot = WorkspaceSnapshot & SaveSiteFields;
  * what the newer rows' tabs do not show, and gets a new id when New Window
  * copied its id. A tab keeps its workspace while a chat in it works there. A
  * session's newest stub wins. The newest row's window state wins: the active
- * tab, the project, terminal docks, return targets, the dock side, and the
- * Mono completions owed. With no tab to restore, the newest row is answered
- * whole, so its completions still come back.
+ * tab, the project, terminal docks, return targets and the dock side.
  */
 export function joinWorkspaceSnapshots(
-  rows: readonly SaveSiteFields[],
-): SavedWorkspaceSnapshot | SaveSiteFields | null {
+  rows: readonly unknown[],
+): WorkspaceSnapshot | null {
   const windows = rows.flatMap(
     (row) => hydrateWorkspaceSnapshot(row, new Map()) ?? [],
   );
@@ -72,20 +64,17 @@ export function joinWorkspaceSnapshots(
   }
   const [newest] = windows;
   return newest
-    ? ({
-        ...workspaceSnapshot([
-          {
-            tabs,
-            sessions: Array.from(sessions.values()),
-            activeTabId: newest.activeTabId,
-            projectCwd: newest.projectCwd,
-            projectReturnMemory: newest.projectReturnMemory,
-            projectTerminals: newest.projectTerminals,
-            lastDockSide: newest.lastDockSide,
-            pins,
-          } satisfies EveryField<WindowWorkspace>,
-        ]),
-        monoCompletions: rows[0].monoCompletions,
-      } satisfies EveryField<SaveSiteFields>)
-    : (rows[0] ?? null);
+    ? workspaceSnapshot([
+        {
+          tabs,
+          sessions: Array.from(sessions.values()),
+          activeTabId: newest.activeTabId,
+          projectCwd: newest.projectCwd,
+          projectReturnMemory: newest.projectReturnMemory,
+          projectTerminals: newest.projectTerminals,
+          lastDockSide: newest.lastDockSide,
+          pins,
+        } satisfies EveryField<WindowWorkspace>,
+      ])
+    : null;
 }
