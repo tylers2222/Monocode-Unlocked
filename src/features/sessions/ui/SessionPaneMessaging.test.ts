@@ -34,6 +34,7 @@ vi.mock("./AgentTranscript", () => ({
   AgentTranscript: (props: {
     blocks: Block[];
     onAddToChat: (text: string) => void;
+    onQuestionReply?: (requestId: number, reply: { kind: "skipped" }) => void;
   }) => {
     probes.transcript(props);
     return createElement(
@@ -44,6 +45,12 @@ vi.mock("./AgentTranscript", () => ({
         { onClick: () => props.onAddToChat("Selected response") },
         "Quote response",
       ),
+      props.onQuestionReply &&
+        createElement(
+          "button",
+          { onClick: () => props.onQuestionReply!(7, { kind: "skipped" }) },
+          "Skip card",
+        ),
       props.blocks
         .filter((block) => block.role === "user")
         .map((block) =>
@@ -236,6 +243,21 @@ it("routes transcript quotes to the Mono draft", () => {
   ].find((button) => button.textContent === "Quote response")!;
   act(() => quote.click());
   expect(field().value).toBe("> Selected response\n\n");
+});
+
+it("answers a card in the transcript as this chat's question reply, unless its worktree is gone", () => {
+  const pane = props();
+  pane.onQuestionReply = vi.fn();
+  render(pane);
+  const skip = [
+    ...container.querySelectorAll<HTMLButtonElement>("button"),
+  ].find((button) => button.textContent === "Skip card")!;
+  act(() => skip.click());
+  expect(pane.onQuestionReply).toHaveBeenCalledWith("chat", 7, {
+    kind: "skipped",
+  });
+  render({ ...pane, session: { ...pane.session, worktreeRemoved: true } });
+  expect(container.textContent).not.toContain("Skip card");
 });
 
 it("shows usage recovery above the Mono input and routes the reset option", () => {

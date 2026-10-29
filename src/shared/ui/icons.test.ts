@@ -5,7 +5,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
-import { FilePlus, FoldVertical, UnfoldVertical } from "./icons";
+import * as icons from "./icons";
 
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
 const CATALOG = "shared/ui/icons.tsx";
@@ -44,8 +44,21 @@ describe("hugeicons imports", () => {
     expect(violations).toEqual([]);
   });
 
+  it("names every catalog icon after its export", () => {
+    const mismatches = Object.entries(icons)
+      .filter(([name, Icon]) => Icon.displayName !== name)
+      .map(([name, Icon]) => `${name}: ${String(Icon.displayName)}`);
+
+    expect(Object.keys(icons).length).toBeGreaterThan(0);
+    expect(mismatches).toEqual([]);
+  });
+
   it("draws fold/unfold as strokes, not filled chevrons", () => {
-    for (const Icon of [FoldVertical, UnfoldVertical, FilePlus]) {
+    for (const Icon of [
+      icons.FoldVertical,
+      icons.UnfoldVertical,
+      icons.FilePlus,
+    ]) {
       const html = renderToStaticMarkup(createElement(Icon));
       expect(html, Icon.displayName).not.toMatch(/fill="currentColor"/);
       expect(html, Icon.displayName).toMatch(/stroke="currentColor"/);
