@@ -217,7 +217,7 @@ jobs:
         with:
           workspaces: ". -> target"
           shared-key: check-${{ matrix.os }}
-          save-if: ${{ github.ref == 'refs/heads/tyler/main' || github.head_ref == 'fix/ade-121-rust-cache' }}
+          save-if: ${{ github.ref == 'refs/heads/tyler/main' }}
 
       - run: npm ci
       - run: npm test
@@ -252,7 +252,7 @@ jobs:
         with:
           workspaces: ". -> target"
           shared-key: appimage-ubuntu-22.04
-          save-if: ${{ github.ref == 'refs/heads/tyler/main' || github.head_ref == 'fix/ade-121-rust-cache' }}
+          save-if: ${{ github.ref == 'refs/heads/tyler/main' }}
 
       - name: Install Linux system dependencies
         run: bash scripts/install-linux-deps-debian.sh
@@ -319,7 +319,7 @@ jobs:
         with:
           workspaces: ". -> target"
           shared-key: rpm-${{ matrix.image }}
-          save-if: ${{ github.ref == 'refs/heads/tyler/main' || github.head_ref == 'fix/ade-121-rust-cache' }}
+          save-if: ${{ github.ref == 'refs/heads/tyler/main' }}
 
       - run: npm ci
       - run: npm run build:fedora

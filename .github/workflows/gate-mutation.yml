@@ -122,9 +122,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
+      # Root package-lock.json only, so the key is the one ci.yml saves on tyler/main
+      # and a PR gets an exact hit (no save). mutation.sh runs npm ci from it.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
 
       - name: Stryker on the changed TypeScript lines
         timeout-minutes: 55

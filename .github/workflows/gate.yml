@@ -79,8 +79,15 @@ jobs:
           git show "$BASE:scripts/install-linux-deps-debian.sh" > "$RUNNER_TEMP/install-linux-deps.sh"
           bash "$RUNNER_TEMP/install-linux-deps.sh" --sources /etc/apt/sources.list.d/ubuntu.sources
 
-      - uses: Swatinem/rust-cache@v2
+      # Restores the ci.yml check (ubuntu-latest) entry: same rustc, env, Cargo.lock and
+      # clippy command, so the key matches. gate.yml runs only on pull_request, so the
+      # tyler/main save-if never fires here and PRs add no cache entries.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: ${{ !cancelled() }}
+        with:
+          workspaces: ". -> target"
+          shared-key: check-ubuntu-latest
+          save-if: ${{ github.ref == 'refs/heads/tyler/main' }}
 
       - name: Clippy
         if: ${{ !cancelled() && steps.linux-deps.outcome == 'success' }}
