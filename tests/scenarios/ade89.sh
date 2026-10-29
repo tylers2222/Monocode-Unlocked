@@ -162,7 +162,7 @@ run_ade89() {
   if [[ "$mode" == kill ]]; then
     crash_before_the_mark "$mono_chat" "$work"
     part_release_then_kill "$mono_chat" a b c
-    part_release_then_kill "$mono_chat" b c a
+    part_release_then_kill "$mono_chat" e f d
   fi
   "$INSTANCE" stop
   return "$FAILED"
@@ -199,7 +199,8 @@ crash_before_the_mark() {
 # Review r1 M2: one Mono turn watched three sessions. Two ended and their
 # notice is in the Mono's saved queue, the app was killed before the mark,
 # and the third never continues. The relaunch reports the third once and
-# the two not again, whichever request id sorts first.
+# the two not again, whichever request id sorts first. `reports` counts the
+# whole puppet log, so each call names its own sessions.
 part_release_then_kill() {
   local first="ade89-$2" second="ade89-$3" late="ade89-$4" group message
   group="mono-completion-batch-$(printf '%s\n' "$first" "$second" | sort | head -1)"
