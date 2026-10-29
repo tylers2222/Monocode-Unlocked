@@ -1,9 +1,9 @@
 //! The Mono completion results a window still owes (ADE-89). Every workspace
 //! window boots from the one saved workspace row, so a result kept there
 //! would reach each window that opens. Here each result is a row that one
-//! window owns: a boot claims the rows no live window holds, in one
-//! `BEGIN IMMEDIATE` transaction, and only the window that restores the
-//! earlier run takes that run's rows. A row whose result is in a notice names
+//! window owns: a boot claims its own rows, in one `BEGIN IMMEDIATE`
+//! transaction, and only the window that restores the earlier run takes the
+//! rows no live window holds. A row whose result is in a notice names
 //! that notice; the transaction that saves a Mono chat holding the notice
 //! marks it delivered and deletes its rows. A row lives only while a Mono
 //! chat save can still settle it: the window deletes the rows of a session
@@ -59,14 +59,14 @@ fn request_id(saved: &Value) -> Result<&str, String> {
         .ok_or_else(|| "a saved completion has no request.requestId".into())
 }
 
-/// A window's boot: it takes this run's rows of a window that is no longer
-/// open (`live` names the open ones), and when `earlier` (the window restores
-/// the earlier run, ADE-93) every row of an earlier run, and returns all it
-/// now holds. Rows another open window holds stay its own. A notice opens its
-/// Mono chat in the window that holds the result, so only the window that
-/// restored that chat may take an earlier run's rows. A row whose notice a
-/// Mono chat already saved is delivered first, and a taken row whose Mono has
-/// no chat is deleted.
+/// A window's boot: it returns the rows it holds, and when `earlier` (the
+/// window restores the earlier run, ADE-93) it first takes every row no open
+/// window holds (`live` names the open ones): an earlier run's, and this
+/// run's rows of a closed window. Rows another open window holds stay its
+/// own. A notice opens its Mono chat in the window that holds the result, and
+/// ADE-93 gives the Mono chats to that window only, so no other window takes
+/// a row it does not hold. A row whose notice a Mono chat already saved is
+/// delivered first, and a taken row whose Mono has no chat is deleted.
 pub(crate) fn claim(
     conn: &Connection,
     owner: Owner,
@@ -83,8 +83,8 @@ pub(crate) fn claim(
     settle(&tx, None, now)?;
     tx.execute(
         "UPDATE mono_completions SET window_label = ?1, window_run = ?2
-         WHERE (?4 AND window_run <> ?2)
-           OR (window_run = ?2 AND window_label NOT IN (SELECT value FROM json_each(?3)))",
+         WHERE ?4 AND (window_run <> ?2
+           OR window_label NOT IN (SELECT value FROM json_each(?3)))",
         params![
             owner.window,
             owner.run,

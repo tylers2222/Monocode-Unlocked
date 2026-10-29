@@ -316,15 +316,20 @@ fn a_claim_delivers_a_notice_the_mono_transcript_holds() {
     assert_eq!(marks(&world), 1);
 }
 
+/// m1: window-4 closed in this run. A result's notice opens the Mono chat
+/// in the window that takes it, and only main, the window that restored the
+/// run, holds the Mono chats (ADE-93), so a window that boots later takes
+/// none of window-4's results and main takes them all.
 #[test]
-fn a_closed_windows_results_go_to_the_next_window_that_boots() {
+fn a_closed_windows_results_go_only_to_the_window_that_restored_the_mono_chats() {
     let world = World::new("ade89-closed-window");
     chat_row(&world, &json!([]));
     let open = ["main", "window-4"];
-    assert!(claim(&world, "window-4", "run-1", true, &open).is_empty());
+    assert!(claim(&world, "main", "run-1", true, &open).is_empty());
+    assert!(claim(&world, "window-4", "run-1", false, &open).is_empty());
     hold(&world, "window-4", "run-1", &[saved("c", None)]);
     assert!(
-        claim(&world, "main", "run-1", false, &open).is_empty(),
+        claim(&world, "main", "run-1", true, &open).is_empty(),
         "an open window keeps its results"
     );
     // window-4 closes. Its last hold reaches Rust after that: its result for
@@ -335,11 +340,16 @@ fn a_closed_windows_results_go_to_the_next_window_that_boots() {
         "run-1",
         &[saved("c", Some("done")), saved("d", None)],
     );
-    let taken = claim(&world, "main", "run-1", false, &["main"]);
+    let now_open = ["main", "window-5"];
+    assert!(
+        claim(&world, "window-5", "run-1", false, &now_open).is_empty(),
+        "a window that boots later takes none of them"
+    );
+    let taken = claim(&world, "main", "run-1", true, &now_open);
     assert_eq!(
         ids(&taken),
         ["c", "d"],
-        "the next window to boot takes them all"
+        "the window that holds the Mono chats takes them all"
     );
     assert!(
         taken[0].get("result").is_some(),
@@ -347,7 +357,7 @@ fn a_closed_windows_results_go_to_the_next_window_that_boots() {
     );
     hold(&world, "main", "run-1", &[saved("e", None)]);
     assert_eq!(
-        ids(&claim(&world, "main", "run-1", false, &["main"])),
+        ids(&claim(&world, "main", "run-1", true, &now_open)),
         ["e"],
         "a hold replaces what the window held"
     );
@@ -415,8 +425,8 @@ fn the_first_claim_moves_the_results_a_quit_kept_in_the_workspace_row() {
     assert_eq!(rows(&world), 1);
 }
 
-/// window-3 closed in this run, and main and window-2 boot at once: each
-/// takes window-3's rows that the other did not.
+/// window-3 closed in this run, and main, the window that restores the run,
+/// and window-2 boot at once: each result goes to one window.
 #[test]
 fn two_windows_booting_at_once_take_each_result_once() {
     let world = World::new("ade89-race");
@@ -447,7 +457,7 @@ fn two_windows_booting_at_once_take_each_result_once() {
                         window,
                         run: "run-2",
                     },
-                    false,
+                    window == "main",
                     BOTH,
                     now,
                 )
@@ -681,13 +691,13 @@ fn each_window_claims_holds_and_delivers_its_own_results_through_the_commands() 
         "a result the window no longer owes is gone"
     );
 
-    // window-2 boots and holds `w` while window-1's claim waits on the
-    // store lock. The claim reads the open windows under that lock, so it
-    // sees window-2 and leaves `w` to it.
+    // window-2 boots and holds `w` while main's claim waits on the store
+    // lock. The claim reads the open windows under that lock, so it sees
+    // window-2 and leaves `w` to it.
     let store = app.state::<SessionStore>();
     let lock = store.lock_conn().unwrap();
     let (started, waiting) = std::sync::mpsc::channel();
-    let racing = other.clone();
+    let racing = main.clone();
     let waited = std::thread::spawn(move || {
         started.send(()).unwrap();
         held(&racing).len()
@@ -879,27 +889,45 @@ fn an_older_builds_row_gives_the_mono_chat_to_one_window() {
 /// ADE-89 on ADE-93. A Mono completion result's notice opens the Mono chat
 /// in the window that holds the result, so after a relaunch only the window
 /// that restores the earlier run, and with it the Mono chat, takes the
-/// results that run left. Here window-0's claim comes after main's restore.
+/// results that run left: those of a window that boots again, of one that
+/// does not, and those an older build kept in the workspace row. Here
+/// window-0's claim comes after main's restore.
 #[cfg(not(windows))]
 #[test]
 fn a_relaunch_gives_the_mono_completions_to_the_window_that_restores_the_mono_chat() {
     let world = World::new("ade89-one-owner");
     chat_row(&world, &json!([]));
-    let (app, windows) = launch_windows(&world, &["main", "window-0"]);
-    let owed = json!({ "saved": [saved("a", None)] });
-    call(&windows[1], "mono_completions_hold", owed);
+    let (app, windows) = launch_windows(&world, &["main", "window-0", "window-1"]);
+    call(
+        &windows[1],
+        "mono_completions_hold",
+        json!({ "saved": [saved("a", None)] }),
+    );
+    call(
+        &windows[2],
+        "mono_completions_hold",
+        json!({ "saved": [saved("b", None)] }),
+    );
     drop((windows, app));
+    let older = json!({ "tabs": [], "monoCompletions": [saved("c", None)] });
+    world
+        .conn()
+        .execute(
+            "INSERT INTO workspace_snapshot (id, snapshot_json, updated_at) VALUES (1, ?1, 1)",
+            [older.to_string()],
+        )
+        .unwrap();
 
     let (_app, windows) = launch_windows(&world, &["main", "window-0"]);
     let [main, second] = [&windows[0], &windows[1]];
     call(main, "workspace_get_snapshot", json!({}));
     assert!(
         held(second).is_empty(),
-        "the other window takes none of the last run's results, its own window's either"
+        "the other window takes none of the last run's results: its own window's, a window not open now, or the workspace row's"
     );
     assert_eq!(
         held(main),
-        ["a"],
+        ["a", "b", "c"],
         "the window that restored the last run takes them"
     );
 }
