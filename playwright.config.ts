@@ -4,7 +4,10 @@ export default defineConfig({
   testDir: "./tests/browser",
   // tests/**/*.test.ts are vitest unit tests of the browser rigs.
   testMatch: "**/*.spec.ts",
-  workers: 1,
+  // Specs share only the read-only dev server: the fake backend lives in each
+  // page, and the real-harness rigs use their own temp dir and a port-0 model
+  // server (ADE-155). CI's ubuntu runner has 4 cores.
+  workers: process.env.CI ? 4 : 2,
   use: {
     baseURL: "http://127.0.0.1:1435",
     viewport: { width: 1000, height: 800 },
