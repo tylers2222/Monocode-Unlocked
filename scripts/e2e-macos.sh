@@ -16,7 +16,8 @@ ROWS="$OUT/results.tsv"
 # app.sh's default, unless the job sets it.
 EVAL_HOME=${GIGA_EVAL_HOME:-/tmp/scenario-app-home}
 
-# command | the app.sh build it runs on | why CI skips it (empty: CI runs it)
+# command | the app.sh build it runs on | why CI skips it (empty: CI runs it).
+# A dispatch that names the command (scenario input) runs it anyway.
 SCENARIOS=(
   "home-isolation|build|"
   "s0|build|"
@@ -30,7 +31,7 @@ SCENARIOS=(
   "ade89 kill|build|"
   "ade89 term|build|"
   "approvals|build|reads a copy of the real app database, which a CI runner does not have"
-  "ade89 two|build-two|"
+  "ade89 two|build-two|PR #411 review r1 M2 (change-linear/reviews/411-round1.md): 12/20, notices lost before the agent gets them; the 20x dispatch runs it"
 )
 
 row() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" >>"$ROWS"; }
@@ -86,7 +87,7 @@ suite_scenarios() {
       row scenarios "$command" skipped 0 "not in this checkout's app.sh"
       continue
     fi
-    if [[ -n $skip ]]; then
+    if [[ -n $skip && -z $ONLY ]]; then
       row scenarios "$command" skipped 0 "$skip"
       continue
     fi
