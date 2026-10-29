@@ -31,13 +31,16 @@ jobs:
     runs-on: ubuntu-24.04
     # The suite runs one test at a time (playwright.config.ts workers: 1), so it
     # is split by spec file across runners. Each shard is its own runner, so specs
-    # that share state still never run side by side. The saves below run on shard
-    # 1 only, so the shards do not race to write one cache key.
-    name: browser (${{ matrix.shard }}/4)
+    # that share state still never run side by side. Playwright cuts the file list
+    # into blocks of equal test count, not equal time, so the slow real-omp specs
+    # near the start make shard 1 the long pole (PR #415 run 40834837758). The
+    # saves below run on shard 1 only, so the shards do not race to write one key.
+    name: browser (${{ matrix.shard }}/${{ matrix.total }})
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
+        total: [6]
     permissions:
       contents: read
     steps:
@@ -107,7 +110,7 @@ jobs:
           echo "$RUNNER_TEMP/omp-bin" >> "$GITHUB_PATH"
       - run: omp --version
       # list prints each test with its time, so the log shows which specs ran.
-      - run: npm run test:browser -- --reporter=list --shard=${{ matrix.shard }}/4
+      - run: npm run test:browser -- --reporter=list --shard=${{ matrix.shard }}/${{ matrix.total }}
       - name: Upload browser screenshots and failure traces
         if: always()
         uses: actions/upload-artifact@v4
