@@ -668,6 +668,7 @@ pub(crate) fn on_ask<C: OnAsk>(
     if let Submitted::Accepted {
         messages,
         duplicate: false,
+        routes,
         ..
     } = &mut submitted
     {
@@ -697,6 +698,11 @@ pub(crate) fn on_ask<C: OnAsk>(
             ],
         )?;
         messages[0].carries = carries(&tx, id)?;
+        // R15: a blocked question's one prompt is its blocked reminder, so
+        // its row goes to no window (`QUEUEABLE` keeps it off every hand-off).
+        if blocked {
+            routes.clear();
+        }
     }
     tx.commit()?;
     Ok(submitted)
