@@ -719,19 +719,29 @@ mod tests {
                 .unwrap();
             found.collect::<rusqlite::Result<_>>().unwrap()
         };
-        // The card sits after a11, with no newer turn or with one after it.
-        for newer in [0, 1] {
+        // The card sits after a11, with no newer turn or with one after it, or
+        // after an earlier habit post, which starts its own turn.
+        for (anchor, newer) in [("a11", 0), ("a11", 1), ("post", 0)] {
             let dir = std::env::temp_dir().join(format!(
-                "monocode-habit-card-{}-{newer}-{}",
+                "monocode-habit-card-{}-{anchor}-{newer}-{}",
                 std::process::id(),
                 session_store::now_millis()
             ));
             let mut session = sample("mono", 12 + newer);
+            let blocks = session.blocks.as_array_mut().unwrap();
+            if anchor == "post" {
+                blocks.push(json!({"id":"post", "role":"assistant", "text":"Done", "monoHabit":{"id":"h1", "name":"Morning check", "at":500}}));
+            }
+            let card_at = blocks
+                .iter()
+                .position(|block| block["id"] == anchor)
+                .unwrap()
+                + 1;
             // sessionStore.ts drops the open card, so the first save lacks it.
             // Settling it makes the saved snapshot differ from the card on, so
             // the app sends the suffix after the block before the card.
             let suffix: Vec<Value> = std::iter::once(settled.clone())
-                .chain(session.blocks.as_array().unwrap()[24..].iter().cloned())
+                .chain(blocks[card_at..].iter().cloned())
                 .collect();
             let saved = {
                 let store = SessionStore::open(dir.join("test.db")).unwrap();
@@ -739,16 +749,20 @@ mod tests {
                 upsert(&conn, &session, None, None, true).unwrap();
                 let saved = rows(&conn);
                 session.blocks = Value::Array(suffix.clone());
-                upsert(&conn, &session, Some("a11"), None, true).unwrap();
+                upsert(&conn, &session, Some(anchor), None, true).unwrap();
                 saved
             };
             let store = SessionStore::open(dir.join("test.db")).unwrap();
             let conn = store.lock_conn().unwrap();
             let stored = rows(&conn);
-            assert_eq!(stored[..24], saved[..24], "earlier blocks are unchanged");
+            assert_eq!(
+                stored[..card_at],
+                saved[..card_at],
+                "earlier blocks are unchanged"
+            );
             assert_eq!(stored.len(), saved.len() + 1);
             assert_eq!(stored.iter().filter(|row| row.1 == "card").count(), 1);
-            assert!(stored[24].3, "the card starts the Mono's turn");
+            assert!(stored[card_at].3, "the card starts the Mono's turn");
             let latest = page(&conn, "mono", None, None).unwrap().blocks;
             assert_eq!(latest[latest.len() - suffix.len()..], suffix[..]);
             drop(conn);
