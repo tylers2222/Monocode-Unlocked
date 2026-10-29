@@ -555,42 +555,6 @@ describe("claiming the Mono completion results at boot", () => {
     expect(logged).toHaveBeenCalledWith(new Error("store busy"));
   });
 
-  it("a relaunch sends again a notice whose turn a kill cut before the agent took it", async () => {
-    // #411 review r1 M2, Pattern A: the Mono chat as run 1 of E2E run
-    // 40811887603 saved it. The notice's turn had started, so the store had
-    // marked it delivered and claims no row for it.
-    const mono = newSession("fx", "/tmp/scratch");
-    const notice = "mono-completion-app-cc93-e390";
-    mono.blocks = [
-      { id: "started", role: "assistant", text: "Started." },
-      {
-        id: notice,
-        appRequestId: notice,
-        role: "user",
-        internal: true,
-        startedAt: 2,
-        text: "MonoCode completion notification: a monitored session stopped.",
-        monoSessionCompletion: { sessionId: "app-cc93-e390", status: "failed", title: "Test it." },
-      },
-    ];
-    const store = await import("../../features/sessions/data/sessionStore");
-    vi.mocked(store.loadWorkspaceSnapshot).mockResolvedValue(null);
-    vi.mocked(store.listInFlightSessions).mockResolvedValue([
-      { sessionId: mono.id, cwd: mono.cwd },
-    ]);
-    vi.mocked(store.getSession).mockResolvedValue(mono);
-    const core = await import("@tauri-apps/api/core");
-    vi.mocked(core.invoke).mockImplementation(async (command) =>
-      command === "mono_completions_claim" ? [] : undefined,
-    );
-    const { loadBootWorkspace } = await import("./appLifecycle");
-    const boot = await loadBootWorkspace();
-    expect(boot.monoCompletions).toEqual([]);
-    expect(
-      boot.resumed?.sessions[0]?.queuedMessages?.map((message) => message.id),
-    ).toEqual([`${notice}:again`]);
-  });
-
   it("a quit, close or reload save waits for the results the window owes to reach the store", async () => {
     const core = await import("@tauri-apps/api/core");
     let held!: () => void;

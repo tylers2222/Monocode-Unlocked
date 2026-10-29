@@ -77,7 +77,7 @@ export function quitWhileBusyMessage(count: number): string {
 export function markTurnInterrupted(session: Session): Session {
   const sealed = { ...sealOpenWork(stopStreaming(session)), busy: false };
   if (lastBlockIsInterrupt(sealed)) return sealed;
-  return resendCutNotice({
+  return {
     ...sealed,
     blocks: [
       ...sealed.blocks,
@@ -88,52 +88,6 @@ export function markTurnInterrupted(session: Session): Session {
         notice: "interrupt",
       },
     ],
-  });
-}
-
-/** Blocks the app or the user writes; any other block is the agent's. */
-const NOT_AGENT_OUTPUT = new Set(["user", "system", "handoff"]);
-
-/**
- * The cut turn opened with a Mono completion notice and the agent wrote
- * nothing after it. The save that held the notice marked it delivered
- * (ADE-89), but a kill can land between the turn's start and the moment the
- * harness takes the prompt, so the agent may never have had it. The notice
- * goes back to the front of the queue under an id of its own, once, and the
- * relaunch sends it. A copy the agent did take only repeats which sessions
- * stopped.
- */
-function resendCutNotice(session: Session): Session {
-  let opener = session.blocks.length - 1;
-  while (opener >= 0) {
-    const block = session.blocks[opener];
-    if (block.role === "user" && block.startedAt !== undefined) break;
-    opener -= 1;
-  }
-  const notice = session.blocks[opener];
-  if (
-    !notice?.monoSessionCompletion ||
-    session.blocks
-      .slice(opener + 1)
-      .some((block) => !NOT_AGENT_OUTPUT.has(block.role))
-  )
-    return session;
-  const id = `${notice.id}:again`;
-  if (session.queuedMessages?.some((message) => message.id === id))
-    return session;
-  return {
-    ...session,
-    queuedMessages: [
-      {
-        id,
-        text: notice.text,
-        attachments: [],
-        monoSessionCompletion: notice.monoSessionCompletion,
-        queuedAt: Date.now(),
-      },
-      ...(session.queuedMessages ?? []),
-    ],
-    queueStatus: session.queueStatus === "paused" ? "paused" : "active",
   };
 }
 
