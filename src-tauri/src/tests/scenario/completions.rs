@@ -509,7 +509,6 @@ fn launch(world: &World) -> tauri::App<tauri::test::MockRuntime> {
     use crate::session_store::{self as store, SessionStore};
     tauri::test::mock_builder()
         .manage(SessionStore::open(world.path().to_path_buf()).unwrap())
-        .manage(completions::Run::default())
         .manage(crate::control::tests::host())
         .invoke_handler(tauri::generate_handler![
             completions::mono_completions_claim,

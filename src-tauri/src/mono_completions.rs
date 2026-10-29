@@ -17,17 +17,9 @@ use tauri::{Manager, Runtime, State, WebviewWindow};
 
 use crate::session_store::SessionStore;
 
-/// This app process. A claim made under another run belongs to a window
-/// that died with its process.
-pub struct Run(String);
-
-impl Default for Run {
-    fn default() -> Self {
-        Self(uuid::Uuid::new_v4().to_string())
-    }
-}
-
-/// The window that holds a row, in the run that opened it.
+/// The window that holds a row, in the run that opened it
+/// (`SessionStore::run_id`). A row of another run belongs to a window that
+/// died with its process.
 #[derive(Clone, Copy)]
 pub(crate) struct Owner<'a> {
     pub window: &'a str,
@@ -224,11 +216,10 @@ pub(crate) fn dismiss(
 pub fn mono_completions_claim<R: Runtime>(
     window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
-    run: State<'_, Run>,
 ) -> Result<Vec<Value>, String> {
     let owner = Owner {
         window: window.label(),
-        run: &run.0,
+        run: &store.run_id,
     };
     // Under the lock no other claim or hold runs, so the open windows read
     // here are the ones at the claim: a window that opens later holds none.
@@ -243,12 +234,11 @@ pub fn mono_completions_claim<R: Runtime>(
 pub fn mono_completions_hold<R: Runtime>(
     window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
-    run: State<'_, Run>,
     saved: Vec<Value>,
 ) -> Result<(), String> {
     let owner = Owner {
         window: window.label(),
-        run: &run.0,
+        run: &store.run_id,
     };
     hold(&*store.lock_conn()?, owner, &saved)
 }
@@ -257,13 +247,12 @@ pub fn mono_completions_hold<R: Runtime>(
 pub fn mono_completions_dismiss<R: Runtime>(
     window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
-    run: State<'_, Run>,
     mono_id: String,
     session_id: String,
 ) -> Result<(), String> {
     let owner = Owner {
         window: window.label(),
-        run: &run.0,
+        run: &store.run_id,
     };
     dismiss(&*store.lock_conn()?, owner, &mono_id, &session_id).map_err(|e| e.to_string())
 }

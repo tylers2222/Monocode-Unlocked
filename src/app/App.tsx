@@ -1717,12 +1717,6 @@ function Workspace({
     }),
     [readProjectReturnMemory, workspacePins],
   );
-  /**
-   * This window as a quit, reload or close saves it (ADE-46). The Mono
-   * completion results it owes live in their own store rows (ADE-89).
-   */
-  const readQuitWorkspace = readWindowWorkspace;
-
   const tabVisitRef = useRef(emptyTabVisitHistory(activeTabId));
   const tabVisitFromHistoryRef = useRef(false);
   const [tabVisitNav, setTabVisitNav] = useState({
@@ -1924,7 +1918,7 @@ function Workspace({
     const stopBridge = startHarnessBridge();
     const reap = () => {
       if (isAppQuitting()) return;
-      void persistQuitState(readQuitWorkspace(), "unload").finally(() => {
+      void persistQuitState(readWindowWorkspace(), "unload").finally(() => {
         void reapWindowRuntime(
           sessionsRef.current,
           tabsRef.current,
@@ -1940,7 +1934,7 @@ function Workspace({
       stopBridge();
       harnessEvents.cancelScheduled();
     };
-  }, [resumed, readQuitWorkspace, harnessEvents]);
+  }, [resumed, readWindowWorkspace, harnessEvents]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2461,7 +2455,7 @@ function Workspace({
   useEffect(() => {
     let unlistenClose: (() => void) | undefined;
     const releaseQuit = setQuitWorkspace(
-      readQuitWorkspace,
+      readWindowWorkspace,
       flushHarnessEvents,
     );
     void getCurrentWindow()
@@ -2490,7 +2484,7 @@ function Workspace({
           void hideCurrentWindow();
           return;
         }
-        void persistQuitState(readQuitWorkspace(), "unload").finally(() => {
+        void persistQuitState(readWindowWorkspace(), "unload").finally(() => {
           void (toTray ? hideCurrentWindow() : closeCurrentWindow());
         });
       })
@@ -2501,7 +2495,7 @@ function Workspace({
       releaseQuit();
       unlistenClose?.();
     };
-  }, [flushHarnessEvents, readQuitWorkspace]);
+  }, [flushHarnessEvents, readWindowWorkspace]);
 
   const refreshHistory = useCallback(async (cwd: string) => {
     if (!cwd || cwd === "~") return;
