@@ -36,4 +36,4 @@ The fixture fails the test when the app sent a command that has no handler, or w
 
 ## Screenshots
 
-Save design-check screenshots with `page.screenshot({ path: test.info().outputPath("<name>.png") })`. They go to `test-results/<test>-<browser>/`. CI uploads `test-results/` as the `browser-test-results` artifact. Because `mount` renders the macOS app by default, CI shots on Linux show the macOS chrome. There are no `toHaveScreenshot` baselines. These shots are for comparing with the doop frames by eye, not a pixel gate, and Playwright keeps a separate baseline per OS, so each OS would need its own set.
+Save design-check screenshots with `page.screenshot({ path: test.info().outputPath("<name>.png") })`. They go to `test-results/<test>-<browser>/`. CI uploads each shard's `test-results/` as the `browser-test-results-<shard>` artifact. Because `mount` renders the macOS app by default, CI shots on Linux show the macOS chrome. There are no `toHaveScreenshot` baselines. These shots are for comparing with the doop frames by eye, not a pixel gate, and Playwright keeps a separate baseline per OS, so each OS would need its own set.
