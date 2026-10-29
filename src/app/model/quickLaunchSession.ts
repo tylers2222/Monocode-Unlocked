@@ -65,28 +65,23 @@ export function appLaunchRepeat(
   return false;
 }
 
-/** Sessions whose launch is being accepted. Idle detach keeps them loaded. */
-const acceptingLaunches = new Set<string>();
-
-/** Whether the launch of session `id` is still being accepted. */
-export function isLaunchAccepting(id: string): boolean {
-  return acceptingLaunches.has(id);
-}
-
 /**
  * Complete the workspace handoff before the receiver acknowledges the launch.
- * The session stays loaded until then: its submit can wait for the project
- * sync, and an idle detach in that wait would leave the submit no session.
+ * The session stays in `keepLoaded` until then: its submit can wait for the
+ * project sync, and an idle detach in that wait would leave the submit no
+ * session. A hold this call did not add (an open, or another acceptance of
+ * the same id) belongs to its owner, so this call leaves it in place.
  */
 export async function acceptQuickLaunch(
   ...args: Parameters<typeof handOffQuickLaunch>
 ): Promise<void> {
-  const [, deliveryId] = args;
-  acceptingLaunches.add(deliveryId);
+  const [, deliveryId, { keepLoaded }] = args;
+  const ownsHold = !keepLoaded.has(deliveryId);
+  keepLoaded.add(deliveryId);
   try {
     await handOffQuickLaunch(...args);
   } finally {
-    acceptingLaunches.delete(deliveryId);
+    if (ownsHold) keepLoaded.delete(deliveryId);
   }
 }
 
@@ -96,6 +91,8 @@ async function handOffQuickLaunch(
   workspace: {
     getSessions: () => Session[];
     updateSessions: (update: (sessions: Session[]) => Session[]) => void;
+    /** Sessions idle detach keeps loaded: App's `openingSessionIds`. */
+    keepLoaded: Set<string>;
     appendTab: (tab: WorkspaceTab, cwd: string) => void;
     placeSession?: (
       sessionId: string,

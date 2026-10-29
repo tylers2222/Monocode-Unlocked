@@ -9055,6 +9055,7 @@ function Workspace({
             // Compose with submission's queued transcript updates.
             setSessions(update);
           },
+          keepLoaded: openingSessionIds.current,
           appendTab,
           placeSession: (sessionId, target, cwd) => {
             const anchor = sessionsRef.current.find(
@@ -9064,9 +9065,7 @@ function Workspace({
               leafIds(entry.layout).includes(target.besideSessionId),
             );
             if (!anchor || !sameProjectPath(anchor.cwd, cwd) || !tab)
-              throw new Error(
-                "The target session must be open in this project",
-              );
+              throw new Error("The target session must be open in this project");
             const nextTabs = tabsRef.current.map((entry) =>
               entry.id === tab.id
                 ? {

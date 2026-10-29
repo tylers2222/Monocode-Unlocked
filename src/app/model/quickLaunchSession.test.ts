@@ -16,11 +16,7 @@ import {
   type WorkspaceTab,
 } from "../../features/workspace/model/layout";
 import { filterTabsForProject } from "../../features/workspace/model/workspaceTabGroups";
-import {
-  acceptQuickLaunch,
-  appLaunchRepeat,
-  isLaunchAccepting,
-} from "./quickLaunchSession";
+import { acceptQuickLaunch, appLaunchRepeat } from "./quickLaunchSession";
 import {
   submitAfterProjectSync,
   type SubmissionAcceptance,
@@ -84,6 +80,7 @@ function setup(reveal = false) {
     updateSessions: (update: (sessions: Session[]) => Session[]) => {
       state.sessions = update(state.sessions);
     },
+    keepLoaded: new Set<string>(),
     appendTab: vi.fn((tab: WorkspaceTab) => {
       state.tabs.push(tab);
     }),
@@ -399,16 +396,39 @@ it("holds a session only while its launch is being accepted", async () => {
   );
   const pending = acceptQuickLaunch(request, "quick-session", workspace);
   await vi.waitFor(() => expect(workspace.submit).toHaveBeenCalledOnce());
-  expect(isLaunchAccepting("quick-session")).toBe(true);
+  expect(workspace.keepLoaded.has("quick-session")).toBe(true);
   resolveSubmit(true);
   await pending;
-  expect(isLaunchAccepting("quick-session")).toBe(false);
+  expect(workspace.keepLoaded.has("quick-session")).toBe(false);
 
   workspace.submit.mockImplementationOnce(() => false);
   await expect(
     acceptQuickLaunch(request, "refused-session", workspace),
   ).rejects.toThrow("could not accept");
-  expect(isLaunchAccepting("refused-session")).toBe(false);
+  expect(workspace.keepLoaded.has("refused-session")).toBe(false);
+});
+
+// ADE-137. Defect: an acceptance that finds its id already held (an open in
+// flight, or another acceptance of the same id) releases that hold when it
+// ends, so idle detach drops the session while its owner still needs it.
+it("leaves a hold it did not add in place", async () => {
+  const { request, workspace } = setup();
+  workspace.keepLoaded.add("opening-session");
+  await acceptQuickLaunch(request, "opening-session", workspace);
+  expect(workspace.keepLoaded.has("opening-session")).toBe(true);
+
+  let resolveFirst!: (accepted: boolean) => void;
+  workspace.submit.mockImplementationOnce(
+    () => new Promise<boolean>((resolve) => (resolveFirst = resolve)),
+  );
+  const first = acceptQuickLaunch(request, "quick-session", workspace);
+  await vi.waitFor(() => expect(workspace.submit).toHaveBeenCalledTimes(2));
+  await acceptQuickLaunch(request, "quick-session", workspace);
+  expect(workspace.submit).toHaveBeenCalledTimes(3);
+  expect(workspace.keepLoaded.has("quick-session")).toBe(true);
+  resolveFirst(true);
+  await first;
+  expect(workspace.keepLoaded.has("quick-session")).toBe(false);
 });
 
 // ADE-135. Defect: a refused launch logs no guard, or names the wrong one.

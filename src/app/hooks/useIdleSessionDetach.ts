@@ -19,14 +19,13 @@ import {
 import { forgetHarnessSession } from "../../integrations/harness/core/registry";
 import { isMonoSession } from "../../features/monos/model/mono";
 import { isHabitRun } from "../../features/monos/model/monoHabits";
-import { isLaunchAccepting } from "../model/quickLaunchSession";
 
 const SESSION_DETACH_DELAY_MS = 250;
 
 type KeepContext = {
   visibleIds: ReadonlySet<string>;
-  /** A session being opened or launched; nothing may detach it mid-open. */
-  isOpening: (sessionId: string) => boolean;
+  /** Sessions being opened or launched; nothing may detach them mid-open. */
+  openingIds: ReadonlySet<string>;
   unseenFinishedIds: ReadonlySet<string>;
   keepUnseen: boolean;
 };
@@ -39,7 +38,7 @@ function keeps(session: Session, ctx: KeepContext): boolean {
     // The queue pump sends only for loaded sessions, so a head it would send
     // with no user action would be stranded by a detach.
     autoSendsQueuedHead(session) ||
-    ctx.isOpening(session.id) ||
+    ctx.openingIds.has(session.id) ||
     (ctx.keepUnseen && ctx.unseenFinishedIds.has(session.id))
   );
 }
@@ -116,9 +115,7 @@ export function useIdleSessionDetach({
     }
     const ctx: KeepContext = {
       visibleIds,
-      isOpening: (sessionId) =>
-        openingSessionIds.current.has(sessionId) ||
-        isLaunchAccepting(sessionId),
+      openingIds: openingSessionIds.current,
       unseenFinishedIds: unseenFinishedRef.current,
       keepUnseen: liveAgentsEnabled,
     };
