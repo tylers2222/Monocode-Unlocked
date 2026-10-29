@@ -128,6 +128,15 @@ jobs:
         with:
           toolchain: ${{ steps.rust-version.outputs.version }}
 
+      # giga-eval builds every instance into $GIGA_EVAL_OUT/target, outside the checkout,
+      # so cache that directory. Only tyler/main pushes save; pull requests restore.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-targets: false
+          cache-directories: ${{ env.GIGA_EVAL_OUT }}/target
+          shared-key: e2e-macos
+          save-if: ${{ github.ref == 'refs/heads/tyler/main' || github.head_ref == 'fix/ade-121-rust-cache' }}
+
       # The omp release ci.yml installs, checked against its SHA256SUMS.txt.
       - name: Install omp 18.2.11 (sha256-checked release binary)
         run: |
