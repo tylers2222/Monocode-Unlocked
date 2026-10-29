@@ -21,9 +21,10 @@ import {
 } from "../../../src/features/monos/model/mono";
 import { defaultSoul } from "../../../src/features/monos/model/monoFiles";
 import type { SessionSummary } from "../../../src/features/sessions/data/sessionStore";
-import type {
-  Block,
-  HarnessId,
+import {
+  agentReplyTo,
+  type Block,
+  type HarnessId,
 } from "../../../src/features/sessions/model/session";
 
 /** A Mono as Rust `MonoRow` sends it (src-tauri/src/mono_roster.rs:101-110). */
@@ -119,19 +120,15 @@ type FakeCompletion = {
 };
 
 /** mono_completions.rs settle: the save of Mono chat `chat` delivers each
- * notice its queue or transcript holds, and deletes that notice's rows. */
-function settleCompletions(
-  store: FakeStore,
-  chat: { id: string; queuedMessages?: unknown[]; blocks: { appRequestId?: string }[] },
-) {
-  const held = new Set([
-    ...(chat.queuedMessages ?? []).flatMap((message) =>
-      message && typeof message === "object" && "id" in message ? [message.id] : [],
+ * notice whose block an agent block follows, and deletes that notice's rows. */
+function settleCompletions(store: FakeStore, chat: { id: string; blocks: Block[] }) {
+  const taken = new Set(
+    chat.blocks.flatMap((block) =>
+      block.appRequestId && agentReplyTo(chat.blocks, block) ? [block.appRequestId] : [],
     ),
-    ...chat.blocks.map((block) => block.appRequestId),
-  ]);
+  );
   for (const row of Object.values(store.completions)) {
-    if (row.origin.monoId !== chat.id || !row.notice || !held.has(row.notice)) continue;
+    if (row.origin.monoId !== chat.id || !row.notice || !taken.has(row.notice)) continue;
     if (!store.deliveredGroups.includes(row.notice)) store.deliveredGroups.push(row.notice);
     delete store.completions[row.request.requestId];
   }
@@ -385,22 +382,18 @@ const HANDLERS: Record<string, Handler> = {
   },
   session_list_in_flight: (store) => store.inFlight,
   // mono_completions.rs. One window, so it holds every row it claims. The
-  // claim first delivers what each Mono chat's save holds, and drops the rows
-  // of a Mono that has no chat.
+  // claim first delivers what each saved Mono chat shows the agent took, and
+  // drops the rows of a Mono that has no chat.
   mono_completions_claim: (store) => {
     const chats = new Set(store.sessions.map((session) => session.id));
     for (const id of chats)
-      settleCompletions(store, {
-        id,
-        queuedMessages: store.queues[id]?.queuedMessages,
-        blocks: store.blocks[id] ?? [],
-      });
+      settleCompletions(store, { id, blocks: store.blocks[id] ?? [] });
     for (const row of Object.values(store.completions))
       if (!chats.has(row.origin.monoId))
         delete store.completions[row.request.requestId];
     return Object.values(store.completions);
   },
-  // A row in a notice stays until a Mono chat save holds that notice.
+  // A row in a notice stays until a Mono chat save shows the agent took it.
   mono_completions_hold: (store, { saved }) => {
     store.completions = Object.fromEntries(
       [

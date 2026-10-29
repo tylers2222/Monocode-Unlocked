@@ -1,6 +1,6 @@
 //! ADE-89: a Mono completion result a window owes survives a kill, a reload
 //! and a closed window, reaches one window only, and is delivered once: by
-//! the save of the Mono chat that holds its notice.
+//! the save of the Mono chat that shows the agent's reply to its notice.
 
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
@@ -85,6 +85,42 @@ fn save_chat(world: &World, queue: &Value) {
     completions::settle(&world.conn(), Some("mono-chat"), world.now()).unwrap();
 }
 
+/// The block a queued notice becomes when its turn starts.
+fn notice_block(notice: &str) -> Value {
+    json!({ "id": format!("block-{notice}"), "role": "user", "text": "MonoCode completion notification", "appRequestId": notice })
+}
+
+fn reply(id: &str) -> Value {
+    json!({ "id": id, "role": "assistant", "text": "Reviewed." })
+}
+
+/// The Mono chat's saved transcript is `blocks`, as a crash left it.
+fn write_transcript(world: &World, blocks: &[Value]) {
+    let conn = world.conn();
+    conn.execute(
+        "INSERT OR IGNORE INTO mono_transcripts (session_id) VALUES ('mono-chat')",
+        [],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM mono_blocks WHERE session_id = 'mono-chat'", [])
+        .unwrap();
+    for (seq, block) in (1_i64..).zip(blocks) {
+        conn.execute(
+            "INSERT INTO mono_blocks (session_id, seq, block_id, block_json, search_text, is_user, is_draft)
+             VALUES ('mono-chat', ?1, ?2, ?3, '', ?4, 0)",
+            params![seq, block["id"].as_str().unwrap(), block.to_string(), block["role"] == "user"],
+        )
+        .unwrap();
+    }
+}
+
+/// The Mono chat is saved with transcript `blocks`, and the save settles its
+/// notices.
+fn save_transcript(world: &World, blocks: &[Value]) {
+    write_transcript(world, blocks);
+    completions::settle(&world.conn(), Some("mono-chat"), world.now()).unwrap();
+}
+
 fn marks(world: &World) -> i64 {
     world
         .conn()
@@ -144,17 +180,43 @@ fn a_waiting_result_reaches_one_window_once_across_kills_and_reloads() {
         &[sent("a", "notice-ab"), sent("b", "notice-ab")],
     );
     hold(&world, "window-2", "run-2", &[]);
-    save_chat(&world, &json!([{ "id": "notice-other" }]));
-    assert_eq!(
-        (rows(&world), marks(&world)),
-        (2, 0),
-        "nothing is marked while the Mono chat does not hold the notice"
-    );
     save_chat(&world, &json!([{ "id": "notice-ab" }]));
     assert_eq!(
         (rows(&world), marks(&world)),
+        (2, 0),
+        "a notice that waits in the Mono's queue is not delivered"
+    );
+    save_transcript(
+        &world,
+        &[
+            reply("earlier"),
+            notice_block("notice-ab"),
+            json!({ "id": "cut", "role": "system", "text": "Turn interrupted." }),
+        ],
+    );
+    assert_eq!(
+        (rows(&world), marks(&world)),
+        (2, 0),
+        "a notice whose turn the agent wrote nothing in is not delivered"
+    );
+    save_transcript(
+        &world,
+        &[
+            notice_block("notice-other"),
+            reply("other-reply"),
+            notice_block("notice-ab"),
+        ],
+    );
+    assert_eq!(
+        (rows(&world), marks(&world)),
+        (2, 0),
+        "another notice's reply does not deliver it"
+    );
+    save_transcript(&world, &[notice_block("notice-ab"), reply("reply")]);
+    assert_eq!(
+        (rows(&world), marks(&world)),
         (0, 1),
-        "the save that holds the notice marks it and deletes its results"
+        "the save that shows the agent's reply marks it and deletes its results"
     );
     hold(&world, "window-2", "run-2", &[sent("a", "notice-ab")]);
 
@@ -273,12 +335,13 @@ fn a_claim_deletes_the_rows_of_a_mono_with_no_chat() {
     );
 }
 
-/// Review r1 M2: a and b went out in one notice that the Mono chat saved,
-/// c still ran, and the app died before that save settled them. The boot
-/// delivers a and b and gives back only c, so c is reported once and a and
-/// b are not sent again.
+/// #411 review r1 M2: a and b went out in one notice, c still ran, and the
+/// app died. While the notice waits in the Mono's queue the boot gives a and
+/// b back with c; the window queues them again under the notice's id, which
+/// the queue already holds, so they are not sent twice. Once the saved chat
+/// shows the agent's reply, the boot delivers a and b and gives back only c.
 #[test]
-fn a_claim_delivers_what_the_mono_chat_saved_and_returns_the_rest() {
+fn a_claim_delivers_what_the_agent_took_and_returns_the_rest() {
     let mut world = World::new("ade89-part-release");
     hold(
         &world,
@@ -293,26 +356,33 @@ fn a_claim_delivers_what_the_mono_chat_saved_and_returns_the_rest() {
     chat_row(&world, &json!([{ "id": "notice-ab" }]));
     world.kill();
     world.restart();
-    assert_eq!(ids(&claim(&world, "main", "run-2", true, &["main"])), ["c"]);
+    assert_eq!(
+        ids(&claim(&world, "main", "run-2", true, &["main"])),
+        ["a", "b", "c"]
+    );
+    assert_eq!((rows(&world), marks(&world)), (3, 0));
+    chat_row(&world, &json!([]));
+    write_transcript(&world, &[notice_block("notice-ab"), reply("reply")]);
+    world.kill();
+    world.restart();
+    assert_eq!(ids(&claim(&world, "main", "run-3", true, &["main"])), ["c"]);
     assert_eq!((rows(&world), marks(&world)), (1, 1));
 }
 
-/// A boot that finds a notice in the Mono's transcript, not its queue,
-/// delivers it too: the queue ran it before the save that settles it.
+/// #411 review r1 M2, Pattern A: the notice's turn started and was saved,
+/// and a kill cut it before the agent took the prompt. The boot gives the
+/// notice's result back, so the window sends it again; once a save shows the
+/// agent's reply, it is delivered.
 #[test]
-fn a_claim_delivers_a_notice_the_mono_transcript_holds() {
+fn a_claim_gives_back_a_notice_whose_turn_has_no_reply() {
     let world = World::new("ade89-transcript");
     hold(&world, "main", "run-1", &[sent("a", "notice-a")]);
     chat_row(&world, &json!([]));
-    world
-        .conn()
-        .execute_batch(
-            "INSERT INTO mono_transcripts (session_id) VALUES ('mono-chat');
-             INSERT INTO mono_blocks (session_id, seq, block_id, block_json, search_text, is_user, is_draft)
-             VALUES ('mono-chat', 1, 'u1', '{\"id\":\"u1\",\"appRequestId\":\"notice-a\"}', '', 1, 0);",
-        )
-        .unwrap();
-    assert!(claim(&world, "main", "run-2", true, &["main"]).is_empty());
+    write_transcript(&world, &[notice_block("notice-a")]);
+    assert_eq!(ids(&claim(&world, "main", "run-2", true, &["main"])), ["a"]);
+    assert_eq!(marks(&world), 0);
+    write_transcript(&world, &[notice_block("notice-a"), reply("reply")]);
+    assert!(claim(&world, "main", "run-3", true, &["main"]).is_empty());
     assert_eq!(marks(&world), 1);
 }
 
@@ -488,15 +558,14 @@ fn two_windows_booting_at_once_take_each_result_once() {
     );
 }
 
-/// `mono_session_upsert`'s arguments: the Mono chat saved with `notice` queued.
+/// `mono_session_upsert`'s arguments: the Mono chat saved with `blocks`.
 #[cfg(not(windows))]
-fn chat_save(notice: &str) -> Value {
+fn chat_save(blocks: &[Value]) -> Value {
     let session = json!({
         "id": "mono-chat", "cwd": "/p", "harness": "fx", "model": "m", "modelSettings": {},
-        "runtimeMode": "auto", "title": "Mono", "blocks": [],
-        "queuedMessages": [{ "id": notice, "text": "MonoCode completion notification", "attachments": [] }],
+        "runtimeMode": "auto", "title": "Mono", "blocks": blocks, "queuedMessages": [],
     });
-    json!({ "session": session, "afterBlockId": null, "fromBlockId": null, "blocksChanged": false, "appendOnly": false })
+    json!({ "session": session, "afterBlockId": null, "fromBlockId": null, "blocksChanged": true, "appendOnly": false })
 }
 
 #[cfg(not(windows))]
@@ -509,7 +578,6 @@ fn launch(world: &World) -> tauri::App<tauri::test::MockRuntime> {
     use crate::session_store::{self as store, SessionStore};
     tauri::test::mock_builder()
         .manage(SessionStore::open(world.path().to_path_buf()).unwrap())
-        .manage(completions::Run::default())
         .manage(crate::control::tests::host())
         .invoke_handler(tauri::generate_handler![
             completions::mono_completions_claim,
@@ -620,11 +688,26 @@ fn a_kill_between_the_noticed_hold_and_the_mono_chat_save_loses_nothing() {
         "the relaunch gives back the result no Mono chat save holds"
     );
     call(&main, "mono_completions_hold", noticed);
-    call(&main, "mono_session_upsert", chat_save("mono-completion-a"));
+    let started = notice_block("mono-completion-a");
+    call(
+        &main,
+        "mono_session_upsert",
+        chat_save(std::slice::from_ref(&started)),
+    );
+    assert_eq!(
+        (rows(&world), marks(&world)),
+        (1, 0),
+        "the save of the notice's turn before the agent's reply delivers nothing"
+    );
+    call(
+        &main,
+        "mono_session_upsert",
+        chat_save(&[started, reply("reply")]),
+    );
     assert_eq!(
         (rows(&world), marks(&world)),
         (0, 1),
-        "the save that holds the notice delivers it"
+        "the save that shows the agent's reply delivers it"
     );
     drop(app);
 
@@ -666,12 +749,12 @@ fn each_window_claims_holds_and_delivers_its_own_results_through_the_commands() 
     call(
         &other,
         "mono_session_upsert",
-        chat_save("mono-completion-a"),
+        chat_save(&[notice_block("mono-completion-a"), reply("reply")]),
     );
     assert_eq!(
         (rows(&world), marks(&world)),
         (0, 1),
-        "the Mono chat save that holds the notice delivers it, from any window"
+        "the Mono chat save that shows the agent's reply delivers it, from any window"
     );
 
     call(
