@@ -201,6 +201,70 @@ describe("markTurnInterrupted", () => {
   });
 });
 
+/**
+ * #411 review r1 M2, Pattern A: the Mono chat as run 1 of E2E run
+ * 40811887603 saved it before the kill. The notice's turn had started, so
+ * its save marked the notice delivered, and the kill landed before the fx
+ * agent took the prompt; a Mono message waits behind it.
+ */
+function cutNoticeChat(after: Session["blocks"] = []): Session {
+  const notice = "mono-completion-app-cc93-e390";
+  return chat("/tmp/scratch", {
+    busy: true,
+    blocks: [
+      { id: "m_7dpdbbna2uss", role: "user", text: "ADE89-GO Start the work session.", startedAt: 1 },
+      { id: "started", role: "assistant", text: "Started." },
+      {
+        id: notice,
+        appRequestId: notice,
+        role: "user",
+        internal: true,
+        startedAt: 2,
+        text: "MonoCode completion notification: a monitored session stopped.",
+        monoSessionCompletion: { sessionId: "app-cc93-e390", status: "failed", title: "fx · ADE89-WORK Test it." },
+      },
+      { id: "m_kevhl6kdigxo", role: "user", text: "ADE89-BUSY Wait for the work.", sentAt: 3 },
+      ...after,
+    ],
+  });
+}
+
+describe("a notice whose turn a quit or kill cut short", () => {
+  it("goes back to the front of the queue when the agent wrote nothing after it", () => {
+    const relaunched = markTurnInterrupted({
+      ...cutNoticeChat(),
+      queuedMessages: [{ id: "later", text: "later", attachments: [] }],
+    });
+    expect(relaunched.queuedMessages?.map((message) => message.id)).toEqual([
+      "mono-completion-app-cc93-e390:again",
+      "later",
+    ]);
+    expect(relaunched.queuedMessages?.[0]).toMatchObject({
+      text: "MonoCode completion notification: a monitored session stopped.",
+      monoSessionCompletion: { sessionId: "app-cc93-e390" },
+    });
+    expect(relaunched.blocks.at(-1)?.text).toBe(INTERRUPT_MESSAGE);
+  });
+
+  it("is queued once however often the turn is marked", () => {
+    const twice = markTurnInterrupted(markTurnInterrupted(cutNoticeChat()));
+    expect(twice.queuedMessages).toHaveLength(1);
+  });
+
+  it("is not sent again once the agent wrote after it", () => {
+    const answered = markTurnInterrupted(
+      cutNoticeChat([{ id: "reply", role: "assistant", text: "Reviewed." }]),
+    );
+    expect(answered.queuedMessages ?? []).toEqual([]);
+  });
+
+  it("leaves the queue alone when another turn was cut", () => {
+    const busy = cutNoticeChat([{ id: "reply", role: "assistant", text: "Reviewed." }]);
+    busy.blocks.push({ id: "busy", role: "user", text: "ADE89-BUSY again", startedAt: 4 });
+    expect(markTurnInterrupted(busy).queuedMessages ?? []).toEqual([]);
+  });
+});
+
 describe("quitWhileBusyMessage", () => {
   it("mentions resume on reopen", () => {
     expect(quitWhileBusyMessage(1)).toContain("1 chat is still running");
