@@ -11,11 +11,14 @@ import {
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi, type Mock } from "vitest";
 import type { Block, Session } from "../../sessions/model/session";
-import type { UserQuestionReply } from "../../sessions/model/userQuestion";
+import type {
+  UserQuestionPrompt,
+  UserQuestionReply,
+} from "../../sessions/model/userQuestion";
 import { answerHabitQuestion, endHabitQuestion } from "./habitQuestion";
 import type * as HostModule from "./habitQuestionHost";
 import type * as HabitsModule from "./monoHabits";
-import type { ApprovalRelay } from "./monoHabits";
+import type { ApprovalRelay, Habit } from "./monoHabits";
 
 let hostModule: typeof HostModule;
 let habits: typeof HabitsModule;
@@ -316,4 +319,105 @@ it("answers before the app binds its store, without settling anything", () => {
     ["chat-1", 4, yes],
     ["run-1", 7, yes],
   ]);
+});
+
+const garden = { id: "habit-1", name: "Garden round" } as Habit;
+
+// Defect: the run's question never reaches the Mono's chat, reaches another
+// chat, keeps the run's own deadline, or its answer cannot find the run.
+it("asks a run's question in its Mono's chat under an id that routes back to the run", () => {
+  const store = mountStore([otherChat, mono, run]);
+  const asked: UserQuestionPrompt = {
+    ...card.habitQuestion!.prompt,
+    requestId: 7,
+    title: "Garden",
+    autoResolveAt: 5_000,
+  };
+
+  act(() =>
+    hostModule.askHabitQuestion("mono-1", garden, "run-1", 1_000, asked),
+  );
+
+  expect(store.append).toHaveBeenCalledTimes(1);
+  const [monoId, block] = store.append.mock.calls[0];
+  const relayId = block.habitQuestion!.prompt.requestId;
+  expect(monoId).toBe("mono-1");
+  expect(block).toEqual({
+    id: expect.any(String),
+    role: "assistant",
+    text: "",
+    habitQuestion: {
+      runId: "run-1",
+      runAt: 1_000,
+      prompt: {
+        requestId: relayId,
+        title: "Garden",
+        questions: asked.questions,
+      },
+    },
+    monoHabit: { id: "habit-1", name: "Garden round", at: expect.any(Number) },
+  });
+  expect(block.habitQuestion!.prompt).not.toHaveProperty("autoResolveAt");
+  expect(habits.questionRoute("mono-1", relayId)).toEqual({
+    sessionId: "run-1",
+    requestId: 7,
+    card: { monoId: "mono-1", runId: "run-1", requestId: 7, blockId: block.id },
+  });
+});
+
+// Defect: a question asked before the app binds its store throws.
+it("asks before the app binds its store without throwing", () => {
+  expect(() =>
+    hostModule.askHabitQuestion(
+      "mono-1",
+      garden,
+      "run-1",
+      1_000,
+      card.habitQuestion!.prompt,
+    ),
+  ).not.toThrow();
+});
+
+// Defect: a run's end leaves its open card open, or ends a card another run
+// asked or one the user already answered.
+it("ends only the run's open cards when it ends", () => {
+  const answered = answerHabitQuestion({ ...card, id: "card-2" }, yes);
+  const otherRun: Block = {
+    ...card,
+    id: "card-3",
+    habitQuestion: { ...card.habitQuestion!, runId: "run-2" },
+  };
+  const approval: Block = {
+    id: "approval-1",
+    role: "approval",
+    text: "",
+    approval: { requestId: 9 },
+  };
+  const chat = {
+    ...mono,
+    blocks: [userLine, card, answered, otherRun, approval],
+  } as Session;
+  const store = mountStore([otherChat, chat]);
+  for (const [runId, blockId] of [
+    ["run-1", "card-1"],
+    ["run-1", "card-2"],
+    ["run-2", "card-3"],
+    ["run-1", "approval-1"],
+  ])
+    habits.relayApproval(relay({ runId, blockId }));
+
+  act(() => hostModule.endHabitQuestions("run-1", { kind: "timed-out" }));
+
+  const ended = endHabitQuestion(card, { kind: "timed-out" });
+  expect(ended.habitQuestion?.end).toEqual({ kind: "timed-out" });
+  const settled = {
+    ...chat,
+    blocks: [userLine, ended, answered, otherRun, approval],
+  };
+  expect(store.shown).toEqual([otherChat, settled]);
+  expect(store.shown[1].blocks[2]).toBe(answered);
+  expect(store.shown[1].blocks[3]).toBe(otherRun);
+  expect(store.persist).toHaveBeenCalled();
+  for (const [saved] of store.persist.mock.calls)
+    expect(saved).toEqual(settled);
 });
