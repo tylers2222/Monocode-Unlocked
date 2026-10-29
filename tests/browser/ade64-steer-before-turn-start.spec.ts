@@ -109,17 +109,23 @@ test("a steer that reaches omp before its turn starts leaves the turn running to
   omp.release();
 
   await expect(stop, "the turn ends when omp ends it").toHaveCount(0);
+  const turnOf = (blocks: Block[]) =>
+    blocks.find(
+      (block) => block.role === "user" && block.startedAt != null && block.text === opener.text,
+    );
+  // The reply's first block is saved while the turn runs (ADE-89); the save
+  // at the turn's end stamps its duration.
   await expect
-    .poll(async () =>
-      (await saved(page)).some(
-        (block) => block.role === "assistant" && block.text.includes(REPLY),
-      ),
-    )
+    .poll(async () => {
+      const blocks = await saved(page);
+      return (
+        blocks.some((block) => block.role === "assistant" && block.text.includes(REPLY)) &&
+        turnOf(blocks)?.durationMs !== undefined
+      );
+    })
     .toBe(true);
   const blocks = await saved(page);
-  const turn = blocks.find(
-    (block) => block.role === "user" && block.startedAt != null && block.text === opener.text,
-  );
+  const turn = turnOf(blocks);
   soft(turn?.durationMs, "the turn's duration runs to omp's real end").toBeGreaterThanOrEqual(
     HOLD_MS,
   );
