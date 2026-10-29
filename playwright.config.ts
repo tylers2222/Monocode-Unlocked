@@ -6,8 +6,9 @@ export default defineConfig({
   testMatch: "**/*.spec.ts",
   // Specs share only the read-only dev server: the fake backend lives in each
   // page, and the real-harness rigs use their own temp dir and a port-0 model
-  // server (ADE-155). CI's ubuntu runner has 4 cores.
-  workers: process.env.CI ? 4 : 2,
+  // server (ADE-155). Not 4: on CI's 4-core runner each test ran 2.8x slower
+  // and 12 timed out (run 40834966222).
+  workers: 2,
   use: {
     baseURL: "http://127.0.0.1:1435",
     viewport: { width: 1000, height: 800 },
