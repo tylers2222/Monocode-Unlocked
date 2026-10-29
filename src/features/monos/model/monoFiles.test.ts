@@ -174,6 +174,7 @@ it("says how to keep memory and update the soul only at the user's request", () 
     'Once per ask, app messages.update {"ask_id"',
     "you have an open ask of your own, ask your own asker with messages.question",
     "otherwise answer from what you know, or ask the user",
+    "your asker then gets it at once as one <mono_reminder> instead",
     "get_monos, send_message, reply, get_message, ask, ack, question, answer, update, extend and reason",
   ])
     expect(messaging).toContain(tool);

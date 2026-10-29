@@ -391,9 +391,10 @@ Actions:
                   answer down; otherwise answer from what you know, or ask
                   the user. Set blocked true only when you cannot go on at
                   all without the answer: the asker then gets it at once as
-                  one <mono_reminder> instead, as a new turn when idle or in
-                  its running turn when it can be steered. Same limits and
-                  pause.
+                  one <mono_reminder> instead, as a new turn when idle, in
+                  its running turn when it can be steered, and otherwise
+                  when that turn ends; the result's delivery is reminder.
+                  Same limits and pause.
                   Codes: invalid_input, request_id_reused,
                   question_refused (no open ask has this id, not yours,
                   acked, a question waits, or 3 asked; the hint says which),
@@ -973,7 +974,7 @@ pub fn app_tools() -> Value {
         {
             "name": "question",
             "action": "messages.question",
-            "description": "Ask the one who asked you a question about its ask: up to 3 per ask, one at a time. Keeps the key and pauses the ask's clock until the answer comes. The asker gets a <mono_message> with question_of and seq. Set blocked to true only when you cannot go on at all without the answer: the asker then gets it at once as one <mono_reminder> instead, as a new turn when idle or in its running turn when it can be steered. If you cannot answer a question you were asked and you have an open ask of your own, ask your own asker with this tool on that ask and pass its answer down; otherwise answer from what you know, or ask the user. A refusal has code and hint; follow the hint.",
+            "description": "Ask the one who asked you a question about its ask: up to 3 per ask, one at a time. Keeps the key and pauses the ask's clock until the answer comes. The asker gets a <mono_message> with question_of and seq. Set blocked to true only when you cannot go on at all without the answer: the asker then gets it at once as one <mono_reminder> instead, as a new turn when idle, in its running turn when it can be steered, and otherwise when that turn ends; the result's delivery is reminder. If you cannot answer a question you were asked and you have an open ask of your own, ask your own asker with this tool on that ask and pass its answer down; otherwise answer from what you know, or ask the user. A refusal has code and hint; follow the hint.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

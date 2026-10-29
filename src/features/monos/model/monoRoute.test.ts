@@ -90,6 +90,8 @@ const rust = vi.hoisted(() => {
     wantingReply: boolean;
     handledBySession: string | null;
     delivery: string;
+    /** A blocked question (R15): Rust gives it no route. */
+    blocked?: true;
     slot: {
       turnId: string;
       handle?: string;
@@ -144,11 +146,15 @@ const rust = vi.hoisted(() => {
   // write (`ask`'s m_zzzzzzzzzzzz) stands for a row sent before the test.
   // IPC returns a copy, so later changes to the row do not show.
   const targeted = (entry: Row) => {
-    const message = structuredClone(entry);
-    if (!entry.replyTo) return { message, target: null };
+    const { blocked, ...message } = structuredClone(entry);
+    const carries = blocked
+      ? { kind: "question", askId: "m_zzzzzzzzzzzz", seq: 1, blocked }
+      : null;
+    if (!entry.replyTo) return { message, target: null, carries };
     const target = row(entry.replyTo);
     return {
       message,
+      carries,
       target: target
         ? {
             messageId: target.id,
@@ -181,6 +187,7 @@ const rust = vi.hoisted(() => {
             intent?: string;
             reply_to?: string;
             scope?: "turn";
+            blocked?: boolean;
           };
         };
         if (state.failure) return { outcome: "failed", error: state.failure };
@@ -219,12 +226,13 @@ const rust = vi.hoisted(() => {
           wantingReply: input.wanting_reply,
           handledBySession: state.route.sessionId,
           delivery: "queue",
+          ...(input.blocked ? { blocked: true as const } : {}),
           slot: null,
           notifiedAt: null,
         };
         state.rows.push(accepted);
-        if (state.turnEnded) {
-          accepted.status = "dropped";
+        if (state.turnEnded) accepted.status = "dropped";
+        if (state.turnEnded || accepted.blocked) {
           return {
             outcome: "accepted",
             messages: [targeted(accepted)],
@@ -1518,7 +1526,7 @@ it("gives the agent an ask's ask_id and due_in, and an ack's ack_of", () => {
     ' ack_of="m_bbbbbbbbbbbb">',
   );
   const ask2 = "m_bbbbbbbbbbbb" as MessageId;
-  expect(tags({ kind: "question", askId: ask2, seq: 2 })).toBe(
+  expect(tags({ kind: "question", askId: ask2, seq: 2, blocked: false })).toBe(
     ' question_of="m_bbbbbbbbbbbb" seq="2">',
   );
   expect(tags({ kind: "answer", askId: ask2, seq: 3 })).toBe(
@@ -1551,7 +1559,7 @@ it("shows an ask in the chat with no countdown and no ask_id as its deadline pas
   ).toContain(' ack_of="m_bbbbbbbbbbbb">');
   const ask2 = "m_bbbbbbbbbbbb" as MessageId;
   for (const carries of [
-    { kind: "question", askId: ask2, seq: 1 },
+    { kind: "question", askId: ask2, seq: 1, blocked: false },
     { kind: "answer", askId: ask2, seq: 1 },
     { kind: "update", askId: ask2 },
   ] as const)
@@ -2286,6 +2294,22 @@ it("reports a duplicate's delivery as its first call in this window did, else as
     delivery: "queue",
     duplicate: true,
   });
+});
+
+// ADE-154 review r1 m1. Defect: a blocked question has no route, so the
+// answer falls back to the stored "queue", though no window ever queues it.
+it("answers reminder for a blocked question, also as a duplicate in a window that never routed it", async () => {
+  const question = { message: "Which branch?", blocked: true };
+  const { run, open } = world([chat("a-chat")]);
+  expect(await run("messages.question", question, "r-q")).toMatchObject({
+    status: "delivered",
+    delivery: "reminder",
+  });
+  expect(
+    await world([chat("a-chat")]).run("messages.question", question, "r-q"),
+  ).toMatchObject({ delivery: "reminder", duplicate: true });
+  expect(open).not.toHaveBeenCalled();
+  expect(rust.state.commands).not.toContain("mono_message_assign_slot");
 });
 
 // Design 16.6 (PR I2 review r1 M2). Defect: a project steer with no turn in

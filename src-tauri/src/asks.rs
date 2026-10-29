@@ -311,8 +311,13 @@ pub enum Carries {
     #[serde(rename_all = "camelCase")]
     Ack { ask_id: MessageId },
     /// R14: the row is question `seq` on ask `ask_id`, or its answer.
+    /// `blocked` (R15): the asker gets it as its blocked reminder instead.
     #[serde(rename_all = "camelCase")]
-    Question { ask_id: MessageId, seq: i64 },
+    Question {
+        ask_id: MessageId,
+        seq: i64,
+        blocked: bool,
+    },
     #[serde(rename_all = "camelCase")]
     Answer { ask_id: MessageId, seq: i64 },
     #[serde(rename_all = "camelCase")]
@@ -322,22 +327,23 @@ pub enum Carries {
 /// What row `id` carries: `mono_asks` by id, else the event that names the
 /// row. One statement, as `targeted()` reads it for every row.
 pub fn carries(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<Carries>> {
-    type Event = (Option<String>, Option<String>, Option<i64>);
-    let (ask, due_in_ms, (kind, ask_id, seq)): (bool, Option<i64>, Event) = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM mono_asks WHERE id = ?1),
-           (SELECT due_active_ms - ifnull((SELECT active_ms FROM mono_clock WHERE id = 1), 0)
-              FROM mono_asks WHERE id = ?1),
-           e.kind, e.ask_id, e.seq
-         FROM (SELECT 1) LEFT JOIN mono_ask_events e ON e.message_id = ?1",
-        [id.as_str()],
-        |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                (row.get(2)?, row.get(3)?, row.get(4)?),
-            ))
-        },
-    )?;
+    type Event = (Option<String>, Option<String>, Option<i64>, Option<bool>);
+    let (ask, due_in_ms, (kind, ask_id, seq, blocked)): (bool, Option<i64>, Event) = conn
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM mono_asks WHERE id = ?1),
+               (SELECT due_active_ms - ifnull((SELECT active_ms FROM mono_clock WHERE id = 1), 0)
+                  FROM mono_asks WHERE id = ?1),
+               e.kind, e.ask_id, e.seq, e.blocked
+             FROM (SELECT 1) LEFT JOIN mono_ask_events e ON e.message_id = ?1",
+            [id.as_str()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    (row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?),
+                ))
+            },
+        )?;
     if ask {
         return Ok(Some(Carries::Ask { due_in_ms }));
     }
@@ -347,7 +353,11 @@ pub fn carries(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<Car
     let ask_id = MessageId::parse(&ask_id).ok_or(rusqlite::Error::InvalidQuery)?;
     Ok(match kind.as_str() {
         "ack" => Some(Carries::Ack { ask_id }),
-        "question" => Some(Carries::Question { ask_id, seq }),
+        "question" => Some(Carries::Question {
+            ask_id,
+            seq,
+            blocked: blocked == Some(true),
+        }),
         "answer" => Some(Carries::Answer { ask_id, seq }),
         "update" => Some(Carries::Update { ask_id }),
         _ => None,
