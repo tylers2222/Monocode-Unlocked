@@ -21,11 +21,11 @@ import {
 } from "../../../src/features/monos/model/mono";
 import { defaultSoul } from "../../../src/features/monos/model/monoFiles";
 import type { SessionSummary } from "../../../src/features/sessions/data/sessionStore";
-import {
-  agentReplyTo,
-  type Block,
-  type HarnessId,
+import type {
+  Block,
+  HarnessId,
 } from "../../../src/features/sessions/model/session";
+import { agentReplyTo } from "../../../src/features/sessions/model/turnReply";
 
 /** A Mono as Rust `MonoRow` sends it (src-tauri/src/mono_roster.rs:101-110). */
 export type MonoRow = {

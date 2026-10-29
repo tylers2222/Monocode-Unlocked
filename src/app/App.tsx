@@ -522,7 +522,6 @@ import {
   sessionWorkCwd,
   sessionWorkingCopy,
   titleFromPrompt,
-  turnReplyBegan,
   type AgentCwd,
   type Attachment,
   type Block,
@@ -561,6 +560,7 @@ import {
   withoutPauseReason,
 } from "../features/sessions/model/messageQueue";
 import { nextQueuedSend } from "../features/sessions/model/queueSteerRule";
+import { turnReplyBegan } from "../features/sessions/model/turnReply";
 import {
   deliverQueuedFollowUp,
   planQueuedSteer,

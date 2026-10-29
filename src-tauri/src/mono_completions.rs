@@ -111,7 +111,7 @@ pub(crate) fn claim(
 
 /// The rows of Mono chat `mono` (every Mono when None) whose notice the
 /// agent took: in that chat's saved transcript an agent block follows the
-/// notice's block (`agentReplyTo` in session.ts). The notice is delivered,
+/// notice's block (`agentReplyTo` in turnReply.ts). The notice is delivered,
 /// marked and the rows deleted in the caller's transaction. A notice that
 /// waits in the queue, or whose turn has no reply yet, is not delivered.
 pub(crate) fn settle(conn: &Connection, mono: Option<&str>, now: i64) -> rusqlite::Result<()> {

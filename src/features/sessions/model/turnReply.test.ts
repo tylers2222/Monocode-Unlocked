@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  agentReplyTo,
-  newSession,
-  turnReplyBegan,
-  type Block,
-  type Session,
-} from "./session";
+import { newSession, type Block, type Session } from "./session";
+import { agentReplyTo, turnReplyBegan } from "./turnReply";
 
 // ADE-89: a busy chat is saved when the agent writes its first block of a
 // turn, so a Mono chat save shows the agent took the notice that opened it.

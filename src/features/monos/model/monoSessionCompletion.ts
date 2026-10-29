@@ -1,8 +1,8 @@
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
 import { INTERRUPT_MESSAGE } from "../../sessions/model/inFlight";
 import { enqueueQueuedMessage } from "../../sessions/model/messageQueue";
+import { agentReplyTo } from "../../sessions/model/turnReply";
 import {
-  agentReplyTo,
   opensTurn,
   type MonoSessionCompletion,
   type QueuedMessage,
