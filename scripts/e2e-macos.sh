@@ -31,7 +31,7 @@ SCENARIOS=(
   "ade89 kill|build|"
   "ade89 term|build|"
   "approvals|build|reads a copy of the real app database, which a CI runner does not have"
-  "ade89 two|build-two|PR #411 review r1 M2 (change-linear/reviews/411-round1.md): 12/20, notices lost before the agent gets them; the 20x dispatch runs it"
+  "ade89 two|build-two|ADE-152 and PR #413: 12/20, notices lost before the agent gets them; the 20x dispatch runs it"
 )
 
 row() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" >>"$ROWS"; }

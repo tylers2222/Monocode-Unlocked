@@ -316,10 +316,10 @@ fn a_claim_delivers_a_notice_the_mono_transcript_holds() {
     assert_eq!(marks(&world), 1);
 }
 
-/// m1: window-4 closed in this run. A result's notice opens the Mono chat
-/// in the window that takes it, and only main, the window that restored the
-/// run, holds the Mono chats (ADE-93), so a window that boots later takes
-/// none of window-4's results and main takes them all.
+/// m1: window-4 closed in this run. Only main, the window that restored the
+/// earlier run (ADE-93), takes rows no open window holds, so a window that
+/// boots later takes none of window-4's results. They wait until main claims
+/// again, which in the app is main's next boot, usually the next launch.
 #[test]
 fn a_closed_windows_results_go_only_to_the_window_that_restored_the_mono_chats() {
     let world = World::new("ade89-closed-window");

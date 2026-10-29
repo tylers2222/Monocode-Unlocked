@@ -63,9 +63,12 @@ fn request_id(saved: &Value) -> Result<&str, String> {
 /// window restores the earlier run, ADE-93) it first takes every row no open
 /// window holds (`live` names the open ones): an earlier run's, and this
 /// run's rows of a closed window. Rows another open window holds stay its
-/// own. A notice opens its Mono chat in the window that holds the result, and
-/// ADE-93 gives the Mono chats to that window only, so no other window takes
-/// a row it does not hold. A row whose notice a Mono chat already saved is
+/// own, and a window that is not the restorer takes only its own rows. A
+/// notice opens its Mono chat in the window that holds the result. ADE-93
+/// gives the restorer only the earlier run's Mono chats: in this run any
+/// window can open a Mono, so a closed window's rows from this run wait until
+/// the restorer boots again, usually the next launch (ADE-140 owns one window
+/// per Mono chat in a run). A row whose notice a Mono chat already saved is
 /// delivered first, and a taken row whose Mono has no chat is deleted.
 pub(crate) fn claim(
     conn: &Connection,
