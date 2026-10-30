@@ -14,7 +14,7 @@ Each `<name>.html` loads a `<name>.tsx` that mounts one component with its own m
 2. Call `app.mount(seed, options)`. The seed fills the in-memory store (`home`, `projects`, `sessions`, `monos`, `automations`, `milestones`, `milestoneSettings`). The store adds the fields Rust always sends, such as a Mono's `name` and `sortOrder` or a session's `pinned`. `home` defaults to `/Users/test`; the other fields default to empty.
 3. Drive the UI with Playwright as a user would. `app-shell.spec.ts` is the example.
 
-Before the first test, `global-setup.ts` loads `app.html` once in Chromium. The first load makes Vite pre-bundle the deps and transform the whole app, so this keeps that cost out of each CI shard's first test.
+Before the first test, `global-setup.ts` loads `app.html` once in each project's browser (Chromium, then WebKit). The first load makes Vite pre-bundle the deps and transform the whole app, and each first launch puts that browser's files in the OS cache, so this keeps those costs out of each CI shard's first test. The browser that runs the tests is a new process, so its own first page load is still cold.
 
 For a live update, change the store with `page.evaluate(() => window.appBackend!.store...)`, then call `app.emit(event, payload)` to send the Tauri event that the Rust side would send.
 
