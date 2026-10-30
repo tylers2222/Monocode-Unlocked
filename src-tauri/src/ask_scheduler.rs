@@ -310,7 +310,12 @@ pub(crate) fn blocked_notices(
         return Ok(notices);
     };
     for targeted in messages {
-        let Some(Carries::Question { ask_id, seq }) = &targeted.carries else {
+        let Some(Carries::Question {
+            ask_id,
+            seq,
+            blocked: true,
+        }) = &targeted.carries
+        else {
             continue;
         };
         let recipient: Option<String> = conn

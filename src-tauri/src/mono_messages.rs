@@ -981,15 +981,19 @@ pub fn get(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<MonoMes
         .optional()
 }
 
-/// The rows that are messages. A `start_session` row is delivered with no
+/// The rows a hand-off delivers. A `start_session` row is delivered with no
 /// slot for good (design 16.2): it records a start and names its work, so
 /// it never waits for a hand-off, takes a slot, or is dropped as waiting.
-const MESSAGE_TOOLS: &str = "tool IN ('send_message', 'reply')";
+/// So is a blocked question's row (R15): its blocked reminder is the
+/// parent's one prompt for it.
+const QUEUEABLE: &str = "(tool IN ('send_message', 'reply')
+   AND NOT EXISTS (SELECT 1 FROM mono_ask_events e WHERE e.message_id = mono_messages.id
+                    AND e.kind = 'question' AND e.blocked = 1))";
 
-/// Row `id` when it is a message.
+/// Row `id` when a hand-off delivers it.
 fn get_queueable(conn: &Connection, id: &MessageId) -> rusqlite::Result<Option<MonoMessage>> {
     conn.query_row(
-        &format!("{SELECT} WHERE id = ?1 AND {MESSAGE_TOOLS}"),
+        &format!("{SELECT} WHERE id = ?1 AND {QUEUEABLE}"),
         [id.as_str()],
         parse_row,
     )
@@ -2488,7 +2492,7 @@ pub fn unqueued(conn: &Connection, session: &SessionId) -> rusqlite::Result<Vec<
     let rows: Vec<MonoMessage> = conn
         .prepare(&format!(
             "{SELECT} WHERE handled_by_session = ?1 AND status IN ('open', 'delivered')
-               AND delivered_at IS NULL AND turn_id IS NULL AND {MESSAGE_TOOLS}
+               AND delivered_at IS NULL AND turn_id IS NULL AND {QUEUEABLE}
              ORDER BY created_at, id"
         ))?
         .query_map([session.as_str()], parse_row)?
@@ -2713,7 +2717,7 @@ pub fn startup(conn: &Connection, now: i64) -> rusqlite::Result<()> {
             &format!(
                 "UPDATE mono_messages SET status = 'dropped', closed_at = ?1, updated_at = ?1
                   WHERE (status = 'open' OR (status = 'delivered' AND delivered_at IS NULL))
-                    AND {MESSAGE_TOOLS}
+                    AND {QUEUEABLE}
                     AND NOT EXISTS (SELECT 1 FROM sessions
                                      WHERE sessions.id = mono_messages.handled_by_session
                                        AND worktree_removed = 0)"
@@ -2794,7 +2798,7 @@ pub fn clear_session(
         .prepare(&format!(
             "UPDATE mono_messages
                 SET status = 'dropped', handled_by_session = NULL, closed_at = ?2, updated_at = ?2
-              WHERE handled_by_session = ?1 AND {MESSAGE_TOOLS}
+              WHERE handled_by_session = ?1 AND {QUEUEABLE}
                 AND (status = 'open' OR (status = 'delivered' AND delivered_at IS NULL))
               RETURNING id"
         ))?

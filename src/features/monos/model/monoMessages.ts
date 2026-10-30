@@ -470,7 +470,8 @@ function fromAttributes(
 export type Carries =
   | { kind: "ask"; dueInMs: number | null }
   | { kind: "ack"; askId: MessageId }
-  | { kind: "question" | "answer"; askId: MessageId; seq: number }
+  | { kind: "question"; askId: MessageId; seq: number; blocked: boolean }
+  | { kind: "answer"; askId: MessageId; seq: number }
   | { kind: "update"; askId: MessageId };
 
 /** Active milliseconds left as the agent reads them, such as `60m`. */

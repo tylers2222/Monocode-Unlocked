@@ -970,13 +970,16 @@ async function sendMessage(
  * reports what that call reported in this window, else its stored row's
  * delivery (PR 4a review m3). A steer that Rust dropped after the commit,
  * because its turn ended while the gate ran, comes back dropped with no
- * route (design 16.12.3.3).
+ * route (design 16.12.3.3). A blocked question has no route: its asker
+ * gets it as one blocked reminder (R15).
  */
 async function sendDelivery(
   host: MonoMessagingHost,
   submitted: Accepted,
   message: Sent,
-): Promise<RouteOutcome> {
+): Promise<RouteOutcome | "reminder"> {
+  const [{ carries }] = submitted.messages;
+  if (carries?.kind === "question" && carries.blocked) return "reminder";
   const stored = message.status === "dropped" ? "dropped" : message.delivery;
   if (submitted.duplicate)
     return (await host.reported.get(message.id)) ?? stored;
