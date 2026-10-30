@@ -112,7 +112,7 @@ function checkRun(
       ? { working: working + POLL_MS }
       : { error: "It took too long and was stopped." };
   const since = waitingSince ?? now;
-  return now - since < HABIT_USER_WAIT_MS
+  return now - since + POLL_MS < HABIT_USER_WAIT_MS
     ? { working, waitingSince: since }
     : { error: "Nobody answered it." };
 }
