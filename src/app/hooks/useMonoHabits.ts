@@ -93,6 +93,30 @@ function finalReply(session: Session | undefined): string {
   return "";
 }
 
+/** A run's time at its last check: its work so far, and since when it has waited on the user. */
+type RunTime = { working: number; waitingSince?: number };
+
+/**
+ * A run's time after one more check, or why it ends. Its wait on the user is
+ * wall time since the wait began, so time the Mac sleeps counts toward the
+ * 12 h. Its work counts one check at a time, so a Mac asleep while the run
+ * works adds one check, not the time asleep.
+ */
+function checkRun(
+  { working, waitingSince }: RunTime,
+  now: number,
+  needsInput: boolean,
+): RunTime | { error: string } {
+  if (!needsInput)
+    return working + POLL_MS < HABIT_RUN_TIMEOUT_MS
+      ? { working: working + POLL_MS }
+      : { error: "It took too long and was stopped." };
+  const since = waitingSince ?? now;
+  return now - since < HABIT_USER_WAIT_MS
+    ? { working, waitingSince: since }
+    : { error: "Nobody answered it." };
+}
+
 /**
  * Sends the run's turn and waits for it, relaying any approval it asks for to
  * the Mono's chat. Only time spent working counts toward the timeout; time
@@ -116,8 +140,7 @@ async function watchRun(
         error: error instanceof Error ? error.message : String(error),
       }),
   );
-  let working = 0;
-  let waiting = 0;
+  let time: RunTime = { working: 0 };
   while (!settled) {
     await Promise.race([turn, new Promise((r) => setTimeout(r, POLL_MS))]);
     if (settled) break;
@@ -128,17 +151,14 @@ async function watchRun(
     for (const block of pending)
       if (!isRelayed(runId, block.approval!.requestId))
         host.askApproval(monoId, habit, runId, block);
-    if (run && sessionNeedsInput(run)) waiting += POLL_MS;
-    else working += POLL_MS;
-    if (working >= HABIT_RUN_TIMEOUT_MS || waiting >= HABIT_USER_WAIT_MS)
+    const next = checkRun(time, Date.now(), !!run && sessionNeedsInput(run));
+    if ("error" in next)
       return {
         status: "failed",
         text: "",
-        error:
-          waiting >= HABIT_USER_WAIT_MS
-            ? "Nobody answered it."
-            : "It took too long and was stopped.",
+        ...next,
       };
+    time = next;
   }
   return settled;
 }

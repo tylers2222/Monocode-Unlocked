@@ -409,16 +409,21 @@ it("stops and records a habit that is still running after one hour", async () =>
   }
 });
 
-it(
-  "puts an approval the run still asks for to the user, once",
-  { timeout: 15_000 },
-  async () => {
-    let allow!: () => void;
-    const wait = new Promise<void>((resolve) => (allow = resolve));
-    const host = setup("Pushed the fix.", { wait });
-    await vi.waitFor(() => expect(host.askApproval).toHaveBeenCalled(), {
-      timeout: 5_000,
+it("puts an approval the run still asks for to the user, once", async () => {
+  vi.useFakeTimers();
+  const hold = deferred();
+  const host = setup("Pushed the fix.", { wait: hold.promise });
+  // The clock moves by `ms` while the run checks on itself once, as when the
+  // Mac sleeps that long.
+  const jump = (ms: number) =>
+    act(async () => {
+      vi.setSystemTime(Date.now() + ms - 2_000);
+      await vi.advanceTimersByTimeAsync(2_000);
     });
+  try {
+    // The first check relays the approval; the 12 h wait starts here.
+    await jump(2_000);
+    expect(host.askApproval).toHaveBeenCalledTimes(1);
     const [monoId, habit, runId, block] = host.askApproval.mock.calls[0];
     expect([monoId, habit.id, block.approval.requestId]).toEqual([
       "mono",
@@ -426,15 +431,29 @@ it(
       7,
     ]);
     expect(runId).toBe(host.add.mock.calls[0][0].id);
-    // Still waiting on the user through the next poll: not asked again.
-    await new Promise((resolve) => setTimeout(resolve, 2_500));
-    allow();
-    await vi.waitFor(() => expect(host.post).toHaveBeenCalled(), {
-      timeout: 5_000,
-    });
+
+    await jump(12 * 60 * 60 * 1000 - 2_000);
+    // Still waiting on the user 2 s before 12 h: not asked again.
     expect(host.askApproval).toHaveBeenCalledTimes(1);
-  },
-);
+    expect(host.endApprovals).not.toHaveBeenCalled();
+    expect(stored[0].lastOutcome).toBeUndefined();
+
+    await jump(2_000);
+    expect(host.endApprovals).toHaveBeenCalledWith(runId);
+    expect(stored[0]).toMatchObject({
+      lastOutcome: "failed",
+      lastError: "Nobody answered it.",
+    });
+
+    await jump(2_000);
+    expect(host.askApproval).toHaveBeenCalledTimes(1);
+    expect(host.endApprovals).toHaveBeenCalledTimes(1);
+    expect(host.post).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => hold.resolve());
+    vi.useRealTimers();
+  }
+});
 
 it("starts a habit asked to run now without waiting for the next minute", async () => {
   const host = setup("CI is red.");
