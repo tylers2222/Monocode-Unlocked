@@ -8981,6 +8981,16 @@ function Workspace({
     [appendTab, focusOpenSession, submitSession],
   );
 
+  // The ref takes the update at once, so a snapshot write built from the ref
+  // before the next render (submitSession's queued Mono path) keeps it.
+  const updateSessions = useCallback(
+    (update: (sessions: Session[]) => Session[]) => {
+      sessionsRef.current = update(sessionsRef.current);
+      setSessions(update);
+    },
+    [],
+  );
+
   const queueMonoSessionCompletion = useCallback(
     async (
       monoId: string,
@@ -8994,18 +9004,18 @@ function Workspace({
         removingSessionIds.current.has(monoId)
       )
         return;
-      setSessions((previous) => {
+      updateSessions((sessions) => {
         const latest = current();
         return latest
-          ? previous.map((session) =>
+          ? sessions.map((session) =>
               session.id === monoId
                 ? enqueueMonoSessionCompletion(session, latest)
                 : session,
             )
-          : previous;
+          : sessions;
       });
     },
-    [ensureOpenSession],
+    [ensureOpenSession, updateSessions],
   );
   const queueMonoSessionCompletionRef = useRef(queueMonoSessionCompletion);
   queueMonoSessionCompletionRef.current = queueMonoSessionCompletion;
@@ -9050,11 +9060,7 @@ function Workspace({
         deliveryId,
         {
           getSessions: () => sessionsRef.current,
-          updateSessions: (update) => {
-            sessionsRef.current = update(sessionsRef.current);
-            // Compose with submission's queued transcript updates.
-            setSessions(update);
-          },
+          updateSessions,
           appendTab,
           placeSession: (sessionId, target, cwd) => {
             const anchor = sessionsRef.current.find(
@@ -9119,7 +9125,7 @@ function Workspace({
         placement,
         openTab,
       ),
-    [appendTab, submitSession, onSaveDraft],
+    [appendTab, submitSession, onSaveDraft, updateSessions],
   );
   useQuickComposerLaunches(launchQuickSession);
   const launchQuickSessionRef = useRef(launchQuickSession);
