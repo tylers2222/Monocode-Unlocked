@@ -557,11 +557,11 @@ it("puts an approval the run still asks for to the user, once", async () => {
     await jump(12 * 60 * 60 * 1000 - 2_000);
     // Still waiting on the user 2 s before 12 h: not asked again.
     expect(host.askApproval).toHaveBeenCalledTimes(1);
-    expect(host.endApprovals).not.toHaveBeenCalled();
+    expect(host.endRun).not.toHaveBeenCalled();
     expect(stored[0].lastOutcome).toBeUndefined();
 
     await jump(2_000);
-    expect(host.endApprovals).toHaveBeenCalledWith(runId);
+    expect(host.endRun).toHaveBeenCalledWith(runId, { kind: "timed-out" });
     expect(stored[0]).toMatchObject({
       lastOutcome: "failed",
       lastError: "Nobody answered it.",
@@ -569,7 +569,7 @@ it("puts an approval the run still asks for to the user, once", async () => {
 
     await jump(2_000);
     expect(host.askApproval).toHaveBeenCalledTimes(1);
-    expect(host.endApprovals).toHaveBeenCalledTimes(1);
+    expect(host.endRun).toHaveBeenCalledTimes(1);
     expect(host.post).not.toHaveBeenCalled();
   } finally {
     await act(async () => hold.resolve());

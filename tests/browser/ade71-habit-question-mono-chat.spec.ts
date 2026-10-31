@@ -285,15 +285,13 @@ test("the card stays, dimmed, when nobody answers in 12 h", async ({
   app,
   page,
 }) => {
-  // 21,600 checks of fake time.
-  test.setTimeout(6 * MINUTE);
   const omp = await startOmp(page, app);
   await startHabitRun(page, app);
-  for (let at = 0; at <= 12 * 60 * MINUTE && !omp.answers().length; at += 2_000)
-    await page.clock.fastForward(2_000);
-  expect(omp.answers(), "the run gives up and skips omp's question").toEqual([
-    { choice: null },
-  ]);
+  // The wait is wall time, so the run's next check, 12 h on, gives up.
+  await page.clock.fastForward(12 * 60 * MINUTE);
+  await expect
+    .poll(omp.answers, "the run gives up and skips omp's question")
+    .toEqual([{ choice: null }]);
   await expect(monoCard(page)).toHaveAttribute(
     "data-habit-question",
     "timed-out",
