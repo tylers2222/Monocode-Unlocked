@@ -106,6 +106,12 @@ noticed() {
 
 queued_once() { (($(queued_notices "$1") == 1)); }
 reported() { (($(reports "$1" "$2") > 0)); }
+# reported_each <mono chat> <work session...>: each session is in a notice.
+reported_each() {
+  local mono_chat="$1" w
+  shift
+  for w in "$@"; do reported "$mono_chat" "$w" || return 1; done
+}
 
 # ADE-89: a waiting completion result is a mono_completions row from the
 # moment the Mono starts the session. It survives two exits with no quit save,
@@ -181,7 +187,8 @@ run_ade89() {
   kill9
 
   "$INSTANCE" start
-  for _ in $(seq 1 60); do (($(notices "$mono_chat") > 0)) && break; sleep 1; done
+  # One notice waits behind the other's turn (#413 r3 m1), so wait for each.
+  wait_until 60 "each result is reported" reported_each "$mono_chat" $work
   # A copy the boot sends again would follow within the boot's first seconds.
   sleep 10
   if [[ "$mode" == two ]]; then
