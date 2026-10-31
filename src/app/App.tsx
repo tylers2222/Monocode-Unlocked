@@ -906,9 +906,10 @@ import {
   setQuitWorkspace,
 } from "./model/appLifecycle";
 import {
-  holderElsewhere,
+  holdsSnapshot,
   listenForHoldChanges,
   reportLoadedSessions,
+  subscribeHolds,
 } from "./model/windowHolds";
 
 const SearchView = lazySurface(
@@ -1528,6 +1529,8 @@ function Workspace({
   const linkedWorkItemActivityFetches = useRef(new Map<string, number>());
   const queueDispatchingRef = useRef(new Set<string>());
   const [queueDispatchVersion, setQueueDispatchVersion] = useState(0);
+  // ADE-140: the chats another window holds; their turns run there.
+  const heldElsewhere = useSyncExternalStore(subscribeHolds, holdsSnapshot);
   const usageResumingRef = useRef(new Set<string>());
   const usageResetLookups = useRef(new WeakSet<UsageLimit>());
   const tabsRef = useRef(tabs);
@@ -4628,10 +4631,6 @@ function Workspace({
         return null;
       }
       loadedSessionCache.current.delete(sessionId);
-      await reportLoadedSessions([
-        ...sessionsRef.current.map((session) => session.id),
-        sessionId,
-      ]).catch(console.error);
       const appeared = sessionsRef.current.find(
         (session) => session.id === sessionId,
       );
@@ -4639,8 +4638,7 @@ function Workspace({
       if (
         !restored.worktreeRemoved &&
         restored.providerSessionId &&
-        isLiveHarness(restored.harness) &&
-        !holderElsewhere(sessionId)
+        isLiveHarness(restored.harness)
       ) {
         bindHarnessSession(
           restored.harness,
@@ -9361,7 +9359,7 @@ function Workspace({
       if (
         !next ||
         queueDispatchingRef.current.has(session.id) ||
-        holderElsewhere(session.id)
+        heldElsewhere.has(session.id)
       )
         continue;
       queueDispatchingRef.current.add(session.id);
@@ -9481,7 +9479,7 @@ function Workspace({
       for (const timer of timers) window.clearTimeout(timer);
       for (const id of scheduled) queueDispatchingRef.current.delete(id);
     };
-  }, [submitSession, sessions, queueDispatchVersion]);
+  }, [submitSession, sessions, queueDispatchVersion, heldElsewhere]);
 
   // Design 5.5 rule 6: a session this window loads, at boot or later, gets
   // its Mono messages that no queue item or slot holds, and its notices.
@@ -9498,17 +9496,26 @@ function Workspace({
     for (const id of loaded) void monoLoads.of(id);
   }, [sessions, monoLoads]);
   useEffect(() => listenForMonoNotices(monoQueue), [monoQueue]);
-  // A chat this window takes from a window that let go of it (ADE-140 A3).
+  // A chat this window takes from a window that let go of it comes back as
+  // that window saved it, and only then binds (ADE-140 A3).
   useEffect(
     () =>
       listenForHoldChanges(
         () => sessionsRef.current.map((session) => session.id),
-        (taken) => {
-          bindResumedSessions(
-            sessionsRef.current.filter((session) => taken.includes(session.id)),
-          );
-          setQueueDispatchVersion((value) => value + 1);
-        },
+        (taken) =>
+          void Promise.all(
+            taken.map((id) => getSession(id).catch(() => null)),
+          ).then((stored) => {
+            const fresh = stored.filter((session) => session !== null);
+            const byId = new Map(fresh.map((session) => [session.id, session]));
+            for (const session of fresh)
+              lastPersisted.current.set(session.id, persistFingerprint(session));
+            sessionsRef.current = sessionsRef.current.map(
+              (session) => byId.get(session.id) ?? session,
+            );
+            setSessions(sessionsRef.current);
+            bindResumedSessions(fresh);
+          }),
       ),
     [],
   );
@@ -13033,8 +13040,13 @@ function Workspace({
         window.dispatchEvent(new Event("open_model_picker"));
       }),
       // Every window hears the click; only the one holding the session acts.
+      // "Go to that window" sends it to that window alone (ADE-141).
       listen<string>(NOTIFICATION_CLICK_EVENT, ({ payload: sessionId }) => {
-        if (!sessionsRef.current.some((s) => s.id === sessionId)) return;
+        if (
+          !sessionsRef.current.some((s) => s.id === sessionId) ||
+          holdsSnapshot().has(sessionId)
+        )
+          return;
         const win = getCurrentWindow();
         // Windows leaves a minimized window minimized when it is only focused.
         void win
@@ -13521,7 +13533,11 @@ function Workspace({
       tabs={monoCovers ? NO_TITLE_TABS : titleTabs}
       mono={
         monoCovers && monoViewMono && monoViewSession
-          ? { look: monoLook(monoViewMono), state: monoState(monoViewSession) }
+          ? {
+              look: monoLook(monoViewMono),
+              state: monoState(monoViewSession),
+              elsewhere: heldElsewhere.has(monoViewSession.id),
+            }
           : undefined
       }
       onToggleMonoOverview={

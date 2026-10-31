@@ -537,6 +537,7 @@ pub(super) fn mock_app(data: &Path) -> tauri::App<tauri::test::MockRuntime> {
     context.config_mut().identifier = path(data);
     let app = tauri::test::mock_builder()
         .manage(crate::harness::HarnessHost::new())
+        .manage(crate::control::tests::host())
         .manage(crate::session_store::SessionStore::open_in_memory().unwrap())
         .build(context)
         .unwrap();

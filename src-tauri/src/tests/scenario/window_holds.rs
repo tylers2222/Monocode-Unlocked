@@ -36,6 +36,7 @@ fn launch(world: &World, data: &Path) -> App {
             crate::control::control_loaded_sessions,
             crate::control::control_authorize_turn,
             crate::control::control_window_booted,
+            crate::control::control_turn_finished,
             store::session_set_in_flight,
             store::session_list_in_flight,
             store::workspace_set_snapshot,
@@ -213,15 +214,21 @@ fn a_relaunch_with_a_mono_open_gives_its_chats_to_the_restoring_window() {
         json!({ chat: "window-1", "work": "window-1", "running": "window-1" }),
         "the reloaded window restores the earlier run again but takes back no chat"
     );
+    crate::control::window_closed(app.handle(), "window-1");
+    assert_eq!(
+        load(&main, &[chat, "work", "running"]),
+        json!({}),
+        "a closed window's chats pass to the window that has them loaded"
+    );
     app.state::<HarnessHost>().kill_all();
 }
 
 /// ADE-141. window-3 runs tab chat S; New Window (window-12, a label that
 /// sorts first) copies S. Its turn on S is refused and window-3's child
-/// keeps running. window-3 closes: window-12 takes S by itself and its
-/// spawn starts.
+/// keeps running. window-3 drops S while its turn runs: when the turn ends,
+/// window-12 takes S by itself and its spawn starts.
 #[test]
-fn a_copied_chat_stays_with_its_window_until_that_window_closes() {
+fn a_copied_chat_stays_with_its_window_until_that_window_lets_go() {
     let world = World::new("ade141-copied");
     let rig = Rig::new("ade141-copied");
     let app = launch(&world, &rig.root.join("app-data"));
@@ -246,14 +253,25 @@ fn a_copied_chat_stays_with_its_window_until_that_window_closes() {
     );
     assert!(running(pid), "the holding window's child keeps running");
 
+    assert_eq!(
+        load(&first, &[]),
+        json!({}),
+        "window-3 closes the tab mid-turn"
+    );
+    assert_eq!(
+        load(&opened, &["tab-chat"]),
+        json!({ "tab-chat": "window-3" }),
+        "the window of a running turn holds its chat"
+    );
     let (moved, changed) = mpsc::channel();
     app.listen_any("control-holds-changed", move |_| {
         let _ = moved.send(());
     });
-    crate::control::window_closed(app.handle(), "window-3");
+    let finished = json!({ "sessionId": "tab-chat", "turnId": "turn-tab-chat" });
+    call(&first, "control_turn_finished", finished).unwrap();
     changed
         .try_recv()
-        .expect("the other windows hear that a hold moved");
+        .expect("the other windows hear that the turn's end passed the chat on");
     assert_eq!(
         load(&opened, &["tab-chat"]),
         json!({}),

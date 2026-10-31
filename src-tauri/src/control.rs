@@ -251,6 +251,18 @@ impl Inner {
         });
         moved
     }
+    /// Runs `change` and returns its result and whether it passed `session`
+    /// to another window: a turn's end hands it to the first window in line.
+    fn watching_holder<T>(
+        &mut self,
+        session: &str,
+        change: impl FnOnce(&mut Self) -> T,
+    ) -> (T, bool) {
+        let before = self.holder(session).map(str::to_owned);
+        let result = change(self);
+        let after = self.holder(session);
+        (result, after.is_some() && after != before.as_deref())
+    }
     /// Window `label` has loaded `sessions`, in place of its last report.
     /// Returns the ones another window holds, with that window, and whether
     /// a session this window dropped passed to another window.
@@ -301,6 +313,8 @@ impl Inner {
                 return Err("This checkout is controlled by an orchestrator. Stop that run before starting independent work.".into());
             }
         }
+        // Its window keeps the chat when the turn ends.
+        self.hold(&turn.window, [session.to_owned()]);
         let eligible = self.prepare_app_grant(session, &turn.window, &turn.cwd);
         turn.app_allowed &= eligible;
         let turn_id = turn.turn_id.clone();
@@ -325,8 +339,9 @@ impl Inner {
     }
     /// Design 2 (review r3): window `label` reloaded, so the turns it ran are
     /// over, and it has loaded nothing until it reports again (PR 4a review
-    /// m11).
-    fn boot_window(&mut self, label: &str) -> Vec<(String, ActiveTurn)> {
+    /// m11). Returns the turns it drops and whether a chat it held passed to
+    /// another window.
+    fn boot_window(&mut self, label: &str) -> (Vec<(String, ActiveTurn)>, bool) {
         let mut ids: Vec<String> = self
             .active
             .iter()
@@ -334,12 +349,15 @@ impl Inner {
             .map(|(id, _)| id.clone())
             .collect();
         ids.sort();
-        ids.into_iter()
+        let ended = ids
+            .into_iter()
             .filter_map(|id| self.active.remove(&id).map(|turn| (id, turn)))
-            .collect()
+            .collect();
+        (ended, self.release(label, &HashSet::new()))
     }
-    /// Returns the turns it drops.
-    fn close_window(&mut self, label: &str) -> Vec<(String, ActiveTurn)> {
+    /// Returns the turns it drops and whether a chat it held passed to
+    /// another window.
+    fn close_window(&mut self, label: &str) -> (Vec<(String, ActiveTurn)>, bool) {
         let ids = self.window_sessions(label);
         self.grants.retain(|id, _| !ids.contains(id));
         self.app_grants.retain(|id, _| !ids.contains(id));
@@ -358,7 +376,7 @@ impl Inner {
                 .send(json!({"ok":false,"error":"MonoCode window closed"}));
             false
         });
-        ended
+        (ended, self.release(label, &HashSet::new()))
     }
 }
 pub struct ControlHost {
@@ -874,9 +892,7 @@ pub(crate) fn refuse_held_elsewhere<R: Runtime>(
     session: &str,
     label: &str,
 ) -> Result<(), String> {
-    let Some(host) = app.try_state::<ControlHost>() else {
-        return Ok(());
-    };
+    let host = app.state::<ControlHost>();
     let inner = host
         .inner
         .lock()
@@ -910,11 +926,12 @@ fn finish_turn(
     session: &str,
     turn_id: &str,
 ) -> Notices {
-    let ended = inner
-        .lock()
-        .ok()
-        .and_then(|mut inner| inner.finish_turn(session, turn_id));
-    end_turns(store, ended.map(|turn| (session.to_string(), turn)))
+    let (ended, moved) = inner.lock().map_or((None, false), |mut inner| {
+        inner.watching_holder(session, |inner| inner.finish_turn(session, turn_id))
+    });
+    let mut notices = end_turns(store, ended.map(|turn| (session.to_string(), turn)));
+    notices.holds |= moved;
+    notices
 }
 
 /// Design 5.3 (review r2): the Stop and kill paths. The process is gone, so
@@ -937,13 +954,14 @@ fn kill_session(
     session: &str,
     harness: &HarnessHost,
 ) -> Notices {
-    let ended = inner
-        .lock()
-        .ok()
-        .and_then(|mut inner| inner.active.remove(session));
+    let (ended, moved) = inner.lock().map_or((None, false), |mut inner| {
+        inner.watching_holder(session, |inner| inner.active.remove(session))
+    });
     // A session's `S#n` children (antigravity) carry its token too.
     harness.kill_session_tree(session);
-    end_turns(store, ended.map(|turn| (session.to_string(), turn)))
+    let mut notices = end_turns(store, ended.map(|turn| (session.to_string(), turn)));
+    notices.holds |= moved;
+    notices
 }
 
 /// Design 2 (review r4): a window that boots runs no turn yet, so every turn
@@ -971,10 +989,7 @@ fn boot_window(
     harness: &HarnessHost,
 ) -> Notices {
     let (ended, moved) = match inner.lock() {
-        Ok(mut inner) => (
-            inner.boot_window(label),
-            inner.release(label, &HashSet::new()),
-        ),
+        Ok(mut inner) => inner.boot_window(label),
         Err(_) => (Vec::new(), false),
     };
     for (session, _) in &ended {
@@ -1126,10 +1141,7 @@ fn close_window(
         harness.kill_session_tree(id);
     }
     let (ended, moved) = match inner.lock() {
-        Ok(mut inner) => (
-            inner.close_window(label),
-            inner.release(label, &HashSet::new()),
-        ),
+        Ok(mut inner) => inner.close_window(label),
         Err(_) => (Vec::new(), false),
     };
     let mut notices = end_turns(store, ended);
@@ -1826,7 +1838,6 @@ pub(crate) mod tests {
         assert_eq!(inner.route_owner("s", "caller"), "runner");
         inner.active.remove("s");
         inner.close_window("other");
-        inner.release("other", &HashSet::new());
         assert_eq!(inner.route_owner("s", "caller"), "caller");
     }
 
@@ -2438,6 +2449,7 @@ pub(crate) mod tests {
 
         let ended: Vec<String> = inner
             .close_window("closing")
+            .0
             .into_iter()
             .map(|(id, _)| id)
             .collect();
@@ -2451,7 +2463,7 @@ pub(crate) mod tests {
         assert_eq!(response.try_recv().unwrap()["ok"], false);
         assert!(other_response.try_recv().is_err());
         assert!(inner.pending.contains_key("other-pending"));
-        assert!(inner.close_window("closing").is_empty());
+        assert!(inner.close_window("closing").0.is_empty());
     }
 
     #[test]
