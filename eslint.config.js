@@ -10,6 +10,10 @@ export default defineConfig(
       "**/target/**",
       "**/gen/**",
       "vendor/**",
+      // The Expo app lints itself with its own config and packages.
+      "mobile/**",
+      // Bundled third-party scripts the native app ships as assets.
+      "crates/monocode-gpui/assets/**",
       "coverage/**",
       "playwright-report/**",
       "test-results/**",
