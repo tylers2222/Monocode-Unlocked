@@ -542,3 +542,84 @@ test("closing a busy window on Linux keeps the waiting group", async ({
   await endTurn(app, SENT, "ADE-58 repro done.");
   await expect.poll(() => notices(page)).toEqual([[at(SENT)]]);
 });
+
+/** The rows this boot's claim gave back (mono_completions_claim). */
+const claimed = (page: Page) =>
+  page.evaluate(
+    () =>
+      (
+        window.appBackend!.calls.find(
+          ({ command }) => command === "mono_completions_claim",
+        )?.reply as unknown[] | undefined
+      )?.length,
+  );
+
+/** Notices the Mono's agent got since this page loaded, plus those in its saved queue. */
+async function owedNotices(page: Page) {
+  const queued = await page.evaluate(
+    ({ chat, notice }) =>
+      (window.appBackend!.store.queues[chat]?.queuedMessages ?? []).filter(
+        (message) => JSON.stringify(message).includes(notice),
+      ).length,
+    { chat: CHAT, notice: NOTICE },
+  );
+  return (await notices(page)).length + queued;
+}
+
+/** The Mono's agent got the notice and was still working on it. */
+async function noticeTurnRunning(app: AppShell, page: Page) {
+  await call(app, page, "cut", "sessions.send", {
+    sessionId: SENT,
+    prompt: "Reproduce ADE-58.",
+    project: PROJECT,
+    notifyOnComplete: true,
+  });
+  await expect.poll(() => prompts(page, SENT)).toHaveLength(1);
+  await app.restart();
+  await expect.poll(() => prompts(page, SENT)).toEqual([CONTINUE]);
+  await endTurn(app, SENT, "ADE-58 repro done.");
+  await expect.poll(() => notices(page)).toEqual([[at(SENT)]]);
+}
+
+// #413 review r1 M1: a notice is delivered once a save of the Mono chat shows
+// the agent's reply to it. A quit that cuts the notice's turn before the
+// agent wrote anything keeps its row, and the relaunch sends it again once.
+test("a notice whose turn the quit cut before the agent replied is sent again once after the relaunch", async ({
+  app,
+  page,
+}) => {
+  await mountOrchestrator(app, page);
+  await noticeTurnRunning(app, page);
+
+  await app.restart();
+  await expect.poll(() => claimed(page)).toBe(1);
+  await expect.poll(() => owedNotices(page)).toBe(1);
+  await rendered(page);
+  expect(await owedNotices(page)).toBe(1);
+});
+
+test("a notice the agent replied to before the quit is not sent again", async ({
+  app,
+  page,
+}) => {
+  await mountOrchestrator(app, page);
+  await noticeTurnRunning(app, page);
+  await app.emit("harness-stdout", {
+    sessionId: CHAT,
+    line: JSON.stringify({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "Reviewing." },
+    }),
+  });
+  // The reply's first block is saved while the turn still runs.
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.appBackend!.store.deliveredGroups.length),
+    )
+    .toBe(1);
+
+  await app.restart();
+  await expect.poll(() => claimed(page)).toBe(0);
+  await rendered(page);
+  expect(await owedNotices(page)).toBe(0);
+});

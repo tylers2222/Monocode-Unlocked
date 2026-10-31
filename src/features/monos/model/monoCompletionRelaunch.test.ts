@@ -4,6 +4,7 @@ import { INTERRUPT_MESSAGE } from "../../sessions/model/inFlight";
 import { newSession, type Session } from "../../sessions/model/session";
 import type { TurnId } from "./monoMessages";
 import {
+  enqueueMonoSessionCompletion,
   MONO_COMPLETION_HOLD_MS,
   MonoSessionCompletionBatches,
   savedMonoCompletions,
@@ -294,6 +295,106 @@ describe("Mono completions across a relaunch", () => {
       batches.dismissSession("mono", "s-b");
       expect(store.dismiss).toHaveBeenLastCalledWith("mono", "s-b");
       expect(store.hold.mock.calls.slice(held).flat(2)).toEqual([]);
+    });
+  });
+
+  // #413 review r1 M1: the store gives back every row whose notice the
+  // saved Mono chat shows no reply to (mono_completions.rs `settle`). The
+  // relaunch queues each such notice once, under its own id.
+  describe("a relaunch after a notice the agent did not take", () => {
+    const origin = { monoId: "mono", turn: 1 };
+    const result = (id: string) => ({
+      sessionId: `s-${id}`,
+      project: "/code/monocode",
+      title: `Work ${id}`,
+      status: "completed" as const,
+      originalPrompt: `Request ${id}`,
+      result: `Done ${id}`,
+      truncated: false,
+    });
+    const row = (id: string, notice: string): SavedMonoCompletion => ({
+      origin,
+      request: request(id, `s-${id}`),
+      result: result(id),
+      notice,
+    });
+    const started = (notice: string) => ({
+      id: `block-${notice}`,
+      role: "user" as const,
+      text: "MonoCode completion notification",
+      appRequestId: notice,
+      internal: true,
+      startedAt: 2,
+    });
+    const cut = {
+      id: "cut",
+      role: "system" as const,
+      text: INTERRUPT_MESSAGE,
+      notice: "interrupt" as const,
+    };
+
+    /** The Mono chat as the relaunch loaded it, after the boot queued what the claim gave back. */
+    function relaunch(mono: Session, claimed: SavedMonoCompletion[]) {
+      const batches = new MonoSessionCompletionBatches(
+        (_, message) => {
+          mono = enqueueMonoSessionCompletion(mono, message);
+        },
+        (run, ms) => setTimeout(run, ms),
+        () => undefined,
+        { hold() {}, dismiss() {} },
+      );
+      batches.restore(claimed, () => false);
+      batches.closeInactive(() => false);
+      return mono;
+    }
+    const queued = (mono: Session) =>
+      mono.queuedMessages?.map(({ id }) => id) ?? [];
+
+    it("queues a notice whose turn was cut before the agent wrote anything, once and under its id", () => {
+      const notice = "mono-completion-batch-a";
+      const claimed = [row("a", notice), row("b", notice)];
+      const mono: Session = {
+        ...newSession("fx", "/code/monocode"),
+        blocks: [
+          { id: "started", role: "assistant", text: "Started." },
+          started(notice),
+          cut,
+        ],
+      };
+      const first = relaunch(mono, claimed);
+      expect(queued(first)).toEqual([notice]);
+      expect(queued(relaunch(first, claimed))).toEqual([notice]);
+    });
+
+    it("does not queue a notice the agent replied to", () => {
+      const notice = "mono-completion-a";
+      const mono: Session = {
+        ...newSession("fx", "/code/monocode"),
+        blocks: [
+          started(notice),
+          { id: "reply", role: "assistant", text: "Reviewed." },
+          cut,
+        ],
+      };
+      expect(queued(relaunch(mono, [row("a", notice)]))).toEqual([]);
+    });
+
+    it("gives each notice of one turn back as itself, so a queued one is not reported twice", () => {
+      const mono: Session = {
+        ...newSession("fx", "/code/monocode"),
+        blocks: [started("mono-completion-a"), cut],
+        queuedMessages: [
+          { id: "mono-completion-b", text: "Notice b", attachments: [] },
+        ],
+      };
+      const claimed = [
+        row("a", "mono-completion-a"),
+        row("b", "mono-completion-b"),
+      ];
+      expect(queued(relaunch(mono, claimed))).toEqual([
+        "mono-completion-b",
+        "mono-completion-a",
+      ]);
     });
   });
 });

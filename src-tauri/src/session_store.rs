@@ -33,7 +33,7 @@ CREATE INDEX IF NOT EXISTS sessions_cwd_updated_idx
 pub struct SessionStore {
     conn: Mutex<Connection>,
     read_conn: Mutex<Option<Connection>>,
-    run_id: String,
+    pub(crate) run_id: String,
     /// The window that restores what the earlier run left (ADE-93).
     restorer: OnceLock<String>,
 }

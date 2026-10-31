@@ -186,7 +186,7 @@ describe("Mono session completion notifications", () => {
     );
     expect(next.queueStatus).toBe("paused");
     expect(enqueueMonoSessionCompletion(next, message)).toBe(next);
-    const delivered = {
+    const started = {
       ...mono,
       blocks: [
         {
@@ -196,6 +196,19 @@ describe("Mono session completion notifications", () => {
           appRequestId: message.id,
           internal: true,
         },
+      ],
+    };
+    // A notice whose turn has no reply was not consumed (ADE-89).
+    expect(
+      enqueueMonoSessionCompletion(started, message).queuedMessages?.map(
+        ({ id }) => id,
+      ),
+    ).toEqual([message.id]);
+    const delivered = {
+      ...started,
+      blocks: [
+        ...started.blocks,
+        { id: "reply", role: "assistant" as const, text: "Reviewed." },
       ],
     };
     expect(enqueueMonoSessionCompletion(delivered, message)).toBe(delivered);

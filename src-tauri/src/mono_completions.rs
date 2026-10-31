@@ -4,8 +4,10 @@
 //! window owns: a boot claims its own rows, in one `BEGIN IMMEDIATE`
 //! transaction, and only the window that restores the earlier run takes the
 //! rows no live window holds. A row whose result is in a notice names
-//! that notice; the transaction that saves a Mono chat holding the notice
-//! marks it delivered and deletes its rows. A row lives only while a Mono
+//! that notice; the transaction that saves a Mono chat showing that the agent
+//! took the notice marks it delivered and deletes its rows. Until then a
+//! boot claims the row again, so a notice whose turn a kill or quit cut is
+//! sent again, under the same id. A row lives only while a Mono
 //! chat save can still settle it: the window deletes the rows of a session
 //! its Mono stopped watching, and a claim deletes the rows of a Mono that has
 //! no chat. The row is the result's `SavedMonoCompletion` JSON, opaque to
@@ -17,17 +19,9 @@ use tauri::{Manager, Runtime, State, WebviewWindow};
 
 use crate::session_store::SessionStore;
 
-/// This app process. A claim made under another run belongs to a window
-/// that died with its process.
-pub struct Run(String);
-
-impl Default for Run {
-    fn default() -> Self {
-        Self(uuid::Uuid::new_v4().to_string())
-    }
-}
-
-/// The window that holds a row, in the run that opened it.
+/// The window that holds a row, in the run that opened it
+/// (`SessionStore::run_id`). A row of another run belongs to a window that
+/// died with its process.
 #[derive(Clone, Copy)]
 pub(crate) struct Owner<'a> {
     pub window: &'a str,
@@ -68,8 +62,9 @@ fn request_id(saved: &Value) -> Result<&str, String> {
 /// gives the restorer only the earlier run's Mono chats: in this run any
 /// window can open a Mono, so a closed window's rows from this run wait until
 /// the restorer boots again, usually the next launch (ADE-140 owns one window
-/// per Mono chat in a run). A row whose notice a Mono chat already saved is
-/// delivered first, and a taken row whose Mono has no chat is deleted.
+/// per Mono chat in a run). A row whose notice the saved Mono chat shows the
+/// agent took is delivered first, and a taken row whose Mono has no chat is
+/// deleted.
 pub(crate) fn claim(
     conn: &Connection,
     owner: Owner,
@@ -114,9 +109,14 @@ pub(crate) fn claim(
         .collect())
 }
 
-/// The rows of Mono chat `mono` (every Mono when None) whose notice that
-/// chat's saved queue or transcript holds: the notice is delivered, marked
-/// and the rows deleted in the caller's transaction.
+/// The rows of Mono chat `mono` (every Mono when None) whose notice the
+/// agent took, by the turn-bounded reply rule (`agentReplyTo` in
+/// turnReply.ts): in that chat's saved transcript an agent block follows the
+/// notice's block before its turn ends, at the next block that opens a turn
+/// (`opensTurn`) or the interrupt note. The notice is delivered, marked and
+/// the rows deleted in the caller's transaction. A notice that waits in the
+/// queue, or whose own turn has no reply, is not delivered, even when a later
+/// turn has one.
 pub(crate) fn settle(conn: &Connection, mono: Option<&str>, now: i64) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO mono_completion_deliveries (group_id, delivered_at)
@@ -125,11 +125,20 @@ pub(crate) fn settle(conn: &Connection, mono: Option<&str>, now: i64) -> rusqlit
                   json_extract(saved_json, '$.origin.monoId') AS mono
            FROM mono_completions) c
          WHERE c.notice IS NOT NULL AND (?1 IS NULL OR c.mono = ?1)
-           AND (EXISTS (SELECT 1 FROM sessions s, json_each(s.queued_messages_json) q
-                        WHERE s.id = c.mono AND json_extract(q.value, '$.id') = c.notice)
-             OR EXISTS (SELECT 1 FROM mono_blocks b
-                        WHERE b.session_id = c.mono
-                          AND json_extract(b.block_json, '$.appRequestId') = c.notice))",
+           AND EXISTS (SELECT 1 FROM mono_blocks b, mono_blocks reply
+                       WHERE b.session_id = c.mono
+                         AND json_extract(b.block_json, '$.appRequestId') = c.notice
+                         AND reply.session_id = b.session_id AND reply.seq > b.seq
+                         AND json_extract(reply.block_json, '$.role')
+                           NOT IN ('user', 'system', 'handoff')
+                         AND NOT EXISTS (
+                           SELECT 1 FROM mono_blocks turn_end
+                           WHERE turn_end.session_id = b.session_id
+                             AND turn_end.seq > b.seq AND turn_end.seq < reply.seq
+                             AND ((turn_end.is_user AND NOT turn_end.is_draft
+                                   AND (json_extract(turn_end.block_json, '$.sentAt') IS NULL
+                                        OR json_extract(turn_end.block_json, '$.startedAt') IS NOT NULL))
+                                  OR json_extract(turn_end.block_json, '$.notice') = 'interrupt')))",
         params![mono, now],
     )?;
     conn.execute(
@@ -179,7 +188,8 @@ fn adopt_workspace_row(tx: &Transaction) -> rusqlite::Result<()> {
 
 /// What the window owes now: its rows become exactly `saved`, in one
 /// commit, except that a row already in a notice stays until a Mono chat
-/// saves that notice. A row another window holds is left as it is.
+/// save shows the agent took that notice. A row another window holds is left
+/// as it is.
 pub(crate) fn hold(conn: &Connection, owner: Owner, saved: &[Value]) -> Result<(), String> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -227,11 +237,10 @@ pub(crate) fn dismiss(
 pub fn mono_completions_claim<R: Runtime>(
     window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
-    run: State<'_, Run>,
 ) -> Result<Vec<Value>, String> {
     let owner = Owner {
         window: window.label(),
-        run: &run.0,
+        run: &store.run_id,
     };
     // Under the lock no other claim or hold runs, so the open windows read
     // here are the ones at the claim: a window that opens later holds none.
@@ -246,12 +255,11 @@ pub fn mono_completions_claim<R: Runtime>(
 pub fn mono_completions_hold<R: Runtime>(
     window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
-    run: State<'_, Run>,
     saved: Vec<Value>,
 ) -> Result<(), String> {
     let owner = Owner {
         window: window.label(),
-        run: &run.0,
+        run: &store.run_id,
     };
     hold(&*store.lock_conn()?, owner, &saved)
 }
@@ -260,13 +268,12 @@ pub fn mono_completions_hold<R: Runtime>(
 pub fn mono_completions_dismiss<R: Runtime>(
     window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
-    run: State<'_, Run>,
     mono_id: String,
     session_id: String,
 ) -> Result<(), String> {
     let owner = Owner {
         window: window.label(),
-        run: &run.0,
+        run: &store.run_id,
     };
     dismiss(&*store.lock_conn()?, owner, &mono_id, &session_id).map_err(|e| e.to_string())
 }

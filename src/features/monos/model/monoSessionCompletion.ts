@@ -1,6 +1,7 @@
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
 import { INTERRUPT_MESSAGE } from "../../sessions/model/inFlight";
 import { enqueueQueuedMessage } from "../../sessions/model/messageQueue";
+import { agentReplyTo } from "../../sessions/model/turnReply";
 import {
   opensTurn,
   type MonoSessionCompletion,
@@ -166,8 +167,9 @@ export type SavedMonoCompletion = {
 
 /**
  * The window's rows in mono_completions.rs. `hold` sets them to what the
- * window owes; a row in a notice stays until the save of the Mono chat that
- * holds the notice marks it delivered and deletes it, in one commit.
+ * window owes; a row in a notice stays until a save of the Mono chat shows
+ * the agent's reply to the notice, which marks it delivered and deletes it,
+ * in one commit.
  * `dismiss` deletes the rows of a session the Mono stopped watching.
  */
 export type MonoCompletionStore = {
@@ -342,8 +344,9 @@ export class MonoSessionCompletionBatches {
     continues: (sessionId: string) => boolean,
   ) {
     const quitEnds = new Map<string, ControlOutcome>();
-    for (const { origin, request, result } of saved) {
-      const key = `${RESTORED}${origin.monoId}:${origin.turn}`;
+    for (const { origin, request, result, notice } of saved) {
+      // A result already in a notice comes back in that notice, under its id.
+      const key = `${RESTORED}${origin.monoId}:${notice ?? origin.turn}`;
       const batch = this.batches.get(key) ?? {
         origin,
         phase: "open" as const,
@@ -566,14 +569,21 @@ export function dismissQueuedMonoSessionCompletion(
   return changed ? { ...mono, queuedMessages } : mono;
 }
 
-/** Receipt IDs deduplicate both waiting notifications and already delivered ones. */
+/**
+ * Receipt IDs deduplicate both waiting notifications and ones the agent took.
+ * A notice whose turn ended before the agent wrote anything was never taken,
+ * so its result, claimed again after a relaunch, is queued again.
+ */
 export function enqueueMonoSessionCompletion(
   mono: Session,
   message: QueuedMessage,
 ): Session {
   if (
     mono.queuedMessages?.some((entry) => entry.id === message.id) ||
-    mono.blocks.some((block) => block.appRequestId === message.id)
+    mono.blocks.some(
+      (block) =>
+        block.appRequestId === message.id && agentReplyTo(mono.blocks, block),
+    )
   )
     return mono;
   return enqueueQueuedMessage(mono, message);
