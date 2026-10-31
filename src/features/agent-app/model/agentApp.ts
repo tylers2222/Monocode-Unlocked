@@ -908,7 +908,9 @@ function startLaunch(
   const launch: QuickLaunch = {
     cwd,
     prompt,
-    ...(mono?.showStartedSessionsInSidebar !== true
+    // Only a Mono's own preference hides what it starts. A regular session
+    // with /operator has no Mono, and its launches belong in the sidebar.
+    ...(mono && mono.showStartedSessionsInSidebar !== true
       ? { sidebarHidden: true }
       : {}),
     ...(draft ? { draft: true } : {}),

@@ -52,6 +52,7 @@ import {
   sameProjectPath,
   type RecentProject,
 } from "../../projects/model/recents";
+import { inProjectScope } from "../../projects/model/projectScope";
 import {
   loadTabGroupColors,
   loadTabGroupCustomColors,
@@ -94,18 +95,25 @@ function enqueueNoteSave(
 }
 
 type Props = {
+  tabbed?: boolean;
+  active?: boolean;
   besideRail?: boolean;
   compactRail?: boolean;
   cwd?: string;
+  /** Lists only this project's notes, plus project-less ones. */
+  scopeProject?: string;
   recents: RecentProject[];
   onClose: () => void;
   onToggleSidebar?: () => void;
 };
 
 export function NotesView({
+  tabbed = false,
+  active = true,
   besideRail = false,
   compactRail = false,
   cwd,
+  scopeProject,
   recents,
   onClose,
   onToggleSidebar,
@@ -170,6 +178,7 @@ export function NotesView({
   }, [selectedId]);
 
   useEffect(() => {
+    if (!active) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -178,12 +187,20 @@ export function NotesView({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [active]);
+
+  const scoped = useMemo(
+    () =>
+      scopeProject
+        ? notes.filter((note) => inProjectScope(note.sourceCwd, scopeProject))
+        : notes,
+    [notes, scopeProject],
+  );
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return notes;
-    return notes.filter((note) => {
+    if (!needle) return scoped;
+    return scoped.filter((note) => {
       const project = noteSourceProject(note.sourceCwd)?.toLowerCase() ?? "";
       return (
         note.title.toLowerCase().includes(needle) ||
@@ -193,12 +210,14 @@ export function NotesView({
         project.includes(needle)
       );
     });
-  }, [notes, query]);
+  }, [scoped, query]);
 
+  // A note from another project stays remembered, but a scoped list opens on
+  // its own first note instead.
   const selected =
     visible.find((note) => note.id === selectedId) ??
-    notes.find((note) => note.id === selectedId) ??
-    null;
+    scoped.find((note) => note.id === selectedId) ??
+    (scopeProject ? (visible[0] ?? null) : null);
 
   const onCreate = async () => {
     if (creating) return;
@@ -341,6 +360,7 @@ export function NotesView({
       compactRail={compactRail}
       onClose={onClose}
       onToggleSidebar={onToggleSidebar}
+      tabbed={tabbed}
     >
       <div className="flex min-h-0 min-w-0 flex-1">
         {list}
