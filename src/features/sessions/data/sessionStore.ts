@@ -657,6 +657,15 @@ export async function getSession(
   sessionId: string,
   options: { restart?: boolean } = {},
 ): Promise<Session | null> {
+  const session = await readSession(sessionId, options);
+  return session ? repairSession(session) : null;
+}
+
+/** Read the saved conversation without waiting for optional provider-log repairs. */
+export async function readSession(
+  sessionId: string,
+  options: { restart?: boolean } = {},
+): Promise<Session | null> {
   const record = await invoke<SessionRecord | null>(
     isMonoSession(sessionId) ? "mono_session_get" : "session_get",
     {
@@ -666,37 +675,95 @@ export async function getSession(
   if (!record) return null;
   const session = recordToSession(record, options);
   if (session.monoTranscript) monoSavedBlocks.set(sessionId, session.blocks);
-  if (session.harness === "claude" && session.providerSessionId) {
-    const toolIds = shellPlaceholderIds(session.blocks);
-    if (toolIds.length) {
-      try {
-        const commands = await claudeShellCommands(
-          session.providerSessionId,
-          session.providerAccountId,
-          toolIds,
-        );
-        const blocks = backfillClaudeShellCommands(session.blocks, commands);
-        if (blocks !== session.blocks) {
-          session.blocks = blocks;
-          await upsertSession(session);
-        }
-      } catch {
-        // A missing or unreadable Claude transcript must not block the session.
-      }
-    }
+  return session;
+}
+
+/** Fetched output stays off its block, so saves never ship it back. */
+const TOOL_DETAIL_CACHE_CHARS = 2_000_000;
+const toolDetailCache = new Map<string, string | null>();
+let toolDetailCacheChars = 0;
+
+/**
+ * Output a loaded transcript omitted (`detailOmitted`), read when its row is
+ * expanded. `stepId` names a step inside the block's subagent run.
+ */
+export async function loadToolDetail(
+  sessionId: string,
+  blockId: string,
+  stepId?: string,
+): Promise<string | null> {
+  const key = `${sessionId}\0${blockId}\0${stepId ?? ""}`;
+  const cached = toolDetailCache.get(key);
+  if (cached !== undefined) {
+    toolDetailCache.delete(key);
+    toolDetailCache.set(key, cached);
+    return cached;
   }
-  if (session.harness === "codex") {
-    // Relabel from the command already saved on the row. Codex sends it with
-    // the item and `shellCommandPreview` stores it as the preview title, so
-    // this needs no disk read at all.
-    const blocks = backfillCodexShellCommands(session.blocks);
+  const detail = await invoke<string | null>("session_tool_detail", {
+    sessionId,
+    blockId,
+    stepId: stepId ?? null,
+  });
+  toolDetailCache.set(key, detail);
+  toolDetailCacheChars += detail?.length ?? 0;
+  for (const [oldest, value] of toolDetailCache) {
+    if (toolDetailCacheChars <= TOOL_DETAIL_CACHE_CHARS) break;
+    if (oldest === key) break;
+    toolDetailCache.delete(oldest);
+    toolDetailCacheChars -= value?.length ?? 0;
+  }
+  return detail;
+}
+
+/** Relabels Claude shell placeholders from the provider transcript, in place. */
+async function repairClaudeShellCommands(
+  session: Session,
+  persist: boolean,
+): Promise<void> {
+  if (session.harness !== "claude" || !session.providerSessionId) return;
+  const toolIds = shellPlaceholderIds(session.blocks);
+  if (!toolIds.length) return;
+  try {
+    const commands = await claudeShellCommands(
+      session.providerSessionId,
+      session.providerAccountId,
+      toolIds,
+    );
+    const blocks = backfillClaudeShellCommands(session.blocks, commands);
     if (blocks !== session.blocks) {
       session.blocks = blocks;
-      // A failed write must not cost the reader the session. The repair stays
-      // in memory and the next load retries it.
-      await upsertSession(session).catch(() => undefined);
+      if (persist) await upsertSession(session);
     }
+  } catch {
+    // A missing or unreadable Claude transcript must not block the session.
   }
+}
+
+/** Relabels Codex shell placeholders from the commands saved on the row, in place. */
+async function repairCodexShellCommands(
+  session: Session,
+  persist: boolean,
+): Promise<void> {
+  if (session.harness !== "codex") return;
+  // Relabel from the command already saved on the row. Codex sends it with
+  // the item and `shellCommandPreview` stores it as the preview title, so
+  // this needs no disk read at all.
+  const blocks = backfillCodexShellCommands(session.blocks);
+  if (blocks === session.blocks) return;
+  session.blocks = blocks;
+  // A failed write must not cost the reader the session. The repair stays
+  // in memory and the next load retries it.
+  if (persist) await upsertSession(session).catch(() => undefined);
+}
+
+/** A progressive caller publishes the repair against current state before persisting. */
+export async function repairSession(
+  source: Session,
+  { persist = true }: { persist?: boolean } = {},
+): Promise<Session> {
+  const session = { ...source };
+  await repairClaudeShellCommands(session, persist);
+  await repairCodexShellCommands(session, persist);
   if (session.harness !== "omp" || !session.providerSessionId) {
     return recoverCursorSubagents(session);
   }
@@ -712,13 +779,31 @@ export async function getSession(
       // Persist before exposing the restored session to a new live turn.
       // Re-reading the source on later loads allows partial repairs to retry;
       // deterministic IDs ensure already repaired transcripts are not written.
-      await upsertSession(session);
+      if (persist) await upsertSession(session);
     }
   } catch {
     // Source logs may be absent/unreadable. Even a failed write must not stop
     // restore; the recovered in-memory boundaries can still be displayed.
   }
   return session;
+}
+
+/** Never let a delayed repair replace a newer stream, edit, or provider binding. */
+export function applySessionRepair(
+  current: Session,
+  source: Session,
+  repaired: Session,
+): Session {
+  if (
+    current.id !== source.id ||
+    current.blocks !== source.blocks ||
+    current.harness !== source.harness ||
+    current.providerSessionId !== source.providerSessionId ||
+    current.providerAccountId !== source.providerAccountId ||
+    repaired.blocks === source.blocks
+  )
+    return current;
+  return { ...current, blocks: repaired.blocks };
 }
 
 export function backfillClaudeShellCommands(
@@ -1407,6 +1492,9 @@ function sanitizeAgentRun(value: unknown): AgentRunMeta | null {
         ...(typeof row.toolKind === "string" ? { toolKind: row.toolKind } : {}),
         ...(typeof row.status === "string" ? { status: row.status } : {}),
         ...(typeof row.detail === "string" ? { detail: row.detail } : {}),
+        ...(row.detailOmitted === true && typeof row.detail !== "string"
+          ? { detailOmitted: true }
+          : {}),
         ...(row.preview && typeof row.preview === "object"
           ? { preview: row.preview as AgentStep["preview"] }
           : {}),

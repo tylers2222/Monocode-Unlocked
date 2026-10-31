@@ -829,6 +829,21 @@ const HANDLERS: Record<string, Handler> = {
   "plugin:app|bundle_type": none,
   "plugin:updater|check": none,
   "plugin:window|is_maximized": () => false,
+  "plugin:window|is_fullscreen": () => false,
+  // Upstream's phone pairing (Settings > Mobile), off on this fake backend.
+  mobile_status: () => ({
+    enabled: false,
+    listening: false,
+    name: "",
+    fingerprint: null,
+    openRouter: false,
+    remoteAddress: "",
+    routerStatus: "",
+    addresses: [],
+    devices: [],
+  }),
+  // No CPU or memory reading, so the resource pressure notice stays hidden.
+  resource_usage: () => ({ cpuPercent: null, memoryPressure: null }),
 };
 
 /** mono_roster.rs `MonoUpdate`. */

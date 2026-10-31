@@ -62,6 +62,12 @@
       "count": 2
     }
   },
+  "host/runtime-download.mjs": {
+    "complexity": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
   "host/server.test.ts": {
     "@typescript-eslint/no-explicit-any": {
       "count": 1
@@ -108,12 +114,44 @@
       "count": 3
     }
   },
+  "scripts/dev-native.mjs": {
+    "complexity": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "max-lines-per-function": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
   "scripts/giga-eval/ax.js": {
     "@typescript-eslint/no-unused-vars": {
       "count": 3
     },
     "complexity": {
       "count": 1
+    }
+  },
+  "scripts/native-editor/index.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 3,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
+  "scripts/native-release.mjs": {
+    "complexity": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
+  "scripts/package-native.mjs": {
+    "complexity": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "max-lines-per-function": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
     }
   },
   "scripts/release-channel.cjs": {
@@ -127,8 +165,13 @@
     }
   },
   "src/app/App.tsx": {
+    "@eslint-community/eslint-comments/no-use": {
+      "count": 2,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
     "complexity": {
-      "count": 27
+      "count": 31,
+      "reason": "upstream import ADE-163 (b9ab5065), was 27"
     },
     "max-depth": {
       "count": 2
@@ -137,7 +180,12 @@
       "count": 1
     },
     "max-lines-per-function": {
-      "count": 31
+      "count": 35,
+      "reason": "upstream import ADE-163 (b9ab5065), was 31"
+    },
+    "react-hooks/exhaustive-deps": {
+      "count": 2,
+      "reason": "upstream import ADE-163 (b9ab5065)"
     }
   },
   "src/app/hooks/useFloatingMono.ts": {
@@ -222,6 +270,16 @@
       "count": 3
     }
   },
+  "src/app/shell/ProjectSpaces.tsx": {
+    "@eslint-community/eslint-comments/no-use": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "react-hooks/exhaustive-deps": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
   "src/app/shell/RailTooltip.tsx": {
     "complexity": {
       "count": 1
@@ -229,13 +287,15 @@
   },
   "src/app/shell/Sidebar.tsx": {
     "complexity": {
-      "count": 10
+      "count": 13,
+      "reason": "upstream import ADE-163 (b9ab5065), was 10"
     },
     "max-lines": {
       "count": 1
     },
     "max-lines-per-function": {
-      "count": 9
+      "count": 10,
+      "reason": "upstream import ADE-163 (b9ab5065), was 9"
     }
   },
   "src/app/shell/TitleBar.tsx": {
@@ -292,6 +352,12 @@
     },
     "max-lines-per-function": {
       "count": 3
+    }
+  },
+  "src/app/shell/useProjectSwipe.ts": {
+    "complexity": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
     }
   },
   "src/features/agent-app/model/agentApp.ts": {
@@ -403,12 +469,20 @@
       "count": 2
     }
   },
-  "src/features/files/editor/codeHighlightPlugin.ts": {
+  "src/features/files/editor/codeHighlight.worker.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
+  "src/features/files/editor/codeHighlightEngine.ts": {
     "complexity": {
-      "count": 1
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
     },
     "max-lines-per-function": {
-      "count": 2
+      "count": 2,
+      "reason": "upstream import ADE-163 (b9ab5065)"
     }
   },
   "src/features/files/editor/editorChrome.ts": {
@@ -490,10 +564,11 @@
   },
   "src/features/files/ui/FilePane.tsx": {
     "complexity": {
-      "count": 4
+      "count": 3
     },
     "max-lines-per-function": {
-      "count": 2
+      "count": 3,
+      "reason": "upstream import ADE-163 (b9ab5065), was 2"
     }
   },
   "src/features/files/ui/FilePicker.tsx": {
@@ -711,6 +786,60 @@
       "count": 1
     }
   },
+  "src/features/mobile/hooks/useMobileWorkspace.ts": {
+    "complexity": {
+      "count": 2,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "max-depth": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "max-lines-per-function": {
+      "count": 4,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
+  "src/features/mobile/model/mobileTranscript.ts": {
+    "complexity": {
+      "count": 3,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "max-lines-per-function": {
+      "count": 2,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
+  "src/features/mobile/model/mobileWorkspace.ts": {
+    "complexity": {
+      "count": 2,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "max-lines": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "max-lines-per-function": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
+  "src/features/mobile/ui/MobileSettings.tsx": {
+    "complexity": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "max-lines-per-function": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
+  "src/features/mobile/ui/PairPhoneDialog.tsx": {
+    "max-lines-per-function": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
   "src/features/monos/model/floatingMono.ts": {
     "@typescript-eslint/no-unused-vars": {
       "count": 1
@@ -886,11 +1015,6 @@
       "count": 1
     }
   },
-  "src/features/monos/ui/MonoUsageLimitNotice.tsx": {
-    "max-lines-per-function": {
-      "count": 1
-    }
-  },
   "src/features/monos/ui/NewHabitPage.tsx": {
     "max-lines-per-function": {
       "count": 1
@@ -919,7 +1043,8 @@
       "count": 1
     },
     "complexity": {
-      "count": 2
+      "count": 3,
+      "reason": "upstream import ADE-163 (b9ab5065), was 2"
     },
     "max-lines": {
       "count": 1
@@ -951,6 +1076,12 @@
       "count": 1
     }
   },
+  "src/features/notifications/model/resourcePressure.ts": {
+    "complexity": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
   "src/features/notifications/ui/NotificationMuteControl.tsx": {
     "max-lines-per-function": {
       "count": 1
@@ -967,6 +1098,16 @@
     },
     "max-lines-per-function": {
       "count": 2
+    }
+  },
+  "src/features/notifications/ui/ResourcePressureNotice.tsx": {
+    "complexity": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "max-lines-per-function": {
+      "count": 2,
+      "reason": "upstream import ADE-163 (b9ab5065)"
     }
   },
   "src/features/orchestration/model/orchestration.test.ts": {
@@ -1346,6 +1487,12 @@
       "count": 4
     }
   },
+  "src/features/sessions/model/transcriptTurnCache.ts": {
+    "complexity": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
   "src/features/sessions/model/userQuestion.ts": {
     "complexity": {
       "count": 1
@@ -1358,10 +1505,12 @@
   },
   "src/features/sessions/ui/AgentMarkdown.tsx": {
     "@typescript-eslint/no-unused-vars": {
-      "count": 2
+      "count": 3,
+      "reason": "upstream import ADE-163 (b9ab5065), was 2"
     },
     "complexity": {
-      "count": 1
+      "count": 3,
+      "reason": "upstream import ADE-163 (b9ab5065), was 1"
     },
     "max-lines": {
       "count": 1
@@ -1440,6 +1589,12 @@
       "count": 3
     }
   },
+  "src/features/sessions/ui/DocumentImage.tsx": {
+    "max-lines-per-function": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
   "src/features/sessions/ui/FileMentionPicker.tsx": {
     "max-lines-per-function": {
       "count": 1
@@ -1448,6 +1603,12 @@
   "src/features/sessions/ui/HarnessIcon.tsx": {
     "max-lines-per-function": {
       "count": 1
+    }
+  },
+  "src/features/sessions/ui/HighlightedCodeBlock.tsx": {
+    "max-lines-per-function": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
     }
   },
   "src/features/sessions/ui/LinkSessionWorkItemDialog.tsx": {
@@ -1541,6 +1702,16 @@
       "count": 1
     }
   },
+  "src/features/sessions/ui/SessionCardPreview.tsx": {
+    "complexity": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "max-lines-per-function": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
   "src/features/sessions/ui/SessionFiltersMenu.tsx": {
     "max-lines-per-function": {
       "count": 1
@@ -1583,6 +1754,12 @@
       "count": 1
     }
   },
+  "src/features/sessions/ui/UsageLimitAccountPicker.tsx": {
+    "max-lines-per-function": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
   "src/features/sessions/ui/UsageLimitNotice.tsx": {
     "max-lines-per-function": {
       "count": 1
@@ -1599,6 +1776,32 @@
   "src/features/sessions/ui/useComposerSkills.ts": {
     "max-lines-per-function": {
       "count": 1
+    }
+  },
+  "src/features/sessions/ui/useMeasuredHistory.ts": {
+    "complexity": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "max-lines-per-function": {
+      "count": 2,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
+  "src/features/sessions/ui/useReplyReflowAnchor.ts": {
+    "complexity": {
+      "count": 2,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "max-lines-per-function": {
+      "count": 2,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
+  "src/features/sessions/ui/wordFade.tsx": {
+    "max-lines-per-function": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
     }
   },
   "src/features/settings/model/appearance.ts": {
@@ -1619,6 +1822,12 @@
   "src/features/settings/model/settings.ts": {
     "max-lines": {
       "count": 1
+    }
+  },
+  "src/features/settings/model/sounds.ts": {
+    "@typescript-eslint/no-this-alias": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
     }
   },
   "src/features/settings/ui/JiraSettings.tsx": {
@@ -1687,6 +1896,16 @@
       "count": 2
     }
   },
+  "src/features/source-control/hooks/useDiffViewport.ts": {
+    "complexity": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "max-lines-per-function": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
   "src/features/source-control/model/gitGraph.ts": {
     "complexity": {
       "count": 2
@@ -1706,6 +1925,12 @@
       "count": 1
     }
   },
+  "src/features/source-control/model/unifiedDiffDocument.ts": {
+    "complexity": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
   "src/features/source-control/ui/BranchPicker.tsx": {
     "complexity": {
       "count": 1
@@ -1719,7 +1944,8 @@
       "count": 1
     },
     "max-lines-per-function": {
-      "count": 1
+      "count": 2,
+      "reason": "upstream import ADE-163 (b9ab5065), was 1"
     }
   },
   "src/features/source-control/ui/CreateWorktreeDialog.tsx": {
@@ -1751,14 +1977,33 @@
       "count": 6
     }
   },
+  "src/features/source-control/ui/GitHistoryGraph.tsx": {
+    "complexity": {
+      "count": 2,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "max-lines": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "max-lines-per-function": {
+      "count": 3,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
   "src/features/source-control/ui/SessionChangesDiff.tsx": {
     "max-lines-per-function": {
-      "count": 1
+      "count": 3,
+      "reason": "upstream import ADE-163 (b9ab5065), was 1"
     }
   },
   "src/features/source-control/ui/SidebarWorktreeSwitcher.tsx": {
     "complexity": {
       "count": 1
+    },
+    "max-lines": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
     },
     "max-lines-per-function": {
       "count": 1
@@ -1774,13 +2019,14 @@
   },
   "src/features/source-control/ui/UnifiedDiffView.tsx": {
     "complexity": {
-      "count": 1
+      "count": 3,
+      "reason": "upstream import ADE-163 (b9ab5065), was 1"
     },
     "max-lines": {
       "count": 1
     },
     "max-lines-per-function": {
-      "count": 4
+      "count": 3
     }
   },
   "src/features/source-control/ui/WorkingTreeDiff.tsx": {
@@ -1788,7 +2034,8 @@
       "count": 1
     },
     "max-lines-per-function": {
-      "count": 2
+      "count": 3,
+      "reason": "upstream import ADE-163 (b9ab5065), was 2"
     }
   },
   "src/features/source-control/ui/WorktreePicker.tsx": {
@@ -1901,11 +2148,16 @@
     }
   },
   "src/features/workspace/ui/PaneTree.tsx": {
+    "complexity": {
+      "count": 3,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
     "max-lines": {
       "count": 1
     },
     "max-lines-per-function": {
-      "count": 4
+      "count": 5,
+      "reason": "upstream import ADE-163 (b9ab5065), was 4"
     }
   },
   "src/features/workspace/ui/SurfaceTabs.tsx": {
@@ -2478,6 +2730,22 @@
   "tests/browser/app/backend.ts": {
     "@typescript-eslint/no-unused-vars": {
       "count": 12
+    }
+  },
+  "tests/browser/unified-diff.spec.ts": {
+    "@typescript-eslint/no-empty-object-type": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    }
+  },
+  "tests/browser/workspace-performance.tsx": {
+    "@typescript-eslint/no-this-alias": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
+    },
+    "complexity": {
+      "count": 1,
+      "reason": "upstream import ADE-163 (b9ab5065)"
     }
   }
 }

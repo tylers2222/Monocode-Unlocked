@@ -94,7 +94,8 @@ function projectMenuExtraItems(
   notificationReady: boolean,
   externalEditors: ExternalEditor[] | null,
   projectGroups: ProjectGroup[],
-  currentProjectGroupId?: string,
+  currentProjectGroupId: string | undefined,
+  railOptions: boolean,
 ): TabGroupMenuExtraItem[] {
   const groupSubmenu: ExplorerMenuItem[] = [
     { kind: "item", id: "project-group:new", label: "New group…" },
@@ -119,15 +120,19 @@ function projectMenuExtraItems(
       label: "Background image",
       icon: ImagePlus,
     },
-    {
-      id: "project-group",
-      label: "Move to group",
-      icon: FolderTree,
-      submenu: groupSubmenu,
-    },
-    pinned
-      ? { id: "unpin", label: "Unpin project", icon: PinOff }
-      : { id: "pin", label: "Pin project", icon: Pin },
+    ...(railOptions
+      ? [
+          {
+            id: "project-group",
+            label: "Move to group",
+            icon: FolderTree,
+            submenu: groupSubmenu,
+          },
+          pinned
+            ? { id: "unpin", label: "Unpin project", icon: PinOff }
+            : { id: "pin", label: "Pin project", icon: Pin },
+        ]
+      : []),
     { id: "reveal", label: REVEAL_LABEL, icon: FolderOpen },
     {
       id: "external-editor",
@@ -191,6 +196,9 @@ type Options = {
   onOpenNotificationSettings?: (projectPath?: string) => void;
   /** Called when a project or group menu opens, so hosts can close sibling menus. */
   onOpen?: () => void;
+  /** Groups and pins only arrange the project rail; layouts without one
+   * leave them out. */
+  railOptions?: boolean;
 };
 
 /**
@@ -203,6 +211,7 @@ export function useProjectMenu({
   onRemoveProject,
   onOpenNotificationSettings,
   onOpen,
+  railOptions = true,
 }: Options) {
   const [projectMenu, setProjectMenu] = useState<
     (Point & { path: string; projectKey: string }) | null
@@ -466,6 +475,7 @@ export function useProjectMenu({
             projectMenu.path,
             loadProjectGroupAssignments(),
           ),
+          railOptions,
         )}
         footer={
           menuError ? (

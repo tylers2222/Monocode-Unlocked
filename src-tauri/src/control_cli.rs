@@ -220,9 +220,11 @@ Actions:
                   "besideSessionId":"<visible session ID>","due_minutes":60}
                   "harness" and "model" are required: copy exact IDs from
                   models.list. There is no default; a missing or unknown
-                  harness or model returns an error. Create a tab with the
-                  prompt, or set placement to right or down to split a
-                  visible session pane. A split defaults to the
+                  harness or model returns an error. Start a session with the
+                  prompt. It waits in the sidebar, under the calling session,
+                  until the user opens it. Set reveal:true or placement right
+                  or down only when the user asks to see it open; a split puts
+                  it beside a visible session pane. A split defaults to the
                   calling session; besideSessionId chooses another visible
                   session in this project, including one just created. Set
                   draft:true to save the prompt unsent; no agent turn runs.
