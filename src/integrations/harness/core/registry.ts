@@ -518,7 +518,7 @@ export async function transferHarnessSessionAccount(input: {
   harness: "claude" | "codex";
   threadId: string;
   providerSessionId: string;
-  cwd: string;
+  cwd: AgentCwd;
   fromAccountId?: string;
   toAccountId: string;
   blocks?: Block[];

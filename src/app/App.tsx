@@ -10207,7 +10207,7 @@ function Workspace({
             harness: session.harness,
             threadId: sessionId,
             providerSessionId: session.providerSessionId,
-            cwd: sessionWorkCwd(session),
+            cwd: sessionAgentCwd(session),
             fromAccountId: session.providerAccountId,
             toAccountId: accountId,
             blocks: session.blocks,
