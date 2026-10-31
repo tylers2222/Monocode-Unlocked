@@ -328,6 +328,7 @@ pub fn run() {
             menu::dispatch(app, event.id().as_ref());
         })
         .invoke_handler(tauri::generate_handler![
+            ade89_probe,
             remote::remote_machines,
             remote::remote_connect,
             remote::remote_disconnect,
@@ -793,4 +794,10 @@ mod tests {
     fn last_window_close_stays_alive_with_dock() {
         assert!(!should_request_quit(None));
     }
+}
+
+// PROBE ONLY (PR #413 r4 B1 diagnosis), never merged.
+#[tauri::command]
+fn ade89_probe(line: String) {
+    eprintln!("ADE89-PROBE {line}");
 }

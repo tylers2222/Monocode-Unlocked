@@ -7297,6 +7297,9 @@ function Workspace({
               )
             : session,
         );
+        void invoke("ade89_probe", {
+          line: `${Date.now()} submit-snapshot item=${item.id} text=${JSON.stringify(text.slice(0, 40))} queue=${JSON.stringify(next.find((s) => s.id === sessionId)?.queuedMessages?.map((m) => m.id) ?? null)}`,
+        }).catch(() => undefined);
         sessionsRef.current = next;
         setSessions(next);
         dismissNoticesForContinuedSession(sessionId);
@@ -8987,22 +8990,31 @@ function Workspace({
       message: QueuedMessage,
       current: () => QueuedMessage | undefined = () => message,
     ) => {
+      const probe = (line: string) =>
+        void invoke("ade89_probe", { line: `${Date.now()} ${line}` }).catch(() => undefined);
+      const queueIds = (list: Session[]) =>
+        JSON.stringify(list.find((s) => s.id === monoId)?.queuedMessages?.map((m) => m.id) ?? null);
+      probe(`queue-enter id=${message.id} mono=${isMonoSession(monoId)} removing=${removingSessionIds.current.has(monoId)}`);
       if (!isMonoSession(monoId) || removingSessionIds.current.has(monoId))
         return;
+      const opened = await ensureOpenSession(monoId);
+      probe(`queue-opened id=${message.id} opened=${!!opened} removing=${removingSessionIds.current.has(monoId)} current=${current()?.id ?? "none"}`);
       if (
-        !(await ensureOpenSession(monoId)) ||
+        !opened ||
         removingSessionIds.current.has(monoId)
       )
         return;
       setSessions((previous) => {
         const latest = current();
-        return latest
+        const result = latest
           ? previous.map((session) =>
               session.id === monoId
                 ? enqueueMonoSessionCompletion(session, latest)
                 : session,
             )
           : previous;
+        probe(`queue-updater latest=${latest?.id ?? "none"} before=${queueIds(previous)} after=${queueIds(result)}`);
+        return result;
       });
     },
     [ensureOpenSession],

@@ -250,7 +250,11 @@ part_release_then_kill() {
       ('$late', $(saved "$1" "$late" "s-$late"), 'main', 'killed-run');
     UPDATE sessions SET queued_messages_json = json_array($message) WHERE id = '$1';"
   "$INSTANCE" start
-  wait_until 30 "the relaunch reports the third" reported "$1" "s-$late"
+  local probed=0
+  ( wait_until 30 "the relaunch reports the third" reported "$1" "s-$late" ) || probed=1
+  # PROBE ONLY (PR #413 r4 B1): keep this launch's app log in the artifact.
+  cp "$EVAL_OUT/instance.log" "$EVAL_OUT/ade89-probe-$4-$(date +%s).log" || true
+  ((probed == 0)) || die "timed out after 30 s: the relaunch reports the third"
   # A second copy would follow the first within the same second or two.
   sleep 5
   for id in "$first" "$second" "$late"; do
