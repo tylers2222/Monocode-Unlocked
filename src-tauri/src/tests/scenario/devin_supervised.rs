@@ -7,7 +7,7 @@ use std::path::Path;
 use serde_json::Value;
 use tauri::Manager;
 
-use super::agent_sandbox::{mock_app, script};
+use super::agent_sandbox::{main_window, mock_app, script};
 use super::omp_mcp::argv;
 
 #[test]
@@ -27,11 +27,13 @@ printf '%s\0' "$@" > argv.part && mv argv.part argv"#,
     .into_owned();
     let data = root.join("com.monocode.devin");
     let app = mock_app(&data);
+    let window = main_window(&app);
     let spawn = |session: &str, ask_edits: Option<bool>, mcp: Option<&str>| {
         let workdir = root.join(session);
         std::fs::create_dir_all(&workdir).unwrap();
         crate::harness::harness_spawn(
             app.handle().clone(),
+            window.clone(),
             app.state::<crate::harness::HarnessHost>(),
             session.into(),
             devin.clone(),

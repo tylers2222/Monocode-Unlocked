@@ -50,6 +50,7 @@ import {
   claimMonoCompletions,
   monoCompletionWrites,
 } from "../../features/sessions/data/monoCompletionStore";
+import { holderElsewhere, reportLoadedSessions } from "./windowHolds";
 
 export { hasInFlightSessions };
 
@@ -238,6 +239,8 @@ async function loadResumedWorkspaceOnce(): Promise<WindowWorkspace | null> {
   const loaded = new Map<string, Session>();
   const [present] = await Promise.all([
     snapshot && withoutDeletedWorktrees(snapshot),
+    // Before `bindResumedSessions`, which binds only the chats this window holds.
+    reportLoadedSessions(ids).catch(console.error),
     ...[...ids].map(async (id) => {
       const record = await getSession(id, { restart: true }).catch(() => null);
       if (record) loaded.set(id, record);
@@ -304,7 +307,8 @@ export function bindResumedSessions(sessions: Session[]): void {
     if (
       session.worktreeRemoved ||
       !session.providerSessionId ||
-      !isLiveHarness(session.harness)
+      !isLiveHarness(session.harness) ||
+      holderElsewhere(session.id)
     )
       continue;
     bindHarnessSession(

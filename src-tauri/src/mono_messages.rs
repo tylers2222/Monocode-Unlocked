@@ -2536,6 +2536,10 @@ pub struct Notices {
     /// A decision row was dropped or requeued: the board reloads once.
     #[serde(skip)]
     pub(crate) approvals: bool,
+    /// A window's hold on a chat passed to another window (ADE-140): each
+    /// window reports its chats again to learn which it now holds.
+    #[serde(skip)]
+    pub(crate) holds: bool,
 }
 
 impl Notices {
@@ -2547,6 +2551,7 @@ impl Notices {
 
     pub fn merge(&mut self, other: Notices) {
         self.approvals |= other.approvals;
+        self.holds |= other.holds;
         for session in other.sessions {
             self.name(session);
         }
@@ -2582,6 +2587,9 @@ impl Notices {
         }
         if self.approvals {
             let _ = app.emit(crate::approvals::CHANGED, ());
+        }
+        if self.holds {
+            let _ = app.emit("control-holds-changed", ());
         }
     }
 }

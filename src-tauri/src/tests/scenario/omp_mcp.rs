@@ -7,7 +7,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 use tauri::Manager;
 
-use super::agent_sandbox::{mock_app, script, wait_for};
+use super::agent_sandbox::{main_window, mock_app, script, wait_for};
 
 pub(super) fn argv(workdir: &Path) -> Vec<String> {
     wait_for(&workdir.join("argv"))
@@ -53,11 +53,13 @@ printf '%s\0' "$@" > argv.part && mv argv.part argv"#,
     .to_string_lossy()
     .into_owned();
     let app = mock_app(&root.join("com.monocode.ade117"));
+    let window = main_window(&app);
     let spawn = |session: &str, mcp: Option<&str>| {
         let workdir = root.join(session);
         std::fs::create_dir_all(&workdir).unwrap();
         crate::harness::harness_spawn(
             app.handle().clone(),
+            window.clone(),
             app.state::<crate::harness::HarnessHost>(),
             session.into(),
             omp.clone(),

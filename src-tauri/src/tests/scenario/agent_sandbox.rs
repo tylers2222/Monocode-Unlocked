@@ -470,6 +470,7 @@ fn harness_spawn_child() {
 
     let data = root.join("app-data");
     let app = mock_app(&data);
+    let window = main_window(&app);
     std::fs::create_dir_all(&data).unwrap();
 
     let spawn = |session: &str| {
@@ -477,6 +478,7 @@ fn harness_spawn_child() {
         std::fs::create_dir_all(&workdir).unwrap();
         let pid = crate::harness::harness_spawn(
             app.handle().clone(),
+            window.clone(),
             app.state::<crate::harness::HarnessHost>(),
             session.into(),
             path(&fx),
@@ -540,6 +542,15 @@ pub(super) fn mock_app(data: &Path) -> tauri::App<tauri::test::MockRuntime> {
         .unwrap();
     assert_eq!(app.path().app_data_dir().unwrap(), data);
     app
+}
+
+/// The window `harness_spawn` is called from.
+pub(super) fn main_window(
+    app: &tauri::App<tauri::test::MockRuntime>,
+) -> tauri::WebviewWindow<tauri::test::MockRuntime> {
+    tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
+        .build()
+        .unwrap()
 }
 
 /// Defect: with the setting off a child starts wrapped, or a settings file

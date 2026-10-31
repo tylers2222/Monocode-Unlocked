@@ -741,11 +741,18 @@ pub fn session_list_in_flight<R: Runtime>(
     window: WebviewWindow<R>,
 ) -> Result<Vec<InFlightSession>, String> {
     let running = control.sessions_running_outside(window.label());
-    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let earlier = store.claim_earlier_run(window.label());
-    let mut sessions = claim_in_flight(&conn, &store.run_id, window.label(), earlier)
-        .map_err(|e| e.to_string())?;
+    let (earlier, mut sessions) = {
+        let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+        let earlier = store.claim_earlier_run(window.label());
+        let sessions = claim_in_flight(&conn, &store.run_id, window.label(), earlier)
+            .map_err(|e| e.to_string())?;
+        (earlier, sessions)
+    };
     sessions.retain(|session| !running.contains(&session.session_id));
+    if earlier {
+        let ids = sessions.iter().map(|session| session.session_id.clone());
+        control.hold_restored(window.label(), ids);
+    }
     Ok(sessions)
 }
 
@@ -814,11 +821,24 @@ pub fn workspace_set_snapshot<R: Runtime>(
 #[tauri::command(async)]
 pub fn workspace_get_snapshot<R: Runtime>(
     store: State<'_, SessionStore>,
+    control: State<'_, ControlHost>,
     window: WebviewWindow<R>,
 ) -> Result<Vec<Value>, String> {
-    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let earlier = store.claim_earlier_run(window.label());
-    get_workspace_snapshot(&conn, &store.run_id, window.label(), earlier)
+    let (earlier, rows) = {
+        let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+        let earlier = store.claim_earlier_run(window.label());
+        let rows = get_workspace_snapshot(&conn, &store.run_id, window.label(), earlier)?;
+        (earlier, rows)
+    };
+    if earlier {
+        let stubs = rows
+            .iter()
+            .filter_map(|row| row.get("sessions")?.as_array())
+            .flatten();
+        let ids = stubs.filter_map(|stub| stub.get("id")?.as_str().map(str::to_owned));
+        control.hold_restored(window.label(), ids);
+    }
+    Ok(rows)
 }
 
 /// Add a `sessions` column when it is absent, so a half-applied history cannot
@@ -5091,6 +5111,7 @@ mod tests {
         let (_app, [a, b, new_window]) = mock_windows(
             tauri::test::mock_builder()
                 .manage(SessionStore::open_in_memory().unwrap())
+                .manage(crate::control::tests::host())
                 .invoke_handler(tauri::generate_handler![
                     workspace_set_snapshot,
                     workspace_get_snapshot

@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewWindow};
 
 use crate::dirs_home;
 use crate::fs::expand_home;
@@ -957,6 +957,7 @@ pub fn harness_free_port() -> Result<u16, String> {
 #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 pub fn harness_spawn<R: Runtime>(
     app: AppHandle<R>,
+    window: WebviewWindow<R>,
     host: State<'_, HarnessHost>,
     session_id: String,
     command: String,
@@ -1012,6 +1013,8 @@ pub fn harness_spawn<R: Runtime>(
         Some(other) => return Err(format!("Unknown mcp choice: {other}")),
     };
 
+    // A second child under the id would end the holding window's child.
+    crate::control::refuse_held_elsewhere(&app, child_session(&session_id), window.label())?;
     let _reservation = crate::worktree_lifecycle::reserve_spawn(&workdir)?;
     let (epoch, kill_all, prev) = host.begin_spawn(&session_id);
     if let Some(prev) = prev {

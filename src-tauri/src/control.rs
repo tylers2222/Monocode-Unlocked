@@ -129,8 +129,10 @@ struct Inner {
     workers: HashMap<String, String>,
     scratch: HashMap<String, PathBuf>,
     active: HashMap<String, ActiveTurn>,
-    /// The sessions each window has loaded, as the window last reported.
-    loaded: HashMap<String, HashSet<String>>,
+    /// The windows that have each session loaded, in the order they loaded
+    /// it (ADE-140). The first holds it until it closes, reloads or drops
+    /// it; then the next one does. Read through [`Inner::holder`].
+    loaders: HashMap<String, Vec<String>>,
 }
 impl Inner {
     // Provider processes can stay alive between turns, so install the token
@@ -199,23 +201,70 @@ impl Inner {
         self.app_grants.remove(session);
         self.workers.remove(session);
         self.scratch.remove(session);
+        self.loaders.remove(session);
         self.active.remove(session)
     }
+    /// ADE-140: the one window that binds `session` and spawns its harness
+    /// child: the window of its turn, else the first window that loaded it.
+    /// Another window's turn there would install a second child under the
+    /// session id and end the first window's (`HarnessHost::install_spawn`).
+    fn holder(&self, session: &str) -> Option<&str> {
+        self.active
+            .get(session)
+            .map(|turn| turn.window.as_str())
+            .or_else(|| Some(self.loaders.get(session)?.first()?.as_str()))
+    }
+    /// The holder of `session` when it is a window other than `label`.
+    fn held_elsewhere(&self, session: &str, label: &str) -> Option<String> {
+        self.holder(session)
+            .filter(|holder| *holder != label)
+            .map(str::to_owned)
+    }
     /// Design 6 (PR 5 review): the one window that runs a Mono message's
-    /// routes and reconcile. A running session belongs to the window of its
-    /// turn; otherwise to the first window by label that has it loaded;
-    /// otherwise to the caller, which loads it. The answer is the same
-    /// whichever window asks, so two windows never both own a session.
+    /// routes and reconcile: the session's holder, otherwise the caller,
+    /// which loads it. The answer is the same whichever window asks, so two
+    /// windows never both own a session.
     fn route_owner(&self, session: &str, caller: &str) -> String {
-        if let Some(turn) = self.active.get(session) {
-            return turn.window.clone();
+        self.holder(session).unwrap_or(caller).to_owned()
+    }
+    /// Window `label` joins the line of each of `sessions`.
+    fn hold(&mut self, label: &str, sessions: impl IntoIterator<Item = String>) {
+        for session in sessions {
+            let line = self.loaders.entry(session).or_default();
+            if !line.iter().any(|loader| loader == label) {
+                line.push(label.to_owned());
+            }
         }
-        self.loaded
-            .iter()
-            .filter(|(_, ids)| ids.contains(session))
-            .map(|(label, _)| label)
-            .min()
-            .map_or_else(|| caller.to_string(), Clone::clone)
+    }
+    /// Window `label` leaves the line of every session but `kept`. Returns
+    /// whether a session it held passed to the next window (ADE-140 A3).
+    fn release(&mut self, label: &str, kept: &HashSet<String>) -> bool {
+        let mut moved = false;
+        self.loaders.retain(|session, line| {
+            if kept.contains(session) {
+                return true;
+            }
+            let held = line.first().is_some_and(|first| first == label);
+            line.retain(|loader| loader != label);
+            moved |= held && !line.is_empty();
+            !line.is_empty()
+        });
+        moved
+    }
+    /// Window `label` has loaded `sessions`, in place of its last report.
+    /// Returns the ones another window holds, with that window, and whether
+    /// a session this window dropped passed to another window.
+    fn load(&mut self, label: &str, sessions: HashSet<String>) -> (HashMap<String, String>, bool) {
+        let moved = self.release(label, &sessions);
+        self.hold(label, sessions.iter().cloned());
+        let elsewhere = sessions
+            .into_iter()
+            .filter_map(|session| {
+                let holder = self.held_elsewhere(&session, label)?;
+                Some((session, holder))
+            })
+            .collect();
+        (elsewhere, moved)
     }
     /// Authorizes `turn` of `session`. Returns the turn it replaces when that
     /// is another turn, which no one finished: its window reloaded (design
@@ -225,18 +274,18 @@ impl Inner {
         session: &str,
         mut turn: ActiveTurn,
     ) -> Result<Option<ActiveTurn>, String> {
+        // Its close or reload never looks at another window's turn or `next`,
+        // so a turn from another window would outlive it.
+        if self.held_elsewhere(session, &turn.window).is_some() {
+            return Err(HELD_ELSEWHERE.into());
+        }
         // A MonoCode turn the window already ended: the run waits for its end.
-        // Only that window may queue it: its close or reload never looks at
-        // `next`, so a turn queued from another window would outlive it.
         if turn.started_by == StartedBy::Harness {
             if let Some(running) = self
                 .active
                 .get_mut(session)
                 .filter(|running| running.started_by == StartedBy::MonoCode)
             {
-                if running.window != turn.window {
-                    return Err("Another window runs this session's turn.".into());
-                }
                 running.next = Some(Box::new(turn));
                 return Ok(None);
             }
@@ -278,7 +327,6 @@ impl Inner {
     /// over, and it has loaded nothing until it reports again (PR 4a review
     /// m11).
     fn boot_window(&mut self, label: &str) -> Vec<(String, ActiveTurn)> {
-        self.loaded.remove(label);
         let mut ids: Vec<String> = self
             .active
             .iter()
@@ -292,7 +340,6 @@ impl Inner {
     }
     /// Returns the turns it drops.
     fn close_window(&mut self, label: &str) -> Vec<(String, ActiveTurn)> {
-        self.loaded.remove(label);
         let ids = self.window_sessions(label);
         self.grants.retain(|id, _| !ids.contains(id));
         self.app_grants.retain(|id, _| !ids.contains(id));
@@ -325,6 +372,15 @@ impl ControlHost {
             .lock()
             .map(|inner| inner.route_owner(session, caller))
             .unwrap_or_else(|_| caller.to_string())
+    }
+
+    /// ADE-140: the window that restores the earlier run (ADE-93) holds the
+    /// chats it restores from the moment it reads them, so a window that
+    /// boots beside it and reports first does not take them.
+    pub(crate) fn hold_restored(&self, label: &str, sessions: impl IntoIterator<Item = String>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.hold(label, sessions);
+        }
     }
 
     /// Sessions with an authorized MonoCode turn, each with that turn's id:
@@ -789,18 +845,46 @@ fn authorize_turn(
     ))
 }
 
-/// A window reports the sessions it has loaded, for [`Inner::route_owner`].
+pub(crate) const HELD_ELSEWHERE: &str = "Another window has this chat open.";
+
+/// A window reports the sessions it has loaded (ADE-140). Returns the ones
+/// another window holds, with that window: this window binds none of them.
 #[tauri::command]
-pub fn control_loaded_sessions(
-    window: WebviewWindow,
+pub fn control_loaded_sessions<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
     host: State<'_, ControlHost>,
     sessions: Vec<String>,
-) {
-    if let Ok(mut inner) = host.inner.lock() {
-        inner
-            .loaded
-            .insert(window.label().to_string(), sessions.into_iter().collect());
+) -> Result<HashMap<String, String>, String> {
+    let (elsewhere, moved) = host
+        .inner
+        .lock()
+        .map_err(|_| "Control service unavailable")?
+        .load(window.label(), sessions.into_iter().collect());
+    let mut notices = Notices::default();
+    notices.holds = moved;
+    notices.emit(&app);
+    Ok(elsewhere)
+}
+
+/// ADE-140: a harness child of `session` starts only in the window that
+/// holds the chat, or when no window does.
+pub(crate) fn refuse_held_elsewhere<R: Runtime>(
+    app: &AppHandle<R>,
+    session: &str,
+    label: &str,
+) -> Result<(), String> {
+    let Some(host) = app.try_state::<ControlHost>() else {
+        return Ok(());
+    };
+    let inner = host
+        .inner
+        .lock()
+        .map_err(|_| "Control service unavailable")?;
+    if inner.held_elsewhere(session, label).is_some() {
+        return Err(HELD_ELSEWHERE.into());
     }
+    Ok(())
 }
 
 /// The registry's `finally` for turn `turn_id` of the session.
@@ -866,7 +950,11 @@ fn kill_session(
 /// that `active` gives it is left from before a reload. Awaited before the
 /// window loads any session.
 #[tauri::command(async)]
-pub fn control_window_booted(app: AppHandle, window: WebviewWindow, host: State<'_, ControlHost>) {
+pub fn control_window_booted<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    host: State<'_, ControlHost>,
+) {
     boot_window(
         &host.inner,
         &app.state::<SessionStore>(),
@@ -882,15 +970,19 @@ fn boot_window(
     label: &str,
     harness: &HarnessHost,
 ) -> Notices {
-    let ended = match inner.lock() {
-        Ok(mut inner) => inner.boot_window(label),
-        Err(_) => Vec::new(),
+    let (ended, moved) = match inner.lock() {
+        Ok(mut inner) => (
+            inner.boot_window(label),
+            inner.release(label, &HashSet::new()),
+        ),
+        Err(_) => (Vec::new(), false),
     };
     for (session, _) in &ended {
         harness.kill_session_tree(session);
     }
     let mut notices = end_turns(store, ended);
     notices.merge(release_window_slots(store, label));
+    notices.holds |= moved;
     notices
 }
 
@@ -1005,7 +1097,7 @@ fn forget_session(
     end_turns(store, ended.map(|turn| (session.to_string(), turn)))
 }
 
-pub fn window_closed(app: &AppHandle, label: &str) {
+pub fn window_closed<R: Runtime>(app: &AppHandle<R>, label: &str) {
     close_window(
         &app.state::<ControlHost>().inner,
         &app.state::<SessionStore>(),
@@ -1033,12 +1125,16 @@ fn close_window(
     for id in &ids {
         harness.kill_session_tree(id);
     }
-    let ended = match inner.lock() {
-        Ok(mut inner) => inner.close_window(label),
-        Err(_) => Vec::new(),
+    let (ended, moved) = match inner.lock() {
+        Ok(mut inner) => (
+            inner.close_window(label),
+            inner.release(label, &HashSet::new()),
+        ),
+        Err(_) => (Vec::new(), false),
     };
     let mut notices = end_turns(store, ended);
     notices.merge(release_window_slots(store, label));
+    notices.holds |= moved;
     notices
 }
 
@@ -1627,8 +1723,7 @@ pub(crate) mod tests {
         inner
             .lock()
             .unwrap()
-            .loaded
-            .insert("reloaded".into(), ["was-loaded".to_string()].into());
+            .load("reloaded", ["was-loaded".to_string()].into());
         let (to_a, to_giga, waiting, other) = {
             let conn = store.lock_conn().unwrap();
             let to_giga = sent(&conn, ("mono-a", "a-chat"), "giga", "to-giga", true);
@@ -1715,9 +1810,7 @@ pub(crate) mod tests {
     fn a_mono_message_route_runs_in_the_window_that_runs_or_holds_its_session() {
         let mut inner = Inner::default();
         assert_eq!(inner.route_owner("s", "caller"), "caller");
-        inner
-            .loaded
-            .insert("other".into(), ["s".to_string()].into_iter().collect());
+        inner.load("other", ["s".to_string()].into());
         assert_eq!(inner.route_owner("s", "caller"), "other");
         inner.active.insert(
             "s".into(),
@@ -1733,6 +1826,7 @@ pub(crate) mod tests {
         assert_eq!(inner.route_owner("s", "caller"), "runner");
         inner.active.remove("s");
         inner.close_window("other");
+        inner.release("other", &HashSet::new());
         assert_eq!(inner.route_owner("s", "caller"), "caller");
     }
 
@@ -1743,16 +1837,13 @@ pub(crate) mod tests {
     fn two_windows_with_a_session_loaded_agree_on_one_owner() {
         let mut inner = Inner::default();
         for label in ["second", "main"] {
-            inner.loaded.insert(
-                label.into(),
-                ["giga-chat".to_string()].into_iter().collect(),
-            );
+            inner.load(label, ["giga-chat".to_string()].into());
         }
         let owners: Vec<&str> = ["main", "second", "third"]
             .into_iter()
             .filter(|window| inner.route_owner("giga-chat", window) == *window)
             .collect();
-        assert_eq!(owners, ["main"]);
+        assert_eq!(owners, ["second"], "the first window to load it");
     }
     #[test]
     fn app_tokens_are_bound_to_active_turns_and_cannot_control_orchestration() {

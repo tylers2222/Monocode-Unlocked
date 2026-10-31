@@ -905,6 +905,11 @@ import {
   reapWindowRuntime,
   setQuitWorkspace,
 } from "./model/appLifecycle";
+import {
+  holderElsewhere,
+  listenForHoldChanges,
+  reportLoadedSessions,
+} from "./model/windowHolds";
 
 const SearchView = lazySurface(
   async () => {
@@ -4623,6 +4628,10 @@ function Workspace({
         return null;
       }
       loadedSessionCache.current.delete(sessionId);
+      await reportLoadedSessions([
+        ...sessionsRef.current.map((session) => session.id),
+        sessionId,
+      ]).catch(console.error);
       const appeared = sessionsRef.current.find(
         (session) => session.id === sessionId,
       );
@@ -4630,7 +4639,8 @@ function Workspace({
       if (
         !restored.worktreeRemoved &&
         restored.providerSessionId &&
-        isLiveHarness(restored.harness)
+        isLiveHarness(restored.harness) &&
+        !holderElsewhere(sessionId)
       ) {
         bindHarnessSession(
           restored.harness,
@@ -9348,7 +9358,12 @@ function Workspace({
         continue;
       }
       const next = nextSend(session, mono);
-      if (!next || queueDispatchingRef.current.has(session.id)) continue;
+      if (
+        !next ||
+        queueDispatchingRef.current.has(session.id) ||
+        holderElsewhere(session.id)
+      )
+        continue;
       queueDispatchingRef.current.add(session.id);
       scheduled.add(session.id);
       timers.push(
@@ -9477,14 +9492,26 @@ function Workspace({
     const report = [...loaded].sort().join("\n");
     if (report !== reportedSessions.current) {
       reportedSessions.current = report;
-      void invoke("control_loaded_sessions", { sessions: [...loaded] }).catch(
-        console.error,
-      );
+      void reportLoadedSessions(loaded).catch(console.error);
     }
     monoLoads.keep(loaded);
     for (const id of loaded) void monoLoads.of(id);
   }, [sessions, monoLoads]);
   useEffect(() => listenForMonoNotices(monoQueue), [monoQueue]);
+  // A chat this window takes from a window that let go of it (ADE-140 A3).
+  useEffect(
+    () =>
+      listenForHoldChanges(
+        () => sessionsRef.current.map((session) => session.id),
+        (taken) => {
+          bindResumedSessions(
+            sessionsRef.current.filter((session) => taken.includes(session.id)),
+          );
+          setQueueDispatchVersion((value) => value + 1);
+        },
+      ),
+    [],
+  );
 
   const onDeleteQueuedMessage = useCallback(
     (sessionId: string, messageId: string) => {

@@ -13,7 +13,7 @@ use std::path::{Component, Path, PathBuf};
 
 use tauri::Manager;
 
-use super::agent_sandbox::{mock_app, script, wait_for};
+use super::agent_sandbox::{main_window, mock_app, script, wait_for};
 use crate::claude_deny::{args_in, srt_deny_in};
 use serde_json::json;
 
@@ -847,12 +847,14 @@ fn harness_spawn_child() {
     let claude = tools.join("claude").to_string_lossy().into_owned();
     let data = root.join("com.monocode.d4");
     let app = mock_app(&data);
+    let window = main_window(&app);
     std::fs::create_dir_all(&data).unwrap();
     let spawn = |session: &str, account: Option<crate::harness::HarnessAccount>| {
         let workdir = root.join(session);
         std::fs::create_dir_all(&workdir).unwrap();
         crate::harness::harness_spawn(
             app.handle().clone(),
+            window.clone(),
             app.state::<crate::harness::HarnessHost>(),
             session.into(),
             claude.clone(),
