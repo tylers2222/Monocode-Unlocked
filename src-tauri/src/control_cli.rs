@@ -170,16 +170,16 @@ upward send gets upward_needs_ask, before steer_scope_not_allowed or
 session_cannot_wait. On that ask it is only intent "new" (a steer with
 reply_to gets upward_steer_forbidden, one with scope steer_scope_not_allowed);
 use messages.question (blocked true when you cannot go on), messages.update
-and messages.ack. Until
-/operator is typed in it, a session that sessions.start started cannot start
-a session with a more permissive runtimeMode, and as a lead it may only list
-models, sessions and worktrees, create worktrees, start workers, and read,
-send to, draft in, stop, archive or delete its own workers; its other
-actions, except messages.*, get lead_scope. A session's level comes only
-from MonoCode's saved session, never from the call. MonoCode saves a session
-before its first turn with app access, so only a session it never saves
-(outside a project on this Mac) could call with none: it gets unknown_caller.
-A Mono chat or habit run whose Mono is gone gets not_a_mono.
+and messages.ack. No caller can start a session with a more permissive
+runtimeMode than its own. Until /operator is typed in it, a session that
+sessions.start started may, as a lead, only list models, sessions and
+worktrees, create worktrees, start workers, and read, send to, draft in,
+stop, archive or delete its own workers; its other actions, except
+messages.*, get lead_scope. A session's level comes only from MonoCode's
+saved session, never from the call. MonoCode saves a session before its first
+turn with app access, so only a session it never saves (outside a project on
+this Mac) could call with none: it gets unknown_caller. A Mono chat or habit
+run whose Mono is gone gets not_a_mono.
 
 Actions:
   models.list    {}  Available providers, models, settings and permission modes.
@@ -253,8 +253,8 @@ Actions:
                   Giga's own gigas/<slug>/ folder and can commit there; pass
                   the project path as worktreeCwd to run at its root. Omit
                   runtimeMode to inherit this
-                  session's permission mode; set it to override (see Levels
-                  for a session that sessions.start started). Run
+                  session's permission mode; set it to the same or a less
+                  permissive mode (see Levels). Run
                   models.list for allowed IDs. cwd is your project; no attachments.
                   Set mcp:"none" (omp only) to start the session without the
                   MCP servers omp would load, also when it resumes; the default

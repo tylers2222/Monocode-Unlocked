@@ -1037,6 +1037,7 @@ describe("agent app commands", () => {
 
   it("starts a submitted tab with explicit model, effort, permissions and workspace", async () => {
     const { source, host } = fixture();
+    source.runtimeMode = "full-access";
     const result = await handleAgentApp(
       source,
       "request-1",
@@ -1381,11 +1382,11 @@ describe("agent app commands", () => {
       source,
       "explicit-mode",
       "sessions.start",
-      { ...CHOICE, prompt: "Review this", runtimeMode: "full-access" },
+      { ...CHOICE, prompt: "Review this", runtimeMode: "supervised" },
       host,
     );
     expect(host.start).toHaveBeenLastCalledWith(
-      expect.objectContaining({ runtimeMode: "full-access" }),
+      expect.objectContaining({ runtimeMode: "supervised" }),
       "app-lead-explicit-mode",
     );
   });

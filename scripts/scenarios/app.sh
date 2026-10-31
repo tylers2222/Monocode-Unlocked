@@ -27,6 +27,9 @@
 #                             two exits with no quit save (MODE kill or
 #                             term, or two: kill with two windows, after
 #                             build-two) and arrives once
+#   app.sh ceiling            ADE-165: an auto Mono's full-access start is
+#                             refused and its plain start runs auto; a
+#                             full-access Giga's full-access start runs
 #
 # GIGA_EVAL_OUT and GIGA_EVAL_HOME default to their own /tmp folders, apart
 # from other GigaEval runs. The installed apps are never used; `approvals`
@@ -667,6 +670,60 @@ run_r11() {
   "$INSTANCE" stop
   return "$FAILED"
 }
+# ADE-165, design 6.6: an agent starts nothing more permissive than itself.
+# The Giga's habit asks the Mono, whose chat is auto; the Mono asks for a
+# full-access child (refused) and one with no runtimeMode (auto), then asks
+# the Giga, whose chat is full-access, for a full-access child (allowed).
+# The rules for the chats' messages come before the habit's and the
+# children's, so a prompt that quotes another rule's text still runs its own.
+CEILING_START='{"harness": "fx", "model": "fx:zai/glm-5.2-fast", "notifyOnComplete": false}'
+CEILING_RULES='[
+  {"match": "CEIL-GIGA", "calls": [{"action": "sessions.start", "arguments":
+    ($start + {"prompt": "CEIL-KID-FULL You are the full-access child.", "runtimeMode": "full-access"})}],
+    "reply": "Started."},
+  {"match": "CEIL-MONO", "calls": [
+    {"action": "sessions.start", "arguments":
+      ($start + {"prompt": "CEIL-KID-RAISED You are the raised child.", "runtimeMode": "full-access"})},
+    {"action": "sessions.start", "arguments": ($start + {"prompt": "CEIL-KID-AUTO You are the inherited child."})},
+    {"tool": "send_message", "arguments":
+      {"message": "CEIL-GIGA Start a full-access session.", "send_to": "ceiling-giga", "wanting_reply": false, "intent": "new"}}],
+    "reply": "Started."},
+  {"match": "CEIL-HABIT", "calls": [{"tool": "ask", "arguments":
+    {"message": "CEIL-MONO Start your sessions.", "send_to": "ceiling-mono"}}], "reply": "Asked."},
+  {"match": "CEIL-KID", "reply": "Ready."}]'
+
+# The mode and caller of the session that Mono `$1` started (one per line).
+ceiling_starts() {
+  q "SELECT s.runtime_mode || ' ' || (m.from_session_id = json_extract(o.data_json, '\$.sessionId'))
+       FROM mono_messages m JOIN sessions s ON s.id = m.to_session_id JOIN monos o ON o.id = m.from_mono_id
+       WHERE m.tool = 'start_session' AND m.from_mono_id = '$1' ORDER BY m.created_at"
+}
+
+run_ceiling() {
+  FAILED=0
+  log "ceiling run"
+  fresh_pair ceiling
+  # The e2e job uploads $GIGA_EVAL_OUT/*.log: every prompt and call, pass or fail.
+  trap 'cp "$PUPPET/log.jsonl" "$EVAL_OUT/ceiling-puppet.log"' EXIT
+  sqlite3 "$DB" "UPDATE sessions SET runtime_mode = 'full-access'
+    WHERE id = (SELECT json_extract(data_json, '\$.sessionId') FROM monos WHERE id = 'ceiling-giga')"
+  jq -n --arg app "$(target_bin instance)" --argjson start "$CEILING_START" "{app: \$app, rules: $CEILING_RULES}" >"$PUPPET/script.json"
+  request_habit ceiling-giga "Ask for sessions" "CEIL-HABIT: ask Ceiling Mono to start its sessions."
+  "$INSTANCE" start
+  wait_until 120 "the Giga starts its child" \
+    holds "SELECT count(*) = 1 FROM mono_messages WHERE tool = 'start_session' AND from_mono_id = 'ceiling-giga'"
+  wait_until 60 "the children get their first prompts" saw CEIL-KID
+  echo "ceiling readings:"
+  expect "the auto Mono's full-access start: ok, names its own mode" \
+    "$(jq -rs --arg want "runtimeMode cannot be more permissive than this session's (auto)" \
+      '[.[] | select(.action == "sessions.start" and (.input.prompt | startswith("CEIL-KID-RAISED")))]
+       | map("\(.result.ok) \(.result.error // "" | contains($want))") | join(",")' "$PUPPET/log.jsonl")" \
+    "false true"
+  expect "the auto Mono's children: mode, started from its chat" "$(ceiling_starts ceiling-mono)" "auto 1"
+  expect "the full-access Giga's children: mode, started from its chat" "$(ceiling_starts ceiling-giga)" "full-access 1"
+  "$INSTANCE" stop
+  return "$FAILED"
+}
 source "$SCENARIOS/approvals.sh"
 # ADE-89: run_ade89 and its helpers.
 source "$SCENARIOS/../../tests/scenarios/ade89.sh"
@@ -686,6 +743,7 @@ case "${1:-}" in
   r6) run_r6 ;;
   r9) run_r9 ;;
   r11) run_r11 ;;
+  ceiling) run_ceiling ;;
   s0)
     failed=0
     for run in $(seq 1 "${2:-1}"); do "$0" s0-run "$run" || failed=$((failed + 1)); done
@@ -710,5 +768,5 @@ case "${1:-}" in
     for run in $(seq 1 "${3:-1}"); do "$0" ade89-run "$2" "$run" || failed=$((failed + 1)); done
     log "ADE-89 $2: $(( ${3:-1} - failed ))/${3:-1} passed"
     ((failed == 0)) ;;
-  *) sed -n '2,33p' "$0"; exit 2 ;;
+  *) sed -n '2,36p' "$0"; exit 2 ;;
 esac
