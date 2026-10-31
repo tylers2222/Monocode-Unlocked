@@ -285,6 +285,7 @@ createRoot(document.getElementById("root")!).render(
     }}
   >
     <App
+      monoCompletions={[]}
       resumed={
         params.has("empty")
           ? null

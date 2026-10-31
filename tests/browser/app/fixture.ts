@@ -72,6 +72,9 @@ export async function mount(
         configurable: true,
         get: () => platform,
       });
+      // Upstream's "Try the Focused layout" invitation covers the title bar;
+      // layout-opt-in.spec.ts tests it without this fixture.
+      localStorage.setItem("monocode.newLayoutPromptDismissed", "1");
       window.appBackendSeed = seed;
       window.appBackendCannotSteer = cannotSteer;
       window.appBackendHandlers = Object.fromEntries(
