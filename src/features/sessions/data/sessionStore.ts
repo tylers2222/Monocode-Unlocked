@@ -739,6 +739,23 @@ async function repairClaudeShellCommands(
   }
 }
 
+/** Relabels Codex shell placeholders from the commands saved on the row, in place. */
+async function repairCodexShellCommands(
+  session: Session,
+  persist: boolean,
+): Promise<void> {
+  if (session.harness !== "codex") return;
+  // Relabel from the command already saved on the row. Codex sends it with
+  // the item and `shellCommandPreview` stores it as the preview title, so
+  // this needs no disk read at all.
+  const blocks = backfillCodexShellCommands(session.blocks);
+  if (blocks === session.blocks) return;
+  session.blocks = blocks;
+  // A failed write must not cost the reader the session. The repair stays
+  // in memory and the next load retries it.
+  if (persist) await upsertSession(session).catch(() => undefined);
+}
+
 /** A progressive caller publishes the repair against current state before persisting. */
 export async function repairSession(
   source: Session,
@@ -746,18 +763,7 @@ export async function repairSession(
 ): Promise<Session> {
   const session = { ...source };
   await repairClaudeShellCommands(session, persist);
-  if (session.harness === "codex") {
-    // Relabel from the command already saved on the row. Codex sends it with
-    // the item and `shellCommandPreview` stores it as the preview title, so
-    // this needs no disk read at all.
-    const blocks = backfillCodexShellCommands(session.blocks);
-    if (blocks !== session.blocks) {
-      session.blocks = blocks;
-      // A failed write must not cost the reader the session. The repair stays
-      // in memory and the next load retries it.
-      if (persist) await upsertSession(session).catch(() => undefined);
-    }
-  }
+  await repairCodexShellCommands(session, persist);
   if (session.harness !== "omp" || !session.providerSessionId) {
     return recoverCursorSubagents(session);
   }

@@ -65,10 +65,10 @@ mod rate_limits;
 mod reminders;
 mod remote;
 mod remote_ssh;
+mod resources;
 #[cfg(test)]
 #[path = "tests/scenario/mod.rs"]
 mod scenario;
-mod resources;
 mod search;
 mod session_store;
 mod skills;
