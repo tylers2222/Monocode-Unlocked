@@ -30,6 +30,7 @@ SCENARIOS=(
   "r11|build|"
   "ade89 kill|build|"
   "ade89 term|build|"
+  "ceiling|build|"
   "approvals|build|reads a copy of the real app database, which a CI runner does not have"
   "ade89 two|build-two|ADE-152 and PR #413: 12/20, notices lost before the agent gets them; the 20x dispatch runs it"
 )

@@ -660,20 +660,22 @@ it("starts a supervised worker from a started lead in auto, stamped with its cal
   );
 });
 
-// Design 6.6: the ceiling binds only started access. Defect: an /operator
-// lead, whose access the user granted, cannot start a more permissive worker.
-it("lets an /operator lead in supervised start a full-access worker", async () => {
+// Design 6.6: the ceiling binds every agent, not only started access
+// (ADE-165). Defect: an /operator lead in supervised starts a full-access
+// worker, so an agent raises its own reach.
+it("refuses a full-access worker from an /operator lead in supervised", async () => {
   const { run, actions, sessions } = world("lead");
   sessions.get("lead")!.runtimeMode = "supervised";
-  await run("sessions.start", {
-    ...CHOICE,
-    prompt: "Deploy",
-    runtimeMode: "full-access",
-  });
-  expect(actions.start).toHaveBeenCalledWith(
-    expect.objectContaining({ runtimeMode: "full-access" }),
-    "app-lead-r1",
+  await expect(
+    run("sessions.start", {
+      ...CHOICE,
+      prompt: "Deploy",
+      runtimeMode: "full-access",
+    }),
+  ).rejects.toThrow(
+    "runtimeMode cannot be more permissive than this session's (supervised)",
   );
+  expect(actions.start).not.toHaveBeenCalled();
 });
 
 // Design 6.6 runtime ceiling, its boundary. Defect: the ceiling refuses the
