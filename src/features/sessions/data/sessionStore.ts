@@ -715,31 +715,37 @@ export async function loadToolDetail(
   return detail;
 }
 
+/** Relabels Claude shell placeholders from the provider transcript, in place. */
+async function repairClaudeShellCommands(
+  session: Session,
+  persist: boolean,
+): Promise<void> {
+  if (session.harness !== "claude" || !session.providerSessionId) return;
+  const toolIds = shellPlaceholderIds(session.blocks);
+  if (!toolIds.length) return;
+  try {
+    const commands = await claudeShellCommands(
+      session.providerSessionId,
+      session.providerAccountId,
+      toolIds,
+    );
+    const blocks = backfillClaudeShellCommands(session.blocks, commands);
+    if (blocks !== session.blocks) {
+      session.blocks = blocks;
+      if (persist) await upsertSession(session);
+    }
+  } catch {
+    // A missing or unreadable Claude transcript must not block the session.
+  }
+}
+
 /** A progressive caller publishes the repair against current state before persisting. */
 export async function repairSession(
   source: Session,
   { persist = true }: { persist?: boolean } = {},
 ): Promise<Session> {
   const session = { ...source };
-  if (session.harness === "claude" && session.providerSessionId) {
-    const toolIds = shellPlaceholderIds(session.blocks);
-    if (toolIds.length) {
-      try {
-        const commands = await claudeShellCommands(
-          session.providerSessionId,
-          session.providerAccountId,
-          toolIds,
-        );
-        const blocks = backfillClaudeShellCommands(session.blocks, commands);
-        if (blocks !== session.blocks) {
-          session.blocks = blocks;
-          if (persist) await upsertSession(session);
-        }
-      } catch {
-        // A missing or unreadable Claude transcript must not block the session.
-      }
-    }
-  }
+  await repairClaudeShellCommands(session, persist);
   if (session.harness === "codex") {
     // Relabel from the command already saved on the row. Codex sends it with
     // the item and `shellCommandPreview` stores it as the preview title, so

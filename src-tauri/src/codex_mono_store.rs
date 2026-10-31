@@ -424,7 +424,6 @@ fn copy_rollouts(
     copy_rollouts_with_edges(source, home, thread_id, paths, &[])
 }
 
-#[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 fn copy_rollouts_with_edges(
     source: &Path,
     home: &Path,

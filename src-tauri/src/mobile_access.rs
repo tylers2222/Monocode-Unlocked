@@ -685,6 +685,7 @@ fn enroll(
         json!({"deviceId":id,"name":crate::mobile_access::name(),"fingerprint":inner.identity.as_ref().unwrap().fingerprint()?,"addresses":addresses(inner)}),
     )
 }
+#[expect(clippy::too_many_lines, reason = "upstream import ADE-163 (b9ab5065)")]
 async fn handle(
     app: &AppHandle,
     host: &MobileHost,
