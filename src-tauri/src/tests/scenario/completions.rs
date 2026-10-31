@@ -719,10 +719,11 @@ fn a_kill_between_the_noticed_hold_and_the_mono_chat_save_loses_nothing() {
 }
 
 /// #413 review r2 M1, as the window calls the commands: a kill cuts the
-/// notice's turn before the agent writes. On the relaunch the interrupt note
-/// ends that turn and the Mono's auto Continue opens the next one, whose
-/// reply is saved. That reply is not the notice's, so a second kill still
-/// gives the notice back, and only its own turn's reply delivers it.
+/// notice's turn before the agent writes. On the relaunch the Mono's auto
+/// Continue is saved as the app saves it, queued (`sentAt` only), so only the
+/// interrupt note ends the notice's turn; a turn the user opens ends it too.
+/// A later turn's reply is not the notice's, so a second kill still gives the
+/// notice back, and only its own turn's reply delivers it.
 #[cfg(not(windows))]
 #[test]
 fn a_later_turns_reply_does_not_deliver_a_cut_notice() {
@@ -748,7 +749,7 @@ fn a_later_turns_reply_does_not_deliver_a_cut_notice() {
     let continued = [
         notice.clone(),
         json!({ "id": "cut", "role": "system", "text": "Turn interrupted when MonoCode quit.", "notice": "interrupt" }),
-        json!({ "id": "continue", "role": "user", "text": "Continue from where you left off.", "sentAt": 1, "startedAt": 1 }),
+        json!({ "id": "continue", "role": "user", "text": "Continue from where you left off.", "sentAt": 1 }),
         reply("continue-reply"),
     ];
     call(&main, "mono_session_upsert", chat_save(&continued));
@@ -756,6 +757,17 @@ fn a_later_turns_reply_does_not_deliver_a_cut_notice() {
         (rows(&world), marks(&world)),
         (1, 0),
         "the Continue turn's reply does not deliver the cut notice"
+    );
+    let typed = [
+        notice.clone(),
+        json!({ "id": "typed", "role": "user", "text": "Next task.", "sentAt": 2, "startedAt": 2 }),
+        reply("typed-reply"),
+    ];
+    call(&main, "mono_session_upsert", chat_save(&typed));
+    assert_eq!(
+        (rows(&world), marks(&world)),
+        (1, 0),
+        "the reply to a turn the user opened does not deliver the notice either"
     );
     drop(app);
 
