@@ -108,7 +108,7 @@ void Promise.all([
     ,
     ,
     ,
-    { resumed, history, historyCwd },
+    { resumed, monoCompletions, history, historyCwd },
     { default: App },
   ]) => {
     performance.mark("monocode:workspace-ready");
@@ -118,6 +118,7 @@ void Promise.all([
         <BootGate>
           <App
             resumed={resumed}
+            monoCompletions={monoCompletions}
             installedUpdate={installedUpdate}
             history={history}
             historyCwd={historyCwd}

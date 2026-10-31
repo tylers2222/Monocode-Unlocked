@@ -5,6 +5,7 @@ export default defineConfig({
   // tests/**/*.test.ts are vitest unit tests of the browser rigs.
   testMatch: "**/*.spec.ts",
   workers: 1,
+  globalSetup: "./tests/browser/global-setup.ts",
   use: {
     baseURL: "http://127.0.0.1:1435",
     viewport: { width: 1000, height: 800 },

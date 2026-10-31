@@ -97,12 +97,13 @@ impl SessionStore {
             .map_err(|_| "Session store is locked".into())
     }
 
-    /// Claims the earlier run's snapshot rows and in-flight chats for `window`
-    /// when no window has claimed them yet, and returns whether `window` holds
-    /// them: the first window that asks in this run does, on every
-    /// ask. A second window that restored them too would bind the same chats,
-    /// and its turn on one would end the first window's turn (ADE-93).
-    fn claim_earlier_run(&self, window: &str) -> bool {
+    /// Claims the earlier run's snapshot rows, in-flight chats and Mono
+    /// completion results for `window` when no window has claimed them yet,
+    /// and returns whether `window` holds them: the first window that asks in
+    /// this run does, on every ask. A second window that restored them too
+    /// would bind the same chats, and its turn on one would end the first
+    /// window's turn (ADE-93).
+    pub(crate) fn claim_earlier_run(&self, window: &str) -> bool {
         self.restorer.get_or_init(|| window.to_owned()) == window
     }
 

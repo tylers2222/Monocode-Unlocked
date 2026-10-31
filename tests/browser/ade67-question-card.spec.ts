@@ -9,6 +9,7 @@ import { bridgeOmp, needsOmp, ompHandlers } from "./app/ompBridge";
 const HOME = "/Users/test";
 const GIGA_CHAT = "giga-chat";
 const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 const QUESTION = "Spend a saved Claude rate-limit reset?";
 /**
  * The card's first appearance waits on a real omp starting: on a CI runner
@@ -154,8 +155,12 @@ async function expectAnswered(page: Page, omp: OmpBridge, choice: "No" | "Skip")
   ).toHaveCount(0);
 }
 
-/** Starts Atlas's habit run with Run now and opens the run's tab at its question. */
-async function startHabitRun(page: Page, app: AppShell) {
+/**
+ * Starts Atlas's habit run with Run now and opens the run's tab at its
+ * question. With `pause`, the page clock stops at Run now, before omp can ask,
+ * so the run checks on itself only when the test moves the clock.
+ */
+async function startHabitRun(page: Page, app: AppShell, { pause = false } = {}) {
   await page.clock.install({ time: new Date("2026-10-20T09:15:00Z") });
   await app.mount(ATLAS_SEED, { handlers: habitHandlers });
   await page.getByRole("button", { name: /^Atlas, / }).click();
@@ -163,6 +168,7 @@ async function startHabitRun(page: Page, app: AppShell) {
   const habit = page.locator('[data-habit="habit-1"]');
   await habit.hover();
   await habit.getByRole("button", { name: "Run now" }).click();
+  if (pause) await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
   await page.getByRole("tab", { name: "Sessions", exact: true }).click();
   await page.locator('[data-mono-session^="app-giga-chat-habit-"]').click();
   await expect(card(page)).toContainText(QUESTION, OMP_START);
@@ -229,25 +235,23 @@ for (const choice of ["No", "Skip"] as const) {
   });
 }
 
-test("a habit run stopped while it waits leaves no question card", async ({
+test("a habit run nobody answers stops at 12 hours of waiting, not before", async ({
   app,
   page,
-  browserName,
 }) => {
-  test.skip(
-    browserName === "webkit",
-    "21,600 fake-clock steps take over 5 min in WebKit; the stop logic does not depend on the browser, and chromium runs it",
-  );
-  // 21,600 checks of fake time; on the base the stop comes at the hour.
-  test.setTimeout(5 * MINUTE);
   const omp = await startOmp(page, app);
-  await startHabitRun(page, app);
-  // The run gives up on the user after 12 hours and stops; omp gets a skip.
-  await runChecks(page, 12 * 60 * MINUTE + MINUTE, () => omp.answers().length > 0);
-  // The stop can land in the loop's last steps; omp then still needs real
-  // time to read the cancel and record the skip.
+  await startHabitRun(page, app, { pause: true });
+  // Each jump fires the run's one pending 2 s check once, at the jump's end.
+  // This first check sees the question: the 12 h wait starts here.
+  await page.clock.fastForward(2_000);
+  await page.clock.fastForward(12 * HOUR - 2_000);
+  await expect(card(page), "2 s before 12 h the run still waits").toContainText(QUESTION);
+  expect(omp.answers(), "omp has no answer yet").toEqual([]);
+  // Exactly 12 h: this check stops the run. The clock stays put after it, so
+  // a run that waits one more check never stops.
+  await page.clock.fastForward(2_000);
   await expect
-    .poll(() => omp.answers(), { message: "the stop skips omp's question", timeout: 5_000 })
+    .poll(omp.answers, "the stop at 12 h skips omp's question")
     .toEqual([{ choice: null }]);
   await expect(card(page), "the card goes with the question").toHaveCount(0);
   await expect(page.getByText(/Waiting for answers/)).toHaveCount(0);
@@ -261,4 +265,8 @@ test("a habit run stopped while it waits leaves no question card", async ({
       "the habit says why its run stopped (ADE-70)",
     )
     .toBe("Nobody answered it.");
+  // Just over 12 h: the run stays stopped and omp got one answer.
+  await page.clock.fastForward(2_000);
+  expect(omp.answers(), "the run answered omp once").toEqual([{ choice: null }]);
+  await expect(card(page)).toHaveCount(0);
 });

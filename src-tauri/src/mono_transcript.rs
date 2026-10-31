@@ -394,6 +394,7 @@ fn upsert_with_mode(
         params![session.id, has_user, draft],
     )?;
     summary.draft = draft;
+    crate::mono_completions::settle(&tx, Some(&session.id), session_store::now_millis())?;
     tx.commit()?;
     Ok(summary)
 }

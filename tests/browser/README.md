@@ -14,6 +14,8 @@ Each `<name>.html` loads a `<name>.tsx` that mounts one component with its own m
 2. Call `app.mount(seed, options)`. The seed fills the in-memory store (`home`, `projects`, `sessions`, `monos`, `automations`, `milestones`, `milestoneSettings`). The store adds the fields Rust always sends, such as a Mono's `name` and `sortOrder` or a session's `pinned`. `home` defaults to `/Users/test`; the other fields default to empty.
 3. Drive the UI with Playwright as a user would. `app-shell.spec.ts` is the example.
 
+Before the first test, `global-setup.ts` loads `app.html` once in each project's browser (Chromium, then WebKit). The first load makes Vite pre-bundle the deps and transform the whole app, and each first launch puts that browser's files in the OS cache, so this keeps those costs out of each CI shard's first test. The browser that runs the tests is a new process, so its own first page load is still cold.
+
 For a live update, change the store with `page.evaluate(() => window.appBackend!.store...)`, then call `app.emit(event, payload)` to send the Tauri event that the Rust side would send.
 
 For a second window, open another page in the same context and call the exported `mount(page, seed)` on it, after `page.exposeFunction("appBackendReport", …)`. Each page keeps its own store, so write the change into each page's store and emit the event in each. `milestones-page.spec.ts` lane 6 does this.
@@ -36,4 +38,4 @@ The fixture fails the test when the app sent a command that has no handler, or w
 
 ## Screenshots
 
-Save design-check screenshots with `page.screenshot({ path: test.info().outputPath("<name>.png") })`. They go to `test-results/<test>-<browser>/`. CI uploads `test-results/` as the `browser-test-results` artifact. Because `mount` renders the macOS app by default, CI shots on Linux show the macOS chrome. There are no `toHaveScreenshot` baselines. These shots are for comparing with the doop frames by eye, not a pixel gate, and Playwright keeps a separate baseline per OS, so each OS would need its own set.
+Save design-check screenshots with `page.screenshot({ path: test.info().outputPath("<name>.png") })`. They go to `test-results/<test>-<browser>/`. CI uploads each shard's `test-results/` as the `browser-test-results-<shard>` artifact. Because `mount` renders the macOS app by default, CI shots on Linux show the macOS chrome. There are no `toHaveScreenshot` baselines. These shots are for comparing with the doop frames by eye, not a pixel gate, and Playwright keeps a separate baseline per OS, so each OS would need its own set.

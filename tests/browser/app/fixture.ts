@@ -97,10 +97,14 @@ export async function mount(
   await booted(page);
 }
 
-async function booted(page: Page) {
-  // A cold Vite cache optimizes deps on the first load, which takes seconds.
+/**
+ * Waits for the booted app shell. A cold Vite cache optimizes deps on the
+ * first load, which takes seconds, and a dep it finds makes it reload the
+ * page, so this waits for the shell rather than the load event.
+ */
+export async function booted(page: Page, timeout = 30_000) {
   await expect(page.getByRole("button", { name: "Automations" })).toBeVisible({
-    timeout: 30_000,
+    timeout,
   });
 }
 

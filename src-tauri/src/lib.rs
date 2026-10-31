@@ -714,7 +714,7 @@ pub fn run() {
             mono_chat::mono_menu_bar_set_visible,
             mono_completions::mono_completions_claim,
             mono_completions::mono_completions_hold,
-            mono_completions::mono_completions_deliver,
+            mono_completions::mono_completions_dismiss,
             chat_background::save_chat_background,
             resources::resource_usage,
             resources::resource_processes,

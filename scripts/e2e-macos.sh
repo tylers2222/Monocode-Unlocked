@@ -13,8 +13,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/scripts/scenarios/app.sh"
 OUT=$1
 ROWS="$OUT/results.tsv"
+# app.sh's default, unless the job sets it.
+EVAL_HOME=${GIGA_EVAL_HOME:-/tmp/scenario-app-home}
 
-# command | the app.sh build it runs on | why CI skips it (empty: CI runs it)
+# command | the app.sh build it runs on | why CI skips it (empty: CI runs it).
+# A dispatch that names the command (scenario input) runs it anyway.
 SCENARIOS=(
   "home-isolation|build|"
   "s0|build|"
@@ -25,7 +28,10 @@ SCENARIOS=(
   "r6|build|"
   "r9|build|"
   "r11|build|"
+  "ade89 kill|build|"
+  "ade89 term|build|"
   "approvals|build|reads a copy of the real app database, which a CI runner does not have"
+  "ade89 two|build-two|ADE-152 and PR #413: 12/20, notices lost before the agent gets them; the 20x dispatch runs it"
 )
 
 row() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" >>"$ROWS"; }
@@ -47,6 +53,11 @@ run() {
   # screencapture -v never stopped on a hosted runner (run 40095797823 hung
   # until the job timed out; ADE-119), so this shot gets 20 s before SIGALRM.
   perl -e 'alarm 20; exec @ARGV' screencapture -x "${log%.log}-failed.png"
+  # The fx puppet's log and a copy of the instance database, to read the
+  # failure from the artifact (ADE-124). Both hold only the run's own data.
+  cp "$EVAL_HOME/.puppet/log.jsonl" "${log%.log}-puppet.jsonl" 2>/dev/null || true
+  sqlite3 "file:$EVAL_HOME/Library/Application Support/com.monocode.desktop.gigaeval/monocode.db?mode=ro" \
+    ".backup '${log%.log}-failed.db'" 2>/dev/null || true
   row "$suite" "$name" failed $((SECONDS - started)) \
     "exit $status: $(grep -m1 -E 'FAIL|ERROR' "$log" | tr '\t' ' ')"
   return 1
@@ -76,7 +87,7 @@ suite_scenarios() {
       row scenarios "$command" skipped 0 "not in this checkout's app.sh"
       continue
     fi
-    if [[ -n $skip ]]; then
+    if [[ -n $skip && -z $ONLY ]]; then
       row scenarios "$command" skipped 0 "$skip"
       continue
     fi
