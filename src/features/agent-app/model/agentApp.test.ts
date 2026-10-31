@@ -184,6 +184,7 @@ describe("agent app commands", () => {
   it("keeps sessions a regular /operator thread starts in the sidebar", async () => {
     const { source, host } = fixture();
     await handleAgentApp(source, "operator-launch", "sessions.start", {
+      ...CHOICE,
       prompt: "Write an article",
       notifyOnComplete: false,
     }, host);
