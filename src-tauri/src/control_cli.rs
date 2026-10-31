@@ -253,8 +253,8 @@ Actions:
                   Giga's own gigas/<slug>/ folder and can commit there; pass
                   the project path as worktreeCwd to run at its root. Omit
                   runtimeMode to inherit this
-                  session's permission mode; set it to override (see Levels
-                  for a session that sessions.start started). Run
+                  session's permission mode; set it to the same or a less
+                  permissive mode (see Levels). Run
                   models.list for allowed IDs. cwd is your project; no attachments.
                   Set mcp:"none" (omp only) to start the session without the
                   MCP servers omp would load, also when it resumes; the default
