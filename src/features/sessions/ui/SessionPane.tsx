@@ -81,6 +81,12 @@ import {
 } from "../../monos/model/mono";
 import { MonoHeader } from "../../monos/ui/MonoHeader";
 import { MonoComposer } from "../../monos/ui/MonoComposer";
+import {
+  goToHolder,
+  holdsSnapshot,
+  subscribeHolds,
+} from "../../../app/model/windowHolds";
+import { HeldElsewhereNotice } from "./HeldElsewhereNotice";
 import type { LaunchedSessionView } from "../../monos/model/monoSpawnedSessions";
 import { ModelControlPills, ModelPicker } from "./ModelPicker";
 import { ContextMeter } from "./ContextMeter";
@@ -700,7 +706,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
     (!draftBlock && (!isEmpty || inSplit || !!session.inboxAsk || !!agent));
   const composerDockMotion = useComposerDockMotion(dockComposer);
   const draftRef = useRef<string | undefined>(getComposerDraft(session.id));
-  const composer = (
+  // ADE-141: a chat another window holds shows a notice in place of the
+  // composer; that window runs its turns.
+  const held = useSyncExternalStore(subscribeHolds, holdsSnapshot);
+  const heldNotice = held.has(session.id) ? (
+    <HeldElsewhereNotice onGo={() => goToHolder(session.id)} />
+  ) : null;
+  const composer = heldNotice ?? (
     <Composer
       key={session.id}
       disabled={workspaceSwitchingSessionId === session.id}
@@ -1199,7 +1211,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
               inert={btw.open}
               className="mx-auto w-full max-w-4xl shrink-0"
             >
-              {agent ? (
+              {agent && !heldNotice ? (
                 <>
                   <MessageQueue
                     messages={monoQueueRows(session)}

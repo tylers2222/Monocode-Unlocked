@@ -224,7 +224,6 @@ const notInstalled: Handler = () => {
 const IGNORED = [
   "automation_runs_recover",
   "autosave_set_enabled",
-  "control_loaded_sessions",
   "control_window_booted",
   "harness_kill",
   "harness_kill_all",
@@ -709,6 +708,8 @@ const HANDLERS: Record<string, Handler> = {
   },
   automation_runs_list: empty,
   control_load: none,
+  // One window: no other window holds a chat (ADE-140).
+  control_loaded_sessions: () => ({}),
   control_owns_session: () => false,
   harness_runtime_binary_paths: () => ({}),
   harness_update_check_claim: () => false,

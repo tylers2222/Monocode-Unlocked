@@ -51,6 +51,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { holdsSnapshot, subscribeHolds } from "../model/windowHolds";
 import {
   loadSidebarTabOrder,
   saveSidebarTabOrder,
@@ -3502,25 +3503,33 @@ export const SessionCard = memo(function SessionCard({
     ? NO_BRANCH_LABEL
     : formatGitLabel(session.repo, session.branch);
   const time = formatRelative(session.updatedAt, now);
+  // ADE-141 A2: another window holds the chat and shows its live state.
+  const elsewhere = useSyncExternalStore(subscribeHolds, holdsSnapshot).has(
+    session.id,
+  );
   const headerRow = !(compact && !orchestrationExpanded) && !modelInFooter;
   const model =
     compact && !orchestrationExpanded
       ? null
       : resolveModel(session.harness, session.model).name;
-  const statusClass = needsApproval
-    ? "text-amber-400"
-    : busy
-      ? "text-accent"
-      : done
-        ? "text-emerald-400"
-        : draft
-          ? "text-content/55"
-          : "text-content/45";
+  const statusClass = elsewhere
+    ? "text-content/45"
+    : needsApproval
+      ? "text-amber-400"
+      : busy
+        ? "text-accent"
+        : done
+          ? "text-emerald-400"
+          : draft
+            ? "text-content/55"
+            : "text-content/45";
   const status = (
     <span
       className={`flex shrink-0 items-center gap-1 text-[11px] tabular-nums ${statusClass}`}
     >
-      {needsApproval ? (
+      {elsewhere ? (
+        <span>In another window</span>
+      ) : needsApproval ? (
         <>
           <CircleAlert className="size-3" strokeWidth={1.75} />
           <span>{orchestration ? "Needs input" : "Need approval"}</span>

@@ -98,7 +98,8 @@ type Props = {
    * The Mono filling the main area. It takes the tabs' place, and nothing
    * project-scoped belongs beside it.
    */
-  mono?: { look: MonoLook; state: MonoState };
+  /** `elsewhere`: another window holds the Mono's chat (ADE-140 A1). */
+  mono?: { look: MonoLook; state: MonoState; elsewhere: boolean };
   /** Shows or hides the Mono's overview panel beside its chat. */
   onToggleMonoOverview?: () => void;
   monoOverviewOpen?: boolean;
@@ -1019,7 +1020,11 @@ function TitleBarComponent({
         }`}
       >
         {mono ? (
-          <MonoTitle look={mono.look} state={mono.state} />
+          <MonoTitle
+            look={mono.look}
+            state={mono.state}
+            elsewhere={mono.elsewhere}
+          />
         ) : (
           <div
             className="relative h-full min-w-0 flex-1 overflow-hidden"
@@ -1145,7 +1150,15 @@ function TitleBarComponent({
 export const TitleBar = memo(TitleBarComponent);
 
 /** In a Mono's view the title bar names it and shows its status. */
-function MonoTitle({ look, state }: { look: MonoLook; state: MonoState }) {
+function MonoTitle({
+  look,
+  state,
+  elsewhere,
+}: {
+  look: MonoLook;
+  state: MonoState;
+  elsewhere: boolean;
+}) {
   return (
     <div
       data-mono-title
@@ -1164,10 +1177,12 @@ function MonoTitle({ look, state }: { look: MonoLook; state: MonoState }) {
       <span
         data-mono-status={state.status}
         className={`shrink-0 text-[12px] ${
-          state.status === "needs-you" ? "text-accent" : "text-content/45"
+          state.status === "needs-you" && !elsewhere
+            ? "text-accent"
+            : "text-content/45"
         }`}
       >
-        {MONO_STATUS_LABEL[state.status]}
+        {elsewhere ? "In another window" : MONO_STATUS_LABEL[state.status]}
       </span>
     </div>
   );
