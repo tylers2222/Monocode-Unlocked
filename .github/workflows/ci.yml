@@ -29,6 +29,17 @@ jobs:
     # (tyler/main 93094e67 run 40314640829, PR #361 run 40316396180);
     # the same suite passed on ubuntu-24.04 (runs 40300536386, 40293333880).
     runs-on: ubuntu-24.04
+    # The suite runs one test at a time (playwright.config.ts workers: 1), so it
+    # is split by spec file across runners. Each shard is its own runner, so specs
+    # that share state still never run side by side. Playwright cuts the file list
+    # into blocks of equal test count, not equal time, so the slow real-omp specs
+    # near the start make shard 1 the long pole (PR #415 run 40834837758). The
+    # saves below run on shard 1 only, so the shards do not race to write one key.
+    name: browser (${{ matrix.shard }}/${{ strategy.job-total }})
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
     permissions:
       contents: read
     steps:
@@ -75,13 +86,13 @@ jobs:
           sudo chown -R "$USER" ~/apt-archives
       # Saved right after the download, so a failing test run still fills them.
       - name: Save Playwright browsers
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        if: matrix.shard == 1 && steps.playwright-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: ${{ steps.playwright.outputs.key }}
       - name: Save apt archives
-        if: steps.apt-cache.outputs.cache-hit != 'true'
+        if: matrix.shard == 1 && steps.apt-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/apt-archives/*.deb
@@ -98,12 +109,12 @@ jobs:
           echo "$RUNNER_TEMP/omp-bin" >> "$GITHUB_PATH"
       - run: omp --version
       # list prints each test with its time, so the log shows which specs ran.
-      - run: npm run test:browser -- --reporter=list
+      - run: npm run test:browser -- --reporter=list --shard=${{ matrix.shard }}/${{ strategy.job-total }}
       - name: Upload browser screenshots and failure traces
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-test-results
+          name: browser-test-results-${{ matrix.shard }}
           path: test-results/
           retention-days: 7
           if-no-files-found: ignore
