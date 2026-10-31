@@ -1,9 +1,22 @@
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { updateSessionState } from "../../../app/model/sessionState";
 import type { Block, Session } from "../../sessions/model/session";
-import type { UserQuestionReply } from "../../sessions/model/userQuestion";
-import { answerHabitQuestion } from "./habitQuestion";
-import { questionRoute, type ApprovalRelay } from "./monoHabits";
+import type {
+  UserQuestionPrompt,
+  UserQuestionReply,
+} from "../../sessions/model/userQuestion";
+import {
+  answerHabitQuestion,
+  endHabitQuestion,
+  type HabitQuestionStop,
+} from "./habitQuestion";
+import {
+  dropRelays,
+  questionRoute,
+  relayApproval,
+  type ApprovalRelay,
+  type Habit,
+} from "./monoHabits";
 
 type Reply = (
   sessionId: string,
@@ -15,10 +28,14 @@ type Host = {
   sessions: RefObject<Session[]>;
   setSessions: Dispatch<SetStateAction<Session[]>>;
   persist: (session: Session | undefined) => void;
-  append: (monoId: string, block: Block) => void;
+  /** Adds the block once the Mono is free, then calls `then`. */
+  append: (monoId: string, block: Block, then?: () => void) => void;
 };
 
 let host: Host | undefined;
+
+/** How a relayed card settles once its run ended, for one that lands later. */
+const ended = new WeakMap<ApprovalRelay, (block: Block) => Block>();
 
 /**
  * The app's session store, bound on every render as the turn guard's host
@@ -31,6 +48,58 @@ export function setHabitQuestionHost(
   append: Host["append"],
 ): void {
   host = { sessions, setSessions, persist, append };
+}
+
+/** Puts a run's question to the user in its Mono's chat. */
+export function askHabitQuestion(
+  monoId: string,
+  habit: Habit,
+  runId: string,
+  runAt: number,
+  prompt: UserQuestionPrompt,
+): void {
+  const blockId = crypto.randomUUID();
+  const relay = { monoId, runId, requestId: prompt.requestId, blockId };
+  const requestId = relayApproval(relay);
+  host?.append(
+    monoId,
+    {
+      id: blockId,
+      role: "assistant",
+      text: "",
+      habitQuestion: {
+        runId,
+        runAt,
+        // The run's own card keeps any deadline; this one only answers.
+        prompt: { requestId, title: prompt.title, questions: prompt.questions },
+      },
+      monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
+    },
+    // A busy Mono holds the card back for up to 10 minutes. One whose run
+    // ended in the meantime settles as it lands, never open.
+    () => {
+      const settle = ended.get(relay);
+      if (settle) settleHabitCard(relay, settle);
+    },
+  );
+}
+
+/**
+ * Settles every card a run left open in the Mono's chat once it ends: an
+ * approval is withdrawn, a question takes the run's end.
+ */
+export function endHabitRun(
+  runId: string,
+  end: HabitQuestionStop = { kind: "stopped" },
+): void {
+  const settle = (block: Block): Block =>
+    block.approval
+      ? { ...block, approval: { ...block.approval, decided: "cancelled" } }
+      : endHabitQuestion(block, end);
+  for (const relay of dropRelays(runId)) {
+    ended.set(relay, settle);
+    settleHabitCard(relay, settle);
+  }
 }
 
 const routed = new WeakMap<Reply, Reply>();

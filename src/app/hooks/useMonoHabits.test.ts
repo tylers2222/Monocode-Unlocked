@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Habit } from "../../features/monos/model/monoHabits";
 import type { Block, Session } from "../../features/sessions/model/session";
+import type { UserQuestionPrompt } from "../../features/sessions/model/userQuestion";
 
 let stored: Habit[] = [];
 let fileVersion = 0;
@@ -177,7 +178,22 @@ function makeHost(reply: string, approve?: { wait: Promise<void> }) {
           blockId: "b",
         }),
     ),
-    endApprovals: vi.fn(),
+    askQuestion: vi.fn(
+      (
+        monoId: string,
+        _habit: Habit,
+        runId: string,
+        _runAt: number,
+        prompt: UserQuestionPrompt,
+      ) =>
+        relayApproval({
+          monoId,
+          runId,
+          requestId: prompt.requestId,
+          blockId: "q",
+        }),
+    ),
+    endRun: vi.fn(),
   };
   return host;
 }
@@ -252,7 +268,8 @@ it("runs a due habit in a kept session and posts what it found", async () => {
   ).toBe(true);
   // Found by tools that list the sessions of the Mono's chat.
   expect(run.id.startsWith("app-mono-habit-")).toBe(true);
-  expect(host.endApprovals).toHaveBeenCalledWith(run.id);
+  // No limit was hit, so its open questions end as stopped.
+  expect(host.endRun).toHaveBeenCalledWith(run.id, undefined);
   await vi.waitFor(() => expect(stored[0].lastOutcome).toBe("posted"));
   expect(stored[0].runs?.[0]).toMatchObject({
     outcome: "posted",
@@ -403,8 +420,113 @@ it("stops and records a habit that is still running after one hour", async () =>
       lastOutcome: "failed",
       lastError: "It took too long and was stopped.",
     });
+    expect(host.endRun).toHaveBeenCalledWith(
+      host.add.mock.calls[0][0].id,
+      undefined,
+    );
   } finally {
     await act(async () => hold.resolve());
+    vi.useRealTimers();
+  }
+});
+
+const RESET: UserQuestionPrompt = {
+  requestId: 4,
+  title: "Rate limit",
+  questions: [
+    {
+      id: "reset",
+      prompt: "Spend a saved reset?",
+      multiSelect: false,
+      allowCustom: false,
+      options: [
+        { id: "yes", label: "Yes" },
+        { id: "no", label: "No" },
+      ],
+    },
+  ],
+};
+
+// Defect: the question is never put to the user, is put before the run asks
+// it, is put again on every check, or a run nobody answered for twelve hours
+// ends its card as stopped instead of unanswered.
+it(
+  "puts the run's question to the user once and ends it unanswered after twelve hours",
+  { timeout: 30_000 },
+  async () => {
+    vi.useFakeTimers();
+    const hold = deferred();
+    const startedAt = Date.now();
+    const host = setup("Asked about the reset.");
+    host.run.mockImplementationOnce(async (id) => {
+      const run = host.sessions().find((s) => s.id === id)!;
+      run.busy = true;
+      // Asked after the first check, which sees no question yet.
+      setTimeout(() => (run.pendingQuestion = RESET), 3_000);
+      await hold.promise;
+      return { status: "completed", text: "Asked about the reset." };
+    });
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_500);
+      });
+      expect(host.run).toHaveBeenCalledTimes(1);
+      expect(host.askQuestion).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      const runId = host.add.mock.calls[0][0].id;
+      expect(host.askQuestion).toHaveBeenCalledTimes(1);
+      const [monoId, habit, askedRun, runAt, prompt] =
+        host.askQuestion.mock.calls[0];
+      expect([monoId, habit.id, askedRun, prompt]).toEqual([
+        "mono",
+        "h1",
+        runId,
+        RESET,
+      ]);
+      expect(runAt).toBe(startedAt);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(12 * 60 * 60 * 1000);
+      });
+      expect(host.askQuestion).toHaveBeenCalledTimes(1);
+      expect(host.endRun).toHaveBeenCalledTimes(1);
+      expect(host.endRun).toHaveBeenCalledWith(runId, { kind: "timed-out" });
+      expect(host.stop).toHaveBeenCalledTimes(1);
+      expect(stored[0]).toMatchObject({
+        lastOutcome: "failed",
+        lastError: "Nobody answered it.",
+      });
+    } finally {
+      await act(async () => hold.resolve());
+      vi.useRealTimers();
+    }
+  },
+);
+
+// Defect: a check that finds no run session (its chat was closed) throws
+// while looking for its question, so the run is recorded as failed.
+it("keeps watching a run whose session has left the list", async () => {
+  vi.useFakeTimers();
+  const host = setup("Checked the garden.");
+  host.run.mockImplementationOnce(async (id) => {
+    const sessions = host.sessions();
+    sessions.splice(
+      sessions.findIndex((s) => s.id === id),
+      1,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+    return { status: "completed", text: "Checked the garden." };
+  });
+  try {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(host.askQuestion).not.toHaveBeenCalled();
+    expect(stored[0].lastOutcome).toBe("posted");
+  } finally {
     vi.useRealTimers();
   }
 });
@@ -435,11 +557,11 @@ it("puts an approval the run still asks for to the user, once", async () => {
     await jump(12 * 60 * 60 * 1000 - 2_000);
     // Still waiting on the user 2 s before 12 h: not asked again.
     expect(host.askApproval).toHaveBeenCalledTimes(1);
-    expect(host.endApprovals).not.toHaveBeenCalled();
+    expect(host.endRun).not.toHaveBeenCalled();
     expect(stored[0].lastOutcome).toBeUndefined();
 
     await jump(2_000);
-    expect(host.endApprovals).toHaveBeenCalledWith(runId);
+    expect(host.endRun).toHaveBeenCalledWith(runId, { kind: "timed-out" });
     expect(stored[0]).toMatchObject({
       lastOutcome: "failed",
       lastError: "Nobody answered it.",
@@ -447,7 +569,7 @@ it("puts an approval the run still asks for to the user, once", async () => {
 
     await jump(2_000);
     expect(host.askApproval).toHaveBeenCalledTimes(1);
-    expect(host.endApprovals).toHaveBeenCalledTimes(1);
+    expect(host.endRun).toHaveBeenCalledTimes(1);
     expect(host.post).not.toHaveBeenCalled();
   } finally {
     await act(async () => hold.resolve());
