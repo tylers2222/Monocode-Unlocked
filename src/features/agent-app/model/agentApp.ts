@@ -59,7 +59,10 @@ import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
 import type { Worktree, Worktrees } from "../../source-control/model/worktrees";
 import { knownHomeDir, pathKey, projectName } from "../../../shared/lib/paths";
 import type { SplitDir } from "../../workspace/model/layout";
-import { consumeOperatorCommand } from "../../sessions/model/operatorCommand";
+import {
+  appAccess,
+  consumeOperatorCommand,
+} from "../../sessions/model/operatorCommand";
 import {
   sessionConversationPage,
   type SessionReadOptions,
@@ -790,8 +793,9 @@ function fileInMonoFolder(
  */
 function runtimeCeiling(source: Session, runtimeMode: Session["runtimeMode"]) {
   if (
+    appAccess(source.blocks) === "started" &&
     RUNTIME_MODES.indexOf(runtimeMode) >
-    RUNTIME_MODES.indexOf(source.runtimeMode)
+      RUNTIME_MODES.indexOf(source.runtimeMode)
   )
     throw new Error(
       `runtimeMode cannot be more permissive than this session's (${source.runtimeMode})`,
