@@ -596,7 +596,7 @@ it("runs nothing when the level check itself fails", async () => {
 // #81 review n5, ADE-175. Defect: messages.* go to the app-action gate too,
 // so a worker's message to its lead gets worker_scope and an app_action row
 // instead of its own gate in mono_message_submit; or get_monos lists Monos
-// without the check's Space scope, or with none.
+// without the check's Space scope, or with none, or with no messaging.
 it("sends messages.* to their own gate, and get_monos to the check for its scope", async () => {
   const { run, actions, host } = world("worker");
   await run("messages.send", {
@@ -621,6 +621,10 @@ it("sends messages.* to their own gate, and get_monos to the check for its scope
     "no Space scope",
   );
   expect(getMonos).toHaveBeenCalledOnce();
+  host.messages = undefined;
+  await expect(run("messages.get_monos", {}, "r4")).rejects.toThrow(
+    "Mono messaging is unavailable here",
+  );
 });
 
 // Design 13.4. Defect: a session with no app access reaches Rust as a caller.
