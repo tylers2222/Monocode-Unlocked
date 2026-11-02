@@ -383,6 +383,8 @@ pub struct Target {
     /// The turn in `ControlHost.active`, while it runs one.
     pub turn: Option<String>,
     pub steerable: bool,
+    /// `sessions.space_id`; Space 1 with no row (ADE-174).
+    pub space: String,
 }
 
 impl Target {
@@ -406,6 +408,8 @@ pub enum Recipient {
         projects: Vec<String>,
         /// Its `messageAllowlist` (design 6.1): S8.
         allowlist: Vec<MonoId>,
+        /// `monos.space_id` (ADE-174).
+        space: String,
     },
     /// An existing session. `own_project` is false for Mono chats, habit runs
     /// and sessions outside the caller's projects. `level` comes from its
@@ -537,29 +541,30 @@ pub struct SendFacts {
     pub pair: PairCount,
     /// U1 (R17): the caller is the child of an open ask from the recipient.
     pub asked_by_recipient: bool,
-    pub spaces: Spaces,
 }
 
-/// ADE-174: the Space of each party, from `monos.space_id` or
-/// `sessions.space_id`; `None` for a party with no saved row.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Spaces {
-    pub caller: Option<String>,
-    pub recipient: Option<String>,
+/// ADE-174: what a call carries across a Space boundary.
+#[derive(Debug, Clone, Copy)]
+enum Crossing<'a> {
+    /// New work, or a reply, from one level to another.
+    Message { from: &'a Level, to: &'a Level },
+    /// A steer (with `reply_to` or `scope: "turn"`), or an app action on
+    /// another session.
+    Control,
 }
 
-/// ADE-174: across Spaces only a regular Mono messages a regular Mono, and
-/// only with new work. A Giga, a session, an ask (whose parent is a Giga or
-/// whose child is a session) and a steer stay inside their Space.
-fn space_rule(
-    from: &Level,
-    from_space: &str,
-    to: &Level,
-    to_space: &str,
-    steer: bool,
-) -> Result<(), RejectCode> {
-    let peers = matches!((from, to), (Level::Mono, Level::Mono));
-    if from_space == to_space || (peers && !steer) {
+/// ADE-174: across Spaces only a regular Mono messages a regular Mono. A
+/// Giga, a session, an ask (whose parent is a Giga or whose child is a
+/// session), a steer and an app action on a session stay inside their Space.
+fn space_rule(from_space: &str, to_space: &str, crossing: Crossing) -> Result<(), RejectCode> {
+    let peers = matches!(
+        crossing,
+        Crossing::Message {
+            from: Level::Mono,
+            to: Level::Mono
+        }
+    );
+    if from_space == to_space || peers {
         Ok(())
     } else {
         Err(RejectCode::CrossSpaceForbidden)
@@ -613,6 +618,9 @@ pub struct Handled {
     pub from: String,
     /// The session the reply goes to: the message's sender session.
     pub sender: Target,
+    /// The sender Mono's row (ADE-174: its level and Space); `None` when it
+    /// is gone.
+    pub sender_row: Option<CallerMono>,
 }
 
 /// What the reply rows (design 6.4) read.
@@ -633,6 +641,8 @@ pub struct CallerMono {
     pub role: MonoRole,
     pub projects: Vec<String>,
     pub allowlist: Vec<MonoId>,
+    /// `monos.space_id` (ADE-174).
+    pub space: String,
 }
 
 /// What the gate knows of the caller.
@@ -640,12 +650,24 @@ pub struct CallerMono {
 pub enum CallerFacts {
     /// A Mono caller's `monos` row.
     Mono(CallerMono),
-    /// Design 13.1: a session caller's level, from its stored row (R4), and
-    /// the `path_key` of its `cwd`, its one project.
-    Session { level: SessionLevel, cwd: String },
+    /// Design 13.1: a session caller's level, from its stored row (R4), the
+    /// `path_key` of its `cwd`, its one project, and its `sessions.space_id`.
+    Session {
+        level: SessionLevel,
+        cwd: String,
+        space: String,
+    },
 }
 
 impl Recipient {
+    fn space(&self) -> Option<&str> {
+        match self {
+            Recipient::Mono { space, .. } => Some(space),
+            Recipient::Session { target, .. } => Some(&target.space),
+            Recipient::Unknown => None,
+        }
+    }
+
     /// The recipient's level; `None` for an unknown target.
     pub fn level(&self) -> Option<Level> {
         match self {
@@ -670,17 +692,26 @@ impl Recipient {
     }
 }
 
+impl CallerMono {
+    pub fn level(&self) -> Level {
+        match self.role {
+            MonoRole::Giga => Level::Giga,
+            MonoRole::Mono => Level::Mono,
+        }
+    }
+}
+
 impl CallerFacts {
+    fn space(&self) -> &str {
+        match self {
+            CallerFacts::Mono(row) => &row.space,
+            CallerFacts::Session { space, .. } => space,
+        }
+    }
+
     pub fn level(&self) -> Level {
         match self {
-            CallerFacts::Mono(CallerMono {
-                role: MonoRole::Giga,
-                ..
-            }) => Level::Giga,
-            CallerFacts::Mono(CallerMono {
-                role: MonoRole::Mono,
-                ..
-            }) => Level::Mono,
+            CallerFacts::Mono(row) => row.level(),
             CallerFacts::Session {
                 level: SessionLevel::Lead,
                 ..
@@ -1083,17 +1114,6 @@ pub fn decide_send(
             return reject(RejectCode::IntentNotAllowed, to)
         }
     };
-    // ADE-174 before L1 and S7: a party in another Space hears only that.
-    if let (Some(from_space), Some(to_space), Some(to_level)) = (
-        about.spaces.caller.as_deref(),
-        about.spaces.recipient.as_deref(),
-        recipient.level(),
-    ) {
-        let steer = !matches!(asked, Asked::New);
-        if let Err(code) = space_rule(&row.level(), from_space, &to_level, to_space, steer) {
-            return reject(code, to);
-        }
-    }
     // L1, L2 before S5: a worker gets "message your lead" for every other
     // target, a made-up one too, and `target_gone` for an ended lead.
     if let CallerFacts::Session {
@@ -1136,6 +1156,7 @@ pub fn decide_send(
             CallerFacts::Session {
                 level: SessionLevel::Lead,
                 cwd,
+                ..
             },
             Recipient::Mono { projects, .. },
         ) if !projects.contains(cwd) => return reject(RejectCode::DirectionForbidden, to),
@@ -1164,6 +1185,20 @@ pub fn decide_send(
     let upward = recipient.level().is_some_and(|to| to.rank() < level.rank());
     if upward && !about.asked_by_recipient {
         return reject(RejectCode::UpwardNeedsAsk, to);
+    }
+    // ADE-174 after the level rows, so a caller they refuse hears the same
+    // for a party in another Space as for a made-up id.
+    if let (Some(to_space), Some(to_level)) = (recipient.space(), recipient.level()) {
+        let crossing = match asked {
+            Asked::New => Crossing::Message {
+                from: &level,
+                to: &to_level,
+            },
+            Asked::Steer | Asked::WholeTurn => Crossing::Control,
+        };
+        if let Err(code) = space_rule(row.space(), to_space, crossing) {
+            return reject(code, to);
+        }
     }
     // W2: the sender learns it may not send this before anything about the
     // recipient's state.
@@ -1335,11 +1370,12 @@ pub fn decide_reply(
     facts: &Facts<ReplyFacts>,
 ) -> Decision {
     let to = input.to.as_deref();
-    if let Err(decision) = prelude(&caller.speaker, facts, hash, |_, code| {
+    let row = match prelude(&caller.speaker, facts, hash, |_, code| {
         reply_again(code, to, &facts.about.then)
     }) {
-        return decision;
-    }
+        Ok(row) => row,
+        Err(decision) => return decision,
+    };
     if too_large(&input.message) {
         return reject(RejectCode::TooLarge, None);
     }
@@ -1359,6 +1395,9 @@ pub fn decide_reply(
     }
     if let Some(rejection) = target_gone(&named) {
         return rejection.into();
+    }
+    if !named.iter().all(|handled| crosses_to(row, handled)) {
+        return listing(RejectCode::CrossSpaceForbidden, None, &[]).into();
     }
     let mut rows = Vec::with_capacity(named.len());
     for handled in &named {
@@ -1382,6 +1421,19 @@ pub fn decide_reply(
         });
     }
     Decision::Accept { hop, rows }
+}
+
+/// ADE-174: a reply reaches the sender of `handled` under the Space rule. A
+/// sender Mono whose row is gone has no level, so only its chat's Space
+/// lets the reply through.
+fn crosses_to(row: &CallerFacts, handled: &Handled) -> bool {
+    let from = row.level();
+    let sender_level = handled.sender_row.as_ref().map(CallerMono::level);
+    let (to_space, crossing) = match (&handled.sender_row, &sender_level) {
+        (Some(sender), Some(to)) => (&sender.space, Crossing::Message { from: &from, to }),
+        _ => (&handled.sender.space, Crossing::Control),
+    };
+    space_rule(row.space(), to_space, crossing).is_ok()
 }
 
 /// R5-R8: the messages a reply answers, or why it answers none. Each handle
@@ -1530,6 +1582,7 @@ fn reply_again(code: RejectCode, to: Option<&[Handle]>, then: &[Handled]) -> Rej
             Some(closure) => handle_closed(handle, closure),
             None => listing(code, None, &[]),
         },
+        (RejectCode::CrossSpaceForbidden, _) => listing(code, None, &[]),
         (RejectCode::TargetGone, _) => {
             let named: Vec<&Handled> = match to {
                 Some(to) => open
@@ -1565,6 +1618,10 @@ pub struct ActionFacts {
     /// The level of the session the action's target names, from its stored
     /// row; a lead when it has no row; `None` when it names no session.
     pub target_level: Option<SessionLevel>,
+    /// ADE-174: the caller's Space, and the Space of the session the target
+    /// names (Space 1 with no row; `None` when it names no session).
+    pub caller_space: String,
+    pub target_space: Option<String>,
     /// The row this caller session already wrote with this request id (part
     /// 0, any tool).
     pub prior: Option<MonoMessage>,
@@ -1690,6 +1747,18 @@ pub fn decide_action(
                 tool: Tool::AppAction,
             };
         }
+    }
+    // ADE-174 after A3-A8: no app action reaches a session in another Space.
+    let crossed = facts
+        .target_space
+        .as_deref()
+        .map(|to| space_rule(&facts.caller_space, to, Crossing::Control));
+    if let Some(Err(code)) = crossed {
+        return ActionDecision::Reject {
+            code,
+            hint: code.hint().into(),
+            tool: Tool::AppAction,
+        };
     }
     ActionDecision::Allow {
         lead_session_id: (starts && lead).then(|| caller.session_id.clone()),
@@ -1824,6 +1893,7 @@ mod tests {
     /// A session that runs `turn-1` while `running`.
     fn live(id: &str, running: bool, steerable: bool) -> Target {
         Target {
+            space: "space-1".into(),
             session: session(id),
             exists: true,
             turn: running.then(|| "turn-1".to_string()),
@@ -1833,6 +1903,7 @@ mod tests {
 
     fn mono_a(chat: Option<Target>) -> Recipient {
         Recipient::Mono {
+            space: "space-1".into(),
             mono_id: mono("mono-a"),
             role: MonoRole::Mono,
             chat,
@@ -1844,6 +1915,7 @@ mod tests {
     /// The caller's `monos` row: the Giga with its chat `giga-chat`.
     fn giga_row() -> CallerMono {
         CallerMono {
+            space: "space-1".into(),
             chat: Some(session("giga-chat")),
             role: MonoRole::Giga,
             projects: Vec::new(),
@@ -1872,7 +1944,6 @@ mod tests {
             reply_to: None,
             pair: PairCount::default(),
             asked_by_recipient: true,
-            spaces: Spaces::default(),
         })
     }
 
@@ -1887,7 +1958,6 @@ mod tests {
             reply_to: Some(Referenced { message, session }),
             pair: PairCount::default(),
             asked_by_recipient: true,
-            spaces: Spaces::default(),
         })
     }
 
@@ -1934,6 +2004,7 @@ mod tests {
 
     fn handled(id: char, handle: i64, sender: Target) -> Handled {
         Handled {
+            sender_row: None,
             message: row(id, Some("giga"), 1, open(handle)),
             handle: Handle::new(handle).unwrap(),
             state: HandleState::Open,
@@ -2409,6 +2480,7 @@ mod tests {
 
     fn mono_with_role(id: &str, role: MonoRole, chat: Target) -> Recipient {
         Recipient::Mono {
+            space: "space-1".into(),
             mono_id: mono(id),
             role,
             chat: Some(chat),
@@ -2650,6 +2722,7 @@ mod tests {
     #[test]
     fn s6_sending_to_yourself_or_your_own_chat_is_self_send() {
         let me = Recipient::Mono {
+            space: "space-1".into(),
             mono_id: mono("giga"),
             role: MonoRole::Giga,
             chat: Some(live("giga-chat", true, true)),
@@ -3031,7 +3104,6 @@ mod tests {
                 reply_to,
                 pair,
                 asked_by_recipient: true,
-                spaces: Spaces::default(),
             });
             decide_send(&caller(CallerKind::MonoChat), &input, &hash(), &facts, NOW)
         };
@@ -3102,7 +3174,6 @@ mod tests {
                 oldest: Some(NOW - 1_000),
             },
             asked_by_recipient: true,
-            spaces: Spaces::default(),
         });
         assert_eq!(
             decide_send(
@@ -3581,6 +3652,7 @@ mod tests {
     /// A lead in `/p/alpha`.
     fn lead_row() -> CallerFacts {
         CallerFacts::Session {
+            space: "space-1".into(),
             level: SessionLevel::Lead,
             cwd: "/p/alpha".into(),
         }
@@ -3589,6 +3661,7 @@ mod tests {
     /// `w1`, the worker of `l1`.
     fn worker_row() -> CallerFacts {
         CallerFacts::Session {
+            space: "space-1".into(),
             level: worker_of("l1"),
             cwd: "/p/alpha".into(),
         }
@@ -3608,6 +3681,7 @@ mod tests {
 
     fn mono_a_row() -> CallerFacts {
         CallerFacts::Mono(CallerMono {
+            space: "space-1".into(),
             chat: Some(session("a-chat")),
             role: MonoRole::Mono,
             projects: strings(&["/p/alpha"]),
@@ -3627,6 +3701,7 @@ mod tests {
     /// A Mono of `role` in `projects`, whose chat `<id>-chat` runs `turn-1`.
     fn mono_in(id: &str, role: MonoRole, projects: &[&str]) -> Recipient {
         Recipient::Mono {
+            space: "space-1".into(),
             mono_id: mono(id),
             role,
             chat: Some(live(&format!("{id}-chat"), true, true)),
@@ -3641,7 +3716,6 @@ mod tests {
             reply_to: None,
             pair: PairCount::default(),
             asked_by_recipient: true,
-            spaces: Spaces::default(),
         }
     }
 
@@ -4170,6 +4244,7 @@ mod tests {
                 &hash(),
                 &steering(
                     Recipient::Mono {
+                        space: "space-1".into(),
                         mono_id: mono("giga-2"),
                         role: MonoRole::Giga,
                         chat: Some(live("g2-chat", true, true)),
@@ -4229,7 +4304,6 @@ mod tests {
                     }),
                     pair: PairCount::default(),
                     asked_by_recipient: true,
-                    spaces: Spaces::default(),
                 },
             ),
             send_rejected(
@@ -4377,6 +4451,7 @@ mod tests {
             "giga outside the folder"
         );
         let in_sub = CallerFacts::Session {
+            space: "space-1".into(),
             level: SessionLevel::Lead,
             cwd: "/p/alpha/sub".into(),
         };
@@ -4414,6 +4489,7 @@ mod tests {
         };
         let b = |projects: &[&str], allowlist: &[&str]| {
             CallerFacts::Mono(CallerMono {
+                space: "space-1".into(),
                 chat: Some(session("b-chat")),
                 role: MonoRole::Mono,
                 projects: strings(projects),
@@ -4421,6 +4497,7 @@ mod tests {
             })
         };
         let a = |allowlist: &[&str]| Recipient::Mono {
+            space: "space-1".into(),
             mono_id: mono("mono-a"),
             role: MonoRole::Mono,
             chat: Some(live("a-chat", true, true)),
@@ -4536,6 +4613,8 @@ mod tests {
             action,
             &action_hash(action, &json!({})),
             &ActionFacts {
+                caller_space: "space-1".into(),
+                target_space: None,
                 caller_level,
                 caller_role: None,
                 target_level,
@@ -4893,7 +4972,6 @@ mod tests {
                     }),
                     pair: PairCount::default(),
                     asked_by_recipient: true,
-                    spaces: Spaces::default(),
                 },
             )
         };
@@ -4955,7 +5033,6 @@ mod tests {
                     }),
                     pair: PairCount::default(),
                     asked_by_recipient: true,
-                    spaces: Spaces::default(),
                 },
             ),
             pinned_steer(&start, "w1", "turn-1")
@@ -4979,6 +5056,8 @@ mod tests {
             ..start_row(None, "l1", "w1")
         };
         let facts = |level: SessionLevel, prior: MonoMessage, ended: bool| ActionFacts {
+            caller_space: "space-1".into(),
+            target_space: None,
             caller_level: Some(level),
             caller_role: None,
             target_level: None,
@@ -5055,6 +5134,7 @@ mod tests {
                 "sessions.send",
                 &steer_hash,
                 &ActionFacts {
+                    caller_space: "space-1".into(), target_space: None,
                     caller_level: None,
                     caller_role: None,
                     target_level: Some(worker_of("l1")),
@@ -5078,6 +5158,8 @@ mod tests {
         let who = mono_a_caller();
         let hash = action_hash("sessions.start", &json!({"prompt": "Build it"}));
         let facts = |prior: Option<MonoMessage>, ended: bool| ActionFacts {
+            caller_space: "space-1".into(),
+            target_space: None,
             caller_level: None,
             caller_role: None,
             target_level: None,

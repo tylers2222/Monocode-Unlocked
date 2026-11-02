@@ -23,8 +23,8 @@ use crate::control::ControlHost;
 use crate::mono_gate::{
     self, Access, ActionDecision, ActionFacts, Caller, CallerFacts, CallerKind, CallerMono,
     Closure, Decision, Facts, HandleState, Handled, Input, MessageRef, OpenHandle, PairCount,
-    Recipient, Referenced, Refusal, ReplyFacts, Route, SendFacts, SessionLevel, Spaces, Speaker,
-    Target, TargetSession,
+    Recipient, Referenced, Refusal, ReplyFacts, Route, SendFacts, SessionLevel, Speaker, Target,
+    TargetSession,
 };
 use crate::mono_roster::{validate_mono_id, MonoRole};
 use crate::session_store::{validate_id, SessionStore};
@@ -1454,14 +1454,14 @@ pub(crate) fn mono_row(
     conn: &Connection,
     mono_id: &MonoId,
 ) -> rusqlite::Result<Option<CallerMono>> {
-    let row: Option<(String, String)> = conn
+    let row: Option<(String, String, String)> = conn
         .query_row(
-            "SELECT role, data_json FROM monos WHERE id = ?1",
+            "SELECT role, data_json, space_id FROM monos WHERE id = ?1",
             [mono_id.as_str()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    row.map(|(role, data)| {
+    row.map(|(role, data, space)| {
         let data = json_of(&data);
         Ok(CallerMono {
             chat: chat_of(&data),
@@ -1474,6 +1474,7 @@ pub(crate) fn mono_row(
             allowlist: texts(&data, "messageAllowlist")
                 .filter_map(MonoId::parse)
                 .collect(),
+            space,
         })
     })
     .transpose()
@@ -1541,6 +1542,19 @@ pub(crate) fn session_level(
         .transpose()
 }
 
+/// ADE-174: `sessions.space_id` of `session`; Space 1 when it has no row, as
+/// for every row that predates Spaces.
+fn session_space(conn: &Connection, session: &SessionId) -> rusqlite::Result<String> {
+    let space = conn
+        .query_row(
+            "SELECT space_id FROM sessions WHERE id = ?1",
+            [session.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(space.unwrap_or_else(|| crate::spaces::FIRST_SPACE.into()))
+}
+
 /// Design 7: `session` was reset, deleted or archived.
 fn session_ended(conn: &Connection, session: &SessionId) -> rusqlite::Result<bool> {
     Ok(conn
@@ -1602,6 +1616,7 @@ fn target(conn: &Connection, session: SessionId, live: &Live) -> rusqlite::Resul
         exists: (listed.is_some() || stored.is_some()) && !ended,
         turn: live.running.get(session.as_str()).cloned(),
         steerable,
+        space: session_space(conn, &session)?,
         session,
     })
 }
@@ -1640,6 +1655,7 @@ fn recipient(conn: &Connection, send_to: &str, live: &Live) -> rusqlite::Result<
                 chat,
                 projects: row.projects,
                 allowlist: row.allowlist,
+                space: row.space,
             });
         }
     }
@@ -1701,15 +1717,16 @@ fn handled(
         let Some(state) = state(&message, closed_at) else {
             continue;
         };
-        let from = match &message.from_mono_id {
-            Some(mono_id) => mono_name(conn, mono_id)?,
-            None => String::new(),
+        let (from, sender_row) = match &message.from_mono_id {
+            Some(mono_id) => (mono_name(conn, mono_id)?, mono_row(conn, mono_id)?),
+            None => (String::new(), None),
         };
         handled.push(Handled {
             handle: required(Handle::new(handle), "handle")?,
             state,
             from,
             sender: target(conn, message.from_session_id.clone(), live)?,
+            sender_row,
             message,
         });
     }
@@ -1813,9 +1830,11 @@ pub(crate) fn submit_in(
     let caller_row = match &caller.speaker {
         Speaker::Mono { mono_id, .. } => mono_row(tx, mono_id)?.map(CallerFacts::Mono),
         Speaker::Session { cwd, .. } => {
+            let space = session_space(tx, &caller.session_id)?;
             session_level(tx, &caller.session_id)?.map(|level| CallerFacts::Session {
                 level,
                 cwd: mono_gate::path_key(cwd),
+                space,
             })
         }
     };
@@ -1835,7 +1854,6 @@ pub(crate) fn submit_in(
             referenced_id = reply_to.as_ref().map(|found| found.message.id.clone());
             let pair = pair_count(tx, caller, &recipient, now)?;
             let asked_by_recipient = crate::asks::asked_by(tx, caller, &recipient)?;
-            let spaces = spaces(tx, caller, &recipient)?;
             mono_gate::decide_send(
                 caller,
                 send,
@@ -1848,7 +1866,6 @@ pub(crate) fn submit_in(
                         reply_to,
                         pair,
                         asked_by_recipient,
-                        spaces,
                     },
                 },
                 now,
@@ -1886,29 +1903,6 @@ pub(crate) fn submit_in(
         referenced_id,
         now,
     )
-}
-
-/// ADE-174: the caller's and the recipient's Space, from their saved rows.
-fn spaces(conn: &Connection, caller: &Caller, recipient: &Recipient) -> rusqlite::Result<Spaces> {
-    let space = |table: &str, id: &str| {
-        conn.query_row(
-            &format!("SELECT space_id FROM {table} WHERE id = ?1"),
-            [id],
-            |row| row.get(0),
-        )
-        .optional()
-    };
-    Ok(Spaces {
-        caller: match caller.mono_id() {
-            Some(mono_id) => space("monos", mono_id.as_str())?,
-            None => space("sessions", caller.session_id.as_str())?,
-        },
-        recipient: match recipient {
-            Recipient::Mono { mono_id, .. } => space("monos", mono_id.as_str())?,
-            Recipient::Session { target, .. } => space("sessions", target.session.as_str())?,
-            Recipient::Unknown => None,
-        },
-    })
 }
 
 /// Design 16.6: the accepted row `id` names. A steer's `reply_to` is a
@@ -3118,9 +3112,9 @@ pub fn check_action(
         (None, None) => false,
     };
     let hash = mono_gate::action_hash(action, input);
-    let caller_level = match &caller.speaker {
-        Speaker::Mono { .. } => None,
-        Speaker::Session { .. } => session_level(&tx, &caller.session_id)?,
+    let (caller_level, caller_row) = match &caller.speaker {
+        Speaker::Mono { mono_id, .. } => (None, mono_row(&tx, mono_id)?),
+        Speaker::Session { .. } => (session_level(&tx, &caller.session_id)?, None),
     };
     let facts = ActionFacts {
         caller_level,
@@ -3132,10 +3126,15 @@ pub fn check_action(
             Some(target) => Some(session_level(&tx, target)?.unwrap_or(SessionLevel::Lead)),
             None => None,
         },
-        caller_role: match &caller.speaker {
-            Speaker::Mono { mono_id, .. } => mono_row(&tx, mono_id)?.map(|row| row.role),
-            Speaker::Session { .. } => None,
+        caller_role: caller_row.as_ref().map(|row| row.role),
+        caller_space: match caller_row {
+            Some(row) => row.space,
+            None => session_space(&tx, &caller.session_id)?,
         },
+        target_space: target_id
+            .as_ref()
+            .map(|target| session_space(&tx, target))
+            .transpose()?,
         prior,
         prior_start_ended,
     };
