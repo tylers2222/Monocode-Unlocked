@@ -9,8 +9,12 @@ import {
 } from "../../sessions/model/handoff";
 import { newSession, type Session } from "../../sessions/model/session";
 import {
+  continueOnRouteGrant,
+  endedRouteGrant,
   resumeMonoUsageLimit,
+  routeGrantRequest,
   switchMonoUsageLimitAccount,
+  type RouteGrant,
 } from "./monoUsageLimit";
 
 function limited(patch: Partial<Session> = {}): Session {
@@ -132,5 +136,76 @@ describe("Mono usage recovery", () => {
     expect(stopped.usageLimit).toEqual({});
     expect(stopped.queueStatus).toBe("paused");
     expect(canDispatchQueuedHead(stopped)).toBe(false);
+
+    const original = limited();
+    const personal = limited({ providerAccountId: "personal" });
+    expect(routeGrantRequest(personal, "account-work", "3h")).toEqual({
+      sessionId: personal.id,
+      provider: "claude",
+      fromAccountId: "personal",
+      toAccountId: "account-work",
+      length: "3h",
+      firstLoginResetsAt: 1000,
+    });
+    expect(
+      routeGrantRequest(limited({ harness: "cursor" }), "account-work", "3h"),
+    ).toBeUndefined();
+    expect(
+      routeGrantRequest(
+        limited({ providerAccountId: undefined, usageLimit: undefined }),
+        "account-work",
+        "1h",
+      ),
+    ).toMatchObject({
+      fromAccountId: "default",
+      firstLoginResetsAt: undefined,
+    });
+    const granted = continueOnRouteGrant(original, "account-work");
+    expect(granted.providerAccountId).toBe("account-work");
+    expect(granted.providerSessionId).toBeUndefined();
+    expect(pendingComposerSwitch(granted)?.fromProviderAccountId).toBe(
+      "default",
+    );
+
+    const grant: RouteGrant = {
+      sessionId: original.id,
+      provider: "claude",
+      fromAccountId: "default",
+      toAccountId: "account-work",
+      grantedAt: 0,
+      expiresAt: 3 * 60 * 60 * 1000,
+    };
+    expect(endedRouteGrant(grant, grant.expiresAt - 1)).toBeUndefined();
+    expect(endedRouteGrant(undefined, grant.expiresAt)).toBeUndefined();
+    const ended = endedRouteGrant(grant, grant.expiresAt);
+    expect(ended).toBe(grant);
+    const expired = applyHarnessEvent(
+      { ...granted, pendingSwitch: undefined },
+      {
+        type: "session.error",
+        message: `route_grant_expired: the grant to the claude login account-work ended at ${grant.expiresAt}`,
+      },
+    );
+    expect(expired.usageLimit).toEqual({});
+    expect(expired.queueStatus).toBe("paused");
+    expect(canDispatchQueuedHead(expired)).toBe(false);
+    expect(routeGrantRequest(expired, "account-work", "1h", ended)).toEqual({
+      sessionId: original.id,
+      provider: "claude",
+      fromAccountId: "default",
+      toAccountId: "account-work",
+      length: "1h",
+      firstLoginResetsAt: undefined,
+    });
+    const again = continueOnRouteGrant(expired, "account-work");
+    expect(again.providerAccountId).toBe("account-work");
+    expect(again.usageLimit).toBeUndefined();
+    expect(canDispatchQueuedHead(again)).toBe(true);
+    const back = switchMonoUsageLimitAccount(expired, grant.fromAccountId);
+    expect(back.providerAccountId).toBe("default");
+    expect(pendingComposerSwitch(back)?.fromProviderAccountId).toBe(
+      "account-work",
+    );
+    expect(canDispatchQueuedHead(back)).toBe(true);
   });
 });

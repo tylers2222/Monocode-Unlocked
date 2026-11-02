@@ -47,6 +47,7 @@ describe("provider error fallback", () => {
     "insufficient_quota",
     "Credit balance is too low",
     "Monthly limit exceeded",
+    "route_grant_expired: the grant to the claude login work ended at 1000",
   ])("recognizes an exhausted account: %s", (message) => {
     expect(usageLimitFromError(message)).toEqual({});
   });

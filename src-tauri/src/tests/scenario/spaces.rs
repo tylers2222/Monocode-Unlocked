@@ -12,7 +12,7 @@ use rusqlite::{params, Connection};
 use super::world::World;
 use crate::mono_roster::MonoRole;
 use crate::spaces::account::{self, ProviderAccount, SpaceLogin};
-use crate::spaces::grants::{self, RouteGrant};
+use crate::spaces::grants::{self, GrantLength, GrantRequest, RouteGrant};
 use crate::spaces::leases::{self, CheckoutLease};
 use crate::spaces::{Provider, FIRST_SPACE};
 
@@ -226,20 +226,24 @@ fn logins_grants_and_leases_store_what_they_are_given(world: &World) {
         let account = serde_json::json!({"provider": provider, "id": "work", "label": "Work"});
         let login =
             serde_json::json!({"spaceId": FIRST_SPACE, "provider": provider, "accountId": "work"});
-        let grant = serde_json::json!({
+        let request = serde_json::json!({
             "sessionId": "s2", "provider": provider, "fromAccountId": "default",
-            "toAccountId": "work", "grantedAt": now, "expiresAt": now + THIRTY_DAYS_MS
+            "toAccountId": "work", "length": "6h", "firstLoginResetsAt": null
         });
         (
             serde_json::from_value::<ProviderAccount>(account),
             serde_json::from_value::<SpaceLogin>(login),
-            serde_json::from_value::<RouteGrant>(grant),
+            serde_json::from_value::<GrantRequest>(request),
         )
     };
     let (account, login, route) = ipc("claude");
     assert_eq!(
         (account.unwrap(), login.unwrap(), route.unwrap()),
-        (work_login(), space_one_login(), grant(now)),
+        (
+            work_login(),
+            space_one_login(),
+            request(GrantLength::SixHours, None)
+        ),
         "a command's arguments do not parse as the UI sends them"
     );
     let (account, login, route) = ipc("gemini");
@@ -436,14 +440,153 @@ fn spaces_migration_backfills_space_one_and_reruns_as_a_no_op() {
     spawn::the_hook_keeps_the_folder_and_login();
 }
 
+const HOUR_MS: i64 = 60 * 60 * 1000;
+
+fn request(length: GrantLength, first_login_resets_at: Option<i64>) -> GrantRequest {
+    GrantRequest {
+        session_id: "s2".into(),
+        provider: Provider::Claude,
+        from_account_id: "default".into(),
+        to_account_id: "work".into(),
+        length,
+        first_login_resets_at,
+    }
+}
+
+/// The spawn hook for `session`'s child on `provider`'s login `login` at the
+/// World's time: the login the child starts with, or the error that stops it.
+fn spawn_on(world: &World, session: &str, provider: &str, login: &str) -> Result<String, String> {
+    let target = crate::spaces::SpawnTarget {
+        workdir: "/work/b".into(),
+        account: Some(crate::harness::HarnessAccount {
+            provider: provider.into(),
+            id: login.into(),
+        }),
+    };
+    crate::spaces::prepare_spawn(world.store(), session, None, world.now(), target)
+        .map(|target| target.account.unwrap().id)
+}
+
+/// Defect: a grant lasts another length than the one picked (the Settings
+/// 6 h for a 3 h pick, a wrong hour count, the first login's reset for a fixed
+/// length); "until the first login resets" guesses a missing reset, takes a
+/// past one or caps a far one; a refused request still replaces the grant; or
+/// the spawn hook leaves a granted session's child on its first login while
+/// the grant lasts, moves another session, CLI or login, lets the child start
+/// on the granted login once the grant ends (or a millisecond early or late),
+/// or stops a session sent back to its first login.
+#[test]
+fn route_grants_last_the_picked_length_and_stop_the_turn_after() {
+    let mut world = World::new("route-grants");
+    world.add_session("s1", "/work/a", None);
+    world.add_session("s2", "/work/b", None);
+    account::save_account(world.store(), &work_login(), world.now()).unwrap();
+    assert_eq!(
+        seeded(&world.conn())[1],
+        "settings space-1 21600000",
+        "Settings no longer say 6 h, so the 3 h checkpoint proves nothing"
+    );
+    let t0 = world.now();
+    let write =
+        |length, resets_at| grants::write_grant(world.store(), &request(length, resets_at), t0);
+    for (length, hours) in [
+        (GrantLength::OneHour, 1),
+        (GrantLength::ThreeHours, 3),
+        (GrantLength::SixHours, 6),
+        (GrantLength::TwelveHours, 12),
+        (GrantLength::TwentyFourHours, 24),
+    ] {
+        let grant = write(length, None).unwrap();
+        assert_eq!(
+            (grant.granted_at, grant.expires_at),
+            (t0, t0 + hours * HOUR_MS),
+            "{length:?} does not last {hours} h from now"
+        );
+        assert_eq!(grants::grant(world.store(), "s2").unwrap(), Some(grant));
+    }
+    let in_twenty_days = t0 + 20 * 24 * HOUR_MS;
+    assert_eq!(
+        write(GrantLength::UntilReset, Some(in_twenty_days)).map(|grant| grant.expires_at),
+        Ok(in_twenty_days),
+        "a reset 20 days out was refused or capped"
+    );
+    let no_reset = "The provider reported no reset time for the first login; pick a length";
+    let reset = "The first login has already reset; pick a length";
+    for (resets_at, error) in [(None, no_reset), (Some(t0), reset), (Some(t0 - 1), reset)] {
+        assert_eq!(
+            write(GrantLength::UntilReset, resets_at),
+            Err(error.into()),
+            "\"until the first login resets\" took the reset {resets_at:?}"
+        );
+    }
+    assert_eq!(
+        grants::grant(world.store(), "s2")
+            .unwrap()
+            .map(|grant| grant.expires_at),
+        Some(in_twenty_days),
+        "a refused request replaced the grant"
+    );
+
+    let picked = write(GrantLength::ThreeHours, Some(in_twenty_days)).unwrap();
+    assert_eq!(
+        picked.expires_at,
+        t0 + 3 * HOUR_MS,
+        "the 3 h pick took another length"
+    );
+    assert_eq!(
+        spawn_on(&world, "s2", "claude", "default"),
+        Ok("work".into()),
+        "the turn after the grant did not start on the granted login"
+    );
+    assert_eq!(spawn_on(&world, "s2", "claude", "work"), Ok("work".into()));
+    for (session, provider, login) in [
+        ("s2", "claude", "other"),
+        ("s2", "codex", "default"),
+        ("s1", "claude", "default"),
+    ] {
+        assert_eq!(
+            spawn_on(&world, session, provider, login),
+            Ok(login.into()),
+            "the grant moved {session}'s {provider} child off the login {login}"
+        );
+    }
+    world.jump_wall(3 * HOUR_MS - 1);
+    assert_eq!(
+        spawn_on(&world, "s2", "claude", "default"),
+        Ok("work".into()),
+        "the 3 h grant ended before 3 h"
+    );
+    world.jump_wall(1);
+    let ended = spawn_on(&world, "s2", "claude", "work").unwrap_err();
+    assert_eq!(
+        ended,
+        format!(
+            "route_grant_expired: the grant to the claude login work ended at {}",
+            t0 + 3 * HOUR_MS
+        ),
+        "the first turn after 3 h did not stop with route_grant_expired"
+    );
+    assert_eq!(
+        spawn_on(&world, "s2", "claude", "default"),
+        Ok("default".into()),
+        "a session sent back to its first login did not start there"
+    );
+
+    #[cfg(unix)]
+    spawn::a_grant_moves_the_child_and_its_end_stops_the_turn();
+}
+
 #[cfg(unix)]
 mod spawn {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
+    use tauri::test::MockRuntime;
     use tauri::Manager;
 
     use super::super::agent_sandbox::{mock_app, script, wait_for};
-    use crate::spaces::HOOKED_SPAWNS;
+    use super::{grant, work_login, RouteGrant, THIRTY_DAYS_MS};
+    use crate::session_store::{now_millis, SessionStore};
+    use crate::spaces::{account, grants, HOOKED_SPAWNS};
 
     fn text(path: &Path) -> String {
         path.to_string_lossy().into_owned()
@@ -453,59 +596,89 @@ mod spawn {
         HOOKED_SPAWNS.with(std::cell::Cell::get)
     }
 
-    /// `harness_spawn` with a stand-in fx that writes the folder it runs in,
-    /// its arguments and its Claude config folder.
-    pub(super) fn the_hook_keeps_the_folder_and_login() {
-        let root = std::env::temp_dir().join(format!("ade168-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let root = std::fs::canonicalize(&root).unwrap();
-        let fx = script(
-            &root.join("fx"),
-            r#"case "$1" in
+    /// `harness_spawn` on Tauri's mock runtime with a stand-in fx that writes
+    /// the folder it runs in, its arguments and its Claude config folder.
+    struct Rig {
+        root: PathBuf,
+        fx: PathBuf,
+        app: tauri::App<MockRuntime>,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!("ade168-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            let root = std::fs::canonicalize(&root).unwrap();
+            let fx = script(
+                &root.join("fx"),
+                r#"case "$1" in
   --help) echo "fx acp: ask over the Agent Client Protocol" ;;
   --version) echo "fx 0.0.1" ;;
   *) printf '%s\n%s\n%s\n' "$(pwd -P)" "$*" "$CLAUDE_CONFIG_DIR" > ran.part && mv ran.part ran ;;
 esac"#,
-        );
-        let data = root.join("app-data");
-        std::fs::create_dir_all(&data).unwrap();
-        let app = mock_app(&data);
-        let spawn = |session: &str, workdir: &Path| {
-            let account = serde_json::from_str(r#"{"provider":"claude","id":"work"}"#).unwrap();
+            );
+            let data = root.join("app-data");
+            std::fs::create_dir_all(&data).unwrap();
+            let app = mock_app(&data);
+            Self { root, fx, app }
+        }
+
+        fn folder(&self, name: &str) -> PathBuf {
+            let folder = self.root.join(name);
+            std::fs::create_dir_all(&folder).unwrap();
+            folder
+        }
+
+        fn spawn(&self, session: &str, workdir: &Path, login: &str) -> Result<u32, String> {
+            let account = serde_json::json!({"provider": "claude", "id": login});
             crate::harness::harness_spawn(
-                app.handle().clone(),
-                app.state::<crate::harness::HarnessHost>(),
+                self.app.handle().clone(),
+                self.app.state::<crate::harness::HarnessHost>(),
                 session.into(),
-                text(&fx),
+                text(&self.fx),
                 vec!["acp".into()],
                 text(workdir),
-                Some(account),
+                Some(serde_json::from_value(account).unwrap()),
                 Some("fx".into()),
-                Some(text(&fx)),
+                Some(text(&self.fx)),
                 None,
                 None,
                 None,
             )
-        };
+        }
 
+        /// What the stand-in CLI wrote when it ran in `workdir` with `login`.
+        fn ran_with(&self, workdir: &Path, login: &str) -> String {
+            let config =
+                crate::harness::provider_account_path(self.app.handle(), "claude", login).unwrap();
+            format!("{}\nacp\n{}\n", text(workdir), text(&config))
+        }
+    }
+
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    pub(super) fn the_hook_keeps_the_folder_and_login() {
+        let rig = Rig::new();
         let before = hooked();
-        let workdir = root.join("project");
-        std::fs::create_dir_all(&workdir).unwrap();
-        spawn("hooked", &workdir).unwrap();
+        let workdir = rig.folder("project");
+        rig.spawn("hooked", &workdir, "work").unwrap();
         assert_eq!(
             hooked(),
             before + 1,
             "harness_spawn started a child without the spawn hook, or ran it twice"
         );
-        let config = crate::harness::provider_account_path(app.handle(), "claude", "work").unwrap();
         assert_eq!(
             wait_for(&workdir.join("ran")),
-            format!("{}\nacp\n{}\n", text(&workdir), text(&config)),
+            rig.ran_with(&workdir, "work"),
             "the CLI started in another folder, with other arguments or another login"
         );
-        let missing = root.join("missing");
+        let missing = rig.root.join("missing");
         assert_eq!(
-            spawn("lost", &missing).unwrap_err(),
+            rig.spawn("lost", &missing, "work").unwrap_err(),
             format!("Working directory does not exist: {}", text(&missing))
         );
         assert_eq!(
@@ -513,7 +686,35 @@ esac"#,
             before + 2,
             "the folder check ran before the spawn hook"
         );
+    }
 
-        let _ = std::fs::remove_dir_all(&root);
+    /// `harness_spawn` reads the real clock, so the grants sit around it.
+    pub(super) fn a_grant_moves_the_child_and_its_end_stops_the_turn() {
+        let rig = Rig::new();
+        let store = rig.app.state::<SessionStore>();
+        account::save_account(&store, &work_login(), 0).unwrap();
+        let granted = |granted_at| RouteGrant {
+            session_id: "granted".into(),
+            ..grant(granted_at)
+        };
+        grants::save_grant(&store, &granted(now_millis())).unwrap();
+        let second = rig.folder("second-turn");
+        rig.spawn("granted", &second, "default").unwrap();
+        assert_eq!(
+            wait_for(&second.join("ran")),
+            rig.ran_with(&second, "work"),
+            "the turn after the grant did not start with the granted login's folder"
+        );
+        grants::save_grant(&store, &granted(now_millis() - THIRTY_DAYS_MS - 1)).unwrap();
+        let after = rig.folder("after-expiry");
+        let error = rig.spawn("granted", &after, "work").unwrap_err();
+        assert!(
+            error.starts_with("route_grant_expired: "),
+            "the first turn after the grant ended did not stop with route_grant_expired: {error}"
+        );
+        assert!(
+            !after.join("ran").exists(),
+            "the CLI started after the grant ended"
+        );
     }
 }

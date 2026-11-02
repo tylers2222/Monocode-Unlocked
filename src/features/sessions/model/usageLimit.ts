@@ -2,8 +2,13 @@ import { formatResetDuration } from "../../providers/model/rateLimits";
 import { resumeQueuedMessages } from "./messageQueue";
 import type { Session, UsageLimit } from "./session";
 
-/** A fallback for adapters that report exhausted accounts as plain errors. */
+/**
+ * A fallback for adapters that report exhausted accounts as plain errors. A
+ * turn the spawn hook stopped because its routing grant ended
+ * (`route_grant_expired`) waits the same way, for another login or a new grant.
+ */
 export function usageLimitFromError(message: string): UsageLimit | undefined {
+  if (message.includes("route_grant_expired")) return {};
   return /(?:usage|spending|monthly|weekly|daily) limit (?:reached|exceeded)|(?:quota|credits?) (?:exceeded|exhausted|depleted)|insufficient[_ ](?:quota|credits)|hit your (?:usage )?limit|credit balance is too low/i.test(
     message,
   )
