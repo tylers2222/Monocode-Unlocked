@@ -473,7 +473,7 @@ fn grant_between(granted_at: i64, expires_at: i64) -> RouteGrant {
     }
 }
 
-/// `check_turn` gives the TS `routeGrantDecision` answer and the message
+/// `check_turn` gives the TS `routeGrantEnded` answer and the message
 /// `expiredRouteGrant` parses at the same times (`routeGrant.fixtures.json`).
 fn check_turn_matches_the_ts_decision_on_the_shared_fixture(world: &World) {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
@@ -507,7 +507,7 @@ fn check_turn_matches_the_ts_decision_on_the_shared_fixture(world: &World) {
                 now
             ),
             expected,
-            "check_turn at {now} disagrees with the TS routeGrantDecision ({decision})"
+            "check_turn at {now} disagrees with the TS routeGrantEnded ({decision})"
         );
     }
     grants::remove_grant(world.store(), "s2").unwrap();
@@ -564,6 +564,7 @@ fn the_writer_takes_only_the_cards_lengths(world: &World, t0: i64) -> i64 {
 /// refused once, the grant goes and its child stops; the next turn starts
 /// fresh on the session's own login.
 fn the_first_turn_after_the_grant_is_refused_once(world: &mut World, t0: i64, picked: RouteGrant) {
+    let first_login = picked.from_account_id.clone();
     let children = crate::harness::HarnessHost::new();
     let turn = |world: &World| grants::check_turn(world.store(), &children, "s2", world.now());
     assert_eq!(turn(world), Ok(()), "a turn under the grant was refused");
@@ -585,12 +586,13 @@ fn the_first_turn_after_the_grant_is_refused_once(world: &mut World, t0: i64, pi
     #[cfg(unix)]
     let mut child = children.insert_test_child("s2");
     world.jump_wall(1);
+    let refused = turn(world).unwrap_err();
     assert_eq!(
-        turn(world),
-        Err(format!(
+        refused,
+        format!(
             "route_grant_expired: the grant from default to work granted at {t0} ended at {}",
             t0 + 3 * HOUR_MS
-        )),
+        ),
         "the first turn after 3 h was sent"
     );
     assert_eq!(
@@ -608,9 +610,16 @@ fn the_first_turn_after_the_grant_is_refused_once(world: &mut World, t0: i64, pi
         Ok(()),
         "the turn after the stop was refused again"
     );
+    // The login the session goes back to, as `leaveExpiredRouteGrant` reads
+    // it from this refusal (`expiredRouteGrant`, pinned by the fixture).
+    let back_to = refused.split(' ').nth(4).unwrap();
     assert_eq!(
-        spawn_on(world, "s2", "claude", "default"),
-        Ok("default".into()),
+        back_to, first_login,
+        "the refusal does not send the session back to its first login"
+    );
+    assert_eq!(
+        spawn_on(world, "s2", "claude", back_to),
+        Ok(first_login),
         "the next turn did not start fresh on the session's own login"
     );
 }
@@ -677,7 +686,7 @@ fn an_expired_grant_is_inert_after_one_stop(world: &World) {
 /// routing's own respawn ends the grant, or the user's own login switch does
 /// not; the spawn hook rewrites a login, lets an ended grant start on the
 /// granted login, or lets an ended grant block it again; or `check_turn` and
-/// the TS `routeGrantDecision` disagree on the same times.
+/// the TS `routeGrantEnded` disagree on the same times.
 #[test]
 fn route_grants_last_the_picked_length_and_stop_the_turn_after() {
     let mut world = World::new("route-grants");

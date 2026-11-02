@@ -8,6 +8,7 @@ import {
   usageLimitFromError,
   resumeUsageLimitedSession,
 } from "./usageLimit";
+import ROUTE_GRANT from "../../monos/model/routeGrant.fixtures.json";
 
 function limited(patch: Partial<Session> = {}): Session {
   return {
@@ -47,7 +48,7 @@ describe("provider error fallback", () => {
     "insufficient_quota",
     "Credit balance is too low",
     "Monthly limit exceeded",
-    "route_grant_expired: the grant to the claude login work ended at 1000",
+    ROUTE_GRANT.expired,
   ])("recognizes an exhausted account: %s", (message) => {
     expect(usageLimitFromError(message)).toEqual({});
   });

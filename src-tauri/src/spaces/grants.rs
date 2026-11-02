@@ -82,6 +82,13 @@ pub(crate) struct RouteGrant {
     pub(crate) expires_at: i64,
 }
 
+impl RouteGrant {
+    /// The one expiry boundary: a turn at `expires_at` is already refused.
+    fn ended(&self, now: i64) -> bool {
+        now >= self.expires_at
+    }
+}
+
 pub(crate) fn grant(store: &SessionStore, session_id: &str) -> Result<Option<RouteGrant>, String> {
     with_conn(store, |conn| {
         conn.query_row(
@@ -181,7 +188,7 @@ pub fn spaces_grant_remove(
 /// The error a turn stops with once its grant has ended. It starts with
 /// `route_grant_expired`, which the front end reads as a usage-limit stop
 /// (`usageLimitFromError`), and names what the expired-grant card shows and
-/// where "Go back" goes (`expiredRouteGrant` parses it).
+/// the login the session goes back to (`expiredRouteGrant` parses it).
 fn expired(grant: &RouteGrant) -> String {
     format!(
         "route_grant_expired: the grant from {} to {} granted at {} ended at {}",
@@ -202,7 +209,7 @@ pub(crate) fn check_turn(
     now: i64,
 ) -> Result<(), String> {
     match grant(store, session_id)? {
-        Some(grant) if now >= grant.expires_at => {
+        Some(grant) if grant.ended(now) => {
             remove_grant(store, session_id)?;
             children.kill_session_tree(session_id);
             Err(expired(&grant))
@@ -244,7 +251,7 @@ pub(super) fn route(
         return Ok(target);
     };
     let on_grant = account.provider == grant.provider.as_str() && account.id == grant.to_account_id;
-    let ended = now >= grant.expires_at;
+    let ended = grant.ended(now);
     if ended || !on_grant {
         remove_grant(store, session_id)?;
     }
