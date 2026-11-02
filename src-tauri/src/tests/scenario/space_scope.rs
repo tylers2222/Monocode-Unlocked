@@ -102,7 +102,11 @@ fn habit_run(mono: &Mono, run: &str) -> Caller {
 
 fn move_to_work(world: &World, table: &str, id: &str) {
     let sql = format!("UPDATE {table} SET space_id = ?1 WHERE id = ?2");
-    assert_eq!(world.conn().execute(&sql, [WORK, id]).unwrap(), 1, "{table} {id}");
+    assert_eq!(
+        world.conn().execute(&sql, [WORK, id]).unwrap(),
+        1,
+        "{table} {id}"
+    );
 }
 
 const MONOS_LIST: &[&str] = &["monos.list"];
@@ -175,7 +179,10 @@ impl Cast {
             .collect();
         let want = vec!["c-giga", "d-mono"];
         checkpoint(failed, "a monos.list: only Space 2 Monos", same_space, want);
-        let p2 = self.scope(&caller, &["sessions.list", "--json", r#"{"project":"/p2"}"#]);
+        let p2 = self.scope(
+            &caller,
+            &["sessions.list", "--json", r#"{"project":"/p2"}"#],
+        );
         let space1_saved = ["a-giga-chat", "b-mono-chat", "lead1", "s1", "worker1"];
         checkpoint(
             failed,
@@ -187,7 +194,12 @@ impl Cast {
         checkpoint(failed, name, refused(&p2, "/p1"), true);
         let name = "a sessions.list takes a Space 2 project";
         checkpoint(failed, name, refused(&p2, "/p2"), false);
-        checkpoint(failed, "a the caller's Space is Space 2", p2.space.as_str(), WORK);
+        checkpoint(
+            failed,
+            "a the caller's Space is Space 2",
+            p2.space.as_str(),
+            WORK,
+        );
     }
 
     /// b. A regular Mono sees other Spaces' regular Monos, marked.
@@ -286,15 +298,28 @@ fn one_space(failed: &mut Vec<String>) {
     let every = same(&["a-giga", "b-mono"]);
     let mono_c = mono_caller(&mono, "t1");
     let listing = scope_of(&one, &mono_c, MONOS_LIST);
-    checkpoint(failed, "f monos.list lists every Mono", listed(&listing), every.clone());
-    let projects: Vec<_> = listing.monos.into_iter().map(|entry| entry.projects).collect();
+    checkpoint(
+        failed,
+        "f monos.list lists every Mono",
+        listed(&listing),
+        every.clone(),
+    );
+    let projects: Vec<_> = listing
+        .monos
+        .into_iter()
+        .map(|entry| entry.projects)
+        .collect();
     checkpoint(
         failed,
         "f monos.list keeps every project",
         projects,
         vec![vec![], vec!["/p1".to_owned(), REMOTE.to_owned()]],
     );
-    let list = scope_of(&one, &mono_c, &["sessions.list", "--json", r#"{"project":"/p1"}"#]);
+    let list = scope_of(
+        &one,
+        &mono_c,
+        &["sessions.list", "--json", r#"{"project":"/p1"}"#],
+    );
     checkpoint(
         failed,
         "f sessions.list hides nothing and keeps every project",
@@ -329,7 +354,12 @@ fn one_space(failed: &mut Vec<String>) {
         call(&one, &mono_c, &["models.list"]),
         Ok(None),
     );
-    checkpoint(failed, "f the Space is Space 1", list.space.as_str(), FIRST_SPACE);
+    checkpoint(
+        failed,
+        "f the Space is Space 1",
+        list.space.as_str(),
+        FIRST_SPACE,
+    );
 }
 
 /// Defect: a list action answers with another Space's Monos, projects or

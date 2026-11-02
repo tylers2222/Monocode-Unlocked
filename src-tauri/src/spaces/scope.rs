@@ -139,7 +139,9 @@ pub(crate) fn scoped(
 /// The two text columns of each row `sql` selects.
 fn pairs<T: FromIterator<(String, String)>>(conn: &Connection, sql: &str) -> rusqlite::Result<T> {
     conn.prepare(sql)?
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .collect()
 }
 
