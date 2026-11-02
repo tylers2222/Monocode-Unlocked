@@ -40,6 +40,22 @@ pub(crate) fn check_account_id(id: &str) -> Result<(), String> {
     }
 }
 
+/// A login's label as TS `cleanLabel` writes it: whitespace collapsed,
+/// trimmed, at most 48 characters, and not empty.
+fn clean_label(label: &str) -> Result<String, String> {
+    let label: String = label
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(48)
+        .collect();
+    if label.is_empty() {
+        return Err("A provider account needs a label".into());
+    }
+    Ok(label)
+}
+
 pub(crate) fn accounts(store: &SessionStore) -> Result<Vec<ProviderAccount>, String> {
     with_conn(store, |conn| {
         conn.prepare(
@@ -62,12 +78,13 @@ pub(crate) fn save_account(
     now: i64,
 ) -> Result<(), String> {
     check_account_id(&account.id)?;
+    let label = clean_label(&account.label)?;
     with_conn(store, |conn| {
         conn.execute(
             "INSERT INTO provider_accounts (provider, id, label, created_at)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (provider, id) DO UPDATE SET label = excluded.label",
-            params![account.provider, account.id, account.label, now],
+            params![account.provider, account.id, label, now],
         )
     })?;
     Ok(())

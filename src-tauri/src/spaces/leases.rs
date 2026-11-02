@@ -4,7 +4,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use super::{path_key, with_conn, SpawnTarget};
+use super::{folder_key, with_conn, SpawnTarget};
 use crate::session_store::{now_millis, SessionStore};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -39,7 +39,7 @@ pub(crate) fn take_lease(
     space_id: &str,
     now: i64,
 ) -> Result<(), String> {
-    let checkout_path = path_key(checkout_path)?;
+    let checkout_path = folder_key(checkout_path)?;
     with_conn(store, |conn| {
         conn.execute(
             "INSERT INTO checkout_leases (checkout_path, space_id, leased_at) VALUES (?1, ?2, ?3)",
@@ -55,7 +55,7 @@ pub(crate) fn release_lease(
     checkout_path: &str,
     space_id: &str,
 ) -> Result<(), String> {
-    let checkout_path = path_key(checkout_path)?;
+    let checkout_path = folder_key(checkout_path)?;
     let released = with_conn(store, |conn| {
         conn.execute(
             "DELETE FROM checkout_leases WHERE checkout_path = ?1 AND space_id = ?2",

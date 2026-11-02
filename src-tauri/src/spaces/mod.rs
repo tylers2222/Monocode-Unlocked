@@ -179,30 +179,17 @@ fn with_conn<T>(
     query(&*store.lock_conn()?).map_err(|e| e.to_string())
 }
 
-/// A folder in the front end's `pathKey()` form: absolute, with no trailing
-/// slash, and a Windows drive or UNC path in forward slashes and lower case.
-pub(crate) fn path_key(path: &str) -> Result<String, String> {
+/// An absolute folder as the front end keys it (`pathKey()`, kept in step by
+/// `mono_gate::path_key`'s fixture test). A relative path is refused.
+pub(crate) fn folder_key(path: &str) -> Result<String, String> {
     let b = path.as_bytes();
     let drive =
         b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\');
-    let windows = drive || path.starts_with("\\\\") || path.starts_with("//");
-    if !windows && !path.starts_with('/') {
-        return Err(format!("Not an absolute folder: {path}"));
+    if drive || path.starts_with(['/', '\\']) {
+        Ok(crate::mono_gate::path_key(path))
+    } else {
+        Err(format!("Not an absolute folder: {path}"))
     }
-    let slashed = if windows {
-        path.replace('\\', "/")
-    } else {
-        path.to_owned()
-    };
-    let trimmed = match slashed.trim_end_matches('/') {
-        "" => "/",
-        rest => rest,
-    };
-    Ok(if windows {
-        trimmed.to_lowercase()
-    } else {
-        trimmed.to_owned()
-    })
 }
 
 /// What a harness child starts with. The spawn hook may change either.

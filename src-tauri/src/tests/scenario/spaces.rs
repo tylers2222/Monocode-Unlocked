@@ -158,6 +158,57 @@ fn logins_grants_and_leases_store_what_they_are_given(world: &World) {
             "stored the login id {id:?}"
         );
     }
+    for label in ["", " \t "] {
+        let blank = ProviderAccount {
+            label: label.into(),
+            ..work_login()
+        };
+        assert_eq!(
+            account::save_account(store, &blank, now),
+            Err("A provider account needs a label".into()),
+            "stored the label {label:?}"
+        );
+    }
+    let renamed = ProviderAccount {
+        label: " Work \t laptop ".into(),
+        ..work_login()
+    };
+    account::save_account(store, &renamed, now).unwrap();
+    assert_eq!(
+        account::accounts(store)
+            .unwrap()
+            .into_iter()
+            .filter(|a| a.id == "work")
+            .map(|a| a.label)
+            .collect::<Vec<_>>(),
+        ["Work laptop"],
+        "a rename was lost, duplicated the login, or kept its stray spaces"
+    );
+    let ipc = |provider: &str| {
+        let account = serde_json::json!({"provider": provider, "id": "work", "label": "Work"});
+        let login =
+            serde_json::json!({"spaceId": FIRST_SPACE, "provider": provider, "accountId": "work"});
+        let grant = serde_json::json!({
+            "sessionId": "s2", "provider": provider, "fromAccountId": "default",
+            "toAccountId": "work", "grantedAt": now, "expiresAt": now + SIX_HOURS_MS
+        });
+        (
+            serde_json::from_value::<ProviderAccount>(account),
+            serde_json::from_value::<SpaceLogin>(login),
+            serde_json::from_value::<RouteGrant>(grant),
+        )
+    };
+    let (account, login, route) = ipc("claude");
+    assert_eq!(
+        (account.unwrap(), login.unwrap(), route.unwrap()),
+        (work_login(), space_one_login(), grant(now)),
+        "a command's arguments do not parse as the UI sends them"
+    );
+    let (account, login, route) = ipc("gemini");
+    assert!(
+        account.is_err() && login.is_err() && route.is_err(),
+        "a command took a CLI that keeps no logins"
+    );
     account::set_login(store, &space_one_login()).unwrap();
     let stranger = SpaceLogin {
         account_id: "nobody".into(),
@@ -169,6 +220,14 @@ fn logins_grants_and_leases_store_what_they_are_given(world: &World) {
     );
 
     grants::save_grant(store, &grant(now)).unwrap();
+    let instant = RouteGrant {
+        expires_at: now,
+        ..grant(now)
+    };
+    assert!(
+        grants::save_grant(store, &instant).is_err(),
+        "the grant command stored a grant that ends as it starts"
+    );
 
     leases::take_lease(store, "/work/b/", "space-2", now).unwrap();
     assert_eq!(
@@ -240,7 +299,9 @@ fn removing_a_login_drops_its_space_login_and_grant(world: &World) {
 /// the 6 hour TTL or a CLI's default login; or a restart migrates again and
 /// reseeds or duplicates rows; a login, grant or lease is lost or altered,
 /// survives the removal of its login, or is stored when its login id is not
-/// a valid folder name, the `default` login goes, a lease path is relative, or one Space releases another's lease; or
+/// a valid folder name or its label is blank, a rename is lost, a command
+/// takes a CLI without logins or misreads the UI's arguments, a grant ends as
+/// it starts, the `default` login goes, a lease path is relative, or one Space releases another's lease; or
 /// a harness child starts without the spawn
 /// hook, in another folder or with another login, or the folder check runs
 /// before the hook.
