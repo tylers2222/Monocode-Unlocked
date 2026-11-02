@@ -1391,6 +1391,7 @@ esac"#,
 /// lease; the folder
 /// check runs before the hook; Space 1's own helpers leave its project; or a
 /// helper on the INTERIM list loses its caller's folder.
+#[cfg(unix)]
 #[test]
 fn helpers_and_execs_run_where_their_session_does() {
     use tauri::Manager;
@@ -1425,6 +1426,7 @@ esac"#,
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[cfg(unix)]
 mod helpers {
     use std::path::{Path, PathBuf};
 
