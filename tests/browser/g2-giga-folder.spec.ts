@@ -430,7 +430,8 @@ test("the first turn of a session a Mono starts is authorized with app access", 
   await page.addInitScript(() => Object.assign(globalThis, { isTauri: true }));
   const none = () => null;
   await mountMonoCode(app, {
-    control_authorize_turn: none,
+    // Rust names the folder the turn runs in (ADE-173).
+    control_authorize_turn: (_store, args) => args.cwd,
     control_turn_finished: none,
     mono_message_confirm_openers: none,
     mono_menu_bar_set_visible: none,

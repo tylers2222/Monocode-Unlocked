@@ -287,17 +287,23 @@ export function sendHarnessTurn(
     cancelIdlePark(input.sessionId);
     const controlled = typeof isTauri === "function" && isTauri();
     const turn = { sessionId: input.sessionId, turnId: input.turnId };
-    if (controlled)
-      await invoke("control_authorize_turn", {
-        ...turn,
-        cwd: input.cwd,
-        appAccess: input.appAccess === true,
-      });
+    // ADE-173: the turn runs where Rust authorized it, the Space's own copy
+    // when another Space holds the checkout.
+    const cwd: unknown = controlled
+      ? await invoke("control_authorize_turn", {
+          ...turn,
+          cwd: input.cwd,
+          appAccess: input.appAccess === true,
+        })
+      : input.cwd;
     activeTurnSessions.add(input.sessionId);
     let result: TurnResult = "cancelled";
     try {
+      if (typeof cwd !== "string" || cwd === "")
+        throw new Error("control_authorize_turn named no folder for the turn");
       result = await adapter.sendTurn({
         ...input,
+        cwd,
         monoTools: await monoToolsFor(
           input.harness,
           input.sessionId,
