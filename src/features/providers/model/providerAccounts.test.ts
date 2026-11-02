@@ -28,6 +28,8 @@ const db = vi.hoisted(() => ({
   refuseSave: new Set<string>(),
   /** The fake clock `created_at` comes from: every save in a test is one ms. */
   now: 1,
+  /** Runs once, inside the next `spaces_accounts_list`. */
+  onList: undefined as (() => void) | undefined,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -41,6 +43,8 @@ vi.mock("@tauri-apps/api/core", () => ({
         return db.spaceLogins;
       // account.rs: ORDER BY provider, created_at, id
       case "spaces_accounts_list":
+        db.onList?.();
+        db.onList = undefined;
         return [...db.accounts]
           .sort(
             (a, b) =>
@@ -136,6 +140,7 @@ function freshDatabase() {
     createdAt: 0,
   }));
   db.now = 1;
+  db.onList = undefined;
   db.refuseSave.clear();
   windows.open.length = 0;
   db.spaceLogins = [];
@@ -566,7 +571,12 @@ describe("provider accounts in monocode.db", () => {
     );
     db.refuseSave.add("account-late");
     let accounts = await boot();
+    const credentials = await import("./providerAccountCredentials");
     accounts.renameProviderAccount("claude", "account-work", "Office");
+    await credentials.removeProviderAccountCredentials(
+      "claude",
+      "account-gone",
+    );
     accounts.removeProviderAccount("claude", "account-gone");
     await settle();
 
@@ -617,6 +627,10 @@ describe("provider accounts in monocode.db", () => {
   it("keeps browser storage when the database cannot load, and tries again on the next write", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     localStorage.setItem("monocode.providerAccounts.v1", BROWSER_LOGINS);
+    localStorage.setItem(
+      "monocode.providerAccountSelections.v1",
+      JSON.stringify({ "/repo/one": { codex: "account-x" } }),
+    );
     db.refuse.add("spaces_accounts_list");
     const accounts = await boot();
 
@@ -650,9 +664,22 @@ describe("provider accounts in monocode.db", () => {
     await vi.waitFor(() =>
       expect(db.accounts.some(({ id }) => id === "account-next")).toBe(true),
     );
+    // The write after the outage runs the whole boot: the browser-only
+    // logins are imported, so they stay listed and chosen.
     await vi.waitFor(() =>
-      expect(labels(accounts, "codex")).toContain("account-next Next"),
+      expect(labels(accounts, "codex")).toEqual([
+        "default Default account",
+        "account-x X",
+        "account-new New",
+        "account-next Next",
+      ]),
     );
+    expect(accounts.selectedProviderAccountId("codex", "/repo/one")).toBe(
+      "account-x",
+    );
+    expect(
+      localStorage.getItem("monocode.providerAccounts.v1.import"),
+    ).toContain("codex/account-x");
 
     db.calls = [];
     accounts.saveProviderAccount({
@@ -672,6 +699,13 @@ describe("provider accounts in monocode.db", () => {
     const accounts = await boot();
     const credentials = await import("./providerAccountCredentials");
     db.refuseSave.add("account-b");
+    // A save made while the reload after the refusal is listing the logins.
+    db.onList = () =>
+      accounts.saveProviderAccount({
+        id: "account-mid",
+        provider: "codex",
+        label: "Mid",
+      });
     db.calls = [];
 
     accounts.saveProviderAccount({
@@ -695,16 +729,20 @@ describe("provider accounts in monocode.db", () => {
       "account-b B",
       "account-c C",
     ]);
+    // The reload after the refusal drops B; the save made during it is
+    // reloaded again once it has run, so it stays.
     await vi.waitFor(() =>
-      expect(sent("spaces_accounts_list")).toHaveLength(1),
+      expect(sent("spaces_accounts_list")).toHaveLength(2),
     );
     await vi.waitFor(() =>
       expect(labels(accounts, "codex")).toEqual([
         "default Default account",
         "account-a A",
         "account-c C",
+        "account-mid Mid",
       ]),
     );
+    expect(db.accounts.map(({ id }) => id)).toContain("account-mid");
     expect(console.error).toHaveBeenCalledWith(
       "spaces_account_save refused account-b",
     );

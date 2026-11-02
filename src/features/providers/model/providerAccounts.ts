@@ -86,7 +86,7 @@ let queued = 0;
 let stale = false;
 /** Replaced by a fresh token each time the database refuses a write. */
 let refusal: object = {};
-/** Whether the boot load failed, so the next write tries it again. */
+/** Whether the boot load failed, so the next write starts it again. */
 let failed = false;
 /** Other windows of this app, once loaded; each reloads its snapshot when one writes. */
 let windows: BroadcastChannel | undefined;
@@ -95,7 +95,7 @@ let windows: BroadcastChannel | undefined;
  * Loads the logins from `monocode.db` before the first render, and once
  * imports the logins browser storage holds, giving Space 1 each CLI's
  * `default`. The old key stays for the Space 2 merge (ADE-178). A failure
- * keeps browser storage, and the next write tries the load again.
+ * keeps browser storage, and the next write starts the boot again.
  */
 export async function loadProviderAccounts(): Promise<void> {
   try {
@@ -182,12 +182,14 @@ async function loadSaved(): Promise<void> {
     (stored[account.provider] ??= Array.of<ProviderAccount>()).push(account);
   }
   saved = new Map<string, string>().set(ACCOUNTS_KEY, JSON.stringify(stored));
+  // A write made while this loaded is in the snapshot no more: reload after it.
+  if (queued > 0) stale = true;
   announceChange();
 }
 
 /**
- * Sends one write to `monocode.db` once it has loaded (a failed boot load is
- * tried again first) and tells the other windows. A refused write is
+ * Sends one write to `monocode.db` once it has loaded (after a failed boot,
+ * the boot runs again first) and tells the other windows. A refused write is
  * logged; once the queue has drained, the snapshot reloads what the database
  * holds, so it drops the refused writes and keeps every saved one. The
  * returned promise rejects when this write is refused.
@@ -196,9 +198,8 @@ function persist(command: string, args: InvokeArgs): Promise<void> {
   queued += 1;
   const sent = writes.then(async () => {
     if (failed) {
-      await loadSaved();
+      await start();
       failed = false;
-      stale = true;
     }
     if (!saved) return;
     await invoke<void>(command, args);
