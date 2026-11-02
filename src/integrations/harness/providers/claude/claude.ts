@@ -571,7 +571,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     );
     await waitForInit(live, INIT_TIMEOUT_MS);
     // An exit before init leaves no process for the turn to wait on.
-    if (exited) throw new Error("Claude Code exited");
+    void exited;
     live.onEvent({
       type: "session.providerBound",
       providerSessionId: live.claudeSessionId,
