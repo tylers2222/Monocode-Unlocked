@@ -231,13 +231,7 @@ fn logins_grants_and_leases_store_what_they_are_given(world: &World) {
     );
 
     leases::take_lease(store, "/work/b/", "space-2", now).unwrap();
-    for relative in ["work/c", "\\work\\c"] {
-        assert_eq!(
-            leases::take_lease(store, relative, FIRST_SPACE, now),
-            Err(format!("Not an absolute folder: {relative}")),
-            "leased a relative folder"
-        );
-    }
+    only_absolute_folders_are_leased(store, now);
     assert!(
         leases::take_lease(store, "/work/b", FIRST_SPACE, now).is_err(),
         "a second Space took a leased checkout"
@@ -247,6 +241,34 @@ fn logins_grants_and_leases_store_what_they_are_given(world: &World) {
         Err("space-1 holds no lease on /work/b".into()),
         "Space 1 released Space 2's lease"
     );
+}
+
+/// A relative folder is refused; each Windows form is leased under its
+/// `pathKey()` form, so dropping the drive or the UNC arm fails here.
+fn only_absolute_folders_are_leased(store: &crate::session_store::SessionStore, now: i64) {
+    for relative in ["work/c", "\\work\\c"] {
+        assert_eq!(
+            leases::take_lease(store, relative, FIRST_SPACE, now),
+            Err(format!("Not an absolute folder: {relative}")),
+            "leased a relative folder"
+        );
+    }
+    for (path, key) in [
+        ("C:\\work\\d", "c:/work/d"),
+        ("C:/work/e", "c:/work/e"),
+        ("\\\\host\\share\\f", "//host/share/f"),
+    ] {
+        assert_eq!(
+            leases::take_lease(store, path, FIRST_SPACE, now),
+            Ok(()),
+            "refused the Windows folder {path}"
+        );
+        assert_eq!(
+            leases::release_lease(store, key, FIRST_SPACE),
+            Ok(()),
+            "{path} was not leased under its pathKey() form {key}"
+        );
+    }
 }
 
 fn logins_grants_and_leases_hold(world: &World, at: i64) {
