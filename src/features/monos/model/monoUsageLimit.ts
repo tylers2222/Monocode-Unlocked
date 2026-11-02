@@ -79,7 +79,7 @@ export function routeGrantRequest(
   session: Session,
   toAccountId: string,
   length: RouteGrantLength,
-  ended?: RouteGrant,
+  ended?: Pick<RouteGrant, "fromAccountId">,
 ): RouteGrantRequest | undefined {
   if (!supportsProviderAccounts(session.harness)) return undefined;
   return {
@@ -106,13 +106,35 @@ export function continueOnRouteGrant(
 }
 
 /**
- * The grant once it has ended: from `expiresAt` on, the instant the spawn
- * hook starts stopping turns. "Go back" is
- * `switchMonoUsageLimitAccount(session, ended.fromAccountId)`.
+ * Whether a turn at `now` runs under the grant or is refused because it has
+ * ended. The backend's `grants::check_turn` gives the same answer before
+ * every turn (`routeGrant.fixtures.json` pins both).
  */
-export function endedRouteGrant(
-  grant: RouteGrant | undefined,
+export function routeGrantDecision(
+  grant: Pick<RouteGrant, "expiresAt">,
   now: number,
-): RouteGrant | undefined {
-  return grant && now >= grant.expiresAt ? grant : undefined;
+): "route" | "expired" {
+  return now >= grant.expiresAt ? "expired" : "route";
+}
+
+const EXPIRED_PREFIX = "route_grant_expired: the grant from ";
+
+/**
+ * The grant a turn was refused on, from the backend's `route_grant_expired`
+ * error (`grants.rs` `expired`); the backend has removed it by then. "Go
+ * back" is `switchMonoUsageLimitAccount(session, fromAccountId)`.
+ */
+export function expiredRouteGrant(
+  message: string,
+): Omit<RouteGrant, "sessionId" | "provider"> | undefined {
+  if (!message.startsWith(EXPIRED_PREFIX)) return undefined;
+  const [fromAccountId, , toAccountId, , , grantedAt, , , expiresAt] = message
+    .slice(EXPIRED_PREFIX.length)
+    .split(" ");
+  return {
+    fromAccountId,
+    toAccountId,
+    grantedAt: Number(grantedAt),
+    expiresAt: Number(expiresAt),
+  };
 }

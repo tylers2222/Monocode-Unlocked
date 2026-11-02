@@ -237,13 +237,10 @@ fn logins_grants_and_leases_store_what_they_are_given(world: &World) {
         )
     };
     let (account, login, route) = ipc("claude");
+    let six_hours = request(GrantLength::SixHours, None);
     assert_eq!(
         (account.unwrap(), login.unwrap(), route.unwrap()),
-        (
-            work_login(),
-            space_one_login(),
-            request(GrantLength::SixHours, None)
-        ),
+        (work_login(), space_one_login(), six_hours),
         "a command's arguments do not parse as the UI sends them"
     );
     let (account, login, route) = ipc("gemini");
@@ -467,26 +464,62 @@ fn spawn_on(world: &World, session: &str, provider: &str, login: &str) -> Result
         .map(|target| target.account.unwrap().id)
 }
 
-/// Defect: a grant lasts another length than the one picked (the Settings
-/// 6 h for a 3 h pick, a wrong hour count, the first login's reset for a fixed
-/// length); "until the first login resets" guesses a missing reset, takes a
-/// past one or caps a far one; a refused request still replaces the grant; or
-/// the spawn hook leaves a granted session's child on its first login while
-/// the grant lasts, moves another session, CLI or login, lets the child start
-/// on the granted login once the grant ends (or a millisecond early or late),
-/// or stops a session sent back to its first login.
-#[test]
-fn route_grants_last_the_picked_length_and_stop_the_turn_after() {
-    let mut world = World::new("route-grants");
-    world.add_session("s1", "/work/a", None);
-    world.add_session("s2", "/work/b", None);
-    account::save_account(world.store(), &work_login(), world.now()).unwrap();
+/// The grant `s2` holds from `granted_at` until `expires_at`.
+fn grant_between(granted_at: i64, expires_at: i64) -> RouteGrant {
+    RouteGrant {
+        granted_at,
+        expires_at,
+        ..grant(granted_at)
+    }
+}
+
+/// `check_turn` gives the TS `routeGrantDecision` answer and the message
+/// `expiredRouteGrant` parses at the same times (`routeGrant.fixtures.json`).
+fn check_turn_matches_the_ts_decision_on_the_shared_fixture(world: &World) {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../src/features/monos/model/routeGrant.fixtures.json"
+    ))
+    .unwrap();
+    let at = |key: &str| fixture["grant"][key].as_i64().unwrap();
+    let pinned = grant_between(at("grantedAt"), at("expiresAt"));
     assert_eq!(
-        seeded(&world.conn())[1],
-        "settings space-1 21600000",
-        "Settings no longer say 6 h, so the 3 h checkpoint proves nothing"
+        (
+            fixture["grant"]["fromAccountId"].as_str(),
+            fixture["grant"]["toAccountId"].as_str()
+        ),
+        (
+            Some(pinned.from_account_id.as_str()),
+            Some(pinned.to_account_id.as_str())
+        )
     );
-    let t0 = world.now();
+    for turn in fixture["turns"].as_array().unwrap() {
+        let (now, decision) = (turn[0].as_i64().unwrap(), turn[1].as_str().unwrap());
+        grants::save_grant(world.store(), &pinned).unwrap();
+        let expected = match decision {
+            "route" => Ok(()),
+            _ => Err(fixture["expired"].as_str().unwrap().to_owned()),
+        };
+        assert_eq!(
+            grants::check_turn(
+                world.store(),
+                &crate::harness::HarnessHost::new(),
+                "s2",
+                now
+            ),
+            expected,
+            "check_turn at {now} disagrees with the TS routeGrantDecision ({decision})"
+        );
+    }
+    grants::remove_grant(world.store(), "s2").unwrap();
+}
+
+/// The grant `s2`'s turns and spawns see at the World's time.
+fn held(world: &World) -> Option<RouteGrant> {
+    grants::grant(world.store(), "s2").unwrap()
+}
+
+/// The writer at `t0`: each card length, the reset choice and its refusals.
+fn the_writer_takes_only_the_cards_lengths(world: &World, t0: i64) -> i64 {
     let write =
         |length, resets_at| grants::write_grant(world.store(), &request(length, resets_at), t0);
     for (length, hours) in [
@@ -502,7 +535,7 @@ fn route_grants_last_the_picked_length_and_stop_the_turn_after() {
             (t0, t0 + hours * HOUR_MS),
             "{length:?} does not last {hours} h from now"
         );
-        assert_eq!(grants::grant(world.store(), "s2").unwrap(), Some(grant));
+        assert_eq!(held(world), Some(grant));
     }
     let in_twenty_days = t0 + 20 * 24 * HOUR_MS;
     assert_eq!(
@@ -520,60 +553,165 @@ fn route_grants_last_the_picked_length_and_stop_the_turn_after() {
         );
     }
     assert_eq!(
-        grants::grant(world.store(), "s2")
-            .unwrap()
-            .map(|grant| grant.expires_at),
+        held(world).map(|grant| grant.expires_at),
         Some(in_twenty_days),
         "a refused request replaced the grant"
     );
+    in_twenty_days
+}
 
-    let picked = write(GrantLength::ThreeHours, Some(in_twenty_days)).unwrap();
+/// A 3 h grant picked at `t0`: turns run until 3 h; the first turn at 3 h is
+/// refused once, the grant goes and its child stops; the next turn starts
+/// fresh on the session's own login.
+fn the_first_turn_after_the_grant_is_refused_once(world: &mut World, t0: i64, picked: RouteGrant) {
+    let children = crate::harness::HarnessHost::new();
+    let turn = |world: &World| grants::check_turn(world.store(), &children, "s2", world.now());
+    assert_eq!(turn(world), Ok(()), "a turn under the grant was refused");
+    assert_eq!(
+        spawn_on(world, "s2", "claude", "work"),
+        Ok("work".into()),
+        "the routing's own respawn on the granted login was refused or rewritten"
+    );
+    for (session, login) in [("monocode-claude-text", "default"), ("s1", "default")] {
+        assert_eq!(spawn_on(world, session, "claude", login), Ok(login.into()));
+    }
+    assert_eq!(
+        held(world),
+        Some(picked),
+        "a helper child, another session or the routing's own respawn ended the grant"
+    );
+    world.jump_wall(3 * HOUR_MS - 1);
+    assert_eq!(turn(world), Ok(()), "the 3 h grant ended before 3 h");
+    #[cfg(unix)]
+    let mut child = children.insert_test_child("s2");
+    world.jump_wall(1);
+    assert_eq!(
+        turn(world),
+        Err(format!(
+            "route_grant_expired: the grant from default to work granted at {t0} ended at {}",
+            t0 + 3 * HOUR_MS
+        )),
+        "the first turn after 3 h was sent"
+    );
+    assert_eq!(
+        held(world),
+        None,
+        "the refused grant stayed, so it blocks its login again"
+    );
+    #[cfg(unix)]
+    assert!(
+        crate::harness::tests::exits_soon(&mut child),
+        "the child on the granted login kept running"
+    );
+    assert_eq!(
+        turn(world),
+        Ok(()),
+        "the turn after the stop was refused again"
+    );
+    assert_eq!(
+        spawn_on(world, "s2", "claude", "default"),
+        Ok("default".into()),
+        "the next turn did not start fresh on the session's own login"
+    );
+}
+
+/// The user's own login pick ends a live grant, and the ended grant never
+/// blocks the granted login.
+fn the_users_switch_ends_the_grant(world: &mut World) {
+    let now = world.now();
+    grants::write_grant(world.store(), &request(GrantLength::OneHour, None), now).unwrap();
+    assert_eq!(
+        spawn_on(world, "s2", "claude", "default"),
+        Ok("default".into()),
+        "the user's own pick of a login was rewritten"
+    );
+    assert_eq!(
+        held(world),
+        None,
+        "the user's login switch did not end the grant"
+    );
+    world.jump_wall(2 * HOUR_MS);
+    let children = crate::harness::HarnessHost::new();
+    assert_eq!(
+        (
+            grants::check_turn(world.store(), &children, "s2", world.now()),
+            spawn_on(world, "s2", "claude", "work")
+        ),
+        (Ok(()), Ok("work".into())),
+        "the ended grant blocked the granted login"
+    );
+}
+
+/// An expired grant the per-turn check has not seen: it moves no child, and
+/// the spawn hook refuses the granted login once, then removes it.
+fn an_expired_grant_is_inert_after_one_stop(world: &World) {
+    let now = world.now();
+    grants::save_grant(world.store(), &grant_between(now - HOUR_MS, now - 1)).unwrap();
+    assert_eq!(
+        spawn_on(world, "s2", "claude", "default"),
+        Ok("default".into()),
+        "an expired grant moved the child"
+    );
+    assert_eq!(held(world), None, "a switch away kept the expired grant");
+    grants::save_grant(world.store(), &grant_between(now - HOUR_MS, now - 1)).unwrap();
+    assert!(
+        spawn_on(world, "s2", "claude", "work")
+            .is_err_and(|error| error.starts_with("route_grant_expired: ")),
+        "a spawn on the granted login after the grant ended started"
+    );
+    assert_eq!(
+        (held(world), spawn_on(world, "s2", "claude", "work")),
+        (None, Ok("work".into())),
+        "the spawn hook's stop kept the grant, so it blocks the login again"
+    );
+}
+
+/// Defect: a grant lasts another length than the one picked (the Settings
+/// 6 h for a 3 h pick, a wrong hour count, the first login's reset for a fixed
+/// length); "until the first login resets" guesses a missing reset, takes a
+/// past one or caps a far one; a refused request still replaces the grant; a
+/// turn (also one on a live child, through `control_authorize_turn`) is sent
+/// after the grant ends, a millisecond early or late, or keeps its child or
+/// the grant; the turn after that stop is refused again or does not start
+/// fresh on the session's own login; a helper child, another session or the
+/// routing's own respawn ends the grant, or the user's own login switch does
+/// not; the spawn hook rewrites a login, lets an ended grant start on the
+/// granted login, or lets an ended grant block it again; or `check_turn` and
+/// the TS `routeGrantDecision` disagree on the same times.
+#[test]
+fn route_grants_last_the_picked_length_and_stop_the_turn_after() {
+    let mut world = World::new("route-grants");
+    world.add_session("s1", "/work/a", None);
+    world.add_session("s2", "/work/b", None);
+    account::save_account(world.store(), &work_login(), world.now()).unwrap();
+    assert_eq!(
+        seeded(&world.conn())[1],
+        "settings space-1 21600000",
+        "Settings no longer say 6 h, so the 3 h checkpoint proves nothing"
+    );
+    let t0 = world.now();
+    let in_twenty_days = the_writer_takes_only_the_cards_lengths(&world, t0);
+    let picked = grants::write_grant(
+        world.store(),
+        &request(GrantLength::ThreeHours, Some(in_twenty_days)),
+        t0,
+    )
+    .unwrap();
     assert_eq!(
         picked.expires_at,
         t0 + 3 * HOUR_MS,
         "the 3 h pick took another length"
     );
-    assert_eq!(
-        spawn_on(&world, "s2", "claude", "default"),
-        Ok("work".into()),
-        "the turn after the grant did not start on the granted login"
-    );
-    assert_eq!(spawn_on(&world, "s2", "claude", "work"), Ok("work".into()));
-    for (session, provider, login) in [
-        ("s2", "claude", "other"),
-        ("s2", "codex", "default"),
-        ("s1", "claude", "default"),
-    ] {
-        assert_eq!(
-            spawn_on(&world, session, provider, login),
-            Ok(login.into()),
-            "the grant moved {session}'s {provider} child off the login {login}"
-        );
-    }
-    world.jump_wall(3 * HOUR_MS - 1);
-    assert_eq!(
-        spawn_on(&world, "s2", "claude", "default"),
-        Ok("work".into()),
-        "the 3 h grant ended before 3 h"
-    );
-    world.jump_wall(1);
-    let ended = spawn_on(&world, "s2", "claude", "work").unwrap_err();
-    assert_eq!(
-        ended,
-        format!(
-            "route_grant_expired: the grant to the claude login work ended at {}",
-            t0 + 3 * HOUR_MS
-        ),
-        "the first turn after 3 h did not stop with route_grant_expired"
-    );
-    assert_eq!(
-        spawn_on(&world, "s2", "claude", "default"),
-        Ok("default".into()),
-        "a session sent back to its first login did not start there"
-    );
+    the_first_turn_after_the_grant_is_refused_once(&mut world, t0, picked);
+    the_users_switch_ends_the_grant(&mut world);
+    an_expired_grant_is_inert_after_one_stop(&world);
+    check_turn_matches_the_ts_decision_on_the_shared_fixture(&world);
 
     #[cfg(unix)]
-    spawn::a_grant_moves_the_child_and_its_end_stops_the_turn();
+    {
+        spawn::every_turn_checks_the_grant(&world);
+        spawn::the_granted_login_starts_and_an_ended_grant_stops_it();
+    }
 }
 
 #[cfg(unix)]
@@ -688,8 +826,46 @@ esac"#,
         );
     }
 
+    /// `control_authorize_turn`, which `sendHarnessTurn` calls before every
+    /// turn, also one on a live child, through the app's IPC. It reads the
+    /// real clock, so the grants sit around it.
+    pub(super) fn every_turn_checks_the_grant(world: &super::World) {
+        let app = tauri::test::mock_builder()
+            .manage(SessionStore::open(world.path().to_path_buf()).unwrap())
+            .manage(crate::harness::HarnessHost::new())
+            .invoke_handler(tauri::generate_handler![
+                crate::control::control_authorize_turn
+            ])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        crate::control::init(app.handle()).unwrap();
+        let main = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+            .build()
+            .unwrap();
+        let cwd = world.path().parent().unwrap().to_str().unwrap().to_owned();
+        let turn = |turn_id: &str| {
+            let args = serde_json::json!(
+                {"sessionId": "s2", "cwd": cwd, "appAccess": false, "turnId": turn_id}
+            );
+            crate::mono_messages::tests::invoke_command(&main, "control_authorize_turn", &args)
+        };
+        let store = app.state::<SessionStore>();
+        let now = now_millis();
+        grants::save_grant(&store, &grant(now)).unwrap();
+        assert!(turn("s2-t1").is_ok(), "a turn under the grant was refused");
+        grants::save_grant(&store, &grant(now - THIRTY_DAYS_MS - 1)).unwrap();
+        let refused = turn("s2-t2").unwrap_err();
+        assert!(
+            refused
+                .as_str()
+                .is_some_and(|error| error.starts_with("route_grant_expired: ")),
+            "a turn sent after the grant ended was authorized: {refused}"
+        );
+        assert_eq!(grants::grant(&store, "s2").unwrap(), None);
+    }
+
     /// `harness_spawn` reads the real clock, so the grants sit around it.
-    pub(super) fn a_grant_moves_the_child_and_its_end_stops_the_turn() {
+    pub(super) fn the_granted_login_starts_and_an_ended_grant_stops_it() {
         let rig = Rig::new();
         let store = rig.app.state::<SessionStore>();
         account::save_account(&store, &work_login(), 0).unwrap();
@@ -699,7 +875,7 @@ esac"#,
         };
         grants::save_grant(&store, &granted(now_millis())).unwrap();
         let second = rig.folder("second-turn");
-        rig.spawn("granted", &second, "default").unwrap();
+        rig.spawn("granted", &second, "work").unwrap();
         assert_eq!(
             wait_for(&second.join("ran")),
             rig.ran_with(&second, "work"),

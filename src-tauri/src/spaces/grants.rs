@@ -3,15 +3,11 @@
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Manager, Runtime, State};
 
 use super::{with_conn, Provider, SpawnTarget};
-use crate::harness::HarnessAccount;
+use crate::harness::HarnessHost;
 use crate::session_store::{now_millis, SessionStore};
-
-/// How a turn's error starts once its grant has ended. The front end reads it
-/// as a usage-limit stop (`usageLimitFromError`).
-const ROUTE_GRANT_EXPIRED: &str = "route_grant_expired";
 
 const HOUR_MS: i64 = 60 * 60 * 1000;
 
@@ -35,26 +31,29 @@ pub(crate) enum GrantLength {
 }
 
 impl GrantLength {
+    /// `None` for "until the first login resets".
+    fn hours(self) -> Option<i64> {
+        match self {
+            Self::OneHour => Some(1),
+            Self::ThreeHours => Some(3),
+            Self::SixHours => Some(6),
+            Self::TwelveHours => Some(12),
+            Self::TwentyFourHours => Some(24),
+            Self::UntilReset => None,
+        }
+    }
+
     /// `first_login_resets_at` is the reset the provider itself reported for
     /// the login the session leaves; without one there is nothing to wait for.
     fn expires_at(self, now: i64, first_login_resets_at: Option<i64>) -> Result<i64, String> {
-        let hours =
-            match self {
-                Self::OneHour => 1,
-                Self::ThreeHours => 3,
-                Self::SixHours => 6,
-                Self::TwelveHours => 12,
-                Self::TwentyFourHours => 24,
-                Self::UntilReset => return match first_login_resets_at {
-                    Some(at) if at > now => Ok(at),
-                    Some(_) => Err("The first login has already reset; pick a length".into()),
-                    None => Err(
-                        "The provider reported no reset time for the first login; pick a length"
-                            .into(),
-                    ),
-                },
-            };
-        Ok(now + hours * HOUR_MS)
+        match (self.hours(), first_login_resets_at) {
+            (Some(hours), _) => Ok(now + hours * HOUR_MS),
+            (None, Some(at)) if at > now => Ok(at),
+            (None, Some(_)) => Err("The first login has already reset; pick a length".into()),
+            (None, None) => {
+                Err("The provider reported no reset time for the first login; pick a length".into())
+            }
+        }
     }
 }
 
@@ -179,37 +178,78 @@ pub fn spaces_grant_remove(
     remove_grant(&store, &session_id)
 }
 
-/// The login a session's grant routes its child to at `now`. While the grant
-/// lasts, a child sent to its first login starts on the granted one. Once it
-/// ends, a child on the granted login stops before its turn; one sent back to
-/// the first login starts there.
+/// The error a turn stops with once its grant has ended. It starts with
+/// `route_grant_expired`, which the front end reads as a usage-limit stop
+/// (`usageLimitFromError`), and names what the expired-grant card shows and
+/// where "Go back" goes (`expiredRouteGrant` parses it).
+fn expired(grant: &RouteGrant) -> String {
+    format!(
+        "route_grant_expired: the grant from {} to {} granted at {} ended at {}",
+        grant.from_account_id, grant.to_account_id, grant.granted_at, grant.expires_at
+    )
+}
+
+/// Before every turn the app sends (`control::control_authorize_turn`, which
+/// `sendHarnessTurn` calls first), so also a turn on a live child, which
+/// reaches no spawn. A running turn is never checked. Once the session's grant has ended,
+/// the turn is refused, the grant is removed (so it never blocks a login
+/// again), and the child on the granted login is stopped, so the next turn
+/// starts a new child on the login the session picks then.
+pub(crate) fn check_turn(
+    store: &SessionStore,
+    children: &HarnessHost,
+    session_id: &str,
+    now: i64,
+) -> Result<(), String> {
+    match grant(store, session_id)? {
+        Some(grant) if now >= grant.expires_at => {
+            remove_grant(store, session_id)?;
+            children.kill_session_tree(session_id);
+            Err(expired(&grant))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `check_turn` on the app's clock, the one `spaces_grant_save` writes with.
+pub(crate) fn check_app_turn<R: Runtime>(
+    app: &impl Manager<R>,
+    session_id: &str,
+) -> Result<(), String> {
+    check_turn(
+        &app.state::<SessionStore>(),
+        &app.state::<HarnessHost>(),
+        session_id,
+        now_millis(),
+    )
+}
+
+/// The spawn hook's grant step, behind `check_turn`. It never changes the
+/// login: the transcript handoff moved the session to the granted one. The
+/// session's own child (its spawn id without `#n`) on any other login means
+/// the user moved it off the grant (Go back, or their own pick), which ends
+/// it; a helper child has another id, so it never does. A child on the granted login after
+/// the grant has ended is refused once, and the grant is removed.
 pub(super) fn route(
     store: &SessionStore,
     session_id: &str,
     now: i64,
-    mut target: SpawnTarget,
+    target: SpawnTarget,
 ) -> Result<SpawnTarget, String> {
     let Some(account) = &target.account else {
         return Ok(target);
     };
+    let session_id = crate::harness::child_session(session_id);
     let Some(grant) = grant(store, session_id)? else {
         return Ok(target);
     };
-    let on = |id: &str| account.provider == grant.provider.as_str() && account.id == id;
-    if now >= grant.expires_at {
-        if on(&grant.to_account_id) {
-            return Err(format!(
-                "{ROUTE_GRANT_EXPIRED}: the grant to the {} login {} ended at {}",
-                grant.provider.as_str(),
-                grant.to_account_id,
-                grant.expires_at
-            ));
-        }
-    } else if on(&grant.from_account_id) {
-        target.account = Some(HarnessAccount {
-            provider: account.provider.clone(),
-            id: grant.to_account_id,
-        });
+    let on_grant = account.provider == grant.provider.as_str() && account.id == grant.to_account_id;
+    let ended = now >= grant.expires_at;
+    if ended || !on_grant {
+        remove_grant(store, session_id)?;
+    }
+    if ended && on_grant {
+        return Err(expired(&grant));
     }
     Ok(target)
 }

@@ -709,6 +709,7 @@ pub fn control_authorize_turn<R: Runtime>(
     app_access: bool,
     turn_id: String,
 ) -> Result<(), String> {
+    crate::spaces::grants::check_app_turn(&window, &session_id)?;
     authorize_window_turn(
         &window,
         &host,
