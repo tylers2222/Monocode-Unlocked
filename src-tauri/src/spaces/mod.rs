@@ -12,10 +12,15 @@ pub(crate) const FIRST_SPACE: &str = "space-1";
 
 const DEFAULT_ROUTE_GRANT_TTL_MS: i64 = 6 * 60 * 60 * 1000;
 
-/// The longest a usage-limit grant may last: a weekly limit resets within it.
-const MAX_ROUTE_GRANT_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// The cap on the Settings default for a new grant's length, whose choices
+/// are at most 24 hours. A grant itself may last longer ("until the first
+/// login resets" can be a monthly limit); bounding it is the grant writer's
+/// call (ADE-176), not the schema's.
+const MAX_ROUTE_GRANT_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
-/// The CLIs that keep named logins (`PROVIDER_ACCOUNT_PROVIDERS` in TS).
+/// The CLIs that keep named logins (`PROVIDER_ACCOUNT_PROVIDERS` in TS). The
+/// schema stores any name: this type is the one parse point, so a new CLI
+/// needs no table rebuild.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Provider {
     Claude,
@@ -65,14 +70,14 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            id INTEGER PRIMARY KEY CHECK (id = 1),
            active_space_id TEXT NOT NULL REFERENCES spaces(id),
            route_grant_ttl_ms INTEGER NOT NULL
-             CHECK (route_grant_ttl_ms BETWEEN 1 AND {MAX_ROUTE_GRANT_MS})
+             CHECK (route_grant_ttl_ms BETWEEN 1 AND {MAX_ROUTE_GRANT_TTL_MS})
          );
          CREATE TABLE IF NOT EXISTS space_projects (
            project_path TEXT PRIMARY KEY,
            space_id TEXT NOT NULL REFERENCES spaces(id)
          );
          CREATE TABLE IF NOT EXISTS provider_accounts (
-           provider TEXT NOT NULL CHECK (provider IN ('claude', 'codex', 'devin')),
+           provider TEXT NOT NULL,
            id TEXT NOT NULL CHECK (length(id) BETWEEN 1 AND 80),
            label TEXT NOT NULL,
            created_at INTEGER NOT NULL,
@@ -88,7 +93,7 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
          );
          CREATE TABLE IF NOT EXISTS space_project_accounts (
            space_id TEXT NOT NULL REFERENCES spaces(id),
-           project_path TEXT NOT NULL,
+           project_path TEXT NOT NULL, -- '~' for no project
            provider TEXT NOT NULL,
            account_id TEXT NOT NULL,
            PRIMARY KEY (space_id, project_path, provider),
@@ -101,8 +106,7 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            from_account_id TEXT NOT NULL,
            to_account_id TEXT NOT NULL,
            granted_at INTEGER NOT NULL,
-           expires_at INTEGER NOT NULL
-             CHECK (expires_at > granted_at AND expires_at - granted_at <= {MAX_ROUTE_GRANT_MS}),
+           expires_at INTEGER NOT NULL CHECK (expires_at > granted_at),
            FOREIGN KEY (provider, from_account_id)
              REFERENCES provider_accounts(provider, id) ON DELETE CASCADE,
            FOREIGN KEY (provider, to_account_id)

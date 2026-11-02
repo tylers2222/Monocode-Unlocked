@@ -3,7 +3,7 @@
 //! a restart migrates again as a no-op. With `MONOCODE_SCENARIO_DB` it runs
 //! on a copy of a real database.
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
 use super::world::World;
 use crate::mono_roster::MonoRole;
@@ -86,9 +86,31 @@ fn seeded(conn: &Connection) -> Vec<String> {
     )
 }
 
+/// A grant as long as its writer picks: "until the first login resets" on a
+/// monthly limit is about 30 days.
+fn a_grant_lasts_as_long_as_its_writer_says(world: &World) {
+    let (conn, now) = (world.conn(), world.now());
+    let grant = |expires_at: i64| {
+        conn.execute(
+            "INSERT INTO account_route_grants VALUES ('s1', 'codex', 'default', 'default', ?1, ?2)",
+            params![now, expires_at],
+        )
+    };
+    let thirty_days = 30 * 24 * 60 * 60 * 1000;
+    assert_eq!(
+        grant(now + thirty_days),
+        Ok(1),
+        "the schema refused a 30 day grant"
+    );
+    conn.execute("DELETE FROM account_route_grants", [])
+        .unwrap();
+    assert!(grant(now).is_err(), "stored a grant that ends as it starts");
+}
+
 /// Defect: a Mono or session from before Spaces, or one written after the
 /// migration, lands outside Space 1; the migration writes a project row in
-/// another form than the one rule (no row = Space 1); the seeds miss Space 1,
+/// another form than the one rule (no row = Space 1); the schema caps a
+/// grant's length or stores one that ends as it starts; the seeds miss Space 1,
 /// the 6 hour TTL or a CLI's default login; or a restart migrates again and
 /// reseeds or duplicates rows.
 #[test]
@@ -113,6 +135,7 @@ fn spaces_migration_backfills_space_one_and_reruns_as_a_no_op() {
         seeds,
         "Space 1, active, a 6 hour route-grant TTL and each CLI's own login"
     );
+    a_grant_lasts_as_long_as_its_writer_says(&world);
 
     world.add_session("s3", "/work/c", None);
     assert_eq!(
