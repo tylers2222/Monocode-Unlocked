@@ -1,11 +1,20 @@
 //! Spaces (ADE-168): one window holds several Spaces, each with its own
-//! logins, Monos, projects and sessions. This module owns the schema.
+//! logins, Monos, projects and sessions. This module owns the schema and the
+//! one spawn hook every harness child passes through. Each concern the hook
+//! applies lives in its own file: `account` (the Space's login), `grants`
+//! (usage-limit routing) and `leases` (one Space per checkout).
+
+pub(crate) mod account;
+pub(crate) mod grants;
+pub(crate) mod leases;
+
+use std::path::PathBuf;
 
 use rusqlite::types::ToSqlOutput;
 use rusqlite::{params, Connection, ToSql, Transaction, TransactionBehavior};
 
-use crate::harness::DEFAULT_PROVIDER_ACCOUNT_ID;
-use crate::session_store::ensure_column;
+use crate::harness::{HarnessAccount, DEFAULT_PROVIDER_ACCOUNT_ID};
+use crate::session_store::{ensure_column, SessionStore};
 
 /// The Space every row that predates Spaces belongs to.
 pub(crate) const FIRST_SPACE: &str = "space-1";
@@ -37,6 +46,13 @@ impl Provider {
             Self::Codex => "codex",
             Self::Devin => "devin",
         }
+    }
+
+    /// The provider a harness CLI is named by, `None` for one without logins.
+    pub(crate) fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|provider| provider.as_str() == name)
     }
 }
 
@@ -144,4 +160,33 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
         }
     }
     tx.commit()
+}
+
+/// What a harness child starts with. The spawn hook may change either.
+pub(crate) struct SpawnTarget {
+    pub(crate) workdir: PathBuf,
+    pub(crate) account: Option<HarnessAccount>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Spawns on this thread that passed through the hook, so a scenario can
+    /// prove `harness_spawn` calls it.
+    pub(crate) static HOOKED_SPAWNS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// The one Spaces step on every harness spawn (`harness_spawn`): the Space's
+/// login, then any usage-limit grant on it, then the checkout lease.
+pub(crate) fn prepare_spawn(
+    store: &SessionStore,
+    session_id: &str,
+    provider: Option<Provider>,
+    now: i64,
+    target: SpawnTarget,
+) -> Result<SpawnTarget, String> {
+    #[cfg(test)]
+    HOOKED_SPAWNS.with(|spawns| spawns.set(spawns.get() + 1));
+    let target = account::resolve(store, session_id, provider, target)?;
+    let target = grants::route(store, session_id, now, target)?;
+    leases::claim(store, session_id, target)
 }

@@ -969,15 +969,27 @@ pub fn harness_spawn<R: Runtime>(
     devin_ask_edits: Option<bool>,
     omp_mcp: Option<String>,
 ) -> Result<u32, String> {
-    let workdir = expand_home(&cwd);
+    if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref()) {
+        return Err("harness_spawn: not a resolved harness CLI".to_string());
+    }
+    // The hook may move the child to another folder, so the check is on its output.
+    let crate::spaces::SpawnTarget { workdir, account } = crate::spaces::prepare_spawn(
+        &app.state::<crate::session_store::SessionStore>(),
+        &session_id,
+        binary_provider
+            .as_deref()
+            .and_then(crate::spaces::Provider::parse),
+        crate::session_store::now_millis(),
+        crate::spaces::SpawnTarget {
+            workdir: expand_home(&cwd),
+            account,
+        },
+    )?;
     if !workdir.is_dir() {
         return Err(format!(
             "Working directory does not exist: {}",
             workdir.display()
         ));
-    }
-    if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref()) {
-        return Err("harness_spawn: not a resolved harness CLI".to_string());
     }
     // `apply_provider_account` gives a Claude account's child its own config folder.
     let account_id = account

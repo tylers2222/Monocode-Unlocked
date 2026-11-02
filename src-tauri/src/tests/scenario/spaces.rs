@@ -1,7 +1,9 @@
 //! Spaces foundation (ADE-168). The app opens a database written before
 //! Spaces existed, migrates it, and every Mono and session lands in Space 1;
-//! a restart migrates again as a no-op. With `MONOCODE_SCENARIO_DB` it runs
-//! on a copy of a real database.
+//! a restart migrates again as a no-op. Then `harness_spawn` on Tauri's mock
+//! runtime starts a stand-in CLI through the spawn hook with the folder and
+//! login it was given. With `MONOCODE_SCENARIO_DB` it runs on a copy of a
+//! real database.
 
 use rusqlite::{params, Connection};
 
@@ -112,7 +114,9 @@ fn a_grant_lasts_as_long_as_its_writer_says(world: &World) {
 /// another form than the one rule (no row = Space 1); the schema caps a
 /// grant's length or stores one that ends as it starts; the seeds miss Space 1,
 /// the 6 hour TTL or a CLI's default login; or a restart migrates again and
-/// reseeds or duplicates rows.
+/// reseeds or duplicates rows; or a harness child starts without the spawn
+/// hook, in another folder or with another login, or the folder check runs
+/// before the hook.
 #[test]
 fn spaces_migration_backfills_space_one_and_reruns_as_a_no_op() {
     let mut world = World::new("spaces");
@@ -159,4 +163,89 @@ fn spaces_migration_backfills_space_one_and_reruns_as_a_no_op() {
         "a restart reseeded or changed the Spaces rows"
     );
     backfilled_to_space_one(&world);
+
+    #[cfg(unix)]
+    spawn::the_hook_keeps_the_folder_and_login();
+}
+
+#[cfg(unix)]
+mod spawn {
+    use std::path::Path;
+
+    use tauri::Manager;
+
+    use super::super::agent_sandbox::{mock_app, script, wait_for};
+    use crate::spaces::HOOKED_SPAWNS;
+
+    fn text(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    fn hooked() -> u32 {
+        HOOKED_SPAWNS.with(std::cell::Cell::get)
+    }
+
+    /// `harness_spawn` with a stand-in fx that writes the folder it runs in,
+    /// its arguments and its Claude config folder.
+    pub(super) fn the_hook_keeps_the_folder_and_login() {
+        let root = std::env::temp_dir().join(format!("ade168-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
+        let fx = script(
+            &root.join("fx"),
+            r#"case "$1" in
+  --help) echo "fx acp: ask over the Agent Client Protocol" ;;
+  --version) echo "fx 0.0.1" ;;
+  *) printf '%s\n%s\n%s\n' "$(pwd -P)" "$*" "$CLAUDE_CONFIG_DIR" > ran.part && mv ran.part ran ;;
+esac"#,
+        );
+        let data = root.join("app-data");
+        std::fs::create_dir_all(&data).unwrap();
+        let app = mock_app(&data);
+        let spawn = |session: &str, workdir: &Path| {
+            let account = serde_json::from_str(r#"{"provider":"claude","id":"work"}"#).unwrap();
+            crate::harness::harness_spawn(
+                app.handle().clone(),
+                app.state::<crate::harness::HarnessHost>(),
+                session.into(),
+                text(&fx),
+                vec!["acp".into()],
+                text(workdir),
+                Some(account),
+                Some("fx".into()),
+                Some(text(&fx)),
+                None,
+                None,
+                None,
+            )
+        };
+
+        let before = hooked();
+        let workdir = root.join("project");
+        std::fs::create_dir_all(&workdir).unwrap();
+        spawn("hooked", &workdir).unwrap();
+        assert_eq!(
+            hooked(),
+            before + 1,
+            "harness_spawn started a child without the spawn hook, or ran it twice"
+        );
+        let config = crate::harness::provider_account_path(app.handle(), "claude", "work").unwrap();
+        assert_eq!(
+            wait_for(&workdir.join("ran")),
+            format!("{}\nacp\n{}\n", text(&workdir), text(&config)),
+            "the CLI started in another folder, with other arguments or another login"
+        );
+        let missing = root.join("missing");
+        assert_eq!(
+            spawn("lost", &missing).unwrap_err(),
+            format!("Working directory does not exist: {}", text(&missing))
+        );
+        assert_eq!(
+            hooked(),
+            before + 2,
+            "the folder check ran before the spawn hook"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
