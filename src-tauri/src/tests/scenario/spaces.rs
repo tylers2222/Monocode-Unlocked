@@ -40,6 +40,23 @@ fn rows(conn: &Connection, sql: &str) -> Vec<String> {
         .unwrap()
 }
 
+/// The spawn hook knows a CLI's logins only by its exact name. Kills the
+/// gate/mutation misses in `Provider::parse` (spaces/mod.rs:53, body replaced
+/// with `None`; :55, `==` -> `!=`).
+fn providers_parse_by_their_cli_name() {
+    use crate::spaces::Provider;
+    for (name, provider) in [
+        ("claude", Provider::Claude),
+        ("codex", Provider::Codex),
+        ("devin", Provider::Devin),
+    ] {
+        assert_eq!(Provider::parse(name), Some(provider), "{name}");
+    }
+    for name in ["", "Claude", "claude ", "omp", "fx"] {
+        assert_eq!(Provider::parse(name), None, "{name:?} named a login CLI");
+    }
+}
+
 fn backfilled_to_space_one(world: &World) {
     let conn = world.conn();
     for table in ["monos", "sessions"] {
@@ -127,6 +144,7 @@ fn spaces_migration_backfills_space_one_and_reruns_as_a_no_op() {
     drop_spaces(&Connection::open(world.path()).unwrap());
     world.restart();
     backfilled_to_space_one(&world);
+    providers_parse_by_their_cli_name();
     let seeds = [
         "space space-1 Space 1",
         "settings space-1 21600000",
