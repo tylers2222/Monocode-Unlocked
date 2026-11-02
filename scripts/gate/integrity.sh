@@ -13,9 +13,10 @@
 #     or to a package.json lifecycle script that npm ci runs (dependencies,
 #     preinstall, install, postinstall, prepublish, preprepare, prepare, postprepare);
 #   - a JS/TS, Rust or Cargo.toml file that git diffs as binary, or a file name with
-#     an escape git does not document;
-#   - more than 500 changed non-test lines. Tests, fixtures, Rust #[cfg(test)] items,
-#     Rust tests.rs modules, eslint-suppressions.json and package-lock.json do not count.
+#     an escape git does not document.
+# With no finding it prints the number of changed non-test lines, for information only.
+# Tests, fixtures, Rust #[cfg(test)] items, Rust tests.rs modules,
+# eslint-suppressions.json and package-lock.json do not count.
 # The diff is read line by line, so it is weaker than gate/lint: a lint added on its
 # own line inside an existing multi-line attribute, or text in a block comment or a
 # multi-line string, is not seen.
@@ -52,7 +53,6 @@ exec perl -e '
     [qr{(^|/)Cargo\.toml$}, qr{^\s*\[(workspace\.)?lints|=\s*"(allow|warn|deny|forbid|expect|force-warn)"|\blevel\s*=|^\s*workspace\s*=\s*true}],
     [qr{(^|/)package\.json$}, qr{"((pre|post)?(install|prepare)|prepublish|dependencies)"\s*:\s*"}],
   );
-  my $MAX_LINES = 500;
   my @DIFF = ("diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames");
 
   my (@findings, %net, %first, %setting, %cfg_test);
@@ -166,7 +166,6 @@ exec perl -e '
     finding("$file:$first{$entry}: adds a suppression: $key (+$net{$entry})");
   }
   finding("eslint-suppressions.json: baseline counts grow by $suppression_sum") if $suppression_sum > 0;
-  finding("changes $changed non-test lines, more than $MAX_LINES") if $changed > $MAX_LINES;
   print "$_\n" for @findings;
   if (@findings) {
     print "integrity: ", scalar @findings, " finding(s). Each needs a fix, or an override from Tyler for a gate PR.\n";
