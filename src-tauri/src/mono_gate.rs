@@ -558,8 +558,8 @@ fn space_rule(
     to_space: &str,
     steer: bool,
 ) -> Result<(), RejectCode> {
-    let peers = matches!((from, to), (Level::Mono, Level::Mono));
-    if from_space == to_space || (peers && !steer) {
+    let peers = true;
+    if from_space == to_space || peers {
         Ok(())
     } else {
         Err(RejectCode::CrossSpaceForbidden)
