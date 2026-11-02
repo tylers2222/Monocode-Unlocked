@@ -1,8 +1,8 @@
 //! Spaces foundation (ADE-168). The app opens a database written before
 //! Spaces existed, migrates it, and every Mono and session lands in Space 1;
-//! a restart migrates again as a no-op. The login, grant and lease storage
-//! round-trips, survives a restart and refuses what the rest of the app
-//! cannot use. Then `harness_spawn` on Tauri's mock
+//! a restart migrates again as a no-op. The Space, settings, project, login,
+//! grant and lease storage round-trips, survives a restart and refuses what
+//! the rest of the app cannot use. Then `harness_spawn` on Tauri's mock
 //! runtime starts a stand-in CLI through the spawn hook with the folder and
 //! login it was given. With `MONOCODE_SCENARIO_DB` it runs on a copy of a
 //! real database.
@@ -14,10 +14,13 @@ use crate::mono_roster::MonoRole;
 use crate::spaces::account::{self, ProviderAccount, SpaceLogin};
 use crate::spaces::grants::{self, GrantLength, GrantRequest, RouteGrant};
 use crate::spaces::leases::{self, CheckoutLease};
-use crate::spaces::{Provider, FIRST_SPACE};
+use crate::spaces::{
+    self, ProjectLogin, Provider, SettingsPatch, Space, SpaceSettings, FIRST_SPACE,
+};
 
 /// A grant until a monthly limit resets: longer than any weekly cap.
 const THIRTY_DAYS_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+const EIGHT_DAYS_MS: i64 = 8 * 24 * 60 * 60 * 1000;
 
 /// Takes the Spaces schema back out, as a database from before Spaces is.
 fn drop_spaces(conn: &Connection) {
@@ -182,6 +185,238 @@ fn grant(now: i64) -> RouteGrant {
     }
 }
 
+fn spaces_settings_and_projects_store_what_they_are_given(world: &World) {
+    let (store, now) = (world.store(), world.now());
+    let two = spaces::create(store, "  Client ", None, now).unwrap();
+    assert_eq!(
+        (two.id.as_str(), two.name.as_str()),
+        ("space-2", "Client"),
+        "the next Space number, its name trimmed"
+    );
+    assert!(
+        spaces::create(store, "   ", None, now).is_err(),
+        "a Space with no name"
+    );
+    spaces::update(store, "space-2", "Space 2", Some("#3366ff")).unwrap();
+    assert_eq!(
+        spaces::update(store, "space-9", "Nobody", None),
+        Err("No Space space-9".into())
+    );
+    let patch = SettingsPatch {
+        active_space_id: Some("space-2".into()),
+        route_grant_ttl_ms: Some(60_000),
+    };
+    spaces::set_settings(store, &patch).unwrap();
+    for (bad, defect) in [
+        (
+            SettingsPatch {
+                active_space_id: Some("space-9".into()),
+                ..SettingsPatch::default()
+            },
+            "a Space that does not exist became active",
+        ),
+        (
+            SettingsPatch {
+                route_grant_ttl_ms: Some(EIGHT_DAYS_MS),
+                ..SettingsPatch::default()
+            },
+            "the route-grant TTL passed the 7 day cap",
+        ),
+        (
+            SettingsPatch {
+                route_grant_ttl_ms: Some(0),
+                ..SettingsPatch::default()
+            },
+            "a route-grant TTL of 0",
+        ),
+        (
+            SettingsPatch {
+                route_grant_ttl_ms: Some(-1),
+                ..SettingsPatch::default()
+            },
+            "a negative route-grant TTL",
+        ),
+    ] {
+        assert!(spaces::set_settings(store, &bad).is_err(), "{defect}");
+    }
+    assert_eq!(
+        spaces::project_space(store, "/work/c").unwrap(),
+        FIRST_SPACE,
+        "a folder first used after the migration is outside Space 1"
+    );
+    spaces::set_project_space(store, "/work/b/", "space-2").unwrap();
+    for relative in ["work/b", "http://env/home/dev/repo"] {
+        assert_eq!(
+            spaces::set_project_space(store, relative, "space-2"),
+            Err(format!("Not an absolute folder: {relative}"))
+        );
+    }
+    assert_eq!(
+        spaces::project_space(store, REMOTE).unwrap(),
+        FIRST_SPACE,
+        "a remote project with no row is outside Space 1"
+    );
+    spaces::set_project_space(store, &format!("{REMOTE}/"), "space-2").unwrap();
+    spaces::set_project_space(store, "C:\\Work\\A\\", FIRST_SPACE).unwrap();
+    spaces::set_project_space(store, "c:/work/a", "space-2").unwrap();
+}
+
+fn spaces_settings_and_projects_hold(world: &World, at: i64) {
+    let store = world.store();
+    assert_eq!(
+        spaces::list(store).unwrap()[1],
+        Space {
+            id: "space-2".into(),
+            name: "Space 2".into(),
+            color: Some("#3366ff".into()),
+            created_at: at
+        }
+    );
+    assert_eq!(
+        spaces::settings(store).unwrap(),
+        SpaceSettings {
+            active_space_id: "space-2".into(),
+            route_grant_ttl_ms: 60_000
+        }
+    );
+    for (folder, space) in [
+        ("/work/a", FIRST_SPACE),
+        ("/work/b", "space-2"),
+        (REMOTE, "space-2"),
+        ("C:/Work/A", "space-2"),
+    ] {
+        assert_eq!(
+            spaces::project_space(store, folder).unwrap(),
+            space,
+            "{folder} is in another Space"
+        );
+    }
+}
+
+/// A remote project's key (`remote://<host>/<path>`). Mixed case, because
+/// `pathKey()` keeps a remote key's case where it lowercases a drive path.
+const REMOTE: &str = "remote://Env/Home/Dev/Repo";
+
+fn project_login(project: &str) -> ProjectLogin {
+    ProjectLogin {
+        space_id: FIRST_SPACE.into(),
+        project_path: project.into(),
+        provider: Provider::Claude,
+        account_id: "default".into(),
+    }
+}
+
+fn claude_in(world: &World, space: &str, project: &str) -> Option<String> {
+    spaces::project_login(world.store(), space, project, Provider::Claude).unwrap()
+}
+
+fn a_project_login_overrides_the_space_login(world: &World) {
+    let store = world.store();
+    assert_eq!(
+        spaces::project_logins(store, "space-2").unwrap(),
+        [],
+        "a Space with no project choices lists some"
+    );
+    assert_eq!(
+        claude_in(world, FIRST_SPACE, "/work/a").as_deref(),
+        Some("work"),
+        "a project without its own choice does not use the Space's login"
+    );
+    let repick = ProjectLogin {
+        account_id: "work".into(),
+        ..project_login("/work/a")
+    };
+    spaces::set_project_login(store, &repick).unwrap();
+    spaces::set_project_login(store, &project_login("/work/a/")).unwrap();
+    assert_eq!(
+        claude_in(world, FIRST_SPACE, "/work/a").as_deref(),
+        Some("default"),
+        "a re-pick of a project's login was lost"
+    );
+    assert_eq!(
+        claude_in(world, "space-2", "/work/a"),
+        None,
+        "a Space 1 project choice leaked into Space 2"
+    );
+    assert_eq!(
+        spaces::project_login(store, FIRST_SPACE, "/work/a", Provider::Codex).unwrap(),
+        None,
+        "a Claude project choice leaked to Codex"
+    );
+    let codex = ProjectLogin {
+        provider: Provider::Codex,
+        ..project_login("/work/a")
+    };
+    spaces::set_project_login(store, &codex).unwrap();
+    spaces::set_project_login(store, &project_login("~")).unwrap();
+    let remote = ProjectLogin {
+        space_id: "space-2".into(),
+        account_id: "work".into(),
+        ..project_login(&format!("{REMOTE}/"))
+    };
+    spaces::set_project_login(store, &remote).unwrap();
+    let two = ProjectLogin {
+        space_id: "space-2".into(),
+        project_path: "/work/b".into(),
+        account_id: "work".into(),
+        ..project_login("/work/b")
+    };
+    spaces::set_project_login(store, &two).unwrap();
+    let stranger = ProjectLogin {
+        account_id: "nobody".into(),
+        ..project_login("/work/c")
+    };
+    assert!(
+        spaces::set_project_login(store, &stranger).is_err(),
+        "a project took a login that does not exist"
+    );
+    assert_eq!(
+        spaces::project_login(store, FIRST_SPACE, "/work/c", Provider::Codex).unwrap(),
+        None
+    );
+}
+
+fn project_logins_hold(world: &World) {
+    assert_eq!(
+        claude_in(world, FIRST_SPACE, "/work/a").as_deref(),
+        Some("default"),
+        "the project's own choice did not override the Space's login"
+    );
+    assert_eq!(
+        claude_in(world, "space-2", "/work/b").as_deref(),
+        Some("work")
+    );
+    assert_eq!(
+        claude_in(world, FIRST_SPACE, "~").as_deref(),
+        Some("default"),
+        "the no-project choice was lost"
+    );
+    assert_eq!(
+        claude_in(world, "space-2", REMOTE).as_deref(),
+        Some("work"),
+        "a remote project's login was lost"
+    );
+    let codex = ProjectLogin {
+        provider: Provider::Codex,
+        ..project_login("/work/a")
+    };
+    assert_eq!(
+        spaces::project_logins(world.store(), FIRST_SPACE).unwrap(),
+        [project_login("/work/a"), codex, project_login("~")],
+        "Space 1's project choices are missing, out of path and provider order, or include Space 2's"
+    );
+    let in_two = |project: &str| ProjectLogin {
+        space_id: "space-2".into(),
+        account_id: "work".into(),
+        ..project_login(project)
+    };
+    assert_eq!(
+        spaces::project_logins(world.store(), "space-2").unwrap(),
+        [in_two("/work/b"), in_two("remote://Env/Home/Dev/Repo")],
+        "Space 2's project choices are missing, or a remote key is listed in another form than pathKey()"
+    );
+}
+
 fn logins_grants_and_leases_store_what_they_are_given(world: &World) {
     let (store, now) = (world.store(), world.now());
     account::save_account(store, &work_login(), now).unwrap();
@@ -339,6 +574,12 @@ fn logins_grants_and_leases_hold(world: &World, at: i64) {
 
 fn removing_a_login_drops_its_space_login_and_grant(world: &World) {
     let store = world.store();
+    spaces::clear_project_login(store, FIRST_SPACE, "/work/a", Provider::Claude).unwrap();
+    assert_eq!(
+        claude_in(world, FIRST_SPACE, "/work/a").as_deref(),
+        Some("work"),
+        "a cleared project choice still overrides the Space's login"
+    );
     assert_eq!(
         account::remove_account(store, Provider::Claude, "default"),
         Err("The default provider account cannot be removed".into()),
@@ -346,6 +587,11 @@ fn removing_a_login_drops_its_space_login_and_grant(world: &World) {
     );
     account::remove_account(store, Provider::Claude, "work").unwrap();
     assert_eq!(account::logins(store).unwrap(), []);
+    assert_eq!(
+        claude_in(world, "space-2", "/work/b"),
+        None,
+        "a project kept a removed login"
+    );
     assert_eq!(grants::grant(store, "s2").unwrap(), None);
     grants::save_grant(store, &grant(world.now())).unwrap_err();
     leases::release_lease(store, "/work/b", "space-2").unwrap();
@@ -361,7 +607,15 @@ fn removing_a_login_drops_its_space_login_and_grant(world: &World) {
 /// another form than the one rule (no row = Space 1); the schema caps a
 /// grant's length or stores one that ends as it starts; the seeds miss Space 1,
 /// the 6 hour TTL or a CLI's default login; or a restart migrates again and
-/// reseeds or duplicates rows; a login, grant or lease is lost or altered,
+/// reseeds or duplicates rows; a Space, the settings or a project's Space is
+/// lost or altered, a blank name, a missing active Space, a TTL outside 1 ms
+/// to 7 days, or a relative or http project path is stored, a remote or
+/// Windows project is refused or keyed otherwise than `pathKey()`, or a
+/// project with no row is outside Space 1; a project's own login does not
+/// override the Space's, is lost on a re-pick, leaks to another Space or
+/// provider, survives being cleared, or outlives its login; a Space's list of
+/// project choices includes another Space's, is out of path and provider
+/// order, or lists a remote key in another form than `pathKey()`; a login, grant or lease is lost or altered,
 /// survives the removal of its login, or is stored when its login id is not
 /// a valid folder name or its label is blank, a rename is lost, a command
 /// takes a CLI without logins or misreads the UI's arguments, a grant ends as
@@ -419,18 +673,14 @@ fn spaces_migration_backfills_space_one_and_reruns_as_a_no_op() {
     );
     backfilled_to_space_one(&world);
 
-    // Space 2's row as `spaces_create` will write it (ADE-187).
-    world
-        .conn()
-        .execute(
-            "INSERT INTO spaces (id, name, created_at) VALUES ('space-2', 'Space 2', 0)",
-            [],
-        )
-        .unwrap();
     let at = world.now();
+    spaces_settings_and_projects_store_what_they_are_given(&world);
     logins_grants_and_leases_store_what_they_are_given(&world);
+    a_project_login_overrides_the_space_login(&world);
     world.down(60_000);
+    spaces_settings_and_projects_hold(&world, at);
     logins_grants_and_leases_hold(&world, at);
+    project_logins_hold(&world);
     removing_a_login_drops_its_space_login_and_grant(&world);
 
     #[cfg(unix)]
@@ -764,6 +1014,115 @@ fn the_grant_command_stores_what_the_card_sends() {
         Some(saved),
         "a refused request replaced the stored grant"
     );
+}
+
+/// The Space, project and project-login commands as the UI invokes them, on
+/// a mock app's migrated store. Not on Windows: `tauri::test` is not built
+/// there (see Cargo.toml).
+///
+/// Defect: a command answers without reading the store (no Spaces, an empty
+/// or made-up Space id, no login or a made-up one, no project choices), or
+/// returns without storing or clearing what the UI sent.
+#[cfg(not(windows))]
+#[test]
+fn the_space_and_project_commands_store_what_the_ui_sends() {
+    use tauri::Manager;
+
+    use crate::session_store::SessionStore;
+
+    type Listed = (String, String, Option<String>);
+
+    let app = tauri::test::mock_builder()
+        .manage(SessionStore::open_in_memory().unwrap())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let store = || app.state::<SessionStore>();
+    let listed = || -> Vec<Listed> {
+        spaces::spaces_list(store())
+            .unwrap()
+            .into_iter()
+            .map(|space| (space.id, space.name, space.color))
+            .collect()
+    };
+    let space_one: Listed = (FIRST_SPACE.into(), "Space 1".into(), None);
+    assert_eq!(
+        listed(),
+        std::slice::from_ref(&space_one),
+        "the Space list is empty or lost Space 1"
+    );
+
+    let two = spaces::spaces_create(store(), "Client".into(), None).unwrap();
+    spaces::spaces_update(store(), two.id, "Space 2".into(), Some("#3366ff".into())).unwrap();
+    assert_eq!(
+        listed(),
+        [
+            space_one,
+            ("space-2".into(), "Space 2".into(), Some("#3366ff".into()))
+        ],
+        "a new Space is not listed or its rename was not stored"
+    );
+    assert_eq!(
+        spaces::spaces_update(store(), "space-9".into(), "Nobody".into(), None),
+        Err("No Space space-9".into()),
+        "renamed a Space that does not exist"
+    );
+
+    let space_of = |project: &str| spaces::spaces_project_get(store(), project.into()).unwrap();
+    assert_eq!(
+        space_of("/work/a"),
+        FIRST_SPACE,
+        "a project with no row is not in Space 1"
+    );
+    spaces::spaces_project_set(store(), "/work/b/".into(), "space-2".into()).unwrap();
+    assert_eq!(
+        space_of("/work/b"),
+        "space-2",
+        "a project's move to another Space was not stored"
+    );
+
+    account::spaces_account_save(store(), work_login()).unwrap();
+    let space_two_login = SpaceLogin {
+        space_id: "space-2".into(),
+        provider: Provider::Claude,
+        account_id: "default".into(),
+    };
+    account::spaces_login_set(store(), space_two_login).unwrap();
+    let login_of = |project: &str| {
+        let (space, provider) = ("space-2".to_owned(), Provider::Claude);
+        spaces::spaces_project_login_get(store(), space, project.into(), provider).unwrap()
+    };
+    assert_eq!(
+        login_of("/work/b").as_deref(),
+        Some("default"),
+        "a project without its own choice does not use the Space's login"
+    );
+    let own = ProjectLogin {
+        space_id: "space-2".into(),
+        project_path: "/work/b".into(),
+        provider: Provider::Claude,
+        account_id: "work".into(),
+    };
+    spaces::spaces_project_login_set(store(), own.clone()).unwrap();
+    assert_eq!(
+        login_of("/work/b").as_deref(),
+        Some("work"),
+        "a project's own login was not stored"
+    );
+    let choices = || spaces::spaces_project_logins_list(store(), "space-2".into()).unwrap();
+    assert_eq!(
+        choices(),
+        [own],
+        "a project's own login is not in its Space's list"
+    );
+
+    let (space, project) = ("space-2".to_owned(), "/work/b".to_owned());
+    spaces::spaces_project_login_clear(store(), space, project, Provider::Claude).unwrap();
+    assert_eq!(
+        login_of("/work/b").as_deref(),
+        Some("default"),
+        "a cleared project login is still used"
+    );
+    assert_eq!(choices(), [], "a cleared project login is still listed");
 }
 
 #[cfg(unix)]

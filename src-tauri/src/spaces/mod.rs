@@ -11,11 +11,12 @@ pub(crate) mod leases;
 use std::path::PathBuf;
 
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef};
-use rusqlite::{params, Connection, ToSql, Transaction, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, ToSql, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
+use tauri::State;
 
 use crate::harness::{HarnessAccount, DEFAULT_PROVIDER_ACCOUNT_ID};
-use crate::session_store::{ensure_column, SessionStore};
+use crate::session_store::{ensure_column, now_millis, SessionStore};
 
 /// The Space every row that predates Spaces belongs to.
 pub(crate) const FIRST_SPACE: &str = "space-1";
@@ -190,6 +191,347 @@ pub(crate) fn folder_key(path: &str) -> Result<String, String> {
     } else {
         Err(format!("Not an absolute folder: {path}"))
     }
+}
+
+/// A project key as the front end's `pathKey()` writes it
+/// (src/shared/lib/paths.ts): `~` for no project (`selectionKey`), a remote
+/// project (`remote://<host>/<path>`, `REMOTE_PATH_PREFIX`) as it is with its
+/// trailing slash trimmed, or an absolute local folder.
+fn project_key(path: &str) -> Result<String, String> {
+    if path == "~" || path.starts_with("remote://") {
+        Ok(crate::mono_gate::path_key(path))
+    } else {
+        folder_key(path)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Space {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) color: Option<String>,
+    pub(crate) created_at: i64,
+}
+
+pub(crate) fn list(store: &SessionStore) -> Result<Vec<Space>, String> {
+    with_conn(store, |conn| {
+        conn.prepare("SELECT id, name, color, created_at FROM spaces ORDER BY created_at, id")?
+            .query_map([], |row| {
+                Ok(Space {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    color: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })?
+            .collect()
+    })
+}
+
+/// A new Space named `space-<n>`, one past the highest number in use, so a
+/// Space's branches can live under that name. The schema refuses a name that
+/// is empty once trimmed.
+pub(crate) fn create(
+    store: &SessionStore,
+    name: &str,
+    color: Option<&str>,
+    now: i64,
+) -> Result<Space, String> {
+    with_conn(store, |conn| {
+        let next: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(CAST(substr(id, 7) AS INTEGER)), 0) + 1
+               FROM spaces WHERE id GLOB 'space-[0-9]*'",
+            [],
+            |row| row.get(0),
+        )?;
+        let space = Space {
+            id: format!("space-{next}"),
+            name: name.trim().to_owned(),
+            color: color.map(str::to_owned),
+            created_at: now,
+        };
+        conn.execute(
+            "INSERT INTO spaces (id, name, color, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![space.id, space.name, space.color, space.created_at],
+        )?;
+        Ok(space)
+    })
+}
+
+pub(crate) fn update(
+    store: &SessionStore,
+    id: &str,
+    name: &str,
+    color: Option<&str>,
+) -> Result<(), String> {
+    let updated = with_conn(store, |conn| {
+        conn.execute(
+            "UPDATE spaces SET name = ?2, color = ?3 WHERE id = ?1",
+            params![id, name.trim(), color],
+        )
+    })?;
+    match updated {
+        0 => Err(format!("No Space {id}")),
+        _ => Ok(()),
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SpaceSettings {
+    pub(crate) active_space_id: String,
+    pub(crate) route_grant_ttl_ms: i64,
+}
+
+/// The schema refuses a Space that does not exist and a TTL past
+/// `MAX_ROUTE_GRANT_TTL_MS`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SettingsPatch {
+    pub(crate) active_space_id: Option<String>,
+    pub(crate) route_grant_ttl_ms: Option<i64>,
+}
+
+pub(crate) fn settings(store: &SessionStore) -> Result<SpaceSettings, String> {
+    with_conn(store, |conn| {
+        conn.query_row(
+            "SELECT active_space_id, route_grant_ttl_ms FROM space_settings WHERE id = 1",
+            [],
+            |row| {
+                Ok(SpaceSettings {
+                    active_space_id: row.get(0)?,
+                    route_grant_ttl_ms: row.get(1)?,
+                })
+            },
+        )
+    })
+}
+
+pub(crate) fn set_settings(
+    store: &SessionStore,
+    patch: &SettingsPatch,
+) -> Result<SpaceSettings, String> {
+    with_conn(store, |conn| {
+        conn.execute(
+            "UPDATE space_settings
+                SET active_space_id = COALESCE(?1, active_space_id),
+                    route_grant_ttl_ms = COALESCE(?2, route_grant_ttl_ms)
+              WHERE id = 1",
+            params![patch.active_space_id, patch.route_grant_ttl_ms],
+        )
+    })?;
+    settings(store)
+}
+
+/// The Space a project belongs to. A project with no row is in Space 1: the
+/// one rule every reader goes through.
+pub(crate) fn project_space(store: &SessionStore, project_path: &str) -> Result<String, String> {
+    let project_path = project_key(project_path)?;
+    let space = with_conn(store, |conn| {
+        conn.query_row(
+            "SELECT space_id FROM space_projects WHERE project_path = ?1",
+            [project_path],
+            |row| row.get(0),
+        )
+        .optional()
+    })?;
+    Ok(space.unwrap_or_else(|| FIRST_SPACE.to_owned()))
+}
+
+pub(crate) fn set_project_space(
+    store: &SessionStore,
+    project_path: &str,
+    space_id: &str,
+) -> Result<(), String> {
+    let project_path = project_key(project_path)?;
+    with_conn(store, |conn| {
+        conn.execute(
+            "INSERT INTO space_projects (project_path, space_id) VALUES (?1, ?2)
+             ON CONFLICT (project_path) DO UPDATE SET space_id = excluded.space_id",
+            params![project_path, space_id],
+        )
+    })?;
+    Ok(())
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProjectLogin {
+    pub(crate) space_id: String,
+    pub(crate) project_path: String,
+    pub(crate) provider: Provider,
+    pub(crate) account_id: String,
+}
+
+/// The login a project uses in a Space: its own choice, else the Space's
+/// login (`space_accounts`), else none.
+pub(crate) fn project_login(
+    store: &SessionStore,
+    space_id: &str,
+    project_path: &str,
+    provider: Provider,
+) -> Result<Option<String>, String> {
+    let project_path = project_key(project_path)?;
+    with_conn(store, |conn| {
+        conn.query_row(
+            "SELECT COALESCE(
+               (SELECT account_id FROM space_project_accounts
+                 WHERE space_id = ?1 AND project_path = ?2 AND provider = ?3),
+               (SELECT account_id FROM space_accounts WHERE space_id = ?1 AND provider = ?3))",
+            params![space_id, project_path, provider],
+            |row| row.get(0),
+        )
+    })
+}
+
+/// Every project's own login choice in one Space (what ADE-171 lists).
+pub(crate) fn project_logins(
+    store: &SessionStore,
+    space_id: &str,
+) -> Result<Vec<ProjectLogin>, String> {
+    with_conn(store, |conn| {
+        conn.prepare(
+            "SELECT space_id, project_path, provider, account_id FROM space_project_accounts
+              WHERE space_id = ?1 ORDER BY project_path, provider",
+        )?
+        .query_map([space_id], |row| {
+            Ok(ProjectLogin {
+                space_id: row.get(0)?,
+                project_path: row.get(1)?,
+                provider: row.get(2)?,
+                account_id: row.get(3)?,
+            })
+        })?
+        .collect()
+    })
+}
+
+pub(crate) fn set_project_login(store: &SessionStore, login: &ProjectLogin) -> Result<(), String> {
+    let project_path = project_key(&login.project_path)?;
+    with_conn(store, |conn| {
+        conn.execute(
+            "INSERT INTO space_project_accounts (space_id, project_path, provider, account_id)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (space_id, project_path, provider)
+             DO UPDATE SET account_id = excluded.account_id",
+            params![
+                login.space_id,
+                project_path,
+                login.provider,
+                login.account_id
+            ],
+        )
+    })?;
+    Ok(())
+}
+
+/// Drops a project's own choice, so it uses the Space's login again.
+pub(crate) fn clear_project_login(
+    store: &SessionStore,
+    space_id: &str,
+    project_path: &str,
+    provider: Provider,
+) -> Result<(), String> {
+    let project_path = project_key(project_path)?;
+    with_conn(store, |conn| {
+        conn.execute(
+            "DELETE FROM space_project_accounts
+              WHERE space_id = ?1 AND project_path = ?2 AND provider = ?3",
+            params![space_id, project_path, provider],
+        )
+    })?;
+    Ok(())
+}
+
+#[tauri::command(async)]
+pub fn spaces_list(store: State<'_, SessionStore>) -> Result<Vec<Space>, String> {
+    list(&store)
+}
+
+#[tauri::command(async)]
+pub fn spaces_create(
+    store: State<'_, SessionStore>,
+    name: String,
+    color: Option<String>,
+) -> Result<Space, String> {
+    create(&store, &name, color.as_deref(), now_millis())
+}
+
+#[tauri::command(async)]
+pub fn spaces_update(
+    store: State<'_, SessionStore>,
+    id: String,
+    name: String,
+    color: Option<String>,
+) -> Result<(), String> {
+    update(&store, &id, &name, color.as_deref())
+}
+
+#[tauri::command(async)]
+pub fn spaces_settings_get(store: State<'_, SessionStore>) -> Result<SpaceSettings, String> {
+    settings(&store)
+}
+
+#[tauri::command(async)]
+pub fn spaces_settings_set(
+    store: State<'_, SessionStore>,
+    patch: SettingsPatch,
+) -> Result<SpaceSettings, String> {
+    set_settings(&store, &patch)
+}
+
+#[tauri::command(async)]
+pub fn spaces_project_get(
+    store: State<'_, SessionStore>,
+    project_path: String,
+) -> Result<String, String> {
+    project_space(&store, &project_path)
+}
+
+#[tauri::command(async)]
+pub fn spaces_project_set(
+    store: State<'_, SessionStore>,
+    project_path: String,
+    space_id: String,
+) -> Result<(), String> {
+    set_project_space(&store, &project_path, &space_id)
+}
+
+#[tauri::command(async)]
+pub fn spaces_project_login_get(
+    store: State<'_, SessionStore>,
+    space_id: String,
+    project_path: String,
+    provider: Provider,
+) -> Result<Option<String>, String> {
+    project_login(&store, &space_id, &project_path, provider)
+}
+
+#[tauri::command(async)]
+pub fn spaces_project_logins_list(
+    store: State<'_, SessionStore>,
+    space_id: String,
+) -> Result<Vec<ProjectLogin>, String> {
+    project_logins(&store, &space_id)
+}
+
+#[tauri::command(async)]
+pub fn spaces_project_login_set(
+    store: State<'_, SessionStore>,
+    login: ProjectLogin,
+) -> Result<(), String> {
+    set_project_login(&store, &login)
+}
+
+#[tauri::command(async)]
+pub fn spaces_project_login_clear(
+    store: State<'_, SessionStore>,
+    space_id: String,
+    project_path: String,
+    provider: Provider,
+) -> Result<(), String> {
+    clear_project_login(&store, &space_id, &project_path, provider)
 }
 
 /// What a harness child starts with. The spawn hook may change either.
