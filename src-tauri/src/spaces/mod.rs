@@ -7,6 +7,7 @@
 pub(crate) mod account;
 pub(crate) mod grants;
 pub(crate) mod leases;
+pub(crate) mod membership;
 
 use std::path::PathBuf;
 

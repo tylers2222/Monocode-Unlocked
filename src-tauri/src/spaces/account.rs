@@ -5,8 +5,8 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use super::{with_conn, Provider, SpawnTarget};
-use crate::harness::DEFAULT_PROVIDER_ACCOUNT_ID;
+use super::{membership, with_conn, Provider, SpawnTarget, FIRST_SPACE};
+use crate::harness::{HarnessAccount, DEFAULT_PROVIDER_ACCOUNT_ID};
 use crate::session_store::{now_millis, SessionStore};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -170,12 +170,54 @@ pub fn spaces_login_set(store: State<'_, SessionStore>, login: SpaceLogin) -> Re
     set_login(&store, &login)
 }
 
-/// The login a child starts with. Today: the one its caller passed.
+fn cli_name(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Claude => "Claude",
+        Provider::Codex => "Codex",
+        Provider::Devin => "Devin",
+    }
+}
+
+/// The login a session's child starts with: the session's own (any but the
+/// CLI's `default`, which the front end sends for a session without one),
+/// else its Space's login for that CLI. Space 1 with none set keeps the
+/// CLI's own login, as every session did before Spaces; another Space
+/// refuses. A session with no row yet (never saved, or its first save not
+/// committed) is in the Space it would join. A child whose CLI keeps no
+/// login profile starts as it was asked.
 pub(super) fn resolve(
-    _store: &SessionStore,
-    _session_id: &str,
+    store: &SessionStore,
+    session_id: &str,
     _provider: Option<Provider>,
     target: SpawnTarget,
 ) -> Result<SpawnTarget, String> {
-    Ok(target)
+    let Some(provider) = target
+        .account
+        .as_ref()
+        .filter(|account| account.id == DEFAULT_PROVIDER_ACCOUNT_ID)
+        .and_then(|account| Provider::parse(&account.provider))
+    else {
+        return Ok(target);
+    };
+    let (space_id, name, login) = with_conn(store, |conn| {
+        let space_id = membership::space_for_row(conn, session_id, None)?;
+        let (name, login): (String, Option<String>) = conn.query_row(
+            "SELECT COALESCE((SELECT name FROM spaces WHERE id = ?1), ?1),
+                    (SELECT account_id FROM space_accounts WHERE space_id = ?1 AND provider = ?2)",
+            params![space_id, provider],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok((space_id, name, login))
+    })?;
+    match login {
+        Some(id) => Ok(SpawnTarget {
+            account: Some(HarnessAccount {
+                provider: provider.as_str().into(),
+                id,
+            }),
+            ..target
+        }),
+        None if space_id == FIRST_SPACE => Ok(target),
+        None => Err(format!("{name} has no {} login", cli_name(provider))),
+    }
 }

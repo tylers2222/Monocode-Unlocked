@@ -531,11 +531,22 @@ fn harness_spawn_child() {
 /// folder at `data`: Tauri names it `<data dir>/<identifier>`, and an absolute
 /// identifier replaces the whole path.
 pub(super) fn mock_app(data: &Path) -> tauri::App<tauri::test::MockRuntime> {
+    mock_app_with(
+        data,
+        crate::session_store::SessionStore::open_in_memory().unwrap(),
+    )
+}
+
+/// `mock_app` on `store`, so a spawn sees the rows a scenario wrote.
+pub(super) fn mock_app_with(
+    data: &Path,
+    store: crate::session_store::SessionStore,
+) -> tauri::App<tauri::test::MockRuntime> {
     let mut context = tauri::test::mock_context(tauri::test::noop_assets());
     context.config_mut().identifier = path(data);
     let app = tauri::test::mock_builder()
         .manage(crate::harness::HarnessHost::new())
-        .manage(crate::session_store::SessionStore::open_in_memory().unwrap())
+        .manage(store)
         .build(context)
         .unwrap();
     assert_eq!(app.path().app_data_dir().unwrap(), data);

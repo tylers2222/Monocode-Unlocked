@@ -859,7 +859,7 @@ pub(crate) fn ensure_column(
 }
 
 #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
-fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
            version INTEGER PRIMARY KEY,
@@ -1445,19 +1445,16 @@ pub(crate) fn upsert_session(
     let has_user_message = has_user_block(&session.blocks);
     let is_draft = has_draft_block(&session.blocks);
 
-    let existing: Option<(i64, i64, String, i64, i64, String)> = conn
+    let existing: Option<(i64, i64, String, i64, i64, String, String)> = conn
         .query_row(
-            "SELECT created_at, updated_at, blocks_json, archived, pinned, queued_messages_json FROM sessions WHERE id = ?1",
+            "SELECT created_at, updated_at, blocks_json, archived, pinned, queued_messages_json, space_id FROM sessions WHERE id = ?1",
             params![session.id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
         )
         .optional()?;
-    let created_at = existing
-        .as_ref()
-        .map(|(value, _, _, _, _, _)| *value)
-        .unwrap_or(now);
+    let created_at = existing.as_ref().map(|(value, ..)| *value).unwrap_or(now);
     let updated_at = match &existing {
-        Some((_, prev_updated, prev_blocks, _, _, prev_queue))
+        Some((_, prev_updated, prev_blocks, _, _, prev_queue, _))
             if json_eq(prev_blocks, blocks.as_ref()) && prev_queue == &queued_messages_json =>
         {
             *prev_updated
@@ -1466,12 +1463,23 @@ pub(crate) fn upsert_session(
     };
     let archived = existing
         .as_ref()
-        .map(|(_, _, _, value, _, _)| *value != 0)
+        .map(|(_, _, _, value, ..)| *value != 0)
         .unwrap_or(false);
     let pinned = existing
         .as_ref()
-        .map(|(_, _, _, _, value, _)| *value != 0)
+        .map(|(_, _, _, _, value, ..)| *value != 0)
         .unwrap_or(false);
+
+    // `space_id` is insert-only (`DO UPDATE` never sets it) and never the
+    // caller's: a new row joins the Space `space_for_row` picks.
+    let space_id = match existing {
+        Some((.., space_id)) => space_id,
+        None => crate::spaces::membership::space_for_row(
+            conn,
+            &session.id,
+            session.lead_session_id.as_deref(),
+        )?,
+    };
 
     // `lead_session_id` is insert-only: a stale copy cannot restore a lead id
     // that a lead delete cleared, and a worker whose lead row is gone saves as
@@ -1483,9 +1491,9 @@ pub(crate) fn upsert_session(
            context_used, context_window, worktree_cwd, has_user_message,
            linked_work_item_json, provider_account_id, worktree_removed, is_draft,
            automation_id, queued_messages_json, queue_status, sidebar_hidden, work_folder,
-           lead_session_id, queue_pause, mcp
+           lead_session_id, queue_pause, mcp, space_id
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-           (SELECT id FROM sessions WHERE id = ?26), ?27, ?28)
+           (SELECT id FROM sessions WHERE id = ?26), ?27, ?28, ?29)
          ON CONFLICT(id) DO UPDATE SET
            cwd = excluded.cwd,
            harness = excluded.harness,
@@ -1542,6 +1550,7 @@ pub(crate) fn upsert_session(
             session.lead_session_id,
             session.queue_pause,
             session.mcp,
+            space_id,
         ],
         |row| row.get(0),
     )?;
@@ -2963,6 +2972,7 @@ mod tests {
         {
             let store = SessionStore::open(path.clone()).unwrap();
             let conn = store.conn.lock().unwrap();
+            upsert_session(&conn, &sample("kept", "/tmp/a", "Kept")).unwrap();
             conn.execute_batch("DROP TABLE monos; DROP TABLE monos_legacy_import;")
                 .unwrap();
             conn.execute(
@@ -2970,7 +2980,6 @@ mod tests {
                 params![version],
             )
             .unwrap();
-            upsert_session(&conn, &sample("kept", "/tmp/a", "Kept")).unwrap();
             let recorded: i64 = conn
                 .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
                     row.get(0)
