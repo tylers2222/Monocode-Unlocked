@@ -3143,7 +3143,16 @@ pub fn check_action(
         prior,
         prior_start_ended,
     };
-    let checked = match mono_gate::decide_action(caller, action, &hash, &facts) {
+    // ADE-175: messages.* keep their own gate. get_monos asks here only for
+    // its Space scope, so every caller that could list Monos still can.
+    let decision = if action == "messages.get_monos" {
+        ActionDecision::Allow {
+            lead_session_id: None,
+        }
+    } else {
+        mono_gate::decide_action(caller, action, &hash, &facts)
+    };
+    let checked = match decision {
         // `started` is set only for a `sessions.start` (`appLaunchId`).
         ActionDecision::Allow { lead_session_id } => match started {
             Some(started) => {

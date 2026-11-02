@@ -1665,13 +1665,6 @@ pub fn decide_action(
     hash: &PayloadHash,
     facts: &ActionFacts,
 ) -> ActionDecision {
-    // messages.* keep their own gate: get_monos comes here only for its
-    // Space scope (ADE-175), so every caller that could list Monos still can.
-    if action == "messages.get_monos" {
-        return ActionDecision::Allow {
-            lead_session_id: None,
-        };
-    }
     if matches!(caller.speaker, Speaker::Session { .. }) && facts.caller_level.is_none() {
         return ActionDecision::Refuse {
             code: Refusal::UnknownCaller,

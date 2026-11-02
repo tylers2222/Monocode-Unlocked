@@ -304,10 +304,10 @@ Actions:
                   busy, queued, queuePaused (its queue sends nothing until
                   someone resumes it), hasConversation, updatedAt and self
                   (true for you).
-  monos.get      {"monoId":"..."}  Mono or habit only. One Mono as monos.list
-                  shows it, plus the harness and model its chat runs on (null
-                  until it has a chat) and its messageAllowlist. Unknown IDs
-                  get code unknown_mono.
+  monos.get      {"monoId":"..."}  Mono or habit only. One Mono by ID with the
+                  fields of monos.list (all its projects), plus the harness
+                  and model its chat runs on (null until it has a chat) and
+                  its messageAllowlist. Unknown IDs get code unknown_mono.
   monos.read     {"monoId":"...","before":"<turnId>","limit":3,"maxChars":1200,
                   "work":true}
                   Read another Mono's chat. Paging works as in sessions.read.

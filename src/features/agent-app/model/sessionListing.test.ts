@@ -31,7 +31,8 @@ afterEach(() => {
 // by `appIdentifier` and finds builders by `branch`. Defect: either field is
 // missing from the reply as the CLI prints it, or a session with no branch
 // drops the key, so its reply looks like one from an app that sends none.
-// ADE-175: or it lists a saved session of another Space.
+// ADE-175: or it lists a saved session of another Space, or a lead lists its
+// folder after that project moved to another Space.
 it("lists the app that answered and each session's branch, null when it has none", async () => {
   const mono = open("mono-chat");
   const scope = {
@@ -72,6 +73,20 @@ it("lists the app that answered and each session's branch, null when it has none
   expect(await handleAgentApp(mono, "r2", "sessions.list", {}, host)).toMatchObject({
     sessions: [{ id: "loose" }, { id: "fresh" }],
   });
+  // A lead whose own folder is a project of another Space lists nothing.
+  let listed = 0;
+  const leadHost = {
+    ...host,
+    sessions: async () => {
+      listed += 1;
+      return [];
+    },
+  } as unknown as AgentAppHost;
+  scope.projects = [];
+  await expect(handleAgentApp(open("lead"), "r3", "sessions.list", {}, leadHost)).rejects.toThrow(
+    "Not one of your projects",
+  );
+  expect(listed).toBe(0);
 });
 
 // ADE-84 #268 r2 M1. The app rewrites a saved session's branch from git on

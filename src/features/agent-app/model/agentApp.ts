@@ -1818,10 +1818,14 @@ export async function handleAgentApp(
     return handleGigaMonos(source, action, input, host);
   if (action.startsWith("monos."))
     return handleMonos(source, action, input, host, scope);
-  if (action === "messages.get_monos") return handleMessages(scope);
-  function handleMessages(space?: SpaceScope) {
-    const messages = host.messages;
-    if (!messages) throw new Error("Mono messaging is unavailable here");
+  if (action === "messages.get_monos")
+    return messaging().getMonos(scoped(scope));
+  function messaging() {
+    if (!host.messages) throw new Error("Mono messaging is unavailable here");
+    return host.messages;
+  }
+  function handleMessages() {
+    const messages = messaging();
     if (action === "messages.send")
       return messages.send(
         requestId,
@@ -1843,9 +1847,7 @@ export async function handleAgentApp(
         requestId,
         checked(() => parseReplyInput(input)),
       );
-    if (action === "messages.get")
-      return messages.get(checked(() => parseGetInput(input)));
-    return messages.getMonos(scoped(space));
+    return messages.get(checked(() => parseGetInput(input)));
   }
   if (action === "workspace.status") {
     const mono = host.monoOf?.(source.id);

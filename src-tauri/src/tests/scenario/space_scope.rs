@@ -179,6 +179,23 @@ impl Cast {
             .collect();
         let want = vec!["c-giga", "d-mono"];
         checkpoint(failed, "a monos.list: only Space 2 Monos", same_space, want);
+        let projects_of = |scope: &SpaceScope, id: &str| {
+            let mono = scope.monos.iter().find(|mono| mono.mono_id.as_str() == id);
+            mono.map(|mono| mono.projects.clone())
+        };
+        checkpoint(
+            failed,
+            "a monos.list shows d-mono's Space 2 projects only",
+            projects_of(&listing, "d-mono"),
+            Some(vec!["/p2".to_owned(), "remote://host/path/".into()]),
+        );
+        let from_space1 = self.scope(&mono_caller(&self.mono1, "t1"), MONOS_LIST);
+        checkpoint(
+            failed,
+            "a a Space 1 Mono sees d-mono's Space 1 projects only",
+            projects_of(&from_space1, "d-mono"),
+            Some(vec!["/p1".to_owned(), "remote://host/other".into()]),
+        );
         let p2 = self.scope(
             &caller,
             &["sessions.list", "--json", r#"{"project":"/p2"}"#],
