@@ -1,3 +1,4 @@
+// ADE-190 demo: a release-channel-only change (this PR is closed unmerged).
 const fs = require("node:fs");
 
 function releaseChannel(tag) {
