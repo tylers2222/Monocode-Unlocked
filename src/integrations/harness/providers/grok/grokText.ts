@@ -1,5 +1,6 @@
 import {
   AcpClient,
+  placedFor,
   promptAcpText,
   textTurns,
   type AcpTextLive,
@@ -51,25 +52,31 @@ async function ensureLive(
   cwd: string,
   requestedModel?: string,
   modelSettings?: Record<string, string>,
+  owner?: string,
 ): Promise<LiveText> {
   const model = requestedModel?.trim() || TEXT_MODEL;
   const settingsKey = modelSettingsKey(modelSettings);
   if (
     live &&
     !live.closed &&
-    live.cwd === cwd &&
+    placedFor(live, cwd, owner) &&
     live.model === model &&
     live.settingsKey === settingsKey
   )
     return live;
   // Retire the previous throwaway session before replacing its id, including
   // when a warmed-up process needs a different model or working directory.
-  return startLive(cwd, model, modelSettings);
+  return startLive(cwd, model, modelSettings, owner);
 }
 
 async function promptOnLive(input: TextPromptInput): Promise<string> {
   input.signal?.throwIfAborted();
-  const session = await ensureLive(input.cwd, input.model, input.modelSettings);
+  const session = await ensureLive(
+    input.cwd,
+    input.model,
+    input.modelSettings,
+    input.owner,
+  );
   return promptAcpText(session, input, REQUEST_TIMEOUT_MS, dropLive);
 }
 
@@ -77,6 +84,7 @@ async function startLive(
   cwd: string,
   model = TEXT_MODEL,
   modelSettings?: Record<string, string>,
+  owner?: string,
 ): Promise<LiveText> {
   await dropLive();
   const { path } = await resolveGrokBinary();
@@ -98,6 +106,7 @@ async function startLive(
   const session: LiveText = {
     acp,
     binaryPath: path,
+    owner,
     cwd,
     // Replaced by the folder Rust names before the first request.
     placed: cwd,
@@ -123,7 +132,7 @@ async function startLive(
 
   try {
     const placed = await spawnHelperChild(
-      undefined,
+      owner,
       TEXT_CHILD_ID,
       path,
       grokTextSpawnArgs(),
@@ -225,8 +234,8 @@ async function deleteTextSession(session: LiveText): Promise<void> {
     session.placed,
     "grok",
     undefined,
-    undefined,
-    // INTERIM (ADE-189 4/4): runs where its text child ran (spaces/mod.rs).
+    // It runs where its text child ran: the same owner and key (ADE-192).
+    session.owner,
     TEXT_CHILD_ID,
   ).catch((error) =>
     console.debug("[monocode] Grok text session cleanup", error),

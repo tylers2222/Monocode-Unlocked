@@ -561,9 +561,12 @@ pub(crate) enum Child<'a> {
 /// ADE-189, and its owner is not wired yet, so it keeps that folder whenever it
 /// has no Space, as a session's own child does, and keeps its project
 /// context. No Space 2 session exists until ADE-179, so none of them lets a
-/// Space into another's checkout today. ADE-192 (the owner of the Claude,
-/// Cursor, Grok and OpenCode text children) shrinks this, and part 4/4 deletes
-/// it. Every other helper of no stored session runs in the neutral folder.
+/// Space into another's checkout today. Every text adapter now passes the
+/// prompt's owner (ADE-192), so a text prompt for a session runs in that
+/// session's Space; the text keys stay listed for the calls that name no
+/// owner (titles, commit, PR and branch text, and `/btw` until part 4/4).
+/// Part 4/4 deletes this. Every other helper of no stored session runs in the
+/// neutral folder.
 ///
 /// - [`KEEPS_CALLER_FOLDER`]: helpers matched by a prefix of their child key,
 ///   including the Grok text cleanup exec (`grokText.ts`
@@ -575,8 +578,8 @@ pub(crate) enum Child<'a> {
 /// so they run in the neutral folder (ADE-191).
 const KEEPS_CALLER_FOLDER: [&str; 10] = [
     // Titles, commit, PR and branch text, /btw side questions, and the Grok
-    // text cleanup exec. Claude, Cursor (`monocode-text`), Grok and OpenCode
-    // text pass no owner yet: owner wiring: ADE-192.
+    // text cleanup exec, when they name no owner. Cursor's key is
+    // `monocode-text`.
     "monocode-claude-text",
     "monocode-codex-text",
     "monocode-text",

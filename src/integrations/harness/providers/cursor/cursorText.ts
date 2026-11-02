@@ -1,5 +1,6 @@
 import {
   AcpClient,
+  placedFor,
   promptAcpText,
   textTurns,
   type AcpTextLive,
@@ -46,7 +47,12 @@ export const runCursorTextPrompt = turns.run;
 
 async function promptOnLive(input: TextPromptInput): Promise<string> {
   input.signal?.throwIfAborted();
-  const session = await ensureLive(input.cwd, input.model, input.modelSettings);
+  const session = await ensureLive(
+    input.cwd,
+    input.model,
+    input.modelSettings,
+    input.owner,
+  );
   return promptAcpText(session, input, REQUEST_TIMEOUT_MS, dropLive);
 }
 
@@ -54,19 +60,21 @@ async function ensureLive(
   cwd: string,
   requestedModel?: string,
   modelSettings?: Record<string, string>,
+  owner?: string,
 ): Promise<LiveText> {
   const model = requestedModel?.trim() || TEXT_MODEL;
   const settingsKey = modelSettingsKey(modelSettings);
   if (live && !live.closed) {
     if (
-      live.cwd === cwd &&
+      placedFor(live, cwd, owner) &&
       live.model === model &&
       live.settingsKey === settingsKey
     )
       return live;
-    // A warm child placed for another folder is never told this one: it
-    // reopens only for its own folder, and startLive replaces it otherwise.
-    if (live.cwd !== cwd) return startLive(cwd, model, modelSettings);
+    // A warm child placed for another folder or session is never told this
+    // one: it reopens only for its own, and startLive replaces it otherwise.
+    if (!placedFor(live, cwd, owner))
+      return startLive(cwd, model, modelSettings, owner);
     try {
       await openSession(live, live.placed, model, modelSettings);
       return live;
@@ -74,13 +82,14 @@ async function ensureLive(
       await dropLive();
     }
   }
-  return startLive(cwd, model, modelSettings);
+  return startLive(cwd, model, modelSettings, owner);
 }
 
 async function startLive(
   cwd: string,
   model = TEXT_MODEL,
   modelSettings?: Record<string, string>,
+  owner?: string,
 ): Promise<LiveText> {
   await dropLive();
   const { path } = await resolveCursorBinary();
@@ -102,6 +111,7 @@ async function startLive(
   const session: LiveText = {
     acp,
     cwd,
+    owner,
     // Replaced by the folder Rust names before the first request.
     placed: cwd,
     model,
@@ -126,7 +136,7 @@ async function startLive(
 
   try {
     const placed = await spawnHelperChild(
-      undefined,
+      owner,
       TEXT_CHILD_ID,
       path,
       ["acp"],

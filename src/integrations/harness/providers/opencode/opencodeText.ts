@@ -12,7 +12,7 @@ import {
 import { OpenCodeClient } from "./opencodeClient";
 import { abortTextPromptRace } from "../../core/abortTextPrompt";
 import { streamTextDelta } from "../../core/streamText";
-import { textTurns } from "../../core/acp";
+import { placedFor, textTurns } from "../../core/acp";
 import type { TextPromptInput } from "../../core/registry";
 import type { HarnessEvent } from "../../core/types";
 import {
@@ -39,6 +39,7 @@ type LiveText = {
   client: OpenCodeClient;
   sessionId: string;
   cwd: string;
+  owner?: string;
   model: { providerID: string; modelID: string };
   modelSettingsKey: string;
   modelSettings?: Record<string, string>;
@@ -63,7 +64,12 @@ export const runOpenCodeTextPrompt = turns.run;
 
 async function promptOnLive(input: TextPromptInput): Promise<string> {
   input.signal?.throwIfAborted();
-  const session = await ensureLive(input.cwd, input.model, input.modelSettings);
+  const session = await ensureLive(
+    input.cwd,
+    input.model,
+    input.modelSettings,
+    input.owner,
+  );
   input.signal?.throwIfAborted();
   session.onEvent = input.onEvent;
   const abort = abortTextPromptRace(input.signal, () =>
@@ -103,37 +109,38 @@ async function ensureLive(
   cwd: string,
   requestedModel?: string,
   modelSettings?: Record<string, string>,
+  owner?: string,
 ): Promise<LiveText> {
   const model = pickTextModel(requestedModel);
   const settingsKey = modelSettingsKey(modelSettings);
   if (
     live &&
-    live.cwd === cwd &&
+    placedFor(live, cwd, owner) &&
     sameModel(live.model, model) &&
     live.modelSettingsKey === settingsKey
   )
     return live;
   if (live) await dropLive();
-  return startLive(cwd, model, modelSettings);
+  return startLive(cwd, model, modelSettings, owner);
 }
 
 async function startLive(
   cwd: string,
   model: { providerID: string; modelID: string },
   modelSettings?: Record<string, string>,
+  owner?: string,
 ): Promise<LiveText> {
   const { path } = await resolveOpenCodeBinary();
   // v2 spawns no child, so the folder this exec is placed in is the
-  // `directory` each request names. It carries the text child's key, so it
-  // keeps its caller's folder (INTERIM, ADE-189). v1's `serve` child names its
-  // own.
+  // `directory` each request names: the owner's Space, or with no owner the
+  // caller's folder its key keeps (INTERIM). v1's `serve` child names its own.
   const probe = await execHelper(
     path,
     ["--version"],
     cwd,
     "opencode",
     undefined,
-    undefined,
+    owner,
     TEXT_CHILD_ID,
   );
   let placed = probe.cwd;
@@ -163,7 +170,7 @@ async function startLive(
 
     const port = await freeHarnessPort();
     placed = await spawnHelperChild(
-      undefined,
+      owner,
       TEXT_CHILD_ID,
       path,
       ["serve", `--hostname=127.0.0.1`, `--port=${port}`],
@@ -191,6 +198,7 @@ async function startLive(
       client,
       sessionId: created.id,
       cwd,
+      owner,
       model,
       modelSettingsKey: modelSettingsKey(modelSettings),
       modelSettings,
