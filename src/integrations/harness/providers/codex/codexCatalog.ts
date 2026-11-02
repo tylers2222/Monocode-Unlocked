@@ -47,11 +47,9 @@ export function refreshCodexCatalog(): Promise<void> {
   return inflight;
 }
 
-export async function discoverCodexModels(
-  workingDirectory?: string,
-): Promise<AgentModel[]> {
+export async function discoverCodexModels(): Promise<AgentModel[]> {
   const { path } = await resolveCodexBinary();
-  const cwd = workingDirectory ?? (await homeDir());
+  const cwd = await homeDir();
   const probeId = `${PROBE_ID}-${crypto.randomUUID()}`;
   const rpc = new JsonRpcClient(
     probeId,

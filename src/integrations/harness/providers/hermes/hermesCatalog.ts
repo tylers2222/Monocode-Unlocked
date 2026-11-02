@@ -34,11 +34,9 @@ export function refreshHermesCatalog(): Promise<void> {
   return inflight;
 }
 
-export async function discoverHermesModels(
-  workingDirectory?: string,
-): Promise<AgentModel[]> {
+export async function discoverHermesModels(): Promise<AgentModel[]> {
   const { path } = await resolveHermesBinary();
-  const cwd = workingDirectory ?? (await homeDir());
+  const cwd = await homeDir();
   const probeId = `${PROBE_ID}-${crypto.randomUUID()}`;
   const acp = new AcpClient(probeId, {
     onRequest: (id, method) => {

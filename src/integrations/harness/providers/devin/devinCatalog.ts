@@ -72,10 +72,8 @@ async function probeThoughtLevels(
   return levels;
 }
 
-export async function discoverDevinModels(
-  workingDirectory?: string,
-): Promise<AgentModel[]> {
-  const cwd = workingDirectory ?? (await homeDir());
+export async function discoverDevinModels(): Promise<AgentModel[]> {
+  const cwd = await homeDir();
   const probeId = `${PROBE_ID}-${crypto.randomUUID()}`;
   const rpc = new JsonRpcClient(
     probeId,

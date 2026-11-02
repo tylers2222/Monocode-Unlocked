@@ -6,6 +6,11 @@ let onStderr: ((line: string) => void) | undefined;
 const textFiles = new Map<string, string>();
 const helperSpawns: unknown[][] = [];
 
+vi.mock(import("../../../../platform/tauri/fs"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  homeDir: async () => "/home/me",
+}));
+
 vi.mock("../../core/child", () => ({
   resolveHermesBinary: async () => ({ path: "/fake/hermes" }),
   spawnChild: async () => undefined,
@@ -86,7 +91,7 @@ async function newSession() {
 it("probes the Hermes model catalog as a helper in the folder Rust names", async () => {
   sent.length = 0;
   helperSpawns.length = 0;
-  const models = discoverHermesModels("/workspace");
+  const models = discoverHermesModels();
   await initialize();
   await waitFor(
     () => parse().some((message) => message.method === "session/new"),
@@ -108,7 +113,7 @@ it("probes the Hermes model catalog as a helper in the folder Rust names", async
       expect.stringMatching(/^monocode-hermes-probe-/),
       "/fake/hermes",
       ["acp"],
-      "/workspace",
+      "/home/me",
       undefined,
       "hermes",
     ],
