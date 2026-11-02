@@ -5,6 +5,7 @@
 // apply_provider_account would give it, here
 // $USAGE_LIMIT_SHIM_DIR/logins/<provider>/<id>.
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -49,8 +50,14 @@ export const child = {
   async writeChild(sessionId, line) {
     children.get(sessionId)?.stdin.write(`${line}\n`);
   },
+  // Resolves once the shim has exited: Windows cannot remove a folder that a
+  // live process has as its cwd.
   async killChild(sessionId) {
     watchers.delete(sessionId);
-    children.get(sessionId)?.kill();
+    const proc = children.get(sessionId);
+    if (!proc) return;
+    const exited = once(proc, "exit");
+    proc.kill();
+    await exited;
   },
 };
