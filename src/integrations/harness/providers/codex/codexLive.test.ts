@@ -68,6 +68,7 @@ import type { MonoTools } from "../../core/monoTools";
 import type { HarnessEvent } from "../../core/types";
 import {
   newSession,
+  sessionAgentCwd,
   type RuntimeMode,
   type TurnIntent,
 } from "../../../../features/sessions/model/session";
@@ -349,7 +350,10 @@ describe("codex live turn sequence", () => {
       config: { sqlite_home: "/private/mono", mcp_servers: { doop } },
       hasThread: false,
     });
-    const mono = await startTurn("codex-live", { codexStore: "mono", monoTools });
+    const mono = await startTurn("codex-live", {
+      codexStore: "mono",
+      monoTools,
+    });
     expect(
       parse().find((m) => m.method === "thread/start")?.params,
     ).toMatchObject({ config: { mcp_servers: { doop, monocode } } });
@@ -2272,7 +2276,16 @@ describe("codex live turn sequence", () => {
     await turn;
   });
 
+  // ADE-173 M1: the session is placed in its Space's copy `/repo` of the
+  // project `/project`. Defect: compaction, or the resume after a restart,
+  // runs in the stored project folder, so Codex drops the thread and opens a
+  // new one in the other Space's checkout.
   it("uses thread/compact/start and waits for its turn to complete", async () => {
+    const placed = applyHarnessEvent(newSession("codex", "/project"), {
+      type: "session.placed",
+      cwd: "/repo",
+    });
+    expect(placed.worktreeCwd).toBe("/repo");
     const { turn } = await startTurn("codex-live");
     notify("turn/completed", {
       turn: { id: "turn_1", status: "completed" },
@@ -2282,7 +2295,7 @@ describe("codex live turn sequence", () => {
 
     const compact = compactCodexContext({
       sessionId: "codex-live",
-      cwd: "/repo",
+      cwd: sessionAgentCwd(placed),
       model: "codex:gpt-5.4",
       runtimeMode: "supervised",
       onEvent: () => undefined,
@@ -2313,6 +2326,21 @@ describe("codex live turn sequence", () => {
     });
     await compact;
     expect(settled).toBe(true);
+    expect(parse().some((message) => message.method === "thread/start")).toBe(
+      false,
+    );
+
+    await stopCodexSession("codex-live");
+    sent.length = 0;
+    bindCodexSession("codex-live", "thr_1", sessionAgentCwd(placed));
+    const resumed = await startTurn("codex-live", { expectResume: true });
+    expect(
+      parse().find((message) => message.method === "thread/resume")?.params,
+    ).toMatchObject({ threadId: "thr_1" });
+    notify("turn/completed", {
+      turn: { id: "turn_1", status: "completed" },
+    });
+    await resumed.turn;
   });
 
   it("reverts before the latest user turn after compaction", async () => {

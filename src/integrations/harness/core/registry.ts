@@ -12,6 +12,7 @@ import { hasLiveCatalog } from "../../../features/sessions/model/models";
 import type { UserQuestionReply } from "../../../features/sessions/model/userQuestion";
 import { monoToolsFor } from "../../../features/monos/model/monoTools";
 import { newTurnId } from "../../../features/monos/model/monoMessages";
+import { pathKey } from "../../../shared/lib/paths";
 import type { NativeCommandProvider } from "./nativeCommands";
 import type {
   ApprovalDecision,
@@ -301,6 +302,8 @@ export function sendHarnessTurn(
     try {
       if (typeof cwd !== "string" || cwd === "")
         throw new Error("control_authorize_turn named no folder for the turn");
+      if (pathKey(cwd) !== pathKey(input.cwd))
+        input.onEvent({ type: "session.placed", cwd });
       result = await adapter.sendTurn({
         ...input,
         cwd,

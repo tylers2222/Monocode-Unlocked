@@ -23,7 +23,7 @@ import {
   sendHarnessTurn,
   type HarnessAdapter,
 } from "./registry";
-import type { SendTurnInput, SteerTurnInput } from "./types";
+import type { HarnessEvent, SendTurnInput, SteerTurnInput } from "./types";
 import { registerBuiltinHarnesses } from "./register";
 
 /**
@@ -159,8 +159,9 @@ describe("harness registry", () => {
   // turn.ready is never confirmed, or only after the turn end took its slot,
   // so the message goes back to the queue and is delivered again. ADE-173
   // defect: the provider is told the folder the window asked for, not the
-  // one Rust authorized (another Space's checkout), or a turn Rust named no
-  // folder for runs anyway, or stays authorized.
+  // one Rust authorized (another Space's checkout); the session is not told
+  // it was placed there, or is told so when the folder did not move; or a
+  // turn Rust named no folder for runs anyway, or stays authorized.
   it("confirms the openers of a turn whose send resolved, before the turn ends, in the folder Rust authorized", async () => {
     const row = opener("s1", "t1");
     const settle = tauri.answer;
@@ -176,6 +177,7 @@ describe("harness registry", () => {
         },
       }),
     );
+    const events: HarnessEvent[] = [];
     const send = (turnId: string) =>
       sendHarnessTurn({
         harness: "cursor",
@@ -185,7 +187,7 @@ describe("harness registry", () => {
         runtimeMode: "supervised",
         text: "hi",
         turnId,
-        onEvent: () => undefined,
+        onEvent: (event) => events.push(event),
       });
     await send("t1");
     expect(row).toEqual({ turnId: "t1", deliveredAt: 1 });
@@ -194,13 +196,22 @@ describe("harness registry", () => {
       { sessionId: "s1", turnId: "t1", cwd: "/tmp", appAccess: false },
     ]);
     expect(told).toEqual(["/tmp-worktrees/space-2/s1"]);
+    expect(events).toContainEqual({
+      type: "session.placed",
+      cwd: "/tmp-worktrees/space-2/s1",
+    });
+    folder = "/tmp/";
+    events.length = 0;
+    await send("t3");
+    expect(told).toEqual(["/tmp-worktrees/space-2/s1", "/tmp/"]);
+    expect(events.map((event) => event.type)).not.toContain("session.placed");
 
     folder = "";
     tauri.calls = [];
     await expect(send("t2")).rejects.toThrow(
       "control_authorize_turn named no folder for the turn",
     );
-    expect(told).toHaveLength(1);
+    expect(told).toHaveLength(2);
     expect(tauri.calls.map(([command]) => command)).toEqual([
       "control_authorize_turn",
       "control_turn_finished",

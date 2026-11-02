@@ -231,18 +231,33 @@ fn create(root: &Path, branch: &str, base: &str, existing: bool) -> Result<Workt
 
 /// Where a folder sits in its git checkout.
 pub(crate) struct CheckoutSpot {
-    /// The checkout's top folder, as git names it.
+    /// The checkout's top folder, as git names it. For a submodule, the
+    /// checkout that holds it: a submodule is part of that working tree.
     pub(crate) top: PathBuf,
-    /// The folder's path below `top`; empty at the top.
+    /// The folder's path below its own top folder; empty at the top.
     pub(crate) inside: PathBuf,
+    pub(crate) submodule: bool,
 }
 
 pub(crate) fn checkout_spot(path: &Path) -> Option<CheckoutSpot> {
-    let out = git(path, &["rev-parse", "--show-toplevel", "--show-prefix"]).ok()?;
+    let out = git(
+        path,
+        &[
+            "rev-parse",
+            "--show-toplevel",
+            "--show-prefix",
+            "--show-superproject-working-tree",
+        ],
+    )
+    .ok()?;
     let mut lines = out.lines();
+    let own = lines.next()?;
+    let inside = PathBuf::from(lines.next().unwrap_or("").trim_end_matches('/'));
+    let holder = lines.next().filter(|line| !line.is_empty());
     Some(CheckoutSpot {
-        top: PathBuf::from(lines.next()?),
-        inside: PathBuf::from(lines.next().unwrap_or("").trim_end_matches('/')),
+        top: PathBuf::from(holder.unwrap_or(own)),
+        inside,
+        submodule: holder.is_some(),
     })
 }
 

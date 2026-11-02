@@ -68,7 +68,7 @@ pub(crate) fn take_lease(
     space_id: &str,
     now: i64,
 ) -> Result<(), String> {
-    let checkout_path = folder_key(checkout_path)?;
+    let checkout_path = lease_key(checkout_path)?;
     with_conn(store, |conn| {
         conn.execute(
             "INSERT INTO checkout_leases (checkout_path, space_id, leased_at) VALUES (?1, ?2, ?3)",
@@ -84,7 +84,7 @@ pub(crate) fn release_lease(
     checkout_path: &str,
     space_id: &str,
 ) -> Result<(), String> {
-    let checkout_path = folder_key(checkout_path)?;
+    let checkout_path = lease_key(checkout_path)?;
     let released = with_conn(store, |conn| {
         conn.execute(
             "DELETE FROM checkout_leases WHERE checkout_path = ?1 AND space_id = ?2",
@@ -136,10 +136,13 @@ pub(super) fn claim(
 /// it asks for `workdir`: `workdir` itself, unless another Space holds the
 /// checkout it is in. Then the same folder inside the session's own copy of
 /// that checkout ([`crate::worktrees::space_worktree`]), leased to the
-/// session's Space. A git checkout no Space holds goes to the session's
-/// Space. Refused when another Space holds `workdir` and the session cannot
-/// get its own copy. A child of no stored session (a text or catalog helper,
-/// or a session not saved yet) has no Space: it takes no lease and stays.
+/// session's Space and recorded as the session's working copy
+/// (`sessions.worktree_cwd`), so every later reader uses it. A git checkout
+/// no Space holds goes to the Space its session's project is assigned
+/// ([`super::project_space`]); a held lease never moves. Refused when another
+/// Space holds `workdir` and the session cannot get its own copy. A child of
+/// no stored session (a text or catalog helper, or a session not saved yet)
+/// has no Space: it takes no lease and stays.
 pub(crate) fn place(
     store: &SessionStore,
     child: &str,
@@ -151,23 +154,30 @@ pub(crate) fn place(
     let Some(real) = resolve(workdir) else {
         return Ok(workdir.to_path_buf());
     };
+    let Some((space, project)) = with_conn(store, |conn| session_of(conn, session_id))? else {
+        return Ok(workdir.to_path_buf());
+    };
+    // A project part 4 cannot key has no assignment.
+    let assigned =
+        super::project_space(store, &project).unwrap_or_else(|_| super::FIRST_SPACE.to_owned());
     let spot = crate::worktrees::checkout_spot(&real);
     let top = spot.as_ref().and_then(|spot| resolve(&spot.top));
     let top_key = top.as_deref().map(key);
-    let held = with_conn(store, |conn| {
-        let Some(space) = space_of(conn, session_id)? else {
-            return Ok(None);
-        };
-        let owner = owner_or_take(conn, &key(&real), top_key.as_deref(), &space, now)?;
-        Ok(owner.map(|owner| (space, owner)))
+    let owner = with_conn(store, |conn| {
+        owner_or_take(conn, &key(&real), top_key.as_deref(), &assigned, now)
     })?;
-    let Some((space, owner)) = held.filter(|(space, owner)| owner != space) else {
+    let Some(owner) = owner.filter(|owner| *owner != space) else {
         return Ok(workdir.to_path_buf());
     };
     let refused = |why: &str| format!("{} is in {owner}'s checkout: {why}", real.display());
     let (Some(spot), Some(top)) = (spot, top) else {
         return Err(refused("it is not a git checkout, so it cannot be copied"));
     };
+    if spot.submodule {
+        return Err(refused(
+            "it is a submodule, which a copy of the checkout does not hold",
+        ));
+    }
     let copy = {
         // A turn and a spawn of one session may place it at once.
         let _one = PLACING
@@ -179,7 +189,14 @@ pub(crate) fn place(
     };
     let copy_key = key(&copy);
     let copy_owner = with_conn(store, |conn| {
-        owner_or_take(conn, &copy_key, Some(&copy_key), &space, now)
+        let copy_owner = owner_or_take(conn, &copy_key, Some(&copy_key), &space, now)?;
+        if copy_owner.as_deref() == Some(space.as_str()) {
+            conn.execute(
+                "UPDATE sessions SET worktree_cwd = ?1 WHERE id = ?2",
+                params![crate::fs::path_to_js(&copy), session_id],
+            )?;
+        }
+        Ok(copy_owner)
     })?;
     if copy_owner.as_deref() != Some(space.as_str()) {
         return Err(refused(&format!("{} is not this Space's", copy.display())));
@@ -195,22 +212,23 @@ pub(crate) fn place(
 
 static PLACING: Mutex<()> = Mutex::new(());
 
-fn space_of(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<String>> {
+/// The session's Space and its project folder.
+fn session_of(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<(String, String)>> {
     conn.query_row(
-        "SELECT space_id FROM sessions WHERE id = ?1",
+        "SELECT space_id, cwd FROM sessions WHERE id = ?1",
         [session_id],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )
     .optional()
 }
 
 /// The Space that holds `path`. When none does and `path` is in the git
-/// checkout `top`, `space_id` takes `top`.
+/// checkout `top`, `owner` takes `top`.
 fn owner_or_take(
     conn: &Connection,
     path: &str,
     top: Option<&str>,
-    space_id: &str,
+    owner: &str,
     now: i64,
 ) -> rusqlite::Result<Option<String>> {
     if let Some(lease) = lease_on(&read_leases(conn)?, path, top) {
@@ -222,7 +240,7 @@ fn owner_or_take(
     conn.execute(
         "INSERT INTO checkout_leases (checkout_path, space_id, leased_at) VALUES (?1, ?2, ?3)
          ON CONFLICT (checkout_path) DO NOTHING",
-        params![top, space_id, now],
+        params![top, owner, now],
     )?;
     conn.query_row(
         "SELECT space_id FROM checkout_leases WHERE checkout_path = ?1",
@@ -249,4 +267,12 @@ fn resolve(path: &Path) -> Option<PathBuf> {
 
 fn key(path: &Path) -> String {
     crate::mono_gate::path_key(&crate::fs::path_to_js(path))
+}
+
+/// The one key of a leased folder: resolved, so a symlink, `..` or a
+/// trailing slash names the folder `place` looks up. A folder that does not
+/// exist yet keeps its absolute text.
+fn lease_key(path: &str) -> Result<String, String> {
+    let text = folder_key(path)?;
+    Ok(resolve(Path::new(path)).map_or(text, |real| key(&real)))
 }
