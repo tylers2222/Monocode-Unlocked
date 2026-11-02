@@ -1,6 +1,8 @@
 //! Spaces foundation (ADE-168). The app opens a database written before
 //! Spaces existed, migrates it, and every Mono and session lands in Space 1;
-//! a restart migrates again as a no-op. Then `harness_spawn` on Tauri's mock
+//! a restart migrates again as a no-op. The login, grant and lease storage
+//! round-trips, survives a restart and refuses what the rest of the app
+//! cannot use. Then `harness_spawn` on Tauri's mock
 //! runtime starts a stand-in CLI through the spawn hook with the folder and
 //! login it was given. With `MONOCODE_SCENARIO_DB` it runs on a copy of a
 //! real database.
@@ -9,6 +11,13 @@ use rusqlite::{params, Connection};
 
 use super::world::World;
 use crate::mono_roster::MonoRole;
+use crate::spaces::account::{self, ProviderAccount, SpaceLogin};
+use crate::spaces::grants::{self, RouteGrant};
+use crate::spaces::leases::{self, CheckoutLease};
+use crate::spaces::{Provider, FIRST_SPACE};
+
+const SIX_HOURS_MS: i64 = 6 * 60 * 60 * 1000;
+const EIGHT_DAYS_MS: i64 = 8 * 24 * 60 * 60 * 1000;
 
 /// Takes the Spaces schema back out, as a database from before Spaces is.
 fn drop_spaces(conn: &Connection) {
@@ -109,12 +118,140 @@ fn a_grant_lasts_as_long_as_its_writer_says(world: &World) {
     assert!(grant(now).is_err(), "stored a grant that ends as it starts");
 }
 
+fn work_login() -> ProviderAccount {
+    ProviderAccount {
+        provider: Provider::Claude,
+        id: "work".into(),
+        label: "Work".into(),
+    }
+}
+
+fn space_one_login() -> SpaceLogin {
+    SpaceLogin {
+        space_id: FIRST_SPACE.into(),
+        provider: Provider::Claude,
+        account_id: "work".into(),
+    }
+}
+
+fn grant(now: i64) -> RouteGrant {
+    RouteGrant {
+        session_id: "s2".into(),
+        provider: Provider::Claude,
+        from_account_id: "default".into(),
+        to_account_id: "work".into(),
+        granted_at: now,
+        expires_at: now + SIX_HOURS_MS,
+    }
+}
+
+fn logins_grants_and_leases_store_what_they_are_given(world: &World) {
+    let (store, now) = (world.store(), world.now());
+    account::save_account(store, &work_login(), now).unwrap();
+    for id in ["../x", "a b", "", &"x".repeat(81)] {
+        let bad = ProviderAccount {
+            id: id.into(),
+            ..work_login()
+        };
+        assert_eq!(
+            account::save_account(store, &bad, now),
+            Err("Invalid provider account id".into()),
+            "stored the login id {id:?}"
+        );
+    }
+    account::set_login(store, &space_one_login()).unwrap();
+    let stranger = SpaceLogin {
+        account_id: "nobody".into(),
+        ..space_one_login()
+    };
+    assert!(
+        account::set_login(store, &stranger).is_err(),
+        "a Space took a login that does not exist"
+    );
+
+    grants::save_grant(store, &grant(now)).unwrap();
+    let endless = RouteGrant {
+        expires_at: now + EIGHT_DAYS_MS,
+        ..grant(now)
+    };
+    assert!(
+        grants::save_grant(store, &endless).is_err(),
+        "a grant outlived the 7 day cap"
+    );
+
+    leases::take_lease(store, "/work/b/", "space-2", now).unwrap();
+    assert_eq!(
+        leases::take_lease(store, "work/c", FIRST_SPACE, now),
+        Err("Not an absolute folder: work/c".into())
+    );
+    assert!(
+        leases::take_lease(store, "/work/b", FIRST_SPACE, now).is_err(),
+        "a second Space took a leased checkout"
+    );
+    assert_eq!(
+        leases::release_lease(store, "/work/b", FIRST_SPACE),
+        Err("space-1 holds no lease on /work/b".into()),
+        "Space 1 released Space 2's lease"
+    );
+}
+
+fn logins_grants_and_leases_hold(world: &World, at: i64) {
+    let store = world.store();
+    assert_eq!(
+        account::accounts(store)
+            .unwrap()
+            .iter()
+            .map(|a| (a.provider, a.id.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (Provider::Claude, "default"),
+            (Provider::Claude, "work"),
+            (Provider::Codex, "default"),
+            (Provider::Devin, "default")
+        ]
+    );
+    assert_eq!(account::logins(store).unwrap(), [space_one_login()]);
+    assert_eq!(grants::grant(store, "s2").unwrap(), Some(grant(at)));
+    assert_eq!(
+        leases::leases(store).unwrap(),
+        [CheckoutLease {
+            checkout_path: "/work/b".into(),
+            space_id: "space-2".into(),
+            leased_at: at
+        }],
+        "the lease is lost, moved, or kept its trailing slash"
+    );
+}
+
+fn removing_a_login_drops_its_space_login_and_grant(world: &World) {
+    let store = world.store();
+    assert_eq!(
+        account::remove_account(store, Provider::Claude, "default"),
+        Err("The default provider account cannot be removed".into()),
+        "removed a CLI's own login"
+    );
+    account::remove_account(store, Provider::Claude, "work").unwrap();
+    assert_eq!(account::logins(store).unwrap(), []);
+    assert_eq!(grants::grant(store, "s2").unwrap(), None);
+    grants::save_grant(store, &grant(world.now())).unwrap_err();
+    leases::release_lease(store, "/work/b", "space-2").unwrap();
+    assert_eq!(leases::leases(store).unwrap(), []);
+    assert!(
+        leases::release_lease(store, "/work/b", "space-2").is_err(),
+        "released a lease nobody holds"
+    );
+}
+
 /// Defect: a Mono or session from before Spaces, or one written after the
 /// migration, lands outside Space 1; the migration writes a project row in
 /// another form than the one rule (no row = Space 1); the schema caps a
 /// grant's length or stores one that ends as it starts; the seeds miss Space 1,
 /// the 6 hour TTL or a CLI's default login; or a restart migrates again and
-/// reseeds or duplicates rows; or a harness child starts without the spawn
+/// reseeds or duplicates rows; a login, grant or lease is lost or altered,
+/// survives the removal of its login, or is stored when its login id is not
+/// a valid folder name, the `default` login goes, a grant passes the 7 day
+/// cap, a lease path is relative, or one Space releases another's lease; or
+/// a harness child starts without the spawn
 /// hook, in another folder or with another login, or the folder check runs
 /// before the hook.
 #[test]
@@ -163,6 +300,20 @@ fn spaces_migration_backfills_space_one_and_reruns_as_a_no_op() {
         "a restart reseeded or changed the Spaces rows"
     );
     backfilled_to_space_one(&world);
+
+    // Space 2's row as `spaces_create` will write it (ADE-187).
+    world
+        .conn()
+        .execute(
+            "INSERT INTO spaces (id, name, created_at) VALUES ('space-2', 'Space 2', 0)",
+            [],
+        )
+        .unwrap();
+    let at = world.now();
+    logins_grants_and_leases_store_what_they_are_given(&world);
+    world.down(60_000);
+    logins_grants_and_leases_hold(&world, at);
+    removing_a_login_drops_its_space_login_and_grant(&world);
 
     #[cfg(unix)]
     spawn::the_hook_keeps_the_folder_and_login();

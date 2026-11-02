@@ -1,6 +1,6 @@
 //! Spaces (ADE-168): one window holds several Spaces, each with its own
-//! logins, Monos, projects and sessions. This module owns the schema and the
-//! one spawn hook every harness child passes through. Each concern the hook
+//! logins, Monos, projects and sessions. This module owns the schema, the
+//! storage commands and the one spawn hook every harness child passes through. Each concern the hook
 //! applies lives in its own file: `account` (the Space's login), `grants`
 //! (usage-limit routing) and `leases` (one Space per checkout).
 
@@ -10,8 +10,9 @@ pub(crate) mod leases;
 
 use std::path::PathBuf;
 
-use rusqlite::types::ToSqlOutput;
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef};
 use rusqlite::{params, Connection, ToSql, Transaction, TransactionBehavior};
+use serde::{Deserialize, Serialize};
 
 use crate::harness::{HarnessAccount, DEFAULT_PROVIDER_ACCOUNT_ID};
 use crate::session_store::{ensure_column, SessionStore};
@@ -30,7 +31,8 @@ const MAX_ROUTE_GRANT_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// The CLIs that keep named logins (`PROVIDER_ACCOUNT_PROVIDERS` in TS). The
 /// schema stores any name: this type is the one parse point, so a new CLI
 /// needs no table rebuild.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum Provider {
     Claude,
     Codex,
@@ -59,6 +61,14 @@ impl Provider {
 impl ToSql for Provider {
     fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
         Ok(self.as_str().into())
+    }
+}
+
+impl FromSql for Provider {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        let text = value.as_str()?;
+        Self::parse(text)
+            .ok_or_else(|| FromSqlError::Other(format!("unknown provider {text}").into()))
     }
 }
 
@@ -160,6 +170,39 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
         }
     }
     tx.commit()
+}
+
+fn with_conn<T>(
+    store: &SessionStore,
+    query: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+) -> Result<T, String> {
+    query(&*store.lock_conn()?).map_err(|e| e.to_string())
+}
+
+/// A folder in the front end's `pathKey()` form: absolute, with no trailing
+/// slash, and a Windows drive or UNC path in forward slashes and lower case.
+pub(crate) fn path_key(path: &str) -> Result<String, String> {
+    let b = path.as_bytes();
+    let drive =
+        b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\');
+    let windows = drive || path.starts_with("\\\\") || path.starts_with("//");
+    if !windows && !path.starts_with('/') {
+        return Err(format!("Not an absolute folder: {path}"));
+    }
+    let slashed = if windows {
+        path.replace('\\', "/")
+    } else {
+        path.to_owned()
+    };
+    let trimmed = match slashed.trim_end_matches('/') {
+        "" => "/",
+        rest => rest,
+    };
+    Ok(if windows {
+        trimmed.to_lowercase()
+    } else {
+        trimmed.to_owned()
+    })
 }
 
 /// What a harness child starts with. The spawn hook may change either.
