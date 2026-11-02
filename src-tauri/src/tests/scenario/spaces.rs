@@ -1,0 +1,139 @@
+//! Spaces foundation (ADE-168). The app opens a database written before
+//! Spaces existed, migrates it, and every Mono and session lands in Space 1;
+//! a restart migrates again as a no-op. With `MONOCODE_SCENARIO_DB` it runs
+//! on a copy of a real database.
+
+use rusqlite::Connection;
+
+use super::world::World;
+use crate::mono_roster::MonoRole;
+
+/// Takes the Spaces schema back out, as a database from before Spaces is.
+fn drop_spaces(conn: &Connection) {
+    conn.execute_batch(
+        "DROP TABLE space_accounts;
+         DROP TABLE space_project_accounts;
+         DROP TABLE account_route_grants;
+         DROP TABLE checkout_leases;
+         DROP TABLE space_projects;
+         DROP TABLE space_settings;
+         DROP TABLE provider_accounts;
+         DROP TABLE spaces;
+         ALTER TABLE monos DROP COLUMN space_id;
+         ALTER TABLE sessions DROP COLUMN space_id;",
+    )
+    .unwrap();
+}
+
+fn count(conn: &Connection, sql: &str) -> i64 {
+    conn.query_row(sql, [], |row| row.get(0)).unwrap()
+}
+
+fn rows(conn: &Connection, sql: &str) -> Vec<String> {
+    conn.prepare(sql)
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+fn backfilled_to_space_one(world: &World) {
+    let conn = world.conn();
+    for table in ["monos", "sessions"] {
+        assert!(
+            count(&conn, &format!("SELECT count(*) FROM {table}")) > 0,
+            "{table}: no rows to backfill"
+        );
+        assert_eq!(
+            count(
+                &conn,
+                &format!("SELECT count(*) FROM {table} WHERE space_id IS NOT 'space-1'")
+            ),
+            0,
+            "{table}: a row outside Space 1"
+        );
+    }
+    eprintln!(
+        "spaces: Space 1 holds {} monos, {} sessions, {} project folders",
+        count(
+            &conn,
+            "SELECT count(*) FROM monos WHERE space_id = 'space-1'"
+        ),
+        count(
+            &conn,
+            "SELECT count(*) FROM sessions WHERE space_id = 'space-1'"
+        ),
+        count(&conn, "SELECT count(DISTINCT cwd) FROM sessions")
+    );
+    assert_eq!(
+        count(&conn, "SELECT count(*) FROM space_projects"),
+        0,
+        "the migration moved a project out of Space 1"
+    );
+}
+
+/// The rows a migration seeds, one string each, in a fixed order.
+fn seeded(conn: &Connection) -> Vec<String> {
+    rows(
+        conn,
+        "SELECT 'space ' || id || ' ' || name FROM spaces
+         UNION ALL
+         SELECT 'settings ' || active_space_id || ' ' || route_grant_ttl_ms FROM space_settings
+         UNION ALL
+         SELECT * FROM (SELECT 'login ' || provider || ' ' || id FROM provider_accounts
+                        ORDER BY provider, id)",
+    )
+}
+
+/// Defect: a Mono or session from before Spaces, or one written after the
+/// migration, lands outside Space 1; the migration writes a project row in
+/// another form than the one rule (no row = Space 1); the seeds miss Space 1,
+/// the 6 hour TTL or a CLI's default login; or a restart migrates again and
+/// reseeds or duplicates rows.
+#[test]
+fn spaces_migration_backfills_space_one_and_reruns_as_a_no_op() {
+    let mut world = World::new("spaces");
+    world.add_mono("alpha", MonoRole::Mono);
+    world.add_session("s1", "/work/a", None);
+    world.add_session("s2", "/work/b", None);
+    world.kill();
+    drop_spaces(&Connection::open(world.path()).unwrap());
+    world.restart();
+    backfilled_to_space_one(&world);
+    let seeds = [
+        "space space-1 Space 1",
+        "settings space-1 21600000",
+        "login claude default",
+        "login codex default",
+        "login devin default",
+    ];
+    assert_eq!(
+        seeded(&world.conn()),
+        seeds,
+        "Space 1, active, a 6 hour route-grant TTL and each CLI's own login"
+    );
+
+    world.add_session("s3", "/work/c", None);
+    assert_eq!(
+        count(
+            &world.conn(),
+            "SELECT count(*) FROM sessions WHERE id = 's3' AND space_id = 'space-1'"
+        ),
+        1,
+        "a new session is outside Space 1"
+    );
+    world
+        .conn()
+        .execute("UPDATE space_settings SET route_grant_ttl_ms = 60000", [])
+        .unwrap();
+    world.down(60_000);
+    let mut kept = seeds;
+    kept[1] = "settings space-1 60000";
+    assert_eq!(
+        seeded(&world.conn()),
+        kept,
+        "a restart reseeded or changed the Spaces rows"
+    );
+    backfilled_to_space_one(&world);
+}
