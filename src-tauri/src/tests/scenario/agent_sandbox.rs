@@ -488,6 +488,7 @@ fn harness_spawn_child() {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert!(pid > 1, "{session}: pid {pid}");

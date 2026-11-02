@@ -35,6 +35,8 @@ vi.mock("../../core/child", () => ({
     return { path: "/fake/agy_acp_server.par", args: ["--uid="] };
   },
   spawnChild: mock.spawn,
+  spawnHelperChild: (_owner: string | undefined, ...rest: unknown[]) =>
+    mock.spawn(...(rest as [])),
   killChild: mock.kill,
   unwatchChild: (id: string) => {
     mock.listeners.delete(id);

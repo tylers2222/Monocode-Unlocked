@@ -5,7 +5,7 @@ import {
 } from "../../../../features/sessions/model/models";
 import {
   killChild,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -88,7 +88,8 @@ async function discoverModels(flavor: PiFlavor, workingDirectory?: string) {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutError = new Error(`${flavor.label} model discovery timed out`);
   try {
-    await spawnChild(
+    await spawnHelperChild(
+      undefined,
       probeId,
       path,
       buildPiSpawnArgs(flavor, {

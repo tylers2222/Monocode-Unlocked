@@ -3,7 +3,7 @@ import {
   copyMonoCodexThreads,
   killChild,
   prepareMonoCodexStore,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -107,7 +107,8 @@ async function prepare(
   );
   let archivedByUs = false;
   try {
-    await spawnChild(
+    await spawnHelperChild(
+      input.sessionId,
       id,
       input.path,
       ["app-server"],

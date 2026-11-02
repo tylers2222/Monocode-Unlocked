@@ -7,6 +7,7 @@ import {
   killChild,
   resolveDevinBinary,
   spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -285,7 +286,12 @@ export async function startDevinAcp(
   childId: string,
   cwd: string,
   rpc: JsonRpcClient,
-  options: { allowBrowser?: boolean; askBeforeEdits?: boolean } = {},
+  options: {
+    allowBrowser?: boolean;
+    askBeforeEdits?: boolean;
+    /** A text or catalog child, of the session it works for, if any. */
+    helper?: { owner?: string };
+  } = {},
 ): Promise<void> {
   const { path } = await resolveDevinBinary();
   const apiKey = await readDevinApiKey(path);
@@ -294,16 +300,26 @@ export async function startDevinAcp(
   }
   // Stopped while the binary and login were being resolved: spawn nothing.
   if (rpc.isClosed) throw new Error("Devin session stopped");
-  await spawnChild(
-    childId,
-    path,
-    ["acp"],
-    cwd,
-    undefined,
-    "devin",
-    undefined,
-    options.askBeforeEdits,
-  );
+  await (options.helper
+    ? spawnHelperChild(
+        options.helper.owner,
+        childId,
+        path,
+        ["acp"],
+        cwd,
+        undefined,
+        "devin",
+      )
+    : spawnChild(
+        childId,
+        path,
+        ["acp"],
+        cwd,
+        undefined,
+        "devin",
+        undefined,
+        options.askBeforeEdits,
+      ));
   let init: unknown;
   try {
     init = await rpc.request(

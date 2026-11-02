@@ -3,7 +3,7 @@ import {
   execChild,
   killChild,
   resolveGrokBinary,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -195,7 +195,8 @@ async function startLive(
   );
 
   try {
-    await spawnChild(
+    await spawnHelperChild(
+      undefined,
       TEXT_CHILD_ID,
       path,
       grokTextSpawnArgs(),

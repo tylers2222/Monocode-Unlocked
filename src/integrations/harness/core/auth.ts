@@ -136,17 +136,16 @@ async function runHarnessLogin(
       accountId && accountId !== "default" && supportsAccountProfiles(harness)
         ? { provider: harness, id: accountId }
         : undefined;
-    const spawn = account
-      ? child.spawnChild(childId, path, [...args], cwd, account, harness)
-      : child.spawnChild(childId, path, [...args], cwd, undefined, harness);
-    void spawn.catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      finish(
-        new Error(
-          `Could not start ${HARNESS_TITLE[harness]} sign-in: ${message}`,
-        ),
-      );
-    });
+    void child
+      .spawnHelperChild(undefined, childId, path, [...args], cwd, account, harness)
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        finish(
+          new Error(
+            `Could not start ${HARNESS_TITLE[harness]} sign-in: ${message}`,
+          ),
+        );
+      });
   });
 }
 

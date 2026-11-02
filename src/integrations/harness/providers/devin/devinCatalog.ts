@@ -103,7 +103,10 @@ export async function discoverDevinModels(
   try {
     return await Promise.race([
       (async () => {
-        await startDevinAcp(probeId, cwd, rpc, { allowBrowser: false });
+        await startDevinAcp(probeId, cwd, rpc, {
+          allowBrowser: false,
+          helper: {},
+        });
         const created = await rpc.request<unknown>(
           "session/new",
           { cwd, mcpServers: [] },

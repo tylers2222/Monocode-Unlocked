@@ -3,7 +3,7 @@ import {
   killChild,
   resolveCodexBinary,
   restoreMonoCodexAgentState,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -339,7 +339,8 @@ async function startLive(
   );
 
   try {
-    await spawnChild(
+    await spawnHelperChild(
+      undefined,
       TEXT_CHILD_ID,
       path,
       ["app-server"],

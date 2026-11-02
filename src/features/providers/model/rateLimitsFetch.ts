@@ -15,7 +15,7 @@ import {
   inspectHarnessBinary,
   killChild,
   resolveCodexBinary,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../../integrations/harness/core/child";
@@ -295,7 +295,8 @@ async function runCodexAccountRequest<T>(
   );
 
   try {
-    await spawnChild(
+    await spawnHelperChild(
+      undefined,
       USAGE_CHILD_ID,
       path,
       ["app-server"],

@@ -37,7 +37,7 @@ vi.mock("../../core/child", () => ({
   killChild: async () => undefined,
   openHarnessSse: async () => undefined,
   resolveOpenCodeBinary: async () => ({ path: "/fake/opencode" }),
-  spawnChild: async () => {
+  spawnHelperChild: async () => {
     onStdout?.("opencode server listening on http://127.0.0.1:4096");
   },
   unwatchChild: () => undefined,

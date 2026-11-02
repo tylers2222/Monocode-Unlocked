@@ -10,7 +10,7 @@ import {
   execChild,
   killChild,
   resolveCursorBinary,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -77,7 +77,15 @@ async function discoverViaAcp(workingDirectory?: string): Promise<AgentModel[]> 
   );
 
   try {
-    await spawnChild(probeId, path, ["acp"], cwd, undefined, "cursor");
+    await spawnHelperChild(
+      undefined,
+      probeId,
+      path,
+      ["acp"],
+      cwd,
+      undefined,
+      "cursor",
+    );
     return await withTimeout(DISCOVERY_TIMEOUT_MS, async () => {
       await acp.request(
         "initialize",

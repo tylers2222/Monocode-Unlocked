@@ -8,7 +8,7 @@ import {
   execChild,
   killChild,
   resolveClaudeBinary,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
   writeChild,
@@ -295,7 +295,8 @@ async function discoverViaListModels(
   );
 
   try {
-    await spawnChild(
+    await spawnHelperChild(
+      undefined,
       probeId,
       path,
       buildClaudeSpawnArgs({ isolated: true, sessionId }),

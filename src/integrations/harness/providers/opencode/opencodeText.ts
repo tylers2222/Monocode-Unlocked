@@ -5,7 +5,7 @@ import {
   freeHarnessPort,
   killChild,
   resolveOpenCodeBinary,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -189,7 +189,8 @@ async function startLive(
     );
 
     const port = await freeHarnessPort();
-    await spawnChild(
+    await spawnHelperChild(
+      undefined,
       TEXT_CHILD_ID,
       path,
       ["serve", `--hostname=127.0.0.1`, `--port=${port}`],

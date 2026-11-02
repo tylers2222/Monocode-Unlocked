@@ -6,7 +6,7 @@ let onLine: ((line: string) => void) | undefined;
 
 vi.mock("../../core/child", () => ({
   resolveCursorBinary: async () => ({ path: "/fake/cursor-agent" }),
-  spawnChild: async () => undefined,
+  spawnHelperChild: async () => undefined,
   killChild: async () => undefined,
   unwatchChild: () => undefined,
   watchChild: (_id: string, line: (value: string) => void) => {

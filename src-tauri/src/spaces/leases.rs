@@ -212,6 +212,12 @@ pub(crate) fn place(
 
 static PLACING: Mutex<()> = Mutex::new(());
 
+/// Whether `child` is a stored session or a numbered child of one.
+pub(super) fn is_session(store: &SessionStore, child: &str) -> Result<bool, String> {
+    let session_id = crate::harness::child_session(child);
+    with_conn(store, |conn| session_of(conn, session_id)).map(|session| session.is_some())
+}
+
 /// The session's Space and its project folder.
 fn session_of(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<(String, String)>> {
     conn.query_row(

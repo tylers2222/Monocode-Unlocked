@@ -7,7 +7,7 @@ import { AcpClient } from "../../core/acp";
 import {
   killChild,
   resolveHermesBinary,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -64,7 +64,15 @@ export async function discoverHermesModels(
   );
 
   try {
-    await spawnChild(probeId, path, ["acp"], cwd, undefined, "hermes");
+    await spawnHelperChild(
+      undefined,
+      probeId,
+      path,
+      ["acp"],
+      cwd,
+      undefined,
+      "hermes",
+    );
     return await withTimeout(
       DISCOVERY_TIMEOUT_MS,
       async () => {

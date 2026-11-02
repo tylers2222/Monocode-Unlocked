@@ -1265,6 +1265,7 @@ esac"#,
                 None,
                 None,
                 None,
+                None,
             )
         }
 
@@ -1374,6 +1375,202 @@ esac"#,
         assert!(
             !after.join("ran").exists(),
             "the CLI started after the grant ended"
+        );
+    }
+}
+
+/// ADE-189. Space 1's session `one` holds a git project, and Space 2's
+/// session `two` works in its own copy. One-shot `harness_exec` calls and
+/// helper children (text, catalog, skills, login) name the session they work
+/// for, and each runs where that session does; one of no stored session runs
+/// in the app's neutral folder. A stand-in fx prints, or writes, its folder.
+/// Defect: `harness_exec` skips the spawn hook, so Space 2's exec runs in
+/// Space 1's checkout; a helper loses the owner it names and runs where the
+/// window said; a helper or exec of no owner, or of an owner that is no
+/// stored session, runs in a project folder or takes a lease; the folder
+/// check runs before the hook; or Space 1's own helpers leave its project.
+#[test]
+fn helpers_and_execs_run_where_their_session_does() {
+    use tauri::Manager;
+
+    let root = super::space_checkouts::temp_root("ade189");
+    let project = super::space_checkouts::git_project(&root);
+    let data = root.join("app-data");
+    std::fs::create_dir_all(&data).unwrap();
+    let app = super::agent_sandbox::mock_app(&data);
+    super::space_checkouts::two_spaces(
+        &app.state::<crate::session_store::SessionStore>(),
+        &project,
+    );
+    let rig = helpers::Rig {
+        fx: super::agent_sandbox::script(
+            &root.join("fx"),
+            r#"case "$1" in
+  --help) echo "fx acp: ask over the Agent Client Protocol" ;;
+  --version) echo "fx 0.0.1" ;;
+  models) pwd -P ;;
+  *) pwd -P > "$2.part" && mv "$2.part" "$2" ;;
+esac"#,
+        ),
+        copy: root.join("project-worktrees/space-2/two"),
+        neutral: app.path().app_cache_dir().unwrap().join("helper-cwd"),
+        project,
+        app,
+    };
+    helpers::execs_run_where_their_owner_does(&rig);
+    helpers::helpers_run_where_their_owner_does(&rig);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+mod helpers {
+    use std::path::{Path, PathBuf};
+
+    use tauri::Manager;
+
+    use super::super::agent_sandbox::wait_for;
+    use super::{leases, FIRST_SPACE};
+    use crate::spaces::Helper;
+
+    pub(super) struct Rig {
+        pub(super) app: tauri::App<tauri::test::MockRuntime>,
+        pub(super) fx: PathBuf,
+        pub(super) project: PathBuf,
+        pub(super) copy: PathBuf,
+        pub(super) neutral: PathBuf,
+    }
+
+    fn text(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    fn exec(rig: &Rig, owner: Option<&str>, cwd: Option<&Path>) -> Result<PathBuf, String> {
+        tauri::async_runtime::block_on(crate::harness::harness_exec(
+            rig.app.handle().clone(),
+            text(&rig.fx),
+            vec!["models".into(), "--json".into()],
+            cwd.map(text),
+            Some("fx".into()),
+            Some(text(&rig.fx)),
+            owner.map(String::from),
+        ))
+        .map(|out| PathBuf::from(out.trim()))
+    }
+
+    /// Starts helper `key` of `owner`, which writes its folder to `<folder>/<key>`.
+    fn helper(rig: &Rig, key: &str, owner: Option<&str>, workdir: &Path) {
+        crate::harness::harness_spawn(
+            rig.app.handle().clone(),
+            rig.app.state::<crate::harness::HarnessHost>(),
+            key.into(),
+            text(&rig.fx),
+            vec!["acp".into(), key.into()],
+            text(workdir),
+            None,
+            Some("fx".into()),
+            Some(text(&rig.fx)),
+            None,
+            None,
+            None,
+            Some(Helper {
+                owner: owner.map(String::from),
+            }),
+        )
+        .unwrap();
+    }
+
+    pub(super) fn execs_run_where_their_owner_does(rig: &Rig) {
+        let Rig {
+            project,
+            copy,
+            neutral,
+            ..
+        } = rig;
+        assert_eq!(
+            exec(rig, Some("one"), Some(project)),
+            Ok(project.clone()),
+            "Space 1's exec left the project no Space held"
+        );
+        assert_eq!(
+            exec(rig, Some("two"), Some(project)),
+            Ok(copy.clone()),
+            "Space 2's exec ran in the checkout Space 1 holds"
+        );
+        assert_eq!(
+            exec(rig, Some("two#2"), Some(&project.join("src"))),
+            Ok(copy.join("src")),
+            "a numbered child's exec left its session's copy"
+        );
+        for (owner, why) in [
+            (None, "an exec of no session ran in the project"),
+            (
+                Some("ghost"),
+                "an exec of an unknown owner ran in the project",
+            ),
+        ] {
+            assert_eq!(
+                exec(rig, owner, Some(project)),
+                Ok(neutral.clone()),
+                "{why}"
+            );
+        }
+        let missing = project.join("missing");
+        assert_eq!(
+            exec(rig, None, Some(&missing)),
+            Ok(neutral.clone()),
+            "the folder check ran before the spawn hook"
+        );
+        assert_eq!(exec(rig, None, None), Ok(neutral.clone()));
+        assert_eq!(
+            exec(rig, Some("two"), Some(&missing)),
+            Err(format!(
+                "Working directory does not exist: {}",
+                text(&missing)
+            )),
+            "an exec ran without the folder it named"
+        );
+    }
+
+    pub(super) fn helpers_run_where_their_owner_does(rig: &Rig) {
+        let Rig {
+            project,
+            copy,
+            neutral,
+            ..
+        } = rig;
+        helper(rig, "monocode-fx-text", Some("two"), project);
+        assert_eq!(
+            wait_for(&copy.join("monocode-fx-text")),
+            format!("{}\n", text(copy)),
+            "Space 2's text helper ran in the checkout Space 1 holds"
+        );
+        helper(rig, "monocode-fx-skills", Some("one"), project);
+        assert_eq!(
+            wait_for(&project.join("monocode-fx-skills")),
+            format!("{}\n", text(project)),
+            "Space 1's helper left its project"
+        );
+        for (key, owner) in [
+            ("monocode-fx-probe", None),
+            ("monocode-fx-login", Some("ghost")),
+        ] {
+            helper(rig, key, owner, project);
+            assert_eq!(
+                wait_for(&neutral.join(key)),
+                format!("{}\n", text(neutral)),
+                "{key}: a helper of no stored session ran in a project folder"
+            );
+        }
+        assert_eq!(
+            leases::leases(&rig.app.state::<crate::session_store::SessionStore>())
+                .unwrap()
+                .into_iter()
+                .map(|lease| (lease.checkout_path, lease.space_id))
+                .collect::<Vec<_>>(),
+            [
+                (text(project), FIRST_SPACE.to_owned()),
+                (text(copy), "space-2".to_owned()),
+            ],
+            "a helper of no stored session took a lease"
         );
     }
 }

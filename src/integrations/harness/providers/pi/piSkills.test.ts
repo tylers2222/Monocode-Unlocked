@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   request: vi.fn(),
   resolveBinary: vi.fn(),
   resolveOmpBinary: vi.fn(),
-  spawnChild: vi.fn(),
+  spawnHelperChild: vi.fn(),
   unwatchChild: vi.fn(),
   watchChild: vi.fn(),
   writeChild: vi.fn(),
@@ -22,7 +22,7 @@ vi.mock("../../core/child", () => ({
   killChild: mocks.killChild,
   resolveOmpBinary: mocks.resolveOmpBinary,
   resolvePiBinary: mocks.resolveBinary,
-  spawnChild: mocks.spawnChild,
+  spawnHelperChild: mocks.spawnHelperChild,
   unwatchChild: mocks.unwatchChild,
   watchChild: mocks.watchChild,
   writeChild: mocks.writeChild,
@@ -74,7 +74,7 @@ beforeEach(() => {
   mocks.acquireHarnessBridge.mockResolvedValue(mocks.releaseBridge);
   mocks.resolveBinary.mockResolvedValue({ path: "/bin/pi" });
   mocks.resolveOmpBinary.mockResolvedValue({ path: "/bin/omp" });
-  mocks.spawnChild.mockResolvedValue(undefined);
+  mocks.spawnHelperChild.mockResolvedValue(undefined);
   mocks.killChild.mockResolvedValue(undefined);
   mocks.writeChild.mockResolvedValue(undefined);
   mocks.request.mockResolvedValue({ data: { commands: [] } });
@@ -110,7 +110,8 @@ describe("OMP native commands", () => {
         origin: "custom",
       },
     ]);
-    expect(mocks.spawnChild).toHaveBeenCalledWith(
+    expect(mocks.spawnHelperChild).toHaveBeenCalledWith(
+      undefined,
       expect.stringMatching(/^monocode-omp-skills-/),
       "/bin/omp",
       ["--mode", "rpc", "--no-session"],
@@ -297,7 +298,7 @@ describe("discoverPiSkills", () => {
       },
     });
 
-    await expect(discoverPiSkills("/repo")).resolves.toEqual([
+    await expect(discoverPiSkills("/repo", "pi-chat")).resolves.toEqual([
       {
         name: "architect",
         description: "Design first.",
@@ -307,7 +308,10 @@ describe("discoverPiSkills", () => {
     ]);
 
     expect(mocks.acquireHarnessBridge).toHaveBeenCalledOnce();
-    const [childId, command, args, cwd] = mocks.spawnChild.mock.calls[0]!;
+    const [owner, childId, command, args, cwd] =
+      mocks.spawnHelperChild.mock.calls[0]!;
+    // ADE-189: the probe runs in the folder of the session the picker is for.
+    expect(owner).toBe("pi-chat");
     expect(childId).toMatch(/^monocode-pi-skills-/);
     expect(command).toBe("/bin/pi");
     expect(args).toEqual(["--mode", "rpc", "--no-session"]);
@@ -327,7 +331,7 @@ describe("discoverPiSkills", () => {
     mocks.request.mockReturnValue(response.promise);
     const discovery = discoverPiSkills("/repo");
     await vi.waitFor(() => expect(mocks.frames).toHaveLength(1));
-    const childId = mocks.spawnChild.mock.calls[0]![0] as string;
+    const childId = mocks.spawnHelperChild.mock.calls[0]![1] as string;
 
     mocks.frames[0]!({
       type: "extension_ui_request",
@@ -364,8 +368,8 @@ describe("discoverPiSkills", () => {
   it("uses a unique child id for each probe", async () => {
     await discoverPiSkills("/repo");
     await discoverPiSkills("/repo");
-    expect(mocks.spawnChild.mock.calls[0]![0]).not.toBe(
-      mocks.spawnChild.mock.calls[1]![0],
+    expect(mocks.spawnHelperChild.mock.calls[0]![1]).not.toBe(
+      mocks.spawnHelperChild.mock.calls[1]![1],
     );
   });
 });

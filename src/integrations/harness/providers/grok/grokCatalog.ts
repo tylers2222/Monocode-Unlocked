@@ -5,7 +5,7 @@ import {
   execChild,
   killChild,
   resolveGrokBinary,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -81,7 +81,8 @@ async function discoverViaAcp(workingDirectory?: string) {
   );
 
   try {
-    await spawnChild(
+    await spawnHelperChild(
+      undefined,
       probeId,
       path,
       grokSpawnArgs({ model: "" }),

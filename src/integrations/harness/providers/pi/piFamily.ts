@@ -195,7 +195,7 @@ export const ompCommandProvider: NativeCommandProvider = {
       !live ||
       normalizeProjectPath(live.cwd) !== normalizeProjectPath(context.cwd)
     ) {
-      return discoverOmpCommands(context.cwd);
+      return discoverOmpCommands(context.cwd, context.sessionId);
     }
     if (live.availableCommands) return live.availableCommands;
     const response = await live.rpc.request(

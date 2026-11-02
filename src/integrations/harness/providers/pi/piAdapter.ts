@@ -18,7 +18,9 @@ import { discoverPiSkills } from "./piSkills";
 export const piAdapter: HarnessAdapter = {
   id: "pi",
   live: true,
-  commands: { discover: ({ cwd }) => discoverPiSkills(cwd) },
+  commands: {
+    discover: ({ cwd, sessionId }) => discoverPiSkills(cwd, sessionId),
+  },
   sendTurn: sendPiTurn,
   compactContext: compactPiContext,
   rewindLastTurn: rewindPiLastTurn,

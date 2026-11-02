@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({
   killChild: vi.fn(async (_id: string) => {}),
   resolveBinary: vi.fn(async () => ({ path: "/fake/pi" })),
   setHarnessModels: vi.fn(),
-  spawnChild: vi.fn(async () => {}),
+  spawnHelperChild: vi.fn(async () => {}),
   unwatchChild: vi.fn(),
   watchChild: vi.fn(),
   writeChild: vi.fn(async (_id: string, _line: string) => {}),
@@ -20,7 +20,7 @@ vi.mock("../../core/child", () => ({
   killChild: mocks.killChild,
   resolveOmpBinary: mocks.resolveBinary,
   resolvePiBinary: mocks.resolveBinary,
-  spawnChild: mocks.spawnChild,
+  spawnHelperChild: mocks.spawnHelperChild,
   unwatchChild: mocks.unwatchChild,
   watchChild: mocks.watchChild,
   writeChild: mocks.writeChild,
@@ -73,7 +73,7 @@ beforeEach(() => {
   vi.setSystemTime(0);
   vi.clearAllMocks();
   mocks.resolveBinary.mockResolvedValue({ path: "/fake/pi" });
-  mocks.spawnChild.mockResolvedValue();
+  mocks.spawnHelperChild.mockResolvedValue();
   mocks.killChild.mockResolvedValue();
   mocks.writeChild.mockImplementation(async (id, line) => {
     reply(id, line, [builtin]);
@@ -89,7 +89,8 @@ it("loads Pi extensions when discovering package-provided models", async () => {
   const result = discoverPiModels("/workspace");
   await vi.runAllTimersAsync();
   await result;
-  expect(mocks.spawnChild).toHaveBeenCalledWith(
+  expect(mocks.spawnHelperChild).toHaveBeenCalledWith(
+    undefined,
     expect.any(String),
     "/fake/pi",
     ["--mode", "rpc", "--no-session"],
@@ -125,7 +126,8 @@ it("includes models registered three seconds after RPC starts answering", async 
 it("loads extensions and preserves immediate discovery for omp", async () => {
   const models = await discoverOmpModels("/workspace");
   expect(models.map((model) => model.id)).toEqual(["omp:meta/shared-id"]);
-  expect(mocks.spawnChild).toHaveBeenCalledWith(
+  expect(mocks.spawnHelperChild).toHaveBeenCalledWith(
+    undefined,
     expect.any(String),
     "/fake/pi",
     ["--mode", "rpc", "--no-session"],
@@ -224,7 +226,7 @@ it("deduplicates concurrent refreshes and publishes the settled catalog", async 
   expect(first).toBe(second);
   await vi.runAllTimersAsync();
   await first;
-  expect(mocks.spawnChild).toHaveBeenCalledTimes(1);
+  expect(mocks.spawnHelperChild).toHaveBeenCalledTimes(1);
   expect(mocks.setHarnessModels).toHaveBeenCalledExactlyOnceWith(
     "pi",
     expect.arrayContaining([
@@ -325,7 +327,7 @@ it("cancels an outstanding request when the process exits", async () => {
 });
 
 it("handles process exit before spawn resolves", async () => {
-  mocks.spawnChild.mockImplementationOnce(async () => {
+  mocks.spawnHelperChild.mockImplementationOnce(async () => {
     mocks.watchChild.mock.calls[0][2]();
   });
   await expect(discoverPiModels("/workspace")).rejects.toThrow(
@@ -336,7 +338,7 @@ it("handles process exit before spawn resolves", async () => {
 });
 
 it("cleans up when spawning or writing to the process fails", async () => {
-  mocks.spawnChild.mockRejectedValueOnce(new Error("spawn failed"));
+  mocks.spawnHelperChild.mockRejectedValueOnce(new Error("spawn failed"));
   await expect(discoverPiModels("/workspace")).rejects.toThrow("spawn failed");
   expectStopped();
   vi.clearAllMocks();

@@ -2,7 +2,7 @@ import { modelsFor } from "../../../../features/sessions/model/models";
 import {
   killChild,
   resolveClaudeBinary,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
   writeChild,
@@ -289,7 +289,8 @@ async function startLive(
   );
 
   try {
-    await spawnChild(
+    await spawnHelperChild(
+      undefined,
       TEXT_CHILD_ID,
       path,
       buildClaudeSpawnArgs({

@@ -17,7 +17,7 @@ use super::world::World;
 use crate::control::tests::{host, turn_folder};
 use crate::session_store::{self, SessionStore};
 use crate::spaces::leases::{self, CheckoutLease};
-use crate::spaces::{prepare_spawn, set_project_space, SpawnTarget, FIRST_SPACE};
+use crate::spaces::{prepare_spawn, set_project_space, Child, SpawnTarget, FIRST_SPACE};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -41,7 +41,7 @@ fn text(path: &Path) -> String {
 
 /// `root/project`, a git project with `src/` in its one commit. `root` is
 /// canonical: macOS `/tmp` is `/private/tmp`.
-fn git_project(root: &Path) -> PathBuf {
+pub(super) fn git_project(root: &Path) -> PathBuf {
     let project = root.join("project");
     std::fs::create_dir_all(project.join("src")).unwrap();
     std::fs::write(project.join("src/lib.rs"), "").unwrap();
@@ -51,7 +51,7 @@ fn git_project(root: &Path) -> PathBuf {
     project
 }
 
-fn temp_root(name: &str) -> PathBuf {
+pub(super) fn temp_root(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("{name}-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root).unwrap();
     std::fs::canonicalize(&root).unwrap()
@@ -117,7 +117,7 @@ fn add_session(store: &SessionStore, id: &str, cwd: &Path, space: &str) {
 }
 
 /// Space 2, and session `one` of Space 1 and `two` of Space 2 in `project`.
-fn two_spaces(store: &SessionStore, project: &Path) {
+pub(super) fn two_spaces(store: &SessionStore, project: &Path) {
     store
         .lock_conn()
         .unwrap()
@@ -149,7 +149,14 @@ fn spawn_in(world: &World, session: &str, workdir: &Path) -> Result<PathBuf, Str
         workdir: workdir.to_path_buf(),
         account: None,
     };
-    prepare_spawn(world.store(), session, None, world.now(), target).map(|t| t.workdir)
+    prepare_spawn(
+        world.store(),
+        Child::Session(session),
+        None,
+        world.now(),
+        target,
+    )
+    .map(|t| t.workdir)
 }
 
 fn held(store: &SessionStore) -> Vec<(String, String)> {
@@ -666,6 +673,7 @@ esac"#,
                 None,
                 Some("fx".into()),
                 Some(text(&fx)),
+                None,
                 None,
                 None,
                 None,

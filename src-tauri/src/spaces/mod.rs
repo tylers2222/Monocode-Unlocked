@@ -9,7 +9,7 @@ pub(crate) mod grants;
 pub(crate) mod leases;
 pub(crate) mod membership;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension, ToSql, Transaction, TransactionBehavior};
@@ -541,6 +541,25 @@ pub(crate) struct SpawnTarget {
     pub(crate) account: Option<HarnessAccount>,
 }
 
+/// What a harness child works for, as the window names it.
+pub(crate) enum Child<'a> {
+    /// A session's own child, `S` or its numbered child `S#n`.
+    Session(&'a str),
+    /// A text, catalog, skills or login child, or a one-shot `harness_exec`:
+    /// the session the window says it works for. Without a stored one it runs
+    /// in `neutral`, a folder that is no project checkout.
+    Helper {
+        owner: Option<&'a str>,
+        neutral: &'a Path,
+    },
+}
+
+/// The `helper` field of `harness_spawn`: the child is a helper of `owner`.
+#[derive(Deserialize)]
+pub struct Helper {
+    pub(crate) owner: Option<String>,
+}
+
 #[cfg(test)]
 thread_local! {
     /// Spawns on this thread that passed through the hook, so a scenario can
@@ -548,18 +567,37 @@ thread_local! {
     pub(crate) static HOOKED_SPAWNS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-/// The one Spaces step on every harness spawn (`harness_spawn`): the Space's
-/// login, then any usage-limit grant on it, then the checkout lease.
+/// The one Spaces step on every harness child (`harness_spawn`,
+/// `harness_exec`): the Space's login, then any usage-limit grant on it, then
+/// the checkout lease. The owner a helper names is the window's word: only a
+/// stored session's Space counts.
 pub(crate) fn prepare_spawn(
     store: &SessionStore,
-    session_id: &str,
+    child: Child<'_>,
     provider: Option<Provider>,
     now: i64,
     target: SpawnTarget,
 ) -> Result<SpawnTarget, String> {
     #[cfg(test)]
     HOOKED_SPAWNS.with(|spawns| spawns.set(spawns.get() + 1));
+    let in_neutral = |neutral: &Path, target: SpawnTarget| SpawnTarget {
+        workdir: neutral.to_path_buf(),
+        ..target
+    };
+    let (session_id, neutral) = match child {
+        Child::Session(key) => (key, None),
+        Child::Helper { owner, neutral } => match owner {
+            Some(owner) if leases::is_session(store, owner)? => (owner, Some(neutral)),
+            _ => return Ok(in_neutral(neutral, target)),
+        },
+    };
     let target = account::resolve(store, session_id, provider, target)?;
     let target = grants::route(store, session_id, now, target)?;
-    leases::claim(store, session_id, target)
+    let target = leases::claim(store, session_id, target)?;
+    // `claim` keeps the folder of a child of no stored session, so a helper
+    // whose owner was deleted since the check must not stay there.
+    match neutral {
+        Some(neutral) if !leases::is_session(store, session_id)? => Ok(in_neutral(neutral, target)),
+        _ => Ok(target),
+    }
 }

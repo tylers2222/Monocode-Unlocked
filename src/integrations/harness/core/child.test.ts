@@ -151,6 +151,20 @@ describe("child bridge", () => {
         ([command]) => command === "harness_spawn",
       )?.[1],
     ).not.toHaveProperty("ompMcp");
+    // ADE-189: a session's own child names no helper; a helper names the
+    // session it works for, or none, so Rust picks its folder.
+    expect(
+      mocks.invoke.mock.calls.find(
+        ([command]) => command === "harness_spawn",
+      )?.[1],
+    ).not.toHaveProperty("helper");
+    for (const owner of ["pi-chat", undefined]) {
+      await child.spawnHelperChild(owner, "pi-text", "pi", [], "/repo");
+      expect(mocks.invoke).toHaveBeenLastCalledWith(
+        "harness_spawn",
+        expect.objectContaining({ sessionId: "pi-text", helper: { owner } }),
+      );
+    }
     await child.spawnChild(
       "probe",
       "omp",
@@ -229,13 +243,21 @@ describe("child bridge", () => {
       binaryPath: "/opt/opencode/bin/opencode",
     });
 
-    await child.execChild("/resolved", ["--version"], undefined, "codex", null);
+    await child.execChild(
+      "/resolved",
+      ["--version"],
+      "/repo",
+      "codex",
+      null,
+      "codex-chat",
+    );
     expect(mocks.invoke).toHaveBeenLastCalledWith("harness_exec", {
       command: "/resolved",
       args: ["--version"],
-      cwd: undefined,
+      cwd: "/repo",
       binaryProvider: "codex",
       binaryPath: null,
+      owner: "codex-chat",
     });
   });
 

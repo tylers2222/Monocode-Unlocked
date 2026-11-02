@@ -16,7 +16,8 @@ vi.mock("../../../integrations/harness/core/child", () => ({
     path: "/bin/devin",
     version: "devin 3000.6.7 (260a97c8)",
   }),
-  spawnChild: async (
+  spawnHelperChild: async (
+    _owner: string | undefined,
     _id: string,
     _path: string,
     _args: string[],

@@ -10,7 +10,7 @@ const killChild = vi.fn(async () => undefined);
 vi.mock("../../core/child", () => ({
   resolveGrokBinary: async () => ({ path: "/fake/grok" }),
   execChild,
-  spawnChild: async () => undefined,
+  spawnHelperChild: async () => undefined,
   killChild,
   unwatchChild: () => undefined,
   watchChild: (

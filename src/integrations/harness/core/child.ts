@@ -332,18 +332,63 @@ export function unwatchSse(sessionId: string) {
   ownedSse.delete(sessionId);
 }
 
-export async function spawnChild(
+type ChildAccount = { provider: "claude" | "codex"; id: string };
+
+/** A session's own child, keyed by the session id or `<session>#<n>`. */
+export function spawnChild(
   sessionId: string,
   command: string,
   args: string[],
   cwd: string,
-  account?: { provider: "claude" | "codex"; id: string },
+  account?: ChildAccount,
   binaryProvider?: ConfigurableBinaryProvider,
   codexStore?: "mono",
   /** `devin acp` only: start with an approval rule for every edit. */
   devinAskEdits?: boolean,
   /** omp only: `"none"` starts it without MCP servers (ADE-117). */
   ompMcp?: Session["mcp"],
+): Promise<void> {
+  return spawn(sessionId, command, args, cwd, account, binaryProvider, {
+    ...(codexStore ? { codexStore } : {}),
+    ...(devinAskEdits ? { devinAskEdits } : {}),
+    ...(ompMcp ? { ompMcp } : {}),
+  });
+}
+
+/**
+ * A text, catalog, skills or login child of `owner`, the session it works
+ * for, or of none. Rust starts it in that session's folder, or in a neutral
+ * folder that is no project checkout (ADE-189).
+ */
+export function spawnHelperChild(
+  owner: string | undefined,
+  childId: string,
+  command: string,
+  args: string[],
+  cwd: string,
+  account?: ChildAccount,
+  binaryProvider?: ConfigurableBinaryProvider,
+  codexStore?: "mono",
+): Promise<void> {
+  return spawn(childId, command, args, cwd, account, binaryProvider, {
+    helper: { owner },
+    ...(codexStore ? { codexStore } : {}),
+  });
+}
+
+async function spawn(
+  sessionId: string,
+  command: string,
+  args: string[],
+  cwd: string,
+  account: ChildAccount | undefined,
+  binaryProvider: ConfigurableBinaryProvider | undefined,
+  options: {
+    helper?: { owner: string | undefined };
+    codexStore?: "mono";
+    devinAskEdits?: boolean;
+    ompMcp?: Session["mcp"];
+  },
 ): Promise<void> {
   livePid.delete(sessionId);
   pendingExit.delete(sessionId);
@@ -359,9 +404,7 @@ export async function spawnChild(
     account,
     binaryProvider,
     binaryPath,
-    ...(codexStore ? { codexStore } : {}),
-    ...(devinAskEdits ? { devinAskEdits } : {}),
-    ...(ompMcp ? { ompMcp } : {}),
+    ...options,
   });
   if (typeof pid !== "number" || pid <= 0) return;
   livePid.set(sessionId, pid);
@@ -576,12 +619,17 @@ export async function updateHarnessCli(
   });
 }
 
+/**
+ * A one-shot helper. Without `owner`, the session it works for, Rust runs it
+ * in a neutral folder, not `cwd` (ADE-189).
+ */
 export function execChild(
   command: string,
   args: string[],
   cwd?: string,
   binaryProvider?: ConfigurableBinaryProvider,
   binaryPathOverride?: string | null,
+  owner?: string,
 ): Promise<string> {
   const binaryPath =
     binaryPathOverride === undefined && binaryProvider
@@ -593,5 +641,6 @@ export function execChild(
     cwd,
     binaryProvider,
     binaryPath,
+    owner,
   });
 }
