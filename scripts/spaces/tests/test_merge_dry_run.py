@@ -1,6 +1,6 @@
 """merge-dry-run.py on two made-up app data folders, one of them with a live writer.
 
-    python3 -I scripts/spaces/merge_dry_run_test.py
+    python3 -I scripts/spaces/tests/test_merge_dry_run.py
 """
 
 import hashlib
@@ -12,8 +12,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).with_name("merge-dry-run.py")
+SCRIPT = Path(__file__).resolve().parents[1] / "merge-dry-run.py"
 SECRET = "made-up-secret-token-7f3a"
+LOGO = "0f3a9c-made-up-project-hash.png"
 LABEL = "made-up-person@example.com"
 HIDDEN_TITLE = "Made-up title that stays private"
 
@@ -95,15 +96,15 @@ class MergeDryRun(unittest.TestCase):
             writer = make_db(two / "monocode.db", SPACE2_ROWS)
             writer.execute("INSERT INTO sessions VALUES ('s-wal', 'Made-up WAL row', NULL)")
             self.assertGreater((two / "monocode.db-wal").stat().st_size, 0, "fixture keeps rows in the WAL")
-            for path in ("monos/m-shared/SOUL.md", "monos/m-one/SOUL.md", "checkpoints/s-same/turn.json"):
+            for path in ("monos/m-shared/SOUL.md", "monos/m-one/SOUL.md", "checkpoints/s-same/turn.json", f"project-logos/{LOGO}"):
                 write(one / path)
             write(one / "backgrounds/chat-background.png", bytes(100))
             write(one / "linear-token", SECRET.encode())
-            for path in ("monos/m-shared/SOUL.md", "monos/m-orphan/SOUL.md", "checkpoints/s-two/turn.json"):
+            for path in ("monos/m-shared/SOUL.md", "monos/m-orphan/SOUL.md", "checkpoints/s-two/turn.json", f"project-logos/{LOGO}"):
                 write(two / path)
-            make_storage(root / "webkit1", {"monocode.colorScheme": "dark"})
+            make_storage(root / "webkit1", {"monocode.colorScheme": "made-up-scheme-one"})
             make_storage(root / "webkit2", {
-                "monocode.colorScheme": "light",
+                "monocode.colorScheme": "made-up-scheme-two",
                 "monocode.providerAccounts.v1": json.dumps(
                     {"claude": [{"id": "account-1", "provider": "claude", "label": LABEL}]}),
                 "monocode.providerAccountSelections.v1": json.dumps({"/made/up": {"claude": "account-sel-gone"}}),
@@ -144,12 +145,15 @@ class MergeDryRun(unittest.TestCase):
             self.assertEqual(refs[("space2", "notes", "source_session_id", "sessions.id")]["values"], ["s-missing"])
             self.assertEqual(refs[("space2", "mono_asks", "parent_actor", "mono:monos.id")]["values"], ["gone"])
             self.assertEqual(len(refs), 3, sorted(refs))
+            self.assertIn("mono_asks.child_actor -> mono:monos", report["skipped_refs"]["space2"], "absent column is listed")
+            self.assertNotIn("mono_asks.parent_actor -> mono:monos", report["skipped_refs"]["space2"])
             self.assertEqual(report["own_paths"], {"space1": {}, "space2": {"sessions.title": 1}})
 
             folders = report["folders"]
             self.assertEqual(folders["monos"]["collisions"], ["m-shared"])
             self.assertEqual(folders["monos"]["without_row"], {"space1": [], "space2": ["m-orphan"]})
             self.assertEqual(folders["checkpoints"]["without_row"], {"space1": [], "space2": []})
+            self.assertEqual(folders["project-logos"]["collisions"], [LOGO])
             self.assertEqual((folders["backgrounds"]["space1"]["files"], folders["backgrounds"]["space1"]["bytes"]), (1, 100))
             self.assertFalse(folders["note-assets"]["space2"]["exists"])
             self.assertEqual(report["other_entries"], {"space1": ["linear-token"], "space2": []})
@@ -174,17 +178,18 @@ class MergeDryRun(unittest.TestCase):
             self.assertIn("monos              space1 2/2/14  space2 2/2/14; 1 collide; 1 without row", text)
 
             for output in (text, json.dumps(report)):
-                for private in (SECRET, LABEL, HIDDEN_TITLE, "light", "dark"):
+                for private in (SECRET, LABEL, HIDDEN_TITLE, "made-up-scheme-one", "made-up-scheme-two"):
                     self.assertNotIn(private, output, "stored values never reach the report")
             self.assertEqual(set(Path("/tmp").glob("merge-dry-run-*")), temps_before, "the /tmp copies are deleted")
 
     def test_refuses_an_out_folder_inside_the_repo(self):
-        out = SCRIPT.parent / "report-must-not-exist"
-        missing = [f"--{flag}=/nonexistent/{flag}" for flag in ("space1", "space2", "webkit1", "webkit2")]
-        run = subprocess.run([sys.executable, "-I", str(SCRIPT), "--out", str(out), *missing], capture_output=True, text=True)
-        self.assertEqual(run.returncode, 2)
-        self.assertIn("--out must be outside", run.stderr)
-        self.assertFalse(out.exists())
+        with tempfile.TemporaryDirectory() as tmp:
+            sources = [f"--{flag}={tmp}/{flag}" for flag in ("space1", "space2", "webkit1", "webkit2")]
+            for out in (SCRIPT.parent / "report-must-not-exist", Path(tmp) / "space2/report", Path(tmp) / "webkit1"):
+                run = subprocess.run([sys.executable, "-I", str(SCRIPT), "--out", str(out), *sources], capture_output=True, text=True)
+                self.assertEqual(run.returncode, 2, out)
+                self.assertIn("--out must be outside", run.stderr)
+                self.assertFalse(out.exists())
 
 
 if __name__ == "__main__":

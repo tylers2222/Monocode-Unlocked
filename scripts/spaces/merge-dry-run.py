@@ -4,15 +4,13 @@
     merge-dry-run.py --out <dir> [--space1 <data dir>] [--space2 <data dir>]
                      [--webkit1 <dir>] [--webkit2 <dir>]
 
-Space 1 is MonoCode 1 (com.monocode.desktop), Space 2 is MonoCode 2
-(com.monocode.second); the defaults are their real macOS folders. Nothing is
-written there: each monocode.db and WebKit localstorage.sqlite3 is copied with
-the SQLite backup API from a mode=ro connection (so the copy holds the WAL)
-into a private folder under /tmp that is deleted at the end, and folders are
-only listed. The report holds real ids and paths, so --out must be outside
-this repository. merge-dry-run.json (shape named by `format`) is the input of
-the importer (ADE-178); merge-dry-run.txt is the same for people. Stored
-values are never written out, only keys, counts, sizes and ids.
+Space 1 is MonoCode 1 (com.monocode.desktop), Space 2 is MonoCode 2 (com.monocode.second); the
+defaults are their real macOS folders. Nothing is written there: each monocode.db and WebKit
+localstorage.sqlite3 is copied with the SQLite backup API from a mode=ro connection (so the copy
+holds the WAL) into a /tmp folder that is deleted at the end, and folders are only listed. The
+report holds real ids and paths, so --out must be outside this repository and the source folders.
+merge-dry-run.json (shape named by `format`) is the importer's input (ADE-178); merge-dry-run.txt
+is the same for people. Stored values are never written out, only keys, counts, sizes and ids.
 """
 
 import argparse
@@ -51,6 +49,9 @@ class Ref:
     target_column: str = "id"
     prefix: str = ""
     declared: bool = False
+
+    def in_schema(self, schema_tables: dict) -> bool:
+        return self.column in schema_tables.get(self.table, {}) and self.target_column in schema_tables.get(self.target, {})
 
 
 # Id columns the schema does not declare as foreign keys. An actor column
@@ -198,7 +199,8 @@ def declared_refs(db, schema: str, table: str) -> list[Ref]:
 
 def broken_refs(db, space: Space, schema_tables: dict) -> list[dict]:
     found = []
-    for ref in [r for t in schema_tables for r in declared_refs(db, space.schema, t)] + list(SOFT_REFS):
+    soft = [r for r in SOFT_REFS if r.in_schema(schema_tables)]
+    for ref in [r for t in schema_tables for r in declared_refs(db, space.schema, t)] + soft:
         col = f"c.{q(ref.column)}"
         value = f"substr({col}, {len(ref.prefix) + 1})" if ref.prefix else col
         match = f"{col} GLOB '{ref.prefix}*'" if ref.prefix else f"{col} IS NOT NULL"
@@ -307,13 +309,13 @@ def storage_report(db, spaces, tmp: Path) -> dict:
         count, values[s.key] = read_storage(s, tmp)
         stored = parse_record(values[s.key].get(ACCOUNTS_KEY))
         accounts = {
-            provider: [a.get("id") for a in rows if isinstance(a, dict)]
+            provider: [a["id"] for a in rows if isinstance(a, dict) and isinstance(a.get("id"), str)]
             for provider, rows in stored.items()
             if isinstance(rows, list)
         }
         known = {DEFAULT_ACCOUNT, *(a for ids in accounts.values() for a in ids)}
         selections = parse_record(values[s.key].get(SELECTIONS_KEY))
-        picked = {a for choice in selections.values() if isinstance(choice, dict) for a in choice.values()}
+        picked = {a for c in selections.values() if isinstance(c, dict) for a in c.values() if isinstance(a, str)}
         sessions = dict(rows_or_none(
             db,
             f"SELECT coalesce(provider_account_id, ?), count(*) FROM {s.schema}.sessions GROUP BY 1",
@@ -357,6 +359,10 @@ def build(spaces: tuple[Space, Space], tmp: Path) -> dict:
         "schema_diff": schema_diff(schemas["space1"], schemas["space2"]),
         "tables": table_report(db, schemas),
         "broken_refs": [r for s in spaces for r in broken_refs(db, s, schemas[s.key])],
+        "skipped_refs": {
+            s.key: [f"{r.table}.{r.column} -> {r.prefix}{r.target}" for r in SOFT_REFS if not r.in_schema(schemas[s.key])]
+            for s in spaces
+        },
         "own_paths": {s.key: own_paths(db, s, schemas[s.key]) for s in spaces},
         "folders": folders(db, spaces),
         "other_entries": {s.key: other_entries(s) for s in spaces},
@@ -390,25 +396,24 @@ def risks(report: dict) -> list[str]:
     defaults = storage["space2"]["sessions_by_login"].get(DEFAULT_ACCOUNT, 0)
     own = sum(report["own_paths"]["space2"].values())
     missing = storage["space1"]["missing_logins"] + storage["space2"]["missing_logins"]
+    text_diff, text_same = key_hits(report, False, "different"), key_hits(report, False, "same")
+    integer = key_hits(report, True, "same", "different")
     rules = [
         (report["schema_diff"] or spaces["space1"]["schema_version"] != spaces["space2"]["schema_version"],
          joined("The schemas differ; migrate both DBs to one version first", list(report["schema_diff"]))),
-        (key_hits(report, False, "different"),
-         joined("Text keys in both Spaces with different rows (one would be lost)", key_hits(report, False, "different"))),
+        (text_diff, joined("Text keys in both Spaces with different rows (one would be lost)", text_diff)),
         (folder_hits, joined("Data folder entries with the same name in both Spaces", folder_hits)),
         (defaults, f"{defaults} Space 2 sessions run on login id 'default'; in one window that id"
                    " names one login, so map them to Space 2's own login."),
         (own, f"{own} Space 2 DB values hold a path into MonoCode 2's data folder; rewrite them."),
         (None not in clocks and len(clocks) == 2,
          "The active clocks differ; rebase Space 2's active-time columns (asks, outbox, ask events)."),
-        (key_hits(report, True, "same", "different"),
-         joined("Integer keys in both Spaces (renumber Space 2 rows)", key_hits(report, True, "same", "different"))),
+        (integer, joined("Integer keys in both Spaces (renumber Space 2 rows)", integer)),
         (declared, joined("Rows that break a declared foreign key", declared)),
         (missing, f"{len(missing)} login ids in sessions or selections are not in browser storage."),
         (storage["keys_differ"],
          f"{len(storage['keys_differ'])} browser-storage keys hold different values in each Space; pick a rule per key."),
-        (key_hits(report, False, "same"),
-         joined("Rows identical in both Spaces (skip on import)", key_hits(report, False, "same"))),
+        (text_same, joined("Rows identical in both Spaces (skip on import)", text_same)),
         (soft, joined("Rows that name an id that is not there (undeclared references)", soft)),
         (without_row, f"{without_row} data folder entries have no row in their table."),
     ]
@@ -434,6 +439,7 @@ def render(report: dict) -> str:
         f" ({'declared' if r['declared'] else 'undeclared'}): {r['rows']} rows, {len(r['values'])} ids"
         for r in report["broken_refs"]
     ] or ["  none"]
+    lines += [f"  {k} not checked (table or column absent): {', '.join(v)}" for k, v in report["skipped_refs"].items() if v]
     lines += ["", "Values holding a path into the Space's own data folder:"]
     lines += [f"  {k} {col}: {n}" for k, cols in report["own_paths"].items() for col, n in cols.items()] or ["  none"]
     lines += ["", "Data folders that move (entries/files/bytes per Space; collisions; entries with no row):"]
@@ -469,8 +475,9 @@ def main(argv=None) -> int:
     parser.add_argument("--webkit2", type=Path, default=home / "Library/WebKit/com.monocode.second")
     args = parser.parse_args(argv)
     out = args.out.resolve()
-    if out == REPO or REPO in out.parents:
-        print(f"merge-dry-run: --out must be outside {REPO}: the report holds real ids", file=sys.stderr)
+    guarded = [REPO] + [p.resolve() for p in (args.space1, args.space2, args.webkit1, args.webkit2)]
+    if inside := next((p for p in guarded if out == p or p in out.parents), None):
+        print(f"merge-dry-run: --out must be outside {inside}: the report holds real ids", file=sys.stderr)
         return 2
     spaces = (
         Space("space1", "MonoCode 1", "com.monocode.desktop", args.space1, args.webkit1, "main"),
