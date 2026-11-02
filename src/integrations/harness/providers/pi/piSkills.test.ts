@@ -45,10 +45,11 @@ vi.mock("./piClient", () => ({
 
 import {
   discoverPiSkills,
-  discoverOmpCommands,
   ompCommandsFromRpcData,
   piSkillsFromRpcData,
 } from "./piSkills";
+import { piAdapter } from "./piAdapter";
+import { ompCommandProvider } from "./piFamily";
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -102,7 +103,11 @@ describe("OMP native commands", () => {
         ],
       },
     });
-    await expect(discoverOmpCommands("/repo-worktree")).resolves.toMatchObject([
+    // ADE-189: with no live child in the folder, the picker's session reaches
+    // the probe as its owner.
+    await expect(
+      ompCommandProvider.discover({ cwd: "/repo-worktree", sessionId: "omp-chat" }),
+    ).resolves.toMatchObject([
       {
         name: "orchestrate",
         invocation: "orchestrate",
@@ -111,7 +116,7 @@ describe("OMP native commands", () => {
       },
     ]);
     expect(mocks.spawnHelperChild).toHaveBeenCalledWith(
-      undefined,
+      "omp-chat",
       expect.stringMatching(/^monocode-omp-skills-/),
       "/bin/omp",
       ["--mode", "rpc", "--no-session"],
@@ -298,7 +303,9 @@ describe("discoverPiSkills", () => {
       },
     });
 
-    await expect(discoverPiSkills("/repo", "pi-chat")).resolves.toEqual([
+    await expect(
+      piAdapter.commands!.discover({ cwd: "/repo", sessionId: "pi-chat" }),
+    ).resolves.toEqual([
       {
         name: "architect",
         description: "Design first.",

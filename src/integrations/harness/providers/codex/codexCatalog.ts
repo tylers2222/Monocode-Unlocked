@@ -8,7 +8,7 @@ import {
 import {
   killChild,
   resolveCodexBinary,
-  spawnHelperChild,
+  spawnChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -76,15 +76,7 @@ export async function discoverCodexModels(
   );
 
   try {
-    await spawnHelperChild(
-      undefined,
-      probeId,
-      path,
-      ["app-server"],
-      cwd,
-      undefined,
-      "codex",
-    );
+    await spawnChild(probeId, path, ["app-server"], cwd, undefined, "codex");
     return await withTimeout(
       DISCOVERY_TIMEOUT_MS,
       async () => {

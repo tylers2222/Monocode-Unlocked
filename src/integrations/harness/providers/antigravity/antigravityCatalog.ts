@@ -4,7 +4,7 @@ import { AcpClient } from "../../core/acp";
 import {
   killChild,
   resolveAntigravityBinary,
-  spawnHelperChild,
+  spawnChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -55,8 +55,9 @@ export async function discoverAntigravityModels(workingDirectory?: string) {
     () => acp.close(new Error("Antigravity probe exited")),
   );
   try {
-    await spawnHelperChild(
-      undefined,
+    // Not a helper (ADE-189): the raw .par finds its resources from its own
+    // folder, the CLI's install folder, which is never a project.
+    await spawnChild(
       probeId,
       path,
       args,

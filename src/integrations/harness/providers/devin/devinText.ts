@@ -102,10 +102,7 @@ async function promptOnce(input: TextPromptInput): Promise<string> {
   );
   try {
     const run = async () => {
-      await startDevinAcp(childId, input.cwd, rpc, {
-        allowBrowser: false,
-        helper: {},
-      });
+      await startDevinAcp(childId, input.cwd, rpc, { allowBrowser: false });
       const created = await rpc.request(
         "session/new",
         { cwd: input.cwd, mcpServers: [] },

@@ -545,14 +545,36 @@ pub(crate) struct SpawnTarget {
 pub(crate) enum Child<'a> {
     /// A session's own child, `S` or its numbered child `S#n`.
     Session(&'a str),
-    /// A text, catalog, skills or login child, or a one-shot `harness_exec`:
-    /// the session the window says it works for. Without a stored one it runs
-    /// in `neutral`, a folder that is no project checkout.
+    /// A text, catalog, skills or login child keyed `key`, or a one-shot
+    /// `harness_exec` (no key): the session the window says it works for.
+    /// Without a stored one it runs in `neutral`, a folder that is no project
+    /// checkout, unless [`KEEPS_CALLER_FOLDER`] names it.
     Helper {
+        key: Option<&'a str>,
         owner: Option<&'a str>,
         neutral: &'a Path,
     },
 }
+
+/// INTERIM (ADE-189 4/4): helpers that ran in their caller's project folder
+/// before ADE-189 and whose owner is not wired yet keep that folder when they
+/// have no Space, as a session's own child does, so they keep their project
+/// context. No Space 2 session exists until ADE-179, so this lets no Space
+/// into another's checkout today. Parts 3/4 and 4/4 shrink it, then delete it.
+/// Matched as a prefix of the child key.
+const KEEPS_CALLER_FOLDER: [&str; 9] = [
+    // Titles, commit, PR and branch text, and /btw side questions.
+    "monocode-claude-text",
+    "monocode-codex-text",
+    "monocode-text",
+    "monocode-grok-text",
+    "monocode-opencode-text",
+    "monocode-pi-text",
+    "monocode-omp-text",
+    // The `/` picker's skills of a tab not saved yet.
+    "monocode-pi-skills-",
+    "monocode-omp-skills-",
+];
 
 /// The `helper` field of `harness_spawn`: the child is a helper of `owner`.
 #[derive(Deserialize)]
@@ -570,7 +592,8 @@ thread_local! {
 /// The one Spaces step on every harness child (`harness_spawn`,
 /// `harness_exec`): the Space's login, then any usage-limit grant on it, then
 /// the checkout lease. The owner a helper names is the window's word: only a
-/// stored session's Space counts.
+/// stored session's Space counts, and the lease claim is the one place that
+/// checks it.
 pub(crate) fn prepare_spawn(
     store: &SessionStore,
     child: Child<'_>,
@@ -580,24 +603,29 @@ pub(crate) fn prepare_spawn(
 ) -> Result<SpawnTarget, String> {
     #[cfg(test)]
     HOOKED_SPAWNS.with(|spawns| spawns.set(spawns.get() + 1));
-    let in_neutral = |neutral: &Path, target: SpawnTarget| SpawnTarget {
-        workdir: neutral.to_path_buf(),
-        ..target
-    };
-    let (session_id, neutral) = match child {
+    let (session_id, no_space) = match child {
         Child::Session(key) => (key, None),
-        Child::Helper { owner, neutral } => match owner {
-            Some(owner) if leases::is_session(store, owner)? => (owner, Some(neutral)),
-            _ => return Ok(in_neutral(neutral, target)),
-        },
+        Child::Helper {
+            key,
+            owner,
+            neutral,
+        } => {
+            let keeps = key.is_some_and(|key| {
+                KEEPS_CALLER_FOLDER
+                    .iter()
+                    .any(|listed| key.starts_with(listed))
+            });
+            let no_space = (!keeps).then_some(neutral);
+            let Some(owner) = owner else {
+                return Ok(SpawnTarget {
+                    workdir: no_space.map_or(target.workdir, Path::to_path_buf),
+                    ..target
+                });
+            };
+            (owner, no_space)
+        }
     };
     let target = account::resolve(store, session_id, provider, target)?;
     let target = grants::route(store, session_id, now, target)?;
-    let target = leases::claim(store, session_id, target)?;
-    // `claim` keeps the folder of a child of no stored session, so a helper
-    // whose owner was deleted since the check must not stay there.
-    match neutral {
-        Some(neutral) if !leases::is_session(store, session_id)? => Ok(in_neutral(neutral, target)),
-        _ => Ok(target),
-    }
+    leases::claim(store, session_id, target, no_space)
 }

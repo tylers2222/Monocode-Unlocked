@@ -1386,9 +1386,11 @@ esac"#,
 /// in the app's neutral folder. A stand-in fx prints, or writes, its folder.
 /// Defect: `harness_exec` skips the spawn hook, so Space 2's exec runs in
 /// Space 1's checkout; a helper loses the owner it names and runs where the
-/// window said; a helper or exec of no owner, or of an owner that is no
-/// stored session, runs in a project folder or takes a lease; the folder
-/// check runs before the hook; or Space 1's own helpers leave its project.
+/// window said; a helper or exec of no owner, of an owner that is no stored
+/// session, or of one deleted since, runs in a project folder or takes a
+/// lease; the folder
+/// check runs before the hook; Space 1's own helpers leave its project; or a
+/// helper on the INTERIM list loses its caller's folder.
 #[test]
 fn helpers_and_execs_run_where_their_session_does() {
     use tauri::Manager;
@@ -1560,6 +1562,27 @@ mod helpers {
                 "{key}: a helper of no stored session ran in a project folder"
             );
         }
+        // INTERIM (ADE-189 4/4): a listed helper of no Space keeps the folder
+        // its caller named; one of a stored session is still placed.
+        for (key, owner, folder) in [
+            ("monocode-claude-text", None, project),
+            ("monocode-codex-text", None, project),
+            ("monocode-text", None, project),
+            ("monocode-grok-text", None, project),
+            ("monocode-opencode-text", None, project),
+            ("monocode-pi-text", None, project),
+            ("monocode-omp-text", None, project),
+            ("monocode-pi-skills-1", None, project),
+            ("monocode-omp-skills-1", Some("ghost"), project),
+            ("monocode-pi-skills-2", Some("two"), copy),
+        ] {
+            helper(rig, key, owner, project);
+            assert_eq!(
+                wait_for(&folder.join(key)),
+                format!("{}\n", text(folder)),
+                "{key}: an interim helper left its caller's folder, or its Space's"
+            );
+        }
         assert_eq!(
             leases::leases(&rig.app.state::<crate::session_store::SessionStore>())
                 .unwrap()
@@ -1571,6 +1594,18 @@ mod helpers {
                 (text(copy), "space-2".to_owned()),
             ],
             "a helper of no stored session took a lease"
+        );
+        // An owner deleted after the window named it has no Space any more.
+        rig.app
+            .state::<crate::session_store::SessionStore>()
+            .lock_conn()
+            .unwrap()
+            .execute("DELETE FROM sessions WHERE id = 'two'", [])
+            .unwrap();
+        assert_eq!(
+            exec(rig, Some("two"), Some(project)),
+            Ok(neutral.clone()),
+            "a helper of a deleted session ran in a project folder"
         );
     }
 }

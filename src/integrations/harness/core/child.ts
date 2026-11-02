@@ -332,63 +332,20 @@ export function unwatchSse(sessionId: string) {
   ownedSse.delete(sessionId);
 }
 
-type ChildAccount = { provider: "claude" | "codex"; id: string };
-
-/** A session's own child, keyed by the session id or `<session>#<n>`. */
-export function spawnChild(
+export async function spawnChild(
   sessionId: string,
   command: string,
   args: string[],
   cwd: string,
-  account?: ChildAccount,
+  account?: { provider: "claude" | "codex"; id: string },
   binaryProvider?: ConfigurableBinaryProvider,
   codexStore?: "mono",
   /** `devin acp` only: start with an approval rule for every edit. */
   devinAskEdits?: boolean,
   /** omp only: `"none"` starts it without MCP servers (ADE-117). */
   ompMcp?: Session["mcp"],
-): Promise<void> {
-  return spawn(sessionId, command, args, cwd, account, binaryProvider, {
-    ...(codexStore ? { codexStore } : {}),
-    ...(devinAskEdits ? { devinAskEdits } : {}),
-    ...(ompMcp ? { ompMcp } : {}),
-  });
-}
-
-/**
- * A text, catalog, skills or login child of `owner`, the session it works
- * for, or of none. Rust starts it in that session's folder, or in a neutral
- * folder that is no project checkout (ADE-189).
- */
-export function spawnHelperChild(
-  owner: string | undefined,
-  childId: string,
-  command: string,
-  args: string[],
-  cwd: string,
-  account?: ChildAccount,
-  binaryProvider?: ConfigurableBinaryProvider,
-  codexStore?: "mono",
-): Promise<void> {
-  return spawn(childId, command, args, cwd, account, binaryProvider, {
-    helper: { owner },
-    ...(codexStore ? { codexStore } : {}),
-  });
-}
-
-async function spawn(
-  sessionId: string,
-  command: string,
-  args: string[],
-  cwd: string,
-  account: ChildAccount | undefined,
-  binaryProvider: ConfigurableBinaryProvider | undefined,
-  options: {
-    helper?: { owner: string | undefined };
-    codexStore?: "mono";
-    devinAskEdits?: boolean;
-    ompMcp?: Session["mcp"];
-  },
+  /** A helper, not a session's own child: see `spawnHelperChild`. */
+  helper?: { owner: string | undefined },
 ): Promise<void> {
   livePid.delete(sessionId);
   pendingExit.delete(sessionId);
@@ -404,7 +361,10 @@ async function spawn(
     account,
     binaryProvider,
     binaryPath,
-    ...options,
+    ...(codexStore ? { codexStore } : {}),
+    ...(devinAskEdits ? { devinAskEdits } : {}),
+    ...(ompMcp ? { ompMcp } : {}),
+    ...(helper ? { helper } : {}),
   });
   if (typeof pid !== "number" || pid <= 0) return;
   livePid.set(sessionId, pid);
@@ -414,6 +374,35 @@ async function spawn(
   if (!exited) return;
   livePid.delete(sessionId);
   exitHandlers.get(sessionId)?.(exited.code);
+}
+
+/**
+ * A text, catalog, skills or login child of `owner`, the session it works
+ * for, or of none. Rust starts it in that session's folder, or in a neutral
+ * folder that is no project checkout (ADE-189).
+ */
+export function spawnHelperChild(
+  owner: string | undefined,
+  childId: string,
+  command: string,
+  args: string[],
+  cwd: string,
+  account?: { provider: "claude" | "codex"; id: string },
+  binaryProvider?: ConfigurableBinaryProvider,
+  codexStore?: "mono",
+): Promise<void> {
+  return spawnChild(
+    childId,
+    command,
+    args,
+    cwd,
+    account,
+    binaryProvider,
+    codexStore,
+    undefined,
+    undefined,
+    { owner },
+  );
 }
 
 export function writeChild(sessionId: string, line: string): Promise<void> {

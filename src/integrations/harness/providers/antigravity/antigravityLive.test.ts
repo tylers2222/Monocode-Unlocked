@@ -34,9 +34,9 @@ vi.mock("../../core/child", () => ({
     }
     return { path: "/fake/agy_acp_server.par", args: ["--uid="] };
   },
+  // No spawnHelperChild (ADE-189): the catalog probe must start in the CLI's
+  // install folder, so it is spawned as `spawnChild`, never as a helper.
   spawnChild: mock.spawn,
-  spawnHelperChild: (_owner: string | undefined, ...rest: unknown[]) =>
-    mock.spawn(...(rest as [])),
   killChild: mock.kill,
   unwatchChild: (id: string) => {
     mock.listeners.delete(id);

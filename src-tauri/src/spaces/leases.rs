@@ -120,14 +120,16 @@ pub fn spaces_lease_release(
     release_lease(&store, &checkout_path, &space_id)
 }
 
-/// The folder a child starts in: see [`place`].
+/// The folder a child starts in: see [`place`]. A helper names `no_space`,
+/// its neutral folder, for an owner that is no stored session (ADE-189).
 pub(super) fn claim(
     store: &SessionStore,
     session_id: &str,
     target: SpawnTarget,
+    no_space: Option<&Path>,
 ) -> Result<SpawnTarget, String> {
     Ok(SpawnTarget {
-        workdir: place(store, session_id, &target.workdir, now_millis())?,
+        workdir: place_or(store, session_id, &target.workdir, now_millis(), no_space)?,
         ..target
     })
 }
@@ -149,13 +151,25 @@ pub(crate) fn place(
     workdir: &Path,
     now: i64,
 ) -> Result<PathBuf, String> {
+    place_or(store, child, workdir, now, None)
+}
+
+/// [`place`], with the one check of whether `child` has a Space: a child of
+/// no stored session goes to `no_space` when it names one (ADE-189).
+fn place_or(
+    store: &SessionStore,
+    child: &str,
+    workdir: &Path,
+    now: i64,
+    no_space: Option<&Path>,
+) -> Result<PathBuf, String> {
     let session_id = crate::harness::child_session(child);
     // A missing folder is the caller's to report.
     let Some(real) = resolve(workdir) else {
         return Ok(workdir.to_path_buf());
     };
     let Some((space, project)) = with_conn(store, |conn| session_of(conn, session_id))? else {
-        return Ok(workdir.to_path_buf());
+        return Ok(no_space.unwrap_or(workdir).to_path_buf());
     };
     // Only `project_key` fails here: a project part 4 cannot key has no assignment.
     let assigned =
@@ -211,12 +225,6 @@ pub(crate) fn place(
 }
 
 static PLACING: Mutex<()> = Mutex::new(());
-
-/// Whether `child` is a stored session or a numbered child of one.
-pub(super) fn is_session(store: &SessionStore, child: &str) -> Result<bool, String> {
-    let session_id = crate::harness::child_session(child);
-    with_conn(store, |conn| session_of(conn, session_id)).map(|session| session.is_some())
-}
 
 /// The session's Space and its project folder.
 fn session_of(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<(String, String)>> {
