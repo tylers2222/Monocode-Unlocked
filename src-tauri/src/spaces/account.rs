@@ -1,12 +1,13 @@
-//! Logins (`provider_accounts`) and the login each Space uses per provider
-//! (`space_accounts`).
+//! Logins (`provider_accounts`), the login each Space uses per provider
+//! (`space_accounts`), the Space a new session joins and the login its
+//! children start with.
 
-use rusqlite::params;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use super::{with_conn, Provider, SpawnTarget};
-use crate::harness::DEFAULT_PROVIDER_ACCOUNT_ID;
+use super::{with_conn, Provider, SpawnTarget, FIRST_SPACE};
+use crate::harness::{HarnessAccount, DEFAULT_PROVIDER_ACCOUNT_ID};
 use crate::session_store::{now_millis, SessionStore};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -170,12 +171,94 @@ pub fn spaces_login_set(store: State<'_, SessionStore>, login: SpaceLogin) -> Re
     set_login(&store, &login)
 }
 
-/// The login a child starts with. Today: the one its caller passed.
+/// The Space a new session row starts in, never one its caller names: its
+/// parent's (the lead that started it, the Mono whose chat it is, or the
+/// session its `app-<parent>-<request>` id names, as a Mono chat names its
+/// leads and habit runs), else the active Space.
+pub(crate) fn new_session_space(
+    conn: &Connection,
+    id: &str,
+    lead: Option<&str>,
+) -> rusqlite::Result<String> {
+    for parent in lead.into_iter().chain([id]).chain(named_parents(id)) {
+        let space = conn
+            .query_row(
+                "SELECT space_id FROM sessions WHERE id = ?1
+                 UNION ALL
+                 SELECT space_id FROM monos WHERE json_extract(data_json, '$.sessionId') = ?1
+                 LIMIT 1",
+                [parent],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(space) = space {
+            return Ok(space);
+        }
+    }
+    conn.query_row(
+        "SELECT active_space_id FROM space_settings WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )
+}
+
+/// The parents an `app-<parent>-<request>` id may name, longest first: a
+/// parent id holds dashes of its own, so each dash may end it.
+fn named_parents(id: &str) -> impl Iterator<Item = &str> {
+    let rest = id.strip_prefix("app-").unwrap_or_default();
+    rest.rmatch_indices('-').map(move |(end, _)| &rest[..end])
+}
+
+fn cli_name(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Claude => "Claude",
+        Provider::Codex => "Codex",
+        Provider::Devin => "Devin",
+    }
+}
+
+/// The login a session's child starts with: the session's own (any but the
+/// CLI's `default`, which the front end sends for a session without one),
+/// else its Space's login for that CLI. Space 1 with none set keeps the
+/// CLI's own login, as every session did before Spaces; another Space
+/// refuses. A child that is no session (a model probe, a sign-in) or whose
+/// CLI keeps no login profile starts as it was asked.
 pub(super) fn resolve(
-    _store: &SessionStore,
-    _session_id: &str,
+    store: &SessionStore,
+    session_id: &str,
     _provider: Option<Provider>,
     target: SpawnTarget,
 ) -> Result<SpawnTarget, String> {
-    Ok(target)
+    let Some(provider) = target
+        .account
+        .as_ref()
+        .filter(|account| account.id == DEFAULT_PROVIDER_ACCOUNT_ID)
+        .and_then(|account| Provider::parse(&account.provider))
+    else {
+        return Ok(target);
+    };
+    let space: Option<(String, String, Option<String>)> = with_conn(store, |conn| {
+        conn.query_row(
+            "SELECT s.space_id, COALESCE(sp.name, s.space_id), sa.account_id
+               FROM sessions s
+               LEFT JOIN spaces sp ON sp.id = s.space_id
+               LEFT JOIN space_accounts sa ON sa.space_id = s.space_id AND sa.provider = ?2
+              WHERE s.id = ?1",
+            params![session_id, provider],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+    })?;
+    match space {
+        None => Ok(target),
+        Some((_, _, Some(id))) => Ok(SpawnTarget {
+            account: Some(HarnessAccount {
+                provider: provider.as_str().into(),
+                id,
+            }),
+            ..target
+        }),
+        Some((space_id, _, None)) if space_id == FIRST_SPACE => Ok(target),
+        Some((_, name, None)) => Err(format!("{name} has no {} login", cli_name(provider))),
+    }
 }

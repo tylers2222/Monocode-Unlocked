@@ -1473,6 +1473,18 @@ pub(crate) fn upsert_session(
         .map(|(_, _, _, _, value, _)| *value != 0)
         .unwrap_or(false);
 
+    // `space_id` is chosen here, never by the caller, and only for a new row;
+    // an existing row keeps its own, so a later save cannot move it.
+    let space_id = if existing.is_some() {
+        None
+    } else {
+        Some(crate::spaces::account::new_session_space(
+            conn,
+            &session.id,
+            session.lead_session_id.as_deref(),
+        )?)
+    };
+
     // `lead_session_id` is insert-only: a stale copy cannot restore a lead id
     // that a lead delete cleared, and a worker whose lead row is gone saves as
     // a lead instead of failing the whole upsert on the FK.
@@ -1483,9 +1495,10 @@ pub(crate) fn upsert_session(
            context_used, context_window, worktree_cwd, has_user_message,
            linked_work_item_json, provider_account_id, worktree_removed, is_draft,
            automation_id, queued_messages_json, queue_status, sidebar_hidden, work_folder,
-           lead_session_id, queue_pause, mcp
+           lead_session_id, queue_pause, mcp, space_id
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-           (SELECT id FROM sessions WHERE id = ?26), ?27, ?28)
+           (SELECT id FROM sessions WHERE id = ?26), ?27, ?28,
+           COALESCE(?29, (SELECT space_id FROM sessions WHERE id = ?1)))
          ON CONFLICT(id) DO UPDATE SET
            cwd = excluded.cwd,
            harness = excluded.harness,
@@ -1542,6 +1555,7 @@ pub(crate) fn upsert_session(
             session.lead_session_id,
             session.queue_pause,
             session.mcp,
+            space_id,
         ],
         |row| row.get(0),
     )?;
