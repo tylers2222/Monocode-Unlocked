@@ -3,13 +3,25 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const sent: string[] = [];
 let onLine: ((line: string) => void) | undefined;
 const textFiles = new Map<string, string>();
-const children = { spawned: 0, killed: 0, askEdits: [] as boolean[] };
+const children = {
+  spawned: 0,
+  killed: 0,
+  askEdits: [] as boolean[],
+  spawnArgs: [] as unknown[][],
+  helperArgs: [] as unknown[][],
+};
 
 vi.mock("../../core/child", () => ({
   resolveDevinBinary: async () => ({ path: "/fake/devin" }),
   spawnChild: async (...args: unknown[]) => {
     children.spawned += 1;
     children.askEdits.push(args[7] === true);
+    children.spawnArgs.push(args);
+  },
+  // Rust places a helper and names the folder (ADE-189).
+  spawnHelperChild: async (...args: unknown[]) => {
+    children.helperArgs.push(args);
+    return "/placed";
   },
   killChild: async () => {
     children.killed += 1;
@@ -44,6 +56,7 @@ const {
   waitForDevinSessionTitle,
 } = await import("./devin");
 const { resetDevinAuthCache } = await import("./devinAuth");
+const { runDevinTextPrompt } = await import("./devinText");
 import type { HarnessEvent } from "../../core/types";
 
 const parse = () => sent.map((line) => JSON.parse(line));
@@ -132,6 +145,8 @@ describe("Devin live ACP sequence", () => {
     children.spawned = 0;
     children.killed = 0;
     children.askEdits.length = 0;
+    children.spawnArgs.length = 0;
+    children.helperArgs.length = 0;
   });
 
   it("makes a Supervised child ask before edits and restarts it to leave", async () => {
@@ -148,6 +163,17 @@ describe("Devin live ACP sequence", () => {
     await answer("session/prompt", { stopReason: "end_turn" });
     await supervised;
     expect(children.askEdits).toEqual([true]);
+    expect(children.spawnArgs[0]).toEqual([
+      expect.any(String),
+      "/fake/devin",
+      ["acp"],
+      "/repo",
+      undefined,
+      "devin",
+      undefined,
+      true,
+    ]);
+    expect(children.helperArgs).toEqual([]);
 
     // Same mode: the child is reused.
     sent.length = 0;
@@ -179,6 +205,13 @@ describe("Devin live ACP sequence", () => {
     await answer("session/prompt", { stopReason: "end_turn" });
     await auto;
     expect(children.askEdits).toEqual([true, false]);
+
+    // ADE-189: with no stored login, a text prompt never opens Devin's
+    // browser sign-in: it fails before it spawns anything.
+    await expect(
+      runDevinTextPrompt({ cwd: "/repo", prompt: "why?" }),
+    ).rejects.toThrow("Devin is not logged in");
+    expect(children.helperArgs).toEqual([]);
   });
 
   it("reuses the CLI login, picks model and mode, and prompts", async () => {
@@ -225,6 +258,45 @@ describe("Devin live ACP sequence", () => {
     });
     expect(events).toContainEqual({ type: "message.delta", text: "hi there" });
     expect(events.some((event) => event.type === "session.error")).toBe(false);
+
+    // ADE-189: a text prompt is a helper of the session it is for, and tells
+    // Devin the folder Rust placed it in, not the one asked for.
+    sent.length = 0;
+    const text = runDevinTextPrompt({
+      cwd: "/repo",
+      owner: "devin-thread",
+      prompt: "why?",
+    });
+    await answer("initialize", {
+      protocolVersion: 1,
+      authMethods: [{ id: "devin-browser" }],
+    });
+    await answer("authenticate", {});
+    await answer("session/new", { sessionId: "devin-text" });
+    expect(request("session/new")!.params).toEqual({
+      cwd: "/placed",
+      mcpServers: [],
+    });
+    await answer("session/set_mode", {});
+    await waitFor(() => !!request("session/prompt"), "session/prompt");
+    notify({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "because" },
+    });
+    reply(request("session/prompt")!.id, { stopReason: "end_turn" });
+    await answer("session/delete", {});
+    await expect(text).resolves.toBe("because");
+    expect(children.helperArgs).toEqual([
+      [
+        "devin-thread",
+        expect.stringMatching(/^monocode-devin-text-/),
+        "/fake/devin",
+        ["acp"],
+        "/repo",
+        undefined,
+        "devin",
+      ],
+    ]);
   });
 
   it("keeps Devin's model when a saved one is no longer offered", async () => {

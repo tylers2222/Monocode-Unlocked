@@ -7,6 +7,7 @@ import {
   killChild,
   resolveDevinBinary,
   spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -280,13 +281,19 @@ export function waitForDevinSessionTitle(
  * Spawn and authenticate a `devin acp` child. The CLI's stored key is used
  * when present; otherwise Devin's own browser sign-in runs for this process,
  * unless the caller is a background probe that must never open a browser.
+ * Returns the folder the spawn hook started the child in (ADE-189).
  */
 export async function startDevinAcp(
   childId: string,
   cwd: string,
   rpc: JsonRpcClient,
-  options: { allowBrowser?: boolean; askBeforeEdits?: boolean } = {},
-): Promise<void> {
+  options: {
+    allowBrowser?: boolean;
+    askBeforeEdits?: boolean;
+    /** A text child, of the session it works for, if any. */
+    helper?: { owner?: string };
+  } = {},
+): Promise<string | undefined> {
   const { path } = await resolveDevinBinary();
   const apiKey = await readDevinApiKey(path);
   if (!apiKey && options.allowBrowser === false) {
@@ -294,16 +301,26 @@ export async function startDevinAcp(
   }
   // Stopped while the binary and login were being resolved: spawn nothing.
   if (rpc.isClosed) throw new Error("Devin session stopped");
-  await spawnChild(
-    childId,
-    path,
-    ["acp"],
-    cwd,
-    undefined,
-    "devin",
-    undefined,
-    options.askBeforeEdits,
-  );
+  const placed = await (options.helper
+    ? spawnHelperChild(
+        options.helper.owner,
+        childId,
+        path,
+        ["acp"],
+        cwd,
+        undefined,
+        "devin",
+      )
+    : spawnChild(
+        childId,
+        path,
+        ["acp"],
+        cwd,
+        undefined,
+        "devin",
+        undefined,
+        options.askBeforeEdits,
+      ));
   let init: unknown;
   try {
     init = await rpc.request(
@@ -327,6 +344,7 @@ export async function startDevinAcp(
   } catch (error) {
     throw devinStartupError(error);
   }
+  return placed;
 }
 
 /**

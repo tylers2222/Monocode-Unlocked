@@ -197,6 +197,7 @@ async function promptOnLive(input: TextPromptInput): Promise<string> {
 }
 async function ensureLive(input: {
   cwd: string;
+  owner?: string;
   providerAccountId?: string;
   model?: string;
   modelSettings?: Record<string, string>;
@@ -244,6 +245,7 @@ async function ensureLive(input: {
         requestedThreadId,
         ephemeral,
         input.codexStore,
+        input.owner,
       );
       input.onThreadId?.(started.threadId);
       return started;
@@ -269,6 +271,7 @@ async function ensureLive(input: {
     requestedThreadId,
     ephemeral,
     input.codexStore,
+    input.owner,
   );
   input.onThreadId?.(started.threadId);
   return started;
@@ -283,6 +286,7 @@ async function startLive(
   requestedThreadId?: string,
   ephemeral = true,
   codexStore?: "mono",
+  owner?: string,
 ): Promise<LiveText> {
   await dropLive();
   const { path } = await resolveCodexBinary();
@@ -346,7 +350,7 @@ async function startLive(
 
   try {
     session.placed = await spawnHelperChild(
-      undefined,
+      owner,
       TEXT_CHILD_ID,
       path,
       ["app-server"],

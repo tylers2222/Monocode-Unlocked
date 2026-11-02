@@ -52,6 +52,7 @@ export function warmupCursorText(cwd: string): Promise<void> {
 /** Cursor ACP turn in ask mode. Reuses a warm `cursor-agent acp` process. */
 export async function runCursorTextPrompt(input: {
   cwd: string;
+  owner?: string;
   model?: string;
   modelSettings?: Record<string, string>;
   prompt: string;
@@ -69,6 +70,7 @@ export async function runCursorTextPrompt(input: {
 
 async function promptOnLive(input: {
   cwd: string;
+  owner?: string;
   model?: string;
   modelSettings?: Record<string, string>;
   prompt: string;
@@ -77,7 +79,12 @@ async function promptOnLive(input: {
   onEvent?: (event: HarnessEvent) => void;
 }): Promise<string> {
   input.signal?.throwIfAborted();
-  const session = await ensureLive(input.cwd, input.model, input.modelSettings);
+  const session = await ensureLive(
+    input.cwd,
+    input.model,
+    input.modelSettings,
+    input.owner,
+  );
   input.signal?.throwIfAborted();
   session.output = "";
   session.collecting = true;
@@ -118,6 +125,7 @@ async function ensureLive(
   cwd: string,
   requestedModel?: string,
   modelSettings?: Record<string, string>,
+  owner?: string,
 ): Promise<LiveText> {
   const model = requestedModel?.trim() || TEXT_MODEL;
   const settingsKey = modelSettingsKey(modelSettings);
@@ -138,13 +146,14 @@ async function ensureLive(
       await dropLive();
     }
   }
-  return startLive(cwd, model, modelSettings);
+  return startLive(cwd, model, modelSettings, owner);
 }
 
 async function startLive(
   cwd: string,
   model = TEXT_MODEL,
   modelSettings?: Record<string, string>,
+  owner?: string,
 ): Promise<LiveText> {
   await dropLive();
   const { path } = await resolveCursorBinary();
@@ -190,7 +199,7 @@ async function startLive(
 
   try {
     const placed = await spawnHelperChild(
-      undefined,
+      owner,
       TEXT_CHILD_ID,
       path,
       ["acp"],

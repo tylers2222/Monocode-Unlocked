@@ -93,6 +93,7 @@ export async function runTextPrompt(
   flavor: PiFlavor,
   input: {
     cwd: string;
+    owner?: string;
     model?: string;
     modelSettings?: Record<string, string>;
     prompt: string;
@@ -116,6 +117,7 @@ async function promptOnLive(
   flavor: PiFlavor,
   input: {
     cwd: string;
+    owner?: string;
     model?: string;
     modelSettings?: Record<string, string>;
     prompt: string;
@@ -129,6 +131,7 @@ async function promptOnLive(
     input.cwd,
     input.model,
     input.modelSettings,
+    input.owner,
   );
   const timeoutMs = input.timeoutMs ?? REQUEST_TIMEOUT_MS;
   try {
@@ -212,6 +215,7 @@ async function ensureLive(
   cwd: string,
   requestedModel?: string,
   modelSettings?: Record<string, string>,
+  owner?: string,
 ): Promise<LiveText> {
   const state = stateFor(flavor);
   const model = pickTextModel(flavor, requestedModel);
@@ -227,7 +231,7 @@ async function ensureLive(
     return current;
   }
   await dropLive(flavor);
-  return startLive(flavor, cwd, model, modelSettings);
+  return startLive(flavor, cwd, model, modelSettings, owner);
 }
 
 async function startLive(
@@ -235,6 +239,7 @@ async function startLive(
   cwd: string,
   model?: string,
   modelSettings?: Record<string, string>,
+  owner?: string,
 ): Promise<LiveText> {
   const state = stateFor(flavor);
   const childId = flavor.textChildId;
@@ -279,7 +284,7 @@ async function startLive(
 
   try {
     await spawnHelperChild(
-      undefined,
+      owner,
       childId,
       path,
       buildPiSpawnArgs(flavor, {
@@ -351,6 +356,7 @@ export const stopPiTextPrompt = () => stopTextPrompt(PI_FLAVOR);
 export const warmupPiText = (cwd: string) => warmupText(PI_FLAVOR, cwd);
 export const runPiTextPrompt = (input: {
   cwd: string;
+  owner?: string;
   model?: string;
   modelSettings?: Record<string, string>;
   prompt: string;
@@ -363,6 +369,7 @@ export const stopOmpTextPrompt = () => stopTextPrompt(OMP_FLAVOR);
 export const warmupOmpText = (cwd: string) => warmupText(OMP_FLAVOR, cwd);
 export const runOmpTextPrompt = (input: {
   cwd: string;
+  owner?: string;
   model?: string;
   modelSettings?: Record<string, string>;
   prompt: string;

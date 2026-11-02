@@ -31,7 +31,8 @@ const harnessHttp = vi.fn(
 
 vi.mock("../../core/child", () => ({
   closeHarnessSse: async () => undefined,
-  execChild: async () => "opencode 1.14.19",
+  // Rust places a helper and names the folder (ADE-189); it is never "/repo".
+  execHelper: async () => ({ stdout: "opencode 1.14.19", cwd: "/neutral" }),
   freeHarnessPort: async () => 4096,
   harnessHttp,
   killChild: async () => undefined,
@@ -39,6 +40,7 @@ vi.mock("../../core/child", () => ({
   resolveOpenCodeBinary: async () => ({ path: "/fake/opencode" }),
   spawnHelperChild: async () => {
     onStdout?.("opencode server listening on http://127.0.0.1:4096");
+    return "/placed";
   },
   unwatchChild: () => undefined,
   watchChild: (_id: string, stdout: (line: string) => void) => {
@@ -135,7 +137,7 @@ it("forwards only incremental OpenCode assistant text", async () => {
   expect(harnessHttp).toHaveBeenCalledWith(
     expect.objectContaining({
       method: "DELETE",
-      url: "http://127.0.0.1:4096/session/text_session?directory=%2Frepo",
+      url: "http://127.0.0.1:4096/session/text_session?directory=%2Fplaced",
     }),
   );
   expect(events).toEqual([
@@ -245,7 +247,7 @@ it("deletes the generated-text session when the provider returns an error", asyn
   expect(harnessHttp).toHaveBeenCalledWith(
     expect.objectContaining({
       method: "DELETE",
-      url: "http://127.0.0.1:4096/session/text_session?directory=%2Frepo",
+      url: "http://127.0.0.1:4096/session/text_session?directory=%2Fplaced",
     }),
   );
 });
@@ -264,7 +266,7 @@ it("deletes the generated-text session when generation is cancelled", async () =
   expect(harnessHttp).toHaveBeenCalledWith(
     expect.objectContaining({
       method: "DELETE",
-      url: "http://127.0.0.1:4096/session/text_session?directory=%2Frepo",
+      url: "http://127.0.0.1:4096/session/text_session?directory=%2Fplaced",
     }),
   );
 });

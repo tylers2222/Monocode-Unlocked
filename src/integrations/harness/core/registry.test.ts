@@ -470,9 +470,11 @@ describe("harness registry", () => {
       prompt: "first",
       signal: first.signal,
     });
+    // ADE-189: a prompt for a session leaves a child another prompt uses.
     const secondRequest = runHarnessTextPrompt({
       harness: "claude",
       cwd: "/tmp",
+      owner: "chat-2",
       prompt: "second",
       signal: second.signal,
     });
@@ -482,6 +484,23 @@ describe("harness registry", () => {
     second.abort();
     await expect(secondRequest).rejects.toThrow("By-the-way request cancelled");
     expect(stopTextPrompt).not.toHaveBeenCalled();
+    // With nothing running, it drops the warm child started for no owner,
+    // before its own prompt starts.
+    const third = new AbortController();
+    const thirdRequest = runHarnessTextPrompt({
+      harness: "claude",
+      cwd: "/tmp",
+      owner: "chat-3",
+      prompt: "third",
+      signal: third.signal,
+    });
+    await vi.waitFor(() => expect(runTextPrompt).toHaveBeenCalledTimes(3));
+    expect(stopTextPrompt).toHaveBeenCalledOnce();
+    expect(stopTextPrompt.mock.invocationCallOrder[0]).toBeLessThan(
+      runTextPrompt.mock.invocationCallOrder[2]!,
+    );
+    third.abort();
+    await expect(thirdRequest).rejects.toThrow("By-the-way request cancelled");
   });
 
   it("exposes the edit-last-turn support matrix", () => {

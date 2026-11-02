@@ -119,11 +119,16 @@ describe("provider-aware skill catalog", () => {
     ).resolves.toBe("/workflow foo /create-skill");
   });
 
-  it("isolates OMP sessions while retaining Pi's shared project cache", () => {
+  // ADE-189: a session's Space picks the folder its probe runs in, so two
+  // sessions of one project never share a list; one of no session keys by
+  // its harness and folder alone.
+  it("isolates Pi and OMP sessions", () => {
     for (const harness of ["pi", "omp"] as const) {
       const a = skillCatalogKey({ harness, cwd: "/repo", sessionId: "a" });
       const b = skillCatalogKey({ harness, cwd: "/repo", sessionId: "b" });
-      expect(a === b).toBe(harness === "pi");
+      expect(a).toBe(`${harness}\0/repo\0a`);
+      expect(b).not.toBe(a);
+      expect(skillCatalogKey({ harness, cwd: "/repo" })).toBe(`${harness}\0/repo`);
     }
   });
 

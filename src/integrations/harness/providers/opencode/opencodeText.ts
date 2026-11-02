@@ -1,7 +1,7 @@
 import { modelsFor } from "../../../../features/sessions/model/models";
 import type { TurnIntent } from "../../../../features/sessions/model/session";
 import {
-  execChild,
+  execHelper,
   freeHarnessPort,
   killChild,
   resolveOpenCodeBinary,
@@ -71,6 +71,7 @@ export function warmupOpenCodeText(cwd: string): Promise<void> {
 
 export async function runOpenCodeTextPrompt(input: {
   cwd: string;
+  owner?: string;
   model?: string;
   modelSettings?: Record<string, string>;
   intent?: TurnIntent;
@@ -89,6 +90,7 @@ export async function runOpenCodeTextPrompt(input: {
 
 async function promptOnLive(input: {
   cwd: string;
+  owner?: string;
   model?: string;
   modelSettings?: Record<string, string>;
   intent?: TurnIntent;
@@ -98,7 +100,12 @@ async function promptOnLive(input: {
   onEvent?: (event: HarnessEvent) => void;
 }): Promise<string> {
   input.signal?.throwIfAborted();
-  const session = await ensureLive(input.cwd, input.model, input.modelSettings);
+  const session = await ensureLive(
+    input.cwd,
+    input.model,
+    input.modelSettings,
+    input.owner,
+  );
   input.signal?.throwIfAborted();
   session.onEvent = input.onEvent;
   const abort = abortTextPromptRace(input.signal, () =>
@@ -138,6 +145,7 @@ async function ensureLive(
   cwd: string,
   requestedModel?: string,
   modelSettings?: Record<string, string>,
+  owner?: string,
 ): Promise<LiveText> {
   const model = pickTextModel(requestedModel);
   const settingsKey = modelSettingsKey(modelSettings);
@@ -149,22 +157,28 @@ async function ensureLive(
   )
     return live;
   if (live) await dropLive();
-  return startLive(cwd, model, modelSettings);
+  return startLive(cwd, model, modelSettings, owner);
 }
 
 async function startLive(
   cwd: string,
   model: { providerID: string; modelID: string },
   modelSettings?: Record<string, string>,
+  owner?: string,
 ): Promise<LiveText> {
   const { path } = await resolveOpenCodeBinary();
-  const versionOut = await execChild(
+  // v2 spawns no child: its shared service works in the folder this exec ran
+  // in. v1's `serve` child names its own (ADE-189).
+  const probe = await execHelper(
     path,
     ["--version"],
     cwd,
     "opencode",
-  ).catch(() => "");
-  const version = parseOpenCodeVersion(versionOut);
+    undefined,
+    owner,
+  );
+  let placed = probe.cwd;
+  const version = parseOpenCodeVersion(probe.stdout);
   const generation = assertSupportedOpenCodeVersion(version);
 
   const service =
@@ -189,8 +203,8 @@ async function startLive(
     );
 
     const port = await freeHarnessPort();
-    await spawnHelperChild(
-      undefined,
+    placed = await spawnHelperChild(
+      owner,
       TEXT_CHILD_ID,
       path,
       ["serve", `--hostname=127.0.0.1`, `--port=${port}`],
@@ -207,7 +221,7 @@ async function startLive(
         : await waitForUrl(() => serverUrl, SERVER_TIMEOUT_MS);
     const client = new OpenCodeClient(
       url,
-      cwd,
+      placed,
       generation,
       service?.password,
     );

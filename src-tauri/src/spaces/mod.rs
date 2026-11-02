@@ -571,11 +571,9 @@ pub(crate) enum Child<'a> {
 ///   `monocode-grok-text` as its key, so it runs where its text child ran: no
 ///   one has shown that Grok finds a session by id alone.
 /// - Still spawned as `spawnChild` (a session's own child, which keeps its
-///   folder by ADE-173's rule) until part 3/4 covers them with tests: Devin
-///   text (`devinText.ts`, the caller's project folder), and the Devin, Codex
-///   and Hermes catalog probes (`devinCatalog.ts`, `codexCatalog.ts`,
-///   `hermesCatalog.ts`, the home dir).
-const KEEPS_CALLER_FOLDER: [&str; 9] = [
+///   folder by ADE-173's rule): the Devin, Codex and Hermes catalog probes
+///   (`devinCatalog.ts`, `codexCatalog.ts`, `hermesCatalog.ts`, the home dir).
+const KEEPS_CALLER_FOLDER: [&str; 10] = [
     // Titles, commit, PR and branch text, /btw side questions, and the Grok
     // text cleanup exec.
     "monocode-claude-text",
@@ -585,6 +583,7 @@ const KEEPS_CALLER_FOLDER: [&str; 9] = [
     "monocode-opencode-text",
     "monocode-pi-text",
     "monocode-omp-text",
+    "monocode-devin-text-",
     // The `/` picker's skills of a tab not saved yet.
     "monocode-pi-skills-",
     "monocode-omp-skills-",
