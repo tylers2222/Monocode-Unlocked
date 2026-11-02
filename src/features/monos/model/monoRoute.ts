@@ -854,22 +854,17 @@ async function getMonos(host: MonoMessagingHost, scope: SpaceScope) {
   const listed = new Map(
     scope.monos.map((entry) => [entry.monoId, entry.otherSpace]),
   );
+  const monos = host.monos().filter((mono) => listed.has(mono.id));
   return {
-    monos: host.monos().flatMap((mono) => {
-      const otherSpace = listed.get(mono.id);
-      if (otherSpace === undefined) return [];
-      return [
-        {
-          mono_id: mono.id,
-          mono_name: mono.name,
-          role: mono.role,
-          ...(otherSpace === null ? {} : { other_space: otherSpace }),
-          you:
-            resolved.caller.kind !== "session" &&
-            mono.id === resolved.caller.monoId,
-        },
-      ];
-    }),
+    monos: monos.map((mono) => ({
+      mono_id: mono.id,
+      mono_name: mono.name,
+      role: mono.role,
+      ...(listed.get(mono.id) === null ? {} : { other_space: listed.get(mono.id) }),
+      you:
+        resolved.caller.kind !== "session" &&
+        mono.id === resolved.caller.monoId,
+    })),
   };
 }
 
