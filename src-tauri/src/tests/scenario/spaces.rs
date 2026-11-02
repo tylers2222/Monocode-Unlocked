@@ -723,6 +723,49 @@ fn route_grants_last_the_picked_length_and_stop_the_turn_after() {
     }
 }
 
+/// Defect: `spaces_grant_save`, the command the usage-limit card calls,
+/// returns without storing, stores another session, login or length than
+/// the request's, or stores a request its writer refuses.
+#[cfg(not(windows))]
+#[test]
+fn the_grant_command_stores_what_the_card_sends() {
+    use tauri::Manager;
+
+    let app = tauri::test::mock_builder()
+        .manage(crate::session_store::SessionStore::open_in_memory().unwrap())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let store = || app.state::<crate::session_store::SessionStore>();
+    account::save_account(&store(), &work_login(), 0).unwrap();
+    let saved = grants::spaces_grant_save(store(), request(GrantLength::OneHour, None)).unwrap();
+    assert_eq!(
+        (
+            saved.session_id.as_str(),
+            saved.from_account_id.as_str(),
+            saved.to_account_id.as_str(),
+            saved.expires_at - saved.granted_at
+        ),
+        ("s2", "default", "work", HOUR_MS),
+        "the command returned another session, login or length than the request's"
+    );
+    let held = || grants::spaces_grant_get(store(), "s2".into()).unwrap();
+    assert_eq!(
+        held(),
+        Some(saved.clone()),
+        "the command did not store the grant it returned"
+    );
+    assert_eq!(
+        grants::spaces_grant_save(store(), request(GrantLength::UntilReset, None)),
+        Err("The provider reported no reset time for the first login; pick a length".into()),
+        "the command took \"until the first login resets\" with no reset"
+    );
+    assert_eq!(
+        held(),
+        Some(saved),
+        "a refused request replaced the stored grant"
+    );
+}
+
 #[cfg(unix)]
 mod spawn {
     use std::path::{Path, PathBuf};
