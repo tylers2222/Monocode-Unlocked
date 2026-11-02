@@ -215,11 +215,6 @@ fn import(world: &World, logins: &[Value]) {
     }
 }
 
-/// The import runs while no Space has a login of its own.
-fn imports(world: &World) -> bool {
-    account::logins(world.store()).unwrap().is_empty()
-}
-
 /// What `spaces_accounts_list` answers, as the snapshot reads it.
 fn logins(world: &World) -> Value {
     serde_json::to_value(account::accounts(world.store()).unwrap()).unwrap()
@@ -237,16 +232,16 @@ fn defaults(label: [&str; 3]) -> [Value; 3] {
     ]
 }
 
-/// Defect: a fresh database skips the import, an import adds a second
-/// `default`, loses a login or its label or order, leaves Space 1 without
-/// each CLI's `default`, a restart imports again, or a removed login or the
-/// `default` one comes back wrong.
+/// Defect: an import adds a second `default`, loses a login or its label,
+/// leaves Space 1 without each CLI's `default`, keeps more than 48 code
+/// points of a label or splits an emoji, a restart changes the list, or a
+/// removed login or the `default` one comes back wrong. It also records that
+/// two logins saved in the same millisecond list by id, not in the order they
+/// were saved, which is why `loadProviderAccounts` keeps the import's order.
 #[test]
-fn the_login_list_imports_once_and_round_trips() {
+fn the_login_list_imports_and_round_trips() {
     let empty = World::new("logins-empty");
-    assert!(imports(&empty), "a fresh database skipped the import");
     import(&empty, &defaults(["Default account"; 3]));
-    assert!(!imports(&empty), "the import left Space 1 without logins");
     assert_eq!(
         logins(&empty),
         json!(defaults(["Default account"; 3])),
@@ -262,28 +257,31 @@ fn the_login_list_imports_once_and_round_trips() {
 
     let mut world = World::new("logins");
     let [claude, codex, devin] = defaults(["Primary", "Default account", "Default account"]);
-    let work = login("claude", "account-work", "Work");
+    let emoji = format!("{}\u{1F600}", "a".repeat(47));
+    let zulu = login("claude", "account-zulu", &format!("{emoji}bcd"));
+    let alpha = login("claude", "account-alpha", "Alpha");
     let x = login("codex", "account-x", "X");
     import(
         &world,
         &[
             claude.clone(),
-            work.clone(),
+            zulu,
+            alpha.clone(),
             codex.clone(),
             x.clone(),
             devin.clone(),
         ],
     );
-    let imported = json!([claude, work, codex, x, devin]);
+    let zulu = login("claude", "account-zulu", &emoji);
+    let listed = json!([claude, alpha, zulu, codex, x, devin]);
     assert_eq!(
         logins(&world),
-        imported,
-        "a login was lost, doubled or reordered"
+        listed,
+        "a login was lost or doubled, a label was cut wrong, or same-ms saves no longer list by id"
     );
 
     world.down(60_000);
-    assert!(!imports(&world), "a second boot imports again");
-    assert_eq!(logins(&world), imported, "a restart changed the logins");
+    assert_eq!(logins(&world), listed, "a restart changed the logins");
     account::remove_account(world.store(), Provider::Codex, "account-x").unwrap();
     assert!(
         account::remove_account(world.store(), Provider::Codex, "default").is_err(),
@@ -291,7 +289,7 @@ fn the_login_list_imports_once_and_round_trips() {
     );
     assert_eq!(
         logins(&world),
-        json!([claude, work, codex, devin]),
+        json!([claude, alpha, zulu, codex, devin]),
         "a removed login stayed, or another went with it"
     );
 }

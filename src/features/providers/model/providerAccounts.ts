@@ -4,6 +4,8 @@ import type { HarnessId } from "../../sessions/model/session";
 
 const ACCOUNTS_KEY = "monocode.providerAccounts.v1";
 const SELECTIONS_KEY = "monocode.providerAccountSelections.v1";
+/** Once the logins are imported: their ids, in the order browser storage held them. */
+const ACCOUNTS_IMPORT_KEY = "monocode.providerAccounts.v1.import";
 const CHANGE_EVENT = "monocode-provider-accounts-changed";
 
 export const DEFAULT_PROVIDER_ACCOUNT_ID = "default";
@@ -78,44 +80,66 @@ const BROWSER_SPACE = "space-1";
  */
 let saved: Map<string, string> | undefined;
 let writes: Promise<unknown> = Promise.resolve();
+/** Writes the database refused since this window loaded. */
+let refusals = 0;
+/** Other windows of this app, once loaded; each reloads its snapshot when one writes. */
+let windows: BroadcastChannel | undefined;
 
 /**
- * Loads the logins from `monocode.db` before the first render. Until a Space
- * has a login of its own, it imports the logins browser storage holds, and
- * gives Space 1 each CLI's `default`. The old key stays for the Space 2 merge
- * (ADE-178). A failure keeps browser storage.
+ * Loads the logins from `monocode.db` before the first render, and once
+ * imports the logins browser storage holds, giving Space 1 each CLI's
+ * `default`. The old key stays for the Space 2 merge (ADE-178). A failure
+ * keeps browser storage.
  */
 export async function loadProviderAccounts(): Promise<void> {
   const accounts = PROVIDER_ACCOUNT_PROVIDERS.flatMap(providerAccounts);
   try {
-    const logins = await invoke<unknown[]>("spaces_logins_list");
     await loadSaved();
-    if (logins.length) return;
-    // `default` cannot be saved, only renamed, so every login is both.
-    for (const account of accounts) {
-      saveProviderAccount(account);
-      renameProviderAccount(account.provider, account.id, account.label);
-    }
-    for (const provider of PROVIDER_ACCOUNT_PROVIDERS) {
-      persist("spaces_login_set", {
-        login: {
-          spaceId: BROWSER_SPACE,
-          provider,
-          accountId: DEFAULT_PROVIDER_ACCOUNT_ID,
-        },
-      });
-    }
-    await writes;
+    windows = new BroadcastChannel("monocode-provider-accounts");
+    windows.onmessage = () => loadSaved().catch(console.error);
+    await importOnce(ACCOUNTS_IMPORT_KEY, () => {
+      // `default` cannot be saved, only renamed, so every login is both.
+      for (const account of accounts) {
+        saveProviderAccount(account);
+        renameProviderAccount(account.provider, account.id, account.label);
+      }
+      for (const provider of PROVIDER_ACCOUNT_PROVIDERS) {
+        persist("spaces_login_set", {
+          login: {
+            spaceId: BROWSER_SPACE,
+            provider,
+            accountId: DEFAULT_PROVIDER_ACCOUNT_ID,
+          },
+        });
+      }
+      return accounts.map((account) => account.id);
+    });
   } catch (error) {
     console.error(error);
   }
 }
 
+/**
+ * Runs an import of browser storage once. It is marked done, with what `run`
+ * returns, only if the database took every write it sent; otherwise it runs
+ * again on the next boot.
+ */
+async function importOnce(marker: string, run: () => unknown): Promise<void> {
+  if (readJson(marker, null) !== null) return;
+  const before = refusals;
+  const done = run();
+  await writes;
+  if (refusals <= before) writeJson(marker, done);
+}
+
 async function loadSaved(): Promise<void> {
+  const order = readJson<string[]>(ACCOUNTS_IMPORT_KEY, Array.of());
+  // As unsigned, an id the import did not see (-1) ranks after every one it did.
+  const rank = (account: ProviderAccount) => order.indexOf(account.id) >>> 0;
   const stored: StoredAccounts = {};
-  for (const account of await invoke<ProviderAccount[]>(
-    "spaces_accounts_list",
-  )) {
+  for (const account of (
+    await invoke<ProviderAccount[]>("spaces_accounts_list")
+  ).sort((a, b) => rank(a) - rank(b))) {
     (stored[account.provider] ??= Array.of<ProviderAccount>()).push(account);
   }
   saved = new Map<string, string>().set(ACCOUNTS_KEY, JSON.stringify(stored));
@@ -123,13 +147,20 @@ async function loadSaved(): Promise<void> {
 }
 
 /**
- * Sends one write to `monocode.db` once it has loaded. A refused one is
- * logged, and the change lasts until the app quits.
+ * Sends one write to `monocode.db` once it has loaded, and tells the other
+ * windows. A refused write is logged and counted.
  */
 function persist(command: string, args: InvokeArgs): void {
   writes = writes
-    .then(() => saved && invoke<void>(command, args))
-    .catch(console.error);
+    .then(async () => {
+      if (!saved) return;
+      await invoke<void>(command, args);
+      windows!.postMessage(command);
+    })
+    .catch((error: unknown) => {
+      console.error(error);
+      refusals += 1;
+    });
 }
 
 export function providerAccounts(
@@ -332,7 +363,7 @@ function selectionKey(project: string | undefined): string {
 
 function cleanLabel(value: unknown): string {
   return typeof value === "string"
-    ? value.replace(/\s+/g, " ").trim().slice(0, 48)
+    ? Array.from(value.replace(/\s+/g, " ").trim()).slice(0, 48).join("")
     : "";
 }
 

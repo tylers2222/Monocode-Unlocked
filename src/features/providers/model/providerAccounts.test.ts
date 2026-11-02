@@ -15,14 +15,19 @@ import {
 } from "./providerAccounts";
 
 type Login = { provider: string; id: string; label: string };
+type Row = Login & { createdAt: number };
 type SpaceLogin = { spaceId: string; provider: string; accountId: string };
 
 /** `monocode.db` behind the Spaces storage commands, as Rust answers them. */
 const db = vi.hoisted(() => ({
-  accounts: [] as Login[],
+  accounts: [] as Row[],
   spaceLogins: [] as SpaceLogin[],
   calls: [] as [string, unknown][],
   refuse: new Set<string>(),
+  /** `spaces_account_save` of these login ids is refused. */
+  refuseSave: new Set<string>(),
+  /** The fake clock `created_at` comes from: every save in a test is one ms. */
+  now: 1,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -34,13 +39,34 @@ vi.mock("@tauri-apps/api/core", () => ({
     switch (command) {
       case "spaces_logins_list":
         return db.spaceLogins;
+      // account.rs: ORDER BY provider, created_at, id
       case "spaces_accounts_list":
-        return db.accounts;
+        return [...db.accounts]
+          .sort(
+            (a, b) =>
+              a.provider.localeCompare(b.provider) ||
+              a.createdAt - b.createdAt ||
+              (a.id < b.id ? -1 : 1),
+          )
+          .map(({ provider, id, label }) => ({ provider, id, label }));
       case "spaces_account_save": {
         const { provider, id, label } = args.account as Login;
+        if (db.refuseSave.has(id)) throw `spaces_account_save refused ${id}`;
+        // serde refuses a lone surrogate; clean_label cuts 48 code points.
+        if (
+          /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(
+            label,
+          )
+        ) {
+          throw "lone leading surrogate in hex escape";
+        }
+        const cut = Array.from(label.split(/\s+/).filter(Boolean).join(" "))
+          .slice(0, 48)
+          .join("");
+        if (!cut) throw "A provider account needs a label";
         const row = db.accounts.find((entry) => same(entry, provider, id));
-        if (row) row.label = label;
-        else db.accounts.push({ provider, id, label });
+        if (row) row.label = cut;
+        else db.accounts.push({ provider, id, label: cut, createdAt: db.now });
         return null;
       }
       case "spaces_account_remove": {
@@ -50,6 +76,8 @@ vi.mock("@tauri-apps/api/core", () => ({
         db.accounts = db.accounts.filter((row) => !same(row, provider, id));
         return null;
       }
+      case "provider_account_remove":
+        return null;
       case "spaces_login_set": {
         const login = args.login as SpaceLogin;
         db.spaceLogins = [
@@ -66,8 +94,34 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-/** A fresh copy of the module, as a new boot of the app loads it. */
-async function boot() {
+/**
+ * The windows' BroadcastChannel: a message reaches every other open channel of
+ * the same name. A boot closes the earlier ones, as a restart does, unless it
+ * opens another window beside them.
+ */
+const windows = vi.hoisted(() => {
+  type Listener = ((event: { data: unknown }) => void) | null;
+  const open: { name: string; onmessage: Listener }[] = [];
+  class Channel {
+    onmessage: Listener = null;
+    constructor(readonly name: string) {
+      open.push(this);
+    }
+    postMessage(data: unknown) {
+      for (const other of open) {
+        if (other !== this && other.name === this.name) {
+          setTimeout(() => other.onmessage?.({ data }));
+        }
+      }
+    }
+  }
+  Object.assign(globalThis, { BroadcastChannel: Channel });
+  return { open };
+});
+
+/** A fresh copy of the module, as a new boot of the app (or a new window) loads it. */
+async function boot(anotherWindow = false) {
+  if (!anotherWindow) windows.open.length = 0;
   vi.resetModules();
   const accounts = await import("./providerAccounts");
   await accounts.loadProviderAccounts();
@@ -79,7 +133,11 @@ function freshDatabase() {
     provider,
     id: "default",
     label: "Default account",
+    createdAt: 0,
   }));
+  db.now = 1;
+  db.refuseSave.clear();
+  windows.open.length = 0;
   db.spaceLogins = [];
   db.calls = [];
   db.refuse.clear();
@@ -311,6 +369,7 @@ describe("provider accounts in monocode.db", () => {
     claude: [
       { id: "default", provider: "claude", label: "Primary" },
       { id: "account-work", provider: "claude", label: "Work" },
+      { id: "account-alpha", provider: "claude", label: "Alpha" },
       { id: "bad id!", provider: "claude", label: "Bad" },
     ],
     codex: [{ id: "account-x", provider: "codex", label: "X" }],
@@ -323,27 +382,24 @@ describe("provider accounts in monocode.db", () => {
     accounts
       .providerAccounts(provider)
       .map(({ id, label }) => `${id} ${label}`);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-  it("imports browser storage once, then reads and writes the database", async () => {
+  it("imports browser storage once, in its order, then reads and writes the database", async () => {
     localStorage.setItem("monocode.providerAccounts.v1", BROWSER_LOGINS);
     let accounts = await boot();
 
-    expect(labels(accounts, "claude")).toEqual([
+    const claude = [
       "default Primary",
       "account-work Work",
-    ]);
+      "account-alpha Alpha",
+    ];
+    expect(labels(accounts, "claude")).toEqual(claude);
     expect(labels(accounts, "codex")).toEqual([
       "default Default account",
       "account-x X",
     ]);
     expect(labels(accounts, "devin")).toEqual(["default Default account"]);
-    expect(db.accounts).toEqual([
-      { provider: "claude", id: "default", label: "Primary" },
-      { provider: "codex", id: "default", label: "Default account" },
-      { provider: "devin", id: "default", label: "Default account" },
-      { provider: "claude", id: "account-work", label: "Work" },
-      { provider: "codex", id: "account-x", label: "X" },
-    ]);
+    expect(db.accounts.filter(({ id }) => id === "default")).toHaveLength(3);
     expect(db.spaceLogins).toEqual(
       ["claude", "codex", "devin"].map((provider) => ({
         spaceId: "space-1",
@@ -364,12 +420,13 @@ describe("provider accounts in monocode.db", () => {
     expect(
       accounts.renameProviderAccount("claude", "account-work", "Office")?.label,
     ).toBe("Office");
-    expect(accounts.removeProviderAccount("codex", "account-x")).toBe(true);
     expect(labels(accounts, "codex")).toEqual([
       "default Default account",
+      "account-x X",
       "account-new New",
     ]);
-    await vi.waitFor(() => expect(db.calls).toHaveLength(3));
+    await vi.waitFor(() => expect(db.calls).toHaveLength(2));
+    await settle();
     expect(db.calls).toEqual([
       [
         "spaces_account_save",
@@ -381,24 +438,26 @@ describe("provider accounts in monocode.db", () => {
           account: { id: "account-work", provider: "claude", label: "Office" },
         },
       ],
-      ["spaces_account_remove", { provider: "codex", id: "account-x" }],
     ]);
     expect(localStorage.getItem("monocode.providerAccounts.v1")).toBe(
       BROWSER_LOGINS,
     );
 
+    // Same-ms saves list by id in the database (alpha before work); the
+    // snapshot keeps the order browser storage had.
     db.calls = [];
     accounts = await boot();
     expect(db.calls.map(([command]) => command)).toEqual([
-      "spaces_logins_list",
       "spaces_accounts_list",
     ]);
     expect(labels(accounts, "claude")).toEqual([
       "default Primary",
       "account-work Office",
+      "account-alpha Alpha",
     ]);
     expect(labels(accounts, "codex")).toEqual([
       "default Default account",
+      "account-x X",
       "account-new New",
     ]);
   });
@@ -420,16 +479,66 @@ describe("provider accounts in monocode.db", () => {
     expect(accounts.providerAccountExists("claude", "default")).toBe(true);
   });
 
+  it("imports an emoji label at the limit whole, and retries a refused import save", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const emoji = `${"a".repeat(47)}\u{1F600}`;
+    localStorage.setItem(
+      "monocode.providerAccounts.v1",
+      JSON.stringify({
+        claude: [
+          { id: "account-emoji", provider: "claude", label: emoji },
+          { id: "account-long", provider: "claude", label: "b".repeat(50) },
+          { id: "account-late", provider: "claude", label: "Late" },
+        ],
+      }),
+    );
+    db.refuseSave.add("account-late");
+    let accounts = await boot();
+
+    expect(
+      accounts
+        .providerAccounts("claude")
+        .find(({ id }) => id === "account-long")?.label,
+    ).toBe("b".repeat(48));
+    expect(db.accounts.find(({ id }) => id === "account-emoji")?.label).toBe(
+      emoji,
+    );
+    expect(db.accounts.some(({ id }) => id === "account-late")).toBe(false);
+    expect(console.error).toHaveBeenCalledWith(
+      "spaces_account_save refused account-late",
+    );
+    expect(
+      localStorage.getItem("monocode.providerAccounts.v1.import"),
+    ).toBeNull();
+
+    db.refuseSave.clear();
+    accounts = await boot();
+    expect(labels(accounts, "claude")).toEqual([
+      "default Default account",
+      `account-emoji ${emoji}`,
+      `account-long ${"b".repeat(48)}`,
+      "account-late Late",
+    ]);
+    expect(
+      localStorage.getItem("monocode.providerAccounts.v1.import"),
+    ).not.toBeNull();
+    db.calls = [];
+    await boot();
+    expect(db.calls.map(([command]) => command)).toEqual([
+      "spaces_accounts_list",
+    ]);
+  });
+
   it("keeps browser storage when the database cannot load", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     localStorage.setItem("monocode.providerAccounts.v1", BROWSER_LOGINS);
-    db.refuse.add("spaces_logins_list");
+    db.refuse.add("spaces_accounts_list");
     const accounts = await boot();
 
-    expect(console.error).toHaveBeenCalledWith("spaces_logins_list refused");
-    expect(labels(accounts, "claude")).toEqual([
-      "default Primary",
-      "account-work Work",
+    expect(console.error).toHaveBeenCalledWith("spaces_accounts_list refused");
+    expect(labels(accounts, "codex")).toEqual([
+      "default Default account",
+      "account-x X",
     ]);
     db.calls = [];
     accounts.saveProviderAccount({
@@ -445,26 +554,40 @@ describe("provider accounts in monocode.db", () => {
     expect(localStorage.getItem("monocode.providerAccounts.v1")).toContain(
       "account-new",
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await settle();
     expect(db.calls).toEqual([]);
   });
 
-  it("logs a write the database refuses", async () => {
-    const accounts = await boot();
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    db.refuse.add("spaces_account_save");
+  it("tells the other windows, which reload and do not bring a removed login back", async () => {
+    localStorage.setItem("monocode.providerAccounts.v1", BROWSER_LOGINS);
+    const windowA = await boot();
+    const credentials = await import("./providerAccountCredentials");
+    const windowB = await boot(true);
 
-    accounts.saveProviderAccount({
+    expect(windows.open.map(({ name }) => name)).toEqual([
+      "monocode-provider-accounts",
+      "monocode-provider-accounts",
+    ]);
+    windowA.saveProviderAccount({
       id: "account-new",
       provider: "codex",
       label: "New",
     });
     await vi.waitFor(() =>
-      expect(console.error).toHaveBeenCalledWith("spaces_account_save refused"),
+      expect(windowB.providerAccountExists("codex", "account-new")).toBe(true),
     );
-    expect(labels(accounts, "codex")).toEqual([
-      "default Default account",
-      "account-new New",
-    ]);
+
+    await credentials.removeProviderAccountCredentials("codex", "account-x");
+    expect(windowA.removeProviderAccount("codex", "account-x")).toBe(true);
+    await vi.waitFor(() =>
+      expect(windowB.providerAccountExists("codex", "account-x")).toBe(false),
+    );
+    db.calls = [];
+    expect(
+      windowB.renameProviderAccount("codex", "account-x", "Back"),
+    ).toBeNull();
+    await settle();
+    expect(sent("spaces_account_save")).toEqual([]);
+    expect(db.accounts.some(({ id }) => id === "account-x")).toBe(false);
   });
 });
