@@ -1582,7 +1582,6 @@ fn reply_again(code: RejectCode, to: Option<&[Handle]>, then: &[Handled]) -> Rej
             Some(closure) => handle_closed(handle, closure),
             None => listing(code, None, &[]),
         },
-        (RejectCode::CrossSpaceForbidden, _) => listing(code, None, &[]),
         (RejectCode::TargetGone, _) => {
             let named: Vec<&Handled> = match to {
                 Some(to) => open
