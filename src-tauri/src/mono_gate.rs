@@ -537,6 +537,33 @@ pub struct SendFacts {
     pub pair: PairCount,
     /// U1 (R17): the caller is the child of an open ask from the recipient.
     pub asked_by_recipient: bool,
+    pub spaces: Spaces,
+}
+
+/// ADE-174: the Space of each party, from `monos.space_id` or
+/// `sessions.space_id`; `None` for a party with no saved row.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Spaces {
+    pub caller: Option<String>,
+    pub recipient: Option<String>,
+}
+
+/// ADE-174: across Spaces only a regular Mono messages a regular Mono, and
+/// only with new work. A Giga, a session, an ask (whose parent is a Giga or
+/// whose child is a session) and a steer stay inside their Space.
+fn space_rule(
+    from: &Level,
+    from_space: &str,
+    to: &Level,
+    to_space: &str,
+    steer: bool,
+) -> Result<(), RejectCode> {
+    let peers = matches!((from, to), (Level::Mono, Level::Mono));
+    if from_space == to_space || (peers && !steer) {
+        Ok(())
+    } else {
+        Err(RejectCode::CrossSpaceForbidden)
+    }
 }
 
 /// Design 6.1 "pair count": accepted `send_message` rows with the caller's
@@ -825,6 +852,7 @@ impl RejectCode {
             RejectCode::SessionCannotWait => "A lead or worker session cannot wait for an answer. Send with wanting_reply false. The recipient answers with a new message if it needs to.",
             RejectCode::LeadScope => "A lead acts only on its own workers. Start workers with sessions.start and steer or stop only sessions you started. To reach your Mono, use messages.question on the ask it gave you, with blocked true when you cannot go on.",
             RejectCode::NotAGiga => "Only a Giga can file, update or withdraw approval cards. To raise a decision, use messages.question on the open ask from your parent, with blocked true when you cannot go on.",
+            RejectCode::CrossSpaceForbidden => "That recipient is in another Space. Across Spaces only a regular Mono may message a regular Mono, and only with intent \"new\".",
         }
     }
 
@@ -1055,6 +1083,17 @@ pub fn decide_send(
             return reject(RejectCode::IntentNotAllowed, to)
         }
     };
+    // ADE-174 before L1 and S7: a party in another Space hears only that.
+    if let (Some(from_space), Some(to_space), Some(to_level)) = (
+        about.spaces.caller.as_deref(),
+        about.spaces.recipient.as_deref(),
+        recipient.level(),
+    ) {
+        let steer = !matches!(asked, Asked::New);
+        if let Err(code) = space_rule(&row.level(), from_space, &to_level, to_space, steer) {
+            return reject(code, to);
+        }
+    }
     // L1, L2 before S5: a worker gets "message your lead" for every other
     // target, a made-up one too, and `target_gone` for an ended lead.
     if let CallerFacts::Session {
@@ -1833,6 +1872,7 @@ mod tests {
             reply_to: None,
             pair: PairCount::default(),
             asked_by_recipient: true,
+            spaces: Spaces::default(),
         })
     }
 
@@ -1847,6 +1887,7 @@ mod tests {
             reply_to: Some(Referenced { message, session }),
             pair: PairCount::default(),
             asked_by_recipient: true,
+            spaces: Spaces::default(),
         })
     }
 
@@ -2990,6 +3031,7 @@ mod tests {
                 reply_to,
                 pair,
                 asked_by_recipient: true,
+                spaces: Spaces::default(),
             });
             decide_send(&caller(CallerKind::MonoChat), &input, &hash(), &facts, NOW)
         };
@@ -3060,6 +3102,7 @@ mod tests {
                 oldest: Some(NOW - 1_000),
             },
             asked_by_recipient: true,
+            spaces: Spaces::default(),
         });
         assert_eq!(
             decide_send(
@@ -3598,6 +3641,7 @@ mod tests {
             reply_to: None,
             pair: PairCount::default(),
             asked_by_recipient: true,
+            spaces: Spaces::default(),
         }
     }
 
@@ -4185,6 +4229,7 @@ mod tests {
                     }),
                     pair: PairCount::default(),
                     asked_by_recipient: true,
+                    spaces: Spaces::default(),
                 },
             ),
             send_rejected(
@@ -4848,6 +4893,7 @@ mod tests {
                     }),
                     pair: PairCount::default(),
                     asked_by_recipient: true,
+                    spaces: Spaces::default(),
                 },
             )
         };
@@ -4909,6 +4955,7 @@ mod tests {
                     }),
                     pair: PairCount::default(),
                     asked_by_recipient: true,
+                    spaces: Spaces::default(),
                 },
             ),
             pinned_steer(&start, "w1", "turn-1")

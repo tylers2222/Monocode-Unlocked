@@ -179,7 +179,9 @@ messages.*, get lead_scope. A session's level comes only from MonoCode's
 saved session, never from the call. MonoCode saves a session before its first
 turn with app access, so only a session it never saves (outside a project on
 this Mac) could call with none: it gets unknown_caller. A Mono chat or habit
-run whose Mono is gone gets not_a_mono.
+run whose Mono is gone gets not_a_mono. Across Spaces only a regular Mono
+messages a regular Mono, with intent "new": a Giga, a session, an ask or a
+steer that crosses a Space gets cross_space_forbidden.
 
 Actions:
   models.list    {}  Available providers, models, settings and permission modes.
@@ -350,7 +352,8 @@ Actions:
                   4 deep (hop_limit), and 8000 characters (too_large). Codes:
                   invalid_input, request_id_reused, too_large,
                   intent_mismatch, steer_needs_target, intent_not_allowed,
-                  worker_scope, unknown_target, self_send,
+                  cross_space_forbidden, worker_scope, unknown_target,
+                  self_send,
                   direction_forbidden, steer_via_lead, lead_scope,
                   upward_needs_ask, steer_scope_not_allowed,
                   session_cannot_wait, upward_steer_forbidden, unknown_message,
