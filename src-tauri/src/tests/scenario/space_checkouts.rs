@@ -567,6 +567,60 @@ mod spawn {
         .collect()
     }
 
+    /// A turn of `one` in `plain`, a folder outside git, whose review keeps
+    /// the session's own snapshots: `prepare` takes the file before the edit
+    /// and `capture` takes the edit, so the review lists the file, with its
+    /// line counts, only when both ran. Returns the review's files.
+    fn review_outside_git(app: &App, plain: &Path) -> Vec<(String, i64, i64, bool)> {
+        std::fs::create_dir_all(plain).unwrap();
+        std::fs::write(plain.join("notes.md"), "one\n").unwrap();
+        block_on(checkpoint::session_checkpoint_begin_turn(
+            app.handle().clone(),
+            app.state(),
+            "one".into(),
+            text(plain),
+            "t3".into(),
+            None,
+        ))
+        .unwrap();
+        block_on(checkpoint::session_checkpoint_prepare(
+            app.handle().clone(),
+            app.state(),
+            "one".into(),
+            text(plain),
+            vec!["notes.md".to_owned()],
+        ))
+        .unwrap();
+        std::fs::write(plain.join("notes.md"), "one\ntwo\n").unwrap();
+        block_on(checkpoint::session_checkpoint_capture(
+            app.handle().clone(),
+            app.state(),
+            "one".into(),
+            text(plain),
+            vec!["notes.md".to_owned()],
+        ))
+        .unwrap();
+        block_on(checkpoint::session_checkpoint_finish_turn(
+            app.handle().clone(),
+            app.state(),
+            "one".into(),
+            text(plain),
+            "t3".into(),
+        ))
+        .unwrap();
+        block_on(checkpoint::session_checkpoint_status(
+            app.state(),
+            "one".into(),
+            text(plain),
+            None,
+        ))
+        .unwrap()
+        .files
+        .into_iter()
+        .map(|file| (file.relative, file.additions, file.deletions, file.exact))
+        .collect()
+    }
+
     /// As the window runs a turn of each Space's codex session
     /// (`sendHarnessTurn`): `control_authorize_turn` names the folder, and the
     /// provider is told it and spawned in it. `harness_spawn` runs a stand-in
@@ -649,6 +703,11 @@ esac"#,
         assert!(
             edit_in_copy(&app, &project, &copy).contains(&"src/lib.rs".to_owned()),
             "the first placed turn's checkpoint was taken in Space 1's checkout"
+        );
+        assert_eq!(
+            review_outside_git(&app, &root.join("plain")),
+            [("notes.md".to_owned(), 1, 0, true)],
+            "a turn's prepare or capture recorded nothing"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
