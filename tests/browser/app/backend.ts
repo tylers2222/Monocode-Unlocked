@@ -470,12 +470,34 @@ const HANDLERS: Record<string, Handler> = {
   },
   // The level rules and start rows live in Rust (appActionCheck.fixtures.json
   // pins them); every gated call the specs make is allowed, starts no worker
-  // and carries no start ask, and a start's row is one fixed id.
-  mono_app_action_check: () => ({
-    outcome: "allowed",
-    leadSessionId: null,
-    ask: null,
-  }),
+  // and carries no start ask, and a start's row is one fixed id. The list
+  // actions get spaces/scope.rs `scoped` for a backend with only Space 1:
+  // every Mono and project is the caller's, no saved session is another's.
+  mono_app_action_check: (store, { call }) => {
+    const { action, caller } = call as {
+      action: string;
+      caller: { kind: string; monoId?: string; cwd?: string };
+    };
+    const allowed = { outcome: "allowed", leadSessionId: null, ask: null };
+    if (!["monos.list", "sessions.list", "messages.get_monos"].includes(action))
+      return allowed;
+    const projectsOf = (mono: MonoRow | undefined) =>
+      ((mono?.data.projects as string[] | undefined) ?? []).filter(Boolean);
+    const scope = {
+      space: "space-1",
+      projects:
+        caller.kind === "session"
+          ? [caller.cwd]
+          : projectsOf(store.monos.find((mono) => mono.id === caller.monoId)),
+      monos: store.monos.map((mono) => ({
+        monoId: mono.id,
+        otherSpace: null,
+        projects: projectsOf(mono),
+      })),
+      foreignSessions: [],
+    };
+    return { ...allowed, scope };
+  },
   mono_message_record_start: () => ({
     outcome: "recorded",
     messageId: "m_aaaaaaaaaaaa",
