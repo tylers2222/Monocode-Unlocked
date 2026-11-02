@@ -1,4 +1,9 @@
-import { AcpClient, type AcpTextLive } from "../../core/acp";
+import {
+  AcpClient,
+  promptAcpText,
+  textTurns,
+  type AcpTextLive,
+} from "../../core/acp";
 import {
   execChild,
   killChild,
@@ -13,9 +18,8 @@ import {
   grokTextSpawnArgs,
   TEXT_MODEL,
 } from "./grokProtocol";
-import { abortTextPromptRace } from "../../core/abortTextPrompt";
 import { mergeStream } from "../../core/streamText";
-import type { HarnessEvent } from "../../core/types";
+import type { TextPromptInput } from "../../core/registry";
 
 const TEXT_CHILD_ID = "monocode-grok-text";
 const INIT_TIMEOUT_MS = 60_000;
@@ -29,7 +33,7 @@ const CLIENT_CAPABILITIES = {
 type LiveText = AcpTextLive & { binaryPath: string };
 
 let live: LiveText | null = null;
-let turns: Promise<void> = Promise.resolve();
+const turns = textTurns(ensureLive, promptOnLive);
 
 export async function stopGrokTextPrompt(childId?: string): Promise<void> {
   await dropLive();
@@ -39,83 +43,9 @@ export async function stopGrokTextPrompt(childId?: string): Promise<void> {
   }
 }
 
-export function warmupGrokText(cwd: string): Promise<void> {
-  if (!cwd || cwd === "~") return Promise.resolve();
-  const run = turns
-    .catch(() => undefined)
-    .then(async () => {
-      await ensureLive(cwd);
-    });
-  turns = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run.catch(() => undefined);
-}
+export const warmupGrokText = turns.warmup;
 
-export async function runGrokTextPrompt(input: {
-  cwd: string;
-  model?: string;
-  modelSettings?: Record<string, string>;
-  prompt: string;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  onEvent?: (event: HarnessEvent) => void;
-}): Promise<string> {
-  const run = turns.catch(() => undefined).then(() => promptOnLive(input));
-  turns = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
-}
-
-async function promptOnLive(input: {
-  cwd: string;
-  model?: string;
-  modelSettings?: Record<string, string>;
-  prompt: string;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  onEvent?: (event: HarnessEvent) => void;
-}): Promise<string> {
-  input.signal?.throwIfAborted();
-  const session = await ensureLive(input.cwd, input.model, input.modelSettings);
-  input.signal?.throwIfAborted();
-  session.output = "";
-  session.collecting = true;
-  session.onEvent = input.onEvent;
-  const abort = abortTextPromptRace(input.signal, () =>
-    session.acp.notify("session/cancel", {
-      sessionId: session.acpSessionId,
-    }),
-  );
-  try {
-    await Promise.race([
-      session.acp.request(
-        "session/prompt",
-        {
-          sessionId: session.acpSessionId,
-          prompt: [{ type: "text", text: input.prompt }],
-        },
-        input.timeoutMs ?? REQUEST_TIMEOUT_MS,
-      ),
-      ...(abort.promise ? [abort.promise] : []),
-    ]);
-    return session.output;
-  } catch (error) {
-    await session.acp
-      .notify("session/cancel", { sessionId: session.acpSessionId })
-      .catch(() => undefined);
-    if (session.closed) await dropLive();
-    throw error;
-  } finally {
-    abort.detach();
-    session.collecting = false;
-    session.onEvent = undefined;
-    await dropLive();
-  }
-}
+export const runGrokTextPrompt = turns.run;
 
 async function ensureLive(
   cwd: string,
@@ -135,6 +65,12 @@ async function ensureLive(
   // Retire the previous throwaway session before replacing its id, including
   // when a warmed-up process needs a different model or working directory.
   return startLive(cwd, model, modelSettings);
+}
+
+async function promptOnLive(input: TextPromptInput): Promise<string> {
+  input.signal?.throwIfAborted();
+  const session = await ensureLive(input.cwd, input.model, input.modelSettings);
+  return promptAcpText(session, input, REQUEST_TIMEOUT_MS, dropLive);
 }
 
 async function startLive(
