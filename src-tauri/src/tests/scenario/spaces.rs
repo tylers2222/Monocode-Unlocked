@@ -73,6 +73,26 @@ fn backfilled_to_space_one(world: &World) {
     );
 }
 
+/// The Settings default for a grant's length may be 1 ms to exactly 7 days.
+/// Kills the gate/mutation miss at spaces/mod.rs:19:39 (`*` -> `+` in
+/// `MAX_ROUTE_GRANT_TTL_MS`, which makes the cap 1 day), the other `*` -> `+`
+/// and `*` -> `/` mutants of that product, and a cap or floor moved off
+/// 7 days and 1 ms.
+fn the_settings_ttl_is_capped_at_seven_days(world: &World) {
+    let conn = world.conn();
+    let ttl = |ms: i64| {
+        conn.execute(
+            "UPDATE space_settings SET route_grant_ttl_ms = ?1",
+            params![ms],
+        )
+    };
+    let seven_days = 7 * 24 * 60 * 60 * 1000;
+    assert_eq!(ttl(seven_days), Ok(1), "a 7 day TTL was refused");
+    assert!(ttl(seven_days + 1).is_err(), "a TTL past 7 days was stored");
+    assert_eq!(ttl(1), Ok(1), "a 1 ms TTL was refused");
+    assert!(ttl(0).is_err(), "a TTL of 0 was stored");
+}
+
 /// The rows a migration seeds, one string each, in a fixed order.
 fn seeded(conn: &Connection) -> Vec<String> {
     rows(
@@ -146,6 +166,7 @@ fn spaces_migration_backfills_space_one_and_reruns_as_a_no_op() {
         1,
         "a new session is outside Space 1"
     );
+    the_settings_ttl_is_capped_at_seven_days(&world);
     world
         .conn()
         .execute("UPDATE space_settings SET route_grant_ttl_ms = 60000", [])
