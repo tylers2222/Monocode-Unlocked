@@ -139,7 +139,10 @@ fn registered_login_child() {
 
     let other_app = home.join("apps/com.monocode.second/provider-accounts/claude/x");
     std::fs::create_dir_all(&other_app).unwrap();
-    let refused: [(&str, PathBuf, &str); 11] = [
+    // Outside the home folder, and not a folder that holds the app data.
+    let outside = rig.root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let refused: [(&str, PathBuf, &str); 12] = [
         ("relative", PathBuf::from(".claude-2"), "absolute path"),
         (
             "relative-up",
@@ -151,6 +154,7 @@ fn registered_login_child() {
         ("looping", rig.folder("looping"), "cannot be opened"),
         ("root", PathBuf::from("/"), "must link"),
         ("home", home.clone(), "must link"),
+        ("outside-home", outside, "must link"),
         ("file", target.join("keep"), "must link"),
         ("other-login", rig.folder("plain"), "must link"),
         ("data-parent", home.join("apps"), "must link"),
