@@ -556,14 +556,28 @@ pub(crate) enum Child<'a> {
     },
 }
 
-/// INTERIM (ADE-189 4/4): helpers that ran in their caller's project folder
-/// before ADE-189 and whose owner is not wired yet keep that folder when they
-/// have no Space, as a session's own child does, so they keep their project
-/// context. No Space 2 session exists until ADE-179, so this lets no Space
-/// into another's checkout today. Parts 3/4 and 4/4 shrink it, then delete it.
-/// Matched as a prefix of the child key.
+/// INTERIM (ADE-189 4/4): every helper that still keeps its caller's
+/// folder, in one place. Each ran in its caller's project folder before
+/// ADE-189, and its owner is not wired yet, so it keeps that folder whenever it
+/// has no Space, as a session's own child does, and keeps its project
+/// context. No Space 2 session exists until ADE-179, so none of them lets a
+/// Space into another's checkout today. Parts 3/4 and 4/4 shrink this, then
+/// delete it. Every other helper of no stored session runs in the neutral
+/// folder.
+///
+/// - [`KEEPS_CALLER_FOLDER`]: helpers matched by a prefix of their child key,
+///   including the Grok text cleanup exec (`grokText.ts`
+///   `deleteTextSession`, `sessions delete`). That exec passes
+///   `monocode-grok-text` as its key, so it runs where its text child ran: no
+///   one has shown that Grok finds a session by id alone.
+/// - Still spawned as `spawnChild` (a session's own child, which keeps its
+///   folder by ADE-173's rule) until part 3/4 covers them with tests: Devin
+///   text (`devinText.ts`, the caller's project folder), and the Devin, Codex
+///   and Hermes catalog probes (`devinCatalog.ts`, `codexCatalog.ts`,
+///   `hermesCatalog.ts`, the home dir).
 const KEEPS_CALLER_FOLDER: [&str; 9] = [
-    // Titles, commit, PR and branch text, and /btw side questions.
+    // Titles, commit, PR and branch text, /btw side questions, and the Grok
+    // text cleanup exec.
     "monocode-claude-text",
     "monocode-codex-text",
     "monocode-text",
@@ -576,10 +590,13 @@ const KEEPS_CALLER_FOLDER: [&str; 9] = [
     "monocode-omp-skills-",
 ];
 
-/// The `helper` field of `harness_spawn`: the child is a helper of `owner`.
+/// The `helper` field of `harness_spawn` and `harness_exec`: the child is a
+/// helper of `owner`. An exec also names `key`, the helper child it acts for;
+/// a spawn's key is its own id.
 #[derive(Deserialize)]
 pub struct Helper {
     pub(crate) owner: Option<String>,
+    pub(crate) key: Option<String>,
 }
 
 #[cfg(test)]

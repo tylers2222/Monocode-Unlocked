@@ -1581,7 +1581,7 @@ fn helper_folder<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
 }
 
 /// One-shot provider commands: catalog probes and temporary-session cleanup.
-/// Each is a helper of `owner`, the session it works for, if any.
+/// Each is a helper of `helper.owner`, the session it works for, if any.
 #[tauri::command]
 pub async fn harness_exec<R: Runtime>(
     app: AppHandle<R>,
@@ -1590,7 +1590,7 @@ pub async fn harness_exec<R: Runtime>(
     cwd: Option<String>,
     binary_provider: Option<String>,
     binary_path: Option<String>,
-    owner: Option<String>,
+    helper: Option<crate::spaces::Helper>,
 ) -> Result<String, String> {
     if !exec_args_allowed(binary_provider.as_deref(), &args) {
         return Err("harness_exec: unsupported arguments".into());
@@ -1604,8 +1604,8 @@ pub async fn harness_exec<R: Runtime>(
         let crate::spaces::SpawnTarget { workdir, .. } = crate::spaces::prepare_spawn(
             &app.state::<crate::session_store::SessionStore>(),
             crate::spaces::Child::Helper {
-                key: None,
-                owner: owner.as_deref(),
+                key: helper.as_ref().and_then(|helper| helper.key.as_deref()),
+                owner: helper.as_ref().and_then(|helper| helper.owner.as_deref()),
                 neutral: &neutral,
             },
             binary_provider

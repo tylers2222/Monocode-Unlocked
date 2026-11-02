@@ -241,6 +241,7 @@ describe("child bridge", () => {
       cwd: undefined,
       binaryProvider: "opencode",
       binaryPath: "/opt/opencode/bin/opencode",
+      helper: {},
     });
 
     await child.execChild(
@@ -250,6 +251,7 @@ describe("child bridge", () => {
       "codex",
       null,
       "codex-chat",
+      "monocode-codex-text",
     );
     expect(mocks.invoke).toHaveBeenLastCalledWith("harness_exec", {
       command: "/resolved",
@@ -257,7 +259,7 @@ describe("child bridge", () => {
       cwd: "/repo",
       binaryProvider: "codex",
       binaryPath: null,
-      owner: "codex-chat",
+      helper: { owner: "codex-chat", key: "monocode-codex-text" },
     });
   });
 

@@ -64,6 +64,7 @@ export async function discoverHermesModels(
   );
 
   try {
+    // INTERIM (ADE-189 4/4): not a helper yet (spaces/mod.rs).
     await spawnChild(probeId, path, ["acp"], cwd, undefined, "hermes");
     return await withTimeout(
       DISCOVERY_TIMEOUT_MS,

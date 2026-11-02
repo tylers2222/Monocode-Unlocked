@@ -619,6 +619,8 @@ export function execChild(
   binaryProvider?: ConfigurableBinaryProvider,
   binaryPathOverride?: string | null,
   owner?: string,
+  /** The helper child this exec acts for, named by the INTERIM list. */
+  key?: string,
 ): Promise<string> {
   const binaryPath =
     binaryPathOverride === undefined && binaryProvider
@@ -630,6 +632,6 @@ export function execChild(
     cwd,
     binaryProvider,
     binaryPath,
-    owner,
+    helper: { owner, key },
   });
 }

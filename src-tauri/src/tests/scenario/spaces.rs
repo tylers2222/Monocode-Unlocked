@@ -1421,6 +1421,7 @@ esac"#,
     };
     helpers::execs_run_where_their_owner_does(&rig);
     helpers::helpers_run_where_their_owner_does(&rig);
+    helpers::interims_and_the_store_lock_hold(&rig);
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -1431,7 +1432,7 @@ mod helpers {
 
     use super::super::agent_sandbox::wait_for;
     use super::{leases, FIRST_SPACE};
-    use crate::spaces::Helper;
+    use crate::spaces::{prepare_spawn, Child, Helper, SpawnTarget};
 
     pub(super) struct Rig {
         pub(super) app: tauri::App<tauri::test::MockRuntime>,
@@ -1446,6 +1447,16 @@ mod helpers {
     }
 
     fn exec(rig: &Rig, owner: Option<&str>, cwd: Option<&Path>) -> Result<PathBuf, String> {
+        exec_as(rig, None, owner, cwd)
+    }
+
+    /// An exec that names `key`, the helper child it acts for.
+    fn exec_as(
+        rig: &Rig,
+        key: Option<&str>,
+        owner: Option<&str>,
+        cwd: Option<&Path>,
+    ) -> Result<PathBuf, String> {
         tauri::async_runtime::block_on(crate::harness::harness_exec(
             rig.app.handle().clone(),
             text(&rig.fx),
@@ -1453,13 +1464,33 @@ mod helpers {
             cwd.map(text),
             Some("fx".into()),
             Some(text(&rig.fx)),
-            owner.map(String::from),
+            Some(Helper {
+                owner: owner.map(String::from),
+                key: key.map(String::from),
+            }),
         ))
         .map(|out| PathBuf::from(out.trim()))
     }
 
     /// Starts helper `key` of `owner`, which writes its folder to `<folder>/<key>`.
     fn helper(rig: &Rig, key: &str, owner: Option<&str>, workdir: &Path) {
+        spawn(
+            rig,
+            key,
+            workdir,
+            Some(Helper {
+                owner: owner.map(String::from),
+                key: None,
+            }),
+        );
+    }
+
+    /// Starts `key` as a session's own child, as `spawnChild` does.
+    fn session_child(rig: &Rig, key: &str, workdir: &Path) {
+        spawn(rig, key, workdir, None);
+    }
+
+    fn spawn(rig: &Rig, key: &str, workdir: &Path, helper: Option<Helper>) {
         crate::harness::harness_spawn(
             rig.app.handle().clone(),
             rig.app.state::<crate::harness::HarnessHost>(),
@@ -1473,9 +1504,7 @@ mod helpers {
             None,
             None,
             None,
-            Some(Helper {
-                owner: owner.map(String::from),
-            }),
+            helper,
         )
         .unwrap();
     }
@@ -1607,5 +1636,65 @@ mod helpers {
             Ok(neutral.clone()),
             "a helper of a deleted session ran in a project folder"
         );
+    }
+
+    /// INTERIM (ADE-189 4/4): the Grok cleanup exec runs where its text child
+    /// ran, and an exec naming no listed key goes neutral; the children still
+    /// spawned as a session's own (Devin text, the Devin, Codex and Hermes
+    /// probes) keep their caller's folder. Then a placement of a helper of no
+    /// Space in a missing folder, while the store is locked, must return
+    /// without the lock: a time bound turns a lock-order regression into a
+    /// failure, not a hang.
+    pub(super) fn interims_and_the_store_lock_hold(rig: &Rig) {
+        let Rig {
+            project, neutral, ..
+        } = rig;
+        assert_eq!(
+            exec_as(rig, Some("monocode-grok-text"), None, Some(project)),
+            Ok(project.clone()),
+            "the Grok cleanup exec left its text child's folder"
+        );
+        assert_eq!(
+            exec_as(rig, Some("monocode-fx-probe"), None, Some(project)),
+            Ok(neutral.clone()),
+            "an exec of an unlisted helper ran in a project folder"
+        );
+        for key in [
+            "monocode-devin-text-1",
+            "monocode-devin-probe-1",
+            "monocode-codex-probe-1",
+            "monocode-hermes-probe-1",
+        ] {
+            session_child(rig, key, project);
+            assert_eq!(
+                wait_for(&project.join(key)),
+                format!("{}\n", text(project)),
+                "{key}: a child still spawned as a session's own left its folder"
+            );
+        }
+        let state = rig.app.state::<crate::session_store::SessionStore>();
+        let store = state.inner();
+        let missing = project.join("gone");
+        let (placed_tx, placed_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let held = store.lock_conn().unwrap();
+            scope.spawn(|| {
+                let target = SpawnTarget {
+                    workdir: missing.clone(),
+                    account: None,
+                };
+                let ghost = Child::Helper {
+                    key: None,
+                    owner: Some("ghost"),
+                    neutral,
+                };
+                let _ = placed_tx.send(prepare_spawn(store, ghost, None, 0, target));
+            });
+            let placed = placed_rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("place_or deadlock: placing a missing folder waited on the store lock");
+            drop(held);
+            assert_eq!(placed.map(|target| target.workdir), Ok(missing.clone()));
+        });
     }
 }

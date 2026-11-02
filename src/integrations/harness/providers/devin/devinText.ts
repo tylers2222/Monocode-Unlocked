@@ -102,6 +102,8 @@ async function promptOnce(input: TextPromptInput): Promise<string> {
   );
   try {
     const run = async () => {
+      // INTERIM (ADE-189 4/4): still a session-kind child in the caller's
+      // folder until part 3/4 covers it (spaces/mod.rs).
       await startDevinAcp(childId, input.cwd, rpc, { allowBrowser: false });
       const created = await rpc.request(
         "session/new",

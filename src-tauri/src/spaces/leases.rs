@@ -143,8 +143,8 @@ pub(super) fn claim(
 /// no Space holds goes to the Space its session's project is assigned
 /// ([`super::project_space`]); a held lease never moves. Refused when another
 /// Space holds `workdir` and the session cannot get its own copy. A child of
-/// no stored session (a text or catalog helper, or a session not saved yet)
-/// has no Space: it takes no lease and stays.
+/// no stored session (a session not saved yet) has no Space: it takes no lease
+/// and stays; a helper's claim sends it to its neutral folder instead.
 pub(crate) fn place(
     store: &SessionStore,
     child: &str,
