@@ -614,7 +614,7 @@ describe("provider accounts in monocode.db", () => {
     ]);
   });
 
-  it("keeps browser storage when the database cannot load", async () => {
+  it("keeps browser storage when the database cannot load, and tries again on the next write", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     localStorage.setItem("monocode.providerAccounts.v1", BROWSER_LOGINS);
     db.refuse.add("spaces_accounts_list");
@@ -631,16 +631,110 @@ describe("provider accounts in monocode.db", () => {
       provider: "codex",
       label: "New",
     });
-    expect(labels(accounts, "codex")).toEqual([
-      "default Default account",
-      "account-x X",
-      "account-new New",
-    ]);
     expect(localStorage.getItem("monocode.providerAccounts.v1")).toContain(
       "account-new",
     );
+    await vi.waitFor(() => expect(console.error).toHaveBeenCalledTimes(3));
+    expect(db.calls.map(([command]) => command)).toEqual([
+      "spaces_accounts_list",
+      "spaces_accounts_list",
+    ]);
+
+    db.refuse.delete("spaces_accounts_list");
+    db.calls = [];
+    accounts.saveProviderAccount({
+      id: "account-next",
+      provider: "codex",
+      label: "Next",
+    });
+    await vi.waitFor(() =>
+      expect(db.accounts.some(({ id }) => id === "account-next")).toBe(true),
+    );
+    await vi.waitFor(() =>
+      expect(labels(accounts, "codex")).toContain("account-next Next"),
+    );
+
+    db.calls = [];
+    accounts.saveProviderAccount({
+      id: "account-last",
+      provider: "codex",
+      label: "Last",
+    });
+    await vi.waitFor(() => expect(db.calls).toHaveLength(1));
     await settle();
-    expect(db.calls).toEqual([]);
+    expect(db.calls.map(([command]) => command)).toEqual([
+      "spaces_account_save",
+    ]);
+  });
+
+  it("keeps the saved writes around a refused one, and a refused remove keeps the folder", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const accounts = await boot();
+    const credentials = await import("./providerAccountCredentials");
+    db.refuseSave.add("account-b");
+    db.calls = [];
+
+    accounts.saveProviderAccount({
+      id: "account-a",
+      provider: "codex",
+      label: "A",
+    });
+    accounts.saveProviderAccount({
+      id: "account-b",
+      provider: "codex",
+      label: "B",
+    });
+    accounts.saveProviderAccount({
+      id: "account-c",
+      provider: "codex",
+      label: "C",
+    });
+    expect(labels(accounts, "codex")).toEqual([
+      "default Default account",
+      "account-a A",
+      "account-b B",
+      "account-c C",
+    ]);
+    await vi.waitFor(() =>
+      expect(sent("spaces_accounts_list")).toHaveLength(1),
+    );
+    await vi.waitFor(() =>
+      expect(labels(accounts, "codex")).toEqual([
+        "default Default account",
+        "account-a A",
+        "account-c C",
+      ]),
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      "spaces_account_save refused account-b",
+    );
+
+    db.calls = [];
+    accounts.saveProviderAccount({
+      id: "account-d",
+      provider: "codex",
+      label: "D",
+    });
+    await vi.waitFor(() => expect(db.calls).toHaveLength(1));
+    await settle();
+    expect(db.calls.map(([command]) => command)).toEqual([
+      "spaces_account_save",
+    ]);
+
+    db.refuse.add("spaces_account_remove");
+    db.calls = [];
+    await expect(
+      credentials.removeProviderAccountCredentials("codex", "account-a"),
+    ).rejects.toBe("spaces_account_remove refused");
+    expect(sent("provider_account_remove")).toEqual([]);
+    db.refuse.delete("spaces_account_remove");
+    await credentials.removeProviderAccountCredentials("codex", "account-c");
+    expect(accounts.removeProviderAccount("codex", "account-c")).toBe(true);
+    expect(sent("provider_account_remove")).toEqual([
+      { provider: "codex", accountId: "account-c" },
+    ]);
+    expect(db.accounts.map(({ id }) => id)).toContain("account-a");
+    expect(db.accounts.map(({ id }) => id)).not.toContain("account-c");
   });
 
   it("tells the other windows, which reload and do not bring a removed login back", async () => {
