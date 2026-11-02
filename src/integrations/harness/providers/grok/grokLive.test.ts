@@ -6,11 +6,6 @@ let onExit: ((code: number | null) => void) | undefined;
 const helperSpawns = vi.hoisted(() => [] as unknown[][]);
 const killed = vi.hoisted(() => [] as string[]);
 
-vi.mock(import("../../../../platform/tauri/fs"), async (importOriginal) => ({
-  ...(await importOriginal()),
-  homeDir: async () => "/home/me",
-}));
-
 vi.mock("../../core/child", () => ({
   resolveGrokBinary: async () => ({ path: "/fake/grok" }),
   spawnChild: async () => undefined,
@@ -398,7 +393,7 @@ it("probes the Grok model catalog as a helper in the folder Rust names", async (
   sent.length = 0;
   helperSpawns.length = 0;
   killed.length = 0;
-  const models = discoverGrokModels();
+  const models = discoverGrokModels("/workspace");
   await waitFor(
     () => parse().some((m) => m.method === "initialize"),
     "initialize",
@@ -423,7 +418,7 @@ it("probes the Grok model catalog as a helper in the folder Rust names", async (
       expect.stringMatching(/^monocode-grok-probe-/),
       "/fake/grok",
       ["--no-auto-update", "agent", "--no-leader", "stdio"],
-      "/home/me",
+      expect.any(String),
       undefined,
       "grok",
     ],

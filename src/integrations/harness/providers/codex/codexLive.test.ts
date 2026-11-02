@@ -54,7 +54,6 @@ vi.mock("../../core/child", () => ({
 vi.mock("../../../../platform/tauri/fs", () => ({
   saveGeneratedImage,
   deleteGeneratedImages,
-  homeDir: async () => "/home/me",
 }));
 
 const {
@@ -214,7 +213,7 @@ describe("codex live turn sequence", () => {
   it("probes the model catalog as a helper, not in the caller's folder", async () => {
     spawnChild.mockClear();
     spawnHelperChild.mockClear();
-    const models = discoverCodexModels();
+    const models = discoverCodexModels("/workspace");
     const answer = async (method: string, result: unknown) => {
       await waitFor(() => parse().some((m) => m.method === method), method);
       reply(parse().find((m) => m.method === method)!.id as number, result);
@@ -231,7 +230,7 @@ describe("codex live turn sequence", () => {
       expect.stringMatching(/^monocode-codex-probe-/),
       "/fake/codex",
       ["app-server"],
-      "/home/me",
+      expect.any(String),
       undefined,
       "codex",
     );

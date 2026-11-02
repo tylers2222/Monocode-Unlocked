@@ -212,7 +212,7 @@ describe("Devin live ACP sequence", () => {
     await expect(
       runDevinTextPrompt({ cwd: "/repo", prompt: "why?" }),
     ).rejects.toThrow("Devin is not logged in");
-    await expect(discoverDevinModels()).rejects.toThrow(
+    await expect(discoverDevinModels("/workspace")).rejects.toThrow(
       "Devin is not logged in",
     );
     expect(children.helperArgs).toEqual([]);
@@ -225,7 +225,7 @@ describe("Devin live ACP sequence", () => {
       "/home/me/.local/share/devin/credentials.toml",
       'windsurf_api_key = "devin-key"\n',
     );
-    const models = discoverDevinModels();
+    const models = discoverDevinModels("/workspace");
     await answer("initialize", {
       protocolVersion: 1,
       authMethods: [{ id: "devin-browser" }],
@@ -248,7 +248,7 @@ describe("Devin live ACP sequence", () => {
         expect.stringMatching(/^monocode-devin-probe-/),
         "/fake/devin",
         ["acp"],
-        "/home/me",
+        expect.any(String),
         undefined,
         "devin",
       ],

@@ -25,7 +25,8 @@ let inflight: Promise<void> | null = null;
 
 export function refreshDevinCatalog(): Promise<void> {
   if (inflight) return inflight;
-  inflight = discoverDevinModels()
+  inflight = homeDir()
+    .then(discoverDevinModels)
     .then((models) => {
       if (models.length > 0) setHarnessModels("devin", models);
     })
@@ -72,8 +73,9 @@ async function probeThoughtLevels(
   return levels;
 }
 
-export async function discoverDevinModels(): Promise<AgentModel[]> {
-  const cwd = await homeDir();
+/** `cwd` is the folder the caller picks: the app's home folder, which Rust
+ * replaces with the neutral one, or the host user's home (ADE-193). */
+export async function discoverDevinModels(cwd: string): Promise<AgentModel[]> {
   const probeId = `${PROBE_ID}-${crypto.randomUUID()}`;
   const rpc = new JsonRpcClient(
     probeId,

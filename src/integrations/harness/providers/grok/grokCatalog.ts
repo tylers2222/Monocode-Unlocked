@@ -31,7 +31,8 @@ let inflight: Promise<void> | null = null;
 
 export function refreshGrokCatalog(): Promise<void> {
   if (inflight) return inflight;
-  inflight = discoverGrokModels()
+  inflight = homeDir()
+    .then(discoverGrokModels)
     .then((models) => {
       if (models.length > 0) setHarnessModels("grok", models);
     })
@@ -44,13 +45,15 @@ export function refreshGrokCatalog(): Promise<void> {
   return inflight;
 }
 
-export async function discoverGrokModels() {
-  const fromAcp = await discoverViaAcp().catch((error: unknown) => {
+/** `cwd` is the folder the caller picks: the app's home folder, which Rust
+ * replaces with the neutral one, or the host user's home (ADE-193). */
+export async function discoverGrokModels(cwd: string) {
+  const fromAcp = await discoverViaAcp(cwd).catch((error: unknown) => {
     console.debug("[monocode] grok ACP catalog failed", error);
     return [];
   });
   if (fromAcp.length > 0) return fromAcp;
-  const fromCli = await discoverViaCli().catch((error: unknown) => {
+  const fromCli = await discoverViaCli(cwd).catch((error: unknown) => {
     console.debug("[monocode] grok CLI catalog failed", error);
     return [];
   });
@@ -58,9 +61,8 @@ export async function discoverGrokModels() {
   return fallbackGrokModels();
 }
 
-async function discoverViaAcp() {
+async function discoverViaAcp(cwd: string) {
   const { path } = await resolveGrokBinary();
-  const cwd = await homeDir();
   const probeId = `${PROBE_ID}-${crypto.randomUUID()}`;
   const acp = new AcpClient(probeId, {
     onRequest: (id) => {
@@ -129,9 +131,8 @@ async function discoverViaAcp() {
   }
 }
 
-async function discoverViaCli() {
+async function discoverViaCli(cwd: string) {
   const { path } = await resolveGrokBinary();
-  const cwd = await homeDir();
   const stdout = await execChild(path, ["models"], cwd, "grok");
   return modelsFromGrokModelsOutput(stdout);
 }
