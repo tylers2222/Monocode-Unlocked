@@ -357,7 +357,7 @@ Actions:
                   steer_target_mismatch, reply_unsupported_target,
                   habit_cannot_wait, target_gone, nothing_running,
                   target_no_conversation, cannot_steer, hop_limit,
-                  rate_limited.
+                  rate_limited, cross_space_forbidden.
   messages.ask   {"message":"...","send_to":"<mono_id or session id>",
                   "due_minutes":60}
                   Ask your direct child for work: a Giga asks a Mono, a Mono
