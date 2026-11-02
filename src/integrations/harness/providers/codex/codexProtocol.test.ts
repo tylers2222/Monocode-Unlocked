@@ -1117,7 +1117,13 @@ describe("recorded Codex app-server streams", () => {
       await stopCodexSession("login-1");
       await stopCodexSession("login-2");
       vi.unstubAllEnvs();
-      rmSync(dir, { recursive: true, force: true });
+      // A backstop: the stop above already waited for each shim to exit.
+      rmSync(dir, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
     });
     const accounts = {
       [loginFolder("codex", "login-1")]:

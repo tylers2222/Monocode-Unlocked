@@ -363,7 +363,13 @@ describe("recorded Claude Code streams", () => {
     onTestFinished(async () => {
       await stopClaudeSession("login-2");
       vi.unstubAllEnvs();
-      rmSync(dir, { recursive: true, force: true });
+      // A backstop: the stop above already waited for each shim to exit.
+      rmSync(dir, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
     });
     const normal = loginFolder("claude", "login-2");
     writeFileSync(
