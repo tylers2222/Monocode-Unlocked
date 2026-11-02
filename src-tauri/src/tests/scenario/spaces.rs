@@ -293,8 +293,9 @@ fn spaces_settings_and_projects_hold(world: &World, at: i64) {
     }
 }
 
-/// A remote project's key (`remote://<host>/<path>`).
-const REMOTE: &str = "remote://env/home/dev/repo";
+/// A remote project's key (`remote://<host>/<path>`). Mixed case, because
+/// `pathKey()` keeps a remote key's case where it lowercases a drive path.
+const REMOTE: &str = "remote://Env/Home/Dev/Repo";
 
 fn project_login(project: &str) -> ProjectLogin {
     ProjectLogin {
@@ -342,6 +343,11 @@ fn a_project_login_overrides_the_space_login(world: &World) {
         None,
         "a Claude project choice leaked to Codex"
     );
+    let codex = ProjectLogin {
+        provider: Provider::Codex,
+        ..project_login("/work/a")
+    };
+    spaces::set_project_login(store, &codex).unwrap();
     spaces::set_project_login(store, &project_login("~")).unwrap();
     let remote = ProjectLogin {
         space_id: "space-2".into(),
@@ -390,10 +396,24 @@ fn project_logins_hold(world: &World) {
         Some("work"),
         "a remote project's login was lost"
     );
+    let codex = ProjectLogin {
+        provider: Provider::Codex,
+        ..project_login("/work/a")
+    };
     assert_eq!(
         spaces::project_logins(world.store(), FIRST_SPACE).unwrap(),
-        [project_login("/work/a"), project_login("~")],
-        "Space 1's project choices are missing, out of order, or include Space 2's"
+        [project_login("/work/a"), codex, project_login("~")],
+        "Space 1's project choices are missing, out of path and provider order, or include Space 2's"
+    );
+    let in_two = |project: &str| ProjectLogin {
+        space_id: "space-2".into(),
+        account_id: "work".into(),
+        ..project_login(project)
+    };
+    assert_eq!(
+        spaces::project_logins(world.store(), "space-2").unwrap(),
+        [in_two("/work/b"), in_two("remote://Env/Home/Dev/Repo")],
+        "Space 2's project choices are missing, or a remote key is listed in another form than pathKey()"
     );
 }
 
@@ -593,7 +613,9 @@ fn removing_a_login_drops_its_space_login_and_grant(world: &World) {
 /// Windows project is refused or keyed otherwise than `pathKey()`, or a
 /// project with no row is outside Space 1; a project's own login does not
 /// override the Space's, is lost on a re-pick, leaks to another Space or
-/// provider, survives being cleared, or outlives its login; a login, grant or lease is lost or altered,
+/// provider, survives being cleared, or outlives its login; a Space's list of
+/// project choices includes another Space's, is out of path and provider
+/// order, or lists a remote key in another form than `pathKey()`; a login, grant or lease is lost or altered,
 /// survives the removal of its login, or is stored when its login id is not
 /// a valid folder name or its label is blank, a rename is lost, a command
 /// takes a CLI without logins or misreads the UI's arguments, a grant ends as
