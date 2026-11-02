@@ -3161,7 +3161,13 @@ pub fn check_action(
             None => ActionChecked::Allowed {
                 lead_session_id,
                 ask: None,
-                scope: crate::spaces::scope::scoped(&tx, caller, action)?,
+                scope: crate::spaces::scope::scoped(
+                    &tx,
+                    caller,
+                    action,
+                    &facts.caller_space,
+                    facts.caller_role,
+                )?,
             },
         },
         ActionDecision::Refuse { code, hint } => ActionChecked::Failed {

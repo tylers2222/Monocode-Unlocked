@@ -1,16 +1,16 @@
 //! ADE-175: what `monos.list`, `sessions.list` and `messages.get_monos` show
-//! a caller. Its Space comes only from saved rows: its Mono's
-//! `monos.space_id` (a Mono chat or a habit run), else its session's
-//! `sessions.space_id`, Space 1 with no row. A regular Mono also sees the
-//! regular Monos of other Spaces, marked with their Space's name.
+//! a caller. Its Space and role are the ones `check_action` resolved for the
+//! Space rule (ADE-174's `caller_space`, from saved rows only). A regular
+//! Mono also sees the regular Monos of other Spaces, marked with their
+//! Space's name.
 
 use std::collections::HashMap;
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::{project_space_in, FIRST_SPACE};
+use super::project_space_in;
 use crate::mono_gate::{Caller, Speaker};
 use crate::mono_messages::{MonoId, SessionId};
 use crate::mono_roster::{self, MonoRole};
@@ -96,36 +96,32 @@ fn decide(
     }
 }
 
-/// The scope of `action` for `caller`; `None` for an action that shows
+/// The scope of `action` for `caller`, whose Space and Mono role (`None`
+/// for a session) `check_action` resolved; `None` for an action that shows
 /// every Space's rows.
 pub(crate) fn scoped(
     conn: &Connection,
     caller: &Caller,
     action: &str,
+    space: &str,
+    role: Option<MonoRole>,
 ) -> rusqlite::Result<Option<SpaceScope>> {
     if !SCOPED_ACTIONS.contains(&action) {
         return Ok(None);
     }
     let monos = mono_rows(conn)?;
-    let session_space = session_space(conn, &caller.session_id)?;
-    let called = match &caller.speaker {
-        Speaker::Mono { mono_id, .. } => match monos.iter().find(|mono| mono.id == *mono_id) {
-            Some(mono) => CallerRow {
-                space: mono.space.clone(),
-                regular_mono: mono.role == MonoRole::Mono,
-                projects: mono.projects.clone(),
-            },
-            None => CallerRow {
-                space: session_space,
-                regular_mono: false,
-                projects: Vec::new(),
-            },
-        },
-        Speaker::Session { cwd, .. } => CallerRow {
-            space: session_space,
-            regular_mono: false,
-            projects: vec![placed(conn, cwd)],
-        },
+    let projects = match &caller.speaker {
+        Speaker::Mono { mono_id, .. } => monos
+            .iter()
+            .find(|mono| mono.id == *mono_id)
+            .map(|mono| mono.projects.clone())
+            .unwrap_or_default(),
+        Speaker::Session { cwd, .. } => vec![placed(conn, cwd)],
+    };
+    let called = CallerRow {
+        space: space.to_owned(),
+        regular_mono: role == Some(MonoRole::Mono),
+        projects,
     };
     let sessions = if action == "sessions.list" {
         session_rows(conn)?
@@ -174,19 +170,6 @@ fn mono_rows(conn: &Connection) -> rusqlite::Result<Vec<MonoRow>> {
             })
         })
         .collect())
-}
-
-/// `sessions.space_id`; Space 1 with no row (a habit run, or a session
-/// MonoCode never saved).
-fn session_space(conn: &Connection, session: &SessionId) -> rusqlite::Result<String> {
-    Ok(conn
-        .query_row(
-            "SELECT space_id FROM sessions WHERE id = ?1",
-            [session.as_str()],
-            |row| row.get(0),
-        )
-        .optional()?
-        .unwrap_or_else(|| FIRST_SPACE.to_owned()))
 }
 
 fn session_rows(conn: &Connection) -> rusqlite::Result<Vec<(SessionId, String)>> {
