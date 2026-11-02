@@ -180,9 +180,6 @@ async function promptOnLive(input: TextPromptInput): Promise<string> {
     const output = session.output.trim();
     if (!output) throw new Error("Claude returned empty output.");
     return output;
-  } catch (error) {
-    if (session.closed) await dropLive();
-    throw error;
   } finally {
     if (abortHandler && input.signal) {
       input.signal.removeEventListener("abort", abortHandler);

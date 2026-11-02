@@ -556,17 +556,21 @@ pub(crate) enum Child<'a> {
     },
 }
 
-/// INTERIM (ADE-189 4/4): every helper that still keeps its caller's
-/// folder, in one place. Each ran in its caller's project folder before
-/// ADE-189, and its owner is not wired yet, so it keeps that folder whenever it
-/// has no Space, as a session's own child does, and keeps its project
-/// context. No Space 2 session exists until ADE-179, so none of them lets a
-/// Space into another's checkout today. Every text adapter now passes the
-/// prompt's owner (ADE-192), so a text prompt for a session runs in that
-/// session's Space; the text keys stay listed for the calls that name no
-/// owner (titles, commit, PR and branch text, and `/btw` until part 4/4).
-/// Part 4/4 deletes this. Every other helper of no stored session runs in the
-/// neutral folder.
+/// INTERIM (ADE-189 4/4): every helper that keeps its caller's folder when it
+/// names no owner, in one place. Each ran in its caller's project folder
+/// before ADE-189. A helper with an owner is placed for that owner's Space
+/// whether or not its key is listed: every text adapter passes the prompt's
+/// owner (ADE-189 3/4 for Codex, Pi and Devin, ADE-192 for Claude, Cursor,
+/// Grok and OpenCode), so owned calls are wired. The keys stay listed because
+/// their remaining callers have no session: titles, branch names, commit and
+/// PR text, `/btw`, the `/` picker's skills of an unsaved tab, and the Grok
+/// text cleanup exec after an ownerless prompt. Removing a key would move
+/// those callers to the neutral folder, away from the project they describe,
+/// which is a user-visible regression. No Space 2 session exists until
+/// ADE-179, so none of them lets a Space into another's checkout today. Whether ADE-189 4/4 deletes this list or renames it into a
+/// permanent, guarded rule for ownerless calls is an open decision (the
+/// build-189-p4 GAP, card #28). Every other helper of no stored session runs
+/// in the neutral folder.
 ///
 /// - [`KEEPS_CALLER_FOLDER`]: helpers matched by a prefix of their child key,
 ///   including the Grok text cleanup exec (`grokText.ts`

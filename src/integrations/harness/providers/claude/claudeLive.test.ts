@@ -15,11 +15,17 @@ let onExit: ((code?: number | null) => void) | undefined;
 const writeChild = vi.fn(async (_id: string, line: string) => {
   sent.push(line);
 });
+const helperSpawns = vi.hoisted(() => [] as unknown[][]);
 
 vi.mock("../../core/child", () => ({
   resolveClaudeBinary: async () => ({ path: "/fake/claude" }),
   spawnChild: async (_id: string, _path: string, args: string[]) => {
     spawned.push(args);
+  },
+  // Rust places a helper and names the folder (ADE-189).
+  spawnHelperChild: async (...args: unknown[]) => {
+    helperSpawns.push(args);
+    return "/placed";
   },
   killChild: async () => undefined,
   unwatchChild: () => undefined,
@@ -45,6 +51,8 @@ const {
   stopClaudeSession,
   __claudeTestReset,
 } = await import("./claude");
+const { runClaudeTextPrompt, stopClaudeTextPrompt } =
+  await import("./claudeText");
 import type { MonoTools } from "../../core/monoTools";
 import type { HarnessEvent } from "../../core/types";
 import type { RuntimeMode, TurnIntent } from "../../../../features/sessions/model/session";
@@ -2117,4 +2125,29 @@ describe("claude manual compaction", () => {
     });
     expect(events.some((event) => event.type === "message.delta")).toBe(false);
   });
+});
+
+
+// ADE-192: a text prompt aborted while its child starts leaves that child,
+// placed for its session, warm. A prompt for another session in the same
+// folder never reuses it: it starts its own child, placed for its session.
+it("never reuses a text child left warm for another session", async () => {
+  helperSpawns.length = 0;
+  const first = new AbortController();
+  const a = runClaudeTextPrompt({
+    cwd: "/repo",
+    owner: "chat-a",
+    prompt: "A",
+    signal: first.signal,
+  });
+  await waitFor(() => helperSpawns.length === 1, "chat-a's child");
+  first.abort();
+  emit({ type: "system", subtype: "init" });
+  await expect(a).rejects.toThrow();
+  const b = runClaudeTextPrompt({ cwd: "/repo", owner: "chat-b", prompt: "B" });
+  const rejected = expect(b).rejects.toThrow();
+  await waitFor(() => helperSpawns.length === 2, "chat-b's child");
+  expect(helperSpawns.map((spawn) => spawn[0])).toEqual(["chat-a", "chat-b"]);
+  await stopClaudeTextPrompt();
+  await rejected;
 });

@@ -33,6 +33,13 @@ const harnessHttp = vi.fn(
 );
 
 // Rust places a helper and names the folder (ADE-189); it is never "/repo".
+// v1's `serve` child prints the server URL as it starts.
+const spawnHelperChild = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<string>>(async () => {
+    onStdout?.("opencode server listening on http://127.0.0.1:4096");
+    return "/placed";
+  }),
+);
 const execHelper = vi.hoisted(() =>
   vi.fn<(...args: unknown[]) => Promise<{ stdout: string; cwd: string }>>(
     async () => ({ stdout: "opencode 1.14.19", cwd: "/neutral" }),
@@ -50,10 +57,7 @@ vi.mock("../../core/child", () => ({
   killChild: async () => undefined,
   openHarnessSse: async () => undefined,
   resolveOpenCodeBinary: async () => ({ path: "/fake/opencode" }),
-  spawnHelperChild: async () => {
-    onStdout?.("opencode server listening on http://127.0.0.1:4096");
-    return "/placed";
-  },
+  spawnHelperChild,
   unwatchChild: () => undefined,
   watchChild: (_id: string, stdout: (line: string) => void) => {
     onStdout = stdout;
@@ -304,4 +308,53 @@ it("deletes the generated-text session when generation is cancelled", async () =
       url: "http://127.0.0.1:4096/session/text_session?directory=%2Fplaced",
     }),
   );
+});
+
+// ADE-192: a prompt for chat-a aborted while its child starts leaves that
+// child warm. chat-b's prompt in the same folder never reuses it: its
+// `--version` exec and its `serve` child are placed for chat-b, and its
+// session names chat-b's folder.
+it("never reuses a text child left warm for another session", async () => {
+  const first = new AbortController();
+  execHelper.mockImplementationOnce(async () => {
+    first.abort();
+    return { stdout: "opencode 1.14.19", cwd: "/neutral" };
+  });
+  spawnHelperChild.mockClear();
+  await expect(
+    runOpenCodeTextPrompt({
+      cwd: "/repo",
+      owner: "chat-a",
+      prompt: "A",
+      signal: first.signal,
+    }),
+  ).rejects.toThrow();
+  spawnHelperChild.mockImplementationOnce(async () => {
+    onStdout?.("opencode server listening on http://127.0.0.1:4096");
+    return "/space-b";
+  });
+  harnessHttp.mockClear();
+  const other = runOpenCodeTextPrompt({
+    cwd: "/repo",
+    owner: "chat-b",
+    prompt: "B",
+  });
+  await waitFor(() => promptStarted, "chat-b's prompt");
+  finishPrompt?.({
+    status: 200,
+    body: JSON.stringify({ info: {}, parts: [{ type: "text", text: "B" }] }),
+  });
+  await expect(other).resolves.toBe("B");
+  expect(spawnHelperChild.mock.calls.map((call) => call[0])).toEqual([
+    "chat-a",
+    "chat-b",
+  ]);
+  expect(execHelper.mock.calls.slice(-2).map((call) => call[5])).toEqual([
+    "chat-a",
+    "chat-b",
+  ]);
+  const created = harnessHttp.mock.calls
+    .map(([request]) => new URL(request.url))
+    .find((url) => url.pathname === "/session");
+  expect(created?.searchParams.get("directory")).toBe("/space-b");
 });
