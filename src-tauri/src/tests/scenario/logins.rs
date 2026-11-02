@@ -139,10 +139,11 @@ fn registered_login_child() {
 
     let other_app = home.join("apps/com.monocode.second/provider-accounts/claude/x");
     std::fs::create_dir_all(&other_app).unwrap();
-    let refused: [(&str, PathBuf, &str); 10] = [
+    let refused: [(&str, PathBuf, &str); 11] = [
+        ("relative", PathBuf::from(".claude-2"), "absolute path"),
         (
-            "relative",
-            PathBuf::from("../../../../../.claude-2"),
+            "relative-up",
+            PathBuf::from("../../../../.claude-2"),
             "absolute path",
         ),
         ("dotdot", home.join("apps/../.claude-2"), "absolute path"),
