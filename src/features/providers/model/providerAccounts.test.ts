@@ -648,9 +648,11 @@ describe("provider accounts in monocode.db", () => {
     expect(localStorage.getItem("monocode.providerAccounts.v1")).toContain(
       "account-new",
     );
-    await vi.waitFor(() => expect(console.error).toHaveBeenCalledTimes(3));
+    // The boot is tried again once, fails again, and the write is dropped
+    // with the error logged.
+    await vi.waitFor(() => expect(console.error).toHaveBeenCalledTimes(2));
+    await settle();
     expect(db.calls.map(([command]) => command)).toEqual([
-      "spaces_accounts_list",
       "spaces_accounts_list",
     ]);
 
@@ -691,6 +693,42 @@ describe("provider accounts in monocode.db", () => {
     await settle();
     expect(db.calls.map(([command]) => command)).toEqual([
       "spaces_account_save",
+    ]);
+  });
+
+  it("after a failed boot, a removal or rename of a login not yet imported sticks", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    localStorage.setItem(
+      "monocode.providerAccounts.v1",
+      JSON.stringify({
+        codex: [
+          { id: "account-x", provider: "codex", label: "X" },
+          { id: "account-y", provider: "codex", label: "Y" },
+        ],
+      }),
+    );
+    db.refuse.add("spaces_accounts_list");
+    let accounts = await boot();
+    const credentials = await import("./providerAccountCredentials");
+    db.refuse.delete("spaces_accounts_list");
+
+    // The first write after the outage: the boot and its import run first.
+    await credentials.removeProviderAccountCredentials("codex", "account-x");
+    expect(accounts.removeProviderAccount("codex", "account-x")).toBe(true);
+    accounts.renameProviderAccount("codex", "account-y", "Why");
+    await settle();
+    await vi.waitFor(() =>
+      expect(labels(accounts, "codex")).toEqual([
+        "default Default account",
+        "account-y Why",
+      ]),
+    );
+    expect(db.accounts.map(({ id }) => id)).not.toContain("account-x");
+
+    accounts = await boot();
+    expect(labels(accounts, "codex")).toEqual([
+      "default Default account",
+      "account-y Why",
     ]);
   });
 

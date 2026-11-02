@@ -86,8 +86,10 @@ let queued = 0;
 let stale = false;
 /** Replaced by a fresh token each time the database refuses a write. */
 let refusal: object = {};
-/** Whether the boot load failed, so the next write starts it again. */
-let failed = false;
+/** After a failed boot: the boot, for the next write to start again. */
+let restart: (() => Promise<void>) | undefined;
+/** The boot a write started after a failure; every later write waits for it. */
+let booting: Promise<void> | undefined;
 /** Other windows of this app, once loaded; each reloads its snapshot when one writes. */
 let windows: BroadcastChannel | undefined;
 
@@ -106,9 +108,14 @@ export async function loadProviderAccounts(): Promise<void> {
     await start();
     await writes;
   } catch (error) {
-    failed = true;
-    console.error(error);
+    bootFailed(error);
   }
+}
+
+/** A boot that could not load: the next write starts it again. */
+function bootFailed(error: unknown): void {
+  restart = start;
+  console.error(error);
 }
 
 /** Loads the saved logins, then queues the import of browser storage's. */
@@ -188,19 +195,33 @@ async function loadSaved(): Promise<void> {
 }
 
 /**
- * Sends one write to `monocode.db` once it has loaded (after a failed boot,
- * the boot runs again first) and tells the other windows. A refused write is
- * logged; once the queue has drained, the snapshot reloads what the database
- * holds, so it drops the refused writes and keeps every saved one. The
- * returned promise rejects when this write is refused.
+ * Sends one write to `monocode.db`. After a failed boot, the first write
+ * starts the boot again, and every write from then on waits for it, so the
+ * import it queues runs before them. The returned promise rejects when this
+ * write is refused.
  */
 function persist(command: string, args: InvokeArgs): Promise<void> {
+  if (restart) {
+    booting = restart().catch(bootFailed);
+    restart = undefined;
+  }
+  // The boot's own import writes come once it has loaded, and go first.
+  if (saved || !booting) return enqueue(command, args);
+  const later = booting.then(() => enqueue(command, args));
+  later.catch(console.error);
+  return later;
+}
+
+/**
+ * Queues one write to `monocode.db` once it has loaded, and tells the other
+ * windows. A refused write is logged; once the queue has drained, the
+ * snapshot reloads what the database holds, so it drops the refused writes
+ * and keeps every saved one. The returned promise rejects when this write is
+ * refused.
+ */
+function enqueue(command: string, args: InvokeArgs): Promise<void> {
   queued += 1;
   const sent = writes.then(async () => {
-    if (failed) {
-      await start();
-      failed = false;
-    }
     if (!saved) return;
     await invoke<void>(command, args);
     windows!.postMessage(command);
