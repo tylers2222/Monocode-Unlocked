@@ -20,6 +20,7 @@ use crate::spaces::{
 
 /// A grant until a monthly limit resets: longer than any weekly cap.
 const THIRTY_DAYS_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+const EIGHT_DAYS_MS: i64 = 8 * 24 * 60 * 60 * 1000;
 
 /// Takes the Spaces schema back out, as a database from before Spaces is.
 fn drop_spaces(conn: &Connection) {

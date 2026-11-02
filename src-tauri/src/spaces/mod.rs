@@ -193,12 +193,12 @@ pub(crate) fn folder_key(path: &str) -> Result<String, String> {
     }
 }
 
-/// A project key: a folder in `path_key` form, or `~` for no project (the
+/// A project key: a folder in `folder_key` form, or `~` for no project (the
 /// front end's `selectionKey`).
 fn project_key(path: &str) -> Result<String, String> {
     match path {
         "~" => Ok(path.to_owned()),
-        _ => path_key(path),
+        _ => folder_key(path),
     }
 }
 
@@ -282,7 +282,7 @@ pub(crate) struct SpaceSettings {
 }
 
 /// The schema refuses a Space that does not exist and a TTL past
-/// `MAX_ROUTE_GRANT_MS`.
+/// `MAX_ROUTE_GRANT_TTL_MS`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SettingsPatch {
