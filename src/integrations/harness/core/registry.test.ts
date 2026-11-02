@@ -47,7 +47,8 @@ vi.mock(import("@tauri-apps/api/core"), async (importOriginal) => {
       tauri.calls.push([command, args]);
       const answer = tauri.answer(command, args ?? {});
       // Rust names the folder a turn runs in: the caller's own unless it moved.
-      if (command === "control_authorize_turn") return answer ?? args?.cwd;
+      if (command === "control_authorize_turn")
+        return answer === undefined ? args?.cwd : answer;
       return answer;
     }) as typeof original.invoke,
   };
@@ -206,16 +207,18 @@ describe("harness registry", () => {
     expect(told).toEqual(["/tmp-worktrees/space-2/s1", "/tmp/"]);
     expect(events.map((event) => event.type)).not.toContain("session.placed");
 
-    folder = "";
-    tauri.calls = [];
-    await expect(send("t2")).rejects.toThrow(
-      "control_authorize_turn named no folder for the turn",
-    );
-    expect(told).toHaveLength(2);
-    expect(tauri.calls.map(([command]) => command)).toEqual([
-      "control_authorize_turn",
-      "control_turn_finished",
-    ]);
+    for (const none of ["", null]) {
+      folder = none;
+      tauri.calls = [];
+      await expect(send("t2")).rejects.toThrow(
+        "control_authorize_turn named no folder for the turn",
+      );
+      expect(told).toHaveLength(2);
+      expect(tauri.calls.map(([command]) => command)).toEqual([
+        "control_authorize_turn",
+        "control_turn_finished",
+      ]);
+    }
   });
 
   // PR 5 review M2. Defect: a Stop while the provider's process spawns ends

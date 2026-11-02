@@ -417,6 +417,17 @@ fn project_logins_hold(world: &World) {
     );
 }
 
+/// The checkout the lease checkpoints take: a real folder, since a folder
+/// that does not exist cannot be leased (ADE-173).
+fn checkout(world: &World) -> String {
+    let folder = world.path().with_file_name("checkout-b");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::canonicalize(&folder)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn logins_grants_and_leases_store_what_they_are_given(world: &World) {
     let (store, now) = (world.store(), world.now());
     account::save_account(store, &work_login(), now).unwrap();
@@ -503,15 +514,16 @@ fn logins_grants_and_leases_store_what_they_are_given(world: &World) {
         "the grant command stored a grant that ends as it starts"
     );
 
-    leases::take_lease(store, "/work/b/", "space-2", now).unwrap();
+    let checkout = checkout(world);
+    leases::take_lease(store, &format!("{checkout}/"), "space-2", now).unwrap();
     only_absolute_folders_are_leased(store, now);
     assert!(
-        leases::take_lease(store, "/work/b", FIRST_SPACE, now).is_err(),
+        leases::take_lease(store, &checkout, FIRST_SPACE, now).is_err(),
         "a second Space took a leased checkout"
     );
     assert_eq!(
-        leases::release_lease(store, "/work/b", FIRST_SPACE),
-        Err("space-1 holds no lease on /work/b".into()),
+        leases::release_lease(store, &checkout, FIRST_SPACE),
+        Err(format!("space-1 holds no lease on {checkout}")),
         "Space 1 released Space 2's lease"
     );
 }
@@ -564,7 +576,7 @@ fn logins_grants_and_leases_hold(world: &World, at: i64) {
     assert_eq!(
         leases::leases(store).unwrap(),
         [CheckoutLease {
-            checkout_path: "/work/b".into(),
+            checkout_path: checkout(world),
             space_id: "space-2".into(),
             leased_at: at
         }],
@@ -594,10 +606,10 @@ fn removing_a_login_drops_its_space_login_and_grant(world: &World) {
     );
     assert_eq!(grants::grant(store, "s2").unwrap(), None);
     grants::save_grant(store, &grant(world.now())).unwrap_err();
-    leases::release_lease(store, "/work/b", "space-2").unwrap();
+    leases::release_lease(store, &checkout(world), "space-2").unwrap();
     assert_eq!(leases::leases(store).unwrap(), []);
     assert!(
-        leases::release_lease(store, "/work/b", "space-2").is_err(),
+        leases::release_lease(store, &checkout(world), "space-2").is_err(),
         "released a lease nobody holds"
     );
 }

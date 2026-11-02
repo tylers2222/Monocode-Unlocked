@@ -1507,7 +1507,14 @@ pub(crate) fn upsert_session(
            branch = excluded.branch,
            context_used = excluded.context_used,
            context_window = excluded.context_window,
-           worktree_cwd = excluded.worktree_cwd,
+           -- ADE-173: a save with no working copy keeps the Space copy Rust placed.
+           worktree_cwd = CASE
+             WHEN NULLIF(excluded.worktree_cwd, '') IS NULL AND EXISTS (
+               SELECT 1 FROM checkout_leases
+                WHERE checkout_path = sessions.worktree_cwd AND space_id = sessions.space_id)
+             THEN sessions.worktree_cwd
+             ELSE excluded.worktree_cwd
+           END,
            has_user_message = excluded.has_user_message,
            linked_work_item_json = excluded.linked_work_item_json,
            provider_account_id = excluded.provider_account_id,

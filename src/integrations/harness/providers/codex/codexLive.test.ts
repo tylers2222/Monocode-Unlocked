@@ -2286,6 +2286,24 @@ describe("codex live turn sequence", () => {
       cwd: "/repo",
     });
     expect(placed.worktreeCwd).toBe("/repo");
+    expect(placed.workFolder).toBeUndefined();
+    expect(
+      applyHarnessEvent(placed, { type: "session.placed", cwd: "/repo/" }),
+    ).toBe(placed);
+    const giga = {
+      ...newSession("codex", "/project/"),
+      workFolder: "/project/sub",
+    };
+    for (const [cwd, worktreeCwd, workFolder] of [
+      ["/repo/sub", "/repo", "/repo/sub"],
+      ["/repo", "/repo", "/repo"],
+    ] as const) {
+      const moved = applyHarnessEvent(giga, { type: "session.placed", cwd });
+      expect([moved.worktreeCwd, moved.workFolder]).toEqual([
+        worktreeCwd,
+        workFolder,
+      ]);
+    }
     const { turn } = await startTurn("codex-live");
     notify("turn/completed", {
       turn: { id: "turn_1", status: "completed" },

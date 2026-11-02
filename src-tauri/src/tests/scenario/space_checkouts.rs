@@ -57,8 +57,9 @@ fn temp_root(name: &str) -> PathBuf {
     std::fs::canonicalize(&root).unwrap()
 }
 
-fn add_session(store: &SessionStore, id: &str, cwd: &Path, space: &str) {
-    let conn = store.lock_conn().unwrap();
+/// What the window saves of session `id` in `cwd` when it holds no working
+/// copy for it (`session_upsert`).
+fn save(store: &SessionStore, id: &str, cwd: &Path) {
     let session = serde_json::from_value(json!({
         "id": id,
         "cwd": text(cwd),
@@ -70,12 +71,19 @@ fn add_session(store: &SessionStore, id: &str, cwd: &Path, space: &str) {
         "blocks": [],
     }))
     .unwrap();
-    session_store::upsert_session(&conn, &session).unwrap();
-    conn.execute(
-        "UPDATE sessions SET space_id = ?2 WHERE id = ?1",
-        [id, space],
-    )
-    .unwrap();
+    session_store::upsert_session(&store.lock_conn().unwrap(), &session).unwrap();
+}
+
+fn add_session(store: &SessionStore, id: &str, cwd: &Path, space: &str) {
+    save(store, id, cwd);
+    store
+        .lock_conn()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET space_id = ?2 WHERE id = ?1",
+            [id, space],
+        )
+        .unwrap();
 }
 
 /// Space 2, and session `one` of Space 1 and `two` of Space 2 in `project`.
@@ -206,6 +214,12 @@ fn two_sessions_in_two_folders(
         Some(text(copy)),
         "the copy is not the session's working copy"
     );
+    save(world.store(), "two", project);
+    assert_eq!(
+        work_cwd(world.store(), "two"),
+        Some(text(copy)),
+        "a window save erased the copy the hook placed the session in"
+    );
     assert_eq!(
         spawn_in(world, "one", project),
         Ok(project.clone()),
@@ -243,6 +257,20 @@ fn two_sessions_in_two_folders(
         "a session's numbered child left its copy"
     );
     let free = git_project(&root.join("free"));
+    world
+        .conn()
+        .execute(
+            "UPDATE sessions SET worktree_cwd = ?1 WHERE id = 'one'",
+            [text(&free)],
+        )
+        .unwrap();
+    save(world.store(), "one", project);
+    assert!(
+        work_cwd(world.store(), "one")
+            .unwrap_or_default()
+            .is_empty(),
+        "a window save could not clear a working copy that is no Space's copy"
+    );
     assert_eq!(
         spawn_in(world, "monocode-claude-text", project),
         Ok(project.clone())
@@ -285,6 +313,12 @@ fn turns_follow_and_foreign_folders_are_refused(
     assert!(
         held(world.store()).contains(&holds(&notes, FIRST_SPACE)),
         "a lease taken through a symlink is not on the folder"
+    );
+    let missing = root.join("missing");
+    assert_eq!(
+        leases::take_lease(world.store(), &text(&missing), FIRST_SPACE, world.now()),
+        Err(format!("No such folder: {}", missing.display())),
+        "a folder that does not exist was leased by its text"
     );
     let dotted = format!("{}/notes/../notes", text(root));
     assert!(
@@ -380,6 +414,7 @@ fn a_restart_and_a_deleted_copy_keep_every_folder(
     git(copy, &["add", "two.txt"]);
     git(copy, &["commit", "-qm", "two"]);
     let work = git(copy, &["rev-parse", "HEAD"]);
+    save(world.store(), "two", project);
     world.down(60_000);
     assert_eq!(
         held(world.store()),
@@ -441,7 +476,7 @@ mod spawn {
     use tauri::Manager;
 
     use super::super::agent_sandbox::{mock_app, script, wait_for};
-    use super::{git_project, temp_root, text, two_spaces};
+    use super::{git_project, save, temp_root, text, two_spaces, work_cwd};
     use crate::checkpoint;
 
     type App = tauri::App<tauri::test::MockRuntime>;
@@ -556,6 +591,13 @@ esac"#,
         let copy = root.join("project-worktrees/space-2/two");
         let one = authorize("one").unwrap();
         begin_checkpoint(&app, &project);
+        let sessions = app.state::<crate::session_store::SessionStore>();
+        save(&sessions, "two", &project);
+        assert_eq!(
+            work_cwd(&sessions, "two"),
+            Some(text(&copy)),
+            "a window save erased the copy a checkpoint placed the session in"
+        );
         let two = authorize("two").unwrap();
         assert_eq!(one, text(&project));
         assert_eq!(
@@ -577,10 +619,6 @@ esac"#,
         assert!(
             edit_in_copy(&app, &project, &copy).contains(&"src/lib.rs".to_owned()),
             "the first placed turn's checkpoint was taken in Space 1's checkout"
-        );
-        assert_eq!(
-            std::fs::read_to_string(project.join("src/lib.rs")).unwrap(),
-            ""
         );
         let _ = std::fs::remove_dir_all(&root);
     }

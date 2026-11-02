@@ -157,7 +157,7 @@ pub(crate) fn place(
     let Some((space, project)) = with_conn(store, |conn| session_of(conn, session_id))? else {
         return Ok(workdir.to_path_buf());
     };
-    // A project part 4 cannot key has no assignment.
+    // Only `project_key` fails here: a project part 4 cannot key has no assignment.
     let assigned =
         super::project_space(store, &project).unwrap_or_else(|_| super::FIRST_SPACE.to_owned());
     let spot = crate::worktrees::checkout_spot(&real);
@@ -193,7 +193,7 @@ pub(crate) fn place(
         if copy_owner.as_deref() == Some(space.as_str()) {
             conn.execute(
                 "UPDATE sessions SET worktree_cwd = ?1 WHERE id = ?2",
-                params![crate::fs::path_to_js(&copy), session_id],
+                params![copy_key, session_id],
             )?;
         }
         Ok(copy_owner)
@@ -271,8 +271,10 @@ fn key(path: &Path) -> String {
 
 /// The one key of a leased folder: resolved, so a symlink, `..` or a
 /// trailing slash names the folder `place` looks up. A folder that does not
-/// exist yet keeps its absolute text.
+/// exist has no such key, so it is refused.
 fn lease_key(path: &str) -> Result<String, String> {
-    let text = folder_key(path)?;
-    Ok(resolve(Path::new(path)).map_or(text, |real| key(&real)))
+    folder_key(path)?;
+    resolve(Path::new(path))
+        .map(|real| key(&real))
+        .ok_or_else(|| format!("No such folder: {path}"))
 }
