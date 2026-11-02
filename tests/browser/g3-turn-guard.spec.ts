@@ -38,7 +38,6 @@ const chat = (id: string, cwd: string, title: string): SessionSummary => ({
 const fakePi: MountOptions["handlers"] = {
   harness_resolve_pi: () => ({ path: "/usr/local/bin/pi" }),
   harness_resolve_omp: () => ({ path: "/usr/local/bin/omp" }),
-  harness_spawn: () => 4242,
   harness_write: (_store, { sessionId, line }) => {
     const request = JSON.parse(line as string) as { id: string; type: string };
     if (request.type === "prompt") return null;

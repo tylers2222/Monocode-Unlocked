@@ -62,7 +62,6 @@ declare global {
 /** Pi in RPC mode (piFamily.ts): every request but a prompt is answered at once. */
 const handlers: MountOptions["handlers"] = {
   harness_resolve_pi: () => ({ path: "/usr/local/bin/pi" }),
-  harness_spawn: () => 4242,
   harness_write: (_store, { sessionId, line }) => {
     const request = JSON.parse(line as string) as { id: string; type: string };
     if (request.type === "prompt") return null;

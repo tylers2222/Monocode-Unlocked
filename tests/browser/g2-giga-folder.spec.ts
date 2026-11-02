@@ -38,7 +38,6 @@ type ControlResponse =
 const handlers: MountOptions["handlers"] = {
   harness_resolve_pi: () => ({ path: "/usr/local/bin/pi" }),
   harness_resolve_claude: () => ({ path: "/usr/local/bin/claude" }),
-  harness_spawn: () => 4242,
   // Pi in RPC mode (piFamily.ts) accepts every request at once; a turn's
   // events come from `endTurnWriting`. Claude's stdin lines carry no id.
   harness_write: (_store, { sessionId, line }) => {

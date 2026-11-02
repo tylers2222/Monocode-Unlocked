@@ -228,7 +228,9 @@ async function ensureLive(input: {
       input.onThreadId?.(live.threadId);
       return live;
     }
+    // A warm child placed for another folder is never told this one.
     if (
+      live.cwd !== input.cwd ||
       live.providerAccountId !== input.providerAccountId ||
       live.codexStore !== input.codexStore
     ) {

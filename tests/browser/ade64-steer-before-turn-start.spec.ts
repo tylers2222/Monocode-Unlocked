@@ -34,13 +34,13 @@ const heldSpawn = {
   ...ompHandlers,
   harness_spawn: async (
     _store: unknown,
-    { sessionId, args }: { sessionId: string; args: string[] },
+    { sessionId, args, cwd }: { sessionId: string; args: string[]; cwd: string },
   ) => {
     await new Promise<void>((resolve) => {
       window.releaseSpawn = resolve;
       window.spawnHeld = true;
     });
-    return window.ompSpawn(sessionId, args);
+    return window.appBackend!.spawned(await window.ompSpawn(sessionId, args), cwd);
   },
 };
 

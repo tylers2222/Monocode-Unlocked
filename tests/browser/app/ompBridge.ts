@@ -52,8 +52,11 @@ export const ompHandlers = {
   harness_resolve_omp: () => ({ path: "omp" }),
   harness_spawn: (
     _store: unknown,
-    { sessionId, args }: { sessionId: string; args: string[] },
-  ) => window.ompSpawn(sessionId, args),
+    { sessionId, args, cwd }: { sessionId: string; args: string[]; cwd: string },
+  ) =>
+    window
+      .ompSpawn(sessionId, args)
+      .then((pid) => window.appBackend!.spawned(pid, cwd)),
   harness_write: (
     _store: unknown,
     { sessionId, line }: { sessionId: string; line: string },

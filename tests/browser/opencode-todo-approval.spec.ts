@@ -151,17 +151,20 @@ declare global {
  */
 const recordedOpenCode: Record<string, Handler> = {
   harness_resolve_opencode: () => ({ path: "/usr/local/bin/opencode" }),
-  harness_exec: (_store, { args }) =>
-    (args as string[])[0] === "--version" ? "1.19.3\n" : "",
+  harness_exec: (_store, { args, cwd }) =>
+    window.appBackend!.ran(
+      (args as string[])[0] === "--version" ? "1.19.3\n" : "",
+      cwd,
+    ),
   harness_free_port: () => 4096,
-  harness_spawn: (_store, { sessionId }) => {
+  harness_spawn: (_store, { sessionId, cwd }) => {
     setTimeout(() =>
       window.appBackend!.emit("harness-stdout", {
         sessionId,
         lines: ["opencode server listening on http://127.0.0.1:4096"],
       }),
     );
-    return 4242;
+    return window.appBackend!.spawned(4242, cwd);
   },
   harness_sse_open: (_store, { sessionId }) => {
     window.openCodeStream = sessionId as string;

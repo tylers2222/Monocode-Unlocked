@@ -185,6 +185,8 @@ it("keeps warmup and subsequent prompts unsaved across model changes", async () 
       prompt: "Generate text",
     }),
   ).resolves.toBe(output);
+  // The warm child of the same folder is reused for another model.
+  expect(spawnHelperChild).toHaveBeenCalledTimes(1);
   await expect(
     runCodexTextPrompt({ cwd: "/repo", prompt: "Generate more text" }),
   ).resolves.toBe(output);
@@ -192,6 +194,15 @@ it("keeps warmup and subsequent prompts unsaved across model changes", async () 
   expect(
     threadStarts().every((request) => request.params?.ephemeral === true),
   ).toBe(true);
+
+  // ADE-189: a warm child is never told another folder; a prompt for one
+  // starts its own child there.
+  await warmupCodexText("/repo");
+  spawnHelperChild.mockResolvedValueOnce("/placed-other");
+  await runCodexTextPrompt({ cwd: "/other", prompt: "Elsewhere" });
+  expect(spawnHelperChild).toHaveBeenCalledTimes(4);
+  expect(spawnHelperChild.mock.calls[3]?.[4]).toBe("/other");
+  expect(threadStarts().at(-1)?.params).toMatchObject({ cwd: "/placed-other" });
 });
 
 it("does not resume a stored thread for an unsaved text request", async () => {

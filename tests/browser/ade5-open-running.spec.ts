@@ -45,7 +45,6 @@ const RUNNING_ACME = new RegExp(`^Close (${runningIn(ACME).join("|")})$`);
 /** Omp in RPC mode accepts each request; no turn ends on its own. */
 const handlers: MountOptions["handlers"] = {
   harness_resolve_omp: () => ({ path: "/usr/local/bin/omp" }),
-  harness_spawn: () => 4242,
   harness_write: (_store, { sessionId, line }) => {
     const request = JSON.parse(line as string) as { id?: string; type?: string };
     if (request.id)

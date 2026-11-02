@@ -55,7 +55,6 @@ declare global {
  */
 const handlers: MountOptions["handlers"] = {
   harness_resolve_pi: () => ({ path: "/usr/local/bin/pi" }),
-  harness_spawn: () => 4242,
   harness_write: (_store, { sessionId, line }) => {
     const request = JSON.parse(line as string) as {
       id?: string;

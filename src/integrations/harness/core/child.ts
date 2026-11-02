@@ -626,7 +626,7 @@ export async function execChild(
  * `owner`, the session it works for, Rust runs it in a neutral folder, not
  * `cwd` (ADE-189).
  */
-export function execHelper(
+export async function execHelper(
   command: string,
   args: string[],
   cwd?: string,
@@ -640,7 +640,7 @@ export function execHelper(
     binaryPathOverride === undefined && binaryProvider
       ? runtimeProviderBinaryPath(binaryProvider)
       : binaryPathOverride;
-  return invoke("harness_exec", {
+  const ran = await invoke<{ stdout: string; cwd: string }>("harness_exec", {
     command,
     args,
     cwd,
@@ -648,4 +648,6 @@ export function execHelper(
     binaryPath,
     helper: { owner, key },
   });
+  if (!ran.cwd) throw new Error(`harness_exec named no folder for ${command}`);
+  return ran;
 }

@@ -1,4 +1,4 @@
-import { AcpClient } from "../../core/acp";
+import { AcpClient, type AcpTextLive } from "../../core/acp";
 import {
   execChild,
   killChild,
@@ -26,20 +26,7 @@ const CLIENT_CAPABILITIES = {
   terminal: false,
 };
 
-type LiveText = {
-  acp: AcpClient;
-  binaryPath: string;
-  cwd: string;
-  /** Where Rust started the child; it tells its agent this folder (ADE-189). */
-  placed: string;
-  model: string;
-  settingsKey: string;
-  acpSessionId: string;
-  collecting: boolean;
-  output: string;
-  closed: boolean;
-  onEvent?: (event: HarnessEvent) => void;
-};
+type LiveText = AcpTextLive & { binaryPath: string };
 
 let live: LiveText | null = null;
 let turns: Promise<void> = Promise.resolve();
@@ -199,7 +186,7 @@ async function startLive(
   );
 
   try {
-    session.placed = await spawnHelperChild(
+    const placed = await spawnHelperChild(
       undefined,
       TEXT_CHILD_ID,
       path,
@@ -208,6 +195,7 @@ async function startLive(
       undefined,
       "grok",
     );
+    session.placed = placed;
     const init = await acp.request(
       "initialize",
       {
@@ -227,7 +215,7 @@ async function startLive(
         )
         .catch(() => undefined);
     }
-    await openSession(session, session.placed, model, modelSettings);
+    await openSession(session, placed, model, modelSettings);
     live = session;
     return session;
   } catch (error) {

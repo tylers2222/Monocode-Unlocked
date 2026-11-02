@@ -1,4 +1,4 @@
-import { AcpClient } from "../../core/acp";
+import { AcpClient, type AcpTextLive } from "../../core/acp";
 import {
   killChild,
   resolveCursorBinary,
@@ -21,19 +21,7 @@ const CLIENT_CAPABILITIES = {
   _meta: { parameterizedModelPicker: true },
 };
 
-type LiveText = {
-  acp: AcpClient;
-  cwd: string;
-  /** Where Rust started the child; it tells its agent this folder (ADE-189). */
-  placed: string;
-  model: string;
-  settingsKey: string;
-  acpSessionId: string;
-  collecting: boolean;
-  output: string;
-  closed: boolean;
-  onEvent?: (event: HarnessEvent) => void;
-};
+type LiveText = AcpTextLive;
 
 let live: LiveText | null = null;
 let turns: Promise<void> = Promise.resolve();
@@ -140,6 +128,9 @@ async function ensureLive(
       live.settingsKey === settingsKey
     )
       return live;
+    // A warm child placed for another folder is never told this one: it
+    // reopens only for its own folder, and startLive replaces it otherwise.
+    if (live.cwd !== cwd) return startLive(cwd, model, modelSettings);
     try {
       await openSession(live, live.placed, model, modelSettings);
       return live;
@@ -198,7 +189,7 @@ async function startLive(
   );
 
   try {
-    session.placed = await spawnHelperChild(
+    const placed = await spawnHelperChild(
       undefined,
       TEXT_CHILD_ID,
       path,
@@ -207,6 +198,7 @@ async function startLive(
       undefined,
       "cursor",
     );
+    session.placed = placed;
     await acp.request(
       "initialize",
       {
@@ -219,7 +211,7 @@ async function startLive(
     await acp
       .request("authenticate", { methodId: "cursor_login" }, REQUEST_TIMEOUT_MS)
       .catch(() => undefined);
-    await openSession(session, session.placed, model, modelSettings);
+    await openSession(session, placed, model, modelSettings);
     live = session;
     return session;
   } catch (error) {

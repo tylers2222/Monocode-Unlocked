@@ -61,7 +61,6 @@ declare global {
 
 const handlers: MountOptions["handlers"] = {
   harness_resolve_omp: () => ({ path: "/usr/local/bin/omp" }),
-  harness_spawn: () => 4242,
   // Omp in RPC mode accepts every request; no turn ends on its own.
   harness_write: (_store, { sessionId, line }) => {
     const request = JSON.parse(line as string) as {

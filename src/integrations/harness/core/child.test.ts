@@ -242,6 +242,15 @@ describe("child bridge", () => {
       );
     }
 
+    // ADE-189: an exec names the folder Rust ran it in, or it fails.
+    mocks.invoke.mockResolvedValue({ stdout: "v1\n", cwd: "/neutral" });
+    await expect(
+      child.execHelper("/resolved", ["--version"], undefined, "opencode"),
+    ).resolves.toEqual({ stdout: "v1\n", cwd: "/neutral" });
+    mocks.invoke.mockResolvedValueOnce({ stdout: "v1\n" });
+    await expect(
+      child.execHelper("/resolved", ["--version"], undefined, "opencode"),
+    ).rejects.toThrow("harness_exec named no folder for /resolved");
     await child.execChild("/resolved", ["--version"], undefined, "opencode");
     expect(mocks.invoke).toHaveBeenCalledWith("harness_exec", {
       command: "/resolved",
