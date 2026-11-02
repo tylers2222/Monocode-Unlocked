@@ -1,0 +1,169 @@
+"""Tests for ci_changes.py with the real ci-map.toml, run on real git diffs in a scratch repo.
+
+    python3 -m unittest discover -s scripts/process/tests
+"""
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).parent
+SCRIPT = HERE.parent / "ci_changes.py"
+WORKFLOWS = HERE.parents[2] / ".github/workflows"
+sys.path.insert(0, str(HERE.parent))
+from ci_changes import MAP, parse  # noqa: E402
+
+JOBS = list(parse(MAP.read_text()).jobs)
+EVERY_JOB = set(JOBS)
+# Real pull requests' file lists (gh pr view <n> --json files).
+PR_429_SCRIPT = ["scripts/spaces/merge-dry-run.py", "scripts/spaces/tests/test_merge_dry_run.py"]
+PR_436_RUST = ["src-tauri/src/harness.rs", "src-tauri/src/lib.rs", "src-tauri/src/session_store.rs",
+               "src-tauri/src/spaces/mod.rs", "src-tauri/src/tests/scenario/mod.rs",
+               "src-tauri/src/tests/scenario/spaces.rs"]
+PR_444_RUST_TS = ["src-tauri/src/control_cli.rs", "src-tauri/src/mono_gate.rs", "src-tauri/src/mono_messages.rs",
+                  "src-tauri/src/tests/scenario/cross_space.rs", "src-tauri/src/tests/scenario/mod.rs",
+                  "src/features/monos/model/monoMessages.ts"]
+PR_417_UI = ["src/app/App.tsx", "src/app/hooks/useMonoHabits.test.ts", "src/app/hooks/useMonoHabits.ts",
+             "src/features/monos/model/habitQuestionHost.test.ts", "src/features/monos/model/habitQuestionHost.ts",
+             "tests/browser/ade67-question-card.spec.ts", "tests/browser/ade71-habit-question-mono-chat.spec.ts"]
+
+
+def git(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+class Repo:
+    """A scratch git repo whose base commit holds one file and whose head commit adds the given files."""
+
+    def __init__(self, files: list[str]):
+        self.dir = tempfile.TemporaryDirectory()
+        self.path = Path(self.dir.name)
+        git(self.path, "init", "-q")
+        git(self.path, "config", "user.email", "t@example.invalid")
+        git(self.path, "config", "user.name", "t")
+        (self.path / "seed").write_text("seed\n")
+        git(self.path, "add", "-A")
+        git(self.path, "commit", "-qm", "base")
+        self.base = git(self.path, "rev-parse", "HEAD")
+        for name in files:
+            (self.path / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.path / name).write_text("changed\n")
+        git(self.path, "add", "-A")
+        git(self.path, "commit", "-qm", "head", "--allow-empty")
+        self.head = git(self.path, "rev-parse", "HEAD")
+
+    def select(self, event: str, base: str | None) -> tuple[dict[str, str], str]:
+        """ci_changes.py's outputs (job -> "true"/"false") and its reason line."""
+        run = subprocess.run([sys.executable, str(SCRIPT), "github", event, self.base if base is None else base, self.head],
+                             cwd=self.path, check=True, capture_output=True, text=True)
+        return dict(line.split("=", 1) for line in run.stdout.splitlines()), run.stderr.strip().splitlines()[-1]
+
+
+def classes(paths: list[str]) -> dict[str, str]:
+    run = subprocess.run([sys.executable, str(SCRIPT), "files"], input="\n".join(paths) + "\n",
+                         check=True, capture_output=True, text=True)
+    return dict(line.split("\t") for line in run.stdout.splitlines())
+
+
+class SelectorOnRealDiffs(unittest.TestCase):
+    def runs(self, files: list[str], event: str = "pull_request", base: str | None = None) -> tuple[set[str], str]:
+        repo = Repo(files)
+        self.addCleanup(repo.dir.cleanup)
+        outputs, reason = repo.select(event, base)
+        self.assertEqual(list(outputs), JOBS, "one output line per job in the map, in map order")
+        return {job for job, on in outputs.items() if on == "true"}, reason
+
+    def test_rust_only_runs_check_packaging_and_e2e(self):
+        jobs, _ = self.runs(PR_436_RUST)
+        self.assertEqual(jobs, {"check", "rpm", "e2e-linux", "e2e-macos"})
+
+    def test_rust_with_a_src_model_adds_browser_and_host(self):
+        jobs, _ = self.runs(PR_444_RUST_TS)
+        self.assertEqual(jobs, {"browser", "host", "check", "rpm", "e2e-linux", "e2e-macos"})
+
+    def test_src_only_runs_front_end_check_and_e2e_without_packaging(self):
+        jobs, _ = self.runs(PR_417_UI)
+        self.assertEqual(jobs, {"browser", "host", "check", "e2e-linux", "e2e-macos"})
+
+    def test_scripts_only_runs_no_gated_job(self):
+        jobs, reason = self.runs(PR_429_SCRIPT)
+        self.assertEqual(jobs, set())
+        self.assertIn("runs: no gated job", reason)
+
+    def test_docs_only_runs_no_gated_job(self):
+        jobs, _ = self.runs(["docs/notes.md", "README.md", "LICENSE"])
+        self.assertEqual(jobs, set())
+
+    def test_e2e_harness_change_runs_only_its_job(self):
+        self.assertEqual(self.runs(["scripts/e2e-macos.sh"])[0], {"e2e-macos"})
+        self.assertEqual(self.runs(["evals/run.sh", "docker/e2e.sh"])[0], {"e2e-linux"})
+
+    def test_unmatched_file_runs_every_job(self):
+        jobs, reason = self.runs(["docs/notes.md", "newtool/config.yaml"])
+        self.assertEqual(jobs, EVERY_JOB)
+        self.assertEqual(reason, "ci-changes: newtool/config.yaml matches no glob in the map: every job runs")
+
+    def test_workflow_change_runs_every_job(self):
+        jobs, reason = self.runs(["docs/notes.md", ".github/workflows/gate.yml"])
+        self.assertEqual(jobs, EVERY_JOB)
+        self.assertEqual(reason, "ci-changes: .github/workflows/gate.yml is in the map's all list: every job runs")
+
+    def test_lockfile_toolchain_map_and_selector_run_every_job(self):
+        for path in ["package-lock.json", "Cargo.lock", ".nvmrc", ".github/rust-version", "rust-toolchain.toml",
+                     "scripts/process/ci-map.toml", "scripts/process/ci_changes.py"]:
+            with self.subTest(path=path):
+                self.assertEqual(self.runs([path]), (EVERY_JOB, f"ci-changes: {path} is in the map's all list: every job runs"))
+
+    def test_push_and_dispatch_run_every_job_whatever_changed(self):
+        for event in ["push", "workflow_dispatch"]:
+            with self.subTest(event=event):
+                self.assertEqual(self.runs(PR_429_SCRIPT, event=event), (EVERY_JOB, f"ci-changes: {event} event: every job runs"))
+
+    def test_a_diff_that_cannot_be_read_runs_every_job(self):
+        no_diff = "ci-changes: no diff could be read (failed or empty): every job runs"
+        for base in ["", "0" * 40, "deadbeef" * 5]:
+            with self.subTest(base=base):
+                self.assertEqual(self.runs(PR_429_SCRIPT, base=base), (EVERY_JOB, no_diff))
+        self.assertEqual(self.runs([]), (EVERY_JOB, no_diff))
+
+
+class FileClasses(unittest.TestCase):
+    def test_box_ci_classes(self):
+        self.assertEqual(classes([".github/workflows/ci.yml", "scripts/process/ci-map.toml", "newtool/x",
+                                  "scripts/process/tier.py", "scripts/process/heavy-lock.sh",
+                                  "scripts/install-linux-deps-fedora.sh", "src-tauri/tauri.linux.conf.json"]), {
+            ".github/workflows/ci.yml": "all",
+            "scripts/process/ci-map.toml": "all",
+            "newtool/x": "unmatched",
+            "scripts/process/tier.py": "none",
+            "scripts/process/heavy-lock.sh": "check",
+            "scripts/install-linux-deps-fedora.sh": "rpm",
+            "src-tauri/tauri.linux.conf.json": "appimage,check,e2e-linux,e2e-macos,release-channel,rpm",
+        })
+
+    def test_globs_keep_single_star_inside_one_folder(self):
+        self.assertEqual(classes(["notes.md", "src/notes.md", "src-tauri/src/remote_bootstrap.sh"]), {
+            "notes.md": "none",
+            "src/notes.md": "browser,check,e2e-linux,e2e-macos,host",
+            "src-tauri/src/remote_bootstrap.sh": "check,e2e-linux,e2e-macos,host,rpm",
+        })
+
+
+class WorkflowWiring(unittest.TestCase):
+    """Each map job is one job-level `if:` on its `changes` output, and nothing else gates by path."""
+
+    def test_every_map_job_is_gated_on_its_own_output_and_nothing_else_is(self):
+        text = {path.name: path.read_text() for path in WORKFLOWS.glob("*.yml")}
+        gated = {job for body in text.values() for job in re.findall(r"needs\.changes\.outputs\.([\w-]+) != 'false'", body)}
+        declared = {job for body in text.values() for job in re.findall(r"^      ([\w-]+): \$\{\{ steps\.paths\.outputs\.\1 \}\}$", body, re.M)}
+        self.assertEqual(gated, EVERY_JOB)
+        self.assertEqual(declared, EVERY_JOB)
+        for name, body in text.items():
+            with self.subTest(workflow=name):
+                self.assertNotRegex(body, r"(?m)^\s+paths(-ignore)?:", "workflow-level paths filters leave required checks pending")
+
+
+if __name__ == "__main__":
+    unittest.main()

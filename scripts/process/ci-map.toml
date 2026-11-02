@@ -1,0 +1,160 @@
+# CI path map: the one list of which changed files run which path-gated CI job (ADE-190).
+# scripts/process/ci_changes.py reads it in the `changes` jobs of ci.yml and e2e.yml,
+# and box-ci.sh reads it through that script.
+#
+# A glob matches the whole repo-relative path: `*` and `?` stay inside one folder,
+# `**` crosses folders (`src/**` is every file under src/).
+#
+# A pull request runs a job when one of its changed files matches the job's globs.
+# Fail safe, every job runs when:
+#   - a changed file matches `all`, or matches no glob in this file at all;
+#   - the event is not a pull request (a push to main or tyler/main, a dispatch);
+#   - the diff cannot be read, or is empty.
+# A file that matches only `none` runs no gated job. gate/lint, gate/integrity,
+# gate/mutation and review/agent are never gated: they run on every pull request.
+
+# Files whose change can affect every job: the workflows, the map and its reader,
+# dependency manifests and lockfiles, toolchain pins.
+all = [
+  ".github/**",
+  "scripts/process/ci-map.toml",
+  "scripts/process/ci_changes.py",
+  "package.json",
+  "package-lock.json",
+  "Cargo.toml",
+  "Cargo.lock",
+  ".nvmrc",
+  ".node-version",
+  ".tool-versions",
+  "rust-toolchain",
+  "rust-toolchain.toml",
+  ".cargo/**",
+  ".npmrc",
+]
+
+# Files no gated job reads. The gate scripts and the lint configs are read by gate/lint,
+# which always runs; scripts/spaces and the version and SSH helpers are run by no workflow.
+none = [
+  "docs/**",
+  "*.md",
+  "LICENSE",
+  "NOTICE",
+  ".gitignore",
+  "scripts/gate/**",
+  "scripts/process/**",
+  "scripts/spaces/**",
+  "scripts/bump-version.mjs",
+  "scripts/test-remote-ssh.py",
+  "eslint.config.js",
+  "eslint-suppressions.json",
+  ".jscpd.json",
+]
+
+# One entry per gated job; the key is the job id and the name of the `changes` output.
+[jobs]
+# node --test scripts/release-channel.test.cjs
+release-channel = [
+  "scripts/release-channel*",
+  "src-tauri/tauri*.conf.json",
+]
+
+# Playwright on Vite: the front end, the specs and their rigs, and host/ (a spec
+# imports it).
+browser = [
+  "src/**",
+  "tests/browser/**",
+  "host/**",
+  "public/**",
+  "*.html",
+  "playwright.config.ts",
+  "vite.config.ts",
+  "tsconfig.json",
+  "tsconfig.node.json",
+]
+
+# The host build and tests: host/ imports src/ models, and its tests read the
+# bootstrap scripts in src-tauri.
+host = [
+  "host/**",
+  "src/**",
+  "src-tauri/src/remote_bootstrap.*",
+  "tsconfig.json",
+]
+
+# vitest (src/, tests/), tsc, cargo fmt/clippy/check/test, heavy-lock.test.sh. The
+# Rust tests read fixtures in src/ and tests/ and include host/windows-acl.ps1.
+check = [
+  "src/**",
+  "src-tauri/**",
+  "tests/**",
+  "vendor/**",
+  "host/windows-acl.ps1",
+  "clippy.toml",
+  "rustfmt.toml",
+  ".rustfmt.toml",
+  "tsconfig.json",
+  "tsconfig.node.json",
+  "vite.config.ts",
+  "vitest.config.ts",
+  "scripts/process/heavy-lock*",
+  "scripts/install-linux-deps-debian.sh",
+]
+
+# Fedora and AlmaLinux rpm builds (and the clean install after them).
+rpm = [
+  "src-tauri/**",
+  "vendor/**",
+  "scripts/repack-appimage.sh",
+  "scripts/assert-appimage-host-libs.sh",
+  "scripts/install-linux-deps-debian.sh",
+  "scripts/install-linux-deps-fedora.sh",
+]
+
+# The AppImage host-library assertion: only these inputs change host-library linking.
+appimage = [
+  "scripts/repack-appimage.sh",
+  "scripts/assert-appimage-host-libs.sh",
+  "scripts/install-linux-deps-debian.sh",
+  "src-tauri/tauri.conf.json",
+  "src-tauri/tauri.linux.conf.json",
+  "src-tauri/Cargo.toml",
+]
+
+# make e2e in the Docker image: the app build, the scenario, milestone and eval suites.
+e2e-linux = [
+  "src/**",
+  "src-tauri/**",
+  "vendor/**",
+  "host/windows-acl.ps1",
+  "public/**",
+  "*.html",
+  "vite.config.ts",
+  "tsconfig.json",
+  "tsconfig.node.json",
+  "tests/scenarios/**",
+  "scripts/scenarios/**",
+  "scripts/giga-eval/**",
+  "scripts/milestones-e2e/**",
+  "scripts/install-linux-deps-debian.sh",
+  "evals/**",
+  "docker/**",
+  "Makefile",
+]
+
+# The real-app scenarios on a hosted Mac.
+e2e-macos = [
+  "src/**",
+  "src-tauri/**",
+  "vendor/**",
+  "host/windows-acl.ps1",
+  "public/**",
+  "*.html",
+  "vite.config.ts",
+  "tsconfig.json",
+  "tsconfig.node.json",
+  "tests/scenarios/**",
+  "scripts/scenarios/**",
+  "scripts/giga-eval/**",
+  "scripts/milestones-e2e/**",
+  "scripts/e2e-macos.sh",
+]
