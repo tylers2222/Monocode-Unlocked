@@ -14,29 +14,34 @@ const saveGeneratedImage = vi.hoisted(() =>
 );
 const deleteGeneratedImages = vi.hoisted(() => vi.fn(async () => undefined));
 const spawnChild = vi.hoisted(() =>
-  vi.fn(async (..._args: unknown[]) => undefined),
+  vi.fn<(...args: unknown[]) => Promise<undefined>>(async () => undefined),
+);
+// Rust places a helper and names the folder (ADE-189).
+const spawnHelperChild = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<string>>(async () => "/neutral"),
 );
 const restoreMonoCodexAgentState = vi.hoisted(() =>
-  vi.fn(async (..._args: unknown[]) => undefined),
+  vi.fn<(...args: unknown[]) => Promise<undefined>>(async () => undefined),
 );
 const prepareCodexMonoContext = vi.hoisted(() =>
-  vi.fn(
-    async (
-      _input: unknown,
-    ): Promise<{ config: Record<string, unknown>; hasThread: boolean }> => ({
-      config: {
-        sqlite_home: "/private/mono",
-        instructions: "Account instructions",
-      },
-      hasThread: true,
-    }),
-  ),
+  vi.fn<
+    (
+      input: unknown,
+    ) => Promise<{ config: Record<string, unknown>; hasThread: boolean }>
+  >(async () => ({
+    config: {
+      sqlite_home: "/private/mono",
+      instructions: "Account instructions",
+    },
+    hasThread: true,
+  })),
 );
 vi.mock("./codexStore", () => ({ prepareCodexMonoContext }));
 
 vi.mock("../../core/child", () => ({
   resolveCodexBinary: async () => ({ path: "/fake/codex" }),
   spawnChild,
+  spawnHelperChild,
   restoreMonoCodexAgentState,
   killChild: async () => undefined,
   unwatchChild: () => undefined,
@@ -64,6 +69,7 @@ const {
   stopCodexSession,
   __codexTestReset,
 } = await import("./codex");
+const { discoverCodexModels } = await import("./codexCatalog");
 import type { MonoTools } from "../../core/monoTools";
 import type { HarnessEvent } from "../../core/types";
 import {
@@ -200,6 +206,35 @@ describe("codex live turn sequence", () => {
     vi.restoreAllMocks();
     await stopCodexSession("codex-live");
     __codexTestReset();
+  });
+
+  // ADE-191: the model-catalog probe is a helper of no session, so Rust runs
+  // it in the neutral folder, never in the folder its caller names.
+  it("probes the model catalog as a helper, not in the caller's folder", async () => {
+    spawnChild.mockClear();
+    spawnHelperChild.mockClear();
+    const models = discoverCodexModels("/workspace");
+    const answer = async (method: string, result: unknown) => {
+      await waitFor(() => parse().some((m) => m.method === method), method);
+      reply(parse().find((m) => m.method === method)!.id as number, result);
+    };
+    await answer("initialize", {});
+    await answer("account/read", { account: { type: "chatgpt" } });
+    await answer("model/list", {
+      data: [{ model: "gpt-probe", displayName: "GPT Probe", isDefault: true }],
+      nextCursor: null,
+    });
+    await expect(models).resolves.toMatchObject([{ nativeId: "gpt-probe" }]);
+    expect(spawnHelperChild).toHaveBeenCalledWith(
+      undefined,
+      expect.stringMatching(/^monocode-codex-probe-/),
+      "/fake/codex",
+      ["app-server"],
+      "/workspace",
+      undefined,
+      "codex",
+    );
+    expect(spawnChild).not.toHaveBeenCalled();
   });
 
   it("reports when the provider accepts a turn", async () => {

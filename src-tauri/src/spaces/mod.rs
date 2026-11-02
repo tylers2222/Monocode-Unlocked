@@ -561,19 +561,18 @@ pub(crate) enum Child<'a> {
 /// ADE-189, and its owner is not wired yet, so it keeps that folder whenever it
 /// has no Space, as a session's own child does, and keeps its project
 /// context. No Space 2 session exists until ADE-179, so none of them lets a
-/// Space into another's checkout today. ADE-191 (the catalog probes) and
-/// ADE-192 (the owner of the Claude, Cursor, Grok and OpenCode text children)
-/// shrink this, and part 4/4 deletes it. Every other helper of no stored
-/// session runs in the neutral folder.
+/// Space into another's checkout today. ADE-192 (the owner of the Claude,
+/// Cursor, Grok and OpenCode text children) shrinks this, and part 4/4 deletes
+/// it. Every other helper of no stored session runs in the neutral folder.
 ///
 /// - [`KEEPS_CALLER_FOLDER`]: helpers matched by a prefix of their child key,
 ///   including the Grok text cleanup exec (`grokText.ts`
 ///   `deleteTextSession`, `sessions delete`). That exec passes
 ///   `monocode-grok-text` as its key, so it runs where its text child ran: no
 ///   one has shown that Grok finds a session by id alone.
-/// - Still spawned as `spawnChild` (a session's own child, which keeps its
-///   folder by ADE-173's rule): the Devin, Codex and Hermes catalog probes
-///   (`devinCatalog.ts`, `codexCatalog.ts`, `hermesCatalog.ts`, the home dir).
+///
+/// The model-catalog probes are not on it: their model lists are the user's,
+/// so they run in the neutral folder (ADE-191).
 const KEEPS_CALLER_FOLDER: [&str; 10] = [
     // Titles, commit, PR and branch text, /btw side questions, and the Grok
     // text cleanup exec. Claude, Cursor (`monocode-text`), Grok and OpenCode

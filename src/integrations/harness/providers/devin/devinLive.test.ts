@@ -57,6 +57,7 @@ const {
 } = await import("./devin");
 const { resetDevinAuthCache } = await import("./devinAuth");
 const { runDevinTextPrompt } = await import("./devinText");
+const { discoverDevinModels } = await import("./devinCatalog");
 import type { HarnessEvent } from "../../core/types";
 
 const parse = () => sent.map((line) => JSON.parse(line));
@@ -211,7 +212,48 @@ describe("Devin live ACP sequence", () => {
     await expect(
       runDevinTextPrompt({ cwd: "/repo", prompt: "why?" }),
     ).rejects.toThrow("Devin is not logged in");
+    await expect(discoverDevinModels("/workspace")).rejects.toThrow(
+      "Devin is not logged in",
+    );
     expect(children.helperArgs).toEqual([]);
+  });
+
+  // ADE-191: the model-catalog probe is a helper of no session. Rust runs it
+  // in the neutral folder, and it tells Devin that folder, never its caller's.
+  it("probes the Devin model catalog as a helper in the folder Rust names", async () => {
+    textFiles.set(
+      "/home/me/.local/share/devin/credentials.toml",
+      'windsurf_api_key = "devin-key"\n',
+    );
+    const models = discoverDevinModels("/workspace");
+    await answer("initialize", {
+      protocolVersion: 1,
+      authMethods: [{ id: "devin-browser" }],
+    });
+    await answer("authenticate", {});
+    await waitFor(() => !!request("session/new"), "session/new");
+    expect(request("session/new")!.params).toEqual({
+      cwd: "/placed",
+      mcpServers: [],
+    });
+    reply(request("session/new")!.id, {
+      sessionId: "devin-probe",
+      configOptions: [CONFIG[1]],
+    });
+    await answer("session/delete", {});
+    await expect(models).resolves.toEqual(expect.any(Array));
+    expect(children.helperArgs).toEqual([
+      [
+        undefined,
+        expect.stringMatching(/^monocode-devin-probe-/),
+        "/fake/devin",
+        ["acp"],
+        "/workspace",
+        undefined,
+        "devin",
+      ],
+    ]);
+    expect(children.spawnArgs).toEqual([]);
   });
 
   it("reuses the CLI login, picks model and mode, and prompts", async () => {

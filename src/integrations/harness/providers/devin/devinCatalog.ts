@@ -103,11 +103,11 @@ export async function discoverDevinModels(
   try {
     return await Promise.race([
       (async () => {
-        // INTERIM (ADE-189 4/4): not a helper yet (spaces/mod.rs).
-        await startDevinAcp(probeId, cwd, rpc, { allowBrowser: false });
+        // A helper of no session: its model list is the user's (ADE-191).
+        const placed = await startDevinAcp(probeId, cwd, rpc, { allowBrowser: false, helper: {} });
         const created = await rpc.request<unknown>(
           "session/new",
-          { cwd, mcpServers: [] },
+          { cwd: placed, mcpServers: [] },
           REQUEST_TIMEOUT_MS,
         );
         // The probe session is throwaway; keep it out of `devin list`.
