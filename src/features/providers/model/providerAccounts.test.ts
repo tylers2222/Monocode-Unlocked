@@ -196,7 +196,7 @@ describe("provider accounts", () => {
     expect(providerAccountLabel("devin", "default")).toBe("Personal");
   });
 
-  it("stores named profiles separately per provider", () => {
+  it("stores named profiles separately per provider", async () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue(
       "00000000-0000-4000-8000-000000000001",
     );
@@ -209,6 +209,9 @@ describe("provider accounts", () => {
     ]);
     expect(providerAccounts("codex")).toHaveLength(1);
     expect(providerAccountLabel("claude", work.id)).toBe("Work account");
+    // Never booted: browser storage is the only store, and nothing is sent.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(db.calls).toEqual([]);
   });
 
   it("falls back to the default account for malformed stored profiles", () => {
@@ -631,8 +634,15 @@ describe("provider accounts in monocode.db", () => {
       "monocode.providerAccountSelections.v1",
       JSON.stringify({ "/repo/one": { codex: "account-x" } }),
     );
+    db.accounts.push({
+      provider: "codex",
+      id: "account-x",
+      label: "X",
+      createdAt: 0,
+    });
     db.refuse.add("spaces_accounts_list");
     const accounts = await boot();
+    const credentials = await import("./providerAccountCredentials");
 
     expect(console.error).toHaveBeenCalledWith("spaces_accounts_list refused");
     expect(labels(accounts, "codex")).toEqual([
@@ -640,6 +650,15 @@ describe("provider accounts in monocode.db", () => {
       "account-x X",
     ]);
     db.calls = [];
+    // The boot is tried again, fails again, and the remove is refused: the
+    // folder and the database row stay.
+    await expect(
+      credentials.removeProviderAccountCredentials("codex", "account-x"),
+    ).rejects.toThrow("monocode.db is not loaded");
+    expect(sent("provider_account_remove")).toEqual([]);
+    expect(sent("spaces_account_remove")).toEqual([]);
+    expect(db.accounts.map(({ id }) => id)).toContain("account-x");
+    expect(labels(accounts, "codex")).toContain("account-x X");
     accounts.saveProviderAccount({
       id: "account-new",
       provider: "codex",
@@ -648,16 +667,13 @@ describe("provider accounts in monocode.db", () => {
     expect(localStorage.getItem("monocode.providerAccounts.v1")).toContain(
       "account-new",
     );
-    // The boot is tried again once, fails again, and the write is dropped
-    // with the error logged.
-    await vi.waitFor(() => expect(console.error).toHaveBeenCalledTimes(2));
     await settle();
-    expect(db.calls.map(([command]) => command)).toEqual([
-      "spaces_accounts_list",
-    ]);
 
     db.refuse.delete("spaces_accounts_list");
     db.calls = [];
+    // A rename made while the boot loads is shown once it has been saved.
+    db.onList = () =>
+      accounts.renameProviderAccount("codex", "account-x", "Why");
     accounts.saveProviderAccount({
       id: "account-next",
       provider: "codex",
@@ -671,11 +687,12 @@ describe("provider accounts in monocode.db", () => {
     await vi.waitFor(() =>
       expect(labels(accounts, "codex")).toEqual([
         "default Default account",
-        "account-x X",
+        "account-x Why",
         "account-new New",
         "account-next Next",
       ]),
     );
+    expect(db.accounts.find(({ id }) => id === "account-x")?.label).toBe("Why");
     expect(accounts.selectedProviderAccountId("codex", "/repo/one")).toBe(
       "account-x",
     );
