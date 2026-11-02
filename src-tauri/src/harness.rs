@@ -1212,14 +1212,7 @@ pub(crate) fn provider_account_path<R: Runtime>(
     if account_id == DEFAULT_PROVIDER_ACCOUNT_ID {
         return Err("The default provider account cannot be removed".into());
     }
-    if account_id.is_empty()
-        || account_id.len() > 80
-        || !account_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-    {
-        return Err("Invalid provider account id".into());
-    }
+    crate::spaces::account::check_account_id(account_id)?;
     Ok(app
         .path()
         .app_data_dir()
