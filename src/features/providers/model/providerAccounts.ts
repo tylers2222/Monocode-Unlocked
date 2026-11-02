@@ -4,7 +4,7 @@ import type { HarnessId } from "../../sessions/model/session";
 
 const ACCOUNTS_KEY = "monocode.providerAccounts.v1";
 const SELECTIONS_KEY = "monocode.providerAccountSelections.v1";
-/** Once the logins are imported: their ids, in the order browser storage held them. */
+/** The login import's entries the database took, in the order they landed. */
 const ACCOUNTS_IMPORT_KEY = "monocode.providerAccounts.v1.import";
 const CHANGE_EVENT = "monocode-provider-accounts-changed";
 
@@ -80,8 +80,8 @@ const BROWSER_SPACE = "space-1";
  */
 let saved: Map<string, string> | undefined;
 let writes: Promise<unknown> = Promise.resolve();
-/** Writes the database refused since this window loaded. */
-let refusals = 0;
+/** Replaced by a fresh token each time the database refuses a write. */
+let refusal: object = {};
 /** Other windows of this app, once loaded; each reloads its snapshot when one writes. */
 let windows: BroadcastChannel | undefined;
 
@@ -92,50 +92,82 @@ let windows: BroadcastChannel | undefined;
  * keeps browser storage.
  */
 export async function loadProviderAccounts(): Promise<void> {
-  const accounts = PROVIDER_ACCOUNT_PROVIDERS.flatMap(providerAccounts);
   try {
-    await loadSaved();
     windows = new BroadcastChannel("monocode-provider-accounts");
-    windows.onmessage = () => loadSaved().catch(console.error);
-    await importOnce(ACCOUNTS_IMPORT_KEY, () => {
-      // `default` cannot be saved, only renamed, so every login is both.
-      for (const account of accounts) {
-        saveProviderAccount(account);
-        renameProviderAccount(account.provider, account.id, account.label);
-      }
-      for (const provider of PROVIDER_ACCOUNT_PROVIDERS) {
-        persist("spaces_login_set", {
-          login: {
-            spaceId: BROWSER_SPACE,
-            provider,
-            accountId: DEFAULT_PROVIDER_ACCOUNT_ID,
-          },
-        });
-      }
-      return accounts.map((account) => account.id);
-    });
+    windows.onmessage = () => {
+      writes = writes.then(loadSaved).catch(console.error);
+    };
+    await start();
+    await writes;
   } catch (error) {
     console.error(error);
   }
 }
 
+/** Loads the saved logins, then queues the import of browser storage's. */
+async function start(): Promise<void> {
+  const accounts = PROVIDER_ACCOUNT_PROVIDERS.flatMap(providerAccounts);
+  await loadSaved();
+  importOnce(
+    ACCOUNTS_IMPORT_KEY,
+    // `default` cannot be saved, only renamed, so every login is both.
+    ...accounts.map((account): ImportEntry => [
+      `${account.provider}/${account.id}`,
+      () => {
+        saveProviderAccount(account);
+        renameProviderAccount(account.provider, account.id, account.label);
+      },
+    ]),
+    [
+      BROWSER_SPACE,
+      () => {
+        for (const provider of PROVIDER_ACCOUNT_PROVIDERS) {
+          persist("spaces_login_set", {
+            login: {
+              spaceId: BROWSER_SPACE,
+              provider,
+              accountId: DEFAULT_PROVIDER_ACCOUNT_ID,
+            },
+          });
+        }
+      },
+    ],
+  );
+}
+
+/** One entry of an import: its key in the marker, and how to send it. */
+type ImportEntry = [key: string, send: () => void];
+
 /**
- * Runs an import of browser storage once. It is marked done, with what `run`
- * returns, only if the database took every write it sent; otherwise it runs
- * again on the next boot.
+ * Imports browser storage once per entry. Each entry the marker does not
+ * hold is sent in turn on the write queue; once its writes have run, the
+ * marker records it if the database took them all. An entry in the marker is
+ * never sent again, so a later boot only retries what was refused. The
+ * marker lists entries in the order they landed: browser storage's order,
+ * with a retried one last.
  */
-async function importOnce(marker: string, run: () => unknown): Promise<void> {
-  if (readJson(marker, null) !== null) return;
-  const before = refusals;
-  const done = run();
-  await writes;
-  if (refusals <= before) writeJson(marker, done);
+function importOnce(marker: string, ...entries: ImportEntry[]): void {
+  const landed = readJson<string[]>(marker, Array.of());
+  let seen = refusal;
+  for (const [key, send] of entries) {
+    if (landed.includes(key)) continue;
+    send();
+    // Once its writes have run: kept only if none was refused.
+    writes = writes.then(() => {
+      if (refusal === seen) {
+        landed.push(key);
+        writeJson(marker, landed);
+      }
+      seen = refusal;
+    });
+  }
 }
 
 async function loadSaved(): Promise<void> {
   const order = readJson<string[]>(ACCOUNTS_IMPORT_KEY, Array.of());
   // As unsigned, an id the import did not see (-1) ranks after every one it did.
-  const rank = (account: ProviderAccount) => order.indexOf(account.id) >>> 0;
+  const rank = (account: ProviderAccount) =>
+    order.indexOf(`${account.provider}/${account.id}`) >>> 0;
   const stored: StoredAccounts = {};
   for (const account of (
     await invoke<ProviderAccount[]>("spaces_accounts_list")
@@ -148,7 +180,7 @@ async function loadSaved(): Promise<void> {
 
 /**
  * Sends one write to `monocode.db` once it has loaded, and tells the other
- * windows. A refused write is logged and counted.
+ * windows. A refused write is logged, and replaces the refusal token.
  */
 function persist(command: string, args: InvokeArgs): void {
   writes = writes
@@ -159,7 +191,7 @@ function persist(command: string, args: InvokeArgs): void {
     })
     .catch((error: unknown) => {
       console.error(error);
-      refusals += 1;
+      refusal = {};
     });
 }
 
@@ -363,7 +395,15 @@ function selectionKey(project: string | undefined): string {
 
 function cleanLabel(value: unknown): string {
   return typeof value === "string"
-    ? Array.from(value.replace(/\s+/g, " ").trim()).slice(0, 48).join("")
+    ? Array.from(
+        // An unpaired surrogate half (a legacy cut through an emoji) is dropped.
+        value
+          .replace(/[\ud800-\udfff]/gu, "")
+          .replace(/\s+/g, " ")
+          .trim(),
+      )
+        .slice(0, 48)
+        .join("")
     : "";
 }
 

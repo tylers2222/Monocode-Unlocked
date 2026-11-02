@@ -383,6 +383,10 @@ describe("provider accounts in monocode.db", () => {
       .providerAccounts(provider)
       .map(({ id, label }) => `${id} ${label}`);
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const marker = () =>
+    JSON.parse(
+      localStorage.getItem("monocode.providerAccounts.v1.import") ?? "[]",
+    );
 
   it("imports browser storage once, in its order, then reads and writes the database", async () => {
     localStorage.setItem("monocode.providerAccounts.v1", BROWSER_LOGINS);
@@ -507,9 +511,8 @@ describe("provider accounts in monocode.db", () => {
     expect(console.error).toHaveBeenCalledWith(
       "spaces_account_save refused account-late",
     );
-    expect(
-      localStorage.getItem("monocode.providerAccounts.v1.import"),
-    ).toBeNull();
+    expect(marker()).toContain("claude/account-emoji");
+    expect(marker()).not.toContain("claude/account-late");
 
     db.refuseSave.clear();
     accounts = await boot();
@@ -519,13 +522,73 @@ describe("provider accounts in monocode.db", () => {
       `account-long ${"b".repeat(48)}`,
       "account-late Late",
     ]);
-    expect(
-      localStorage.getItem("monocode.providerAccounts.v1.import"),
-    ).not.toBeNull();
+    expect(marker()).toContain("claude/account-late");
     db.calls = [];
     await boot();
     expect(db.calls.map(([command]) => command)).toEqual([
       "spaces_accounts_list",
+    ]);
+  });
+
+  it("retries only the refused import entry, so later changes survive the next boot", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    localStorage.setItem(
+      "monocode.providerAccounts.v1",
+      JSON.stringify({
+        claude: [
+          { id: "account-work", provider: "claude", label: "Work" },
+          { id: "account-gone", provider: "claude", label: "Gone" },
+          { id: "account-late", provider: "claude", label: "Late" },
+        ],
+      }),
+    );
+    db.refuseSave.add("account-late");
+    let accounts = await boot();
+    accounts.renameProviderAccount("claude", "account-work", "Office");
+    accounts.removeProviderAccount("claude", "account-gone");
+    await settle();
+
+    db.refuseSave.clear();
+    db.calls = [];
+    accounts = await boot();
+    expect(sent("spaces_account_save")).toEqual([
+      { account: { id: "account-late", provider: "claude", label: "Late" } },
+      { account: { id: "account-late", provider: "claude", label: "Late" } },
+    ]);
+    expect(labels(accounts, "claude")).toEqual([
+      "default Default account",
+      "account-work Office",
+      "account-late Late",
+    ]);
+    expect(marker()).toContain("claude/account-late");
+  });
+
+  it("imports a legacy label cut through an emoji once, without its lone half", async () => {
+    const legacy = `${"a".repeat(47)}\u{1F600}xyz`.slice(0, 48);
+    localStorage.setItem(
+      "monocode.providerAccounts.v1",
+      JSON.stringify({
+        claude: [{ id: "account-old", provider: "claude", label: legacy }],
+      }),
+    );
+    let accounts = await boot();
+    expect(labels(accounts, "claude")).toEqual([
+      "default Default account",
+      `account-old ${"a".repeat(47)}`,
+    ]);
+    expect(db.accounts.find(({ id }) => id === "account-old")?.label).toBe(
+      "a".repeat(47),
+    );
+    expect(marker()).toContain("claude/account-old");
+
+    db.calls = [];
+    accounts = await boot();
+    expect(db.calls.map(([command]) => command)).toEqual([
+      "spaces_accounts_list",
+    ]);
+    expect(labels(accounts, "claude")).toEqual([
+      "default Default account",
+      `account-old ${"a".repeat(47)}`,
     ]);
   });
 
@@ -564,10 +627,11 @@ describe("provider accounts in monocode.db", () => {
     const credentials = await import("./providerAccountCredentials");
     const windowB = await boot(true);
 
-    expect(windows.open.map(({ name }) => name)).toEqual([
-      "monocode-provider-accounts",
-      "monocode-provider-accounts",
-    ]);
+    // The channel name is the contract between windows: one opened by it
+    // hears a window's write, and its post makes a window reload.
+    const raw = new BroadcastChannel("monocode-provider-accounts");
+    const heard: unknown[] = [];
+    raw.onmessage = ({ data }) => heard.push(data);
     windowA.saveProviderAccount({
       id: "account-new",
       provider: "codex",
@@ -575,6 +639,17 @@ describe("provider accounts in monocode.db", () => {
     });
     await vi.waitFor(() =>
       expect(windowB.providerAccountExists("codex", "account-new")).toBe(true),
+    );
+    expect(heard).toEqual(["spaces_account_save"]);
+    db.accounts.push({
+      provider: "codex",
+      id: "account-cli",
+      label: "CLI",
+      createdAt: 1,
+    });
+    raw.postMessage("spaces_account_save");
+    await vi.waitFor(() =>
+      expect(windowB.providerAccountExists("codex", "account-cli")).toBe(true),
     );
 
     await credentials.removeProviderAccountCredentials("codex", "account-x");
