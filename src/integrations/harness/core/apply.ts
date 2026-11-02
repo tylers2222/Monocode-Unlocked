@@ -11,7 +11,7 @@ import {
   type ToolPreview,
 } from "../../../features/sessions/model/session";
 import { mergeContextUsage } from "../../../features/sessions/model/contextUsage";
-import { displayPath, pathKey } from "../../../shared/lib/paths";
+import { displayPath, pathKey, trimSlash } from "../../../shared/lib/paths";
 import {
   composeToolTitle,
   isFileTool,
@@ -63,9 +63,7 @@ function rearmTurn(session: Session, event: HarnessEvent): Session {
  */
 function placed(session: Session, folder: string): Session {
   const work = sessionWorkCwd(session);
-  const inside = sessionAgentCwd(session).slice(
-    work.replace(/[/\\]+$/, "").length,
-  );
+  const inside = sessionAgentCwd(session).slice(trimSlash(work).length);
   const copy =
     inside && folder.endsWith(inside)
       ? folder.slice(0, -inside.length)

@@ -290,13 +290,13 @@ export function sendHarnessTurn(
     const turn = { sessionId: input.sessionId, turnId: input.turnId };
     // ADE-173: the turn runs where Rust authorized it, the Space's own copy
     // when another Space holds the checkout.
-    const cwd: unknown = controlled
-      ? await invoke("control_authorize_turn", {
-          ...turn,
-          cwd: input.cwd,
-          appAccess: input.appAccess === true,
-        })
-      : input.cwd;
+    let cwd: unknown = input.cwd;
+    if (controlled)
+      cwd = await invoke("control_authorize_turn", {
+        ...turn,
+        cwd: input.cwd,
+        appAccess: input.appAccess === true,
+      });
     activeTurnSessions.add(input.sessionId);
     let result: TurnResult = "cancelled";
     try {

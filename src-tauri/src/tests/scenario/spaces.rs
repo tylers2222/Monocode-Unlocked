@@ -528,8 +528,7 @@ fn logins_grants_and_leases_store_what_they_are_given(world: &World) {
     );
 }
 
-/// A relative folder is refused; each Windows form is leased under its
-/// `pathKey()` form, so dropping the drive or the UNC arm fails here.
+/// A relative folder is refused.
 fn only_absolute_folders_are_leased(store: &crate::session_store::SessionStore, now: i64) {
     for relative in ["work/c", "\\work\\c"] {
         assert_eq!(
@@ -538,22 +537,77 @@ fn only_absolute_folders_are_leased(store: &crate::session_store::SessionStore, 
             "leased a relative folder"
         );
     }
-    for (path, key) in [
-        ("C:\\work\\d", "c:/work/d"),
+}
+
+/// ADE-173 m-3 (lead decision): each Windows folder form keys as `pathKey()`
+/// does, on every OS; a folder that does not resolve is refused; on unix the
+/// Windows-form folders themselves are refused. The real-folder round trip is
+/// `a_windows_folder_is_leased_under_one_key`.
+fn windows_forms_key_and_missing_folders_are_refused(world: &World, checkout: &str) {
+    for (folder, key) in [
+        (r"C:\work\d", "c:/work/d"),
         ("C:/work/e", "c:/work/e"),
-        ("\\\\host\\share\\f", "//host/share/f"),
+        (r"\\host\share\f", "//host/share/f"),
     ] {
         assert_eq!(
-            leases::take_lease(store, path, FIRST_SPACE, now),
-            Ok(()),
-            "refused the Windows folder {path}"
-        );
-        assert_eq!(
-            leases::release_lease(store, key, FIRST_SPACE),
-            Ok(()),
-            "{path} was not leased under its pathKey() form {key}"
+            spaces::folder_key(folder).as_deref(),
+            Ok(key),
+            "a Windows folder form keyed apart from pathKey()"
         );
     }
+    let missing = format!("{checkout}-missing");
+    let mut refused = vec![missing.as_str()];
+    if cfg!(unix) {
+        refused.extend([r"C:\work\d", "C:/work/e", r"\\host\share\f"]);
+    }
+    for folder in refused {
+        assert_eq!(
+            leases::take_lease(world.store(), folder, FIRST_SPACE, world.now()),
+            Err(format!("No such folder: {folder}")),
+            "a folder that does not resolve was leased by its text"
+        );
+    }
+}
+
+/// ADE-173 m-3: a real Windows folder named with `\` or with `/` is one
+/// lease, which Space 1 cannot take and its holder releases by either form.
+#[cfg(windows)]
+#[test]
+fn a_windows_folder_is_leased_under_one_key() {
+    let world = World::new("spaces-windows");
+    let folder = world.path().with_file_name("Checkout-W");
+    std::fs::create_dir_all(&folder).unwrap();
+    // The runner's temp folder can be an 8.3 short name; a lease keys the
+    // folder's real name.
+    let real = std::fs::canonicalize(&folder).unwrap();
+    let back = real
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_owned();
+    let forward = back.replace('\\', "/");
+    assert!(back.contains('\\') && back.as_bytes()[1] == b':');
+    let store = world.store();
+    world
+        .conn()
+        .execute(
+            "INSERT INTO spaces (id, name, created_at) VALUES ('space-2', 'Space 2', 0)",
+            [],
+        )
+        .unwrap();
+    leases::take_lease(store, &back, "space-2", world.now()).unwrap();
+    assert!(
+        leases::take_lease(store, &forward, FIRST_SPACE, world.now()).is_err(),
+        "the `/` form of a leased folder was a second lease"
+    );
+    let leased = leases::leases(store).unwrap();
+    assert_eq!(leased.len(), 1);
+    assert_eq!(
+        leased[0].checkout_path,
+        spaces::folder_key(&forward).unwrap(),
+        "a Windows lease is not keyed as pathKey()"
+    );
+    leases::release_lease(store, &forward, "space-2").unwrap();
+    assert_eq!(leases::leases(store).unwrap(), []);
 }
 
 fn logins_grants_and_leases_hold(world: &World, at: i64) {
@@ -688,6 +742,7 @@ fn spaces_migration_backfills_space_one_and_reruns_as_a_no_op() {
     let at = world.now();
     spaces_settings_and_projects_store_what_they_are_given(&world);
     logins_grants_and_leases_store_what_they_are_given(&world);
+    windows_forms_key_and_missing_folders_are_refused(&world, &checkout(&world));
     a_project_login_overrides_the_space_login(&world);
     world.down(60_000);
     spaces_settings_and_projects_hold(&world, at);

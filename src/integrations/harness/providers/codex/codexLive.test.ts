@@ -2290,14 +2290,19 @@ describe("codex live turn sequence", () => {
     expect(
       applyHarnessEvent(placed, { type: "session.placed", cwd: "/repo/" }),
     ).toBe(placed);
-    const giga = {
-      ...newSession("codex", "/project/"),
-      workFolder: "/project/sub",
-    };
-    for (const [cwd, worktreeCwd, workFolder] of [
-      ["/repo/sub", "/repo", "/repo/sub"],
-      ["/repo", "/repo", "/repo"],
+    for (const [project, sub, cwd, worktreeCwd, workFolder] of [
+      ["/project/", "/project/sub", "/repo/sub", "/repo", "/repo/sub"],
+      ["/project/", "/project/sub", "/repo", "/repo", "/repo"],
+      ["/project//", "/project/sub", "/repo/sub", "/repo", "/repo/sub"],
+      [
+        "C:\\project\\",
+        "C:\\project\\sub",
+        "C:\\repo\\sub",
+        "C:\\repo",
+        "C:\\repo\\sub",
+      ],
     ] as const) {
+      const giga = { ...newSession("codex", project), workFolder: sub };
       const moved = applyHarnessEvent(giga, { type: "session.placed", cwd });
       expect([moved.worktreeCwd, moved.workFolder]).toEqual([
         worktreeCwd,

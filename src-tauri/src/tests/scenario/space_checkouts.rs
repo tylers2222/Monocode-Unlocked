@@ -58,8 +58,9 @@ fn temp_root(name: &str) -> PathBuf {
 }
 
 /// What the window saves of session `id` in `cwd` when it holds no working
-/// copy for it (`session_upsert`).
-fn save(store: &SessionStore, id: &str, cwd: &Path) {
+/// copy for it (`session_upsert`), and the summary the save replies with. A
+/// user message puts the session in its project's session list.
+fn save(store: &SessionStore, id: &str, cwd: &Path) -> session_store::SessionSummary {
     let session = serde_json::from_value(json!({
         "id": id,
         "cwd": text(cwd),
@@ -68,10 +69,39 @@ fn save(store: &SessionStore, id: &str, cwd: &Path) {
         "modelSettings": {},
         "runtimeMode": "auto",
         "title": id,
-        "blocks": [],
+        "blocks": [{"id": "u1", "role": "user", "text": "Start"}],
     }))
     .unwrap();
-    session_store::upsert_session(&store.lock_conn().unwrap(), &session).unwrap();
+    session_store::upsert_session(&store.lock_conn().unwrap(), &session).unwrap()
+}
+
+/// The working copy and branch a window save of placed session `id` leaves
+/// in its reply, in its row and in the project's session list.
+fn saved_copy(
+    store: &SessionStore,
+    id: &str,
+    project: &Path,
+) -> [(Option<String>, Option<String>); 3] {
+    let reply = save(store, id, project);
+    let row = store
+        .lock_conn()
+        .unwrap()
+        .query_row(
+            "SELECT worktree_cwd, branch FROM sessions WHERE id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let listed = session_store::list_by_project(&store.lock_conn().unwrap(), &text(project))
+        .unwrap()
+        .into_iter()
+        .find(|summary| summary.id == id)
+        .unwrap();
+    [
+        (reply.worktree_cwd, reply.branch),
+        row,
+        (listed.worktree_cwd, listed.branch),
+    ]
 }
 
 fn add_session(store: &SessionStore, id: &str, cwd: &Path, space: &str) {
@@ -214,11 +244,11 @@ fn two_sessions_in_two_folders(
         Some(text(copy)),
         "the copy is not the session's working copy"
     );
-    save(world.store(), "two", project);
+    let placed = (Some(text(copy)), Some("space-2/two".to_owned()));
     assert_eq!(
-        work_cwd(world.store(), "two"),
-        Some(text(copy)),
-        "a window save erased the copy the hook placed the session in"
+        saved_copy(world.store(), "two", project),
+        [placed.clone(), placed.clone(), placed],
+        "a window save erased the copy the hook placed the session in, or its branch, in the reply, the row or the session list"
     );
     assert_eq!(
         spawn_in(world, "one", project),
@@ -476,7 +506,7 @@ mod spawn {
     use tauri::Manager;
 
     use super::super::agent_sandbox::{mock_app, script, wait_for};
-    use super::{git_project, save, temp_root, text, two_spaces, work_cwd};
+    use super::{git_project, saved_copy, temp_root, text, two_spaces};
     use crate::checkpoint;
 
     type App = tauri::App<tauri::test::MockRuntime>;
@@ -592,11 +622,11 @@ esac"#,
         let one = authorize("one").unwrap();
         begin_checkpoint(&app, &project);
         let sessions = app.state::<crate::session_store::SessionStore>();
-        save(&sessions, "two", &project);
+        let placed = (Some(text(&copy)), Some("space-2/two".to_owned()));
         assert_eq!(
-            work_cwd(&sessions, "two"),
-            Some(text(&copy)),
-            "a window save erased the copy a checkpoint placed the session in"
+            saved_copy(&sessions, "two", &project),
+            [placed.clone(), placed.clone(), placed],
+            "a window save erased the copy a checkpoint placed the session in, or its branch"
         );
         let two = authorize("two").unwrap();
         assert_eq!(one, text(&project));
