@@ -1,0 +1,3 @@
+#!/bin/sh
+# The claude CLI for the app's path override: replays a recorded fixture (shim.mjs).
+exec node "$(dirname "$0")/../shim.mjs" claude "$@"

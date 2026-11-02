@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { loginFolder } from "../../../../../scripts/scenarios/usage-limit/child.mjs";
+import type { HarnessEvent } from "../../core/types";
 import {
   addCodexTurnUsage,
   buildThreadStartParams,
@@ -13,6 +18,15 @@ import {
   toCodexApprovalDecision,
 } from "./codexProtocol";
 import { parseCodexModelList } from "./codexCatalog";
+
+// The real adapter against the usage-limit shim, a real process (ADE-167).
+vi.mock(
+  "../../core/child",
+  async () =>
+    (await import("../../../../../scripts/scenarios/usage-limit/child.mjs"))
+      .child,
+);
+const { sendCodexTurn, stopCodexSession } = await import("./codex");
 
 describe("runtimeModeToCodexConfig", () => {
   it("maps supervised to untrusted read-only", () => {
@@ -1092,5 +1106,68 @@ describe("mapCodexSubagentSteps", () => {
   it("leaves a settled child's result off its step", () => {
     const steps = subagentBash("completed", "12 passed");
     expect(steps[0]).not.toHaveProperty("detail");
+  });
+});
+
+describe("recorded Codex app-server streams", () => {
+  it("replays each login's recorded turn from its own folder: a reply, and a failure that is no usage limit", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "usage-limit-"));
+    vi.stubEnv("USAGE_LIMIT_SHIM_DIR", dir);
+    onTestFinished(async () => {
+      await stopCodexSession("login-1");
+      await stopCodexSession("login-2");
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const accounts = {
+      [loginFolder("codex", "login-1")]:
+        "codex-0.165.0-2026-11-02-unauthorized.jsonl",
+      [loginFolder("codex", "login-2")]: "codex-0.165.0-2026-11-02-ok.jsonl",
+    };
+    writeFileSync(
+      join(dir, "script.json"),
+      JSON.stringify({ speed: 20, accounts }),
+    );
+    const turn = async (login: string) => {
+      const events: HarnessEvent[] = [];
+      const result = await sendCodexTurn({
+        sessionId: login,
+        cwd: dir,
+        model: "codex:gpt-5.5",
+        runtimeMode: "supervised",
+        providerAccountId: login,
+        text: "say ok",
+        attachments: [],
+        turnId: `${login}-turn`,
+        onEvent: (event) => events.push(event),
+      }).catch((error: Error) => error.message);
+      await stopCodexSession(login);
+      return { result, events, types: events.map((event) => event.type) };
+    };
+
+    const ok = await turn("login-2");
+    expect(ok.result).toBe("sent");
+    expect(ok.events).toContainEqual({ type: "message.delta", text: "ok" });
+    expect(ok.types).not.toContain("session.error");
+    expect(ok.types).not.toContain("usage.limited");
+
+    const startedAt = Date.now();
+    const refused = await turn("login-1");
+    // The 401 fixture's turn/completed comes 16 686 ms after its turn/start.
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(16_686 / 20);
+    expect(refused.result).toBe("sent");
+    expect(refused.events).toContainEqual({
+      type: "session.error",
+      message: expect.stringContaining("401 Unauthorized"),
+    });
+    expect(refused.types).not.toContain("usage.limited");
+
+    const started = readFileSync(join(dir, "log.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { folder: string; fixture: string });
+    expect(started.map(({ folder, fixture }) => [folder, fixture])).toEqual(
+      Object.entries(accounts).reverse(),
+    );
   });
 });
