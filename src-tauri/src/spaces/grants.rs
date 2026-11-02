@@ -8,8 +8,8 @@ use tauri::State;
 use super::{with_conn, Provider, SpawnTarget};
 use crate::session_store::SessionStore;
 
-/// The schema refuses a grant that ends before it starts or lasts longer
-/// than `MAX_ROUTE_GRANT_MS`, and one whose logins do not exist.
+/// The schema refuses a grant that ends before it starts and one whose
+/// logins do not exist. How long a grant lasts is its writer's call (ADE-176).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RouteGrant {

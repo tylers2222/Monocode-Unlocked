@@ -17,7 +17,6 @@ use crate::spaces::leases::{self, CheckoutLease};
 use crate::spaces::{Provider, FIRST_SPACE};
 
 const SIX_HOURS_MS: i64 = 6 * 60 * 60 * 1000;
-const EIGHT_DAYS_MS: i64 = 8 * 24 * 60 * 60 * 1000;
 
 /// Takes the Spaces schema back out, as a database from before Spaces is.
 fn drop_spaces(conn: &Connection) {
@@ -170,14 +169,6 @@ fn logins_grants_and_leases_store_what_they_are_given(world: &World) {
     );
 
     grants::save_grant(store, &grant(now)).unwrap();
-    let endless = RouteGrant {
-        expires_at: now + EIGHT_DAYS_MS,
-        ..grant(now)
-    };
-    assert!(
-        grants::save_grant(store, &endless).is_err(),
-        "a grant outlived the 7 day cap"
-    );
 
     leases::take_lease(store, "/work/b/", "space-2", now).unwrap();
     assert_eq!(
@@ -249,8 +240,7 @@ fn removing_a_login_drops_its_space_login_and_grant(world: &World) {
 /// the 6 hour TTL or a CLI's default login; or a restart migrates again and
 /// reseeds or duplicates rows; a login, grant or lease is lost or altered,
 /// survives the removal of its login, or is stored when its login id is not
-/// a valid folder name, the `default` login goes, a grant passes the 7 day
-/// cap, a lease path is relative, or one Space releases another's lease; or
+/// a valid folder name, the `default` login goes, a lease path is relative, or one Space releases another's lease; or
 /// a harness child starts without the spawn
 /// hook, in another folder or with another login, or the folder check runs
 /// before the hook.
