@@ -417,15 +417,20 @@ fn project_logins_hold(world: &World) {
     );
 }
 
-/// The checkout the lease checkpoints take: a real folder, since a folder
-/// that does not exist cannot be leased (ADE-173).
+/// The checkout the lease checkpoints take, in its lease key form: a real
+/// folder, since a folder that does not exist cannot be leased (ADE-173).
+/// Windows `canonicalize` gives a `\\?\` path, which takes no `/`, so the
+/// prefix goes as `leases::resolve` drops it.
 fn checkout(world: &World) -> String {
     let folder = world.path().with_file_name("checkout-b");
     std::fs::create_dir_all(&folder).unwrap();
-    std::fs::canonicalize(&folder)
-        .unwrap()
-        .to_string_lossy()
-        .into_owned()
+    let real = std::fs::canonicalize(&folder).unwrap();
+    let text = real.to_string_lossy();
+    let plain = match text.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => text.trim_start_matches(r"\\?\").to_owned(),
+    };
+    spaces::folder_key(&plain).unwrap()
 }
 
 fn logins_grants_and_leases_store_what_they_are_given(world: &World) {
