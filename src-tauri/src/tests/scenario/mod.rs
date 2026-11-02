@@ -29,6 +29,7 @@ mod s4_questions;
 mod s5_delivery;
 mod s5_scheduler;
 mod spaces;
+mod spaces_commands;
 #[cfg(not(windows))]
 mod wake_turn;
 mod world;
