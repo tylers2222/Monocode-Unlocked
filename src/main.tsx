@@ -20,6 +20,7 @@ import { homeDir } from "./platform/tauri/fs";
 import { setHomeDir } from "./shared/lib/paths";
 import { consumeInstalledUpdate } from "./app/model/updateNotice";
 import { initializeProviderBinaryPaths } from "./features/providers/model/providerBinaryPaths";
+import { loadProviderAccounts } from "./features/providers/model/providerAccounts";
 // Lets file commands reach a connected machine for `remote://` paths.
 import "./features/connections/model/remoteCommands";
 import "./styles/index.css";
@@ -101,6 +102,7 @@ void Promise.all([
   monosPrimed,
   loadBootWorkspace(),
   appLoaded,
+  loadProviderAccounts(),
 ]).then(
   ([
     ,

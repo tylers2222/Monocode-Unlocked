@@ -1,3 +1,4 @@
+import { invoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { pathKey } from "../../../shared/lib/paths";
 import type { HarnessId } from "../../sessions/model/session";
 
@@ -67,6 +68,70 @@ type StoredSelections = Record<
   Partial<Record<ProviderAccountProvider, string>>
 >;
 
+/** Browser storage predates Spaces: what it holds is Space 1's (`FIRST_SPACE`). */
+const BROWSER_SPACE = "space-1";
+
+/**
+ * The records `monocode.db` holds, in the shape browser storage held them.
+ * A record it does not hold, and every record until it loads or when it
+ * cannot load, comes from browser storage.
+ */
+let saved: Map<string, string> | undefined;
+let writes: Promise<unknown> = Promise.resolve();
+
+/**
+ * Loads the logins from `monocode.db` before the first render. Until a Space
+ * has a login of its own, it imports the logins browser storage holds, and
+ * gives Space 1 each CLI's `default`. The old key stays for the Space 2 merge
+ * (ADE-178). A failure keeps browser storage.
+ */
+export async function loadProviderAccounts(): Promise<void> {
+  const accounts = PROVIDER_ACCOUNT_PROVIDERS.flatMap(providerAccounts);
+  try {
+    const logins = await invoke<unknown[]>("spaces_logins_list");
+    await loadSaved();
+    if (logins.length) return;
+    // `default` cannot be saved, only renamed, so every login is both.
+    for (const account of accounts) {
+      saveProviderAccount(account);
+      renameProviderAccount(account.provider, account.id, account.label);
+    }
+    for (const provider of PROVIDER_ACCOUNT_PROVIDERS) {
+      persist("spaces_login_set", {
+        login: {
+          spaceId: BROWSER_SPACE,
+          provider,
+          accountId: DEFAULT_PROVIDER_ACCOUNT_ID,
+        },
+      });
+    }
+    await writes;
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+async function loadSaved(): Promise<void> {
+  const stored: StoredAccounts = {};
+  for (const account of await invoke<ProviderAccount[]>(
+    "spaces_accounts_list",
+  )) {
+    (stored[account.provider] ??= Array.of<ProviderAccount>()).push(account);
+  }
+  saved = new Map<string, string>().set(ACCOUNTS_KEY, JSON.stringify(stored));
+  announceChange();
+}
+
+/**
+ * Sends one write to `monocode.db` once it has loaded. A refused one is
+ * logged, and the change lasts until the app quits.
+ */
+function persist(command: string, args: InvokeArgs): void {
+  writes = writes
+    .then(() => saved && invoke<void>(command, args))
+    .catch(console.error);
+}
+
 export function providerAccounts(
   provider: ProviderAccountProvider,
 ): ProviderAccount[] {
@@ -133,6 +198,7 @@ export function saveProviderAccount(account: ProviderAccount): void {
     { id: account.id, provider: account.provider, label },
   ]);
   writeJson(ACCOUNTS_KEY, stored);
+  persist("spaces_account_save", { account: { ...account, label } });
   announceChange();
 }
 
@@ -153,6 +219,7 @@ export function renameProviderAccount(
     accounts.map((account) => (account.id === accountId ? renamed : account)),
   );
   writeJson(ACCOUNTS_KEY, stored);
+  persist("spaces_account_save", { account: renamed });
   announceChange();
   return renamed;
 }
@@ -182,6 +249,7 @@ export function removeProviderAccount(
     else selections[key] = nextSelection;
   }
   writeJson(SELECTIONS_KEY, selections);
+  persist("spaces_account_remove", { provider, id: accountId });
   announceChange();
   return true;
 }
@@ -288,7 +356,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readJson<T>(key: string, fallback: T): T {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = saved?.get(key) ?? localStorage.getItem(key);
     return raw ? (JSON.parse(raw) as T) : fallback;
   } catch {
     return fallback;
@@ -296,6 +364,10 @@ function readJson<T>(key: string, fallback: T): T {
 }
 
 function writeJson(key: string, value: unknown): void {
+  if (saved?.has(key)) {
+    saved.set(key, JSON.stringify(value));
+    return;
+  }
   try {
     localStorage.setItem(key, JSON.stringify(value));
   } catch {
