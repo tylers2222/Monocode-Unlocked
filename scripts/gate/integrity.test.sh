@@ -74,14 +74,13 @@ probe cargo-lint 1 'Cargo.toml:2: edits a lint or install setting' perl -pi -e '
 probe postinstall 1 'package.json:4: edits a lint or install setting' perl -pi -e 's/"scripts": \{/"scripts": {\n    "postinstall": "node x.js",/' package.json
 probe prepare 1 'package.json:4: edits a lint or install setting' perl -pi -e 's/"scripts": \{/"scripts": {\n    "prepare": "node x.js",/' package.json
 probe dependencies-object 0 'ok, 3 non-test lines' eval 'mkdir -p tools && printf "{\n  \"dependencies\": {\n  }\n" > tools/package.json'
-probe over-500 1 'changes 501 non-test lines' lines src/big.ts 501
-probe at-500 0 'ok, 500 non-test lines' lines src/big.ts 500
+probe over-500 0 'ok, 501 non-test lines' lines src/big.ts 501
 probe test-file 0 'ok, 0 non-test lines' lines src/big.test.ts 600
 probe fixture 0 'ok, 0 non-test lines' eval 'mkdir -p src/fixtures && lines src/fixtures/f.ts 600'
 probe cfg-test 0 'ok, 0 non-test lines' rust_test_mod
 probe rust-tests-module 0 'ok, 7 non-test lines' eval 'mkdir -p src/foo && lines src/foo/tests.rs 600 && lines src/foo/tests_util.rs 2 && lines src/foo/mod.rs 3 && lines src/foo/mytests.rs 1 && lines src/foo/tests.rs.bak 1'
-probe cfg-test-one-line 1 'more than 500' cfg_test_one_line
-probe cfg-test-variant 1 'more than 500' cfg_test_variant
+probe cfg-test-one-line 0 'ok, 513 non-test lines' cfg_test_one_line
+probe cfg-test-variant 0 'ok, 516 non-test lines' cfg_test_variant
 probe binary 1 'diffs as binary' eval 'printf "// \0\n" > src/bin.ts'
 probe control-char 1 'src/x\x0a::warning' control_char_dir
 probe quoted-name 1 'src/x\x09y.ts:1: adds a suppression' tab_name
