@@ -26,8 +26,8 @@ pub(crate) const DEFAULT_PROVIDER_ACCOUNT_ID: &str = "default";
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessAccount {
-    provider: String,
-    id: String,
+    pub(crate) provider: String,
+    pub(crate) id: String,
 }
 
 #[derive(Serialize, Clone)]
