@@ -8,7 +8,7 @@ use crate::session_store::{now_millis, SessionStore};
 use crate::spaces::account::{self, ProviderAccount, SpaceLogin};
 use crate::spaces::grants::{self, GrantLength, GrantRequest};
 use crate::spaces::leases;
-use crate::spaces::{Provider, FIRST_SPACE};
+use crate::spaces::{self, Provider, FIRST_SPACE};
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
@@ -124,8 +124,9 @@ fn the_login_grant_and_lease_commands_store_what_the_ui_sends() {
 
 /// Leases through the commands: a bare drive, a drive with no slash, a slash
 /// in the wrong place and a non-letter drive are refused (folder_key's `>`
-/// and each `&&` side); an absolute folder is stored under its `pathKey()`
-/// form, listed, and released.
+/// and each `&&` side); a real folder named with a trailing slash is stored
+/// under its resolved `pathKey()` form, listed, and released. `C:/` is leased
+/// on Windows only; on unix it does not resolve, so it is refused.
 fn the_lease_commands_take_only_absolute_folders(app: &tauri::App<tauri::test::MockRuntime>) {
     let store = || app.state::<SessionStore>();
     for path in ["C:", "C:work", "ab/work", "1:/work"] {
@@ -135,8 +136,29 @@ fn the_lease_commands_take_only_absolute_folders(app: &tauri::App<tauri::test::M
             "leased the folder {path:?}"
         );
     }
+    let folder = std::env::temp_dir().join(format!("ade173-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let folder_text = folder.to_string_lossy().into_owned();
+    // The key as `leases::resolve` makes it: Windows `canonicalize` gives a
+    // `\\?\` path, and macOS resolves /var to /private/var.
+    let key = {
+        let real = std::fs::canonicalize(&folder).unwrap();
+        let text = real.to_string_lossy();
+        let plain = match text.strip_prefix(r"\\?\UNC\") {
+            Some(share) => format!(r"\\{share}"),
+            None => text.trim_start_matches(r"\\?\").to_owned(),
+        };
+        spaces::folder_key(&plain).unwrap()
+    };
+    leases::spaces_lease_take(store(), format!("{folder_text}/"), FIRST_SPACE.into()).unwrap();
+    #[cfg(unix)]
+    assert_eq!(
+        leases::spaces_lease_take(store(), "C:/".into(), FIRST_SPACE.into()),
+        Err("No such folder: C:/".into()),
+        "leased a Windows folder on unix"
+    );
+    #[cfg(windows)]
     leases::spaces_lease_take(store(), "C:/".into(), FIRST_SPACE.into()).unwrap();
-    leases::spaces_lease_take(store(), "/work/x/".into(), FIRST_SPACE.into()).unwrap();
     let leased = || -> Vec<(String, String)> {
         leases::spaces_leases_list(store())
             .unwrap()
@@ -144,20 +166,23 @@ fn the_lease_commands_take_only_absolute_folders(app: &tauri::App<tauri::test::M
             .map(|l| (l.checkout_path, l.space_id))
             .collect()
     };
+    let mut held = vec![(key, FIRST_SPACE.to_owned())];
+    if cfg!(windows) {
+        held.push(("c:".to_owned(), FIRST_SPACE.to_owned()));
+    }
+    held.sort();
     assert_eq!(
         leased(),
-        [
-            ("/work/x".to_owned(), FIRST_SPACE.to_owned()),
-            ("c:".to_owned(), FIRST_SPACE.to_owned())
-        ],
+        held,
         "a lease was not stored, not listed, or not keyed as pathKey() does"
     );
-    for path in ["/work/x", "C:/"] {
-        leases::spaces_lease_release(store(), path.into(), FIRST_SPACE.into()).unwrap();
-    }
+    leases::spaces_lease_release(store(), folder_text.clone(), FIRST_SPACE.into()).unwrap();
+    #[cfg(windows)]
+    leases::spaces_lease_release(store(), "C:/".into(), FIRST_SPACE.into()).unwrap();
     assert_eq!(leased(), [], "a released lease is still listed");
     assert!(
-        leases::spaces_lease_release(store(), "/work/x".into(), FIRST_SPACE.into()).is_err(),
+        leases::spaces_lease_release(store(), folder_text, FIRST_SPACE.into()).is_err(),
         "released a lease nobody holds"
     );
+    std::fs::remove_dir_all(&folder).unwrap();
 }
