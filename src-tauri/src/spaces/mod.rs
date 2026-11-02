@@ -185,7 +185,7 @@ pub(crate) fn folder_key(path: &str) -> Result<String, String> {
     let b = path.as_bytes();
     let drive =
         b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\');
-    if drive || path.starts_with(['/', '\\']) {
+    if drive || path.starts_with('/') || path.starts_with("\\\\") {
         Ok(crate::mono_gate::path_key(path))
     } else {
         Err(format!("Not an absolute folder: {path}"))

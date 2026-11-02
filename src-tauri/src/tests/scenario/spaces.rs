@@ -16,7 +16,8 @@ use crate::spaces::grants::{self, RouteGrant};
 use crate::spaces::leases::{self, CheckoutLease};
 use crate::spaces::{Provider, FIRST_SPACE};
 
-const SIX_HOURS_MS: i64 = 6 * 60 * 60 * 1000;
+/// A grant until a monthly limit resets: longer than any weekly cap.
+const THIRTY_DAYS_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 /// Takes the Spaces schema back out, as a database from before Spaces is.
 fn drop_spaces(conn: &Connection) {
@@ -140,7 +141,7 @@ fn grant(now: i64) -> RouteGrant {
         from_account_id: "default".into(),
         to_account_id: "work".into(),
         granted_at: now,
-        expires_at: now + SIX_HOURS_MS,
+        expires_at: now + THIRTY_DAYS_MS,
     }
 }
 
@@ -190,7 +191,7 @@ fn logins_grants_and_leases_store_what_they_are_given(world: &World) {
             serde_json::json!({"spaceId": FIRST_SPACE, "provider": provider, "accountId": "work"});
         let grant = serde_json::json!({
             "sessionId": "s2", "provider": provider, "fromAccountId": "default",
-            "toAccountId": "work", "grantedAt": now, "expiresAt": now + SIX_HOURS_MS
+            "toAccountId": "work", "grantedAt": now, "expiresAt": now + THIRTY_DAYS_MS
         });
         (
             serde_json::from_value::<ProviderAccount>(account),
@@ -230,10 +231,13 @@ fn logins_grants_and_leases_store_what_they_are_given(world: &World) {
     );
 
     leases::take_lease(store, "/work/b/", "space-2", now).unwrap();
-    assert_eq!(
-        leases::take_lease(store, "work/c", FIRST_SPACE, now),
-        Err("Not an absolute folder: work/c".into())
-    );
+    for relative in ["work/c", "\\work\\c"] {
+        assert_eq!(
+            leases::take_lease(store, relative, FIRST_SPACE, now),
+            Err(format!("Not an absolute folder: {relative}")),
+            "leased a relative folder"
+        );
+    }
     assert!(
         leases::take_lease(store, "/work/b", FIRST_SPACE, now).is_err(),
         "a second Space took a leased checkout"
@@ -301,9 +305,10 @@ fn removing_a_login_drops_its_space_login_and_grant(world: &World) {
 /// survives the removal of its login, or is stored when its login id is not
 /// a valid folder name or its label is blank, a rename is lost, a command
 /// takes a CLI without logins or misreads the UI's arguments, a grant ends as
-/// it starts, the `default` login goes, a lease path is relative, or one Space releases another's lease; or
-/// a harness child starts without the spawn
-/// hook, in another folder or with another login, or the folder check runs
+/// it starts or is refused for lasting 30 days, the `default` login goes, a
+/// lease path is relative (a single leading backslash included), or one
+/// Space releases another's lease; or a harness child starts without the
+/// spawn hook, in another folder or with another login, or the folder check runs
 /// before the hook.
 #[test]
 fn spaces_migration_backfills_space_one_and_reruns_as_a_no_op() {
