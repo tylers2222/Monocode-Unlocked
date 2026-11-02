@@ -336,12 +336,38 @@ impl Cast {
                 "allowed",
             ),
             row(
+                "Mono sessions.send to Mono's chat",
+                &self.a,
+                Act::Action("sessions.send", &self.mono_b.chat),
+                "allowed",
+            ),
+            row(
                 "lead acks its Mono",
                 &self.lead_b_c,
                 Act::Tool("ack", json!({"ask_id": ask_id, "message": "Done"})),
                 "accepted",
             ),
         ]
+    }
+
+    /// The lead's other actions on its worker (design 6.6, A8).
+    fn lifecycle_rows(&self) -> Vec<Row<'_>> {
+        [
+            "sessions.stop",
+            "sessions.queue.clear",
+            "sessions.archive",
+            "sessions.delete",
+        ]
+        .into_iter()
+        .map(|action| {
+            row(
+                action,
+                &self.lead_c,
+                Act::Action(action, &self.worker),
+                "allowed",
+            )
+        })
+        .collect()
     }
 }
 
@@ -388,6 +414,7 @@ fn only_a_regular_mono_messages_across_spaces() {
             println!("FAIL {round} worker hints differ: {to_giga:?} vs {made_up:?}");
             failed.push(format!("{round} worker hints"));
         }
+        cast.check(&mut failed, round, cast.lifecycle_rows());
         cast.check(&mut failed, round, cast.ask_and_action_rows(round));
     }
 

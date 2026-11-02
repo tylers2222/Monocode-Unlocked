@@ -4632,6 +4632,47 @@ mod tests {
         }
     }
 
+    // ADE-174. Defect: an app action reaches a session in another Space,
+    // the check covers only some actions, or a same-Space action is refused.
+    #[test]
+    fn no_app_action_reaches_a_session_in_another_space() {
+        let lead = operator("l1");
+        let cross = act_rejected(
+            RejectCode::CrossSpaceForbidden,
+            RejectCode::CrossSpaceForbidden.hint(),
+            Tool::AppAction,
+        );
+        for action in [
+            "sessions.read",
+            "sessions.send",
+            "sessions.draft",
+            "sessions.queue.clear",
+            "sessions.stop",
+            "sessions.archive",
+            "sessions.delete",
+            "folders.move",
+        ] {
+            let decide = |target_space: &str| {
+                decide_action(
+                    &lead,
+                    action,
+                    &action_hash(action, &json!({})),
+                    &ActionFacts {
+                        caller_space: "space-1".into(),
+                        target_space: Some(target_space.into()),
+                        caller_level: Some(SessionLevel::Lead),
+                        caller_role: None,
+                        target_level: Some(worker_of("l1")),
+                        prior: None,
+                        prior_start_ended: false,
+                    },
+                )
+            };
+            assert_eq!(decide("space-2"), cross, "{action} across Spaces");
+            assert_eq!(decide("space-1"), ALLOWED, "{action} in one Space");
+        }
+    }
+
     // A8 (design 6.6). Defect: an app-started lead gets every /operator
     // action (all notes, a sibling's delete, steering or stopping a sibling
     // lead, a user's session or another lead's worker), or loses a power the
