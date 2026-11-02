@@ -11,7 +11,7 @@ use super::agents::{mono_caller, session_caller, Mono};
 use super::world::World;
 use crate::mono_gate::Caller;
 use crate::mono_messages::{self, ActionChecked, MessageId, RequestId, SessionId, Submitted};
-use crate::mono_roster::MonoRole;
+use crate::mono_roster::{self, MonoRole};
 use crate::spaces::FIRST_SPACE;
 
 const OTHER_SPACE: &str = "space-2";
@@ -350,6 +350,64 @@ impl Cast {
         ]
     }
 
+    /// Mono A asks Mono B for a reply, B's chat starts turn `turn` with it,
+    /// and B replies as checkpoint `<round> <name>`. Returns the asked row's
+    /// status and the session each accepted reply to it went to.
+    fn reply_to_a(
+        &mut self,
+        failed: &mut Vec<String>,
+        (round, name, want): (&str, &'static str, &'static str),
+        before_reply: impl FnOnce(&Self),
+    ) -> (String, Vec<String>) {
+        let b = self.mono_b.id.as_str();
+        let wants =
+            json!({"message": "Ready?", "send_to": b, "wanting_reply": true, "intent": "new"});
+        let request = format!("{round}-{}-asks", name.replace(' ', "-"));
+        let asked = self.call(&self.a, &request, Act::Tool("send_message", wants));
+        assert_eq!(
+            asked.0, "accepted",
+            "{round} {name}: the message B replies to"
+        );
+        let turn = format!("tb-{request}");
+        self.world.start_turn(&self.mono_b.chat, &turn);
+        before_reply(self);
+        let replier = mono_caller(&self.mono_b, &turn);
+        let reply = Act::Tool("reply", json!({"message": "Yes", "wanting_reply": false}));
+        let rows = vec![Row {
+            across: want,
+            ..row(name, &replier, reply, want)
+        }];
+        self.check(failed, round, rows);
+        let conn = self.world.conn();
+        let asked_id: String = conn
+            .query_row(
+                "SELECT id FROM mono_messages WHERE request_id = ?1 AND from_session_id = ?2",
+                [request.as_str(), self.a.session_id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let status = conn
+            .query_row(
+                "SELECT status FROM mono_messages WHERE id = ?1",
+                [&asked_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let routed = conn
+            .prepare(
+                "SELECT handled_by_session FROM mono_messages
+                  WHERE reply_to = ?1 AND status <> 'rejected'",
+            )
+            .unwrap()
+            .query_map([&asked_id], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        drop(conn);
+        self.world.end_turn(&self.mono_b.chat, &turn, true);
+        (status, routed)
+    }
+
     /// The lead's other actions on its worker (design 6.6, A8).
     fn lifecycle_rows(&self) -> Vec<Row<'_>> {
         [
@@ -433,6 +491,45 @@ fn only_a_regular_mono_messages_across_spaces() {
         cast.move_to(space);
         let rows = vec![row("Mono replies to Giga", &replier, reply(), "accepted")];
         cast.check(&mut failed, round, rows);
+    }
+    cast.world.end_turn(&cast.mono_b.chat, "tb", true);
+
+    // A regular Mono's reply reaches a regular Mono in another Space, and
+    // lands in its chat (General GO m_odwdctcbquov).
+    let a_chat = cast.a.session_id.as_str().to_string();
+    for (round, space) in [("across", OTHER_SPACE), ("same", FIRST_SPACE)] {
+        cast.move_to(space);
+        let got = cast.reply_to_a(
+            &mut failed,
+            (round, "Mono replies to Mono", "accepted"),
+            |_| {},
+        );
+        let want = ("answered".to_string(), vec![a_chat.clone()]);
+        let name = format!("{round} the reply reached Mono A's chat");
+        if got == want {
+            println!("ok   {name}: {got:?}");
+        } else {
+            println!("FAIL {name}: {got:?}, expected {want:?}");
+            failed.push(name);
+        }
+    }
+
+    // The sender Mono is deleted before B replies: its rows lose
+    // `from_mono_id` (ON DELETE SET NULL), so `target_gone` answers first
+    // and nothing is routed.
+    cast.move_to(OTHER_SPACE);
+    let delete_a = |cast: &Cast| {
+        let a = cast.a.mono_id().unwrap().as_str();
+        assert!(
+            mono_roster::delete(&cast.world.conn(), a).unwrap(),
+            "Mono A deleted"
+        );
+    };
+    let row_gone = ("across", "Mono replies to a deleted Mono", "target_gone");
+    let (_, routed) = cast.reply_to_a(&mut failed, row_gone, delete_a);
+    if !routed.is_empty() {
+        println!("FAIL across a reply to a deleted Mono was routed: {routed:?}");
+        failed.push("across reply to a deleted Mono routed".into());
     }
     assert!(failed.is_empty(), "failed checkpoints: {failed:#?}");
 }
