@@ -1016,6 +1016,115 @@ fn the_grant_command_stores_what_the_card_sends() {
     );
 }
 
+/// The Space, project and project-login commands as the UI invokes them, on
+/// a mock app's migrated store. Not on Windows: `tauri::test` is not built
+/// there (see Cargo.toml).
+///
+/// Defect: a command answers without reading the store (no Spaces, an empty
+/// or made-up Space id, no login or a made-up one, no project choices), or
+/// returns without storing or clearing what the UI sent.
+#[cfg(not(windows))]
+#[test]
+fn the_space_and_project_commands_store_what_the_ui_sends() {
+    use tauri::Manager;
+
+    use crate::session_store::SessionStore;
+
+    type Listed = (String, String, Option<String>);
+
+    let app = tauri::test::mock_builder()
+        .manage(SessionStore::open_in_memory().unwrap())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let store = || app.state::<SessionStore>();
+    let listed = || -> Vec<Listed> {
+        spaces::spaces_list(store())
+            .unwrap()
+            .into_iter()
+            .map(|space| (space.id, space.name, space.color))
+            .collect()
+    };
+    let space_one: Listed = (FIRST_SPACE.into(), "Space 1".into(), None);
+    assert_eq!(
+        listed(),
+        std::slice::from_ref(&space_one),
+        "the Space list is empty or lost Space 1"
+    );
+
+    let two = spaces::spaces_create(store(), "Client".into(), None).unwrap();
+    spaces::spaces_update(store(), two.id, "Space 2".into(), Some("#3366ff".into())).unwrap();
+    assert_eq!(
+        listed(),
+        [
+            space_one,
+            ("space-2".into(), "Space 2".into(), Some("#3366ff".into()))
+        ],
+        "a new Space is not listed or its rename was not stored"
+    );
+    assert_eq!(
+        spaces::spaces_update(store(), "space-9".into(), "Nobody".into(), None),
+        Err("No Space space-9".into()),
+        "renamed a Space that does not exist"
+    );
+
+    let space_of = |project: &str| spaces::spaces_project_get(store(), project.into()).unwrap();
+    assert_eq!(
+        space_of("/work/a"),
+        FIRST_SPACE,
+        "a project with no row is not in Space 1"
+    );
+    spaces::spaces_project_set(store(), "/work/b/".into(), "space-2".into()).unwrap();
+    assert_eq!(
+        space_of("/work/b"),
+        "space-2",
+        "a project's move to another Space was not stored"
+    );
+
+    account::spaces_account_save(store(), work_login()).unwrap();
+    let space_two_login = SpaceLogin {
+        space_id: "space-2".into(),
+        provider: Provider::Claude,
+        account_id: "default".into(),
+    };
+    account::spaces_login_set(store(), space_two_login).unwrap();
+    let login_of = |project: &str| {
+        let (space, provider) = ("space-2".to_owned(), Provider::Claude);
+        spaces::spaces_project_login_get(store(), space, project.into(), provider).unwrap()
+    };
+    assert_eq!(
+        login_of("/work/b").as_deref(),
+        Some("default"),
+        "a project without its own choice does not use the Space's login"
+    );
+    let own = ProjectLogin {
+        space_id: "space-2".into(),
+        project_path: "/work/b".into(),
+        provider: Provider::Claude,
+        account_id: "work".into(),
+    };
+    spaces::spaces_project_login_set(store(), own.clone()).unwrap();
+    assert_eq!(
+        login_of("/work/b").as_deref(),
+        Some("work"),
+        "a project's own login was not stored"
+    );
+    let choices = || spaces::spaces_project_logins_list(store(), "space-2".into()).unwrap();
+    assert_eq!(
+        choices(),
+        [own],
+        "a project's own login is not in its Space's list"
+    );
+
+    let (space, project) = ("space-2".to_owned(), "/work/b".to_owned());
+    spaces::spaces_project_login_clear(store(), space, project, Provider::Claude).unwrap();
+    assert_eq!(
+        login_of("/work/b").as_deref(),
+        Some("default"),
+        "a cleared project login is still used"
+    );
+    assert_eq!(choices(), [], "a cleared project login is still listed");
+}
+
 #[cfg(unix)]
 mod spawn {
     use std::path::{Path, PathBuf};
