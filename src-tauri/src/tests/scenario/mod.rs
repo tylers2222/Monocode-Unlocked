@@ -34,6 +34,7 @@ mod s5_scheduler;
 #[cfg(unix)]
 mod space_checkouts;
 mod space_login;
+mod space_scope;
 mod spaces;
 #[cfg(not(windows))]
 mod spaces_commands;

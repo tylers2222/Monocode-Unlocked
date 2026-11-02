@@ -90,9 +90,20 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
     reply: vi.fn(async () => ({ message_ids: [] })),
     get: vi.fn(async () => ({ message: {} })),
   };
+  // Every Mono in the caller's Space, as Rust answers it (ADE-175).
+  const scope = {
+    space: "space-1",
+    projects: [],
+    monos: entries.map(({ mono }) => ({
+      monoId: mono.id,
+      otherSpace: null as string | null,
+      projects: mono.projects,
+    })),
+    foreignSessions: [],
+  };
   const host = {
     levels: {
-      check: async () => ({ leadSessionId: null }),
+      check: async () => ({ leadSessionId: null, ask: null, scope }),
       recordStart: async () => "m_aaaaaaaaaaaa",
     },
     isMono: (id: string) => kind === "mono" && id === source.id,
@@ -121,6 +132,7 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
       update: vi.mocked(messages.update),
     },
     shroomChat,
+    scope,
   };
 }
 
@@ -173,7 +185,7 @@ const shroomListing = {
 };
 
 it("lists every Mono with its role to a Mono with no projects and marks only itself", async () => {
-  const { run } = fixture();
+  const { run, scope } = fixture();
   expect(await run("monos.list")).toEqual({
     monos: [
       captainListing,
@@ -191,6 +203,15 @@ it("lists every Mono with its role to a Mono with no projects and marks only its
       },
     ],
   });
+  // ADE-175. Defect: monos.list shows a Mono of another Space, or a
+  // project outside the caller's Space, or lists anything with no scope.
+  scope.monos[1].projects = [];
+  scope.monos[2].otherSpace = "Work";
+  expect(await run("monos.list")).toEqual({
+    monos: [captainListing, { ...shroomListing, projects: [] }],
+  });
+  scope.monos = [];
+  expect(await run("monos.list")).toEqual({ monos: [] });
 });
 
 it("gets one Mono as monos.list shows it, with the harness and model its chat runs on", async () => {

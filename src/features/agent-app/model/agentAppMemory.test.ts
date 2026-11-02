@@ -202,13 +202,15 @@ it("refuses to start a habit that is already running", async () => {
   setHabitRunning(added.habit.id);
 });
 
-function projectFixture(projects: string[], cwd = "/Users/me") {
+/** `inSpace`: the Mono's projects in its Space, as Rust's scope answers them. */
+function projectFixture(projects: string[], cwd = "/Users/me", inSpace = projects) {
   const source = newSession("codex", cwd, "codex:test");
   source.id = "agent";
   const sessions = vi.fn(async (_cwd: string) => []);
+  const scope = { space: "space-1", projects: inSpace, monos: [], foreignSessions: [] };
   const host = {
     levels: {
-      check: async () => ({ leadSessionId: null }),
+      check: async () => ({ leadSessionId: null, ask: null, scope }),
       recordStart: async () => "m_aaaaaaaaaaaa",
     },
     isMono: (id: string) => id === "agent",
@@ -240,6 +242,15 @@ it("lets a Mono choose which of its projects an action works in", async () => {
     "/code/site",
     "/code/app",
   ]);
+  // ADE-175. Defect: a project in another Space is listed, or its refusal
+  // tells it from a project the Mono does not have.
+  const spaced = projectFixture(["/code/app", "/code/site"], "/Users/me", ["/code/app"]);
+  for (const project of ["site", "/code/site", "/code/other"])
+    await expect(spaced.run("sessions.list", { project })).rejects.toThrow(
+      "Not one of your projects. Yours: app (/code/app)",
+    );
+  expect(await spaced.run("sessions.list")).toMatchObject({ cwd: "/code/app" });
+  expect(spaced.sessions.mock.calls).toEqual([["/code/app"]]);
 });
 
 it("uses a Mono's only project, or the one its chat started in", async () => {

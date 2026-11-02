@@ -593,11 +593,12 @@ it("runs nothing when the level check itself fails", async () => {
   expect(actions.start).not.toHaveBeenCalled();
 });
 
-// #81 review n5. Defect: messages.* go to the app-action gate too, so a
-// worker's message to its lead gets worker_scope and an app_action row
-// instead of its own gate in mono_message_submit.
-it("sends messages.* to their own gate, never to the level check", async () => {
-  const { run, actions } = world("worker");
+// #81 review n5, ADE-175. Defect: messages.* go to the app-action gate too,
+// so a worker's message to its lead gets worker_scope and an app_action row
+// instead of its own gate in mono_message_submit; or get_monos lists Monos
+// without the check's Space scope, or with none.
+it("sends messages.* to their own gate, and get_monos to the check for its scope", async () => {
+  const { run, actions, host } = world("worker");
   await run("messages.send", {
     message: "Done",
     send_to: "lead",
@@ -606,6 +607,20 @@ it("sends messages.* to their own gate, never to the level check", async () => {
   });
   expect(actions.messageSend).toHaveBeenCalledOnce();
   expect(checks()).toEqual([]);
+  const scope = { space: "space-2", projects: [], monos: [], foreignSessions: [] };
+  command.answer = () => ({ ...ALLOWED, scope });
+  const getMonos = vi.fn(async () => ({ monos: [] }));
+  host.messages!.getMonos = getMonos;
+  await run("messages.get_monos", {}, "r2");
+  expect(checks()).toMatchObject([
+    { call: { action: "messages.get_monos", requestId: "r2" } },
+  ]);
+  expect(getMonos).toHaveBeenCalledWith(scope);
+  command.answer = () => ALLOWED;
+  await expect(run("messages.get_monos", {}, "r3")).rejects.toThrow(
+    "no Space scope",
+  );
+  expect(getMonos).toHaveBeenCalledOnce();
 });
 
 // Design 13.4. Defect: a session with no app access reaches Rust as a caller.

@@ -542,6 +542,11 @@ function world(
     opening = Promise.resolve(),
     /** The lead and worker sessions `sessionSender` knows, by id. */
     senders = {} as Record<string, { title: string; level: "lead" | "worker" }>,
+    /**
+     * The Monos the level check's scope names (ADE-175), each with the name
+     * of its other Space, or null in the caller's.
+     */
+    listed = { giga: null, "mono-a": null } as Record<string, string | null>,
   } = {},
 ) {
   let sessions = loaded;
@@ -609,7 +614,20 @@ function world(
     steerProject,
   };
   const loads = createLoadReconciles(host);
-  const app = { messages: agentMessages(host) } as unknown as AgentAppHost;
+  const scope = {
+    space: "space-1",
+    projects: [],
+    monos: Object.entries(listed).map(([monoId, otherSpace]) => ({
+      monoId,
+      otherSpace,
+      projects: [],
+    })),
+    foreignSessions: [],
+  };
+  const app = {
+    messages: agentMessages(host),
+    levels: { check: async () => ({ leadSessionId: null, ask: null, scope }) },
+  } as unknown as AgentAppHost;
   const source = chat(
     typeof caller === "object"
       ? caller.sessionId
@@ -1275,6 +1293,14 @@ it("lists every Mono for messages.get_monos and marks the caller", async () => {
     monos: [
       { mono_id: "giga", mono_name: "Boss", role: "giga", you: true },
       { mono_id: "mono-a", mono_name: "A", role: "mono", you: false },
+    ],
+  });
+  // ADE-175. Defect: get_monos lists a Mono its scope leaves out, or does
+  // not mark one of another Space with that Space's name.
+  const across = world([], [], { caller: "mono-a", listed: { "mono-a": "Work" } });
+  expect(await across.run("messages.get_monos")).toEqual({
+    monos: [
+      { mono_id: "mono-a", mono_name: "A", role: "mono", other_space: "Work", you: true },
     ],
   });
 });

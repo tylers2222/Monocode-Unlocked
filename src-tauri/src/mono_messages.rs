@@ -28,6 +28,7 @@ use crate::mono_gate::{
 };
 use crate::mono_roster::{validate_mono_id, MonoRole};
 use crate::session_store::{validate_id, SessionStore};
+use crate::spaces::scope::SpaceScope;
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     rebuild_mono_messages(conn)?;
@@ -2898,11 +2899,14 @@ pub fn drop_message(
 #[serde(tag = "outcome", rename_all = "camelCase")]
 pub enum ActionChecked {
     /// The action runs. A start writes `lead_session_id` on the new session
-    /// (design 13.3), and puts `ask` on its first prompt (R7).
+    /// (design 13.3), and puts `ask` on its first prompt (R7). `scope` is
+    /// the caller's Space (ADE-175), only for the actions that list one.
     #[serde(rename_all = "camelCase")]
     Allowed {
         lead_session_id: Option<SessionId>,
         ask: Option<StartAsk>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        scope: Option<SpaceScope>,
     },
     Failed {
         error: ToolError,
@@ -3062,6 +3066,7 @@ fn start_allowed(
     Ok(ActionChecked::Allowed {
         lead_session_id,
         ask,
+        scope: None,
     })
 }
 
@@ -3147,6 +3152,7 @@ pub fn check_action(
             None => ActionChecked::Allowed {
                 lead_session_id,
                 ask: None,
+                scope: crate::spaces::scope::scoped(&tx, caller, action)?,
             },
         },
         ActionDecision::Refuse { code, hint } => ActionChecked::Failed {
@@ -9674,7 +9680,8 @@ pub(crate) mod tests {
             .unwrap(),
             ActionChecked::Allowed {
                 lead_session_id: None,
-                ask: None
+                ask: None,
+                scope: None
             },
             "unsaved target"
         );
@@ -9710,7 +9717,8 @@ pub(crate) mod tests {
             .unwrap(),
             ActionChecked::Allowed {
                 lead_session_id: None,
-                ask: None
+                ask: None,
+                scope: None
             },
             "Mono chat with a sessions row"
         );
@@ -9989,7 +9997,8 @@ pub(crate) mod tests {
             check("operator"),
             ActionChecked::Allowed {
                 lead_session_id: None,
-                ask: None
+                ask: None,
+                scope: None
             }
         );
     }
@@ -10246,6 +10255,7 @@ pub(crate) mod tests {
                 ask_id: start_message_id(&session("lead"), &key),
                 due_in_ms: Some(3_600_000),
             }),
+            scope: None,
         };
         assert_eq!(check(&start_input("Fix the build")), allowed);
         start_row(
@@ -10347,6 +10357,7 @@ pub(crate) mod tests {
                         ask_id: start_message_id(&session(from), &RequestId::parse("r1").unwrap()),
                         due_in_ms: Some(3_600_000),
                     }),
+                    scope: None,
                 }
             );
             clear(&store.lock_conn().unwrap(), started, 200);
