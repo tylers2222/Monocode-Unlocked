@@ -81,6 +81,7 @@ fn app_with_window(
 ) {
     let app = tauri::test::mock_builder()
         .manage(SessionStore::open(world.path().to_path_buf()).unwrap())
+        .manage(crate::harness::HarnessHost::new())
         .invoke_handler(tauri::generate_handler![
             control::control_authorize_turn,
             control::control_authorize_harness_turn,

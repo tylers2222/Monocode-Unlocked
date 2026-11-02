@@ -4,9 +4,9 @@
 
 use tauri::Manager;
 
-use crate::session_store::SessionStore;
+use crate::session_store::{now_millis, SessionStore};
 use crate::spaces::account::{self, ProviderAccount, SpaceLogin};
-use crate::spaces::grants::{self, RouteGrant};
+use crate::spaces::grants::{self, GrantLength, GrantRequest};
 use crate::spaces::leases;
 use crate::spaces::{Provider, FIRST_SPACE};
 
@@ -20,14 +20,16 @@ fn work() -> ProviderAccount {
     }
 }
 
-fn grant(session_id: &str) -> RouteGrant {
-    RouteGrant {
+/// A grant until the first login resets `resets_at`, as the usage-limit
+/// card sends it.
+fn grant(session_id: &str, resets_at: i64) -> GrantRequest {
+    GrantRequest {
         session_id: session_id.into(),
         provider: Provider::Claude,
         from_account_id: "default".into(),
         to_account_id: "work".into(),
-        granted_at: 1_000,
-        expires_at: 1_000 + 30 * DAY_MS,
+        length: GrantLength::UntilReset,
+        first_login_resets_at: Some(resets_at),
     }
 }
 
@@ -74,12 +76,15 @@ fn the_login_grant_and_lease_commands_store_what_the_ui_sends() {
         "a Space's login was not stored or not listed"
     );
 
-    for session in ["s1", "s2"] {
-        grants::spaces_grant_save(store(), grant(session)).unwrap();
-    }
+    let in_30_days = now_millis() + 30 * DAY_MS;
+    let [s1, s2] = ["s1", "s2"]
+        .map(|session| grants::spaces_grant_save(store(), grant(session, in_30_days)).unwrap());
     assert_eq!(
-        grants::spaces_grant_get(store(), "s1".into()).unwrap(),
-        Some(grant("s1")),
+        (
+            grants::spaces_grant_get(store(), "s1".into()).unwrap(),
+            s1.expires_at
+        ),
+        (Some(s1), in_30_days),
         "a 30 day grant was not stored or not read back"
     );
     grants::spaces_grant_remove(store(), "s1".into()).unwrap();
@@ -89,8 +94,11 @@ fn the_login_grant_and_lease_commands_store_what_the_ui_sends() {
         "a removed grant is still there"
     );
     assert_eq!(
-        grants::spaces_grant_get(store(), "s2".into()).unwrap(),
-        Some(grant("s2")),
+        (
+            grants::spaces_grant_get(store(), "s2".into()).unwrap(),
+            s2.expires_at
+        ),
+        (Some(s2), in_30_days),
         "removing one session's grant took another's"
     );
 

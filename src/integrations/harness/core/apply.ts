@@ -23,7 +23,10 @@ import { taskListText } from "../../../features/sessions/model/taskList";
 import { isReviewablePlan } from "../../../features/sessions/model/plan";
 import { resolveModel } from "../../../features/sessions/model/models";
 import type { HarnessEvent } from "./types";
-import { usageLimitFromError } from "../../../features/sessions/model/usageLimit";
+import {
+  leaveExpiredRouteGrant,
+  usageLimitFromError,
+} from "../../../features/sessions/model/usageLimit";
 import {
   missedTurn,
   pauseQueue,
@@ -188,7 +191,7 @@ export function applyHarnessEvent(
           // Do not drain remaining messages into the same failed connection.
           pauseQueue(
             {
-              ...session,
+              ...leaveExpiredRouteGrant(session, event.message),
               usageLimit:
                 session.usageLimit ?? usageLimitFromError(event.message),
             },
