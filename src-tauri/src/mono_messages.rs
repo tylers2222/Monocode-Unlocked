@@ -23,8 +23,8 @@ use crate::control::ControlHost;
 use crate::mono_gate::{
     self, Access, ActionDecision, ActionFacts, Caller, CallerFacts, CallerKind, CallerMono,
     Closure, Decision, Facts, HandleState, Handled, Input, MessageRef, OpenHandle, PairCount,
-    Recipient, Referenced, Refusal, ReplyFacts, Route, SendFacts, SessionLevel, Speaker, Target,
-    TargetSession,
+    Recipient, Referenced, Refusal, ReplyFacts, Route, SendFacts, SessionLevel, Spaces, Speaker,
+    Target, TargetSession,
 };
 use crate::mono_roster::{validate_mono_id, MonoRole};
 use crate::session_store::{validate_id, SessionStore};
@@ -450,6 +450,7 @@ text_enum!(all RejectCode {
     SessionCannotWait = "session_cannot_wait",
     LeadScope = "lead_scope",
     NotAGiga = "not_a_giga",
+    CrossSpaceForbidden = "cross_space_forbidden",
 });
 
 /// A text value the table stores as is, built only through `parse`.
@@ -1834,6 +1835,7 @@ pub(crate) fn submit_in(
             referenced_id = reply_to.as_ref().map(|found| found.message.id.clone());
             let pair = pair_count(tx, caller, &recipient, now)?;
             let asked_by_recipient = crate::asks::asked_by(tx, caller, &recipient)?;
+            let spaces = spaces(tx, caller, &recipient)?;
             mono_gate::decide_send(
                 caller,
                 send,
@@ -1846,6 +1848,7 @@ pub(crate) fn submit_in(
                         reply_to,
                         pair,
                         asked_by_recipient,
+                        spaces,
                     },
                 },
                 now,
@@ -1883,6 +1886,29 @@ pub(crate) fn submit_in(
         referenced_id,
         now,
     )
+}
+
+/// ADE-174: the caller's and the recipient's Space, from their saved rows.
+fn spaces(conn: &Connection, caller: &Caller, recipient: &Recipient) -> rusqlite::Result<Spaces> {
+    let space = |table: &str, id: &str| {
+        conn.query_row(
+            &format!("SELECT space_id FROM {table} WHERE id = ?1"),
+            [id],
+            |row| row.get(0),
+        )
+        .optional()
+    };
+    Ok(Spaces {
+        caller: match caller.mono_id() {
+            Some(mono_id) => space("monos", mono_id.as_str())?,
+            None => space("sessions", caller.session_id.as_str())?,
+        },
+        recipient: match recipient {
+            Recipient::Mono { mono_id, .. } => space("monos", mono_id.as_str())?,
+            Recipient::Session { target, .. } => space("sessions", target.session.as_str())?,
+            Recipient::Unknown => None,
+        },
+    })
 }
 
 /// Design 16.6: the accepted row `id` names. A steer's `reply_to` is a

@@ -275,7 +275,8 @@ export type RejectCode =
   | "steer_via_lead"
   | "session_cannot_wait"
   | "lead_scope"
-  | "not_a_giga";
+  | "not_a_giga"
+  | "cross_space_forbidden";
 
 /** Failures that write no row: every app action code, from the one list. */
 export type CallErrorCode = AppErrorCode;
