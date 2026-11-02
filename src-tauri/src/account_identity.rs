@@ -38,6 +38,37 @@ fn home() -> Option<PathBuf> {
     dirs_home().map(PathBuf::from)
 }
 
+/// The folder a login uses. One registered through a symlink, e.g.
+/// `provider-accounts/claude/<id>` -> `~/.claude-2`, is the target as the link
+/// names it, since Claude hashes that exact string for its Keychain item. The
+/// target must be a folder inside the home folder and outside the app's data
+/// folder. A path that is not a symlink is returned as it is.
+pub(crate) fn login_folder(dir: PathBuf) -> Result<PathBuf, String> {
+    let Ok(link) = std::fs::read_link(&dir) else {
+        return Ok(dir);
+    };
+    let target = dir.with_file_name(link);
+    let real = std::fs::canonicalize(&target).map_err(|error| {
+        format!(
+            "The login folder {} links to {}, which cannot be opened: {error}",
+            dir.display(),
+            target.display()
+        )
+    })?;
+    let canonical = |path: Option<&Path>| path.and_then(|path| std::fs::canonicalize(path).ok());
+    let inside_home =
+        canonical(home().as_deref()).is_some_and(|home| real != home && real.starts_with(home));
+    // `<app data>/provider-accounts/<provider>/<id>`
+    let app_data = canonical(dir.ancestors().nth(3));
+    if !real.is_dir() || !inside_home || app_data.is_some_and(|data| real.starts_with(data)) {
+        return Err(format!(
+            "The login folder {} must link to a folder inside the home folder and outside the app's data",
+            dir.display()
+        ));
+    }
+    Ok(target)
+}
+
 fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
@@ -59,7 +90,7 @@ fn capitalize(value: &str) -> String {
         .unwrap_or_default()
 }
 
-fn claude_identity(dir: Option<PathBuf>) -> Option<ProviderAccountIdentity> {
+pub(crate) fn claude_identity(dir: Option<PathBuf>) -> Option<ProviderAccountIdentity> {
     let path = match dir {
         Some(dir) => dir.join(".claude.json"),
         None => home()?.join(".claude.json"),

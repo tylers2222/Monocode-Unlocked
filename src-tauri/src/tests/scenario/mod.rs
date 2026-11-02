@@ -19,6 +19,8 @@ mod d4_deny;
 #[cfg(unix)]
 mod devin_supervised;
 #[cfg(unix)]
+mod logins;
+#[cfg(unix)]
 mod omp_mcp;
 mod s0_baseline;
 mod s1_asks;

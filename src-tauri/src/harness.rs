@@ -1191,7 +1191,8 @@ pub(crate) fn provider_account_dir<R: Runtime>(
     let Some(account_id) = account_id.filter(|id| *id != DEFAULT_PROVIDER_ACCOUNT_ID) else {
         return Ok(None);
     };
-    let dir = provider_account_path(app, provider, account_id)?;
+    let dir =
+        crate::account_identity::login_folder(provider_account_path(app, provider, account_id)?)?;
     std::fs::create_dir_all(&dir).map_err(|error| {
         format!(
             "Could not create the {provider} account directory {}: {error}",
@@ -1223,8 +1224,8 @@ pub(crate) fn provider_account_path<R: Runtime>(
 }
 
 #[tauri::command(async)]
-pub fn provider_account_remove(
-    app: AppHandle,
+pub fn provider_account_remove<R: Runtime>(
+    app: AppHandle<R>,
     host: State<'_, HarnessHost>,
     provider: String,
     account_id: String,
