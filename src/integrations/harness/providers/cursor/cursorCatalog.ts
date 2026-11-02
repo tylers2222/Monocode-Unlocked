@@ -77,7 +77,7 @@ async function discoverViaAcp(workingDirectory?: string): Promise<AgentModel[]> 
   );
 
   try {
-    await spawnHelperChild(
+    const placed = await spawnHelperChild(
       undefined,
       probeId,
       path,
@@ -109,7 +109,7 @@ async function discoverViaAcp(workingDirectory?: string): Promise<AgentModel[]> 
 
       const created = await acp.request<unknown>(
         "session/new",
-        { cwd, mcpServers: [] },
+        { cwd: placed, mcpServers: [] },
         REQUEST_TIMEOUT_MS,
       );
       return modelsFromSessionNew(created);

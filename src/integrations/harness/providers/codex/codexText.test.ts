@@ -12,8 +12,9 @@ let output = "Generated text";
 let threadCount = 0;
 let failTurn = false;
 let missingResume = false;
+// Rust places a helper and names the folder (ADE-189); it is never "/repo".
 const spawnHelperChild = vi.hoisted(() =>
-  vi.fn(async (..._args: unknown[]) => undefined),
+  vi.fn(async (..._args: unknown[]) => "/placed"),
 );
 const prepareCodexMonoContext = vi.hoisted(() =>
   vi.fn(async (_input: unknown) => ({
@@ -165,7 +166,10 @@ it.each([
     output = JSON.stringify(response);
     await expect(run()).resolves.toEqual(expected);
     expect(threadStarts()).toHaveLength(1);
-    expect(threadStarts()[0].params).toMatchObject({ ephemeral: true });
+    expect(threadStarts()[0].params).toMatchObject({
+      ephemeral: true,
+      cwd: "/placed",
+    });
     expect(sent.some((request) => request.method === "thread/resume")).toBe(
       false,
     );

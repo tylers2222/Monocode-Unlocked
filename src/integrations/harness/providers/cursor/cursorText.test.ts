@@ -3,8 +3,9 @@ import type { HarnessEvent } from "../../core/types";
 
 const sent: string[] = [];
 let onLine: ((line: string) => void) | undefined;
+// Rust places a helper and names the folder (ADE-189); it is never "/repo".
 const spawnHelperChild = vi.hoisted(() =>
-  vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined),
+  vi.fn<(...args: unknown[]) => Promise<string>>(async () => "/placed"),
 );
 
 vi.mock("../../core/child", () => ({
@@ -76,6 +77,7 @@ it("forwards Cursor text deltas without duplicating snapshots", async () => {
   await waitFor(() => !!outbound("authenticate"), "authenticate");
   reply("authenticate", {});
   await waitFor(() => !!outbound("session/new"), "session/new");
+  expect(outbound("session/new")?.params).toMatchObject({ cwd: "/placed" });
   reply("session/new", {
     sessionId: "cursor_text",
     configOptions: [{ id: "model", category: "model" }],

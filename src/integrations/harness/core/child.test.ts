@@ -120,7 +120,7 @@ describe("child bridge", () => {
 
   it("reconciles an exit that arrives before spawn returns its pid", async () => {
     installResolvedListeners();
-    const spawned = deferred<number>();
+    const spawned = deferred<{ pid: number; cwd: string }>();
     mocks.invoke.mockImplementation((command: string) => {
       if (command === "harness_spawn") return spawned.promise;
       return Promise.resolve();
@@ -141,7 +141,7 @@ describe("child bridge", () => {
     });
     expect(onExit).not.toHaveBeenCalled();
 
-    spawned.resolve(42);
+    spawned.resolve({ pid: 42, cwd: "/placed" });
     await spawning;
     expect(onExit).toHaveBeenCalledWith(1);
     // ADE-117: a default spawn sends no ompMcp; a "none" spawn sends it, so
@@ -158,13 +158,21 @@ describe("child bridge", () => {
         ([command]) => command === "harness_spawn",
       )?.[1],
     ).not.toHaveProperty("helper");
+    // The helper is told the folder Rust placed it in, never the one asked.
     for (const owner of ["pi-chat", undefined]) {
-      await child.spawnHelperChild(owner, "pi-text", "pi", [], "/repo");
+      await expect(
+        child.spawnHelperChild(owner, "pi-text", "pi", [], "/repo"),
+      ).resolves.toBe("/placed");
       expect(mocks.invoke).toHaveBeenLastCalledWith(
         "harness_spawn",
         expect.objectContaining({ sessionId: "pi-text", helper: { owner } }),
       );
     }
+    // No folder named: the helper fails, it never falls back to "/repo".
+    mocks.invoke.mockResolvedValueOnce({ pid: 43 });
+    await expect(
+      child.spawnHelperChild(undefined, "pi-probe", "pi", [], "/repo"),
+    ).rejects.toThrow("harness_spawn named no folder for pi-probe");
     await child.spawnChild(
       "probe",
       "omp",
@@ -324,7 +332,7 @@ describe("child bridge", () => {
     const release = await child.acquireHarnessBridge();
     const emit = (name: string, payload: unknown) =>
       mocks.handlers.get(name)?.({ payload: payload as never });
-    mocks.invoke.mockResolvedValue(42);
+    mocks.invoke.mockResolvedValue({ pid: 42, cwd: "/tmp" });
 
     await child.spawnChild("mine", "agent", [], "/tmp");
     emit("harness-stdout", { sessionId: "mine", line: "early" });
@@ -346,7 +354,7 @@ describe("child bridge", () => {
     const release = await child.acquireHarnessBridge();
     const emit = (name: string, payload: unknown) =>
       mocks.handlers.get(name)?.({ payload: payload as never });
-    mocks.invoke.mockResolvedValue(42);
+    mocks.invoke.mockResolvedValue({ pid: 42, cwd: "/tmp" });
 
     await child.spawnChild("mine", "agent", [], "/tmp");
     await child.openHarnessSse("mine", "http://127.0.0.1:1/event");
@@ -378,7 +386,7 @@ describe("child bridge", () => {
     const release = await child.acquireHarnessBridge();
     const emit = (name: string, payload: unknown) =>
       mocks.handlers.get(name)?.({ payload: payload as never });
-    mocks.invoke.mockResolvedValue(42);
+    mocks.invoke.mockResolvedValue({ pid: 42, cwd: "/tmp" });
 
     child.watchChild("probe", vi.fn(), vi.fn());
     await child.spawnChild("probe", "agent", [], "/tmp");

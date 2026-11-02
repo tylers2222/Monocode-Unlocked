@@ -949,6 +949,15 @@ pub fn harness_free_port() -> Result<u16, String> {
         .map_err(|e| format!("Failed to reserve a local port: {e}"))
 }
 
+/// A started harness child, and the folder the spawn hook started it in. A
+/// helper tells its agent that folder (`session/new`, `thread/start`), never
+/// the one the window asked for (ADE-189).
+#[derive(Debug, Serialize)]
+pub struct Spawned {
+    pub(crate) pid: u32,
+    pub(crate) cwd: String,
+}
+
 /// Off the main thread: fork/exec, and `apply_gui_env` can wait on the first
 /// login-shell read. Callers await this before writing to the child. Kill can
 /// still race the fork, so a cancelled spawn must not reinsert the child.
@@ -969,7 +978,7 @@ pub fn harness_spawn<R: Runtime>(
     devin_ask_edits: Option<bool>,
     omp_mcp: Option<String>,
     helper: Option<crate::spaces::Helper>,
-) -> Result<u32, String> {
+) -> Result<Spawned, String> {
     if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref()) {
         return Err("harness_spawn: not a resolved harness CLI".to_string());
     }
@@ -1193,7 +1202,10 @@ pub fn harness_spawn<R: Runtime>(
         );
     });
 
-    Ok(pid)
+    Ok(Spawned {
+        pid,
+        cwd: crate::fs::path_to_js(&workdir),
+    })
 }
 
 pub(crate) fn provider_account_dir<R: Runtime>(
@@ -1580,6 +1592,13 @@ fn helper_folder<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(folder)
 }
 
+/// What a one-shot helper printed, and the folder the spawn hook ran it in.
+#[derive(Debug, Serialize)]
+pub struct Ran {
+    pub(crate) stdout: String,
+    pub(crate) cwd: String,
+}
+
 /// One-shot provider commands: catalog probes and temporary-session cleanup.
 /// Each is a helper of `helper.owner`, the session it works for, if any.
 #[tauri::command]
@@ -1591,7 +1610,7 @@ pub async fn harness_exec<R: Runtime>(
     binary_provider: Option<String>,
     binary_path: Option<String>,
     helper: Option<crate::spaces::Helper>,
-) -> Result<String, String> {
+) -> Result<Ran, String> {
     if !exec_args_allowed(binary_provider.as_deref(), &args) {
         return Err("harness_exec: unsupported arguments".into());
     }
@@ -1623,10 +1642,13 @@ pub async fn harness_exec<R: Runtime>(
                 workdir.display()
             ));
         }
-        let workdir = workdir
+        let cwd = workdir
             .to_str()
             .ok_or_else(|| format!("Not a UTF-8 folder: {}", workdir.display()))?;
-        exec_capture(&command, &args, Some(workdir))
+        Ok(Ran {
+            stdout: exec_capture(&command, &args, Some(cwd))?,
+            cwd: cwd.to_owned(),
+        })
     })
     .await
     .map_err(|e| e.to_string())?

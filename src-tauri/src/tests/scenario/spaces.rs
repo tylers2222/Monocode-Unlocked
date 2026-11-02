@@ -1454,6 +1454,8 @@ mod helpers {
         path.to_string_lossy().into_owned()
     }
 
+    /// The folder `harness_exec` ran the stand-in in, as it printed it and as
+    /// the command names it to the window.
     fn exec(rig: &Rig, owner: Option<&str>, cwd: Option<&Path>) -> Result<PathBuf, String> {
         exec_as(rig, None, owner, cwd)
     }
@@ -1477,11 +1479,20 @@ mod helpers {
                 key: key.map(String::from),
             }),
         ))
-        .map(|out| PathBuf::from(out.trim()))
+        .map(|ran| {
+            assert_eq!(
+                ran.cwd,
+                ran.stdout.trim(),
+                "harness_exec named another folder than it ran in"
+            );
+            PathBuf::from(ran.cwd)
+        })
     }
 
-    /// Starts helper `key` of `owner`, which writes its folder to `<folder>/<key>`.
-    fn helper(rig: &Rig, key: &str, owner: Option<&str>, workdir: &Path) {
+    /// Starts helper `key` of `owner`, which writes its folder to
+    /// `<folder>/<key>`. Returns the folder `harness_spawn` names: the one the
+    /// helper tells its agent.
+    fn helper(rig: &Rig, key: &str, owner: Option<&str>, workdir: &Path) -> String {
         spawn(
             rig,
             key,
@@ -1490,7 +1501,7 @@ mod helpers {
                 owner: owner.map(String::from),
                 key: None,
             }),
-        );
+        )
     }
 
     /// Starts `key` as a session's own child, as `spawnChild` does.
@@ -1498,7 +1509,7 @@ mod helpers {
         spawn(rig, key, workdir, None);
     }
 
-    fn spawn(rig: &Rig, key: &str, workdir: &Path, helper: Option<Helper>) {
+    fn spawn(rig: &Rig, key: &str, workdir: &Path, helper: Option<Helper>) -> String {
         crate::harness::harness_spawn(
             rig.app.handle().clone(),
             rig.app.state::<crate::harness::HarnessHost>(),
@@ -1514,7 +1525,8 @@ mod helpers {
             None,
             helper,
         )
-        .unwrap();
+        .unwrap()
+        .cwd
     }
 
     pub(super) fn execs_run_where_their_owner_does(rig: &Rig) {
@@ -1576,13 +1588,20 @@ mod helpers {
             neutral,
             ..
         } = rig;
-        helper(rig, "monocode-fx-text", Some("two"), project);
+        assert_eq!(
+            helper(rig, "monocode-fx-text", Some("two"), project),
+            text(copy),
+            "Space 2's text helper was told the checkout Space 1 holds"
+        );
         assert_eq!(
             wait_for(&copy.join("monocode-fx-text")),
             format!("{}\n", text(copy)),
             "Space 2's text helper ran in the checkout Space 1 holds"
         );
-        helper(rig, "monocode-fx-skills", Some("one"), project);
+        assert_eq!(
+            helper(rig, "monocode-fx-skills", Some("one"), project),
+            text(project)
+        );
         assert_eq!(
             wait_for(&project.join("monocode-fx-skills")),
             format!("{}\n", text(project)),
@@ -1592,7 +1611,11 @@ mod helpers {
             ("monocode-fx-probe", None),
             ("monocode-fx-login", Some("ghost")),
         ] {
-            helper(rig, key, owner, project);
+            assert_eq!(
+                helper(rig, key, owner, project),
+                text(neutral),
+                "{key}: a helper of no stored session was told a project folder"
+            );
             assert_eq!(
                 wait_for(&neutral.join(key)),
                 format!("{}\n", text(neutral)),
@@ -1613,7 +1636,11 @@ mod helpers {
             ("monocode-omp-skills-1", Some("ghost"), project),
             ("monocode-pi-skills-2", Some("two"), copy),
         ] {
-            helper(rig, key, owner, project);
+            assert_eq!(
+                helper(rig, key, owner, project),
+                text(folder),
+                "{key}: an interim helper was told another folder"
+            );
             assert_eq!(
                 wait_for(&folder.join(key)),
                 format!("{}\n", text(folder)),

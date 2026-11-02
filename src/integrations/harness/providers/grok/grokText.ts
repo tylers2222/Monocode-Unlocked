@@ -30,6 +30,8 @@ type LiveText = {
   acp: AcpClient;
   binaryPath: string;
   cwd: string;
+  /** Where Rust started the child; it tells its agent this folder (ADE-189). */
+  placed: string;
   model: string;
   settingsKey: string;
   acpSessionId: string;
@@ -174,6 +176,8 @@ async function startLive(
     acp,
     binaryPath: path,
     cwd,
+    // Replaced by the folder Rust names before the first request.
+    placed: cwd,
     model,
     settingsKey: modelSettingsKey(modelSettings),
     acpSessionId: "",
@@ -195,7 +199,7 @@ async function startLive(
   );
 
   try {
-    await spawnHelperChild(
+    session.placed = await spawnHelperChild(
       undefined,
       TEXT_CHILD_ID,
       path,
@@ -223,7 +227,7 @@ async function startLive(
         )
         .catch(() => undefined);
     }
-    await openSession(session, cwd, model, modelSettings);
+    await openSession(session, session.placed, model, modelSettings);
     live = session;
     return session;
   } catch (error) {
@@ -269,7 +273,6 @@ async function openSession(
     )
     .catch(() => undefined);
 
-  session.cwd = cwd;
   session.model = model;
   session.settingsKey = modelSettingsKey(modelSettings);
 }
@@ -295,7 +298,7 @@ async function deleteTextSession(session: LiveText): Promise<void> {
   await execChild(
     session.binaryPath,
     ["--no-auto-update", "sessions", "delete", session.acpSessionId],
-    session.cwd,
+    session.placed,
     "grok",
     undefined,
     undefined,

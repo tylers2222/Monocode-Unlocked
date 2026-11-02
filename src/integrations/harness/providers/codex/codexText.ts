@@ -32,6 +32,8 @@ const TEXT_EFFORT = "low";
 type LiveText = {
   rpc: JsonRpcClient;
   cwd: string;
+  /** Where Rust started the child; it tells its agent this folder (ADE-189). */
+  placed: string;
   providerAccountId?: string;
   threadId: string;
   ephemeral: boolean;
@@ -248,7 +250,7 @@ async function ensureLive(input: {
       live.model = model;
       live.effort = effort;
       live.serviceTier = serviceTier;
-      await openThread(live, input.cwd, requestedThreadId, ephemeral);
+      await openThread(live, live.placed, requestedThreadId, ephemeral);
       input.onThreadId?.(live.threadId);
       return live;
     } catch (error) {
@@ -309,6 +311,8 @@ async function startLive(
   const session: LiveText = {
     rpc,
     cwd,
+    // Replaced by the folder Rust names before the first request.
+    placed: cwd,
     providerAccountId,
     threadId: "",
     ephemeral,
@@ -339,7 +343,7 @@ async function startLive(
   );
 
   try {
-    await spawnHelperChild(
+    session.placed = await spawnHelperChild(
       undefined,
       TEXT_CHILD_ID,
       path,
@@ -365,7 +369,7 @@ async function startLive(
       INIT_TIMEOUT_MS,
     );
     await rpc.notify("initialized", undefined);
-    await openThread(session, cwd, requestedThreadId, ephemeral, store);
+    await openThread(session, session.placed, requestedThreadId, ephemeral, store);
     live = session;
     return session;
   } catch (error) {
@@ -445,7 +449,6 @@ async function openThread(
   }
   const threadId = opened.thread?.id?.trim();
   if (!threadId) throw new Error("Codex did not return a thread id");
-  session.cwd = cwd;
   session.threadId = threadId;
   session.ephemeral = ephemeral;
 }

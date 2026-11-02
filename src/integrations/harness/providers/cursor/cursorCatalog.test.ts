@@ -6,8 +6,9 @@ const mocks = vi.hoisted(() => ({
   killChild: vi.fn(async () => undefined),
   resolveCursorBinary: vi.fn(async () => ({ path: "/fake/cursor-agent" })),
   setHarnessModels: vi.fn(),
-  spawnHelperChild: vi.fn<(...args: unknown[]) => Promise<void>>(
-    async () => undefined,
+  // Rust places a helper and names the folder (ADE-189).
+  spawnHelperChild: vi.fn<(...args: unknown[]) => Promise<string>>(
+    async () => "/placed",
   ),
   unwatchChild: vi.fn(),
 }));
@@ -118,7 +119,7 @@ describe("Cursor catalog discovery", () => {
       "cursor/list_available_models",
       "session/new",
     ]);
-    expect(sent.at(-1)?.params).toEqual({ cwd: "/workspace", mcpServers: [] });
+    expect(sent.at(-1)?.params).toEqual({ cwd: "/placed", mcpServers: [] });
   });
 
   it("falls back to CLI models when ACP requires login without starting a login flow", async () => {

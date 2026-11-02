@@ -490,7 +490,8 @@ fn harness_spawn_child() {
             None,
             None,
         )
-        .unwrap();
+        .unwrap()
+        .pid;
         assert!(pid > 1, "{session}: pid {pid}");
         workdir
     };

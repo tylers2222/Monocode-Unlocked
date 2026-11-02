@@ -10,7 +10,8 @@ const killChild = vi.fn(async () => undefined);
 vi.mock("../../core/child", () => ({
   resolveGrokBinary: async () => ({ path: "/fake/grok" }),
   execChild,
-  spawnHelperChild: async () => undefined,
+  // Rust places a helper and names the folder (ADE-189); it is never "/repo".
+  spawnHelperChild: async () => "/placed",
   killChild,
   unwatchChild: () => undefined,
   watchChild: (
@@ -74,6 +75,9 @@ it("forwards Grok text deltas without duplicating snapshots", async () => {
   await waitFor(() => !!outbound("initialize"), "initialize");
   reply("initialize", {});
   await waitFor(() => !!outbound("session/new"), "session/new");
+  // ADE-189: the agent works in the folder Rust placed it in, and its session
+  // is deleted there.
+  expect(outbound("session/new")?.params).toMatchObject({ cwd: "/placed" });
   reply("session/new", { sessionId: "550e8400-e29b-41d4-a716-446655440000" });
   await waitFor(() => !!outbound("session/set_model"), "session/set_model");
   reply("session/set_model", {});
@@ -112,7 +116,7 @@ it("forwards Grok text deltas without duplicating snapshots", async () => {
       "delete",
       "550e8400-e29b-41d4-a716-446655440000",
     ],
-    "/repo",
+    "/placed",
     "grok",
     undefined,
     undefined,
@@ -164,7 +168,7 @@ it("deletes only the temporary session when generation fails", async () => {
       "delete",
       "550e8400-e29b-41d4-a716-446655440000",
     ],
-    "/repo",
+    "/placed",
     "grok",
     undefined,
     undefined,
@@ -191,7 +195,7 @@ it("deletes the temporary session when generation is cancelled", async () => {
       "delete",
       "550e8400-e29b-41d4-a716-446655440000",
     ],
-    "/repo",
+    "/placed",
     "grok",
     undefined,
     undefined,
@@ -219,7 +223,7 @@ it("cleans up warmup sessions before starting with a different model", async () 
       "delete",
       "550e8400-e29b-41d4-a716-446655440001",
     ],
-    "/repo",
+    "/placed",
     "grok",
     undefined,
     undefined,
@@ -245,7 +249,7 @@ it("cleans up its session even if the provider exits before teardown", async () 
       "delete",
       "550e8400-e29b-41d4-a716-446655440000",
     ],
-    "/repo",
+    "/placed",
     "grok",
     undefined,
     undefined,

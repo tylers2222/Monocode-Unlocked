@@ -24,6 +24,8 @@ const CLIENT_CAPABILITIES = {
 type LiveText = {
   acp: AcpClient;
   cwd: string;
+  /** Where Rust started the child; it tells its agent this folder (ADE-189). */
+  placed: string;
   model: string;
   settingsKey: string;
   acpSessionId: string;
@@ -139,7 +141,7 @@ async function ensureLive(
     )
       return live;
     try {
-      await openSession(live, cwd, model, modelSettings);
+      await openSession(live, live.placed, model, modelSettings);
       return live;
     } catch {
       await dropLive();
@@ -173,6 +175,8 @@ async function startLive(
   const session: LiveText = {
     acp,
     cwd,
+    // Replaced by the folder Rust names before the first request.
+    placed: cwd,
     model,
     settingsKey: modelSettingsKey(modelSettings),
     acpSessionId: "",
@@ -194,7 +198,7 @@ async function startLive(
   );
 
   try {
-    await spawnHelperChild(
+    session.placed = await spawnHelperChild(
       undefined,
       TEXT_CHILD_ID,
       path,
@@ -215,7 +219,7 @@ async function startLive(
     await acp
       .request("authenticate", { methodId: "cursor_login" }, REQUEST_TIMEOUT_MS)
       .catch(() => undefined);
-    await openSession(session, cwd, model, modelSettings);
+    await openSession(session, session.placed, model, modelSettings);
     live = session;
     return session;
   } catch (error) {
@@ -285,7 +289,6 @@ async function openSession(
       .catch(() => undefined);
   }
 
-  session.cwd = cwd;
   session.model = model;
   session.settingsKey = modelSettingsKey(modelSettings);
   session.acpSessionId = acpSessionId;

@@ -346,14 +346,15 @@ export async function spawnChild(
   ompMcp?: Session["mcp"],
   /** A helper, not a session's own child: see `spawnHelperChild`. */
   helper?: { owner: string | undefined },
-): Promise<void> {
+): Promise<string | undefined> {
   livePid.delete(sessionId);
   pendingExit.delete(sessionId);
   ownedChildren.add(sessionId);
   const binaryPath = binaryProvider
     ? runtimeProviderBinaryPath(binaryProvider)
     : undefined;
-  const pid = await invoke<number>("harness_spawn", {
+  // The folder the spawn hook started the child in; none for a dead pid.
+  const spawned = await invoke<{ pid: number; cwd: string }>("harness_spawn", {
     sessionId,
     command,
     args,
@@ -366,22 +367,25 @@ export async function spawnChild(
     ...(ompMcp ? { ompMcp } : {}),
     ...(helper ? { helper } : {}),
   });
+  const pid = spawned.pid;
   if (typeof pid !== "number" || pid <= 0) return;
   livePid.set(sessionId, pid);
   const exits = pendingExit.get(sessionId);
   pendingExit.delete(sessionId);
   const exited = exits?.find((event) => event.pid === pid);
-  if (!exited) return;
+  if (!exited) return spawned.cwd;
   livePid.delete(sessionId);
   exitHandlers.get(sessionId)?.(exited.code);
+  return spawned.cwd;
 }
 
 /**
  * A text, catalog, skills or login child of `owner`, the session it works
  * for, or of none. Rust starts it in that session's folder, or in a neutral
- * folder that is no project checkout (ADE-189).
+ * folder that is no project checkout (ADE-189), and returns that folder: the
+ * one the helper names to its agent, never `cwd`.
  */
-export function spawnHelperChild(
+export async function spawnHelperChild(
   owner: string | undefined,
   childId: string,
   command: string,
@@ -390,8 +394,8 @@ export function spawnHelperChild(
   account?: { provider: "claude" | "codex"; id: string },
   binaryProvider?: ConfigurableBinaryProvider,
   codexStore?: "mono",
-): Promise<void> {
-  return spawnChild(
+): Promise<string> {
+  const placed = await spawnChild(
     childId,
     command,
     args,
@@ -403,6 +407,8 @@ export function spawnHelperChild(
     undefined,
     { owner },
   );
+  if (!placed) throw new Error(`harness_spawn named no folder for ${childId}`);
+  return placed;
 }
 
 export function writeChild(sessionId: string, line: string): Promise<void> {
@@ -608,11 +614,19 @@ export async function updateHarnessCli(
   });
 }
 
+/** A one-shot helper's output, without the folder it ran in. */
+export async function execChild(
+  ...input: Parameters<typeof execHelper>
+): Promise<string> {
+  return (await execHelper(...input)).stdout;
+}
+
 /**
- * A one-shot helper. Without `owner`, the session it works for, Rust runs it
- * in a neutral folder, not `cwd` (ADE-189).
+ * A one-shot helper, and the folder the spawn hook ran it in. Without
+ * `owner`, the session it works for, Rust runs it in a neutral folder, not
+ * `cwd` (ADE-189).
  */
-export function execChild(
+export function execHelper(
   command: string,
   args: string[],
   cwd?: string,
@@ -621,7 +635,7 @@ export function execChild(
   owner?: string,
   /** The helper child this exec acts for, named by the INTERIM list. */
   key?: string,
-): Promise<string> {
+): Promise<{ stdout: string; cwd: string }> {
   const binaryPath =
     binaryPathOverride === undefined && binaryProvider
       ? runtimeProviderBinaryPath(binaryProvider)
