@@ -18,6 +18,7 @@ import {
 import type { HarnessEvent } from "../../core/types";
 import { JsonRpcClient, type JsonRpcId } from "../../core/jsonRpc";
 import { prepareCodexMonoContext } from "./codexStore";
+import { placedFor } from "../../core/acp";
 import type { TextPromptInput } from "../../core/registry";
 
 import { mergeStream, streamTextDelta } from "../../core/streamText";
@@ -32,6 +33,7 @@ const TEXT_EFFORT = "low";
 type LiveText = {
   rpc: JsonRpcClient;
   cwd: string;
+  owner?: string;
   /** Where Rust started the child; it tells its agent this folder (ADE-189). */
   placed: string;
   providerAccountId?: string;
@@ -217,7 +219,7 @@ async function ensureLive(input: {
     : input.threadId?.trim() || undefined;
   if (live && !live.closed) {
     if (
-      live.cwd === input.cwd &&
+      placedFor(live, input.cwd, input.owner) &&
       live.model === model &&
       live.effort === effort &&
       live.serviceTier === serviceTier &&
@@ -229,9 +231,9 @@ async function ensureLive(input: {
       input.onThreadId?.(live.threadId);
       return live;
     }
-    // A warm child placed for another folder is never told this one.
+    // A warm child placed for another folder or session is never told this one.
     if (
-      live.cwd !== input.cwd ||
+      !placedFor(live, input.cwd, input.owner) ||
       live.providerAccountId !== input.providerAccountId ||
       live.codexStore !== input.codexStore
     ) {
@@ -294,6 +296,7 @@ async function startLive(
     codexStore === "mono"
       ? await prepareCodexMonoContext({
           sessionId: TEXT_CHILD_ID,
+          owner,
           path,
           cwd,
           providerAccountId,
@@ -317,6 +320,7 @@ async function startLive(
   const session: LiveText = {
     rpc,
     cwd,
+    owner,
     // Replaced by the folder Rust names before the first request.
     placed: cwd,
     providerAccountId,
@@ -402,6 +406,7 @@ async function openThread(
       preparedStore ??
       (await prepareCodexMonoContext({
         sessionId: TEXT_CHILD_ID,
+        owner: session.owner,
         path,
         cwd,
         providerAccountId: session.providerAccountId,

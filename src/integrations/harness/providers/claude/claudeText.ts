@@ -128,7 +128,6 @@ export function warmupClaudeText(cwd: string): Promise<void> {
 
 export async function runClaudeTextPrompt(input: {
   cwd: string;
-  owner?: string;
   providerAccountId?: string;
   model?: string;
   modelSettings?: Record<string, string>;
@@ -148,7 +147,6 @@ export async function runClaudeTextPrompt(input: {
 
 async function promptOnLive(input: {
   cwd: string;
-  owner?: string;
   providerAccountId?: string;
   model?: string;
   modelSettings?: Record<string, string>;
@@ -161,7 +159,12 @@ async function promptOnLive(input: {
   input.signal?.throwIfAborted();
   const model = pickTextModel(input.model);
   const settings = textSettings(model, input.modelSettings, input.intent);
-  const session = await ensureLive(input.cwd, input.providerAccountId, model, settings, input.owner);
+  const session = await ensureLive(
+    input.cwd,
+    input.providerAccountId,
+    model,
+    settings,
+  );
   input.signal?.throwIfAborted();
   session.output = "";
   session.collecting = true;
@@ -231,7 +234,6 @@ async function ensureLive(
   providerAccountId?: string,
   requestedModel?: string,
   requestedSettings?: TextSettings,
-  owner?: string,
 ): Promise<LiveText> {
   const model = pickTextModel(requestedModel);
   const settings = requestedSettings ?? textSettings(model);
@@ -246,7 +248,7 @@ async function ensureLive(
     return live;
   }
   await dropLive();
-  return startLive(cwd, providerAccountId, model, settings, owner);
+  return startLive(cwd, providerAccountId, model, settings);
 }
 
 async function startLive(
@@ -254,7 +256,6 @@ async function startLive(
   providerAccountId?: string,
   model = pickTextModel(),
   settings = textSettings(model),
-  owner?: string,
 ): Promise<LiveText> {
   const { path } = await resolveClaudeBinary();
   const session: LiveText = {
@@ -289,7 +290,7 @@ async function startLive(
 
   try {
     await spawnHelperChild(
-      owner,
+      undefined,
       TEXT_CHILD_ID,
       path,
       buildClaudeSpawnArgs({

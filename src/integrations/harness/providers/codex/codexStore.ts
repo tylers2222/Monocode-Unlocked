@@ -44,6 +44,8 @@ const inFlight = new Map<
  * rollouts privately. No inference or transcript summarization is involved. */
 export function prepareCodexMonoContext(input: {
   sessionId: string;
+  /** The session whose Space places the store child, when not `sessionId`. */
+  owner?: string;
   path: string;
   cwd: string;
   providerAccountId?: string;
@@ -108,7 +110,7 @@ async function prepare(
   let archivedByUs = false;
   try {
     const placed = await spawnHelperChild(
-      input.sessionId,
+      input.owner ?? input.sessionId,
       id,
       input.path,
       ["app-server"],

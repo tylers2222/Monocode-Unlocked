@@ -648,11 +648,6 @@ export async function runHarnessTextPrompt(
   if (signal?.aborted) {
     throw cancelledTextPrompt();
   }
-  // ADE-189: a warm child was started for no owner. A prompt for a session,
-  // with no other prompt running, drops it, so the child it starts is placed
-  // for that session's Space.
-  if (input.owner && !activeTextPromptOwners.has(adapter))
-    await stopTextPrompt(adapter);
 
   const owner = beginTextPrompt(adapter);
   let run: Promise<string>;

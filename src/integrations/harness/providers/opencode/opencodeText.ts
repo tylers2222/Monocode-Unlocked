@@ -71,7 +71,6 @@ export function warmupOpenCodeText(cwd: string): Promise<void> {
 
 export async function runOpenCodeTextPrompt(input: {
   cwd: string;
-  owner?: string;
   model?: string;
   modelSettings?: Record<string, string>;
   intent?: TurnIntent;
@@ -90,7 +89,6 @@ export async function runOpenCodeTextPrompt(input: {
 
 async function promptOnLive(input: {
   cwd: string;
-  owner?: string;
   model?: string;
   modelSettings?: Record<string, string>;
   intent?: TurnIntent;
@@ -100,12 +98,7 @@ async function promptOnLive(input: {
   onEvent?: (event: HarnessEvent) => void;
 }): Promise<string> {
   input.signal?.throwIfAborted();
-  const session = await ensureLive(
-    input.cwd,
-    input.model,
-    input.modelSettings,
-    input.owner,
-  );
+  const session = await ensureLive(input.cwd, input.model, input.modelSettings);
   input.signal?.throwIfAborted();
   session.onEvent = input.onEvent;
   const abort = abortTextPromptRace(input.signal, () =>
@@ -145,7 +138,6 @@ async function ensureLive(
   cwd: string,
   requestedModel?: string,
   modelSettings?: Record<string, string>,
-  owner?: string,
 ): Promise<LiveText> {
   const model = pickTextModel(requestedModel);
   const settingsKey = modelSettingsKey(modelSettings);
@@ -157,25 +149,27 @@ async function ensureLive(
   )
     return live;
   if (live) await dropLive();
-  return startLive(cwd, model, modelSettings, owner);
+  return startLive(cwd, model, modelSettings);
 }
 
 async function startLive(
   cwd: string,
   model: { providerID: string; modelID: string },
   modelSettings?: Record<string, string>,
-  owner?: string,
 ): Promise<LiveText> {
   const { path } = await resolveOpenCodeBinary();
-  // v2 spawns no child: its shared service works in the folder this exec ran
-  // in. v1's `serve` child names its own (ADE-189).
+  // v2 spawns no child, so the folder this exec is placed in is the
+  // `directory` each request names. It carries the text child's key, so it
+  // keeps its caller's folder (INTERIM, ADE-189). v1's `serve` child names its
+  // own.
   const probe = await execHelper(
     path,
     ["--version"],
     cwd,
     "opencode",
     undefined,
-    owner,
+    undefined,
+    TEXT_CHILD_ID,
   );
   let placed = probe.cwd;
   const version = parseOpenCodeVersion(probe.stdout);
@@ -204,7 +198,7 @@ async function startLive(
 
     const port = await freeHarnessPort();
     placed = await spawnHelperChild(
-      owner,
+      undefined,
       TEXT_CHILD_ID,
       path,
       ["serve", `--hostname=127.0.0.1`, `--port=${port}`],

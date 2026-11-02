@@ -13,7 +13,10 @@ const harnessHttp = vi.fn(
     method: string;
   }): Promise<{ status: number; body: string }> => {
     const url = new URL(input.url);
-    if (input.method === "POST" && url.pathname === "/session") {
+    if (
+      input.method === "POST" &&
+      (url.pathname === "/session" || url.pathname === "/api/session")
+    ) {
       return { status: 200, body: JSON.stringify({ id: "text_session" }) };
     }
     if (
@@ -29,10 +32,19 @@ const harnessHttp = vi.fn(
   },
 );
 
+// Rust places a helper and names the folder (ADE-189); it is never "/repo".
+const execHelper = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<{ stdout: string; cwd: string }>>(
+    async () => ({ stdout: "opencode 1.14.19", cwd: "/neutral" }),
+  ),
+);
+
 vi.mock("../../core/child", () => ({
   closeHarnessSse: async () => undefined,
-  // Rust places a helper and names the folder (ADE-189); it is never "/repo".
-  execHelper: async () => ({ stdout: "opencode 1.14.19", cwd: "/neutral" }),
+  // The v2 background service, which is machine-wide.
+  execChild: async (_path: string, args: string[]) =>
+    args[1] === "status" ? "http://127.0.0.1:4097" : "secret",
+  execHelper,
   freeHarnessPort: async () => 4096,
   harnessHttp,
   killChild: async () => undefined,
@@ -250,6 +262,29 @@ it("deletes the generated-text session when the provider returns an error", asyn
       url: "http://127.0.0.1:4096/session/text_session?directory=%2Fplaced",
     }),
   );
+});
+
+// ADE-189: v2 spawns no child, so the folder its `--version` exec is placed
+// in is the `directory` each request names. The exec carries the text child's
+// key, which INTERIM keeps in its caller's folder; Rust names that folder.
+it("names the v2 directory where the keyed version exec was placed", async () => {
+  execHelper.mockResolvedValueOnce({ stdout: "opencode 2.0.15", cwd: "/kept" });
+  harnessHttp.mockClear();
+  // The mocked v2 service answers the prompt with no text.
+  await expect(
+    runOpenCodeTextPrompt({ cwd: "/repo", prompt: "Generate text" }),
+  ).rejects.toThrow("OpenCode returned empty output.");
+  expect(execHelper).toHaveBeenLastCalledWith(
+    "/fake/opencode",
+    ["--version"],
+    "/repo",
+    "opencode",
+    undefined,
+    undefined,
+    "monocode-opencode-text",
+  );
+  const [created] = harnessHttp.mock.calls[0]!;
+  expect(new URL(created.url).searchParams.get("directory")).toBe("/kept");
 });
 
 it("deletes the generated-text session when generation is cancelled", async () => {

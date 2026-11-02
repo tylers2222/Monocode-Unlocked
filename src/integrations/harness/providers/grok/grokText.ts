@@ -55,7 +55,6 @@ export function warmupGrokText(cwd: string): Promise<void> {
 
 export async function runGrokTextPrompt(input: {
   cwd: string;
-  owner?: string;
   model?: string;
   modelSettings?: Record<string, string>;
   prompt: string;
@@ -73,7 +72,6 @@ export async function runGrokTextPrompt(input: {
 
 async function promptOnLive(input: {
   cwd: string;
-  owner?: string;
   model?: string;
   modelSettings?: Record<string, string>;
   prompt: string;
@@ -82,12 +80,7 @@ async function promptOnLive(input: {
   onEvent?: (event: HarnessEvent) => void;
 }): Promise<string> {
   input.signal?.throwIfAborted();
-  const session = await ensureLive(
-    input.cwd,
-    input.model,
-    input.modelSettings,
-    input.owner,
-  );
+  const session = await ensureLive(input.cwd, input.model, input.modelSettings);
   input.signal?.throwIfAborted();
   session.output = "";
   session.collecting = true;
@@ -128,7 +121,6 @@ async function ensureLive(
   cwd: string,
   requestedModel?: string,
   modelSettings?: Record<string, string>,
-  owner?: string,
 ): Promise<LiveText> {
   const model = requestedModel?.trim() || TEXT_MODEL;
   const settingsKey = modelSettingsKey(modelSettings);
@@ -142,14 +134,13 @@ async function ensureLive(
     return live;
   // Retire the previous throwaway session before replacing its id, including
   // when a warmed-up process needs a different model or working directory.
-  return startLive(cwd, model, modelSettings, owner);
+  return startLive(cwd, model, modelSettings);
 }
 
 async function startLive(
   cwd: string,
   model = TEXT_MODEL,
   modelSettings?: Record<string, string>,
-  owner?: string,
 ): Promise<LiveText> {
   await dropLive();
   const { path } = await resolveGrokBinary();
@@ -196,7 +187,7 @@ async function startLive(
 
   try {
     const placed = await spawnHelperChild(
-      owner,
+      undefined,
       TEXT_CHILD_ID,
       path,
       grokTextSpawnArgs(),
