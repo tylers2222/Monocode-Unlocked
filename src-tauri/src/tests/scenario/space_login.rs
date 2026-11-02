@@ -1,11 +1,12 @@
 //! Sessions inherit their Space's login (ADE-172). Every new session row
 //! records its Space at insert: a child its parent's (the lead that started
 //! it, the Mono whose chat it is, the Mono chat that started a lead or a
-//! habit run), a session the user starts the active Space, and never a Space
-//! its caller names. Then `harness_spawn` on Tauri's mock runtime, on the
+//! habit run), a session or Mono the user starts the active Space, and never
+//! a Space its caller names. Then `harness_spawn` on Tauri's mock runtime, on the
 //! same database, starts a stand-in CLI with the session's own login, else
 //! its Space's, else the CLI's own in Space 1, and refuses a Space with no
-//! login for that CLI. With `MONOCODE_SCENARIO_DB` it runs on a copy of a
+//! login for that CLI. A session with no row yet is in the Space it would
+//! join. With `MONOCODE_SCENARIO_DB` it runs on a copy of a
 //! real database.
 
 use serde_json::json;
@@ -62,15 +63,16 @@ fn user_session_naming(world: &World, id: &str, space: &str) {
     session_store::upsert_session(&world.conn(), &session).unwrap();
 }
 
-/// Defect: a session started while Space 2 is active, or one that names
-/// Space 1 itself, lands outside Space 2; a later save moves a session to
-/// the active Space; a Mono's chat, a lead its Mono started, that lead's
+/// Defect: a session or a Mono created while Space 2 is active, or a
+/// session that names Space 1 itself, lands outside Space 2; a later save
+/// moves a session to the active Space; a Mono's chat, a lead its Mono started, that lead's
 /// worker, a habit run or a session the habit run started lands in the
 /// active Space instead of its parent's; a Space 1 session or an imported
 /// Space 2 session runs on another Space's login; a session's own login
 /// loses to its Space's; a Space with no login for a CLI starts the child on
-/// the CLI's own login instead of refusing; or a child that is no session
-/// is refused or moved to a Space's login.
+/// the CLI's own login instead of refusing; or a session with no row yet
+/// takes the caller's `default` login instead of the Space it would join,
+/// its parent's or the active one, or loses the login its caller named.
 #[test]
 fn a_session_takes_its_parents_space_and_runs_on_that_spaces_login() {
     let mut world = World::new("space-login");
@@ -109,6 +111,17 @@ fn a_session_takes_its_parents_space_and_runs_on_that_spaces_login() {
         FIRST_SPACE,
         "a Space 1 Mono's habit run took the active Space"
     );
+    let beta = world.add_mono_in("beta", MonoRole::Mono, &[P]);
+    let beta_space: String = world
+        .conn()
+        .query_row("SELECT space_id FROM monos WHERE id = 'beta'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        beta_space, SPACE_2,
+        "a Mono created while Space 2 is active is outside Space 2"
+    );
 
     activate(&world, FIRST_SPACE);
     user_session_naming(&world, "u2", FIRST_SPACE);
@@ -117,15 +130,6 @@ fn a_session_takes_its_parents_space_and_runs_on_that_spaces_login() {
         SPACE_2,
         "a later save moved a session to the active Space"
     );
-    let beta = world.add_mono_in("beta", MonoRole::Mono, &[P]);
-    // Beta moved to Space 2, as the Space move will write it (ADE-187).
-    world
-        .conn()
-        .execute(
-            "UPDATE monos SET space_id = ?1 WHERE id = 'beta'",
-            [SPACE_2],
-        )
-        .unwrap();
     let beta = world.reset_mono_chat(&beta, "beta-chat-2");
     let lead = world.start_lead(&beta, "app-beta-chat-2-r1", P);
     let worker = world.add_session("w2", P, Some(lead.as_str()));
@@ -194,7 +198,7 @@ esac"#,
         let store = SessionStore::open_at(world.path().to_path_buf(), world.now()).unwrap();
         let app = mock_app_with(&data, store);
         let spawn = |session: &str, provider: &str, id: &str| -> Result<String, String> {
-            let workdir = root.join(format!("{session}-{provider}-{id}"));
+            let workdir = root.join(uuid::Uuid::new_v4().to_string());
             std::fs::create_dir_all(&workdir).unwrap();
             let account = serde_json::json!({"provider": provider, "id": id});
             crate::harness::harness_spawn(
@@ -248,9 +252,35 @@ esac"#,
             "a Space with no Codex login started a child on another login"
         );
         assert_eq!(
-            spawn("probe", "claude", "default"),
+            spawn("unsaved", "claude", "default"),
+            Ok(own.clone()),
+            "a session with no row, Space 1 active, left the CLI's own login"
+        );
+
+        app.state::<SessionStore>()
+            .lock_conn()
+            .unwrap()
+            .execute("UPDATE space_settings SET active_space_id = 'space-2'", [])
+            .unwrap();
+        assert_eq!(
+            spawn("unsaved", "claude", "default"),
+            Ok(config("space2")),
+            "a session with no row, Space 2 active, did not get Space 2's login"
+        );
+        assert_eq!(
+            spawn("unsaved", "codex", "default"),
+            Err("Space 2 has no Codex login".into()),
+            "a session with no row in a Space with no Codex login was not refused"
+        );
+        assert_eq!(
+            spawn("app-s1-r9", "claude", "default"),
             Ok(own),
-            "a child that is no session was refused or given a Space's login"
+            "a session with no row took the active Space over its parent's"
+        );
+        assert_eq!(
+            spawn("signin", "claude", "work"),
+            Ok(config("work")),
+            "a login its caller named lost to the active Space's"
         );
 
         let _ = std::fs::remove_dir_all(&root);

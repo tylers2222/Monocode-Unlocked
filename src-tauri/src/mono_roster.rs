@@ -301,16 +301,19 @@ fn invalid_column(index: usize, name: &str) -> rusqlite::Error {
     )
 }
 
-/// Inserts each Mono. Fails, and inserts none, when one id already exists.
+/// Inserts each Mono in the Space a new row joins. Fails, and inserts none,
+/// when one id already exists.
 fn insert_rows(conn: &Connection, monos: &[ValidCreate]) -> Result<(), String> {
     let now = now_millis();
     let mut statement = conn
         .prepare(
-            "INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            "INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at, space_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)",
         )
         .map_err(|e| e.to_string())?;
     for mono in monos {
+        let space_id = crate::spaces::membership::space_for_row(conn, &mono.id, None)
+            .map_err(|e| e.to_string())?;
         statement
             .execute(params![
                 mono.id,
@@ -318,7 +321,8 @@ fn insert_rows(conn: &Connection, monos: &[ValidCreate]) -> Result<(), String> {
                 mono.role.as_str(),
                 data_json(&mono.data)?,
                 mono.sort_order,
-                now
+                now,
+                space_id
             ])
             .map_err(|e| e.to_string())?;
     }
@@ -572,8 +576,7 @@ mod tests {
 
     fn conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        ensure_tables(&conn).unwrap();
-        crate::mono_messages::ensure_tables(&conn).unwrap();
+        crate::session_store::migrate(&conn).unwrap();
         conn
     }
 
