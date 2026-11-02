@@ -127,7 +127,8 @@ function bootFailed(error: unknown): void {
 
 /**
  * Loads the saved logins and the active Space's project choices, then imports
- * browser storage's logins and, with Space 1 active, its project choices.
+ * browser storage's logins and, with Space 1 active and once those have run,
+ * its project choices.
  */
 async function start(): Promise<void> {
   const accounts = PROVIDER_ACCOUNT_PROVIDERS.flatMap(providerAccounts);
@@ -165,13 +166,20 @@ async function start(): Promise<void> {
     ],
   );
   if (space !== BROWSER_SPACE) return;
+  // After the login import has run, so a choice waits for its login to land.
+  const logins = readJson<string[]>(ACCOUNTS_IMPORT_KEY, Array.of());
   await importApart(
     SELECTIONS_IMPORT_KEY,
     ...choices.flatMap(([project, selection]) =>
-      PROVIDER_ACCOUNT_PROVIDERS.map((provider): ImportEntry => [
-        `${project}/${provider}`,
-        () => selectProviderAccount(provider, project, selection?.[provider]),
-      ]),
+      PROVIDER_ACCOUNT_PROVIDERS.flatMap((provider): ImportEntry[] => {
+        const accountId = selection?.[provider];
+        if (!logins.includes(`${provider}/${accountId}`)) return [];
+        // A bare drive (`c:`) is not an absolute folder to the database.
+        const send = /^[a-z]:$/.test(project)
+          ? null
+          : () => selectProviderAccount(provider, project, accountId);
+        return [[`${project}/${provider}`, send]];
+      }),
     ),
   );
 }
@@ -192,8 +200,11 @@ async function importApart(
   await imported;
 }
 
-/** One entry of an import: its key in the marker, and how to send it. */
-type ImportEntry = [key: string, send: () => void];
+/**
+ * One entry of an import: its key in the marker, and how to send it, or
+ * `null` to skip it for good (logged, and recorded as done).
+ */
+type ImportEntry = [key: string, send: (() => void) | null];
 
 /**
  * Imports browser storage once per entry. Each entry the marker does not
@@ -208,7 +219,8 @@ function importOnce(marker: string, ...entries: ImportEntry[]): void {
   let seen = refusal;
   for (const [key, send] of entries) {
     if (landed.includes(key)) continue;
-    send();
+    if (send) send();
+    else console.warn(`monocode: ${marker} skips ${key}`);
     // Once its writes have run: kept only if none was refused.
     writes = writes.then(() => {
       if (refusal === seen) {

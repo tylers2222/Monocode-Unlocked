@@ -751,7 +751,14 @@ const HANDLERS: Record<string, Handler> = {
   app_cli_path: () => "/Applications/MonoCode.app/Contents/MacOS/monocode",
   // account_identity.rs and rate_limits.rs while the CLI is not signed in.
   provider_account_identity: none,
-  // spaces/: each CLI's own login, and the writes the import and Settings send.
+  // spaces/: each CLI's own login and no project choices in Space 1, and the
+  // writes the import, Settings and the usage control send.
+  spaces_settings_get: () => ({
+    activeSpaceId: "space-1",
+    routeGrantTtlMs: 6 * 60 * 60 * 1000,
+  }),
+  spaces_project_logins_list: empty,
+  spaces_project_login_set: none,
   spaces_accounts_list: () =>
     ["claude", "codex", "devin"].map((provider) => ({
       provider,

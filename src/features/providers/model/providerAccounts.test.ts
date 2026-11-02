@@ -444,6 +444,11 @@ describe("provider accounts in monocode.db", () => {
       .providerAccounts(provider)
       .map(({ id, label }) => `${id} ${label}`);
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const choiceMarker = (): string[] =>
+    JSON.parse(
+      localStorage.getItem("monocode.providerAccountSelections.v1.import") ??
+        "[]",
+    );
   const marker = () =>
     JSON.parse(
       localStorage.getItem("monocode.providerAccounts.v1.import") ?? "[]",
@@ -676,7 +681,9 @@ describe("provider accounts in monocode.db", () => {
     db.calls = [];
     accounts = await boot();
     expect(db.calls.map(([command]) => command)).toEqual([
+      "spaces_settings_get",
       "spaces_accounts_list",
+      "spaces_project_logins_list",
     ]);
     expect(labels(accounts, "claude")).toEqual([
       "default Default account",
@@ -1052,6 +1059,60 @@ describe("provider accounts in monocode.db", () => {
     expect(accounts.selectedProviderAccountId("claude", "/repo/one")).toBe(
       "default",
     );
+  });
+
+  it("skips a project key the database cannot hold, and never sends a landed choice again", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    localStorage.setItem("monocode.providerAccounts.v1", BROWSER_LOGINS);
+    localStorage.setItem(
+      "monocode.providerAccountSelections.v1",
+      JSON.stringify({
+        "/repo/one": { claude: "account-work" },
+        "c:": { claude: "account-work" },
+        "c:/repo": { claude: "account-work" },
+        "/srv/d:": { claude: "account-work" },
+      }),
+    );
+    let accounts = await boot();
+    expect(console.warn).toHaveBeenCalledWith(
+      "monocode: monocode.providerAccountSelections.v1.import skips c:/claude",
+    );
+    expect(db.projectLogins.map(({ projectPath }) => projectPath)).toEqual([
+      "/repo/one",
+      "c:/repo",
+      "/srv/d:",
+    ]);
+    expect(choiceMarker()).toContain("c:/claude");
+    accounts.selectProviderAccount("claude", "/repo/one", "default");
+    await settle();
+
+    db.calls = [];
+    accounts = await boot();
+    expect(sent("spaces_project_login_set")).toEqual([]);
+    expect(accounts.selectedProviderAccountId("claude", "/repo/one")).toBe(
+      "default",
+    );
+  });
+
+  it("imports a project choice once its refused login has landed", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    localStorage.setItem("monocode.providerAccounts.v1", BROWSER_LOGINS);
+    localStorage.setItem(
+      "monocode.providerAccountSelections.v1",
+      JSON.stringify({ "/repo/one": { claude: "account-work" } }),
+    );
+    db.refuseSave.add("account-work");
+    let accounts = await boot();
+    expect(sent("spaces_project_login_set")).toEqual([]);
+    expect(choiceMarker()).not.toContain("/repo/one/claude");
+
+    db.refuseSave.clear();
+    accounts = await boot();
+    expect(db.accounts.map(({ id }) => id)).toContain("account-work");
+    expect(accounts.selectedProviderAccountId("claude", "/repo/one")).toBe(
+      "account-work",
+    );
+    expect(choiceMarker()).toContain("/repo/one/claude");
   });
 
   it("keeps the saved project choices around a refused one", async () => {
