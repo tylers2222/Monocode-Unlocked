@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { loginFolder } from "../../../../../scripts/scenarios/usage-limit/child.mjs";
+import type { HarnessEvent } from "../../core/types";
 import {
   modelsForClaudeVersion,
   modelsFromClaudeListModels,
@@ -42,6 +47,15 @@ import {
   usageLimitFromRateLimitEvent,
   isReplayedTaskNotificationResult,
 } from "./claudeProtocol";
+
+// The real adapter against the usage-limit shim, a real process (ADE-167).
+vi.mock(
+  "../../core/child",
+  async () =>
+    (await import("../../../../../scripts/scenarios/usage-limit/child.mjs"))
+      .child,
+);
+const { sendClaudeTurn, stopClaudeSession } = await import("./claude");
 
 describe("runtimeModeToPermission", () => {
   it("maps runtime modes onto Claude permission flags", () => {
@@ -339,6 +353,58 @@ describe("usage limits", () => {
         result: "You've hit your limit",
       }),
     ).toBe(false);
+  });
+});
+
+describe("recorded Claude Code streams", () => {
+  it("replays a login's recorded turn from its own folder, and fails a login with no recording", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "usage-limit-"));
+    vi.stubEnv("USAGE_LIMIT_SHIM_DIR", dir);
+    const normal = loginFolder("claude", "login-2");
+    writeFileSync(
+      join(dir, "script.json"),
+      JSON.stringify({
+        speed: 20,
+        accounts: { [normal]: "claude-2.1.312-2026-11-02-ok.jsonl" },
+      }),
+    );
+    const turn = async (login: string) => {
+      const events: HarnessEvent[] = [];
+      const result = await sendClaudeTurn({
+        sessionId: login,
+        cwd: dir,
+        model: "claude:claude-haiku-4-5",
+        runtimeMode: "supervised",
+        providerAccountId: login,
+        text: "say ok",
+        attachments: [],
+        turnId: `${login}-turn`,
+        onEvent: (event) => events.push(event),
+      }).catch((error: Error) => error.message);
+      return { result, events };
+    };
+
+    const ok = await turn("login-2");
+    expect(ok.result).toBe("sent");
+    expect(ok.events).toContainEqual({ type: "message.delta", text: "ok" });
+    expect(ok.events.map((event) => event.type)).not.toContain(
+      "usage.limited",
+    );
+
+    const missing = await turn("login-3");
+    expect(missing.result).toBe("Claude Code exited");
+    expect(missing.events).toContainEqual({ type: "session.ended", code: 2 });
+
+    const started = readFileSync(join(dir, "log.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { folder: string; fixture: string | null });
+    expect(started.map(({ folder, fixture }) => [folder, fixture])).toEqual([
+      [normal, "claude-2.1.312-2026-11-02-ok.jsonl"],
+      [loginFolder("claude", "login-3"), null],
+    ]);
+    await stopClaudeSession("login-2");
+    vi.unstubAllEnvs();
   });
 });
 

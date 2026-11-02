@@ -522,6 +522,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     compactionConfirmed: false,
   };
   liveRef.current = live;
+  let exited = false;
 
   watchChild(
     input.sessionId,
@@ -531,6 +532,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       handleLine(input.sessionId, current, line);
     },
     (code) => {
+      exited = true;
       liveByThread.delete(input.sessionId);
       const current = liveRef.current;
       if (!current?.muteUpdates) {
@@ -568,6 +570,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       buildControlRequest(nextControlId(live), { subtype: "initialize" }),
     );
     await waitForInit(live, INIT_TIMEOUT_MS);
+    // An exit before init leaves no process for the turn to wait on.
+    if (exited) throw new Error("Claude Code exited");
     live.onEvent({
       type: "session.providerBound",
       providerSessionId: live.claudeSessionId,
