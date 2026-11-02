@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use base64::Engine as _;
 use serde::Serialize;
@@ -40,14 +40,21 @@ fn home() -> Option<PathBuf> {
 
 /// The folder a login uses. One registered through a symlink, e.g.
 /// `provider-accounts/claude/<id>` -> `~/.claude-2`, is the target as the link
-/// names it, since Claude hashes that exact string for its Keychain item. The
-/// target must be a folder inside the home folder and outside the app's data
+/// names it, since Claude hashes that exact string for its Keychain item, so
+/// the link must name an absolute path without `..`. The target must be a
+/// folder inside the home folder that neither holds nor is inside an app data
 /// folder. A path that is not a symlink is returned as it is.
 pub(crate) fn login_folder(dir: PathBuf) -> Result<PathBuf, String> {
-    let Ok(link) = std::fs::read_link(&dir) else {
+    let Ok(target) = std::fs::read_link(&dir) else {
         return Ok(dir);
     };
-    let target = dir.with_file_name(link);
+    if target.is_relative() || target.components().any(|part| part == Component::ParentDir) {
+        return Err(format!(
+            "The login folder {} must link to an absolute path without `..`, not {}",
+            dir.display(),
+            target.display()
+        ));
+    }
     let real = std::fs::canonicalize(&target).map_err(|error| {
         format!(
             "The login folder {} links to {}, which cannot be opened: {error}",
@@ -60,13 +67,29 @@ pub(crate) fn login_folder(dir: PathBuf) -> Result<PathBuf, String> {
         canonical(home().as_deref()).is_some_and(|home| real != home && real.starts_with(home));
     // `<app data>/provider-accounts/<provider>/<id>`
     let app_data = canonical(dir.ancestors().nth(3));
-    if !real.is_dir() || !inside_home || app_data.is_some_and(|data| real.starts_with(data)) {
+    if !real.is_dir() || !inside_home || app_data.is_some_and(|data| near_app_data(&real, &data)) {
         return Err(format!(
-            "The login folder {} must link to a folder inside the home folder and outside the app's data",
+            "The login folder {} must link to a folder inside the home folder and outside every app data folder",
             dir.display()
         ));
     }
     Ok(target)
+}
+
+/// Whether `real` is inside this app's data folder or holds it, or is inside
+/// another app's data folder beside it (`com.monocode.*`, as `claude_deny.rs`
+/// treats them), such as Space 2's logins before the merge.
+fn near_app_data(real: &Path, data: &Path) -> bool {
+    let beside = data
+        .parent()
+        .and_then(|parent| real.strip_prefix(parent).ok())
+        .and_then(|rest| rest.components().next())
+        .is_some_and(|app| {
+            app.as_os_str()
+                .to_string_lossy()
+                .starts_with("com.monocode.")
+        });
+    real.starts_with(data) || data.starts_with(real) || beside
 }
 
 fn read_json(path: &Path) -> Option<Value> {
@@ -90,7 +113,7 @@ fn capitalize(value: &str) -> String {
         .unwrap_or_default()
 }
 
-pub(crate) fn claude_identity(dir: Option<PathBuf>) -> Option<ProviderAccountIdentity> {
+fn claude_identity(dir: Option<PathBuf>) -> Option<ProviderAccountIdentity> {
     let path = match dir {
         Some(dir) => dir.join(".claude.json"),
         None => home()?.join(".claude.json"),

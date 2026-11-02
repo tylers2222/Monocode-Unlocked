@@ -41,8 +41,9 @@ fn a_login_folder_registered_through_a_symlink_runs_as_its_target() {
     );
 }
 
-/// A mock app whose data folder is inside the scratch home folder, as on
-/// macOS and Linux, and a stand-in CLI that writes its Claude config folder.
+/// A mock app whose data folder is `$HOME/apps/com.monocode.desktop`, beside
+/// another app's as on macOS, and a stand-in CLI that writes its Claude
+/// config folder.
 struct Rig {
     root: PathBuf,
     fx: PathBuf,
@@ -59,7 +60,7 @@ impl Rig {
   *) printf '%s\n' "$CLAUDE_CONFIG_DIR" > ran.part && mv ran.part ran ;;
 esac"#,
         );
-        let data = root.join("home/app-data");
+        let data = root.join("home/apps/com.monocode.desktop");
         std::fs::create_dir_all(&data).unwrap();
         let app = mock_app(&data);
         Rig { root, fx, app }
@@ -115,22 +116,20 @@ fn registered_login_child() {
     let target = home.join(".claude-2");
     std::fs::create_dir_all(&target).unwrap();
     std::fs::write(target.join("keep"), "the login's own file").unwrap();
-    std::fs::write(
-        target.join(".claude.json"),
-        r#"{"oauthAccount":{"emailAddress":"ada@example.com"}}"#,
-    )
-    .unwrap();
     rig.link("linked", &target);
     assert_eq!(
         rig.spawn("linked").unwrap(),
         format!("{}\n", text(&target)),
         "the CLI did not get the link's target as its config folder"
     );
-    let identity = crate::account_identity::claude_identity(rig.dir("linked").unwrap()).unwrap();
+    // The string the user logged in with, not its canonical path.
+    let alias = home.join("alias");
+    std::os::unix::fs::symlink(&target, &alias).unwrap();
+    rig.link("aliased", &alias);
     assert_eq!(
-        identity.email.as_deref(),
-        Some("ada@example.com"),
-        "the target's identity"
+        rig.spawn("aliased").unwrap(),
+        format!("{}\n", text(&alias)),
+        "the CLI got another string than the link names"
     );
     assert_eq!(
         rig.spawn("plain").unwrap(),
@@ -138,13 +137,23 @@ fn registered_login_child() {
         "a login that is not a link moved"
     );
 
-    let refused: [(&str, PathBuf, &str); 6] = [
+    let other_app = home.join("apps/com.monocode.second/provider-accounts/claude/x");
+    std::fs::create_dir_all(&other_app).unwrap();
+    let refused: [(&str, PathBuf, &str); 10] = [
+        (
+            "relative",
+            PathBuf::from("../../../../../.claude-2"),
+            "absolute path",
+        ),
+        ("dotdot", home.join("apps/../.claude-2"), "absolute path"),
         ("dangling", home.join("missing"), "cannot be opened"),
         ("looping", rig.folder("looping"), "cannot be opened"),
         ("root", PathBuf::from("/"), "must link"),
         ("home", home.clone(), "must link"),
         ("file", target.join("keep"), "must link"),
         ("other-login", rig.folder("plain"), "must link"),
+        ("data-parent", home.join("apps"), "must link"),
+        ("other-app", other_app, "must link"),
     ];
     for (id, to, why) in refused {
         rig.link(id, &to);
