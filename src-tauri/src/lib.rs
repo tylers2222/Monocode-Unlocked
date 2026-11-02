@@ -67,6 +67,7 @@ mod scenario;
 mod search;
 mod session_store;
 mod skills;
+mod spaces;
 pub mod ssh_askpass;
 #[cfg(target_os = "macos")]
 mod trackpad_zoom;

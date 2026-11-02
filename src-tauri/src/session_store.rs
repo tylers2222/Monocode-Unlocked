@@ -840,7 +840,12 @@ fn ensure_session_column(conn: &Connection, column: &str, decl: &str) -> rusqlit
 
 /// Add a column to `table` when it is missing, tolerating the case where a
 /// recorded migration version has no matching column.
-fn ensure_column(conn: &Connection, table: &str, name: &str, decl: &str) -> rusqlite::Result<()> {
+pub(crate) fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    name: &str,
+    decl: &str,
+) -> rusqlite::Result<()> {
     let present: i64 = conn.query_row(
         "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
         params![table, name],
@@ -1240,6 +1245,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::mono_transcript::ensure_tables(conn)?;
     // The Mono roster. No version row: another build may reuse the number.
     crate::mono_roster::ensure_tables(conn)?;
+    // Spaces add a column to `monos` and `sessions`, so they come after both.
+    crate::spaces::ensure_tables(conn)?;
     // Mono messages reference `monos`, so they come after it.
     crate::mono_messages::ensure_tables(conn)?;
     crate::milestones::ensure_tables(conn)?;
@@ -2933,11 +2940,13 @@ mod tests {
                 "sort_order INTEGER 1 0",
                 "created_at INTEGER 1 0",
                 "updated_at INTEGER 1 0",
+                "space_id TEXT 1 0",
             ]
         );
         let insert = |id: &str, role: &str| {
             conn.execute(
-                "INSERT INTO monos VALUES (?1, 'X', ?2, '{}', 0, 0, 0)",
+                "INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
+                 VALUES (?1, 'X', ?2, '{}', 0, 0, 0)",
                 params![id, role],
             )
         };
