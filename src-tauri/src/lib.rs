@@ -400,6 +400,7 @@ pub fn run() {
             spaces::spaces_project_get,
             spaces::spaces_project_set,
             spaces::spaces_project_login_get,
+            spaces::spaces_project_logins_list,
             spaces::spaces_project_login_set,
             spaces::spaces_project_login_clear,
             spaces::account::spaces_accounts_list,

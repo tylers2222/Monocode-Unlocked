@@ -312,6 +312,11 @@ fn claude_in(world: &World, space: &str, project: &str) -> Option<String> {
 fn a_project_login_overrides_the_space_login(world: &World) {
     let store = world.store();
     assert_eq!(
+        spaces::project_logins(store, "space-2").unwrap(),
+        [],
+        "a Space with no project choices lists some"
+    );
+    assert_eq!(
         claude_in(world, FIRST_SPACE, "/work/a").as_deref(),
         Some("work"),
         "a project without its own choice does not use the Space's login"
@@ -384,6 +389,11 @@ fn project_logins_hold(world: &World) {
         claude_in(world, "space-2", REMOTE).as_deref(),
         Some("work"),
         "a remote project's login was lost"
+    );
+    assert_eq!(
+        spaces::project_logins(world.store(), FIRST_SPACE).unwrap(),
+        [project_login("/work/a"), project_login("~")],
+        "Space 1's project choices are missing, out of order, or include Space 2's"
     );
 }
 

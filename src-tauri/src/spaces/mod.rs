@@ -385,6 +385,28 @@ pub(crate) fn project_login(
     })
 }
 
+/// Every project's own login choice in one Space (what ADE-171 lists).
+pub(crate) fn project_logins(
+    store: &SessionStore,
+    space_id: &str,
+) -> Result<Vec<ProjectLogin>, String> {
+    with_conn(store, |conn| {
+        conn.prepare(
+            "SELECT space_id, project_path, provider, account_id FROM space_project_accounts
+              WHERE space_id = ?1 ORDER BY project_path, provider",
+        )?
+        .query_map([space_id], |row| {
+            Ok(ProjectLogin {
+                space_id: row.get(0)?,
+                project_path: row.get(1)?,
+                provider: row.get(2)?,
+                account_id: row.get(3)?,
+            })
+        })?
+        .collect()
+    })
+}
+
 pub(crate) fn set_project_login(store: &SessionStore, login: &ProjectLogin) -> Result<(), String> {
     let project_path = project_key(&login.project_path)?;
     with_conn(store, |conn| {
@@ -484,6 +506,14 @@ pub fn spaces_project_login_get(
     provider: Provider,
 ) -> Result<Option<String>, String> {
     project_login(&store, &space_id, &project_path, provider)
+}
+
+#[tauri::command(async)]
+pub fn spaces_project_logins_list(
+    store: State<'_, SessionStore>,
+    space_id: String,
+) -> Result<Vec<ProjectLogin>, String> {
+    project_logins(&store, &space_id)
 }
 
 #[tauri::command(async)]
