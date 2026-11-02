@@ -222,6 +222,20 @@ fn spaces_settings_and_projects_store_what_they_are_given(world: &World) {
             },
             "the route-grant TTL passed the 7 day cap",
         ),
+        (
+            SettingsPatch {
+                route_grant_ttl_ms: Some(0),
+                ..SettingsPatch::default()
+            },
+            "a route-grant TTL of 0",
+        ),
+        (
+            SettingsPatch {
+                route_grant_ttl_ms: Some(-1),
+                ..SettingsPatch::default()
+            },
+            "a negative route-grant TTL",
+        ),
     ] {
         assert!(spaces::set_settings(store, &bad).is_err(), "{defect}");
     }
@@ -231,10 +245,20 @@ fn spaces_settings_and_projects_store_what_they_are_given(world: &World) {
         "a folder first used after the migration is outside Space 1"
     );
     spaces::set_project_space(store, "/work/b/", "space-2").unwrap();
+    for relative in ["work/b", "http://env/home/dev/repo"] {
+        assert_eq!(
+            spaces::set_project_space(store, relative, "space-2"),
+            Err(format!("Not an absolute folder: {relative}"))
+        );
+    }
     assert_eq!(
-        spaces::set_project_space(store, "work/b", "space-2"),
-        Err("Not an absolute folder: work/b".into())
+        spaces::project_space(store, REMOTE).unwrap(),
+        FIRST_SPACE,
+        "a remote project with no row is outside Space 1"
     );
+    spaces::set_project_space(store, &format!("{REMOTE}/"), "space-2").unwrap();
+    spaces::set_project_space(store, "C:\\Work\\A\\", FIRST_SPACE).unwrap();
+    spaces::set_project_space(store, "c:/work/a", "space-2").unwrap();
 }
 
 fn spaces_settings_and_projects_hold(world: &World, at: i64) {
@@ -255,7 +279,12 @@ fn spaces_settings_and_projects_hold(world: &World, at: i64) {
             route_grant_ttl_ms: 60_000
         }
     );
-    for (folder, space) in [("/work/a", FIRST_SPACE), ("/work/b", "space-2")] {
+    for (folder, space) in [
+        ("/work/a", FIRST_SPACE),
+        ("/work/b", "space-2"),
+        (REMOTE, "space-2"),
+        ("C:/Work/A", "space-2"),
+    ] {
         assert_eq!(
             spaces::project_space(store, folder).unwrap(),
             space,
@@ -263,6 +292,9 @@ fn spaces_settings_and_projects_hold(world: &World, at: i64) {
         );
     }
 }
+
+/// A remote project's key (`remote://<host>/<path>`).
+const REMOTE: &str = "remote://env/home/dev/repo";
 
 fn project_login(project: &str) -> ProjectLogin {
     ProjectLogin {
@@ -284,7 +316,34 @@ fn a_project_login_overrides_the_space_login(world: &World) {
         Some("work"),
         "a project without its own choice does not use the Space's login"
     );
+    let repick = ProjectLogin {
+        account_id: "work".into(),
+        ..project_login("/work/a")
+    };
+    spaces::set_project_login(store, &repick).unwrap();
     spaces::set_project_login(store, &project_login("/work/a/")).unwrap();
+    assert_eq!(
+        claude_in(world, FIRST_SPACE, "/work/a").as_deref(),
+        Some("default"),
+        "a re-pick of a project's login was lost"
+    );
+    assert_eq!(
+        claude_in(world, "space-2", "/work/a"),
+        None,
+        "a Space 1 project choice leaked into Space 2"
+    );
+    assert_eq!(
+        spaces::project_login(store, FIRST_SPACE, "/work/a", Provider::Codex).unwrap(),
+        None,
+        "a Claude project choice leaked to Codex"
+    );
+    spaces::set_project_login(store, &project_login("~")).unwrap();
+    let remote = ProjectLogin {
+        space_id: "space-2".into(),
+        account_id: "work".into(),
+        ..project_login(&format!("{REMOTE}/"))
+    };
+    spaces::set_project_login(store, &remote).unwrap();
     let two = ProjectLogin {
         space_id: "space-2".into(),
         project_path: "/work/b".into(),
@@ -315,6 +374,16 @@ fn project_logins_hold(world: &World) {
     assert_eq!(
         claude_in(world, "space-2", "/work/b").as_deref(),
         Some("work")
+    );
+    assert_eq!(
+        claude_in(world, FIRST_SPACE, "~").as_deref(),
+        Some("default"),
+        "the no-project choice was lost"
+    );
+    assert_eq!(
+        claude_in(world, "space-2", REMOTE).as_deref(),
+        Some("work"),
+        "a remote project's login was lost"
     );
 }
 
@@ -509,10 +578,12 @@ fn removing_a_login_drops_its_space_login_and_grant(world: &World) {
 /// grant's length or stores one that ends as it starts; the seeds miss Space 1,
 /// the 6 hour TTL or a CLI's default login; or a restart migrates again and
 /// reseeds or duplicates rows; a Space, the settings or a project's Space is
-/// lost or altered, a blank name, a missing active Space, a TTL past the cap
-/// or a relative project path is stored, or a folder with no row is outside
-/// Space 1; a project's own login does not override the Space's, survives
-/// being cleared, or outlives its login; a login, grant or lease is lost or altered,
+/// lost or altered, a blank name, a missing active Space, a TTL outside 1 ms
+/// to 7 days, or a relative or http project path is stored, a remote or
+/// Windows project is refused or keyed otherwise than `pathKey()`, or a
+/// project with no row is outside Space 1; a project's own login does not
+/// override the Space's, is lost on a re-pick, leaks to another Space or
+/// provider, survives being cleared, or outlives its login; a login, grant or lease is lost or altered,
 /// survives the removal of its login, or is stored when its login id is not
 /// a valid folder name or its label is blank, a rename is lost, a command
 /// takes a CLI without logins or misreads the UI's arguments, a grant ends as

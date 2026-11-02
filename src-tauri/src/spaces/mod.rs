@@ -193,12 +193,15 @@ pub(crate) fn folder_key(path: &str) -> Result<String, String> {
     }
 }
 
-/// A project key: a folder in `folder_key` form, or `~` for no project (the
-/// front end's `selectionKey`).
+/// A project key as the front end's `pathKey()` writes it
+/// (src/shared/lib/paths.ts): `~` for no project (`selectionKey`), a remote
+/// project (`remote://<host>/<path>`, `REMOTE_PATH_PREFIX`) as it is with its
+/// trailing slash trimmed, or an absolute local folder.
 fn project_key(path: &str) -> Result<String, String> {
-    match path {
-        "~" => Ok(path.to_owned()),
-        _ => folder_key(path),
+    if path == "~" || path.starts_with("remote://") {
+        Ok(crate::mono_gate::path_key(path))
+    } else {
+        folder_key(path)
     }
 }
 
