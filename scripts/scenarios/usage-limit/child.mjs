@@ -1,14 +1,16 @@
 // The app's core/child for vitest (ADE-167): the adapters run as in the app,
-// and each spawn starts this folder's bin/claude or bin/codex the way
-// harness_spawn does, as a real process. A login other than "default" gets
-// the folder harness.rs apply_provider_account would give it, here
+// and each spawn starts the shim as a real process, as bin/claude or
+// bin/codex would. Node runs it directly: Windows cannot run those scripts.
+// A login other than "default" gets the folder harness.rs
+// apply_provider_account would give it, here
 // $USAGE_LIMIT_SHIM_DIR/logins/<provider>/<id>.
 import { spawn } from "node:child_process";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-const BIN = join(dirname(fileURLToPath(import.meta.url)), "bin");
+const HERE = dirname(fileURLToPath(import.meta.url));
+const BIN = join(HERE, "bin");
 const FOLDER_ENV = { claude: "CLAUDE_CONFIG_DIR", codex: "CODEX_HOME" };
 const children = new Map();
 const watchers = new Map();
@@ -25,7 +27,8 @@ export const child = {
     if (account && account.id !== "default") {
       env[FOLDER_ENV[account.provider]] = loginFolder(account.provider, account.id);
     }
-    const proc = spawn(path, args, { cwd, env });
+    const shim = [join(HERE, "shim.mjs"), basename(path), ...args];
+    const proc = spawn(process.execPath, shim, { cwd, env });
     proc.stdin.on("error", () => {});
     children.set(sessionId, proc);
     const watcher = () => watchers.get(sessionId);

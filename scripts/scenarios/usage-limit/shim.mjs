@@ -6,17 +6,22 @@
 // Replay (bin/claude, bin/codex): prints the fixture that script.json maps to
 // the login folder the CLI was started with (CLAUDE_CONFIG_DIR or CODEX_HOME,
 // "default" when unset), with its recorded timing divided by `speed`. Each
-// recorded input waits for the client's next line of the same kind, and the
-// ids the recording answered become the client's own. `--version` prints the
-// recorded CLI's version. log.jsonl gets one line per start with the folder.
+// recorded input waits for the client's next line of the same kind.
+// `--version` prints the recorded CLI's version. log.jsonl gets one line per
+// start with the folder.
 //   $USAGE_LIMIT_SHIM_DIR (else $HOME/.usage-limit)/script.json:
 //   {"speed": 1, "accounts": {"<folder>": "<file in fixtures/>"}}
+//
+// Redact: node shim.mjs redact <fixture...> applies today's redaction to
+// fixtures recorded before it, in place.
 //
 // Record: node shim.mjs record <claude|codex> <label> <real cli> [folder]
 // runs the real CLI with the app's opening messages and the prompt "say ok",
 // and writes fixtures/<provider>-<version>-<date>-<label>.jsonl. Record from a
-// login that is really out of usage: a refused request is not billed. Emails,
-// names, ids, tokens, the host and local paths become fixed placeholders.
+// login that is really out of usage: a refused request is not billed. A CLI
+// that exits early still gets its fixture, and record exits with its code.
+// Emails, names, ids, tokens, MCP server names, the host and local paths
+// become fixed placeholders.
 //
 // A fixture is one header line ({"provider", "version", "recorded"}), then one
 // line per event at `ms` after the start: {"in"} a line the client sent,
@@ -137,6 +142,15 @@ function redactor(paths) {
       ),
     ),
   };
+  // MCP servers the login configured, by name, and why each failed to start.
+  const server = numbered((n) => `mcp_${n}`);
+  const servers = (entry) => {
+    if (entry.out?.method !== "mcpServer/startupStatus/updated") return entry;
+    const params = { ...entry.out.params, name: server(entry.out.params.name) };
+    delete params.error;
+    delete params.failureReason;
+    return { ...entry, out: { ...entry.out, params } };
+  };
   const strip = (value) => {
     if (Array.isArray(value)) return value.map(strip);
     if (typeof value !== "object" || value === null) return value;
@@ -145,7 +159,7 @@ function redactor(paths) {
     );
   };
   return (entry) =>
-    rules.reduce((text, [pattern, to]) => text.replace(pattern, (match) => to(match)), JSON.stringify(strip(entry)));
+    rules.reduce((text, [pattern, to]) => text.replace(pattern, (match) => to(match)), JSON.stringify(strip(servers(entry))));
 }
 
 async function record([provider, label, real, folder]) {
@@ -169,12 +183,16 @@ async function record([provider, label, real, folder]) {
   const events = [];
   const note = (event) => events.push({ ms: Date.now() - started, ...event });
   let waiting = () => {};
+  let gone = false;
+  // "close" comes after the CLI's last stdout line, so the capture is whole.
   const exited = new Promise((resolve) =>
-    child.on("exit", (code) => {
+    child.on("close", (code) => {
+      gone = true;
       waiting(null);
       resolve(code);
     }),
   );
+  child.stdin.on("error", () => {});
   createInterface({ input: child.stdout }).on("line", (line) => {
     const msg = parse(line);
     note({ out: msg });
@@ -184,14 +202,22 @@ async function record([provider, label, real, folder]) {
     note({ in: msg });
     child.stdin.write(`${JSON.stringify(msg)}\n`);
   };
+  // Rejects once the CLI has exited, which ends the client's script early.
   const until = (done) =>
-    new Promise((resolve) => {
-      waiting = (msg) => (msg === null || done(msg)) && resolve(msg);
+    new Promise((resolve, reject) => {
+      waiting = (msg) => (msg === null ? reject(new Error("exited")) : done(msg) && resolve(msg));
+      if (gone) waiting(null);
     });
-  await CLIENT[provider](send, until, cwd);
-  note({ eof: true });
-  child.stdin.end();
-  note({ exit: await exited });
+  const finished = await CLIENT[provider](send, until, cwd).then(
+    () => true,
+    () => false,
+  );
+  if (finished) {
+    note({ eof: true });
+    child.stdin.end();
+  }
+  const code = await exited;
+  note({ exit: code });
 
   const date = new Date().toISOString().slice(0, 10);
   const number = version.match(/\d+\.\d+\.\d+/)?.[0] ?? "unknown";
@@ -215,6 +241,7 @@ async function record([provider, label, real, folder]) {
   writeFileSync(file, [header, ...events].map(redact).join("\n") + "\n");
   rmSync(cwd, { recursive: true, force: true });
   console.log(file);
+  if (!finished) process.exitCode = code ?? 1;
 }
 
 /** The client's stdin. `next(kind)` is its next line of that kind, null once closed. */
@@ -247,42 +274,17 @@ function clientLines() {
   };
 }
 
-/** The recording's request ids, answered as the live client's own. */
-function idMap() {
-  const ids = new Map();
-  const live = (id) => (ids.has(JSON.stringify(id)) ? ids.get(JSON.stringify(id)) : id);
-  return {
-    pair(recorded, msg) {
-      if (kind(recorded) === "response") return;
-      for (const key of ["id", "request_id"]) {
-        if (recorded[key] !== undefined) ids.set(JSON.stringify(recorded[key]), msg[key]);
-      }
-    },
-    answer(out) {
-      if (typeof out !== "object" || out === null) return out;
-      if (out.type === "control_response") {
-        return { ...out, response: { ...out.response, request_id: live(out.response?.request_id) } };
-      }
-      return out.id !== undefined && out.method === undefined ? { ...out, id: live(out.id) } : out;
-    },
-  };
-}
-
 async function play(events, speed) {
   const client = clientLines();
-  const ids = idMap();
   let clock = { at: Date.now(), ms: 0 };
   for (const event of events) {
     if ("in" in event) {
-      const msg = await client.next(kind(event.in));
-      if (msg === null) process.exit(0);
-      ids.pair(event.in, msg);
+      if ((await client.next(kind(event.in))) === null) process.exit(0);
       clock = { at: Date.now(), ms: event.ms };
     } else if ("out" in event) {
       const wait = clock.at + (event.ms - clock.ms) / speed - Date.now();
       if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-      const out = ids.answer(event.out);
-      process.stdout.write(`${typeof out === "string" ? out : JSON.stringify(out)}\n`);
+      process.stdout.write(`${typeof event.out === "string" ? event.out : JSON.stringify(event.out)}\n`);
     } else if ("eof" in event) {
       await client.closed();
     } else {
@@ -316,8 +318,14 @@ async function replay(provider, args) {
 
 const [first, ...rest] = process.argv.slice(2);
 if (first === "record") await record(rest);
+else if (first === "redact") {
+  for (const file of rest) {
+    const lines = readFileSync(file, "utf8").trim().split("\n").map(parse);
+    writeFileSync(file, lines.map(redactor([])).join("\n") + "\n");
+  }
+}
 else if (FOLDER_ENV[first]) await replay(first, rest);
 else {
-  console.error("usage: shim.mjs record ... | shim.mjs <claude|codex> <cli args>");
+  console.error("usage: shim.mjs record ... | shim.mjs redact <fixture...> | shim.mjs <claude|codex> <cli args>");
   process.exit(2);
 }

@@ -1,7 +1,7 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { loginFolder } from "../../../../../scripts/scenarios/usage-limit/child.mjs";
 import type { HarnessEvent } from "../../core/types";
 import {
@@ -360,6 +360,11 @@ describe("recorded Claude Code streams", () => {
   it("replays a login's recorded turn from its own folder, and fails a login with no recording", async () => {
     const dir = mkdtempSync(join(tmpdir(), "usage-limit-"));
     vi.stubEnv("USAGE_LIMIT_SHIM_DIR", dir);
+    onTestFinished(async () => {
+      await stopClaudeSession("login-2");
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    });
     const normal = loginFolder("claude", "login-2");
     writeFileSync(
       join(dir, "script.json"),
@@ -403,8 +408,6 @@ describe("recorded Claude Code streams", () => {
       [normal, "claude-2.1.312-2026-11-02-ok.jsonl"],
       [loginFolder("claude", "login-3"), null],
     ]);
-    await stopClaudeSession("login-2");
-    vi.unstubAllEnvs();
   });
 });
 

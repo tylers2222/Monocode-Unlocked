@@ -1,7 +1,7 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { loginFolder } from "../../../../../scripts/scenarios/usage-limit/child.mjs";
 import type { HarnessEvent } from "../../core/types";
 import {
@@ -1113,6 +1113,12 @@ describe("recorded Codex app-server streams", () => {
   it("replays each login's recorded turn from its own folder: a reply, and a failure that is no usage limit", async () => {
     const dir = mkdtempSync(join(tmpdir(), "usage-limit-"));
     vi.stubEnv("USAGE_LIMIT_SHIM_DIR", dir);
+    onTestFinished(async () => {
+      await stopCodexSession("login-1");
+      await stopCodexSession("login-2");
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    });
     const accounts = {
       [loginFolder("codex", "login-1")]:
         "codex-0.165.0-2026-11-02-unauthorized.jsonl",
@@ -1145,7 +1151,10 @@ describe("recorded Codex app-server streams", () => {
     expect(ok.types).not.toContain("session.error");
     expect(ok.types).not.toContain("usage.limited");
 
+    const startedAt = Date.now();
     const refused = await turn("login-1");
+    // The 401 fixture's turn/completed comes 16 686 ms after its turn/start.
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(16_686 / 20);
     expect(refused.result).toBe("sent");
     expect(refused.events).toContainEqual({
       type: "session.error",
@@ -1160,6 +1169,5 @@ describe("recorded Codex app-server streams", () => {
     expect(started.map(({ folder, fixture }) => [folder, fixture])).toEqual(
       Object.entries(accounts).reverse(),
     );
-    vi.unstubAllEnvs();
   });
 });
