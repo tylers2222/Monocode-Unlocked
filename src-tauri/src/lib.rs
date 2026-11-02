@@ -67,6 +67,7 @@ mod scenario;
 mod search;
 mod session_store;
 mod skills;
+mod spaces;
 pub mod ssh_askpass;
 #[cfg(target_os = "macos")]
 mod trackpad_zoom;
@@ -391,6 +392,24 @@ pub fn run() {
             milestones::milestones_remove_project,
             milestones::milestone_settings_get,
             milestones::milestone_settings_set,
+            spaces::spaces_list,
+            spaces::spaces_create,
+            spaces::spaces_update,
+            spaces::spaces_settings_get,
+            spaces::spaces_settings_set,
+            spaces::spaces_project_get,
+            spaces::spaces_project_set,
+            spaces::account::spaces_accounts_list,
+            spaces::account::spaces_account_save,
+            spaces::account::spaces_account_remove,
+            spaces::account::spaces_logins_list,
+            spaces::account::spaces_login_set,
+            spaces::grants::spaces_grant_get,
+            spaces::grants::spaces_grant_save,
+            spaces::grants::spaces_grant_remove,
+            spaces::leases::spaces_leases_list,
+            spaces::leases::spaces_lease_take,
+            spaces::leases::spaces_lease_release,
             approvals::approvals_list,
             approvals::approvals_get,
             approvals::approvals_open_counts,

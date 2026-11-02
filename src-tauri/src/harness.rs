@@ -26,8 +26,8 @@ const DEFAULT_PROVIDER_ACCOUNT_ID: &str = "default";
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessAccount {
-    provider: String,
-    id: String,
+    pub(crate) provider: String,
+    pub(crate) id: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -979,6 +979,13 @@ pub fn harness_spawn<R: Runtime>(
     if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref()) {
         return Err("harness_spawn: not a resolved harness CLI".to_string());
     }
+    let crate::spaces::SpawnTarget { workdir, account } = crate::spaces::prepare_spawn(
+        &app.state::<crate::session_store::SessionStore>(),
+        &session_id,
+        binary_provider.as_deref(),
+        crate::mono_messages::now_ms(),
+        crate::spaces::SpawnTarget { workdir, account },
+    )?;
     // `apply_provider_account` gives a Claude account's child its own config folder.
     let account_id = account
         .as_ref()
