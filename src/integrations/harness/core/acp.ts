@@ -26,6 +26,18 @@ export type AcpTextLive = {
   onEvent?: (event: HarnessEvent) => void;
 };
 
+/**
+ * ADE-189: a warm text child serves a prompt only when it was placed for the
+ * same folder and the same session, so a prompt never runs in another Space.
+ */
+export function placedFor(
+  live: { cwd: string; owner?: string },
+  cwd: string,
+  owner?: string,
+): boolean {
+  return live.cwd === cwd && live.owner === owner;
+}
+
 export type AcpHandlers = {
   onNotification?: (method: string, params: unknown) => void;
   onRequest?: (

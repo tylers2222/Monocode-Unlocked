@@ -382,6 +382,33 @@ describe("harness registry", () => {
     });
   });
 
+  // ADE-189: these text adapters place their child for the prompt's session.
+  // claude, cursor, grok and opencode text stay ownerless (INTERIM) until a
+  // later part.
+  it.each(["codex", "pi", "omp"] as const)(
+    "places %s's text child for the prompt's owner",
+    async (harness) => {
+      registerBuiltinHarnesses();
+      tauri.inApp = true;
+      tauri.answer = (command) => {
+        if (command === "harness_spawn") throw new Error("placed");
+        return { path: `/bin/${harness}` };
+      };
+      await expect(
+        runHarnessTextPrompt({
+          harness,
+          cwd: "/repo",
+          owner: "chat-x",
+          prompt: "q",
+        }),
+      ).rejects.toThrow("placed");
+      const placed = tauri.calls.find(
+        ([command]) => command === "harness_spawn",
+      );
+      expect(placed?.[1]?.helper).toEqual({ owner: "chat-x" });
+    },
+  );
+
   it("exposes the native compaction support matrix", () => {
     registerBuiltinHarnesses();
     const ids: HarnessId[] = [
@@ -470,9 +497,11 @@ describe("harness registry", () => {
       prompt: "first",
       signal: first.signal,
     });
+    // ADE-189: a prompt for a session leaves a child another prompt uses.
     const secondRequest = runHarnessTextPrompt({
       harness: "claude",
       cwd: "/tmp",
+      owner: "chat-2",
       prompt: "second",
       signal: second.signal,
     });
@@ -481,6 +510,29 @@ describe("harness registry", () => {
     expect(stopTextPrompt).not.toHaveBeenCalled();
     second.abort();
     await expect(secondRequest).rejects.toThrow("By-the-way request cancelled");
+    expect(stopTextPrompt).not.toHaveBeenCalled();
+    // ADE-189: titles and git text call the provider directly, not through
+    // the registry. A session's prompt never stops the child such a call is
+    // using; the provider's own reuse rule places the session's child.
+    let finishTitle: ((text: string) => void) | undefined;
+    runTextPrompt
+      .mockImplementationOnce(
+        () => new Promise<string>((resolve) => (finishTitle = resolve)),
+      )
+      .mockImplementationOnce(async () => "Answer");
+    const title = runTextPrompt();
+    const third = runHarnessTextPrompt({
+      harness: "claude",
+      cwd: "/tmp",
+      owner: "chat-3",
+      prompt: "third",
+    });
+    await expect(third).resolves.toBe("Answer");
+    expect(runTextPrompt.mock.calls[3]).toEqual([
+      expect.objectContaining({ owner: "chat-3" }),
+    ]);
+    finishTitle?.("Title");
+    await expect(title).resolves.toBe("Title");
     expect(stopTextPrompt).not.toHaveBeenCalled();
   });
 

@@ -197,7 +197,16 @@ it("does not reopen the ordinary home for an already migrated startup thread", a
 
 it("can migrate an archived legacy root without archiving it twice", async () => {
   mock.archived = true;
-  await prepareCodexMonoContext({ ...input, threadId: "root" });
+  // ADE-189: a text child's store is placed for the prompt's session.
+  await prepareCodexMonoContext({
+    ...input,
+    owner: "chat-x",
+    threadId: "root",
+  });
+  expect(mock.spawn.mock.calls[0]?.slice(0, 2)).toEqual([
+    "chat-x",
+    "mono-chat:codex-store:account",
+  ]);
   expect(mock.copy).toHaveBeenCalledOnce();
   expect(mock.sent.some((r) => r.method === "thread/archive")).toBe(false);
 });

@@ -139,9 +139,12 @@ type CatalogEntry = {
 
 const catalogEntries = new Map<string, CatalogEntry>();
 
+/**
+ * One entry per session: the session's Space decides the folder a native
+ * probe runs in, so a list is never served across Spaces (ADE-189).
+ */
 export function skillCatalogKey(context: SkillCatalogContext): string {
-  const sessionScoped = !!getHarness(context.harness)?.commands?.subscribe;
-  return `${context.harness}\0${normalizeProjectPath(context.cwd)}${sessionScoped && context.sessionId ? `\0${context.sessionId}` : ""}`;
+  return `${context.harness}\0${normalizeProjectPath(context.cwd)}${context.sessionId ? `\0${context.sessionId}` : ""}`;
 }
 
 export function hasNativeCommands(harness: HarnessId): boolean {

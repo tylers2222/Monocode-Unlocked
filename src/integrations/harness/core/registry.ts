@@ -38,6 +38,8 @@ export type TitleInput = {
 /** One-shot, isolated text generation shared by titles and side questions. */
 export type TextPromptInput = {
   cwd: string;
+  /** The session the prompt is for: its Space decides the helper's folder. */
+  owner?: string;
   providerAccountId?: string;
   model?: string;
   modelSettings?: Record<string, string>;

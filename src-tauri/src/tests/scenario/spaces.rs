@@ -1633,6 +1633,7 @@ mod helpers {
             ("monocode-opencode-text", None, project),
             ("monocode-pi-text", None, project),
             ("monocode-omp-text", None, project),
+            ("monocode-devin-text-1", None, project),
             ("monocode-pi-skills-1", None, project),
             ("monocode-omp-skills-1", Some("ghost"), project),
             ("monocode-pi-skills-2", Some("two"), copy),
@@ -1676,8 +1677,8 @@ mod helpers {
 
     /// INTERIM (ADE-189 4/4): the Grok cleanup exec runs where its text child
     /// ran, and an exec naming no listed key goes neutral; the children still
-    /// spawned as a session's own (Devin text, the Devin, Codex and Hermes
-    /// probes) keep their caller's folder. Then a placement of a helper of no
+    /// spawned as a session's own (the Devin, Codex and Hermes probes) keep
+    /// their caller's folder. Then a placement of a helper of no
     /// Space in a missing folder, while the store is locked, must return
     /// without the lock: a time bound turns a lock-order regression into a
     /// failure, not a hang.
@@ -1696,7 +1697,6 @@ mod helpers {
             "an exec of an unlisted helper ran in a project folder"
         );
         for key in [
-            "monocode-devin-text-1",
             "monocode-devin-probe-1",
             "monocode-codex-probe-1",
             "monocode-hermes-probe-1",

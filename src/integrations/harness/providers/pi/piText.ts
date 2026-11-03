@@ -16,6 +16,8 @@ import {
   isAgentSettled,
   isPiThinkingLevel,
 } from "./piProtocol";
+import { placedFor } from "../../core/acp";
+import type { TextPromptInput } from "../../core/registry";
 import { abortTextPromptRace } from "../../core/abortTextPrompt";
 import { mergeStream } from "../../core/streamText";
 import type { HarnessEvent } from "../../core/types";
@@ -26,6 +28,7 @@ const REQUEST_TIMEOUT_MS = 45_000;
 type LiveText = {
   rpc: PiRpc;
   cwd: string;
+  owner?: string;
   model?: string;
   settingsKey: string;
   collecting: boolean;
@@ -91,15 +94,7 @@ export function warmupText(flavor: PiFlavor, cwd: string): Promise<void> {
 
 export async function runTextPrompt(
   flavor: PiFlavor,
-  input: {
-    cwd: string;
-    model?: string;
-    modelSettings?: Record<string, string>;
-    prompt: string;
-    timeoutMs?: number;
-    signal?: AbortSignal;
-    onEvent?: (event: HarnessEvent) => void;
-  },
+  input: TextPromptInput,
 ): Promise<string> {
   const state = stateFor(flavor);
   const run = state.turns
@@ -114,21 +109,14 @@ export async function runTextPrompt(
 
 async function promptOnLive(
   flavor: PiFlavor,
-  input: {
-    cwd: string;
-    model?: string;
-    modelSettings?: Record<string, string>;
-    prompt: string;
-    timeoutMs?: number;
-    signal?: AbortSignal;
-    onEvent?: (event: HarnessEvent) => void;
-  },
+  input: TextPromptInput,
 ): Promise<string> {
   const session = await ensureLive(
     flavor,
     input.cwd,
     input.model,
     input.modelSettings,
+    input.owner,
   );
   const timeoutMs = input.timeoutMs ?? REQUEST_TIMEOUT_MS;
   try {
@@ -212,6 +200,7 @@ async function ensureLive(
   cwd: string,
   requestedModel?: string,
   modelSettings?: Record<string, string>,
+  owner?: string,
 ): Promise<LiveText> {
   const state = stateFor(flavor);
   const model = pickTextModel(flavor, requestedModel);
@@ -220,14 +209,14 @@ async function ensureLive(
   if (
     current &&
     !current.closed &&
-    current.cwd === cwd &&
+    placedFor(current, cwd, owner) &&
     current.model === model &&
     current.settingsKey === settingsKey
   ) {
     return current;
   }
   await dropLive(flavor);
-  return startLive(flavor, cwd, model, modelSettings);
+  return startLive(flavor, cwd, model, modelSettings, owner);
 }
 
 async function startLive(
@@ -235,6 +224,7 @@ async function startLive(
   cwd: string,
   model?: string,
   modelSettings?: Record<string, string>,
+  owner?: string,
 ): Promise<LiveText> {
   const state = stateFor(flavor);
   const childId = flavor.textChildId;
@@ -251,6 +241,7 @@ async function startLive(
   const session: LiveText = {
     rpc,
     cwd,
+    owner,
     model,
     settingsKey: modelSettingsKey(modelSettings),
     collecting: false,
@@ -279,7 +270,7 @@ async function startLive(
 
   try {
     await spawnHelperChild(
-      undefined,
+      owner,
       childId,
       path,
       buildPiSpawnArgs(flavor, {
@@ -349,24 +340,10 @@ function modelSettingsKey(settings?: Record<string, string>): string {
 
 export const stopPiTextPrompt = () => stopTextPrompt(PI_FLAVOR);
 export const warmupPiText = (cwd: string) => warmupText(PI_FLAVOR, cwd);
-export const runPiTextPrompt = (input: {
-  cwd: string;
-  model?: string;
-  modelSettings?: Record<string, string>;
-  prompt: string;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  onEvent?: (event: HarnessEvent) => void;
-}) => runTextPrompt(PI_FLAVOR, input);
+export const runPiTextPrompt = (input: TextPromptInput) =>
+  runTextPrompt(PI_FLAVOR, input);
 
 export const stopOmpTextPrompt = () => stopTextPrompt(OMP_FLAVOR);
 export const warmupOmpText = (cwd: string) => warmupText(OMP_FLAVOR, cwd);
-export const runOmpTextPrompt = (input: {
-  cwd: string;
-  model?: string;
-  modelSettings?: Record<string, string>;
-  prompt: string;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  onEvent?: (event: HarnessEvent) => void;
-}) => runTextPrompt(OMP_FLAVOR, input);
+export const runOmpTextPrompt = (input: TextPromptInput) =>
+  runTextPrompt(OMP_FLAVOR, input);

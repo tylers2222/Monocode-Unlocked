@@ -203,6 +203,13 @@ it("keeps warmup and subsequent prompts unsaved across model changes", async () 
   expect(spawnHelperChild).toHaveBeenCalledTimes(4);
   expect(spawnHelperChild.mock.calls[3]?.[4]).toBe("/other");
   expect(threadStarts().at(-1)?.params).toMatchObject({ cwd: "/placed-other" });
+
+  // A warm child started for no session never serves a session's prompt.
+  await warmupCodexText("/repo");
+  const spawns = spawnHelperChild.mock.calls.length;
+  await runCodexTextPrompt({ cwd: "/repo", owner: "chat-x", prompt: "Owned" });
+  expect(spawnHelperChild).toHaveBeenCalledTimes(spawns + 1);
+  expect(spawnHelperChild.mock.calls[spawns]?.[0]).toBe("chat-x");
 });
 
 it("does not resume a stored thread for an unsaved text request", async () => {
@@ -280,11 +287,19 @@ it("isolates Mono side questions from regular Codex threads and resumes them aft
   expect(prepareCodexMonoContext).not.toHaveBeenCalled();
   await runCodexTextPrompt({
     cwd: "/repo",
+    owner: "chat-x",
     ephemeral: false,
     codexStore: "mono",
     prompt: "Mono side question",
   });
   expect(spawnHelperChild.mock.calls[1][7]).toBe("mono");
+  // ADE-189: the store child is placed for the prompt's session too.
+  expect(prepareCodexMonoContext).toHaveBeenCalledWith(
+    expect.objectContaining({
+      sessionId: "monocode-codex-text",
+      owner: "chat-x",
+    }),
+  );
   expect(threadStarts()[1].params).toMatchObject({
     config: { sqlite_home: "/private/mono" },
   });

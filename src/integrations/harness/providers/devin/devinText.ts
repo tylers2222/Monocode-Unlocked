@@ -102,12 +102,15 @@ async function promptOnce(input: TextPromptInput): Promise<string> {
   );
   try {
     const run = async () => {
-      // INTERIM (ADE-189 4/4): still a session-kind child in the caller's
-      // folder until part 3/4 covers it (spaces/mod.rs).
-      await startDevinAcp(childId, input.cwd, rpc, { allowBrowser: false });
+      // INTERIM (ADE-189 4/4): with no owner, its key keeps the caller's
+      // folder (spaces/mod.rs).
+      const placed = await startDevinAcp(childId, input.cwd, rpc, {
+        allowBrowser: false,
+        helper: { owner: input.owner },
+      });
       const created = await rpc.request(
         "session/new",
-        { cwd: input.cwd, mcpServers: [] },
+        { cwd: placed, mcpServers: [] },
         REQUEST_TIMEOUT_MS,
       );
       sessionId = sessionIdFromResult(created);

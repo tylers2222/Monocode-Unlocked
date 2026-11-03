@@ -1,7 +1,7 @@
 import { modelsFor } from "../../../../features/sessions/model/models";
 import type { TurnIntent } from "../../../../features/sessions/model/session";
 import {
-  execChild,
+  execHelper,
   freeHarnessPort,
   killChild,
   resolveOpenCodeBinary,
@@ -158,13 +158,21 @@ async function startLive(
   modelSettings?: Record<string, string>,
 ): Promise<LiveText> {
   const { path } = await resolveOpenCodeBinary();
-  const versionOut = await execChild(
+  // v2 spawns no child, so the folder this exec is placed in is the
+  // `directory` each request names. It carries the text child's key, so it
+  // keeps its caller's folder (INTERIM, ADE-189). v1's `serve` child names its
+  // own.
+  const probe = await execHelper(
     path,
     ["--version"],
     cwd,
     "opencode",
-  ).catch(() => "");
-  const version = parseOpenCodeVersion(versionOut);
+    undefined,
+    undefined,
+    TEXT_CHILD_ID,
+  );
+  let placed = probe.cwd;
+  const version = parseOpenCodeVersion(probe.stdout);
   const generation = assertSupportedOpenCodeVersion(version);
 
   const service =
@@ -189,7 +197,7 @@ async function startLive(
     );
 
     const port = await freeHarnessPort();
-    await spawnHelperChild(
+    placed = await spawnHelperChild(
       undefined,
       TEXT_CHILD_ID,
       path,
@@ -207,7 +215,7 @@ async function startLive(
         : await waitForUrl(() => serverUrl, SERVER_TIMEOUT_MS);
     const client = new OpenCodeClient(
       url,
-      cwd,
+      placed,
       generation,
       service?.password,
     );
