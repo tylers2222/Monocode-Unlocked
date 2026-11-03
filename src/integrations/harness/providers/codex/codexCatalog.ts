@@ -76,6 +76,7 @@ export async function discoverCodexModels(
   );
 
   try {
+    // INTERIM (ADE-189 4/4): not a helper yet (spaces/mod.rs).
     await spawnChild(probeId, path, ["app-server"], cwd, undefined, "codex");
     return await withTimeout(
       DISCOVERY_TIMEOUT_MS,

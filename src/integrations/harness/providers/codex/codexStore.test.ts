@@ -19,7 +19,7 @@ vi.mock("../../core/child", () => ({
   acquireHarnessBridge: async () => mock.release,
   prepareMonoCodexStore: mock.prepare,
   copyMonoCodexThreads: mock.copy,
-  spawnChild: mock.spawn,
+  spawnHelperChild: mock.spawn,
   killChild: mock.kill,
   watchChild: (id: string, line: (line: string) => void) =>
     mock.handlers.set(id, line),
@@ -130,6 +130,7 @@ it("uses the account's resolved settings with an isolated SQLite home", async ()
     hasThread: false,
   });
   expect(mock.spawn).toHaveBeenCalledWith(
+    "mono-chat",
     expect.any(String),
     "/codex",
     ["app-server"],

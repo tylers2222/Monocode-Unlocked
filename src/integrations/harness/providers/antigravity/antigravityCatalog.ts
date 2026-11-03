@@ -55,6 +55,8 @@ export async function discoverAntigravityModels(workingDirectory?: string) {
     () => acp.close(new Error("Antigravity probe exited")),
   );
   try {
+    // Not a helper (ADE-189): the raw .par finds its resources from its own
+    // folder, the CLI's install folder, which is never a project.
     await spawnChild(
       probeId,
       path,

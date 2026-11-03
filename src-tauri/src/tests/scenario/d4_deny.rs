@@ -864,6 +864,7 @@ fn harness_spawn_child() {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         let argv = wait_for(&workdir.join("argv"));

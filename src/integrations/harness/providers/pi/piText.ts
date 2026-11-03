@@ -1,7 +1,7 @@
 import { modelsFor } from "../../../../features/sessions/model/models";
 import {
   killChild,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -278,7 +278,8 @@ async function startLive(
   );
 
   try {
-    await spawnChild(
+    await spawnHelperChild(
+      undefined,
       childId,
       path,
       buildPiSpawnArgs(flavor, {

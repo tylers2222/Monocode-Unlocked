@@ -12,7 +12,7 @@ let output = "Generated text";
 let threadCount = 0;
 let failTurn = false;
 let missingResume = false;
-const spawnChild = vi.hoisted(() =>
+const spawnHelperChild = vi.hoisted(() =>
   vi.fn(async (..._args: unknown[]) => undefined),
 );
 const prepareCodexMonoContext = vi.hoisted(() =>
@@ -29,7 +29,7 @@ function receive(message: unknown) {
 
 vi.mock("../../core/child", () => ({
   resolveCodexBinary: async () => ({ path: "/fake/codex" }),
-  spawnChild,
+  spawnHelperChild,
   restoreMonoCodexAgentState: async () => undefined,
   killChild: async () => undefined,
   unwatchChild: () => undefined,
@@ -113,7 +113,7 @@ beforeEach(() => {
   threadCount = 0;
   failTurn = false;
   missingResume = false;
-  spawnChild.mockClear();
+  spawnHelperChild.mockClear();
   prepareCodexMonoContext.mockClear();
 });
 
@@ -261,7 +261,7 @@ it("isolates Mono side questions from regular Codex threads and resumes them aft
     ephemeral: false,
     prompt: "Regular side question",
   });
-  expect(spawnChild.mock.calls[0][6]).toBeUndefined();
+  expect(spawnHelperChild.mock.calls[0][7]).toBeUndefined();
   expect(prepareCodexMonoContext).not.toHaveBeenCalled();
   await runCodexTextPrompt({
     cwd: "/repo",
@@ -269,7 +269,7 @@ it("isolates Mono side questions from regular Codex threads and resumes them aft
     codexStore: "mono",
     prompt: "Mono side question",
   });
-  expect(spawnChild.mock.calls[1][6]).toBe("mono");
+  expect(spawnHelperChild.mock.calls[1][7]).toBe("mono");
   expect(threadStarts()[1].params).toMatchObject({
     config: { sqlite_home: "/private/mono" },
   });

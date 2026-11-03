@@ -10,7 +10,7 @@ const killChild = vi.fn(async () => undefined);
 vi.mock("../../core/child", () => ({
   resolveGrokBinary: async () => ({ path: "/fake/grok" }),
   execChild,
-  spawnChild: async () => undefined,
+  spawnHelperChild: async () => undefined,
   killChild,
   unwatchChild: () => undefined,
   watchChild: (
@@ -114,6 +114,9 @@ it("forwards Grok text deltas without duplicating snapshots", async () => {
     ],
     "/repo",
     "grok",
+    undefined,
+    undefined,
+    "monocode-grok-text",
   );
   expect(killChild.mock.invocationCallOrder.at(-1)).toBeLessThan(
     execChild.mock.invocationCallOrder[0],
@@ -163,6 +166,9 @@ it("deletes only the temporary session when generation fails", async () => {
     ],
     "/repo",
     "grok",
+    undefined,
+    undefined,
+    "monocode-grok-text",
   );
 });
 
@@ -187,6 +193,9 @@ it("deletes the temporary session when generation is cancelled", async () => {
     ],
     "/repo",
     "grok",
+    undefined,
+    undefined,
+    "monocode-grok-text",
   );
 });
 
@@ -212,6 +221,9 @@ it("cleans up warmup sessions before starting with a different model", async () 
     ],
     "/repo",
     "grok",
+    undefined,
+    undefined,
+    "monocode-grok-text",
   );
   await waitFor(() => !!outbound("session/prompt"), "session/prompt");
   reply("session/prompt", {});
@@ -235,6 +247,9 @@ it("cleans up its session even if the provider exits before teardown", async () 
     ],
     "/repo",
     "grok",
+    undefined,
+    undefined,
+    "monocode-grok-text",
   );
 });
 

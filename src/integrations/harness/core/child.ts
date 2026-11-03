@@ -344,6 +344,8 @@ export async function spawnChild(
   devinAskEdits?: boolean,
   /** omp only: `"none"` starts it without MCP servers (ADE-117). */
   ompMcp?: Session["mcp"],
+  /** A helper, not a session's own child: see `spawnHelperChild`. */
+  helper?: { owner: string | undefined },
 ): Promise<void> {
   livePid.delete(sessionId);
   pendingExit.delete(sessionId);
@@ -362,6 +364,7 @@ export async function spawnChild(
     ...(codexStore ? { codexStore } : {}),
     ...(devinAskEdits ? { devinAskEdits } : {}),
     ...(ompMcp ? { ompMcp } : {}),
+    ...(helper ? { helper } : {}),
   });
   if (typeof pid !== "number" || pid <= 0) return;
   livePid.set(sessionId, pid);
@@ -371,6 +374,35 @@ export async function spawnChild(
   if (!exited) return;
   livePid.delete(sessionId);
   exitHandlers.get(sessionId)?.(exited.code);
+}
+
+/**
+ * A text, catalog, skills or login child of `owner`, the session it works
+ * for, or of none. Rust starts it in that session's folder, or in a neutral
+ * folder that is no project checkout (ADE-189).
+ */
+export function spawnHelperChild(
+  owner: string | undefined,
+  childId: string,
+  command: string,
+  args: string[],
+  cwd: string,
+  account?: { provider: "claude" | "codex"; id: string },
+  binaryProvider?: ConfigurableBinaryProvider,
+  codexStore?: "mono",
+): Promise<void> {
+  return spawnChild(
+    childId,
+    command,
+    args,
+    cwd,
+    account,
+    binaryProvider,
+    codexStore,
+    undefined,
+    undefined,
+    { owner },
+  );
 }
 
 export function writeChild(sessionId: string, line: string): Promise<void> {
@@ -576,12 +608,19 @@ export async function updateHarnessCli(
   });
 }
 
+/**
+ * A one-shot helper. Without `owner`, the session it works for, Rust runs it
+ * in a neutral folder, not `cwd` (ADE-189).
+ */
 export function execChild(
   command: string,
   args: string[],
   cwd?: string,
   binaryProvider?: ConfigurableBinaryProvider,
   binaryPathOverride?: string | null,
+  owner?: string,
+  /** The helper child this exec acts for, named by the INTERIM list. */
+  key?: string,
 ): Promise<string> {
   const binaryPath =
     binaryPathOverride === undefined && binaryProvider
@@ -593,5 +632,6 @@ export function execChild(
     cwd,
     binaryProvider,
     binaryPath,
+    helper: { owner, key },
   });
 }

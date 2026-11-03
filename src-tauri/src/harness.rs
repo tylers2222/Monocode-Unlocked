@@ -968,14 +968,27 @@ pub fn harness_spawn<R: Runtime>(
     codex_store: Option<String>,
     devin_ask_edits: Option<bool>,
     omp_mcp: Option<String>,
+    helper: Option<crate::spaces::Helper>,
 ) -> Result<u32, String> {
     if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref()) {
         return Err("harness_spawn: not a resolved harness CLI".to_string());
     }
+    let neutral;
+    let child = match &helper {
+        None => crate::spaces::Child::Session(&session_id),
+        Some(helper) => {
+            neutral = helper_folder(&app)?;
+            crate::spaces::Child::Helper {
+                key: Some(&session_id),
+                owner: helper.owner.as_deref(),
+                neutral: &neutral,
+            }
+        }
+    };
     // The hook may move the child to another folder, so the check is on its output.
     let crate::spaces::SpawnTarget { workdir, account } = crate::spaces::prepare_spawn(
         &app.state::<crate::session_store::SessionStore>(),
-        &session_id,
+        child,
         binary_provider
             .as_deref()
             .and_then(crate::spaces::Provider::parse),
@@ -1555,14 +1568,29 @@ pub(crate) fn is_resolved_harness_binary(
     resolved.is_ok_and(|path| path == Path::new(command))
 }
 
+/// The folder a helper of no stored session runs in: no project checkout,
+/// and not the app data folder, which the agent sandbox denies.
+fn helper_folder<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    let folder = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| error.to_string())?
+        .join("helper-cwd");
+    std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    Ok(folder)
+}
+
 /// One-shot provider commands: catalog probes and temporary-session cleanup.
+/// Each is a helper of `helper.owner`, the session it works for, if any.
 #[tauri::command]
-pub async fn harness_exec(
+pub async fn harness_exec<R: Runtime>(
+    app: AppHandle<R>,
     command: String,
     args: Vec<String>,
     cwd: Option<String>,
     binary_provider: Option<String>,
     binary_path: Option<String>,
+    helper: Option<crate::spaces::Helper>,
 ) -> Result<String, String> {
     if !exec_args_allowed(binary_provider.as_deref(), &args) {
         return Err("harness_exec: unsupported arguments".into());
@@ -1572,7 +1600,33 @@ pub async fn harness_exec(
         {
             return Err("harness_exec: not a resolved harness CLI".to_string());
         }
-        exec_capture(&command, &args, cwd.as_deref())
+        let neutral = helper_folder(&app)?;
+        let crate::spaces::SpawnTarget { workdir, .. } = crate::spaces::prepare_spawn(
+            &app.state::<crate::session_store::SessionStore>(),
+            crate::spaces::Child::Helper {
+                key: helper.as_ref().and_then(|helper| helper.key.as_deref()),
+                owner: helper.as_ref().and_then(|helper| helper.owner.as_deref()),
+                neutral: &neutral,
+            },
+            binary_provider
+                .as_deref()
+                .and_then(crate::spaces::Provider::parse),
+            crate::session_store::now_millis(),
+            crate::spaces::SpawnTarget {
+                workdir: cwd.as_deref().map_or_else(|| neutral.clone(), expand_home),
+                account: None,
+            },
+        )?;
+        if !workdir.is_dir() {
+            return Err(format!(
+                "Working directory does not exist: {}",
+                workdir.display()
+            ));
+        }
+        let workdir = workdir
+            .to_str()
+            .ok_or_else(|| format!("Not a UTF-8 folder: {}", workdir.display()))?;
+        exec_capture(&command, &args, Some(workdir))
     })
     .await
     .map_err(|e| e.to_string())?

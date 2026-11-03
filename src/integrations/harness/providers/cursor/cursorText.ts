@@ -2,7 +2,7 @@ import { AcpClient } from "../../core/acp";
 import {
   killChild,
   resolveCursorBinary,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -194,7 +194,15 @@ async function startLive(
   );
 
   try {
-    await spawnChild(TEXT_CHILD_ID, path, ["acp"], cwd, undefined, "cursor");
+    await spawnHelperChild(
+      undefined,
+      TEXT_CHILD_ID,
+      path,
+      ["acp"],
+      cwd,
+      undefined,
+      "cursor",
+    );
     await acp.request(
       "initialize",
       {

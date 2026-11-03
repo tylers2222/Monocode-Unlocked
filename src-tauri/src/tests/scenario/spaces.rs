@@ -782,8 +782,14 @@ fn spawn_on(world: &World, session: &str, provider: &str, login: &str) -> Result
             id: login.into(),
         }),
     };
-    crate::spaces::prepare_spawn(world.store(), session, None, world.now(), target)
-        .map(|target| target.account.unwrap().id)
+    crate::spaces::prepare_spawn(
+        world.store(),
+        crate::spaces::Child::Session(session),
+        None,
+        world.now(),
+        target,
+    )
+    .map(|target| target.account.unwrap().id)
 }
 
 /// The grant `s2` holds from `granted_at` until `expires_at`.
@@ -1265,6 +1271,7 @@ esac"#,
                 None,
                 None,
                 None,
+                None,
             )
         }
 
@@ -1375,5 +1382,327 @@ esac"#,
             !after.join("ran").exists(),
             "the CLI started after the grant ended"
         );
+    }
+}
+
+/// ADE-189. Space 1's session `one` holds a git project, and Space 2's
+/// session `two` works in its own copy. One-shot `harness_exec` calls and
+/// helper children (text, catalog, skills, login) name the session they work
+/// for, and each runs where that session does; one of no stored session runs
+/// in the app's neutral folder. A stand-in fx prints, or writes, its folder.
+/// Defect: `harness_exec` skips the spawn hook, so Space 2's exec runs in
+/// Space 1's checkout; a helper loses the owner it names and runs where the
+/// window said; a helper or exec of no owner, of an owner that is no stored
+/// session, or of one deleted since, runs in a project folder or takes a
+/// lease; the folder
+/// check runs before the hook; Space 1's own helpers leave its project; or a
+/// helper on the INTERIM list loses its caller's folder.
+#[cfg(unix)]
+#[test]
+fn helpers_and_execs_run_where_their_session_does() {
+    use tauri::Manager;
+
+    let root = super::space_checkouts::temp_root("ade189");
+    let project = super::space_checkouts::git_project(&root);
+    let data = root.join("app-data");
+    std::fs::create_dir_all(&data).unwrap();
+    let app = super::agent_sandbox::mock_app(&data);
+    super::space_checkouts::two_spaces(
+        &app.state::<crate::session_store::SessionStore>(),
+        &project,
+    );
+    let rig = helpers::Rig {
+        fx: super::agent_sandbox::script(
+            &root.join("fx"),
+            r#"case "$1" in
+  --help) echo "fx acp: ask over the Agent Client Protocol" ;;
+  --version) echo "fx 0.0.1" ;;
+  models) pwd -P ;;
+  *) pwd -P > "$2.part" && mv "$2.part" "$2" ;;
+esac"#,
+        ),
+        copy: root.join("project-worktrees/space-2/two"),
+        neutral: app.path().app_cache_dir().unwrap().join("helper-cwd"),
+        project,
+        app,
+    };
+    helpers::execs_run_where_their_owner_does(&rig);
+    helpers::helpers_run_where_their_owner_does(&rig);
+    helpers::interims_and_the_store_lock_hold(&rig);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+mod helpers {
+    use std::path::{Path, PathBuf};
+
+    use tauri::Manager;
+
+    use super::super::agent_sandbox::wait_for;
+    use super::{leases, FIRST_SPACE};
+    use crate::spaces::{prepare_spawn, Child, Helper, SpawnTarget};
+
+    pub(super) struct Rig {
+        pub(super) app: tauri::App<tauri::test::MockRuntime>,
+        pub(super) fx: PathBuf,
+        pub(super) project: PathBuf,
+        pub(super) copy: PathBuf,
+        pub(super) neutral: PathBuf,
+    }
+
+    fn text(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    fn exec(rig: &Rig, owner: Option<&str>, cwd: Option<&Path>) -> Result<PathBuf, String> {
+        exec_as(rig, None, owner, cwd)
+    }
+
+    /// An exec that names `key`, the helper child it acts for.
+    fn exec_as(
+        rig: &Rig,
+        key: Option<&str>,
+        owner: Option<&str>,
+        cwd: Option<&Path>,
+    ) -> Result<PathBuf, String> {
+        tauri::async_runtime::block_on(crate::harness::harness_exec(
+            rig.app.handle().clone(),
+            text(&rig.fx),
+            vec!["models".into(), "--json".into()],
+            cwd.map(text),
+            Some("fx".into()),
+            Some(text(&rig.fx)),
+            Some(Helper {
+                owner: owner.map(String::from),
+                key: key.map(String::from),
+            }),
+        ))
+        .map(|out| PathBuf::from(out.trim()))
+    }
+
+    /// Starts helper `key` of `owner`, which writes its folder to `<folder>/<key>`.
+    fn helper(rig: &Rig, key: &str, owner: Option<&str>, workdir: &Path) {
+        spawn(
+            rig,
+            key,
+            workdir,
+            Some(Helper {
+                owner: owner.map(String::from),
+                key: None,
+            }),
+        );
+    }
+
+    /// Starts `key` as a session's own child, as `spawnChild` does.
+    fn session_child(rig: &Rig, key: &str, workdir: &Path) {
+        spawn(rig, key, workdir, None);
+    }
+
+    fn spawn(rig: &Rig, key: &str, workdir: &Path, helper: Option<Helper>) {
+        crate::harness::harness_spawn(
+            rig.app.handle().clone(),
+            rig.app.state::<crate::harness::HarnessHost>(),
+            key.into(),
+            text(&rig.fx),
+            vec!["acp".into(), key.into()],
+            text(workdir),
+            None,
+            Some("fx".into()),
+            Some(text(&rig.fx)),
+            None,
+            None,
+            None,
+            helper,
+        )
+        .unwrap();
+    }
+
+    pub(super) fn execs_run_where_their_owner_does(rig: &Rig) {
+        let Rig {
+            project,
+            copy,
+            neutral,
+            ..
+        } = rig;
+        assert_eq!(
+            exec(rig, Some("one"), Some(project)),
+            Ok(project.clone()),
+            "Space 1's exec left the project no Space held"
+        );
+        assert_eq!(
+            exec(rig, Some("two"), Some(project)),
+            Ok(copy.clone()),
+            "Space 2's exec ran in the checkout Space 1 holds"
+        );
+        assert_eq!(
+            exec(rig, Some("two#2"), Some(&project.join("src"))),
+            Ok(copy.join("src")),
+            "a numbered child's exec left its session's copy"
+        );
+        for (owner, why) in [
+            (None, "an exec of no session ran in the project"),
+            (
+                Some("ghost"),
+                "an exec of an unknown owner ran in the project",
+            ),
+        ] {
+            assert_eq!(
+                exec(rig, owner, Some(project)),
+                Ok(neutral.clone()),
+                "{why}"
+            );
+        }
+        let missing = project.join("missing");
+        assert_eq!(
+            exec(rig, None, Some(&missing)),
+            Ok(neutral.clone()),
+            "the folder check ran before the spawn hook"
+        );
+        assert_eq!(exec(rig, None, None), Ok(neutral.clone()));
+        assert_eq!(
+            exec(rig, Some("two"), Some(&missing)),
+            Err(format!(
+                "Working directory does not exist: {}",
+                text(&missing)
+            )),
+            "an exec ran without the folder it named"
+        );
+    }
+
+    pub(super) fn helpers_run_where_their_owner_does(rig: &Rig) {
+        let Rig {
+            project,
+            copy,
+            neutral,
+            ..
+        } = rig;
+        helper(rig, "monocode-fx-text", Some("two"), project);
+        assert_eq!(
+            wait_for(&copy.join("monocode-fx-text")),
+            format!("{}\n", text(copy)),
+            "Space 2's text helper ran in the checkout Space 1 holds"
+        );
+        helper(rig, "monocode-fx-skills", Some("one"), project);
+        assert_eq!(
+            wait_for(&project.join("monocode-fx-skills")),
+            format!("{}\n", text(project)),
+            "Space 1's helper left its project"
+        );
+        for (key, owner) in [
+            ("monocode-fx-probe", None),
+            ("monocode-fx-login", Some("ghost")),
+        ] {
+            helper(rig, key, owner, project);
+            assert_eq!(
+                wait_for(&neutral.join(key)),
+                format!("{}\n", text(neutral)),
+                "{key}: a helper of no stored session ran in a project folder"
+            );
+        }
+        // INTERIM (ADE-189 4/4): a listed helper of no Space keeps the folder
+        // its caller named; one of a stored session is still placed.
+        for (key, owner, folder) in [
+            ("monocode-claude-text", None, project),
+            ("monocode-codex-text", None, project),
+            ("monocode-text", None, project),
+            ("monocode-grok-text", None, project),
+            ("monocode-opencode-text", None, project),
+            ("monocode-pi-text", None, project),
+            ("monocode-omp-text", None, project),
+            ("monocode-pi-skills-1", None, project),
+            ("monocode-omp-skills-1", Some("ghost"), project),
+            ("monocode-pi-skills-2", Some("two"), copy),
+        ] {
+            helper(rig, key, owner, project);
+            assert_eq!(
+                wait_for(&folder.join(key)),
+                format!("{}\n", text(folder)),
+                "{key}: an interim helper left its caller's folder, or its Space's"
+            );
+        }
+        assert_eq!(
+            leases::leases(&rig.app.state::<crate::session_store::SessionStore>())
+                .unwrap()
+                .into_iter()
+                .map(|lease| (lease.checkout_path, lease.space_id))
+                .collect::<Vec<_>>(),
+            [
+                (text(project), FIRST_SPACE.to_owned()),
+                (text(copy), "space-2".to_owned()),
+            ],
+            "a helper of no stored session took a lease"
+        );
+        // An owner deleted after the window named it has no Space any more.
+        rig.app
+            .state::<crate::session_store::SessionStore>()
+            .lock_conn()
+            .unwrap()
+            .execute("DELETE FROM sessions WHERE id = 'two'", [])
+            .unwrap();
+        assert_eq!(
+            exec(rig, Some("two"), Some(project)),
+            Ok(neutral.clone()),
+            "a helper of a deleted session ran in a project folder"
+        );
+    }
+
+    /// INTERIM (ADE-189 4/4): the Grok cleanup exec runs where its text child
+    /// ran, and an exec naming no listed key goes neutral; the children still
+    /// spawned as a session's own (Devin text, the Devin, Codex and Hermes
+    /// probes) keep their caller's folder. Then a placement of a helper of no
+    /// Space in a missing folder, while the store is locked, must return
+    /// without the lock: a time bound turns a lock-order regression into a
+    /// failure, not a hang.
+    pub(super) fn interims_and_the_store_lock_hold(rig: &Rig) {
+        let Rig {
+            project, neutral, ..
+        } = rig;
+        assert_eq!(
+            exec_as(rig, Some("monocode-grok-text"), None, Some(project)),
+            Ok(project.clone()),
+            "the Grok cleanup exec left its text child's folder"
+        );
+        assert_eq!(
+            exec_as(rig, Some("monocode-fx-probe"), None, Some(project)),
+            Ok(neutral.clone()),
+            "an exec of an unlisted helper ran in a project folder"
+        );
+        for key in [
+            "monocode-devin-text-1",
+            "monocode-devin-probe-1",
+            "monocode-codex-probe-1",
+            "monocode-hermes-probe-1",
+        ] {
+            session_child(rig, key, project);
+            assert_eq!(
+                wait_for(&project.join(key)),
+                format!("{}\n", text(project)),
+                "{key}: a child still spawned as a session's own left its folder"
+            );
+        }
+        let state = rig.app.state::<crate::session_store::SessionStore>();
+        let store = state.inner();
+        let missing = project.join("gone");
+        let (placed_tx, placed_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let held = store.lock_conn().unwrap();
+            scope.spawn(|| {
+                let target = SpawnTarget {
+                    workdir: missing.clone(),
+                    account: None,
+                };
+                let ghost = Child::Helper {
+                    key: None,
+                    owner: Some("ghost"),
+                    neutral,
+                };
+                let _ = placed_tx.send(prepare_spawn(store, ghost, None, 0, target));
+            });
+            let placed = placed_rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("place_or deadlock: placing a missing folder waited on the store lock");
+            drop(held);
+            assert_eq!(placed.map(|target| target.workdir), Ok(missing.clone()));
+        });
     }
 }

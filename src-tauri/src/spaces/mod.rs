@@ -11,7 +11,7 @@ pub(crate) mod leases;
 pub(crate) mod membership;
 pub(crate) mod scope;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension, ToSql, Transaction, TransactionBehavior};
@@ -548,6 +548,64 @@ pub(crate) struct SpawnTarget {
     pub(crate) account: Option<HarnessAccount>,
 }
 
+/// What a harness child works for, as the window names it.
+pub(crate) enum Child<'a> {
+    /// A session's own child, `S` or its numbered child `S#n`.
+    Session(&'a str),
+    /// A text, catalog, skills or login child keyed `key`, or a one-shot
+    /// `harness_exec` (no key): the session the window says it works for.
+    /// Without a stored one it runs in `neutral`, a folder that is no project
+    /// checkout, unless [`KEEPS_CALLER_FOLDER`] names it.
+    Helper {
+        key: Option<&'a str>,
+        owner: Option<&'a str>,
+        neutral: &'a Path,
+    },
+}
+
+/// INTERIM (ADE-189 4/4): every helper that still keeps its caller's
+/// folder, in one place. Each ran in its caller's project folder before
+/// ADE-189, and its owner is not wired yet, so it keeps that folder whenever it
+/// has no Space, as a session's own child does, and keeps its project
+/// context. No Space 2 session exists until ADE-179, so none of them lets a
+/// Space into another's checkout today. Parts 3/4 and 4/4 shrink this, then
+/// delete it. Every other helper of no stored session runs in the neutral
+/// folder.
+///
+/// - [`KEEPS_CALLER_FOLDER`]: helpers matched by a prefix of their child key,
+///   including the Grok text cleanup exec (`grokText.ts`
+///   `deleteTextSession`, `sessions delete`). That exec passes
+///   `monocode-grok-text` as its key, so it runs where its text child ran: no
+///   one has shown that Grok finds a session by id alone.
+/// - Still spawned as `spawnChild` (a session's own child, which keeps its
+///   folder by ADE-173's rule) until part 3/4 covers them with tests: Devin
+///   text (`devinText.ts`, the caller's project folder), and the Devin, Codex
+///   and Hermes catalog probes (`devinCatalog.ts`, `codexCatalog.ts`,
+///   `hermesCatalog.ts`, the home dir).
+const KEEPS_CALLER_FOLDER: [&str; 9] = [
+    // Titles, commit, PR and branch text, /btw side questions, and the Grok
+    // text cleanup exec.
+    "monocode-claude-text",
+    "monocode-codex-text",
+    "monocode-text",
+    "monocode-grok-text",
+    "monocode-opencode-text",
+    "monocode-pi-text",
+    "monocode-omp-text",
+    // The `/` picker's skills of a tab not saved yet.
+    "monocode-pi-skills-",
+    "monocode-omp-skills-",
+];
+
+/// The `helper` field of `harness_spawn` and `harness_exec`: the child is a
+/// helper of `owner`. An exec also names `key`, the helper child it acts for;
+/// a spawn's key is its own id.
+#[derive(Deserialize)]
+pub struct Helper {
+    pub(crate) owner: Option<String>,
+    pub(crate) key: Option<String>,
+}
+
 #[cfg(test)]
 thread_local! {
     /// Spawns on this thread that passed through the hook, so a scenario can
@@ -555,18 +613,43 @@ thread_local! {
     pub(crate) static HOOKED_SPAWNS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-/// The one Spaces step on every harness spawn (`harness_spawn`): the Space's
-/// login, then any usage-limit grant on it, then the checkout lease.
+/// The one Spaces step on every harness child (`harness_spawn`,
+/// `harness_exec`): the Space's login, then any usage-limit grant on it, then
+/// the checkout lease. The owner a helper names is the window's word: only a
+/// stored session's Space counts, and the lease claim is the one place that
+/// checks it.
 pub(crate) fn prepare_spawn(
     store: &SessionStore,
-    session_id: &str,
+    child: Child<'_>,
     provider: Option<Provider>,
     now: i64,
     target: SpawnTarget,
 ) -> Result<SpawnTarget, String> {
     #[cfg(test)]
     HOOKED_SPAWNS.with(|spawns| spawns.set(spawns.get() + 1));
+    let (session_id, no_space) = match child {
+        Child::Session(key) => (key, None),
+        Child::Helper {
+            key,
+            owner,
+            neutral,
+        } => {
+            let keeps = key.is_some_and(|key| {
+                KEEPS_CALLER_FOLDER
+                    .iter()
+                    .any(|listed| key.starts_with(listed))
+            });
+            let no_space = (!keeps).then_some(neutral);
+            let Some(owner) = owner else {
+                return Ok(SpawnTarget {
+                    workdir: no_space.map_or(target.workdir, Path::to_path_buf),
+                    ..target
+                });
+            };
+            (owner, no_space)
+        }
+    };
     let target = account::resolve(store, session_id, provider, target)?;
     let target = grants::route(store, session_id, now, target)?;
-    leases::claim(store, session_id, target)
+    leases::claim(store, session_id, target, no_space)
 }

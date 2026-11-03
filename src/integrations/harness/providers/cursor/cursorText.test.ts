@@ -3,10 +3,13 @@ import type { HarnessEvent } from "../../core/types";
 
 const sent: string[] = [];
 let onLine: ((line: string) => void) | undefined;
+const spawnHelperChild = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined),
+);
 
 vi.mock("../../core/child", () => ({
   resolveCursorBinary: async () => ({ path: "/fake/cursor-agent" }),
-  spawnChild: async () => undefined,
+  spawnHelperChild,
   killChild: async () => undefined,
   unwatchChild: () => undefined,
   watchChild: (_id: string, line: (value: string) => void) => {
@@ -59,6 +62,16 @@ it("forwards Cursor text deltas without duplicating snapshots", async () => {
   });
 
   await waitFor(() => !!outbound("initialize"), "initialize");
+  // ADE-189: the text child is a helper of no session, so Rust places it.
+  expect(spawnHelperChild).toHaveBeenCalledWith(
+    undefined,
+    "monocode-text",
+    "/fake/cursor-agent",
+    ["acp"],
+    "/repo",
+    undefined,
+    "cursor",
+  );
   reply("initialize", {});
   await waitFor(() => !!outbound("authenticate"), "authenticate");
   reply("authenticate", {});

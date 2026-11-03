@@ -103,6 +103,7 @@ export async function discoverDevinModels(
   try {
     return await Promise.race([
       (async () => {
+        // INTERIM (ADE-189 4/4): not a helper yet (spaces/mod.rs).
         await startDevinAcp(probeId, cwd, rpc, { allowBrowser: false });
         const created = await rpc.request<unknown>(
           "session/new",

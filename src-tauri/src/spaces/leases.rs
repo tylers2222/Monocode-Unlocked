@@ -120,14 +120,16 @@ pub fn spaces_lease_release(
     release_lease(&store, &checkout_path, &space_id)
 }
 
-/// The folder a child starts in: see [`place`].
+/// The folder a child starts in: see [`place`]. A helper names `no_space`,
+/// its neutral folder, for an owner that is no stored session (ADE-189).
 pub(super) fn claim(
     store: &SessionStore,
     session_id: &str,
     target: SpawnTarget,
+    no_space: Option<&Path>,
 ) -> Result<SpawnTarget, String> {
     Ok(SpawnTarget {
-        workdir: place(store, session_id, &target.workdir, now_millis())?,
+        workdir: place_or(store, session_id, &target.workdir, now_millis(), no_space)?,
         ..target
     })
 }
@@ -141,13 +143,25 @@ pub(super) fn claim(
 /// no Space holds goes to the Space its session's project is assigned
 /// ([`super::project_space`]); a held lease never moves. Refused when another
 /// Space holds `workdir` and the session cannot get its own copy. A child of
-/// no stored session (a text or catalog helper, or a session not saved yet)
-/// has no Space: it takes no lease and stays.
+/// no stored session (a session not saved yet) has no Space: it takes no lease
+/// and stays; a helper's claim sends it to its neutral folder instead.
 pub(crate) fn place(
     store: &SessionStore,
     child: &str,
     workdir: &Path,
     now: i64,
+) -> Result<PathBuf, String> {
+    place_or(store, child, workdir, now, None)
+}
+
+/// [`place`], with the one check of whether `child` has a Space: a child of
+/// no stored session goes to `no_space` when it names one (ADE-189).
+fn place_or(
+    store: &SessionStore,
+    child: &str,
+    workdir: &Path,
+    now: i64,
+    no_space: Option<&Path>,
 ) -> Result<PathBuf, String> {
     let session_id = crate::harness::child_session(child);
     // A missing folder is the caller's to report.
@@ -155,7 +169,7 @@ pub(crate) fn place(
         return Ok(workdir.to_path_buf());
     };
     let Some((space, project)) = with_conn(store, |conn| session_of(conn, session_id))? else {
-        return Ok(workdir.to_path_buf());
+        return Ok(no_space.unwrap_or(workdir).to_path_buf());
     };
     // Only `project_key` fails here: a project part 4 cannot key has no assignment.
     let assigned =

@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   killChild: vi.fn(async () => undefined),
   resolveCursorBinary: vi.fn(async () => ({ path: "/fake/cursor-agent" })),
   setHarnessModels: vi.fn(),
-  spawnChild: vi.fn<(...args: unknown[]) => Promise<void>>(
+  spawnHelperChild: vi.fn<(...args: unknown[]) => Promise<void>>(
     async () => undefined,
   ),
   unwatchChild: vi.fn(),
@@ -81,7 +81,8 @@ describe("Cursor catalog discovery", () => {
       "cursor/list_available_models",
     ]);
     expect(mocks.execChild).not.toHaveBeenCalled();
-    expect(mocks.spawnChild).toHaveBeenCalledWith(
+    expect(mocks.spawnHelperChild).toHaveBeenCalledWith(
+      undefined,
       expect.any(String),
       "/fake/cursor-agent",
       ["acp"],
@@ -89,7 +90,7 @@ describe("Cursor catalog discovery", () => {
       undefined,
       "cursor",
     );
-    const probeId = mocks.spawnChild.mock.calls[0][0];
+    const probeId = mocks.spawnHelperChild.mock.calls[0][1];
     expect(mocks.unwatchChild).toHaveBeenCalledWith(probeId);
     expect(mocks.killChild).toHaveBeenCalledWith(probeId);
   });

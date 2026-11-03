@@ -3,7 +3,7 @@ import {
   execChild,
   killChild,
   resolveGrokBinary,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -195,7 +195,8 @@ async function startLive(
   );
 
   try {
-    await spawnChild(
+    await spawnHelperChild(
+      undefined,
       TEXT_CHILD_ID,
       path,
       grokTextSpawnArgs(),
@@ -296,6 +297,10 @@ async function deleteTextSession(session: LiveText): Promise<void> {
     ["--no-auto-update", "sessions", "delete", session.acpSessionId],
     session.cwd,
     "grok",
+    undefined,
+    undefined,
+    // INTERIM (ADE-189 4/4): runs where its text child ran (spaces/mod.rs).
+    TEXT_CHILD_ID,
   ).catch((error) =>
     console.debug("[monocode] Grok text session cleanup", error),
   );

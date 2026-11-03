@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const child = vi.hoisted(() => ({
   killChild: vi.fn(async () => undefined),
-  spawnChild: vi.fn(async () => undefined),
+  spawnHelperChild: vi.fn(async () => undefined),
   unwatchChild: vi.fn(),
   watchChild: vi.fn(),
   resolveClaudeBinary: vi.fn(async () => ({ path: "/bin/claude" })),
@@ -72,7 +72,8 @@ describe("harness login", () => {
   it("launches Claude's official login command and waits for success", async () => {
     const login = loginHarness("claude");
     await vi.waitFor(() => expect(child.watchChild).toHaveBeenCalledOnce());
-    expect(child.spawnChild).toHaveBeenCalledWith(
+    expect(child.spawnHelperChild).toHaveBeenCalledWith(
+      undefined,
       "monocode-provider-login-test-window-claude",
       "/bin/claude",
       ["auth", "login"],
@@ -90,7 +91,8 @@ describe("harness login", () => {
   it("isolates a named Codex account during sign-in", async () => {
     const login = loginHarness("codex", "account-work");
     await vi.waitFor(() => expect(child.watchChild).toHaveBeenCalledOnce());
-    expect(child.spawnChild).toHaveBeenCalledWith(
+    expect(child.spawnHelperChild).toHaveBeenCalledWith(
+      undefined,
       "monocode-provider-login-test-window-codex-account-work",
       "/bin/codex",
       ["login"],
@@ -116,13 +118,13 @@ describe("harness login", () => {
       ((code: number | null) => void) | undefined;
     onExit?.(0);
     await first;
-    expect(child.spawnChild).toHaveBeenCalledOnce();
+    expect(child.spawnHelperChild).toHaveBeenCalledOnce();
   });
 
   it("does not invent one login flow for multi-provider harnesses", async () => {
     await expect(loginHarness("opencode")).rejects.toThrow(
       "does not offer a single browser sign-in flow",
     );
-    expect(child.spawnChild).not.toHaveBeenCalled();
+    expect(child.spawnHelperChild).not.toHaveBeenCalled();
   });
 });

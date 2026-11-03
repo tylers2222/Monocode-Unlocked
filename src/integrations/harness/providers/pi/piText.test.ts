@@ -11,7 +11,7 @@ vi.mock("../../core/child", () => ({
   killChild: async () => undefined,
   resolveOmpBinary: async () => ({ path: "/fake/omp" }),
   resolvePiBinary: async () => ({ path: "/fake/pi" }),
-  spawnChild: async () => undefined,
+  spawnHelperChild: async () => undefined,
   unwatchChild: () => undefined,
   watchChild: () => undefined,
 }));

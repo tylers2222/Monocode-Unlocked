@@ -74,6 +74,7 @@ printf '%s\0' "$@" > argv.part && mv argv.part argv"#,
             None,
             None,
             mcp.map(String::from),
+            None,
         )
         .map(|_| workdir)
     };

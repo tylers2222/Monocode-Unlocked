@@ -1,7 +1,7 @@
 import {
   acquireHarnessBridge,
   killChild,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
   writeChild,
@@ -26,17 +26,22 @@ export type PiSkillCommand = {
   source: "pi";
 };
 
-export async function discoverPiSkills(cwd: string): Promise<PiSkillCommand[]> {
+/** `owner`: the session the picker is for; its Space picks the folder. */
+export async function discoverPiSkills(
+  cwd: string,
+  owner?: string,
+): Promise<PiSkillCommand[]> {
   return piSkillsFromRpcData(
-    await discoverCommands(PI_FLAVOR, cwd, "get_commands"),
+    await discoverCommands(PI_FLAVOR, cwd, "get_commands", owner),
   );
 }
 
 export async function discoverOmpCommands(
   cwd: string,
+  owner?: string,
 ): Promise<NativeCommand[]> {
   return ompCommandsFromRpcData(
-    await discoverCommands(OMP_FLAVOR, cwd, "get_available_commands"),
+    await discoverCommands(OMP_FLAVOR, cwd, "get_available_commands", owner),
   );
 }
 
@@ -44,6 +49,7 @@ async function discoverCommands(
   flavor: PiFlavor,
   cwd: string,
   command: string,
+  owner: string | undefined,
 ): Promise<unknown> {
   const { path } = await flavor.resolveBinary();
   const releaseBridge = await acquireHarnessBridge();
@@ -64,7 +70,8 @@ async function discoverCommands(
       (line) => rpc.pushLine(line),
       () => rpc.close(new Error(`${flavor.label} skill probe exited`)),
     );
-    await spawnChild(
+    await spawnHelperChild(
+      owner,
       childId,
       path,
       buildPiSpawnArgs(flavor, { noSession: true }),
