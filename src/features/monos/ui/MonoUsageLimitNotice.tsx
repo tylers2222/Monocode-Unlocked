@@ -1,16 +1,19 @@
 import {
+  useEffect,
   useId,
   useRef,
   useState,
   useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
 } from "react";
-import { ChevronDown } from "../../../shared/ui/icons";
+import { ChevronDown, Clock, Gauge } from "../../../shared/ui/icons";
 import { Popover } from "../../../shared/ui/Popover";
 import {
   HARNESS_TITLE,
   type HarnessId,
   type Session,
+  type UsageLimit,
 } from "../../sessions/model/session";
 import { UsageLimitNotice } from "../../sessions/ui/UsageLimitNotice";
 import { ModelPicker } from "../../sessions/ui/ModelPicker";
@@ -22,20 +25,45 @@ import {
   supportsProviderAccounts,
   type ProviderAccount,
 } from "../../providers/model/providerAccounts";
+import { useProviderAccountUsage } from "../../providers/model/accountUsage";
+import {
+  identityKey,
+  useProviderAccountIdentities,
+} from "../../providers/model/providerAccountIdentity";
+import { ProviderAccountSubtitle } from "../../providers/ui/ProviderAccountSubtitle";
+import {
+  meterWindows,
+  UsageMeter,
+} from "../../providers/ui/ProviderAccountUsage";
+import {
+  loadRouteGrantDefault,
+  ROUTE_GRANT_DURATIONS,
+  type RouteGrantDuration,
+} from "../../settings/model/settings";
+import { RouteGrantExpired } from "../../spaces/ui/RouteGrantExpired";
+import {
+  loadSpaceLogins,
+  routeGrantCard,
+  routeGrantExpiry,
+  routeGrantOutUntil,
+  routeGrantRequest,
+  routeGrantYes,
+  saveRouteGrant,
+  type RouteGrantCard,
+  type RouteGrantRequest,
+  type SpaceLogins,
+} from "../model/monoUsageLimit";
 
-export function MonoUsageLimitNotice({
-  session,
-  onModelChange,
-  onAccountChange,
-  onResume,
-  onResumeAtReset,
-}: {
+type Props = {
   session: Session;
   onModelChange: (harness: HarnessId, model: string) => void;
   onAccountChange?: (accountId: string) => void;
   onResume: () => void;
   onResumeAtReset: (enabled: boolean) => void;
-}) {
+};
+
+export function MonoUsageLimitNotice(props: Props) {
+  const { session, onAccountChange, onResume, onResumeAtReset } = props;
   const snapshot = useSyncExternalStore(
     subscribeProviderAccounts,
     () =>
@@ -44,10 +72,47 @@ export function MonoUsageLimitNotice({
         : "[]",
     () => "[]",
   );
+  const provider = supportsProviderAccounts(session.harness)
+    ? session.harness
+    : undefined;
+  const usage = useProviderAccountUsage(snapshot, {
+    provider,
+    enabled: provider != null,
+  });
+  const [spaces, setSpaces] = useState<SpaceLogins>();
+  useEffect(() => {
+    loadSpaceLogins().then(setSpaces, () => {});
+  }, [session.id]);
+  const [askAgain, setAskAgain] = useState(false);
+  if (!session.usageLimit) return null;
+  const expired = askAgain
+    ? undefined
+    : routeGrantExpiry(session, usage.usage, usage.now);
+  if (expired)
+    return (
+      <RouteGrantExpired
+        {...expired}
+        onGoBack={onResume}
+        onAskAgain={() => setAskAgain(true)}
+      />
+    );
+  const card =
+    spaces && routeGrantCard(session, spaces, usage.usage, usage.now);
+  if (card && onAccountChange)
+    return (
+      <RouteGrantPrompt
+        session={session}
+        limit={session.usageLimit}
+        card={card}
+        now={usage.now}
+        modelPicker={<ChooseModel {...props} />}
+        onAccountChange={onAccountChange}
+        onResumeAtReset={onResumeAtReset}
+      />
+    );
   const accounts = (JSON.parse(snapshot) as ProviderAccount[]).filter(
     (account) => !sameProviderAccountId(account.id, session.providerAccountId),
   );
-  if (!session.usageLimit) return null;
   return (
     <UsageLimitNotice
       variant="mono"
@@ -57,16 +122,7 @@ export function MonoUsageLimitNotice({
       onResumeAtReset={onResumeAtReset}
       modelPicker={
         <>
-          <ModelPicker
-            harness={session.harness}
-            model={session.model}
-            values={session.modelSettings}
-            project={session.cwd}
-            hideSettings
-            triggerLabel="Choose another model"
-            onChange={onModelChange}
-            onSettingsChange={() => {}}
-          />
+          <ChooseModel {...props} />
           {onAccountChange && accounts.length ? (
             <AccountPicker
               harness={session.harness}
@@ -77,6 +133,239 @@ export function MonoUsageLimitNotice({
         </>
       }
     />
+  );
+}
+
+function ChooseModel({ session, onModelChange }: Props) {
+  return (
+    <ModelPicker
+      harness={session.harness}
+      model={session.model}
+      values={session.modelSettings}
+      project={session.cwd}
+      hideSettings
+      triggerLabel="Choose another model"
+      onChange={onModelChange}
+      onSettingsChange={() => {}}
+    />
+  );
+}
+
+/**
+ * The usage-limit card with another Space's login to move to, and for how
+ * long (approved frame 4, ADE-170). Yes stores the grant first, then moves
+ * the session; a refused grant moves nothing and its reason replaces the hint.
+ */
+function RouteGrantPrompt({
+  session,
+  limit,
+  card,
+  now,
+  modelPicker,
+  onAccountChange,
+  onResumeAtReset,
+}: {
+  session: Session;
+  limit: UsageLimit;
+  card: RouteGrantCard;
+  now: number;
+  modelPicker: ReactNode;
+  onAccountChange: (accountId: string) => void;
+  onResumeAtReset: (enabled: boolean) => void;
+}) {
+  const [defaultDuration] = useState(loadRouteGrantDefault);
+  const [duration, setDuration] = useState(defaultDuration);
+  const [picked, setPicked] = useState<string>();
+  const to =
+    card.offers.find((offer) => offer.account.id === picked)?.account ??
+    card.offers[0].account;
+  const grant = useGrantSave(onAccountChange);
+  return (
+    <div
+      className="mx-1.5 mb-2 rounded-lg border border-amber-400/20 bg-amber-400/6 px-3 py-2.5 text-[12px] text-content/60"
+      data-usage-limit
+      role="status"
+    >
+      <div className="flex items-center gap-2">
+        <Gauge className="size-3.5 shrink-0 text-amber-400" />
+        <span className="text-content/85">
+          {card.fromLabel} is out until{" "}
+          {routeGrantOutUntil(card.resetsAt, now)}
+        </span>
+      </div>
+      <div className="pl-5.5">
+        <p className="mt-1 leading-relaxed">
+          Use another login for this session? Your conversation is saved and
+          moves with it.
+        </p>
+        <LoginChoices card={card} to={to} now={now} onPick={setPicked} />
+        <DurationPicker
+          fromLabel={card.fromLabel}
+          duration={duration}
+          defaultDuration={defaultDuration}
+          onPick={setDuration}
+        />
+        <p className="mt-1 text-[11px] text-content/45">
+          {grant.error ??
+            "Only logins that still have usage are listed. Default from Settings › Spaces."}
+        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <button
+            type="button"
+            disabled={grant.saving}
+            onClick={() =>
+              grant.save(
+                routeGrantRequest(session, to.id, duration, card.resetsAt)!,
+              )
+            }
+            className="flex h-6.5 shrink-0 items-center rounded-md bg-white px-2.5 text-[12px] font-medium text-black hover:bg-white/90 disabled:opacity-50"
+          >
+            {routeGrantYes(to.label, card.fromLabel, duration)}
+          </button>
+          <WaitForReset limit={limit} onResumeAtReset={onResumeAtReset} />
+          {modelPicker}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Stores the grant, then moves the session to its login; a refusal stays. */
+function useGrantSave(onAccountChange: (accountId: string) => void) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>();
+  const save = (request: RouteGrantRequest) => {
+    setSaving(true);
+    setError(undefined);
+    saveRouteGrant(request).then(
+      () => onAccountChange(request.toAccountId),
+      (reason: unknown) => {
+        setSaving(false);
+        setError(String(reason));
+      },
+    );
+  };
+  return { saving, error, save };
+}
+
+function LoginChoices({
+  card,
+  to,
+  now,
+  onPick,
+}: {
+  card: RouteGrantCard;
+  to: ProviderAccount;
+  now: number;
+  onPick: (accountId: string) => void;
+}) {
+  const identities = useProviderAccountIdentities(
+    card.offers.map((offer) => offer.account),
+  );
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Use another login"
+      className="mt-2 flex max-w-[520px] flex-col gap-0.5"
+    >
+      {card.offers.map(({ account, limits }) => (
+        <button
+          key={account.id}
+          type="button"
+          role="radio"
+          aria-checked={account.id === to.id}
+          aria-label={account.label}
+          onClick={() => onPick(account.id)}
+          className="group flex h-10 items-center gap-2.5 rounded-lg border border-transparent px-2 text-left hover:bg-content/5 aria-checked:border-content/10 aria-checked:bg-content/5"
+        >
+          <span
+            aria-hidden
+            className="size-3.5 shrink-0 rounded-full border-[1.5px] border-content/30 group-aria-checked:border-4 group-aria-checked:border-accent"
+          />
+          <HarnessIcon harness={card.provider} className="size-3.5 shrink-0" />
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="truncate text-content/90">{account.label}</span>
+            <ProviderAccountSubtitle
+              identity={identities[identityKey(account)]}
+              className="truncate text-[10.5px] text-content/40"
+            />
+          </span>
+          <span className="flex shrink-0 gap-3">
+            {meterWindows(limits).map((entry) => (
+              <UsageMeter
+                key={entry.title}
+                title={entry.title}
+                window={entry.window}
+                now={now}
+                className="w-28"
+              />
+            ))}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function DurationPicker({
+  fromLabel,
+  duration,
+  defaultDuration,
+  onPick,
+}: {
+  fromLabel: string;
+  duration: RouteGrantDuration;
+  defaultDuration: RouteGrantDuration;
+  onPick: (duration: RouteGrantDuration) => void;
+}) {
+  return (
+    <div className="mt-2 flex items-center gap-2.5">
+      <span>For</span>
+      <span
+        role="radiogroup"
+        aria-label="For"
+        className="inline-flex gap-0.5 rounded-md border border-content/10 p-0.5"
+      >
+        {ROUTE_GRANT_DURATIONS.map((option) => (
+          <button
+            key={option}
+            type="button"
+            role="radio"
+            aria-checked={option === duration}
+            onClick={() => onPick(option)}
+            className="whitespace-nowrap rounded-[5px] px-2.5 py-1 text-content/50 hover:text-content aria-checked:bg-selection aria-checked:text-content"
+          >
+            {option === "reset" ? `Until ${fromLabel} resets` : `${option} h`}
+            {option === defaultDuration ? (
+              <span className="ml-1 text-[10px] text-content/35">default</span>
+            ) : null}
+          </button>
+        ))}
+      </span>
+    </div>
+  );
+}
+
+/** "Wait for the reset" arms the resume the stop's own reset time drives. */
+function WaitForReset({
+  limit,
+  onResumeAtReset,
+}: {
+  limit: UsageLimit;
+  onResumeAtReset: (enabled: boolean) => void;
+}) {
+  if (limit.resetsAt == null) return null;
+  const armed = limit.resumeAtReset === true;
+  return (
+    <button
+      type="button"
+      aria-pressed={armed}
+      onClick={() => onResumeAtReset(!armed)}
+      className="flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 hover:bg-content/10 hover:text-content aria-pressed:text-amber-400"
+    >
+      <Clock className="size-3.5" />
+      {armed ? "Resuming at reset" : "Wait for the reset"}
+    </button>
   );
 }
 
