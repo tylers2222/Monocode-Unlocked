@@ -153,6 +153,11 @@ export type RouteGrantCard = {
   fromLabel: string;
   resetsAt: number;
   offers: { account: ProviderAccount; limits: ProviderRateLimits }[];
+  /**
+   * Ask again after a grant ended (frame 15): what ended and the question,
+   * in place of frame 4's header and line; it offers no "until reset".
+   */
+  ended?: { title: string; line: string };
 };
 
 /**
@@ -194,7 +199,27 @@ function cardFor(
     session.usageLimit?.resetsAt ??
     (fromUsage && exhaustedWindowResetAt(fromUsage)) ??
     0;
-  const offers = providerAccounts(provider).flatMap((account) => {
+  const offers = offersFor(provider, logins, activeSpaceId, fromAccountId, usage, now);
+  if (resetsAt <= now || offers.length === 0) return undefined;
+  return {
+    provider,
+    fromAccountId,
+    fromLabel: providerAccountLabel(provider, fromAccountId),
+    resetsAt,
+    offers,
+  };
+}
+
+/** The other Spaces' logins with usage left, never the one the session leaves. */
+function offersFor(
+  provider: ProviderAccountProvider,
+  logins: SpaceLogin[],
+  activeSpaceId: string,
+  fromAccountId: string,
+  usage: Record<string, ProviderRateLimits>,
+  now: number,
+): RouteGrantCard["offers"] {
+  return providerAccounts(provider).flatMap((account) => {
     const limits = usage[accountUsageKey(account)];
     return account.id !== fromAccountId &&
       logins.some(
@@ -205,13 +230,49 @@ function cardFor(
       ? [{ account, limits }]
       : [];
   });
-  if (resetsAt <= now || offers.length === 0) return undefined;
+}
+
+/**
+ * Ask again after `route_grant_expired` (frame 15, Tyler card #47 B): once
+ * the first login has room again, the card offers the login the grant ended
+ * on, for a new length, or one click back. While the first login is still
+ * out, frame 4's card says so instead.
+ */
+export function routeGrantAgainCard(
+  session: Session,
+  spaces: SpaceLogins,
+  usage: Record<string, ProviderRateLimits>,
+  now: number,
+): RouteGrantCard | undefined {
+  const grant = lastExpiredRouteGrant(session);
+  const logins = spaces.logins.filter(
+    (login) => login.provider === session.harness,
+  );
+  if (!grant || !logins[0]) return undefined;
+  const provider = logins[0].provider;
+  const fromAccountId = grant.fromAccountId;
+  const offers = offersFor(
+    provider,
+    logins,
+    spaces.activeSpaceId,
+    fromAccountId,
+    usage,
+    now,
+  ).filter((offer) => offer.account.id === grant.toAccountId);
+  const fromUsage = usage[accountUsageKey({ provider, id: fromAccountId })];
+  if (!offers[0] || !hasRoom(fromUsage, now)) return undefined;
+  const fromLabel = providerAccountLabel(provider, fromAccountId);
+  const toLabel = offers[0].account.label;
   return {
     provider,
     fromAccountId,
-    fromLabel: providerAccountLabel(provider, fromAccountId),
-    resetsAt,
+    fromLabel,
+    resetsAt: grant.expiresAt,
     offers,
+    ended: {
+      title: `Your ${grantSpan(grant)} on ${toLabel} ended at ${clockAt(grant.expiresAt)}`,
+      line: `${fromLabel} has reset. Use ${toLabel} again, or go back? Your conversation is saved.`,
+    },
   };
 }
 
@@ -286,16 +347,22 @@ function routeGrantEndedTitle(
   grant: { grantedAt: number; expiresAt: number },
   toLabel: string,
 ): string {
+  return `The ${grantSpan(grant)} on ${toLabel} ended at ${clockAt(grant.expiresAt)}`;
+}
+
+/** "3 hours", or the exact length of a grant written by hand ("1m"). */
+function grantSpan(grant: { grantedAt: number; expiresAt: number }): string {
   const length = grant.expiresAt - grant.grantedAt;
-  const span =
-    length % HOUR_MS === 0
-      ? hours(length / HOUR_MS)
-      : formatResetDuration(length);
-  const at = new Date(grant.expiresAt).toLocaleTimeString(undefined, {
+  return length % HOUR_MS === 0
+    ? hours(length / HOUR_MS)
+    : formatResetDuration(length);
+}
+
+function clockAt(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, {
     hour: "numeric",
     minute: "2-digit",
   });
-  return `The ${span} on ${toLabel} ended at ${at}`;
 }
 
 /**

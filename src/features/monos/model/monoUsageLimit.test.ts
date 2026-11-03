@@ -16,6 +16,7 @@ import { newSession, type Session } from "../../sessions/model/session";
 import {
   loadSpaceLogins,
   resumeMonoUsageLimit,
+  routeGrantAgainCard,
   routeGrantCard,
   routeGrantEnded,
   routeGrantExpiry,
@@ -476,6 +477,74 @@ describe("usage-limit card (ADE-181)", () => {
     expect(routeGrantExpiry(out(), {}, NOON)).toBeUndefined();
     expect(
       routeGrantExpiry({ ...ended(0, NOON), harness: "cursor" }, {}, NOON),
+    ).toBeUndefined();
+  });
+
+  it("asks again with the login the grant ended on, once the first login has room (frame 15)", () => {
+    claudeLogins();
+    const ended = (grantedAt: number) =>
+      out({
+        providerAccountId: "account-1",
+        blocks: [
+          {
+            id: "stop",
+            role: "system",
+            notice: "error",
+            text: `route_grant_expired: the grant from account-1 to account-2 granted at ${grantedAt} ended at ${NOON}`,
+          },
+        ],
+      });
+    const at = new Date(NOON).toLocaleTimeString(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    // Account 1 has room again; account 3 has room too, but the grant ended
+    // on account 2, so only it is offered.
+    const back = {
+      ...usage,
+      "claude:account-1": limits(windowOf(41, NOON + HOUR)),
+      "claude:account-3": limits(windowOf(10, null)),
+    };
+    expect(routeGrantAgainCard(ended(NOON - 3 * HOUR), spaces, back, NOON)).toEqual({
+      provider: "claude",
+      fromAccountId: "account-1",
+      fromLabel: "Claude account 1",
+      resetsAt: NOON,
+      offers: [
+        {
+          account: {
+            id: "account-2",
+            provider: "claude",
+            label: "Claude account 2",
+          },
+          limits: two,
+        },
+      ],
+      ended: {
+        title: `Your 3 hours on Claude account 2 ended at ${at}`,
+        line: "Claude account 1 has reset. Use Claude account 2 again, or go back? Your conversation is saved.",
+      },
+    });
+    expect(
+      routeGrantAgainCard(ended(NOON - 60_000), spaces, back, NOON)?.ended?.title,
+    ).toBe(`Your 1m on Claude account 2 ended at ${at}`);
+    // Account 1 still out: frame 4's card says so instead.
+    expect(
+      routeGrantAgainCard(ended(NOON - 3 * HOUR), spaces, usage, NOON),
+    ).toBeUndefined();
+    // Account 2 has no room left: nothing to ask for.
+    const twoFull = { ...back, "claude:account-2": limits(windowOf(100, null)) };
+    expect(
+      routeGrantAgainCard(ended(NOON - 3 * HOUR), spaces, twoFull, NOON),
+    ).toBeUndefined();
+    expect(routeGrantAgainCard(out(), spaces, back, NOON)).toBeUndefined();
+    expect(
+      routeGrantAgainCard(
+        { ...ended(NOON - 3 * HOUR), harness: "cursor" },
+        spaces,
+        back,
+        NOON,
+      ),
     ).toBeUndefined();
   });
 
