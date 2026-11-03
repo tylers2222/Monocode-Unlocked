@@ -264,7 +264,8 @@ fn xdg_config() -> PathBuf {
         .map_or_else(|| home.join(".config"), PathBuf::from)
 }
 
-/// The fixed defaults, the temp dir, then OpenCode's and Devin's config folders.
+/// The fixed defaults, the temp dir, then the OpenCode, Devin, gh and doctl
+/// config folders.
 fn default_allow_write() -> Vec<String> {
     let fixed = [
         ".",
@@ -276,9 +277,11 @@ fn default_allow_write() -> Vec<String> {
         "~/.cache",
         "~/.npm",
         "~/Library/Caches",
+        "~/MonoCode",
+        "~/Library/Application Support/doctl",
     ];
     let temp = std::env::temp_dir().components().collect::<PathBuf>();
-    let tools = ["opencode", "devin"].map(|tool| xdg_config().join(tool));
+    let tools = ["opencode", "devin", "gh", "doctl"].map(|tool| xdg_config().join(tool));
     let dirs = std::iter::once(temp).chain(tools).map(|dir| path(&dir));
     let mut list: Vec<String> = fixed.map(String::from).into_iter().chain(dirs).collect();
     // On Linux the temp dir is `/tmp`, which the app lists once.
@@ -847,7 +850,11 @@ esac"#,
         let fence = space_fence(&rig.store(), "two", &rig.copy)
             .unwrap()
             .unwrap();
-        assert_eq!(fence.others, [rig.project.clone()], "Space 2's fence");
+        assert_eq!(
+            fence.others,
+            std::slice::from_ref(&rig.project),
+            "Space 2's fence"
+        );
         let claude = script(
             &rig.data.with_file_name("tools").join("claude"),
             r#"[ "$1" = --version ] && { echo "2.1.309 (Claude Code)"; exit 0; }
@@ -888,8 +895,7 @@ printf '%s\0' "$@" > argv.part && mv argv.part argv"#,
         std::fs::remove_file(rig.copy.join("ran")).unwrap();
         let error = rig
             .spawn("two")
-            .err()
-            .expect("Space 2 started unfenced without srt");
+            .expect_err("Space 2 started unfenced without srt");
         assert!(
             error.contains("srt is not installed") && error.contains("fence each Space's writes"),
             "the refusal: {error}"
