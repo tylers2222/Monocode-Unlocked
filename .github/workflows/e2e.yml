@@ -198,11 +198,6 @@ jobs:
       - name: Install Claude Code 2.1.310
         run: npm install --global --no-audit --no-fund @anthropic-ai/claude-code@2.1.310
 
-      # With two Spaces the app runs every agent under srt and refuses a spawn
-      # when srt is missing (agent_sandbox.rs SRT_VERSION), so install that pin.
-      - name: Install srt 0.0.81
-        run: npm install --global --no-audit --no-fund @anthropic-ai/sandbox-runtime@0.0.81 && srt --version
-
       # Builds the instance each scenario needs, then runs it on the runner's screen:
       # the scenarios of $E2E_MACOS_SHARD, or all of them when it is unset.
       - name: Run the scenarios
