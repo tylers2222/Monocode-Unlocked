@@ -84,10 +84,12 @@ export async function generateCursorPrContent(
 export async function generateCursorBranchName(
   cwd: string,
   message: string,
+  owner?: string,
 ): Promise<string | null> {
   try {
     const output = await runCursorTextPrompt({
       cwd,
+      owner,
       prompt: buildBranchNamePrompt(message),
       timeoutMs: GIT_TIMEOUT_MS,
     });

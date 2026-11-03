@@ -80,10 +80,12 @@ export async function generateClaudePrContent(
 export async function generateClaudeBranchName(
   cwd: string,
   message: string,
+  owner?: string,
 ): Promise<string | null> {
   try {
     const output = await runClaudeTextPrompt({
       cwd,
+      owner,
       prompt: buildBranchNamePrompt(message),
       timeoutMs: GIT_TIMEOUT_MS,
     });

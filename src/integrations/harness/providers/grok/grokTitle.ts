@@ -15,6 +15,7 @@ export async function generateGrokSessionTitle(input: {
   try {
     const output = await runGrokTextPrompt({
       cwd: input.cwd,
+      owner: input.sessionId,
       prompt: buildThreadTitlePrompt(input.message),
       timeoutMs: TITLE_TIMEOUT_MS,
     });

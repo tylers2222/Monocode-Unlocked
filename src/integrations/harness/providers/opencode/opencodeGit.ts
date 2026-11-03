@@ -80,10 +80,12 @@ export async function generateOpenCodePrContent(
 export async function generateOpenCodeBranchName(
   cwd: string,
   message: string,
+  owner?: string,
 ): Promise<string | null> {
   try {
     const output = await runOpenCodeTextPrompt({
       cwd,
+      owner,
       prompt: buildBranchNamePrompt(message),
       timeoutMs: GIT_TIMEOUT_MS,
     });

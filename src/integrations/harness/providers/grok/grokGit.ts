@@ -80,10 +80,12 @@ export async function generateGrokPrContent(
 export async function generateGrokBranchName(
   cwd: string,
   message: string,
+  owner?: string,
 ): Promise<string | null> {
   try {
     const output = await runGrokTextPrompt({
       cwd,
+      owner,
       prompt: buildBranchNamePrompt(message),
       timeoutMs: GIT_TIMEOUT_MS,
     });

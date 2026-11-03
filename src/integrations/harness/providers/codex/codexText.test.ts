@@ -125,6 +125,8 @@ afterEach(async () => {
 it.each([
   {
     name: "session titles",
+    // ADE-189 4/4: a title and a branch name are placed for their session.
+    owner: "session",
     response: { title: "Keep Helper History Clean", workItem: null },
     run: () =>
       generateCodexSessionTitle({
@@ -136,18 +138,22 @@ it.each([
   },
   {
     name: "commit messages",
+    owner: undefined,
     response: { subject: "Keep helper history clean", body: "" },
     run: () => generateCodexCommitMessage("/repo"),
     expected: "Keep helper history clean",
   },
   {
     name: "branch names",
+    owner: "session",
     response: { branch: "keep-helper-history-clean" },
-    run: () => generateCodexBranchName("/repo", "Keep helper history clean"),
+    run: () =>
+      generateCodexBranchName("/repo", "Keep helper history clean", "session"),
     expected: "keep-helper-history-clean",
   },
   {
     name: "PR content",
+    owner: undefined,
     response: {
       title: "Keep helper history clean",
       body: "## Summary\n- Use unsaved threads",
@@ -162,9 +168,10 @@ it.each([
   },
 ])(
   "generates $name without saving a Codex conversation",
-  async ({ response, run, expected }) => {
+  async ({ owner, response, run, expected }) => {
     output = JSON.stringify(response);
     await expect(run()).resolves.toEqual(expected);
+    expect(spawnHelperChild.mock.calls[0]?.[0]).toBe(owner);
     expect(threadStarts()).toHaveLength(1);
     expect(threadStarts()[0].params).toMatchObject({
       ephemeral: true,

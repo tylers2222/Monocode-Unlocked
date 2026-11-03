@@ -120,6 +120,27 @@ pub fn spaces_lease_release(
     release_lease(&store, &checkout_path, &space_id)
 }
 
+/// The ownerless-helper rule's guard (ADE-189): a helper call that names no
+/// owner and keeps its caller's folder is Space 1's, the only Space a window
+/// has until windows carry a Space (ADE-179). So it is refused in a checkout
+/// another Space holds, before anything is spawned there. It takes no lease.
+pub(super) fn keep_ownerless(store: &SessionStore, workdir: &Path) -> Result<(), String> {
+    // A missing folder is the caller's to report.
+    let Some(real) = resolve(workdir) else {
+        return Ok(());
+    };
+    let top = crate::worktrees::checkout_spot(&real).and_then(|spot| resolve(&spot.top));
+    let leases = with_conn(store, read_leases)?;
+    match lease_on(&leases, &key(&real), top.as_deref().map(key).as_deref()) {
+        Some(lease) if lease.space_id != super::FIRST_SPACE => Err(format!(
+            "{} is in {}'s checkout: a call of no session runs only outside another Space's checkout",
+            real.display(),
+            lease.space_id
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// The folder a child starts in: see [`place`]. A helper names `no_space`,
 /// its neutral folder, for an owner that is no stored session (ADE-189).
 pub(super) fn claim(

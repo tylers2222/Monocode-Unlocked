@@ -7989,6 +7989,7 @@ function Workspace({
             pickTextHarness(current.harness),
             workCwd,
             branchMessage,
+            sessionId,
           )
             .then(async (fragment) => {
               const branch = fragment ? namedWorktreeBranch(fragment) : null;
@@ -10017,6 +10018,7 @@ function Workspace({
       void runHarnessTextPrompt({
         harness,
         cwd,
+        owner: input.source.id,
         providerAccountId: input.source.providerAccountId,
         model: model || undefined,
         modelSettings: input.thread.modelSettings ?? input.source.modelSettings,

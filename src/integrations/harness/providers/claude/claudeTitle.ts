@@ -16,6 +16,7 @@ export async function generateClaudeSessionTitle(input: {
   try {
     const output = await runClaudeTextPrompt({
       cwd: input.cwd,
+      owner: input.sessionId,
       providerAccountId: input.providerAccountId,
       prompt: buildThreadTitlePrompt(input.message),
       timeoutMs: TITLE_TIMEOUT_MS,
