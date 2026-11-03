@@ -90,7 +90,9 @@ test("Settings > Spaces lists both logins per Space and sets the card's default 
 
   // Frame 5: the same Select as the rest of Settings, open, 6 hours default.
   await duration(page).click();
-  const listbox = page.getByRole("listbox", { name: "Use the other login for" });
+  const listbox = page.getByRole("listbox", {
+    name: "Use the other login for",
+  });
   await expect(listbox.getByRole("option")).toHaveText([
     "1 hour",
     "3 hours",

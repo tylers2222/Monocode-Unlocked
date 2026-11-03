@@ -319,6 +319,7 @@ import {
   subscribeMonos,
   updateMono,
   type Mono,
+  type MonoState,
 } from "../../monos/model/mono";
 import { resetMonoDefaults } from "../../monos/model/monoFiles";
 import { ConfirmReset } from "../../monos/ui/ConfirmReset";
@@ -459,7 +460,13 @@ type Props = {
   onOpenWhatsNew: (version: string) => void;
   collapsedProjectRailMode?: CollapsedProjectRailMode;
   onCollapsedProjectRailModeChange?: (mode: CollapsedProjectRailMode) => void;
+  /** What each Mono is doing, by Mono id, for the Spaces page's badges. */
+  monoStates?: ReadonlyMap<string, MonoState>;
+  /** Unseen replies by Mono id, for the Spaces page's badges. */
+  monoUnseenCounts?: ReadonlyMap<string, number>;
 };
+
+const NO_MONO_STATES: ReadonlyMap<string, MonoState> = new Map();
 
 export function SettingsView({
   section,
@@ -484,6 +491,8 @@ export function SettingsView({
   onOpenWhatsNew,
   collapsedProjectRailMode,
   onCollapsedProjectRailModeChange,
+  monoStates = NO_MONO_STATES,
+  monoUnseenCounts,
 }: Props) {
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const [revealed, setRevealed] = useState<string | null>(anchor);
@@ -601,7 +610,12 @@ export function SettingsView({
               ) : null}
               {section === "chat" ? <ChatPage /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}
-              {section === "spaces" ? <SpacesPage /> : null}
+              {section === "spaces" ? (
+                <SpacesPage
+                  monoStates={monoStates}
+                  monoUnseenCounts={monoUnseenCounts}
+                />
+              ) : null}
               {section === "monos" ? <MonosPage /> : null}
               {section === "mcp" ? (
                 <McpSettings cwd={cwd} recents={recents} />
@@ -990,7 +1004,13 @@ const ROUTE_GRANT_DURATION_LABEL: Record<RouteGrantDuration, string> = {
   reset: "Until the limit resets",
 };
 
-function SpacesPage() {
+function SpacesPage({
+  monoStates,
+  monoUnseenCounts,
+}: {
+  monoStates: ReadonlyMap<string, MonoState>;
+  monoUnseenCounts?: ReadonlyMap<string, number>;
+}) {
   const [routeGrantDefault, setRouteGrantDefault] = useState(
     loadRouteGrantDefault,
   );
@@ -1011,7 +1031,7 @@ function SpacesPage() {
         description="Each Space has its own logins, Gigas, Monos, projects and sessions. Every Space keeps running while you look at another one."
         action={<NewSpaceButton />}
       >
-        <SpacesList />
+        <SpacesList states={monoStates} unseenCounts={monoUnseenCounts} />
       </Group>
       <Group title="When a login runs out">
         <Row

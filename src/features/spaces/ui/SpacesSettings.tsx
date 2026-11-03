@@ -1,49 +1,22 @@
-import { useEffect, useState } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { Layers, Pencil, Plus, Trash2 } from "../../../shared/ui/icons";
+import { countBadge } from "../../../shared/lib/numbers";
 import {
-  getSpaceSettings,
-  listSpaceLogins,
-  listSpaces,
-  SPACE_LOGIN_PROVIDERS,
-  type Space,
-  type SpaceLogin,
-} from "../model/spaces";
-// PLACEHOLDER (lead, 2026-11-03): ADE-179 owns the one both-logins line; its
-// path and props replace this import when it lands.
+  listMonos,
+  monosSnapshot,
+  subscribeMonos,
+  type MonoState,
+} from "../../monos/model/mono";
+import {
+  spaceActivity,
+  spacesView,
+  subscribeSpaces,
+} from "../model/activeSpace";
+import type { Space, SpaceLogin } from "../model/spaces";
 import { SpaceLogins } from "./SpaceLogins";
 
 // New Space, rename and remove are drawn on frame 3 but what they open is not
 // (frames 11-14 pending), so the buttons do nothing yet.
-
-type SpaceLoginProvider = (typeof SPACE_LOGIN_PROVIDERS)[number];
-
-type SpaceRow = {
-  space: Space;
-  /** The Space this window shows. */
-  current: boolean;
-  /** Login id per provider; null when the Space has none. */
-  logins: Record<SpaceLoginProvider, string | null>;
-};
-
-/** One row per Space, in the order Rust lists them. */
-export function spaceRows(
-  spaces: Space[],
-  logins: SpaceLogin[],
-  activeSpaceId: string,
-): SpaceRow[] {
-  const loginOf = (spaceId: string, provider: SpaceLoginProvider) =>
-    logins.find(
-      (login) => login.spaceId === spaceId && login.provider === provider,
-    )?.accountId ?? null;
-  return spaces.map((space) => ({
-    space,
-    current: space.id === activeSpaceId,
-    logins: {
-      claude: loginOf(space.id, "claude"),
-      codex: loginOf(space.id, "codex"),
-    },
-  }));
-}
 
 /** The "New Space" button beside the Spaces group title. */
 export function NewSpaceButton() {
@@ -59,23 +32,48 @@ export function NewSpaceButton() {
 }
 
 /** One row per Space with its Claude and Codex login. */
-export function SpacesList() {
-  const [rows, setRows] = useState<SpaceRow[] | null>(null);
-
-  useEffect(() => {
-    Promise.all([listSpaces(), listSpaceLogins(), getSpaceSettings()])
-      .then(([spaces, logins, settings]) =>
-        setRows(spaceRows(spaces, logins, settings.activeSpaceId)),
-      )
-      // No frame draws a failed load; the card stays empty.
-      .catch((error: unknown) => console.warn("Could not load Spaces", error));
-  }, []);
-
-  return rows?.map((row) => <SpaceListRow key={row.space.id} row={row} />);
+export function SpacesList({
+  states,
+  unseenCounts,
+}: {
+  /** What each Mono is doing, by Mono id, in every Space. */
+  states: ReadonlyMap<string, MonoState>;
+  /** Unseen replies by Mono id, in every Space. */
+  unseenCounts?: ReadonlyMap<string, number>;
+}) {
+  const view = useSyncExternalStore(subscribeSpaces, spacesView);
+  const roster = useSyncExternalStore(subscribeMonos, monosSnapshot);
+  const activity = useMemo(
+    () => spaceActivity(listMonos(), states, unseenCounts),
+    // The roster is read through its snapshot.
+    [roster, states, unseenCounts],
+  );
+  return view.spaces.map((space) => {
+    const current = space.id === view.activeSpaceId;
+    return (
+      <SpaceListRow
+        key={space.id}
+        space={space}
+        current={current}
+        logins={view.logins}
+        // Like the switcher, only another Space's replies are news.
+        unread={current ? 0 : (activity.get(space.id)?.unread ?? 0)}
+      />
+    );
+  });
 }
 
-function SpaceListRow({ row }: { row: SpaceRow }) {
-  const { space } = row;
+function SpaceListRow({
+  space,
+  current,
+  logins,
+  unread,
+}: {
+  space: Space;
+  current: boolean;
+  logins: readonly SpaceLogin[];
+  unread: number;
+}) {
   return (
     <div
       data-space-id={space.id}
@@ -87,13 +85,23 @@ function SpaceListRow({ row }: { row: SpaceRow }) {
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1.5 text-[13px] font-medium text-content">
           <span className="truncate">{space.name}</span>
-          {row.current ? (
+          {current ? (
             <span className="shrink-0 rounded bg-accent/15 px-1.5 text-[10px] font-medium leading-4 text-accent">
               This window
             </span>
           ) : null}
+          {unread ? (
+            <span
+              data-space-unread={unread}
+              className="grid h-4 min-w-4 shrink-0 place-items-center rounded-full bg-accent px-1 text-[10px] font-medium tabular-nums leading-none text-white"
+            >
+              {countBadge(unread)}
+            </span>
+          ) : null}
         </div>
-        <SpaceLogins logins={row.logins} className="mt-0.5" />
+        <div className="mt-[3px] flex min-w-0 gap-4">
+          <SpaceLogins spaceId={space.id} logins={logins} withPlan />
+        </div>
       </div>
       <div className="flex shrink-0 items-center gap-1">
         <button
@@ -104,7 +112,7 @@ function SpaceListRow({ row }: { row: SpaceRow }) {
         >
           <Pencil className="size-3.5" strokeWidth={1.75} />
         </button>
-        {row.current ? null : (
+        {current ? null : (
           <button
             type="button"
             aria-label={`Remove ${space.name}`}
