@@ -167,7 +167,8 @@ fn a_snapshot_write_replaces_a_planted_link() {
 }
 
 /// Defect: a copy with no closed agents leaves a folder planted at the
-/// snapshot as if it were removed, or makes the snapshot folder.
+/// snapshot as if it were removed, makes the snapshot folder, or fails when
+/// that folder is there with no snapshot (a copy and restore before it).
 #[test]
 fn a_copy_without_agents_removes_only_a_snapshot_file() {
     let scratch = Scratch::new();
@@ -176,6 +177,8 @@ fn a_copy_without_agents_removes_only_a_snapshot_file() {
         !scratch.home.join(".monocode-agent-state").exists(),
         "a copy with no closed agents made their folder"
     );
+    std::fs::create_dir_all(scratch.home.join(".monocode-agent-state")).unwrap();
+    scratch.copy().unwrap();
     std::fs::create_dir_all(scratch.home.join(SNAPSHOT)).unwrap();
     let error = scratch.copy().expect_err("a folder at the snapshot");
     assert!(error.contains(SNAPSHOT), "{error}");
