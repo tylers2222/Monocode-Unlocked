@@ -7,7 +7,7 @@ import { AcpClient } from "../../core/acp";
 import {
   killChild,
   resolveHermesBinary,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -64,8 +64,8 @@ export async function discoverHermesModels(
   );
 
   try {
-    // INTERIM (ADE-189 4/4): not a helper yet (spaces/mod.rs).
-    await spawnChild(probeId, path, ["acp"], cwd, undefined, "hermes");
+    // A helper of no session: its model list is the user's (ADE-191).
+    const placed = await spawnHelperChild(undefined, probeId, path, ["acp"], cwd, undefined, "hermes");
     return await withTimeout(
       DISCOVERY_TIMEOUT_MS,
       async () => {
@@ -83,7 +83,7 @@ export async function discoverHermesModels(
         );
         const created = await acp.request<unknown>(
           "session/new",
-          { cwd, mcpServers: [] },
+          { cwd: placed, mcpServers: [] },
           REQUEST_TIMEOUT_MS,
         );
         return modelsFromHermesSession(created);

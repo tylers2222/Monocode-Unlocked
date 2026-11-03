@@ -1505,11 +1505,6 @@ mod helpers {
         )
     }
 
-    /// Starts `key` as a session's own child, as `spawnChild` does.
-    fn session_child(rig: &Rig, key: &str, workdir: &Path) {
-        spawn(rig, key, workdir, None);
-    }
-
     fn spawn(rig: &Rig, key: &str, workdir: &Path, helper: Option<Helper>) -> String {
         crate::harness::harness_spawn(
             rig.app.handle().clone(),
@@ -1676,9 +1671,8 @@ mod helpers {
     }
 
     /// INTERIM (ADE-189 4/4): the Grok cleanup exec runs where its text child
-    /// ran, and an exec naming no listed key goes neutral; the children still
-    /// spawned as a session's own (the Devin, Codex and Hermes probes) keep
-    /// their caller's folder. Then a placement of a helper of no
+    /// ran, and an exec naming no listed key goes neutral; the model-catalog
+    /// probes run in the neutral folder (ADE-191). Then a placement of a helper of no
     /// Space in a missing folder, while the store is locked, must return
     /// without the lock: a time bound turns a lock-order regression into a
     /// failure, not a hang.
@@ -1696,16 +1690,22 @@ mod helpers {
             Ok(neutral.clone()),
             "an exec of an unlisted helper ran in a project folder"
         );
+        // ADE-191: the model-catalog probes are helpers of no session and
+        // run in the neutral folder.
         for key in [
             "monocode-devin-probe-1",
             "monocode-codex-probe-1",
             "monocode-hermes-probe-1",
         ] {
-            session_child(rig, key, project);
             assert_eq!(
-                wait_for(&project.join(key)),
-                format!("{}\n", text(project)),
-                "{key}: a child still spawned as a session's own left its folder"
+                helper(rig, key, None, project),
+                text(neutral),
+                "{key}: a catalog probe was told a project folder"
+            );
+            assert_eq!(
+                wait_for(&neutral.join(key)),
+                format!("{}\n", text(neutral)),
+                "{key}: a catalog probe ran in a project folder"
             );
         }
         let state = rig.app.state::<crate::session_store::SessionStore>();

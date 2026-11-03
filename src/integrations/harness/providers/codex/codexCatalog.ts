@@ -8,7 +8,7 @@ import {
 import {
   killChild,
   resolveCodexBinary,
-  spawnChild,
+  spawnHelperChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -76,8 +76,8 @@ export async function discoverCodexModels(
   );
 
   try {
-    // INTERIM (ADE-189 4/4): not a helper yet (spaces/mod.rs).
-    await spawnChild(probeId, path, ["app-server"], cwd, undefined, "codex");
+    // A helper of no session: its model list is the user's (ADE-191).
+    await spawnHelperChild(undefined, probeId, path, ["app-server"], cwd, undefined, "codex");
     return await withTimeout(
       DISCOVERY_TIMEOUT_MS,
       async () => {

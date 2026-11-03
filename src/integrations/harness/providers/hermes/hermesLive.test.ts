@@ -4,10 +4,16 @@ const sent: string[] = [];
 let onLine: ((line: string) => void) | undefined;
 let onStderr: ((line: string) => void) | undefined;
 const textFiles = new Map<string, string>();
+const helperSpawns: unknown[][] = [];
 
 vi.mock("../../core/child", () => ({
   resolveHermesBinary: async () => ({ path: "/fake/hermes" }),
   spawnChild: async () => undefined,
+  // Rust places a helper and names the folder (ADE-189).
+  spawnHelperChild: async (...args: unknown[]) => {
+    helperSpawns.push(args);
+    return "/neutral";
+  },
   killChild: async () => undefined,
   unwatchChild: () => undefined,
   watchChild: (
@@ -35,6 +41,7 @@ const {
   sendHermesTurn,
   stopHermesSession,
 } = await import("./hermes");
+const { discoverHermesModels } = await import("./hermesCatalog");
 import type { HarnessEvent } from "../../core/types";
 
 const parse = () => sent.map((line) => JSON.parse(line));
@@ -73,6 +80,40 @@ async function newSession() {
     models: { currentModelId: "nous:hermes-4" },
   });
 }
+
+// ADE-191: the model-catalog probe is a helper of no session. Rust runs it in
+// the neutral folder, and it tells Hermes that folder, never its caller's.
+it("probes the Hermes model catalog as a helper in the folder Rust names", async () => {
+  sent.length = 0;
+  helperSpawns.length = 0;
+  const models = discoverHermesModels("/workspace");
+  await initialize();
+  await waitFor(
+    () => parse().some((message) => message.method === "session/new"),
+    "session/new",
+  );
+  const created = parse().find((message) => message.method === "session/new")!;
+  expect(created.params).toEqual({ cwd: "/neutral", mcpServers: [] });
+  reply(created.id, {
+    sessionId: "hermes-probe",
+    models: {
+      currentModelId: "nous:hermes-4",
+      availableModels: [{ modelId: "nous:hermes-4", name: "Hermes 4" }],
+    },
+  });
+  await models;
+  expect(helperSpawns).toEqual([
+    [
+      undefined,
+      expect.stringMatching(/^monocode-hermes-probe-/),
+      "/fake/hermes",
+      ["acp"],
+      "/workspace",
+      undefined,
+      "hermes",
+    ],
+  ]);
+});
 
 describe("Hermes live ACP sequence", () => {
   beforeEach(() => {
