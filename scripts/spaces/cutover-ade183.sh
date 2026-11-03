@@ -116,21 +116,28 @@ up() { local p st w
   done
   log "$(basename "$1") NOT up: pid=${p:-none} state=${st:-none} clock=${w:-none} launch=$3"; return 1; }
 
-# The job owns an app instance it opened: OPENED_AT[i] is the epoch second of its last open of
-# app i. own_pid <i>: the pid whose argv is app i's main executable (pid_of) and that started at or
-# after that open; an instance Tyler started earlier is never the job's.
-OPENED_AT=(0 0)
-own_pid() { local p t; p=$(pid_of "${APPS[$1]}"); [ -n "$p" ] && [ "${OPENED_AT[$1]}" -gt 0 ] || return 1
-  t=$(LC_ALL=C date -j -f '%a %b %e %T %Y' "$(LC_ALL=C ps -o lstart= -p "$p" | sed 's/ *$//')" +%s 2>/dev/null) || return 1
-  [ "$t" -ge "${OPENED_AT[$1]}" ] && echo "$p"; }
+# The job owns only the app instance it opened itself. When its open of app i ends, claim records
+# the one instance that started at or after that open: OWN_PID[i] and its exact `ps lstart`
+# OWN_START[i]. A successful quit clears the record, so an instance Tyler starts later is never
+# the job's. own_pid <i>: the recorded pid, while it still has that start time and app i's main
+# executable as its argv.
+OWN_PID=("" ""); OWN_START=("" "")
+start_of() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | sed 's/ *$//'; }
+claim() { local p s t; p=$(pid_of "${APPS[$1]}"); [ -n "$p" ] || return 0
+  s=$(start_of "$p"); t=$(LC_ALL=C date -j -f '%a %b %e %T %Y' "$s" +%s 2>/dev/null) || return 0
+  [ "$t" -ge "$2" ] || return 0
+  OWN_PID[$1]=$p; OWN_START[$1]=$s; log "own instance of $(basename "${APPS[$1]}"): pid $p, started $s"; }
+disown_app() { OWN_PID[$1]=""; OWN_START[$1]=""; }
+own_pid() { local p=${OWN_PID[$1]}; [ -n "$p" ] || return 1
+  [ "$(start_of "$p")" = "${OWN_START[$1]}" ] && [ "$(ps -o args= -p "$p" 2>/dev/null | sed 's/ *$//')" = "$(main_exe "${APPS[$1]}")" ] && echo "$p"; }
 # kill_own <i>: TERM, then after 10 s KILL, the instance of app i the job opened, re-checked by
 # own_pid before each signal. Never by name; never an instance the job did not open.
 kill_own() { local p
   p=$(own_pid "$1") || return 0
-  log "TERM to $(basename "${APPS[$1]}") pid $p (opened by this job at ${OPENED_AT[$1]})"; kill -TERM "$p"
+  log "TERM to $(basename "${APPS[$1]}") pid $p (opened by this job; started ${OWN_START[$1]})"; kill -TERM "$p"
   for _ in $(seq 1 10); do [ "$(own_pid "$1")" = "$p" ] || break; sleep 1; done
   if [ "$(own_pid "$1")" = "$p" ]; then log "KILL to pid $p"; kill -KILL "$p"; sleep 1; fi
-  [ -z "$(pid_of "${APPS[$1]}")" ] && log "$(basename "${APPS[$1]}") pid $p is gone"; }
+  [ -z "$(start_of "$p")" ] && { disown_app "$1"; log "$(basename "${APPS[$1]}") pid $p is gone"; }; }
 
 # quit_app <i>: a normal Apple Event quit to app i, then wait until it is gone; past QUIT_TIMEOUT
 # the job kills its own instance and reports the quit as failed.
@@ -138,16 +145,17 @@ quit_app() { local q app=${APPS[$1]}
   osascript -e "tell application id \"${IDS[$1]}\" to quit" >/dev/null 2>&1 & q=$!
   for _ in $(seq 1 "$QUIT_TIMEOUT"); do [ -z "$(pid_of "$app")" ] && break; sleep 1; done
   kill "$q" 2>/dev/null; wait "$q" 2>/dev/null
-  [ -z "$(pid_of "$app")" ] && { log "$(basename "$app") quit"; return 0; }
+  [ -z "$(pid_of "$app")" ] && { disown_app "$1"; log "$(basename "$app") quit"; return 0; }
   log "$(basename "$app") did not quit in ${QUIT_TIMEOUT}s"; kill_own "$1"; return 1; }
 
 # open_app <i> [open args]: clean-env open of app i, wait until up, check its env. An instance that
 # does not come up or fails the env check is not left running.
-open_app() { local app=${APPS[$1]} i=$1 t0 p r; shift
-  OPENED_AT[i]=$(date +%s); t0=$(now_ms)
+open_app() { local app=${APPS[$1]} i=$1 since t0 p r; shift
+  since=$(date +%s); t0=$(now_ms)
   env -i HOME="$HOME" USER="${USER:-$(id -un)}" SHELL=/bin/zsh PATH=/usr/bin:/bin open -a "$app" "$@" \
     || { log "open $app failed"; return 1; }
-  up "$app" "${DATAS[$i]}" "$t0" || { kill_own "$i"; return 1; }
+  if ! up "$app" "${DATAS[$i]}" "$t0"; then claim "$i" "$since"; kill_own "$i"; return 1; fi
+  claim "$i" "$since"
   p=$(pid_of "$app")
   if r=$(py env-check "$p" "$app"); then log "env check PASS $(basename "$app") pid $p: $r"; return 0; fi
   log "env check FAIL $(basename "$app") pid $p: $r; quitting it at once"

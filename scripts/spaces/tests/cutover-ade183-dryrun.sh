@@ -25,11 +25,14 @@
 #   stuck-quit      the new-app stand-in ignores quit: the job kills its own instance (TERM, then
 #                   KILL) and restores without waiting on anyone: ROLLED-BACK (migrate)
 #   stuck-up        the new-app stand-in never ticks its clock: the same, from the up() timeout
+#   tyler-reopen    after the job opened and quit APP1, a second APP1 stand-in starts (Tyler
+#                   reopening MonoCode during the import); forced failure at relaunch: the job must
+#                   not kill it: ROLLBACK-NEEDS-HUMAN, nothing restored, the stand-in still alive
 # In every case the job's plist must be gone and the log must hold exactly one result line.
 # shellcheck disable=SC2329  # helpers run through check and wait_for
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-ALL=(ok backup-partial backup migrate report dry apply rerun relaunch compare envcheck term restore-fail stuck-quit stuck-up)
+ALL=(ok backup-partial backup migrate report dry apply rerun relaunch compare envcheck term restore-fail stuck-quit stuck-up tyler-reopen)
 [ $# -gt 0 ] || { echo "usage: cutover-ade183-dryrun.sh <case>... | all (${ALL[*]})" >&2; exit 2; }
 [ "$1" = all ] && set -- "${ALL[@]}"
 ROLLED='result=ROLLED-BACK \(restored == backup, old apps reopened\) after failure in'
@@ -41,21 +44,27 @@ expect_of() {
     backup|backup-partial) echo "$UNCHANGED" ;;
     compare|term) echo "$ROLLED apply$" ;;
     envcheck|stuck-quit|stuck-up) echo "$ROLLED migrate$" ;;
+    tyler-reopen) echo 'result=ROLLBACK-NEEDS-HUMAN after failure in [a-z]+: an app this job did not open is running; nothing restored' ;;
     restore-fail) echo 'result=ROLLBACK-INCOMPLETE after failure in migrate: not restored: data1; apps left closed' ;;
     migrate|report|dry|apply|rerun|relaunch) echo "$ROLLED $1$" ;;
     *) return 1 ;;
   esac; }
-fail_at_of() { case $1 in ok|backup-partial|stuck-*) ;; restore-fail) echo migrate ;; *) echo "$1" ;; esac; }
+fail_at_of() { case $1 in ok|backup-partial|stuck-*) ;; restore-fail) echo migrate ;; tyler-reopen) echo relaunch ;; *) echo "$1" ;; esac; }
 # An extra launcher key: the stuck cases shorten the timeout they hit.
 keys_of() { case $1 in stuck-quit) echo QUIT_TIMEOUT=5 ;; stuck-up) echo UP_TIMEOUT=8 ;; esac; }
 
 # wait_for <seconds> <command...>: poll every second until the command succeeds.
 wait_for() { local t=$1; shift
   for _ in $(seq 1 "$t"); do "$@" && return 0; sleep 1; done; return 1; }
+# wait_for_fast <tenths of a second> <command...>: wait_for, polling every 0.1 s.
+wait_for_fast() { local t=$1; shift
+  for _ in $(seq 1 "$t"); do "$@" && return 0; sleep 0.1; done; return 1; }
 gone() { ! pgrep -f "$1/Contents/MacOS/applet" >/dev/null; }
 # One osascript per app: a script that names an app which is not running fails as a whole.
 quit_both() { local id; for id in "$ID1" "$ID2"; do osascript -e "tell application id \"$id\" to quit" >/dev/null 2>&1; done; }
 both_gone() { gone "$APP1" && gone "$APP2"; }
+# tyler_started: sets tpid to the pid of an APP1 stand-in the harness started itself.
+tyler_started() { tpid=$(pgrep -f "$APP1/Contents/MacOS/applet" | head -1); [ -n "$tpid" ]; }
 
 # snap <item paths...>: one line per entry, hashed; *.db by content without mono_clock.
 snap() { local root
@@ -160,12 +169,13 @@ run_job() { env -i HOME="$TH" USER="$(id -un)" LOGNAME="$(id -un)" SHELL=/bin/zs
 check() { if "${@:2}"; then echo "  ok   $1"; else echo "  FAIL $1"; BAD=1; fi; }
 same() { cmp -s "$1" "$2" || { diff "$1" "$2" | head -20 | sed 's/^/       /'; return 1; }; }
 results() { grep -c '\] result=' "$RUN/log.txt"; }
+none_in_log() { ! grep -Eq "$1" "$RUN/log.txt"; }
 partly() { [ -d "$1" ] && [ ! -e "$1/$2" ]; }
 none_of() { local p; for p in "$@"; do [ ! -e "$p" ] || return 1; done; }
 drop_d1() { awk -v h="== ${D1#"$TH"}" '/^== /{on=($0!=h)} on' "$1"; }
 version() { plutil -extract CFBundleShortVersionString raw "$1/Contents/Info.plist" 2>/dev/null; }
 
-one_case() { local case=$1 expect fail_at job key
+one_case() { local case=$1 expect fail_at job key tpid
   expect=$(expect_of "$case") || { echo "unknown case $case" >&2; return 1; }
   fail_at=$(fail_at_of "$case"); key=$(keys_of "$case")
   TH=$(mktemp -d "/tmp/cutover183-dry-$case.XXXXXX"); BAD=0
@@ -196,6 +206,11 @@ one_case() { local case=$1 expect fail_at job key
     check "backup done" wait_for 60 grep -qs 'backup complete' "$RUN/log.txt"
     chmod 000 "$RUN/backup/data1/attachments/one.txt"
   fi
+  if [ "$case" = tyler-reopen ]; then
+    check "the job quit its own APP1" wait_for_fast 600 grep -qs 'migrated; the new app exited' "$RUN/log.txt"
+    open -a "$APP1"
+    check "Tyler's APP1 stand-in started" wait_for 10 tyler_started
+  fi
   check "result line within 300 s" wait_for 300 grep -qs '\] result=' "$RUN/log.txt"
   wait "$job"
   snap "${ITEMS[@]}" > "$TH/after.txt"
@@ -205,6 +220,11 @@ one_case() { local case=$1 expect fail_at job key
   check "exactly one result line" [ "$(results)" = 1 ]
   check "plist deleted" [ ! -e "$RUN/com.tyler.cutover-ade183-dryrun-$tag.plist" ]
   case $case in
+    tyler-reopen)
+      check "Tyler's stand-in (pid $tpid) still alive" kill -0 "$tpid"
+      check "no TERM or KILL sent" none_in_log 'TERM to|KILL to'
+      check "nothing restored" [ ! -e "$RUN/failed-state" ]
+      ;;
     restore-fail)
       check "no app reopened" both_gone
       check "every item but data1 == before" same <(drop_d1 "$TH/before.txt") <(drop_d1 "$TH/after.txt")
