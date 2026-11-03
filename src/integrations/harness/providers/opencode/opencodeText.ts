@@ -12,6 +12,8 @@ import {
 import { OpenCodeClient } from "./opencodeClient";
 import { abortTextPromptRace } from "../../core/abortTextPrompt";
 import { streamTextDelta } from "../../core/streamText";
+import { textTurns } from "../../core/acp";
+import type { TextPromptInput } from "../../core/registry";
 import type { HarnessEvent } from "../../core/types";
 import {
   appendOpenCodeAssistantTextDelta,
@@ -48,55 +50,18 @@ type LiveText = {
 };
 
 let live: LiveText | null = null;
-let turns: Promise<void> = Promise.resolve();
+const turns = textTurns(ensureLive, promptOnLive);
 let serverUrl = "";
 
 export async function stopOpenCodeTextPrompt(): Promise<void> {
   await dropLive();
 }
 
-export function warmupOpenCodeText(cwd: string): Promise<void> {
-  if (!cwd || cwd === "~") return Promise.resolve();
-  const run = turns
-    .catch(() => undefined)
-    .then(async () => {
-      await ensureLive(cwd);
-    });
-  turns = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run.catch(() => undefined);
-}
+export const warmupOpenCodeText = turns.warmup;
 
-export async function runOpenCodeTextPrompt(input: {
-  cwd: string;
-  model?: string;
-  modelSettings?: Record<string, string>;
-  intent?: TurnIntent;
-  prompt: string;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  onEvent?: (event: HarnessEvent) => void;
-}): Promise<string> {
-  const run = turns.catch(() => undefined).then(() => promptOnLive(input));
-  turns = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
-}
+export const runOpenCodeTextPrompt = turns.run;
 
-async function promptOnLive(input: {
-  cwd: string;
-  model?: string;
-  modelSettings?: Record<string, string>;
-  intent?: TurnIntent;
-  prompt: string;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  onEvent?: (event: HarnessEvent) => void;
-}): Promise<string> {
+async function promptOnLive(input: TextPromptInput): Promise<string> {
   input.signal?.throwIfAborted();
   const session = await ensureLive(input.cwd, input.model, input.modelSettings);
   input.signal?.throwIfAborted();

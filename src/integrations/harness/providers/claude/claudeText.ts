@@ -28,6 +28,8 @@ import {
   turnStatusFromResult,
 } from "./claudeProtocol";
 import type { TurnIntent } from "../../../../features/sessions/model/session";
+import { textTurns } from "../../core/acp";
+import type { TextPromptInput } from "../../core/registry";
 import type { HarnessEvent } from "../../core/types";
 import { mergeStream } from "../../core/streamText";
 
@@ -72,7 +74,7 @@ type LiveText = {
 };
 
 let live: LiveText | null = null;
-let turns: Promise<void> = Promise.resolve();
+const turns = textTurns(ensureLive, promptOnLive);
 
 function textSettings(
   model: string,
@@ -112,50 +114,11 @@ export async function stopClaudeTextPrompt(): Promise<void> {
   await dropLive();
 }
 
-export function warmupClaudeText(cwd: string): Promise<void> {
-  if (!cwd || cwd === "~") return Promise.resolve();
-  const run = turns
-    .catch(() => undefined)
-    .then(async () => {
-      await ensureLive(cwd);
-    });
-  turns = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run.catch(() => undefined);
-}
+export const warmupClaudeText = turns.warmup;
 
-export async function runClaudeTextPrompt(input: {
-  cwd: string;
-  providerAccountId?: string;
-  model?: string;
-  modelSettings?: Record<string, string>;
-  intent?: TurnIntent;
-  prompt: string;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  onEvent?: (event: HarnessEvent) => void;
-}): Promise<string> {
-  const run = turns.catch(() => undefined).then(() => promptOnLive(input));
-  turns = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
-}
+export const runClaudeTextPrompt = turns.run;
 
-async function promptOnLive(input: {
-  cwd: string;
-  providerAccountId?: string;
-  model?: string;
-  modelSettings?: Record<string, string>;
-  intent?: TurnIntent;
-  prompt: string;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  onEvent?: (event: HarnessEvent) => void;
-}): Promise<string> {
+async function promptOnLive(input: TextPromptInput): Promise<string> {
   input.signal?.throwIfAborted();
   const model = pickTextModel(input.model);
   const settings = textSettings(model, input.modelSettings, input.intent);

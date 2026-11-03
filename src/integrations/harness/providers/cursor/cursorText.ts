@@ -1,4 +1,9 @@
-import { AcpClient, type AcpTextLive } from "../../core/acp";
+import {
+  AcpClient,
+  promptAcpText,
+  textTurns,
+  type AcpTextLive,
+} from "../../core/acp";
 import {
   killChild,
   resolveCursorBinary,
@@ -6,9 +11,8 @@ import {
   unwatchChild,
   watchChild,
 } from "../../core/child";
-import { abortTextPromptRace } from "../../core/abortTextPrompt";
 import { mergeStream } from "../../core/streamText";
-import type { HarnessEvent } from "../../core/types";
+import type { TextPromptInput } from "../../core/registry";
 
 const TEXT_CHILD_ID = "monocode-text";
 const INIT_TIMEOUT_MS = 60_000;
@@ -24,7 +28,7 @@ const CLIENT_CAPABILITIES = {
 type LiveText = AcpTextLive;
 
 let live: LiveText | null = null;
-let turns: Promise<void> = Promise.resolve();
+const turns = textTurns(ensureLive, promptOnLive);
 
 export async function stopCursorTextPrompt(childId?: string): Promise<void> {
   await dropLive();
@@ -35,83 +39,15 @@ export async function stopCursorTextPrompt(childId?: string): Promise<void> {
 }
 
 /** Start the shared text ACP process in the background so the first prompt is fast. */
-export function warmupCursorText(cwd: string): Promise<void> {
-  if (!cwd || cwd === "~") return Promise.resolve();
-  const run = turns
-    .catch(() => undefined)
-    .then(async () => {
-      await ensureLive(cwd);
-    });
-  turns = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run.catch(() => undefined);
-}
+export const warmupCursorText = turns.warmup;
 
 /** Cursor ACP turn in ask mode. Reuses a warm `cursor-agent acp` process. */
-export async function runCursorTextPrompt(input: {
-  cwd: string;
-  model?: string;
-  modelSettings?: Record<string, string>;
-  prompt: string;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  onEvent?: (event: HarnessEvent) => void;
-}): Promise<string> {
-  const run = turns.catch(() => undefined).then(() => promptOnLive(input));
-  turns = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
-}
+export const runCursorTextPrompt = turns.run;
 
-async function promptOnLive(input: {
-  cwd: string;
-  model?: string;
-  modelSettings?: Record<string, string>;
-  prompt: string;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  onEvent?: (event: HarnessEvent) => void;
-}): Promise<string> {
+async function promptOnLive(input: TextPromptInput): Promise<string> {
   input.signal?.throwIfAborted();
   const session = await ensureLive(input.cwd, input.model, input.modelSettings);
-  input.signal?.throwIfAborted();
-  session.output = "";
-  session.collecting = true;
-  session.onEvent = input.onEvent;
-  const abort = abortTextPromptRace(input.signal, () =>
-    session.acp.notify("session/cancel", {
-      sessionId: session.acpSessionId,
-    }),
-  );
-  try {
-    await Promise.race([
-      session.acp.request(
-        "session/prompt",
-        {
-          sessionId: session.acpSessionId,
-          prompt: [{ type: "text", text: input.prompt }],
-        },
-        input.timeoutMs ?? REQUEST_TIMEOUT_MS,
-      ),
-      ...(abort.promise ? [abort.promise] : []),
-    ]);
-    return session.output;
-  } catch (error) {
-    await session.acp
-      .notify("session/cancel", { sessionId: session.acpSessionId })
-      .catch(() => undefined);
-    if (session.closed) await dropLive();
-    throw error;
-  } finally {
-    abort.detach();
-    session.collecting = false;
-    session.onEvent = undefined;
-    await dropLive();
-  }
+  return promptAcpText(session, input, REQUEST_TIMEOUT_MS, dropLive);
 }
 
 async function ensureLive(

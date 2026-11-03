@@ -264,3 +264,31 @@ it("does not pass an invalid provider session id to the cleanup command", async 
   await stopGrokTextPrompt();
   expect(execChild).not.toHaveBeenCalled();
 });
+
+// ADE-192: the shared ACP prompt flow sends exactly this prompt, keeps the
+// caller's own timeout, and cancels its session when the answer never comes.
+it("sends the prompt and cancels its session when the answer times out", async () => {
+  const result = runGrokTextPrompt({
+    cwd: "/repo",
+    prompt: "Generate text",
+    timeoutMs: 20,
+  });
+  const rejected = expect(result).rejects.toThrow("session/prompt timed out");
+  await openTextSession();
+  await waitFor(() => !!outbound("session/prompt"), "session/prompt");
+  expect(outbound("session/prompt")?.params).toEqual({
+    sessionId: "550e8400-e29b-41d4-a716-446655440000",
+    prompt: [{ type: "text", text: "Generate text" }],
+  });
+  await waitFor(() => !!outbound("session/cancel"), "session/cancel");
+  expect(outbound("session/cancel")?.params).toEqual({
+    sessionId: "550e8400-e29b-41d4-a716-446655440000",
+  });
+  await rejected;
+});
+
+it("warms up no child for no folder", async () => {
+  await warmupGrokText("~");
+  await warmupGrokText("");
+  expect(sent).toEqual([]);
+});
