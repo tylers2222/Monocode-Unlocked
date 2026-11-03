@@ -222,7 +222,7 @@ function parseMono(value: unknown): Mono | undefined {
 }
 
 /** A Mono's record without the parts `monocode.db` keeps in columns. */
-type MonoData = Omit<Mono, "id" | "giga">;
+type MonoData = Omit<Mono, "id" | "giga" | "spaceId">;
 
 /**
  * A new Mono as `monocode.db` stores it; `data` is the rest of its record.
@@ -265,6 +265,8 @@ function monoDisplayName(mono: Pick<Mono, "name" | "mascot">): string {
 
 function monoCreate(mono: Mono, sortOrder: number): MonoCreate {
   const { id, giga, ...data } = mono;
+  // The Space is the row's own column, never part of its data.
+  delete data.spaceId;
   return { id, role: giga ? "giga" : "mono", data, sortOrder };
 }
 
@@ -289,6 +291,8 @@ function monoUpdate(
 ): MonoUpdate | undefined {
   const { id: _, giga: wasGiga, ...was } = before;
   const { id, giga, ...data } = after;
+  delete was.spaceId;
+  delete data.spaceId;
   const patch = dataPatch(was, data);
   const update: MonoUpdate = {
     id,

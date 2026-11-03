@@ -12,9 +12,48 @@ import {
 import { useProjectDiffStats } from "../../features/source-control/hooks/useProjectDiffStats";
 import { copyText } from "../../platform/tauri/clipboard";
 import {
+  __monosTestReset,
   createMono,
+  monoLook,
   saveMonoSessionId,
+  updateMono,
 } from "../../features/monos/model/mono";
+import {
+  __spacesTestReset,
+  switchSpace,
+} from "../../features/spaces/model/activeSpace";
+import { saveRailMonosPinned } from "../../features/settings/model/displayPrefs";
+import {
+  loadPinnedProjects,
+  savePinnedProjects,
+} from "../../features/projects/model/recents";
+
+/** The Spaces in `monocode.db`: Space 1 and Space 2, and each project's Space. */
+const spacesDb = vi.hoisted(() => ({
+  active: "space-1",
+  projects: new Map<string, string>(),
+}));
+vi.mock("../../features/spaces/model/spaces", async (importOriginal) => {
+  const settings = () => ({
+    activeSpaceId: spacesDb.active,
+    routeGrantTtlMs: 21_600_000,
+  });
+  return {
+    ...(await importOriginal<object>()),
+    listSpaces: async () => [
+      { id: "space-1", name: "Space 1", color: null, createdAt: 1 },
+      { id: "space-2", name: "Space 2", color: null, createdAt: 2 },
+    ],
+    getSpaceSettings: async () => settings(),
+    setSpaceSettings: async (patch: { activeSpaceId?: string }) => {
+      spacesDb.active = patch.activeSpaceId ?? spacesDb.active;
+      return settings();
+    },
+    listSpaceLogins: async () => [],
+    projectSpace: async (path: string) =>
+      spacesDb.projects.get(path) ?? "space-1",
+  };
+});
 
 // Keep native services out of these menu/input interaction tests.
 vi.mock("../../features/source-control/hooks/useProjectDiffStats", () => ({
@@ -89,6 +128,9 @@ function startRename() {
 }
 
 beforeEach(() => {
+  __spacesTestReset();
+  spacesDb.active = "space-1";
+  spacesDb.projects = new Map();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.mocked(copyText).mockReset().mockResolvedValue(undefined);
   vi.mocked(useProjectDiffStats).mockReturnValue(null);
@@ -212,6 +254,146 @@ describe("project rail visibility", () => {
     await act(async () => render());
     expect(container.querySelector('nav[aria-label="Projects"]')).toBe(rail);
     expect(rail?.scrollTop).toBe(37);
+  });
+});
+
+describe("Spaces: the sidebar shows only the active Space", () => {
+  beforeEach(() => __monosTestReset());
+
+  /** Lets the Space reads answer and React render what they changed. */
+  async function settle() {
+    for (let i = 0; i < 5; i += 1) await act(async () => {});
+  }
+
+  /** A Mono the database saved in `spaceId`. */
+  function monoIn(spaceId: string) {
+    const mono = createMono();
+    updateMono(mono.id, (entry) => ({ ...entry, spaceId }));
+    return mono;
+  }
+
+  const monoProps = (states = new Map()) => ({
+    states,
+    onOpen: vi.fn(),
+    onCreate: vi.fn(),
+    onDelete: vi.fn(),
+  });
+
+  it("lists the active Space's sessions, and the other Space's after a switch", async () => {
+    const session = (id: string, spaceId?: string) => ({
+      ...props.sessions[0],
+      id,
+      title: `Chat ${id}`,
+      ...(spaceId ? { spaceId } : {}),
+    });
+    props.sessions = [
+      session("in-one", "space-1"),
+      session("in-two", "space-2"),
+      session("unsaved"),
+    ];
+    props.busySessionIds = new Set(["in-one", "in-two"]);
+    const cards = () =>
+      [...container.querySelectorAll<HTMLElement>("[data-session-card]")]
+        .map((card) => card.dataset.sessionCard)
+        .sort();
+    await act(async () => render());
+    await settle();
+    expect(cards()).toEqual(["in-one", "unsaved"]);
+
+    await act(async () => switchSpace("space-2"));
+    expect(cards()).toEqual(["in-two", "unsaved"]);
+    expect(props.onSelectSession).not.toHaveBeenCalled();
+  });
+
+  it("shows the rail's projects and Monos of the active Space, and switches from the rail", async () => {
+    spacesDb.projects.set("/code/beta-proj", "space-2");
+    spacesDb.projects.set("/code/gamma-pin", "space-2");
+    // A pin of the other Space's project survives every switch.
+    savePinnedProjects(["/code/gamma-pin"]);
+    const alpha = monoIn("space-1");
+    const beta = monoIn("space-2");
+    props = {
+      ...props,
+      recents: [
+        { path: "/code/alpha-proj", openedAt: 3 },
+        { path: "/code/beta-proj", openedAt: 2 },
+        { path: "/code/gamma-pin", openedAt: 1 },
+      ],
+      projectRailOpen: true,
+      compactProjectRail: false,
+      onSelectProject: vi.fn(),
+      onOpenProject: vi.fn(),
+      monos: monoProps(new Map([[beta.id, { status: "needs-you" as const }]])),
+    };
+    const rail = () =>
+      container.querySelector<HTMLElement>('nav[aria-label="Projects"]')!;
+    const monoRail = () => rail().querySelector<HTMLElement>("[data-mono-rail]")!;
+    await act(async () => render());
+    await settle();
+    expect(rail().textContent).toContain("alpha-proj");
+    expect(rail().textContent).not.toContain("beta-proj");
+    expect(rail().textContent).not.toContain("gamma-pin");
+    expect(loadPinnedProjects()).toEqual(["/code/gamma-pin"]);
+    expect(monoRail().textContent).toContain(monoLook(alpha).name);
+    expect(monoRail().textContent).not.toContain(monoLook(beta).name);
+    // Space 2's waiting Mono puts the dot on the switcher above the Monos.
+    expect(rail().querySelector("[data-space-news]")).not.toBeNull();
+
+    await act(async () =>
+      rail()
+        .querySelector<HTMLButtonElement>('button[aria-label="Space: Space 1"]')!
+        .click(),
+    );
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('[data-space-row="space-2"]')!.click(),
+    );
+    await settle();
+    expect(rail().querySelector('button[aria-label="Space: Space 2"]')).not.toBeNull();
+    expect(rail().textContent).toContain("beta-proj");
+    expect(rail().textContent).toContain("gamma-pin");
+    expect(rail().textContent).not.toContain("alpha-proj");
+    expect(loadPinnedProjects()).toEqual(["/code/gamma-pin"]);
+    expect(monoRail().textContent).toContain(monoLook(beta).name);
+    expect(monoRail().textContent).not.toContain(monoLook(alpha).name);
+  });
+
+  it("shows the switcher on a rail without Monos", async () => {
+    monoIn("space-2");
+    props = {
+      ...props,
+      projectRailOpen: true,
+      compactProjectRail: false,
+      onSelectProject: vi.fn(),
+      onOpenProject: vi.fn(),
+    };
+    await act(async () => render());
+    await settle();
+    expect(container.querySelector('button[aria-label="Space: Space 1"]')).not.toBeNull();
+    expect(container.querySelector("[data-space-news]")).toBeNull();
+  });
+
+  it("keeps the compact rail's Mono buttons to the active Space", async () => {
+    saveRailMonosPinned(true);
+    const alpha = monoIn("space-1");
+    const beta = monoIn("space-2");
+    props = {
+      ...props,
+      projectRailOpen: false,
+      compactProjectRail: true,
+      onSelectProject: vi.fn(),
+      onOpenProject: vi.fn(),
+      monos: monoProps(),
+    };
+    const buttons = () =>
+      [...container.querySelectorAll<HTMLElement>("[data-compact-rail-mono]")].map(
+        (button) => button.dataset.railTip,
+      );
+    await act(async () => render());
+    await settle();
+    expect(buttons()).toEqual([monoLook(alpha).name]);
+
+    await act(async () => switchSpace("space-2"));
+    expect(buttons()).toEqual([monoLook(beta).name]);
   });
 });
 

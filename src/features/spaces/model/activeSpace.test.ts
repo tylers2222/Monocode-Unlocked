@@ -26,6 +26,8 @@ const db = {
   projects: new Map<string, string>(),
   /** The next reads of the Space list fail, as a locked database would. */
   failList: false,
+  /** Each read of the Space list waits for this. */
+  listGate: Promise.resolve(),
   /** The next Space read of a project fails. */
   failProject: false,
 };
@@ -33,7 +35,8 @@ const db = {
 const settings = () => ({ activeSpaceId: db.active, routeGrantTtlMs: 21_600_000 });
 type Args = { patch: { activeSpaceId?: string }; projectPath: string };
 const COMMANDS: Record<string, (args: Args) => unknown> = {
-  spaces_list: () => {
+  spaces_list: async () => {
+    await db.listGate;
     if (db.failList) throw new Error("database is locked");
     return structuredClone(db.spaces);
   },
@@ -76,6 +79,7 @@ beforeEach(() => {
   ];
   db.projects = new Map([["/code/two", "space-2"]]);
   db.failList = false;
+  db.listGate = Promise.resolve();
   db.failProject = false;
   vi.mocked(invoke).mockClear();
 });
@@ -88,7 +92,9 @@ async function settle() {
 }
 
 describe("the active Space model", () => {
-  it("shows every row until the first read, then only the active Space's", async () => {
+  it("shows every row until a read succeeds, then only the active Space's", async () => {
+    db.active = "space-2";
+    expect(inActiveSpace("space-1")).toBe(true);
     expect(inActiveSpace("space-2")).toBe(true);
     const listener = vi.fn();
     const stop = subscribeSpaces(listener);
@@ -97,12 +103,12 @@ describe("the active Space model", () => {
     expect(listener).toHaveBeenCalled();
     expect(spacesView()).toMatchObject({
       loaded: true,
-      activeSpaceId: "space-1",
+      activeSpaceId: "space-2",
       spaces: db.spaces,
       logins: db.logins,
     });
-    expect(inActiveSpace("space-1")).toBe(true);
-    expect(inActiveSpace("space-2")).toBe(false);
+    expect(inActiveSpace("space-2")).toBe(true);
+    expect(inActiveSpace("space-1")).toBe(false);
     // A row the database has not saved yet joins the active Space.
     expect(inActiveSpace(undefined)).toBe(true);
 
@@ -113,17 +119,17 @@ describe("the active Space model", () => {
     expect(commands()).toEqual([]);
 
     // A new read sees what changed since.
-    db.active = "space-2";
+    db.active = "space-1";
     await loadSpaces();
-    expect(spacesView().activeSpaceId).toBe("space-2");
+    expect(spacesView().activeSpaceId).toBe("space-1");
     stop();
     again();
     listener.mockClear();
-    await switchSpace("space-1");
+    await switchSpace("space-2");
     expect(listener).not.toHaveBeenCalled();
   });
 
-  it("logs a failed read, keeps every row shown, and reads again for the next subscriber", async () => {
+  it("logs a failed read, hides no row, and reads again for the next subscriber", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     db.failList = true;
     const stop = subscribeSpaces(() => {});
@@ -138,6 +144,7 @@ describe("the active Space model", () => {
       activeSpaceId: "space-1",
       logins: [],
     });
+    expect(inActiveSpace("space-1")).toBe(true);
     expect(inActiveSpace("space-2")).toBe(true);
 
     db.failList = false;
@@ -256,20 +263,34 @@ describe("the active Space model", () => {
     expect(otherSpaceHasNews(unread, "space-1")).toBe(true);
   });
 
-  it("starts over for the next suite after a test reset", async () => {
+  it("never lets a read undo a switch saved while it was reading", async () => {
+    await loadSpaces();
+    let release = () => {};
+    db.listGate = new Promise((done) => (release = done));
+    const reading = loadSpaces();
+    await settle();
+    await switchSpace("space-2");
+    expect(db.active).toBe("space-2");
+    release();
+    await reading;
+    // The read began with Space 1 saved; the switch after it stays.
+    expect(spacesView().activeSpaceId).toBe("space-2");
+  });
+
+  it("asks each project's Space again on the next read of the Spaces", async () => {
     await loadSpaces();
     projectInActiveSpace("/code/two");
     await settle();
-    const pending = loadSpaces();
-    __spacesTestReset();
-    expect(spacesView().loaded).toBe(false);
+    expect(projectInActiveSpace("/code/two")).toBe(false);
+
+    db.projects.set("/code/two", "space-1");
+    await loadSpaces();
     vi.mocked(invoke).mockClear();
-    projectInActiveSpace("/code/two");
-    expect(commands()).toEqual(["spaces_project_get"]);
-    const fresh = loadSpaces();
-    expect(fresh).not.toBe(pending);
-    await Promise.all([pending, fresh]);
+    // The last answer holds until the new one comes.
+    expect(projectInActiveSpace("/code/two")).toBe(false);
     await settle();
+    expect(commands()).toEqual(["spaces_project_get"]);
+    expect(projectInActiveSpace("/code/two")).toBe(true);
   });
 
   it("sends the other Space commands with their arguments", async () => {

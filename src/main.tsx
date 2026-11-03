@@ -21,6 +21,7 @@ import { setHomeDir } from "./shared/lib/paths";
 import { consumeInstalledUpdate } from "./app/model/updateNotice";
 import { initializeProviderBinaryPaths } from "./features/providers/model/providerBinaryPaths";
 import { loadProviderAccounts } from "./features/providers/model/providerAccounts";
+import { loadSpaces } from "./features/spaces/model/activeSpace";
 // Lets file commands reach a connected machine for `remote://` paths.
 import "./features/connections/model/remoteCommands";
 import "./styles/index.css";
@@ -103,6 +104,9 @@ void Promise.all([
   loadBootWorkspace(),
   appLoaded,
   loadProviderAccounts(),
+  // The rail shows only the active Space: read it before the first render.
+  // A failed read logs inside, and the window then shows every row.
+  loadSpaces(),
 ]).then(
   ([
     ,

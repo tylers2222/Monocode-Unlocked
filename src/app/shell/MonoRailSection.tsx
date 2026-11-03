@@ -36,6 +36,11 @@ import {
   type Mono,
   type MonoState,
 } from "../../features/monos/model/mono";
+import {
+  inActiveSpace,
+  spacesView,
+  subscribeSpaces,
+} from "../../features/spaces/model/activeSpace";
 
 export type MonoRailProps = {
   /** The Mono open in the main area, if any. */
@@ -70,7 +75,11 @@ export function MonoRailSection({
   onDelete,
 }: MonoRailProps) {
   const snapshot = useSyncExternalStore(subscribeMonos, monosSnapshot);
-  const monos = useMemo(() => listMonos(), [snapshot]);
+  const spaces = useSyncExternalStore(subscribeSpaces, spacesView);
+  const monos = useMemo(
+    () => listMonos().filter((mono) => inActiveSpace(mono.spaceId, spaces)),
+    [snapshot, spaces],
+  );
   const giga = monos.filter((mono) => mono.giga);
   const regular = monos.filter((mono) => !mono.giga);
   const [menu, setMenu] = useState<{ id: string; anchor: PopoverAnchor }>();

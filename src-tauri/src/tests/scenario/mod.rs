@@ -36,6 +36,7 @@ mod space_checkouts;
 #[cfg(unix)]
 mod space_import;
 mod space_login;
+#[cfg(not(windows))]
 mod space_rows;
 mod space_scope;
 mod spaces;

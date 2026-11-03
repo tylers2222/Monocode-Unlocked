@@ -19,7 +19,7 @@ import {
  * saved; the window reads it back at launch.
  */
 export type SpacesView = {
-  /** False until the first read from monocode.db; the window then shows every row. */
+  /** False until a read from monocode.db succeeds. */
   loaded: boolean;
   spaces: readonly Space[];
   activeSpaceId: string;
@@ -37,6 +37,8 @@ const UNREAD: SpacesView = {
 };
 let view = UNREAD;
 let loading: Promise<void> | undefined;
+/** Replaced on each saved switch; a read that began before it keeps it. */
+let lastSwitch: object = {};
 const asked = new Set<string>();
 const listeners = new Set<() => void>();
 
@@ -56,7 +58,7 @@ export function __spacesTestReset(): void {
   asked.clear();
 }
 
-/** Subscribes, and reads the Spaces from monocode.db until a read succeeds. */
+/** Subscribes; while no read has succeeded, each subscriber starts one. */
 export function subscribeSpaces(listener: () => void): () => void {
   listeners.add(listener);
   if (!view.loaded) void loadSpaces();
@@ -65,25 +67,34 @@ export function subscribeSpaces(listener: () => void): () => void {
   };
 }
 
-/** Reads the Spaces, the active one and every Space's logins. */
+/**
+ * Reads the Spaces, the active one and every Space's logins, and asks each
+ * project's Space again. A switch saved while it reads stays.
+ */
 export function loadSpaces(): Promise<void> {
-  loading ??= Promise.all([listSpaces(), getSpaceSettings(), listSpaceLogins()])
-    .then(([spaces, settings, logins]) =>
+  loading ??= readSpaces(lastSwitch);
+  return loading;
+}
+
+function readSpaces(seen: object): Promise<void> {
+  return Promise.all([listSpaces(), getSpaceSettings(), listSpaceLogins()])
+    .then(([spaces, settings, logins]) => {
+      asked.clear();
       publish({
         ...view,
         loaded: true,
         spaces,
-        activeSpaceId: settings.activeSpaceId,
+        activeSpaceId:
+          lastSwitch === seen ? settings.activeSpaceId : view.activeSpaceId,
         logins,
-      }),
-    )
+      });
+    })
     .catch((error) => {
       console.error("monocode: could not read Spaces", error);
     })
     .finally(() => {
       loading = undefined;
     });
-  return loading;
 }
 
 /**
@@ -93,22 +104,29 @@ export function loadSpaces(): Promise<void> {
 export async function switchSpace(id: string): Promise<void> {
   if (id === view.activeSpaceId) return;
   const settings = await setSpaceSettings({ activeSpaceId: id });
+  lastSwitch = {};
   publish({ ...view, activeSpaceId: settings.activeSpaceId });
 }
 
 /**
  * Whether a row in Space `spaceId` shows in the window. A row the database
- * has not saved yet joins the active Space, and before the first read every
- * row shows.
+ * has not saved yet joins the active Space. The boot reads the Spaces before
+ * the first render; if that read failed, every row shows, so no work is ever
+ * hidden.
  */
 export function inActiveSpace(
   spaceId: string | undefined,
   spaces: Pick<SpacesView, "loaded" | "activeSpaceId"> = view,
 ): boolean {
-  return !spaces.loaded || spaceId === undefined || spaceId === spaces.activeSpaceId;
+  return (
+    !spaces.loaded || spaceId === undefined || spaceId === spaces.activeSpaceId
+  );
 }
 
-/** Whether project `path` shows; asks the backend for its Space once. */
+/**
+ * Whether project `path` shows; asks the backend for its Space once per read
+ * of the Spaces. Until the answer, the project shows.
+ */
 export function projectInActiveSpace(
   path: string,
   spaces: SpacesView = view,
@@ -147,7 +165,12 @@ export type SpaceActivity = { working: number; needsYou: number; unread: number 
 
 const QUIET: SpaceActivity = { working: 0, needsYou: 0, unread: 0 };
 
-/** Each Space's activity, from the Monos' states and unseen reply counts. */
+/**
+ * Each Space's activity, from the Monos' states and unseen reply counts. It
+ * counts Monos only, as frame 2 does ("1 Mono working and 2 new replies"):
+ * the window's open sessions carry no Space to count them by. A session's
+ * reply in another Space reaches the Inbox instead.
+ */
 export function spaceActivity(
   monos: readonly Mono[],
   states: ReadonlyMap<string, MonoState>,

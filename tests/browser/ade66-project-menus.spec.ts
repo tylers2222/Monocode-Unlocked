@@ -47,10 +47,12 @@ test("project and project group menus offer no tab group actions", async ({
 
   for (const path of REAL_RAIL.projects) {
     const name = path.split("/").pop()!;
-    await page
-      .getByRole("button", { name, exact: true })
-      .first()
-      .click({ button: "right" });
+    const row = page.getByRole("button", { name, exact: true }).first();
+    // As a user would: scroll the row into view, then right-click it. An open
+    // project menu closes on a rail scroll, so the scroll must land first.
+    await row.scrollIntoViewIfNeeded();
+    await expect(row).toBeInViewport({ ratio: 1 });
+    await row.click({ button: "right" });
     await expect(projectMenu.getByRole("textbox")).toHaveValue(name);
     await expect(
       projectMenu.getByRole("menuitem", { name: "Move to group" }),
