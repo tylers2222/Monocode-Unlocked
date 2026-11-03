@@ -17,13 +17,18 @@ import {
 type Login = { provider: string; id: string; label: string };
 type Row = Login & { createdAt: number };
 type SpaceLogin = { spaceId: string; provider: string; accountId: string };
+type ProjectLogin = SpaceLogin & { projectPath: string };
 
 /** `monocode.db` behind the Spaces storage commands, as Rust answers them. */
 const db = vi.hoisted(() => ({
   accounts: [] as Row[],
   spaceLogins: [] as SpaceLogin[],
+  projectLogins: [] as ProjectLogin[],
+  activeSpaceId: "space-1",
   calls: [] as [string, unknown][],
   refuse: new Set<string>(),
+  /** Project keys Rust `project_key` refuses. */
+  refuseProjects: new Set<string>(),
   /** `spaces_account_save` of these login ids is refused. */
   refuseSave: new Set<string>(),
   /** The fake clock `created_at` comes from: every save in a test is one ms. */
@@ -32,10 +37,68 @@ const db = vi.hoisted(() => ({
   onList: undefined as (() => void) | undefined,
 }));
 
+/** account.rs `save_account`: serde, then `clean_label`, then an upsert. */
+function saveAccount({ provider, id, label }: Login): null {
+  if (db.refuseSave.has(id)) throw `spaces_account_save refused ${id}`;
+  // serde refuses a lone surrogate; clean_label cuts 48 code points.
+  if (
+    /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(
+      label,
+    )
+  ) {
+    throw "lone leading surrogate in hex escape";
+  }
+  const cut = Array.from(label.split(/\s+/).filter(Boolean).join(" "))
+    .slice(0, 48)
+    .join("");
+  if (!cut) throw "A provider account needs a label";
+  const row = db.accounts.find(
+    (entry) => entry.provider === provider && entry.id === id,
+  );
+  if (row) row.label = cut;
+  else db.accounts.push({ provider, id, label: cut, createdAt: db.now });
+  return null;
+}
+
+/** spaces/mod.rs: a Space's project choices. */
+function projectCommand(command: string, args: Record<string, never>): unknown {
+  switch (command) {
+    // spaces/mod.rs: ORDER BY project_path, provider (byte order)
+    case "spaces_project_logins_list":
+      return db.projectLogins
+        .filter((row) => row.spaceId === args.spaceId)
+        .sort((a, b) =>
+          `${a.projectPath} ${a.provider}` < `${b.projectPath} ${b.provider}`
+            ? -1
+            : 1,
+        );
+    case "spaces_project_login_set": {
+      const login = args.login as ProjectLogin;
+      if (db.refuseProjects.has(login.projectPath)) {
+        throw `Not an absolute folder: ${login.projectPath}`;
+      }
+      db.projectLogins = [
+        ...db.projectLogins.filter(
+          (row) =>
+            row.spaceId !== login.spaceId ||
+            row.projectPath !== login.projectPath ||
+            row.provider !== login.provider,
+        ),
+        login,
+      ];
+      return null;
+    }
+  }
+  throw `no command ${command}`;
+}
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: async (command: string, args: Record<string, never> = {}) => {
     db.calls.push([command, args]);
     if (db.refuse.has(command)) throw `${command} refused`;
+    if (command.startsWith("spaces_project_")) {
+      return projectCommand(command, args);
+    }
     const same = (row: Login, provider: string, id: string) =>
       row.provider === provider && row.id === id;
     switch (command) {
@@ -53,35 +116,22 @@ vi.mock("@tauri-apps/api/core", () => ({
               (a.id < b.id ? -1 : 1),
           )
           .map(({ provider, id, label }) => ({ provider, id, label }));
-      case "spaces_account_save": {
-        const { provider, id, label } = args.account as Login;
-        if (db.refuseSave.has(id)) throw `spaces_account_save refused ${id}`;
-        // serde refuses a lone surrogate; clean_label cuts 48 code points.
-        if (
-          /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(
-            label,
-          )
-        ) {
-          throw "lone leading surrogate in hex escape";
-        }
-        const cut = Array.from(label.split(/\s+/).filter(Boolean).join(" "))
-          .slice(0, 48)
-          .join("");
-        if (!cut) throw "A provider account needs a label";
-        const row = db.accounts.find((entry) => same(entry, provider, id));
-        if (row) row.label = cut;
-        else db.accounts.push({ provider, id, label: cut, createdAt: db.now });
-        return null;
-      }
+      case "spaces_account_save":
+        return saveAccount(args.account as Login);
       case "spaces_account_remove": {
         const { provider, id } = args as { provider: string; id: string };
         if (id === "default")
           throw "The default provider account cannot be removed";
         db.accounts = db.accounts.filter((row) => !same(row, provider, id));
+        db.projectLogins = db.projectLogins.filter(
+          (row) => row.provider !== provider || row.accountId !== id,
+        );
         return null;
       }
       case "provider_account_remove":
         return null;
+      case "spaces_settings_get":
+        return { activeSpaceId: db.activeSpaceId, routeGrantTtlMs: 21600000 };
       case "spaces_login_set": {
         const login = args.login as SpaceLogin;
         db.spaceLogins = [
@@ -144,6 +194,9 @@ function freshDatabase() {
   db.refuseSave.clear();
   windows.open.length = 0;
   db.spaceLogins = [];
+  db.projectLogins = [];
+  db.activeSpaceId = "space-1";
+  db.refuseProjects.clear();
   db.calls = [];
   db.refuse.clear();
 }
@@ -391,6 +444,11 @@ describe("provider accounts in monocode.db", () => {
       .providerAccounts(provider)
       .map(({ id, label }) => `${id} ${label}`);
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const choiceMarker = (): string[] =>
+    JSON.parse(
+      localStorage.getItem("monocode.providerAccountSelections.v1.import") ??
+        "[]",
+    );
   const marker = () =>
     JSON.parse(
       localStorage.getItem("monocode.providerAccounts.v1.import") ?? "[]",
@@ -460,7 +518,9 @@ describe("provider accounts in monocode.db", () => {
     db.calls = [];
     accounts = await boot();
     expect(db.calls.map(([command]) => command)).toEqual([
+      "spaces_settings_get",
       "spaces_accounts_list",
+      "spaces_project_logins_list",
     ]);
     expect(labels(accounts, "claude")).toEqual([
       "default Primary",
@@ -556,7 +616,9 @@ describe("provider accounts in monocode.db", () => {
     db.calls = [];
     await boot();
     expect(db.calls.map(([command]) => command)).toEqual([
+      "spaces_settings_get",
       "spaces_accounts_list",
+      "spaces_project_logins_list",
     ]);
   });
 
@@ -619,7 +681,9 @@ describe("provider accounts in monocode.db", () => {
     db.calls = [];
     accounts = await boot();
     expect(db.calls.map(([command]) => command)).toEqual([
+      "spaces_settings_get",
       "spaces_accounts_list",
+      "spaces_project_logins_list",
     ]);
     expect(labels(accounts, "claude")).toEqual([
       "default Default account",
@@ -873,5 +937,254 @@ describe("provider accounts in monocode.db", () => {
     await settle();
     expect(sent("spaces_account_save")).toEqual([]);
     expect(db.accounts.some(({ id }) => id === "account-x")).toBe(false);
+
+    windowA.selectProviderAccount("codex", "/work/acme", "account-new");
+    await vi.waitFor(() =>
+      expect(windowB.selectedProviderAccountId("codex", "/work/acme")).toBe(
+        "account-new",
+      ),
+    );
+  });
+
+  it("imports project choices into Space 1 once and reads the active Space's", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    localStorage.setItem("monocode.providerAccounts.v1", BROWSER_LOGINS);
+    const browserChoices = JSON.stringify({
+      "/x": null,
+      "/repo/one": { claude: "account-work" },
+      "remote://box/srv/app": { claude: "account-work", codex: "account-x" },
+      "~": { codex: "default" },
+      "/repo/gone": { claude: "account-missing", opencode: "default" },
+    });
+    localStorage.setItem(
+      "monocode.providerAccountSelections.v1",
+      browserChoices,
+    );
+    let accounts = await boot();
+
+    const row = (projectPath: string, provider: string, accountId: string) => ({
+      spaceId: "space-1",
+      projectPath,
+      provider,
+      accountId,
+    });
+    expect(db.projectLogins).toEqual([
+      row("/repo/one", "claude", "account-work"),
+      row("remote://box/srv/app", "claude", "account-work"),
+      row("remote://box/srv/app", "codex", "account-x"),
+      row("~", "codex", "default"),
+    ]);
+    expect(accounts.selectedProviderAccountId("claude", "/repo/one/")).toBe(
+      "account-work",
+    );
+    expect(
+      accounts.selectedProviderAccountId("codex", "remote://box/srv/app"),
+    ).toBe("account-x");
+    expect(accounts.selectedProviderAccountId("claude", "/repo/gone")).toBe(
+      "default",
+    );
+    expect(localStorage.getItem("monocode.providerAccountSelections.v1")).toBe(
+      browserChoices,
+    );
+
+    db.calls = [];
+    accounts.selectProviderAccount("claude", "/repo/one", "default");
+    await vi.waitFor(() => expect(db.calls).toHaveLength(1));
+    expect(db.calls).toEqual([
+      [
+        "spaces_project_login_set",
+        { login: row("/repo/one", "claude", "default") },
+      ],
+    ]);
+
+    accounts = await boot();
+    expect(accounts.selectedProviderAccountId("claude", "/repo/one")).toBe(
+      "default",
+    );
+    expect(
+      accounts.selectedProviderAccountId("claude", "remote://box/srv/app"),
+    ).toBe("account-work");
+    expect(
+      accounts.selectedProviderAccountId("codex", "remote://box/srv/app"),
+    ).toBe("account-x");
+    expect(sent("spaces_project_login_set")).toHaveLength(1);
+    expect(accounts.removeProviderAccount("codex", "account-x")).toBe(true);
+    expect(
+      accounts.selectedProviderAccountId("codex", "remote://box/srv/app"),
+    ).toBe("default");
+
+    db.refuse.add("spaces_project_login_set");
+    accounts.selectProviderAccount("claude", "/repo/one", "account-work");
+    expect(accounts.selectedProviderAccountId("claude", "/repo/one")).toBe(
+      "account-work",
+    );
+    await vi.waitFor(() =>
+      expect(accounts.selectedProviderAccountId("claude", "/repo/one")).toBe(
+        "default",
+      ),
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      "spaces_project_login_set refused",
+    );
+  });
+
+  it("imports project choices once, even after Space 1 has none again", async () => {
+    localStorage.setItem("monocode.providerAccounts.v1", BROWSER_LOGINS);
+    localStorage.setItem(
+      "monocode.providerAccountSelections.v1",
+      JSON.stringify({ "/repo/one": { claude: "account-work" } }),
+    );
+    let accounts = await boot();
+    const credentials = await import("./providerAccountCredentials");
+    expect(accounts.selectedProviderAccountId("claude", "/repo/one")).toBe(
+      "account-work",
+    );
+    expect(
+      localStorage.getItem("monocode.providerAccountSelections.v1.import"),
+    ).toContain("/repo/one/claude");
+
+    accounts.saveProviderAccount({
+      id: "account-new",
+      provider: "claude",
+      label: "New",
+    });
+    accounts.selectProviderAccount("claude", "/repo/one", "account-new");
+    await credentials.removeProviderAccountCredentials("claude", "account-new");
+    accounts.removeProviderAccount("claude", "account-new");
+    await vi.waitFor(() => expect(db.projectLogins).toEqual([]));
+
+    db.calls = [];
+    accounts = await boot();
+    expect(sent("spaces_project_login_set")).toEqual([]);
+    expect(accounts.selectedProviderAccountId("claude", "/repo/one")).toBe(
+      "default",
+    );
+  });
+
+  it("skips a project key the database cannot hold, and never sends a landed choice again", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    localStorage.setItem("monocode.providerAccounts.v1", BROWSER_LOGINS);
+    localStorage.setItem(
+      "monocode.providerAccountSelections.v1",
+      JSON.stringify({
+        "/repo/one": { claude: "account-work" },
+        "c:": { claude: "account-work" },
+        "c:/repo": { claude: "account-work" },
+        "/srv/d:": { claude: "account-work" },
+      }),
+    );
+    let accounts = await boot();
+    expect(console.warn).toHaveBeenCalledWith(
+      "monocode: monocode.providerAccountSelections.v1.import skips c:/claude",
+    );
+    expect(db.projectLogins.map(({ projectPath }) => projectPath)).toEqual([
+      "/repo/one",
+      "c:/repo",
+      "/srv/d:",
+    ]);
+    expect(choiceMarker()).toContain("c:/claude");
+    accounts.selectProviderAccount("claude", "/repo/one", "default");
+    await settle();
+
+    db.calls = [];
+    accounts = await boot();
+    expect(sent("spaces_project_login_set")).toEqual([]);
+    expect(accounts.selectedProviderAccountId("claude", "/repo/one")).toBe(
+      "default",
+    );
+  });
+
+  it("imports a project choice once its refused login has landed", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    localStorage.setItem("monocode.providerAccounts.v1", BROWSER_LOGINS);
+    localStorage.setItem(
+      "monocode.providerAccountSelections.v1",
+      JSON.stringify({ "/repo/one": { claude: "account-work" } }),
+    );
+    db.refuseSave.add("account-work");
+    let accounts = await boot();
+    expect(sent("spaces_project_login_set")).toEqual([]);
+    expect(choiceMarker()).not.toContain("/repo/one/claude");
+
+    db.refuseSave.clear();
+    accounts = await boot();
+    expect(db.accounts.map(({ id }) => id)).toContain("account-work");
+    expect(accounts.selectedProviderAccountId("claude", "/repo/one")).toBe(
+      "account-work",
+    );
+    expect(choiceMarker()).toContain("/repo/one/claude");
+  });
+
+  it("keeps the saved project choices around a refused one", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    localStorage.setItem("monocode.providerAccounts.v1", BROWSER_LOGINS);
+    const accounts = await boot();
+    db.refuseProjects.add("repo/bad");
+    db.calls = [];
+
+    accounts.selectProviderAccount("claude", "/repo/a", "account-work");
+    accounts.selectProviderAccount("claude", "repo/bad", "account-work");
+    accounts.selectProviderAccount("claude", "/repo/c", "account-work");
+    await vi.waitFor(() =>
+      expect(sent("spaces_project_logins_list")).toHaveLength(1),
+    );
+    await vi.waitFor(() =>
+      expect(accounts.selectedProviderAccountId("claude", "repo/bad")).toBe(
+        "default",
+      ),
+    );
+    expect(accounts.selectedProviderAccountId("claude", "/repo/a")).toBe(
+      "account-work",
+    );
+    expect(accounts.selectedProviderAccountId("claude", "/repo/c")).toBe(
+      "account-work",
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      "Not an absolute folder: repo/bad",
+    );
+
+    db.calls = [];
+    accounts.selectProviderAccount("claude", "/repo/d", "account-work");
+    await vi.waitFor(() => expect(db.calls).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(db.calls.map(([command]) => command)).toEqual([
+      "spaces_project_login_set",
+    ]);
+  });
+
+  it("reads and writes another active Space's choices without importing into it", async () => {
+    localStorage.setItem("monocode.providerAccounts.v1", BROWSER_LOGINS);
+    localStorage.setItem(
+      "monocode.providerAccountSelections.v1",
+      JSON.stringify({ "/repo/one": { claude: "account-work" } }),
+    );
+    // Space 2 is active on the very first boot: nothing is imported into it,
+    // and the import stays open for Space 1.
+    db.activeSpaceId = "space-2";
+    const accounts = await boot();
+
+    expect(sent("spaces_project_logins_list")).toEqual([
+      { spaceId: "space-2" },
+    ]);
+    expect(sent("spaces_project_login_set")).toEqual([]);
+    expect(
+      localStorage.getItem("monocode.providerAccountSelections.v1.import"),
+    ).toBeNull();
+    expect(accounts.selectedProviderAccountId("claude", "/repo/one")).toBe(
+      "default",
+    );
+    accounts.selectProviderAccount("claude", "/repo/two", "account-work");
+    await vi.waitFor(() =>
+      expect(sent("spaces_project_login_set")).toEqual([
+        {
+          login: {
+            spaceId: "space-2",
+            projectPath: "/repo/two",
+            provider: "claude",
+            accountId: "account-work",
+          },
+        },
+      ]),
+    );
   });
 });

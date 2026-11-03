@@ -4,6 +4,8 @@ import type { HarnessId } from "../../sessions/model/session";
 
 const ACCOUNTS_KEY = "monocode.providerAccounts.v1";
 const SELECTIONS_KEY = "monocode.providerAccountSelections.v1";
+/** The project-choice import's entries the database took. */
+const SELECTIONS_IMPORT_KEY = "monocode.providerAccountSelections.v1.import";
 /** The login import's entries the database took, in the order they landed. */
 const ACCOUNTS_IMPORT_KEY = "monocode.providerAccounts.v1.import";
 const CHANGE_EVENT = "monocode-provider-accounts-changed";
@@ -69,6 +71,11 @@ type StoredSelections = Record<
   string,
   Partial<Record<ProviderAccountProvider, string>>
 >;
+type ProjectLogin = {
+  projectPath: string;
+  provider: ProviderAccountProvider;
+  accountId: string;
+};
 
 /** Browser storage predates Spaces: what it holds is Space 1's (`FIRST_SPACE`). */
 const BROWSER_SPACE = "space-1";
@@ -79,6 +86,8 @@ const BROWSER_SPACE = "space-1";
  * cannot load, comes from browser storage.
  */
 let saved: Map<string, string> | undefined;
+/** The active Space: the snapshot holds its project choices. */
+let space = BROWSER_SPACE;
 let writes: Promise<unknown> = Promise.resolve();
 /** Writes sent and not yet answered. */
 let queued = 0;
@@ -117,19 +126,21 @@ function bootFailed(error: unknown): void {
 }
 
 /**
- * Loads the saved logins, then imports browser storage's. The import runs on
- * its own chain, which this awaits, so a boot can run as a write-queue item
- * and the writes queued behind it come after the import.
+ * Loads the saved logins and the active Space's project choices, then imports
+ * browser storage's logins and, with Space 1 active and once those have run,
+ * its project choices.
  */
 async function start(): Promise<void> {
   const accounts = PROVIDER_ACCOUNT_PROVIDERS.flatMap(providerAccounts);
+  const choices = Object.entries(readRecord<StoredSelections>(SELECTIONS_KEY));
   const before = queued;
+  ({ activeSpaceId: space } = await invoke<{ activeSpaceId: string }>(
+    "spaces_settings_get",
+  ));
   await loadSaved();
   // The import reads every earlier write; only one made while this loaded is lost.
   stale = queued > before;
-  const queue = writes;
-  writes = Promise.resolve();
-  importOnce(
+  await importApart(
     ACCOUNTS_IMPORT_KEY,
     // `default` cannot be saved, only renamed, so every login is both.
     ...accounts.map((account): ImportEntry => [
@@ -154,13 +165,46 @@ async function start(): Promise<void> {
       },
     ],
   );
+  if (space !== BROWSER_SPACE) return;
+  // After the login import has run, so a choice waits for its login to land.
+  const logins = readJson<string[]>(ACCOUNTS_IMPORT_KEY, Array.of());
+  await importApart(
+    SELECTIONS_IMPORT_KEY,
+    ...choices.flatMap(([project, selection]) =>
+      PROVIDER_ACCOUNT_PROVIDERS.flatMap((provider): ImportEntry[] => {
+        const accountId = selection?.[provider];
+        if (!logins.includes(`${provider}/${accountId}`)) return [];
+        // A bare drive (`c:`) is not an absolute folder to the database.
+        const send = /^[a-z]:$/.test(project)
+          ? null
+          : () => selectProviderAccount(provider, project, accountId);
+        return [[`${project}/${provider}`, send]];
+      }),
+    ),
+  );
+}
+
+/**
+ * Runs an import on its own chain and waits for its writes, so a boot running
+ * as a write-queue item imports before the writes queued behind it.
+ */
+async function importApart(
+  marker: string,
+  ...entries: ImportEntry[]
+): Promise<void> {
+  const queue = writes;
+  writes = Promise.resolve();
+  importOnce(marker, ...entries);
   const imported = writes;
   writes = queue;
   await imported;
 }
 
-/** One entry of an import: its key in the marker, and how to send it. */
-type ImportEntry = [key: string, send: () => void];
+/**
+ * One entry of an import: its key in the marker, and how to send it, or
+ * `null` to skip it for good (logged, and recorded as done).
+ */
+type ImportEntry = [key: string, send: (() => void) | null];
 
 /**
  * Imports browser storage once per entry. Each entry the marker does not
@@ -175,7 +219,8 @@ function importOnce(marker: string, ...entries: ImportEntry[]): void {
   let seen = refusal;
   for (const [key, send] of entries) {
     if (landed.includes(key)) continue;
-    send();
+    if (send) send();
+    else console.warn(`monocode: ${marker} skips ${key}`);
     // Once its writes have run: kept only if none was refused.
     writes = writes.then(() => {
       if (refusal === seen) {
@@ -198,7 +243,19 @@ async function loadSaved(): Promise<void> {
   ).sort((a, b) => rank(a) - rank(b))) {
     (stored[account.provider] ??= Array.of<ProviderAccount>()).push(account);
   }
-  saved = new Map<string, string>().set(ACCOUNTS_KEY, JSON.stringify(stored));
+  const selections: StoredSelections = {};
+  for (const login of await invoke<ProjectLogin[]>(
+    "spaces_project_logins_list",
+    { spaceId: space },
+  )) {
+    selections[login.projectPath] = {
+      ...selections[login.projectPath],
+      [login.provider]: login.accountId,
+    };
+  }
+  saved = new Map<string, string>()
+    .set(ACCOUNTS_KEY, JSON.stringify(stored))
+    .set(SELECTIONS_KEY, JSON.stringify(selections));
   // A write made while this loaded is in the snapshot no more: reload after it.
   if (queued > 0) stale = true;
   announceChange();
@@ -406,10 +463,11 @@ export function selectedProviderAccountId(
     : DEFAULT_PROVIDER_ACCOUNT_ID;
 }
 
+/** Remembers a project's login; an unknown or missing one is ignored. */
 export function selectProviderAccount(
   provider: ProviderAccountProvider,
   project: string | undefined,
-  accountId: string,
+  accountId: string | undefined,
 ): void {
   if (!providerAccounts(provider).some((account) => account.id === accountId)) {
     return;
@@ -418,6 +476,9 @@ export function selectProviderAccount(
   const key = selectionKey(project);
   selections[key] = { ...selections[key], [provider]: accountId };
   writeJson(SELECTIONS_KEY, selections);
+  persist("spaces_project_login_set", {
+    login: { spaceId: space, projectPath: key, provider, accountId },
+  });
   announceChange();
 }
 

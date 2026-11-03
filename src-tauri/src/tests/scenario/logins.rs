@@ -5,6 +5,8 @@
 //! makes is near a real one. Part 2/3: the login list `providerAccounts.ts`
 //! imports from browser storage at boot and then reads and writes, sent as
 //! the JSON it sends through the Spaces storage commands on a real store.
+//! Part 4/4: the project choices it imports into Space 1 and then reads and
+//! writes for the active Space, the same way.
 
 use std::path::{Path, PathBuf};
 
@@ -13,7 +15,7 @@ use tauri::Manager;
 
 use super::agent_sandbox::{mock_app, script, wait_for};
 use super::world::World;
-use crate::spaces::{account, Provider, FIRST_SPACE};
+use crate::spaces::{self, account, Provider, FIRST_SPACE};
 
 const ROOT: &str = "MC_ADE171_ROOT";
 
@@ -291,5 +293,79 @@ fn the_login_list_imports_and_round_trips() {
         logins(&world),
         json!([claude, alpha, zulu, codex, devin]),
         "a removed login stayed, or another went with it"
+    );
+}
+
+/// The project keys `selectionKey()` writes: a local folder, a Windows
+/// drive, a remote project, and `~` for no project.
+const KEYS: [&str; 4] = ["/work/acme", "c:/repo", "remote://box/srv/app", "~"];
+
+fn choice(space: &str, project: &str, provider: &str, id: &str) -> Value {
+    json!({ "spaceId": space, "projectPath": project, "provider": provider, "accountId": id })
+}
+
+/// What the import and `selectProviderAccount` send for one choice.
+fn choose(world: &World, choice: &Value) {
+    let login = serde_json::from_value(choice.clone()).unwrap();
+    spaces::set_project_login(world.store(), &login).unwrap();
+}
+
+/// What `spaces_project_logins_list` gives the snapshot for one Space.
+fn choices(world: &World, space: &str) -> Value {
+    serde_json::to_value(spaces::project_logins(world.store(), space).unwrap()).unwrap()
+}
+
+/// Defect: a project key comes back other than `selectionKey()` wrote it,
+/// so the snapshot never finds the choice; a Space lists another Space's
+/// choices; a restart changes them; or a removed login keeps its choices.
+#[test]
+fn project_choices_round_trip_per_space() {
+    let mut world = World::new("project-logins");
+    let work = serde_json::from_value(login("claude", "account-work", "Work")).unwrap();
+    account::save_account(world.store(), &work, world.now()).unwrap();
+    let mut space_one: Vec<Value> = KEYS
+        .iter()
+        .map(|key| choice(FIRST_SPACE, key, "claude", "account-work"))
+        .collect();
+    space_one.push(choice(FIRST_SPACE, "~", "codex", "default"));
+    for row in &space_one {
+        choose(&world, row);
+    }
+    assert_eq!(
+        choices(&world, FIRST_SPACE),
+        json!(space_one),
+        "a choice came back under another key, order or Space"
+    );
+
+    let two = spaces::create(world.store(), "Client", None, world.now()).unwrap();
+    let client = choice(&two.id, KEYS[0], "claude", "default");
+    choose(&world, &client);
+    assert_eq!(
+        choices(&world, FIRST_SPACE),
+        json!(space_one),
+        "Space 1 lists Space 2's choice"
+    );
+    assert_eq!(
+        choices(&world, &two.id),
+        json!([client]),
+        "Space 2 lists Space 1's choices"
+    );
+
+    world.down(60_000);
+    assert_eq!(
+        choices(&world, FIRST_SPACE),
+        json!(space_one),
+        "a restart changed the choices"
+    );
+    account::remove_account(world.store(), Provider::Claude, "account-work").unwrap();
+    assert_eq!(
+        choices(&world, FIRST_SPACE),
+        json!([choice(FIRST_SPACE, "~", "codex", "default")]),
+        "a removed login kept its project choices"
+    );
+    assert_eq!(
+        choices(&world, &two.id),
+        json!([client]),
+        "Space 2 lost its choice"
     );
 }
