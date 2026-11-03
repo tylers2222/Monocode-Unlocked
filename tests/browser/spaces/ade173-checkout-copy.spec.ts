@@ -42,6 +42,8 @@ const handlers: Record<string, Handler> = {
   control_authorize_harness_turn: () => null,
   control_turn_finished: () => null,
   control_owns_session: () => true,
+  // mono_messages.rs `mono_messages_unqueued`: no message waits for a chat.
+  mono_messages_unqueued: () => [],
   mono_message_confirm_openers: () => null,
   mono_menu_bar_set_visible: () => null,
   mono_chat_sync: () => null,

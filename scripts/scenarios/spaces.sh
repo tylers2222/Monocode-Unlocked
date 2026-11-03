@@ -87,6 +87,8 @@ sp_starts() {
 }
 sp_count() { sp_starts | grep -c "$1" || true; }
 sp_started() { grep -q "$1" "$EVAL_HOME/.spaces/cli.jsonl"; }
+# sp_ran <cli>: the CLI has started at least once, `--version` checks aside.
+sp_ran() { [[ -n "$(sp_starts "$1")" ]]; }
 
 # sp_fresh <prefix>: a fresh temp HOME with the puppet, launched once so the
 # DB is migrated, then stopped. Every SQL insert below goes in while it is.
@@ -255,7 +257,9 @@ run_spaces_checkout() {
   wait_until 90 "both habit runs ran their probes" holds_log '[.[] | select(.exec)] | length == 4'
   wait_until 30 "Space 1's run ends" habit_done co1-mono
   wait_until 30 "Space 2's run ends" habit_done co2-mono
-  wait_until 60 "Space 2's Codex chat starts Codex" sp_started '"cli":"codex"'
+  wait_for 90 sp_ran codex \
+    || q "SELECT '  (no Codex start) message ' || status || ', chat ' || substr(ifnull(blocks_json, '-'), 1, 300)
+          FROM mono_messages, sessions WHERE to_mono_id = 'co2-codex' AND sessions.id = '$(chat_of co2-codex)'"
   local c2 run2 copy
   c2="$(chat_of co2-mono)"
   run2="$(q "SELECT id FROM sessions WHERE id LIKE 'app-$c2-habit-%' LIMIT 1")"
@@ -287,10 +291,15 @@ run_spaces_checkout() {
   "$INSTANCE" stop
 }
 
-# ADE-174 and ADE-175. Space 1: a Mono. Space 2: a Mono and a Giga. Space
-# 1's Mono messages, asks and steers Space 2's Mono and messages its Giga, and
-# starts a session that messages Space 2's Mono. Space 2's Mono answers across
-# and lists what it sees; Space 2's Giga messages Space 1's Mono and lists.
+# ADE-174 and ADE-175. Space 1: a Mono. Space 2: a Mono and a Giga. Each
+# refused call is one the gate allows inside a Space, so only the Space rule
+# refuses it: Space 1's Mono steers Space 2's Mono (a Mono may steer the turn
+# its message started) and starts a session in its project that messages Space
+# 2's Mono, which lists that project too; Space 2's Giga messages and asks
+# Space 1's Mono (a Giga asks any Mono). Mono to Giga is refused before the
+# Space rule (it needs the Giga's open ask, which cannot cross), so it is
+# checked only as refused. Space 2's Mono answers across and lists what it
+# sees; Space 2's Giga lists too.
 run_spaces_messages() {
   log "spaces messages"
   sp_fresh messages
@@ -303,6 +312,9 @@ run_spaces_messages() {
   sp_mono ms1-mono mono space-1 "$p1" fx fx:zai/glm-5.2-fast
   sp_mono ms2-mono mono space-2 "$p2" fx fx:zai/glm-5.2-fast
   sp_mono ms2-giga giga space-2 "$p2" fx fx:zai/glm-5.2-fast
+  # A session messages a Mono that has its project (direction_forbidden
+  # otherwise): Space 2's Mono lists Space 1's project after its own.
+  sqlite3 "$DB" "UPDATE monos SET data_json = json_insert(data_json, '\$.projects[#]', '$p1') WHERE id = 'ms2-mono'"
   # Two Monos message each other when they share a project or one allowlists
   # the other (design 6.1); a project is in one Space, so the allowlist.
   sqlite3 "$DB" "UPDATE monos SET data_json = json_set(data_json, '\$.messageAllowlist', json_array('ms2-mono')) WHERE id = 'ms1-mono'"
@@ -320,12 +332,12 @@ run_spaces_messages() {
     {match: "MS1-HABIT", calls: [
       {tool: "send_message", arguments: {message: "MS-HELLO Hello from Space 1.", send_to: "ms2-mono", wanting_reply: false, intent: "new"}},
       {tool: "send_message", arguments: {message: "MS-TO-GIGA Hello, Giga.", send_to: "ms2-giga", wanting_reply: false, intent: "new"}},
-      {tool: "ask", arguments: {message: "MS-ASK Is CI green?", send_to: "ms2-mono"}},
       {tool: "send_message", arguments: {message: "MS-STEER Stop.", send_to: "ms2-mono", wanting_reply: false, intent: "steer", scope: "turn"}},
       {action: "sessions.start", arguments: {prompt: "MS-KID You are the session.", harness: "fx", model: "fx:zai/glm-5.2-fast", notifyOnComplete: false}}],
       reply: "Sent."},
     {match: "MS2-GIGA-HABIT", calls: [
       {tool: "send_message", arguments: {message: "MS-FROM-GIGA Hello, Space 1.", send_to: "ms1-mono", wanting_reply: false, intent: "new"}},
+      {tool: "ask", arguments: {message: "MS-ASK Is CI green?", send_to: "ms1-mono"}},
       {tool: "get_monos", arguments: {}}],
       reply: "Sent."}]}' >"$PUPPET/script.json"
   request_habit ms1-mono "Say hello" "MS1-HABIT: say hello across."
@@ -341,16 +353,18 @@ run_spaces_messages() {
   expect "Mono to a Mono in another Space: ok" "$(called MS-HELLO .ok)" true
   expect "the Mono in another Space gets it" "$(prompts MS-HELLO)" 1
   expect "its answer across: ok" "$(called MS-BACK .ok)" true
-  expect "Mono to a Giga in another Space: code" "$(called MS-TO-GIGA .code)" cross_space_forbidden
-  expect "Mono asks a Mono in another Space: code" "$(called MS-ASK .code)" cross_space_forbidden
+  expect "Mono to a Giga in another Space: refused" "$(called MS-TO-GIGA .ok)" false
+  expect "Giga asks a Mono in another Space: code" "$(called MS-ASK .code)" cross_space_forbidden
   expect "Mono steers a Mono in another Space: code" "$(called MS-STEER .code)" cross_space_forbidden
   expect "a session to a Mono in another Space: code" "$(called MS-FROM-KID .code)" cross_space_forbidden
   expect "Giga to a Mono in another Space: code" "$(called MS-FROM-GIGA .code)" cross_space_forbidden
   expect "the refused messages reach no one" \
     "$(heard MS-TO-GIGA) $(heard MS-ASK) $(heard MS-STEER) $(heard MS-FROM-KID) $(heard MS-FROM-GIGA)" "0 0 0 0 0"
+  expect "no message to or from Space 2's Giga is written (rejected rows aside)" \
+    "$(q "SELECT count(*) FROM mono_messages WHERE 'ms2-giga' IN (from_mono_id, to_mono_id) AND status <> 'rejected'")" 0
   expect "messages written across: the two allowed only" \
     "$(q "SELECT group_concat(from_mono_id || '>' || to_mono_id, ' ') FROM (SELECT * FROM mono_messages
-          WHERE to_mono_id IS NOT NULL ORDER BY created_at)")" "ms1-mono>ms2-mono ms2-mono>ms1-mono"
+          WHERE to_mono_id IS NOT NULL AND status <> 'rejected' ORDER BY created_at)")" "ms1-mono>ms2-mono ms2-mono>ms1-mono"
   # ADE-175: what the app CLI shows a Space 2 caller.
   expect "Space 2's Mono, get_monos: its Space, and Space 1's regular Mono marked" \
     "$(listed MS-HELLO get_monos '(.monos // .result.monos) | map("\(.mono_id):\(.other_space // "-")") | sort | join(" ")')" \
@@ -412,10 +426,14 @@ run_spaces_grants() {
   "$INSTANCE" start
   wait_until 90 "the Giga's second message is sent" holds_log '[.[] | select(.tool == "send_message" and .result.ok == true)] | length == 1'
   wait_until 60 "the ended grant is removed" holds "SELECT count(*) = 0 FROM account_route_grants WHERE session_id = '$chat'"
-  wait_until 30 "the chat saves the refusal" holds "SELECT blocks_json LIKE '%route_grant_expired%' FROM sessions WHERE id = '$chat'"
+  wait_for 30 holds "SELECT blocks_json LIKE '%route_grant_expired%' FROM sessions WHERE id = '$chat'" || true
+  # The quit saves every session, the refused chat's error block included.
+  "$INSTANCE" stop
+  expect "after the minute: the turn is refused with route_grant_expired" \
+    "$(q "SELECT blocks_json LIKE '%route_grant_expired%' FROM sessions WHERE id = '$chat'")" 1
   expect "after the minute: no new Claude start on the granted login" "$(sp_count "/provider-accounts/claude/acct-2 ")" "$before"
   expect "the chat is back on its first login" "$(q "SELECT ifnull(provider_account_id, 'default') FROM sessions WHERE id = '$chat'")" default
-  "$INSTANCE" stop
+  q "SELECT '  chat blocks (end): ' || substr(ifnull(blocks_json, '-'), -400) FROM sessions WHERE id = '$chat'"
 }
 
 SP_PARTS=(login checkout messages grants)

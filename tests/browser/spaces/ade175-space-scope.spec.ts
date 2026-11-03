@@ -53,6 +53,8 @@ declare global {
 const handlers: Record<string, Handler> = {
   harness_resolve_pi: () => ({ path: "/usr/local/bin/pi" }),
   control_owns_session: () => true,
+  // mono_messages.rs `mono_messages_unqueued`: no message waits for a chat.
+  mono_messages_unqueued: () => [],
   control_reply: (_store, { id, response }) => {
     (window.controlReplies ??= []).push({
       id: id as string,
@@ -136,6 +138,10 @@ test("a Space 2 Mono's monos.list, get_monos and sessions.list show only what it
     },
     { handlers },
   );
+
+  // The app CLI answers a chat the window has open (agentApp.ts appCliSource).
+  await page.getByRole("button", { name: /^Pip, / }).click();
+  await expect(page.getByPlaceholder("Message Pip")).toBeVisible();
 
   const listed = await fromPip(app, page, "monos.list", {});
   expect(listed.ok, JSON.stringify(listed)).toBe(true);
