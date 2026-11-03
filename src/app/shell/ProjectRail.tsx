@@ -257,12 +257,14 @@ export function ProjectRail({
     for (const path of project.paths) muteStatuses.set(pathKey(path), status);
   }
   // Only what the rail shows follows the active Space: the saved order and
-  // pins keep every Space's projects.
+  // pins keep every Space's projects, and the open project always has its
+  // row.
   const spaces = useSyncExternalStore(subscribeSpaces, spacesView);
   const sections = useMemo(() => {
     const all = projectRailSections(recents, cwd, railOrder, pinnedPaths);
+    const open = pathKey(cwd);
     const shown = (item: RecentProject) =>
-      projectInActiveSpace(item.path, spaces);
+      pathKey(item.path) === open || projectInActiveSpace(item.path, spaces);
     return {
       pinned: all.pinned.filter(shown),
       projects: all.projects.filter(shown),

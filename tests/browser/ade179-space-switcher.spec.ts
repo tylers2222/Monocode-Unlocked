@@ -96,9 +96,10 @@ test("the switcher shows the active Space's logins and switches the rail to the 
   await expect(monos).toContainText("Studio Builder");
   await expect(monos).not.toContainText("Fork Orchestrator");
   await expect(rail).toContainText("studio-site");
-  // Space 1's projects leave the rail; the project open in the window stays
-  // until the tabs follow the Space (frame 10, not in ADE-179).
+  // Space 1's projects leave the rail; the project open in the window keeps
+  // its row until the tabs follow the Space (frame 10, not in ADE-179).
   await expect(rail).not.toContainText("beta-lib");
+  await expect(rail.getByRole("button", { name: "alpha-app" })).toBeVisible();
   const sent = await page.evaluate(
     (from) => window.appBackend!.calls.slice(from).map((call) => call.command),
     before,
