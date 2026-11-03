@@ -68,13 +68,16 @@ SH
     "{\"claude\": \"$EVAL_HOME/.spaces/bin/claude\", \"codex\": \"$EVAL_HOME/.spaces/bin/codex\"}"
 }
 
-# sp_accounts <folder>=<fixture>...: the shim's script, the Claude ok
-# recording for the default login, each folder under both spellings of /tmp
-# on macOS.
+# sp_accounts <folder>=<fixture>...: the shim's script, each login folder
+# under both spellings of /tmp on macOS ("default" is no login folder). The
+# shim keys by folder alone, so "default" serves both CLIs: a Codex
+# `--version` there must not read the Claude recording, and a CLI with no
+# fixture for its folder answers `--version` from any recording of its own.
 sp_accounts() {
-  local pair accounts="{\"default\": \"$SP_OK\"}"
+  local pair accounts="{}"
   for pair in "$@"; do
-    accounts="$(jq -c --arg f "${pair%%=*}" --arg x "${pair#*=}" '. + {($f): $x, ("/private" + $f): $x}' <<<"$accounts")"
+    accounts="$(jq -c --arg f "${pair%%=*}" --arg x "${pair#*=}" \
+      'if $f == "default" then . + {default: $x} else . + {($f): $x, ("/private" + $f): $x} end' <<<"$accounts")"
   done
   jq -n --argjson accounts "$accounts" '{speed: 20, accounts: $accounts}' >"$USAGE_LIMIT_SHIM_DIR/script.json"
   : >"$USAGE_LIMIT_SHIM_DIR/log.jsonl"
@@ -194,7 +197,7 @@ run_spaces_login() {
   sp_mono lg2-mono mono space-2 "$p2" claude claude:haiku-4.5
   sp_mono lg3-mono mono space-3 "$p3" claude claude:haiku-4.5
   sp_clis
-  sp_accounts "$SP_LOGINS/claude/acct-2=$SP_OK"
+  sp_accounts "default=$SP_OK" "$SP_LOGINS/claude/acct-2=$SP_OK"
   for mono in lg1-mono lg2-mono lg3-mono; do request_habit "$mono" "Say ok" "LG-HABIT: say ok."; done
   "$INSTANCE" start
   wait_until 90 "Space 1's habit starts Claude" sp_started '"login":"default"'
@@ -298,11 +301,13 @@ run_spaces_checkout() {
 # refused call is one the gate allows inside a Space, so only the Space rule
 # refuses it: Space 1's Mono steers Space 2's Mono (a Mono may steer the turn
 # its message started) and starts a session in its project that messages Space
-# 2's Mono, which lists that project too; Space 2's Giga messages and asks
-# Space 1's Mono (a Giga asks any Mono). Mono to Giga is refused before the
-# Space rule (it needs the Giga's open ask, which cannot cross), so it is
-# checked only as refused. Space 2's Mono answers across and lists what it
-# sees; Space 2's Giga lists too.
+# 2's Mono, which lists that project too; Space 2's Mono messages a saved
+# Space 1 session in a project it lists; Space 2's Giga messages and asks
+# Space 1's Mono (a Giga asks any Mono). Mono to Giga and session to Mono are
+# refused before the Space rule (each needs the recipient's open ask, which
+# cannot cross), so they are checked only as refused, with nothing written.
+# Space 2's Mono answers across and lists what it sees; Space 2's Giga lists
+# too.
 run_spaces_messages() {
   log "spaces messages"
   sp_fresh messages
@@ -318,6 +323,10 @@ run_spaces_messages() {
   # A session messages a Mono that has its project (direction_forbidden
   # otherwise): Space 2's Mono lists Space 1's project after its own.
   sqlite3 "$DB" "UPDATE monos SET data_json = json_insert(data_json, '\$.projects[#]', '$p1') WHERE id = 'ms2-mono'"
+  # A saved Space 1 session in that project, which any Mono of it may message
+  # inside a Space.
+  sqlite3 "$DB" "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at, space_id)
+    VALUES ('ms1-lead', '$p1', 'fx', 'fx:zai/glm-5.2-fast', 'auto', 'MS1 lead', $SP_NOW, $SP_NOW, 'space-1')"
   # Two Monos message each other when they share a project or one allowlists
   # the other (design 6.1); a project is in one Space, so the allowlist.
   sqlite3 "$DB" "UPDATE monos SET data_json = json_set(data_json, '\$.messageAllowlist', json_array('ms2-mono')) WHERE id = 'ms1-mono'"
@@ -325,6 +334,7 @@ run_spaces_messages() {
   jq -n --arg app "$(target_bin instance)" '{app: $app, rules: [
     {match: "MS-HELLO", calls: [
       {tool: "send_message", arguments: {message: "MS-BACK Hello from Space 2.", send_to: "ms1-mono", wanting_reply: false, intent: "new"}},
+      {tool: "send_message", arguments: {message: "MS-TO-SESSION Hello, session.", send_to: "ms1-lead", wanting_reply: false, intent: "new"}},
       {tool: "get_monos", arguments: {}},
       {action: "monos.list", arguments: {}},
       {action: "sessions.list", arguments: {}}], reply: "Answered."},
@@ -359,12 +369,16 @@ run_spaces_messages() {
   expect "Mono to a Giga in another Space: refused" "$(called MS-TO-GIGA .ok)" false
   expect "Giga asks a Mono in another Space: code" "$(called MS-ASK .code)" cross_space_forbidden
   expect "Mono steers a Mono in another Space: code" "$(called MS-STEER .code)" cross_space_forbidden
-  expect "a session to a Mono in another Space: code" "$(called MS-FROM-KID .code)" cross_space_forbidden
+  expect "Mono to a session in another Space: code" "$(called MS-TO-SESSION .code)" cross_space_forbidden
+  expect "a session to a Mono in another Space: refused" "$(called MS-FROM-KID .ok)" false
   expect "Giga to a Mono in another Space: code" "$(called MS-FROM-GIGA .code)" cross_space_forbidden
   expect "the refused messages reach no one" \
     "$(heard MS-TO-GIGA) $(heard MS-ASK) $(heard MS-STEER) $(heard MS-FROM-KID) $(heard MS-FROM-GIGA)" "0 0 0 0 0"
   expect "no message to or from Space 2's Giga is written (rejected rows aside)" \
     "$(q "SELECT count(*) FROM mono_messages WHERE 'ms2-giga' IN (from_mono_id, to_mono_id) AND status <> 'rejected'")" 0
+  expect "written to Space 2's Mono: Space 1's Mono's message only; to Space 1's session: none (rejected rows aside)" \
+    "$(q "SELECT (SELECT count(*) FROM mono_messages WHERE to_mono_id = 'ms2-mono' AND status <> 'rejected') || ' '
+          || (SELECT count(*) FROM mono_messages WHERE to_session_id = 'ms1-lead' AND status <> 'rejected')")" "1 0"
   expect "messages written across: the two allowed only" \
     "$(q "SELECT group_concat(from_mono_id || '>' || to_mono_id, ' ') FROM (SELECT * FROM mono_messages
           WHERE to_mono_id IS NOT NULL AND status <> 'rejected' ORDER BY created_at)")" "ms1-mono>ms2-mono ms2-mono>ms1-mono"
