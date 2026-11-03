@@ -55,6 +55,11 @@ const handlers: Record<string, Handler> = {
   control_owns_session: () => true,
   // mono_messages.rs `mono_messages_unqueued`: no message waits for a chat.
   mono_messages_unqueued: () => [],
+  // The desktop app's Mono polls (ask_scheduler.rs, mono_messages.rs,
+  // mono_chat.rs): nothing pending, no chat kept alive.
+  mono_outbox_pending: () => [],
+  mono_messages_pending_notices: () => [],
+  mono_chat_keep_alive: () => false,
   control_reply: (_store, { id, response }) => {
     (window.controlReplies ??= []).push({
       id: id as string,
