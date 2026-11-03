@@ -7,7 +7,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
-import { ChevronDown, Clock, Gauge } from "../../../shared/ui/icons";
+import { ChevronDown, Clock, Gauge, Undo2 } from "../../../shared/ui/icons";
 import { Popover } from "../../../shared/ui/Popover";
 import {
   HARNESS_TITLE,
@@ -37,12 +37,14 @@ import {
 } from "../../providers/ui/ProviderAccountUsage";
 import {
   loadRouteGrantDefault,
+  ROUTE_GRANT_DEFAULT,
   ROUTE_GRANT_DURATIONS,
   type RouteGrantDuration,
 } from "../../settings/model/settings";
 import { RouteGrantExpired } from "../../spaces/ui/RouteGrantExpired";
 import {
   loadSpaceLogins,
+  routeGrantAgainCard,
   routeGrantCard,
   routeGrantExpiry,
   routeGrantOutUntil,
@@ -107,7 +109,10 @@ function Notice(props: Props & { spaces: SpaceLogins | undefined }) {
       />
     );
   const card =
-    spaces && routeGrantCard(session, spaces, usage.usage, usage.now);
+    spaces &&
+    ((askAgain &&
+      routeGrantAgainCard(session, spaces, usage.usage, usage.now)) ||
+      routeGrantCard(session, spaces, usage.usage, usage.now));
   if (card && onAccountChange)
     return (
       <RouteGrantPrompt
@@ -118,6 +123,7 @@ function Notice(props: Props & { spaces: SpaceLogins | undefined }) {
         modelPicker={<ChooseModel {...props} />}
         onAccountChange={onAccountChange}
         onResumeAtReset={onResumeAtReset}
+        onGoBack={onResume}
       />
     );
   const accounts = (JSON.parse(snapshot) as ProviderAccount[]).filter(
@@ -165,6 +171,8 @@ function ChooseModel({ session, onModelChange }: Props) {
  * The usage-limit card with another Space's login to move to, and for how
  * long (approved frame 4, ADE-170). Yes stores the grant first, then moves
  * the session; a refused grant moves nothing and its reason replaces the hint.
+ * After Ask again it is frame 15's card: what ended, the same login, no
+ * "until reset", and one click back.
  */
 function RouteGrantPrompt({
   session,
@@ -174,6 +182,7 @@ function RouteGrantPrompt({
   modelPicker,
   onAccountChange,
   onResumeAtReset,
+  onGoBack,
 }: {
   session: Session;
   limit: UsageLimit;
@@ -182,9 +191,10 @@ function RouteGrantPrompt({
   modelPicker: ReactNode;
   onAccountChange: (accountId: string) => void;
   onResumeAtReset: (enabled: boolean) => void;
+  onGoBack: () => void;
 }) {
   const [defaultDuration] = useState(loadRouteGrantDefault);
-  const [duration, setDuration] = useState(defaultDuration);
+  const [duration, setDuration] = useState(startsOn(card, defaultDuration));
   const [picked, setPicked] = useState<string>();
   const to =
     card.offers.find((offer) => offer.account.id === picked)?.account ??
@@ -196,29 +206,26 @@ function RouteGrantPrompt({
       data-usage-limit
       role="status"
     >
-      <div className="flex items-center gap-2">
-        <Gauge className="size-3.5 shrink-0 text-amber-400" />
-        <span className="text-content/85">
-          {card.fromLabel} is out until{" "}
-          {routeGrantOutUntil(card.resetsAt, now)}
-        </span>
-      </div>
+      <PromptHead card={card} now={now} />
       <div className="pl-5.5">
         <p className="mt-1 leading-relaxed">
-          Use another login for this session? Your conversation is saved and
-          moves with it.
+          {card.ended?.line ??
+            "Use another login for this session? Your conversation is saved and moves with it."}
         </p>
         <LoginChoices card={card} to={to} now={now} onPick={setPicked} />
         <DurationPicker
           fromLabel={card.fromLabel}
+          withReset={!card.ended}
           duration={duration}
           defaultDuration={defaultDuration}
           onPick={setDuration}
         />
-        <p className="mt-1 text-[11px] text-content/45">
-          {grant.error ??
-            "Only logins that still have usage are listed. Default from Settings › Spaces."}
-        </p>
+        {grant.error || !card.ended ? (
+          <p className="mt-1 text-[11px] text-content/45">
+            {grant.error ??
+              "Only logins that still have usage are listed. Default from Settings › Spaces."}
+          </p>
+        ) : null}
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
           <button
             type="button"
@@ -232,11 +239,58 @@ function RouteGrantPrompt({
           >
             {routeGrantYes(to.label, card.fromLabel, duration)}
           </button>
-          <WaitForReset limit={limit} onResumeAtReset={onResumeAtReset} />
-          {modelPicker}
+          {card.ended ? (
+            <GoBack fromLabel={card.fromLabel} onGoBack={onGoBack} />
+          ) : (
+            <>
+              <WaitForReset limit={limit} onResumeAtReset={onResumeAtReset} />
+              {modelPicker}
+            </>
+          )}
         </div>
       </div>
     </div>
+  );
+}
+
+/** Frame 15 has no "until reset": a "reset" default starts on six hours. */
+function startsOn(
+  card: RouteGrantCard,
+  duration: RouteGrantDuration,
+): RouteGrantDuration {
+  return card.ended && duration === "reset" ? ROUTE_GRANT_DEFAULT : duration;
+}
+
+/** Frame 4: when the first login is back; frame 15: what ended. */
+function PromptHead({ card, now }: { card: RouteGrantCard; now: number }) {
+  return (
+    <div className="flex items-center gap-2">
+      <Gauge className="size-3.5 shrink-0 text-amber-400" />
+      <span className="text-content/85">
+        {card.ended?.title ??
+          `${card.fromLabel} is out until ${routeGrantOutUntil(card.resetsAt, now)}`}
+      </span>
+    </div>
+  );
+}
+
+/** Frame 15: back to the first login in one click. */
+function GoBack({
+  fromLabel,
+  onGoBack,
+}: {
+  fromLabel: string;
+  onGoBack: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onGoBack}
+      className="flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 hover:bg-content/10 hover:text-content"
+    >
+      <Undo2 className="size-3.5" />
+      Go back to {fromLabel}
+    </button>
   );
 }
 
@@ -323,11 +377,13 @@ function LoginChoices({
 
 function DurationPicker({
   fromLabel,
+  withReset,
   duration,
   defaultDuration,
   onPick,
 }: {
   fromLabel: string;
+  withReset: boolean;
   duration: RouteGrantDuration;
   defaultDuration: RouteGrantDuration;
   onPick: (duration: RouteGrantDuration) => void;
@@ -340,7 +396,9 @@ function DurationPicker({
         aria-label="For"
         className="inline-flex gap-0.5 rounded-md border border-content/10 p-0.5"
       >
-        {ROUTE_GRANT_DURATIONS.map((option) => (
+        {ROUTE_GRANT_DURATIONS.filter(
+          (option) => withReset || option !== "reset",
+        ).map((option) => (
           <button
             key={option}
             type="button"

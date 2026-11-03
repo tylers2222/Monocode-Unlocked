@@ -574,3 +574,76 @@ it("starts the next Mono's card on the Settings default, not another Mono's pick
     "true",
   ]);
 });
+
+// Frame 15 (Tyler card #47, option B): Ask again once account 1 has room
+// reopens frame 4's card for the login the grant ended on.
+it("asks again with the ended login, the Settings default and one click back", async () => {
+  spacesWorld();
+  usage["claude:account-1"] = limits(windowOf(41, NOW + HOUR));
+  const onResume = vi.fn();
+  const onAccountChange = vi.fn();
+  render(endedMono("mono-a"), { onResume, onAccountChange });
+  await settle();
+  act(() => byText("Ask again")!.click());
+  const card = container.querySelector('[data-usage-limit][role="status"]')!;
+  expect(card.textContent).toContain(
+    "Your 3 hours on Claude account 2 ended at " +
+      new Date(NOW - HOUR).toLocaleTimeString(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+      }),
+  );
+  expect(card.textContent).toContain(
+    "Claude account 1 has reset. Use Claude account 2 again, or go back? Your conversation is saved.",
+  );
+  expect(
+    [
+      ...container.querySelectorAll(
+        '[role="radiogroup"][aria-label="Use another login"] [role="radio"]',
+      ),
+    ].map((radio) => radio.getAttribute("aria-label")),
+  ).toEqual(["Claude account 2"]);
+  expect(radios("For")).toEqual([
+    ["1 h", "false"],
+    ["3 h", "false"],
+    ["6 hdefault", "true"],
+    ["12 h", "false"],
+    ["24 h", "false"],
+  ]);
+  expect(card.textContent).not.toContain("Only logins that still");
+  expect(byText("Wait for the reset")).toBeUndefined();
+  expect(container.querySelector('[aria-label="Choose another model"]')).toBeNull();
+  act(() => byText("Go back to Claude account 1")!.click());
+  expect(onResume).toHaveBeenCalledOnce();
+  act(() => byText("Use Claude account 2 for 6 hours")!.click());
+  await settle();
+  expect(grantRequests()).toEqual([
+    {
+      sessionId: "mono-a",
+      provider: "claude",
+      fromAccountId: "account-1",
+      toAccountId: "account-2",
+      length: "6h",
+      firstLoginResetsAt: NOW - HOUR,
+    },
+  ]);
+  expect(onAccountChange).toHaveBeenCalledWith("account-2");
+});
+
+it("asks again on six hours when the default waits for a reset, and says why a grant is refused", async () => {
+  spacesWorld(() => Promise.reject("Claude account 2 is not another Space's login"));
+  saveRouteGrantDefault("reset");
+  usage["claude:account-1"] = limits(windowOf(41, NOW + HOUR));
+  render(endedMono("mono-a"), { onAccountChange: vi.fn() });
+  await settle();
+  act(() => byText("Ask again")!.click());
+  expect(radios("For").find(([, checked]) => checked === "true")).toEqual([
+    "6 h",
+    "true",
+  ]);
+  act(() => byText("Use Claude account 2 for 6 hours")!.click());
+  await settle();
+  expect(container.textContent).toContain(
+    "Claude account 2 is not another Space's login",
+  );
+});
