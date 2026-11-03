@@ -5,8 +5,9 @@
 //! Every MonoCode data folder is in both deny lists. The user's `extraAllowWrite`
 //! and `extraAllowedDomains` are added to the defaults on every spawn, and srt
 //! lets `denyWrite` win, so an addition cannot reopen a denied path.
-//! A spawn with write rules of its own (ADE-44's hook files, the Space fence)
-//! gets a copy with them added, `agent-sandbox-<hash of its content>.json`.
+//! A spawn with write rules of its own (ADE-44's hook files, the Space fence,
+//! its login's folder) gets a copy with them added,
+//! `agent-sandbox-<hash of its content>.json`.
 //!
 //! The Space write fence (ADE-177): once a second Space exists the sandbox is
 //! on for every spawn, marker or not, and a spawn may write to its own
@@ -99,11 +100,23 @@ pub(crate) struct Spawn {
     pub(crate) sandboxed: bool,
 }
 
+/// The folders a spawn's CLI keeps its login and state in.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct Homes<'a> {
+    /// `harness::provider_account_dir`: writable outside the app data only.
+    pub(crate) account: Option<&'a Path>,
+    /// A Mono's private Codex home in the app data (`codex_mono_store`):
+    /// readable and writable, and nothing else in the app data is.
+    pub(crate) codex: Option<&'a Path>,
+}
+
 /// srt write rules one spawn adds to the shared settings.
 #[derive(Default)]
 struct SpawnRules {
     allow_write: Vec<String>,
     deny_write: Vec<String>,
+    /// Folders in the app data this spawn reads and writes.
+    carve: Vec<PathBuf>,
 }
 
 /// What the Space write fence lets one spawn write, and what it keeps it out of.
@@ -194,9 +207,10 @@ pub(crate) fn command<R: Runtime>(
     program: &str,
     fence: Option<&Fence>,
     spawn_deny: &[String],
+    homes: Homes,
 ) -> Result<Spawn, String> {
     let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    command_in(&data, program, fence, spawn_deny, find_srt)
+    command_in(&data, program, fence, spawn_deny, homes, find_srt)
 }
 
 #[cfg(test)]
@@ -217,8 +231,8 @@ fn find_srt() -> Option<PathBuf> {
     crate::harness::resolve_gui_binary("srt")
 }
 
-/// `command` for the app data folder `data`, with `fence` and `spawn_deny`
-/// added to srt's write rules for this spawn only; `find_srt` runs only when
+/// `command` for the app data folder `data`, with `fence`, `spawn_deny` and
+/// `homes` added to srt's rules for this spawn only; `find_srt` runs only when
 /// the sandbox is on. A fence turns it on without the marker, and a fence
 /// without a working srt refuses the spawn, except on Windows, where srt does
 /// not run and the spawn starts unfenced.
@@ -227,6 +241,7 @@ pub(crate) fn command_in(
     program: &str,
     fence: Option<&Fence>,
     spawn_deny: &[String],
+    homes: Homes,
     find_srt: impl FnOnce() -> Option<PathBuf>,
 ) -> Result<Spawn, String> {
     let marker =
@@ -254,6 +269,15 @@ pub(crate) fn command_in(
     let srt = pinned_srt(find_srt(), why)?;
     let mut rules = fence.map(fence_rules).transpose()?.unwrap_or_default();
     rules.deny_write.extend_from_slice(spawn_deny);
+    // The CLI keeps its config and refreshed login there. A login folder
+    // inside the app data stays denied, as the rest of it.
+    rules.allow_write.extend(
+        homes
+            .account
+            .filter(|dir| !dir.starts_with(data))
+            .map(path_entry),
+    );
+    rules.carve.extend(homes.codex.map(Path::to_path_buf));
     let settings = write_settings(data, &srt, rules)?;
     let mut cmd = Command::new(srt);
     cmd.arg("--settings").arg(settings).arg("--").arg(program);
@@ -277,6 +301,7 @@ fn fence_rules(fence: &Fence) -> Result<SpawnRules, String> {
     Ok(SpawnRules {
         allow_write: own.iter().map(PathBuf::as_path).map(path_entry).collect(),
         deny_write: deny,
+        carve: Vec::new(),
     })
 }
 
@@ -388,6 +413,7 @@ fn write_settings(data: &Path, srt: &Path, spawn: SpawnRules) -> Result<PathBuf,
     default_write.push(path_entry(&std::env::temp_dir()));
     default_write
         .extend(["opencode", "devin", "gh", "doctl"].map(|tool| path_entry(&config.join(tool))));
+    default_write.extend(keychain_cache().as_deref().map(path_entry));
     for list in [&mut deny_read, &mut deny_write, &mut default_write] {
         add_resolved(list);
     }
@@ -419,7 +445,7 @@ fn write_settings(data: &Path, srt: &Path, spawn: SpawnRules) -> Result<PathBuf,
         Ok(())
     })
     .map_err(|e| format!("{}: {e}", path.display()))?;
-    if spawn.allow_write.is_empty() && spawn.deny_write.is_empty() {
+    if spawn.allow_write.is_empty() && spawn.deny_write.is_empty() && spawn.carve.is_empty() {
         return Ok(path);
     }
     // In a file named by its content, so a spawn starting at the same time
@@ -428,9 +454,15 @@ fn write_settings(data: &Path, srt: &Path, spawn: SpawnRules) -> Result<PathBuf,
         .map_err(|e| e.to_string())?;
     allow.extend(spawn.allow_write);
     let mut deny = [deny_write, spawn.deny_write].concat();
-    for list in [&mut allow, &mut deny] {
+    let mut read: Vec<String> = spawn.carve.iter().map(|dir| path_entry(dir)).collect();
+    if !spawn.carve.is_empty() {
+        allow.extend(read.iter().cloned());
+        carve_out(data, &spawn.carve, &mut deny)?;
+    }
+    for list in [&mut allow, &mut deny, &mut read] {
         add_resolved(list);
     }
+    written["filesystem"]["allowRead"] = json!(read);
     written["filesystem"]["allowWrite"] = json!(allow);
     written["filesystem"]["denyWrite"] = json!(deny);
     let mut hash = std::hash::DefaultHasher::new();
@@ -442,6 +474,63 @@ fn write_settings(data: &Path, srt: &Path, spawn: SpawnRules) -> Result<PathBuf,
     })
     .map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(path)
+}
+
+/// Opens `keep`, folders in the app data folder `data`, to writes. srt lets a
+/// deny win, so `deny`'s entries on `data` and on every MonoCode data folder
+/// become one on each entry beside the way down to `keep`, and one on each
+/// other data folder. srt's `allowRead` reopens reads.
+fn carve_out(data: &Path, keep: &[PathBuf], deny: &mut Vec<String>) -> Result<(), String> {
+    let instances = data.parent().map(|dir| dir.join(ALL_INSTANCES));
+    let mut covering: Vec<String> = std::iter::once(data)
+        .chain(instances.as_deref())
+        .map(path_entry)
+        .collect();
+    add_resolved(&mut covering);
+    deny.retain(|entry| !covering.contains(entry));
+    deny_around(data, keep, deny)?;
+    let Some(parent) = data.parent() else {
+        return Ok(());
+    };
+    let entries = std::fs::read_dir(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    for entry in entries {
+        let other = entry
+            .map_err(|e| format!("{}: {e}", parent.display()))?
+            .path();
+        let name = other.file_name().unwrap_or_default().to_string_lossy();
+        if name.starts_with("com.monocode.") && other != data {
+            deny.push(path_entry(&other));
+        }
+    }
+    Ok(())
+}
+
+/// The Keychain's module cache, in the per-user cache folder under
+/// `/var/folders` (`getconf DARWIN_USER_CACHE_DIR`). Without it every
+/// `security` call fails with "A Module Directory Service error", so Claude
+/// Code cannot read its login and reports it is not logged in.
+#[cfg(target_os = "macos")]
+fn keychain_cache() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let mut buf = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: confstr writes at most `buf.len()` bytes, its NUL included.
+    let len = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_CACHE_DIR,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+        )
+    };
+    if len == 0 || len > buf.len() {
+        return None;
+    }
+    buf.truncate(len - 1);
+    Some(PathBuf::from(std::ffi::OsString::from_vec(buf)).join("mds"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keychain_cache() -> Option<PathBuf> {
+    None
 }
 
 /// The user's additions under `key`. srt refuses the whole file for one entry

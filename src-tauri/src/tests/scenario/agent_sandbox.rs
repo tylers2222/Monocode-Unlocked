@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tauri::Manager;
 
-use crate::agent_sandbox::{command_in, Spawn};
+use crate::agent_sandbox::{command_in, Homes, Spawn};
 
 struct Folder(PathBuf);
 
@@ -92,7 +92,9 @@ impl Rig {
     }
 
     fn spawn(&self) -> Result<Spawn, String> {
-        command_in(&self.data, "fx", None, &[], || Some(self.pinned.clone()))
+        command_in(&self.data, "fx", None, &[], Homes::default(), || {
+            Some(self.pinned.clone())
+        })
     }
 
     fn written(&self) -> Value {
@@ -126,7 +128,7 @@ impl Rig {
 }
 
 fn off_starts_the_cli_bare(rig: &Rig) {
-    let off = command_in(&rig.data, "fx", None, &[], || {
+    let off = command_in(&rig.data, "fx", None, &[], Homes::default(), || {
         panic!("srt looked up while off")
     })
     .unwrap();
@@ -141,7 +143,7 @@ fn off_starts_the_cli_bare(rig: &Rig) {
 
 fn on_refuses_without_a_working_pinned_srt(rig: &Rig) {
     let refused = |find: Option<PathBuf>| {
-        command_in(&rig.data, "fx", None, &[], || find)
+        command_in(&rig.data, "fx", None, &[], Homes::default(), || find)
             .err()
             .unwrap()
     };
@@ -168,7 +170,7 @@ fn on_refuses_an_unreadable_data_folder() {
     std::fs::create_dir_all(&data).unwrap();
     let locked = root.0.join("locked");
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let result = command_in(&data, "fx", None, &[], || {
+    let result = command_in(&data, "fx", None, &[], Homes::default(), || {
         panic!("srt looked up for an unreadable folder")
     });
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -264,8 +266,8 @@ fn xdg_config() -> PathBuf {
         .map_or_else(|| home.join(".config"), PathBuf::from)
 }
 
-/// The fixed defaults, the temp dir, then the OpenCode, Devin, gh and doctl
-/// config folders.
+/// The fixed defaults, the temp dir, the OpenCode, Devin, gh and doctl
+/// config folders, then on macOS the Keychain's module cache.
 fn default_allow_write() -> Vec<String> {
     let fixed = [
         ".",
@@ -282,12 +284,29 @@ fn default_allow_write() -> Vec<String> {
     ];
     let temp = std::env::temp_dir().components().collect::<PathBuf>();
     let tools = ["opencode", "devin", "gh", "doctl"].map(|tool| xdg_config().join(tool));
-    let dirs = std::iter::once(temp).chain(tools).map(|dir| path(&dir));
+    let dirs = std::iter::once(temp)
+        .chain(tools)
+        .chain(keychain_cache())
+        .map(|dir| path(&dir));
     let mut list: Vec<String> = fixed.map(String::from).into_iter().chain(dirs).collect();
     // On Linux the temp dir is `/tmp`, which the app lists once.
     let mut seen = std::collections::HashSet::new();
     list.retain(|entry| seen.insert(entry.clone()));
     list
+}
+
+/// `mds` in the folder `getconf DARWIN_USER_CACHE_DIR` names.
+fn keychain_cache() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let out = std::process::Command::new("getconf")
+        .arg("DARWIN_USER_CACHE_DIR")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "getconf DARWIN_USER_CACHE_DIR failed");
+    let dir = String::from_utf8(out.stdout).unwrap();
+    Some(PathBuf::from(dir.trim().trim_end_matches('/')).join("mds"))
 }
 
 fn on_settings_start_with_the_default_allows(rig: &Rig) {
@@ -306,6 +325,12 @@ fn on_settings_start_with_the_default_allows(rig: &Rig) {
     assert!(allowed.contains(&literal), "{literal} is not writable");
     for dir in [Path::new("/tmp"), temp.as_path()] {
         let real = path(&std::fs::canonicalize(dir).unwrap());
+        assert!(allowed.contains(&real), "{real} is not writable");
+    }
+    // `/var/folders` is `/private/var/folders`.
+    if let Some(cache) = keychain_cache() {
+        let real = std::fs::canonicalize(cache.parent().unwrap()).unwrap();
+        let real = path(&real.join("mds"));
         assert!(allowed.contains(&real), "{real} is not writable");
     }
     let domains = strings(&written["network"]["allowedDomains"]);
@@ -404,6 +429,52 @@ fn an_old_settings_file_gets_the_current_defaults(rig: &Rig) {
     );
     assert!(strings(&written["network"]["allowedDomains"]).contains(&"github.com".to_owned()));
     assert_eq!(written["extraAllowWrite"], json!([]));
+}
+
+/// A Mono's private Codex home (ADE-224) is in the app data folder, which
+/// srt denies whole: the spawn's copy opens that folder and nothing beside it.
+fn on_opens_only_a_monos_codex_home(rig: &Rig) {
+    let home = rig.data.join("codex-monos/monocode-2");
+    let other = rig.data.join("codex-monos/default");
+    for dir in [&home, &other] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let homes = Homes {
+        account: None,
+        codex: Some(&home),
+    };
+    let spawn = command_in(&rig.data, "fx", None, &[], homes, || {
+        Some(rig.pinned.clone())
+    })
+    .unwrap();
+    let settings = argv(&spawn.cmd).1[1].clone();
+    assert_ne!(
+        Path::new(&settings),
+        rig.settings,
+        "the shared file opened it"
+    );
+    let written: Value = serde_json::from_str(&std::fs::read_to_string(settings).unwrap()).unwrap();
+    let list = |key: &str| strings(&written["filesystem"][key]);
+    for key in ["allowRead", "allowWrite"] {
+        assert!(list(key).contains(&path(&home)), "{key} misses {home:?}");
+    }
+    let deny = list("denyWrite");
+    for open in [&rig.data, &rig.data.join("codex-monos"), &home] {
+        assert!(!deny.contains(&path(open)), "{open:?} stays denied");
+    }
+    for closed in [&rig.settings, &other] {
+        assert!(deny.contains(&path(closed)), "{closed:?} is writable");
+    }
+    assert!(
+        !list("allowRead").contains(&path(&rig.data)),
+        "the whole app data folder is readable"
+    );
+    let shared = rig.written();
+    assert_eq!(
+        shared["filesystem"]["allowRead"],
+        json!([]),
+        "every spawn reads it"
+    );
 }
 
 pub(super) fn wait_for(file: &Path) -> String {
@@ -584,6 +655,7 @@ fn the_sandbox_setting_decides_how_a_harness_child_starts() {
     on_settings_start_with_the_default_allows(&rig);
     on_adds_only_the_user_additions(&rig);
     an_old_settings_file_gets_the_current_defaults(&rig);
+    on_opens_only_a_monos_codex_home(&rig);
     harness_spawn_starts_the_cli_bare_when_off_and_through_srt_when_on();
 }
 
