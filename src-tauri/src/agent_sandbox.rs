@@ -123,34 +123,40 @@ impl Fence {
     }
 }
 
-/// The fence for `session` starting in `workdir`, `None` while the user has
-/// one Space. Its own checkout is the one its Space leases around `workdir`,
-/// where the spawn hook placed it (`spaces::leases::place`).
+/// The fence for a child of `session` (`spaces::Child::session`) starting
+/// in `workdir`, `None` while the user has one Space. Its own checkout is the
+/// one its Space leases around `workdir`, where the spawn hook placed it
+/// (`spaces::leases::place`). A child of no session has no Space, so every
+/// leased checkout is another's.
 pub(crate) fn space_fence(
     store: &SessionStore,
-    session: &str,
+    session: Option<&str>,
     workdir: &Path,
 ) -> Result<Option<Fence>, String> {
     if crate::spaces::list(store)?.len() < 2 {
         return Ok(None);
     }
-    let space = {
-        let conn = store.lock_conn()?;
-        let session = crate::harness::child_session(session);
-        crate::spaces::membership::space_for_row(&conn, session, None).map_err(|e| e.to_string())?
-    };
+    let space = session
+        .map(|session| {
+            let conn = store.lock_conn()?;
+            let session = crate::harness::child_session(session);
+            crate::spaces::membership::space_for_row(&conn, session, None)
+                .map_err(|e| e.to_string())
+        })
+        .transpose()?;
+    let space = space.as_ref();
     let leases = leases(store)?;
     let real = std::fs::canonicalize(workdir).map_err(|e| format!("{}: {e}", workdir.display()))?;
     let key = crate::mono_gate::path_key(&crate::fs::path_to_js(&real));
     let checkout = lease_on(&leases, &key, None)
-        .filter(|lease| lease.space_id == space)
+        .filter(|lease| Some(&lease.space_id) == space)
         .map(|lease| PathBuf::from(&lease.checkout_path));
     Ok(Some(Fence {
         git: checkout.as_deref().and_then(git_common_dir),
         checkout,
         others: leases
             .iter()
-            .filter(|lease| lease.space_id != space)
+            .filter(|lease| Some(&lease.space_id) != space)
             .map(|lease| PathBuf::from(&lease.checkout_path))
             .collect(),
     }))

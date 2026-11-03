@@ -1024,7 +1024,7 @@ pub fn harness_spawn<R: Runtime>(
     };
     let fence = crate::agent_sandbox::space_fence(
         &app.state::<crate::session_store::SessionStore>(),
-        &session_id,
+        child.session(),
         &workdir,
     )?;
     let crate::agent_sandbox::Spawn { mut cmd, sandboxed } =

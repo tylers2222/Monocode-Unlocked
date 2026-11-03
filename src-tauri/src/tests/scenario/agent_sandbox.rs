@@ -726,6 +726,7 @@ esac"#,
                 None,
                 None,
                 None,
+                None,
             )
         }
 
@@ -753,7 +754,7 @@ esac"#,
     }
 
     fn with_one_space_a_spawn_starts_as_the_marker_says(rig: &Rig) {
-        assert!(space_fence(&rig.store(), "one", &rig.project)
+        assert!(space_fence(&rig.store(), Some("one"), &rig.project)
             .unwrap()
             .is_none());
         rig.spawn("one").unwrap();
@@ -844,10 +845,18 @@ esac"#,
         );
     }
 
+    /// A helper no session owns has no Space: every leased checkout is another's.
+    fn a_helper_of_no_session_owns_no_checkout(rig: &Rig) {
+        let fence = space_fence(&rig.store(), None, &rig.project)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fence.others, [rig.project.clone(), rig.copy.clone()]);
+    }
+
     /// Claude Code's deny rules (ADE-44) name the same checkouts as srt's
     /// denies: a stand-in `claude` in Space 2 keeps the args it got.
     fn claude_gets_edit_rules_on_the_other_spaces_checkouts(rig: &Rig) {
-        let fence = space_fence(&rig.store(), "two", &rig.copy)
+        let fence = space_fence(&rig.store(), Some("two"), &rig.copy)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -871,6 +880,7 @@ printf '%s\0' "$@" > argv.part && mv argv.part argv"#,
             None,
             Some("claude".into()),
             Some(path(&claude)),
+            None,
             None,
             None,
             None,
@@ -925,6 +935,7 @@ printf '%s\0' "$@" > argv.part && mv argv.part argv"#,
             .unwrap();
         space_two_writes_only_its_own_copy(&rig);
         space_one_cannot_write_space_twos_copy(&rig);
+        a_helper_of_no_session_owns_no_checkout(&rig);
         claude_gets_edit_rules_on_the_other_spaces_checkouts(&rig);
         without_srt_a_fenced_spawn_is_refused(&rig);
     }
