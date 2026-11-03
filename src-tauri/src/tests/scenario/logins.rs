@@ -349,8 +349,11 @@ esac"#,
 /// the app data cannot read it (it got the link, in the app data), cannot
 /// write it (Claude Code refreshes its login there), or cannot reach the
 /// Keychain ("A Module Directory Service error", so Claude Code reports it is
-/// not logged in). macOS only, with srt 0.0.81 on the search PATH, as ci.yml
-/// installs it. In the home folder, since every spawn may write the temp dir.
+/// not logged in). That last one shows only where `security` must rewrite
+/// the module cache: on a CI runner whose cache is current it passes without
+/// it, and `on_settings_start_with_the_default_allows` is the check that fails
+/// (#512). macOS only, with srt 0.0.81 on the search PATH, as ci.yml installs
+/// it. In the home folder, since every spawn may write the temp dir.
 #[test]
 #[cfg(target_os = "macos")]
 fn a_linked_login_signs_in_under_the_real_srt() {
