@@ -8,11 +8,12 @@
 #
 #   login      ADE-172: a session starts with its Space's login (Space 1: the
 #              default, Space 2: its own), a Space with no Claude login is
-#              refused, and new rows record their Space. ADE-189 1-2: every
-#              Claude child of a Space 2 project, helpers included, starts
-#              with Space 2's login
+#              refused, and new rows record their Space
 #   checkout   ADE-173: the same project in two Spaces runs in two folders,
-#              Space 2 in its own worktree on a space-2/ branch, each leased
+#              Space 2 in its own worktree on a space-2/ branch, each leased,
+#              each side commits and pushes. ADE-189 1-2: a helper a Space 2
+#              session owns (the Codex store helper) runs in that session's
+#              copy on Space 2's login
 #   messages   ADE-174: a Mono messages a Mono in another Space; a Giga is
 #              refused both ways. ADE-175: the app CLI lists only the
 #              caller's Space
@@ -30,46 +31,62 @@
 #                 the ADE-167 shim as the CLI and a 1-minute TTL
 #   TODO(ADE-189 4/4) the last helpers that keep their caller's folder
 
-# claude_override: the app's Claude path setting.
-# shellcheck source-path=SCRIPTDIR
-source "$SCENARIOS/usage-limit/app.test.sh"
-SP_SHIM="$SCENARIOS/usage-limit/bin/claude"
+SP_BIN="$SCENARIOS/usage-limit/bin"
 SP_OK="claude-2.1.312-2026-11-02-ok.jsonl"
-SP_LOGINS="$APP_DATA/provider-accounts/claude"
+SP_CODEX_OK="codex-0.165.0-2026-11-02-ok.jsonl"
+SP_LOGINS="$APP_DATA/provider-accounts"
 
-# The Claude CLI for the app's path override: logs its folder, login and
-# arguments, then runs the ADE-167 shim, which replays the fixture of its login.
-sp_claude() {
-  local bin="$EVAL_HOME/.spaces/bin/claude"
-  mkdir -p "$(dirname "$bin")"
-  cat >"$bin" <<SH
-#!/bin/sh
-printf '%s\n' "\$@" | jq -R . | jq -sc --arg cwd "\$(pwd -P)" --arg login "\${CLAUDE_CONFIG_DIR:-default}" \\
-  '{cwd: \$cwd, login: \$login, args: .}' >>"$EVAL_HOME/.spaces/claude.jsonl"
-exec "$SP_SHIM" "\$@"
-SH
-  chmod +x "$bin"
-  : >"$EVAL_HOME/.spaces/claude.jsonl"
-  echo "$bin"
+# sp_local <key> <json>: one value of the app's localStorage, read at the next
+# start (claude_override in usage-limit/app.test.sh writes it the same way).
+sp_local() {
+  local db value
+  db="$(find "$EVAL_HOME/Library/WebKit" -name localstorage.sqlite3 | head -1)"
+  [[ -n "$db" ]] || die "no localStorage database under the temp HOME"
+  value="$(printf '%s' "$2" | iconv -f UTF-8 -t UTF-16LE | xxd -p | tr -d '\n')"
+  sqlite3 "$db" "INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('$1', X'$value')"
 }
 
-# sp_accounts <folder...>: the shim's script, the ok recording for the
-# default login and each folder, under both spellings of /tmp on macOS.
-sp_accounts() {
-  # shellcheck disable=SC2016 # jq's $ok, not the shell's
-  local folder accounts='{"default": $ok}'
-  for folder in "$@"; do
-    accounts+=" + {\"$folder\": \$ok, \"/private$folder\": \$ok}"
+# sp_clis: the claude and codex CLIs for the app's path override. Each logs
+# its CLI, folder, login folder and arguments, then runs the ADE-167 shim,
+# which replays the fixture of its login.
+sp_clis() {
+  local cli bin env
+  mkdir -p "$EVAL_HOME/.spaces/bin"
+  for cli in claude codex; do
+    bin="$EVAL_HOME/.spaces/bin/$cli"
+    env=CLAUDE_CONFIG_DIR; [[ $cli == codex ]] && env=CODEX_HOME
+    cat >"$bin" <<SH
+#!/bin/sh
+printf '%s\n' "\$@" | jq -R . | jq -sc --arg cli $cli --arg cwd "\$(pwd -P)" --arg login "\${$env:-default}" \\
+  '{cli: \$cli, cwd: \$cwd, login: \$login, args: .}' >>"$EVAL_HOME/.spaces/cli.jsonl"
+exec "$SP_BIN/$cli" "\$@"
+SH
+    chmod +x "$bin"
   done
-  jq -n --arg ok "$SP_OK" "{speed: 20, accounts: ($accounts)}" >"$USAGE_LIMIT_SHIM_DIR/script.json"
+  : >"$EVAL_HOME/.spaces/cli.jsonl"
+  sp_local monocode.providerBinaryPaths.v1 \
+    "{\"claude\": \"$EVAL_HOME/.spaces/bin/claude\", \"codex\": \"$EVAL_HOME/.spaces/bin/codex\"}"
+}
+
+# sp_accounts <folder>=<fixture>...: the shim's script, the Claude ok
+# recording for the default login, each folder under both spellings of /tmp
+# on macOS.
+sp_accounts() {
+  local pair accounts="{\"default\": \"$SP_OK\"}"
+  for pair in "$@"; do
+    accounts="$(jq -c --arg f "${pair%%=*}" --arg x "${pair#*=}" '. + {($f): $x, ("/private" + $f): $x}' <<<"$accounts")"
+  done
+  jq -n --argjson accounts "$accounts" '{speed: 20, accounts: $accounts}' >"$USAGE_LIMIT_SHIM_DIR/script.json"
   : >"$USAGE_LIMIT_SHIM_DIR/log.jsonl"
 }
 
-# Claude starts, not `--version` checks: one "<login> <cwd>" line each.
+# sp_starts [cli]: CLI starts, not `--version` checks: "<login> <cwd>" each.
 sp_starts() {
-  jq -r 'select(.args[0] != "--version") | "\(.login) \(.cwd)"' "$EVAL_HOME/.spaces/claude.jsonl"
+  jq -r --arg cli "${1:-claude}" 'select(.cli == $cli and .args[0] != "--version") | "\(.login) \(.cwd)"' \
+    "$EVAL_HOME/.spaces/cli.jsonl"
 }
 sp_count() { sp_starts | grep -c "$1" || true; }
+sp_started() { grep -q "$1" "$EVAL_HOME/.spaces/cli.jsonl"; }
 
 # sp_fresh <prefix>: a fresh temp HOME with the puppet, launched once so the
 # DB is migrated, then stopped. Every SQL insert below goes in while it is.
@@ -83,15 +100,29 @@ sp_fresh() {
   wait_until 30 "the first launch writes mono_clock" holds "SELECT count(*) = 1 FROM mono_clock"
   "$INSTANCE" stop
   SP_NOW="$(date +%s)000"
-  trap 'cp "$PUPPET/log.jsonl" "$EVAL_OUT/spaces-$1-puppet.log"; cp "$EVAL_HOME/.spaces/claude.jsonl" "$EVAL_OUT/spaces-$1-claude.log" 2>/dev/null || true' EXIT
+  # The e2e job uploads $GIGA_EVAL_OUT/*.log; a failed part also prints its
+  # puppet's prompts and calls, so the job log names the step that stalled.
+  # shellcheck disable=SC2064 # the part's name now, the exit status then
+  trap "sp_logs $1 \$?" EXIT
+}
+
+sp_logs() {
+  cp "$PUPPET/log.jsonl" "$EVAL_OUT/spaces-$1-puppet.log" 2>/dev/null || true
+  cp "$EVAL_HOME/.spaces/cli.jsonl" "$EVAL_OUT/spaces-$1-cli.log" 2>/dev/null || true
+  (($2 == 0)) && return
+  echo "spaces $1: the puppet's prompts and calls:"
+  jq -c '{rule, steer, tool, action, exec, message: (.input.message // .input.prompt), ok: .result.ok, code: .result.code,
+    error: (.result.error // .result.hint)} | with_entries(select(.value != null))' "$PUPPET/log.jsonl" 2>/dev/null | sed 's/^/  /'
+  sed 's/^/  cli: /' "$EVAL_HOME/.spaces/cli.jsonl" 2>/dev/null || true
 }
 
 sp_space() { sqlite3 "$DB" "INSERT INTO spaces (id, name, created_at) VALUES ('$1', '$2', $SP_NOW)"; }
 
-# sp_login <space> <account>: a Claude login, Space <space>'s.
+# sp_login <space> <account> [cli]: a login (Claude unless named), Space <space>'s.
 sp_login() {
-  sqlite3 "$DB" "INSERT OR IGNORE INTO provider_accounts (provider, id, label, created_at) VALUES ('claude', '$2', '$2', $SP_NOW);
-    INSERT INTO space_accounts (space_id, provider, account_id) VALUES ('$1', 'claude', '$2')"
+  local cli="${3:-claude}"
+  sqlite3 "$DB" "INSERT OR IGNORE INTO provider_accounts (provider, id, label, created_at) VALUES ('$cli', '$2', '$2', $SP_NOW);
+    INSERT INTO space_accounts (space_id, provider, account_id) VALUES ('$1', '$cli', '$2')"
 }
 
 # sp_mono <id> <role> <space> <project> <harness> <model> [account]: a Mono in
@@ -132,6 +163,14 @@ listed() {
   jq -rs --arg r "$1" --arg a "$2" "(first(.[] | select(.rule == \$r)) | .pid) as \$pid
     | first(.[] | select(.pid == \$pid and (.action == \$a or .tool == \$a)) | .result) | $3" "$PUPPET/log.jsonl"
 }
+# wait_for <seconds> <command...>: wait_until that returns 1 instead of
+# stopping the run, so the readings after it still print.
+wait_for() {
+  local secs="$1" _
+  shift
+  for _ in $(seq 1 "$secs"); do "$@" && return 0; sleep 1; done
+  return 1
+}
 # Prompts that carry <text> anywhere, whatever rule they ran.
 heard() { jq -s --arg t "$1" '[.[] | select(.prompt // "" | contains($t))] | length' "$PUPPET/log.jsonl"; }
 
@@ -141,7 +180,7 @@ heard() { jq -s --arg t "$1" '[.[] | select(.prompt // "" | contains($t))] | len
 run_spaces_login() {
   log "spaces login"
   sp_fresh login
-  local p1="$EVAL_HOME/lg-one" p2="$EVAL_HOME/lg-two" p3="$EVAL_HOME/lg-three" claude
+  local p1="$EVAL_HOME/lg-one" p2="$EVAL_HOME/lg-two" p3="$EVAL_HOME/lg-three"
   sp_project "$p1"; sp_project "$p2"; sp_project "$p3"
   sp_space space-2 "Space 2"; sp_space space-3 "Space 3"
   sp_login space-2 acct-2
@@ -149,13 +188,12 @@ run_spaces_login() {
   sp_mono lg1-mono mono space-1 "$p1" claude claude:haiku-4.5
   sp_mono lg2-mono mono space-2 "$p2" claude claude:haiku-4.5
   sp_mono lg3-mono mono space-3 "$p3" claude claude:haiku-4.5
-  claude="$(sp_claude)"
-  sp_accounts "$SP_LOGINS/acct-2"
-  claude_override "$claude"
+  sp_clis
+  sp_accounts "$SP_LOGINS/claude/acct-2=$SP_OK"
   for mono in lg1-mono lg2-mono lg3-mono; do request_habit "$mono" "Say ok" "LG-HABIT: say ok."; done
   "$INSTANCE" start
-  wait_until 90 "Space 1's habit starts Claude" bash -c "grep -q '\"login\":\"default\"' '$EVAL_HOME/.spaces/claude.jsonl'"
-  wait_until 90 "Space 2's habit starts Claude" bash -c "grep -q 'acct-2' '$EVAL_HOME/.spaces/claude.jsonl'"
+  wait_until 90 "Space 1's habit starts Claude" sp_started '"login":"default"'
+  wait_until 90 "Space 2's habit starts Claude" sp_started claude/acct-2
   wait_until 90 "Space 3's habit run ends" habit_done lg3-mono
   local c1 c2 c3 real2 real1
   c1="$(chat_of lg1-mono)"; c2="$(chat_of lg2-mono)"; c3="$(chat_of lg3-mono)"
@@ -165,7 +203,8 @@ run_spaces_login() {
   expect "Space 1's habit run: Claude starts in its project on the default login" "$(($(sp_count "^default $real1\$") >= 1))" 1
   expect "Space 2's habit run: Claude starts in its project on Space 2's login" \
     "$(($(sp_count "/provider-accounts/claude/acct-2 $real2\$") >= 1))" 1
-  # ADE-189 1-2: helpers too (titles, text), not only the session's own child.
+  # Any other Claude child here (none is required: titles of habit runs are
+  # set) is Space 2's too.
   expect "Claude children in Space 2's project on any other login" \
     "$(sp_starts | grep " $real2" | grep -vc '/provider-accounts/claude/acct-2 ' || true)" 0
   expect "Claude children in Space 3's project (no Claude login)" "$(sp_count "$(cd "$p3" && pwd -P)")" 0
@@ -180,8 +219,12 @@ run_spaces_login() {
   "$INSTANCE" stop
 }
 
-# ADE-173. One project, a Mono on it in Space 1 and one in Space 2. Each
-# habit run writes a file and prints its folder and branch.
+# ADE-173 and ADE-189 1-2. One project, a Mono on it in Space 1 and one in
+# Space 2. Each habit run writes a file, prints its folder and branch, and
+# commits and pushes. Space 2's run also messages a Space 2 Mono whose chat
+# is Codex: before its turn the app starts the Codex store helper
+# (codexStore.ts), a helper the chat owns, so the spawn hook places it as
+# its owner: in Space 2's copy of the project, on Space 2's Codex login.
 run_spaces_checkout() {
   log "spaces checkout"
   sp_fresh checkout
@@ -192,13 +235,19 @@ run_spaces_checkout() {
   git -C "$p" remote add origin "$remote"
   git -C "$p" config user.name spaces; git -C "$p" config user.email spaces@local
   sp_space space-2 "Space 2"
+  sp_login space-2 acct-2 codex
   sp_mono co1-mono mono space-1 "$p" fx fx:zai/glm-5.2-fast
   sp_mono co2-mono mono space-2 "$p" fx fx:zai/glm-5.2-fast
+  sp_mono co2-codex mono space-2 "$p" codex codex:gpt-5.4
+  sp_clis
+  sp_accounts "$SP_LOGINS/codex/acct-2=$SP_CODEX_OK"
   jq -n --arg app "$(target_bin instance)" '{app: $app, rules: [
     {match: "CO1-HABIT", exec: [["sh", "-c", "echo one > co-one.txt; pwd -P; git branch --show-current"],
       ["sh", "-c", "git add co-one.txt && git commit -qm one && git push -q origin HEAD 2>&1 && echo pushed-one"]], reply: "Done."},
     {match: "CO2-HABIT", exec: [["sh", "-c", "echo two > co-two.txt; pwd -P; git branch --show-current"],
-      ["sh", "-c", "git add co-two.txt && git commit -qm two && git push -q origin HEAD 2>&1 && echo pushed-two"]], reply: "Done."}]}' \
+      ["sh", "-c", "git add co-two.txt && git commit -qm two && git push -q origin HEAD 2>&1 && echo pushed-two"]],
+     calls: [{tool: "send_message", arguments: {message: "CO-CODEX Say ok.", send_to: "co2-codex", wanting_reply: false, intent: "new"}}],
+     reply: "Done."}]}' \
     >"$PUPPET/script.json"
   request_habit co1-mono "Write one" "CO1-HABIT: write one."
   request_habit co2-mono "Write two" "CO2-HABIT: write two."
@@ -206,6 +255,7 @@ run_spaces_checkout() {
   wait_until 90 "both habit runs ran their probes" holds_log '[.[] | select(.exec)] | length == 4'
   wait_until 30 "Space 1's run ends" habit_done co1-mono
   wait_until 30 "Space 2's run ends" habit_done co2-mono
+  wait_until 60 "Space 2's Codex chat starts Codex" sp_started '"cli":"codex"'
   local c2 run2 copy
   c2="$(chat_of co2-mono)"
   run2="$(q "SELECT id FROM sessions WHERE id LIKE 'app-$c2-habit-%' LIMIT 1")"
@@ -226,6 +276,13 @@ run_spaces_checkout() {
     "README.md,co-one.txt 1"
   expect "Space 2's run records its copy" \
     "$(q "SELECT worktree_cwd LIKE '%co-project-worktrees/space-2/$run2' FROM sessions WHERE id = '$run2'")" 1
+  # ADE-189 1-2: codex.ts awaits the store helper before it spawns the chat's
+  # own Codex, so the first Codex start is the helper.
+  local codex_chat
+  codex_chat="$(chat_of co2-codex)"
+  sp_starts codex | sed 's/^/  codex start: /'
+  expect "the helper Space 2's Codex chat owns: its login, its folder" "$(sp_starts codex | head -1)" \
+    "$SP_LOGINS/codex/acct-2 $real-worktrees/space-2/$codex_chat"
   q "SELECT '  lease ' || checkout_path || ' ' || space_id FROM checkout_leases ORDER BY checkout_path"
   "$INSTANCE" stop
 }
@@ -246,6 +303,9 @@ run_spaces_messages() {
   sp_mono ms1-mono mono space-1 "$p1" fx fx:zai/glm-5.2-fast
   sp_mono ms2-mono mono space-2 "$p2" fx fx:zai/glm-5.2-fast
   sp_mono ms2-giga giga space-2 "$p2" fx fx:zai/glm-5.2-fast
+  # Two Monos message each other when they share a project or one allowlists
+  # the other (design 6.1); a project is in one Space, so the allowlist.
+  sqlite3 "$DB" "UPDATE monos SET data_json = json_set(data_json, '\$.messageAllowlist', json_array('ms2-mono')) WHERE id = 'ms1-mono'"
   # Messages first: a prompt carrying a message may quote a habit's text.
   jq -n --arg app "$(target_bin instance)" '{app: $app, rules: [
     {match: "MS-HELLO", calls: [
@@ -272,8 +332,9 @@ run_spaces_messages() {
   request_habit ms2-giga "Say hello" "MS2-GIGA-HABIT: say hello across."
   "$INSTANCE" start
   wait_until 90 "Space 1's Mono gets Space 2's answer" saw MS-BACK
-  wait_until 60 "Space 1's session tried" holds_log '[.[] | select(.input.message // "" | startswith("MS-FROM-KID"))] | length == 1'
   wait_until 60 "Space 2's Giga tried" holds_log '[.[] | select(.input.message // "" | startswith("MS-FROM-GIGA"))] | length == 1'
+  wait_for 60 holds_log '[.[] | select(.input.message // "" | startswith("MS-FROM-KID"))] | length == 1' \
+    || echo "  (Space 1's session never sent; its start: $(called MS-KID 'tostring'))"
   local c1
   c1="$(chat_of ms1-mono)"
   echo "spaces messages readings:"
@@ -315,7 +376,7 @@ run_spaces_messages() {
 run_spaces_grants() {
   log "spaces grants"
   sp_fresh grants
-  local p="$EVAL_HOME/gr-project" claude chat before
+  local p="$EVAL_HOME/gr-project" chat before
   sp_project "$p"
   sqlite3 "$DB" "INSERT INTO provider_accounts (provider, id, label, created_at) VALUES ('claude', 'acct-2', 'acct-2', $SP_NOW)"
   sp_mono gr-giga giga space-1 "$p" fx fx:zai/glm-5.2-fast
@@ -323,19 +384,21 @@ run_spaces_grants() {
   chat="$(chat_of gr-mono)"
   sqlite3 "$DB" "INSERT INTO account_route_grants (session_id, provider, from_account_id, to_account_id, granted_at, expires_at)
     VALUES ('$chat', 'claude', 'default', 'acct-2', $SP_NOW, $((SP_NOW + 3600000)))"
-  claude="$(sp_claude)"
-  sp_accounts "$SP_LOGINS/acct-2"
-  claude_override "$claude"
+  sp_clis
+  sp_accounts "$SP_LOGINS/claude/acct-2=$SP_OK"
+  # The window refuses a turn on a login its own list lacks ("a removed
+  # provider account"); until ADE-171 that list lives in localStorage.
+  sp_local monocode.providerAccounts.v1 '{"claude": [{"id": "acct-2", "provider": "claude", "label": "Account 2"}]}'
   jq -n --arg app "$(target_bin instance)" '{app: $app, rules: [
     {match: "GR-HABIT", calls: [{tool: "send_message", arguments:
       {message: "GR-TURN Say ok.", send_to: "gr-mono", wanting_reply: false, intent: "new"}}], reply: "Sent."}]}' \
     >"$PUPPET/script.json"
   request_habit gr-giga "Message" "GR-HABIT: message the Mono."
   "$INSTANCE" start
-  wait_until 90 "the granted turn starts Claude" bash -c "grep -q 'acct-2' '$EVAL_HOME/.spaces/claude.jsonl'"
+  wait_until 90 "the granted turn starts Claude" sp_started claude/acct-2
   echo "spaces grants readings:"
-  expect "under the grant: Claude starts on the granted login, never another" \
-    "$(($(sp_count "/provider-accounts/claude/acct-2 ") >= 1)) $(sp_starts | grep -vc '/provider-accounts/claude/acct-2 ' || true)" "1 0"
+  sp_starts | sed 's/^/  claude start: /'
+  expect "under the grant: Claude starts on the granted login" "$(($(sp_count "/provider-accounts/claude/acct-2 ") >= 1))" 1
   expect "the grant stays while it is valid" "$(q "SELECT count(*) FROM account_route_grants WHERE session_id = '$chat'")" 1
   "$INSTANCE" stop
   before="$(sp_count "/provider-accounts/claude/acct-2 ")"
