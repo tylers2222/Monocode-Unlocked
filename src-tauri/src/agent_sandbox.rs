@@ -5,13 +5,15 @@
 //! Every MonoCode data folder is in both deny lists. The user's `extraAllowWrite`
 //! and `extraAllowedDomains` are added to the defaults on every spawn, and srt
 //! lets `denyWrite` win, so an addition cannot reopen a denied path.
-//! A spawn with write rules of its own (ADE-44's hook files, the Space fence)
-//! gets a copy with them added, `agent-sandbox-<hash of its content>.json`.
+//! A spawn with write rules of its own (ADE-44's hook files, its login's
+//! folder) gets a copy with them added, `agent-sandbox-<hash of its content>.json`.
 //!
-//! The Space write fence (ADE-177): once a second Space exists the sandbox is
-//! on for every spawn, marker or not, and a spawn may write to its own
-//! checkout but to no checkout another Space holds. Windows has no srt, so
-//! there the fence is not available and spawns start unfenced.
+//! The Space fence is removed (ADE-226). From ADE-177 a second Space turned
+//! this sandbox on for every agent, and srt's network allow list then refused
+//! every host off it (DigitalOcean, Hugging Face, Linear, pypi, docker, SSH),
+//! which no allow list can fix. Space separation is checkout lease placement
+//! (`spaces::leases::place`): a session in a checkout another Space holds runs
+//! in its own Space's copy. The only sandbox is this opt-in ADE-41 marker.
 
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
@@ -21,9 +23,6 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, Runtime};
-
-use crate::session_store::SessionStore;
-use crate::spaces::leases::{lease_on, leases};
 
 /// The settings format is a research preview, so no other version runs.
 const SRT_VERSION: &str = "0.0.81";
@@ -99,110 +98,39 @@ pub(crate) struct Spawn {
     pub(crate) sandboxed: bool,
 }
 
+/// The folders a spawn's CLI keeps its login and state in.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct Homes<'a> {
+    /// `harness::provider_account_dir`: writable outside the app data only.
+    pub(crate) account: Option<&'a Path>,
+    /// A Mono's private Codex home in the app data (`codex_mono_store`):
+    /// readable and writable, and nothing else in the app data is.
+    pub(crate) codex: Option<&'a Path>,
+}
+
 /// srt write rules one spawn adds to the shared settings.
 #[derive(Default)]
 struct SpawnRules {
     allow_write: Vec<String>,
     deny_write: Vec<String>,
-}
-
-/// What the Space write fence lets one spawn write, and what it keeps it out of.
-#[derive(Debug)]
-pub(crate) struct Fence {
-    /// The spawn's own checkout, `None` outside every checkout its Space holds.
-    checkout: Option<PathBuf>,
-    /// The main checkout's `.git`, which a linked copy commits to.
-    git: Option<PathBuf>,
-    /// Every checkout another Space holds.
-    pub(crate) others: Vec<PathBuf>,
-}
-
-impl Fence {
-    fn own(&self) -> impl Iterator<Item = &PathBuf> {
-        self.checkout.iter().chain(&self.git)
-    }
-}
-
-/// Whether every agent child must run fenced: the user has more than one Space.
-pub(crate) fn fence_on(store: &SessionStore) -> Result<bool, String> {
-    Ok(crate::spaces::list(store)?.len() > 1)
-}
-
-/// The fence for a child of `session` (`spaces::Child::session`) starting
-/// in `workdir`, `None` while the user has one Space. Its own checkout is the
-/// one its Space leases around `workdir`, where the spawn hook placed it
-/// (`spaces::leases::place`). A child of no session has no Space, so every
-/// leased checkout is another's.
-pub(crate) fn space_fence(
-    store: &SessionStore,
-    session: Option<&str>,
-    workdir: &Path,
-) -> Result<Option<Fence>, String> {
-    if !fence_on(store)? {
-        return Ok(None);
-    }
-    let space = session
-        .map(|session| {
-            let conn = store.lock_conn()?;
-            let session = crate::harness::child_session(session);
-            crate::spaces::membership::space_for_row(&conn, session, None)
-                .map_err(|e| e.to_string())
-        })
-        .transpose()?;
-    let space = space.as_ref();
-    let leases = leases(store)?;
-    let real = std::fs::canonicalize(workdir).map_err(|e| format!("{}: {e}", workdir.display()))?;
-    let key = crate::mono_gate::path_key(&crate::fs::path_to_js(&real));
-    let checkout = lease_on(&leases, &key, None)
-        .filter(|lease| Some(&lease.space_id) == space)
-        .map(|lease| PathBuf::from(&lease.checkout_path));
-    // A lease on the shared Giga workspace predates the rule that never takes one.
-    let shared = crate::spaces::leases::shared_workspace();
-    Ok(Some(Fence {
-        git: checkout.as_deref().and_then(git_dir),
-        checkout,
-        others: leases
-            .iter()
-            .filter(|lease| Some(&lease.space_id) != space)
-            .map(|lease| PathBuf::from(&lease.checkout_path))
-            .filter(|other| {
-                shared
-                    .as_ref()
-                    .is_none_or(|shared| !other.starts_with(shared))
-            })
-            .collect(),
-    }))
-}
-
-/// The git folder the checkout at `top` commits to: its `.git`, or for a
-/// linked worktree the main checkout's (`gitdir:` in its `.git` file, then
-/// that folder's `commondir`).
-fn git_dir(top: &Path) -> Option<PathBuf> {
-    let dot_git = top.join(".git");
-    if dot_git.is_dir() {
-        return std::fs::canonicalize(dot_git).ok();
-    }
-    let link = std::fs::read_to_string(dot_git).ok()?;
-    let gitdir = top.join(link.strip_prefix("gitdir:")?.trim());
-    let common = std::fs::read_to_string(gitdir.join("commondir"))
-        .map_or_else(|_| gitdir.clone(), |dir| gitdir.join(dir.trim()));
-    std::fs::canonicalize(common).ok()
+    /// Folders in the app data this spawn reads and writes.
+    carve: Vec<PathBuf>,
 }
 
 pub(crate) fn command<R: Runtime>(
     app: &AppHandle<R>,
     program: &str,
-    fence: Option<&Fence>,
     spawn_deny: &[String],
+    homes: Homes,
 ) -> Result<Spawn, String> {
     let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    command_in(&data, program, fence, spawn_deny, find_srt)
+    command_in(&data, program, spawn_deny, homes, find_srt)
 }
 
 #[cfg(test)]
 thread_local! {
     /// The srt spawns on this thread find in place of the search PATH's,
-    /// `Some(None)` for none: a scenario with two Spaces needs one to spawn.
+    /// `Some(None)` for none: a scenario with the marker on needs one to spawn.
     pub(crate) static SRT_STAND_IN: std::cell::RefCell<Option<Option<PathBuf>>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -217,67 +145,40 @@ fn find_srt() -> Option<PathBuf> {
     crate::harness::resolve_gui_binary("srt")
 }
 
-/// `command` for the app data folder `data`, with `fence` and `spawn_deny`
-/// added to srt's write rules for this spawn only; `find_srt` runs only when
-/// the sandbox is on. A fence turns it on without the marker, and a fence
-/// without a working srt refuses the spawn, except on Windows, where srt does
-/// not run and the spawn starts unfenced.
+/// `command` for the app data folder `data`, with `spawn_deny` and `homes`
+/// added to srt's rules for this spawn only; `find_srt` runs only when the
+/// marker turns the sandbox on.
 pub(crate) fn command_in(
     data: &Path,
     program: &str,
-    fence: Option<&Fence>,
     spawn_deny: &[String],
+    homes: Homes,
     find_srt: impl FnOnce() -> Option<PathBuf>,
 ) -> Result<Spawn, String> {
-    let marker =
+    let sandboxed =
         std::fs::exists(data.join(ON_MARKER)).map_err(|e| format!("{}: {e}", data.display()))?;
-    let fenced = fence.is_some() && !cfg!(windows);
-    #[cfg(windows)]
-    {
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        if fence.is_some() {
-            ONCE.call_once(|| {
-                eprintln!("The write fence between Spaces is unavailable on Windows: agents start unfenced.");
-            });
-        }
-    }
-    let sandboxed = marker || fenced;
     if !sandboxed {
         let cmd = Command::new(program);
         return Ok(Spawn { cmd, sandboxed });
     }
-    let why = if marker {
-        ""
-    } else {
-        " to fence each Space's writes"
+    let srt = pinned_srt(find_srt())?;
+    let mut rules = SpawnRules {
+        deny_write: spawn_deny.to_vec(),
+        ..SpawnRules::default()
     };
-    let srt = pinned_srt(find_srt(), why)?;
-    let mut rules = fence.map(fence_rules).transpose()?.unwrap_or_default();
-    rules.deny_write.extend_from_slice(spawn_deny);
+    // The CLI keeps its config and refreshed login there. A login folder
+    // inside the app data stays denied, as the rest of it.
+    rules.allow_write.extend(
+        homes
+            .account
+            .filter(|dir| !dir.starts_with(data))
+            .map(path_entry),
+    );
+    rules.carve.extend(homes.codex.map(Path::to_path_buf));
     let settings = write_settings(data, &srt, rules)?;
     let mut cmd = Command::new(srt);
     cmd.arg("--settings").arg(settings).arg("--").arg(program);
     Ok(Spawn { cmd, sandboxed })
-}
-
-/// srt's write allows and denies for `fence`. srt lets a deny win, and a
-/// linked copy commits into its main checkout's `.git`, so a checkout that
-/// holds a folder of the spawn's own is denied around it: each entry beside
-/// the way down. Git runs that folder's hooks, and its config's
-/// `core.fsmonitor` or `core.hooksPath`, outside srt for every checkout that
-/// shares it, and srt guards only the `.git` in the child's own folder, so
-/// both stay denied.
-fn fence_rules(fence: &Fence) -> Result<SpawnRules, String> {
-    let own: Vec<PathBuf> = fence.own().cloned().collect();
-    let mut deny = Vec::new();
-    for other in &fence.others {
-        deny_around(other, &own, &mut deny)?;
-    }
-    deny.extend(fence.git.as_deref().into_iter().flat_map(git_code));
-    Ok(SpawnRules {
-        allow_write: own.iter().map(PathBuf::as_path).map(path_entry).collect(),
-        deny_write: deny,
-    })
 }
 
 /// What git in `git` runs outside srt: its hooks, and its config's commands.
@@ -307,10 +208,10 @@ fn deny_around(folder: &Path, keep: &[PathBuf], deny: &mut Vec<String>) -> Resul
     Ok(())
 }
 
-fn pinned_srt(srt: Option<PathBuf>, why: &str) -> Result<PathBuf, String> {
+fn pinned_srt(srt: Option<PathBuf>) -> Result<PathBuf, String> {
     let install = format!("npm install -g @anthropic-ai/sandbox-runtime@{SRT_VERSION}");
     let srt = srt.ok_or_else(|| {
-        format!("The agent sandbox is on{why}, but srt is not installed. Run `{install}`.")
+        format!("The agent sandbox is on, but srt is not installed. Run `{install}`.")
     })?;
     let output = crate::harness::exec_output(
         &srt.to_string_lossy(),
@@ -388,6 +289,7 @@ fn write_settings(data: &Path, srt: &Path, spawn: SpawnRules) -> Result<PathBuf,
     default_write.push(path_entry(&std::env::temp_dir()));
     default_write
         .extend(["opencode", "devin", "gh", "doctl"].map(|tool| path_entry(&config.join(tool))));
+    default_write.extend(keychain_cache().as_deref().map(path_entry));
     for list in [&mut deny_read, &mut deny_write, &mut default_write] {
         add_resolved(list);
     }
@@ -419,7 +321,7 @@ fn write_settings(data: &Path, srt: &Path, spawn: SpawnRules) -> Result<PathBuf,
         Ok(())
     })
     .map_err(|e| format!("{}: {e}", path.display()))?;
-    if spawn.allow_write.is_empty() && spawn.deny_write.is_empty() {
+    if spawn.allow_write.is_empty() && spawn.deny_write.is_empty() && spawn.carve.is_empty() {
         return Ok(path);
     }
     // In a file named by its content, so a spawn starting at the same time
@@ -428,9 +330,15 @@ fn write_settings(data: &Path, srt: &Path, spawn: SpawnRules) -> Result<PathBuf,
         .map_err(|e| e.to_string())?;
     allow.extend(spawn.allow_write);
     let mut deny = [deny_write, spawn.deny_write].concat();
-    for list in [&mut allow, &mut deny] {
+    let mut read: Vec<String> = spawn.carve.iter().map(|dir| path_entry(dir)).collect();
+    if !spawn.carve.is_empty() {
+        allow.extend(read.iter().cloned());
+        carve_out(data, &spawn.carve, &mut deny)?;
+    }
+    for list in [&mut allow, &mut deny, &mut read] {
         add_resolved(list);
     }
+    written["filesystem"]["allowRead"] = json!(read);
     written["filesystem"]["allowWrite"] = json!(allow);
     written["filesystem"]["denyWrite"] = json!(deny);
     let mut hash = std::hash::DefaultHasher::new();
@@ -442,6 +350,63 @@ fn write_settings(data: &Path, srt: &Path, spawn: SpawnRules) -> Result<PathBuf,
     })
     .map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(path)
+}
+
+/// Opens `keep`, folders in the app data folder `data`, to writes. srt lets a
+/// deny win, so `deny`'s entries on `data` and on every MonoCode data folder
+/// become one on each entry beside the way down to `keep`, and one on each
+/// other data folder. srt's `allowRead` reopens reads.
+fn carve_out(data: &Path, keep: &[PathBuf], deny: &mut Vec<String>) -> Result<(), String> {
+    let instances = data.parent().map(|dir| dir.join(ALL_INSTANCES));
+    let mut covering: Vec<String> = std::iter::once(data)
+        .chain(instances.as_deref())
+        .map(path_entry)
+        .collect();
+    add_resolved(&mut covering);
+    deny.retain(|entry| !covering.contains(entry));
+    deny_around(data, keep, deny)?;
+    let Some(parent) = data.parent() else {
+        return Ok(());
+    };
+    let entries = std::fs::read_dir(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    for entry in entries {
+        let other = entry
+            .map_err(|e| format!("{}: {e}", parent.display()))?
+            .path();
+        let name = other.file_name().unwrap_or_default().to_string_lossy();
+        if name.starts_with("com.monocode.") && other != data {
+            deny.push(path_entry(&other));
+        }
+    }
+    Ok(())
+}
+
+/// The Keychain's module cache, in the per-user cache folder under
+/// `/var/folders` (`getconf DARWIN_USER_CACHE_DIR`). Without it every
+/// `security` call fails with "A Module Directory Service error", so Claude
+/// Code cannot read its login and reports it is not logged in.
+#[cfg(target_os = "macos")]
+fn keychain_cache() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let mut buf = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: confstr writes at most `buf.len()` bytes, its NUL included.
+    let len = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_CACHE_DIR,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+        )
+    };
+    if len == 0 || len > buf.len() {
+        return None;
+    }
+    buf.truncate(len - 1);
+    Some(PathBuf::from(std::ffi::OsString::from_vec(buf)).join("mds"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keychain_cache() -> Option<PathBuf> {
+    None
 }
 
 /// The user's additions under `key`. srt refuses the whole file for one entry

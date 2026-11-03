@@ -1535,8 +1535,6 @@ fn helpers_and_execs_run_where_their_session_does() {
     let data = root.join("app-data");
     std::fs::create_dir_all(&data).unwrap();
     let app = super::agent_sandbox::mock_app(&data);
-    // Two Spaces fence every child (ADE-177), so it needs an srt.
-    super::agent_sandbox::stand_in_srt(&root.join("tools"));
     super::space_checkouts::two_spaces(
         &app.state::<crate::session_store::SessionStore>(),
         &project,

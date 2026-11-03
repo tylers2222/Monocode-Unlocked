@@ -512,7 +512,7 @@ mod spawn {
     use tauri::async_runtime::block_on;
     use tauri::Manager;
 
-    use super::super::agent_sandbox::{mock_app, script, stand_in_srt, wait_for};
+    use super::super::agent_sandbox::{mock_app, script, wait_for};
     use super::{git_project, saved_copy, temp_root, text, two_spaces};
     use crate::checkpoint;
 
@@ -646,8 +646,6 @@ esac"#,
         let data = root.join("app-data");
         std::fs::create_dir_all(&data).unwrap();
         let app = mock_app(&data);
-        // Two Spaces fence every child (ADE-177), so it needs an srt.
-        stand_in_srt(&root.join("tools"));
         app.manage(crate::control::tests::host());
         checkpoint::init(app.handle()).unwrap();
         two_spaces(&app.state::<crate::session_store::SessionStore>(), &project);
