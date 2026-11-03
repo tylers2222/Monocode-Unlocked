@@ -39,6 +39,8 @@ mod space_login;
 #[cfg(not(windows))]
 mod space_rows;
 mod space_scope;
+#[cfg(unix)]
+mod space_shared;
 mod spaces;
 #[cfg(not(windows))]
 mod spaces_commands;

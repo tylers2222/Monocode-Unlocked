@@ -40,7 +40,7 @@ fn call(world: &World, caller: &Caller, args: &[&str]) -> Result<Option<SpaceSco
     }
 }
 
-fn scope_of(world: &World, caller: &Caller, args: &[&str]) -> SpaceScope {
+pub(super) fn scope_of(world: &World, caller: &Caller, args: &[&str]) -> SpaceScope {
     call(world, caller, args)
         .unwrap_or_else(|code| panic!("{args:?}: {code}"))
         .unwrap_or_else(|| panic!("{args:?}: no scope"))
@@ -110,6 +110,9 @@ fn move_to_work(world: &World, table: &str, id: &str) {
 }
 
 const MONOS_LIST: &[&str] = &["monos.list"];
+/// The Space 2 Mono's projects: /p1 and `remote://host/other` are assigned
+/// to Space 1, /p2 and `remote://host/path` to Space 2.
+const D_MONO_PROJECTS: [&str; 4] = ["/p1", "/p2", "remote://host/path/", "remote://host/other"];
 const GET_MONOS: &[&str] = &["messages.get_monos"];
 
 /// Space 1: a Giga, a regular Mono, a project session, a lead and its
@@ -135,8 +138,7 @@ impl Cast {
         let giga1 = world.add_mono("a-giga", MonoRole::Giga);
         let mono1 = world.add_mono_in("b-mono", MonoRole::Mono, &["/p1"]);
         let giga2 = world.add_mono("c-giga", MonoRole::Giga);
-        let projects2 = ["/p1", "/p2", "remote://host/path/", "remote://host/other"];
-        let mono2 = world.add_mono_in("d-mono", MonoRole::Mono, &projects2);
+        let mono2 = world.add_mono_in("d-mono", MonoRole::Mono, &D_MONO_PROJECTS);
         world.add_session("s1", "/p1", None);
         world.add_session("s2", "/p2", None);
         let lead1 = world.start_lead(&mono1, "lead1", "/p1");
@@ -185,9 +187,9 @@ impl Cast {
         };
         checkpoint(
             failed,
-            "a monos.list shows d-mono's Space 2 projects only",
+            "a monos.list shows every project of d-mono, its own Space's Mono (ADE-229)",
             projects_of(&listing, "d-mono"),
-            Some(vec!["/p2".to_owned(), "remote://host/path/".into()]),
+            Some(D_MONO_PROJECTS.map(str::to_owned).to_vec()),
         );
         let from_space1 = self.scope(&mono_caller(&self.mono1, "t1"), MONOS_LIST);
         checkpoint(
@@ -207,8 +209,14 @@ impl Cast {
             foreign(&p2),
             sorted(space1_saved.map(str::to_owned).to_vec()),
         );
-        let name = "a sessions.list refuses a Space 1 project";
-        checkpoint(failed, name, refused(&p2, "/p1"), true);
+        let name = "a sessions.list takes /p1, a project Space 1 shares (ADE-229)";
+        checkpoint(failed, name, refused(&p2, "/p1"), false);
+        let lead1_in_p2 = self.scope(
+            &session_caller(&self.lead1, "/p2"),
+            &["sessions.list", "--json", r#"{"project":"/p2"}"#],
+        );
+        let name = "a a Space 1 session in a project only Space 2 has gets no project";
+        checkpoint(failed, name, refused(&lead1_in_p2, "/p2"), true);
         let name = "a sessions.list takes a Space 2 project";
         checkpoint(failed, name, refused(&p2, "/p2"), false);
         checkpoint(
@@ -267,8 +275,8 @@ impl Cast {
             let name = format!("d habit run {run} answers for Space 2");
             checkpoint(failed, &name, space.as_str(), WORK);
             let projects = self.scope(&habit, &["sessions.list"]).projects;
-            let name = format!("d habit run {run} has its Mono's Space 2 projects");
-            let want = vec!["/p2".to_owned(), "remote://host/path/".into()];
+            let name = format!("d habit run {run} has every project of its Mono");
+            let want = D_MONO_PROJECTS.map(str::to_owned).to_vec();
             checkpoint(failed, &name, projects, want);
         }
     }
@@ -284,9 +292,9 @@ impl Cast {
         );
         checkpoint(
             failed,
-            "e a remote project left in Space 1 is refused",
+            "e a Mono's remote project assigned to Space 1 is still its own (ADE-229)",
             refused(&mono, "remote://host/other"),
-            true,
+            false,
         );
         let lead = self.scope(&session_caller(&self.lead2, REMOTE), &["sessions.list"]);
         checkpoint(
@@ -380,7 +388,8 @@ fn one_space(failed: &mut Vec<String>) {
 }
 
 /// Defect: a list action answers with another Space's Monos, projects or
-/// sessions; the caller's Space comes from anything but its saved rows (a
+/// sessions, or hides a Mono's own project assigned to another Space
+/// (ADE-229); the caller's Space comes from anything but its saved rows (a
 /// habit run reads its session); a Giga or a session sees other Spaces'
 /// Monos, or a regular Mono sees another Space's Giga or no Space name; a
 /// remote key reaches the Space rule in another form than `project_space`

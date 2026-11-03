@@ -144,7 +144,7 @@ fn work_cwd(store: &SessionStore, session: &str) -> Option<String> {
 }
 
 /// The folder the spawn hook starts `session`'s child in.
-fn spawn_in(world: &World, session: &str, workdir: &Path) -> Result<PathBuf, String> {
+pub(super) fn spawn_in(world: &World, session: &str, workdir: &Path) -> Result<PathBuf, String> {
     let target = SpawnTarget {
         workdir: workdir.to_path_buf(),
         account: None,

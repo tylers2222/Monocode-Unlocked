@@ -280,12 +280,20 @@ def register_rows(db, logins: dict, now: int) -> list[str]:
             done.append(f"space_accounts {SPACE_ID}/{provider}")
         elif chosen[0] != LOGIN_ID and not is_imported(db):
             raise Stop(f"{SPACE_NAME} already uses {provider} login {chosen[0]}")
-    # A project with no row is in Space 1, where a Space 2 session would run
-    # in a copy of its checkout: a project only Space 2 used moves with it,
-    # keyed as pathKey() (mono_gate::path_key) keys a POSIX or remote path.
+    # A project with no row is assigned to Space 1, where a Space 2 session
+    # would run in a copy of its checkout: a project only Space 2 used (its
+    # sessions' folders and its Monos' projects) moves with it, keyed as
+    # pathKey() (mono_gate::path_key) keys a POSIX or remote path. A project
+    # Space 1 also uses stays assigned to Space 1, and is in Space 2 too
+    # through the Space 2 Mono that lists it (spaces::project_spaces_in,
+    # ADE-229), so no project leaves a Space that uses it.
     for (project,) in db.execute(
-        "SELECT k FROM (SELECT CASE WHEN rtrim(cwd, '/') = '' THEN '/' ELSE rtrim(cwd, '/') END AS k, space_id"
-        " FROM main.sessions WHERE cwd GLOB '/*' OR cwd GLOB 'remote://*')"
+        "SELECT k FROM (SELECT CASE WHEN rtrim(p, '/') = '' THEN '/' ELSE rtrim(p, '/') END AS k, space_id"
+        " FROM (SELECT cwd AS p, space_id FROM main.sessions"
+        "       UNION ALL SELECT j.value, m.space_id FROM main.monos m,"
+        "         json_each(CASE WHEN json_valid(m.data_json) THEN m.data_json END, '$.projects') j"
+        "         WHERE j.type = 'text')"
+        " WHERE p GLOB '/*' OR p GLOB 'remote://*')"
         " GROUP BY k HAVING sum(space_id <> ?) = 0 ORDER BY k", (SPACE_ID,)
     ).fetchall():
         if db.execute("INSERT OR IGNORE INTO main.space_projects (project_path, space_id) VALUES (?, ?)",
