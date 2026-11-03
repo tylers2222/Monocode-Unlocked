@@ -245,13 +245,14 @@ const SESSION: &str =
     "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at, provider_account_id, lead_session_id)";
 const APPROVAL: &str = "INSERT INTO approvals (id, project_path, heading, summary, tradeoffs, options, urgency, links, requested_by, requested_by_name, created_at, status)";
 
+/// Space 1: a Mono with its chat in /p and its projects /p and /t.
 fn space_one(data: &Path) {
     app_folder(
         data,
         &format!(
             "INSERT OR REPLACE INTO mono_clock (id, active_ms, last_wall_ms, boot_wall_ms) VALUES (1, 5000, 0, 0);
              INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
-               VALUES ('m1', 'Made-up One', 'mono', '{{\"sessionId\":\"s1-a\"}}', 0, 1, 1);
+               VALUES ('m1', 'Made-up One', 'mono', '{{\"sessionId\":\"s1-a\",\"projects\":[\"/p\",\"/t\"]}}', 0, 1, 1);
              {SESSION} VALUES ('s1-a', '/p', 'claude', 'm', 'auto', 'Made-up one', 1, 1, NULL, NULL);
              {APPROVAL} VALUES ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', '/p', 'Made-up', 'S',
                '{{\"pros\":[],\"cons\":[]}}', '[]', 'blocking', '[]', 'm1', 'One', 1, 'open');"
@@ -260,8 +261,9 @@ fn space_one(data: &Path) {
     write(&data.join("monos/m1/MEMORY.md"), "Space 1's made-up memory");
 }
 
-/// MonoCode 2 today: its own clock and downtime, a Mono with its chat, a
-/// worker in a project only it used, an open ask with its event and outbox
+/// MonoCode 2 today: its own clock and downtime, a Mono with its chat and
+/// projects (one only it lists, two Space 1's Mono lists too), a worker in a
+/// project only it used, an open ask with its event and outbox
 /// row on its clock, an approval numbered as Space 1's, and a note.
 fn space_two(data: &Path) {
     app_folder(
@@ -270,7 +272,7 @@ fn space_two(data: &Path) {
             "INSERT OR REPLACE INTO mono_clock (id, active_ms, last_wall_ms, boot_wall_ms) VALUES (1, 1000, 0, 0);
              INSERT INTO mono_downtime (id, start_wall_ms, end_wall_ms, cause, active_ms) VALUES (1, 1, 2, 'sleep', 3);
              INSERT INTO monos (id, name, role, data_json, sort_order, created_at, updated_at)
-               VALUES ('m2', 'Made-up Two', 'mono', '{{\"sessionId\":\"s2-a\"}}', 0, 1, 1);
+               VALUES ('m2', 'Made-up Two', 'mono', '{{\"sessionId\":\"s2-a\",\"projects\":[\"/p\",\"/s/\",\"/t\"]}}', 0, 1, 1);
              {SESSION} VALUES ('s2-a', '/p', 'claude', 'm', 'auto', 'Made-up two', 1, 1, 'default', NULL);
              {SESSION} VALUES ('s2-b', '/q/', 'claude', 'm', 'auto', 'Made-up worker', 1, 1, NULL, 's2-a');
              INSERT INTO mono_transcripts (session_id) VALUES ('s2-a');
@@ -396,10 +398,11 @@ fn dry_run_predicts_and_writes_nothing(rig: &Rig) -> Json {
             "spaces space-2",
             "provider_accounts claude/monocode-2",
             "space_accounts space-2/claude",
-            "space_projects /q"
+            "space_projects /q",
+            "space_projects /s"
         ])
     );
-    assert_eq!(plan["changes"], 18);
+    assert_eq!(plan["changes"], 19);
     let left = &plan["not_imported"];
     assert_eq!(left["own_paths"]["count"], 1, "{left}");
     assert_eq!(
@@ -788,8 +791,28 @@ fn app_reads_the_spaces(rig: &Rig) {
         account_id: "monocode-2".into(),
     };
     assert!(account::logins(&store).unwrap().contains(&chosen));
-    assert_eq!(spaces::project_space(&store, "/q").unwrap(), "space-2");
-    assert_eq!(spaces::project_space(&store, "/p").unwrap(), "space-1");
+    // ADE-229: a project only Space 2 used, by a session (/q) or a Mono
+    // (/s), moves to Space 2. One Space 1 uses as well (/p, /t) stays
+    // assigned to Space 1 and is in Space 2 through Space 2's Mono.
+    let conn = store.lock_conn().unwrap();
+    for (project, assigned, every) in [
+        ("/q", "space-2", &["space-2"][..]),
+        ("/s", "space-2", &["space-2"]),
+        ("/p", "space-1", &["space-1", "space-2"]),
+        ("/t", "space-1", &["space-1", "space-2"]),
+    ] {
+        assert_eq!(
+            spaces::project_space_in(&conn, project).unwrap(),
+            assigned,
+            "{project} is assigned to another Space"
+        );
+        assert_eq!(
+            spaces::project_spaces_in(&conn, project).unwrap(),
+            every,
+            "{project} is in other Spaces"
+        );
+    }
+    drop(conn);
     let spawn = |session: &str| {
         let target = SpawnTarget {
             workdir: rig.root.join("no-such-folder"),

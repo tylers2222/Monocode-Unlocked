@@ -78,9 +78,11 @@ impl FromSql for Provider {
 
 /// One migration for every Spaces table, safe to run on each open. Monos and
 /// sessions that predate Spaces land in Space 1 through the column default.
-/// Projects need no backfill: `space_projects` holds only the folders moved
-/// out of Space 1, so a folder with no row is in Space 1. Project paths are
-/// stored in the front end's `pathKey()` form.
+/// Projects need no backfill: `space_projects` holds only the folders
+/// assigned out of Space 1, so a folder with no row is assigned to Space 1.
+/// A Mono's own projects are in its Space as well (`project_spaces_in`), so
+/// a project shared by several Spaces needs no row. Project paths are stored
+/// in the front end's `pathKey()` form.
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let fresh: bool = tx.query_row(
@@ -327,10 +329,47 @@ pub(crate) fn set_settings(
     settings(store)
 }
 
-/// The Space a project belongs to. A project with no row is in Space 1: the
-/// one rule every reader goes through.
+/// The Space a project is assigned: the one whose copy is its own folder
+/// (`leases::place`) and whose window lists it. A project with no row is in
+/// Space 1. It is not every Space the project is in: see
+/// [`project_spaces_in`].
 pub(crate) fn project_space(store: &SessionStore, project_path: &str) -> Result<String, String> {
     project_space_in(&*store.lock_conn()?, project_path)
+}
+
+/// Every Space `project_path` is a project of (ADE-229): the Space it is
+/// assigned ([`project_space_in`]), then the Space of each Mono that lists it,
+/// so a Mono's own projects are always its projects in its Space. One project
+/// may be in several Spaces; each works in its own copy (`leases::place`).
+/// This is the rule the app CLI's lists and project check read
+/// (`scope::scoped`).
+pub(crate) fn project_spaces_in(
+    conn: &Connection,
+    project_path: &str,
+) -> Result<Vec<String>, String> {
+    let project_path = project_key(project_path)?;
+    let mut spaces = vec![project_space_in(conn, &project_path)?];
+    let listed: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT m.space_id, j.value
+               FROM monos m,
+                    json_each(CASE WHEN json_valid(m.data_json) THEN m.data_json END, '$.projects') j
+              WHERE j.type = 'text'",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
+        })
+        .map_err(|e| e.to_string())?;
+    for (space, listed) in listed {
+        // A Mono's path that is no project key is in no Space.
+        if project_key(&listed).as_deref() == Ok(project_path.as_str()) && !spaces.contains(&space)
+        {
+            spaces.push(space);
+        }
+    }
+    Ok(spaces)
 }
 
 /// `project_space` on an open connection.
@@ -347,6 +386,10 @@ pub(crate) fn project_space_in(conn: &Connection, project_path: &str) -> Result<
     Ok(space.unwrap_or_else(|| FIRST_SPACE.to_owned()))
 }
 
+/// Assigns the project to Space `space_id`, out of the Space it was
+/// assigned. Its old Space's Monos keep it (`project_spaces_in`); only which
+/// Space owns its folder and lists it in the window changes. A Space gets a
+/// shared project through its Mono, never through this (ADE-229).
 pub(crate) fn set_project_space(
     store: &SessionStore,
     project_path: &str,

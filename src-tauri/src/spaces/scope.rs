@@ -2,7 +2,9 @@
 //! a caller. Its Space and role are the ones `check_action` resolved for the
 //! Space rule (ADE-174's `caller_space`, from saved rows only). A regular
 //! Mono also sees the regular Monos of other Spaces, marked with their
-//! Space's name.
+//! Space's name. A project is in its assigned Space and in the Space of each
+//! Mono that lists it (ADE-229), so a project several Spaces share is listed
+//! in each.
 
 use std::collections::HashMap;
 
@@ -10,7 +12,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::project_space_in;
+use super::project_spaces_in;
 use crate::mono_gate::{Caller, Speaker};
 use crate::mono_messages::{MonoId, SessionId};
 use crate::mono_roster::{self, MonoRole};
@@ -21,7 +23,8 @@ const SCOPED_ACTIONS: [&str; 3] = ["monos.list", "sessions.list", "messages.get_
 #[serde(rename_all = "camelCase")]
 pub struct SpaceScope {
     pub space: String,
-    /// The caller's own projects in its Space: a Mono's, or a session's folder.
+    /// The caller's own projects in its Space: a Mono's (always in its Space,
+    /// ADE-229), or a session's folder.
     pub projects: Vec<String>,
     pub monos: Vec<ScopedMono>,
     /// Saved sessions of other Spaces, which `sessions.list` hides.
@@ -38,8 +41,9 @@ pub struct ScopedMono {
     pub projects: Vec<String>,
 }
 
-/// A project path and its Space; `None` when the path is no project key.
-type Placed = (String, Option<String>);
+/// A project path and every Space it is in (`project_spaces_in`); none when
+/// the path is no project key.
+type Placed = (String, Vec<String>);
 
 /// A `monos` row as the rule reads it.
 struct MonoRow {
@@ -68,7 +72,7 @@ fn decide(
     let ours = |projects: &[Placed]| -> Vec<String> {
         projects
             .iter()
-            .filter(|(_, space)| space.as_deref() == Some(caller.space.as_str()))
+            .filter(|(_, spaces)| spaces.contains(&caller.space))
             .map(|(path, _)| path.clone())
             .collect()
     };
@@ -141,9 +145,10 @@ fn pairs<T: FromIterator<(String, String)>>(conn: &Connection, sql: &str) -> rus
         .collect()
 }
 
-/// A key `project_space` cannot read is in no Space, so no caller sees it.
+/// A key `project_spaces_in` cannot read is in no Space, so no caller sees it.
 fn placed(conn: &Connection, path: &str) -> Placed {
-    (path.to_owned(), project_space_in(conn, path).ok())
+    let spaces = project_spaces_in(conn, path).unwrap_or_default();
+    (path.to_owned(), spaces)
 }
 
 /// Every Mono in roster order, each project as `data_json` holds it.
