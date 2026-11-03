@@ -7,7 +7,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::codex_mono_store::{copy_rollouts_with_edges, restore_agent_edges, AgentEdge};
+use crate::codex_mono_store::{
+    closed_agent_edges, copy_rollouts_with_edges, restore_agent_edges, AgentEdge,
+};
 
 const ROLLOUT: &str = "rollout-2026-10-08T10-00-00-root.jsonl";
 const SNAPSHOT: &str = ".monocode-agent-state/root.json";
@@ -286,4 +288,31 @@ fn a_failed_config_share_leaves_no_temporary_link() {
         .filter(|name| name.starts_with(".config.toml."))
         .collect();
     assert_eq!(left, Vec::<String>::new());
+}
+
+/// Defect: a link in a folder above the login or the home (a linked login,
+/// macOS's `/var`) makes SQLite's no-follow open refuse the state database,
+/// so closed agents are neither read from the login nor restored in the home.
+#[test]
+fn closed_agents_survive_a_linked_folder_above_the_login_and_home() {
+    let scratch = Scratch::new();
+    let alias = scratch.root.join("alias");
+    std::os::unix::fs::symlink(&scratch.root, &alias).unwrap();
+    let (source, home) = (alias.join("login"), alias.join("home"));
+    let closed = "INSERT INTO thread_spawn_edges VALUES ('root', 'agent', 'closed')";
+    rusqlite::Connection::open(scratch.source.join("state_5.sqlite"))
+        .unwrap()
+        .execute_batch(&format!("{EDGES}; {closed};"))
+        .unwrap();
+    let edges = closed_agent_edges(&source, "root").unwrap();
+    assert_eq!(edges.len(), 1, "the closed agent was not read");
+    let rollout = source.join("sessions/2026/10/08").join(ROLLOUT);
+    copy_rollouts_with_edges(&source, &home, "root", &[rollout], &edges).unwrap();
+    let private = rusqlite::Connection::open(scratch.home.join("state_5.sqlite")).unwrap();
+    private.execute_batch(EDGES).unwrap();
+    restore_agent_edges(&home, "root").unwrap();
+    let status: String = private
+        .query_row("SELECT status FROM thread_spawn_edges", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(status, "closed");
 }
