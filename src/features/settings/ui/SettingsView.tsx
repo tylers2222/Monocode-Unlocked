@@ -238,15 +238,21 @@ import {
   useProviderAccountIdentities,
 } from "../../providers/model/providerAccountIdentity";
 import { ProviderAccountSubtitle } from "../../providers/ui/ProviderAccountSubtitle";
+// ADE-181 adds the route-grant default (rebase onto it).
 import {
+  loadRouteGrantDefault,
+  ROUTE_GRANT_DEFAULT,
+  ROUTE_GRANT_DURATIONS,
   saveComposerAutocorrect,
   saveMaskEmails,
   saveRailMonosPinned,
+  saveRouteGrantDefault,
   saveShowRemainingUsage,
   useComposerAutocorrect,
   useMaskEmails,
   useRailMonosPinned,
   useShowRemainingUsage,
+  type RouteGrantDuration,
 } from "../model/displayPrefs";
 import {
   accountStatus,
@@ -406,6 +412,7 @@ import {
 import { SkillsPage } from "../../skills/ui/SkillsPage";
 import { ProjectNotificationSettings } from "../../notifications/ui/ProjectNotificationSettings";
 import { WorktreesPage } from "../../source-control/ui/WorktreesPage";
+import { NewSpaceButton, SpacesList } from "../../spaces/ui/SpacesSettings";
 import {
   removeWorktree,
   type RemoveWorktree,
@@ -594,6 +601,7 @@ export function SettingsView({
               ) : null}
               {section === "chat" ? <ChatPage /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}
+              {section === "spaces" ? <SpacesPage /> : null}
               {section === "monos" ? <MonosPage /> : null}
               {section === "mcp" ? (
                 <McpSettings cwd={cwd} recents={recents} />
@@ -970,6 +978,91 @@ function GeneralPage({
         <UpdateRow onOpenWhatsNew={onOpenWhatsNew} />
       </Group>
     </>
+  );
+}
+
+const ROUTE_GRANT_DURATION_LABEL: Record<RouteGrantDuration, string> = {
+  1: "1 hour",
+  3: "3 hours",
+  6: "6 hours",
+  12: "12 hours",
+  24: "24 hours",
+  reset: "Until the limit resets",
+};
+
+function SpacesPage() {
+  const [routeGrantDefault, setRouteGrantDefault] = useState(
+    loadRouteGrantDefault,
+  );
+
+  const onRouteGrantDefault = (value: string) => {
+    const next =
+      ROUTE_GRANT_DURATIONS.find((duration) => String(duration) === value) ??
+      ROUTE_GRANT_DEFAULT;
+    saveRouteGrantDefault(next);
+    setRouteGrantDefault(next);
+  };
+
+  return (
+    <>
+      <Group
+        id="spaces-list"
+        title="Spaces"
+        description="Each Space has its own logins, Gigas, Monos, projects and sessions. Every Space keeps running while you look at another one."
+        action={<NewSpaceButton />}
+      >
+        <SpacesList />
+      </Group>
+      <Group title="When a login runs out">
+        <Row
+          id="route-grant-default"
+          label="Use the other login for"
+          description="Default time for the usage-limit card. When a login hits its limit, the card starts on this time; you can pick another one there. After that time the session stops and asks again."
+        >
+          <Select
+            label="Use the other login for"
+            value={String(routeGrantDefault)}
+            options={ROUTE_GRANT_DURATIONS.map((duration) => ({
+              value: String(duration),
+              label: ROUTE_GRANT_DURATION_LABEL[duration],
+              hint: duration === ROUTE_GRANT_DEFAULT ? "default" : undefined,
+            }))}
+            onChange={onRouteGrantDefault}
+          />
+        </Row>
+      </Group>
+      <Group title="Between Spaces">
+        <Row
+          label="Messages"
+          description="A regular Mono can message a regular Mono in another Space. Gigas, sessions, asks and steers stay in their own Space."
+        >
+          <span className="text-[12px] text-content/45">
+            Regular Monos only
+          </span>
+        </Row>
+        <Row
+          label="Same project"
+          description={
+            <>
+              When two Spaces open one project, the second Space works in its
+              own worktree (
+              <InlineCode>monocode-worktrees/space-2/…</InlineCode>) on{" "}
+              <InlineCode>space-2/</InlineCode> branches.
+            </>
+          }
+        >
+          <span className="text-[12px] text-content/45">Automatic</span>
+        </Row>
+      </Group>
+    </>
+  );
+}
+
+function InlineCode({ children }: { children: ReactNode }) {
+  return (
+    <code className="rounded bg-content/[0.07] px-1 font-mono text-[11.5px] text-content">
+      {children}
+    </code>
   );
 }
 
@@ -4247,7 +4340,7 @@ function Row({
   /** Matches a `SETTINGS_INDEX` id so search can scroll here. */
   id?: string;
   label: ReactNode;
-  description?: string;
+  description?: ReactNode;
   children?: ReactNode;
 }) {
   const revealed = useContext(RevealedSetting);
@@ -4494,7 +4587,7 @@ function Select({
 }: {
   label: string;
   value: string;
-  options: { value: string; label: string; icon?: ReactNode }[];
+  options: { value: string; label: string; icon?: ReactNode; hint?: string }[];
   onChange: (value: string) => void;
   onOpen?: () => void;
 }) {
@@ -4646,6 +4739,11 @@ function Select({
                   </span>
                 ) : null}
                 <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                {option.hint ? (
+                  <span className="shrink-0 text-[11px] text-content/35">
+                    {option.hint}
+                  </span>
+                ) : null}
                 {isSelected ? (
                   <Check className="size-3.5 shrink-0" strokeWidth={2.25} />
                 ) : null}

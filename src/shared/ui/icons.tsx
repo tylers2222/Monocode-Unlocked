@@ -67,6 +67,7 @@ import InformationCircleIcon from "@hugeicons/core-free-icons/InformationCircleI
 import Notification01Icon from "@hugeicons/core-free-icons/Notification01Icon";
 import NotificationOff01Icon from "@hugeicons/core-free-icons/NotificationOff01Icon";
 import KeyboardIcon from "@hugeicons/core-free-icons/KeyboardIcon";
+import Layers01Icon from "@hugeicons/core-free-icons/Layers01Icon";
 import LayoutAlignLeftIcon from "@hugeicons/core-free-icons/LayoutAlignLeftIcon";
 import LayoutAlignRightIcon from "@hugeicons/core-free-icons/LayoutAlignRightIcon";
 import LayoutBottomIcon from "@hugeicons/core-free-icons/LayoutBottomIcon";
@@ -236,6 +237,7 @@ export const Info = wrap(InformationCircleIcon, "Info");
 export const Bell = wrap(Notification01Icon, "Bell");
 export const BellOff = wrap(NotificationOff01Icon, "BellOff");
 export const Keyboard = wrap(KeyboardIcon, "Keyboard");
+export const Layers = wrap(Layers01Icon, "Layers");
 export const ListBullet = wrap(LeftToRightListBulletIcon, "ListBullet");
 export const ListEnd = wrap(ListEndIcon, "ListEnd");
 export const ListFilter = wrap(FilterIcon, "ListFilter");

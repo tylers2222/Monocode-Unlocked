@@ -23,7 +23,11 @@ import {
   HARNESSES,
   HARNESS_TITLE,
 } from "../../sessions/model/session";
-import { saveMaskEmails, saveShowRemainingUsage } from "../model/displayPrefs";
+import {
+  loadRouteGrantDefault,
+  saveMaskEmails,
+  saveShowRemainingUsage,
+} from "../model/displayPrefs";
 import {
   createMono,
   findMono,
@@ -738,6 +742,76 @@ describe("settings pages", () => {
     expect(localStorage.getItem("monocode.uiScale")).toBe("1.5");
     expect(trigger.getAttribute("aria-label")).toBe("Interface scale: 150%");
     document.documentElement.style.removeProperty("zoom");
+  });
+
+  // Frames 3 and 5 (ADE-170): the default the usage-limit card starts on.
+  it("sets the usage-limit card's default time on the Spaces page", async () => {
+    await render("spaces");
+    expect(container.querySelector("h1")?.textContent).toBe("Spaces");
+    const text = container.textContent ?? "";
+    for (const line of [
+      "One window, several Spaces. Each one is like a separate copy of MonoCode.",
+      "Each Space has its own logins, Gigas, Monos, projects and sessions. Every Space keeps running while you look at another one.",
+      "New Space",
+      "When a login runs out",
+      "Use the other login for",
+      "Default time for the usage-limit card. When a login hits its limit, the card starts on this time; you can pick another one there. After that time the session stops and asks again.",
+      "Between Spaces",
+      "Messages",
+      "A regular Mono can message a regular Mono in another Space. Gigas, sessions, asks and steers stay in their own Space.",
+      "Regular Monos only",
+      "Same project",
+      "Automatic",
+    ]) {
+      expect(text).toContain(line);
+    }
+    expect(text).toContain(
+      "the second Space works in its own worktree (monocode-worktrees/space-2/…) on space-2/ branches.",
+    );
+
+    const row = container.querySelector(
+      '[data-setting-id="route-grant-default"]',
+    )!;
+    const trigger = row.querySelector<HTMLButtonElement>(
+      '[aria-haspopup="listbox"]',
+    )!;
+    expect(trigger.getAttribute("aria-label")).toBe(
+      "Use the other login for: 6 hours",
+    );
+
+    await act(async () => trigger.click());
+    const options = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    );
+    expect(options.map((node) => node.textContent)).toEqual([
+      "1 hour",
+      "3 hours",
+      "6 hoursdefault",
+      "12 hours",
+      "24 hours",
+      "Until the limit resets",
+    ]);
+    // Label only; 6 hours adds the "default" hint and the check.
+    expect(options.map((node) => node.childElementCount)).toEqual([
+      1, 1, 3, 1, 1, 1,
+    ]);
+    await act(async () => options[5]!.click());
+
+    expect(loadRouteGrantDefault()).toBe("reset");
+    expect(trigger.getAttribute("aria-label")).toBe(
+      "Use the other login for: Until the limit resets",
+    );
+
+    // A fresh mount reads the saved choice back.
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render("spaces");
+    expect(
+      container
+        .querySelector('[data-setting-id="route-grant-default"]')!
+        .querySelector('[aria-haspopup="listbox"]')!
+        .getAttribute("aria-label"),
+    ).toBe("Use the other login for: Until the limit resets");
   });
 
   it("reports collapsed project rail changes to the app shell", async () => {

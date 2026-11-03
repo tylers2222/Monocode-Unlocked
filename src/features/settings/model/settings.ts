@@ -22,6 +22,7 @@ export type SettingsSectionId =
   | "connections"
   | "appearance"
   | "keybindings"
+  | "spaces"
   | "chat"
   | "providers"
   | "mcp"
@@ -81,6 +82,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "Every shortcut the workspace handles, from the app menu and the key handler.",
     keywords: "shortcut hotkey keyboard binding",
+  },
+  {
+    id: "spaces",
+    group: "app",
+    label: "Spaces",
+    description:
+      "One window, several Spaces. Each one is like a separate copy of MonoCode.",
   },
   {
     id: "chat",
@@ -173,6 +181,18 @@ export type SettingsEntry = {
 };
 
 export const SETTINGS_INDEX: SettingsEntry[] = [
+  {
+    id: "spaces-list",
+    section: "spaces",
+    label: "Spaces",
+    keywords: "new space rename claude codex login",
+  },
+  {
+    id: "route-grant-default",
+    section: "spaces",
+    label: "Use the other login for",
+    keywords: "login runs out usage limit hours reset default time",
+  },
   {
     id: "remote-machines",
     section: "connections",
