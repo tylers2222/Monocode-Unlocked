@@ -180,7 +180,9 @@ fn cli_name(provider: Provider) -> &'static str {
 
 /// The login a session's child starts with: the session's own (any but the
 /// CLI's `default`, which the front end sends for a session without one),
-/// else its Space's login for that CLI. Space 1 with none set keeps the
+/// else its project's own login in its Space, else its Space's login for
+/// that CLI (`project_login`). The project is the session's folder, or the
+/// child's for a session with no row. Space 1 with none set keeps the
 /// CLI's own login, as every session did before Spaces; another Space
 /// refuses. A session with no row yet (never saved, or its first save not
 /// committed) is in the Space it would join. A child whose CLI keeps no
@@ -199,16 +201,18 @@ pub(super) fn resolve(
     else {
         return Ok(target);
     };
-    let (space_id, name, login) = with_conn(store, |conn| {
-        let space_id = membership::space_for_row(conn, session_id, None)?;
-        let (name, login): (String, Option<String>) = conn.query_row(
+    let (space_id, name, folder) = with_conn(store, |conn| {
+        let space_id = membership::space_for_row(conn, session_id, None, None)?;
+        let (name, folder): (String, Option<String>) = conn.query_row(
             "SELECT COALESCE((SELECT name FROM spaces WHERE id = ?1), ?1),
-                    (SELECT account_id FROM space_accounts WHERE space_id = ?1 AND provider = ?2)",
-            params![space_id, provider],
+                    (SELECT cwd FROM sessions WHERE id = ?2)",
+            params![space_id, session_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        Ok((space_id, name, login))
+        Ok((space_id, name, folder))
     })?;
+    let project = folder.unwrap_or_else(|| target.workdir.to_string_lossy().into_owned());
+    let login = super::project_login(store, &space_id, &project, provider)?;
     match login {
         Some(id) => Ok(SpawnTarget {
             account: Some(HarnessAccount {

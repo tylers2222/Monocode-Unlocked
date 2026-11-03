@@ -15,9 +15,10 @@ use super::world::World;
 use crate::mono_roster::MonoRole;
 use crate::session_store::{self, SessionUpsert};
 use crate::spaces::account::{self, ProviderAccount, SpaceLogin};
-use crate::spaces::{Provider, FIRST_SPACE};
+use crate::spaces::{self, ProjectLogin, Provider, FIRST_SPACE};
 
 const P: &str = "/p";
+const P2: &str = "/p2";
 const SPACE_2: &str = "space-2";
 const HABIT: &str = "habit-6f1d2c3a-1b2c-4d5e-8f90-a1b2c3d4e5f6";
 
@@ -43,6 +44,54 @@ fn login(id: &str) -> ProviderAccount {
         id: id.into(),
         label: id.into(),
     }
+}
+
+/// A run of automation `automation-1`, saved as the web app saves it.
+fn automation_run(world: &World, id: &str, cwd: &str) {
+    let session: SessionUpsert = serde_json::from_value(json!({
+        "id": id,
+        "cwd": cwd,
+        "harness": "claude",
+        "model": "claude:default",
+        "modelSettings": {},
+        "runtimeMode": "auto",
+        "title": id,
+        "blocks": [],
+        "automationId": "automation-1",
+    }))
+    .unwrap();
+    session_store::upsert_session(&world.conn(), &session).unwrap();
+}
+
+/// P2 moves to Space 2 with its own Claude login there (ADE-171), and gets
+/// a worker of `lead` (`p2w`). Automation runs, which have no Mono owner,
+/// take their project's Space whichever Space is active. Leaves Space 1
+/// active.
+fn a_project_keeps_its_space_and_login(world: &World, lead: &str) {
+    spaces::set_project_space(world.store(), P2, SPACE_2).unwrap();
+    account::save_account(world.store(), &login("proj2"), world.now()).unwrap();
+    let project_login = ProjectLogin {
+        space_id: SPACE_2.into(),
+        project_path: P2.into(),
+        provider: Provider::Claude,
+        account_id: "proj2".into(),
+    };
+    spaces::set_project_login(world.store(), &project_login).unwrap();
+    world.add_session("p2w", P2, Some(lead));
+    automation_run(world, "auto2", P2);
+    assert_eq!(
+        space_of(world, "auto2"),
+        SPACE_2,
+        "an automation run took the active Space, not its project's"
+    );
+    activate(world, SPACE_2);
+    automation_run(world, "auto1", P);
+    assert_eq!(
+        space_of(world, "auto1"),
+        FIRST_SPACE,
+        "an automation run in a Space 1 project took the active Space"
+    );
+    activate(world, FIRST_SPACE);
 }
 
 /// A user session saved as the web app saves it, plus a `spaceId` the
@@ -72,7 +121,9 @@ fn user_session_naming(world: &World, id: &str, space: &str) {
 /// loses to its Space's; a Space with no login for a CLI starts the child on
 /// the CLI's own login instead of refusing; or a session with no row yet
 /// takes the caller's `default` login instead of the Space it would join,
-/// its parent's or the active one, or loses the login its caller named.
+/// its parent's or the active one, or loses the login its caller named; an
+/// automation run takes the active Space instead of its project's; or a
+/// project's own login in its Space loses to the Space's login.
 #[test]
 fn a_session_takes_its_parents_space_and_runs_on_that_spaces_login() {
     let mut world = World::new("space-login");
@@ -150,6 +201,7 @@ fn a_session_takes_its_parents_space_and_runs_on_that_spaces_login() {
             "{what} is outside its parent's Space"
         );
     }
+    a_project_keeps_its_space_and_login(&world, lead.as_str());
     // A MonoCode 2 session as the import will write it (ADE-178).
     world.add_session("m2", P, None);
     world
@@ -179,20 +231,25 @@ mod spawn {
         path.to_string_lossy().into_owned()
     }
 
-    /// `harness_spawn` on the World's database with a stand-in fx that
-    /// writes its Claude config folder.
-    pub(super) fn children_run_on_their_spaces_login(world: &World, habit: &str) {
-        let root = std::env::temp_dir().join(format!("ade172-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let root = std::fs::canonicalize(&root).unwrap();
-        let fx = script(
+    /// A stand-in fx that writes its Claude config folder to `ran`.
+    fn stand_in_fx(root: &Path) -> std::path::PathBuf {
+        script(
             &root.join("fx"),
             r#"case "$1" in
   --help) echo "fx acp: ask over the Agent Client Protocol" ;;
   --version) echo "fx 0.0.1" ;;
   *) printf '%s\n' "$CLAUDE_CONFIG_DIR" > ran.part && mv ran.part ran ;;
 esac"#,
-        );
+        )
+    }
+
+    /// `harness_spawn` on the World's database with a stand-in fx that
+    /// writes its Claude config folder.
+    pub(super) fn children_run_on_their_spaces_login(world: &World, habit: &str) {
+        let root = std::env::temp_dir().join(format!("ade172-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
+        let fx = stand_in_fx(&root);
         let data = root.join("app-data");
         std::fs::create_dir_all(&data).unwrap();
         let store = SessionStore::open_at(world.path().to_path_buf(), world.now()).unwrap();
@@ -231,6 +288,11 @@ esac"#,
             spawn("w2", "claude", "default"),
             Ok(config("space2")),
             "a Space 2 child did not get Space 2's CLAUDE_CONFIG_DIR"
+        );
+        assert_eq!(
+            spawn("p2w", "claude", "default"),
+            Ok(config("proj2")),
+            "a project's own login in its Space lost to the Space's login"
         );
         assert_eq!(
             spawn("m2", "claude", "default"),

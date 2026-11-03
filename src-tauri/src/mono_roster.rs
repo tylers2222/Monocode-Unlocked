@@ -315,7 +315,7 @@ fn insert_rows(conn: &Connection, monos: &[ValidCreate]) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     for mono in monos {
-        let space_id = crate::spaces::membership::space_for_row(conn, &mono.id, None)
+        let space_id = crate::spaces::membership::space_for_row(conn, &mono.id, None, None)
             .map_err(|e| e.to_string())?;
         statement
             .execute(params![
