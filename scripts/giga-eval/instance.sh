@@ -38,12 +38,15 @@
 # through LaunchServices, hidden (open -g -j), instead of as a child. The app
 # then starts in /, not in the scratch project.
 #
-# Every start: `security` on the app's PATH must be keychain.sh's stub, or the
-# app does not start; once it has a window, its PATH must still start with the
-# stub's dir. The stub's calls are in $GIGA_EVAL_OUT/security.log.
-source "$(dirname "$0")/lib.sh"
-source "$(dirname "$0")/sandbox.sh"
-source "$(dirname "$0")/keychain.sh"
+# Every start: `security` must be keychain.sh's stub on the app's PATH and in
+# the login shell its children's PATH comes from, or the app does not start.
+# The running app's PATH must start with the stub's dir: on the open route as
+# soon as it has a pid, on every route once it has a window. The stub's calls
+# are in $GIGA_EVAL_OUT/security.log. It does not cover /usr/bin/security run
+# by absolute path (keychain.sh).
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/sandbox.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/keychain.sh"
 
 SRC_ROOT="$EVAL_OUT/src"
 TARGET_DIR="$EVAL_OUT/target"
@@ -59,14 +62,18 @@ APP_DATA="$EVAL_APP_DATA"
 # The files the harnesses log in with: omp's credentials and settings, Codex's
 # auth, git's identity. Copied, never linked, so every write the instance makes
 # (token refreshes too) stays in the temp HOME. Claude Code keeps its login in
-# the macOS keychain, which no temp HOME shares, so it has none here.
+# the macOS keychain, which is the user's, not HOME's: keychain.sh keeps the
+# instance's `security` by name on a stub instead.
 LOGINS=(.omp/agent/agent.db .omp/agent/config.yml .codex/auth.json .gitconfig)
 
 # What differs per OS. install_build <label> <src> copies the build to
 # apps/<label>, records it in instance.app and checks its identifier.
 # has_window <pid> is true once the process shows a window. launch <bin>
-# [jail...] execs the app in place of the calling subshell.
+# [jail...] execs the app in place of the calling subshell, with $APP_ENV.
+# OS_ENV and LOGIN_SHELL (harness.rs's fallback when $SHELL is unset) go into
+# $APP_ENV.
 if [[ "$EVAL_OS" == macos ]]; then
+  OS_ENV=(CFFIXED_USER_HOME="$EVAL_HOME") LOGIN_SHELL=/bin/zsh
   BUNDLE=(--bundles app)
   LEAK_DIRS=("$REAL_HOME/Library/WebKit/$EVAL_ID" "$REAL_HOME/Library/Application Support/$EVAL_ID" "$REAL_HOME/Library/Caches/$EVAL_ID")
   install_build() {
@@ -85,16 +92,15 @@ if [[ "$EVAL_OS" == macos ]]; then
   # persistence flags reach the process.
   launch() {
     local bin="$1"; shift
-    HOME="$EVAL_HOME" CFFIXED_USER_HOME="$EVAL_HOME" PATH="$INSTANCE_PATH" \
-      exec nohup "$@" "$bin" -ApplePersistence NO -NSQuitAlwaysKeepsWindows NO
+    exec nohup env "${APP_ENV[@]}" "$@" "$bin" -ApplePersistence NO -NSQuitAlwaysKeepsWindows NO
   }
   # open_launch <app> <bin>: GIGA_EVAL_OPEN=1. LaunchServices gives the app
   # launchd's env plus each --env, never ours. Prints the app's pid.
   open_launch() {
-    local pid="" _
+    local pid="" _ v envs=()
+    for v in "${APP_ENV[@]}"; do envs+=(--env "$v"); done
     env -i USER="$(id -un)" LOGNAME="$(id -un)" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-      open -g -j -n -a "$1" --stdout "$EVAL_OUT/instance.log" --stderr "$EVAL_OUT/instance.log" \
-      --env HOME="$EVAL_HOME" --env CFFIXED_USER_HOME="$EVAL_HOME" --env PATH="$INSTANCE_PATH" \
+      open -g -j -n -a "$1" --stdout "$EVAL_OUT/instance.log" --stderr "$EVAL_OUT/instance.log" "${envs[@]}" \
       --args -ApplePersistence NO -NSQuitAlwaysKeepsWindows NO
     for _ in $(seq 1 60); do
       pid="$(pgrep -n -f "^(/private)?$2( |\$)" || true)"
@@ -109,6 +115,8 @@ else
   LEAK_DIRS=("$REAL_HOME/.local/share/$EVAL_ID" "$REAL_HOME/.cache/$EVAL_ID" "$REAL_HOME/.config/$EVAL_ID")
   # Linux runs in a container that holds no logins.
   LOGINS=()
+  OS_ENV=(XDG_DATA_HOME="$EVAL_HOME/.local/share" XDG_CONFIG_HOME="$EVAL_HOME/.config" XDG_CACHE_HOME="$EVAL_HOME/.cache")
+  LOGIN_SHELL=/bin/bash
   install_build() {
     local built="$TARGET_DIR/$PROFILE/monocode" dest="$EVAL_OUT/apps/$1/monocode"
     [[ -x "$built" ]] || die "no binary at $built"
@@ -119,11 +127,8 @@ else
     log "built $dest (identifier $EVAL_ID, rev $(cut -c1-10 "$2/.giga-eval-rev"))"
   }
   has_window() { xdotool search --onlyvisible --pid "$1" >/dev/null 2>&1; }
-  # The XDG folders follow HOME, so app_data_dir() is $EVAL_APP_DATA.
-  launch() {
-    HOME="$EVAL_HOME" XDG_DATA_HOME="$EVAL_HOME/.local/share" XDG_CONFIG_HOME="$EVAL_HOME/.config" \
-      XDG_CACHE_HOME="$EVAL_HOME/.cache" PATH="$INSTANCE_PATH" exec nohup "$1"
-  }
+  # The XDG folders (OS_ENV) follow HOME, so app_data_dir() is $EVAL_APP_DATA.
+  launch() { exec nohup env "${APP_ENV[@]}" "$1"; }
 fi
 
 cmd_build() {
@@ -242,7 +247,12 @@ cmd_start() {
   if [[ "${1:-}" == "--fresh-home" ]]; then cmd_home --fresh; else cmd_home; fi
   local app; app="$(cat "$EVAL_OUT/instance.app" 2>/dev/null)" || die "build first"
   local bin jail=(); bin="$(app_bin "$app")"
-  INSTANCE_PATH="$(instance_path "$PATH")"
+  # ZDOTDIR: a zsh login shell reads the temp HOME's dotfiles even when the
+  # caller set ZDOTDIR. The env command is the app's env, for the login check.
+  APP_ENV=(HOME="$EVAL_HOME" ZDOTDIR="$EVAL_HOME" SHELL="${SHELL:-$LOGIN_SHELL}"
+    PATH="$(instance_path "$PATH")" "${OS_ENV[@]}")
+  local app_env=(env)
+  [[ "${GIGA_EVAL_OPEN:-}" != 1 ]] || app_env=(env -i)
   if [[ "${GIGA_EVAL_SANDBOX:-}" == 1 ]]; then
     sandbox_home_ok || exit 1
     if [[ -f "$APP_DATA/monocode.db" ]]; then
@@ -260,9 +270,13 @@ cmd_start() {
     sandbox_launch "$profile" "$envs"
     sandbox_preflight "$bin" "$jailtmp" || exit 1
     jail=("${SANDBOX_LAUNCH[@]}")
-    INSTANCE_PATH="$(sed -n 's/^PATH=//p' <<<"$envs")"
+    IFS=$'\n' read -r -d '' -a APP_ENV <<<"$envs" || true
+    app_env=(env -i)
   fi
-  keychain_stub_ok "$INSTANCE_PATH" || die "the app does not start"
+  local v path=""
+  for v in "${APP_ENV[@]}"; do [[ "$v" != PATH=* ]] || path="${v#PATH=}"; done
+  keychain_stub_ok "$path" || die "the app does not start"
+  keychain_login_ok "${app_env[@]}" "${APP_ENV[@]}" || die "the app does not start"
   touch "$EVAL_OUT/instance.marker"
   # A fake-clock build stops at launch without its clock file. This one holds
   # still; scripts/scenarios/app.sh writes its own and moves it.
@@ -286,6 +300,9 @@ cmd_start() {
     disown "$pid" 2>/dev/null || true
   fi
   echo "$pid" >"$EVAL_OUT/instance.pid"
+  # The PATH LaunchServices gave the app, before the webview can ask for usage.
+  # (A child's pid is still this script until it execs the app: checked below.)
+  if [[ "${GIGA_EVAL_OPEN:-}" == 1 ]]; then keychain_proc_ok "$pid" || { cmd_stop; die "stopped the instance"; }; fi
   if [[ "${GIGA_EVAL_SANDBOX:-}" == 1 ]]; then
     sandbox_watch "$pid" "$(realpath "$bin")" </dev/null >/dev/null 2>&1 &
     disown $! 2>/dev/null || true
@@ -363,6 +380,8 @@ cmd_status() {
   echo "home: $EVAL_HOME"
 }
 
+# Sourced (keychain.test.sh): the functions only.
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
 case "${1:-}" in
   build) shift; cmd_build "$@" ;;
   home) shift; cmd_home "$@" ;;
@@ -373,5 +392,5 @@ case "${1:-}" in
   scrub) sandbox_scrub "$APP_DATA/monocode.db" "${2:?usage: instance.sh scrub <model>}" ;;
   guard) sandbox_guard "${2:-$APP_DATA/monocode.db}" && log "safe: ${2:-$APP_DATA/monocode.db}" ;;
   denied) sandbox_denied "${2:?usage: instance.sh denied <since>}" ;;
-  *) sed -n '2,43p' "$0"; exit 2 ;;
+  *) sed -n '2,46p' "$0"; exit 2 ;;
 esac
