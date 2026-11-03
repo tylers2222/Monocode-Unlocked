@@ -199,7 +199,8 @@ fn cli_name(provider: Provider) -> &'static str {
 /// else its project's own login in its Space, else its Space's login for
 /// that CLI (`project_login`). The project is the session's folder; for a
 /// session with no row, its automation's folder, else the project its
-/// child's folder stands for ([`unsaved_project`]). Space 1 with none set keeps the
+/// child's folder stands for ([`unsaved_project`]). A caller that names no
+/// folder (the usage-limit card) gets the Space's login for such a session. Space 1 with none set keeps the
 /// CLI's own login, as every session did before Spaces; another Space
 /// refuses. A session with no row yet (never saved, or its first save not
 /// committed) is in the Space it would join. A child whose CLI keeps no
@@ -218,22 +219,31 @@ pub(super) fn resolve(
     else {
         return Ok(target);
     };
-    let (space_id, name, project) = with_conn(store, |conn| {
+    let (space_id, name, project, space_login) = with_conn(store, |conn| {
         let space_id = membership::space_for_row(conn, session_id, None)?;
-        let (name, folder): (String, Option<String>) = conn.query_row(
-            "SELECT COALESCE((SELECT name FROM spaces WHERE id = ?1), ?1),
-                    (SELECT cwd FROM sessions WHERE id = ?2)",
-            params![space_id, session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
+        let (name, folder, space_login): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT COALESCE((SELECT name FROM spaces WHERE id = ?1), ?1),
+                    (SELECT cwd FROM sessions WHERE id = ?2),
+                    (SELECT account_id FROM space_accounts WHERE space_id = ?1 AND provider = ?3)",
+                params![space_id, session_id, provider],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
         let project = match folder {
             Some(folder) => Some(folder),
             None => membership::automation_project(conn, session_id)?,
         };
-        Ok((space_id, name, project))
+        Ok((space_id, name, project, space_login))
     })?;
-    let project = project.unwrap_or_else(|| unsaved_project(&target.workdir));
-    let login = super::project_login(store, &space_id, &project, provider)?;
+    let project = project.or_else(|| {
+        Some(target.workdir.as_path())
+            .filter(|folder| folder.is_absolute())
+            .map(unsaved_project)
+    });
+    let login = match project {
+        Some(project) => super::project_login(store, &space_id, &project, provider)?,
+        None => space_login,
+    };
     match login {
         Some(id) => Ok(SpawnTarget {
             account: Some(HarnessAccount {
