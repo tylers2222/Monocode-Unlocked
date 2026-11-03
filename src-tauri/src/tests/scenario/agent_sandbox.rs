@@ -475,6 +475,12 @@ fn on_opens_only_a_monos_codex_home(rig: &Rig) {
         list("denyWrite").contains(&path(&rig.data)),
         "the app data folder is writable"
     );
+    for file in ["config.toml", "settings.json"] {
+        assert!(
+            list("denyWrite").contains(&path(&home.join(file))),
+            "the Mono may write its home's {file}, which later spawns run"
+        );
+    }
     assert!(list("denyRead").contains(&path(&rig.codex_homes())));
     let shared = rig.written();
     assert_eq!(

@@ -294,6 +294,9 @@ pub(crate) fn command_in(
     if let Some(home) = homes.codex {
         rules.allow_write.push(path_entry(home));
         rules.allow_read.push(path_entry(home));
+        rules
+            .deny_write
+            .extend(LOGIN_CONFIG.map(|file| path_entry(&home.join(file))));
     }
     let settings = write_settings(data, &srt, rules)?;
     let mut cmd = Command::new(srt);

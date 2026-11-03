@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, Runtime};
 
+use crate::mono_home::Dir;
+
 /// Beside every app data folder, holding one folder per app, then one per account.
 const HOMES: &str = "MonoCode Codex Monos";
 
@@ -196,8 +198,7 @@ fn private_entry(name: &str) -> bool {
 fn prepare_files(source: &Path, home: &Path) -> Result<(), String> {
     std::fs::create_dir_all(source)
         .map_err(|e| format!("Could not open the Codex account directory: {e}"))?;
-    std::fs::create_dir_all(home)
-        .map_err(|e| format!("Could not create Mono Codex storage: {e}"))?;
+    Dir::open(home, &[])?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -213,6 +214,15 @@ fn prepare_files(source: &Path, home: &Path) -> Result<(), String> {
         if std::fs::symlink_metadata(home.join(name)).is_ok_and(|m| m.file_type().is_symlink()) {
             return Err("Mono Codex state must remain in its private storage directory".into());
         }
+    }
+    // Codex runs `config.toml`'s `notify` and MCP servers, and an agent may
+    // write in this home: it is always the login's, a link even to none.
+    #[cfg(unix)]
+    {
+        let temp = home.join(format!(".config.toml.{}.tmp", uuid::Uuid::new_v4()));
+        std::os::unix::fs::symlink(source.join("config.toml"), &temp)
+            .and_then(|()| std::fs::rename(&temp, home.join("config.toml")))
+            .map_err(|e| format!("Could not share the Codex configuration: {e}"))?;
     }
     for entry in std::fs::read_dir(&source).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -235,7 +245,7 @@ fn prepare_files(source: &Path, home: &Path) -> Result<(), String> {
     // rather than individual files, preserves those writes in both homes.
     std::fs::create_dir_all(source.join("secrets")).map_err(|e| e.to_string())?;
     link_entry(&source.join("secrets"), &home.join("secrets"))?;
-    std::fs::create_dir_all(home.join("sessions")).map_err(|e| e.to_string())?;
+    Dir::open(home, &["sessions"])?;
     Ok(())
 }
 
@@ -426,7 +436,7 @@ fn contains_thread(dir: &Path, id: &str) -> Result<bool, String> {
 }
 
 #[cfg(test)]
-fn copy_rollouts(
+pub(crate) fn copy_rollouts(
     source: &Path,
     home: &Path,
     thread_id: &str,
@@ -532,16 +542,11 @@ fn copy_rollouts_with_edges(
                 })
             })
             .ok_or("Missing Codex rollout date")?;
-        let dir = home
-            .join("sessions")
-            .join(&date[..4])
-            .join(&date[5..7])
-            .join(&date[8..10]);
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let dest = dir.join(path.file_name().unwrap());
+        let dir = Dir::open(home, &["sessions", &date[..4], &date[5..7], &date[8..10]])?;
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
         // Retrying a partial migration can replace already copied descendants.
         // The provider checks for the root before invoking this operation.
-        staged.push((path, dest));
+        staged.push((path, dir, name));
     }
     let root_name = staged[0].0.file_name().unwrap().to_string_lossy();
     if !root_name.ends_with(&format!("-{thread_id}.jsonl"))
@@ -549,41 +554,25 @@ fn copy_rollouts_with_edges(
     {
         return Err("The saved Mono root does not match its thread id".into());
     }
-    let pending_dir = home.join(".monocode-migrations");
-    std::fs::create_dir_all(&pending_dir).map_err(|e| e.to_string())?;
-    let pending = pending_dir.join(thread_id);
-    std::fs::write(&pending, b"pending").map_err(|e| e.to_string())?;
+    let pending = Dir::open(home, &[".monocode-migrations"])?;
+    pending.write(thread_id, b"pending")?;
     // Copy descendants first and the root last, so a partial migration is not
     // mistaken for a successfully migrated root on the next connection.
-    for (path, dest) in staged.iter().rev() {
-        let temp = dest.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-        std::fs::copy(path, &temp)
+    for (path, dir, name) in staged.iter().rev() {
+        dir.copy(name, path)
             .map_err(|e| format!("Could not retain the full Codex thread: {e}"))?;
-        // Windows requires write access when flushing a file to disk.
-        std::fs::File::options()
-            .write(true)
-            .open(&temp)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| e.to_string())?;
-        std::fs::rename(&temp, dest).map_err(|e| e.to_string())?;
     }
-    let edge_snapshot = edge_snapshot_path(home, thread_id);
+    let (state, snapshot) = edge_snapshot(home, thread_id)?;
     if !edges.is_empty() {
-        let path = edge_snapshot;
-        std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-        std::fs::write(&path, serde_json::to_vec(edges).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        std::fs::File::options()
-            .write(true)
-            .open(&path)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| e.to_string())?;
-    } else if edge_snapshot.exists() {
+        state.write(
+            &snapshot,
+            &serde_json::to_vec(edges).map_err(|e| e.to_string())?,
+        )?;
+    } else if state.read(&snapshot)?.is_some() {
         // A retry must not apply a closure changed in the original meanwhile.
-        std::fs::remove_file(edge_snapshot).map_err(|e| e.to_string())?;
+        state.remove(&snapshot)?;
     }
-    std::fs::remove_file(pending).map_err(|e| e.to_string())?;
-    Ok(())
+    pending.remove(thread_id)
 }
 
 // Rollouts reconstruct the graph, but explicit agent closure lives only in
@@ -596,9 +585,12 @@ struct AgentEdge {
     status: String,
 }
 
-fn edge_snapshot_path(home: &Path, thread_id: &str) -> PathBuf {
-    home.join(".monocode-agent-state")
-        .join(format!("{thread_id}.json"))
+/// The folder of a Mono's agent closure snapshots, and `thread_id`'s name in it.
+fn edge_snapshot(home: &Path, thread_id: &str) -> Result<(Dir, String), String> {
+    Ok((
+        Dir::open(home, &[".monocode-agent-state"])?,
+        format!("{thread_id}.json"),
+    ))
 }
 
 fn state_db(home: &Path) -> Result<Option<PathBuf>, String> {
@@ -656,11 +648,9 @@ fn closed_agent_edges(home: &Path, thread_id: &str) -> Result<Vec<AgentEdge>, St
 }
 
 fn restore_agent_edges(home: &Path, thread_id: &str) -> Result<(), String> {
-    let snapshot = edge_snapshot_path(home, thread_id);
-    let bytes = match std::fs::read(&snapshot) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e.to_string()),
+    let (state, snapshot) = edge_snapshot(home, thread_id)?;
+    let Some(bytes) = state.read(&snapshot)? else {
+        return Ok(());
     };
     let edges: Vec<AgentEdge> = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     let path = state_db(home)?.ok_or("Codex has not initialized the private Mono index")?;
@@ -676,8 +666,7 @@ fn restore_agent_edges(home: &Path, thread_id: &str) -> Result<(), String> {
         tx.execute("INSERT INTO thread_spawn_edges(parent_thread_id, child_thread_id, status) VALUES (?1, ?2, ?3) ON CONFLICT(child_thread_id) DO UPDATE SET status=excluded.status WHERE parent_thread_id=excluded.parent_thread_id", rusqlite::params![edge.parent, edge.child, edge.status]).map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())?;
-    std::fs::remove_file(snapshot).map_err(|e| e.to_string())?;
-    Ok(())
+    state.remove(&snapshot)
 }
 
 fn rollout_matches(path: &Path, id: &str) -> bool {
@@ -978,7 +967,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 1);
-        assert!(!edge_snapshot_path(&fixture.home(), "root").exists());
+        assert!(!fixture
+            .home()
+            .join(".monocode-agent-state/root.json")
+            .exists());
         // Later changes in the private graph must not be overwritten on resume.
         private
             .execute("UPDATE thread_spawn_edges SET status='open'", [])

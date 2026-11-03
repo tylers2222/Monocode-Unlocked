@@ -296,8 +296,9 @@ fn home_rig() -> (Remove, Rig) {
 }
 
 /// Defect: a Codex Mono's `CODEX_HOME` is not its own home beside the app
-/// data folder (ADE-224), or private storage starts for a spawn that is not
-/// Codex's app-server on a Codex login.
+/// data folder (ADE-224), its home keeps a `config.toml` an agent wrote there
+/// (r1 M2), or private storage starts for a spawn that is not Codex's
+/// app-server on a Codex login.
 #[test]
 fn a_codex_mono_runs_in_its_own_home_beside_the_app_data() {
     let (_remove, rig) = home_rig();
@@ -319,6 +320,9 @@ esac"#,
     let home = crate::codex_mono_store::homes(&data)
         .unwrap()
         .join("com.monocode.desktop/linked");
+    // An agent's `notify` from an earlier run; the login has no config.toml.
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("config.toml"), "notify = [\"planted\"]").unwrap();
     assert_eq!(
         rig.start(
             "linked",
@@ -330,6 +334,11 @@ esac"#,
         ),
         Ok(format!("{}\n", text(&home))),
         "the Mono's CODEX_HOME is not its own home beside the app data"
+    );
+    assert_eq!(
+        std::fs::read_link(home.join("config.toml")).ok(),
+        Some(target.join("config.toml")),
+        "the Mono home kept a config.toml that is not its login's"
     );
     let refused = "Private Mono storage is only supported for Codex app-server";
     for (id, provider, cli, name, arg) in [
