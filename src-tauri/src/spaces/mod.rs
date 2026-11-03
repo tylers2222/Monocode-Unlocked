@@ -556,7 +556,7 @@ pub(crate) enum Child<'a> {
     /// A text, catalog, skills or login child keyed `key`, or a one-shot
     /// `harness_exec` (no key): the session the window says it works for.
     /// Without a stored one it runs in `neutral`, a folder that is no project
-    /// checkout, unless [`KEEPS_CALLER_FOLDER`] names it.
+    /// checkout, unless [`OWNERLESS_KEEPS_CALLER_FOLDER`] names it.
     Helper {
         key: Option<&'a str>,
         owner: Option<&'a str>,
@@ -575,42 +575,34 @@ impl Child<'_> {
     }
 }
 
-/// INTERIM (ADE-189 4/4): every helper that keeps its caller's folder when it
-/// names no owner, in one place. Each ran in its caller's project folder
-/// before ADE-189. A helper with an owner is placed for that owner's Space
-/// whether or not its key is listed: every text adapter passes the prompt's
-/// owner (ADE-189 3/4 for Codex, Pi and Devin, ADE-192 for Claude, Cursor,
-/// Grok and OpenCode), so owned calls are wired. The keys stay listed because
-/// their remaining callers have no session: titles, branch names, commit and
-/// PR text, `/btw`, the `/` picker's skills of an unsaved tab, and the Grok
-/// text cleanup exec after an ownerless prompt. Removing a key would move
-/// those callers to the neutral folder, away from the project they describe,
-/// which is a user-visible regression. No Space 2 session exists until
-/// ADE-179, so none of them lets a Space into another's checkout today. Whether ADE-189 4/4 deletes this list or renames it into a
-/// permanent, guarded rule for ownerless calls is an open decision (the
-/// build-189-p4 GAP, card #28). Every other helper of no stored session runs
-/// in the neutral folder.
+/// The ownerless-helper rule (permanent, ADE-189): a helper call that names
+/// no owner keeps its caller's folder when its child key starts with one of
+/// these prefixes, and runs in the neutral folder otherwise. A call with an
+/// owner is placed for that owner's Space whether or not its key is listed.
+/// These keys stay because some of their callers have no session to name:
+/// commit and PR text (the git panels describe the folder they show), the
+/// `/` picker's skills of a tab not saved yet, and the Grok text cleanup exec
+/// after such a prompt. Titles, branch names and `/btw` pass their session
+/// (ADE-189 4/4), so a key only they used is not here.
 ///
-/// - [`KEEPS_CALLER_FOLDER`]: helpers matched by a prefix of their child key,
-///   including the Grok text cleanup exec (`grokText.ts`
-///   `deleteTextSession`, `sessions delete`). That exec passes
-///   `monocode-grok-text` as its key, so it runs where its text child ran: no
-///   one has shown that Grok finds a session by id alone.
+/// Its guard is the checkout lease check ([`leases::keep_ownerless`]): a call
+/// of no session has no Space of its own, so it is Space 1's, the only Space
+/// a window has until windows carry a Space (ADE-179). It is refused in a
+/// checkout another Space holds, and nothing is spawned there.
 ///
-/// The model-catalog probes are not on it: their model lists are the user's,
-/// so they run in the neutral folder (ADE-191).
-const KEEPS_CALLER_FOLDER: [&str; 10] = [
-    // Titles, commit, PR and branch text, /btw side questions, and the Grok
-    // text cleanup exec, when they name no owner. Cursor's key is
-    // `monocode-text`.
+/// The Grok cleanup exec (`grokText.ts` `deleteTextSession`, `sessions
+/// delete`) passes `monocode-grok-text` as its key, so it runs where its text
+/// child ran: no one has shown that Grok finds a session by id alone. The
+/// model-catalog probes are not here: their model lists are the user's, so
+/// they run in the neutral folder (ADE-191).
+const OWNERLESS_KEEPS_CALLER_FOLDER: [&str; 7] = [
+    // Titles, commit, PR and branch text and /btw, when they name no owner,
+    // and the Grok text cleanup exec. Cursor's key is `monocode-text`.
     "monocode-claude-text",
     "monocode-codex-text",
     "monocode-text",
     "monocode-grok-text",
     "monocode-opencode-text",
-    "monocode-pi-text",
-    "monocode-omp-text",
-    "monocode-devin-text-",
     // The `/` picker's skills of a tab not saved yet.
     "monocode-pi-skills-",
     "monocode-omp-skills-",
@@ -648,18 +640,21 @@ pub(crate) fn prepare_spawn(
 ) -> Result<SpawnTarget, String> {
     #[cfg(test)]
     HOOKED_SPAWNS.with(|spawns| spawns.set(spawns.get() + 1));
-    let no_space = match child {
-        Child::Session(_) => None,
+    let (no_space, keeps) = match child {
+        Child::Session(_) => (None, false),
         Child::Helper { key, neutral, .. } => {
             let keeps = key.is_some_and(|key| {
-                KEEPS_CALLER_FOLDER
+                OWNERLESS_KEEPS_CALLER_FOLDER
                     .iter()
                     .any(|listed| key.starts_with(listed))
             });
-            (!keeps).then_some(neutral)
+            ((!keeps).then_some(neutral), keeps)
         }
     };
     let Some(session_id) = child.session() else {
+        if keeps {
+            leases::keep_ownerless(store, &target.workdir)?;
+        }
         return Ok(SpawnTarget {
             workdir: no_space.map_or(target.workdir, Path::to_path_buf),
             ..target
@@ -667,5 +662,5 @@ pub(crate) fn prepare_spawn(
     };
     let target = account::resolve(store, session_id, provider, target)?;
     let target = grants::route(store, session_id, now, target)?;
-    leases::claim(store, session_id, target, no_space)
+    leases::claim(store, session_id, target, no_space, keeps)
 }

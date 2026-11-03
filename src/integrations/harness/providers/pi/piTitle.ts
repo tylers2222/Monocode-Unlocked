@@ -19,6 +19,7 @@ async function generateSessionTitle(
   try {
     const output = await runTextPrompt(flavor, {
       cwd: input.cwd,
+      owner: input.sessionId,
       prompt: buildThreadTitlePrompt(input.message),
       timeoutMs: TITLE_TIMEOUT_MS,
     });

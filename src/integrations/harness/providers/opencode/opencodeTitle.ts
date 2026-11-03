@@ -15,6 +15,7 @@ export async function generateOpenCodeSessionTitle(input: {
   try {
     const output = await runOpenCodeTextPrompt({
       cwd: input.cwd,
+      owner: input.sessionId,
       prompt: buildThreadTitlePrompt(input.message),
       timeoutMs: TITLE_TIMEOUT_MS,
     });

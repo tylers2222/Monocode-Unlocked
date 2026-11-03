@@ -1524,7 +1524,7 @@ esac"#,
 /// session, or of one deleted since, runs in a project folder or takes a
 /// lease; the folder
 /// check runs before the hook; Space 1's own helpers leave its project; or a
-/// helper on the INTERIM list loses its caller's folder.
+/// helper under the ownerless-helper rule loses its caller's folder.
 #[cfg(unix)]
 #[test]
 fn helpers_and_execs_run_where_their_session_does() {
@@ -1558,6 +1558,7 @@ esac"#,
     };
     helpers::execs_run_where_their_owner_does(&rig);
     helpers::helpers_run_where_their_owner_does(&rig);
+    helpers::the_ownerless_rule_is_guarded(&rig);
     helpers::interims_and_the_store_lock_hold(&rig);
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1623,6 +1624,16 @@ mod helpers {
     /// `<folder>/<key>`. Returns the folder `harness_spawn` names: the one the
     /// helper tells its agent.
     fn helper(rig: &Rig, key: &str, owner: Option<&str>, workdir: &Path) -> String {
+        try_helper(rig, key, owner, workdir).unwrap()
+    }
+
+    /// [`helper`], or why the spawn hook refused it.
+    fn try_helper(
+        rig: &Rig,
+        key: &str,
+        owner: Option<&str>,
+        workdir: &Path,
+    ) -> Result<String, String> {
         spawn(
             rig,
             key,
@@ -1634,7 +1645,12 @@ mod helpers {
         )
     }
 
-    fn spawn(rig: &Rig, key: &str, workdir: &Path, helper: Option<Helper>) -> String {
+    fn spawn(
+        rig: &Rig,
+        key: &str,
+        workdir: &Path,
+        helper: Option<Helper>,
+    ) -> Result<String, String> {
         crate::harness::harness_spawn(
             rig.app.handle().clone(),
             rig.app.state::<crate::harness::HarnessHost>(),
@@ -1650,8 +1666,7 @@ mod helpers {
             None,
             helper,
         )
-        .unwrap()
-        .cwd
+        .map(|spawned| spawned.cwd)
     }
 
     pub(super) fn execs_run_where_their_owner_does(rig: &Rig) {
@@ -1732,9 +1747,15 @@ mod helpers {
             format!("{}\n", text(project)),
             "Space 1's helper left its project"
         );
+        // ADE-189 4/4: Pi, OMP and Devin text left the ownerless-helper rule.
+        // Their titles and /btw pass their session, so an ownerless one is a
+        // helper of no stored session like any other.
         for (key, owner) in [
             ("monocode-fx-probe", None),
             ("monocode-fx-login", Some("ghost")),
+            ("monocode-pi-text", None),
+            ("monocode-omp-text", None),
+            ("monocode-devin-text-1", None),
         ] {
             assert_eq!(
                 helper(rig, key, owner, project),
@@ -1747,30 +1768,30 @@ mod helpers {
                 "{key}: a helper of no stored session ran in a project folder"
             );
         }
-        // INTERIM (ADE-189 4/4): a listed helper of no Space keeps the folder
-        // its caller named; one of a stored session is still placed.
+        // The ownerless-helper rule (ADE-189): a listed helper of no Space
+        // keeps the folder its caller named; one of a stored session is
+        // still placed. A Space 2 session's /btw (Codex text, owner `two`)
+        // runs in Space 2's copy.
         for (key, owner, folder) in [
             ("monocode-claude-text", None, project),
             ("monocode-codex-text", None, project),
             ("monocode-text", None, project),
             ("monocode-grok-text", None, project),
             ("monocode-opencode-text", None, project),
-            ("monocode-pi-text", None, project),
-            ("monocode-omp-text", None, project),
-            ("monocode-devin-text-1", None, project),
             ("monocode-pi-skills-1", None, project),
             ("monocode-omp-skills-1", Some("ghost"), project),
             ("monocode-pi-skills-2", Some("two"), copy),
+            ("monocode-codex-text", Some("two"), copy),
         ] {
             assert_eq!(
                 helper(rig, key, owner, project),
                 text(folder),
-                "{key}: an interim helper was told another folder"
+                "{key}: an ownerless-rule helper was told another folder"
             );
             assert_eq!(
                 wait_for(&folder.join(key)),
                 format!("{}\n", text(folder)),
-                "{key}: an interim helper left its caller's folder, or its Space's"
+                "{key}: an ownerless-rule helper left its caller's folder, or its Space's"
             );
         }
         assert_eq!(
@@ -1799,8 +1820,46 @@ mod helpers {
         );
     }
 
-    /// INTERIM (ADE-189 4/4): the Grok cleanup exec runs where its text child
-    /// ran, and an exec naming no listed key goes neutral; the model-catalog
+    /// The ownerless-helper rule's guard (ADE-189 4/4): a call of no stored
+    /// session is Space 1's, so a commit-text helper the window points at the
+    /// checkout Space 2 holds is refused, and nothing is spawned there. The
+    /// same call in a folder no other Space holds runs there (the rule's rows
+    /// in [`helpers_run_where_their_owner_does`]).
+    pub(super) fn the_ownerless_rule_is_guarded(rig: &Rig) {
+        let copy = &rig.copy;
+        let refused = format!(
+            "{} is in space-2's checkout: a call of no session runs only outside another Space's checkout",
+            text(copy)
+        );
+        assert_eq!(
+            try_helper(rig, "monocode-claude-text", None, copy),
+            Err(refused.clone()),
+            "an ownerless commit-text helper ran in Space 2's checkout"
+        );
+        assert!(
+            !copy.join("monocode-claude-text").exists(),
+            "an ownerless commit-text helper was spawned in Space 2's checkout"
+        );
+        assert_eq!(
+            exec_as(rig, Some("monocode-grok-text"), None, Some(copy)),
+            Err(refused.clone()),
+            "an ownerless cleanup exec ran in Space 2's checkout"
+        );
+        // A kept helper whose owner is no stored session (the `/` picker of an
+        // unsaved tab) is held to the same guard.
+        assert_eq!(
+            try_helper(rig, "monocode-pi-skills-3", Some("ghost"), copy),
+            Err(refused),
+            "an unsaved tab's picker helper ran in Space 2's checkout"
+        );
+        assert!(
+            !copy.join("monocode-pi-skills-3").exists(),
+            "an unsaved tab's picker helper was spawned in Space 2's checkout"
+        );
+    }
+
+    /// The ownerless-helper rule (ADE-189): the Grok cleanup exec runs where
+    /// its text child ran, and an exec naming no listed key goes neutral; the model-catalog
     /// probes run in the neutral folder (ADE-191). Then a placement of a helper of no
     /// Space in a missing folder, while the store is locked, must return
     /// without the lock: a time bound turns a lock-order regression into a

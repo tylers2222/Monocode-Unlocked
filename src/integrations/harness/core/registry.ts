@@ -113,7 +113,12 @@ export type HarnessAdapter = {
     cwd: string,
   ): Promise<(PrContent & { base: string; head: string }) | null>;
   /** Optional LLM branch name from a user message. */
-  generateBranchName?(cwd: string, message: string): Promise<string | null>;
+  /** `owner`: the session the branch is named for (ADE-189). */
+  generateBranchName?(
+    cwd: string,
+    message: string,
+    owner?: string,
+  ): Promise<string | null>;
   /** Optional warmup for text-generation backends. */
   warmupText?(cwd: string): Promise<void>;
   /** Run an isolated, read-only prompt without mutating the main session. */
@@ -583,10 +588,11 @@ export async function generateHarnessBranchName(
   harness: HarnessId,
   cwd: string,
   message: string,
+  owner?: string,
 ): Promise<string | null> {
   const adapter = getHarness(harness);
   if (!adapter?.generateBranchName) return null;
-  return adapter.generateBranchName(cwd, message);
+  return adapter.generateBranchName(cwd, message, owner);
 }
 
 export async function warmupHarnessText(

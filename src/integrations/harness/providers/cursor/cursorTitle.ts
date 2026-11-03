@@ -20,6 +20,7 @@ export async function generateCursorSessionTitle(input: {
   try {
     const output = await runCursorTextPrompt({
       cwd: input.cwd,
+      owner: input.sessionId,
       prompt: buildThreadTitlePrompt(input.message),
       timeoutMs: TITLE_TIMEOUT_MS,
     });
