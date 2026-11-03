@@ -112,9 +112,6 @@ sp_ran() { [[ -n "$(sp_starts "$1")" ]]; }
 sp_fresh() {
   fresh_home
   install_puppet_bin
-  # With a second Space every agent runs fenced under srt (ADE-177), which
-  # stops a spawn when srt is missing; app.sh pins the version the app needs.
-  install_srt
   unset CLAUDE_CONFIG_DIR CODEX_HOME
   export USAGE_LIMIT_SHIM_DIR="$EVAL_HOME/.usage-limit"
   mkdir -p "$USAGE_LIMIT_SHIM_DIR"

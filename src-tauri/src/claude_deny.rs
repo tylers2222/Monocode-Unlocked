@@ -31,19 +31,10 @@ pub(crate) fn args<R: Runtime>(
     workdir: &Path,
     account_id: Option<&str>,
     in_srt: bool,
-    fenced: &[PathBuf],
     args: Vec<String>,
 ) -> Result<Vec<String>, String> {
     let (data, config_dir, home) = child_env(app, account_id)?;
-    args_in(
-        &data,
-        config_dir.as_deref(),
-        &home,
-        workdir,
-        in_srt,
-        fenced,
-        args,
-    )
+    args_in(&data, config_dir.as_deref(), &home, workdir, in_srt, args)
 }
 
 /// What D1's srt must deny writes to for this spawn: inside srt, Claude Code's
@@ -107,15 +98,13 @@ pub(crate) fn srt_deny_in(
 /// A marker that cannot be read counts as on: an IO error must not lower
 /// protection. `config_dir` is the config folder the child loads (`None`:
 /// `$HOME/.claude`), `home` its HOME, `workdir` its working folder, `in_srt`
-/// whether D1 runs it inside srt, and `fenced` the checkouts other Spaces
-/// hold (`agent_sandbox::Fence::others`), which get Edit rules too.
+/// whether D1 runs it inside srt.
 pub(crate) fn args_in(
     data: &Path,
     config_dir: Option<&OsStr>,
     home: &Path,
     workdir: &Path,
     in_srt: bool,
-    fenced: &[PathBuf],
     mut args: Vec<String>,
 ) -> Result<Vec<String>, String> {
     if matches!(std::fs::exists(data.join(ON_MARKER)), Ok(false)) {
@@ -166,11 +155,6 @@ pub(crate) fn args_in(
         "Edit(//**/.mcp.json)".to_owned(),
     ];
     deny.extend(config);
-    deny.extend(
-        fenced
-            .iter()
-            .map(|folder| format!("Edit(/{}/**)", folder.display())),
-    );
     settings.insert("permissions".into(), json!({ "deny": deny }));
     if !in_srt {
         settings.insert(

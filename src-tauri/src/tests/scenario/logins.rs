@@ -147,34 +147,7 @@ fn registered_login_child() {
         "a login that is not a link moved"
     );
 
-    let marker = rig
-        .app
-        .path()
-        .app_data_dir()
-        .unwrap()
-        .join("agent-sandbox-on");
-    std::fs::write(&marker, b"").unwrap();
-    stand_in_srt(&rig.root.join("srt"));
-    rig.link("fenced", &target);
-    for id in ["fenced", "plain-fenced"] {
-        rig.spawn(id).unwrap();
-    }
-    let allowed = |id: &str| {
-        let settings = std::fs::read_to_string(rig.root.join(id).join("srt-settings")).unwrap();
-        let settings: Value =
-            serde_json::from_str(&std::fs::read_to_string(settings).unwrap()).unwrap();
-        settings["filesystem"]["allowWrite"].clone()
-    };
-    let has = |list: &Value, dir: &Path| list.as_array().unwrap().contains(&json!(text(dir)));
-    assert!(
-        has(&allowed("fenced"), &target),
-        "srt keeps the CLI from writing its linked login's folder"
-    );
-    assert!(
-        !has(&allowed("plain-fenced"), &rig.folder("plain-fenced")),
-        "srt lets the CLI write a login folder in the app data"
-    );
-    std::fs::remove_file(marker).unwrap();
+    sandbox_rules_follow_the_login(&rig, &target);
 
     let other_app = home.join("apps/com.monocode.second/provider-accounts/claude/x");
     std::fs::create_dir_all(&other_app).unwrap();
@@ -231,8 +204,10 @@ fn registered_login_child() {
     );
 }
 
+#[cfg(target_os = "macos")]
 struct Remove(PathBuf);
 
+#[cfg(target_os = "macos")]
 impl Drop for Remove {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -290,6 +265,39 @@ esac"#,
         std::fs::read_to_string(target.join("login")).unwrap(),
         "refreshed\n"
     );
+}
+
+/// srt's rules for a linked login with the ADE-41 marker on: its folder
+/// writable, a plain login's folder in the app data not opened.
+fn sandbox_rules_follow_the_login(rig: &Rig, target: &Path) {
+    let marker = rig
+        .app
+        .path()
+        .app_data_dir()
+        .unwrap()
+        .join("agent-sandbox-on");
+    std::fs::write(&marker, b"").unwrap();
+    stand_in_srt(&rig.root.join("srt"));
+    rig.link("sandboxed", target);
+    for id in ["sandboxed", "plain-sandboxed"] {
+        rig.spawn(id).unwrap();
+    }
+    let allowed = |id: &str| {
+        let settings = std::fs::read_to_string(rig.root.join(id).join("srt-settings")).unwrap();
+        let settings: Value =
+            serde_json::from_str(&std::fs::read_to_string(settings).unwrap()).unwrap();
+        settings["filesystem"]["allowWrite"].clone()
+    };
+    let has = |list: &Value, dir: &Path| list.as_array().unwrap().contains(&json!(text(dir)));
+    assert!(
+        has(&allowed("sandboxed"), target),
+        "srt keeps the CLI from writing its linked login's folder"
+    );
+    assert!(
+        !has(&allowed("plain-sandboxed"), &rig.folder("plain-sandboxed")),
+        "srt lets the CLI write a login folder in the app data"
+    );
+    std::fs::remove_file(marker).unwrap();
 }
 
 /// What `loadProviderAccounts` sends for each login browser storage holds:
