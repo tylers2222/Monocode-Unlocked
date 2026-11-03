@@ -28,7 +28,7 @@ import {
   turnStatusFromResult,
 } from "./claudeProtocol";
 import type { TurnIntent } from "../../../../features/sessions/model/session";
-import { textTurns } from "../../core/acp";
+import { placedFor, textTurns } from "../../core/acp";
 import type { TextPromptInput } from "../../core/registry";
 import type { HarnessEvent } from "../../core/types";
 import { mergeStream } from "../../core/streamText";
@@ -58,6 +58,7 @@ type InFlightTool = {
 
 type LiveText = {
   cwd: string;
+  owner?: string;
   providerAccountId?: string;
   model: string;
   settingsKey: string;
@@ -127,6 +128,7 @@ async function promptOnLive(input: TextPromptInput): Promise<string> {
     input.providerAccountId,
     model,
     settings,
+    input.owner,
   );
   input.signal?.throwIfAborted();
   session.output = "";
@@ -178,9 +180,6 @@ async function promptOnLive(input: TextPromptInput): Promise<string> {
     const output = session.output.trim();
     if (!output) throw new Error("Claude returned empty output.");
     return output;
-  } catch (error) {
-    if (session.closed) await dropLive();
-    throw error;
   } finally {
     if (abortHandler && input.signal) {
       input.signal.removeEventListener("abort", abortHandler);
@@ -197,13 +196,14 @@ async function ensureLive(
   providerAccountId?: string,
   requestedModel?: string,
   requestedSettings?: TextSettings,
+  owner?: string,
 ): Promise<LiveText> {
   const model = pickTextModel(requestedModel);
   const settings = requestedSettings ?? textSettings(model);
   if (
     live &&
     !live.closed &&
-    live.cwd === cwd &&
+    placedFor(live, cwd, owner) &&
     live.providerAccountId === providerAccountId &&
     live.model === model &&
     live.settingsKey === settings.key
@@ -211,7 +211,7 @@ async function ensureLive(
     return live;
   }
   await dropLive();
-  return startLive(cwd, providerAccountId, model, settings);
+  return startLive(cwd, providerAccountId, model, settings, owner);
 }
 
 async function startLive(
@@ -219,10 +219,12 @@ async function startLive(
   providerAccountId?: string,
   model = pickTextModel(),
   settings = textSettings(model),
+  owner?: string,
 ): Promise<LiveText> {
   const { path } = await resolveClaudeBinary();
   const session: LiveText = {
     cwd,
+    owner,
     providerAccountId,
     model,
     settingsKey: settings.key,
@@ -253,7 +255,7 @@ async function startLive(
 
   try {
     await spawnHelperChild(
-      undefined,
+      owner,
       TEXT_CHILD_ID,
       path,
       buildClaudeSpawnArgs({

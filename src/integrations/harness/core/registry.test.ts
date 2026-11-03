@@ -382,16 +382,24 @@ describe("harness registry", () => {
     });
   });
 
-  // ADE-189: these text adapters place their child for the prompt's session.
-  // claude, cursor, grok and opencode text stay ownerless (INTERIM) until a
-  // later part.
-  it.each(["codex", "pi", "omp"] as const)(
+  // ADE-189/192: every text adapter places its child for the prompt's
+  // session. OpenCode's first placed call is its keyed `--version` exec.
+  it.each([
+    "claude",
+    "codex",
+    "cursor",
+    "grok",
+    "opencode",
+    "pi",
+    "omp",
+  ] as const)(
     "places %s's text child for the prompt's owner",
     async (harness) => {
       registerBuiltinHarnesses();
       tauri.inApp = true;
       tauri.answer = (command) => {
-        if (command === "harness_spawn") throw new Error("placed");
+        if (command === "harness_spawn" || command === "harness_exec")
+          throw new Error("placed");
         return { path: `/bin/${harness}` };
       };
       await expect(
@@ -403,9 +411,14 @@ describe("harness registry", () => {
         }),
       ).rejects.toThrow("placed");
       const placed = tauri.calls.find(
-        ([command]) => command === "harness_spawn",
+        ([command]) =>
+          command === "harness_spawn" || command === "harness_exec",
       );
-      expect(placed?.[1]?.helper).toEqual({ owner: "chat-x" });
+      expect(placed?.[1]?.helper).toEqual(
+        harness === "opencode"
+          ? { owner: "chat-x", key: "monocode-opencode-text" }
+          : { owner: "chat-x" },
+      );
     },
   );
 

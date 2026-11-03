@@ -18,6 +18,8 @@ export type { JsonRpcMessage };
 export type AcpTextLive = {
   acp: AcpClient;
   cwd: string;
+  /** The session the child was placed for; none for a warm-up or an ownerless prompt (ADE-192). */
+  owner?: string;
   placed: string;
   model: string;
   settingsKey: string;

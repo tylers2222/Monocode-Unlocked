@@ -6,12 +6,15 @@ let onLine: ((line: string) => void) | undefined;
 let onExit: (() => void) | undefined;
 const execChild = vi.fn(async () => "");
 const killChild = vi.fn(async () => undefined);
+// Rust places a helper and names the folder (ADE-189); it is never "/repo".
+const spawnHelperChild = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<string>>(async () => "/placed"),
+);
 
 vi.mock("../../core/child", () => ({
   resolveGrokBinary: async () => ({ path: "/fake/grok" }),
   execChild,
-  // Rust places a helper and names the folder (ADE-189); it is never "/repo".
-  spawnHelperChild: async () => "/placed",
+  spawnHelperChild,
   killChild,
   unwatchChild: () => undefined,
   watchChild: (
@@ -233,6 +236,79 @@ it("cleans up warmup sessions before starting with a different model", async () 
   reply("session/prompt", {});
   await result;
   expect(execChild).toHaveBeenCalledTimes(2);
+
+  // ADE-192: a prompt for chat-a aborted while its child starts leaves that
+  // child warm. chat-b's prompt in the same folder never reuses it: chat-a's
+  // child is dropped and its session deleted as chat-a, and chat-b gets its
+  // own child, told chat-b's folder, and cleaned up as chat-b.
+  spawnHelperChild.mockClear();
+  execChild.mockClear();
+  sent.length = 0;
+  const first = new AbortController();
+  const owned = runGrokTextPrompt({
+    cwd: "/repo",
+    owner: "chat-a",
+    prompt: "A",
+    signal: first.signal,
+  });
+  const aborted = expect(owned).rejects.toThrow();
+  await waitFor(() => !!outbound("initialize"), "initialize");
+  first.abort();
+  await openTextSession("550e8400-e29b-41d4-a716-44665544000a");
+  await aborted;
+  spawnHelperChild.mockResolvedValueOnce("/space-b");
+  sent.length = 0;
+  const other = runGrokTextPrompt({
+    cwd: "/repo",
+    owner: "chat-b",
+    prompt: "B",
+  });
+  await waitFor(() => !!outbound("initialize"), "chat-b's initialize");
+  reply("initialize", {});
+  await waitFor(() => !!outbound("session/new"), "chat-b's session/new");
+  expect(outbound("session/new")?.params).toMatchObject({ cwd: "/space-b" });
+  reply("session/new", { sessionId: "550e8400-e29b-41d4-a716-44665544000b" });
+  await waitFor(() => !!outbound("session/set_model"), "session/set_model");
+  reply("session/set_model", {});
+  await waitFor(() => !!outbound("session/set_mode"), "session/set_mode");
+  reply("session/set_mode", {});
+  await waitFor(() => !!outbound("session/prompt"), "session/prompt");
+  reply("session/prompt", {});
+  await other;
+  expect(spawnHelperChild.mock.calls.map((call) => call[0])).toEqual([
+    "chat-a",
+    "chat-b",
+  ]);
+  expect(execChild.mock.calls).toEqual([
+    [
+      "/fake/grok",
+      [
+        "--no-auto-update",
+        "sessions",
+        "delete",
+        "550e8400-e29b-41d4-a716-44665544000a",
+      ],
+      "/placed",
+      "grok",
+      undefined,
+      "chat-a",
+      "monocode-grok-text",
+    ],
+    [
+      "/fake/grok",
+      [
+        "--no-auto-update",
+        "sessions",
+        "delete",
+        "550e8400-e29b-41d4-a716-44665544000b",
+      ],
+      "/space-b",
+      "grok",
+      undefined,
+      "chat-b",
+      "monocode-grok-text",
+    ],
+  ]);
 });
 
 it("cleans up its session even if the provider exits before teardown", async () => {

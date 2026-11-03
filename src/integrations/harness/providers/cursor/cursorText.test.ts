@@ -66,9 +66,9 @@ async function startsTextChild() {
   return params;
 }
 
-// ADE-189: a warm child is told the folder it was placed for, so a prompt
-// for another folder starts a child of its own there.
-it("reuses a warm text child only for the folder it was placed for", async () => {
+// ADE-189/192: a warm child is told the folder it was placed for, so a
+// prompt for another folder or session starts a child of its own.
+it("reuses a warm text child only for the folder and session it was placed for", async () => {
   spawnHelperChild.mockClear();
   const warm = warmupCursorText("/repo");
   expect(await startsTextChild()).toMatchObject({ cwd: "/placed" });
@@ -101,6 +101,28 @@ it("reuses a warm text child only for the folder it was placed for", async () =>
   await waitFor(() => !!outbound("session/prompt"), "session/prompt");
   reply("session/prompt", {});
   await other;
+
+  // ADE-192: a warm child started for no session never serves a session's
+  // prompt, even for another model in its own folder: the session gets its
+  // own child, placed for it, and its agent is told that folder.
+  sent.length = 0;
+  const third = warmupCursorText("/repo");
+  await startsTextChild();
+  await third;
+  spawnHelperChild.mockResolvedValueOnce("/space-x");
+  sent.length = 0;
+  const owned = runCursorTextPrompt({
+    cwd: "/repo",
+    owner: "chat-x",
+    model: "gpt-5",
+    prompt: "q",
+  });
+  expect(await startsTextChild()).toMatchObject({ cwd: "/space-x" });
+  expect(spawnHelperChild).toHaveBeenCalledTimes(5);
+  expect(spawnHelperChild.mock.calls[4]?.[0]).toBe("chat-x");
+  await waitFor(() => !!outbound("session/prompt"), "session/prompt");
+  reply("session/prompt", {});
+  await owned;
 });
 
 afterEach(async () => {
