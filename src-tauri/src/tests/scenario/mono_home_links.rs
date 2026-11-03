@@ -312,7 +312,9 @@ fn closed_agents_survive_a_linked_folder_above_the_login_and_home() {
     private.execute_batch(EDGES).unwrap();
     restore_agent_edges(&home, "root").unwrap();
     let status: String = private
-        .query_row("SELECT status FROM thread_spawn_edges", [], |row| row.get(0))
+        .query_row("SELECT status FROM thread_spawn_edges", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(status, "closed");
 }
