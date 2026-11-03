@@ -20,7 +20,10 @@ import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 let usage: Record<string, ProviderRateLimits> = {};
-const NOW = Date.now();
+// A fixed midday (vitest runs on Los Angeles time): a reset 2h 14m on is
+// the same day, whenever the suite runs. The card adds the date once the
+// reset is another day.
+const NOW = new Date(2026, 10, 3, 12, 0).getTime();
 vi.mock("../../providers/model/accountUsage", async (importOriginal) => ({
   ...(await importOriginal<
     typeof import("../../providers/model/accountUsage")
@@ -61,6 +64,8 @@ vi.mock("../../../shared/ui/Popover", () => ({
 let container: HTMLDivElement;
 let root: Root;
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
   setHarnessModels("claude", [
@@ -80,6 +85,7 @@ afterEach(() => {
   container.remove();
   resetHarnessModelOverlays();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 const noop = () => {};
 function render(
