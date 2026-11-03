@@ -89,21 +89,34 @@ esac"#,
 
     /// `harness_spawn` on the login; the folder its CLI got.
     fn spawn(&self, id: &str) -> Result<String, String> {
+        self.start(id, "claude", &self.fx, "fx", "acp", None)
+    }
+
+    /// `harness_spawn` of `cli`, found as `name`, with `arg` on a `provider`
+    /// login; what the CLI wrote to `ran` in its folder.
+    fn start(
+        &self,
+        id: &str,
+        provider: &str,
+        cli: &Path,
+        name: &str,
+        arg: &str,
+        codex_store: Option<&str>,
+    ) -> Result<String, String> {
         let workdir = self.root.join(id);
         std::fs::create_dir_all(&workdir).unwrap();
-        let account =
-            serde_json::from_value(serde_json::json!({ "provider": "claude", "id": id })).unwrap();
+        let account = serde_json::from_value(json!({ "provider": provider, "id": id })).unwrap();
         crate::harness::harness_spawn(
             self.app.handle().clone(),
             self.app.state::<crate::harness::HarnessHost>(),
             id.into(),
-            text(&self.fx),
-            vec!["acp".into()],
+            text(cli),
+            vec![arg.into()],
             text(&workdir),
             Some(account),
-            Some("fx".into()),
-            Some(text(&self.fx)),
-            None,
+            Some(name.into()),
+            Some(text(cli)),
+            codex_store.map(String::from),
             None,
             None,
             None,
@@ -115,7 +128,9 @@ esac"#,
 /// Defect: a symlinked login starts its CLI with the link, not the target
 /// (Claude then misses the Keychain login made for the target), a plain
 /// login's folder changes, srt's settings leave a linked login's folder
-/// unwritable or open a plain one's in the app data, a broken, looping or
+/// unwritable, its hooks or `notify` config writable, or open a plain one's in
+/// the app data, Claude Code's deny rules name the link instead of the folder
+/// its CLI gets, a broken, looping or
 /// out-of-bounds link falls back to a folder instead of failing, or removing
 /// the login follows the link and deletes the target.
 #[test]
@@ -204,13 +219,138 @@ fn registered_login_child() {
     );
 }
 
-#[cfg(target_os = "macos")]
+/// srt's rules and Claude Code's deny rules for a linked login: its folder
+/// writable but not its hooks or `notify` config, a plain login's folder in
+/// the app data not opened, and Claude Code's rules on the folder its CLI gets.
+fn sandbox_rules_follow_the_login(rig: &Rig, target: &Path) {
+    let marker = rig
+        .app
+        .path()
+        .app_data_dir()
+        .unwrap()
+        .join("agent-sandbox-on");
+    std::fs::write(&marker, b"").unwrap();
+    stand_in_srt(&rig.root.join("srt"));
+    rig.link("sandboxed", target);
+    for id in ["sandboxed", "plain-sandboxed"] {
+        rig.spawn(id).unwrap();
+    }
+    let rules = |id: &str, key: &str| {
+        let settings = std::fs::read_to_string(rig.root.join(id).join("srt-settings")).unwrap();
+        let settings: Value =
+            serde_json::from_str(&std::fs::read_to_string(settings).unwrap()).unwrap();
+        settings["filesystem"][key].clone()
+    };
+    let has = |list: &Value, dir: &Path| list.as_array().unwrap().contains(&json!(text(dir)));
+    assert!(
+        has(&rules("sandboxed", "allowWrite"), target),
+        "srt keeps the CLI from writing its linked login's folder"
+    );
+    for file in ["settings.json", "config.toml"] {
+        assert!(
+            has(&rules("sandboxed", "denyWrite"), &target.join(file)),
+            "the CLI may write {file}, which sessions outside srt run"
+        );
+    }
+    assert!(
+        !has(
+            &rules("plain-sandboxed", "allowWrite"),
+            &rig.folder("plain-sandboxed")
+        ),
+        "srt lets the CLI write a login folder in the app data"
+    );
+    std::fs::remove_file(marker).unwrap();
+
+    let data = rig.app.path().app_data_dir().unwrap();
+    std::fs::write(data.join("claude-deny-rules-on"), b"").unwrap();
+    let deny =
+        crate::claude_deny::srt_deny(rig.app.handle(), &rig.root.join("sandboxed"), Some("sandboxed"))
+            .unwrap();
+    assert!(
+        deny.contains(&text(&target.join("settings.json"))),
+        "Claude Code's deny rules miss the linked login's settings: {deny:?}"
+    );
+    assert!(
+        !deny.iter().any(|entry| Path::new(entry).starts_with(&data)),
+        "Claude Code's deny rules name the link, not the folder its CLI gets: {deny:?}"
+    );
+    std::fs::remove_file(data.join("claude-deny-rules-on")).unwrap();
+}
+
 struct Remove(PathBuf);
 
-#[cfg(target_os = "macos")]
 impl Drop for Remove {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A scratch folder in the home folder, removed on drop, and a rig in it: a
+/// login must link inside the home folder, and every spawn may write the temp dir.
+fn home_rig() -> (Remove, Rig) {
+    let home = PathBuf::from(crate::dirs_home().unwrap());
+    let root = home.join(format!(".ade224-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let rig = Rig::new(std::fs::canonicalize(&root).unwrap());
+    (Remove(root), rig)
+}
+
+/// Defect: a Codex Mono's `CODEX_HOME` is not its own home beside the app
+/// data folder (ADE-224), its home keeps a `config.toml` an agent wrote there
+/// (r1 M2), or private storage starts for a spawn that is not Codex's
+/// app-server on a Codex login.
+#[test]
+fn a_codex_mono_runs_in_its_own_home_beside_the_app_data() {
+    let (_remove, rig) = home_rig();
+    let data = rig.app.path().app_data_dir().unwrap();
+    std::fs::create_dir_all(rig.root.join("codex-cli")).unwrap();
+    let codex = script(
+        &rig.root.join("codex-cli/codex"),
+        r#"case "$1" in
+  --help) echo "codex app-server" ;;
+  --version) echo "codex 0.0.1" ;;
+  *) printf '%s\n' "$CODEX_HOME" > ran.part && mv ran.part ran ;;
+esac"#,
+    );
+    let target = rig.root.join("home/.codex-2");
+    std::fs::create_dir_all(&target).unwrap();
+    let link = data.join("provider-accounts/codex/linked");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, link).unwrap();
+    let home = crate::codex_mono_store::homes(&data)
+        .unwrap()
+        .join("com.monocode.desktop/linked");
+    // An agent's `notify` from an earlier run; the login has no config.toml.
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("config.toml"), "notify = [\"planted\"]").unwrap();
+    assert_eq!(
+        rig.start(
+            "linked",
+            "codex",
+            &codex,
+            "codex",
+            "app-server",
+            Some("mono")
+        ),
+        Ok(format!("{}\n", text(&home))),
+        "the Mono's CODEX_HOME is not its own home beside the app data"
+    );
+    assert_eq!(
+        std::fs::read_link(home.join("config.toml")).ok(),
+        Some(target.join("config.toml")),
+        "the Mono home kept a config.toml that is not its login's"
+    );
+    let refused = "Private Mono storage is only supported for Codex app-server";
+    for (id, provider, cli, name, arg) in [
+        ("exec", "codex", &codex, "codex", "exec"),
+        ("claude-login", "claude", &codex, "codex", "app-server"),
+        ("other-cli", "codex", &rig.fx, "fx", "app-server"),
+    ] {
+        assert_eq!(
+            rig.start(id, provider, cli, name, arg, Some("mono")),
+            Err(refused.into()),
+            "{id}: private storage started"
+        );
     }
 }
 
@@ -218,8 +358,11 @@ impl Drop for Remove {
 /// the app data cannot read it (it got the link, in the app data), cannot
 /// write it (Claude Code refreshes its login there), or cannot reach the
 /// Keychain ("A Module Directory Service error", so Claude Code reports it is
-/// not logged in). macOS only, with srt 0.0.81 on the search PATH, as ci.yml
-/// installs it. In the home folder, since every spawn may write the temp dir.
+/// not logged in). That last one shows only where `security` must rewrite
+/// the module cache: on a CI runner whose cache is current it passes without
+/// it, and `on_settings_start_with_the_default_allows` is the check that fails
+/// (#512). macOS only, with srt 0.0.81 on the search PATH, as ci.yml installs
+/// it. In the home folder, since every spawn may write the temp dir.
 #[test]
 #[cfg(target_os = "macos")]
 fn a_linked_login_signs_in_under_the_real_srt() {
@@ -228,11 +371,7 @@ fn a_linked_login_signs_in_under_the_real_srt() {
         eprintln!("skipped: srt is not installed");
         return;
     }
-    let home = PathBuf::from(crate::dirs_home().unwrap());
-    let root = home.join(format!(".ade224-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
-    let _remove = Remove(root.clone());
-    let mut rig = Rig::new(std::fs::canonicalize(&root).unwrap());
+    let (_remove, mut rig) = home_rig();
     std::fs::create_dir_all(rig.root.join("login")).unwrap();
     rig.fx = script(
         &rig.root.join("login/fx"),
@@ -267,37 +406,73 @@ esac"#,
     );
 }
 
-/// srt's rules for a linked login with the ADE-41 marker on: its folder
-/// writable, a plain login's folder in the app data not opened.
-fn sandbox_rules_follow_the_login(rig: &Rig, target: &Path) {
-    let marker = rig
-        .app
-        .path()
-        .app_data_dir()
-        .unwrap()
-        .join("agent-sandbox-on");
-    std::fs::write(&marker, b"").unwrap();
-    stand_in_srt(&rig.root.join("srt"));
-    rig.link("sandboxed", target);
-    for id in ["sandboxed", "plain-sandboxed"] {
-        rig.spawn(id).unwrap();
+/// Defect: under the real srt, a Codex Mono cannot write its private home, can
+/// read another login's, or can add a file to the app data folder (ADE-224:
+/// srt cannot open one folder inside a denied one to writes, so the homes are
+/// beside it). macOS only, as `a_linked_login_signs_in_under_the_real_srt`.
+#[test]
+#[cfg(target_os = "macos")]
+fn a_codex_mono_writes_only_its_home_under_the_real_srt() {
+    if crate::harness::resolve_gui_binary("srt").is_none() {
+        assert!(std::env::var_os("CI").is_none(), "srt is not installed");
+        eprintln!("skipped: srt is not installed");
+        return;
     }
-    let allowed = |id: &str| {
-        let settings = std::fs::read_to_string(rig.root.join(id).join("srt-settings")).unwrap();
-        let settings: Value =
-            serde_json::from_str(&std::fs::read_to_string(settings).unwrap()).unwrap();
-        settings["filesystem"]["allowWrite"].clone()
-    };
-    let has = |list: &Value, dir: &Path| list.as_array().unwrap().contains(&json!(text(dir)));
+    let (_remove, rig) = home_rig();
+    let data = rig.app.path().app_data_dir().unwrap();
+    let homes = crate::codex_mono_store::homes(&data).unwrap();
+    let other = homes.join("com.monocode.desktop/other");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("secret"), "another login's rollout").unwrap();
+    std::fs::create_dir_all(rig.root.join("codex-cli")).unwrap();
+    let planted = data.join("planted");
+    let codex = script(
+        &rig.root.join("codex-cli/codex"),
+        &format!(
+            r#"case "$1" in
+  --help) echo "codex app-server" ;;
+  --version) echo "codex 0.0.1" ;;
+  *) {{
+    echo rollout > "$CODEX_HOME/sessions/r.jsonl" && echo wrote-home
+    cat '{}' && echo read-other
+    echo x > '{}' && echo wrote-data
+  }} > ran.part 2>&1; mv ran.part ran ;;
+esac"#,
+            other.join("secret").display(),
+            planted.display()
+        ),
+    );
+    let target = rig.root.join("home/.codex-2");
+    std::fs::create_dir_all(&target).unwrap();
+    let link = data.join("provider-accounts/codex/linked");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, link).unwrap();
+    std::fs::write(data.join("agent-sandbox-on"), b"").unwrap();
+    let ran = rig
+        .start(
+            "linked",
+            "codex",
+            &codex,
+            "codex",
+            "app-server",
+            Some("mono"),
+        )
+        .unwrap();
     assert!(
-        has(&allowed("sandboxed"), target),
-        "srt keeps the CLI from writing its linked login's folder"
+        ran.contains("wrote-home"),
+        "the Mono cannot write its home:\n{ran}"
     );
     assert!(
-        !has(&allowed("plain-sandboxed"), &rig.folder("plain-sandboxed")),
-        "srt lets the CLI write a login folder in the app data"
+        !ran.contains("read-other") && !ran.contains("another login's"),
+        "the Mono read another login's home:\n{ran}"
     );
-    std::fs::remove_file(marker).unwrap();
+    assert!(
+        !ran.contains("wrote-data") && !planted.exists(),
+        "the Mono added a file to the app data folder:\n{ran}"
+    );
+    assert!(homes
+        .join("com.monocode.desktop/linked/sessions/r.jsonl")
+        .is_file());
 }
 
 /// What `loadProviderAccounts` sends for each login browser storage holds:

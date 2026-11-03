@@ -55,6 +55,20 @@ const STARTUP_FILES: [&str; 11] = [
 /// `.git/config`; a linked worktree's `.git` file stays writable (ADE-101).
 const OTHERS_CONFIG: [&str; 3] = [".gitconfig", ".claude/settings.json", ".codex/config.toml"];
 
+/// In a login folder outside `~/.claude` and `~/.codex` (`~/.claude-2`), the
+/// same files: Claude Code's hooks and Codex's `notify` command, which
+/// sessions outside srt on that login run later.
+const LOGIN_CONFIG: [&str; 2] = ["settings.json", "config.toml"];
+
+/// `confstr` folders every spawn may write, each with the subfolder opened: on
+/// macOS the Keychain's module cache, `$(getconf DARWIN_USER_CACHE_DIR)mds`.
+/// Without it every `security` call fails with "A Module Directory Service
+/// error", so Claude Code cannot read its login and reports it is not logged in.
+#[cfg(target_os = "macos")]
+const CONFSTR_WRITE: [(libc::c_int, &str); 1] = [(libc::_CS_DARWIN_USER_CACHE_DIR, "mds")];
+#[cfg(all(unix, not(target_os = "macos")))]
+const CONFSTR_WRITE: [(libc::c_int, &str); 0] = [];
+
 /// Each harness's own state folder. Under the XDG config folder only OpenCode
 /// (`opencode`) and Devin (`devin`) write, so it is not allowed whole.
 /// `~/MonoCode` and DigitalOcean's `doctl` (its macOS folder here, its XDG one
@@ -103,18 +117,18 @@ pub(crate) struct Spawn {
 pub(crate) struct Homes<'a> {
     /// `harness::provider_account_dir`: writable outside the app data only.
     pub(crate) account: Option<&'a Path>,
-    /// A Mono's private Codex home in the app data (`codex_mono_store`):
-    /// readable and writable, and nothing else in the app data is.
+    /// A Mono's private Codex home (`codex_mono_store`), in the folder of
+    /// homes every spawn is denied reads of: this spawn reads and writes it.
     pub(crate) codex: Option<&'a Path>,
 }
 
-/// srt write rules one spawn adds to the shared settings.
+/// srt rules one spawn adds to the shared settings.
 #[derive(Default)]
 struct SpawnRules {
     allow_write: Vec<String>,
     deny_write: Vec<String>,
-    /// Folders in the app data this spawn reads and writes.
-    carve: Vec<PathBuf>,
+    /// Reads reopened inside a denied folder.
+    allow_read: Vec<String>,
 }
 
 pub(crate) fn command<R: Runtime>(
@@ -168,13 +182,19 @@ pub(crate) fn command_in(
     };
     // The CLI keeps its config and refreshed login there. A login folder
     // inside the app data stays denied, as the rest of it.
-    rules.allow_write.extend(
-        homes
-            .account
-            .filter(|dir| !dir.starts_with(data))
-            .map(path_entry),
-    );
-    rules.carve.extend(homes.codex.map(Path::to_path_buf));
+    if let Some(dir) = homes.account.filter(|dir| !dir.starts_with(data)) {
+        rules.allow_write.push(path_entry(dir));
+        rules
+            .deny_write
+            .extend(LOGIN_CONFIG.map(|file| path_entry(&dir.join(file))));
+    }
+    if let Some(home) = homes.codex {
+        rules.allow_write.push(path_entry(home));
+        rules.allow_read.push(path_entry(home));
+        rules
+            .deny_write
+            .extend(LOGIN_CONFIG.map(|file| path_entry(&home.join(file))));
+    }
     let settings = write_settings(data, &srt, rules)?;
     let mut cmd = Command::new(srt);
     cmd.arg("--settings").arg(settings).arg("--").arg(program);
@@ -184,28 +204,6 @@ pub(crate) fn command_in(
 /// What git in `git` runs outside srt: its hooks, and its config's commands.
 fn git_code(git: &Path) -> [String; 2] {
     ["hooks", "config"].map(|name| path_entry(&git.join(name)))
-}
-
-/// Denies `folder`, or, when it holds a folder in `keep`, each entry in it
-/// that is not on the way down to one.
-fn deny_around(folder: &Path, keep: &[PathBuf], deny: &mut Vec<String>) -> Result<(), String> {
-    let inside: Vec<&PathBuf> = keep
-        .iter()
-        .filter(|kept| kept.starts_with(folder))
-        .collect();
-    if inside.is_empty() {
-        deny.push(path_entry(folder));
-        return Ok(());
-    }
-    if inside.iter().any(|kept| kept.as_path() == folder) {
-        return Ok(());
-    }
-    let entries = std::fs::read_dir(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("{}: {e}", folder.display()))?;
-        deny_around(&entry.path(), keep, deny)?;
-    }
-    Ok(())
 }
 
 fn pinned_srt(srt: Option<PathBuf>) -> Result<PathBuf, String> {
@@ -262,6 +260,12 @@ fn write_settings(data: &Path, srt: &Path, spawn: SpawnRules) -> Result<PathBuf,
         .map(path_entry)
         .collect();
     let mut deny_write = deny_read.clone();
+    // Not denied writes: a spawn writes its own home there, and no default allows the rest.
+    deny_read.extend(
+        crate::codex_mono_store::homes(data)
+            .as_deref()
+            .map(path_entry),
+    );
     // `$XDG_CONFIG_HOME`, as git, OpenCode and Devin find it (devin_config.rs).
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|dir| !dir.is_empty())
@@ -289,7 +293,8 @@ fn write_settings(data: &Path, srt: &Path, spawn: SpawnRules) -> Result<PathBuf,
     default_write.push(path_entry(&std::env::temp_dir()));
     default_write
         .extend(["opencode", "devin", "gh", "doctl"].map(|tool| path_entry(&config.join(tool))));
-    default_write.extend(keychain_cache().as_deref().map(path_entry));
+    #[cfg(unix)]
+    default_write.extend(confstr_dirs(&CONFSTR_WRITE));
     for list in [&mut deny_read, &mut deny_write, &mut default_write] {
         add_resolved(list);
     }
@@ -321,7 +326,7 @@ fn write_settings(data: &Path, srt: &Path, spawn: SpawnRules) -> Result<PathBuf,
         Ok(())
     })
     .map_err(|e| format!("{}: {e}", path.display()))?;
-    if spawn.allow_write.is_empty() && spawn.deny_write.is_empty() && spawn.carve.is_empty() {
+    if spawn.allow_write.is_empty() && spawn.deny_write.is_empty() && spawn.allow_read.is_empty() {
         return Ok(path);
     }
     // In a file named by its content, so a spawn starting at the same time
@@ -330,11 +335,7 @@ fn write_settings(data: &Path, srt: &Path, spawn: SpawnRules) -> Result<PathBuf,
         .map_err(|e| e.to_string())?;
     allow.extend(spawn.allow_write);
     let mut deny = [deny_write, spawn.deny_write].concat();
-    let mut read: Vec<String> = spawn.carve.iter().map(|dir| path_entry(dir)).collect();
-    if !spawn.carve.is_empty() {
-        allow.extend(read.iter().cloned());
-        carve_out(data, &spawn.carve, &mut deny)?;
-    }
+    let mut read = spawn.allow_read;
     for list in [&mut allow, &mut deny, &mut read] {
         add_resolved(list);
     }
@@ -352,61 +353,28 @@ fn write_settings(data: &Path, srt: &Path, spawn: SpawnRules) -> Result<PathBuf,
     Ok(path)
 }
 
-/// Opens `keep`, folders in the app data folder `data`, to writes. srt lets a
-/// deny win, so `deny`'s entries on `data` and on every MonoCode data folder
-/// become one on each entry beside the way down to `keep`, and one on each
-/// other data folder. srt's `allowRead` reopens reads.
-fn carve_out(data: &Path, keep: &[PathBuf], deny: &mut Vec<String>) -> Result<(), String> {
-    let instances = data.parent().map(|dir| dir.join(ALL_INSTANCES));
-    let mut covering: Vec<String> = std::iter::once(data)
-        .chain(instances.as_deref())
-        .map(path_entry)
-        .collect();
-    add_resolved(&mut covering);
-    deny.retain(|entry| !covering.contains(entry));
-    deny_around(data, keep, deny)?;
-    let Some(parent) = data.parent() else {
-        return Ok(());
-    };
-    let entries = std::fs::read_dir(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    for entry in entries {
-        let other = entry
-            .map_err(|e| format!("{}: {e}", parent.display()))?
-            .path();
-        let name = other.file_name().unwrap_or_default().to_string_lossy();
-        if name.starts_with("com.monocode.") && other != data {
-            deny.push(path_entry(&other));
-        }
-    }
-    Ok(())
+/// Each `(name, subfolder)` in `names` whose `confstr` folder is set.
+#[cfg(unix)]
+fn confstr_dirs(names: &[(libc::c_int, &str)]) -> Vec<String> {
+    names
+        .iter()
+        .filter_map(|&(name, sub)| Some(path_entry(&confstr(name)?.join(sub))))
+        .collect()
 }
 
-/// The Keychain's module cache, in the per-user cache folder under
-/// `/var/folders` (`getconf DARWIN_USER_CACHE_DIR`). Without it every
-/// `security` call fails with "A Module Directory Service error", so Claude
-/// Code cannot read its login and reports it is not logged in.
-#[cfg(target_os = "macos")]
-fn keychain_cache() -> Option<PathBuf> {
+#[cfg(unix)]
+fn confstr(name: libc::c_int) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStringExt;
-    let mut buf = vec![0u8; libc::PATH_MAX as usize];
-    // SAFETY: confstr writes at most `buf.len()` bytes, its NUL included.
-    let len = unsafe {
-        libc::confstr(
-            libc::_CS_DARWIN_USER_CACHE_DIR,
-            buf.as_mut_ptr().cast(),
-            buf.len(),
-        )
-    };
-    if len == 0 || len > buf.len() {
+    // SAFETY: with no buffer, confstr only answers the length, its NUL included.
+    let len = unsafe { libc::confstr(name, std::ptr::null_mut(), 0) };
+    if len == 0 {
         return None;
     }
-    buf.truncate(len - 1);
-    Some(PathBuf::from(std::ffi::OsString::from_vec(buf)).join("mds"))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn keychain_cache() -> Option<PathBuf> {
-    None
+    let mut buf = vec![0u8; len];
+    // SAFETY: confstr writes at most `buf.len()` bytes.
+    unsafe { libc::confstr(name, buf.as_mut_ptr().cast(), buf.len()) };
+    buf.pop();
+    Some(PathBuf::from(std::ffi::OsString::from_vec(buf)))
 }
 
 /// The user's additions under `key`. srt refuses the whole file for one entry
@@ -449,5 +417,22 @@ fn resolved(path: &Path) -> Option<PathBuf> {
     match std::fs::canonicalize(path) {
         Ok(real) => Some(real),
         Err(_) => Some(resolved(path.parent()?)?.join(path.file_name()?)),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// Defect: a `confstr` folder is dropped, keeps its NUL, or an unset name
+    /// adds an entry.
+    #[test]
+    fn confstr_dirs_names_each_set_folder() {
+        let out = Command::new("getconf").arg("PATH").output().unwrap();
+        let path = String::from_utf8(out.stdout).unwrap();
+        assert_eq!(
+            confstr_dirs(&[(libc::_CS_PATH, "sub"), (-1, "unset")]),
+            [path_entry(&Path::new(path.trim()).join("sub"))]
+        );
     }
 }
