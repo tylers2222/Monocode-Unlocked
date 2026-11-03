@@ -1820,8 +1820,8 @@ mod helpers {
         );
     }
 
-    /// The ownerless-helper rule's guard (ADE-189 4/4): a call of no session
-    /// is Space 1's, so a commit-text helper the window points at the
+    /// The ownerless-helper rule's guard (ADE-189 4/4): a call of no stored
+    /// session is Space 1's, so a commit-text helper the window points at the
     /// checkout Space 2 holds is refused, and nothing is spawned there. The
     /// same call in a folder no other Space holds runs there (the rule's rows
     /// in [`helpers_run_where_their_owner_does`]).
@@ -1842,8 +1842,19 @@ mod helpers {
         );
         assert_eq!(
             exec_as(rig, Some("monocode-grok-text"), None, Some(copy)),
-            Err(refused),
+            Err(refused.clone()),
             "an ownerless cleanup exec ran in Space 2's checkout"
+        );
+        // A kept helper whose owner is no stored session (the `/` picker of an
+        // unsaved tab) is held to the same guard.
+        assert_eq!(
+            try_helper(rig, "monocode-pi-skills-3", Some("ghost"), copy),
+            Err(refused),
+            "an unsaved tab's picker helper ran in Space 2's checkout"
+        );
+        assert!(
+            !copy.join("monocode-pi-skills-3").exists(),
+            "an unsaved tab's picker helper was spawned in Space 2's checkout"
         );
     }
 

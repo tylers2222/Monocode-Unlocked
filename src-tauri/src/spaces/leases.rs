@@ -120,9 +120,10 @@ pub fn spaces_lease_release(
     release_lease(&store, &checkout_path, &space_id)
 }
 
-/// The ownerless-helper rule's guard (ADE-189): a helper call that names no
-/// owner and keeps its caller's folder is Space 1's, the only Space a window
-/// has until windows carry a Space (ADE-179). So it is refused in a checkout
+/// The ownerless-helper rule's guard (ADE-189): a helper call that keeps its
+/// caller's folder and names no owner, or an owner that is no stored session
+/// (an unsaved tab), is Space 1's, the only Space a window has until windows
+/// carry a Space (ADE-179). So it is refused in a checkout
 /// another Space holds, before anything is spawned there. It takes no lease.
 pub(super) fn keep_ownerless(store: &SessionStore, workdir: &Path) -> Result<(), String> {
     // A missing folder is the caller's to report.
@@ -148,9 +149,17 @@ pub(super) fn claim(
     session_id: &str,
     target: SpawnTarget,
     no_space: Option<&Path>,
+    kept: bool,
 ) -> Result<SpawnTarget, String> {
     Ok(SpawnTarget {
-        workdir: place_or(store, session_id, &target.workdir, now_millis(), no_space)?,
+        workdir: place_or(
+            store,
+            session_id,
+            &target.workdir,
+            now_millis(),
+            no_space,
+            kept,
+        )?,
         ..target
     })
 }
@@ -174,17 +183,20 @@ pub(crate) fn place(
     workdir: &Path,
     now: i64,
 ) -> Result<PathBuf, String> {
-    place_or(store, child, workdir, now, None)
+    place_or(store, child, workdir, now, None, false)
 }
 
 /// [`place`], with the one check of whether `child` has a Space: a child of
-/// no stored session goes to `no_space` when it names one (ADE-189).
+/// no stored session goes to `no_space` when it names one (ADE-189). A
+/// `kept` helper (the ownerless-helper rule) of no stored session keeps its
+/// caller's folder only past [`keep_ownerless`], as one that names no owner.
 fn place_or(
     store: &SessionStore,
     child: &str,
     workdir: &Path,
     now: i64,
     no_space: Option<&Path>,
+    kept: bool,
 ) -> Result<PathBuf, String> {
     let session_id = crate::harness::child_session(child);
     // A missing folder is the caller's to report.
@@ -192,6 +204,9 @@ fn place_or(
         return Ok(workdir.to_path_buf());
     };
     let Some((space, project)) = with_conn(store, |conn| session_of(conn, session_id))? else {
+        if kept {
+            keep_ownerless(store, workdir)?;
+        }
         return Ok(no_space.unwrap_or(workdir).to_path_buf());
     };
     if shared_workspace().is_some_and(|shared| real.starts_with(shared)) {

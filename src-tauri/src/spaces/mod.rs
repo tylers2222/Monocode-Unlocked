@@ -662,5 +662,5 @@ pub(crate) fn prepare_spawn(
     };
     let target = account::resolve(store, session_id, provider, target)?;
     let target = grants::route(store, session_id, now, target)?;
-    leases::claim(store, session_id, target, no_space)
+    leases::claim(store, session_id, target, no_space, keeps)
 }
