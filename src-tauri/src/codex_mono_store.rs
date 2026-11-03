@@ -1,5 +1,8 @@
 //! Mono threads retain native Codex rollouts, but outside the Codex app's home.
 //! Configuration and credentials remain shared with the selected provider account.
+//! The homes are beside the app data folder, not in it (ADE-224): the agent
+//! sandbox denies writes to the whole app data folder, and srt cannot open one
+//! folder inside a denied one to writes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -7,6 +10,9 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, Runtime};
+
+/// Beside every app data folder, holding one folder per app, then one per account.
+const HOMES: &str = "MonoCode Codex Monos";
 
 const STATE_NAMES: &[&str] = &[
     "sessions",
@@ -91,13 +97,39 @@ fn locations<R: Runtime>(
         })
         .or_else(|| crate::dirs_home().map(|h| PathBuf::from(h).join(".codex")))
         .ok_or("Could not find the Codex home directory")?;
-    let home = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("codex-monos")
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let home = homes(&data)
+        .ok_or("The app data folder has no parent folder")?
+        .join(data.file_name().ok_or("The app data folder has no name")?)
         .join(account_id);
+    move_old_home(&data.join("codex-monos").join(account_id), &home)?;
     Ok((source, home))
+}
+
+/// The folder every app's Mono Codex homes are in, beside the app data folder
+/// `data`. The agent sandbox denies reads of it, and opens one spawn's own home.
+pub(crate) fn homes(data: &Path) -> Option<PathBuf> {
+    Some(data.parent()?.join(HOMES))
+}
+
+/// A home from before ADE-224 was in the app data folder. It moves once, whole,
+/// so its rollouts and Codex's state database stay together.
+fn move_old_home(old: &Path, home: &Path) -> Result<(), String> {
+    if !old.is_dir() || std::fs::symlink_metadata(home).is_ok() {
+        return Ok(());
+    }
+    let parent = home
+        .parent()
+        .ok_or("Mono Codex storage has no parent folder")?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("Could not create Mono Codex storage: {e}"))?;
+    std::fs::rename(old, home).map_err(|e| {
+        format!(
+            "Could not move Mono Codex storage from {} to {}: {e}",
+            old.display(),
+            home.display()
+        )
+    })
 }
 
 #[tauri::command(async)]
@@ -745,6 +777,32 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// Defect: a home from before ADE-224 is left in the app data folder, is
+    /// moved over a home already beside it, or a missing one makes a folder.
+    #[test]
+    fn an_old_home_moves_once_beside_the_app_data() {
+        let fx = Fixture::new();
+        let old = fx.0.join("data/codex-monos/a");
+        let home = fx.0.join("homes/data/a");
+        move_old_home(&old, &home).unwrap();
+        assert!(!home.exists(), "a missing old home made a folder");
+        std::fs::create_dir_all(old.join("sessions")).unwrap();
+        std::fs::write(old.join("sessions/r.jsonl"), "rollout").unwrap();
+        move_old_home(&old, &home).unwrap();
+        assert!(!old.exists(), "the old home stayed in the app data folder");
+        assert_eq!(
+            std::fs::read_to_string(home.join("sessions/r.jsonl")).unwrap(),
+            "rollout"
+        );
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("newer"), "").unwrap();
+        move_old_home(&old, &home).unwrap();
+        assert!(
+            old.join("newer").exists() && !home.join("newer").exists(),
+            "an old home replaced the one beside the app data"
+        );
     }
 
     #[test]

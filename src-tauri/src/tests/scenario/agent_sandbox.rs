@@ -102,8 +102,8 @@ impl Rig {
     }
 
     /// The app data folder, every MonoCode data folder beside it (the live
-    /// `com.monocode.second` among them), then login items and the shell
-    /// startup files.
+    /// `com.monocode.second` among them), login items and the shell startup
+    /// files, then the folder of Mono Codex homes.
     fn deny_read(&self) -> Vec<String> {
         let home = PathBuf::from(crate::dirs_home().unwrap());
         let startup = [
@@ -123,7 +123,12 @@ impl Rig {
         [path(&self.data), path(&siblings)]
             .into_iter()
             .chain(startup.map(|file| path(&home.join(file))))
+            .chain([path(&self.codex_homes())])
             .collect()
+    }
+
+    fn codex_homes(&self) -> PathBuf {
+        self.data.parent().unwrap().join("MonoCode Codex Monos")
     }
 }
 
@@ -220,10 +225,15 @@ fn on_settings_deny_the_protected_paths(rig: &Rig) {
     }
     assert_eq!(written["filesystem"]["allowRead"], json!([]));
     let deny_write = strings(&written["filesystem"]["denyWrite"]);
+    // A Mono's spawn writes its own Codex home there, and srt lets a deny win.
+    let homes = rig.codex_homes();
+    let real_homes = real.join("MonoCode Codex Monos");
     for entry in &deny_read {
-        assert!(
+        let codex = [&homes, &real_homes].map(|dir| path(dir)).contains(entry);
+        assert_eq!(
             deny_write.contains(entry),
-            "{entry} is readable-denied but writable"
+            !codex,
+            "{entry}: write deny does not match its read deny"
         );
     }
     // Config that programs outside the sandbox load later. The agent may read it.
@@ -431,21 +441,23 @@ fn an_old_settings_file_gets_the_current_defaults(rig: &Rig) {
     assert_eq!(written["extraAllowWrite"], json!([]));
 }
 
-/// A Mono's private Codex home (ADE-224) is in the app data folder, which
-/// srt denies whole: the spawn's copy opens that folder and nothing beside it.
+/// A Mono's private Codex home (ADE-224) is beside the app data folder,
+/// which stays denied whole: the spawn's copy opens that home and no other.
 fn on_opens_only_a_monos_codex_home(rig: &Rig) {
-    let home = rig.data.join("codex-monos/monocode-2");
-    let other = rig.data.join("codex-monos/default");
-    for dir in [&home, &other] {
-        std::fs::create_dir_all(dir).unwrap();
-    }
-    let homes = Homes {
-        account: None,
-        codex: Some(&home),
-    };
-    let spawn = command_in(&rig.data, "fx", None, &[], homes, || {
-        Some(rig.pinned.clone())
-    })
+    let homes = rig.codex_homes().join("com.monocode.test");
+    let home = homes.join("monocode-2");
+    let homes = homes.as_path();
+    let spawn = command_in(
+        &rig.data,
+        "fx",
+        None,
+        &[],
+        Homes {
+            account: None,
+            codex: Some(&home),
+        },
+        || Some(rig.pinned.clone()),
+    )
     .unwrap();
     let settings = argv(&spawn.cmd).1[1].clone();
     assert_ne!(
@@ -457,23 +469,22 @@ fn on_opens_only_a_monos_codex_home(rig: &Rig) {
     let list = |key: &str| strings(&written["filesystem"][key]);
     for key in ["allowRead", "allowWrite"] {
         assert!(list(key).contains(&path(&home)), "{key} misses {home:?}");
-    }
-    let deny = list("denyWrite");
-    for open in [&rig.data, &rig.data.join("codex-monos"), &home] {
-        assert!(!deny.contains(&path(open)), "{open:?} stays denied");
-    }
-    for closed in [&rig.settings, &other] {
-        assert!(deny.contains(&path(closed)), "{closed:?} is writable");
+        assert!(!list(key).contains(&path(homes)), "{key} opens every home");
     }
     assert!(
-        !list("allowRead").contains(&path(&rig.data)),
-        "the whole app data folder is readable"
+        list("denyWrite").contains(&path(&rig.data)),
+        "the app data folder is writable"
     );
+    assert!(list("denyRead").contains(&path(&rig.codex_homes())));
     let shared = rig.written();
     assert_eq!(
         shared["filesystem"]["allowRead"],
         json!([]),
         "every spawn reads it"
+    );
+    assert!(
+        !strings(&shared["filesystem"]["allowWrite"]).contains(&path(&home)),
+        "every spawn writes it"
     );
 }
 
@@ -493,8 +504,8 @@ const SPAWN_ROOT: &str = "MC_ADE41_SPAWN_ROOT";
 /// The `harness_spawn` command on Tauri's mock runtime, with a stand-in fx and
 /// a stand-in srt that each write a file in the child's folder. Each writes a
 /// part file and renames it, so `wait_for` never reads a file the shell has
-/// created but not yet filled. It runs in a process of its own, so the PATH
-/// that puts the stand-in srt first changes no other test's environment.
+/// created but not yet filled. It runs in a process of its own, so its
+/// `XDG_CONFIG_HOME` changes no other test's environment.
 fn harness_spawn_starts_the_cli_bare_when_off_and_through_srt_when_on() {
     let root = folder();
     // Resolved, as the app's binary resolver hands back a path.
@@ -515,8 +526,6 @@ echo "$2" > through-srt.part && mv through-srt.part through-srt
 shift 3
 exec "$@""#,
     );
-    let inherited = std::env::var_os("PATH").unwrap_or_default();
-    let dirs = std::iter::once(tools.clone()).chain(std::env::split_paths(&inherited));
     let child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -524,7 +533,6 @@ exec "$@""#,
             "--ignored",
             "--quiet",
         ])
-        .env("PATH", std::env::join_paths(dirs).unwrap())
         .env(SPAWN_ROOT, &tools)
         .env("XDG_CONFIG_HOME", root.0.join("xdg"))
         .output()
@@ -542,12 +550,10 @@ fn harness_spawn_child() {
     let tools = PathBuf::from(std::env::var_os(SPAWN_ROOT).unwrap());
     let root = tools.parent().unwrap();
     let fx = tools.join("fx");
-    // The app finds srt on its search PATH, which ends with this process's PATH.
-    assert_eq!(
-        crate::harness::resolve_gui_binary("srt"),
-        Some(tools.join("srt")),
-        "another srt comes first on the search PATH"
-    );
+    // In place of the search PATH's: the login shell's PATH comes first there,
+    // so an srt the machine has installed would win.
+    crate::agent_sandbox::SRT_STAND_IN
+        .with(|found| *found.borrow_mut() = Some(Some(tools.join("srt"))));
 
     let data = root.join("app-data");
     let app = mock_app(&data);
