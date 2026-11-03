@@ -33,6 +33,8 @@
 #   app.sh usage-limit        ADE-167: with usage-limit/bin/claude as the
 #                             Claude override and a login with no fixture, a
 #                             turn ends with Claude Code's exit (app.test.sh)
+#   app.sh spaces [part]      ADE-182: Spaces end to end (spaces.sh), every
+#                             part or one of login, checkout, messages, grants
 #
 # GIGA_EVAL_OUT and GIGA_EVAL_HOME default to their own /tmp folders, apart
 # from other GigaEval runs. The installed apps are never used; `approvals`
@@ -755,6 +757,7 @@ case "${1:-}" in
   d4) source "$SCENARIOS/d4.test.sh"; run_d4 "${2:-}" ;;
   d2) source "$SCENARIOS/d2.test.sh"; run_d2 ;;
   usage-limit) source "$SCENARIOS/usage-limit/app.test.sh"; run_usage_limit ;;
+  spaces) source "$SCENARIOS/spaces.sh"; run_spaces "${2:-all}" ;;
   home-isolation) source "$SCENARIOS/home-isolation.test.sh"; run_home_isolation ;;
   approvals-run) export GIGA_EVAL_SANDBOX=1 GIGA_EVAL_WATCH_NOTIFY=$$; run_approvals "$2" ;;
   approvals)
@@ -772,5 +775,5 @@ case "${1:-}" in
     for run in $(seq 1 "${3:-1}"); do "$0" ade89-run "$2" "$run" || failed=$((failed + 1)); done
     log "ADE-89 $2: $(( ${3:-1} - failed ))/${3:-1} passed"
     ((failed == 0)) ;;
-  *) sed -n '2,39p' "$0"; exit 2 ;;
+  *) sed -n '2,41p' "$0"; exit 2 ;;
 esac
