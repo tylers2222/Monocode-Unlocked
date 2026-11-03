@@ -91,6 +91,10 @@ import {
 import { remoteProjectFor } from "../../features/connections/model/remoteProjects";
 import { useProjectMenu } from "./useProjectMenu";
 import { MonoRailSection, type MonoRailProps } from "./MonoRailSection";
+import { SpaceSwitcher } from "../../features/spaces/ui/SpaceSwitcher";
+import type { MonoState } from "../../features/monos/model/mono";
+
+const NO_MONO_STATES: ReadonlyMap<string, MonoState> = new Map();
 
 type Props = {
   visible?: boolean;
@@ -451,6 +455,11 @@ export function ProjectRail({
             ) : null}
           </div>
 
+          <SpaceSwitcher
+            states={monos?.states ?? NO_MONO_STATES}
+            unseenCounts={monos?.unseenCounts}
+            onOpenSettings={onOpenSettings}
+          />
           <div
             ref={(el) => {
               lockOverscroll(el);

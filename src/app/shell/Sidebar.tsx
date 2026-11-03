@@ -193,6 +193,12 @@ import {
 } from "../../features/monos/model/mono";
 import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
 import { useRailMonosPinned } from "../../features/settings/model/displayPrefs";
+import {
+  inActiveSpace,
+  projectInActiveSpace,
+  spacesView,
+  subscribeSpaces,
+} from "../../features/spaces/model/activeSpace";
 import type { PickerMonos } from "../../features/projects/ui/SearchableProjectPicker";
 import {
   unreadLabel,
@@ -704,12 +710,17 @@ function SidebarComponent({
   const worktreeFocus = useWorktreeFocus(cwd);
   const focusedWorktree = remoteProject ? undefined : worktreeFocus;
   useSyncExternalStore(subscribeMonos, monosSnapshot);
+  const spaces = useSyncExternalStore(subscribeSpaces, spacesView);
+  const spaceRecents = recents.filter((project) =>
+    projectInActiveSpace(project.path, spaces),
+  );
   const listedSessions = mergeFolderSessionSummaries(
     projectSessions,
     remoteProject ? [] : openSessions,
     sessionFolders,
   ).filter(
     (session) =>
+      inActiveSpace(session.spaceId, spaces) &&
       !isMonoSession(session.id) &&
       !session.sidebarHidden &&
       !("ephemeral" in session && session.ephemeral) &&
@@ -1800,7 +1811,7 @@ function SidebarComponent({
           {onSelectProject && !compactRailVisible ? (
             <SidebarProjectPicker
               cwd={cwd}
-              recents={recents}
+              recents={spaceRecents}
               busy={projectPathBusy(busyProjectPaths, cwd)}
               onSelectProject={onSelectProject}
               onOpenProject={onOpenProject}
@@ -2320,7 +2331,7 @@ function SidebarComponent({
       {compactRailVisible ? (
         <CompactProjectRail
           cwd={cwd}
-          recents={recents}
+          recents={spaceRecents}
           busy={projectPathBusy(busyProjectPaths, cwd)}
           tabs={visibleTabs}
           activeTab={tab}
@@ -2360,7 +2371,7 @@ function SidebarComponent({
         <ProjectRail
           visible={railVisible}
           cwd={cwd}
-          recents={recents}
+          recents={spaceRecents}
           inboxUnseen={inboxUnseen}
           busyPaths={busyProjectPaths}
           liveAgents={liveAgents}
@@ -2682,17 +2693,20 @@ function CompactProjectRail({
   monoViewActive?: boolean;
 }) {
   const monosSnap = useSyncExternalStore(subscribeMonos, monosSnapshot);
+  const spaces = useSyncExternalStore(subscribeSpaces, spacesView);
   const monosPinned = useRailMonosPinned();
   const approvals = useApprovalsBadge();
   const monoItems = useMemo(() => {
     if (!monos) return [];
-    return listMonos().map((mono) => ({
-      id: mono.id,
-      ...monoLook(mono),
-      status: monos.states.get(mono.id)?.status ?? "idle",
-    }));
+    return listMonos()
+      .filter((mono) => inActiveSpace(mono.spaceId, spaces))
+      .map((mono) => ({
+        id: mono.id,
+        ...monoLook(mono),
+        status: monos.states.get(mono.id)?.status ?? "idle",
+      }));
     // The roster is read through its snapshot.
-  }, [monos, monosSnap]);
+  }, [monos, monosSnap, spaces]);
   const pickerMonos = useMemo((): PickerMonos | undefined => {
     if (!monos) return undefined;
     return {
