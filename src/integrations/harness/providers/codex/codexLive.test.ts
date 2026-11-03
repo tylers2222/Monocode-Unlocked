@@ -14,14 +14,22 @@ const saveGeneratedImage = vi.hoisted(() =>
 );
 const deleteGeneratedImages = vi.hoisted(() => vi.fn(async () => undefined));
 const spawnChild = vi.hoisted(() =>
-  vi.fn<(...args: unknown[]) => Promise<undefined>>(async () => undefined),
+  vi.fn<
+    (
+      ...args: unknown[]
+    ) => Promise<{ cwd: string; sandboxed: boolean } | undefined>
+  >(async () => undefined),
 );
 // Rust places a helper and names the folder (ADE-189).
 const spawnHelperChild = vi.hoisted(() =>
   vi.fn<(...args: unknown[]) => Promise<string>>(async () => "/neutral"),
 );
 const restoreMonoCodexAgentState = vi.hoisted(() =>
-  vi.fn<(...args: unknown[]) => Promise<undefined>>(async () => undefined),
+  vi.fn<
+    (
+      ...args: unknown[]
+    ) => Promise<{ cwd: string; sandboxed: boolean } | undefined>
+  >(async () => undefined),
 );
 const prepareCodexMonoContext = vi.hoisted(() =>
   vi.fn<
@@ -519,6 +527,40 @@ describe("codex live turn sequence", () => {
       "Send a message before compacting this chat",
     );
     expect(sent).toEqual([]);
+  });
+
+  // ADE-199: inside srt (the Space write fence) Codex's own seatbelt cannot
+  // start, so the thread and its turns ask for none and srt is the only
+  // fence; outside srt they keep Codex's. Defect: a fenced session still asks
+  // for a sandbox, an unfenced one loses it, or the approval policy changes.
+  it("drops Codex's own sandbox only when srt runs the app-server", async () => {
+    const params = (method: string) =>
+      parse().find((message) => message.method === method)?.params;
+    spawnChild.mockResolvedValueOnce({ cwd: "/repo", sandboxed: true });
+    const fenced = await startTurn("codex-live", { runtimeMode: "auto" });
+    expect(params("thread/start")).toMatchObject({
+      sandbox: "danger-full-access",
+      approvalPolicy: "on-request",
+    });
+    expect(params("turn/start")).toMatchObject({
+      sandboxPolicy: { type: "dangerFullAccess" },
+      approvalPolicy: "on-request",
+    });
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await fenced.turn;
+
+    sent.length = 0;
+    spawnChild.mockResolvedValueOnce({ cwd: "/repo", sandboxed: false });
+    const plain = await startTurn("codex-live-plain", { runtimeMode: "auto" });
+    expect(params("thread/start")).toMatchObject({
+      sandbox: "workspace-write",
+    });
+    expect(params("turn/start")).toMatchObject({
+      sandboxPolicy: { type: "workspaceWrite" },
+    });
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await plain.turn;
+    await stopCodexSession("codex-live-plain");
   });
 
   // Codex has no thread-level sandboxPolicy, so the turn carries the

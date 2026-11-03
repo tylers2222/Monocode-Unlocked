@@ -766,7 +766,8 @@ esac"#,
         assert!(space_fence(&rig.store(), Some("one"), &rig.project)
             .unwrap()
             .is_none());
-        rig.spawn("one").unwrap();
+        // ADE-199: the caller learns srt does not run it, so Codex keeps its sandbox.
+        assert!(!rig.spawn("one").unwrap().sandboxed, "one Space: sandboxed");
         assert_eq!(
             wait_for(&rig.project.join("ran")).trim(),
             path(&rig.project)
@@ -781,7 +782,11 @@ esac"#,
     /// Space 2's child writes its own copy and the `.git` the copy commits to,
     /// and nothing else of Space 1's checkout.
     fn space_two_writes_only_its_own_copy(rig: &Rig) {
-        rig.spawn("two").unwrap();
+        // ADE-199: the caller learns srt runs it, so Codex starts no sandbox inside.
+        assert!(
+            rig.spawn("two").unwrap().sandboxed,
+            "two Spaces: not sandboxed"
+        );
         let (allow, deny) = rig.fenced_in(&rig.copy);
         let git = rig.project.join(".git");
         for own in [&rig.copy, &git] {
