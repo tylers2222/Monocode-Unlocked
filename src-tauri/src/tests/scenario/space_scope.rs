@@ -144,6 +144,8 @@ impl Cast {
         let mono2 = world.add_mono_in("d-mono", MonoRole::Mono, &D_MONO_PROJECTS);
         world.add_session("s1", "/p1", None);
         world.add_session("s2", "/p2", None);
+        // The same folder written with a trailing slash: `path_key` matches it.
+        world.add_session("s2-slash", "/p2/", None);
         let lead1 = world.start_lead(&mono1, "lead1", "/p1");
         let worker1 = world.add_session("worker1", "/p1", Some("lead1"));
         let lead2 = world.start_lead(&mono2, "lead2", REMOTE);
@@ -152,7 +154,9 @@ impl Cast {
             move_to_work(&world, "sessions", mono.chat.as_str());
         }
         // lead2 is in a remote project, so the app never saved it.
-        move_to_work(&world, "sessions", "s2");
+        for session in ["s2", "s2-slash"] {
+            move_to_work(&world, "sessions", session);
+        }
         spaces::set_project_space(world.store(), "/p2", WORK).unwrap();
         spaces::set_project_space(world.store(), REMOTE, WORK).unwrap();
         Self {
@@ -208,7 +212,7 @@ impl Cast {
             failed,
             "a sessions.list names only Space 2's saved sessions in its projects, no Space 1 id",
             ours(&p2),
-            vec!["s2".to_owned()],
+            vec!["s2".to_owned(), "s2-slash".into()],
         );
         let name = "a sessions.list takes /p1, a project Space 1 shares (ADE-229)";
         checkpoint(failed, name, refused(&p2, "/p1"), false);
@@ -385,7 +389,7 @@ impl Cast {
             want,
         );
         let space2 = self.scope(&mono_caller(&self.mono2, "t1"), &p1);
-        let want = vec!["h-two".to_owned(), "s2".into()];
+        let want = vec!["h-two".to_owned(), "s2".into(), "s2-slash".into()];
         checkpoint(
             failed,
             "h a Space 2 Mono gets no Space 1 id in /p1",
