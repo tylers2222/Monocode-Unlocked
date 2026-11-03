@@ -28,6 +28,8 @@ const db = vi.hoisted(() => ({
   refuseSave: new Set<string>(),
   /** The fake clock `created_at` comes from: every save in a test is one ms. */
   now: 1,
+  /** Runs once, inside the next `spaces_accounts_list`. */
+  onList: undefined as (() => void) | undefined,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -41,6 +43,8 @@ vi.mock("@tauri-apps/api/core", () => ({
         return db.spaceLogins;
       // account.rs: ORDER BY provider, created_at, id
       case "spaces_accounts_list":
+        db.onList?.();
+        db.onList = undefined;
         return [...db.accounts]
           .sort(
             (a, b) =>
@@ -136,6 +140,7 @@ function freshDatabase() {
     createdAt: 0,
   }));
   db.now = 1;
+  db.onList = undefined;
   db.refuseSave.clear();
   windows.open.length = 0;
   db.spaceLogins = [];
@@ -191,7 +196,7 @@ describe("provider accounts", () => {
     expect(providerAccountLabel("devin", "default")).toBe("Personal");
   });
 
-  it("stores named profiles separately per provider", () => {
+  it("stores named profiles separately per provider", async () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue(
       "00000000-0000-4000-8000-000000000001",
     );
@@ -204,6 +209,9 @@ describe("provider accounts", () => {
     ]);
     expect(providerAccounts("codex")).toHaveLength(1);
     expect(providerAccountLabel("claude", work.id)).toBe("Work account");
+    // Never booted: browser storage is the only store, and nothing is sent.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(db.calls).toEqual([]);
   });
 
   it("falls back to the default account for malformed stored profiles", () => {
@@ -566,7 +574,12 @@ describe("provider accounts in monocode.db", () => {
     );
     db.refuseSave.add("account-late");
     let accounts = await boot();
+    const credentials = await import("./providerAccountCredentials");
     accounts.renameProviderAccount("claude", "account-work", "Office");
+    await credentials.removeProviderAccountCredentials(
+      "claude",
+      "account-gone",
+    );
     accounts.removeProviderAccount("claude", "account-gone");
     await settle();
 
@@ -614,11 +627,22 @@ describe("provider accounts in monocode.db", () => {
     ]);
   });
 
-  it("keeps browser storage when the database cannot load", async () => {
+  it("keeps browser storage when the database cannot load, and tries again on the next write", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     localStorage.setItem("monocode.providerAccounts.v1", BROWSER_LOGINS);
+    localStorage.setItem(
+      "monocode.providerAccountSelections.v1",
+      JSON.stringify({ "/repo/one": { codex: "account-x" } }),
+    );
+    db.accounts.push({
+      provider: "codex",
+      id: "account-x",
+      label: "X",
+      createdAt: 0,
+    });
     db.refuse.add("spaces_accounts_list");
     const accounts = await boot();
+    const credentials = await import("./providerAccountCredentials");
 
     expect(console.error).toHaveBeenCalledWith("spaces_accounts_list refused");
     expect(labels(accounts, "codex")).toEqual([
@@ -626,21 +650,184 @@ describe("provider accounts in monocode.db", () => {
       "account-x X",
     ]);
     db.calls = [];
+    // The boot is tried again, fails again, and the remove is refused: the
+    // folder and the database row stay.
+    await expect(
+      credentials.removeProviderAccountCredentials("codex", "account-x"),
+    ).rejects.toThrow("monocode.db is not loaded");
+    expect(sent("provider_account_remove")).toEqual([]);
+    expect(sent("spaces_account_remove")).toEqual([]);
+    expect(db.accounts.map(({ id }) => id)).toContain("account-x");
+    expect(labels(accounts, "codex")).toContain("account-x X");
     accounts.saveProviderAccount({
       id: "account-new",
       provider: "codex",
       label: "New",
     });
-    expect(labels(accounts, "codex")).toEqual([
-      "default Default account",
-      "account-x X",
-      "account-new New",
-    ]);
     expect(localStorage.getItem("monocode.providerAccounts.v1")).toContain(
       "account-new",
     );
     await settle();
-    expect(db.calls).toEqual([]);
+
+    db.refuse.delete("spaces_accounts_list");
+    db.calls = [];
+    // A rename made while the boot loads is shown once it has been saved.
+    db.onList = () =>
+      accounts.renameProviderAccount("codex", "account-x", "Why");
+    accounts.saveProviderAccount({
+      id: "account-next",
+      provider: "codex",
+      label: "Next",
+    });
+    await vi.waitFor(() =>
+      expect(db.accounts.some(({ id }) => id === "account-next")).toBe(true),
+    );
+    // The write after the outage runs the whole boot: the browser-only
+    // logins are imported, so they stay listed and chosen.
+    await vi.waitFor(() =>
+      expect(labels(accounts, "codex")).toEqual([
+        "default Default account",
+        "account-x Why",
+        "account-new New",
+        "account-next Next",
+      ]),
+    );
+    expect(db.accounts.find(({ id }) => id === "account-x")?.label).toBe("Why");
+    expect(accounts.selectedProviderAccountId("codex", "/repo/one")).toBe(
+      "account-x",
+    );
+    expect(
+      localStorage.getItem("monocode.providerAccounts.v1.import"),
+    ).toContain("codex/account-x");
+
+    db.calls = [];
+    accounts.saveProviderAccount({
+      id: "account-last",
+      provider: "codex",
+      label: "Last",
+    });
+    await vi.waitFor(() => expect(db.calls).toHaveLength(1));
+    await settle();
+    expect(db.calls.map(([command]) => command)).toEqual([
+      "spaces_account_save",
+    ]);
+  });
+
+  it("after a failed boot, a removal or rename of a login not yet imported sticks", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    localStorage.setItem(
+      "monocode.providerAccounts.v1",
+      JSON.stringify({
+        codex: [
+          { id: "account-x", provider: "codex", label: "X" },
+          { id: "account-y", provider: "codex", label: "Y" },
+        ],
+      }),
+    );
+    db.refuse.add("spaces_accounts_list");
+    let accounts = await boot();
+    const credentials = await import("./providerAccountCredentials");
+    db.refuse.delete("spaces_accounts_list");
+
+    // The first write after the outage: the boot and its import run first.
+    await credentials.removeProviderAccountCredentials("codex", "account-x");
+    expect(accounts.removeProviderAccount("codex", "account-x")).toBe(true);
+    accounts.renameProviderAccount("codex", "account-y", "Why");
+    await settle();
+    await vi.waitFor(() =>
+      expect(labels(accounts, "codex")).toEqual([
+        "default Default account",
+        "account-y Why",
+      ]),
+    );
+    expect(db.accounts.map(({ id }) => id)).not.toContain("account-x");
+
+    accounts = await boot();
+    expect(labels(accounts, "codex")).toEqual([
+      "default Default account",
+      "account-y Why",
+    ]);
+  });
+
+  it("keeps the saved writes around a refused one, and a refused remove keeps the folder", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const accounts = await boot();
+    const credentials = await import("./providerAccountCredentials");
+    db.refuseSave.add("account-b");
+    // A save made while the reload after the refusal is listing the logins.
+    db.onList = () =>
+      accounts.saveProviderAccount({
+        id: "account-mid",
+        provider: "codex",
+        label: "Mid",
+      });
+    db.calls = [];
+
+    accounts.saveProviderAccount({
+      id: "account-a",
+      provider: "codex",
+      label: "A",
+    });
+    accounts.saveProviderAccount({
+      id: "account-b",
+      provider: "codex",
+      label: "B",
+    });
+    accounts.saveProviderAccount({
+      id: "account-c",
+      provider: "codex",
+      label: "C",
+    });
+    expect(labels(accounts, "codex")).toEqual([
+      "default Default account",
+      "account-a A",
+      "account-b B",
+      "account-c C",
+    ]);
+    // The reload after the refusal drops B; the save made during it is
+    // reloaded again once it has run, so it stays.
+    await vi.waitFor(() =>
+      expect(sent("spaces_accounts_list")).toHaveLength(2),
+    );
+    await vi.waitFor(() =>
+      expect(labels(accounts, "codex")).toEqual([
+        "default Default account",
+        "account-a A",
+        "account-c C",
+        "account-mid Mid",
+      ]),
+    );
+    expect(db.accounts.map(({ id }) => id)).toContain("account-mid");
+    expect(console.error).toHaveBeenCalledWith(
+      "spaces_account_save refused account-b",
+    );
+
+    db.calls = [];
+    accounts.saveProviderAccount({
+      id: "account-d",
+      provider: "codex",
+      label: "D",
+    });
+    await vi.waitFor(() => expect(db.calls).toHaveLength(1));
+    await settle();
+    expect(db.calls.map(([command]) => command)).toEqual([
+      "spaces_account_save",
+    ]);
+
+    db.refuse.add("spaces_account_remove");
+    db.calls = [];
+    await expect(
+      credentials.removeProviderAccountCredentials("codex", "account-a"),
+    ).rejects.toBe("spaces_account_remove refused");
+    expect(sent("provider_account_remove")).toEqual([]);
+    db.refuse.delete("spaces_account_remove");
+    await credentials.removeProviderAccountCredentials("codex", "account-c");
+    expect(accounts.removeProviderAccount("codex", "account-c")).toBe(true);
+    expect(sent("provider_account_remove")).toEqual([
+      { provider: "codex", accountId: "account-c" },
+    ]);
+    expect(db.accounts.map(({ id }) => id)).toContain("account-a");
+    expect(db.accounts.map(({ id }) => id)).not.toContain("account-c");
   });
 
   it("tells the other windows, which reload and do not bring a removed login back", async () => {

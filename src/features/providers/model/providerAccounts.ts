@@ -80,8 +80,14 @@ const BROWSER_SPACE = "space-1";
  */
 let saved: Map<string, string> | undefined;
 let writes: Promise<unknown> = Promise.resolve();
+/** Writes sent and not yet answered. */
+let queued = 0;
+/** Whether the snapshot shows a write the database has not taken. */
+let stale = false;
 /** Replaced by a fresh token each time the database refuses a write. */
 let refusal: object = {};
+/** After a failed boot: the boot, for the next write to start again. */
+let restart: (() => Promise<void>) | undefined;
 /** Other windows of this app, once loaded; each reloads its snapshot when one writes. */
 let windows: BroadcastChannel | undefined;
 
@@ -89,7 +95,7 @@ let windows: BroadcastChannel | undefined;
  * Loads the logins from `monocode.db` before the first render, and once
  * imports the logins browser storage holds, giving Space 1 each CLI's
  * `default`. The old key stays for the Space 2 merge (ADE-178). A failure
- * keeps browser storage.
+ * keeps browser storage, and the next write starts the boot again.
  */
 export async function loadProviderAccounts(): Promise<void> {
   try {
@@ -100,14 +106,29 @@ export async function loadProviderAccounts(): Promise<void> {
     await start();
     await writes;
   } catch (error) {
-    console.error(error);
+    bootFailed(error);
   }
 }
 
-/** Loads the saved logins, then queues the import of browser storage's. */
+/** A boot that could not load: the next write starts it again. */
+function bootFailed(error: unknown): void {
+  restart = start;
+  console.error(error);
+}
+
+/**
+ * Loads the saved logins, then imports browser storage's. The import runs on
+ * its own chain, which this awaits, so a boot can run as a write-queue item
+ * and the writes queued behind it come after the import.
+ */
 async function start(): Promise<void> {
   const accounts = PROVIDER_ACCOUNT_PROVIDERS.flatMap(providerAccounts);
+  const before = queued;
   await loadSaved();
+  // The import reads every earlier write; only one made while this loaded is lost.
+  stale = queued > before;
+  const queue = writes;
+  writes = Promise.resolve();
   importOnce(
     ACCOUNTS_IMPORT_KEY,
     // `default` cannot be saved, only renamed, so every login is both.
@@ -133,6 +154,9 @@ async function start(): Promise<void> {
       },
     ],
   );
+  const imported = writes;
+  writes = queue;
+  await imported;
 }
 
 /** One entry of an import: its key in the marker, and how to send it. */
@@ -175,24 +199,56 @@ async function loadSaved(): Promise<void> {
     (stored[account.provider] ??= Array.of<ProviderAccount>()).push(account);
   }
   saved = new Map<string, string>().set(ACCOUNTS_KEY, JSON.stringify(stored));
+  // A write made while this loaded is in the snapshot no more: reload after it.
+  if (queued > 0) stale = true;
   announceChange();
 }
 
 /**
- * Sends one write to `monocode.db` once it has loaded, and tells the other
- * windows. A refused write is logged, and replaces the refusal token.
+ * Queues one write to `monocode.db`, and tells the other windows once it is
+ * saved. After a failed boot, the boot runs again first, as its own queue
+ * item; if it fails again, this write and every write behind it are refused.
+ * A refused write is logged; once the queue has drained, the snapshot reloads
+ * what the database holds, so it drops the refused writes and keeps every
+ * saved one. The returned promise rejects when this write is refused.
  */
-function persist(command: string, args: InvokeArgs): void {
-  writes = writes
-    .then(async () => {
-      if (!saved) return;
-      await invoke<void>(command, args);
-      windows!.postMessage(command);
-    })
+function persist(command: string, args: InvokeArgs): Promise<void> {
+  // `restart` is unset unless the last boot failed.
+  writes = writes.then(restart).catch(bootFailed);
+  restart = undefined;
+  queued += 1;
+  const sent = writes.then(async () => {
+    if (!saved) {
+      // Booted, but the database did not load: refuse, never drop.
+      if (windows) throw new Error("monocode.db is not loaded");
+      return;
+    }
+    await invoke<void>(command, args);
+    windows!.postMessage(command);
+  });
+  writes = sent
     .catch((error: unknown) => {
       console.error(error);
       refusal = {};
-    });
+      stale = true;
+    })
+    .then(async () => {
+      queued -= 1;
+      if (queued === 0 && stale) {
+        stale = false;
+        await loadSaved();
+      }
+    })
+    .catch(console.error);
+  return sent;
+}
+
+/** Takes a login out of `monocode.db`; rejects, and keeps it, when refused. */
+export function removeSavedProviderAccount(
+  provider: ProviderAccountProvider,
+  accountId: string,
+): Promise<void> {
+  return persist("spaces_account_remove", { provider, id: accountId });
 }
 
 export function providerAccounts(
@@ -312,7 +368,6 @@ export function removeProviderAccount(
     else selections[key] = nextSelection;
   }
   writeJson(SELECTIONS_KEY, selections);
-  persist("spaces_account_remove", { provider, id: accountId });
   announceChange();
   return true;
 }
