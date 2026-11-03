@@ -57,11 +57,33 @@ function withNetwork(
   };
 }
 
+/**
+ * Inside srt (the backend's Space write fence, `harness_spawn`'s `sandboxed`)
+ * Codex's own seatbelt cannot start ("sandbox_apply: Operation not
+ * permitted"), so every shell command would fail. There srt is the only
+ * sandbox: Codex runs commands unsandboxed, and the approval policy stays.
+ */
+function withoutNestedSandbox(
+  config: CodexThreadConfig,
+  inSandbox?: boolean,
+): CodexThreadConfig {
+  if (!inSandbox) return config;
+  return {
+    ...config,
+    sandbox: "danger-full-access",
+    sandboxPolicy: { type: "dangerFullAccess" },
+  };
+}
+
 export function runtimeModeToCodexConfig(
   mode: RuntimeMode,
   controlsAgents?: boolean,
+  inSandbox?: boolean,
 ): CodexThreadConfig {
-  return withNetwork(baseCodexConfig(mode), controlsAgents);
+  return withNetwork(
+    withoutNestedSandbox(baseCodexConfig(mode), inSandbox),
+    controlsAgents,
+  );
 }
 
 function baseCodexConfig(mode: RuntimeMode): CodexThreadConfig {
@@ -109,8 +131,13 @@ export function buildThreadStartParams(input: {
   runtimeMode: RuntimeMode;
   model?: string;
   serviceTier?: string;
+  inSandbox?: boolean;
 }): Record<string, unknown> {
-  const config = runtimeModeToCodexConfig(input.runtimeMode);
+  const config = runtimeModeToCodexConfig(
+    input.runtimeMode,
+    undefined,
+    input.inSandbox,
+  );
   return {
     cwd: input.cwd,
     approvalPolicy: config.approvalPolicy,
@@ -166,20 +193,31 @@ export function buildTurnStartParams(input: {
   effort?: string;
   serviceTier?: string;
   intent?: TurnIntent;
+  inSandbox?: boolean;
 }): Record<string, unknown> {
   const runtimeConfig = runtimeModeToCodexConfig(
     input.runtimeMode,
     input.controlsAgents,
+    input.inSandbox,
   );
+  // A plan turn makes no change. Inside srt it gets no read-only sandbox, so
+  // every untrusted command asks first, and the asks go to the user's client,
+  // not Auto's reviewer subagent, which could approve one: the plan turn
+  // denies each (codex.ts handleServerRequest).
   const config: CodexThreadConfig =
     input.intent === "plan"
       ? withNetwork(
-          {
-            approvalPolicy: "never",
-            sandbox: "read-only",
-            approvalsReviewer: runtimeConfig.approvalsReviewer,
-            sandboxPolicy: { type: "readOnly" },
-          },
+          withoutNestedSandbox(
+            {
+              approvalPolicy: input.inSandbox ? "untrusted" : "never",
+              sandbox: "read-only",
+              approvalsReviewer: input.inSandbox
+                ? "user"
+                : runtimeConfig.approvalsReviewer,
+              sandboxPolicy: { type: "readOnly" },
+            },
+            input.inSandbox,
+          ),
           input.controlsAgents,
         )
       : runtimeConfig;

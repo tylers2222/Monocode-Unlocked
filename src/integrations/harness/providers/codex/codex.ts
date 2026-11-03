@@ -97,6 +97,8 @@ type Live = {
   ephemeral: boolean;
   codexStore?: "mono";
   runtimeMode: RuntimeMode;
+  /** srt runs the app-server, so Codex starts no sandbox of its own (ADE-199). */
+  inSandbox: boolean;
   planning: boolean;
   onEvent: (event: HarnessEvent) => void;
   approvals: Map<number, PendingApproval>;
@@ -652,7 +654,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     },
   );
 
-  await spawnChild(
+  const spawned = await spawnChild(
     input.sessionId,
     path,
     ["app-server"],
@@ -665,6 +667,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     codexStore,
   );
 
+  const inSandbox = spawned?.sandboxed === true;
   try {
     await rpc.request("initialize", {
       clientInfo: {
@@ -700,6 +703,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           runtimeMode: input.runtimeMode,
           model,
           serviceTier,
+          inSandbox,
         });
         const opened = await rpc.request<{ thread?: { id?: string } }>(
           "thread/resume",
@@ -727,6 +731,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         runtimeMode: input.runtimeMode,
         model,
         serviceTier,
+        inSandbox,
       });
       const opened = await rpc.request<{ thread?: { id?: string } }>(
         "thread/start",
@@ -753,6 +758,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       ephemeral,
       codexStore,
       runtimeMode: input.runtimeMode,
+      inSandbox,
       planning: input.intent === "plan",
       onEvent: input.onEvent,
       approvals: new Map(),
@@ -816,6 +822,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     effort,
     serviceTier,
     intent: input.intent,
+    inSandbox: live.inSandbox,
   });
 
   if (Array.isArray(params.input) && params.input.length === 0) {
@@ -1499,9 +1506,10 @@ async function handleServerRequest(
   }
 
   if (live.planning || live.cancelled || live.muteUpdates) {
-    // Plan turns run in a non-escalating read-only sandbox. If an older
-    // app-server still asks for broader access, deny it silently instead of
-    // leaking a Supervised approval prompt into the user's selected mode.
+    // Plan turns make no change: a non-escalating read-only sandbox, or
+    // inside srt (no nested sandbox, ADE-199) an untrusted policy whose every
+    // ask lands here. Deny it silently instead of leaking a Supervised
+    // approval prompt into the user's selected mode.
     if (method === "item/permissions/requestApproval") {
       await live.rpc.respond(id, { permissions: {} }).catch(() => undefined);
     } else {

@@ -951,11 +951,13 @@ pub fn harness_free_port() -> Result<u16, String> {
 
 /// A started harness child, and the folder the spawn hook started it in. A
 /// helper tells its agent that folder (`session/new`, `thread/start`), never
-/// the one the window asked for (ADE-189).
+/// the one the window asked for (ADE-189). `sandboxed`: srt runs it, so a
+/// sandbox the CLI starts itself cannot start inside it (ADE-199).
 #[derive(Debug, Serialize)]
 pub struct Spawned {
     pub(crate) pid: u32,
     pub(crate) cwd: String,
+    pub(crate) sandboxed: bool,
 }
 
 /// Off the main thread: fork/exec, and `apply_gui_env` can wait on the first
@@ -1213,6 +1215,7 @@ pub fn harness_spawn<R: Runtime>(
     Ok(Spawned {
         pid,
         cwd: crate::fs::path_to_js(&workdir),
+        sandboxed,
     })
 }
 

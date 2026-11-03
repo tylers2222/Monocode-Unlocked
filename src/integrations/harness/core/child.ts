@@ -332,6 +332,10 @@ export function unwatchSse(sessionId: string) {
   ownedSse.delete(sessionId);
 }
 
+/** A started child: the folder the spawn hook started it in, and whether srt
+ *  runs it, so its CLI's own sandbox cannot start (ADE-199). */
+export type SpawnedChild = { cwd: string; sandboxed: boolean };
+
 export async function spawnChild(
   sessionId: string,
   command: string,
@@ -346,7 +350,7 @@ export async function spawnChild(
   ompMcp?: Session["mcp"],
   /** A helper, not a session's own child: see `spawnHelperChild`. */
   helper?: { owner: string | undefined },
-): Promise<string | undefined> {
+): Promise<SpawnedChild | undefined> {
   livePid.delete(sessionId);
   pendingExit.delete(sessionId);
   ownedChildren.add(sessionId);
@@ -354,7 +358,11 @@ export async function spawnChild(
     ? runtimeProviderBinaryPath(binaryProvider)
     : undefined;
   // The folder the spawn hook started the child in; none for a dead pid.
-  const spawned = await invoke<{ pid: number; cwd: string }>("harness_spawn", {
+  const spawned = await invoke<{
+    pid: number;
+    cwd: string;
+    sandboxed: boolean;
+  }>("harness_spawn", {
     sessionId,
     command,
     args,
@@ -373,10 +381,11 @@ export async function spawnChild(
   const exits = pendingExit.get(sessionId);
   pendingExit.delete(sessionId);
   const exited = exits?.find((event) => event.pid === pid);
-  if (!exited) return spawned.cwd;
+  const started = { cwd: spawned.cwd, sandboxed: spawned.sandboxed };
+  if (!exited) return started;
   livePid.delete(sessionId);
   exitHandlers.get(sessionId)?.(exited.code);
-  return spawned.cwd;
+  return started;
 }
 
 /**
@@ -407,8 +416,9 @@ export async function spawnHelperChild(
     undefined,
     { owner },
   );
-  if (!placed) throw new Error(`harness_spawn named no folder for ${childId}`);
-  return placed;
+  if (!placed?.cwd)
+    throw new Error(`harness_spawn named no folder for ${childId}`);
+  return placed.cwd;
 }
 
 export function writeChild(sessionId: string, line: string): Promise<void> {

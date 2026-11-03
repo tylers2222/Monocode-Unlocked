@@ -109,6 +109,50 @@ describe("runtimeModeToCodexConfig", () => {
     ).not.toHaveProperty("networkAccess");
   });
 
+  // ADE-199: inside srt Codex's own seatbelt cannot start, so srt is the only
+  // sandbox; outside it nothing widens. Defect: a fenced turn still asks for
+  // Codex's sandbox, an unfenced one loses it, or the approval policy changes.
+  it("runs Codex unsandboxed only inside srt, keeping each mode's approvals", () => {
+    for (const mode of ["supervised", "auto-accept-edits", "auto"] as const) {
+      const outside = runtimeModeToCodexConfig(mode);
+      expect(runtimeModeToCodexConfig(mode, false, false)).toEqual(outside);
+      expect(outside.sandbox).not.toBe("danger-full-access");
+      expect(runtimeModeToCodexConfig(mode, false, true)).toEqual({
+        ...outside,
+        sandbox: "danger-full-access",
+        sandboxPolicy: { type: "dangerFullAccess" },
+      });
+    }
+    const plan = (inSandbox: boolean) =>
+      buildTurnStartParams({
+        threadId: "thr",
+        runtimeMode: "auto",
+        intent: "plan",
+        inSandbox,
+      });
+    expect(plan(false)).toMatchObject({
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "readOnly" },
+    });
+    // Inside srt a plan turn has no read-only sandbox, so each command asks.
+    // Its asks reach the client, never Auto's reviewer subagent.
+    expect(plan(true)).toMatchObject({
+      approvalPolicy: "untrusted",
+      approvalsReviewer: "user",
+      sandboxPolicy: { type: "dangerFullAccess" },
+    });
+    expect(
+      buildThreadStartParams({
+        cwd: "/r",
+        runtimeMode: "auto",
+        inSandbox: true,
+      }),
+    ).toMatchObject({
+      sandbox: "danger-full-access",
+      approvalPolicy: "on-request",
+    });
+  });
+
   it("allows explicit escalation requests in full-access", () => {
     expect(runtimeModeToCodexConfig("full-access")).toMatchObject({
       approvalPolicy: "on-request",

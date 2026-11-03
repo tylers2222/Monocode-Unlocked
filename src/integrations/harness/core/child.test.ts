@@ -120,7 +120,11 @@ describe("child bridge", () => {
 
   it("reconciles an exit that arrives before spawn returns its pid", async () => {
     installResolvedListeners();
-    const spawned = deferred<{ pid: number; cwd: string }>();
+    const spawned = deferred<{
+      pid: number;
+      cwd: string;
+      sandboxed: boolean;
+    }>();
     mocks.invoke.mockImplementation((command: string) => {
       if (command === "harness_spawn") return spawned.promise;
       return Promise.resolve();
@@ -141,8 +145,12 @@ describe("child bridge", () => {
     });
     expect(onExit).not.toHaveBeenCalled();
 
-    spawned.resolve({ pid: 42, cwd: "/placed" });
-    await spawning;
+    spawned.resolve({ pid: 42, cwd: "/placed", sandboxed: true });
+    // ADE-199: the caller learns whether srt runs the child.
+    await expect(spawning).resolves.toEqual({
+      cwd: "/placed",
+      sandboxed: true,
+    });
     expect(onExit).toHaveBeenCalledWith(1);
     // ADE-117: a default spawn sends no ompMcp; a "none" spawn sends it, so
     // Rust starts omp without MCP servers.

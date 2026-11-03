@@ -320,7 +320,7 @@ export async function startDevinAcp(
         "devin",
         undefined,
         options.askBeforeEdits,
-      ));
+      ).then((spawned) => spawned?.cwd));
   let init: unknown;
   try {
     init = await rpc.request(
