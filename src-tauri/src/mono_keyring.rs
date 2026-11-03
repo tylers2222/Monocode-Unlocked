@@ -153,8 +153,10 @@ impl KeyringMirror {
     }
 }
 
-/// On keyutils, never a real Keychain.
-#[cfg(all(test, target_os = "linux"))]
+/// On keyutils, never a real Keychain. Two attributes, not `all(test, ..)`:
+/// cargo-mutants skips only a `cfg` that names `test` at its top level.
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
@@ -197,6 +199,12 @@ mod tests {
             format!("secrets|{}{suffix}", home_key(dir).unwrap())
         }
 
+        /// The `Codex Auth` entry in the login (`private` false) or the home.
+        fn auth_key(&self, private: bool) -> String {
+            let dir = if private { &self.home } else { &self.source };
+            format!("cli|{}", home_key(dir).unwrap())
+        }
+
         fn write(&self, private: bool, suffix: &str, value: &str) {
             write_keyring("codex", &self.key(private, suffix), value).unwrap();
         }
@@ -214,6 +222,8 @@ mod tests {
                     let _ = keyring::Entry::new("codex", &self.key(private, suffix))
                         .and_then(|entry| entry.delete_credential());
                 }
+                let _ = keyring::Entry::new("Codex Auth", &self.auth_key(private))
+                    .and_then(|entry| entry.delete_credential());
             }
             let _ = std::fs::remove_dir_all(&self.root);
         }
@@ -370,5 +380,25 @@ mod tests {
         let later = done.recv_timeout(Duration::from_secs(20));
         assert!(matches!(later, Ok(Ok(()))), "the second spawn never ran");
         drop(a);
+    }
+
+    /// Defect: a spawn on an idle home copies an older `Codex Auth` login over
+    /// a newer refresh of the same account in the home, which the last child
+    /// wrote and never synced; that newer one must win, in the login too.
+    #[test]
+    fn an_idle_spawn_keeps_a_newer_codex_auth_refresh_of_the_same_account() {
+        let login = Login::new(true);
+        let auth = |at: &str| {
+            format!(
+                r#"{{"tokens":{{"account_id":"one"}},"last_refresh":"2026-11-04T{at}:00:00Z"}}"#
+            )
+        };
+        write_keyring("Codex Auth", &login.auth_key(false), &auth("11")).unwrap();
+        write_keyring("Codex Auth", &login.auth_key(true), &auth("12")).unwrap();
+        let a = login.share();
+        let found = [false, true]
+            .map(|private| read_keyring("Codex Auth", &login.auth_key(private)).unwrap());
+        drop(a);
+        assert_eq!(found, [Some(auth("12")), Some(auth("12"))]);
     }
 }

@@ -320,18 +320,11 @@ pub(crate) fn write_keyring(service: &str, key: &str, value: &str) -> Result<(),
 }
 
 pub(crate) fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringMirror>, String> {
-    let explicit_keyring = std::fs::read_to_string(source.join("config.toml"))
-        .ok()
-        .and_then(|s| s.parse::<toml::Value>().ok())
-        .and_then(|v| {
-            v.get("cli_auth_credentials_store")
-                .and_then(toml::Value::as_str)
-                .map(str::to_owned)
-        })
-        .is_some_and(|v| v == "keyring" || v == "auto");
-    let encrypted = has_secrets(source);
     // The default file store shares auth.json directly, with no Keychain prompt.
-    if !explicit_keyring && !encrypted {
+    // `cli_auth_credentials_store` in config.toml is not read: the check here
+    // parsed the file as one TOML value, which no config file is, so it never
+    // matched (ADE-225 #521); reading it is its own change.
+    if !has_secrets(source) {
         return Ok(Vec::new());
     }
     let source_hash = home_key(source)?;
@@ -340,11 +333,7 @@ pub(crate) fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringM
     for (service, prefix, suffix) in MIRRORED {
         let source_key = format!("{prefix}|{source_hash}{suffix}");
         let private_key = format!("{prefix}|{private_hash}{suffix}");
-        let value = match read_keyring(service, &source_key) {
-            Ok(value) => value,
-            Err(error) if explicit_keyring || encrypted => return Err(error),
-            Err(_) => continue,
-        };
+        let value = read_keyring(service, &source_key)?;
         let value = if service == "Codex Auth" {
             let private = read_keyring(service, &private_key)?;
             if newer_same_account(&private, &value) {
@@ -884,5 +873,32 @@ mod tests {
             })
             .unwrap();
         assert_eq!(status, "open");
+    }
+
+    /// Defect: a Mono store's sync never reaches its home's mirror, so a
+    /// refresh its private server wrote never reaches the login. On keyutils,
+    /// never a real Keychain.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_mono_store_sync_copies_a_refresh_to_the_login() {
+        keyring::set_default_credential_builder(keyring::keyutils::default_credential_builder());
+        let fixture = Fixture::new();
+        let (source, home) = (fixture.source(), fixture.home());
+        prepare_files(&source, &home).unwrap();
+        std::fs::write(source.join("secrets/blob"), "sealed").unwrap();
+        let key = |dir: &Path| format!("secrets|{}|gateway-oauth", home_key(dir).unwrap());
+        write_keyring("codex", &key(&source), "token-1").unwrap();
+        let store = MonoCodexStore {
+            auth: crate::mono_keyring::share(&source, home.clone()).unwrap(),
+            home: home.clone(),
+        };
+        write_keyring("codex", &key(&home), "token-2").unwrap();
+        store.sync_auth();
+        let login = read_keyring("codex", &key(&source)).unwrap();
+        drop(store);
+        for dir in [&source, &home] {
+            let _ = keyring::Entry::new("codex", &key(dir)).and_then(|e| e.delete_credential());
+        }
+        assert_eq!(login.as_deref(), Some("token-2"));
     }
 }
