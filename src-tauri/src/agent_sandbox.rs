@@ -17,7 +17,6 @@ use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Once;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -195,8 +194,6 @@ fn find_srt() -> Option<PathBuf> {
     crate::harness::resolve_gui_binary("srt")
 }
 
-static NO_FENCE_ON_WINDOWS: Once = Once::new();
-
 /// `command` for the app data folder `data`, with `fence` and `spawn_deny`
 /// added to srt's write rules for this spawn only; `find_srt` runs only when
 /// the sandbox is on. A fence turns it on without the marker, and a fence
@@ -212,12 +209,14 @@ pub(crate) fn command_in(
     let marker =
         std::fs::exists(data.join(ON_MARKER)).map_err(|e| format!("{}: {e}", data.display()))?;
     let fenced = fence.is_some() && !cfg!(windows);
-    if fence.is_some() && !fenced {
-        NO_FENCE_ON_WINDOWS.call_once(|| {
-            eprintln!(
-                "The write fence between Spaces is unavailable on Windows: agents start unfenced."
-            );
-        });
+    #[cfg(windows)]
+    {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        if fence.is_some() {
+            ONCE.call_once(|| {
+                eprintln!("The write fence between Spaces is unavailable on Windows: agents start unfenced.");
+            });
+        }
     }
     let sandboxed = marker || fenced;
     if !sandboxed {
