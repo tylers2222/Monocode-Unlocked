@@ -67,7 +67,7 @@ const LOGIN_CONFIG: [&str; 2] = ["settings.json", "config.toml"];
 /// Without it every `security` call fails with "A Module Directory Service
 /// error", so Claude Code cannot read its login and reports it is not logged in.
 #[cfg(target_os = "macos")]
-const CONFSTR_WRITE: [(libc::c_int, &str); 1] = [(libc::_CS_DARWIN_USER_CACHE_DIR, "mds")];
+const CONFSTR_WRITE: [(libc::c_int, &str); 0] = [];
 #[cfg(all(unix, not(target_os = "macos")))]
 const CONFSTR_WRITE: [(libc::c_int, &str); 0] = [];
 
