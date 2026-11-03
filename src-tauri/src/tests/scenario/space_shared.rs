@@ -90,11 +90,14 @@ fn two_spaces_share_one_project() {
         "Space 1's Mono lost its project"
     );
 
-    // Both start a lead in it, which joins its Mono's Space.
-    let lead1 = world.start_lead(&one, "lead1", &path);
-    let lead2 = world.start_lead(&two, "lead2", &path);
-    assert_eq!(space_of(&world, "sessions", "lead1"), FIRST_SPACE);
-    assert_eq!(space_of(&world, "sessions", "lead2"), TWO);
+    // Both start a lead in it. A lead's id names its Mono's chat, as the
+    // app's do (`app-<chat>-<request>`), so it joins its Mono's Space.
+    let id1 = format!("app-{}-r1", one.chat.as_str());
+    let id2 = format!("app-{}-r1", two.chat.as_str());
+    let lead1 = world.start_lead(&one, &id1, &path);
+    let lead2 = world.start_lead(&two, &id2, &path);
+    assert_eq!(space_of(&world, "sessions", &id1), FIRST_SPACE);
+    assert_eq!(space_of(&world, "sessions", &id2), TWO);
 
     // Both may list the project's sessions, each only its own Space's.
     let sessions_list = [
@@ -107,15 +110,21 @@ fn two_spaces_share_one_project() {
         two_lists.projects, ours,
         "sessions.list refuses Space 2's Mono"
     );
-    assert!(foreign(&two_lists).contains(&"lead1"), "{two_lists:?}");
-    assert!(!foreign(&two_lists).contains(&"lead2"), "{two_lists:?}");
+    assert!(foreign(&two_lists).contains(&id1.as_str()), "{two_lists:?}");
+    assert!(
+        !foreign(&two_lists).contains(&id2.as_str()),
+        "{two_lists:?}"
+    );
     let one_lists = scope_of(&world, &mono_caller(&one, "t2"), &sessions_list);
     assert_eq!(
         one_lists.projects, ours,
         "sessions.list refuses Space 1's Mono"
     );
-    assert!(foreign(&one_lists).contains(&"lead2"), "{one_lists:?}");
-    assert!(!foreign(&one_lists).contains(&"lead1"), "{one_lists:?}");
+    assert!(foreign(&one_lists).contains(&id2.as_str()), "{one_lists:?}");
+    assert!(
+        !foreign(&one_lists).contains(&id1.as_str()),
+        "{one_lists:?}"
+    );
     let lead2_lists = scope_of(&world, &session_caller(&lead2, &path), &sessions_list);
     assert_eq!(
         (lead2_lists.space.as_str(), lead2_lists.projects),
@@ -129,7 +138,7 @@ fn two_spaces_share_one_project() {
     assert_eq!(first, project, "Space 1's lead left the project's checkout");
     assert_eq!(
         second,
-        root.join("project-worktrees").join(TWO).join("lead2"),
+        root.join("project-worktrees").join(TWO).join(&id2),
         "Space 2's lead did not get its own copy"
     );
 
