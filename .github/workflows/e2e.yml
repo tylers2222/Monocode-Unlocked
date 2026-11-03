@@ -39,9 +39,10 @@ on:
 permissions:
   contents: read
 
-# The nightly run has its own group, so a tyler/main push does not cancel it.
+# The nightly run has its own group, so a tyler/main push does not cancel it. A push
+# has its own group too, so a newer push cancels the older one and no dispatch.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
+  group: ${{ github.event_name == 'push' && format('e2e-push-{0}', github.ref) || format('{0}-{1}', github.workflow, github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref) }}
   cancel-in-progress: true
 
 env:

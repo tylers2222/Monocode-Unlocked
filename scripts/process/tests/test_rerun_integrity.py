@@ -112,18 +112,23 @@ class MainTest(unittest.TestCase):
         code, posts, _ = self.run_main("status", {"sha": "OLD"}, ["H1"], prs=[{"number": 210, "state": "open", "head": "H1"}])
         self.assertEqual((code, posts), (0, []))
 
-    def test_it_waits_for_the_runs_then_re_runs_the_job_once(self):
+    def test_a_running_run_is_cancelled_then_its_job_re_run_once(self):
         code, posts, reads = self.run_main("status", {"sha": "H1"}, ["H1"], polls=([(7, "in_progress")], [(7, "completed")]), prs=self.STACK)
-        self.assertEqual((code, posts), (0, ["repos/o/r/actions/jobs/71/rerun"]), "the stacked child #196 is not picked")
+        self.assertEqual((code, posts), (0, ["repos/o/r/actions/runs/7/cancel", "repos/o/r/actions/jobs/71/rerun"]),
+                         "the stacked child #196 is not picked")
         self.assertEqual(sum("/runs?" in path for path in reads), 2)
+
+    def test_a_finished_run_is_not_cancelled(self):
+        code, posts, _ = self.run_main("status", {"sha": "H1"}, ["H1"], prs=self.STACK)
+        self.assertEqual((code, posts), (0, ["repos/o/r/actions/jobs/71/rerun"]))
 
     def test_a_head_that_moves_before_the_re_run_posts_nothing(self):
         code, posts, _ = self.run_main("issue_comment", self.COMMENT, ["H1", "H2"])
         self.assertEqual((code, posts), (0, []))
 
-    def test_a_head_that_moves_during_a_comments_wait_posts_nothing(self):
-        code, posts, _ = self.run_main("issue_comment", self.COMMENT, ["H1", "H2", "H2"], polls=([(7, "in_progress")], [(7, "completed")]))
-        self.assertEqual((code, posts), (0, []))
+    def test_a_head_that_moves_during_a_comments_cancel_re_runs_nothing(self):
+        code, posts, _ = self.run_main("issue_comment", self.COMMENT, ["H1", "H2"], polls=([(7, "in_progress")], [(7, "completed")]))
+        self.assertEqual((code, posts), (0, ["repos/o/r/actions/runs/7/cancel"]))
 
     def test_a_commit_that_is_no_open_prs_head_posts_nothing(self):
         code, posts, _ = self.run_main("status", {"sha": "H9"}, ["H1"], prs=self.STACK)
@@ -138,11 +143,11 @@ class MainTest(unittest.TestCase):
         code, posts, _ = self.run_main("status", {"sha": "H1"}, ["H1"], prs=self.STACK)
         self.assertEqual((code, posts), (0, ["repos/o/r/actions/runs/7/rerun"]))
 
-    def test_a_run_still_running_after_the_wait_fails_and_posts_nothing(self):
-        clock = itertools.count(0, rerun_integrity.WAIT_SECONDS + 1)
+    def test_a_cancel_that_does_not_land_in_time_fails_and_re_runs_nothing(self):
+        clock = itertools.count(0, rerun_integrity.CANCEL_WAIT_SECONDS + 1)
         with unittest.mock.patch.object(rerun_integrity.time, "monotonic", lambda: next(clock)):
             code, posts, _ = self.run_main("status", {"sha": "H1"}, ["H1"], polls=([(7, "in_progress")], [(7, "completed")]), prs=self.STACK)
-        self.assertEqual((code, posts), (1, []), "the run completes only after the deadline has passed")
+        self.assertEqual((code, posts), (1, ["repos/o/r/actions/runs/7/cancel"]), "the run completes only after the deadline has passed")
 
 
 if __name__ == "__main__":
