@@ -939,6 +939,8 @@ describe("Settings > Spaces: Edit Space", () => {
   };
 
   beforeEach(() => {
+    // Frame 12 draws the emails; masking is the default.
+    saveMaskEmails(false);
     saveProviderAccount({
       id: "account-second",
       provider: "claude",
@@ -1115,6 +1117,23 @@ describe("Settings > Spaces: Edit Space", () => {
       ],
     ]);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("leaves emails out of the picker while they are masked", async () => {
+    saveMaskEmails(true);
+    await openEdit("space-2");
+    expect(picker("claude").textContent).toBe("Studio");
+    await act(async () => picker("claude").click());
+    expect(
+      Array.from(
+        document.querySelectorAll('[role="option"]'),
+        (option) => option.textContent,
+      ),
+    ).toEqual([
+      "Default accountMax 20x",
+      "Claude account 2Max 5x",
+      "StudioMax 5x",
+    ]);
   });
 
   it("saves only the name and colour when no login changed", async () => {

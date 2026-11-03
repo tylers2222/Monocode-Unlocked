@@ -1174,18 +1174,20 @@ function SpaceLoginsField({
 /**
  * The picker's choices: every login of `provider`, and "No <provider> login"
  * only while the Space has none saved (no command clears a Space's login).
+ * With emails masked the text leaves them out: a Select option is plain text.
  */
 function spaceLoginOptions(
   provider: SpaceLoginProvider,
   accounts: ProviderAccount[],
   identities: Record<string, ProviderAccountIdentity | null>,
   saved: string,
+  maskEmails: boolean,
 ): SelectOption[] {
   const name = PROVIDER_NAME[provider];
   const icon = <HarnessIcon harness={provider} className="size-3.5" />;
   const options: SelectOption[] = accounts.map((account) => {
     const identity = identities[identityKey(account)];
-    const email = identity?.email;
+    const email = maskEmails ? undefined : identity?.email;
     return {
       value: account.id,
       label: account.label,
@@ -1231,6 +1233,7 @@ function SpaceLoginRow({
   const accounts = providerAccounts(provider);
   const identities = useProviderAccountIdentities(accounts, version);
   const add = useAddSpaceLogin(provider, onChange);
+  const maskEmails = useMaskEmails();
   const name = PROVIDER_NAME[provider];
   return (
     <div
@@ -1247,7 +1250,13 @@ function SpaceLoginRow({
         <Select
           label={`${name} login`}
           value={value}
-          options={spaceLoginOptions(provider, accounts, identities, saved)}
+          options={spaceLoginOptions(
+            provider,
+            accounts,
+            identities,
+            saved,
+            maskEmails,
+          )}
           onChange={onChange}
           wide
         />

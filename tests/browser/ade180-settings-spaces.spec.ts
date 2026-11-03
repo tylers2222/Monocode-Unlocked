@@ -156,6 +156,8 @@ test.beforeEach(async ({ app, page }) => {
   await page.addInitScript(
     ({ accounts, fake }) => {
       localStorage.setItem("monocode.providerAccounts.v1", accounts);
+      // The frames draw the emails; masking is the default.
+      localStorage.setItem("monocode.maskEmails", "0");
       (window as unknown as Record<string, unknown>).spacesFake = fake;
     },
     { accounts: STORED_ACCOUNTS, fake: SPACES_FAKE },
