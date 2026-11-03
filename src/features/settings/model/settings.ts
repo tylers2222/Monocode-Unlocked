@@ -655,6 +655,51 @@ export function saveFileTabMode(value: FileTabMode) {
   }
 }
 
+const ROUTE_GRANT_DEFAULT_KEY = "monocode.routeGrantDefault";
+
+/**
+ * How long the usage-limit card lends a session another login: hours, or
+ * "reset" for until the first login resets.
+ */
+export type RouteGrantDuration = 1 | 3 | 6 | 12 | 24 | "reset";
+
+/** The card's choices, in the order it shows them. */
+export const ROUTE_GRANT_DURATIONS: readonly RouteGrantDuration[] = [
+  1,
+  3,
+  6,
+  12,
+  24,
+  "reset",
+];
+
+/** Six hours (Tyler, 2026-11-02). */
+export const ROUTE_GRANT_DEFAULT: RouteGrantDuration = 6;
+
+/**
+ * The choice the usage-limit card starts on. Only a preselection: the grant
+ * lasts what the card sends. Settings › Spaces edits it.
+ */
+export function loadRouteGrantDefault(): RouteGrantDuration {
+  try {
+    const raw = localStorage.getItem(ROUTE_GRANT_DEFAULT_KEY);
+    return (
+      ROUTE_GRANT_DURATIONS.find((duration) => String(duration) === raw) ??
+      ROUTE_GRANT_DEFAULT
+    );
+  } catch {
+    return ROUTE_GRANT_DEFAULT;
+  }
+}
+
+export function saveRouteGrantDefault(value: RouteGrantDuration) {
+  try {
+    localStorage.setItem(ROUTE_GRANT_DEFAULT_KEY, String(value));
+  } catch {
+    // private mode / quota
+  }
+}
+
 export const TAB_ANIMATIONS_ENABLED_DEFAULT = false;
 
 export function loadTabAnimationsEnabled(): boolean {

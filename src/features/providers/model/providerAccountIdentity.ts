@@ -43,7 +43,9 @@ export function identityOrganizationTag(
   return /['’]s Organization$/.test(name) ? "Personal" : name;
 }
 
-export function identityKey(account: ProviderAccount): string {
+export function identityKey(
+  account: Pick<ProviderAccount, "provider" | "id">,
+): string {
   return `${account.provider}:${account.id}`;
 }
 
