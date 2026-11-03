@@ -40,6 +40,11 @@ RUN set -eu; arch=x64; [ "$TARGETARCH" = arm64 ] && arch=arm64; \
     rm SHASUMS256.txt "$tarball" nvmrc; \
     node --version
 
+# With two Spaces the app runs every agent under srt and refuses a spawn when
+# srt is missing (agent_sandbox.rs SRT_VERSION), so install that pin.
+RUN npm install --global --no-audit --no-fund @anthropic-ai/sandbox-runtime@0.0.81 \
+    && srt --version
+
 # The omp release ci.yml installs, checked against its SHA256SUMS.txt.
 RUN set -eu; case "$TARGETARCH" in \
       amd64) asset=omp-linux-x64 sum=97cf39557bf3d98327dd4c9814380b7e6bcb76e41169edd9b0ff30424c733a2a ;; \
