@@ -95,6 +95,9 @@ sp_ran() { [[ -n "$(sp_starts "$1")" ]]; }
 sp_fresh() {
   fresh_home
   install_puppet_bin
+  # With a second Space every agent runs fenced under srt (ADE-177), which
+  # stops a spawn when srt is missing; app.sh pins the version the app needs.
+  install_srt
   unset CLAUDE_CONFIG_DIR CODEX_HOME
   export USAGE_LIMIT_SHIM_DIR="$EVAL_HOME/.usage-limit"
   mkdir -p "$USAGE_LIMIT_SHIM_DIR"
@@ -426,14 +429,15 @@ run_spaces_grants() {
   "$INSTANCE" start
   wait_until 90 "the Giga's second message is sent" holds_log '[.[] | select(.tool == "send_message" and .result.ok == true)] | length == 1'
   wait_until 60 "the ended grant is removed" holds "SELECT count(*) = 0 FROM account_route_grants WHERE session_id = '$chat'"
-  wait_for 30 holds "SELECT blocks_json LIKE '%route_grant_expired%' FROM sessions WHERE id = '$chat'" || true
-  # The quit saves every session, the refused chat's error block included.
+  # A Mono chat's transcript is in mono_blocks (mono_transcript.rs).
+  wait_for 30 holds "SELECT count(*) > 0 FROM mono_blocks WHERE session_id = '$chat' AND block_json LIKE '%route_grant_expired%'" \
+    || true
   "$INSTANCE" stop
   expect "after the minute: the turn is refused with route_grant_expired" \
-    "$(q "SELECT blocks_json LIKE '%route_grant_expired%' FROM sessions WHERE id = '$chat'")" 1
+    "$(q "SELECT count(*) > 0 FROM mono_blocks WHERE session_id = '$chat' AND block_json LIKE '%route_grant_expired%'")" 1
   expect "after the minute: no new Claude start on the granted login" "$(sp_count "/provider-accounts/claude/acct-2 ")" "$before"
   expect "the chat is back on its first login" "$(q "SELECT ifnull(provider_account_id, 'default') FROM sessions WHERE id = '$chat'")" default
-  q "SELECT '  chat blocks (end): ' || substr(ifnull(blocks_json, '-'), -400) FROM sessions WHERE id = '$chat'"
+  q "SELECT '  chat block ' || seq || ': ' || substr(block_json, 1, 200) FROM mono_blocks WHERE session_id = '$chat' ORDER BY seq DESC LIMIT 3"
 }
 
 SP_PARTS=(login checkout messages grants)
