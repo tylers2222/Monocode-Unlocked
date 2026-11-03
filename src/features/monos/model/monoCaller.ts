@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentAppHost, StartAsk } from "../../agent-app/model/agentApp";
+import type {
+  AgentAppHost,
+  SpaceScope,
+  StartAsk,
+} from "../../agent-app/model/agentApp";
 import {
   AppActionError,
   type AppErrorCode,
@@ -101,7 +105,12 @@ export async function resolveCaller(
 
 /** What `mono_app_action_check` answers (Rust `ActionChecked`). */
 export type ActionChecked =
-  | { outcome: "allowed"; leadSessionId: string | null; ask: StartAsk | null }
+  | {
+      outcome: "allowed";
+      leadSessionId: string | null;
+      ask: StartAsk | null;
+      scope?: SpaceScope;
+    }
   | {
       outcome: "failed";
       error: { code: RejectCode | AppErrorCode; hint: string } & ToolErrorDetails;
@@ -127,12 +136,16 @@ function parseFailed(error: unknown): Failed | undefined {
 /** The reply of `mono_app_action_check`, parsed; undefined for any other shape. */
 function parseActionChecked(reply: unknown): ActionChecked | undefined {
   if (typeof reply !== "object" || reply === null) return undefined;
-  const { outcome, leadSessionId, ask, error } = reply as Record<string, unknown>;
+  const { outcome, leadSessionId, ask, scope, error } = reply as Record<string, unknown>;
   if (outcome === "allowed") {
     const lead = leadSessionId === null ? null : parseSessionId(leadSessionId);
-    // Rust's `StartAsk` (R7), read as a hand-off reads `Targeted.carries`.
+    // Rust's `StartAsk` (R7) and `SpaceScope`, read as a hand-off reads
+    // `Targeted.carries`.
     const start = (ask ?? null) as StartAsk | null;
-    return lead === undefined ? undefined : { outcome, leadSessionId: lead, ask: start };
+    const space = (scope ?? undefined) as SpaceScope | undefined;
+    return lead === undefined
+      ? undefined
+      : { outcome, leadSessionId: lead, ask: start, scope: space };
   }
   return outcome === "failed" ? parseFailed(error) : undefined;
 }
@@ -197,7 +210,8 @@ export function levelGate(
         parseActionChecked(await invoke("mono_app_action_check", { call })),
         "The level check answered in an unknown form, so the action did not run.",
       );
-      return { leadSessionId: answer.leadSessionId, ask: answer.ask };
+      const { leadSessionId, ask, scope } = answer;
+      return { leadSessionId, ask, scope };
     },
     async recordStart(requestId, sessionId, input) {
       const call = { caller: caller(), sessionId, requestId, input };

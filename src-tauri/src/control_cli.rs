@@ -185,6 +185,8 @@ Actions:
   models.list    {}  Available providers, models, settings and permission modes.
   sessions.list  {}  Project sessions with IDs, branch, busy status, hasDraft
                   and archived, and the appIdentifier of the app that answered.
+                  Only your Space's: a project in another Space is not one of
+                  yours, and its sessions are left out.
   sessions.read  {"sessionId":"...","before":"<turnId>","limit":3,"maxChars":1200}
                   Read up to 3 recent user/assistant exchanges. Tools and
                   reasoning are omitted. Omit before for the newest page;
@@ -297,14 +299,15 @@ Actions:
                   stop, archive and delete cannot target the calling session,
                   Mono chats, habit runs or orchestration workers. Sessions
                   must belong to the chosen project.
-  monos.list     {}  Mono or habit only. The Monos in MonoCode, with id,
-                  name, role (giga or mono), projects, busy, queued,
-                  queuePaused (its queue sends nothing until someone resumes
-                  it), hasConversation, updatedAt and self (true for you).
-  monos.get      {"monoId":"..."}  Mono or habit only. One Mono as monos.list
-                  shows it, plus the harness and model its chat runs on (null
-                  until it has a chat) and its messageAllowlist. Unknown IDs
-                  get code unknown_mono.
+  monos.list     {}  Mono or habit only. The Monos in your Space, with id,
+                  name, role (giga or mono), projects (those in your Space),
+                  busy, queued, queuePaused (its queue sends nothing until
+                  someone resumes it), hasConversation, updatedAt and self
+                  (true for you).
+  monos.get      {"monoId":"..."}  Mono or habit only. One Mono by ID with the
+                  fields of monos.list (all its projects), plus the harness
+                  and model its chat runs on (null until it has a chat) and
+                  its messageAllowlist. Unknown IDs get code unknown_mono.
   monos.read     {"monoId":"...","before":"<turnId>","limit":3,"maxChars":1200,
                   "work":true}
                   Read another Mono's chat. Paging works as in sessions.read.
@@ -313,8 +316,10 @@ Actions:
                   its newest rows up to 1 MB; "omittedWork" counts the rest.
                   Codes: unknown_mono, no_conversation (it has no chat yet),
                   invalid_input (a before that is not a turn ID).
-  messages.get_monos {}  Every Mono in rail order as {mono_id, mono_name,
-                  role, you}; you is true for yourself.
+  messages.get_monos {}  Every Mono in your Space in rail order as {mono_id,
+                  mono_name, role, you}; you is true for yourself. A regular
+                  Mono also gets the regular Monos of other Spaces, each with
+                  other_space (that Space's name).
   messages.send  {"message":"...","send_to":"<mono_id or session id>",
                   "wanting_reply":false,"intent":"new"}
                   Send a message to another Mono's chat or to a session in
@@ -894,7 +899,7 @@ pub fn app_tools() -> Value {
         {
             "name": "get_monos",
             "action": "messages.get_monos",
-            "description": "List every Mono in MonoCode in rail order as {mono_id, mono_name, role, you}. you is true for yourself. Use a mono_id as send_to.",
+            "description": "List every Mono in your Space in rail order as {mono_id, mono_name, role, you}. you is true for yourself. A regular Mono also gets the regular Monos of other Spaces, each with other_space (that Space's name). Use a mono_id as send_to.",
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
         },
         {
@@ -1341,6 +1346,17 @@ impl From<ParseError> for String {
 #[cfg(test)]
 fn parse_args(args: &[String]) -> Result<Parsed, ParseError> {
     parse_args_for(args, false)
+}
+
+/// The action, input and request id `app <args>` sends, as a scenario
+/// calls the app.
+#[cfg(test)]
+pub(crate) fn app_call(args: &[&str]) -> Result<(String, Value, String), String> {
+    let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+    match parse_args_for(&args, true)? {
+        Parsed::Call(action, input, request_id) => Ok((action, input, request_id)),
+        Parsed::Help => Err("help".into()),
+    }
 }
 
 /// In app mode every refusal carries a code: `unknown_action` for the action,

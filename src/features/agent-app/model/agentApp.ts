@@ -144,6 +144,20 @@ export type AppSessionPlacement = {
 /** R7: the ask a submitted start gives the session it starts (Rust `StartAsk`). */
 export type StartAsk = { askId: MessageId; dueInMs: number | null };
 
+/**
+ * ADE-175: what monos.list, sessions.list and messages.get_monos show the
+ * caller, from its Space's saved rows (Rust `SpaceScope`).
+ */
+export type SpaceScope = {
+  space: string;
+  /** The caller's own projects in its Space. */
+  projects: string[];
+  /** `otherSpace` is another Space's name; null in the caller's Space. */
+  monos: { monoId: string; otherSpace: string | null; projects: string[] }[];
+  /** Saved sessions of other Spaces. */
+  foreignSessions: string[];
+};
+
 /** A Mono as app calls from its chat or habit runs see it. */
 export type AppMono = {
   id: string;
@@ -304,7 +318,7 @@ export type AgentAppHost = {
   };
   /** messages.*: the calling session's Mono messaging (`monoRoute.ts`). */
   messages?: {
-    getMonos(): Promise<unknown>;
+    getMonos(scope: SpaceScope): Promise<unknown>;
     send(requestId: string, input: SendInput): Promise<unknown>;
     ask(requestId: string, input: Record<string, unknown>): Promise<unknown>;
     ack(requestId: string, input: Record<string, unknown>): Promise<unknown>;
@@ -321,7 +335,8 @@ export type AgentAppHost = {
    * `mono_app_action_check`. Required, so a host cannot run app actions with
    * no level rule. Throws the refusal or rejection as an `AppActionError`;
    * allowed, it answers the lead id `sessions.start` writes on the new
-   * session, and the ask the start gives it (R7).
+   * session, the ask the start gives it (R7), and the caller's Space scope
+   * for the actions that list one.
    */
   levels: {
     check(
@@ -334,7 +349,11 @@ export type AgentAppHost = {
         startedSessionId: string | null;
         input: Record<string, unknown>;
       },
-    ): Promise<{ leadSessionId: string | null; ask: StartAsk | null }>;
+    ): Promise<{
+      leadSessionId: string | null;
+      ask: StartAsk | null;
+      scope?: SpaceScope;
+    }>;
     /**
      * `mono_message_record_start`: the accepted start row of session
      * `sessionId`, which this submitted start launched, as its message id.
@@ -674,6 +693,7 @@ function requireProject(
   source: Session,
   input: Record<string, unknown>,
   host: AgentAppHost,
+  scope?: SpaceScope,
 ): string {
   const mono = host.monoOf?.(source.id);
   const named = optionalString(input.project, "project", 4096);
@@ -683,25 +703,32 @@ function requireProject(
       throw new Error("Choose a project folder in this session first");
     return source.cwd;
   }
+  // ADE-175: with a scope, a project in another Space is not the Mono's.
+  const projects = scope?.projects ?? mono.projects;
   const choices = () =>
-    mono.projects.length
-      ? mono.projects.map((path) => `${projectName(path)} (${path})`).join(", ")
+    projects.length
+      ? projects.map((path) => `${projectName(path)} (${path})`).join(", ")
       : "none yet; the user adds them from your details panel";
   if (named) {
-    const byPath = mono.projects.find(
-      (path) => pathKey(path) === pathKey(named),
-    );
-    const byName = mono.projects.filter((path) => projectName(path) === named);
+    const byPath = projects.find((path) => pathKey(path) === pathKey(named));
+    const byName = projects.filter((path) => projectName(path) === named);
     const match = byPath ?? (byName.length === 1 ? byName[0] : undefined);
     if (!match) throw new Error(`Not one of your projects. Yours: ${choices()}`);
     return match;
   }
-  const own = mono.projects.find(
-    (path) => pathKey(path) === pathKey(source.cwd),
-  );
+  const own = projects.find((path) => pathKey(path) === pathKey(source.cwd));
   if (own) return own;
-  if (mono.projects.length === 1) return mono.projects[0];
+  if (projects.length === 1) return projects[0];
   throw new Error(`Pass "project" to choose one. Yours: ${choices()}`);
+}
+
+/** The scope a scoped action lists; an answer with none runs nothing. */
+function scoped(scope: SpaceScope | undefined): SpaceScope {
+  if (!scope)
+    throw new Error(
+      "The level check answered no Space scope, so the action did not run.",
+    );
+  return scope;
 }
 
 /**
@@ -1330,16 +1357,28 @@ async function handleMonos(
   action: string,
   input: Record<string, unknown>,
   host: AgentAppHost,
+  scope: SpaceScope | undefined,
 ): Promise<unknown> {
   // A Mono's chat or one of its habit runs; neither needs a project.
   const mono = host.monoOf?.(source.id);
   const monos = host.monos;
   if (!mono || !monos) throw monoError("not_a_mono");
   switch (action) {
-    case "monos.list":
+    case "monos.list": {
+      const same = new Map(
+        scoped(scope)
+          .monos.filter((entry) => entry.otherSpace === null)
+          .map((entry) => [entry.monoId, entry.projects]),
+      );
       return {
-        monos: (await monos.list()).map((entry) => monoListing(entry, mono.id)),
+        monos: (await monos.list()).flatMap((entry) => {
+          const projects = same.get(entry.mono.id);
+          return projects
+            ? [{ ...monoListing(entry, mono.id), projects }]
+            : [];
+        }),
       };
+    }
     case "monos.get": {
       const monoId = checked(() => requiredString(input.monoId, "monoId", 256));
       const entry = await monos.get(monoId);
@@ -1750,13 +1789,14 @@ export async function handleAgentApp(
 ): Promise<unknown> {
   fields(action, rawInput);
   const input = boundaryInput(action, rawInput);
-  // messages.* get their own gate in mono_message_submit.
-  if (action.startsWith("messages."))
+  // messages.* get their own gate in mono_message_submit; get_monos asks
+  // the level check only for its Space scope.
+  if (action.startsWith("messages.") && action !== "messages.get_monos")
     return handleMessages();
   const launchId =
     action === "sessions.start" ? appLaunchId(source, requestId) : null;
   // Design 6.6: Rust decides every app action once, before it runs.
-  const { leadSessionId, ask } = await host.levels.check(requestId, {
+  const { leadSessionId, ask, scope } = await host.levels.check(requestId, {
     action,
     target: typeof input.sessionId === "string" ? input.sessionId : null,
     startedSessionId: launchId,
@@ -1777,10 +1817,15 @@ export async function handleAgentApp(
   if (action === "monos.create" || action === "monos.update")
     return handleGigaMonos(source, action, input, host);
   if (action.startsWith("monos."))
-    return handleMonos(source, action, input, host);
+    return handleMonos(source, action, input, host, scope);
+  if (action === "messages.get_monos")
+    return messaging().getMonos(scoped(scope));
+  function messaging() {
+    if (!host.messages) throw new Error("Mono messaging is unavailable here");
+    return host.messages;
+  }
   function handleMessages() {
-    const messages = host.messages;
-    if (!messages) throw new Error("Mono messaging is unavailable here");
+    const messages = messaging();
     if (action === "messages.send")
       return messages.send(
         requestId,
@@ -1802,9 +1847,7 @@ export async function handleAgentApp(
         requestId,
         checked(() => parseReplyInput(input)),
       );
-    if (action === "messages.get")
-      return messages.get(checked(() => parseGetInput(input)));
-    return messages.getMonos();
+    return messages.get(checked(() => parseGetInput(input)));
   }
   if (action === "workspace.status") {
     const mono = host.monoOf?.(source.id);
@@ -1846,11 +1889,18 @@ export async function handleAgentApp(
         })),
       };
     case "sessions.list": {
-      const cwd = requireProject(source, input, host);
+      const space = scoped(scope);
+      const cwd = requireProject(source, input, host, space);
+      // A session's own folder can be a project of another Space.
+      if (!space.projects.includes(cwd))
+        throw new Error("Not one of your projects");
+      const foreign = new Set(space.foreignSessions);
       return {
         appIdentifier: await host.appIdentifier(),
         cwd,
-        sessions: await host.sessions(cwd),
+        sessions: (await host.sessions(cwd)).filter(
+          (session) => !foreign.has(session.id),
+        ),
       };
     }
     case "sessions.read": {

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import type { AgentAppHost } from "../../agent-app/model/agentApp";
+import type { AgentAppHost, SpaceScope } from "../../agent-app/model/agentApp";
 import {
   AppActionError,
   type ToolErrorDetails,
@@ -844,15 +844,23 @@ function route(
   );
 }
 
-/** `messages.get_monos` (design 3.1). */
-async function getMonos(host: MonoMessagingHost) {
+/**
+ * `messages.get_monos` (design 3.1): the Monos `scope` lists (ADE-175), each
+ * of another Space marked with that Space's name.
+ */
+async function getMonos(host: MonoMessagingHost, scope: SpaceScope) {
   const resolved = await host.caller();
   if (!resolved.ok) throw new AppActionError(resolved.code, resolved.hint);
+  const listed = new Map(
+    scope.monos.map((entry) => [entry.monoId, entry.otherSpace]),
+  );
+  const monos = host.monos().filter((mono) => listed.has(mono.id));
   return {
-    monos: host.monos().map((mono) => ({
+    monos: monos.map((mono) => ({
       mono_id: mono.id,
       mono_name: mono.name,
       role: mono.role,
+      ...(listed.get(mono.id) === null ? {} : { other_space: listed.get(mono.id) }),
       you:
         resolved.caller.kind !== "session" &&
         mono.id === resolved.caller.monoId,
@@ -1010,7 +1018,7 @@ export function agentMessages(
   host: MonoMessagingHost,
 ): NonNullable<AgentAppHost["messages"]> {
   return {
-    getMonos: () => getMonos(host),
+    getMonos: (scope) => getMonos(host, scope),
     send: (requestId, input) =>
       sendMessage(host, "send_message", requestId, input),
     ask: (requestId, input) => sendMessage(host, "ask", requestId, input),

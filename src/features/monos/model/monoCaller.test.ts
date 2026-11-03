@@ -247,6 +247,22 @@ it("checks a Mono's app action without the roster", async () => {
       requestId: "r2",
     }),
   });
+  // ADE-175: the Space scope Rust answers reaches the action as is.
+  const scope = {
+    space: "space-2",
+    projects: ["/code/app"],
+    monos: [{ monoId: mono.id, otherSpace: null, projects: ["/code/app"] }],
+    foreignSessions: ["worker"],
+  };
+  db.check = { outcome: "allowed", leadSessionId: null, ask: null, scope };
+  expect(
+    await gate.check("r3", {
+      action: "monos.list",
+      target: null,
+      startedSessionId: null,
+      input: {},
+    }),
+  ).toStrictEqual({ leadSessionId: null, ask: null, scope });
 });
 
 // Design 2 step 4, #87 review r1 n3. Defect: a call with no turn reaches

@@ -122,6 +122,7 @@ impl World {
             ActionChecked::Allowed {
                 lead_session_id,
                 ask,
+                ..
             } => (lead_session_id, ask),
             ActionChecked::Failed { error } => return Err(error),
         };

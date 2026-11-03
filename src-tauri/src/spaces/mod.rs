@@ -2,12 +2,14 @@
 //! logins, Monos, projects and sessions. This module owns the schema, the
 //! storage commands and the one spawn hook every harness child passes through. Each concern the hook
 //! applies lives in its own file: `account` (the Space's login), `grants`
-//! (usage-limit routing) and `leases` (one Space per checkout).
+//! (usage-limit routing) and `leases` (one Space per checkout). `scope` is
+//! what the app CLI shows a caller of its Space.
 
 pub(crate) mod account;
 pub(crate) mod grants;
 pub(crate) mod leases;
 pub(crate) mod membership;
+pub(crate) mod scope;
 
 use std::path::PathBuf;
 
@@ -328,15 +330,20 @@ pub(crate) fn set_settings(
 /// The Space a project belongs to. A project with no row is in Space 1: the
 /// one rule every reader goes through.
 pub(crate) fn project_space(store: &SessionStore, project_path: &str) -> Result<String, String> {
+    project_space_in(&*store.lock_conn()?, project_path)
+}
+
+/// `project_space` on an open connection.
+pub(crate) fn project_space_in(conn: &Connection, project_path: &str) -> Result<String, String> {
     let project_path = project_key(project_path)?;
-    let space = with_conn(store, |conn| {
-        conn.query_row(
+    let space = conn
+        .query_row(
             "SELECT space_id FROM space_projects WHERE project_path = ?1",
             [project_path],
             |row| row.get(0),
         )
         .optional()
-    })?;
+        .map_err(|e| e.to_string())?;
     Ok(space.unwrap_or_else(|| FIRST_SPACE.to_owned()))
 }
 
