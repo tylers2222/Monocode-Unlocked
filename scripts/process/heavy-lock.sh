@@ -176,24 +176,16 @@ release() {
 }
 
 # The only gate for a group signal from this shell (ADE-200: a group kill with a wrong id
-# once SIGKILLed every process of the user). $1 must be the command the perl layer ($child)
-# forked: a pid above 1 whose parent is $child and that leads its own group, which is not
-# this script's group. Anything else gets no group signal, and stderr says why.
+# once SIGKILLed every process of the user). $1 must be a live child of the perl layer
+# ($child), which is the command it forked. That is enough: a group's id is the pid of the
+# process that made it, and a pid is not reused while it lives, so group -$1 is the
+# command's own group or does not exist (ESRCH). Empty, 0, 1, garbage, this script's group
+# and anyone else's group all fail it. Anything else gets no group signal; stderr says why.
 own_group() {
-  local pg=$1 why='' ppid pgid mine
-  case "$pg" in
-    '' | 0* | 1 | *[!0-9]*) why="not a pid above 1" ;;
-    *)
-      ppid=$(ps -o ppid= -p "$pg" 2>/dev/null | tr -d ' ')
-      pgid=$(ps -o pgid= -p "$pg" 2>/dev/null | tr -d ' ')
-      mine=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
-      if [ "$ppid" != "$child" ]; then why="its parent is ${ppid:-gone}, not the command layer"
-      elif [ "$pgid" != "$pg" ]; then why="it is in group ${pgid:-none}, not a group it leads"
-      elif [ "$pgid" = "$mine" ]; then why="that is this script's own group"
-      fi ;;
-  esac
-  [ -z "$why" ] && return 0
-  echo "heavy-lock: no group signal to '$pg': $why; signalling only the command layer $child" >&2
+  local ppid
+  ppid=$(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ')
+  [ "$ppid" = "$child" ] && return 0
+  echo "heavy-lock: no group signal to '$1': its parent is ${ppid:-gone}, not the command layer $child" >&2
   return 1
 }
 
