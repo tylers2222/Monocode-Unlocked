@@ -12,6 +12,7 @@ import { hasLiveCatalog } from "../../../features/sessions/model/models";
 import type { UserQuestionReply } from "../../../features/sessions/model/userQuestion";
 import { monoToolsFor } from "../../../features/monos/model/monoTools";
 import { newTurnId } from "../../../features/monos/model/monoMessages";
+import { pathKey } from "../../../shared/lib/paths";
 import type { NativeCommandProvider } from "./nativeCommands";
 import type {
   ApprovalDecision,
@@ -287,8 +288,11 @@ export function sendHarnessTurn(
     cancelIdlePark(input.sessionId);
     const controlled = typeof isTauri === "function" && isTauri();
     const turn = { sessionId: input.sessionId, turnId: input.turnId };
+    // ADE-173: the turn runs where Rust authorized it, the Space's own copy
+    // when another Space holds the checkout.
+    let cwd: unknown = input.cwd;
     if (controlled)
-      await invoke("control_authorize_turn", {
+      cwd = await invoke("control_authorize_turn", {
         ...turn,
         cwd: input.cwd,
         appAccess: input.appAccess === true,
@@ -296,8 +300,13 @@ export function sendHarnessTurn(
     activeTurnSessions.add(input.sessionId);
     let result: TurnResult = "cancelled";
     try {
+      if (typeof cwd !== "string" || cwd === "")
+        throw new Error("control_authorize_turn named no folder for the turn");
+      if (pathKey(cwd) !== pathKey(input.cwd))
+        input.onEvent({ type: "session.placed", cwd });
       result = await adapter.sendTurn({
         ...input,
+        cwd,
         monoTools: await monoToolsFor(
           input.harness,
           input.sessionId,

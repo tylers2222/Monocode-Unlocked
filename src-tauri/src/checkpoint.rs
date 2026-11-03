@@ -6,7 +6,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 
 #[cfg(test)]
 use crate::fs::GitDiffStats;
@@ -581,7 +581,7 @@ pub struct CheckpointApplyResult {
     pub already_applied: usize,
 }
 
-pub fn init(app: &AppHandle) -> Result<(), String> {
+pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let dir = app
         .path()
         .app_data_dir()
@@ -592,8 +592,27 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// `cwd` where the session's turn runs: a turn's checkpoint follows its child
+/// into the Space's own copy (ADE-173), the window may still name the
+/// checkout another Space holds on the turn that places it.
+fn turn_cwd<R: Runtime>(app: &AppHandle<R>, session_id: &str, cwd: &str) -> Result<String, String> {
+    let asked = expand_home(cwd);
+    let folder = crate::spaces::leases::place(
+        &app.state::<crate::session_store::SessionStore>(),
+        session_id,
+        &asked,
+        crate::session_store::now_millis(),
+    )?;
+    Ok(if folder == asked {
+        cwd.to_owned()
+    } else {
+        path_to_js(&folder)
+    })
+}
+
 #[tauri::command]
-pub async fn session_checkpoint_begin_turn(
+pub async fn session_checkpoint_begin_turn<R: Runtime>(
+    app: AppHandle<R>,
     store: State<'_, CheckpointStore>,
     session_id: String,
     cwd: String,
@@ -604,6 +623,7 @@ pub async fn session_checkpoint_begin_turn(
     validate_id(&turn_id, "turn")?;
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let cwd = turn_cwd(&app, &session_id, &cwd)?;
         store.exclusive(|store| {
             if let Some(paths) = &edited_paths {
                 store.capture_turn_paths(&session_id, &cwd, paths)?;
@@ -616,7 +636,8 @@ pub async fn session_checkpoint_begin_turn(
 }
 
 #[tauri::command]
-pub async fn session_checkpoint_finish_turn(
+pub async fn session_checkpoint_finish_turn<R: Runtime>(
+    app: AppHandle<R>,
     store: State<'_, CheckpointStore>,
     session_id: String,
     cwd: String,
@@ -626,6 +647,7 @@ pub async fn session_checkpoint_finish_turn(
     validate_id(&turn_id, "turn")?;
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let cwd = turn_cwd(&app, &session_id, &cwd)?;
         store.exclusive(|store| store.finish_turn(&session_id, &cwd, &turn_id))
     })
     .await
@@ -648,38 +670,60 @@ pub async fn session_checkpoint_ensure(
 }
 
 #[tauri::command]
-pub async fn session_checkpoint_prepare(
+pub async fn session_checkpoint_prepare<R: Runtime>(
+    app: AppHandle<R>,
     store: State<'_, CheckpointStore>,
     session_id: String,
     cwd: String,
     paths: Vec<String>,
 ) -> Result<(), String> {
-    validate_id(&session_id, "session")?;
-    if paths.len() > MAX_SNAPSHOT_FILES {
-        return Err("Too many paths".into());
-    }
-    let store = store.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        store.exclusive(|store| store.prepare(&session_id, &cwd, &paths))
-    })
+    on_turn_paths(
+        app,
+        &store,
+        session_id,
+        cwd,
+        paths,
+        CheckpointStore::prepare,
+    )
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub async fn session_checkpoint_capture(
+pub async fn session_checkpoint_capture<R: Runtime>(
+    app: AppHandle<R>,
     store: State<'_, CheckpointStore>,
     session_id: String,
     cwd: String,
     paths: Vec<String>,
 ) -> Result<(), String> {
+    on_turn_paths(
+        app,
+        &store,
+        session_id,
+        cwd,
+        paths,
+        CheckpointStore::capture,
+    )
+    .await
+}
+
+/// Runs `op` on `paths` of the session's turn, in the folder the turn runs in.
+async fn on_turn_paths<R: Runtime>(
+    app: AppHandle<R>,
+    store: &CheckpointStore,
+    session_id: String,
+    cwd: String,
+    paths: Vec<String>,
+    op: fn(&CheckpointStore, &str, &str, &[String]) -> Result<(), String>,
+) -> Result<(), String> {
     validate_id(&session_id, "session")?;
     if paths.len() > MAX_SNAPSHOT_FILES {
         return Err("Too many paths".into());
     }
-    let store = store.inner().clone();
+    let store = store.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        store.exclusive(|store| store.capture(&session_id, &cwd, &paths))
+        let cwd = turn_cwd(&app, &session_id, &cwd)?;
+        store.exclusive(|store| op(store, &session_id, &cwd, &paths))
     })
     .await
     .map_err(|e| e.to_string())?

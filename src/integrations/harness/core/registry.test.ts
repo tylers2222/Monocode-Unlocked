@@ -23,7 +23,7 @@ import {
   sendHarnessTurn,
   type HarnessAdapter,
 } from "./registry";
-import type { SendTurnInput, SteerTurnInput } from "./types";
+import type { HarnessEvent, SendTurnInput, SteerTurnInput } from "./types";
 import { registerBuiltinHarnesses } from "./register";
 
 /**
@@ -33,7 +33,8 @@ import { registerBuiltinHarnesses } from "./register";
 const tauri = vi.hoisted(() => ({
   inApp: false,
   calls: [] as [string, Record<string, unknown> | undefined][],
-  answer: (_command: string, _args: Record<string, unknown>) => {},
+  answer: (_command: string, _args: Record<string, unknown>): unknown =>
+    undefined,
 }));
 
 vi.mock(import("@tauri-apps/api/core"), async (importOriginal) => {
@@ -44,7 +45,11 @@ vi.mock(import("@tauri-apps/api/core"), async (importOriginal) => {
     invoke: (async (command: string, args?: Record<string, unknown>) => {
       if (!tauri.inApp) return original.invoke(command, args);
       tauri.calls.push([command, args]);
-      tauri.answer(command, args ?? {});
+      const answer = tauri.answer(command, args ?? {});
+      // Rust names the folder a turn runs in: the caller's own unless it moved.
+      if (command === "control_authorize_turn")
+        return answer === undefined ? args?.cwd : answer;
+      return answer;
     }) as typeof original.invoke,
   };
 });
@@ -153,25 +158,67 @@ describe("harness registry", () => {
 
   // Design 5.4 (3). Defect: an opener on a provider that never reports
   // turn.ready is never confirmed, or only after the turn end took its slot,
-  // so the message goes back to the queue and is delivered again.
-  it("confirms the openers of a turn whose send resolved, before the turn ends", async () => {
+  // so the message goes back to the queue and is delivered again. ADE-173
+  // defect: the provider is told the folder the window asked for, not the
+  // one Rust authorized (another Space's checkout); the session is not told
+  // it was placed there, or is told so when the folder did not move; or a
+  // turn Rust named no folder for runs anyway, or stays authorized.
+  it("confirms the openers of a turn whose send resolved, before the turn ends, in the folder Rust authorized", async () => {
     const row = opener("s1", "t1");
-    registerHarness(stub("cursor"));
-    await sendHarnessTurn({
-      harness: "cursor",
-      sessionId: "s1",
-      cwd: "/tmp",
-      model: "cursor:composer-2.5",
-      runtimeMode: "supervised",
-      text: "hi",
-      turnId: "t1",
-      onEvent: () => undefined,
-    });
+    const settle = tauri.answer;
+    let folder: unknown = "/tmp-worktrees/space-2/s1";
+    tauri.answer = (command, args) =>
+      command === "control_authorize_turn" ? folder : settle(command, args);
+    const told: string[] = [];
+    registerHarness(
+      stub("cursor", {
+        async sendTurn(input) {
+          told.push(input.cwd);
+          return "sent" as const;
+        },
+      }),
+    );
+    const events: HarnessEvent[] = [];
+    const send = (turnId: string) =>
+      sendHarnessTurn({
+        harness: "cursor",
+        sessionId: "s1",
+        cwd: "/tmp",
+        model: "cursor:composer-2.5",
+        runtimeMode: "supervised",
+        text: "hi",
+        turnId,
+        onEvent: (event) => events.push(event),
+      });
+    await send("t1");
     expect(row).toEqual({ turnId: "t1", deliveredAt: 1 });
     expect(tauri.calls[0]).toEqual([
       "control_authorize_turn",
       { sessionId: "s1", turnId: "t1", cwd: "/tmp", appAccess: false },
     ]);
+    expect(told).toEqual(["/tmp-worktrees/space-2/s1"]);
+    expect(events).toContainEqual({
+      type: "session.placed",
+      cwd: "/tmp-worktrees/space-2/s1",
+    });
+    folder = "/tmp/";
+    events.length = 0;
+    await send("t3");
+    expect(told).toEqual(["/tmp-worktrees/space-2/s1", "/tmp/"]);
+    expect(events.map((event) => event.type)).not.toContain("session.placed");
+
+    for (const none of ["", null]) {
+      folder = none;
+      tauri.calls = [];
+      await expect(send("t2")).rejects.toThrow(
+        "control_authorize_turn named no folder for the turn",
+      );
+      expect(told).toHaveLength(2);
+      expect(tauri.calls.map(([command]) => command)).toEqual([
+        "control_authorize_turn",
+        "control_turn_finished",
+      ]);
+    }
   });
 
   // PR 5 review M2. Defect: a Stop while the provider's process spawns ends

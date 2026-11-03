@@ -1,4 +1,6 @@
 import {
+  sessionAgentCwd,
+  sessionWorkCwd,
   turnOpener,
   type AgentRunMeta,
   type AgentStep,
@@ -9,7 +11,7 @@ import {
   type ToolPreview,
 } from "../../../features/sessions/model/session";
 import { mergeContextUsage } from "../../../features/sessions/model/contextUsage";
-import { displayPath } from "../../../shared/lib/paths";
+import { displayPath, pathKey, trimSlash } from "../../../shared/lib/paths";
 import {
   composeToolTitle,
   isFileTool,
@@ -51,6 +53,27 @@ function rearmTurn(session: Session, event: HarnessEvent): Session {
     default:
       return session;
   }
+}
+
+/**
+ * ADE-173: `folder`, the folder a turn runs in, is in the copy the app made
+ * for the session's Space; that copy becomes its working copy, so compact,
+ * rewind, restore, checkpoints and the git UI all use it. A `workFolder`
+ * keeps its place inside the copy.
+ */
+function placed(session: Session, folder: string): Session {
+  const work = sessionWorkCwd(session);
+  const inside = sessionAgentCwd(session).slice(trimSlash(work).length);
+  const copy =
+    inside && folder.endsWith(inside)
+      ? folder.slice(0, -inside.length)
+      : folder;
+  if (pathKey(copy) === pathKey(work)) return session;
+  return {
+    ...session,
+    worktreeCwd: copy,
+    ...(session.workFolder ? { workFolder: folder } : {}),
+  };
 }
 
 /** Apply one delivery batch without copying the transcript for every token. */
@@ -232,6 +255,8 @@ export function applyHarnessEvent(
     }
     case "turn.ready":
       return session.busy ? { ...session, turnReadiness: "ready" } : session;
+    case "session.placed":
+      return placed(session, event.cwd);
     case "session.configChanged":
       return {
         ...session,

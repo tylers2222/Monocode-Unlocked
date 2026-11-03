@@ -229,6 +229,98 @@ fn create(root: &Path, branch: &str, base: &str, existing: bool) -> Result<Workt
         })
 }
 
+/// Where a folder sits in its git checkout.
+pub(crate) struct CheckoutSpot {
+    /// The checkout's top folder, as git names it. For a submodule, the
+    /// checkout that holds it: a submodule is part of that working tree.
+    pub(crate) top: PathBuf,
+    /// The folder's path below its own top folder; empty at the top.
+    pub(crate) inside: PathBuf,
+    pub(crate) submodule: bool,
+}
+
+pub(crate) fn checkout_spot(path: &Path) -> Option<CheckoutSpot> {
+    let out = git(
+        path,
+        &[
+            "rev-parse",
+            "--show-toplevel",
+            "--show-prefix",
+            "--show-superproject-working-tree",
+        ],
+    )
+    .ok()?;
+    let mut lines = out.lines();
+    let own = lines.next()?;
+    let inside = PathBuf::from(lines.next().unwrap_or("").trim_end_matches('/'));
+    let holder = lines.next().filter(|line| !line.is_empty());
+    Some(CheckoutSpot {
+        top: PathBuf::from(holder.unwrap_or(own)),
+        inside,
+        submodule: holder.is_some(),
+    })
+}
+
+/// Space `space_id`'s own copy of the checkout at `root` for `session_id`:
+/// `<project>-worktrees/<space>/<session>` on branch `<space>/<session>`,
+/// made from `root`'s HEAD the first time and reused after.
+pub(crate) fn space_worktree(
+    root: &Path,
+    space_id: &str,
+    session_id: &str,
+) -> Result<PathBuf, String> {
+    crate::session_store::validate_id(space_id, "space")?;
+    crate::session_store::validate_id(session_id, "session")?;
+    let trees = list(root)?;
+    let main = trees.first().ok_or("No working copies found")?;
+    let parent = default_root(Path::new(&main.path)).join(space_id);
+    let path = parent.join(session_id);
+    let branch = format!("{space_id}/{session_id}");
+    let registered = trees
+        .iter()
+        .any(|tree| same_path(Path::new(&tree.path), &path));
+    if registered && path.is_dir() {
+        return Ok(path);
+    }
+    if trees.iter().any(|tree| {
+        tree.branch.as_deref() == Some(branch.as_str()) && !same_path(Path::new(&tree.path), &path)
+    }) {
+        return Err(format!("{branch} is checked out in another working copy"));
+    }
+    std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
+    let path_text = path_to_js(&path);
+    let kept = git(
+        root,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok();
+    let mut args = vec!["worktree", "add"];
+    // A copy whose folder was deleted stays registered; only `--force` adds
+    // it again, and nothing else of the user's is touched.
+    if registered {
+        args.push("--force");
+    }
+    if kept {
+        args.extend(["--", path_text.as_str(), branch.as_str()]);
+    } else {
+        args.extend([
+            "--no-track",
+            "-b",
+            branch.as_str(),
+            "--",
+            path_text.as_str(),
+            "HEAD",
+        ]);
+    }
+    git_checked(root, &args)?;
+    Ok(path)
+}
+
 #[tauri::command(async)]
 pub async fn git_worktree_create(
     cwd: String,

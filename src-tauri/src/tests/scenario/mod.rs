@@ -31,6 +31,8 @@ mod s3_miss;
 mod s4_questions;
 mod s5_delivery;
 mod s5_scheduler;
+#[cfg(unix)]
+mod space_checkouts;
 mod space_login;
 mod spaces;
 #[cfg(not(windows))]

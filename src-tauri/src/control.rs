@@ -708,7 +708,7 @@ pub fn control_authorize_turn<R: Runtime>(
     cwd: String,
     app_access: bool,
     turn_id: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     crate::spaces::grants::check_app_turn(&window, &session_id)?;
     authorize_window_turn(
         &window,
@@ -735,7 +735,7 @@ pub fn control_authorize_harness_turn<R: Runtime>(
     cwd: String,
     app_access: bool,
     turn_id: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     authorize_window_turn(
         &window,
         &host,
@@ -747,7 +747,8 @@ pub fn control_authorize_harness_turn<R: Runtime>(
     )
 }
 
-/// Authorizes turn `turn_id` of `session` in `window` and `cwd`.
+/// Authorizes turn `turn_id` of `session` in `window` and `cwd`. Returns
+/// the folder it runs in.
 fn authorize_window_turn<R: Runtime>(
     window: &WebviewWindow<R>,
     host: &ControlHost,
@@ -756,38 +757,55 @@ fn authorize_window_turn<R: Runtime>(
     app_access: bool,
     turn_id: &str,
     started_by: StartedBy,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let turn_id = mono_messages::parse_turn_id(turn_id)?;
     let workdir = crate::fs::expand_home(cwd);
-    let cwd = std::fs::canonicalize(&workdir)
+    let real = std::fs::canonicalize(&workdir)
         .map_err(|e| format!("Working directory {}: {e}", workdir.display()))?;
     let turn = ActiveTurn {
         window: window.label().into(),
-        cwd: comparison_path(&cwd),
+        cwd: String::new(),
         app_allowed: app_access,
         turn_id: turn_id.into(),
         started_by,
         next: None,
     };
     let app = window.app_handle();
-    authorize_turn(&host.inner, &app.state::<SessionStore>(), session, turn)?.emit(app);
-    Ok(())
+    let (folder, notices) = authorize_turn(
+        &host.inner,
+        &app.state::<SessionStore>(),
+        session,
+        &real,
+        turn,
+    )?;
+    notices.emit(app);
+    Ok(if folder == real {
+        cwd.to_owned()
+    } else {
+        crate::fs::path_to_js(&folder)
+    })
 }
 
+/// Authorizes `turn` in `cwd`. It runs where the spawn hook starts the
+/// session's child: in its Space's own copy when another Space holds the
+/// checkout. A turn the hook would leave in another Space's checkout is
+/// refused. Returns the folder the turn runs in.
 fn authorize_turn(
     inner: &Mutex<Inner>,
     store: &SessionStore,
     session: &str,
-    turn: ActiveTurn,
-) -> Result<Notices, String> {
+    cwd: &Path,
+    mut turn: ActiveTurn,
+) -> Result<(PathBuf, Notices), String> {
+    let folder =
+        crate::spaces::leases::place(store, session, cwd, crate::session_store::now_millis())?;
+    turn.cwd = comparison_path(&folder);
     let replaced = inner
         .lock()
         .map_err(|_| "Control service unavailable")?
         .authorize_turn(session, turn)?;
-    Ok(end_turns(
-        store,
-        replaced.map(|turn| (session.to_string(), turn)),
-    ))
+    let notices = end_turns(store, replaced.map(|turn| (session.to_string(), turn)));
+    Ok((folder, notices))
 }
 
 /// A window reports the sessions it has loaded, for [`Inner::route_owner`].
@@ -1343,9 +1361,30 @@ pub(crate) mod tests {
             &host.inner,
             store,
             session,
+            Path::new(cwd),
             monocode_turn(window, cwd, &turn_id),
         )
         .unwrap();
+    }
+
+    /// `control_authorize_turn` of turn `turn-<session>` in `cwd`: the folder
+    /// the turn runs in, or why it is refused.
+    #[cfg(not(windows))]
+    pub(crate) fn turn_folder(
+        host: &ControlHost,
+        store: &SessionStore,
+        session: &str,
+        cwd: &Path,
+    ) -> Result<String, String> {
+        let turn = monocode_turn("main", "", &format!("turn-{session}"));
+        let (folder, _) = authorize_turn(&host.inner, store, session, cwd, turn)?;
+        let recorded = host.inner.lock().unwrap().active[session].cwd.clone();
+        assert_eq!(
+            recorded,
+            comparison_path(&folder),
+            "the turn record and the folder differ"
+        );
+        Ok(crate::fs::path_to_js(&folder))
     }
 
     #[cfg(not(windows))]
@@ -1370,6 +1409,15 @@ pub(crate) mod tests {
         let inner = Mutex::new(Inner::default());
         run(&inner, "lead", "main", "turn-4");
         let harness = HarnessHost::new();
+        // turn-5's authorize below runs while this thread holds the store
+        // lock; it only stays off the store because /p does not exist. A
+        // lease regression that resolves /p would deadlock the test instead
+        // of failing it.
+        assert_eq!(
+            crate::spaces::leases::take_lease(&store, "/p", "space", 0),
+            Err("No such folder: /p".to_owned()),
+            "the test relies on /p not existing; a resolve that names it would make place lock the held store"
+        );
         let steer = std::thread::scope(|scope| {
             let held = store.lock_conn().unwrap();
             let killing = scope.spawn(|| kill_session(&inner, &store, "lead", &harness));
@@ -1381,6 +1429,7 @@ pub(crate) mod tests {
                 &inner,
                 &store,
                 "lead",
+                Path::new("/p"),
                 monocode_turn("main", "/p", "turn-5"),
             )
             .unwrap();
@@ -1460,9 +1509,11 @@ pub(crate) mod tests {
                 &inner,
                 &store,
                 "a-chat",
+                Path::new("/a"),
                 monocode_turn("main", "/a", turn_id),
             )
             .unwrap()
+            .1
         };
         assert_eq!(authorize("turn-1"), Notices::default());
         assert_eq!(authorize("turn-1"), Notices::default());

@@ -1376,6 +1376,19 @@ fn orchestration_summary(conn: &Connection, id: &str) -> rusqlite::Result<Option
     ))
 }
 
+/// The Space copy Rust placed session `id` in (ADE-173): its stored working
+/// copy, when that folder is leased to the session's own Space.
+fn placed_copy(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT s.worktree_cwd FROM sessions s
+           JOIN checkout_leases l ON l.checkout_path = s.worktree_cwd AND l.space_id = s.space_id
+          WHERE s.id = ?1",
+        [id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
 #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 pub(crate) fn upsert_session(
     conn: &Connection,
@@ -1410,12 +1423,19 @@ pub(crate) fn upsert_session(
         .as_ref()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty());
+    // ADE-173: a save that names no working copy keeps the Space copy Rust
+    // placed the session in, so the row, its branch and the reply all name it.
+    let worktree_cwd = match session
+        .worktree_cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(cwd) => Some(cwd.to_owned()),
+        None => placed_copy(conn, &session.id)?,
+    };
     let git = crate::fs::git_info_for(&crate::fs::expand_home(
-        session
-            .worktree_cwd
-            .as_deref()
-            .filter(|cwd| !cwd.is_empty())
-            .unwrap_or(&session.cwd),
+        worktree_cwd.as_deref().unwrap_or(&session.cwd),
     ));
     let branch = if session.worktree_removed {
         None
@@ -1431,11 +1451,6 @@ pub(crate) fn upsert_session(
                     .filter(|value| !value.is_empty())
             })
     };
-    let worktree_cwd = session
-        .worktree_cwd
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
     let work_folder = session
         .work_folder
         .as_deref()
@@ -1568,7 +1583,7 @@ pub(crate) fn upsert_session(
         title: session.title.clone(),
         provider_session_id: provider_session_id.map(str::to_owned),
         branch: branch.map(str::to_owned),
-        worktree_cwd: worktree_cwd.map(str::to_owned),
+        worktree_cwd,
         worktree_removed: session.worktree_removed,
         repo: git.repo,
         additions: 0,
@@ -1922,7 +1937,10 @@ fn ceil_char_boundary(text: &str, mut index: usize) -> usize {
     index
 }
 
-fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<SessionSummary>> {
+pub(crate) fn list_by_project(
+    conn: &Connection,
+    cwd: &str,
+) -> rusqlite::Result<Vec<SessionSummary>> {
     let git = crate::fs::git_info_for(&crate::fs::expand_home(cwd));
     let mut statement = conn.prepare(
         "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,

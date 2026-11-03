@@ -9,7 +9,7 @@ export function slash(path: string): string {
     ? path.replace(/\\/g, "/") : path;
 }
 
-function trimSlash(path: string): string {
+export function trimSlash(path: string): string {
   return slash(path).replace(/\/+$/, "") || "/";
 }
 

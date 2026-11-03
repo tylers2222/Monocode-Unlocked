@@ -21,6 +21,12 @@ export type HarnessEvent =
   | { type: "session.providerBound"; providerSessionId: string }
   | { type: "turn.started"; providerTurnId: string }
   | { type: "turn.ready" }
+  /**
+   * ADE-173: the app placed the session in a folder other than the one it
+   * asked for, its Space's own copy of a checkout another Space holds.
+   * `cwd` is the folder the turn runs in.
+   */
+  | { type: "session.placed"; cwd: string }
   | {
       type: "session.configChanged";
       model?: string;
