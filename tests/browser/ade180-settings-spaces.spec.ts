@@ -236,6 +236,9 @@ test("frames 11, 12: New Space, then Edit Space picks its logins", async ({
   page,
 }) => {
   // Frame 11: name and colour, then Create.
+  // The app's own writes at launch (each provider's default login for Space
+  // 1) are not this flow's.
+  const before = (await writes(page)).length;
   await settings(page).getByRole("button", { name: "New Space" }).click();
   await expect(dialog(page)).toContainText(
     "A Space has its own logins, Gigas, Monos, projects and sessions.",
@@ -258,7 +261,7 @@ test("frames 11, 12: New Space, then Edit Space picks its logins", async ({
   await dialog(page).getByRole("button", { name: "Save" }).click();
   await expect(dialog(page)).toHaveCount(0);
 
-  expect(await writes(page)).toEqual([
+  expect((await writes(page)).slice(before)).toEqual([
     { command: "spaces_create", args: { name: "Client work", color: GREEN } },
     {
       command: "spaces_update",
