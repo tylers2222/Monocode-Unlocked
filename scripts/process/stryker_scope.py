@@ -23,8 +23,9 @@ from pathlib import Path
 
 PINNED = '9.6.1'
 STRYKER_PACKAGES = frozenset({'api', 'core', 'instrumenter', 'util', 'vitest-runner'})
-# #232 took about 78 s per mutant; the Stryker step has 55 minutes.
-MAX_TS_MUTANTS = 35
+# Measured 2026-11-03: #455 ran 35 mutants in 2.5 min on GitHub, #461 ran 56 in 7.5 min on
+# the box, so about 150 fit the Stryker step's 55 minutes.
+MAX_TS_MUTANTS = 150
 PASSING = frozenset({'Killed', 'Timeout'})
 INSTRUMENTED = re.compile(r'Instrumented \d+ source file\(s\) with (\d+) mutant\(s\)')
 
@@ -63,7 +64,7 @@ def stryker_config(mutate, report):
     return {'testRunner': 'vitest', 'plugins': ['@stryker-mutator/vitest-runner'], 'mutate': mutate,
             'coverageAnalysis': 'perTest', 'thresholds': {'high': 100, 'low': 100, 'break': 100},
             'concurrency': 1, 'timeoutFactor': 3, 'reporters': ['clear-text', 'progress', 'json'],
-            'jsonReporter': {'fileName': report}}
+            'jsonReporter': {'fileName': report}, 'dryRunTimeoutMinutes': 15}
 
 
 def mutant_count(log):
@@ -75,7 +76,8 @@ def mutant_count(log):
 def cap_problem(counts):
     total = sum(counts.values())
     if total > MAX_TS_MUTANTS:
-        return (f'{total} TypeScript mutants, more than {MAX_TS_MUTANTS} (about 78 s each in a 55-minute step); '
+        return (f'{total} TypeScript mutants, more than {MAX_TS_MUTANTS} '
+                f'(#455: 35 in 2.5 min on GitHub; #461: 56 in 7.5 min on the box; a 55-minute step); '
                 f'split the PR so each part mutates fewer')
     return None
 

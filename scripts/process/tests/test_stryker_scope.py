@@ -65,6 +65,7 @@ class Configs(unittest.TestCase):
         self.assertEqual((config['mutate'], config['jsonReporter'], config['thresholds']['break']),
                          (['src/a.ts:1-3'], {'fileName': '/tmp/r.json'}, 100))
         self.assertIn('json', config['reporters'])
+        self.assertEqual(config['dryRunTimeoutMinutes'], 15)
 
     def test_the_count_instruments_without_a_test_run(self):
         config = S.count_config(['src/a.ts:1-3'])
@@ -76,8 +77,8 @@ class Configs(unittest.TestCase):
         self.assertIsNone(S.mutant_count('ERROR something else'))
 
     def test_above_the_cap_fails_and_says_split_the_pr(self):
-        self.assertIsNone(S.cap_problem({'a.ts': 20, 'b.ts': 15}))
-        self.assertIn('split the PR', S.cap_problem({'a.ts': 20, 'b.ts': 16}))
+        self.assertIsNone(S.cap_problem({'a.ts': 100, 'b.ts': 50}))
+        self.assertIn('split the PR', S.cap_problem({'a.ts': 100, 'b.ts': 51}))
 
 
 class ReportProblems(unittest.TestCase):
@@ -196,9 +197,9 @@ class Cli(unittest.TestCase):
         self.assertIn('::error::src/a.ts: the mutant count failed (exit 1)', out)
 
     def test_above_the_cap_fails_before_any_run(self):
-        code, out, runs = self.run_cli('src/a.ts:1-1,src/b.ts:1-1', count=18)
+        code, out, runs = self.run_cli('src/a.ts:1-1,src/b.ts:1-1', count=76)
         self.assertEqual((code, runs), (1, []))
-        self.assertIn('36 TypeScript mutants, more than 35', out)
+        self.assertIn('152 TypeScript mutants, more than 150', out)
         self.assertIn('split the PR', out)
 
     def test_a_bad_job_tree_fails_before_any_run(self):
