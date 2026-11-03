@@ -25,11 +25,22 @@
 # `start` needs a fresh home, refuses an unsafe database, starts the app from
 # `env -i` under sandbox.sh's profile after a preflight, and watches its
 # process tree (GIGA_EVAL_WATCH_NOTIFY: a pid to get USR1 on a stray).
+#
+# GIGA_EVAL_DEBUG_BUILD=1 (e2e.yml's e2e-macos job): `build` makes a debug build
+# with no debug info, in $GIGA_EVAL_OUT/target/debug. It takes minutes less
+# than a release build. On macOS a debug build rewrites its bundle's Info.plist
+# at launch with the identifier com.monocode.desktop (src-tauri/src/macos.rs).
 source "$(dirname "$0")/lib.sh"
 source "$(dirname "$0")/sandbox.sh"
 
 SRC_ROOT="$EVAL_OUT/src"
 TARGET_DIR="$EVAL_OUT/target"
+if [[ "${GIGA_EVAL_DEBUG_BUILD:-}" == 1 ]]; then
+  PROFILE=debug PROFILE_FLAGS=(--debug)
+  export CARGO_PROFILE_DEV_DEBUG=0
+else
+  PROFILE=release PROFILE_FLAGS=()
+fi
 APP_DATA="$EVAL_APP_DATA"
 # The files the harnesses log in with: omp's credentials and settings, Codex's
 # auth, git's identity. Copied, never linked, so every write the instance makes
@@ -45,7 +56,7 @@ if [[ "$EVAL_OS" == macos ]]; then
   BUNDLE=(--bundles app)
   LEAK_DIRS=("$REAL_HOME/Library/WebKit/$EVAL_ID" "$REAL_HOME/Library/Application Support/$EVAL_ID" "$REAL_HOME/Library/Caches/$EVAL_ID")
   install_build() {
-    local built="$TARGET_DIR/release/bundle/macos/$EVAL_PRODUCT.app" dest="$EVAL_OUT/apps/$1/$EVAL_PRODUCT.app"
+    local built="$TARGET_DIR/$PROFILE/bundle/macos/$EVAL_PRODUCT.app" dest="$EVAL_OUT/apps/$1/$EVAL_PRODUCT.app"
     [[ -d "$built" ]] || die "no bundle at $built"
     mkdir -p "$(dirname "$dest")"; rm -rf "$dest"; cp -a "$built" "$dest"
     echo "$dest" >"$EVAL_OUT/instance.app"
@@ -69,7 +80,7 @@ else
   # Linux runs in a container that holds no logins.
   LOGINS=()
   install_build() {
-    local built="$TARGET_DIR/release/monocode" dest="$EVAL_OUT/apps/$1/monocode"
+    local built="$TARGET_DIR/$PROFILE/monocode" dest="$EVAL_OUT/apps/$1/monocode"
     [[ -x "$built" ]] || die "no binary at $built"
     mkdir -p "$(dirname "$dest")"; cp "$built" "$dest"
     echo "$dest" >"$EVAL_OUT/instance.app"
@@ -112,8 +123,8 @@ cmd_build() {
     echo "$lock_hash" >"$src/node_modules/.giga-eval-lock"
   fi
   local features="${GIGA_EVAL_FEATURES-fake-clock,test-db-key}"
-  log "tauri build, features '$features' ($logf)"
-  (cd "$src" && CARGO_TARGET_DIR="$TARGET_DIR" npx tauri build "${BUNDLE[@]}" --config tauri.gigaeval.json \
+  log "tauri build ($PROFILE), features '$features' ($logf)"
+  (cd "$src" && CARGO_TARGET_DIR="$TARGET_DIR" npx tauri build ${PROFILE_FLAGS[@]+"${PROFILE_FLAGS[@]}"} "${BUNDLE[@]}" --config tauri.gigaeval.json \
     ${features:+--features "$features"}) >>"$logf" 2>&1 \
     || die "tauri build failed, see $logf"
   install_build "$label" "$src"
@@ -320,5 +331,5 @@ case "${1:-}" in
   scrub) sandbox_scrub "$APP_DATA/monocode.db" "${2:?usage: instance.sh scrub <model>}" ;;
   guard) sandbox_guard "${2:-$APP_DATA/monocode.db}" && log "safe: ${2:-$APP_DATA/monocode.db}" ;;
   denied) sandbox_denied "${2:?usage: instance.sh denied <since>}" ;;
-  *) sed -n '2,26p' "$0"; exit 2 ;;
+  *) sed -n '2,31p' "$0"; exit 2 ;;
 esac
