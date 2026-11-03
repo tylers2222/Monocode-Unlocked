@@ -21,6 +21,17 @@ test("the switcher shows news from the other Space, closed and open", async ({
   await expect(space2).toContainText("No Codex login");
   await page.screenshot({ path: testInfo.outputPath("frame2-open-badge.png") });
 
+  // Frame 13: each Space's colour as an 8 px dot, Space 1 blue and Space 2 violet.
+  const dot = (scope: typeof trigger) => scope.locator("[data-space-dot]");
+  for (const [scope, rgb] of [
+    [trigger, "rgb(69, 155, 247)"],
+    [page.getByRole("menuitemradio", { name: /Space 1/ }), "rgb(69, 155, 247)"],
+    [space2, "rgb(176, 105, 211)"],
+  ] as const) {
+    await expect(dot(scope)).toHaveCSS("background-color", rgb);
+    await expect(dot(scope)).toHaveCSS("width", "8px");
+  }
+
   await page.getByRole("menuitem", { name: "Manage Spaces" }).click();
   await expect(page.locator("body")).toHaveAttribute("data-settings", "");
 });

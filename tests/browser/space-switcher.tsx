@@ -10,11 +10,12 @@ import { saveMaskEmails } from "../../src/features/settings/model/displayPrefs";
 import { SpaceSwitcher } from "../../src/features/spaces/ui/SpaceSwitcher";
 import "../../src/styles/index.css";
 
-// The real switcher on ADE-170 frames 1 and 2's data: Space 1 shown, and in
-// Space 2 one Mono working and one with 2 new replies. Emails are made up.
+// The real switcher on ADE-170 frames 1, 2 and 13's data: Space 1 shown, and
+// in Space 2 one Mono working and one with 2 new replies. Space 1 predates
+// colours; Space 2 is violet. Emails are made up.
 const spaces = [
   { id: "space-1", name: "Space 1", color: null, createdAt: 1 },
-  { id: "space-2", name: "Space 2", color: null, createdAt: 2 },
+  { id: "space-2", name: "Space 2", color: "hsl(280 55% 62%)", createdAt: 2 },
 ];
 const logins = [
   { spaceId: "space-1", provider: "codex", accountId: "dev" },

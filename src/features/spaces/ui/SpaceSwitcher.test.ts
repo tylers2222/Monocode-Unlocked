@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __monosTestReset,
   createMono,
+  MONO_COLORS,
   updateMono,
 } from "../../monos/model/mono";
 import { saveMaskEmails } from "../../settings/model/displayPrefs";
@@ -225,10 +226,11 @@ describe("SpaceSwitcher", () => {
     );
     const top = trigger().firstElementChild!.firstElementChild!;
     expect(top.className).toBe("flex items-center gap-1.5");
-    expect(top.firstElementChild!.className).toBe(
+    const name = top.children[1];
+    expect(name.className).toBe(
       "min-w-0 flex-1 truncate text-[13px] font-medium leading-tight text-content",
     );
-    expect(top.firstElementChild!.textContent).toBe("Space 1");
+    expect(name.textContent).toBe("Space 1");
     expect(top.lastElementChild!.getAttribute("class")).toContain(
       "size-3.5 shrink-0 text-content/50",
     );
@@ -317,10 +319,12 @@ describe("SpaceSwitcher", () => {
       "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] bg-selection",
     );
     expect(one.firstElementChild!.className).toBe("flex min-w-0 flex-1 flex-col gap-[3px]");
-    expect(one.firstElementChild!.firstElementChild!.className).toBe(
+    const heading = one.firstElementChild!.firstElementChild!;
+    expect(heading.className).toBe("flex items-center gap-1.5");
+    expect(heading.lastElementChild!.className).toBe(
       "truncate font-medium leading-4 text-content",
     );
-    expect(one.firstElementChild!.firstElementChild!.textContent).toBe("Space 1");
+    expect(heading.lastElementChild!.textContent).toBe("Space 1");
     expect(line(one, "claude").textContent).toBe("main@example.com · Max 20x");
     expect(line(one, "codex").textContent).toBe("dev@example.com · ChatGPT Pro");
     expect(one.lastElementChild!.className).toBe("pt-px");
@@ -352,6 +356,33 @@ describe("SpaceSwitcher", () => {
     expect(item("Manage Spaces").firstElementChild!.getAttribute("class")).toContain(
       "size-3.5 text-content/55",
     );
+  });
+
+  it("draws each Space's colour as a dot before its name, closed and open (frame 13)", async () => {
+    const violet = MONO_COLORS[5];
+    db.spaces[1].color = violet;
+    // Space 1 predates colours and reads as the first one, as on its Settings tile.
+    const blue = MONO_COLORS[0];
+    /** The dot in `scope`, checked to sit just before `name`. */
+    const dot = (scope: Element, name: string) => {
+      const found = scope.querySelector<HTMLElement>("[data-space-dot]")!;
+      expect(found.className).toBe("size-2 shrink-0 rounded-full");
+      expect(found.nextElementSibling!.textContent).toBe(name);
+      return found;
+    };
+    await renderSwitcher();
+    expect(dot(trigger(), "Space 1").dataset.spaceDot).toBe(blue);
+    expect(dot(trigger(), "Space 1").style.backgroundColor).toBe(blue);
+
+    await act(async () => trigger().click());
+    expect(dot(row("space-1"), "Space 1").style.backgroundColor).toBe(blue);
+    expect(dot(row("space-2"), "Space 2").dataset.spaceDot).toBe(violet);
+    expect(dot(row("space-2"), "Space 2").style.backgroundColor).toBe(violet);
+
+    // Switched to Space 2, the closed switcher takes its colour.
+    await act(async () => row("space-2").click());
+    await settle();
+    expect(dot(trigger(), "Space 2").style.backgroundColor).toBe(violet);
   });
 
   it("shows no news on the row of a Space with no Mono", async () => {

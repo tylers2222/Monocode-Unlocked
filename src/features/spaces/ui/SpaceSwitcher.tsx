@@ -10,6 +10,7 @@ import { Popover } from "../../../shared/ui/Popover";
 import { countBadge } from "../../../shared/lib/numbers";
 import {
   listMonos,
+  MONO_COLORS,
   monosSnapshot,
   subscribeMonos,
   type MonoState,
@@ -71,6 +72,7 @@ export function SpaceSwitcher({
       >
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex items-center gap-1.5">
+            <SpaceDot space={active} />
             <span className="min-w-0 flex-1 truncate text-[13px] font-medium leading-tight text-content">
               {active.name}
             </span>
@@ -179,8 +181,11 @@ function SpaceRow({
       }`}
     >
       <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
-        <span className="truncate font-medium leading-4 text-content">
-          {space.name}
+        <span className="flex items-center gap-1.5">
+          <SpaceDot space={space} />
+          <span className="truncate font-medium leading-4 text-content">
+            {space.name}
+          </span>
         </span>
         <SpaceLogins spaceId={space.id} logins={logins} withPlan />
       </span>
@@ -206,6 +211,18 @@ function SpaceRow({
         )}
       </span>
     </button>
+  );
+}
+
+/** Frame 13: the Space colour as an 8 px dot; Space 1 predates colours and reads as the first. */
+function SpaceDot({ space }: { space: Space }) {
+  const color = space.color ?? MONO_COLORS[0];
+  return (
+    <span
+      data-space-dot={color}
+      className="size-2 shrink-0 rounded-full"
+      style={{ backgroundColor: color }}
+    />
   );
 }
 
