@@ -1,0 +1,68 @@
+name: realapp-build
+
+# Throwaway branch only (ADE-182 real-app run, never merged): builds the
+# GigaEval release .app (identifier com.monocode.desktop.gigaeval, features
+# fake-clock,test-db-key, ad-hoc signed) of the tyler/main head at run time and
+# uploads it with its rev and SHA-256. A release build, never GIGA_EVAL_DEBUG_BUILD:
+# a macOS debug app takes the real app's bundle id (instance.sh). No secrets.
+on:
+  push:
+    branches: [realapp/ade-182-build]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 150
+    env:
+      # e2e-macos-release's paths, so its rust-cache entry (key e2e-macos) restores.
+      GIGA_EVAL_OUT: /tmp/e2e-app
+      GIGA_EVAL_HOME: /tmp/e2e-app-home
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: tyler/main
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - id: rust-version
+        run: echo "version=$(cat .github/rust-version)" >>"$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ steps.rust-version.outputs.version }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-targets: false
+          cache-directories: ${{ env.GIGA_EVAL_OUT }}/target
+          shared-key: e2e-macos
+          save-if: false
+
+      - name: Build the GigaEval release app
+        run: bash scripts/giga-eval/instance.sh build "$GITHUB_WORKSPACE" realapp
+
+      - name: Pack the app with its rev and SHA-256
+        run: |
+          set -euo pipefail
+          rev="$(git rev-parse HEAD)"
+          out="$RUNNER_TEMP/realapp"
+          mkdir -p "$out"
+          ditto -c -k --keepParent "$GIGA_EVAL_OUT/apps/realapp/MonoCode GigaEval.app" "$out/MonoCode-GigaEval.zip"
+          echo "$rev" >"$out/rev.txt"
+          (cd "$out" && shasum -a 256 MonoCode-GigaEval.zip | tee SHA256SUMS.txt)
+          echo "built rev $rev"
+          cp "$GIGA_EVAL_OUT"/build-realapp.log "$out/" || true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: realapp-gigaeval-macos
+          path: ${{ runner.temp }}/realapp/
+          retention-days: 7
+          if-no-files-found: error
