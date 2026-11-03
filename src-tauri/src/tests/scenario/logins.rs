@@ -277,13 +277,71 @@ fn sandbox_rules_follow_the_login(rig: &Rig, target: &Path) {
     std::fs::remove_file(data.join("claude-deny-rules-on")).unwrap();
 }
 
-#[cfg(target_os = "macos")]
 struct Remove(PathBuf);
 
-#[cfg(target_os = "macos")]
 impl Drop for Remove {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A scratch folder in the home folder, removed on drop, and a rig in it: a
+/// login must link inside the home folder, and every spawn may write the temp dir.
+fn home_rig() -> (Remove, Rig) {
+    let home = PathBuf::from(crate::dirs_home().unwrap());
+    let root = home.join(format!(".ade224-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let rig = Rig::new(std::fs::canonicalize(&root).unwrap());
+    (Remove(root), rig)
+}
+
+/// Defect: a Codex Mono's `CODEX_HOME` is not its own home beside the app
+/// data folder (ADE-224), or private storage starts for a spawn that is not
+/// Codex's app-server on a Codex login.
+#[test]
+fn a_codex_mono_runs_in_its_own_home_beside_the_app_data() {
+    let (_remove, rig) = home_rig();
+    let data = rig.app.path().app_data_dir().unwrap();
+    std::fs::create_dir_all(rig.root.join("codex-cli")).unwrap();
+    let codex = script(
+        &rig.root.join("codex-cli/codex"),
+        r#"case "$1" in
+  --help) echo "codex app-server" ;;
+  --version) echo "codex 0.0.1" ;;
+  *) printf '%s\n' "$CODEX_HOME" > ran.part && mv ran.part ran ;;
+esac"#,
+    );
+    let target = rig.root.join("home/.codex-2");
+    std::fs::create_dir_all(&target).unwrap();
+    let link = data.join("provider-accounts/codex/linked");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, link).unwrap();
+    let home = crate::codex_mono_store::homes(&data)
+        .unwrap()
+        .join("com.monocode.desktop/linked");
+    assert_eq!(
+        rig.start(
+            "linked",
+            "codex",
+            &codex,
+            "codex",
+            "app-server",
+            Some("mono")
+        ),
+        Ok(format!("{}\n", text(&home))),
+        "the Mono's CODEX_HOME is not its own home beside the app data"
+    );
+    let refused = "Private Mono storage is only supported for Codex app-server";
+    for (id, provider, cli, name, arg) in [
+        ("exec", "codex", &codex, "codex", "exec"),
+        ("claude-login", "claude", &codex, "codex", "app-server"),
+        ("other-cli", "codex", &rig.fx, "fx", "app-server"),
+    ] {
+        assert_eq!(
+            rig.start(id, provider, cli, name, arg, Some("mono")),
+            Err(refused.into()),
+            "{id}: private storage started"
+        );
     }
 }
 
@@ -301,11 +359,7 @@ fn a_linked_login_signs_in_under_the_real_srt() {
         eprintln!("skipped: srt is not installed");
         return;
     }
-    let home = PathBuf::from(crate::dirs_home().unwrap());
-    let root = home.join(format!(".ade224-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
-    let _remove = Remove(root.clone());
-    let mut rig = Rig::new(std::fs::canonicalize(&root).unwrap());
+    let (_remove, mut rig) = home_rig();
     std::fs::create_dir_all(rig.root.join("login")).unwrap();
     rig.fx = script(
         &rig.root.join("login/fx"),
@@ -352,11 +406,7 @@ fn a_codex_mono_writes_only_its_home_under_the_real_srt() {
         eprintln!("skipped: srt is not installed");
         return;
     }
-    let home = PathBuf::from(crate::dirs_home().unwrap());
-    let root = home.join(format!(".ade224-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
-    let _remove = Remove(root.clone());
-    let rig = Rig::new(std::fs::canonicalize(&root).unwrap());
+    let (_remove, rig) = home_rig();
     let data = rig.app.path().app_data_dir().unwrap();
     let homes = crate::codex_mono_store::homes(&data).unwrap();
     let other = homes.join("com.monocode.desktop/other");
