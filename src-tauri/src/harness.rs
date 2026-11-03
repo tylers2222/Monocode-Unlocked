@@ -1317,14 +1317,14 @@ fn apply_provider_account(cmd: &mut Command, account: Option<&HarnessAccount>, d
             // Claude scopes both its ordinary config and its macOS Keychain
             // credential to these exact strings. Setting both keeps profiles
             // isolated on every supported platform.
-            cmd.env("CLAUDE_CONFIG_DIR", &dir)
-                .env("CLAUDE_SECURESTORAGE_CONFIG_DIR", &dir)
+            cmd.env("CLAUDE_CONFIG_DIR", dir)
+                .env("CLAUDE_SECURESTORAGE_CONFIG_DIR", dir)
                 .env_remove("ANTHROPIC_API_KEY")
                 .env_remove("ANTHROPIC_AUTH_TOKEN")
                 .env_remove("CLAUDE_CODE_OAUTH_TOKEN");
         }
         "codex" => {
-            cmd.env("CODEX_HOME", &dir)
+            cmd.env("CODEX_HOME", dir)
                 .env_remove("OPENAI_API_KEY")
                 .env_remove("CODEX_API_KEY")
                 .env_remove("CODEX_ACCESS_TOKEN");

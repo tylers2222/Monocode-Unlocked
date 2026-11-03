@@ -162,58 +162,7 @@ fn registered_login_child() {
         "a login that is not a link moved"
     );
 
-    let marker = rig
-        .app
-        .path()
-        .app_data_dir()
-        .unwrap()
-        .join("agent-sandbox-on");
-    std::fs::write(&marker, b"").unwrap();
-    stand_in_srt(&rig.root.join("srt"));
-    rig.link("fenced", &target);
-    for id in ["fenced", "plain-fenced"] {
-        rig.spawn(id).unwrap();
-    }
-    let rules = |id: &str, key: &str| {
-        let settings = std::fs::read_to_string(rig.root.join(id).join("srt-settings")).unwrap();
-        let settings: Value =
-            serde_json::from_str(&std::fs::read_to_string(settings).unwrap()).unwrap();
-        settings["filesystem"][key].clone()
-    };
-    let has = |list: &Value, dir: &Path| list.as_array().unwrap().contains(&json!(text(dir)));
-    assert!(
-        has(&rules("fenced", "allowWrite"), &target),
-        "srt keeps the CLI from writing its linked login's folder"
-    );
-    for file in ["settings.json", "config.toml"] {
-        assert!(
-            has(&rules("fenced", "denyWrite"), &target.join(file)),
-            "the CLI may write {file}, which sessions outside srt run"
-        );
-    }
-    assert!(
-        !has(
-            &rules("plain-fenced", "allowWrite"),
-            &rig.folder("plain-fenced")
-        ),
-        "srt lets the CLI write a login folder in the app data"
-    );
-    std::fs::remove_file(marker).unwrap();
-
-    let data = rig.app.path().app_data_dir().unwrap();
-    std::fs::write(data.join("claude-deny-rules-on"), b"").unwrap();
-    let deny =
-        crate::claude_deny::srt_deny(rig.app.handle(), &rig.root.join("fenced"), Some("fenced"))
-            .unwrap();
-    assert!(
-        deny.contains(&text(&target.join("settings.json"))),
-        "Claude Code's deny rules miss the linked login's settings: {deny:?}"
-    );
-    assert!(
-        !deny.iter().any(|entry| Path::new(entry).starts_with(&data)),
-        "Claude Code's deny rules name the link, not the folder its CLI gets: {deny:?}"
-    );
-    std::fs::remove_file(data.join("claude-deny-rules-on")).unwrap();
+    sandbox_rules_follow_the_login(&rig, &target);
 
     let other_app = home.join("apps/com.monocode.second/provider-accounts/claude/x");
     std::fs::create_dir_all(&other_app).unwrap();
@@ -270,8 +219,68 @@ fn registered_login_child() {
     );
 }
 
+/// srt's rules and Claude Code's deny rules for a linked login: its folder
+/// writable but not its hooks or `notify` config, a plain login's folder in
+/// the app data not opened, and Claude Code's rules on the folder its CLI gets.
+fn sandbox_rules_follow_the_login(rig: &Rig, target: &Path) {
+    let marker = rig
+        .app
+        .path()
+        .app_data_dir()
+        .unwrap()
+        .join("agent-sandbox-on");
+    std::fs::write(&marker, b"").unwrap();
+    stand_in_srt(&rig.root.join("srt"));
+    rig.link("fenced", target);
+    for id in ["fenced", "plain-fenced"] {
+        rig.spawn(id).unwrap();
+    }
+    let rules = |id: &str, key: &str| {
+        let settings = std::fs::read_to_string(rig.root.join(id).join("srt-settings")).unwrap();
+        let settings: Value =
+            serde_json::from_str(&std::fs::read_to_string(settings).unwrap()).unwrap();
+        settings["filesystem"][key].clone()
+    };
+    let has = |list: &Value, dir: &Path| list.as_array().unwrap().contains(&json!(text(dir)));
+    assert!(
+        has(&rules("fenced", "allowWrite"), target),
+        "srt keeps the CLI from writing its linked login's folder"
+    );
+    for file in ["settings.json", "config.toml"] {
+        assert!(
+            has(&rules("fenced", "denyWrite"), &target.join(file)),
+            "the CLI may write {file}, which sessions outside srt run"
+        );
+    }
+    assert!(
+        !has(
+            &rules("plain-fenced", "allowWrite"),
+            &rig.folder("plain-fenced")
+        ),
+        "srt lets the CLI write a login folder in the app data"
+    );
+    std::fs::remove_file(marker).unwrap();
+
+    let data = rig.app.path().app_data_dir().unwrap();
+    std::fs::write(data.join("claude-deny-rules-on"), b"").unwrap();
+    let deny =
+        crate::claude_deny::srt_deny(rig.app.handle(), &rig.root.join("fenced"), Some("fenced"))
+            .unwrap();
+    assert!(
+        deny.contains(&text(&target.join("settings.json"))),
+        "Claude Code's deny rules miss the linked login's settings: {deny:?}"
+    );
+    assert!(
+        !deny.iter().any(|entry| Path::new(entry).starts_with(&data)),
+        "Claude Code's deny rules name the link, not the folder its CLI gets: {deny:?}"
+    );
+    std::fs::remove_file(data.join("claude-deny-rules-on")).unwrap();
+}
+
+#[cfg(target_os = "macos")]
 struct Remove(PathBuf);
 
+#[cfg(target_os = "macos")]
 impl Drop for Remove {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
