@@ -798,11 +798,17 @@ fn app_reads_the_spaces(rig: &Rig) {
                 id: "default".into(),
             }),
         };
-        spaces::prepare_spawn(&store, session, Some(Provider::Claude), NOW, target)
-            .unwrap()
-            .account
-            .unwrap()
-            .id
+        spaces::prepare_spawn(
+            &store,
+            spaces::Child::Session(session),
+            Some(Provider::Claude),
+            NOW,
+            target,
+        )
+        .unwrap()
+        .account
+        .unwrap()
+        .id
     };
     assert_eq!(
         spawn("s2-a"),
