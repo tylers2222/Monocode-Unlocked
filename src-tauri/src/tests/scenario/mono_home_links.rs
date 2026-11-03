@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::codex_mono_store::{
-    closed_agent_edges, copy_rollouts_with_edges, restore_agent_edges, AgentEdge,
+    closed_agent_edges, copy_rollouts_with_edges, open_state, restore_agent_edges, AgentEdge,
 };
 
 const ROLLOUT: &str = "rollout-2026-10-08T10-00-00-root.jsonl";
@@ -317,4 +317,93 @@ fn closed_agents_survive_a_linked_folder_above_the_login_and_home() {
         })
         .unwrap();
     assert_eq!(status, "closed");
+}
+
+/// What an agent plants at a database name.
+#[derive(Clone, Copy, Debug)]
+enum Planted {
+    Link,
+    Folder,
+    Fifo,
+}
+
+impl Planted {
+    fn make(self, at: &Path, outside: &Path) {
+        match self {
+            Planted::Link => std::os::unix::fs::symlink(outside, at).unwrap(),
+            Planted::Folder => std::fs::create_dir(at).unwrap(),
+            Planted::Fifo => {
+                let path = std::ffi::CString::new(at.to_str().unwrap()).unwrap();
+                // SAFETY: a NUL-terminated path.
+                assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+            }
+        }
+    }
+}
+
+/// Defect (ADE-225 item 18): a link, folder or FIFO an agent plants as the
+/// highest `state_N.sqlite` is picked. In the login, a link makes the app read
+/// the database it names into the Mono snapshot, which the agent can read; in
+/// the home, every restore for that Mono fails, or one hangs on the FIFO.
+#[test]
+fn closed_agents_skip_a_planted_newer_state_database() {
+    for planted in [Planted::Link, Planted::Folder, Planted::Fifo] {
+        let (send, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let scratch = Scratch::new();
+            let secret = scratch.outside.join("state.sqlite");
+            let leak = "INSERT INTO thread_spawn_edges VALUES ('root', 'secret', 'closed')";
+            rusqlite::Connection::open(&secret)
+                .unwrap()
+                .execute_batch(&format!("{EDGES}; {leak};"))
+                .unwrap();
+            let closed = "INSERT INTO thread_spawn_edges VALUES ('root', 'agent', 'closed')";
+            rusqlite::Connection::open(scratch.source.join("state_5.sqlite"))
+                .unwrap()
+                .execute_batch(&format!("{EDGES}; {closed};"))
+                .unwrap();
+            planted.make(&scratch.source.join("state_99.sqlite"), &secret);
+            let edges = closed_agent_edges(&scratch.source, "root");
+            let children: Vec<String> = edges.unwrap().into_iter().map(|e| e.child).collect();
+            assert_eq!(children, ["agent"], "{planted:?} in the login");
+
+            scratch.copy_into(&scratch.home, &[edge()]).unwrap();
+            let private = rusqlite::Connection::open(scratch.home.join("state_5.sqlite")).unwrap();
+            private.execute_batch(EDGES).unwrap();
+            planted.make(&scratch.home.join("state_99.sqlite"), &secret);
+            restore_agent_edges(&scratch.home, "root").unwrap();
+            let status: String = private
+                .query_row("SELECT status FROM thread_spawn_edges", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(status, "closed", "{planted:?} in the home");
+            send.send(()).unwrap();
+        });
+        done.recv_timeout(Duration::from_secs(20))
+            .unwrap_or_else(|_| panic!("{planted:?}: failed, or blocked on the planted name"));
+    }
+}
+
+/// Defect: a link swapped in at the picked database's name, after the pick,
+/// is followed by the open.
+#[test]
+fn a_state_database_open_refuses_a_link_at_its_name() {
+    let scratch = Scratch::new();
+    let real = scratch.outside.join("state.sqlite");
+    rusqlite::Connection::open(&real)
+        .unwrap()
+        .execute_batch(EDGES)
+        .unwrap();
+    let link = scratch.plant("state_5.sqlite", &real);
+    for access in [
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+    ] {
+        open_state(&real, access).expect("the real database");
+        assert!(
+            open_state(&link, access).is_err(),
+            "{access:?} followed the link"
+        );
+    }
 }

@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use rusqlite::OpenFlags;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, Runtime};
@@ -596,14 +597,18 @@ pub(crate) struct AgentEdge {
 /// The folder of a Mono's agent closure snapshots, `<thread id>.json`.
 const AGENT_STATE: &str = ".monocode-agent-state";
 
+/// The newest regular `state_N.sqlite` in `home`: an agent may write the home
+/// and a linked login, so a link, folder or FIFO it plants is never picked. The
+/// path is under the home's real path, as SQLITE_OPEN_NOFOLLOW refuses a link at
+/// any folder on it (macOS's /var, a linked login or home).
 fn state_db(home: &Path) -> Result<Option<PathBuf>, String> {
-    let entries = match std::fs::read_dir(home) {
-        Ok(entries) => entries,
+    let home = match home.canonicalize() {
+        Ok(home) => home,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.to_string()),
     };
     let mut databases = Vec::new();
-    for entry in entries {
+    for entry in std::fs::read_dir(home).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if let Some(version) = name
@@ -611,7 +616,9 @@ fn state_db(home: &Path) -> Result<Option<PathBuf>, String> {
             .and_then(|n| n.strip_suffix(".sqlite"))
             .and_then(|n| n.parse::<u32>().ok())
         {
-            databases.push((version, entry.path()));
+            if entry.file_type().map_err(|e| e.to_string())?.is_file() {
+                databases.push((version, entry.path()));
+            }
         }
     }
     Ok(databases
@@ -620,17 +627,21 @@ fn state_db(home: &Path) -> Result<Option<PathBuf>, String> {
         .map(|(_, path)| path))
 }
 
+/// The state database `state_db` picked, refusing a link swapped in at its name.
+pub(crate) fn open_state(path: &Path, access: OpenFlags) -> Result<rusqlite::Connection, String> {
+    let flags = access.union(OpenFlags::SQLITE_OPEN_NOFOLLOW);
+    let db = rusqlite::Connection::open_with_flags(path, flags).map_err(|e| e.to_string())?;
+    db.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| e.to_string())?;
+    Ok(db)
+}
+
 pub(crate) fn closed_agent_edges(home: &Path, thread_id: &str) -> Result<Vec<AgentEdge>, String> {
     validate_thread_id(thread_id)?;
     let Some(path) = state_db(home)? else {
         return Ok(Vec::new());
     };
-    // The login's own folder, which a linked login reaches through a link.
-    let db =
-        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|e| e.to_string())?;
-    db.busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(|e| e.to_string())?;
+    let db = open_state(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_spawn_edges')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
     if !exists {
         return Ok(Vec::new());
@@ -658,16 +669,8 @@ pub(crate) fn restore_agent_edges(home: &Path, thread_id: &str) -> Result<(), St
         return Ok(());
     };
     let edges: Vec<AgentEdge> = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    // SQLITE_OPEN_NOFOLLOW refuses a link at any folder on the path (macOS's
-    // /var, a linked home), so the home's real path leaves an agent's link at
-    // the database's name the only one it can meet.
-    let home = home.canonicalize().map_err(|e| e.to_string())?;
-    let path = state_db(&home)?.ok_or("Codex has not initialized the private Mono index")?;
-    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
-        .union(rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW);
-    let mut db = rusqlite::Connection::open_with_flags(path, flags).map_err(|e| e.to_string())?;
-    db.busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(|e| e.to_string())?;
+    let path = state_db(home)?.ok_or("Codex has not initialized the private Mono index")?;
+    let mut db = open_state(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     let tx = db.transaction().map_err(|e| e.to_string())?;
     for edge in edges {
         validate_thread_id(&edge.parent)?;
