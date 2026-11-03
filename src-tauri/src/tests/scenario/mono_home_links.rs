@@ -188,7 +188,11 @@ fn a_copy_makes_a_private_home() {
     let scratch = Scratch::new();
     let home = scratch.root.join("homes/app/login");
     scratch.copy_into(&home, &[]).unwrap();
-    for dir in [scratch.root.join("homes"), home.clone(), home.join("sessions")] {
+    for dir in [
+        scratch.root.join("homes"),
+        home.clone(),
+        home.join("sessions"),
+    ] {
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "{}", dir.display());
     }

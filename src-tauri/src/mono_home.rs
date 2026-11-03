@@ -185,7 +185,9 @@ mod sys {
     use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
 
-    use libc::{O_CLOEXEC, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_NONBLOCK, O_RDONLY, O_WRONLY};
+    use libc::{
+        O_CLOEXEC, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_NONBLOCK, O_RDONLY, O_WRONLY,
+    };
 
     /// A folder, not a link to one.
     const DIR: [libc::c_int; 4] = [O_RDONLY, O_DIRECTORY, O_NOFOLLOW, O_CLOEXEC];
@@ -259,8 +261,7 @@ mod sys {
     pub(super) fn open_file(dir: &OwnedFd, name: &str) -> io::Result<File> {
         let name = c(name.as_bytes())?;
         // SAFETY: as above.
-        owned(unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), flags(&READ)) })
-            .map(File::from)
+        owned(unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), flags(&READ)) }).map(File::from)
     }
 
     pub(super) fn rename(dir: &OwnedFd, from: &str, to: &str) -> io::Result<()> {
@@ -302,7 +303,10 @@ mod tests {
         let read = dir.read("at-cap");
         let over = dir.read("over-cap");
         std::fs::remove_dir_all(&root).unwrap();
-        assert_eq!(read.unwrap().map(|bytes| bytes.len() as u64), Some(READ_CAP));
+        assert_eq!(
+            read.unwrap().map(|bytes| bytes.len() as u64),
+            Some(READ_CAP)
+        );
         assert!(over.unwrap_err().contains("at most"));
     }
 }

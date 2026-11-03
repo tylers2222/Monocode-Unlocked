@@ -563,9 +563,12 @@ pub(crate) fn copy_rollouts_with_edges(
     // Copy descendants first and the root last, so a partial migration is not
     // mistaken for a successfully migrated root on the next connection.
     for (path, [year, month, day], name) in staged.iter().rev() {
-        Dir::create(home, &["sessions", year.as_str(), month.as_str(), day.as_str()])?
-            .copy(name, path)
-            .map_err(|e| format!("Could not retain the full Codex thread: {e}"))?;
+        Dir::create(
+            home,
+            &["sessions", year.as_str(), month.as_str(), day.as_str()],
+        )?
+        .copy(name, path)
+        .map_err(|e| format!("Could not retain the full Codex thread: {e}"))?;
     }
     let snapshot = format!("{thread_id}.json");
     if !edges.is_empty() {
