@@ -14076,6 +14076,8 @@ function Workspace({
                   onOpenWhatsNew={onOpenWhatsNew}
                   collapsedProjectRailMode={collapsedProjectRailMode}
                   onCollapsedProjectRailModeChange={setCollapsedProjectRailMode}
+                  monoStates={monoRail.states}
+                  monoUnseenCounts={monoRail.unseen}
                 />
               ) : null}
               {searchViewOpen ||

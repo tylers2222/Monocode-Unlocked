@@ -659,6 +659,7 @@ describe("settings navigation", () => {
       "connections",
       "appearance",
       "keybindings",
+      "spaces",
       "chat",
       "providers",
       "mcp",
@@ -708,6 +709,43 @@ describe("settings search", () => {
       section: "chat",
       settingId: "format-on-save",
       label: "Format on save",
+    });
+  });
+
+  it("finds the Spaces page, its list and the usage-limit default", () => {
+    expect(searchSettings("spaces")).toEqual([
+      {
+        section: "spaces",
+        sectionLabel: "Spaces",
+        settingId: "spaces-list",
+        label: "Spaces",
+      },
+      {
+        section: "spaces",
+        sectionLabel: "Spaces",
+        settingId: null,
+        label: "Spaces",
+      },
+    ]);
+    expect(searchSettings("new space")).toEqual([
+      {
+        section: "spaces",
+        sectionLabel: "Spaces",
+        settingId: "spaces-list",
+        label: "Spaces",
+      },
+    ]);
+    expect(searchSettings("runs out")).toEqual([
+      {
+        section: "spaces",
+        sectionLabel: "Spaces",
+        settingId: "route-grant-default",
+        label: "Use the other login for",
+      },
+    ]);
+    expect(searchSettings("several spaces")[0]).toMatchObject({
+      section: "spaces",
+      settingId: null,
     });
   });
 

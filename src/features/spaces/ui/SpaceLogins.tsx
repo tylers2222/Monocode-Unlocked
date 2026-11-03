@@ -17,7 +17,7 @@ import {
   type SpaceLoginProvider,
 } from "../model/spaces";
 
-const PROVIDER_NAME: Record<SpaceLoginProvider, string> = {
+export const PROVIDER_NAME: Record<SpaceLoginProvider, string> = {
   claude: "Claude",
   codex: "Codex",
 };

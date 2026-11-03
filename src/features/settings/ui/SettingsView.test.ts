@@ -7,6 +7,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { SettingsView } from "./SettingsView";
 import { rememberNotificationProjects } from "../../notifications/model/notificationProjects";
 import {
+  loadRouteGrantDefault,
   SETTINGS_INDEX,
   SETTINGS_SECTIONS,
   type SettingsSectionId,
@@ -27,9 +28,12 @@ import { saveMaskEmails, saveShowRemainingUsage } from "../model/displayPrefs";
 import {
   createMono,
   findMono,
+  MONO_COLORS,
   monoLook,
   updateMono,
 } from "../../monos/model/mono";
+import { __spacesTestReset } from "../../spaces/model/activeSpace";
+import { loginHarness } from "../../../integrations/harness/core/auth";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async () => undefined),
@@ -43,6 +47,12 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(async () => true) }));
+vi.mock("../../../integrations/harness/core/auth", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../../integrations/harness/core/auth")
+  >()),
+  loginHarness: vi.fn(async () => {}),
+}));
 vi.mock("../../../integrations/harness/core/availability", () => ({
   isHarnessAvailable: (id: string) => id === "claude" || id === "cursor",
   hasProbedHarnessAvailability: () => true,
@@ -107,6 +117,7 @@ beforeEach(() => {
   root = createRoot(container);
   onSelectSection = vi.fn();
   vi.mocked(invoke).mockReset().mockResolvedValue(undefined);
+  __spacesTestReset();
 });
 
 afterEach(async () => {
@@ -740,6 +751,76 @@ describe("settings pages", () => {
     document.documentElement.style.removeProperty("zoom");
   });
 
+  // Frames 3 and 5 (ADE-170): the default the usage-limit card starts on.
+  it("sets the usage-limit card's default time on the Spaces page", async () => {
+    await render("spaces");
+    expect(container.querySelector("h1")?.textContent).toBe("Spaces");
+    const text = container.textContent ?? "";
+    for (const line of [
+      "One window, several Spaces. Each one is like a separate copy of MonoCode.",
+      "Each Space has its own logins, Gigas, Monos, projects and sessions. Every Space keeps running while you look at another one.",
+      "New Space",
+      "When a login runs out",
+      "Use the other login for",
+      "Default time for the usage-limit card. When a login hits its limit, the card starts on this time; you can pick another one there. After that time the session stops and asks again.",
+      "Between Spaces",
+      "Messages",
+      "A regular Mono can message a regular Mono in another Space. Gigas, sessions, asks and steers stay in their own Space.",
+      "Regular Monos only",
+      "Same project",
+      "Automatic",
+    ]) {
+      expect(text).toContain(line);
+    }
+    expect(text).toContain(
+      "the second Space works in its own worktree (monocode-worktrees/space-2/…) on space-2/ branches.",
+    );
+
+    const row = container.querySelector(
+      '[data-setting-id="route-grant-default"]',
+    )!;
+    const trigger = row.querySelector<HTMLButtonElement>(
+      '[aria-haspopup="listbox"]',
+    )!;
+    expect(trigger.getAttribute("aria-label")).toBe(
+      "Use the other login for: 6 hours",
+    );
+
+    await act(async () => trigger.click());
+    const options = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    );
+    expect(options.map((node) => node.textContent)).toEqual([
+      "1 hour",
+      "3 hours",
+      "6 hoursdefault",
+      "12 hours",
+      "24 hours",
+      "Until the limit resets",
+    ]);
+    // Label only; 6 hours adds the "default" hint and the check.
+    expect(options.map((node) => node.childElementCount)).toEqual([
+      1, 1, 3, 1, 1, 1,
+    ]);
+    await act(async () => options[5]!.click());
+
+    expect(loadRouteGrantDefault()).toBe("reset");
+    expect(trigger.getAttribute("aria-label")).toBe(
+      "Use the other login for: Until the limit resets",
+    );
+
+    // A fresh mount reads the saved choice back.
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render("spaces");
+    expect(
+      container
+        .querySelector('[data-setting-id="route-grant-default"]')!
+        .querySelector('[aria-haspopup="listbox"]')!
+        .getAttribute("aria-label"),
+    ).toBe("Use the other login for: Until the limit resets");
+  });
+
   it("reports collapsed project rail changes to the app shell", async () => {
     const onCollapsedProjectRailModeChange = vi.fn();
     await render("appearance", {
@@ -841,6 +922,315 @@ describe("settings pages", () => {
         ).toBe(true);
       }
     }
+  });
+});
+
+// Frame 12 (ADE-170 card #47): Edit Space from a Space row's pencil.
+describe("Settings > Spaces: Edit Space", () => {
+  const VIOLET = MONO_COLORS[5];
+  const IDENTITIES: Record<string, { email: string; plan: string }> = {
+    "claude:default": { email: "tyler.main@example.com", plan: "Max 20x" },
+    "claude:account-second": { email: "second.ts@example.com", plan: "Max 5x" },
+    "claude:account-studio": { email: "studio.ts@example.com", plan: "Max 5x" },
+    "codex:account-dev": {
+      email: "tyler.dev@example.com",
+      plan: "ChatGPT Pro",
+    },
+  };
+
+  beforeEach(() => {
+    // Frame 12 draws the emails; masking is the default.
+    saveMaskEmails(false);
+    saveProviderAccount({
+      id: "account-second",
+      provider: "claude",
+      label: "Claude account 2",
+    });
+    saveProviderAccount({
+      id: "account-studio",
+      provider: "claude",
+      label: "Studio",
+    });
+    saveProviderAccount({ id: "account-dev", provider: "codex", label: "Dev" });
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      const input = args as Record<string, string>;
+      switch (command) {
+        case "spaces_list":
+          return [
+            { id: "space-1", name: "Space 1", color: null, createdAt: 1 },
+            { id: "space-2", name: "Space 2", color: VIOLET, createdAt: 2 },
+          ];
+        case "spaces_settings_get":
+          return { activeSpaceId: "space-1", routeGrantTtlMs: 21_600_000 };
+        case "spaces_logins_list":
+          return [
+            { spaceId: "space-1", provider: "claude", accountId: "default" },
+            { spaceId: "space-1", provider: "codex", accountId: "account-dev" },
+            {
+              spaceId: "space-2",
+              provider: "claude",
+              accountId: "account-studio",
+            },
+          ];
+        case "provider_account_identity":
+          return IDENTITIES[`${input.provider}:${input.accountId}`] ?? null;
+        default:
+          return undefined;
+      }
+    });
+  });
+
+  const dialog = () => document.querySelector<HTMLElement>('[role="dialog"]')!;
+  const buttonIn = (scope: ParentNode, text: string) =>
+    Array.from(scope.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === text,
+    )!;
+  const picker = (provider: string) =>
+    dialog()
+      .querySelector(`[data-space-login-row="${provider}"]`)!
+      .querySelector<HTMLButtonElement>('[aria-haspopup="listbox"]')!;
+  const writes = () =>
+    vi
+      .mocked(invoke)
+      .mock.calls.filter(
+        ([command]) =>
+          command === "spaces_update" || command === "spaces_login_set",
+      );
+
+  async function openEdit(spaceId: string) {
+    await render("spaces");
+    await act(async () => {});
+    await act(async () =>
+      container
+        .querySelector(`[data-space-id="${spaceId}"]`)!
+        .querySelector("button")!
+        .click(),
+    );
+    await act(async () => {});
+  }
+
+  async function pick(provider: string, label: string) {
+    await act(async () => picker(provider).click());
+    const options = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    );
+    await act(async () =>
+      options.find((option) => option.textContent?.startsWith(label))!.click(),
+    );
+  }
+
+  it("renames, recolours and picks each login for that Space only", async () => {
+    await openEdit("space-2");
+    expect(dialog().textContent).toContain("Edit Space");
+    expect(
+      dialog().querySelector<HTMLInputElement>(
+        'input[aria-label="Space name"]',
+      )!.value,
+    ).toBe("Space 2");
+    expect(
+      dialog()
+        .querySelector('[aria-label="Purple"]')!
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(dialog().textContent).toContain(
+      "One per provider. New sessions in Space 2 sign in with these.",
+    );
+
+    // Claude: Space 2's login, shown with its email; every Claude login to
+    // pick from, each with email and plan. It has a login, so no "No login".
+    expect(picker("claude").getAttribute("aria-label")).toBe(
+      "Claude login: Studio",
+    );
+    expect(picker("claude").textContent).toBe("Studio · studio.ts@example.com");
+    await act(async () => picker("claude").click());
+    expect(
+      Array.from(
+        document.querySelectorAll('[role="option"]'),
+        (option) => option.textContent,
+      ),
+    ).toEqual([
+      "Default accounttyler.main@example.com · Max 20x",
+      "Claude account 2second.ts@example.com · Max 5x",
+      "Studiostudio.ts@example.com · Max 5x",
+    ]);
+    await act(async () => picker("claude").click());
+
+    // Codex: none yet, muted, and "No Codex login" is a choice.
+    expect(picker("codex").getAttribute("aria-label")).toBe(
+      "Codex login: No Codex login",
+    );
+    expect(picker("codex").querySelector(".text-content\\/45")).not.toBeNull();
+    await act(async () => picker("codex").click());
+    expect(
+      Array.from(
+        document.querySelectorAll('[role="option"]'),
+        (option) => option.textContent,
+      ),
+    ).toEqual([
+      "Default account",
+      "Devtyler.dev@example.com · ChatGPT Pro",
+      "No Codex loginSessions in this Space cannot use Codex",
+    ]);
+    await act(async () => picker("codex").click());
+
+    await pick("claude", "Claude account 2");
+    await pick("codex", "Dev");
+    const name = dialog().querySelector<HTMLInputElement>(
+      'input[aria-label="Space name"]',
+    )!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!.call(name, "  Studio space  ");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () =>
+      dialog().querySelector<HTMLButtonElement>('[aria-label="Teal"]')!.click(),
+    );
+    await act(async () => buttonIn(dialog(), "Save").click());
+
+    expect(writes()).toEqual([
+      [
+        "spaces_update",
+        { id: "space-2", name: "Studio space", color: MONO_COLORS[6] },
+      ],
+      [
+        "spaces_login_set",
+        {
+          login: {
+            spaceId: "space-2",
+            provider: "claude",
+            accountId: "account-second",
+          },
+        },
+      ],
+      [
+        "spaces_login_set",
+        {
+          login: {
+            spaceId: "space-2",
+            provider: "codex",
+            accountId: "account-dev",
+          },
+        },
+      ],
+    ]);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("leaves emails out of the picker while they are masked", async () => {
+    saveMaskEmails(true);
+    await openEdit("space-2");
+    expect(picker("claude").textContent).toBe("Studio");
+    await act(async () => picker("claude").click());
+    expect(
+      Array.from(
+        document.querySelectorAll('[role="option"]'),
+        (option) => option.textContent,
+      ),
+    ).toEqual([
+      "Default accountMax 20x",
+      "Claude account 2Max 5x",
+      "StudioMax 5x",
+    ]);
+  });
+
+  it("saves only the name and colour when no login changed", async () => {
+    await openEdit("space-1");
+    // Space 1 predates colours: it opens on the first one.
+    expect(
+      dialog()
+        .querySelector('[aria-label="Blue"]')!
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+    await act(async () => buttonIn(dialog(), "Save").click());
+    expect(writes()).toEqual([
+      [
+        "spaces_update",
+        { id: "space-1", name: "Space 1", color: MONO_COLORS[0] },
+      ],
+    ]);
+  });
+
+  it("keeps the dialog open with the error when a save is refused", async () => {
+    const answer = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "spaces_update") throw "database is locked";
+      return answer(command, args);
+    });
+    await openEdit("space-2");
+    await act(async () => buttonIn(dialog(), "Save").click());
+    expect(dialog().querySelector('[role="alert"]')?.textContent).toBe(
+      "database is locked",
+    );
+    await act(async () => buttonIn(dialog(), "Cancel").click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("adds a login with Providers' sign-in and picks it for the Space", async () => {
+    await openEdit("space-2");
+    const codexRow = () =>
+      dialog().querySelector('[data-space-login-row="codex"]')!;
+    await act(async () => buttonIn(codexRow(), "Add a login").click());
+
+    expect(buttonIn(codexRow(), "Add a login")).toBeUndefined();
+    expect(codexRow().textContent).toContain(
+      "Same sign-in as Settings › Providers › Add account. When it finishes, the new login is saved there and picked here for this Space.",
+    );
+    const label = codexRow().querySelector<HTMLInputElement>(
+      'input[aria-label="New Codex account"]',
+    )!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!.call(label, "Studio Codex");
+      label.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => buttonIn(codexRow(), "Sign in and add").click());
+
+    const added = providerAccounts("codex").find(
+      (account) => account.label === "Studio Codex",
+    )!;
+    expect(loginHarness).toHaveBeenCalledWith("codex", added.id);
+    expect(picker("codex").getAttribute("aria-label")).toBe(
+      "Codex login: Studio Codex",
+    );
+    expect(buttonIn(codexRow(), "Add a login")).toBeDefined();
+    // Picked, not saved, until Save.
+    expect(writes()).toEqual([]);
+
+    await act(async () => buttonIn(dialog(), "Save").click());
+    expect(writes()[1]).toEqual([
+      "spaces_login_set",
+      { login: { spaceId: "space-2", provider: "codex", accountId: added.id } },
+    ]);
+  });
+
+  it("shows a failed sign-in under the editor", async () => {
+    vi.mocked(loginHarness).mockRejectedValueOnce(new Error("Browser closed"));
+    await openEdit("space-2");
+    const claudeRow = () =>
+      dialog().querySelector('[data-space-login-row="claude"]')!;
+    await act(async () => buttonIn(claudeRow(), "Add a login").click());
+    const label = claudeRow().querySelector<HTMLInputElement>(
+      'input[aria-label="New Claude Code account"]',
+    )!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!.call(label, "Work");
+      label.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => buttonIn(claudeRow(), "Sign in and add").click());
+    expect(claudeRow().querySelector('[role="alert"]')?.textContent).toBe(
+      "Browser closed",
+    );
+    expect(picker("claude").getAttribute("aria-label")).toBe(
+      "Claude login: Studio",
+    );
   });
 });
 
