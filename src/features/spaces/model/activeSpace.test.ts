@@ -92,10 +92,10 @@ async function settle() {
 }
 
 describe("the active Space model", () => {
-  it("shows Space 1's rows until the first read, then only the active Space's", async () => {
+  it("shows every row until a read succeeds, then only the active Space's", async () => {
     db.active = "space-2";
     expect(inActiveSpace("space-1")).toBe(true);
-    expect(inActiveSpace("space-2")).toBe(false);
+    expect(inActiveSpace("space-2")).toBe(true);
     const listener = vi.fn();
     const stop = subscribeSpaces(listener);
     await settle();
@@ -129,7 +129,7 @@ describe("the active Space model", () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
-  it("logs a failed read, keeps Space 1 shown, and reads again for the next subscriber", async () => {
+  it("logs a failed read, hides no row, and reads again for the next subscriber", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     db.failList = true;
     const stop = subscribeSpaces(() => {});
@@ -145,7 +145,7 @@ describe("the active Space model", () => {
       logins: [],
     });
     expect(inActiveSpace("space-1")).toBe(true);
-    expect(inActiveSpace("space-2")).toBe(false);
+    expect(inActiveSpace("space-2")).toBe(true);
 
     db.failList = false;
     const retry = subscribeSpaces(() => {});

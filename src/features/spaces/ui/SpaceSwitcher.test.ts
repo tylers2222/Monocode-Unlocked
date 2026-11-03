@@ -299,6 +299,8 @@ describe("SpaceSwitcher", () => {
     await settle();
 
     expect(trigger().getAttribute("aria-expanded")).toBe("true");
+    // Frame 2 draws no dot on the open switcher; the rows carry the news.
+    expect(container.querySelector("[data-space-news]")).toBeNull();
     expect(trigger().className).toContain("shadow-sm bg-selection");
     expect(menu()!.className).toContain("p-1");
     const header = [...menu()!.querySelectorAll("div")].find(
@@ -368,9 +370,10 @@ describe("SpaceSwitcher", () => {
     await settle();
 
     expect(menu()).toBeNull();
-    expect(commands().filter((command) => command.startsWith("spaces_"))).toEqual([
-      "spaces_settings_set",
-    ]);
+    // Nothing but the saved Space goes out: no stop, no kill, no other write.
+    expect(
+      commands().filter((command) => command !== "provider_account_identity"),
+    ).toEqual(["spaces_settings_set"]);
     expect(trigger().getAttribute("aria-label")).toBe("Space: Space 2");
     expect(line(trigger(), "claude").textContent).toBe("studio@example.com");
     expect(line(trigger(), "codex").textContent).toBe("No Codex login");
@@ -410,13 +413,17 @@ describe("SpaceSwitcher", () => {
   });
 
   it("closes on Escape, and the trigger toggles it", async () => {
-    await renderSwitcher();
+    const replied = monoIn("space-2");
+    await renderSwitcher({ unseenCounts: new Map([[replied, 1]]) });
+    expect(container.querySelector("[data-space-news]")).not.toBeNull();
     await act(async () => trigger().click());
     expect(menu()).not.toBeNull();
     await act(async () =>
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
     );
     expect(menu()).toBeNull();
+    // Closed again, the dot is back.
+    expect(container.querySelector("[data-space-news]")).not.toBeNull();
     await act(async () => trigger().click());
     await act(async () => trigger().click());
     expect(menu()).toBeNull();

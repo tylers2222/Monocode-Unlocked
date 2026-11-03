@@ -172,6 +172,8 @@ fn each_listed_row_carries_its_saved_space() {
         failed.push(format!("5 lists after a restart: {:?}", listed(&app, &ids)));
     }
 
+    drop(app);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     assert!(
         failed.is_empty(),
         "space rows checkpoints failed:\n{}",

@@ -110,14 +110,17 @@ export async function switchSpace(id: string): Promise<void> {
 
 /**
  * Whether a row in Space `spaceId` shows in the window. A row the database
- * has not saved yet joins the active Space. Until a read succeeds the active
- * Space is Space 1, where every row from before Spaces is.
+ * has not saved yet joins the active Space. The boot reads the Spaces before
+ * the first render; if that read failed, every row shows, so no work is ever
+ * hidden.
  */
 export function inActiveSpace(
   spaceId: string | undefined,
-  spaces: Pick<SpacesView, "activeSpaceId"> = view,
+  spaces: Pick<SpacesView, "loaded" | "activeSpaceId"> = view,
 ): boolean {
-  return spaceId === undefined || spaceId === spaces.activeSpaceId;
+  return (
+    !spaces.loaded || spaceId === undefined || spaceId === spaces.activeSpaceId
+  );
 }
 
 /**
@@ -165,7 +168,8 @@ const QUIET: SpaceActivity = { working: 0, needsYou: 0, unread: 0 };
 /**
  * Each Space's activity, from the Monos' states and unseen reply counts. It
  * counts Monos only, as frame 2 does ("1 Mono working and 2 new replies"):
- * the window holds no sessions of another Space's projects to count.
+ * the window's open sessions carry no Space to count them by. A session's
+ * reply in another Space reaches the Inbox instead.
  */
 export function spaceActivity(
   monos: readonly Mono[],

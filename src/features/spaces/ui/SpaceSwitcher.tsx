@@ -54,7 +54,8 @@ export function SpaceSwitcher({
   const active = view.spaces.find((space) => space.id === view.activeSpaceId);
   if (!active) return null;
 
-  const news = otherSpaceHasNews(activity, active.id);
+  // Frame 2: the open menu shows the news itself, so the dot is closed-only.
+  const news = !open && otherSpaceHasNews(activity, active.id);
   return (
     <div className="shrink-0 px-2 pb-2" data-space-switcher>
       <button
