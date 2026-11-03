@@ -1,0 +1,40 @@
+name: cancel-closed-pr-runs
+
+# A merged or closed pull request keeps its queued and running CI runs, so runners
+# keep working on dead code. This cancels them. It uses pull_request (gate/integrity
+# allows pull_request_target in gate-integrity.yml only), never checks out code, and
+# passes the head branch to the shell through env only.
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  actions: write
+
+jobs:
+  cancel:
+    # A fork's token is read-only, and a fork's runs live under its own branch names.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR: ${{ github.event.pull_request.number }}
+          SELF: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # pull_request runs of this head branch only, not push runs. A run whose
+          # pull_requests names only other PRs (one branch, two bases) is kept.
+          for status in queued in_progress waiting pending requested; do
+            gh api -X GET "repos/$REPO/actions/runs" -f branch="$HEAD_REF" -f event=pull_request \
+              -f status="$status" -F per_page=100 --paginate \
+              --jq ".workflow_runs[] | select(.id != $SELF)
+                | select((.pull_requests | length) == 0 or any(.pull_requests[]; .number == $PR)) | .id"
+          done | sort -u | while read -r id; do
+            # A run can finish between the list and the cancel; that is not an error.
+            gh api -X POST "repos/$REPO/actions/runs/$id/cancel" >/dev/null && echo "cancelled $id" \
+              || echo "::warning::run $id was not cancelled"
+          done
