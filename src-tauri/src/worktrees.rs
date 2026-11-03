@@ -261,6 +261,33 @@ pub(crate) fn checkout_spot(path: &Path) -> Option<CheckoutSpot> {
     })
 }
 
+/// The same place in the main checkout for `folder` in one of its linked
+/// work copies (git names it with symlinks resolved). `None` for a folder in
+/// a main checkout, which stands for itself in its caller's spelling, outside
+/// git, or in a submodule.
+pub(crate) fn main_checkout_folder(folder: &Path) -> Option<PathBuf> {
+    let dirs = git(
+        folder,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+        ],
+    )
+    .ok()?;
+    let mut dirs = dirs.lines();
+    if dirs.next()? == dirs.next()? {
+        return None;
+    }
+    let spot = checkout_spot(folder).filter(|spot| !spot.submodule)?;
+    let main = list(&spot.top)
+        .ok()?
+        .into_iter()
+        .find(|tree| tree.is_main)?;
+    Some(PathBuf::from(main.path).join(spot.inside))
+}
+
 /// Space `space_id`'s own copy of the checkout at `root` for `session_id`:
 /// `<project>-worktrees/<space>/<session>` on branch `<space>/<session>`,
 /// made from `root`'s HEAD the first time and reused after.

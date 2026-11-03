@@ -621,10 +621,12 @@ thread_local! {
 }
 
 /// The one Spaces step on every harness child (`harness_spawn`,
-/// `harness_exec`): the Space's login, then any usage-limit grant on it, then
-/// the checkout lease. The owner a helper names is the window's word: only a
-/// stored session's Space counts, and the lease claim is the one place that
-/// checks it.
+/// `harness_exec`). The login is the session's own (a live usage-limit
+/// grant's included), else its project's own login in its Space, else its
+/// Space's (`account::resolve`); then the grant check (`grants::route`); then
+/// the checkout lease (`leases::claim`). The owner a helper names is the
+/// window's word: only a stored session's Space counts, and the lease claim
+/// is the one place that checks it.
 pub(crate) fn prepare_spawn(
     store: &SessionStore,
     child: Child<'_>,
