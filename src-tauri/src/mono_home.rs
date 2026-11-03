@@ -239,7 +239,7 @@ mod sys {
             )
         });
         match found {
-            Ok(()) => Ok(stat.st_mode & libc::S_IFMT == libc::S_IFLNK),
+            Ok(()) => Ok((stat.st_mode & libc::S_IFMT) == libc::S_IFLNK),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(e) => Err(e),
         }
