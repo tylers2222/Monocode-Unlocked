@@ -24,16 +24,18 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, Runtime};
 
+use crate::harness::LoginDir;
+
 const ON_MARKER: &str = "claude-deny-rules-on";
 
 pub(crate) fn args<R: Runtime>(
     app: &AppHandle<R>,
     workdir: &Path,
-    account_id: Option<&str>,
+    login: Option<&LoginDir>,
     in_srt: bool,
     args: Vec<String>,
 ) -> Result<Vec<String>, String> {
-    let (data, config_dir, home) = child_env(app, account_id)?;
+    let (data, config_dir, home) = child_env(app, login)?;
     args_in(&data, config_dir.as_deref(), &home, workdir, in_srt, args)
 }
 
@@ -42,18 +44,18 @@ pub(crate) fn args<R: Runtime>(
 pub(crate) fn srt_deny<R: Runtime>(
     app: &AppHandle<R>,
     workdir: &Path,
-    account_id: Option<&str>,
+    login: Option<&LoginDir>,
 ) -> Result<Vec<String>, String> {
-    let (data, config_dir, home) = child_env(app, account_id)?;
+    let (data, config_dir, home) = child_env(app, login)?;
     srt_deny_in(&data, config_dir.as_deref(), &home, workdir)
 }
 
 /// The app data folder, the config folder the child loads (`None`:
-/// `$HOME/.claude`), and its HOME. `account_id` is the spawn's Claude account
-/// other than the default one.
+/// `$HOME/.claude`), and its HOME. `login` is the spawn's, resolved once by
+/// `harness_spawn`.
 fn child_env<R: Runtime>(
     app: &AppHandle<R>,
-    account_id: Option<&str>,
+    login: Option<&LoginDir>,
 ) -> Result<(PathBuf, Option<OsString>, PathBuf), String> {
     let data = app
         .path()
@@ -65,9 +67,9 @@ fn child_env<R: Runtime>(
         .or_else(|| crate::passwd_identity().map(|id| id.home.into()))
         .unwrap_or_default();
     // The folder `apply_provider_account` gives the child: a linked login's target.
-    let config = match account_id {
-        Some(id) => crate::harness::provider_account_dir(app, "claude", Some(id))?.map(Into::into),
-        None => std::env::var_os("CLAUDE_CONFIG_DIR"),
+    let config = match login {
+        Some(LoginDir::Claude(dir)) => Some(dir.into()),
+        _ => std::env::var_os("CLAUDE_CONFIG_DIR"),
     };
     Ok((data, config, home))
 }

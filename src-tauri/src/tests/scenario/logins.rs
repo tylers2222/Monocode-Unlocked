@@ -263,10 +263,13 @@ fn sandbox_rules_follow_the_login(rig: &Rig, target: &Path) {
 
     let data = rig.app.path().app_data_dir().unwrap();
     std::fs::write(data.join("claude-deny-rules-on"), b"").unwrap();
+    let account =
+        serde_json::from_value(json!({ "provider": "claude", "id": "sandboxed" })).unwrap();
+    let login = crate::harness::LoginDir::of(rig.app.handle(), Some(&account)).unwrap();
     let deny = crate::claude_deny::srt_deny(
         rig.app.handle(),
         &rig.root.join("sandboxed"),
-        Some("sandboxed"),
+        login.as_ref(),
     )
     .unwrap();
     assert!(

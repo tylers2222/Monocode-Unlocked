@@ -1015,18 +1015,10 @@ pub fn harness_spawn<R: Runtime>(
             workdir.display()
         ));
     }
-    // `apply_provider_account` gives a Claude account's child its own config folder.
-    let account_id = account
-        .as_ref()
-        .filter(|account| account.provider == "claude" && account.id != DEFAULT_PROVIDER_ACCOUNT_ID)
-        .map(|account| account.id.as_str());
+    let login = LoginDir::of(&app, account.as_ref())?;
     let srt_deny = match binary_provider.as_deref() {
-        Some("claude") => crate::claude_deny::srt_deny(&app, &workdir, account_id)?,
+        Some("claude") => crate::claude_deny::srt_deny(&app, &workdir, login.as_ref())?,
         _ => Vec::new(),
-    };
-    let account_dir = match &account {
-        Some(account) => provider_account_dir(&app, &account.provider, Some(&account.id))?,
-        None => None,
     };
     let codex_store = match codex_store.as_deref() {
         None => None,
@@ -1045,13 +1037,15 @@ pub fn harness_spawn<R: Runtime>(
         }
     };
     let homes = crate::agent_sandbox::Homes {
-        account: account_dir.as_deref(),
+        account: login.as_ref().map(LoginDir::path),
         codex: codex_store.as_ref().map(|store| store.home.as_path()),
     };
     let crate::agent_sandbox::Spawn { mut cmd, sandboxed } =
         crate::agent_sandbox::command(&app, &command, &srt_deny, homes)?;
     let args = match binary_provider.as_deref() {
-        Some("claude") => crate::claude_deny::args(&app, &workdir, account_id, sandboxed, args)?,
+        Some("claude") => {
+            crate::claude_deny::args(&app, &workdir, login.as_ref(), sandboxed, args)?
+        }
         _ => args,
     };
 
@@ -1086,7 +1080,7 @@ pub fn harness_spawn<R: Runtime>(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     prepare_child(&mut cmd, &command);
-    apply_provider_account(&mut cmd, account.as_ref(), account_dir.as_deref());
+    apply_provider_account(&mut cmd, login.as_ref());
     if let Some(store) = &codex_store {
         let private_path = serde_json::to_string(&store.home).map_err(|e| e.to_string())?;
         // Explicit config takes precedence over CODEX_SQLITE_HOME. Override
@@ -1300,13 +1294,41 @@ pub fn provider_account_remove<R: Runtime>(
     })
 }
 
-/// `dir` is `provider_account_dir` for `account`.
-fn apply_provider_account(cmd: &mut Command, account: Option<&HarnessAccount>, dir: Option<&Path>) {
-    let (Some(account), Some(dir)) = (account, dir) else {
-        return;
-    };
-    match account.provider.as_str() {
-        "claude" => {
+/// A spawn's login folder, `provider_account_dir` of its account, with the CLI
+/// it is for. Built only from the account, so the two always match.
+pub(crate) enum LoginDir {
+    Claude(PathBuf),
+    Codex(PathBuf),
+}
+
+impl LoginDir {
+    /// `None` for no account, or the default login.
+    pub(crate) fn of<R: Runtime>(
+        app: &AppHandle<R>,
+        account: Option<&HarnessAccount>,
+    ) -> Result<Option<Self>, String> {
+        let Some(account) = account else {
+            return Ok(None);
+        };
+        let dir = provider_account_dir(app, &account.provider, Some(&account.id))?;
+        Ok(dir.map(|dir| match account.provider.as_str() {
+            "claude" => Self::Claude(dir),
+            "codex" => Self::Codex(dir),
+            _ => unreachable!("provider_account_dir validates the provider"),
+        }))
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        match self {
+            Self::Claude(dir) | Self::Codex(dir) => dir,
+        }
+    }
+}
+
+fn apply_provider_account(cmd: &mut Command, login: Option<&LoginDir>) {
+    match login {
+        None => {}
+        Some(LoginDir::Claude(dir)) => {
             // Claude scopes both its ordinary config and its macOS Keychain
             // credential to these exact strings. Setting both keeps profiles
             // isolated on every supported platform.
@@ -1316,13 +1338,12 @@ fn apply_provider_account(cmd: &mut Command, account: Option<&HarnessAccount>, d
                 .env_remove("ANTHROPIC_AUTH_TOKEN")
                 .env_remove("CLAUDE_CODE_OAUTH_TOKEN");
         }
-        "codex" => {
+        Some(LoginDir::Codex(dir)) => {
             cmd.env("CODEX_HOME", dir)
                 .env_remove("OPENAI_API_KEY")
                 .env_remove("CODEX_API_KEY")
                 .env_remove("CODEX_ACCESS_TOKEN");
         }
-        _ => unreachable!("provider_account_dir validates the provider"),
     }
 }
 
