@@ -1,4 +1,10 @@
-import { useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
+import {
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+  type FormEvent,
+} from "react";
 import { Layers, Loader, Pencil, Plus } from "../../../shared/ui/icons";
 import { Modal } from "../../../shared/ui/Modal";
 import { countBadge } from "../../../shared/lib/numbers";
@@ -22,6 +28,15 @@ import { SpaceLogins } from "./SpaceLogins";
 /** A Space's colour; Space 1 predates colours and reads as the first one. */
 export function spaceColor(space: Pick<Space, "color">): string {
   return space.color ?? MONO_COLORS[0];
+}
+
+/** Frame 13's tile: the colour at 16% fill, a 32% ring, the icon in full. */
+export function spaceTileStyle(color: string): CSSProperties {
+  return {
+    color,
+    background: `color-mix(in srgb, ${color} 16%, transparent)`,
+    boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 32%, transparent)`,
+  };
 }
 
 /** The "New Space" button beside the Spaces group title. */
@@ -92,15 +107,10 @@ function SpaceListRow({
       data-space-id={space.id}
       className="flex items-center gap-4 border-b border-content/5 px-4 py-3.5 last:border-b-0"
     >
-      {/* Frame 13: the colour at 16% fill, a 32% ring, the icon in full. */}
       <span
         data-space-color={color}
         className="grid size-7 shrink-0 place-items-center rounded-lg"
-        style={{
-          color,
-          background: `color-mix(in srgb, ${color} 16%, transparent)`,
-          boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 32%, transparent)`,
-        }}
+        style={spaceTileStyle(color)}
       >
         <Layers className="size-4" strokeWidth={1.75} />
       </span>
@@ -170,13 +180,15 @@ export function NewSpaceDialog({
   return (
     <Modal
       title="New Space"
-      description="A Space has its own logins, Gigas, Monos, projects and sessions."
       size="sm"
       onClose={() => {
         if (!busy) onCancel();
       }}
     >
       <form className="flex flex-col gap-4 p-4" onSubmit={submit}>
+        <p className="text-[12px] text-content/55">
+          A Space has its own logins, Gigas, Monos, projects and sessions.
+        </p>
         <SpaceNameField value={name} disabled={busy} onChange={setName} />
         <SpaceColorField value={color} onChange={setColor} />
         <p className="text-[11px] leading-relaxed text-content/45">

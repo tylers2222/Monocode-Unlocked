@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { MONO_COLORS } from "../../monos/model/mono";
 import { __spacesTestReset } from "../model/activeSpace";
 import type { Space } from "../model/spaces";
-import { NewSpaceDialog, SpacesList } from "./SpacesSettings";
+import { NewSpaceDialog, SpacesList, spaceTileStyle } from "./SpacesSettings";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -152,8 +152,11 @@ describe("Settings > Spaces list (frames 3, 13, 14)", () => {
       row(spaceId).querySelector<HTMLElement>("[data-space-color]")!;
     expect(tile("space-1").dataset.spaceColor).toBe(MONO_COLORS[0]);
     expect(tile("space-2").dataset.spaceColor).toBe(VIOLET);
-    expect(tile("space-2").style.background).toContain("16%");
-    expect(tile("space-2").style.boxShadow).toContain("32%");
+    expect(spaceTileStyle(VIOLET)).toEqual({
+      color: VIOLET,
+      background: `color-mix(in srgb, ${VIOLET} 16%, transparent)`,
+      boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${VIOLET} 32%, transparent)`,
+    });
 
     // Frame 14 A+A: one button per row, Edit; no remove, no counts.
     const buttons = (spaceId: string) =>
@@ -222,11 +225,10 @@ describe("New Space (frame 11)", () => {
       createdAt: 3,
     });
     // The list reread the Spaces before Edit Space opens.
-    expect(
-      vi
-        .mocked(invoke)
-        .mock.calls.filter(([command]) => command === "spaces_list"),
-    ).toHaveLength(2);
+    const commands = vi.mocked(invoke).mock.calls.map(([command]) => command);
+    expect(commands.lastIndexOf("spaces_list")).toBeGreaterThan(
+      commands.indexOf("spaces_create"),
+    );
   });
 
   it("shows a refused create and stays open; Cancel closes", async () => {
