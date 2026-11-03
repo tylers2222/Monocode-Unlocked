@@ -782,8 +782,14 @@ fn spawn_on(world: &World, session: &str, provider: &str, login: &str) -> Result
             id: login.into(),
         }),
     };
-    crate::spaces::prepare_spawn(world.store(), session, None, world.now(), target)
-        .map(|target| target.account.unwrap().id)
+    crate::spaces::prepare_spawn(
+        world.store(),
+        crate::spaces::Child::Session(session),
+        None,
+        world.now(),
+        target,
+    )
+    .map(|target| target.account.unwrap().id)
 }
 
 /// The grant `s2` holds from `granted_at` until `expires_at`.
