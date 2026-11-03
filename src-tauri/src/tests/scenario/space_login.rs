@@ -176,7 +176,8 @@ fn user_session_naming(world: &World, id: &str, space: &str) {
 /// automation run takes the active Space instead of its project's, at its
 /// save or at a spawn before it; a project's own login in its Space loses to
 /// the Space's login, also for a `remote://`, drive or `~` key in another
-/// spelling and for a session not saved yet in a work copy or `~`; or
+/// spelling and for a session not saved yet in a work copy, in a project
+/// opened through a symlink, or in `~`; or
 /// another CLI, or the same project in Space 1, gets that project's login.
 #[test]
 fn a_session_takes_its_parents_space_and_runs_on_that_spaces_login() {
@@ -395,13 +396,12 @@ esac"#,
                 .unwrap()
         }
 
-        /// A git project in `root` with one work copy: (project, copy).
-        fn project_with_a_work_copy(&self) -> (PathBuf, PathBuf) {
-            let project = self.root.join("wtproj");
-            std::fs::create_dir_all(&project).unwrap();
-            git(&project, &["init", "-q"]);
+        /// A git project at `project` with one commit.
+        fn git_project(project: &Path) {
+            std::fs::create_dir_all(project).unwrap();
+            git(project, &["init", "-q"]);
             git(
-                &project,
+                project,
                 &[
                     "-c",
                     "user.name=t",
@@ -413,9 +413,22 @@ esac"#,
                     "--allow-empty",
                 ],
             );
+        }
+
+        /// A git project in `root` with one work copy: (project, copy).
+        fn project_with_a_work_copy(&self) -> (PathBuf, PathBuf) {
+            let project = self.root.join("wtproj");
+            Self::git_project(&project);
             let copy = self.root.join("wtproj-worktrees").join("w1");
             git(&project, &["worktree", "add", "-q", &text(&copy)]);
             (project, copy)
+        }
+
+        /// A git project opened through a symlinked folder, by its link path.
+        fn project_through_a_symlink(&self) -> PathBuf {
+            Self::git_project(&self.root.join("real").join("symproj"));
+            std::os::unix::fs::symlink(self.root.join("real"), self.root.join("link")).unwrap();
+            self.root.join("link").join("symproj")
         }
     }
 
@@ -539,6 +552,13 @@ esac"#,
             spawner.spawn_in("wt-first", "claude", "default", &text(&copy)),
             Ok(spawner.config("wt2")),
             "a session not saved yet in a work copy missed its project's own login"
+        );
+        let linked = spawner.project_through_a_symlink();
+        project_login_in_space_2(&spawner.store(), &text(&linked), "sym2", now);
+        assert_eq!(
+            spawner.spawn_in("sym-first", "claude", "default", &text(&linked)),
+            Ok(spawner.config("sym2")),
+            "a session not saved yet in a project opened through a symlink missed its own login"
         );
         assert_eq!(
             spawner.spawn_in("home-first", "claude", "default", "~"),

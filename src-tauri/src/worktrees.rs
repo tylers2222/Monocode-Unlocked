@@ -261,10 +261,25 @@ pub(crate) fn checkout_spot(path: &Path) -> Option<CheckoutSpot> {
     })
 }
 
-/// The folder in the main checkout that `folder` stands for: `folder` in a
-/// main checkout, the same place in the main checkout for a folder in one of
-/// its work copies. `None` outside git or in a submodule.
+/// The same place in the main checkout for `folder` in one of its linked
+/// work copies (git names it with symlinks resolved). `None` for a folder in
+/// a main checkout, which stands for itself in its caller's spelling, outside
+/// git, or in a submodule.
 pub(crate) fn main_checkout_folder(folder: &Path) -> Option<PathBuf> {
+    let dirs = git(
+        folder,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+        ],
+    )
+    .ok()?;
+    let mut dirs = dirs.lines();
+    if dirs.next()? == dirs.next()? {
+        return None;
+    }
     let spot = checkout_spot(folder).filter(|spot| !spot.submodule)?;
     let main = list(&spot.top)
         .ok()?

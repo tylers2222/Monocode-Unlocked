@@ -174,7 +174,8 @@ pub fn spaces_login_set(store: State<'_, SessionStore>, login: SpaceLogin) -> Re
 
 /// The project a session with no row runs in, as its saved `cwd` would name
 /// it: `~` (no project) for the home folder, the main checkout's folder for
-/// a work copy's (`worktrees::main_checkout_folder`), else the folder.
+/// a linked work copy's (`worktrees::main_checkout_folder`), else the folder
+/// as its caller spelled it.
 fn unsaved_project(folder: &Path) -> String {
     if folder == crate::fs::expand_home("~") {
         return "~".into();
