@@ -155,8 +155,8 @@ fn registered_login_child() {
         .join("agent-sandbox-on");
     std::fs::write(&marker, b"").unwrap();
     stand_in_srt(&rig.root.join("srt"));
-    rig.link("fenced", &target);
-    for id in ["fenced", "plain-fenced"] {
+    rig.link("sandboxed", &target);
+    for id in ["sandboxed", "plain-sandboxed"] {
         rig.spawn(id).unwrap();
     }
     let allowed = |id: &str| {
@@ -167,11 +167,11 @@ fn registered_login_child() {
     };
     let has = |list: &Value, dir: &Path| list.as_array().unwrap().contains(&json!(text(dir)));
     assert!(
-        has(&allowed("fenced"), &target),
+        has(&allowed("sandboxed"), &target),
         "srt keeps the CLI from writing its linked login's folder"
     );
     assert!(
-        !has(&allowed("plain-fenced"), &rig.folder("plain-fenced")),
+        !has(&allowed("plain-sandboxed"), &rig.folder("plain-sandboxed")),
         "srt lets the CLI write a login folder in the app data"
     );
     std::fs::remove_file(marker).unwrap();

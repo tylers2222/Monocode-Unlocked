@@ -92,7 +92,7 @@ impl Rig {
     }
 
     fn spawn(&self) -> Result<Spawn, String> {
-        command_in(&self.data, "fx", None, &[], Homes::default(), || {
+        command_in(&self.data, "fx", &[], Homes::default(), || {
             Some(self.pinned.clone())
         })
     }
@@ -128,7 +128,7 @@ impl Rig {
 }
 
 fn off_starts_the_cli_bare(rig: &Rig) {
-    let off = command_in(&rig.data, "fx", None, &[], Homes::default(), || {
+    let off = command_in(&rig.data, "fx", &[], Homes::default(), || {
         panic!("srt looked up while off")
     })
     .unwrap();
@@ -143,7 +143,7 @@ fn off_starts_the_cli_bare(rig: &Rig) {
 
 fn on_refuses_without_a_working_pinned_srt(rig: &Rig) {
     let refused = |find: Option<PathBuf>| {
-        command_in(&rig.data, "fx", None, &[], Homes::default(), || find)
+        command_in(&rig.data, "fx", &[], Homes::default(), || find)
             .err()
             .unwrap()
     };
@@ -170,7 +170,7 @@ fn on_refuses_an_unreadable_data_folder() {
     std::fs::create_dir_all(&data).unwrap();
     let locked = root.0.join("locked");
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let result = command_in(&data, "fx", None, &[], Homes::default(), || {
+    let result = command_in(&data, "fx", &[], Homes::default(), || {
         panic!("srt looked up for an unreadable folder")
     });
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -443,10 +443,7 @@ fn on_opens_only_a_monos_codex_home(rig: &Rig) {
         account: None,
         codex: Some(&home),
     };
-    let spawn = command_in(&rig.data, "fx", None, &[], homes, || {
-        Some(rig.pinned.clone())
-    })
-    .unwrap();
+    let spawn = command_in(&rig.data, "fx", &[], homes, || Some(rig.pinned.clone())).unwrap();
     let settings = argv(&spawn.cmd).1[1].clone();
     assert_ne!(
         Path::new(&settings),
@@ -675,458 +672,62 @@ exec "$@""#,
     srt
 }
 
-/// The Space write fence (ADE-177) through `harness_spawn`, on a git project
-/// that two Spaces open: the spawn hook (ADE-173) places Space 2's session in
-/// its own copy, and the stand-in srt keeps the settings each child got.
-/// The real srt is not on the CI box; the PR quotes a real srt run on
-/// made-up folders, where seatbelt refuses a denied write with "Operation not
-/// permitted".
-mod space_fence {
-    use std::path::{Path, PathBuf};
-    use std::process::Command;
+/// ADE-226: the Space fence is removed. A second Space no longer turns the
+/// sandbox on, so its network allow list refuses no host. Defect: with two
+/// Spaces and no marker, `command_in` looks srt up or wraps the CLI, or a
+/// child of either Space starts under srt.
+#[test]
+fn two_spaces_without_the_marker_start_every_agent_bare() {
+    let root = super::space_checkouts::temp_root("ade226");
+    let project = super::space_checkouts::git_project(&root);
+    let data = root.join("app-data");
+    std::fs::create_dir_all(&data).unwrap();
+    let app = mock_app(&data);
+    super::space_checkouts::two_spaces(
+        &app.state::<crate::session_store::SessionStore>(),
+        &project,
+    );
+    let spawn = command_in(&data, "fx", &[], Homes::default(), || {
+        panic!("srt looked up without the marker")
+    })
+    .unwrap();
+    assert!(!spawn.sandboxed, "two Spaces sandbox an agent");
+    assert_eq!(argv(&spawn.cmd), ("fx".to_owned(), Vec::<String>::new()));
 
-    use serde_json::{json, Value};
-    use tauri::test::MockRuntime;
-    use tauri::Manager;
-
-    use super::{
-        folder, mock_app, path, script, stand_in_srt, strings, wait_for, xdg_config, Folder,
-    };
-    use crate::agent_sandbox::{space_fence, SRT_STAND_IN};
-    use crate::session_store::{self, SessionStore};
-
-    fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-
-    /// Session `id` of `space`, saved in `cwd` as the window saves it.
-    fn save(store: &SessionStore, id: &str, cwd: &Path, space: &str) {
-        let session = serde_json::from_value(json!({
-            "id": id,
-            "cwd": path(cwd),
-            "harness": "codex",
-            "model": "codex:default",
-            "modelSettings": {},
-            "runtimeMode": "auto",
-            "title": id,
-            "blocks": [{"id": "u1", "role": "user", "text": "Start"}],
-        }))
-        .unwrap();
-        let conn = store.lock_conn().unwrap();
-        session_store::upsert_session(&conn, &session).unwrap();
-        conn.execute(
-            "UPDATE sessions SET space_id = ?2 WHERE id = ?1",
-            [id, space],
-        )
-        .unwrap();
-    }
-
-    struct Rig {
-        _root: Folder,
-        project: PathBuf,
-        copy: PathBuf,
-        fx: PathBuf,
-        data: PathBuf,
-        app: tauri::App<MockRuntime>,
-    }
-
-    impl Rig {
-        /// `project`, a git checkout with `README` and `src/` in its one
-        /// commit, and sessions `one` (Space 1) and `two` (Space 2) in it.
-        fn new() -> Self {
-            let root = folder();
-            let real = std::fs::canonicalize(&root.0).unwrap();
-            let project = real.join("project");
-            std::fs::create_dir_all(project.join("src")).unwrap();
-            std::fs::write(project.join("src/lib.rs"), "").unwrap();
-            std::fs::write(project.join("README"), "").unwrap();
-            git(&project, &["init", "-q", "-b", "main"]);
-            git(&project, &["add", "."]);
-            git(&project, &["commit", "-qm", "initial"]);
-            let fx = script(
-                &real.join("fx"),
-                r#"case "$1" in
+    // An srt the spawn would find, which leaves `srt-settings` where it runs.
+    stand_in_srt(&root.join("tools"));
+    let fx = script(
+        &root.join("fx"),
+        r#"case "$1" in
   --help) echo "fx acp: ask over the Agent Client Protocol" ;;
   --version) echo "fx 0.0.1" ;;
   *) pwd -P > ran.part && mv ran.part ran ;;
 esac"#,
-            );
-            // Claude Code's deny rules need a `com.monocode.*` data folder.
-            let data = real.join("com.monocode.ade177");
-            std::fs::create_dir_all(&data).unwrap();
-            let app = mock_app(&data);
-            let store = app.state::<SessionStore>();
-            save(&store, "one", &project, crate::spaces::FIRST_SPACE);
-            save(&store, "two", &project, "space-2");
-            Self {
-                copy: real.join("project-worktrees/space-2/two"),
-                _root: root,
-                project,
-                fx,
-                data,
-                app,
-            }
-        }
-
-        fn store(&self) -> tauri::State<'_, SessionStore> {
-            self.app.state::<SessionStore>()
-        }
-
-        /// `session` asks to start in the project; the child runs where the
-        /// spawn hook placed it, and its `ran` names that folder.
-        fn spawn(&self, session: &str) -> Result<crate::harness::Spawned, String> {
-            self.spawn_in(session, &self.project)
-        }
-
-        fn spawn_in(
-            &self,
-            session: &str,
-            folder: &Path,
-        ) -> Result<crate::harness::Spawned, String> {
-            crate::harness::harness_spawn(
-                self.app.handle().clone(),
-                self.app.state::<crate::harness::HarnessHost>(),
-                session.into(),
-                path(&self.fx),
-                vec!["acp".into()],
-                path(folder),
-                None,
-                Some("fx".into()),
-                Some(path(&self.fx)),
-                None,
-                None,
-                None,
-                None,
-            )
-        }
-
-        /// The child started in `folder` through srt: srt's settings there.
-        fn fenced_in(&self, folder: &Path) -> (Vec<String>, Vec<String>) {
-            assert_eq!(
-                wait_for(&folder.join("ran")).trim(),
-                path(folder),
-                "the child ran elsewhere"
-            );
-            let settings = wait_for(&folder.join("srt-settings"));
-            let written: Value =
-                serde_json::from_str(&std::fs::read_to_string(settings).unwrap()).unwrap();
-            let fs = &written["filesystem"];
-            (strings(&fs["allowWrite"]), strings(&fs["denyWrite"]))
-        }
-    }
-
-    /// A deny on `kept` or a folder above it, which would refuse every write there.
-    fn denied_above(deny: &[String], kept: &Path) -> Vec<String> {
-        deny.iter()
-            .filter(|entry| kept.starts_with(entry.as_str()))
-            .cloned()
-            .collect()
-    }
-
-    fn with_one_space_a_spawn_starts_as_the_marker_says(rig: &Rig) {
-        assert!(space_fence(&rig.store(), Some("one"), &rig.project)
-            .unwrap()
-            .is_none());
-        // ADE-199: the caller learns srt does not run it, so Codex keeps its sandbox.
-        assert!(!rig.spawn("one").unwrap().sandboxed, "one Space: sandboxed");
-        assert_eq!(
-            wait_for(&rig.project.join("ran")).trim(),
-            path(&rig.project)
-        );
-        assert!(
-            !rig.project.join("srt-settings").exists(),
-            "one Space without the marker: the child ran through srt"
-        );
-        std::fs::remove_file(rig.project.join("ran")).unwrap();
-    }
-
-    /// Space 2's child writes its own copy and the `.git` the copy commits to,
-    /// and nothing else of Space 1's checkout.
-    fn space_two_writes_only_its_own_copy(rig: &Rig) {
-        // ADE-199: the caller learns srt runs it, so Codex starts no sandbox inside.
-        assert!(
-            rig.spawn("two").unwrap().sandboxed,
-            "two Spaces: not sandboxed"
-        );
-        let (allow, deny) = rig.fenced_in(&rig.copy);
-        let git = rig.project.join(".git");
-        for own in [&rig.copy, &git] {
-            assert!(
-                allow.contains(&path(own)),
-                "{} is not writable: {allow:?}",
-                own.display()
-            );
-            assert_eq!(
-                denied_above(&deny, own),
-                Vec::<String>::new(),
-                "{} is denied",
-                own.display()
-            );
-        }
-        assert!(
-            !allow.contains(&path(&rig.project)),
-            "Space 1's checkout is writable"
-        );
-        // Git runs `.git/config`'s core.fsmonitor and core.hooksPath, and
-        // `.git/hooks`, outside srt for Space 1's checkout too.
-        let space_one = ["README", "src", ".git/hooks", ".git/config"];
-        for other in space_one.map(|name| rig.project.join(name)) {
-            assert!(
-                deny.contains(&path(&other)),
-                "Space 1's {} is writable: {deny:?}",
-                other.display()
-            );
-        }
-        let home = PathBuf::from(crate::dirs_home().unwrap());
-        for giga in ["hooks", "config"].map(|name| home.join("MonoCode/.git").join(name)) {
-            assert!(
-                deny.contains(&path(&giga)),
-                "{} is writable",
-                giga.display()
-            );
-        }
-        let temp = path(&std::env::temp_dir().components().collect::<PathBuf>());
-        let shared = [
-            "~/MonoCode",
-            "~/.claude",
-            "~/.codex",
-            "~/Library/Application Support/doctl",
-        ]
-        .map(String::from)
-        .into_iter()
-        .chain(["gh", "doctl"].map(|tool| path(&xdg_config().join(tool))))
-        .chain([temp]);
-        for entry in shared {
-            assert!(allow.contains(&entry), "the shared {entry} is not writable");
-            assert!(!deny.contains(&entry), "the shared {entry} is denied");
-        }
-        assert!(!allow.contains(&path(&home)), "all of HOME is writable");
-    }
-
-    /// Space 1's child is kept out of the whole copy Space 2 holds.
-    fn space_one_cannot_write_space_twos_copy(rig: &Rig) {
-        rig.spawn("one").unwrap();
-        let (allow, deny) = rig.fenced_in(&rig.project);
-        assert!(
-            allow.contains(&path(&rig.project)),
-            "Space 1's own checkout is not writable"
-        );
-        assert!(
-            deny.contains(&path(&rig.copy)),
-            "Space 2's copy is writable: {deny:?}"
-        );
-        assert!(
-            !allow.contains(&path(&rig.copy)),
-            "Space 2's copy is writable"
-        );
-        assert_eq!(denied_above(&deny, &rig.project), Vec::<String>::new());
-        let inside: Vec<&String> = deny
-            .iter()
-            .filter(|entry| Path::new(entry).starts_with(&rig.project))
-            .collect();
-        let git_code = ["hooks", "config"].map(|name| path(&rig.project.join(".git").join(name)));
-        assert_eq!(
-            inside,
-            git_code.iter().collect::<Vec<_>>(),
-            "Space 1's own checkout is denied beyond its git hooks and config"
-        );
-        let giga = PathBuf::from(crate::dirs_home().unwrap()).join("MonoCode");
-        assert!(
-            !deny.contains(&path(&giga)),
-            "the shared Giga workspace is denied to Space 1"
-        );
-    }
-
-    /// The Giga workspace `~/MonoCode` is shared by every Space: a Space 2
-    /// session there stays, takes no lease, and its git code stays denied.
-    fn the_giga_workspace_is_shared_and_never_leased(rig: &Rig) {
-        let giga = PathBuf::from(crate::dirs_home().unwrap()).join("MonoCode");
-        let folder = giga.join("gigas/g");
-        std::fs::create_dir_all(&folder).unwrap();
-        std::fs::write(giga.join("index.md"), "").unwrap();
-        git(&giga, &["init", "-q", "-b", "main"]);
-        git(&giga, &["add", "."]);
-        git(&giga, &["commit", "-qm", "initial"]);
-        save(&rig.store(), "giga", &folder, "space-2");
-        let spawned = rig.spawn_in("giga", &folder).unwrap();
-        assert_eq!(spawned.cwd, path(&folder), "the Giga folder was copied");
-        let (allow, deny) = rig.fenced_in(&folder);
-        assert!(allow.contains(&"~/MonoCode".to_owned()));
-        assert_eq!(denied_above(&deny, &folder), Vec::<String>::new());
-        for code in ["hooks", "config"].map(|name| giga.join(".git").join(name)) {
-            assert!(
-                deny.contains(&path(&code)),
-                "{} is writable",
-                code.display()
-            );
-        }
-        let leased = crate::spaces::leases::leases(&rig.store()).unwrap();
-        assert!(
-            leased
-                .iter()
-                .all(|lease| !Path::new(&lease.checkout_path).starts_with(&giga)),
-            "the Giga workspace was leased: {leased:?}"
-        );
-    }
-
-    /// OpenCode v2 runs its sessions' shells in a background service srt
-    /// cannot fence, so with two Spaces it is refused; with one it runs.
-    fn opencode_v2_is_refused_while_fenced(rig: &Rig, fenced: bool) {
-        let opencode = script(
-            &rig.data.with_file_name("tools").join("opencode"),
-            r#"[ "$1" = service ] && { echo "http://127.0.0.1:4096"; exit 0; }
-echo "opencode 2.0.0""#,
-        );
-        let ran = tauri::async_runtime::block_on(crate::harness::harness_exec(
-            rig.app.handle().clone(),
-            path(&opencode),
-            vec!["service".into(), "start".into()],
-            Some(path(&rig.project)),
-            Some("opencode".into()),
-            Some(path(&opencode)),
+    );
+    for session in ["one", "two"] {
+        let spawned = crate::harness::harness_spawn(
+            app.handle().clone(),
+            app.state::<crate::harness::HarnessHost>(),
+            session.into(),
+            path(&fx),
+            vec!["acp".into()],
+            path(&project),
             None,
-        ));
-        match ran {
-            Ok(ran) => assert!(!fenced && ran.stdout.contains("4096"), "{}", ran.stdout),
-            Err(error) => assert!(
-                fenced && error.contains("OpenCode v2 cannot run fenced between Spaces yet"),
-                "{error}"
-            ),
-        }
-    }
-
-    /// A helper no session owns has no Space: every leased checkout is another's.
-    fn a_helper_of_no_session_owns_no_checkout(rig: &Rig) {
-        let fence = space_fence(&rig.store(), None, &rig.project)
-            .unwrap()
-            .unwrap();
-        assert_eq!(fence.others, [rig.project.clone(), rig.copy.clone()]);
-    }
-
-    /// Claude Code's deny rules (ADE-44) name the same checkouts as srt's
-    /// denies: a stand-in `claude` in Space 2 keeps the args it got.
-    fn claude_gets_edit_rules_on_the_other_spaces_checkouts(rig: &Rig) {
-        let fence = space_fence(&rig.store(), Some("two"), &rig.copy)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            fence.others,
-            std::slice::from_ref(&rig.project),
-            "Space 2's fence"
-        );
-        let claude = script(
-            &rig.data.with_file_name("tools").join("claude"),
-            r#"[ "$1" = --version ] && { echo "2.1.309 (Claude Code)"; exit 0; }
-printf '%s\0' "$@" > argv.part && mv argv.part argv"#,
-        );
-        std::fs::write(rig.data.join("claude-deny-rules-on"), b"").unwrap();
-        crate::harness::harness_spawn(
-            rig.app.handle().clone(),
-            rig.app.state::<crate::harness::HarnessHost>(),
-            "two".into(),
-            path(&claude),
-            vec!["--settings".into(), "{}".into()],
-            path(&rig.project),
-            None,
-            Some("claude".into()),
-            Some(path(&claude)),
+            Some("fx".into()),
+            Some(path(&fx)),
             None,
             None,
             None,
             None,
         )
         .unwrap();
-        let argv = wait_for(&rig.copy.join("argv"));
-        let settings = argv.split_terminator('\0').nth(1).unwrap();
-        let settings: Value = serde_json::from_str(settings).unwrap();
-        let deny = strings(&settings["permissions"]["deny"]);
-        let rule = format!("Edit(/{}/**)", path(&rig.project));
-        assert!(deny.contains(&rule), "no {rule}: {deny:?}");
-        let own = format!("Edit(/{}/**)", path(&rig.copy));
+        assert!(!spawned.sandboxed, "{session}: started under srt");
+        let folder = PathBuf::from(&spawned.cwd);
+        wait_for(&folder.join("ran"));
         assert!(
-            !deny.contains(&own),
-            "Claude Code may not edit its own copy"
-        );
-        std::fs::remove_file(rig.data.join("claude-deny-rules-on")).unwrap();
-    }
-
-    fn without_srt_a_fenced_spawn_is_refused(rig: &Rig) {
-        SRT_STAND_IN.with(|found| *found.borrow_mut() = Some(None));
-        std::fs::remove_file(rig.copy.join("ran")).unwrap();
-        let error = rig
-            .spawn("two")
-            .expect_err("Space 2 started unfenced without srt");
-        assert!(
-            error.contains("srt is not installed") && error.contains("fence each Space's writes"),
-            "the refusal: {error}"
-        );
-        assert!(!rig.copy.join("ran").exists(), "the child ran without srt");
-    }
-
-    /// Defect: with two Spaces a child starts without srt, or with srt but
-    /// without the fence; Space 2's child may write Space 1's checkout, its
-    /// `.git` hooks or config, the Giga workspace's, or all of HOME, or may
-    /// not write its own copy, the `.git` that copy commits to or the shared
-    /// folders; Space 1's child may write Space 2's copy or not its own
-    /// checkout; the Giga workspace is leased or denied to a Space; Claude
-    /// Code's rules miss the other Space's checkout; OpenCode v2's service
-    /// starts while fenced; a fenced spawn runs when srt is missing; or one
-    /// Space without the marker starts through srt. A process of its own with
-    /// a temp HOME, so its `~/MonoCode` is made up.
-    #[test]
-    fn the_space_fence_keeps_each_space_out_of_the_others_checkouts() {
-        let home = folder();
-        let child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "scenario::agent_sandbox::space_fence::space_fence_child",
-                "--ignored",
-                "--quiet",
-            ])
-            .env("HOME", std::fs::canonicalize(&home.0).unwrap())
-            .env_remove("CLAUDE_CONFIG_DIR")
-            .output()
-            .unwrap();
-        assert!(
-            child.status.success(),
-            "the fence let a Space write what it must not:\n{}{}",
-            String::from_utf8_lossy(&child.stdout),
-            String::from_utf8_lossy(&child.stderr)
+            !folder.join("srt-settings").exists(),
+            "{session}: srt ran it"
         );
     }
-
-    #[test]
-    #[ignore = "the_space_fence_keeps_each_space_out_of_the_others_checkouts runs it with a temp HOME"]
-    fn space_fence_child() {
-        let rig = Rig::new();
-        stand_in_srt(&rig.data.with_file_name("tools"));
-        with_one_space_a_spawn_starts_as_the_marker_says(&rig);
-        opencode_v2_is_refused_while_fenced(&rig, false);
-        rig.store()
-            .lock_conn()
-            .unwrap()
-            .execute(
-                "INSERT INTO spaces (id, name, created_at) VALUES ('space-2', 'Space 2', 0)",
-                [],
-            )
-            .unwrap();
-        space_two_writes_only_its_own_copy(&rig);
-        the_giga_workspace_is_shared_and_never_leased(&rig);
-        space_one_cannot_write_space_twos_copy(&rig);
-        a_helper_of_no_session_owns_no_checkout(&rig);
-        claude_gets_edit_rules_on_the_other_spaces_checkouts(&rig);
-        opencode_v2_is_refused_while_fenced(&rig, true);
-        without_srt_a_fenced_spawn_is_refused(&rig);
-    }
+    let _ = std::fs::remove_dir_all(&root);
 }
