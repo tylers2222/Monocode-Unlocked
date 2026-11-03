@@ -10,22 +10,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  release-channel:
-    name: Release channel isolation
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.release-channel != 'false' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - run: node --test scripts/release-channel.test.cjs
-
   browser:
     # Pinned: on ubuntu-26.04 (the new ubuntu-latest) 11 WebKit real-omp specs time out
     # (tyler/main 93094e67 run 40314640829, PR #361 run 40316396180);
@@ -129,7 +113,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Pull requests run ubuntu only; the macOS and Windows legs run after the
+        # merge (a push), and a red one opens the "tyler/main CI red" issue.
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -174,13 +160,17 @@ jobs:
           set -euo pipefail
           python3 scripts/process/ci_changes.py github "$EVENT" "$BASE" "$HEAD" | tee -a "$GITHUB_OUTPUT"
 
+  # The ubuntu leg also runs the release-channel test, so a release-channel change
+  # alone runs this job.
   check:
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.check != 'false' }}
+    if: ${{ !cancelled() && (needs.changes.outputs.check != 'false' || needs.changes.outputs.release-channel != 'false') }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        # The Windows leg runs after the merge (a push) only; a red one opens the
+        # "tyler/main CI red" issue.
+        os: ${{ github.event_name == 'push' && fromJSON('["macos-latest", "ubuntu-latest", "windows-latest"]') || fromJSON('["macos-latest", "ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -215,22 +205,30 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/tyler/main' }}
 
       - run: npm ci
+      # vitest and tsc do not depend on the OS, so macOS skips them. Windows keeps
+      # vitest: its path handling has failed there before.
       - run: npm test
+        if: runner.os != 'macOS'
       - run: npx tsc --noEmit
+        if: runner.os == 'Linux'
+      - run: node --test scripts/release-channel.test.cjs
+        if: runner.os == 'Linux'
       - run: cargo fmt --check
+      # On a pull request gate/lint runs this same clippy on ubuntu, so this leg skips
+      # it. A tyler/main push still runs it, to save it in the cache gate/lint restores.
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo check
+        if: runner.os != 'Linux' || github.event_name != 'pull_request'
       - run: cargo test
 
   appimage:
     name: AppImage host libraries
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.appimage != 'false' }}
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.changes.outputs.appimage != 'false' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: read
-    # A full tauri release build is too expensive for every PR. Run when
-    # its packaging inputs change; the release linux job still always asserts.
+    # A full tauri release build is too expensive for every PR, so packaging runs
+    # after the merge only; the release linux job still always asserts.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -263,7 +261,8 @@ jobs:
   rpm:
     name: RPM build (${{ matrix.image }})
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.rpm != 'false' }}
+    # After the merge only, like appimage; rpm-clean-install follows it.
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.changes.outputs.rpm != 'false' }}
     runs-on: ubuntu-latest
     container: ${{ matrix.image }}
     strategy:
@@ -408,3 +407,72 @@ jobs:
             echo "monocode cannot load on EL 10" >&2
             exit 1
           fi
+
+  # The one check for the ruleset: a matrix job that is skipped never reports its
+  # per-leg name, so a required leg would leave a PR pending. Keep the name `ci`.
+  ci:
+    name: ci
+    needs: [changes, browser, host, check, appimage, rpm, rpm-clean-install]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      failed: ${{ steps.results.outputs.failed }}
+    steps:
+      - name: Every job passed or was skipped
+        id: results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          failed="$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<<"$NEEDS")"
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+          if [ -n "$failed" ]; then
+            echo "Failed or cancelled: $failed" >&2
+            exit 1
+          fi
+
+  # Pull requests skip the Windows, host macOS and packaging legs, so a break there
+  # first shows on tyler/main. One open issue tracks it; the next green run closes it.
+  main-red:
+    name: Report tyler/main CI red
+    needs: ci
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/tyler/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TITLE: tyler/main CI red
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Open or update the issue
+        if: needs.ci.result != 'success'
+        env:
+          FAILED: ${{ needs.ci.outputs.failed }}
+        run: |
+          set -euo pipefail
+          {
+            echo "CI on tyler/main \`$GITHUB_SHA\` failed: ${FAILED:-the ci job itself}."
+            echo
+            echo "Run: $RUN_URL"
+          } > body.md
+          # REST, not `gh issue`: GraphQL createIssue rejects GITHUB_TOKEN (fork-sync.yml).
+          issues="repos/$GITHUB_REPOSITORY/issues"
+          number=$(gh api "$issues?state=open&per_page=100" --jq "map(select(.title == \"$TITLE\" and (has(\"pull_request\") | not)))[0].number // empty")
+          if [ -n "$number" ]; then
+            gh api "$issues/$number/comments" -F body=@body.md --jq .html_url
+          else
+            gh api "$issues" -f title="$TITLE" -F body=@body.md --jq .html_url
+          fi
+
+      - name: Close the issue
+        if: needs.ci.result == 'success'
+        run: |
+          set -euo pipefail
+          issues="repos/$GITHUB_REPOSITORY/issues"
+          for number in $(gh api "$issues?state=open&per_page=100" --jq "map(select(.title == \"$TITLE\" and (has(\"pull_request\") | not)))[].number"); do
+            gh api "$issues/$number/comments" -f body="Fixed: CI is green on \`$GITHUB_SHA\` in $RUN_URL" --jq .html_url
+            gh api -X PATCH "$issues/$number" -f state=closed --jq .state
+          done
