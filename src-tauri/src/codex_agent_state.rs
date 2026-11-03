@@ -119,3 +119,25 @@ pub(crate) fn restore_agent_edges(home: &Path, thread_id: &str) -> Result<(), St
     tx.commit().map_err(|e| e.to_string())?;
     state.remove(&snapshot)
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// Defect: a login whose folder Codex has not made yet errors, or one that
+    /// cannot be read (its path goes through a file) has no closed agents.
+    #[test]
+    fn closed_agents_of_a_missing_login_are_none_and_an_unreadable_one_errors() {
+        let root = std::env::temp_dir().join(format!("ade225-state-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let missing = closed_agent_edges(&root.join("missing"), "root");
+        assert!(missing.unwrap().is_empty());
+        std::fs::write(root.join("file"), "").unwrap();
+        let through_a_file = closed_agent_edges(&root.join("file/login"), "root");
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(
+            through_a_file.is_err(),
+            "a path through a file read as empty"
+        );
+    }
+}
