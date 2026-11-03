@@ -372,7 +372,11 @@ fn confstr(name: libc::c_int) -> Option<PathBuf> {
     }
     let mut buf = vec![0u8; len];
     // SAFETY: confstr writes at most `buf.len()` bytes.
-    unsafe { libc::confstr(name, buf.as_mut_ptr().cast(), buf.len()) };
+    let written = unsafe { libc::confstr(name, buf.as_mut_ptr().cast(), buf.len()) };
+    // 0 is an error; another length means the value changed between the calls.
+    if written != len {
+        return None;
+    }
     buf.pop();
     Some(PathBuf::from(std::ffi::OsString::from_vec(buf)))
 }

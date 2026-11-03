@@ -195,10 +195,10 @@ fn private_entry(name: &str) -> bool {
         || name.starts_with(".monocode-")
 }
 
-fn prepare_files(source: &Path, home: &Path) -> Result<(), String> {
+pub(crate) fn prepare_files(source: &Path, home: &Path) -> Result<(), String> {
     std::fs::create_dir_all(source)
         .map_err(|e| format!("Could not open the Codex account directory: {e}"))?;
-    Dir::open(home, &[])?;
+    Dir::create(home, &[])?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -216,13 +216,17 @@ fn prepare_files(source: &Path, home: &Path) -> Result<(), String> {
         }
     }
     // Codex runs `config.toml`'s `notify` and MCP servers, and an agent may
-    // write in this home: it is always the login's, a link even to none.
+    // write in this home: it is always the login's, a link even to none. So a
+    // Mono's own config.toml is replaced, and Codex's config writes go to the login's.
     #[cfg(unix)]
     {
         let temp = home.join(format!(".config.toml.{}.tmp", uuid::Uuid::new_v4()));
-        std::os::unix::fs::symlink(source.join("config.toml"), &temp)
-            .and_then(|()| std::fs::rename(&temp, home.join("config.toml")))
-            .map_err(|e| format!("Could not share the Codex configuration: {e}"))?;
+        let shared = std::os::unix::fs::symlink(source.join("config.toml"), &temp)
+            .and_then(|()| std::fs::rename(&temp, home.join("config.toml")));
+        if shared.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        shared.map_err(|e| format!("Could not share the Codex configuration: {e}"))?;
     }
     for entry in std::fs::read_dir(&source).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -245,7 +249,7 @@ fn prepare_files(source: &Path, home: &Path) -> Result<(), String> {
     // rather than individual files, preserves those writes in both homes.
     std::fs::create_dir_all(source.join("secrets")).map_err(|e| e.to_string())?;
     link_entry(&source.join("secrets"), &home.join("secrets"))?;
-    Dir::open(home, &["sessions"])?;
+    Dir::create(home, &["sessions"])?;
     Ok(())
 }
 
@@ -446,7 +450,7 @@ pub(crate) fn copy_rollouts(
 }
 
 #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
-fn copy_rollouts_with_edges(
+pub(crate) fn copy_rollouts_with_edges(
     source: &Path,
     home: &Path,
     thread_id: &str,
@@ -542,11 +546,11 @@ fn copy_rollouts_with_edges(
                 })
             })
             .ok_or("Missing Codex rollout date")?;
-        let dir = Dir::open(home, &["sessions", &date[..4], &date[5..7], &date[8..10]])?;
+        let day = [&date[..4], &date[5..7], &date[8..10]].map(str::to_owned);
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         // Retrying a partial migration can replace already copied descendants.
         // The provider checks for the root before invoking this operation.
-        staged.push((path, dir, name));
+        staged.push((path, day, name));
     }
     let root_name = staged[0].0.file_name().unwrap().to_string_lossy();
     if !root_name.ends_with(&format!("-{thread_id}.jsonl"))
@@ -554,21 +558,22 @@ fn copy_rollouts_with_edges(
     {
         return Err("The saved Mono root does not match its thread id".into());
     }
-    let pending = Dir::open(home, &[".monocode-migrations"])?;
+    let pending = Dir::create(home, &[".monocode-migrations"])?;
     pending.write(thread_id, b"pending")?;
     // Copy descendants first and the root last, so a partial migration is not
     // mistaken for a successfully migrated root on the next connection.
-    for (path, dir, name) in staged.iter().rev() {
-        dir.copy(name, path)
+    for (path, [year, month, day], name) in staged.iter().rev() {
+        Dir::create(home, &["sessions", year.as_str(), month.as_str(), day.as_str()])?
+            .copy(name, path)
             .map_err(|e| format!("Could not retain the full Codex thread: {e}"))?;
     }
-    let (state, snapshot) = edge_snapshot(home, thread_id)?;
+    let snapshot = format!("{thread_id}.json");
     if !edges.is_empty() {
-        state.write(
+        Dir::create(home, &[AGENT_STATE])?.write(
             &snapshot,
             &serde_json::to_vec(edges).map_err(|e| e.to_string())?,
         )?;
-    } else if state.read(&snapshot)?.is_some() {
+    } else if let Some(state) = Dir::open(home, &[AGENT_STATE])? {
         // A retry must not apply a closure changed in the original meanwhile.
         state.remove(&snapshot)?;
     }
@@ -579,18 +584,19 @@ fn copy_rollouts_with_edges(
 // SQLite. Apply that small snapshot after private app-server initialization
 // and before it restores agent identities while resuming the root.
 #[derive(Serialize, Deserialize)]
-struct AgentEdge {
-    parent: String,
-    child: String,
-    status: String,
+pub(crate) struct AgentEdge {
+    pub(crate) parent: String,
+    pub(crate) child: String,
+    pub(crate) status: String,
 }
 
-/// The folder of a Mono's agent closure snapshots, and `thread_id`'s name in it.
-fn edge_snapshot(home: &Path, thread_id: &str) -> Result<(Dir, String), String> {
-    Ok((
-        Dir::open(home, &[".monocode-agent-state"])?,
-        format!("{thread_id}.json"),
-    ))
+/// The folder of a Mono's agent closure snapshots, `<thread id>.json`.
+const AGENT_STATE: &str = ".monocode-agent-state";
+
+/// A state database: a link at its name (an agent's, in a Mono home) is refused.
+fn open_state(path: PathBuf, flags: rusqlite::OpenFlags) -> Result<rusqlite::Connection, String> {
+    let flags = flags.union(rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW);
+    rusqlite::Connection::open_with_flags(path, flags).map_err(|e| e.to_string())
 }
 
 fn state_db(home: &Path) -> Result<Option<PathBuf>, String> {
@@ -608,9 +614,7 @@ fn state_db(home: &Path) -> Result<Option<PathBuf>, String> {
             .and_then(|n| n.strip_suffix(".sqlite"))
             .and_then(|n| n.parse::<u32>().ok())
         {
-            if entry.file_type().map_err(|e| e.to_string())?.is_file() {
-                databases.push((version, entry.path()));
-            }
+            databases.push((version, entry.path()));
         }
     }
     Ok(databases
@@ -624,9 +628,7 @@ fn closed_agent_edges(home: &Path, thread_id: &str) -> Result<Vec<AgentEdge>, St
     let Some(path) = state_db(home)? else {
         return Ok(Vec::new());
     };
-    let db =
-        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|e| e.to_string())?;
+    let db = open_state(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     db.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|e| e.to_string())?;
     let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_spawn_edges')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
@@ -647,16 +649,17 @@ fn closed_agent_edges(home: &Path, thread_id: &str) -> Result<Vec<AgentEdge>, St
         .map_err(|e| e.to_string())
 }
 
-fn restore_agent_edges(home: &Path, thread_id: &str) -> Result<(), String> {
-    let (state, snapshot) = edge_snapshot(home, thread_id)?;
+pub(crate) fn restore_agent_edges(home: &Path, thread_id: &str) -> Result<(), String> {
+    let snapshot = format!("{thread_id}.json");
+    let Some(state) = Dir::open(home, &[AGENT_STATE])? else {
+        return Ok(());
+    };
     let Some(bytes) = state.read(&snapshot)? else {
         return Ok(());
     };
     let edges: Vec<AgentEdge> = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     let path = state_db(home)?.ok_or("Codex has not initialized the private Mono index")?;
-    let mut db =
-        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
-            .map_err(|e| e.to_string())?;
+    let mut db = open_state(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     db.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|e| e.to_string())?;
     let tx = db.transaction().map_err(|e| e.to_string())?;
