@@ -994,6 +994,18 @@ function storeFrom(seed: FakeSeed): FakeStore {
     inFlight: seed.inFlight ?? [],
     completions: {},
     deliveredGroups: [],
+    ...spacesFrom(seed),
+  };
+}
+
+/** One Space, Space 1, with no logins of its own: a database from before Spaces. */
+function spacesFrom(
+  seed: FakeSeed,
+): Pick<
+  FakeStore,
+  "spaces" | "activeSpaceId" | "spaceLogins" | "projectSpaces" | "identities"
+> {
+  return {
     spaces: seed.spaces ?? [
       { id: "space-1", name: "Space 1", color: null, createdAt: 1 },
     ],

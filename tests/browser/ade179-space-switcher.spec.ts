@@ -6,10 +6,12 @@ import { expect, test } from "./app/fixture";
  * switching changes only what the rail shows. Emails are made up.
  */
 const ONE = "/Users/test/alpha-app";
+/** A Space 1 project that is not the one open. */
+const OTHER = "/Users/test/beta-lib";
 const TWO = "/Users/test/studio-site";
 
 const SEED = {
-  projects: [ONE, TWO],
+  projects: [ONE, OTHER, TWO],
   projectSpaces: { [TWO]: "space-2" },
   spaces: [
     { id: "space-1", name: "Space 1", color: null, createdAt: 1 },
@@ -64,6 +66,7 @@ test("the switcher shows the active Space's logins and switches the rail to the 
   await expect(monos).toContainText("Fork Orchestrator");
   await expect(monos).not.toContainText("Studio Builder");
   await expect(rail).toContainText("alpha-app");
+  await expect(rail).toContainText("beta-lib");
   await expect(rail).not.toContainText("studio-site");
   await page.screenshot({ path: testInfo.outputPath("frame1-closed.png") });
 
@@ -93,7 +96,9 @@ test("the switcher shows the active Space's logins and switches the rail to the 
   await expect(monos).toContainText("Studio Builder");
   await expect(monos).not.toContainText("Fork Orchestrator");
   await expect(rail).toContainText("studio-site");
-  await expect(rail).not.toContainText("alpha-app");
+  // Space 1's projects leave the rail; the project open in the window stays
+  // until the tabs follow the Space (frame 10, not in ADE-179).
+  await expect(rail).not.toContainText("beta-lib");
   const sent = await page.evaluate(
     (from) => window.appBackend!.calls.slice(from).map((call) => call.command),
     before,

@@ -181,6 +181,7 @@ test("answers have the shapes the Rust commands send", async ({
         sortOrder: 0,
         createdAt: 1,
         updatedAt: 1,
+        spaceId: "space-1",
       },
       {
         id: "mono-2",
@@ -190,6 +191,7 @@ test("answers have the shapes the Rust commands send", async ({
         sortOrder: 1,
         createdAt: 1,
         updatedAt: 1,
+        spaceId: "space-1",
       },
     ],
   });
@@ -204,6 +206,7 @@ test("answers have the shapes the Rust commands send", async ({
     archived: false,
     pinned: false,
     draft: false,
+    spaceId: "space-1",
   };
   expect(answers.sessions).toEqual([
     {
