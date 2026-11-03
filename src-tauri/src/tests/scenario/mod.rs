@@ -33,6 +33,8 @@ mod s5_delivery;
 mod s5_scheduler;
 #[cfg(unix)]
 mod space_checkouts;
+#[cfg(unix)]
+mod space_import;
 mod space_login;
 mod space_scope;
 mod spaces;
