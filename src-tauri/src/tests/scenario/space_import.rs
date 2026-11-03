@@ -110,9 +110,11 @@ impl Rig {
         serde_json::from_slice(&out.stdout).unwrap()
     }
 
-    /// The import stops with `code` and a message holding `says`.
+    /// An apply stops with `code` and a message holding `says`, and Space 1
+    /// is byte-identical after it.
     fn refused(&self, extra: &[&str], code: i32, says: &str) {
-        let out = self.import(extra);
+        let one = fingerprint(&self.one);
+        let out = self.import(&[extra, &["--apply"][..]].concat());
         assert_eq!(
             out.status.code(),
             Some(code),
@@ -125,6 +127,7 @@ impl Rig {
             "merge-import {extra:?} stopped for another reason: {}",
             text(&out.stderr)
         );
+        assert_eq!(fingerprint(&self.one), one, "merge-import {extra:?} wrote");
     }
 
     fn db(&self, data: &Path) -> Connection {
@@ -292,8 +295,18 @@ fn space_two(data: &Path) {
              ALTER TABLE monos DROP COLUMN space_id; ALTER TABLE sessions DROP COLUMN space_id;",
         )
         .unwrap();
-    write(&data.join("monos/m2/MEMORY.md"), "Space 2's made-up memory");
+    // A transcript naming a file in MonoCode 2's data folder stays as written.
+    let named = data.join("monos/m2/MEMORY.md");
+    Connection::open(data.join("monocode.db"))
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET blocks_json = json_array(?1) WHERE id = 's2-a'",
+            [named.to_str().unwrap()],
+        )
+        .unwrap();
+    write(&named, "Space 2's made-up memory");
     write(&data.join("checkpoints/s2-a/0.json"), "{}");
+    write(&data.join(".window-state.json"), "{}");
 }
 
 /// Defect: a dry run writes, or predicts other counts than an apply makes;
@@ -331,8 +344,12 @@ fn import_child() {
     let plan = dry_run_predicts_and_writes_nothing(&rig);
     arguments_that_stop_the_run(&rig);
     data_that_stops_the_run(&rig);
-    let (one, before) = a_failed_backup_writes_nothing(&rig);
-    apply_makes_the_prediction(&rig, &plan, &one, &before);
+    let lock = std::fs::File::create(rig.one.join("scheduler.lock")).unwrap();
+    lock.try_lock().unwrap();
+    rig.refused(&[], 1, "quit its app first");
+    drop(lock);
+    let resumed = a_stopped_apply_resumes(&rig, &plan);
+    apply_makes_the_prediction(&rig, &resumed);
     second_apply_changes_nothing(&rig);
     app_reads_the_rows(&rig);
     app_reads_the_spaces(&rig);
@@ -383,118 +400,211 @@ fn dry_run_predicts_and_writes_nothing(rig: &Rig) -> Json {
         ])
     );
     assert_eq!(plan["changes"], 18);
+    let left = &plan["not_imported"];
+    assert_eq!(left["own_paths"]["count"], 1, "{left}");
+    assert_eq!(
+        left["own_paths"]["columns"],
+        serde_json::json!({"sessions.blocks_json": 1})
+    );
+    assert_eq!(
+        left["other_entries"]["entries"],
+        serde_json::json!([".window-state.json"])
+    );
+    assert_eq!(left["browser_storage"]["count"], 0);
     plan
 }
 
-/// A path in the real home, the first app's Codex login and a stale report.
+/// Arguments that stop an apply: a path in the real home, the first app's
+/// Codex login, a stale report, a backup folder inside an app's data or one
+/// that cannot be made, a login folder outside the home folder or inside an
+/// app's data, and one folder for both logins.
 fn arguments_that_stop_the_run(rig: &Rig) {
     let real = PathBuf::from(std::env::var_os(REAL_HOME).unwrap()).join(format!(
         "Library/Application Support/ade178-missing-{}",
         uuid::Uuid::new_v4()
     ));
-    rig.refused(&["--space1", real.to_str().unwrap()], 2, "--real");
-    let instance_one = rig.home.join(".codex");
-    rig.refused(
-        &["--codex-home", instance_one.to_str().unwrap()],
-        1,
-        "never touched",
-    );
     let mut stale: Json =
         serde_json::from_slice(&std::fs::read(rig.root.join("report/merge-dry-run.json")).unwrap())
             .unwrap();
     stale["tables"]["sessions"]["rows"]["space2"] = 1.into();
-    let stale_path = rig.root.join("stale.json");
-    std::fs::write(&stale_path, stale.to_string()).unwrap();
-    rig.refused(
-        &["--report", stale_path.to_str().unwrap()],
-        1,
-        "the report says",
-    );
-}
-
-/// A shared folder entry or row key, a table with no rule, Spaces rows
-/// MonoCode 2 made, and a running app. Each is undone after its refusal.
-fn data_that_stops_the_run(rig: &Rig) {
-    write(&rig.one.join("monos/m2/MEMORY.md"), "another Mono's memory");
-    rig.refused(&[], 1, "in both Spaces with different contents");
-    std::fs::remove_dir_all(rig.one.join("monos/m2")).unwrap();
-    rig.db(&rig.one)
-        .execute_batch("INSERT INTO notes (id, slug, title, created_at, updated_at) VALUES ('n2', 'other', 'Other', 1, 1)")
-        .unwrap();
-    rig.report();
-    rig.refused(&[], 1, "notes: 1 Space 2 rows share a key");
-    rig.db(&rig.one)
-        .execute_batch("DELETE FROM notes WHERE id = 'n2'")
-        .unwrap();
-    rig.report();
-    for (made, says, undo) in [
-        (
-            "CREATE TABLE made_up_new (id TEXT PRIMARY KEY)",
-            "No import rule for made_up_new",
-            "DROP TABLE made_up_new",
-        ),
-        (
-            "CREATE TABLE space_projects (project_path TEXT PRIMARY KEY, space_id TEXT NOT NULL);
-             INSERT INTO space_projects VALUES ('/q', 'space-3')",
-            "already has its own space_projects rows",
-            "DROP TABLE space_projects",
-        ),
-    ] {
-        rig.db(&rig.two).execute_batch(made).unwrap();
-        rig.refused(&[], 1, says);
-        rig.db(&rig.two).execute_batch(undo).unwrap();
+    std::fs::write(rig.root.join("stale.json"), stale.to_string()).unwrap();
+    std::fs::write(rig.root.join("not-a-folder"), "").unwrap();
+    for folder in [rig.root.join("outside"), rig.one.join("login")] {
+        std::fs::create_dir_all(folder).unwrap();
     }
-    let lock = std::fs::File::create(rig.one.join("scheduler.lock")).unwrap();
-    lock.try_lock().unwrap();
-    rig.refused(&["--apply"], 1, "quit its app first");
+    let path = |p: PathBuf| p.to_str().unwrap().to_owned();
+    let rows: [(&str, String, i32, &str); 8] = [
+        ("--space1", path(real), 2, "--real"),
+        (
+            "--codex-home",
+            path(rig.home.join(".codex")),
+            1,
+            "never touched",
+        ),
+        (
+            "--report",
+            path(rig.root.join("stale.json")),
+            1,
+            "the report says",
+        ),
+        (
+            "--backup",
+            path(rig.one.join("backups")),
+            2,
+            "--backup must be outside",
+        ),
+        (
+            "--backup",
+            path(rig.root.join("not-a-folder/b")),
+            1,
+            "Not a directory",
+        ),
+        (
+            "--claude-home",
+            path(rig.root.join("outside")),
+            1,
+            "inside the home folder",
+        ),
+        (
+            "--claude-home",
+            path(rig.one.join("login")),
+            1,
+            "outside every app data folder",
+        ),
+        (
+            "--codex-home",
+            path(rig.home.join(".claude-2")),
+            1,
+            "must be different folders",
+        ),
+    ];
+    for (flag, value, code, says) in rows {
+        rig.refused(&[flag, value.as_str()], code, says);
+    }
+    std::fs::remove_dir(rig.one.join("login")).unwrap();
 }
 
-/// Space 1's files and rows as they were before any write.
-fn a_failed_backup_writes_nothing(
-    rig: &Rig,
-) -> (BTreeMap<String, String>, BTreeMap<String, Vec<String>>) {
+type Change = fn(&Rig);
+
+/// Data that stops an apply, each made, refused against a fresh report and
+/// undone: a Space 1 folder entry or row sharing a Space 2 key, a table with
+/// no rule, Spaces rows or named logins MonoCode 2 made itself, another
+/// login at Space 2's link, Space 2 already on another login, and a
+/// `space-2` the user made under another name.
+fn data_that_stops_the_run(rig: &Rig) {
+    let rows: [(Change, &str, Change); 8] = [
+        (
+            |rig| write(&rig.one.join("monos/m2/MEMORY.md"), "another Mono's memory"),
+            "in both Spaces with different contents",
+            |rig| std::fs::remove_dir_all(rig.one.join("monos/m2")).unwrap(),
+        ),
+        (
+            |rig| {
+                sql(&rig.one, "INSERT INTO notes (id, slug, title, created_at, updated_at) VALUES ('n2', 'other', 'Other', 1, 1)")
+            },
+            "notes: 1 Space 2 rows share a key",
+            |rig| sql(&rig.one, "DELETE FROM notes WHERE id = 'n2'"),
+        ),
+        (
+            |rig| sql(&rig.two, "CREATE TABLE made_up_new (id TEXT PRIMARY KEY)"),
+            "No import rule for made_up_new",
+            |rig| sql(&rig.two, "DROP TABLE made_up_new"),
+        ),
+        (
+            |rig| {
+                sql(&rig.two, "CREATE TABLE space_projects (project_path TEXT PRIMARY KEY, space_id TEXT NOT NULL);
+                 INSERT INTO space_projects VALUES ('/q', 'space-3')")
+            },
+            "already has its own space_projects rows",
+            |rig| sql(&rig.two, "DROP TABLE space_projects"),
+        ),
+        (
+            |rig| std::fs::create_dir_all(rig.two.join("provider-accounts/claude/x")).unwrap(),
+            "holds named logins",
+            |rig| std::fs::remove_dir_all(rig.two.join("provider-accounts")).unwrap(),
+        ),
+        (
+            |rig| {
+                let link = rig.one.join("provider-accounts/claude/monocode-2");
+                std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+                std::fs::create_dir_all(rig.home.join(".claude-other")).unwrap();
+                std::os::unix::fs::symlink(rig.home.join(".claude-other"), link).unwrap();
+            },
+            "is already another login",
+            |rig| std::fs::remove_dir_all(rig.one.join("provider-accounts")).unwrap(),
+        ),
+        (
+            |rig| {
+                sql(&rig.one, "INSERT INTO spaces (id, name, created_at) VALUES ('space-2', 'Space 2', 1);
+                 INSERT INTO provider_accounts (provider, id, label, created_at) VALUES ('claude', 'other', 'Other', 1);
+                 INSERT INTO space_accounts (space_id, provider, account_id) VALUES ('space-2', 'claude', 'other')")
+            },
+            "Space 2 already uses claude login other",
+            |rig| {
+                sql(
+                    &rig.one,
+                    "DELETE FROM space_accounts; DELETE FROM provider_accounts WHERE id = 'other';
+                 DELETE FROM spaces WHERE id = 'space-2'",
+                )
+            },
+        ),
+        (
+            |rig| {
+                sql(
+                    &rig.one,
+                    "INSERT INTO spaces (id, name, created_at) VALUES ('space-2', 'Work', 1)",
+                )
+            },
+            "space-2 already exists as 'Work'",
+            |rig| sql(&rig.one, "DELETE FROM spaces WHERE id = 'space-2'"),
+        ),
+    ];
+    for (make, says, undo) in rows {
+        make(rig);
+        rig.report();
+        rig.refused(&[], 1, says);
+        undo(rig);
+        rig.report();
+    }
+}
+
+fn sql(data: &Path, batch: &str) {
+    Connection::open(data.join("monocode.db"))
+        .unwrap()
+        .execute_batch(batch)
+        .unwrap();
+}
+
+/// An apply stopped after its backup, folder copies and login link, before
+/// the rows: another connection holds Space 1's write lock. The backup is
+/// Space 1 as it was, and the link is the importer's own. A dry run then
+/// counts the copied entries and the link as present and predicts every row.
+fn a_stopped_apply_resumes(rig: &Rig, plan: &Json) -> Json {
     let one = fingerprint(&rig.one);
     let before = dump(&rig.one.join("monocode.db"));
-    let not_a_folder = rig.root.join("not-a-folder");
-    std::fs::write(&not_a_folder, "").unwrap();
-    rig.refused(
-        &["--apply", "--backup", not_a_folder.to_str().unwrap()],
-        1,
-        "Not a directory",
+    let holder = rig.db(&rig.one);
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let out = rig.import(&["--apply"]);
+    drop(holder);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stderr).contains("database is locked"),
+        "{}",
+        text(&out.stderr)
     );
     assert_eq!(
-        fingerprint(&rig.one),
-        one,
-        "a failed backup let a write through"
+        dump(&rig.one.join("monocode.db")),
+        before,
+        "rows were imported"
     );
-    (one, before)
-}
-
-/// The apply makes what the dry run predicted, after a backup that restores
-/// Space 1 as it was, and links the login instead of copying it.
-fn apply_makes_the_prediction(
-    rig: &Rig,
-    plan: &Json,
-    one: &BTreeMap<String, String>,
-    before: &BTreeMap<String, Vec<String>>,
-) {
-    let done = rig.imported(&["--apply"]);
-    for key in [
-        "tables",
-        "kept",
-        "folders",
-        "links",
-        "registered",
-        "changes",
-    ] {
-        assert_eq!(
-            done[key], plan[key],
-            "the apply's {key} differ from the dry run's"
-        );
-    }
-    let backup = PathBuf::from(done["backup"].as_str().unwrap());
+    let backups: Vec<PathBuf> = std::fs::read_dir(rig.root.join("backups"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(backups.len(), 1, "{backups:?}");
+    let backup = &backups[0];
     assert_eq!(
-        &dump(&backup.join("monocode.db")),
+        dump(&backup.join("monocode.db")),
         before,
         "the DB backup is not Space 1 as it was"
     );
@@ -510,7 +620,51 @@ fn apply_makes_the_prediction(
         monos,
         "the monos/ backup is not Space 1's monos/ as it was"
     );
-    assert!(backup.join("manifest.json").is_file() && backup.join("result.json").is_file());
+    assert!(backup.join("manifest.json").is_file());
+    let resumed = rig.imported(&[]);
+    for key in ["tables", "kept", "registered", "not_imported"] {
+        assert_eq!(
+            resumed[key], plan[key],
+            "after a stop the dry run's {key} moved"
+        );
+    }
+    for folder in ["monos", "checkpoints"] {
+        assert_eq!(
+            resumed["folders"][folder],
+            serde_json::json!({"source": 1, "present": 1, "copy": []})
+        );
+    }
+    assert_eq!(resumed["links"], serde_json::json!({"claude": "present"}));
+    assert_eq!(resumed["changes"], plan["changes"].as_i64().unwrap() - 3);
+    resumed
+}
+
+/// The resumed apply imports what the dry run predicted, after a backup of
+/// the DB, and the login stays a link, not a copy.
+fn apply_makes_the_prediction(rig: &Rig, plan: &Json) {
+    let before = dump(&rig.one.join("monocode.db"));
+    let done = rig.imported(&["--apply"]);
+    for key in [
+        "tables",
+        "kept",
+        "not_imported",
+        "folders",
+        "links",
+        "registered",
+        "changes",
+    ] {
+        assert_eq!(
+            done[key], plan[key],
+            "the apply's {key} differ from the dry run's"
+        );
+    }
+    let backup = PathBuf::from(done["backup"].as_str().unwrap());
+    assert_eq!(
+        dump(&backup.join("monocode.db")),
+        before,
+        "the DB backup is not Space 1 as it was"
+    );
+    assert!(backup.join("result.json").is_file());
     let link = rig.one.join("provider-accounts/claude/monocode-2");
     assert!(
         std::fs::symlink_metadata(&link)

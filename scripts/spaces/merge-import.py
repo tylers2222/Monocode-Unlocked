@@ -15,6 +15,13 @@ With --apply it first backs up the target DB and every target folder it changes 
 under --backup and checks the copies by sha256; no write happens unless that backup is complete.
 Then it copies the data folders, links the login folders and imports the rows in one transaction,
 which it rolls back when a count differs from the prediction. A second apply makes 0 changes.
+Every conflict check (rows, folder entries, login links, Space 2's own name and login) runs in the
+prediction, before the backup. Only a race after it can still stop an apply; the DB then rolls
+back, the copied folders and login links stay, and a re-run converges.
+
+What the ADE-169 report lists and the import leaves where it is is printed under "Not imported":
+values that name MonoCode 2's data folder (transcript text, kept as written, so keep that folder),
+MonoCode 2's browser storage, and its other data-folder entries.
 
 The Spaces rows mirror the app's own writers (spaces::create, account::save_account and
 account::set_login), since those run only inside the app and the app must be quit. Every path
@@ -145,14 +152,8 @@ def tree_digest(root: Path) -> str | None:
     return digest.hexdigest()
 
 
-def read_only(path: Path) -> sqlite3.Connection:
-    """A read-only open that leaves the files as they are (see dry.snapshot)."""
-    live = Path(f"{path}-wal").exists()
-    return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro{'' if live else '&immutable=1'}", uri=True)
-
-
 def db_digest(path: Path) -> str:
-    db = read_only(path)
+    db = dry.read_only(path)
     try:
         return hashlib.sha256("\n".join(db.iterdump()).encode()).hexdigest()
     finally:
@@ -160,7 +161,9 @@ def db_digest(path: Path) -> str:
 
 
 def hold_lock(stack: ExitStack, data: Path) -> None:
-    """Holds the app's scheduler lock, so neither app can start meanwhile."""
+    """Holds the app's scheduler lock, so the run stops while an app runs. A
+    held lock does not keep an app from starting (it only gives up the clock):
+    both apps stay closed until the run ends."""
     lock = data / "scheduler.lock"
     if not lock.exists():
         return
@@ -259,6 +262,9 @@ def register_rows(db, logins: dict, now: int) -> list[str]:
     """Space 2, its logins and projects, as spaces::create, save_account, set_login and
     set_project_space write them."""
     done = []
+    named = db.execute("SELECT name FROM main.spaces WHERE id = ?", (SPACE_ID,)).fetchone()
+    if named and named[0] != SPACE_NAME and not is_imported(db):
+        raise Stop(f"{SPACE_ID} already exists as {named[0]!r}: MonoCode 2's data would join that Space")
     if db.execute("INSERT OR IGNORE INTO main.spaces (id, name, color, created_at) VALUES (?, ?, NULL, ?)",
                   (SPACE_ID, SPACE_NAME, now)).rowcount:
         done.append(f"spaces {SPACE_ID}")
@@ -380,7 +386,7 @@ def backup(space1: Path, root: Path, folders: list[str]) -> Path:
     run = root / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     run.mkdir(parents=True)
     db = space1 / "monocode.db"
-    source, target = read_only(db), sqlite3.connect(run / "monocode.db")
+    source, target = dry.read_only(db), sqlite3.connect(run / "monocode.db")
     try:
         source.backup(target)
     finally:
@@ -400,6 +406,31 @@ def backup(space1: Path, root: Path, folders: list[str]) -> Path:
     return run
 
 
+def not_imported(report: dict, space2: Path) -> dict:
+    """The ADE-169 inventory the import leaves where it is, with the reason."""
+    paths = report["own_paths"]["space2"]
+    storage = report["browser_storage"]
+    others = report["other_entries"]["space2"]
+    return {
+        "own_paths": {
+            "count": sum(paths.values()),
+            "columns": paths,
+            "reason": f"values naming {space2} stay as written (transcript text): keep that folder",
+        },
+        "browser_storage": {
+            "count": len(storage["space2"]["keys"]),
+            "differ": len(storage["keys_differ"]),
+            "only_in_space2": len(storage["keys_only_in_space2"]),
+            "reason": "browser storage stays with each app; the one app keeps Space 1's",
+        },
+        "other_entries": {
+            "count": len(others),
+            "entries": others,
+            "reason": "MonoCode 2's own window state and lock files",
+        },
+    }
+
+
 def render(result: dict) -> str:
     mode = "apply" if result["apply"] else "dry run (nothing written)"
     lines = [f"merge-import {mode}: MonoCode 2 -> {SPACE_NAME}"]
@@ -412,6 +443,8 @@ def render(result: dict) -> str:
               for t, c in result["tables"].items()]
     lines += ["", "Kept from the target:"]
     lines += [f"  {t}: {n} Space 2 rows not copied ({KEEP[t]})" for t, n in result["kept"].items()] or ["  none"]
+    lines += ["", "Not imported:"]
+    lines += [f"  {kind}: {n['count']} ({n['reason']})" for kind, n in result["not_imported"].items()]
     lines += ["", f"  {'folder':<28} {'space2':>8} {'present':>8} {'copy':>8}"]
     lines += [f"  {n + '/':<28} {f['source']:>8} {f['present']:>8} {len(f['copy']):>8}"
               for n, f in result["folders"].items()]
@@ -454,6 +487,7 @@ def run(args) -> dict:
         db.execute("COMMIT")
         sources = dry.tables(db, "src")
         result["kept"] = {t: count(db, "src", t) for t in KEEP if t in sources}
+        result["not_imported"] = not_imported(report, space2)
         result["folders"] = plan_folders(space1, space2, result["imported_before"])
         result["links"] = plan_links(space1, logins)
         result["logins"] = {p: str(h) for p, h in logins.items()}
@@ -477,7 +511,8 @@ def run(args) -> dict:
         try:
             done = import_db(live, logins, now)
             if done["tables"] != result["tables"] or done["registered"] != result["registered"]:
-                raise Stop("The import changed other counts than the dry run predicted; rolled back")
+                raise Stop("The import changed other counts than the dry run predicted: the DB rolled back;"
+                           " the copied folders and the login link stay, and a re-run converges")
             live.execute("COMMIT")
         except BaseException:
             live.execute("ROLLBACK")
