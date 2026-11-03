@@ -206,6 +206,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/tyler/main' }}
 
       - run: npm ci
+      # The real srt for scenario::logins::a_linked_login_signs_in_under_the_real_srt
+      # (ADE-224), the version agent_sandbox.rs pins.
+      - run: npm install -g @anthropic-ai/sandbox-runtime@0.0.81
+        if: runner.os == 'macOS'
       # vitest and tsc do not depend on the OS, so macOS skips them. Windows keeps
       # vitest: its path handling has failed there before.
       - run: npm test

@@ -73,9 +73,9 @@ fn child_env<R: Runtime>(
         .map(PathBuf::from)
         .or_else(|| crate::passwd_identity().map(|id| id.home.into()))
         .unwrap_or_default();
-    // The folder `apply_provider_account` gives the child, as `fs.rs` reads it.
+    // The folder `apply_provider_account` gives the child: a linked login's target.
     let config = match account_id {
-        Some(id) => Some(crate::harness::provider_account_path(app, "claude", id)?.into()),
+        Some(id) => crate::harness::provider_account_dir(app, "claude", Some(id))?.map(Into::into),
         None => std::env::var_os("CLAUDE_CONFIG_DIR"),
     };
     Ok((data, config, home))

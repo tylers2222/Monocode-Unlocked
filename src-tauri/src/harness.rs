@@ -1029,8 +1029,31 @@ pub fn harness_spawn<R: Runtime>(
         child.session(),
         &workdir,
     )?;
+    let account_dir = match &account {
+        Some(account) => provider_account_dir(&app, &account.provider, Some(&account.id))?,
+        None => None,
+    };
+    let codex_store = match codex_store.as_deref() {
+        None => None,
+        Some("mono")
+            if binary_provider.as_deref() == Some("codex")
+                && account.as_ref().is_some_and(|a| a.provider == "codex")
+                && args.first().is_some_and(|a| a == "app-server") =>
+        {
+            let store =
+                crate::codex_mono_store::prepare(&app, account.as_ref().map(|a| a.id.as_str()))?;
+            Some(Arc::new(store))
+        }
+        Some(_) => {
+            return Err("Private Mono storage is only supported for Codex app-server".into())
+        }
+    };
+    let homes = crate::agent_sandbox::Homes {
+        account: account_dir.as_deref(),
+        codex: codex_store.as_ref().map(|store| store.home.as_path()),
+    };
     let crate::agent_sandbox::Spawn { mut cmd, sandboxed } =
-        crate::agent_sandbox::command(&app, &command, fence.as_ref(), &srt_deny)?;
+        crate::agent_sandbox::command(&app, &command, fence.as_ref(), &srt_deny, homes)?;
     let args = match binary_provider.as_deref() {
         Some("claude") => {
             let fenced = fence.map(|fence| fence.others).unwrap_or_default();
@@ -1070,28 +1093,15 @@ pub fn harness_spawn<R: Runtime>(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     prepare_child(&mut cmd, &command);
-    apply_provider_account(&app, &mut cmd, account.as_ref())?;
-    let codex_store = match codex_store.as_deref() {
-        None => None,
-        Some("mono")
-            if binary_provider.as_deref() == Some("codex")
-                && account.as_ref().is_some_and(|a| a.provider == "codex")
-                && args.first().is_some_and(|a| a == "app-server") =>
-        {
-            let store =
-                crate::codex_mono_store::prepare(&app, account.as_ref().map(|a| a.id.as_str()))?;
-            let private_path = serde_json::to_string(&store.home).map_err(|e| e.to_string())?;
-            // Explicit config takes precedence over CODEX_SQLITE_HOME. Override
-            // both so a user's sqlite_home cannot index Monos in the Codex app.
-            cmd.env("CODEX_HOME", &store.home)
-                .env("CODEX_SQLITE_HOME", &store.home)
-                .args(["-c", &format!("sqlite_home={private_path}")]);
-            Some(Arc::new(store))
-        }
-        Some(_) => {
-            return Err("Private Mono storage is only supported for Codex app-server".into())
-        }
-    };
+    apply_provider_account(&mut cmd, account.as_ref(), account_dir.as_deref());
+    if let Some(store) = &codex_store {
+        let private_path = serde_json::to_string(&store.home).map_err(|e| e.to_string())?;
+        // Explicit config takes precedence over CODEX_SQLITE_HOME. Override
+        // both so a user's sqlite_home cannot index Monos in the Codex app.
+        cmd.env("CODEX_HOME", &store.home)
+            .env("CODEX_SQLITE_HOME", &store.home)
+            .args(["-c", &format!("sqlite_home={private_path}")]);
+    }
 
     crate::control::configure_child(&app, &session_id, &mut cmd);
     crate::giga_workspace::configure_child(
@@ -1297,16 +1307,10 @@ pub fn provider_account_remove<R: Runtime>(
     })
 }
 
-fn apply_provider_account<R: Runtime>(
-    app: &AppHandle<R>,
-    cmd: &mut Command,
-    account: Option<&HarnessAccount>,
-) -> Result<(), String> {
-    let Some(account) = account else {
-        return Ok(());
-    };
-    let Some(dir) = provider_account_dir(app, &account.provider, Some(&account.id))? else {
-        return Ok(());
+/// `dir` is `provider_account_dir` for `account`.
+fn apply_provider_account(cmd: &mut Command, account: Option<&HarnessAccount>, dir: Option<&Path>) {
+    let (Some(account), Some(dir)) = (account, dir) else {
+        return;
     };
     match account.provider.as_str() {
         "claude" => {
@@ -1327,7 +1331,6 @@ fn apply_provider_account<R: Runtime>(
         }
         _ => unreachable!("provider_account_dir validates the provider"),
     }
-    Ok(())
 }
 
 /// A child that stops draining stdin can block `write_all` for minutes, so the
