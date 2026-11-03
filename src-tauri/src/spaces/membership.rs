@@ -7,14 +7,13 @@ use rusqlite::{Connection, OptionalExtension};
 /// else its parent's (the lead that started it, the Mono whose chat it is,
 /// or the session its `app-<parent>-<request>` id names, as a Mono chat
 /// names its leads and habit runs), else, for an automation run, which has
-/// no Mono owner, its project's Space (`project_space`), else the active
-/// Space. The session and Mono inserts store it; the spawn hook reads it for
-/// a session that may not be saved yet.
+/// no Mono owner, its automation's project's Space (`project_space`), else
+/// the active Space. The session and Mono inserts store it; the spawn hook
+/// reads it for a session that may not be saved yet.
 pub(crate) fn space_for_row(
     conn: &Connection,
     id: &str,
     lead: Option<&str>,
-    automation_project: Option<&str>,
 ) -> rusqlite::Result<String> {
     for parent in [id].into_iter().chain(lead).chain(named_parents(id)) {
         let space = conn
@@ -31,16 +30,33 @@ pub(crate) fn space_for_row(
             return Ok(space);
         }
     }
-    if let Some(project) = automation_project {
-        let key = super::project_key(project)
-            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?;
-        return super::space_of_project(conn, &key);
+    if let Some(project) = automation_project(conn, id)? {
+        return super::project_space_in(conn, &project)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()));
     }
     conn.query_row(
         "SELECT active_space_id FROM space_settings WHERE id = 1",
         [],
         |row| row.get(0),
     )
+}
+
+/// The project of the automation session `id` runs for, from saved rows: the
+/// newest run that names it (`run_json.sessionId`, saved before the run's
+/// first turn) and its automation's folder.
+pub(super) fn automation_project(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    let project: Option<Option<String>> = conn
+        .query_row(
+            "SELECT json_extract(a.definition_json, '$.cwd')
+               FROM automation_runs r JOIN automations a ON a.id = r.automation_id
+              WHERE json_extract(r.run_json, '$.sessionId') = ?1
+              ORDER BY r.created_at DESC
+              LIMIT 1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(project.flatten())
 }
 
 /// The parents an `app-<parent>-<request>` id may name, longest first: a

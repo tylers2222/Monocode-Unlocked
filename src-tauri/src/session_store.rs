@@ -1496,7 +1496,6 @@ pub(crate) fn upsert_session(
             conn,
             &session.id,
             session.lead_session_id.as_deref(),
-            automation_id.map(|_| session.cwd.as_str()),
         )?,
     };
 

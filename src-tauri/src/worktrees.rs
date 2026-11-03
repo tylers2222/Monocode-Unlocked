@@ -261,6 +261,18 @@ pub(crate) fn checkout_spot(path: &Path) -> Option<CheckoutSpot> {
     })
 }
 
+/// The folder in the main checkout that `folder` stands for: `folder` in a
+/// main checkout, the same place in the main checkout for a folder in one of
+/// its work copies. `None` outside git or in a submodule.
+pub(crate) fn main_checkout_folder(folder: &Path) -> Option<PathBuf> {
+    let spot = checkout_spot(folder).filter(|spot| !spot.submodule)?;
+    let main = list(&spot.top)
+        .ok()?
+        .into_iter()
+        .find(|tree| tree.is_main)?;
+    Some(PathBuf::from(main.path).join(spot.inside))
+}
+
 /// Space `space_id`'s own copy of the checkout at `root` for `session_id`:
 /// `<project>-worktrees/<space>/<session>` on branch `<space>/<session>`,
 /// made from `root`'s HEAD the first time and reused after.

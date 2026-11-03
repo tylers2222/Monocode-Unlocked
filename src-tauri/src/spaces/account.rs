@@ -1,6 +1,8 @@
 //! Logins (`provider_accounts`) and the login each Space uses per provider
 //! (`space_accounts`).
 
+use std::path::Path;
+
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -170,6 +172,19 @@ pub fn spaces_login_set(store: State<'_, SessionStore>, login: SpaceLogin) -> Re
     set_login(&store, &login)
 }
 
+/// The project a session with no row runs in, as its saved `cwd` would name
+/// it: `~` (no project) for the home folder, the main checkout's folder for
+/// a work copy's (`worktrees::main_checkout_folder`), else the folder.
+fn unsaved_project(folder: &Path) -> String {
+    if folder == crate::fs::expand_home("~") {
+        return "~".into();
+    }
+    crate::worktrees::main_checkout_folder(folder)
+        .unwrap_or_else(|| folder.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn cli_name(provider: Provider) -> &'static str {
     match provider {
         Provider::Claude => "Claude",
@@ -181,8 +196,9 @@ fn cli_name(provider: Provider) -> &'static str {
 /// The login a session's child starts with: the session's own (any but the
 /// CLI's `default`, which the front end sends for a session without one),
 /// else its project's own login in its Space, else its Space's login for
-/// that CLI (`project_login`). The project is the session's folder, or the
-/// child's for a session with no row. Space 1 with none set keeps the
+/// that CLI (`project_login`). The project is the session's folder; for a
+/// session with no row, its automation's folder, else the project its
+/// child's folder stands for ([`unsaved_project`]). Space 1 with none set keeps the
 /// CLI's own login, as every session did before Spaces; another Space
 /// refuses. A session with no row yet (never saved, or its first save not
 /// committed) is in the Space it would join. A child whose CLI keeps no
@@ -201,17 +217,21 @@ pub(super) fn resolve(
     else {
         return Ok(target);
     };
-    let (space_id, name, folder) = with_conn(store, |conn| {
-        let space_id = membership::space_for_row(conn, session_id, None, None)?;
+    let (space_id, name, project) = with_conn(store, |conn| {
+        let space_id = membership::space_for_row(conn, session_id, None)?;
         let (name, folder): (String, Option<String>) = conn.query_row(
             "SELECT COALESCE((SELECT name FROM spaces WHERE id = ?1), ?1),
                     (SELECT cwd FROM sessions WHERE id = ?2)",
             params![space_id, session_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        Ok((space_id, name, folder))
+        let project = match folder {
+            Some(folder) => Some(folder),
+            None => membership::automation_project(conn, session_id)?,
+        };
+        Ok((space_id, name, project))
     })?;
-    let project = folder.unwrap_or_else(|| target.workdir.to_string_lossy().into_owned());
+    let project = project.unwrap_or_else(|| unsaved_project(&target.workdir));
     let login = super::project_login(store, &space_id, &project, provider)?;
     match login {
         Some(id) => Ok(SpawnTarget {
