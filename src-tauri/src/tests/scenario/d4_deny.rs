@@ -76,7 +76,7 @@ fn d4_marker_decides_and_bad_input_fails_the_spawn() {
     std::fs::write(work.join(".mcp.json"), "{}").unwrap();
     let plain = spawn_args(r#"{"alwaysThinkingEnabled":true}"#);
     let spawn = |data: &Path, config: Option<&str>, args: Vec<String>| {
-        args_in(data, config.map(OsStr::new), &home, &work, false, args)
+        args_in(data, config.map(OsStr::new), &home, &work, false, &[], args)
     };
 
     assert_eq!(
@@ -97,7 +97,8 @@ fn d4_marker_decides_and_bad_input_fails_the_spawn() {
         true,
         "on: other keys kept"
     );
-    let in_srt = settings_of(&args_in(&data, None, &home, &work, true, plain.clone()).unwrap());
+    let in_srt =
+        settings_of(&args_in(&data, None, &home, &work, true, &[], plain.clone()).unwrap());
     assert!(
         in_srt["permissions"]["deny"].is_array() && in_srt.get("sandbox").is_none(),
         "on inside D1's srt: deny rules, no sandbox block"
@@ -226,7 +227,7 @@ fn an_unreadable_hook_source_fails_the_spawn(root: &Path, data: &Path, work: &Pa
         .is_err_and(|e| e.kind() == ErrorKind::PermissionDenied)
     {
         assert!(
-            args_in(data, None, &locked, work, false, spawn_args("{}")).is_err(),
+            args_in(data, None, &locked, work, false, &[], spawn_args("{}")).is_err(),
             "on: a hook source that cannot be read fails the spawn"
         );
     }
@@ -263,6 +264,7 @@ fn a_settings_chain_is_denied_at_every_link(
         home,
         work,
         false,
+        &[],
         spawn_args("{}"),
     );
     let deny = deny_of(&on.unwrap());
@@ -349,7 +351,7 @@ fn a_dangling_settings_link_is_denied_where_it_points(root: &Path, data: &Path, 
         "Edit(/{}/gen/settings.json)",
         work.canonicalize().unwrap().display()
     );
-    let deny = deny_of(&args_in(data, None, home, &work, false, spawn_args("{}")).unwrap());
+    let deny = deny_of(&args_in(data, None, home, &work, false, &[], spawn_args("{}")).unwrap());
     assert!(
         deny.contains(&rule),
         "on: a dangling settings link denies {rule}: {deny:?}"
@@ -522,7 +524,8 @@ fn every_link_and_real_path_on_the_list_is_covered(at: &Path, data: &Path) {
     let (home, work, config) = link_layouts(at);
     let config_dir = Some(config.as_os_str());
     let srt = srt_deny_in(data, config_dir, &home, &work).unwrap();
-    let deny = deny_of(&args_in(data, config_dir, &home, &work, false, spawn_args("{}")).unwrap());
+    let deny =
+        deny_of(&args_in(data, config_dir, &home, &work, false, &[], spawn_args("{}")).unwrap());
     let files = [
         config.join("settings.json"),
         home.join(".claude/hooks/a.sh"),
@@ -688,7 +691,7 @@ fn grid_misses(at: &Path, links: [Slot; 3], dots: usize, plain: bool, data: &Pat
     let hook = json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}});
     std::fs::write(claude.join("settings.json"), hook.to_string()).unwrap();
     let srt = srt_deny_in(data, None, &home, &work).unwrap();
-    let deny = deny_of(&args_in(data, None, &home, &work, false, spawn_args("{}")).unwrap());
+    let deny = deny_of(&args_in(data, None, &home, &work, false, &[], spawn_args("{}")).unwrap());
     std::iter::once(work.join(".claude/settings.json"))
         .chain(scripts)
         .flat_map(|path| link_misses(&path, false, &srt, &deny))

@@ -1022,10 +1022,18 @@ pub fn harness_spawn<R: Runtime>(
         Some("claude") => crate::claude_deny::srt_deny(&app, &workdir, account_id)?,
         _ => Vec::new(),
     };
+    let fence = crate::agent_sandbox::space_fence(
+        &app.state::<crate::session_store::SessionStore>(),
+        &session_id,
+        &workdir,
+    )?;
     let crate::agent_sandbox::Spawn { mut cmd, sandboxed } =
-        crate::agent_sandbox::command(&app, &command, &srt_deny)?;
+        crate::agent_sandbox::command(&app, &command, fence.as_ref(), &srt_deny)?;
     let args = match binary_provider.as_deref() {
-        Some("claude") => crate::claude_deny::args(&app, &workdir, account_id, sandboxed, args)?,
+        Some("claude") => {
+            let fenced = fence.map(|fence| fence.others).unwrap_or_default();
+            crate::claude_deny::args(&app, &workdir, account_id, sandboxed, &fenced, args)?
+        }
         _ => args,
     };
 
