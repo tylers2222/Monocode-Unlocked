@@ -69,6 +69,8 @@ pub(crate) fn share(source: &Path, home: PathBuf) -> Result<Share, String> {
     let mirror = Home::of(&home);
     let mut state = mirror.lock();
     if state.live == 0 && !state.unsynced {
+        #[cfg(all(test, target_os = "linux"))]
+        tests::inside_prepare(&home);
         state.mirrors = prepare_keyring(source, &home)?;
         state.source = source.to_owned();
     }
@@ -154,6 +156,7 @@ impl KeyringMirror {
 /// On keyutils, never a real Keychain.
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    use std::sync::mpsc;
     use std::time::Duration;
 
     use super::*;
@@ -217,6 +220,19 @@ mod tests {
     }
 
     const GATEWAY: &str = "|gateway-oauth";
+
+    type Held = (mpsc::Sender<()>, mpsc::Receiver<()>);
+
+    /// Homes whose next prepare says it started, then waits to be let go.
+    static HELD: Mutex<BTreeMap<PathBuf, Held>> = Mutex::new(BTreeMap::new());
+
+    pub(super) fn inside_prepare(home: &Path) {
+        let held = HELD.lock().unwrap().remove(home);
+        if let Some((started, go)) = held {
+            started.send(()).unwrap();
+            go.recv().unwrap();
+        }
+    }
 
     fn both(value: &str) -> [Option<String>; 2] {
         [Some(value.to_owned()), Some(value.to_owned())]
@@ -306,5 +322,53 @@ mod tests {
             "a spawn on another home waited"
         );
         assert_eq!(file_store.read(GATEWAY)[1].as_deref(), Some("kept"));
+    }
+
+    /// Defect (#521 r2 m1): a failed sync must keep the home joined, or the
+    /// next spawn on the idle home copies the login over the live child's key.
+    /// Hiding the home makes `home_key` fail inside the sync's first mirror build.
+    #[test]
+    fn a_failed_sync_keeps_the_live_key_on_the_idle_home() {
+        let login = Login::new(false);
+        let a = login.share();
+        login.write(true, "", "key-a");
+        login.seal();
+        let hidden = login.root.join("hidden");
+        std::fs::rename(&login.home, &hidden).unwrap();
+        a.sync();
+        std::fs::rename(&hidden, &login.home).unwrap();
+        drop(a);
+        let b = login.share();
+        assert_eq!(login.read("")[1].as_deref(), Some("key-a"));
+        drop(b);
+    }
+
+    /// Defect (#521 r2 m2): the home's lock is let go across the prepare, so a
+    /// second spawn on the idle home also sees no live store and prepares,
+    /// copying the login over what the first spawn's child writes.
+    #[test]
+    fn a_second_spawn_waits_for_the_first_ones_prepare() {
+        let login = Login::new(false);
+        let (started, start) = mpsc::channel();
+        let (go, wait) = mpsc::channel();
+        HELD.lock()
+            .unwrap()
+            .insert(login.home.clone(), (started, wait));
+        let (source, home) = (login.source.clone(), login.home.clone());
+        let first = std::thread::spawn(move || share(&source, home).unwrap());
+        start.recv_timeout(Duration::from_secs(20)).unwrap();
+        let (source, home) = (login.source.clone(), login.home.clone());
+        let (send, done) = mpsc::channel();
+        std::thread::spawn(move || send.send(share(&source, home).map(drop)));
+        let early = done.recv_timeout(Duration::from_millis(500));
+        go.send(()).unwrap();
+        let a = first.join().unwrap();
+        assert!(
+            early.is_err(),
+            "a second spawn ran while the first prepared"
+        );
+        let later = done.recv_timeout(Duration::from_secs(20));
+        assert!(matches!(later, Ok(Ok(()))), "the second spawn never ran");
+        drop(a);
     }
 }
