@@ -1,8 +1,11 @@
+import { invoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { pathKey } from "../../../shared/lib/paths";
 import type { HarnessId } from "../../sessions/model/session";
 
 const ACCOUNTS_KEY = "monocode.providerAccounts.v1";
 const SELECTIONS_KEY = "monocode.providerAccountSelections.v1";
+/** The login import's entries the database took, in the order they landed. */
+const ACCOUNTS_IMPORT_KEY = "monocode.providerAccounts.v1.import";
 const CHANGE_EVENT = "monocode-provider-accounts-changed";
 
 export const DEFAULT_PROVIDER_ACCOUNT_ID = "default";
@@ -66,6 +69,131 @@ type StoredSelections = Record<
   string,
   Partial<Record<ProviderAccountProvider, string>>
 >;
+
+/** Browser storage predates Spaces: what it holds is Space 1's (`FIRST_SPACE`). */
+const BROWSER_SPACE = "space-1";
+
+/**
+ * The records `monocode.db` holds, in the shape browser storage held them.
+ * A record it does not hold, and every record until it loads or when it
+ * cannot load, comes from browser storage.
+ */
+let saved: Map<string, string> | undefined;
+let writes: Promise<unknown> = Promise.resolve();
+/** Replaced by a fresh token each time the database refuses a write. */
+let refusal: object = {};
+/** Other windows of this app, once loaded; each reloads its snapshot when one writes. */
+let windows: BroadcastChannel | undefined;
+
+/**
+ * Loads the logins from `monocode.db` before the first render, and once
+ * imports the logins browser storage holds, giving Space 1 each CLI's
+ * `default`. The old key stays for the Space 2 merge (ADE-178). A failure
+ * keeps browser storage.
+ */
+export async function loadProviderAccounts(): Promise<void> {
+  try {
+    windows = new BroadcastChannel("monocode-provider-accounts");
+    windows.onmessage = () => {
+      writes = writes.then(loadSaved).catch(console.error);
+    };
+    await start();
+    await writes;
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+/** Loads the saved logins, then queues the import of browser storage's. */
+async function start(): Promise<void> {
+  const accounts = PROVIDER_ACCOUNT_PROVIDERS.flatMap(providerAccounts);
+  await loadSaved();
+  importOnce(
+    ACCOUNTS_IMPORT_KEY,
+    // `default` cannot be saved, only renamed, so every login is both.
+    ...accounts.map((account): ImportEntry => [
+      `${account.provider}/${account.id}`,
+      () => {
+        saveProviderAccount(account);
+        renameProviderAccount(account.provider, account.id, account.label);
+      },
+    ]),
+    [
+      BROWSER_SPACE,
+      () => {
+        for (const provider of PROVIDER_ACCOUNT_PROVIDERS) {
+          persist("spaces_login_set", {
+            login: {
+              spaceId: BROWSER_SPACE,
+              provider,
+              accountId: DEFAULT_PROVIDER_ACCOUNT_ID,
+            },
+          });
+        }
+      },
+    ],
+  );
+}
+
+/** One entry of an import: its key in the marker, and how to send it. */
+type ImportEntry = [key: string, send: () => void];
+
+/**
+ * Imports browser storage once per entry. Each entry the marker does not
+ * hold is sent in turn on the write queue; once its writes have run, the
+ * marker records it if the database took them all. An entry in the marker is
+ * never sent again, so a later boot only retries what was refused. The
+ * marker lists entries in the order they landed: browser storage's order,
+ * with a retried one last.
+ */
+function importOnce(marker: string, ...entries: ImportEntry[]): void {
+  const landed = readJson<string[]>(marker, Array.of());
+  let seen = refusal;
+  for (const [key, send] of entries) {
+    if (landed.includes(key)) continue;
+    send();
+    // Once its writes have run: kept only if none was refused.
+    writes = writes.then(() => {
+      if (refusal === seen) {
+        landed.push(key);
+        writeJson(marker, landed);
+      }
+      seen = refusal;
+    });
+  }
+}
+
+async function loadSaved(): Promise<void> {
+  const order = readJson<string[]>(ACCOUNTS_IMPORT_KEY, Array.of());
+  // As unsigned, an id the import did not see (-1) ranks after every one it did.
+  const rank = (account: ProviderAccount) =>
+    order.indexOf(`${account.provider}/${account.id}`) >>> 0;
+  const stored: StoredAccounts = {};
+  for (const account of (
+    await invoke<ProviderAccount[]>("spaces_accounts_list")
+  ).sort((a, b) => rank(a) - rank(b))) {
+    (stored[account.provider] ??= Array.of<ProviderAccount>()).push(account);
+  }
+  saved = new Map<string, string>().set(ACCOUNTS_KEY, JSON.stringify(stored));
+  announceChange();
+}
+
+/**
+ * Sends one write to `monocode.db` once it has loaded, and tells the other
+ * windows. A refused write is logged, and replaces the refusal token.
+ */
+function persist(command: string, args: InvokeArgs): void {
+  writes = writes
+    .then(async () => {
+      if (!saved) return;
+      await invoke<void>(command, args);
+      windows!.postMessage(command);
+    })
+    .catch((error: unknown) => {
+      console.error(error);
+      refusal = {};
+    });
+}
 
 export function providerAccounts(
   provider: ProviderAccountProvider,
@@ -133,6 +261,7 @@ export function saveProviderAccount(account: ProviderAccount): void {
     { id: account.id, provider: account.provider, label },
   ]);
   writeJson(ACCOUNTS_KEY, stored);
+  persist("spaces_account_save", { account: { ...account, label } });
   announceChange();
 }
 
@@ -153,6 +282,7 @@ export function renameProviderAccount(
     accounts.map((account) => (account.id === accountId ? renamed : account)),
   );
   writeJson(ACCOUNTS_KEY, stored);
+  persist("spaces_account_save", { account: renamed });
   announceChange();
   return renamed;
 }
@@ -182,6 +312,7 @@ export function removeProviderAccount(
     else selections[key] = nextSelection;
   }
   writeJson(SELECTIONS_KEY, selections);
+  persist("spaces_account_remove", { provider, id: accountId });
   announceChange();
   return true;
 }
@@ -264,7 +395,15 @@ function selectionKey(project: string | undefined): string {
 
 function cleanLabel(value: unknown): string {
   return typeof value === "string"
-    ? value.replace(/\s+/g, " ").trim().slice(0, 48)
+    ? Array.from(
+        // An unpaired surrogate half (a legacy cut through an emoji) is dropped.
+        value
+          .replace(/[\ud800-\udfff]/gu, "")
+          .replace(/\s+/g, " ")
+          .trim(),
+      )
+        .slice(0, 48)
+        .join("")
     : "";
 }
 
@@ -288,7 +427,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readJson<T>(key: string, fallback: T): T {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = saved?.get(key) ?? localStorage.getItem(key);
     return raw ? (JSON.parse(raw) as T) : fallback;
   } catch {
     return fallback;
@@ -296,6 +435,10 @@ function readJson<T>(key: string, fallback: T): T {
 }
 
 function writeJson(key: string, value: unknown): void {
+  if (saved?.has(key)) {
+    saved.set(key, JSON.stringify(value));
+    return;
+  }
   try {
     localStorage.setItem(key, JSON.stringify(value));
   } catch {

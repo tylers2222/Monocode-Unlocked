@@ -1,14 +1,19 @@
-//! A login folder registered through a symlink (ADE-171 part 1/3): a link
-//! at `provider-accounts/<provider>/<id>` to an existing login folder, e.g.
-//! `~/.claude-2`. The scenario starts a harness child on such a login in a
-//! process whose home folder is a scratch folder, so no link or login it
-//! makes is near a real one.
+//! Logins (ADE-171). Part 1/3: a login folder registered through a symlink,
+//! a link at `provider-accounts/<provider>/<id>` to an existing login folder,
+//! e.g. `~/.claude-2`. The scenario starts a harness child on such a login in
+//! a process whose home folder is a scratch folder, so no link or login it
+//! makes is near a real one. Part 2/3: the login list `providerAccounts.ts`
+//! imports from browser storage at boot and then reads and writes, sent as
+//! the JSON it sends through the Spaces storage commands on a real store.
 
 use std::path::{Path, PathBuf};
 
+use serde_json::{json, Value};
 use tauri::Manager;
 
 use super::agent_sandbox::{mock_app, script, wait_for};
+use super::world::World;
+use crate::spaces::{account, Provider, FIRST_SPACE};
 
 const ROOT: &str = "MC_ADE171_ROOT";
 
@@ -190,5 +195,101 @@ fn registered_login_child() {
     assert!(
         target.join("keep").is_file(),
         "removing the login deleted the folder it linked to"
+    );
+}
+
+/// What `loadProviderAccounts` sends for each login browser storage holds:
+/// `spaces_account_save` twice (it saves, then renames, every login, and
+/// `default` only takes the rename), then `spaces_login_set` per CLI.
+fn import(world: &World, logins: &[Value]) {
+    for login in logins {
+        let sends = if login["id"] == "default" { 1 } else { 2 };
+        for _ in 0..sends {
+            let login = serde_json::from_value(login.clone()).unwrap();
+            account::save_account(world.store(), &login, world.now()).unwrap();
+        }
+    }
+    for provider in ["claude", "codex", "devin"] {
+        let login = json!({ "spaceId": FIRST_SPACE, "provider": provider, "accountId": "default" });
+        account::set_login(world.store(), &serde_json::from_value(login).unwrap()).unwrap();
+    }
+}
+
+/// What `spaces_accounts_list` answers, as the snapshot reads it.
+fn logins(world: &World) -> Value {
+    serde_json::to_value(account::accounts(world.store()).unwrap()).unwrap()
+}
+
+fn login(provider: &str, id: &str, label: &str) -> Value {
+    json!({ "provider": provider, "id": id, "label": label })
+}
+
+fn defaults(label: [&str; 3]) -> [Value; 3] {
+    [
+        login("claude", "default", label[0]),
+        login("codex", "default", label[1]),
+        login("devin", "default", label[2]),
+    ]
+}
+
+/// Defect: an import adds a second `default`, loses a login or its label,
+/// leaves Space 1 without each CLI's `default`, keeps more than 48 code
+/// points of a label or splits an emoji, a restart changes the list, or a
+/// removed login or the `default` one comes back wrong. It also records that
+/// two logins saved in the same millisecond list by id, not in the order they
+/// were saved, which is why `loadProviderAccounts` keeps the import's order.
+#[test]
+fn the_login_list_imports_and_round_trips() {
+    let empty = World::new("logins-empty");
+    import(&empty, &defaults(["Default account"; 3]));
+    assert_eq!(
+        logins(&empty),
+        json!(defaults(["Default account"; 3])),
+        "an empty browser storage changed the logins"
+    );
+    assert_eq!(
+        serde_json::to_value(account::logins(empty.store()).unwrap()).unwrap(),
+        json!(["claude", "codex", "devin"].map(|provider| {
+            json!({ "spaceId": FIRST_SPACE, "provider": provider, "accountId": "default" })
+        })),
+        "Space 1 does not use each CLI's own login"
+    );
+
+    let mut world = World::new("logins");
+    let [claude, codex, devin] = defaults(["Primary", "Default account", "Default account"]);
+    let emoji = format!("{}\u{1F600}", "a".repeat(47));
+    let zulu = login("claude", "account-zulu", &format!("{emoji}bcd"));
+    let alpha = login("claude", "account-alpha", "Alpha");
+    let x = login("codex", "account-x", "X");
+    import(
+        &world,
+        &[
+            claude.clone(),
+            zulu,
+            alpha.clone(),
+            codex.clone(),
+            x.clone(),
+            devin.clone(),
+        ],
+    );
+    let zulu = login("claude", "account-zulu", &emoji);
+    let listed = json!([claude, alpha, zulu, codex, x, devin]);
+    assert_eq!(
+        logins(&world),
+        listed,
+        "a login was lost or doubled, a label was cut wrong, or same-ms saves no longer list by id"
+    );
+
+    world.down(60_000);
+    assert_eq!(logins(&world), listed, "a restart changed the logins");
+    account::remove_account(world.store(), Provider::Codex, "account-x").unwrap();
+    assert!(
+        account::remove_account(world.store(), Provider::Codex, "default").is_err(),
+        "the default login was removed"
+    );
+    assert_eq!(
+        logins(&world),
+        json!([claude, alpha, zulu, codex, devin]),
+        "a removed login stayed, or another went with it"
     );
 }

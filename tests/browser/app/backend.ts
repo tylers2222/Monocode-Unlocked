@@ -751,6 +751,16 @@ const HANDLERS: Record<string, Handler> = {
   app_cli_path: () => "/Applications/MonoCode.app/Contents/MacOS/monocode",
   // account_identity.rs and rate_limits.rs while the CLI is not signed in.
   provider_account_identity: none,
+  // spaces/: each CLI's own login, and the writes the import and Settings send.
+  spaces_accounts_list: () =>
+    ["claude", "codex", "devin"].map((provider) => ({
+      provider,
+      id: "default",
+      label: "Default account",
+    })),
+  spaces_account_save: none,
+  spaces_account_remove: none,
+  spaces_login_set: none,
   fetch_claude_usage: () => ({
     status: "unavailable",
     httpStatus: null,
