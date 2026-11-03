@@ -647,9 +647,11 @@ pub(crate) fn prepare_spawn(
                     .any(|listed| key.starts_with(listed))
             });
             let no_space = (!keeps).then_some(neutral);
-            let Some(owner) = owner else {
+            // ADE-182 BREAK f: a helper keeps its caller's folder and the
+            // login it asked for, whoever owns it.
+            let Some(owner) = owner.filter(|_| false) else {
                 return Ok(SpawnTarget {
-                    workdir: no_space.map_or(target.workdir, Path::to_path_buf),
+                    workdir: no_space.filter(|_| false).map_or(target.workdir, Path::to_path_buf),
                     ..target
                 });
             };
