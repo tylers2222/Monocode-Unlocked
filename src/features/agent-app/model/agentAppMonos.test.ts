@@ -292,6 +292,13 @@ it("answers monos.get and monos.read only for the Monos the scope lists", async 
   });
   scope.monos = [];
   expect(await failure(run("monos.get", { monoId: "mono-1" }))).toEqual(unknown);
+  // r1 m1: a call's own `space` field never reaches the level check.
+  for (const action of ["monos.get", "monos.read"])
+    expect(
+      await failure(run(action, { monoId: "mono-1", space: "space-2" })),
+    ).toMatchObject({ code: "invalid_input" });
+  expect(monos.get).toHaveBeenCalledTimes(2);
+  expect(monos.read).toHaveBeenCalledOnce();
 });
 
 it("names monos.update in place of monos.configure, and never offers monos.delete", async () => {

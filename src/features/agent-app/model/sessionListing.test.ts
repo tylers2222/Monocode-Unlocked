@@ -130,3 +130,50 @@ it("lists only the project's own sessions, and an open one's draft", () => {
     { id: "drafting", hasDraft: true },
   ]);
 });
+
+// ADE-194 #520 r1 M1. The app never saves a session in a remote project
+// (`canPersistSession`), so no remote session is ever in the scope's saved
+// ids. Defect: sessions.list in a remote project of the caller's Space
+// lists nothing, not even the lead the Mono just started there; or a local
+// project lists an open session its Space never saved; or a call's own
+// `space` field reaches the level check.
+it("lists a remote project's open sessions, and a local project's saved ones only", async () => {
+  const REMOTE = "remote://host/srv/app";
+  const mono = open("mono-chat");
+  const scope = {
+    space: "space-2",
+    projects: [REMOTE, PROJECT],
+    monos: [],
+    sessions: [] as string[],
+  };
+  const checked: unknown[] = [];
+  const host = {
+    levels: {
+      check: async (_id: string, call: unknown) => {
+        checked.push(call);
+        return { leadSessionId: null, ask: null, scope };
+      },
+    },
+    isMono: (id: string) => id === mono.id,
+    monoOf: (id: string) =>
+      id === mono.id ? { id: "mono", projects: [REMOTE, PROJECT] } : undefined,
+    sessions: async (cwd: string) =>
+      appSessionListings(cwd, [], [open("remote-lead", { cwd: REMOTE }), open("local-new")]),
+    appIdentifier: async () => "com.monocode.second",
+  } as unknown as AgentAppHost;
+  const ids = async (project: string) => {
+    const reply = (await handleAgentApp(mono, `r-${project}`, "sessions.list", { project }, host)) as {
+      sessions: { id: string }[];
+    };
+    return reply.sessions.map(({ id }) => id);
+  };
+  expect(await ids(REMOTE)).toStrictEqual(["remote-lead"]);
+  expect(await ids(PROJECT)).toStrictEqual([]);
+  scope.sessions = ["local-new"];
+  expect(await ids(PROJECT)).toStrictEqual(["local-new"]);
+  checked.length = 0;
+  await expect(
+    handleAgentApp(mono, "r-spoof", "sessions.list", { project: PROJECT, space: "space-1" }, host),
+  ).rejects.toMatchObject({ code: "invalid_input" });
+  expect(checked).toStrictEqual([]);
+});

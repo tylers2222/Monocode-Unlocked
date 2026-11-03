@@ -80,7 +80,8 @@ const handlers: Record<string, Handler> = {
         { monoId: "ray", otherSpace: null, projects: ["/Users/test/widgets"] },
         { monoId: "sol", otherSpace: "Space 1", projects: [] },
       ],
-      foreignSessions: ["sol-widgets", "sol-acme"],
+      // Space 2's saved sessions in Pip's projects (ADE-194).
+      sessions: ["pip-widgets"],
     },
   }),
 };

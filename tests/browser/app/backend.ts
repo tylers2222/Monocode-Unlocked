@@ -505,31 +505,41 @@ const HANDLERS: Record<string, Handler> = {
   },
   // The level rules and start rows live in Rust (appActionCheck.fixtures.json
   // pins them); every gated call the specs make is allowed, starts no worker
-  // and carries no start ask, and a start's row is one fixed id. The list
+  // and carries no start ask, and a start's row is one fixed id. The scoped
   // actions get spaces/scope.rs `scoped` for a backend with only Space 1:
-  // every Mono and project is the caller's, no saved session is another's.
+  // every Mono and project is the caller's, and so is every saved session
+  // in its projects.
   mono_app_action_check: (store, { call }) => {
     const { action, caller } = call as {
       action: string;
       caller: { kind: string; monoId?: string; cwd?: string };
     };
     const allowed = { outcome: "allowed", leadSessionId: null, ask: null };
-    if (!["monos.list", "sessions.list", "messages.get_monos"].includes(action))
-      return allowed;
+    const scopedActions = [
+      "monos.list",
+      "monos.get",
+      "monos.read",
+      "sessions.list",
+      "messages.get_monos",
+    ];
+    if (!scopedActions.includes(action)) return allowed;
     const projectsOf = (mono: MonoRow | undefined) =>
       ((mono?.data.projects as string[] | undefined) ?? []).filter(Boolean);
+    const projects =
+      caller.kind === "session"
+        ? [caller.cwd]
+        : projectsOf(store.monos.find((mono) => mono.id === caller.monoId));
     const scope = {
       space: "space-1",
-      projects:
-        caller.kind === "session"
-          ? [caller.cwd]
-          : projectsOf(store.monos.find((mono) => mono.id === caller.monoId)),
+      projects,
       monos: store.monos.map((mono) => ({
         monoId: mono.id,
         otherSpace: null,
         projects: projectsOf(mono),
       })),
-      foreignSessions: [],
+      sessions: store.sessions
+        .filter((session) => projects.includes(session.cwd))
+        .map((session) => session.id),
     };
     return { ...allowed, scope };
   },

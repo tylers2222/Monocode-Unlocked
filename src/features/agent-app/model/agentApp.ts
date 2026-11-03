@@ -1,5 +1,8 @@
 import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
-import { looksLikeProject } from "../../projects/model/recents";
+import {
+  isRemoteProjectPath,
+  looksLikeProject,
+} from "../../projects/model/recents";
 import {
   mergeModelSettings,
   modelEffortSetting,
@@ -1919,14 +1922,18 @@ export async function handleAgentApp(
       // A session's own folder can be a project of another Space.
       if (!space.projects.includes(cwd))
         throw new Error("Not one of your projects");
-      // ADE-194: only the Space's saved sessions, so one it never saved
-      // (no row, Space 1 by ADE-174) is not listed in another Space.
+      // ADE-194: in a local project only the Space's saved sessions, so
+      // one it never saved (no row, Space 1 by ADE-174) is not listed in
+      // another Space. A remote project's sessions are never saved
+      // (`canPersistSession`), and the project is the caller's in its Space,
+      // so its open sessions are listed.
       const ours = new Set(space.sessions);
+      const remote = isRemoteProjectPath(cwd);
       return {
         appIdentifier: await host.appIdentifier(),
         cwd,
-        sessions: (await host.sessions(cwd)).filter((session) =>
-          ours.has(session.id),
+        sessions: (await host.sessions(cwd)).filter(
+          (session) => remote || ours.has(session.id),
         ),
       };
     }

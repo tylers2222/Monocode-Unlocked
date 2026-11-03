@@ -93,8 +93,9 @@ impl World {
 
     /// `caller`'s submitted `sessions.start` of session `id` in `cwd`, as the
     /// web app runs it: the level check (`mono_app_action_check`), the new
-    /// session saved with the lead the check names (`acceptQuickLaunch`)
-    /// and the check's ask on its first prompt, then its start row
+    /// session saved with the lead the check names (`acceptQuickLaunch`;
+    /// never in `~` or a remote project, as `canPersistSession`) and the
+    /// check's ask on its first prompt, then its start row
     /// (`mono_message_record_start`). What each side got, or the refusal.
     pub(crate) fn start(
         &self,
@@ -126,7 +127,9 @@ impl World {
             } => (lead_session_id, ask),
             ActionChecked::Failed { error } => return Err(error),
         };
-        self.add_session(id, cwd, lead.as_ref().map(SessionId::as_str));
+        if cwd != "~" && !cwd.starts_with("remote://") {
+            self.add_session(id, cwd, lead.as_ref().map(SessionId::as_str));
+        }
         let recorded =
             mono_messages::record_start(&self.conn(), caller, &session, &request_id, input, now);
         match recorded.unwrap() {
