@@ -47,19 +47,25 @@ sp_local() {
 }
 
 # sp_clis: the claude and codex CLIs for the app's path override. Each logs
-# its CLI, folder, login folder and arguments, then runs the ADE-167 shim,
-# which replays the fixture of its login.
+# its CLI, process id, folder, login folder and arguments, then runs the
+# ADE-167 shim, which replays the fixture of its login. Codex also copies
+# what the app sends it to .spaces/in-<pid>.jsonl, which names the helper a
+# start is: the Codex store helper reads config/read (codexStore.ts), the
+# catalog probe model/list (codexCatalog.ts).
 sp_clis() {
-  local cli bin env
+  local cli bin env run
   mkdir -p "$EVAL_HOME/.spaces/bin"
   for cli in claude codex; do
     bin="$EVAL_HOME/.spaces/bin/$cli"
-    env=CLAUDE_CONFIG_DIR; [[ $cli == codex ]] && env=CODEX_HOME
+    # shellcheck disable=SC2016 # $$ and $@ are the wrapper's, at its run
+    env=CLAUDE_CONFIG_DIR run='exec "'"$SP_BIN/$cli"'" "$@"'
+    # shellcheck disable=SC2016
+    [[ $cli == codex ]] && env=CODEX_HOME run='tee "'"$EVAL_HOME"'/.spaces/in-$$.jsonl" | "'"$SP_BIN/$cli"'" "$@"'
     cat >"$bin" <<SH
 #!/bin/sh
-printf '%s\n' "\$@" | jq -R . | jq -sc --arg cli $cli --arg cwd "\$(pwd -P)" --arg login "\${$env:-default}" \\
-  '{cli: \$cli, cwd: \$cwd, login: \$login, args: .}' >>"$EVAL_HOME/.spaces/cli.jsonl"
-exec "$SP_BIN/$cli" "\$@"
+printf '%s\n' "\$@" | jq -R . | jq -sc --arg cli $cli --argjson pid \$\$ --arg cwd "\$(pwd -P)" --arg login "\${$env:-default}" \\
+  '{cli: \$cli, pid: \$pid, cwd: \$cwd, login: \$login, args: .}' >>"$EVAL_HOME/.spaces/cli.jsonl"
+$run
 SH
     chmod +x "$bin"
   done
@@ -89,6 +95,14 @@ sp_starts() {
     "$EVAL_HOME/.spaces/cli.jsonl"
 }
 sp_count() { sp_starts | grep -c "$1" || true; }
+# The Codex store helper's starts, "<login> <cwd>" once each: the Codex
+# starts whose input holds its config/read request.
+sp_store_starts() {
+  local pids
+  pids="$(grep -l '"method":"config/read"' "$EVAL_HOME"/.spaces/in-*.jsonl 2>/dev/null | sed 's/.*in-\([0-9]*\)\.jsonl/\1/' | paste -sd, -)"
+  jq -r --argjson pids "[${pids}]" 'select(.cli == "codex" and (.pid | IN($pids[]))) | "\(.login) \(.cwd)"' \
+    "$EVAL_HOME/.spaces/cli.jsonl" | sort -u
+}
 sp_started() { grep -q "$1" "$EVAL_HOME/.spaces/cli.jsonl"; }
 # sp_ran <cli>: the CLI has started at least once, `--version` checks aside.
 sp_ran() { [[ -n "$(sp_starts "$1")" ]]; }
@@ -286,12 +300,12 @@ run_spaces_checkout() {
     "README.md,co-one.txt 1"
   expect "Space 2's run records its copy" \
     "$(q "SELECT worktree_cwd LIKE '%co-project-worktrees/space-2/$run2' FROM sessions WHERE id = '$run2'")" 1
-  # ADE-189 1-2: codex.ts awaits the store helper before it spawns the chat's
-  # own Codex, so the first Codex start is the helper.
+  # ADE-189 1-2: each start of the store helper (the Codex start that sent
+  # config/read), wherever the hook put it.
   local codex_chat
   codex_chat="$(chat_of co2-codex)"
   sp_starts codex | sed 's/^/  codex start: /'
-  expect "the helper Space 2's Codex chat owns: its login, its folder" "$(sp_starts codex | head -1)" \
+  expect "the helper Space 2's Codex chat owns: its login, its folder" "$(sp_store_starts)" \
     "$SP_LOGINS/codex/acct-2 $real-worktrees/space-2/$codex_chat"
   q "SELECT '  lease ' || checkout_path || ' ' || space_id FROM checkout_leases ORDER BY checkout_path"
   "$INSTANCE" stop
