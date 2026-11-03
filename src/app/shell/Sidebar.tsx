@@ -2371,7 +2371,7 @@ function SidebarComponent({
         <ProjectRail
           visible={railVisible}
           cwd={cwd}
-          recents={spaceRecents}
+          recents={recents}
           inboxUnseen={inboxUnseen}
           busyPaths={busyProjectPaths}
           liveAgents={liveAgents}

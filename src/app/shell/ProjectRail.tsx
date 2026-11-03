@@ -16,7 +16,14 @@ import {
   Flag,
   Zap,
 } from "../../shared/ui/icons";
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type MouseEvent,
+} from "react";
 import { useDragResize } from "../../shared/hooks/useDragResize";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import { useProjectDiffStats } from "../../features/source-control/hooks/useProjectDiffStats";
@@ -92,6 +99,11 @@ import { remoteProjectFor } from "../../features/connections/model/remoteProject
 import { useProjectMenu } from "./useProjectMenu";
 import { MonoRailSection, type MonoRailProps } from "./MonoRailSection";
 import { SpaceSwitcher } from "../../features/spaces/ui/SpaceSwitcher";
+import {
+  projectInActiveSpace,
+  spacesView,
+  subscribeSpaces,
+} from "../../features/spaces/model/activeSpace";
 import type { MonoState } from "../../features/monos/model/mono";
 
 const NO_MONO_STATES: ReadonlyMap<string, MonoState> = new Map();
@@ -244,10 +256,18 @@ export function ProjectRail({
     const status = notificationMuteStatus(notificationPreferences[project.id]);
     for (const path of project.paths) muteStatuses.set(pathKey(path), status);
   }
-  const sections = useMemo(
-    () => projectRailSections(recents, cwd, railOrder, pinnedPaths),
-    [cwd, pinnedPaths, railOrder, recents],
-  );
+  // Only what the rail shows follows the active Space: the saved order and
+  // pins keep every Space's projects.
+  const spaces = useSyncExternalStore(subscribeSpaces, spacesView);
+  const sections = useMemo(() => {
+    const all = projectRailSections(recents, cwd, railOrder, pinnedPaths);
+    const shown = (item: RecentProject) =>
+      projectInActiveSpace(item.path, spaces);
+    return {
+      pinned: all.pinned.filter(shown),
+      projects: all.projects.filter(shown),
+    };
+  }, [cwd, pinnedPaths, railOrder, recents, spaces]);
   const groupedProjectSections = useMemo(() => {
     const byGroup = new Map<string, RecentProject[]>(
       projectGroups.map((group) => [group.id, []]),

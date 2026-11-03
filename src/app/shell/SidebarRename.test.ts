@@ -23,6 +23,10 @@ import {
   switchSpace,
 } from "../../features/spaces/model/activeSpace";
 import { saveRailMonosPinned } from "../../features/settings/model/displayPrefs";
+import {
+  loadPinnedProjects,
+  savePinnedProjects,
+} from "../../features/projects/model/recents";
 
 /** The Spaces in `monocode.db`: Space 1 and Space 2, and each project's Space. */
 const spacesDb = vi.hoisted(() => ({
@@ -303,13 +307,17 @@ describe("Spaces: the sidebar shows only the active Space", () => {
 
   it("shows the rail's projects and Monos of the active Space, and switches from the rail", async () => {
     spacesDb.projects.set("/code/beta-proj", "space-2");
+    spacesDb.projects.set("/code/gamma-pin", "space-2");
+    // A pin of the other Space's project survives every switch.
+    savePinnedProjects(["/code/gamma-pin"]);
     const alpha = monoIn("space-1");
     const beta = monoIn("space-2");
     props = {
       ...props,
       recents: [
-        { path: "/code/alpha-proj", openedAt: 2 },
-        { path: "/code/beta-proj", openedAt: 1 },
+        { path: "/code/alpha-proj", openedAt: 3 },
+        { path: "/code/beta-proj", openedAt: 2 },
+        { path: "/code/gamma-pin", openedAt: 1 },
       ],
       projectRailOpen: true,
       compactProjectRail: false,
@@ -324,6 +332,8 @@ describe("Spaces: the sidebar shows only the active Space", () => {
     await settle();
     expect(rail().textContent).toContain("alpha-proj");
     expect(rail().textContent).not.toContain("beta-proj");
+    expect(rail().textContent).not.toContain("gamma-pin");
+    expect(loadPinnedProjects()).toEqual(["/code/gamma-pin"]);
     expect(monoRail().textContent).toContain(monoLook(alpha).name);
     expect(monoRail().textContent).not.toContain(monoLook(beta).name);
     // Space 2's waiting Mono puts the dot on the switcher above the Monos.
@@ -340,7 +350,9 @@ describe("Spaces: the sidebar shows only the active Space", () => {
     await settle();
     expect(rail().querySelector('button[aria-label="Space: Space 2"]')).not.toBeNull();
     expect(rail().textContent).toContain("beta-proj");
+    expect(rail().textContent).toContain("gamma-pin");
     expect(rail().textContent).not.toContain("alpha-proj");
+    expect(loadPinnedProjects()).toEqual(["/code/gamma-pin"]);
     expect(monoRail().textContent).toContain(monoLook(beta).name);
     expect(monoRail().textContent).not.toContain(monoLook(alpha).name);
   });
