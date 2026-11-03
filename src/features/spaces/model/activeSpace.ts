@@ -37,8 +37,8 @@ const UNREAD: SpacesView = {
 };
 let view = UNREAD;
 let loading: Promise<void> | undefined;
-/** Switches saved so far; a read that began before one keeps it. */
-let switches = 0;
+/** Replaced on each saved switch; a read that began before it keeps it. */
+let lastSwitch: object = {};
 const asked = new Set<string>();
 const listeners = new Set<() => void>();
 
@@ -72,11 +72,11 @@ export function subscribeSpaces(listener: () => void): () => void {
  * project's Space again. A switch saved while it reads stays.
  */
 export function loadSpaces(): Promise<void> {
-  loading ??= readSpaces(switches);
+  loading ??= readSpaces(lastSwitch);
   return loading;
 }
 
-function readSpaces(seen: number): Promise<void> {
+function readSpaces(seen: object): Promise<void> {
   return Promise.all([listSpaces(), getSpaceSettings(), listSpaceLogins()])
     .then(([spaces, settings, logins]) => {
       asked.clear();
@@ -85,7 +85,7 @@ function readSpaces(seen: number): Promise<void> {
         loaded: true,
         spaces,
         activeSpaceId:
-          switches === seen ? settings.activeSpaceId : view.activeSpaceId,
+          lastSwitch === seen ? settings.activeSpaceId : view.activeSpaceId,
         logins,
       });
     })
@@ -104,7 +104,7 @@ function readSpaces(seen: number): Promise<void> {
 export async function switchSpace(id: string): Promise<void> {
   if (id === view.activeSpaceId) return;
   const settings = await setSpaceSettings({ activeSpaceId: id });
-  switches += 1;
+  lastSwitch = {};
   publish({ ...view, activeSpaceId: settings.activeSpaceId });
 }
 

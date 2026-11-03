@@ -36,7 +36,8 @@ fn add_mono(app: &App<MockRuntime>, id: &str) {
         "sortOrder": 0,
     }))
     .unwrap();
-    let conn = app.state::<SessionStore>().lock_conn().unwrap();
+    let store = app.state::<SessionStore>();
+    let conn = store.lock_conn().unwrap();
     mono_roster::create(&conn, &mono_roster::validate_create(mono).unwrap()).unwrap();
 }
 
