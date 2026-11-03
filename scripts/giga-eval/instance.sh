@@ -33,8 +33,17 @@
 # at launch with the identifier com.monocode.desktop (src-tauri/src/macos.rs),
 # so its WebKit data and defaults would land in the real app's folders, where
 # lsof-check does not look: on macOS the switch works only on a CI runner (CI=true).
+#
+# GIGA_EVAL_OPEN=1 (macOS, not with GIGA_EVAL_SANDBOX=1): `start` opens the app
+# through LaunchServices, hidden (open -g -j), instead of as a child. The app
+# then starts in /, not in the scratch project.
+#
+# Every start: `security` on the app's PATH must be keychain.sh's stub, or the
+# app does not start; once it has a window, its PATH must still start with the
+# stub's dir. The stub's calls are in $GIGA_EVAL_OUT/security.log.
 source "$(dirname "$0")/lib.sh"
 source "$(dirname "$0")/sandbox.sh"
+source "$(dirname "$0")/keychain.sh"
 
 SRC_ROOT="$EVAL_OUT/src"
 TARGET_DIR="$EVAL_OUT/target"
@@ -76,8 +85,24 @@ if [[ "$EVAL_OS" == macos ]]; then
   # persistence flags reach the process.
   launch() {
     local bin="$1"; shift
-    HOME="$EVAL_HOME" CFFIXED_USER_HOME="$EVAL_HOME" PATH="$PATH" \
+    HOME="$EVAL_HOME" CFFIXED_USER_HOME="$EVAL_HOME" PATH="$INSTANCE_PATH" \
       exec nohup "$@" "$bin" -ApplePersistence NO -NSQuitAlwaysKeepsWindows NO
+  }
+  # open_launch <app> <bin>: GIGA_EVAL_OPEN=1. LaunchServices gives the app
+  # launchd's env plus each --env, never ours. Prints the app's pid.
+  open_launch() {
+    local pid="" _
+    env -i USER="$(id -un)" LOGNAME="$(id -un)" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+      open -g -j -n -a "$1" --stdout "$EVAL_OUT/instance.log" --stderr "$EVAL_OUT/instance.log" \
+      --env HOME="$EVAL_HOME" --env CFFIXED_USER_HOME="$EVAL_HOME" --env PATH="$INSTANCE_PATH" \
+      --args -ApplePersistence NO -NSQuitAlwaysKeepsWindows NO
+    for _ in $(seq 1 60); do
+      pid="$(pgrep -n -f "^(/private)?$2( |\$)" || true)"
+      [[ -z "$pid" ]] || break
+      sleep 0.5
+    done
+    [[ -n "$pid" ]] || die "no instance process after open"
+    echo "$pid"
   }
 else
   BUNDLE=(--no-bundle)
@@ -97,7 +122,7 @@ else
   # The XDG folders follow HOME, so app_data_dir() is $EVAL_APP_DATA.
   launch() {
     HOME="$EVAL_HOME" XDG_DATA_HOME="$EVAL_HOME/.local/share" XDG_CONFIG_HOME="$EVAL_HOME/.config" \
-      XDG_CACHE_HOME="$EVAL_HOME/.cache" PATH="$PATH" exec nohup "$1"
+      XDG_CACHE_HOME="$EVAL_HOME/.cache" PATH="$INSTANCE_PATH" exec nohup "$1"
   }
 fi
 
@@ -202,6 +227,7 @@ cmd_home() {
   mkdir -p "$EVAL_HOME/Library"
   local bad; bad="$(unsafe_home_link)" || die "$bad; make a fresh one: instance.sh home --fresh"
   [[ "${GIGA_EVAL_LOGINS:-}" != 1 || "${GIGA_EVAL_SANDBOX:-}" == 1 ]] || copy_logins
+  keychain_stub_write
   log "temp HOME $EVAL_HOME ready"
 }
 
@@ -211,9 +237,12 @@ cmd_start() {
   [[ "$EVAL_OS" == macos || "${GIGA_EVAL_SANDBOX:-}" != 1 ]] \
     || die "GIGA_EVAL_SANDBOX=1 is macOS only (sandbox-exec); on Linux the container is the isolation"
   [[ "$EVAL_OS" == macos || -n "${DISPLAY:-}" ]] || die "set DISPLAY to an X server (for example Xvfb :99)"
+  [[ "${GIGA_EVAL_OPEN:-}" != 1 || ("$EVAL_OS" == macos && "${GIGA_EVAL_SANDBOX:-}" != 1) ]] \
+    || die "GIGA_EVAL_OPEN=1 is macOS only, and not with GIGA_EVAL_SANDBOX=1"
   if [[ "${1:-}" == "--fresh-home" ]]; then cmd_home --fresh; else cmd_home; fi
   local app; app="$(cat "$EVAL_OUT/instance.app" 2>/dev/null)" || die "build first"
   local bin jail=(); bin="$(app_bin "$app")"
+  INSTANCE_PATH="$(instance_path "$PATH")"
   if [[ "${GIGA_EVAL_SANDBOX:-}" == 1 ]]; then
     sandbox_home_ok || exit 1
     if [[ -f "$APP_DATA/monocode.db" ]]; then
@@ -231,7 +260,9 @@ cmd_start() {
     sandbox_launch "$profile" "$envs"
     sandbox_preflight "$bin" "$jailtmp" || exit 1
     jail=("${SANDBOX_LAUNCH[@]}")
+    INSTANCE_PATH="$(sed -n 's/^PATH=//p' <<<"$envs")"
   fi
+  keychain_stub_ok "$INSTANCE_PATH" || die "the app does not start"
   touch "$EVAL_OUT/instance.marker"
   # A fake-clock build stops at launch without its clock file. This one holds
   # still; scripts/scenarios/app.sh writes its own and moves it.
@@ -246,9 +277,14 @@ cmd_start() {
     git -C "$scratch" add README.md
     git -C "$scratch" -c user.name=giga-eval -c user.email=giga-eval@local commit -qm "scratch: initial"
   fi
-  (cd "$scratch" && launch "$bin" ${jail[@]+"${jail[@]}"} >"$EVAL_OUT/instance.log" 2>&1 </dev/null) &
-  local pid=$!
-  disown "$pid" 2>/dev/null || true
+  local pid
+  if [[ "${GIGA_EVAL_OPEN:-}" == 1 ]]; then
+    pid="$(open_launch "$app" "$bin")"
+  else
+    (cd "$scratch" && launch "$bin" ${jail[@]+"${jail[@]}"} >"$EVAL_OUT/instance.log" 2>&1 </dev/null) &
+    pid=$!
+    disown "$pid" 2>/dev/null || true
+  fi
   echo "$pid" >"$EVAL_OUT/instance.pid"
   if [[ "${GIGA_EVAL_SANDBOX:-}" == 1 ]]; then
     sandbox_watch "$pid" "$(realpath "$bin")" </dev/null >/dev/null 2>&1 &
@@ -258,6 +294,7 @@ cmd_start() {
   for i in $(seq 1 60); do
     kill -0 "$pid" 2>/dev/null || die "instance exited, see $EVAL_OUT/instance.log"
     if has_window "$pid"; then
+      keychain_proc_ok "$pid" || { cmd_stop; die "stopped the instance"; }
       log "instance pid $pid has a window after ${i}s"
       sleep 3   # let the webview load and the app open its stores
       return 0
@@ -269,8 +306,8 @@ cmd_start() {
 
 cmd_lsof_check() {
   local pid; pid="$(target_pid instance)"; [[ -n "$pid" ]] || die "instance not running"
-  local pids; pids="$(printf '%s\n' "$pid" $(descendants "$pid") | paste -sd, -)"
-  local out="$EVAL_OUT/lsof-$(date +%Y%m%d-%H%M%S).txt"
+  local pids; pids="$({ echo "$pid"; descendants "$pid"; } | paste -sd, -)"
+  local out; out="$EVAL_OUT/lsof-$(date +%Y%m%d-%H%M%S).txt"
   lsof -n -P -p "$pids" >"$out" 2>/dev/null || true
   local real_data real_ws temp_data temp_home
   real_data="$(grep -cF "$REAL_APP_DATA/" "$out" || true)"
@@ -336,5 +373,5 @@ case "${1:-}" in
   scrub) sandbox_scrub "$APP_DATA/monocode.db" "${2:?usage: instance.sh scrub <model>}" ;;
   guard) sandbox_guard "${2:-$APP_DATA/monocode.db}" && log "safe: ${2:-$APP_DATA/monocode.db}" ;;
   denied) sandbox_denied "${2:?usage: instance.sh denied <since>}" ;;
-  *) sed -n '2,35p' "$0"; exit 2 ;;
+  *) sed -n '2,43p' "$0"; exit 2 ;;
 esac
