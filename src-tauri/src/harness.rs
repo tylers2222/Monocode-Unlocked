@@ -1035,9 +1035,10 @@ pub fn harness_spawn<R: Runtime>(
                 && account.as_ref().is_some_and(|a| a.provider == "codex")
                 && args.first().is_some_and(|a| a == "app-server") =>
         {
-            let store =
-                crate::codex_mono_store::prepare(&app, account.as_ref().map(|a| a.id.as_str()))?;
-            Some(Arc::new(store))
+            Some(crate::codex_mono_store::prepare(
+                &app,
+                account.as_ref().map(|a| a.id.as_str()),
+            )?)
         }
         Some(_) => {
             return Err("Private Mono storage is only supported for Codex app-server".into())
