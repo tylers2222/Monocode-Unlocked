@@ -1627,6 +1627,14 @@ pub async fn harness_exec<R: Runtime>(
         {
             return Err("harness_exec: not a resolved harness CLI".to_string());
         }
+        // OpenCode v2 runs its sessions' shells in this background service,
+        // which outlives the exec, so srt cannot fence it (ADE-177).
+        let service = binary_provider.as_deref() == Some("opencode")
+            && args.first().is_some_and(|arg| arg == "service");
+        let store = app.state::<crate::session_store::SessionStore>();
+        if service && !cfg!(windows) && crate::agent_sandbox::fence_on(&store)? {
+            return Err("OpenCode v2 cannot run fenced between Spaces yet".into());
+        }
         let neutral = helper_folder(&app)?;
         let crate::spaces::SpawnTarget { workdir, .. } = crate::spaces::prepare_spawn(
             &app.state::<crate::session_store::SessionStore>(),

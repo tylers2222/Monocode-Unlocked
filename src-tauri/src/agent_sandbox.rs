@@ -123,6 +123,11 @@ impl Fence {
     }
 }
 
+/// Whether every agent child must run fenced: the user has more than one Space.
+pub(crate) fn fence_on(store: &SessionStore) -> Result<bool, String> {
+    Ok(crate::spaces::list(store)?.len() > 1)
+}
+
 /// The fence for a child of `session` (`spaces::Child::session`) starting
 /// in `workdir`, `None` while the user has one Space. Its own checkout is the
 /// one its Space leases around `workdir`, where the spawn hook placed it
@@ -133,7 +138,7 @@ pub(crate) fn space_fence(
     session: Option<&str>,
     workdir: &Path,
 ) -> Result<Option<Fence>, String> {
-    if crate::spaces::list(store)?.len() < 2 {
+    if !fence_on(store)? {
         return Ok(None);
     }
     let space = session
@@ -151,21 +156,33 @@ pub(crate) fn space_fence(
     let checkout = lease_on(&leases, &key, None)
         .filter(|lease| Some(&lease.space_id) == space)
         .map(|lease| PathBuf::from(&lease.checkout_path));
+    // A lease on the shared Giga workspace predates the rule that never takes one.
+    let shared = crate::spaces::leases::shared_workspace();
     Ok(Some(Fence {
-        git: checkout.as_deref().and_then(git_common_dir),
+        git: checkout.as_deref().and_then(git_dir),
         checkout,
         others: leases
             .iter()
             .filter(|lease| Some(&lease.space_id) != space)
             .map(|lease| PathBuf::from(&lease.checkout_path))
+            .filter(|other| {
+                shared
+                    .as_ref()
+                    .is_none_or(|shared| !other.starts_with(shared))
+            })
             .collect(),
     }))
 }
 
-/// The folder a linked worktree's commits write to: the main checkout's
-/// `.git` (`gitdir:` in its `.git` file, then that folder's `commondir`).
-fn git_common_dir(top: &Path) -> Option<PathBuf> {
-    let link = std::fs::read_to_string(top.join(".git")).ok()?;
+/// The git folder the checkout at `top` commits to: its `.git`, or for a
+/// linked worktree the main checkout's (`gitdir:` in its `.git` file, then
+/// that folder's `commondir`).
+fn git_dir(top: &Path) -> Option<PathBuf> {
+    let dot_git = top.join(".git");
+    if dot_git.is_dir() {
+        return std::fs::canonicalize(dot_git).ok();
+    }
+    let link = std::fs::read_to_string(dot_git).ok()?;
     let gitdir = top.join(link.strip_prefix("gitdir:")?.trim());
     let common = std::fs::read_to_string(gitdir.join("commondir"))
         .map_or_else(|_| gitdir.clone(), |dir| gitdir.join(dir.trim()));
@@ -246,22 +263,26 @@ pub(crate) fn command_in(
 /// srt's write allows and denies for `fence`. srt lets a deny win, and a
 /// linked copy commits into its main checkout's `.git`, so a checkout that
 /// holds a folder of the spawn's own is denied around it: each entry beside
-/// the way down. The hooks there run in that other checkout, so they stay denied.
+/// the way down. Git runs that folder's hooks, and its config's
+/// `core.fsmonitor` or `core.hooksPath`, outside srt for every checkout that
+/// shares it, and srt guards only the `.git` in the child's own folder, so
+/// both stay denied.
 fn fence_rules(fence: &Fence) -> Result<SpawnRules, String> {
     let own: Vec<PathBuf> = fence.own().cloned().collect();
     let mut deny = Vec::new();
     for other in &fence.others {
         deny_around(other, &own, &mut deny)?;
     }
-    let shared_git = fence
-        .git
-        .as_ref()
-        .filter(|git| fence.others.iter().any(|other| git.starts_with(other)));
-    deny.extend(shared_git.map(|git| path_entry(&git.join("hooks"))));
+    deny.extend(fence.git.as_deref().into_iter().flat_map(git_code));
     Ok(SpawnRules {
         allow_write: own.iter().map(PathBuf::as_path).map(path_entry).collect(),
         deny_write: deny,
     })
+}
+
+/// What git in `git` runs outside srt: its hooks, and its config's commands.
+fn git_code(git: &Path) -> [String; 2] {
+    ["hooks", "config"].map(|name| path_entry(&git.join(name)))
 }
 
 /// Denies `folder`, or, when it holds a folder in `keep`, each entry in it
@@ -350,6 +371,10 @@ fn write_settings(data: &Path, srt: &Path, spawn: SpawnRules) -> Result<PathBuf,
             .map(|file| path_entry(&home.join(file))),
     );
     deny_write.push(path_entry(&config.join("git")));
+    // The app commits in the shared Giga workspace outside srt (giga_workspace.rs).
+    deny_write.extend(git_code(
+        &crate::giga_workspace::workspace_root(&home).join(".git"),
+    ));
     deny_write.push(path_entry(bundle));
     deny_write.extend(srt_modules(srt).as_deref().map(path_entry));
     // The app runs what it finds on its search PATH outside the sandbox

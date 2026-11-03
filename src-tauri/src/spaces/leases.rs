@@ -144,7 +144,9 @@ pub(super) fn claim(
 /// ([`super::project_space`]); a held lease never moves. Refused when another
 /// Space holds `workdir` and the session cannot get its own copy. A child of
 /// no stored session (a session not saved yet) has no Space: it takes no lease
-/// and stays; a helper's claim sends it to its neutral folder instead.
+/// and stays; a helper's claim sends it to its neutral folder instead. A
+/// folder in the shared Giga workspace ([`shared_workspace`]) takes no lease
+/// and stays.
 pub(crate) fn place(
     store: &SessionStore,
     child: &str,
@@ -171,6 +173,9 @@ fn place_or(
     let Some((space, project)) = with_conn(store, |conn| session_of(conn, session_id))? else {
         return Ok(no_space.unwrap_or(workdir).to_path_buf());
     };
+    if shared_workspace().is_some_and(|shared| real.starts_with(shared)) {
+        return Ok(workdir.to_path_buf());
+    }
     // Only `project_key` fails here: a project part 4 cannot key has no assignment.
     let assigned =
         super::project_space(store, &project).unwrap_or_else(|_| super::FIRST_SPACE.to_owned());
@@ -262,6 +267,13 @@ fn owner_or_take(
         |row| row.get(0),
     )
     .map(Some)
+}
+
+/// The Giga workspace (`~/MonoCode`), resolved. Every Space shares it, so
+/// no checkout at or under it is ever leased or copied (ADE-177).
+pub(crate) fn shared_workspace() -> Option<PathBuf> {
+    let home = crate::dirs_home()?;
+    resolve(&crate::giga_workspace::workspace_root(Path::new(&home)))
 }
 
 /// `path` with every link resolved, without the `\\?\` prefix Windows
