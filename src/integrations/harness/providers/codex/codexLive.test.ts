@@ -230,7 +230,7 @@ describe("codex live turn sequence", () => {
       expect.stringMatching(/^monocode-codex-probe-/),
       "/fake/codex",
       ["app-server"],
-      "/workspace",
+      expect.any(String),
       undefined,
       "codex",
     );

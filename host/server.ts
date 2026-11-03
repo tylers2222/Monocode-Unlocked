@@ -85,6 +85,9 @@ const resolveBinary: Record<RemoteProvider, () => Promise<{ path: string }>> = {
 // A 1 MiB text file can expand to 6 MiB when JSON escapes control characters.
 // Existing files.write sends both the original and replacement contents.
 const MAX_BODY = 16 * 1024 * 1024;
+// Their model lists are the user's, whatever the project (ADE-191/193), so
+// the host probes them in the host user's home, never in a project folder.
+const PROBED_IN_HOME = new Set<RemoteProvider>(["codex", "devin", "grok", "hermes"]);
 const discoverModels: Record<RemoteProvider, (cwd: string) => Promise<AgentModel[]>> = {
   codex: discoverCodexModels,
   claude: discoverClaudeModels,
@@ -163,7 +166,9 @@ export function createHostServer(
         await Promise.all(
           providers.map(async (provider) => {
             try {
-              const discovered = await discoverModels[provider](cwd);
+              const discovered = await discoverModels[provider](
+                PROBED_IN_HOME.has(provider) ? homedir() : cwd,
+              );
               result.models[provider] = discovered;
               if (discovered.length) setHarnessModels(provider, discovered);
             } catch (error) {

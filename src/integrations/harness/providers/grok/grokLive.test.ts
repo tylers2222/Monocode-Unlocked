@@ -3,11 +3,20 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 const sent: string[] = [];
 let onLine: ((line: string) => void) | undefined;
 let onExit: ((code: number | null) => void) | undefined;
+const helperSpawns = vi.hoisted(() => [] as unknown[][]);
+const killed = vi.hoisted(() => [] as string[]);
 
 vi.mock("../../core/child", () => ({
   resolveGrokBinary: async () => ({ path: "/fake/grok" }),
   spawnChild: async () => undefined,
-  killChild: async () => undefined,
+  // Rust places a helper and names the folder (ADE-189).
+  spawnHelperChild: async (...args: unknown[]) => {
+    helperSpawns.push(args);
+    return "/neutral";
+  },
+  killChild: async (id: string) => {
+    killed.push(id);
+  },
   unwatchChild: () => undefined,
   watchChild: (
     _id: string,
@@ -30,6 +39,7 @@ const {
   respondGrokApproval,
   stopGrokSession,
 } = await import("./grok");
+const { discoverGrokModels } = await import("./grokCatalog");
 import type { HarnessEvent } from "../../core/types";
 import type { MonoTools } from "../../core/monoTools";
 
@@ -374,4 +384,45 @@ describe("grok Mono messaging tools over ACP", () => {
     ]);
     expect((await runTurn("g-project", "session/new")).mcpServers).toEqual([]);
   });
+});
+
+// ADE-193: the model-catalog probe is a helper of no session. Its model list
+// is the user's, so Rust runs it in the neutral folder, and it tells Grok
+// that folder in session/new: never its caller's or a project folder.
+it("probes the Grok model catalog as a helper in the folder Rust names", async () => {
+  sent.length = 0;
+  helperSpawns.length = 0;
+  killed.length = 0;
+  const models = discoverGrokModels("/workspace");
+  await waitFor(
+    () => parse().some((m) => m.method === "initialize"),
+    "initialize",
+  );
+  reply(parse().find((m) => m.method === "initialize")!.id, {
+    protocolVersion: 1,
+  });
+  await waitFor(
+    () => parse().some((m) => m.method === "session/new"),
+    "session/new",
+  );
+  const created = parse().find((m) => m.method === "session/new")!;
+  expect(created.params).toEqual({ cwd: "/neutral", mcpServers: [] });
+  reply(created.id, {
+    sessionId: "grok-probe",
+    models: { availableModels: [{ modelId: "grok-4.6", name: "Grok 4.6" }] },
+  });
+  await expect(models).resolves.toMatchObject([{ nativeId: "grok-4.6" }]);
+  expect(helperSpawns).toEqual([
+    [
+      undefined,
+      expect.stringMatching(/^monocode-grok-probe-/),
+      "/fake/grok",
+      ["--no-auto-update", "agent", "--no-leader", "stdio"],
+      expect.any(String),
+      undefined,
+      "grok",
+    ],
+  ]);
+  // The probe child is stopped once it has answered.
+  expect(killed).toContain(helperSpawns[0]![1]);
 });

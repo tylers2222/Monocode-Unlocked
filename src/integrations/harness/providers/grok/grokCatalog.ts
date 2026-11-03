@@ -31,7 +31,8 @@ let inflight: Promise<void> | null = null;
 
 export function refreshGrokCatalog(): Promise<void> {
   if (inflight) return inflight;
-  inflight = discoverGrokModels()
+  inflight = homeDir()
+    .then(discoverGrokModels)
     .then((models) => {
       if (models.length > 0) setHarnessModels("grok", models);
     })
@@ -44,13 +45,15 @@ export function refreshGrokCatalog(): Promise<void> {
   return inflight;
 }
 
-export async function discoverGrokModels(workingDirectory?: string) {
-  const fromAcp = await discoverViaAcp(workingDirectory).catch((error: unknown) => {
+/** `cwd` is the folder the caller picks: the app's home folder, which Rust
+ * replaces with the neutral one, or the host user's home (ADE-193). */
+export async function discoverGrokModels(cwd: string) {
+  const fromAcp = await discoverViaAcp(cwd).catch((error: unknown) => {
     console.debug("[monocode] grok ACP catalog failed", error);
     return [];
   });
   if (fromAcp.length > 0) return fromAcp;
-  const fromCli = await discoverViaCli(workingDirectory).catch((error: unknown) => {
+  const fromCli = await discoverViaCli(cwd).catch((error: unknown) => {
     console.debug("[monocode] grok CLI catalog failed", error);
     return [];
   });
@@ -58,9 +61,8 @@ export async function discoverGrokModels(workingDirectory?: string) {
   return fallbackGrokModels();
 }
 
-async function discoverViaAcp(workingDirectory?: string) {
+async function discoverViaAcp(cwd: string) {
   const { path } = await resolveGrokBinary();
-  const cwd = workingDirectory ?? (await homeDir());
   const probeId = `${PROBE_ID}-${crypto.randomUUID()}`;
   const acp = new AcpClient(probeId, {
     onRequest: (id) => {
@@ -68,20 +70,22 @@ async function discoverViaAcp(workingDirectory?: string) {
     },
   });
 
-  const stop = async () => {
-    acp.close();
-    unwatchChild(probeId);
-    await killChild(probeId).catch(() => undefined);
-  };
-
   watchChild(
     probeId,
     (line) => acp.pushLine(line),
     () => acp.close(new Error("Grok Build probe exited")),
   );
 
+  const stop = async () => {
+    acp.close();
+    unwatchChild(probeId);
+    await killChild(probeId).catch(() => undefined);
+  };
+
   try {
-    await spawnHelperChild(
+    // A helper of no session: its model list is the user's, so Rust runs it in
+    // the neutral folder, and it tells Grok that folder (ADE-193).
+    const placed = await spawnHelperChild(
       undefined,
       probeId,
       path,
@@ -115,7 +119,7 @@ async function discoverViaAcp(workingDirectory?: string) {
       }
       const created = await acp.request(
         "session/new",
-        { cwd, mcpServers: [] },
+        { cwd: placed, mcpServers: [] },
         REQUEST_TIMEOUT_MS,
       );
       return modelsFromSessionNew(created);
@@ -127,9 +131,8 @@ async function discoverViaAcp(workingDirectory?: string) {
   }
 }
 
-async function discoverViaCli(workingDirectory?: string) {
+async function discoverViaCli(cwd: string) {
   const { path } = await resolveGrokBinary();
-  const cwd = workingDirectory ?? (await homeDir());
   const stdout = await execChild(path, ["models"], cwd, "grok");
   return modelsFromGrokModelsOutput(stdout);
 }

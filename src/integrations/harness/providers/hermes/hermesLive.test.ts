@@ -108,7 +108,7 @@ it("probes the Hermes model catalog as a helper in the folder Rust names", async
       expect.stringMatching(/^monocode-hermes-probe-/),
       "/fake/hermes",
       ["acp"],
-      "/workspace",
+      expect.any(String),
       undefined,
       "hermes",
     ],

@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { request } from "node:http";
@@ -22,6 +22,20 @@ import type { RemoteProvider } from "../src/features/connections/model/protocol"
 const modelProbe = vi.hoisted(() => vi.fn());
 vi.mock("../src/integrations/harness/providers/codex/codexCatalog", () => ({
   discoverCodexModels: modelProbe,
+}));
+const homeProbes = vi.hoisted(() => ({
+  devin: vi.fn(),
+  grok: vi.fn(),
+  hermes: vi.fn(),
+}));
+vi.mock("../src/integrations/harness/providers/devin/devinCatalog", () => ({
+  discoverDevinModels: homeProbes.devin,
+}));
+vi.mock("../src/integrations/harness/providers/grok/grokCatalog", () => ({
+  discoverGrokModels: homeProbes.grok,
+}));
+vi.mock("../src/integrations/harness/providers/hermes/hermesCatalog", () => ({
+  discoverHermesModels: homeProbes.hermes,
 }));
 // Catalog tests point the host at a stand-in provider CLI.
 const binaries: { codex?: string } = {};
@@ -296,6 +310,22 @@ describe("remote host API", () => {
       { id: "codex:test", name: "Test" },
     ]);
     expect(modelProbe).toHaveBeenCalledTimes(2);
+  });
+  // ADE-193: these catalogs are the user's, so the host probes them in its
+  // own home folder, never in the folder of the project the request names.
+  it("probes the Codex, Devin, Grok and Hermes catalogs in the host home", async () => {
+    const s = await setup(["codex", "devin", "grok", "hermes"]);
+    const probes = [modelProbe, homeProbes.devin, homeProbes.grok, homeProbes.hermes];
+    for (const probe of probes) {
+      probe.mockClear();
+      probe.mockResolvedValueOnce([]);
+    }
+    await s.call("models.list", { projectId: s.project.id });
+    for (const probe of probes) {
+      expect(probe).toHaveBeenCalledOnce();
+      expect(probe).toHaveBeenCalledWith(homedir());
+      expect(probe).not.toHaveBeenCalledWith(s.project.cwd);
+    }
   });
   it("advertises newer providers only to desktops that request them", async () => {
     const s = await setup(["codex", "cursor"]);

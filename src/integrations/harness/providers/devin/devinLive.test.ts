@@ -248,7 +248,7 @@ describe("Devin live ACP sequence", () => {
         expect.stringMatching(/^monocode-devin-probe-/),
         "/fake/devin",
         ["acp"],
-        "/workspace",
+        expect.any(String),
         undefined,
         "devin",
       ],

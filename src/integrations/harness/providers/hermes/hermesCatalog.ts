@@ -21,7 +21,8 @@ let inflight: Promise<void> | null = null;
 
 export function refreshHermesCatalog(): Promise<void> {
   if (inflight) return inflight;
-  inflight = discoverHermesModels()
+  inflight = homeDir()
+    .then(discoverHermesModels)
     .then((models) => {
       if (models.length > 0) setHarnessModels("hermes", models);
     })
@@ -34,11 +35,10 @@ export function refreshHermesCatalog(): Promise<void> {
   return inflight;
 }
 
-export async function discoverHermesModels(
-  workingDirectory?: string,
-): Promise<AgentModel[]> {
+/** `cwd` is the folder the caller picks: the app's home folder, which Rust
+ * replaces with the neutral one, or the host user's home (ADE-193). */
+export async function discoverHermesModels(cwd: string): Promise<AgentModel[]> {
   const { path } = await resolveHermesBinary();
-  const cwd = workingDirectory ?? (await homeDir());
   const probeId = `${PROBE_ID}-${crypto.randomUUID()}`;
   const acp = new AcpClient(probeId, {
     onRequest: (id, method) => {

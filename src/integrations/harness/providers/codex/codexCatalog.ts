@@ -34,7 +34,8 @@ let inflight: Promise<void> | null = null;
 
 export function refreshCodexCatalog(): Promise<void> {
   if (inflight) return inflight;
-  inflight = discoverCodexModels()
+  inflight = homeDir()
+    .then(discoverCodexModels)
     .then((models) => {
       if (models.length > 0) setHarnessModels("codex", models);
     })
@@ -47,11 +48,10 @@ export function refreshCodexCatalog(): Promise<void> {
   return inflight;
 }
 
-export async function discoverCodexModels(
-  workingDirectory?: string,
-): Promise<AgentModel[]> {
+/** `cwd` is the folder the caller picks: the app's home folder, which Rust
+ * replaces with the neutral one, or the host user's home (ADE-193). */
+export async function discoverCodexModels(cwd: string): Promise<AgentModel[]> {
   const { path } = await resolveCodexBinary();
-  const cwd = workingDirectory ?? (await homeDir());
   const probeId = `${PROBE_ID}-${crypto.randomUUID()}`;
   const rpc = new JsonRpcClient(
     probeId,
