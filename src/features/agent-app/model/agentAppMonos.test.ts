@@ -301,6 +301,21 @@ it("answers monos.get and monos.read only for the Monos the scope lists", async 
   expect(monos.read).toHaveBeenCalledOnce();
 });
 
+// ADE-194 #520 gate/mutation. Defect: monos.get shows a Mono of the
+// caller's Space with its whole project list, so a project it has in another
+// Space shows, where monos.list shows only the scope's.
+it("shows a same-Space Mono's projects in the caller's Space only, unmarked", async () => {
+  const { run, scope } = fixture();
+  scope.monos[1].projects = [];
+  expect(await run("monos.get", { monoId: "mono-2" })).toEqual({
+    ...shroomListing,
+    projects: [],
+    harness: "claude",
+    model: "claude:opus",
+    messageAllowlist: [],
+  });
+});
+
 it("names monos.update in place of monos.configure, and never offers monos.delete", async () => {
   const { run } = fixture();
   expect(
