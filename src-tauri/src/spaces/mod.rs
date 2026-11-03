@@ -549,6 +549,7 @@ pub(crate) struct SpawnTarget {
 }
 
 /// What a harness child works for, as the window names it.
+#[derive(Clone, Copy)]
 pub(crate) enum Child<'a> {
     /// A session's own child, `S` or its numbered child `S#n`.
     Session(&'a str),
@@ -561,6 +562,17 @@ pub(crate) enum Child<'a> {
         owner: Option<&'a str>,
         neutral: &'a Path,
     },
+}
+
+impl Child<'_> {
+    /// The session the spawn hook acts for: a session child's own key, or a
+    /// helper's owner. `None` for a helper no session owns, which has no Space.
+    pub(crate) fn session(&self) -> Option<&str> {
+        match *self {
+            Child::Session(key) => Some(key),
+            Child::Helper { owner, .. } => owner,
+        }
+    }
 }
 
 /// INTERIM (ADE-189 4/4): every helper that keeps its caller's folder when it
@@ -636,27 +648,22 @@ pub(crate) fn prepare_spawn(
 ) -> Result<SpawnTarget, String> {
     #[cfg(test)]
     HOOKED_SPAWNS.with(|spawns| spawns.set(spawns.get() + 1));
-    let (session_id, no_space) = match child {
-        Child::Session(key) => (key, None),
-        Child::Helper {
-            key,
-            owner,
-            neutral,
-        } => {
+    let no_space = match child {
+        Child::Session(_) => None,
+        Child::Helper { key, neutral, .. } => {
             let keeps = key.is_some_and(|key| {
                 KEEPS_CALLER_FOLDER
                     .iter()
                     .any(|listed| key.starts_with(listed))
             });
-            let no_space = (!keeps).then_some(neutral);
-            let Some(owner) = owner else {
-                return Ok(SpawnTarget {
-                    workdir: no_space.map_or(target.workdir, Path::to_path_buf),
-                    ..target
-                });
-            };
-            (owner, no_space)
+            (!keeps).then_some(neutral)
         }
+    };
+    let Some(session_id) = child.session() else {
+        return Ok(SpawnTarget {
+            workdir: no_space.map_or(target.workdir, Path::to_path_buf),
+            ..target
+        });
     };
     let target = account::resolve(store, session_id, provider, target)?;
     let target = grants::route(store, session_id, now, target)?;

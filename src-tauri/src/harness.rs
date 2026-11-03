@@ -1022,10 +1022,18 @@ pub fn harness_spawn<R: Runtime>(
         Some("claude") => crate::claude_deny::srt_deny(&app, &workdir, account_id)?,
         _ => Vec::new(),
     };
+    let fence = crate::agent_sandbox::space_fence(
+        &app.state::<crate::session_store::SessionStore>(),
+        child.session(),
+        &workdir,
+    )?;
     let crate::agent_sandbox::Spawn { mut cmd, sandboxed } =
-        crate::agent_sandbox::command(&app, &command, &srt_deny)?;
+        crate::agent_sandbox::command(&app, &command, fence.as_ref(), &srt_deny)?;
     let args = match binary_provider.as_deref() {
-        Some("claude") => crate::claude_deny::args(&app, &workdir, account_id, sandboxed, args)?,
+        Some("claude") => {
+            let fenced = fence.map(|fence| fence.others).unwrap_or_default();
+            crate::claude_deny::args(&app, &workdir, account_id, sandboxed, &fenced, args)?
+        }
         _ => args,
     };
 
@@ -1618,6 +1626,14 @@ pub async fn harness_exec<R: Runtime>(
         if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref())
         {
             return Err("harness_exec: not a resolved harness CLI".to_string());
+        }
+        // OpenCode v2 runs its sessions' shells in this background service,
+        // which outlives the exec, so srt cannot fence it (ADE-177).
+        let service = binary_provider.as_deref() == Some("opencode")
+            && args.first().is_some_and(|arg| arg == "service");
+        let store = app.state::<crate::session_store::SessionStore>();
+        if service && !cfg!(windows) && crate::agent_sandbox::fence_on(&store)? {
+            return Err("OpenCode v2 cannot run fenced between Spaces yet".into());
         }
         let neutral = helper_folder(&app)?;
         let crate::spaces::SpawnTarget { workdir, .. } = crate::spaces::prepare_spawn(

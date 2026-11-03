@@ -280,7 +280,7 @@ mod spawn {
 
     use tauri::Manager;
 
-    use super::super::agent_sandbox::{mock_app_with, script, wait_for};
+    use super::super::agent_sandbox::{mock_app_with, script, stand_in_srt, wait_for};
     use super::{project_login_in_space_2, save_automation_run, save_run_session, World, P2};
     use crate::session_store::SessionStore;
 
@@ -325,6 +325,8 @@ esac"#,
             let data = root.join("app-data");
             std::fs::create_dir_all(&data).unwrap();
             let store = SessionStore::open_at(world.path().to_path_buf(), world.now()).unwrap();
+            // Two Spaces fence every child (ADE-177), so each needs an srt.
+            stand_in_srt(&root.join("tools"));
             Self {
                 root,
                 fx,
