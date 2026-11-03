@@ -194,12 +194,15 @@ pub(crate) fn prepare<R: Runtime>(
 /// item 5). The lock also keeps two spawns from preparing at once.
 fn prepare_store(source: &Path, home: PathBuf) -> Result<Arc<MonoCodexStore>, String> {
     let mut live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
-    live.retain(|store| store.strong_count() > 0);
-    for store in live.iter().filter_map(Weak::upgrade) {
+    live.retain(|store| {
+        let Some(store) = store.upgrade() else {
+            return false;
+        };
         if store.home == home {
             store.sync_auth();
         }
-    }
+        true
+    });
     let auth = prepare_keyring(source, &home)?;
     let store = Arc::new(MonoCodexStore {
         home,
