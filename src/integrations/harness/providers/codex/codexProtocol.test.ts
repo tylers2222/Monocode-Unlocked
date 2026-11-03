@@ -134,8 +134,9 @@ describe("runtimeModeToCodexConfig", () => {
       approvalPolicy: "never",
       sandboxPolicy: { type: "readOnly" },
     });
+    // Inside srt a plan turn has no read-only sandbox, so each command asks.
     expect(plan(true)).toMatchObject({
-      approvalPolicy: "never",
+      approvalPolicy: "untrusted",
       sandboxPolicy: { type: "dangerFullAccess" },
     });
     expect(

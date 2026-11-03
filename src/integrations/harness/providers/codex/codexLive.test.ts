@@ -563,6 +563,37 @@ describe("codex live turn sequence", () => {
     await stopCodexSession("codex-live-plain");
   });
 
+  // ADE-199 r1 B1: inside srt a plan turn has no read-only sandbox, so it
+  // must ask before every untrusted command, and the plan turn declines each
+  // ask. Defect: it runs under `never` and edits, commits or pushes unasked.
+  it("keeps a plan turn inside srt from running a command unasked", async () => {
+    spawnChild.mockResolvedValueOnce({ cwd: "/repo", sandboxed: true });
+    const { events, turn } = await startTurn("codex-live", {
+      runtimeMode: "auto",
+      intent: "plan",
+    });
+    expect(
+      parse().find((message) => message.method === "turn/start")?.params,
+    ).toMatchObject({
+      approvalPolicy: "untrusted",
+      sandboxPolicy: { type: "dangerFullAccess" },
+    });
+    onLine!(
+      JSON.stringify({
+        id: 92,
+        method: "item/commandExecution/requestApproval",
+        params: { itemId: "cmd_1", command: "git push origin main" },
+      }),
+    );
+    await waitFor(() => parse().some((m) => m.id === 92), "plan decline");
+    expect(parse().find((m) => m.id === 92)?.result).toEqual({
+      decision: "decline",
+    });
+    expect(events.some((e) => e.type === "approval.requested")).toBe(false);
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+  });
+
   // Codex has no thread-level sandboxPolicy, so the turn carries the
   // network. Defect: thread/resume sends a sandboxPolicy (codex ignores
   // it), or the turn loses the network a changed controlsAgents gives it.

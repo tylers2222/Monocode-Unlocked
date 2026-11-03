@@ -1506,9 +1506,10 @@ async function handleServerRequest(
   }
 
   if (live.planning || live.cancelled || live.muteUpdates) {
-    // Plan turns run in a non-escalating read-only sandbox. If an older
-    // app-server still asks for broader access, deny it silently instead of
-    // leaking a Supervised approval prompt into the user's selected mode.
+    // Plan turns make no change: a non-escalating read-only sandbox, or
+    // inside srt (no nested sandbox, ADE-199) an untrusted policy whose every
+    // ask lands here. Deny it silently instead of leaking a Supervised
+    // approval prompt into the user's selected mode.
     if (method === "item/permissions/requestApproval") {
       await live.rpc.respond(id, { permissions: {} }).catch(() => undefined);
     } else {
