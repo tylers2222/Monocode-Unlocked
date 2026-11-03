@@ -200,7 +200,11 @@ async function renderSwitcher(
 ) {
   await act(async () =>
     root.render(
-      createElement(SpaceSwitcher, { states: new Map(), ...props }),
+      createElement(SpaceSwitcher, {
+        states: new Map(),
+        onOpenSettings: () => {},
+        ...props,
+      }),
     ),
   );
   await settle();
@@ -395,11 +399,14 @@ describe("SpaceSwitcher", () => {
     expect(onOpenSettings).toHaveBeenCalledOnce();
     expect(menu()).toBeNull();
 
-    // Without a Settings handler the menu still closes.
+  });
+
+  it("leaves New Space and Manage Spaces out with no Settings to open", async () => {
     await renderSwitcher({ onOpenSettings: undefined });
     await act(async () => trigger().click());
-    await act(async () => item(label).click());
-    expect(menu()).toBeNull();
+    expect(row("space-2")).not.toBeNull();
+    expect(document.querySelectorAll('[role="menuitem"]')).toHaveLength(0);
+    expect(menu()!.querySelector(".my-1")).toBeNull();
   });
 
   it("closes on Escape, and the trigger toggles it", async () => {

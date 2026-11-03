@@ -2698,13 +2698,14 @@ function CompactProjectRail({
   const approvals = useApprovalsBadge();
   const monoItems = useMemo(() => {
     if (!monos) return [];
-    return listMonos()
-      .filter((mono) => inActiveSpace(mono.spaceId, spaces))
-      .map((mono) => ({
-        id: mono.id,
-        ...monoLook(mono),
-        status: monos.states.get(mono.id)?.status ?? "idle",
-      }));
+    const shown = listMonos().filter((mono) =>
+      inActiveSpace(mono.spaceId, spaces),
+    );
+    return shown.map((mono) => ({
+      id: mono.id,
+      ...monoLook(mono),
+      status: monos.states.get(mono.id)?.status ?? "idle",
+    }));
     // The roster is read through its snapshot.
   }, [monos, monosSnap, spaces]);
   const pickerMonos = useMemo((): PickerMonos | undefined => {

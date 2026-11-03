@@ -115,10 +115,6 @@ function SpacesMenu({
   onClose: () => void;
   onOpenSettings?: () => void;
 }) {
-  const settings = () => {
-    onClose();
-    onOpenSettings?.();
-  };
   return (
     <Popover
       anchor={anchor}
@@ -149,9 +145,9 @@ function SpacesMenu({
           }}
         />
       ))}
-      <div className="my-1 h-px bg-content/10" />
-      <MenuItem icon={Plus} label="New Space" onClick={settings} />
-      <MenuItem icon={Settings} label="Manage Spaces" onClick={settings} />
+      {onOpenSettings ? (
+        <SettingsItems onClose={onClose} onOpenSettings={onOpenSettings} />
+      ) : null}
     </Popover>
   );
 }
@@ -209,6 +205,27 @@ function SpaceRow({
         )}
       </span>
     </button>
+  );
+}
+
+/** New Space and Manage Spaces: both open Settings (Settings › Spaces). */
+function SettingsItems({
+  onClose,
+  onOpenSettings,
+}: {
+  onClose: () => void;
+  onOpenSettings: () => void;
+}) {
+  const settings = () => {
+    onClose();
+    onOpenSettings();
+  };
+  return (
+    <>
+      <div className="my-1 h-px bg-content/10" />
+      <MenuItem icon={Plus} label="New Space" onClick={settings} />
+      <MenuItem icon={Settings} label="Manage Spaces" onClick={settings} />
+    </>
   );
 }
 
