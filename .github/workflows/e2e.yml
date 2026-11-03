@@ -1,12 +1,16 @@
 name: E2E
 
 # E2E runs here and never on a developer's machine. e2e-linux runs the suites of
-# the Docker image (make e2e); e2e-macos runs the real-app scenarios on a hosted
-# Mac. Every agent is the fx puppet: no model, no secrets.
+# the Docker image (make e2e); e2e-macos-1 and e2e-macos-2 run the real-app
+# scenarios on hosted Macs, half each, on a debug build. e2e-macos-release runs
+# them all on a release build, nightly on tyler/main or when a dispatch asks.
+# Every agent is the fx puppet: no model, no secrets.
 on:
   pull_request:
   push:
     branches: [tyler/main]
+  schedule:
+    - cron: "30 16 * * *"
   workflow_dispatch:
     inputs:
       suite:
@@ -26,12 +30,18 @@ on:
         description: Switches the scenarios read, space-separated NAME=value, for example R6_KEEP_LEAD_LOADED=1
         type: string
         default: ""
+      macos_build:
+        description: The macOS build the scenarios run on (release runs only e2e-macos-release)
+        type: choice
+        options: [debug, release]
+        default: debug
 
 permissions:
   contents: read
 
+# The nightly run has its own group, so a tyler/main push does not cancel it.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -46,6 +56,7 @@ jobs:
   # (see ci.yml): when this job fails, its outputs are empty and both run.
   changes:
     name: Changed paths (e2e)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     outputs:
       e2e-linux: ${{ steps.paths.outputs.e2e-linux }}
@@ -69,7 +80,7 @@ jobs:
   e2e-linux:
     name: e2e-linux
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.e2e-linux != 'false' }}
+    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.e2e-linux != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -130,10 +141,13 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-  e2e-macos:
-    name: e2e-macos
+  # Two named jobs, not a matrix: a skipped job keeps its name, so a ruleset can
+  # require e2e-macos-1 and e2e-macos-2. scripts/e2e-macos.sh holds the split
+  # (E2E_MACOS_SHARD) and fails when a scenario is in no shard or in two.
+  e2e-macos-1:
+    name: e2e-macos-1
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.e2e-macos != 'false' && contains(fromJSON('["all", "scenarios", "milestones"]'), inputs.suite || 'all') }}
+    if: &e2e-macos-if ${{ !cancelled() && github.event_name != 'schedule' && inputs.macos_build != 'release' && needs.changes.outputs.e2e-macos != 'false' && contains(fromJSON('["all", "scenarios", "milestones"]'), inputs.suite || 'all') }}
     runs-on: macos-latest
     timeout-minutes: 150
     env:
@@ -141,7 +155,9 @@ jobs:
       GIGA_EVAL_HOME: /tmp/e2e-app-home
       # A debug instance: its build takes minutes less than release (instance.sh).
       GIGA_EVAL_DEBUG_BUILD: "1"
-    steps:
+      E2E_MACOS_SHARD: "1"
+      E2E_CACHE_KEY: e2e-macos-debug
+    steps: &e2e-macos-steps
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
@@ -159,13 +175,13 @@ jobs:
           toolchain: ${{ steps.rust-version.outputs.version }}
 
       # giga-eval builds every instance into $GIGA_EVAL_OUT/target, outside the checkout,
-      # so cache that directory. Only tyler/main pushes save; pull requests restore.
+      # so cache that directory. Only tyler/main runs save; pull requests restore.
       # The key names the profile: a release target restores nothing a debug build uses.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-targets: false
           cache-directories: ${{ env.GIGA_EVAL_OUT }}/target
-          shared-key: e2e-macos-debug
+          shared-key: ${{ env.E2E_CACHE_KEY }}
           save-if: ${{ github.ref == 'refs/heads/tyler/main' }}
 
       # The omp release ci.yml installs, checked against its SHA256SUMS.txt.
@@ -182,7 +198,8 @@ jobs:
       - name: Install Claude Code 2.1.310
         run: npm install --global --no-audit --no-fund @anthropic-ai/claude-code@2.1.310
 
-      # Builds the instance each scenario needs, then runs it on the runner's screen.
+      # Builds the instance each scenario needs, then runs it on the runner's screen:
+      # the scenarios of $E2E_MACOS_SHARD, or all of them when it is unset.
       - name: Run the scenarios
         run: bash scripts/e2e-macos.sh e2e-results/macos "$SUITE" "$SCENARIO" "$REPEAT" "$SCENARIO_ENV"
 
@@ -194,7 +211,34 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: e2e-macos-results
+          name: ${{ github.job }}-results
           path: e2e-results/
           retention-days: 14
           if-no-files-found: warn
+
+  e2e-macos-2:
+    name: e2e-macos-2
+    needs: changes
+    if: *e2e-macos-if
+    runs-on: macos-latest
+    timeout-minutes: 150
+    env:
+      GIGA_EVAL_OUT: /tmp/e2e-app
+      GIGA_EVAL_HOME: /tmp/e2e-app-home
+      GIGA_EVAL_DEBUG_BUILD: "1"
+      E2E_MACOS_SHARD: "2"
+      E2E_CACHE_KEY: e2e-macos-debug
+    steps: *e2e-macos-steps
+
+  # Every scenario on a release build, so an optimised build still runs them
+  # before a release ships. Not on pull requests.
+  e2e-macos-release:
+    name: e2e-macos-release
+    if: ${{ (github.event_name == 'schedule' || inputs.macos_build == 'release') && contains(fromJSON('["all", "scenarios", "milestones"]'), inputs.suite || 'all') }}
+    runs-on: macos-latest
+    timeout-minutes: 150
+    env:
+      GIGA_EVAL_OUT: /tmp/e2e-app
+      GIGA_EVAL_HOME: /tmp/e2e-app-home
+      E2E_CACHE_KEY: e2e-macos
+    steps: *e2e-macos-steps

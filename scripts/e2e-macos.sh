@@ -5,6 +5,8 @@
 # [scenario] (an app.sh command line), each [repeat] times (default 1), and
 # builds the instance each one needs. [env] holds space-separated switches
 # that a scenario reads, NAME=value with a scenario prefix such as R6_.
+# E2E_MACOS_SHARD=1 or 2 (the e2e-macos-1 and e2e-macos-2 jobs) runs only the
+# scenarios of that shard; unset runs them all.
 # Writes one log per run, a screenshot of each failure, and results.tsv and
 # junit.xml in the row format of docker/e2e-run.sh. Exits 1 when a row failed.
 set -uo pipefail
@@ -16,25 +18,41 @@ ROWS="$OUT/results.tsv"
 # app.sh's default, unless the job sets it.
 EVAL_HOME=${GIGA_EVAL_HOME:-/tmp/scenario-app-home}
 
-# command | the app.sh build it runs on | why CI skips it (empty: CI runs it).
+# command | the app.sh build it runs on | shard | why CI skips it (empty: CI runs it).
 # A dispatch that names the command (scenario input) runs it anyway.
+# The shards split by the warm debug-build seconds of run 41569271314: shard 1
+# r11 139, ade89 kill 110, r9 64, ceiling 22, usage-limit 17, home-isolation 2
+# (354 s); shard 2 d1 52, d4 50, d2 43, d4 d1 39, r6 38, s0 36, ade89 term 63 (321 s).
 SCENARIOS=(
-  "home-isolation|build|"
-  "s0|build|"
-  "d1|build|"
-  "d2|build|"
-  "d4|build|"
-  "d4 d1|build|"
-  "r6|build|"
-  "r9|build|"
-  "r11|build|"
-  "ade89 kill|build|"
-  "ade89 term|build|"
-  "ceiling|build|"
-  "usage-limit|build|"
-  "approvals|build|reads a copy of the real app database, which a CI runner does not have"
-  "ade89 two|build-two|ADE-152 and PR #413: 12/20, notices lost before the agent gets them; the 20x dispatch runs it"
+  "home-isolation|build|1|"
+  "s0|build|2|"
+  "d1|build|2|"
+  "d2|build|2|"
+  "d4|build|2|"
+  "d4 d1|build|2|"
+  "r6|build|2|"
+  "r9|build|1|"
+  "r11|build|1|"
+  "ade89 kill|build|1|"
+  "ade89 term|build|2|"
+  "ceiling|build|1|"
+  "usage-limit|build|1|"
+  "approvals|build|1|reads a copy of the real app database, which a CI runner does not have"
+  "ade89 two|build-two|2|ADE-152 and PR #413: 12/20, notices lost before the agent gets them; the 20x dispatch runs it"
 )
+
+# Every command once, in shard 1 or 2: the two jobs together run each scenario
+# exactly once.
+check_shards() {
+  local entry command build shard skip seen=" " bad=0
+  for entry in "${SCENARIOS[@]}"; do
+    IFS='|' read -r command build shard skip <<<"$entry"
+    [[ $shard == 1 || $shard == 2 ]] || { echo "e2e-macos: '$command' has shard '$shard', not 1 or 2" >&2; bad=1; }
+    [[ $seen != *" $command "* ]] || { echo "e2e-macos: '$command' is in SCENARIOS twice" >&2; bad=1; }
+    seen+="$command "
+  done
+  return "$bad"
+}
 
 row() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" >>"$ROWS"; }
 
@@ -80,11 +98,13 @@ use_build() {
 }
 
 suite_scenarios() {
-  local code=0 entry command build skip i slug args matched=""
+  local code=0 entry command build shard skip i slug args matched=""
   for entry in "${SCENARIOS[@]}"; do
-    IFS='|' read -r command build skip <<<"$entry"
+    IFS='|' read -r command build shard skip <<<"$entry"
     [[ -z $ONLY || $ONLY == "$command" ]] || continue
     matched=1
+    # The other shard's job runs it.
+    [[ -z $SHARD || $SHARD == "$shard" ]] || continue
     if ! has "$command"; then
       row scenarios "$command" skipped 0 "not in this checkout's app.sh"
       continue
@@ -116,6 +136,7 @@ suite_scenarios() {
 # On macOS the milestones E2E holds its turns on omp with a real model, and CI
 # has no model. The fx puppet mode (#337) runs it in the Linux image.
 suite_milestones() {
+  [[ -z $SHARD || $SHARD == 1 ]] || return 0
   row milestones "scripts/milestones-e2e/run.sh" skipped 0 "needs omp and a real model on macOS; CI has none"
 }
 
@@ -125,6 +146,9 @@ case ${2:-} in
   *) sed -n '2,10p' "$0"; exit 2 ;;
 esac
 ONLY=${3:-}
+SHARD=${E2E_MACOS_SHARD:-}
+[[ -z $SHARD || $SHARD == 1 || $SHARD == 2 ]] || { echo "e2e-macos: E2E_MACOS_SHARD is '$SHARD', not 1 or 2" >&2; exit 2; }
+check_shards || exit 2
 REPEAT=${4:-1}
 read -ra switches <<<"${5:-}"
 for switch in ${switches[@]+"${switches[@]}"}; do

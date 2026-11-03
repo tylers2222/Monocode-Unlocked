@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build, launch, check and stop an isolated "MonoCode GigaEval" release instance.
+# Build, launch, check and stop an isolated "MonoCode GigaEval" instance (release;
+# debug with GIGA_EVAL_DEBUG_BUILD=1).
 #
 #   instance.sh build <checkout> [label]   copy the checkout's working tree, build a release .app
 #                                          (Linux: a release binary) with cargo features
@@ -26,16 +27,20 @@
 # `env -i` under sandbox.sh's profile after a preflight, and watches its
 # process tree (GIGA_EVAL_WATCH_NOTIFY: a pid to get USR1 on a stray).
 #
-# GIGA_EVAL_DEBUG_BUILD=1 (e2e.yml's e2e-macos job): `build` makes a debug build
+# GIGA_EVAL_DEBUG_BUILD=1 (e2e.yml's e2e-macos jobs): `build` makes a debug build
 # with no debug info, in $GIGA_EVAL_OUT/target/debug. It takes minutes less
 # than a release build. On macOS a debug build rewrites its bundle's Info.plist
-# at launch with the identifier com.monocode.desktop (src-tauri/src/macos.rs).
+# at launch with the identifier com.monocode.desktop (src-tauri/src/macos.rs),
+# so its WebKit data and defaults would land in the real app's folders, where
+# lsof-check does not look: on macOS the switch works only on a CI runner (CI=true).
 source "$(dirname "$0")/lib.sh"
 source "$(dirname "$0")/sandbox.sh"
 
 SRC_ROOT="$EVAL_OUT/src"
 TARGET_DIR="$EVAL_OUT/target"
 if [[ "${GIGA_EVAL_DEBUG_BUILD:-}" == 1 ]]; then
+  [[ "$EVAL_OS" != macos || "${CI:-}" == true ]] \
+    || die "GIGA_EVAL_DEBUG_BUILD=1 is for CI runners: a macOS debug app takes the real app's bundle id"
   PROFILE=debug PROFILE_FLAGS=(--debug)
   export CARGO_PROFILE_DEV_DEBUG=0
 else
@@ -331,5 +336,5 @@ case "${1:-}" in
   scrub) sandbox_scrub "$APP_DATA/monocode.db" "${2:?usage: instance.sh scrub <model>}" ;;
   guard) sandbox_guard "${2:-$APP_DATA/monocode.db}" && log "safe: ${2:-$APP_DATA/monocode.db}" ;;
   denied) sandbox_denied "${2:?usage: instance.sh denied <since>}" ;;
-  *) sed -n '2,31p' "$0"; exit 2 ;;
+  *) sed -n '2,35p' "$0"; exit 2 ;;
 esac
