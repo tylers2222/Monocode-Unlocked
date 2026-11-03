@@ -53,8 +53,21 @@ fn state_db(home: &Path) -> Result<Option<PathBuf>, String> {
         .map(|(_, path)| path))
 }
 
-/// The state database `state_db` picked, refusing a link swapped in at its name.
+/// The files SQLite may open beside a database: the first read opens a hot
+/// `-journal` read-only, and a WAL database opens `-wal` and `-shm`. A FIFO an
+/// agent plants at one blocks that open with no writer.
+const SIDECARS: [&str; 3] = ["-journal", "-wal", "-shm"];
+
+/// The state database `state_db` picked, refusing a link swapped in at its
+/// name, and anything but a file at a name beside it.
 pub(crate) fn open_state(path: &Path, access: OpenFlags) -> Result<rusqlite::Connection, String> {
+    for sidecar in SIDECARS {
+        let mut name = path.as_os_str().to_owned();
+        name.push(sidecar);
+        if std::fs::symlink_metadata(&name).is_ok_and(|meta| !meta.is_file()) {
+            return Err(format!("{} is not a file", Path::new(&name).display()));
+        }
+    }
     let flags = access.union(OpenFlags::SQLITE_OPEN_NOFOLLOW);
     let db = rusqlite::Connection::open_with_flags(path, flags).map_err(|e| e.to_string())?;
     db.busy_timeout(std::time::Duration::from_secs(5))

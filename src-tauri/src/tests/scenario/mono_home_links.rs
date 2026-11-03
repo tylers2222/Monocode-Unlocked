@@ -1,8 +1,10 @@
 //! ADE-224 r1 M1, r2: a Mono's private Codex home is in its spawn's srt
 //! `allowWrite`, so a sandboxed agent may plant links, FIFOs and folders in it,
 //! and the app copies a thread into it and restores its agent state outside srt.
-//! The app must never follow a link there, never block on a FIFO, and leave
-//! what a link names as it was.
+//! The app must never follow a link there, never block on a FIFO it finds, and
+//! leave what a link names as it was. A FIFO swapped in at the state
+//! database's name between its check and the read-only open still blocks that
+//! open: SQLite opens it without `O_NONBLOCK` (ADE-225, accepted).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -344,6 +346,8 @@ impl Planted {
 /// highest `state_N.sqlite` is picked. In the login, a link makes the app read
 /// the database it names into the Mono snapshot, which the agent can read; in
 /// the home, every restore for that Mono fails, or one hangs on the FIFO.
+/// Or an older regular database is picked over the newest, or Codex's own
+/// `-wal` and `-shm` beside it stop the read.
 #[test]
 fn closed_agents_skip_a_planted_newer_state_database() {
     for planted in [Planted::Link, Planted::Folder, Planted::Fifo] {
@@ -356,10 +360,16 @@ fn closed_agents_skip_a_planted_newer_state_database() {
                 .unwrap()
                 .execute_batch(&format!("{EDGES}; {leak};"))
                 .unwrap();
-            let closed = "INSERT INTO thread_spawn_edges VALUES ('root', 'agent', 'closed')";
-            rusqlite::Connection::open(scratch.source.join("state_5.sqlite"))
+            let older = "INSERT INTO thread_spawn_edges VALUES ('root', 'older', 'closed')";
+            rusqlite::Connection::open(scratch.source.join("state_3.sqlite"))
                 .unwrap()
-                .execute_batch(&format!("{EDGES}; {closed};"))
+                .execute_batch(&format!("{EDGES}; {older};"))
+                .unwrap();
+            // Codex running on the login, its `-wal` and `-shm` open beside it.
+            let closed = "INSERT INTO thread_spawn_edges VALUES ('root', 'agent', 'closed')";
+            let codex = rusqlite::Connection::open(scratch.source.join("state_5.sqlite")).unwrap();
+            codex
+                .execute_batch(&format!("PRAGMA journal_mode=WAL; {EDGES}; {closed};"))
                 .unwrap();
             planted.make(&scratch.source.join("state_99.sqlite"), &secret);
             let edges = closed_agent_edges(&scratch.source, "root");
@@ -367,6 +377,10 @@ fn closed_agents_skip_a_planted_newer_state_database() {
             assert_eq!(children, ["agent"], "{planted:?} in the login");
 
             scratch.copy_into(&scratch.home, &[edge()]).unwrap();
+            rusqlite::Connection::open(scratch.home.join("state_3.sqlite"))
+                .unwrap()
+                .execute_batch(EDGES)
+                .unwrap();
             let private = rusqlite::Connection::open(scratch.home.join("state_5.sqlite")).unwrap();
             private.execute_batch(EDGES).unwrap();
             planted.make(&scratch.home.join("state_99.sqlite"), &secret);
@@ -404,5 +418,48 @@ fn a_state_database_open_refuses_a_link_at_its_name() {
             open_state(&link, access).is_err(),
             "{access:?} followed the link"
         );
+    }
+}
+
+/// Defect (ADE-225 r1 m1): a FIFO an agent plants beside the state database,
+/// where SQLite opens a journal or WAL file, blocks the login read and the
+/// home restore every time, or reaches SQLite instead of being refused.
+#[test]
+fn a_fifo_beside_the_state_database_is_refused_without_blocking() {
+    for sidecar in ["-journal", "-wal", "-shm"] {
+        let (send, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let scratch = Scratch::new();
+            let mode = if sidecar == "-journal" {
+                "DELETE"
+            } else {
+                "WAL"
+            };
+            for dir in [&scratch.source, &scratch.home] {
+                let db = dir.join("state_5.sqlite");
+                rusqlite::Connection::open(&db)
+                    .unwrap()
+                    .execute_batch(&format!("PRAGMA journal_mode={mode}; {EDGES};"))
+                    .unwrap();
+                // A closed WAL database may keep its `-shm`.
+                let fifo = dir.join(format!("state_5.sqlite{sidecar}"));
+                let _ = std::fs::remove_file(&fifo);
+                Planted::Fifo.make(&fifo, &db);
+            }
+            scratch.save_snapshot();
+            let login = closed_agent_edges(&scratch.source, "root").map(|_| ());
+            send.send([login, restore_agent_edges(&scratch.home, "root")])
+                .unwrap();
+        });
+        let results = done
+            .recv_timeout(Duration::from_secs(20))
+            .unwrap_or_else(|_| panic!("{sidecar}: blocked on the FIFO"));
+        for (side, result) in ["login", "home"].into_iter().zip(results) {
+            let error = result.expect_err(side);
+            assert!(
+                error.contains("is not a file"),
+                "{sidecar} in the {side}: {error}"
+            );
+        }
     }
 }
