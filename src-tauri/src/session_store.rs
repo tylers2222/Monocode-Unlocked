@@ -230,7 +230,6 @@ pub struct SessionSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lead_session_id: Option<String>,
     /// `sessions.space_id`, as the insert stored it.
-    #[serde(default)]
     pub space_id: String,
 }
 
@@ -1999,7 +1998,7 @@ pub(crate) fn list_by_project(
     rows.collect()
 }
 
-pub(crate) fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
+fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
     let mut statement = conn.prepare(
         "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
                 created_at, updated_at, branch, archived, pinned,

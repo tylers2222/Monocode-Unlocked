@@ -557,6 +557,8 @@ it("shows each Mono's Space from its row, and never writes it into the Mono's da
 
   mono.saveMonoName("mono-a", "Ada");
   mono.reorderMonos(["mono-b", "mono-a", "mono-c"]);
+  // Even a Space changed in the window never goes into the data.
+  mono.updateMono("mono-c", (entry) => ({ ...entry, spaceId: "space-9" }));
   await mono.monoWritesSettled();
   for (const saved of db.rows.values())
     expect(saved.data).not.toHaveProperty("spaceId");
