@@ -931,9 +931,9 @@ mod tests {
         keyring::set_default_credential_builder(keyring::keyutils::default_credential_builder());
         let fixture = Fixture::new();
         let (source, home) = (fixture.source(), fixture.home());
-        std::fs::create_dir_all(&source).unwrap();
-        let store = "cli_auth_credentials_store = \"keyring\"\n";
-        std::fs::write(source.join("config.toml"), store).unwrap();
+        // Encrypted secrets turn the keyring mirror on.
+        std::fs::create_dir_all(source.join("secrets")).unwrap();
+        std::fs::write(source.join("secrets/blob"), "sealed").unwrap();
         prepare_files(&source, &home).unwrap();
         let hashes = [home_key(&source).unwrap(), home_key(&home).unwrap()];
         let key = |hash: &str, suffix: &str| format!("secrets|{hash}{suffix}");
