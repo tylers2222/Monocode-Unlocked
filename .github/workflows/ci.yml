@@ -5,8 +5,9 @@ on:
     branches: [main, tyler/main]
   pull_request:
 
+# A push gets one group per branch, so a newer push cancels the older run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.event_name == 'push' && format('ci-push-{0}', github.ref) || format('{0}-{1}', github.workflow, github.event.pull_request.number || github.run_id) }}
   cancel-in-progress: true
 
 jobs:

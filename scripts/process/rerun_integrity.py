@@ -2,7 +2,9 @@
 changes without a pull_request_target event: a fixer-proof comment, a review/agent
 verdict, or a finished pull_request workflow. It re-runs that one job, or the whole
 run when no run had its other jobs succeed, and so updates the required context on the
-head.
+head. A run of the head still queued or running may have read the state before the event
+changed it, so it is cancelled first: GitHub re-runs only a finished run, and a cancel
+lands in seconds where the run itself can hold this runner for many minutes.
 
 Usage: rerun_integrity.py  (reads GITHUB_EVENT_NAME and GITHUB_EVENT_PATH)
 GATE_REPO, GATE_WORKFLOW (default gate-integrity.yml), GATE_EVENT (default
@@ -14,7 +16,7 @@ import subprocess
 import sys
 import time
 
-WAIT_SECONDS, POLL_SECONDS = 20 * 60, 20
+CANCEL_WAIT_SECONDS, POLL_SECONDS = 60, 3
 
 
 def event_target(name, event):
@@ -69,29 +71,37 @@ def main():
         if pr is None:
             print(f'rerun: {event_sha} is not the head of an open PR')
             return 0
-    deadline = time.monotonic() + WAIT_SECONDS
-    while True:
-        head = gh('api', f'repos/{repo}/pulls/{pr}', '--jq', '.head.sha').strip()
-        # A comment names no commit: pin the head it found first, so a push during the
-        # wait does not re-run the new head (that push starts its own run).
-        event_sha = event_sha or head
-        if stale(event_sha, head):
-            print(f'rerun: {event_sha} is not the head of #{pr} ({head}); nothing to re-run')
-            return 0
-        runs = json.loads(gh('api', f'repos/{repo}/actions/workflows/{workflow}/runs?head_sha={head}&event={trigger}&per_page=20',
+    head = gh('api', f'repos/{repo}/pulls/{pr}', '--jq', '.head.sha').strip()
+    # A comment names no commit: it is about the head found now, so a push during the
+    # cancel does not re-run the new head (that push starts its own run).
+    event_sha = event_sha or head
+    if stale(event_sha, head):
+        print(f'rerun: {event_sha} is not the head of #{pr} ({head}); nothing to re-run')
+        return 0
+    def head_runs():
+        return json.loads(gh('api', f'repos/{repo}/actions/workflows/{workflow}/runs?head_sha={head}&event={trigger}&per_page=20',
                              '--jq', '[.workflow_runs[] | {id, status}]'))
-        if not runs:
-            print(f'rerun: no {workflow} run for {head}')
-            return 0
-        if all(run['status'] == 'completed' for run in runs):
-            break
+    runs = head_runs()
+    if not runs:
+        print(f'rerun: no {workflow} run for {head}')
+        return 0
+    deadline = time.monotonic() + CANCEL_WAIT_SECONDS
+    while running := [run['id'] for run in runs if run['status'] != 'completed']:
+        # Each poll, so a run that started meanwhile is cancelled too.
+        for run_id in running:
+            try:
+                gh('api', '-X', 'POST', f'repos/{repo}/actions/runs/{run_id}/cancel')
+                print(f'rerun: cancelled run {run_id} for {head}, which may have read the old state')
+            except subprocess.CalledProcessError:
+                pass  # it finished, or its cancel is already landing
         if time.monotonic() > deadline:
-            print(f'rerun: a {workflow} run for {head} is still running after {WAIT_SECONDS}s')
+            print(f'rerun: a cancelled {workflow} run for {head} is still running after {CANCEL_WAIT_SECONDS}s')
             return 1
         time.sleep(POLL_SECONDS)
-    # The head may move while this waited; read it once more right before re-running.
+        runs = head_runs()
+    # The head may move during the cancel; read it once more right before re-running.
     if gh('api', f'repos/{repo}/pulls/{pr}', '--jq', '.head.sha').strip() != head:
-        print(f'rerun: #{pr} moved past {head} while waiting; nothing to re-run')
+        print(f'rerun: #{pr} moved past {head}; nothing to re-run')
         return 0
     jobs_by_run = {run['id']: json.loads(gh('api', f'repos/{repo}/actions/runs/{run["id"]}/jobs',
                                             '--jq', '[.jobs[] | {id, name, conclusion}]')) for run in runs}
