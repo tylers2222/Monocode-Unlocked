@@ -20,11 +20,16 @@
 #   compare         one dry-run count corrupted before the apply compare: ROLLED-BACK (apply)
 #   envcheck        MONOCODE_APP_TOKEN planted on the migration open: ROLLED-BACK (migrate)
 #   term            SIGTERM to the job after the apply (the EXIT-trap path): ROLLED-BACK (apply)
+#   restore-fail    forced failure in the migrate, and one file in backup/data1 made unreadable
+#                   once the backup is done: ROLLBACK-INCOMPLETE naming data1; no app reopened
+#   stuck-quit      the new-app stand-in ignores quit: the job kills its own instance (TERM, then
+#                   KILL) and restores without waiting on anyone: ROLLED-BACK (migrate)
+#   stuck-up        the new-app stand-in never ticks its clock: the same, from the up() timeout
 # In every case the job's plist must be gone and the log must hold exactly one result line.
 # shellcheck disable=SC2329  # helpers run through check and wait_for
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-ALL=(ok backup-partial backup migrate report dry apply rerun relaunch compare envcheck term)
+ALL=(ok backup-partial backup migrate report dry apply rerun relaunch compare envcheck term restore-fail stuck-quit stuck-up)
 [ $# -gt 0 ] || { echo "usage: cutover-ade183-dryrun.sh <case>... | all (${ALL[*]})" >&2; exit 2; }
 [ "$1" = all ] && set -- "${ALL[@]}"
 ROLLED='result=ROLLED-BACK \(restored == backup, old apps reopened\) after failure in'
@@ -35,11 +40,14 @@ expect_of() {
     ok) echo 'result=OK \(.*; agent logins NOT checked\)$' ;;
     backup|backup-partial) echo "$UNCHANGED" ;;
     compare|term) echo "$ROLLED apply$" ;;
-    envcheck) echo "$ROLLED migrate$" ;;
+    envcheck|stuck-quit|stuck-up) echo "$ROLLED migrate$" ;;
+    restore-fail) echo 'result=ROLLBACK-INCOMPLETE after failure in migrate: not restored: data1; apps left closed' ;;
     migrate|report|dry|apply|rerun|relaunch) echo "$ROLLED $1$" ;;
     *) return 1 ;;
   esac; }
-fail_at_of() { case $1 in ok|backup-partial) ;; *) echo "$1" ;; esac; }
+fail_at_of() { case $1 in ok|backup-partial|stuck-*) ;; restore-fail) echo migrate ;; *) echo "$1" ;; esac; }
+# An extra launcher key: the stuck cases shorten the timeout they hit.
+keys_of() { case $1 in stuck-quit) echo QUIT_TIMEOUT=5 ;; stuck-up) echo UP_TIMEOUT=8 ;; esac; }
 
 # wait_for <seconds> <command...>: poll every second until the command succeeds.
 wait_for() { local t=$1; shift
@@ -123,17 +131,20 @@ SH
   /usr/libexec/PlistBuddy -c "Add :LSEnvironment dict" -c "Add :LSEnvironment:CLAUDE_SECURESTORAGE_CONFIG_DIR string $C2" \
     -c "Add :LSEnvironment:CODEX_HOME string $X2" "$APP2/Contents/Info.plist"
   codesign --force --deep --sign - "$APP2" 2>/dev/null
-  applet "$NEW" "$ID1" 0.14.0-new "$D1" 1
+  applet "$NEW" "$ID1" 0.14.0-new "$D1" 1 "$1"
 }
-# applet <out .app> <bundle id> <version> <data dir> <migrate>
-applet() {
+# applet <out .app> <bundle id> <version> <data dir> <migrate> [stuck-quit|stuck-up]
+# stuck-quit: a quit handler that never quits; stuck-up: never runs the hook, so the clock never ticks.
+applet() { local hook="/bin/bash '$FX/hook.sh' '$4' $5" extra=""
+  [ "${6:-}" = stuck-up ] && hook=true
+  [ "${6:-}" = stuck-quit ] && extra=$'\non quit\nend quit'
   osacompile -s -o "$1" -e "on run
-  do shell script \"/bin/bash '$FX/hook.sh' '$4' $5 start\"
+  do shell script \"$hook start\"
 end run
 on idle
-  do shell script \"/bin/bash '$FX/hook.sh' '$4' $5 tick\"
+  do shell script \"$hook tick\"
   return 1
-end idle"
+end idle$extra"
   /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $2" "$1/Contents/Info.plist" 2>/dev/null \
     || /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $2" "$1/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $3" "$1/Contents/Info.plist" 2>/dev/null \
@@ -151,11 +162,12 @@ same() { cmp -s "$1" "$2" || { diff "$1" "$2" | head -20 | sed 's/^/       /'; r
 results() { grep -c '\] result=' "$RUN/log.txt"; }
 partly() { [ -d "$1" ] && [ ! -e "$1/$2" ]; }
 none_of() { local p; for p in "$@"; do [ ! -e "$p" ] || return 1; done; }
+drop_d1() { awk -v h="== ${D1#"$TH"}" '/^== /{on=($0!=h)} on' "$1"; }
 version() { plutil -extract CFBundleShortVersionString raw "$1/Contents/Info.plist" 2>/dev/null; }
 
-one_case() { local case=$1 expect fail_at job
+one_case() { local case=$1 expect fail_at job key
   expect=$(expect_of "$case") || { echo "unknown case $case" >&2; return 1; }
-  fail_at=$(fail_at_of "$case")
+  fail_at=$(fail_at_of "$case"); key=$(keys_of "$case")
   TH=$(mktemp -d "/tmp/cutover183-dry-$case.XXXXXX"); BAD=0
   local tag; tag=$(basename "$TH" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
   ID1=com.example.ade183dry.$tag.one; ID2=com.example.ade183dry.$tag.two
@@ -165,13 +177,14 @@ one_case() { local case=$1 expect fail_at job
   NEW="$TH/ship183-art/app/MonoCode GigaEval.app"
   ITEMS=("$APP1" "$APP2" "$D1" "$D2" "$W1" "$W2" "$C2" "$X2")
   echo "== case $case ($TH)"
-  fixtures
+  fixtures "$case"
   if [ "$case" = backup-partial ]; then echo "made-up" > "$C2/zz-unreadable"; chmod 000 "$C2/zz-unreadable"; fi
 
   open -a "$APP1"; open -a "$APP2"
   RUN=$(bash "$HERE/cutover-ade183-launch.sh" LOAD=0 LABEL="com.tyler.cutover-ade183-dryrun-$tag" RUN_ROOT="$TH/MonoCode-cutover" \
     HOME_DIR="$TH" APP1="$APP1" ID1="$ID1" DATA1="$D1" WEBKIT1="$W1" APP2="$APP2" ID2="$ID2" DATA2="$D2" WEBKIT2="$W2" \
-    CLAUDE2="$C2" CODEX2="$X2" NEW_APP="$NEW" PYTHON="$(command -v python3)" REAL=0 POLL=3 ${fail_at:+FAIL_AT=$fail_at}) \
+    CLAUDE2="$C2" CODEX2="$X2" NEW_APP="$NEW" PYTHON="$(command -v python3)" REAL=0 POLL=3 ${fail_at:+FAIL_AT=$fail_at} \
+    ${key:+"$key"}) \
     || { echo "  FAIL launcher"; return 1; }
   run_job & job=$!
   # Tyler's quit, once the job waits for it; then the "before" picture, while the job polls twice.
@@ -179,6 +192,10 @@ one_case() { local case=$1 expect fail_at job
   quit_both
   check "stand-ins quit" wait_for 30 both_gone
   snap "${ITEMS[@]}" > "$TH/before.txt"
+  if [ "$case" = restore-fail ]; then
+    check "backup done" wait_for 60 grep -qs 'backup complete' "$RUN/log.txt"
+    chmod 000 "$RUN/backup/data1/attachments/one.txt"
+  fi
   check "result line within 300 s" wait_for 300 grep -qs '\] result=' "$RUN/log.txt"
   wait "$job"
   snap "${ITEMS[@]}" > "$TH/after.txt"
@@ -188,6 +205,16 @@ one_case() { local case=$1 expect fail_at job
   check "exactly one result line" [ "$(results)" = 1 ]
   check "plist deleted" [ ! -e "$RUN/com.tyler.cutover-ade183-dryrun-$tag.plist" ]
   case $case in
+    restore-fail)
+      check "no app reopened" both_gone
+      check "every item but data1 == before" same <(drop_d1 "$TH/before.txt") <(drop_d1 "$TH/after.txt")
+      check "data1 left as it is (still migrated)" [ "$(sqlite3 -readonly "$D1/monocode.db" "SELECT count(*) FROM sqlite_master WHERE name='spaces'")" = 1 ]
+      ;;
+    stuck-quit|stuck-up)
+      check "the job killed its own stuck instance" grep -Eqs '\] (TERM to MonoCode GigaEval.app pid [0-9]+ \(opened by this job|MonoCode GigaEval.app pid [0-9]+ is gone)' "$RUN/log.txt"
+      check "every live item == before (restored)" same "$TH/before.txt" "$TH/after.txt"
+      check "old app back in place" [ "$(version "$APP1")" = 0.13.0-old ]
+      ;;
     ok)
       check "Space 2 == before" same <(awk -v h="== ${D2#"$TH"}" '/^== /{on=($0==h)} on' "$TH/before.txt") <(snap "$D2")
       check "Space 1 has the import (3 monos)" [ "$(sqlite3 -readonly "$D1/monocode.db" 'SELECT count(*) FROM monos')" = 3 ]
@@ -218,7 +245,10 @@ one_case() { local case=$1 expect fail_at job
   # Quit whatever stand-in the job left open (the relaunched or reopened apps); made-up ids only.
   quit_both
   check "no stand-in left running" wait_for 30 both_gone
+  # A stand-in that ignores quit (a failed case) is killed by its pid under this temp HOME only.
+  pgrep -f "${TH#/private}/" | while read -r p; do kill -KILL "$p"; done
   [ -e "$C2/zz-unreadable" ] && chmod 600 "$C2/zz-unreadable"
+  [ -e "$RUN/backup/data1/attachments/one.txt" ] && chmod 600 "$RUN/backup/data1/attachments/one.txt"
   [ "$BAD" = 0 ] && echo "  PASS $case" || echo "  CASE FAILED $case (log $RUN/log.txt)"
   return "$BAD"
 }

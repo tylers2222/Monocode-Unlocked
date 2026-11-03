@@ -40,10 +40,24 @@
 #   rerun     a second apply makes 0 changes
 #   relaunch  open the ONE app (APP1) and wait until it is up; MonoCode 2 stays closed
 # A failure before the migrate changes nothing live: the job stops, restores nothing and reopens
-# the old apps. A failure from the migrate on: wait until no app runs, then restore each item from
-# its verified backup (copy next to the live path, check, then swap by rename; an item without a
-# verified backup is left as it is), and reopen MonoCode 2 and MonoCode.
+# the old apps. A failure from the migrate on: the job kills the app instance it opened if that
+# instance did not come up or quit (by pid, path and start time), then restores each item from its
+# verified backup (copy next to the live path, check, then swap by rename; an item without a
+# verified backup is left as it is). Only when every item is restored does it reopen MonoCode 2 and
+# MonoCode; otherwise both stay closed and the result names the items. It never waits on Tyler: if
+# an app it did not open is running, it restores nothing (ROLLBACK-NEEDS-HUMAN).
 # Log: RUN/log.txt; last line result=...
+#
+# RECOVERY after a hard kill or power loss from the migrate on, or a result other than OK or
+# ROLLED-BACK: the job does not resume, and a re-start on the same RUN is refused. By hand, with
+# both apps closed, for each item n in RUN/backup/.verified (its live path is in RUN/log.txt,
+# "item n = <path>"):
+#   1. If <live>.restore-<RUN name> exists and `cutover_checks.py manifest <it> /tmp/m` gives a
+#      file equal to RUN/backup/manifest-n.txt, use it as the copy; else ditto RUN/backup/n to
+#      <live>.restore-<RUN name> and check it the same way.
+#   2. Move <live> (if there) and any <live>.failed-<RUN name> into RUN/failed-state/, then rename
+#      the checked copy to <live>. An item whose backup manifest is ABSENT has no live path after.
+#   3. When every item is done, open MonoCode 2 and MonoCode (env -i, as the job does).
 set -uo pipefail
 CONF=${1:?usage: cutover-ade183.sh <config file>}
 # shellcheck source=/dev/null
@@ -102,27 +116,45 @@ up() { local p st w
   done
   log "$(basename "$1") NOT up: pid=${p:-none} state=${st:-none} clock=${w:-none} launch=$3"; return 1; }
 
-# quit_app <app> <bundle id>: a normal Apple Event quit, then wait until the process is gone.
-quit_app() { local q
-  osascript -e "tell application id \"$2\" to quit" >/dev/null 2>&1 & q=$!
-  for _ in $(seq 1 "$QUIT_TIMEOUT"); do [ -z "$(pid_of "$1")" ] && break; sleep 1; done
-  kill "$q" 2>/dev/null; wait "$q" 2>/dev/null
-  [ -z "$(pid_of "$1")" ] && { log "$(basename "$1") quit"; return 0; }
-  log "$(basename "$1") did not quit in ${QUIT_TIMEOUT}s"; return 1; }
+# The job owns an app instance it opened: OPENED_AT[i] is the epoch second of its last open of
+# app i. own_pid <i>: the pid whose argv is app i's main executable (pid_of) and that started at or
+# after that open; an instance Tyler started earlier is never the job's.
+OPENED_AT=(0 0)
+own_pid() { local p t; p=$(pid_of "${APPS[$1]}"); [ -n "$p" ] && [ "${OPENED_AT[$1]}" -gt 0 ] || return 1
+  t=$(LC_ALL=C date -j -f '%a %b %e %T %Y' "$(LC_ALL=C ps -o lstart= -p "$p" | sed 's/ *$//')" +%s 2>/dev/null) || return 1
+  [ "$t" -ge "${OPENED_AT[$1]}" ] && echo "$p"; }
+# kill_own <i>: TERM, then after 10 s KILL, the instance of app i the job opened, re-checked by
+# own_pid before each signal. Never by name; never an instance the job did not open.
+kill_own() { local p
+  p=$(own_pid "$1") || return 0
+  log "TERM to $(basename "${APPS[$1]}") pid $p (opened by this job at ${OPENED_AT[$1]})"; kill -TERM "$p"
+  for _ in $(seq 1 10); do [ "$(own_pid "$1")" = "$p" ] || break; sleep 1; done
+  if [ "$(own_pid "$1")" = "$p" ]; then log "KILL to pid $p"; kill -KILL "$p"; sleep 1; fi
+  [ -z "$(pid_of "${APPS[$1]}")" ] && log "$(basename "${APPS[$1]}") pid $p is gone"; }
 
-# open_app <app> <bundle id> <data> [open args]: clean-env open, wait until up, check its env.
-open_app() { local app=$1 id=$2 data=$3 t0 p r; shift 3
-  t0=$(now_ms)
+# quit_app <i>: a normal Apple Event quit to app i, then wait until it is gone; past QUIT_TIMEOUT
+# the job kills its own instance and reports the quit as failed.
+quit_app() { local q app=${APPS[$1]}
+  osascript -e "tell application id \"${IDS[$1]}\" to quit" >/dev/null 2>&1 & q=$!
+  for _ in $(seq 1 "$QUIT_TIMEOUT"); do [ -z "$(pid_of "$app")" ] && break; sleep 1; done
+  kill "$q" 2>/dev/null; wait "$q" 2>/dev/null
+  [ -z "$(pid_of "$app")" ] && { log "$(basename "$app") quit"; return 0; }
+  log "$(basename "$app") did not quit in ${QUIT_TIMEOUT}s"; kill_own "$1"; return 1; }
+
+# open_app <i> [open args]: clean-env open of app i, wait until up, check its env. An instance that
+# does not come up or fails the env check is not left running.
+open_app() { local app=${APPS[$1]} i=$1 t0 p r; shift
+  OPENED_AT[i]=$(date +%s); t0=$(now_ms)
   env -i HOME="$HOME" USER="${USER:-$(id -un)}" SHELL=/bin/zsh PATH=/usr/bin:/bin open -a "$app" "$@" \
     || { log "open $app failed"; return 1; }
-  up "$app" "$data" "$t0" || return 1
+  up "$app" "${DATAS[$i]}" "$t0" || { kill_own "$i"; return 1; }
   p=$(pid_of "$app")
   if r=$(py env-check "$p" "$app"); then log "env check PASS $(basename "$app") pid $p: $r"; return 0; fi
   log "env check FAIL $(basename "$app") pid $p: $r; quitting it at once"
-  quit_app "$app" "$id"; return 1; }
+  quit_app "$i"; return 1; }
 
 reopen_old() { local i ok=0
-  for i in 1 0; do open_app "${APPS[$i]}" "${IDS[$i]}" "${DATAS[$i]}" || ok=1; done
+  for i in 1 0; do open_app "$i" || ok=1; done
   return "$ok"; }
 
 # restore <i>: copy item i's verified backup next to its live path, check the copy, then swap by
@@ -142,18 +174,26 @@ restore() { local n=${NAMES[$1]} live=${ROOTS[$1]} tmp old
   if [ -e "$old" ] || [ -L "$old" ]; then mv "$old" "$RUN/failed-state/$n" || log "failed state of $n stays at $old"; fi
   log "restored $n: manifest sha256 $(shasum -a 256 < "$BK/manifest-$n.txt" | cut -c1-16) == backup ($live)"; }
 
-# Restore the backup and reopen the old apps. Runs only after every app has exited. A SIGTERM
-# (bootout, logout) no longer stops it; the plist gives it a long ExitTimeOut before a SIGKILL.
-rollback() { local i ok=1
+# Restore the backup, then reopen the old apps only if every item was restored. It never waits on
+# Tyler: the job's own instances are killed first, and an app still running 30 s later is one the
+# job did not open, so nothing is restored under it. A SIGTERM (bootout, logout) no longer stops
+# the rollback; the plist gives it a long ExitTimeOut before a SIGKILL.
+rollback() { local i bad=()
   trap '' TERM
   STEP=rollback
-  log "restore starts; waiting until no app runs (never killing one)"
-  while any_running; do sleep "$POLL"; done
+  log "restore starts (manual steps if this stops: RECOVERY in the header of $RUN/cutover-ade183.sh)"
+  for i in 0 1; do kill_own "$i"; done
+  for _ in $(seq 1 30); do any_running || break; sleep 1; done
+  if any_running; then
+    finish "ROLLBACK-NEEDS-HUMAN after failure in $FAILED: an app this job did not open is running; nothing restored, apps left as they are; quit it, then RECOVERY" 1
+  fi
   mkdir -p "$RUN/failed-state"
-  for i in "${!NAMES[@]}"; do restore "$i" || ok=0; done
-  reopen_old || ok=0
-  [ "$ok" = 1 ] && finish "ROLLED-BACK (restored == backup, old apps reopened) after failure in $FAILED" 1
-  finish "ROLLBACK-INCOMPLETE after failure in $FAILED: see the lines above; backup in $BK" 1
+  for i in "${!NAMES[@]}"; do restore "$i" || bad+=("${NAMES[$i]}"); done
+  if [ ${#bad[@]} -gt 0 ]; then
+    finish "ROLLBACK-INCOMPLETE after failure in $FAILED: not restored: ${bad[*]}; apps left closed; see RECOVERY; backup in $BK" 1
+  fi
+  reopen_old && finish "ROLLED-BACK (restored == backup, old apps reopened) after failure in $FAILED" 1
+  finish "ROLLBACK-INCOMPLETE after failure in $FAILED: restored == backup, but an old app did not reopen clean" 1
 }
 # Before the migrate nothing live has changed: stop and restore nothing. In the backup step Tyler
 # has quit both apps, so reopen them. From the migrate on, restore.
@@ -229,11 +269,11 @@ log "installed $APP1: $(codesign -dvv "$APP1" 2>&1 | grep -E '^(Identifier|Autho
 PLANT=(); [ "$FAIL_AT" = envcheck ] && { PLANT=(--env MONOCODE_APP_TOKEN=dummy); log "FORCED FAILURE (test hook FAIL_AT=envcheck): open with a planted MONOCODE_APP_TOKEN=dummy"; }
 opened=$(date '+%H:%M:%S')
 log "migration open at $opened"
-open_app "$APP1" "$ID1" "$DATA1" ${PLANT[@]+"${PLANT[@]}"} || fail "the new app's migration open failed"
+open_app 0 ${PLANT[@]+"${PLANT[@]}"} || fail "the new app's migration open failed"
 for _ in $(seq 1 "$UP_TIMEOUT"); do py has-table "$DATA1/monocode.db" spaces && break; sleep 1; done
-py has-table "$DATA1/monocode.db" spaces || { quit_app "$APP1" "$ID1"; fail "no Spaces tables in $DATA1 after the new app started"; }
+py has-table "$DATA1/monocode.db" spaces || { quit_app 0; fail "no Spaces tables in $DATA1 after the new app started"; }
 log "Spaces tables present at $(date '+%H:%M:%S'); quitting the new app (Apple Event quit)"
-quit_app "$APP1" "$ID1" || fail "the new app did not quit"
+quit_app 0 || fail "the new app did not quit"
 log "migration window: open $opened, quit $(date '+%H:%M:%S'); sessions that ran in it (step 7 checks them):"
 mkdir -p "$RUN/scratch"; s="$RUN/scratch/before.db"
 cp "$BK/data1/monocode.db" "$s"; for x in wal shm; do [ -f "$BK/data1/monocode.db-$x" ] && cp "$BK/data1/monocode.db-$x" "$s-$x"; done
@@ -284,5 +324,5 @@ log "re-run made 0 changes"
 
 STEP=relaunch
 forced && fail "forced"
-open_app "$APP1" "$ID1" "$DATA1" || fail "the one app did not come up clean"
+open_app 0 || fail "the one app did not come up clean"
 finish "OK (backup $BK; one app $APP1 relaunched; MonoCode 2 stays closed; agent logins NOT checked)" 0
