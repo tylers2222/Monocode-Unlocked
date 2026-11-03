@@ -26,26 +26,26 @@ it("resolves every provider and runs only allowed provider commands", async () =
           process.platform === "linux" ? ["--uid="] : [],
         );
     }
-    const output = await backend.invoke<string>("harness_exec", {
+    const output = await backend.invoke<{ stdout: string }>("harness_exec", {
       command: file,
       args: ["models", "--json"],
       binaryProvider: "fx",
       cwd: directory,
     });
-    expect(JSON.parse(output)).toEqual(["models", "--json"]);
+    expect(JSON.parse(output.stdout)).toEqual(["models", "--json"]);
     const cleanupArgs = [
       "--no-auto-update",
       "sessions",
       "delete",
       "550e8400-e29b-41d4-a716-446655440000",
     ];
-    const cleanupOutput = await backend.invoke<string>("harness_exec", {
+    const cleanupOutput = await backend.invoke<{ stdout: string }>("harness_exec", {
       command: file,
       args: cleanupArgs,
       binaryProvider: "grok",
       cwd: directory,
     });
-    expect(JSON.parse(cleanupOutput)).toEqual(cleanupArgs);
+    expect(JSON.parse(cleanupOutput.stdout)).toEqual(cleanupArgs);
     await expect(
       backend.invoke("harness_exec", {
         command: file,
@@ -58,13 +58,13 @@ it("resolves every provider and runs only allowed provider commands", async () =
       ["service", "start"],
       ["service", "get", "password"],
     ]) {
-      const serviceOutput = await backend.invoke<string>("harness_exec", {
+      const serviceOutput = await backend.invoke<{ stdout: string }>("harness_exec", {
         command: file,
         args,
         binaryProvider: "opencode",
         cwd: directory,
       });
-      expect(JSON.parse(serviceOutput)).toEqual(args);
+      expect(JSON.parse(serviceOutput.stdout)).toEqual(args);
     }
     for (const [provider, args] of [
       ["fx", ["service", "start"]],
@@ -152,13 +152,15 @@ it("bridges OpenCode HTTP and event streams on loopback", async () => {
 it("runs the resolved Claude version fallback in headless mode", async () => {
   const backend = new HostChildBackend({ claude: process.execPath });
   try {
-    const version = await backend.invoke<string>("harness_exec", {
+    const version = await backend.invoke<{ stdout: string; cwd: string }>("harness_exec", {
       command: process.execPath,
       args: ["--version"],
       binaryProvider: "claude",
       cwd: process.cwd(),
     });
-    expect(version.trim()).toBe(process.version);
+    expect(version.stdout.trim()).toBe(process.version);
+    // ADE-189: the host has no Spaces, so it names the folder it ran in.
+    expect(version.cwd).toBe(process.cwd());
     await expect(
       backend.invoke("harness_exec", {
         command: process.execPath,

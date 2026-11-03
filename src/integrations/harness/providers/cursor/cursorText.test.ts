@@ -3,8 +3,9 @@ import type { HarnessEvent } from "../../core/types";
 
 const sent: string[] = [];
 let onLine: ((line: string) => void) | undefined;
+// Rust places a helper and names the folder (ADE-189); it is never "/repo".
 const spawnHelperChild = vi.hoisted(() =>
-  vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined),
+  vi.fn<(...args: unknown[]) => Promise<string>>(async () => "/placed"),
 );
 
 vi.mock("../../core/child", () => ({
@@ -20,7 +21,7 @@ vi.mock("../../core/child", () => ({
   },
 }));
 
-const { runCursorTextPrompt, stopCursorTextPrompt } =
+const { runCursorTextPrompt, stopCursorTextPrompt, warmupCursorText } =
   await import("./cursorText");
 
 function messages() {
@@ -47,6 +48,59 @@ async function waitFor(predicate: () => boolean, label: string) {
 beforeEach(() => {
   sent.length = 0;
   onLine = undefined;
+});
+
+/** Answers a fresh text child's setup; returns its `session/new` params. */
+async function startsTextChild() {
+  for (const method of ["initialize", "authenticate"]) {
+    await waitFor(() => !!outbound(method), method);
+    reply(method, {});
+  }
+  await waitFor(() => !!outbound("session/new"), "session/new");
+  const params = outbound("session/new")?.params;
+  reply("session/new", { sessionId: "cursor_text", configOptions: [] });
+  for (const method of ["session/set_mode", "session/set_config_option"]) {
+    await waitFor(() => !!outbound(method), method);
+    reply(method, {});
+  }
+  return params;
+}
+
+// ADE-189: a warm child is told the folder it was placed for, so a prompt
+// for another folder starts a child of its own there.
+it("reuses a warm text child only for the folder it was placed for", async () => {
+  spawnHelperChild.mockClear();
+  const warm = warmupCursorText("/repo");
+  expect(await startsTextChild()).toMatchObject({ cwd: "/placed" });
+  await warm;
+  // Another model in the same folder reopens the warm child, not a new one.
+  sent.length = 0;
+  const same = runCursorTextPrompt({ cwd: "/repo", model: "gpt-5", prompt: "q" });
+  await waitFor(() => !!outbound("session/new"), "session/new");
+  expect(outbound("session/new")?.params).toMatchObject({ cwd: "/placed" });
+  reply("session/new", { sessionId: "cursor_text", configOptions: [] });
+  for (const method of ["session/set_mode", "session/set_config_option"]) {
+    await waitFor(() => !!outbound(method), method);
+    reply(method, {});
+  }
+  await waitFor(() => !!outbound("session/prompt"), "session/prompt");
+  expect(spawnHelperChild).toHaveBeenCalledTimes(1);
+  reply("session/prompt", {});
+  await same;
+
+  sent.length = 0;
+  const again = warmupCursorText("/repo");
+  await startsTextChild();
+  await again;
+  spawnHelperChild.mockResolvedValueOnce("/placed-other");
+  sent.length = 0;
+  const other = runCursorTextPrompt({ cwd: "/other", prompt: "q" });
+  expect(await startsTextChild()).toMatchObject({ cwd: "/placed-other" });
+  expect(spawnHelperChild).toHaveBeenCalledTimes(3);
+  expect(spawnHelperChild.mock.calls[2]?.[4]).toBe("/other");
+  await waitFor(() => !!outbound("session/prompt"), "session/prompt");
+  reply("session/prompt", {});
+  await other;
 });
 
 afterEach(async () => {
@@ -76,6 +130,7 @@ it("forwards Cursor text deltas without duplicating snapshots", async () => {
   await waitFor(() => !!outbound("authenticate"), "authenticate");
   reply("authenticate", {});
   await waitFor(() => !!outbound("session/new"), "session/new");
+  expect(outbound("session/new")?.params).toMatchObject({ cwd: "/placed" });
   reply("session/new", {
     sessionId: "cursor_text",
     configOptions: [{ id: "model", category: "model" }],

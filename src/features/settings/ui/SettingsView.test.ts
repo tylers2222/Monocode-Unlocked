@@ -416,9 +416,12 @@ describe("settings pages", () => {
         if (payload?.binaryPath === "/bad/codex") {
           throw new Error("Codex failed to start");
         }
-        return payload?.binaryPath?.includes("opencode")
-          ? "opencode 1.18.32"
-          : "codex-cli 0.156.1";
+        return {
+          stdout: payload?.binaryPath?.includes("opencode")
+            ? "opencode 1.18.32"
+            : "codex-cli 0.156.1",
+          cwd: "/helper-cwd",
+        };
       }
       return undefined;
     });
@@ -802,7 +805,8 @@ describe("settings pages", () => {
   it("keeps location failures separate from CLI check failures", async () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === "harness_resolve_codex") return { path: "/auto/codex" };
-      if (command === "harness_exec") return "codex-cli 0.156.1";
+      if (command === "harness_exec")
+        return { stdout: "codex-cli 0.156.1", cwd: "/helper-cwd" };
       if (command === "reveal_path") throw new Error("File manager unavailable");
       return undefined;
     });

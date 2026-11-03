@@ -107,7 +107,7 @@ async function prepare(
   );
   let archivedByUs = false;
   try {
-    await spawnHelperChild(
+    const placed = await spawnHelperChild(
       input.sessionId,
       id,
       input.path,
@@ -125,7 +125,7 @@ async function prepare(
     // Passing these resolved values preserves profiles, agents and MCP paths.
     const settings = await request<{ config: Record<string, unknown> }>(
       "config/read",
-      { cwd: input.cwd },
+      { cwd: placed },
     );
     const config = codexConfigOverrides(settings.config, store.home);
 

@@ -1,3 +1,4 @@
+import type { HarnessEvent } from "./types";
 import {
   JsonRpcClient,
   type JsonRpcHandlers,
@@ -6,6 +7,24 @@ import {
 } from "./jsonRpc";
 
 export type { JsonRpcMessage };
+
+/**
+ * A warm ACP text child (cursor, grok): its client, the folder it was asked
+ * for and the one Rust placed it in, the one it tells its agent (ADE-189),
+ * and the answer it is collecting.
+ */
+export type AcpTextLive = {
+  acp: AcpClient;
+  cwd: string;
+  placed: string;
+  model: string;
+  settingsKey: string;
+  acpSessionId: string;
+  collecting: boolean;
+  output: string;
+  closed: boolean;
+  onEvent?: (event: HarnessEvent) => void;
+};
 
 export type AcpHandlers = {
   onNotification?: (method: string, params: unknown) => void;

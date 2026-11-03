@@ -160,13 +160,15 @@ export class HostChildBackend implements ChildBackend {
         )
           throw new Error("Unsupported headless catalog command");
         const launch = await providerLaunch(commandPath, args.args as string[]);
+        // The host has no Spaces: a command runs in the folder it was given.
+        const cwd = typeof args.cwd === "string" ? args.cwd : process.cwd();
         const { stdout } = await exec(launch.command, launch.args, {
-          cwd: typeof args.cwd === "string" ? args.cwd : undefined,
+          cwd,
           timeout: 10_000,
           maxBuffer: 8 * 1024 * 1024,
           windowsHide: true,
         });
-        return stdout as T;
+        return { stdout, cwd } as T;
       }
       case "harness_free_port": {
         const server = createServer();
@@ -321,7 +323,7 @@ export class HostChildBackend implements ChildBackend {
   private async start(
     id: string,
     args: Record<string, unknown>,
-  ): Promise<number> {
+  ): Promise<{ pid: number; cwd: string }> {
     if (this.closing) throw new Error("Host is stopping");
     await this.kill(id);
     if (this.closing) throw new Error("Host is stopping");
@@ -372,7 +374,8 @@ export class HostChildBackend implements ChildBackend {
       child.once("spawn", resolve);
       child.once("error", reject);
     });
-    return child.pid!;
+    // The host has no Spaces: a child runs in the folder it was given.
+    return { pid: child.pid!, cwd: String(args.cwd) };
   }
 
   private lines(

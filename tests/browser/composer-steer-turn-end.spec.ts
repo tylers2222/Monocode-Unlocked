@@ -19,7 +19,6 @@ type ClaudeInput = {
  */
 const claude: Record<string, Handler> = {
   harness_resolve_claude: () => ({ path: "/usr/local/bin/claude" }),
-  harness_spawn: () => 4242,
   harness_write: (_, { sessionId, line }) => {
     const input: ClaudeInput = JSON.parse(line as string);
     if (input.request?.subtype === "initialize")

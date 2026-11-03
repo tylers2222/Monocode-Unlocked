@@ -1,4 +1,4 @@
-import { AcpClient } from "../../core/acp";
+import { AcpClient, type AcpTextLive } from "../../core/acp";
 import {
   execChild,
   killChild,
@@ -26,18 +26,7 @@ const CLIENT_CAPABILITIES = {
   terminal: false,
 };
 
-type LiveText = {
-  acp: AcpClient;
-  binaryPath: string;
-  cwd: string;
-  model: string;
-  settingsKey: string;
-  acpSessionId: string;
-  collecting: boolean;
-  output: string;
-  closed: boolean;
-  onEvent?: (event: HarnessEvent) => void;
-};
+type LiveText = AcpTextLive & { binaryPath: string };
 
 let live: LiveText | null = null;
 let turns: Promise<void> = Promise.resolve();
@@ -174,6 +163,8 @@ async function startLive(
     acp,
     binaryPath: path,
     cwd,
+    // Replaced by the folder Rust names before the first request.
+    placed: cwd,
     model,
     settingsKey: modelSettingsKey(modelSettings),
     acpSessionId: "",
@@ -195,7 +186,7 @@ async function startLive(
   );
 
   try {
-    await spawnHelperChild(
+    const placed = await spawnHelperChild(
       undefined,
       TEXT_CHILD_ID,
       path,
@@ -204,6 +195,7 @@ async function startLive(
       undefined,
       "grok",
     );
+    session.placed = placed;
     const init = await acp.request(
       "initialize",
       {
@@ -223,7 +215,7 @@ async function startLive(
         )
         .catch(() => undefined);
     }
-    await openSession(session, cwd, model, modelSettings);
+    await openSession(session, placed, model, modelSettings);
     live = session;
     return session;
   } catch (error) {
@@ -269,7 +261,6 @@ async function openSession(
     )
     .catch(() => undefined);
 
-  session.cwd = cwd;
   session.model = model;
   session.settingsKey = modelSettingsKey(modelSettings);
 }
@@ -295,7 +286,7 @@ async function deleteTextSession(session: LiveText): Promise<void> {
   await execChild(
     session.binaryPath,
     ["--no-auto-update", "sessions", "delete", session.acpSessionId],
-    session.cwd,
+    session.placed,
     "grok",
     undefined,
     undefined,

@@ -1,4 +1,4 @@
-import { AcpClient } from "../../core/acp";
+import { AcpClient, type AcpTextLive } from "../../core/acp";
 import {
   killChild,
   resolveCursorBinary,
@@ -21,17 +21,7 @@ const CLIENT_CAPABILITIES = {
   _meta: { parameterizedModelPicker: true },
 };
 
-type LiveText = {
-  acp: AcpClient;
-  cwd: string;
-  model: string;
-  settingsKey: string;
-  acpSessionId: string;
-  collecting: boolean;
-  output: string;
-  closed: boolean;
-  onEvent?: (event: HarnessEvent) => void;
-};
+type LiveText = AcpTextLive;
 
 let live: LiveText | null = null;
 let turns: Promise<void> = Promise.resolve();
@@ -138,8 +128,11 @@ async function ensureLive(
       live.settingsKey === settingsKey
     )
       return live;
+    // A warm child placed for another folder is never told this one: it
+    // reopens only for its own folder, and startLive replaces it otherwise.
+    if (live.cwd !== cwd) return startLive(cwd, model, modelSettings);
     try {
-      await openSession(live, cwd, model, modelSettings);
+      await openSession(live, live.placed, model, modelSettings);
       return live;
     } catch {
       await dropLive();
@@ -173,6 +166,8 @@ async function startLive(
   const session: LiveText = {
     acp,
     cwd,
+    // Replaced by the folder Rust names before the first request.
+    placed: cwd,
     model,
     settingsKey: modelSettingsKey(modelSettings),
     acpSessionId: "",
@@ -194,7 +189,7 @@ async function startLive(
   );
 
   try {
-    await spawnHelperChild(
+    const placed = await spawnHelperChild(
       undefined,
       TEXT_CHILD_ID,
       path,
@@ -203,6 +198,7 @@ async function startLive(
       undefined,
       "cursor",
     );
+    session.placed = placed;
     await acp.request(
       "initialize",
       {
@@ -215,7 +211,7 @@ async function startLive(
     await acp
       .request("authenticate", { methodId: "cursor_login" }, REQUEST_TIMEOUT_MS)
       .catch(() => undefined);
-    await openSession(session, cwd, model, modelSettings);
+    await openSession(session, placed, model, modelSettings);
     live = session;
     return session;
   } catch (error) {
@@ -285,7 +281,6 @@ async function openSession(
       .catch(() => undefined);
   }
 
-  session.cwd = cwd;
   session.model = model;
   session.settingsKey = modelSettingsKey(modelSettings);
   session.acpSessionId = acpSessionId;

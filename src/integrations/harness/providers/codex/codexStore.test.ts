@@ -6,7 +6,8 @@ const mock = vi.hoisted(() => ({
   archived: false,
   missing: false,
   release: vi.fn(),
-  spawn: vi.fn(async (..._args: unknown[]) => undefined),
+  // Rust places a helper and names the folder (ADE-189).
+  spawn: vi.fn(async (..._args: unknown[]) => "/placed"),
   kill: vi.fn(async (_id: string) => undefined),
   prepare: vi.fn(async (..._args: unknown[]) => ({
     home: "/mono/default",
@@ -143,6 +144,7 @@ it("uses the account's resolved settings with an isolated SQLite home", async ()
     "initialized",
     "config/read",
   ]);
+  expect(mock.sent.at(-1)?.params).toEqual({ cwd: "/placed" });
   expect(mock.release).toHaveBeenCalledOnce();
   expect(mock.kill).toHaveBeenCalledOnce();
   expect(mock.handlers.size).toBe(0);

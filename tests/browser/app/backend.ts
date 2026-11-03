@@ -186,7 +186,16 @@ export type AppBackend = {
   emit: (event: string, payload?: unknown) => Promise<void>;
   /** Hands the store to the next page load, as Rust's database outlives a reload. */
   keepStore: () => void;
+  /**
+   * `harness_spawn`'s reply: the child's pid and the folder the spawn hook
+   * started it in; a stand-in starts it where it was asked (ADE-189).
+   */
+  spawned: (pid: number, cwd: unknown) => { pid: number; cwd: unknown };
+  /** `harness_exec`'s reply: what it printed and the folder it ran in. */
+  ran: (stdout: string, cwd: unknown) => { stdout: string; cwd: unknown };
 };
+
+const spawned: AppBackend["spawned"] = (pid, cwd) => ({ pid, cwd });
 
 declare global {
   interface Window {
@@ -369,6 +378,9 @@ const HANDLERS: Record<string, Handler> = {
     HARNESSES.map((id) => [`harness_resolve_${id}`, notInstalled]),
   ),
   home_dir: (store) => store.home,
+  // A fake harness child starts where it was asked; a spec overrides this
+  // only to answer the child's protocol.
+  harness_spawn: (_store, { cwd }) => spawned(4242, cwd),
   default_cwd: (store) => store.home,
   // The page is one window, so its own row is the only one.
   workspace_get_snapshot: (store) => (store.workspace ? [store.workspace] : []),
@@ -957,6 +969,9 @@ export function installBackend(
     calls: [],
     emit,
     keepStore: () => sessionStorage.setItem(KEPT_STORE, JSON.stringify(store)),
+    spawned,
+    // Rust always names a folder: a helper of no session runs in its neutral one.
+    ran: (stdout, cwd) => ({ stdout, cwd: cwd ?? "/app-cache/helper-cwd" }),
   };
   mockWindows("main");
   // Project logos and image previews load through the asset protocol.
