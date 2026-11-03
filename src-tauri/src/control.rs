@@ -1409,6 +1409,15 @@ pub(crate) mod tests {
         let inner = Mutex::new(Inner::default());
         run(&inner, "lead", "main", "turn-4");
         let harness = HarnessHost::new();
+        // turn-5's authorize below runs while this thread holds the store
+        // lock; it only stays off the store because /p does not exist. A
+        // lease regression that resolves /p would deadlock the test instead
+        // of failing it.
+        assert_eq!(
+            crate::spaces::leases::take_lease(&store, "/p", "space", 0),
+            Err("No such folder: /p".to_owned()),
+            "the test relies on /p not existing; a resolve that names it would make place lock the held store"
+        );
         let steer = std::thread::scope(|scope| {
             let held = store.lock_conn().unwrap();
             let killing = scope.spawn(|| kill_session(&inner, &store, "lead", &harness));
