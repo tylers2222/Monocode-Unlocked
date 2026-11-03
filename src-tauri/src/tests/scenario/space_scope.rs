@@ -297,14 +297,19 @@ impl Cast {
             refused(&mono, "remote://host/other"),
             false,
         );
-        let lead = self.scope(&session_caller(&self.lead2, REMOTE), &["sessions.list"]);
-        // ADE-174 reads a session with no row as Space 1's, and the app
-        // never saves a remote session: Space 2's remote project is not its.
+        let lead = call(
+            &self.world,
+            &session_caller(&self.lead2, REMOTE),
+            &["sessions.list"],
+        )
+        .map(|_| ());
+        // The app never saves a remote session, and a session with no row
+        // is no app caller.
         checkpoint(
             failed,
-            "e an unsaved lead in Space 2's remote project answers for Space 1 and gets no project",
-            (lead.space.as_str(), lead.projects),
-            (FIRST_SPACE, Vec::<String>::new()),
+            "e an unsaved lead in the remote project is no app caller",
+            lead,
+            Err("unknown_caller".to_owned()),
         );
         checkpoint(
             failed,
@@ -446,9 +451,9 @@ impl Cast {
         );
         checkpoint(
             failed,
-            "i a Space 1 session in Space 2's remote project gets nothing",
-            lists(&session_caller(&lead, REMOTE)),
-            None,
+            "i the unsaved lead itself is no app caller, so it gets no Space's scope",
+            call(&self.world, &session_caller(&lead, REMOTE), &args).map(|_| ()),
+            Err("unknown_caller".to_owned()),
         );
     }
 }

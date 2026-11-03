@@ -297,7 +297,7 @@ it("answers monos.get and monos.read only for the Monos the scope lists", async 
     expect(
       await failure(run(action, { monoId: "mono-1", space: "space-2" })),
     ).toMatchObject({ code: "invalid_input" });
-  expect(monos.get).toHaveBeenCalledTimes(2);
+  expect(monos.get).toHaveBeenCalledOnce();
   expect(monos.read).toHaveBeenCalledOnce();
 });
 
