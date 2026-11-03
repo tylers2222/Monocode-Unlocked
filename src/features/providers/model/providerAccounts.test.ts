@@ -483,6 +483,28 @@ describe("provider accounts in monocode.db", () => {
     expect(accounts.providerAccountExists("claude", "default")).toBe(true);
   });
 
+  it("cuts a long label to 48 code points before the database sees it", async () => {
+    // The fake database cuts too, as Rust does; this reads what TS sends.
+    const long = `${"\u{1F600}".repeat(10)}${"a".repeat(50)}`;
+    const cut = `${"\u{1F600}".repeat(10)}${"a".repeat(38)}`;
+    const accounts = await boot();
+    db.calls = [];
+    accounts.saveProviderAccount({
+      id: "account-long",
+      provider: "claude",
+      label: long,
+    });
+    expect(labels(accounts, "claude")).toEqual([
+      "default Default account",
+      `account-long ${cut}`,
+    ]);
+    await vi.waitFor(() =>
+      expect(sent("spaces_account_save")).toEqual([
+        { account: { id: "account-long", provider: "claude", label: cut } },
+      ]),
+    );
+  });
+
   it("imports an emoji label at the limit whole, and retries a refused import save", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const emoji = `${"a".repeat(47)}\u{1F600}`;
