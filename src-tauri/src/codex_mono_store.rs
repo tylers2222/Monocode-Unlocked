@@ -5,7 +5,7 @@
 //! folder inside a denied one to writes.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::Arc;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -32,42 +32,29 @@ const STATE_NAMES: &[&str] = &[
 
 pub(crate) struct MonoCodexStore {
     pub home: PathBuf,
-    auth: Mutex<Vec<KeyringMirror>>,
+    auth: crate::mono_keyring::Share,
 }
 
-struct KeyringMirror {
-    service: &'static str,
-    source_key: String,
-    private_key: String,
+/// The keyring entries a Mono home mirrors from its login: service, key prefix
+/// and suffix, around each folder's `home_key`.
+pub(crate) const MIRRORED: [(&str, &str, &str); 3] = [
+    ("Codex Auth", "cli", ""),
+    ("codex", "secrets", ""),
+    ("codex", "secrets", "|gateway-oauth"),
+];
+
+pub(crate) struct KeyringMirror {
+    pub(crate) service: &'static str,
+    pub(crate) source_key: String,
+    pub(crate) private_key: String,
     // Never serialize or log credential contents.
-    source_value: Option<String>,
+    pub(crate) source_value: Option<String>,
 }
 
 impl MonoCodexStore {
     /// Refreshes written by the private server must also reach the ordinary CLI.
-    /// Do not overwrite a login changed independently while this server ran.
     pub(crate) fn sync_auth(&self) {
-        let mut mirrors = self.auth.lock().unwrap_or_else(|e| e.into_inner());
-        for mirror in mirrors.iter_mut() {
-            let Ok(source) = read_keyring(mirror.service, &mirror.source_key) else {
-                continue;
-            };
-            let Ok(private) = read_keyring(mirror.service, &mirror.private_key) else {
-                continue;
-            };
-            if private == source {
-                mirror.source_value = source;
-                continue;
-            }
-            if source != mirror.source_value && !newer_same_account(&private, &source) {
-                continue;
-            }
-            if let Some(value) = private {
-                if write_keyring(mirror.service, &mirror.source_key, &value).is_ok() {
-                    mirror.source_value = Some(value);
-                }
-            }
-        }
+        self.auth.sync();
     }
 }
 
@@ -174,42 +161,16 @@ pub fn codex_mono_store_restore_agent_state(
     restore_agent_edges(&home, &thread_id)
 }
 
-/// The stores of every Mono child that may still run. A home is one per login,
-/// not per session, so its private keyring entries are shared by every live
-/// Codex on that login, and Codex rewrites them itself (a refreshed token, a
-/// new secrets key) before `sync_auth` copies them to the login.
-static LIVE: Mutex<Vec<Weak<MonoCodexStore>>> = Mutex::new(Vec::new());
-
 pub(crate) fn prepare<R: Runtime>(
     app: &AppHandle<R>,
     account_id: Option<&str>,
 ) -> Result<Arc<MonoCodexStore>, String> {
     let (source, home) = locations(app, account_id)?;
     prepare_files(&source, &home)?;
-    prepare_store(&source, home)
-}
-
-/// `prepare_keyring` copies the login over the private entries, so first each
-/// live store on `home` copies what its child wrote there to the login (ADE-225
-/// item 5). The lock also keeps two spawns from preparing at once.
-fn prepare_store(source: &Path, home: PathBuf) -> Result<Arc<MonoCodexStore>, String> {
-    let mut live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
-    live.retain(|store| {
-        let Some(store) = store.upgrade() else {
-            return false;
-        };
-        if store.home == home {
-            store.sync_auth();
-        }
-        true
-    });
-    let auth = prepare_keyring(source, &home)?;
-    let store = Arc::new(MonoCodexStore {
+    Ok(Arc::new(MonoCodexStore {
+        auth: crate::mono_keyring::share(&source, home.clone())?,
         home,
-        auth: Mutex::new(auth),
-    });
-    live.push(Arc::downgrade(&store));
-    Ok(store)
+    }))
 }
 
 fn private_entry(name: &str) -> bool {
@@ -333,7 +294,7 @@ fn link_entry(source: &Path, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn home_key(home: &Path) -> Result<String, String> {
+pub(crate) fn home_key(home: &Path) -> Result<String, String> {
     let canonical = home.canonicalize().map_err(|e| e.to_string())?;
     let digest = format!(
         "{:x}",
@@ -342,7 +303,7 @@ fn home_key(home: &Path) -> Result<String, String> {
     Ok(digest[..16].to_owned())
 }
 
-fn read_keyring(service: &str, key: &str) -> Result<Option<String>, String> {
+pub(crate) fn read_keyring(service: &str, key: &str) -> Result<Option<String>, String> {
     let entry =
         keyring::Entry::new(service, key).map_err(|_| "Could not access Codex credentials")?;
     match entry.get_password() {
@@ -352,13 +313,13 @@ fn read_keyring(service: &str, key: &str) -> Result<Option<String>, String> {
     }
 }
 
-fn write_keyring(service: &str, key: &str, value: &str) -> Result<(), String> {
+pub(crate) fn write_keyring(service: &str, key: &str, value: &str) -> Result<(), String> {
     keyring::Entry::new(service, key)
         .and_then(|e| e.set_password(value))
         .map_err(|_| "Could not share Codex credentials with Mono storage".into())
 }
 
-fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringMirror>, String> {
+pub(crate) fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringMirror>, String> {
     let explicit_keyring = std::fs::read_to_string(source.join("config.toml"))
         .ok()
         .and_then(|s| s.parse::<toml::Value>().ok())
@@ -368,9 +329,7 @@ fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringMirror>, Str
                 .map(str::to_owned)
         })
         .is_some_and(|v| v == "keyring" || v == "auto");
-    let encrypted = std::fs::read_dir(source.join("secrets"))
-        .map(|mut entries| entries.next().is_some())
-        .unwrap_or(false);
+    let encrypted = has_secrets(source);
     // The default file store shares auth.json directly, with no Keychain prompt.
     if !explicit_keyring && !encrypted {
         return Ok(Vec::new());
@@ -378,11 +337,7 @@ fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringMirror>, Str
     let source_hash = home_key(source)?;
     let private_hash = home_key(home)?;
     let mut mirrors = Vec::new();
-    for (service, prefix, suffix) in [
-        ("Codex Auth", "cli", ""),
-        ("codex", "secrets", ""),
-        ("codex", "secrets", "|gateway-oauth"),
-    ] {
+    for (service, prefix, suffix) in MIRRORED {
         let source_key = format!("{prefix}|{source_hash}{suffix}");
         let private_key = format!("{prefix}|{private_hash}{suffix}");
         let value = match read_keyring(service, &source_key) {
@@ -420,7 +375,14 @@ fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringMirror>, Str
     Ok(mirrors)
 }
 
-fn newer_same_account(private: &Option<String>, source: &Option<String>) -> bool {
+/// Codex has encrypted a secret for the login, under a key in the keyring.
+pub(crate) fn has_secrets(source: &Path) -> bool {
+    std::fs::read_dir(source.join("secrets"))
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
+}
+
+pub(crate) fn newer_same_account(private: &Option<String>, source: &Option<String>) -> bool {
     let Some((private, source)) = private.as_ref().zip(source.as_ref()) else {
         return false;
     };
@@ -922,46 +884,5 @@ mod tests {
             })
             .unwrap();
         assert_eq!(status, "open");
-    }
-
-    /// ADE-225 item 5. Defect: a new spawn copies the login over its home's
-    /// private keyring entries while a live child on the same login has
-    /// written there (a refreshed gateway token, a new secrets key) and not
-    /// yet synced, so that write is lost. On keyutils, never a real Keychain.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_new_spawn_keeps_what_a_live_child_wrote_to_the_private_keyring() {
-        keyring::set_default_credential_builder(keyring::keyutils::default_credential_builder());
-        let fixture = Fixture::new();
-        let (source, home) = (fixture.source(), fixture.home());
-        // Encrypted secrets turn the keyring mirror on.
-        std::fs::create_dir_all(source.join("secrets")).unwrap();
-        std::fs::write(source.join("secrets/blob"), "sealed").unwrap();
-        prepare_files(&source, &home).unwrap();
-        let hashes = [home_key(&source).unwrap(), home_key(&home).unwrap()];
-        let key = |hash: &str, suffix: &str| format!("secrets|{hash}{suffix}");
-        write_keyring("codex", &key(&hashes[0], "|gateway-oauth"), "token-1").unwrap();
-        let first = prepare_store(&source, home.clone()).unwrap();
-        write_keyring("codex", &key(&hashes[1], "|gateway-oauth"), "token-2").unwrap();
-        write_keyring("codex", &key(&hashes[1], ""), "key-a").unwrap();
-
-        let second = prepare_store(&source, home.clone()).unwrap();
-        let mut found = Vec::new();
-        for (suffix, at) in [
-            ("|gateway-oauth", 0),
-            ("|gateway-oauth", 1),
-            ("", 0),
-            ("", 1),
-        ] {
-            found.push(read_keyring("codex", &key(&hashes[at], suffix)).unwrap());
-            let _ = keyring::Entry::new("codex", &key(&hashes[at], suffix))
-                .and_then(|entry| entry.delete_credential());
-        }
-        drop((first, second));
-        let want = ["token-2", "token-2", "key-a", "key-a"].map(|v| Some(v.to_owned()));
-        assert_eq!(
-            found, want,
-            "login, then private: gateway token, then secrets key"
-        );
     }
 }
