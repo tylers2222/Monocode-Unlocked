@@ -1273,6 +1273,7 @@ esac"#,
                 None,
                 None,
             )
+            .map(|spawned| spawned.pid)
         }
 
         /// What the stand-in CLI wrote when it ran in `workdir` with `login`.
