@@ -21,6 +21,11 @@ import {
 } from "../../../src/features/monos/model/mono";
 import { defaultSoul } from "../../../src/features/monos/model/monoFiles";
 import type { SessionSummary } from "../../../src/features/sessions/data/sessionStore";
+import type { ProviderAccountIdentity } from "../../../src/features/providers/model/providerAccountIdentity";
+import type {
+  Space,
+  SpaceLogin,
+} from "../../../src/features/spaces/model/spaces";
 import type {
   Block,
   HarnessId,
@@ -35,12 +40,14 @@ export type MonoRow = {
   sortOrder: number;
   createdAt: number;
   updatedAt: number;
+  /** `monos.space_id`, as the insert stored it. */
+  spaceId: string;
 };
 
 /** A seeded Mono. Rust derives `name` from `data` (mono_roster.rs `display_name`). */
 export type MonoSeed = Pick<MonoRow, "id" | "role"> & {
   data: { name?: string; mascot: string; [key: string]: unknown };
-} & Partial<Pick<MonoRow, "sortOrder" | "createdAt" | "updatedAt">>;
+} & Partial<Pick<MonoRow, "sortOrder" | "createdAt" | "updatedAt" | "spaceId">>;
 
 /** The fields Rust `SessionSummary` always sends (session_store.rs:141-178). */
 export type SessionRow = SessionSummary &
@@ -54,6 +61,7 @@ export type SessionRow = SessionSummary &
       | "archived"
       | "pinned"
       | "draft"
+      | "spaceId"
     >
   >;
 
@@ -110,6 +118,14 @@ export type FakeStore = {
   completions: Record<string, FakeCompletion>;
   /** mono_completion_deliveries: the groups already delivered. */
   deliveredGroups: string[];
+  /** spaces/mod.rs: the Spaces, the active one, and each Space's logins. */
+  spaces: Space[];
+  activeSpaceId: string;
+  spaceLogins: SpaceLogin[];
+  /** space_projects rows; a project with none is in Space 1. */
+  projectSpaces: Record<string, string>;
+  /** account_identity.rs by `provider:accountId`; none is signed out. */
+  identities: Record<string, ProviderAccountIdentity>;
 };
 
 type FakeCompletion = {
@@ -152,6 +168,11 @@ export type FakeSeed = Partial<{
   workFolders: Record<string, string>;
   workspace: unknown;
   inFlight: { sessionId: string; cwd: string }[];
+  spaces: Space[];
+  activeSpaceId: string;
+  spaceLogins: SpaceLogin[];
+  projectSpaces: Record<string, string>;
+  identities: Record<string, ProviderAccountIdentity>;
 }>;
 
 /**
@@ -336,6 +357,8 @@ const upsertSession: Handler = (store, { session }) => {
     archived: kept?.archived ?? false,
     pinned: kept?.pinned ?? false,
     draft: blocks.some((block) => block.role === "user" && block.draft),
+    // Insert-only: a new row joins the active Space.
+    spaceId: kept?.spaceId ?? store.activeSpaceId,
   });
   store.sessions = [
     ...store.sessions.filter((other) => other.id !== row.id),
@@ -749,16 +772,27 @@ const HANDLERS: Record<string, Handler> = {
   list_external_editors: empty,
   // control.rs: the app's own executable.
   app_cli_path: () => "/Applications/MonoCode.app/Contents/MacOS/monocode",
-  // account_identity.rs and rate_limits.rs while the CLI is not signed in.
-  provider_account_identity: none,
-  // spaces/: each CLI's own login and no project choices in Space 1, and the
-  // writes the import, Settings and the usage control send.
-  spaces_settings_get: () => ({
-    activeSpaceId: "space-1",
-    routeGrantTtlMs: 6 * 60 * 60 * 1000,
+  // account_identity.rs: what the login's CLI cached, or nothing while it is
+  // not signed in.
+  provider_account_identity: (store, { provider, accountId }) =>
+    store.identities[`${provider}:${accountId}`] ?? null,
+  // spaces/mod.rs and spaces/account.rs storage commands.
+  spaces_list: (store) => store.spaces,
+  spaces_settings_get: (store) => ({
+    activeSpaceId: store.activeSpaceId,
+    routeGrantTtlMs: 21_600_000,
   }),
+  spaces_settings_set: (store, { patch }) => {
+    const { activeSpaceId } = patch as { activeSpaceId?: string };
+    if (activeSpaceId) store.activeSpaceId = activeSpaceId;
+    return { activeSpaceId: store.activeSpaceId, routeGrantTtlMs: 21_600_000 };
+  },
+  spaces_logins_list: (store) => store.spaceLogins,
+  spaces_project_get: (store, { projectPath }) =>
+    store.projectSpaces[projectPath as string] ?? "space-1",
   spaces_project_logins_list: empty,
   spaces_project_login_set: none,
+  // spaces/: each CLI's own login, and the writes the import and Settings send.
   spaces_accounts_list: () =>
     ["claude", "codex", "devin"].map((provider) => ({
       provider,
@@ -923,6 +957,7 @@ function monoRow(seed: MonoSeed, index: number): MonoRow {
     sortOrder: index,
     createdAt: 1,
     updatedAt: 1,
+    spaceId: "space-1",
     ...seed,
   };
 }
@@ -936,6 +971,7 @@ function sessionRow(seed: SessionSummary): SessionRow {
     archived: false,
     pinned: false,
     draft: false,
+    spaceId: "space-1",
     ...seed,
   };
 }
@@ -958,6 +994,13 @@ function storeFrom(seed: FakeSeed): FakeStore {
     inFlight: seed.inFlight ?? [],
     completions: {},
     deliveredGroups: [],
+    spaces: seed.spaces ?? [
+      { id: "space-1", name: "Space 1", color: null, createdAt: 1 },
+    ],
+    activeSpaceId: seed.activeSpaceId ?? "space-1",
+    spaceLogins: seed.spaceLogins ?? [],
+    projectSpaces: seed.projectSpaces ?? {},
+    identities: seed.identities ?? {},
   };
 }
 
