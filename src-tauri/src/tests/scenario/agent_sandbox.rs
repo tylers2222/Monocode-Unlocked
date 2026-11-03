@@ -712,7 +712,7 @@ esac"#,
 
         /// `session` asks to start in the project; the child runs where the
         /// spawn hook placed it, and its `ran` names that folder.
-        fn spawn(&self, session: &str) -> Result<u32, String> {
+        fn spawn(&self, session: &str) -> Result<crate::harness::Spawned, String> {
             crate::harness::harness_spawn(
                 self.app.handle().clone(),
                 self.app.state::<crate::harness::HarnessHost>(),
