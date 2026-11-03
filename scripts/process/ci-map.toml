@@ -81,7 +81,7 @@ host = [
   "tsconfig.json",
 ]
 
-# vitest (src/, tests/), tsc, cargo fmt/clippy/check/test, heavy-lock.test.sh. The
+# vitest (src/, tests/), tsc, cargo fmt/clippy/check/test. The
 # Rust tests read fixtures in src/ and tests/ and include host/windows-acl.ps1.
 check = [
   "src/**",
