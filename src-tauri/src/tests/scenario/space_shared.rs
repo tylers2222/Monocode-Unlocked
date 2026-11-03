@@ -39,12 +39,9 @@ fn listed_projects(scope: &SpaceScope, id: &str) -> Option<Vec<String>> {
     mono.map(|mono| mono.projects.clone())
 }
 
-fn foreign(scope: &SpaceScope) -> Vec<&str> {
-    scope
-        .foreign_sessions
-        .iter()
-        .map(|id| id.as_str())
-        .collect()
+/// The sessions `sessions.list` may list.
+fn own_sessions(scope: &SpaceScope) -> Vec<&str> {
+    scope.sessions.iter().map(|id| id.as_str()).collect()
 }
 
 /// Defect: a project is in one Space only, so a Mono of a second Space that
@@ -110,21 +107,13 @@ fn two_spaces_share_one_project() {
         two_lists.projects, ours,
         "sessions.list refuses Space 2's Mono"
     );
-    assert!(foreign(&two_lists).contains(&id1.as_str()), "{two_lists:?}");
-    assert!(
-        !foreign(&two_lists).contains(&id2.as_str()),
-        "{two_lists:?}"
-    );
+    assert_eq!(own_sessions(&two_lists), [id2.as_str()], "{two_lists:?}");
     let one_lists = scope_of(&world, &mono_caller(&one, "t2"), &sessions_list);
     assert_eq!(
         one_lists.projects, ours,
         "sessions.list refuses Space 1's Mono"
     );
-    assert!(foreign(&one_lists).contains(&id2.as_str()), "{one_lists:?}");
-    assert!(
-        !foreign(&one_lists).contains(&id1.as_str()),
-        "{one_lists:?}"
-    );
+    assert_eq!(own_sessions(&one_lists), [id1.as_str()], "{one_lists:?}");
     let lead2_lists = scope_of(&world, &session_caller(&lead2, &path), &sessions_list);
     assert_eq!(
         (lead2_lists.space.as_str(), lead2_lists.projects),

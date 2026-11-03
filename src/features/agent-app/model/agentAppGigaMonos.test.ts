@@ -121,7 +121,20 @@ function fixture(
   });
   const host = {
     levels: {
-      check: async () => ({ leadSessionId: null }),
+      // Both Monos in the caller's Space, as Rust answers it (ADE-194).
+      check: async () => ({
+        leadSessionId: null,
+        scope: {
+          space: "space-1",
+          projects: [],
+          monos: [boss, shroom].map((mono) => ({
+            monoId: mono.id,
+            otherSpace: null,
+            projects: mono.projects,
+          })),
+          sessions: [],
+        },
+      }),
       recordStart: async () => "m_aaaaaaaaaaaa",
     },
     isMono: (id: string) => kind === "mono" && id === source.id,

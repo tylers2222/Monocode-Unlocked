@@ -99,7 +99,7 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
       otherSpace: null as string | null,
       projects: mono.projects,
     })),
-    foreignSessions: [],
+    sessions: [],
   };
   const host = {
     levels: {
@@ -133,6 +133,7 @@ function fixture(kind: "mono" | "habit" | "session" = "mono") {
     },
     shroomChat,
     scope,
+    monos: vi.mocked(monos),
   };
 }
 
@@ -261,6 +262,57 @@ it("answers monos.get for an unknown Mono with unknown_mono", async () => {
   });
   expect(await failure(run("monos.get", {}))).toMatchObject({
     code: "invalid_input",
+  });
+});
+
+// ADE-194. Defect: monos.get or monos.read answers for a Mono the caller's
+// Space scope does not list (another Space's Giga, or any Mono for a Giga),
+// or answers it with anything but the unknown-ID error, or loads it first;
+// or another Space's Mono comes back unmarked or with projects outside the
+// caller's Space.
+it("answers monos.get and monos.read only for the Monos the scope lists", async () => {
+  const { run, scope, monos } = fixture();
+  const unknown = await failure(run("monos.get", { monoId: "mono-9" }));
+  scope.monos.splice(1, 1);
+  for (const action of ["monos.get", "monos.read"])
+    expect(await failure(run(action, { monoId: "mono-2" }))).toEqual(unknown);
+  expect(monos.get).not.toHaveBeenCalledWith("mono-2");
+  expect(monos.read).not.toHaveBeenCalled();
+  scope.monos.push({ monoId: "mono-2", otherSpace: "Work", projects: [] });
+  expect(await run("monos.get", { monoId: "mono-2" })).toEqual({
+    ...shroomListing,
+    projects: [],
+    otherSpace: "Work",
+    harness: "claude",
+    model: "claude:opus",
+    messageAllowlist: [],
+  });
+  expect(await run("monos.read", { monoId: "mono-2", limit: 1 })).toMatchObject({
+    sessionId: "shroom-chat",
+  });
+  scope.monos = [];
+  expect(await failure(run("monos.get", { monoId: "mono-1" }))).toEqual(unknown);
+  // r1 m1: a call's own `space` field never reaches the level check.
+  for (const action of ["monos.get", "monos.read"])
+    expect(
+      await failure(run(action, { monoId: "mono-1", space: "space-2" })),
+    ).toMatchObject({ code: "invalid_input" });
+  expect(monos.get).toHaveBeenCalledOnce();
+  expect(monos.read).toHaveBeenCalledOnce();
+});
+
+// ADE-194 #520 gate/mutation. Defect: monos.get shows a Mono of the
+// caller's Space with its whole project list, so a project it has in another
+// Space shows, where monos.list shows only the scope's.
+it("shows a same-Space Mono's projects in the caller's Space only, unmarked", async () => {
+  const { run, scope } = fixture();
+  scope.monos[1].projects = [];
+  expect(await run("monos.get", { monoId: "mono-2" })).toEqual({
+    ...shroomListing,
+    projects: [],
+    harness: "claude",
+    model: "claude:opus",
+    messageAllowlist: [],
   });
 });
 

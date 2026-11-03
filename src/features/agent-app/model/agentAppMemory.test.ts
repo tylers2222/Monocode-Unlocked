@@ -207,7 +207,7 @@ function projectFixture(projects: string[], cwd = "/Users/me", inSpace = project
   const source = newSession("codex", cwd, "codex:test");
   source.id = "agent";
   const sessions = vi.fn(async (_cwd: string) => []);
-  const scope = { space: "space-1", projects: inSpace, monos: [], foreignSessions: [] };
+  const scope = { space: "space-1", projects: inSpace, monos: [], sessions: [] };
   const host = {
     levels: {
       check: async () => ({ leadSessionId: null, ask: null, scope }),

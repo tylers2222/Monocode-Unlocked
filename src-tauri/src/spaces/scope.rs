@@ -1,10 +1,12 @@
 //! ADE-175: what `monos.list`, `sessions.list` and `messages.get_monos` show
-//! a caller. Its Space and role are the ones `check_action` resolved for the
-//! Space rule (ADE-174's `caller_space`, from saved rows only). A regular
-//! Mono also sees the regular Monos of other Spaces, marked with their
-//! Space's name. A project is in its assigned Space and in the Space of each
-//! Mono that lists it (ADE-229), so a project several Spaces share is listed
-//! in each.
+//! a caller, and (ADE-194) which Monos `monos.get` and `monos.read` answer
+//! for. Its Space and role are the ones `check_action` resolved for the Space
+//! rule (ADE-174's `caller_space`, from saved rows only). A regular Mono also
+//! sees the regular Monos of other Spaces, marked with their Space's name. A
+//! project is in its assigned Space and in the Space of each Mono that lists
+//! it (ADE-229), so a project several Spaces share is listed in each.
+//! `sessions.list` gets only the caller's Space's sessions in the caller's
+//! projects, never another Space's session ids.
 
 use std::collections::HashMap;
 
@@ -13,11 +15,17 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::project_spaces_in;
-use crate::mono_gate::{Caller, Speaker};
+use crate::mono_gate::{path_key, Caller, Speaker};
 use crate::mono_messages::{MonoId, SessionId};
 use crate::mono_roster::{self, MonoRole};
 
-const SCOPED_ACTIONS: [&str; 3] = ["monos.list", "sessions.list", "messages.get_monos"];
+const SCOPED_ACTIONS: [&str; 5] = [
+    "monos.list",
+    "monos.get",
+    "monos.read",
+    "sessions.list",
+    "messages.get_monos",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,8 +35,9 @@ pub struct SpaceScope {
     /// ADE-229), or a session's folder.
     pub projects: Vec<String>,
     pub monos: Vec<ScopedMono>,
-    /// Saved sessions of other Spaces, which `sessions.list` hides.
-    pub foreign_sessions: Vec<SessionId>,
+    /// `sessions.list` only: the saved sessions of the caller's Space whose
+    /// folder is one of `projects`. It lists no other session.
+    pub sessions: Vec<SessionId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -39,6 +48,13 @@ pub struct ScopedMono {
     pub other_space: Option<String>,
     /// Its projects in the caller's Space.
     pub projects: Vec<String>,
+}
+
+/// A saved session as the rule reads it.
+struct SessionRow {
+    id: SessionId,
+    space: String,
+    cwd: String,
 }
 
 /// A project path and every Space it is in (`project_spaces_in`); none when
@@ -66,7 +82,7 @@ struct CallerRow {
 fn decide(
     caller: &CallerRow,
     monos: &[MonoRow],
-    sessions: &[(SessionId, String)],
+    sessions: &[SessionRow],
     spaces: &HashMap<String, String>,
 ) -> SpaceScope {
     let ours = |projects: &[Placed]| -> Vec<String> {
@@ -88,15 +104,17 @@ fn decide(
             projects: ours(&mono.projects),
         })
         .collect();
+    let projects = ours(&caller.projects);
+    let keys: Vec<_> = projects.iter().map(|path| path_key(path)).collect();
     SpaceScope {
         space: caller.space.clone(),
-        projects: ours(&caller.projects),
-        monos,
-        foreign_sessions: sessions
+        sessions: sessions
             .iter()
-            .filter(|(_, space)| *space != caller.space)
-            .map(|(id, _)| id.clone())
+            .filter(|row| row.space == caller.space && keys.contains(&path_key(&row.cwd)))
+            .map(|row| row.id.clone())
             .collect(),
+        projects,
+        monos,
     }
 }
 
@@ -177,10 +195,21 @@ fn mono_rows(conn: &Connection) -> rusqlite::Result<Vec<MonoRow>> {
         .collect())
 }
 
-fn session_rows(conn: &Connection) -> rusqlite::Result<Vec<(SessionId, String)>> {
-    let rows: Vec<_> = pairs(conn, "SELECT id, space_id FROM sessions")?;
+fn session_rows(conn: &Connection) -> rusqlite::Result<Vec<SessionRow>> {
+    let rows = conn
+        .prepare("SELECT id, space_id, cwd FROM sessions")?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .collect::<rusqlite::Result<Vec<(String, String, String)>>>()?;
     Ok(rows
         .into_iter()
-        .filter_map(|(id, space)| Some((SessionId::parse(&id)?, space)))
+        .filter_map(|(id, space, cwd)| {
+            Some(SessionRow {
+                id: SessionId::parse(&id)?,
+                space,
+                cwd,
+            })
+        })
         .collect())
 }
