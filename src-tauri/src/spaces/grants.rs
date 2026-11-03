@@ -5,8 +5,8 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, Runtime, State};
 
-use super::{with_conn, Provider, SpawnTarget};
-use crate::harness::HarnessHost;
+use super::{account, membership, with_conn, Provider, SpawnTarget};
+use crate::harness::{HarnessAccount, HarnessHost};
 use crate::session_store::{now_millis, SessionStore};
 
 const HOUR_MS: i64 = 60 * 60 * 1000;
@@ -129,7 +129,8 @@ pub(crate) fn save_grant(store: &SessionStore, grant: &RouteGrant) -> Result<(),
     Ok(())
 }
 
-/// The one product writer: the grant lasts the picked length from `now`.
+/// The one writer: the grant lasts the picked length from `now`. The card's
+/// Yes reaches it through `grant_from_card`.
 /// Settings only preselect the card's choice, so they are not read here. A
 /// real-app check that needs a shorter grant writes the row itself.
 pub(crate) fn write_grant(
@@ -149,6 +150,52 @@ pub(crate) fn write_grant(
     };
     save_grant(store, &grant)?;
     Ok(grant)
+}
+
+/// What the usage-limit card's Yes may grant: the session leaves the login it
+/// runs on for another Space's login on the same CLI. The card sends the
+/// session's own or its project's login, else `default`, which is its Space's
+/// login: resolved here as the spawn hook resolves it, so the grant names the
+/// login the session goes back to. The card shows the active Space; this
+/// reads the Space the session is saved in.
+pub(crate) fn grant_from_card(
+    store: &SessionStore,
+    request: &GrantRequest,
+    now: i64,
+) -> Result<RouteGrant, String> {
+    let asked = SpawnTarget {
+        workdir: Default::default(),
+        account: Some(HarnessAccount {
+            provider: request.provider.as_str().into(),
+            id: request.from_account_id.clone(),
+        }),
+    };
+    let from = account::resolve(store, &request.session_id, Some(request.provider), asked)?
+        .account
+        .map_or_else(|| request.from_account_id.clone(), |account| account.id);
+    let another_space = with_conn(store, |conn| {
+        let space = membership::space_for_row(conn, &request.session_id, None)?;
+        conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM space_accounts
+                             WHERE provider = ?1 AND account_id = ?2 AND space_id <> ?3)",
+            params![request.provider, request.to_account_id, space],
+            |row| row.get::<_, bool>(0),
+        )
+    })?;
+    if !another_space || request.to_account_id == from {
+        return Err(format!(
+            "{} is not another Space's login for this session",
+            request.to_account_id
+        ));
+    }
+    write_grant(
+        store,
+        &GrantRequest {
+            from_account_id: from,
+            ..request.clone()
+        },
+        now,
+    )
 }
 
 pub(crate) fn remove_grant(store: &SessionStore, session_id: &str) -> Result<(), String> {
@@ -174,7 +221,7 @@ pub fn spaces_grant_save(
     store: State<'_, SessionStore>,
     request: GrantRequest,
 ) -> Result<RouteGrant, String> {
-    write_grant(&store, &request, now_millis())
+    grant_from_card(&store, &request, now_millis())
 }
 
 #[tauri::command(async)]

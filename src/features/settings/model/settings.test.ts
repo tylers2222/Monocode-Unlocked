@@ -14,6 +14,7 @@ import {
   GRID_ARCADE_ENABLED_DEFAULT,
   KEYBINDINGS,
   LIVE_AGENTS_ENABLED_DEFAULT,
+  ROUTE_GRANT_DURATIONS,
   TAB_ANIMATIONS_ENABLED_DEFAULT,
   loadComposerRunner,
   loadAutosave,
@@ -27,6 +28,7 @@ import {
   loadGridArcadeEnabled,
   loadLiveAgentsEnabled,
   loadNotesEnabled,
+  loadRouteGrantDefault,
   keybindingPressed,
   matchCustomKeybinding,
   loadQuickComposerShortcut,
@@ -43,6 +45,7 @@ import {
   saveGridArcadeEnabled,
   saveLiveAgentsEnabled,
   saveNotesEnabled,
+  saveRouteGrantDefault,
   saveKeybindingOverride,
   type KeybindingOverride,
   saveQuickComposerShortcut,
@@ -563,6 +566,40 @@ describe("file tab mode setting", () => {
   it("ignores unknown stored values", () => {
     localStorage.setItem(FILE_TAB_MODE_KEY, "window");
     expect(loadFileTabMode()).toBe("pane");
+  });
+});
+
+describe("route grant default setting", () => {
+  beforeEach(mockLocalStorage);
+
+  it("starts the usage-limit card on six hours and keeps every card choice", () => {
+    expect(loadRouteGrantDefault()).toBe(6);
+    expect(ROUTE_GRANT_DURATIONS).toEqual([1, 3, 6, 12, 24, "reset"]);
+    for (const duration of ROUTE_GRANT_DURATIONS) {
+      saveRouteGrantDefault(duration);
+      expect(localStorage.getItem("monocode.routeGrantDefault")).toBe(
+        String(duration),
+      );
+      expect(loadRouteGrantDefault()).toBe(duration);
+    }
+  });
+
+  it("falls back to six hours on an unknown value or unreadable storage", () => {
+    localStorage.setItem("monocode.routeGrantDefault", "2");
+    expect(loadRouteGrantDefault()).toBe(6);
+    Object.defineProperty(globalThis, "localStorage", {
+      value: {
+        getItem: () => {
+          throw new Error("denied");
+        },
+        setItem: () => {
+          throw new Error("denied");
+        },
+      },
+      configurable: true,
+    });
+    expect(() => saveRouteGrantDefault(1)).not.toThrow();
+    expect(loadRouteGrantDefault()).toBe(6);
   });
 });
 

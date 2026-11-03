@@ -64,8 +64,11 @@ fn the_login_grant_and_lease_commands_store_what_the_ui_sends() {
         ids().contains(&(Provider::Claude, "work".into())),
         "a saved login is not listed"
     );
+    // The card grants only another Space's login (`grant_from_card`): the
+    // sessions are in Space 1, so `work` is Space 2's.
+    let two = spaces::create(&store(), "Two", None, 0).unwrap();
     let login = SpaceLogin {
-        space_id: FIRST_SPACE.into(),
+        space_id: two.id,
         provider: Provider::Claude,
         account_id: "work".into(),
     };

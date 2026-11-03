@@ -1045,9 +1045,29 @@ fn route_grants_last_the_picked_length_and_stop_the_turn_after() {
     }
 }
 
+/// `id` as a Claude login, the one Space `space` uses for Claude.
+fn claude_login(store: &crate::session_store::SessionStore, space: &str, id: &str) {
+    let login = ProviderAccount {
+        id: id.into(),
+        label: id.into(),
+        ..work_login()
+    };
+    account::save_account(store, &login, 0).unwrap();
+    account::set_login(
+        store,
+        &SpaceLogin {
+            space_id: space.into(),
+            account_id: id.into(),
+            ..space_one_login()
+        },
+    )
+    .unwrap();
+}
+
 /// Defect: `spaces_grant_save`, the command the usage-limit card calls,
 /// returns without storing, stores another session, login or length than
-/// the request's, or stores a request its writer refuses.
+/// the request's, stores a request its writer refuses, or skips the card's
+/// checks (`grant_from_card`), so it stores the `default` the card sent.
 #[cfg(not(windows))]
 #[test]
 fn the_grant_command_stores_what_the_card_sends() {
@@ -1058,7 +1078,9 @@ fn the_grant_command_stores_what_the_card_sends() {
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
     let store = || app.state::<crate::session_store::SessionStore>();
-    account::save_account(&store(), &work_login(), 0).unwrap();
+    let two = spaces::create(&store(), "Two", None, 0).unwrap();
+    claude_login(&store(), FIRST_SPACE, "one");
+    claude_login(&store(), &two.id, "work");
     let saved = grants::spaces_grant_save(store(), request(GrantLength::OneHour, None)).unwrap();
     assert_eq!(
         (
@@ -1067,7 +1089,7 @@ fn the_grant_command_stores_what_the_card_sends() {
             saved.to_account_id.as_str(),
             saved.expires_at - saved.granted_at
         ),
-        ("s2", "default", "work", HOUR_MS),
+        ("s2", "one", "work", HOUR_MS),
         "the command returned another session, login or length than the request's"
     );
     let held = || grants::spaces_grant_get(store(), "s2".into()).unwrap();
@@ -1085,6 +1107,111 @@ fn the_grant_command_stores_what_the_card_sends() {
         held(),
         Some(saved),
         "a refused request replaced the stored grant"
+    );
+}
+
+/// ADE-181: the usage-limit card's Yes. `s2` is saved in Space 1 (login
+/// `one`); Space 2 uses `two` (and Codex `cx`); `three` is the project's own
+/// pick and no Space's login.
+///
+/// Defect: the grant records the `default` the card sent instead of the
+/// session's Space login (so when it ends the session does not go back to
+/// the login it left), or rewrites a login the card resolved itself (the
+/// project's); it grants the session's own Space's login, a login no Space
+/// uses, another CLI's login, or the login the session runs on; it reads the active Space
+/// instead of the one the session is saved in; or after the grant from the
+/// project's login ends, the next turn does not run on that login.
+#[test]
+fn the_card_grants_another_spaces_login_from_the_resolved_one() {
+    let mut world = World::new("card-grants");
+    world.add_session("s2", "/work/b", None);
+    let two = spaces::create(world.store(), "Two", None, world.now()).unwrap();
+    claude_login(world.store(), FIRST_SPACE, "one");
+    claude_login(world.store(), &two.id, "two");
+    account::save_account(
+        world.store(),
+        &ProviderAccount {
+            id: "three".into(),
+            label: "three".into(),
+            ..work_login()
+        },
+        world.now(),
+    )
+    .unwrap();
+    let codex = ProviderAccount {
+        provider: Provider::Codex,
+        id: "cx".into(),
+        label: "cx".into(),
+    };
+    account::save_account(world.store(), &codex, world.now()).unwrap();
+    let codex_login = SpaceLogin {
+        space_id: two.id.clone(),
+        provider: Provider::Codex,
+        account_id: "cx".into(),
+    };
+    account::set_login(world.store(), &codex_login).unwrap();
+    let card = |world: &World, from: &str, to: &str| {
+        let request = GrantRequest {
+            from_account_id: from.into(),
+            to_account_id: to.into(),
+            ..request(GrantLength::OneHour, None)
+        };
+        grants::grant_from_card(world.store(), &request, world.now())
+            .map(|grant| (grant.from_account_id, grant.to_account_id))
+    };
+    let from = |space_login: &str| Ok((space_login.to_owned(), "two".to_owned()));
+    assert_eq!(
+        card(&world, "default", "two"),
+        from("one"),
+        "the grant does not leave the session's Space login"
+    );
+    assert_eq!(
+        card(&world, "three", "two"),
+        from("three"),
+        "the grant rewrote the project's login the card resolved"
+    );
+    for (asked, to) in [
+        ("default", "one"),
+        ("default", "three"),
+        ("default", "default"),
+        ("default", "cx"),
+        ("two", "two"),
+    ] {
+        assert_eq!(
+            card(&world, asked, to),
+            Err(format!(
+                "{to} is not another Space's login for this session"
+            )),
+            "the card granted {to} from {asked}"
+        );
+    }
+    let active_two = SettingsPatch {
+        active_space_id: Some(two.id.clone()),
+        ..Default::default()
+    };
+    spaces::set_settings(world.store(), &active_two).unwrap();
+    assert_eq!(
+        (
+            card(&world, "default", "two"),
+            card(&world, "default", "one").is_err()
+        ),
+        (from("one"), true),
+        "the check read the active Space, not the session's saved one"
+    );
+    card(&world, "three", "two").unwrap();
+    world.jump_wall(HOUR_MS);
+    let refused = grants::check_turn(
+        world.store(),
+        &crate::harness::HarnessHost::new(),
+        "s2",
+        world.now(),
+    )
+    .unwrap_err();
+    let back_to = refused.split(' ').nth(4).unwrap();
+    assert_eq!(
+        spawn_on(&world, "s2", "claude", back_to),
+        Ok("three".into()),
+        "after the grant ended the next turn did not run on the project's login"
     );
 }
 
