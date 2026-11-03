@@ -139,6 +139,8 @@ jobs:
     env:
       GIGA_EVAL_OUT: /tmp/e2e-app
       GIGA_EVAL_HOME: /tmp/e2e-app-home
+      # A debug instance: its build takes minutes less than release (instance.sh).
+      GIGA_EVAL_DEBUG_BUILD: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -158,11 +160,12 @@ jobs:
 
       # giga-eval builds every instance into $GIGA_EVAL_OUT/target, outside the checkout,
       # so cache that directory. Only tyler/main pushes save; pull requests restore.
+      # The key names the profile: a release target restores nothing a debug build uses.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-targets: false
           cache-directories: ${{ env.GIGA_EVAL_OUT }}/target
-          shared-key: e2e-macos
+          shared-key: e2e-macos-debug
           save-if: ${{ github.ref == 'refs/heads/tyler/main' }}
 
       # The omp release ci.yml installs, checked against its SHA256SUMS.txt.
