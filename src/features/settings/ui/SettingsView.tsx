@@ -417,8 +417,9 @@ import {
   DialogButtons,
   NewSpaceButton,
   NewSpaceDialog,
-  SPACE_NAME_FIELD,
+  SpaceColorField,
   spaceColor,
+  SpaceNameField,
   SpacesList,
 } from "../../spaces/ui/SpacesSettings";
 import { PROVIDER_NAME } from "../../spaces/ui/SpaceLogins";
@@ -434,7 +435,6 @@ import {
   type Space,
   type SpaceLoginProvider,
 } from "../../spaces/model/spaces";
-import { ColorPicker } from "../../monos/ui/monoPanelParts";
 import { Modal } from "../../../shared/ui/Modal";
 import {
   removeWorktree,
@@ -1111,41 +1111,16 @@ function EditSpaceDialog({
       }}
     >
       <div className="flex flex-col gap-4 p-4">
-        <label className="flex flex-col gap-1.5 text-[12px] text-content/70">
-          <span>Name</span>
-          <input
-            aria-label="Space name"
-            className={SPACE_NAME_FIELD}
-            value={name}
-            disabled={busy}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </label>
-        <div className="flex flex-col gap-1.5 text-[12px] text-content/70">
-          <span>Colour</span>
-          <ColorPicker current={color} onPick={setColor} />
-        </div>
-        <div className="flex flex-col gap-1.5 text-[12px] text-content/70">
-          <span>Logins</span>
-          <span className="text-[11px] text-content/45">
-            One per provider. New sessions in {space.name} sign in with these.
-          </span>
-          <div className="overflow-hidden rounded-xl border border-content/10 bg-content/3">
-            {SPACE_LOGIN_PROVIDERS.map((provider) => (
-              <SpaceLoginRow
-                key={provider}
-                provider={provider}
-                value={logins[provider]}
-                saved={saved[provider]}
-                onChange={(accountId) =>
-                  setLogins((current) => ({ ...current, [provider]: accountId }))
-                }
-              />
-            ))}
-          </div>
-        </div>
+        <SpaceNameField value={name} disabled={busy} onChange={setName} />
+        <SpaceColorField value={color} onChange={setColor} />
+        <SpaceLoginsField
+          spaceName={space.name}
+          logins={logins}
+          saved={saved}
+          onChange={(provider, accountId) =>
+            setLogins((current) => ({ ...current, [provider]: accountId }))
+          }
+        />
         {error ? (
           <p role="alert" className="text-[12px] text-red-400">
             {error}
@@ -1160,6 +1135,39 @@ function EditSpaceDialog({
         />
       </div>
     </Modal>
+  );
+}
+
+/** Frame 12's Logins: one row per provider, each with its picker. */
+function SpaceLoginsField({
+  spaceName,
+  logins,
+  saved,
+  onChange,
+}: {
+  spaceName: string;
+  logins: SpaceLoginChoices;
+  saved: SpaceLoginChoices;
+  onChange: (provider: SpaceLoginProvider, accountId: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5 text-[12px] text-content/70">
+      <span>Logins</span>
+      <span className="text-[11px] text-content/45">
+        One per provider. New sessions in {spaceName} sign in with these.
+      </span>
+      <div className="overflow-hidden rounded-xl border border-content/10 bg-content/3">
+        {SPACE_LOGIN_PROVIDERS.map((provider) => (
+          <SpaceLoginRow
+            key={provider}
+            provider={provider}
+            value={logins[provider]}
+            saved={saved[provider]}
+            onChange={(accountId) => onChange(provider, accountId)}
+          />
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1254,28 +1262,38 @@ function SpaceLoginRow({
           </button>
         )}
       </div>
-      {add.editor ? (
-        <div className="px-3 pb-3 pl-13">
-          <div className="overflow-hidden rounded-lg border border-content/10">
-            <ProviderAccountEditor
-              editor={add.editor}
-              working={add.working}
-              onLabel={add.setLabel}
-              onCancel={add.cancel}
-              onSubmit={add.submit}
-            />
-          </div>
-          <p className="mt-1.5 text-[11px] leading-relaxed text-content/45">
-            Same sign-in as Settings › Providers › Add account. When it
-            finishes, the new login is saved there and picked here for this
-            Space.
-          </p>
-          {add.error ? (
-            <p role="alert" className="mt-1 text-[11px] text-red-400">
-              {add.error}
-            </p>
-          ) : null}
-        </div>
+      {add.editor ? <AddSpaceLogin editor={add.editor} add={add} /> : null}
+    </div>
+  );
+}
+
+/** Frame 12's Add a login: Providers' account editor under the row. */
+function AddSpaceLogin({
+  editor,
+  add,
+}: {
+  editor: AccountEditor;
+  add: ReturnType<typeof useAddSpaceLogin>;
+}) {
+  return (
+    <div className="px-3 pb-3 pl-13">
+      <div className="overflow-hidden rounded-lg border border-content/10">
+        <ProviderAccountEditor
+          editor={editor}
+          working={add.working}
+          onLabel={add.setLabel}
+          onCancel={add.cancel}
+          onSubmit={add.submit}
+        />
+      </div>
+      <p className="mt-1.5 text-[11px] leading-relaxed text-content/45">
+        Same sign-in as Settings › Providers › Add account. When it finishes,
+        the new login is saved there and picked here for this Space.
+      </p>
+      {add.error ? (
+        <p role="alert" className="mt-1 text-[11px] text-red-400">
+          {add.error}
+        </p>
       ) : null}
     </div>
   );
@@ -4919,6 +4937,30 @@ function Toggle({
 }
 
 /** Theme-aware dropdown for a Settings row: a trigger button opening a Popover listbox. Used instead of a native select, whose option popup is OS-rendered and unreadable in dark mode on Windows/Linux. */
+/** The closed Select: the choice's icon and text, muted when it asks. */
+function SelectTriggerContent({
+  selected,
+  value,
+}: {
+  selected: SelectOption | undefined;
+  value: string;
+}) {
+  return (
+    <span className="flex min-w-0 flex-1 items-center gap-1.5">
+      {selected?.icon ? (
+        <span className="grid size-4 shrink-0 place-items-center">
+          {selected.icon}
+        </span>
+      ) : null}
+      <span
+        className={`min-w-0 truncate ${selected?.muted ? "text-content/45" : ""}`}
+      >
+        {selected?.triggerLabel ?? selected?.label ?? value}
+      </span>
+    </span>
+  );
+}
+
 type SelectOption = {
   value: string;
   label: string;
@@ -5036,18 +5078,7 @@ function Select({
         onClick={() => setOpen((prev) => !prev)}
         className="flex w-full items-center justify-between gap-2 rounded-md border border-content/10 bg-content/5 px-2 py-1 text-left text-[12px] text-content outline-none hover:border-content/20"
       >
-        <span className="flex min-w-0 flex-1 items-center gap-1.5">
-          {selected?.icon ? (
-            <span className="grid size-4 shrink-0 place-items-center">
-              {selected.icon}
-            </span>
-          ) : null}
-          <span
-            className={`min-w-0 truncate ${selected?.muted ? "text-content/45" : ""}`}
-          >
-            {selected?.triggerLabel ?? selected?.label ?? value}
-          </span>
-        </span>
+        <SelectTriggerContent selected={selected} value={value} />
         <ChevronDown
           className={`size-3.5 shrink-0 text-content/50 transition-transform ${open ? "rotate-180" : ""}`}
           strokeWidth={1.75}

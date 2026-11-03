@@ -1,9 +1,4 @@
-import {
-  useMemo,
-  useState,
-  useSyncExternalStore,
-  type FormEvent,
-} from "react";
+import { useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
 import { Layers, Loader, Pencil, Plus } from "../../../shared/ui/icons";
 import { Modal } from "../../../shared/ui/Modal";
 import { countBadge } from "../../../shared/lib/numbers";
@@ -182,23 +177,8 @@ export function NewSpaceDialog({
       }}
     >
       <form className="flex flex-col gap-4 p-4" onSubmit={submit}>
-        <label className="flex flex-col gap-1.5 text-[12px] text-content/70">
-          <span>Name</span>
-          <input
-            autoFocus
-            aria-label="Space name"
-            className={SPACE_NAME_FIELD}
-            value={name}
-            disabled={busy}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </label>
-        <div className="flex flex-col gap-1.5 text-[12px] text-content/70">
-          <span>Colour</span>
-          <ColorPicker current={color} onPick={setColor} />
-        </div>
+        <SpaceNameField value={name} disabled={busy} onChange={setName} />
+        <SpaceColorField value={color} onChange={setColor} />
         <p className="text-[11px] leading-relaxed text-content/45">
           Next you pick its Claude and Codex logins: Create opens Edit Space for
           the new Space.
@@ -219,9 +199,48 @@ export function NewSpaceDialog({
   );
 }
 
-/** The name field of New Space and Edit Space (CreateWorktreeDialog's field). */
-export const SPACE_NAME_FIELD =
-  "h-9 rounded-md border border-content/10 bg-background-base px-2.5 text-[13px] text-content outline-none focus:border-content/25 disabled:opacity-50";
+/** The Name field of New Space and Edit Space, as CreateWorktreeDialog's. */
+export function SpaceNameField({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="flex flex-col gap-1.5 text-[12px] text-content/70">
+      <span>Name</span>
+      <input
+        autoFocus
+        aria-label="Space name"
+        className="h-9 rounded-md border border-content/10 bg-background-base px-2.5 text-[13px] text-content outline-none focus:border-content/25 disabled:opacity-50"
+        value={value}
+        disabled={disabled}
+        autoComplete="off"
+        spellCheck={false}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </label>
+  );
+}
+
+/** The Colour field: monos' nine presets and the custom picker. */
+export function SpaceColorField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (color: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5 text-[12px] text-content/70">
+      <span>Colour</span>
+      <ColorPicker current={value} onPick={onChange} />
+    </div>
+  );
+}
 
 /**
  * Cancel and the submit button, as CreateWorktreeDialog draws them. With
