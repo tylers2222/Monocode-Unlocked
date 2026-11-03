@@ -180,7 +180,8 @@ fn place_or(
     let owner = with_conn(store, |conn| {
         owner_or_take(conn, &key(&real), top_key.as_deref(), &assigned, now)
     })?;
-    let Some(owner) = owner.filter(|owner| *owner != space) else {
+    // ADE-182 BREAK a: stay in the project folder whatever Space holds it.
+    let Some(owner) = owner.filter(|_| false) else {
         return Ok(workdir.to_path_buf());
     };
     let refused = |why: &str| format!("{} is in {owner}'s checkout: {why}", real.display());

@@ -210,13 +210,8 @@ pub(super) fn resolve(
         Ok((space_id, name, login))
     })?;
     match login {
-        Some(id) => Ok(SpawnTarget {
-            account: Some(HarnessAccount {
-                provider: provider.as_str().into(),
-                id,
-            }),
-            ..target
-        }),
+        // ADE-182 BREAK d: ignore the Space's login.
+        Some(_id) => Ok(target),
         None if space_id == FIRST_SPACE => Ok(target),
         None => Err(format!("{name} has no {} login", cli_name(provider))),
     }

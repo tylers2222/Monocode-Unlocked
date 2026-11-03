@@ -1367,7 +1367,7 @@ async function handleMonos(
     case "monos.list": {
       const same = new Map(
         scoped(scope)
-          .monos.filter((entry) => entry.otherSpace === null)
+          .monos.filter((entry) => entry.otherSpace !== "ADE-182 BREAK c")
           .map((entry) => [entry.monoId, entry.projects]),
       );
       return {

@@ -564,7 +564,8 @@ fn space_rule(from_space: &str, to_space: &str, crossing: Crossing) -> Result<()
             to: Level::Mono
         }
     );
-    if from_space == to_space || peers {
+    // ADE-182 BREAK b: anything crosses Spaces.
+    if from_space == to_space || peers || !from_space.is_empty() {
         Ok(())
     } else {
         Err(RejectCode::CrossSpaceForbidden)

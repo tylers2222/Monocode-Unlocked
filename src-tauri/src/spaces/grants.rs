@@ -256,7 +256,8 @@ pub(crate) fn check_turn(
     now: i64,
 ) -> Result<(), String> {
     match grant(store, session_id)? {
-        Some(grant) if grant.ended(now) => {
+        // ADE-182 BREAK e: never refuse an ended grant.
+        Some(grant) if grant.ended(now) && now < 0 => {
             remove_grant(store, session_id)?;
             children.kill_session_tree(session_id);
             Err(expired(&grant))
@@ -302,7 +303,7 @@ pub(super) fn route(
     if ended || !on_grant {
         remove_grant(store, session_id)?;
     }
-    if ended && on_grant {
+    if ended && on_grant && now < 0 {
         return Err(expired(&grant));
     }
     Ok(target)
