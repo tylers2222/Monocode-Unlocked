@@ -3,9 +3,9 @@
 # vitest, Playwright, one mutation run), across every session of every MonoCode instance.
 # Usage: heavy-lock.sh <command...>. Hold the lock for one command, never a whole batch.
 #
-# Lock: the directory $HEAVY_LOCK, made with mkdir (atomic). The holder writes its pid, its
+# Lock: the directory $LOCK, made with mkdir (atomic). The holder writes its pid, its
 # command's pid and a holder line into it. Queue: one empty file per waiter in
-# $HEAVY_LOCK_QUEUE, named <arrival time>.<pid>, so sorted names are arrival order. Only
+# $QUEUE, named <arrival time>.<pid>, so sorted names are arrival order. Only
 # the oldest live ticket (the head) may break a stale lock or take the lock. So a caller
 # that locks again right after it releases goes to the back of the line, and, among callers
 # of this script, no caller can take the lock between the head's check of a dead holder and
@@ -14,14 +14,14 @@
 #
 # A lock is removed only when its holder pid and its command pid are both dead, a ticket only
 # when its pid is dead; a lock directory with no pid file counts as stale once it is 10 s
-# old. Every wait writes one line to $HEAVY_LOCK_WAITLOG.
+# old. Every wait writes one line to $WAITLOG.
 #
 # One fixed exemption runs without the lock (see light_job). Its code is the same as the
 # exemption block of the live projects/shared/briefs/heavy-lock.sh (General 2, binding).
-LOCK=${HEAVY_LOCK:-/tmp/monocode-heavy.lock}
-QUEUE=${HEAVY_LOCK_QUEUE:-/tmp/monocode-heavy.queue}
-WAITLOG=${HEAVY_LOCK_WAITLOG:-/tmp/monocode-heavy.waits.log}
-POLL=${HEAVY_LOCK_POLL:-2}
+LOCK=/tmp/monocode-heavy.lock
+QUEUE=/tmp/monocode-heavy.queue
+WAITLOG=/tmp/monocode-heavy.waits.log
+POLL=2
 STALE_SECONDS=10
 export CARGO_BUILD_JOBS=4
 
@@ -71,8 +71,6 @@ if shell_wrapper "$@"; then
   printf '%s refused=1 reason=shell-wrapper waiter=[%s cmd=%s]\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "${HEAVY_LOCK_WHO:-$(instance)} session=${MONOCODE_SESSION_ID:-${PWD##*/}} cwd=$PWD" "$*" >> "$WAITLOG"
   exit 2
 fi
-# Not in the live block; for heavy-lock.test.sh only: a hold limit in seconds (--long doubles it).
-if [ -n "${HEAVY_LOCK_HOLD_LIMIT:-}" ]; then HOLD_LIMIT=$((HEAVY_LOCK_HOLD_LIMIT * (long + 1))); fi
 
 # Light-job exemption (General 2, 2026-10-20/21): run WITHOUT the lock only
 # `python3 -m unittest|pytest` whose every path argument is under scripts/process/
@@ -131,10 +129,6 @@ shims_ready() {
   done
   for tool in $HEAVY_TOOLS; do [ -x "$SHIMS/$tool" ] || return 1; done
 }
-# Not in the live block; kept only for heavy-lock.test.sh. Its shims cases delete the shim
-# dir, remove a shim and make the dir read-only, which must not touch the live dir that
-# running exempt jobs use. Unset, this line changes nothing.
-SHIMS=${HEAVY_LOCK_SHIMS:-$SHIMS}
 run_light_job() {
   local shims rc extra
   shims=$SHIMS
@@ -181,9 +175,25 @@ release() {
   mv "$LOCK" "$LOCK.done.$$" && rm -rf "$LOCK.done.$$"
 }
 
+# The only gate for a group signal from this shell (ADE-200: a group kill with a wrong id
+# once SIGKILLed every process of the user). $1 must be a live child of the perl layer
+# ($child), which is the command it forked. That is enough: a group's id is the pid of the
+# process that made it, and a pid is not reused while it lives, so group -$1 is the
+# command's own group or does not exist (ESRCH). Empty, 0, 1, garbage, this script's group
+# and anyone else's group all fail it. Anything else gets no group signal; stderr says why.
+own_group() {
+  local ppid
+  ppid=$(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ')
+  [ "$ppid" = "$child" ] && return 0
+  echo "heavy-lock: no group signal to '$1': its parent is ${ppid:-gone}, not the command layer $child" >&2
+  return 1
+}
+
 # A holder that gets INT, TERM or HUP passes the same signal to its command (the perl layer
 # passes it on to the command's process group and kills the group after 5 s), waits for it,
-# then sweeps the group with KILL and exits, so the EXIT handler writes the end line. The
+# then sweeps the group with KILL and exits, so the EXIT handler writes the end line. Both
+# group signals go only to the group own_group proved before the first one; the sweep runs
+# after the leader may have exited, and a group id is not reused while a member lives. The
 # handler ignores INT, TERM and HUP from its first line on: under bash 3.2 an exit from a
 # nested handler skips the EXIT trap. So a second signal of any kind waits out the 5 s grace,
 # and there is always one end line and the release. A waiter logs its give-up and exits.
@@ -193,6 +203,7 @@ on_signal() {
   if [ -n "$child" ]; then
     signal=1
     pg=$(pgrep -P "$child" | head -1)
+    own_group "$pg" || pg=
     kill -"$2" "$child" 2>/dev/null
     [ -n "$pg" ] && kill -"$2" -- "-$pg" 2>/dev/null
     while kill -0 "$child" 2>/dev/null; do wait "$child"; done
