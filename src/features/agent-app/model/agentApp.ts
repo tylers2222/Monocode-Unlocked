@@ -146,7 +146,8 @@ export type StartAsk = { askId: MessageId; dueInMs: number | null };
 
 /**
  * ADE-175: what monos.list, sessions.list and messages.get_monos show the
- * caller, from its Space's saved rows (Rust `SpaceScope`).
+ * caller, and (ADE-194) the Monos monos.get and monos.read answer for, from
+ * its Space's saved rows (Rust `SpaceScope`).
  */
 export type SpaceScope = {
   space: string;
@@ -154,8 +155,11 @@ export type SpaceScope = {
   projects: string[];
   /** `otherSpace` is another Space's name; null in the caller's Space. */
   monos: { monoId: string; otherSpace: string | null; projects: string[] }[];
-  /** Saved sessions of other Spaces. */
-  foreignSessions: string[];
+  /**
+   * sessions.list only: the saved sessions of the caller's Space in one of
+   * `projects`. It lists no other session.
+   */
+  sessions: string[];
 };
 
 /** A Mono as app calls from its chat or habit runs see it. */
@@ -217,6 +221,8 @@ export type AppMonoListing = {
  * its allowlist, which monos.update replaces as a whole.
  */
 export type AppMonoDetails = AppMonoListing & {
+  /** The name of the Mono's Space when it is not the caller's. */
+  otherSpace?: string;
   harness: HarnessId | null;
   model: string | null;
   messageAllowlist: string[];
@@ -729,6 +735,22 @@ function scoped(scope: SpaceScope | undefined): SpaceScope {
       "The level check answered no Space scope, so the action did not run.",
     );
   return scope;
+}
+
+/**
+ * ADE-194: `monoId` as the scope lists it: its projects in the caller's Space
+ * and, when it is of another Space, that Space's name. A Mono the scope does
+ * not list is as unknown as an ID no Mono has, so the answer never says it
+ * exists.
+ */
+function scopedMono(
+  scope: SpaceScope | undefined,
+  monoId: string,
+): Pick<AppMonoDetails, "projects" | "otherSpace"> {
+  const entry = scoped(scope).monos.find((mono) => mono.monoId === monoId);
+  if (!entry) throw monoError("unknown_mono");
+  const { projects, otherSpace } = entry;
+  return otherSpace === null ? { projects } : { projects, otherSpace };
 }
 
 /**
@@ -1381,10 +1403,12 @@ async function handleMonos(
     }
     case "monos.get": {
       const monoId = checked(() => requiredString(input.monoId, "monoId", 256));
+      const seen = scopedMono(scope, monoId);
       const entry = await monos.get(monoId);
       if (!entry) throw monoError("unknown_mono");
       return {
         ...monoListing(entry, mono.id),
+        ...seen,
         harness: entry.chat?.harness ?? null,
         model: entry.chat?.model ?? null,
         messageAllowlist: entry.mono.messageAllowlist ?? [],
@@ -1405,6 +1429,7 @@ async function handleMonos(
         );
         return [requiredString(input.monoId, "monoId", 256), options] as const;
       });
+      scopedMono(scope, monoId);
       return monos.read(monoId, options);
     }
   }
@@ -1894,12 +1919,14 @@ export async function handleAgentApp(
       // A session's own folder can be a project of another Space.
       if (!space.projects.includes(cwd))
         throw new Error("Not one of your projects");
-      const foreign = new Set(space.foreignSessions);
+      // ADE-194: only the Space's saved sessions, so one it never saved
+      // (no row, Space 1 by ADE-174) is not listed in another Space.
+      const ours = new Set(space.sessions);
       return {
         appIdentifier: await host.appIdentifier(),
         cwd,
-        sessions: (await host.sessions(cwd)).filter(
-          (session) => !foreign.has(session.id),
+        sessions: (await host.sessions(cwd)).filter((session) =>
+          ours.has(session.id),
         ),
       };
     }

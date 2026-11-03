@@ -252,7 +252,7 @@ it("checks a Mono's app action without the roster", async () => {
     space: "space-2",
     projects: ["/code/app"],
     monos: [{ monoId: mono.id, otherSpace: null, projects: ["/code/app"] }],
-    foreignSessions: ["worker"],
+    sessions: ["worker"],
   };
   db.check = { outcome: "allowed", leadSessionId: null, ask: null, scope };
   expect(

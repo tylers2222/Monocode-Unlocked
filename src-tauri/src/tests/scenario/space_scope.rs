@@ -1,9 +1,11 @@
 //! ADE-175: `monos.list`, `sessions.list` and `messages.get_monos` answer for
-//! the caller's Space only. Each call is parsed by the real `app` CLI parser
-//! and checked by the real `mono_app_action_check` path (`check_action`) on
-//! saved rows: Space 1 holds a Giga, a regular Mono, a project session, a
-//! lead and its worker; Space 2 ("Work") holds the same plus a remote
-//! project. Then a one-Space world lists what it listed before Spaces.
+//! the caller's Space only; ADE-194: so do `monos.get` and `monos.read`, and
+//! `sessions.list` names no other Space's session. Each call is parsed by the
+//! real `app` CLI parser and checked by the real `mono_app_action_check` path
+//! (`check_action`) on saved rows: Space 1 holds a Giga, a regular Mono, a
+//! project session, a lead and its worker; Space 2 ("Work") holds the same
+//! plus a remote project. Then a one-Space world lists what it listed before
+//! Spaces.
 //! Every checkpoint prints `ok` or `FAIL`, so one run shows every rule a
 //! change broke.
 
@@ -70,10 +72,11 @@ fn sorted(mut ids: Vec<String>) -> Vec<String> {
     ids
 }
 
-fn foreign(scope: &SpaceScope) -> Vec<String> {
+/// The sessions `sessions.list` may list.
+fn ours(scope: &SpaceScope) -> Vec<String> {
     sorted(
         scope
-            .foreign_sessions
+            .sessions
             .iter()
             .map(|id| id.as_str().to_owned())
             .collect(),
@@ -202,12 +205,11 @@ impl Cast {
             &caller,
             &["sessions.list", "--json", r#"{"project":"/p2"}"#],
         );
-        let space1_saved = ["a-giga-chat", "b-mono-chat", "lead1", "s1", "worker1"];
         checkpoint(
             failed,
-            "a sessions.list hides Space 1 saved sessions",
-            foreign(&p2),
-            sorted(space1_saved.map(str::to_owned).to_vec()),
+            "a sessions.list names only Space 2's sessions in its projects, no Space 1 id",
+            ours(&p2),
+            vec!["lead2".to_owned(), "s2".into()],
         );
         let name = "a sessions.list takes /p1, a project Space 1 shares (ADE-229)";
         checkpoint(failed, name, refused(&p2, "/p1"), false);
@@ -310,6 +312,100 @@ impl Cast {
             WORK.to_owned(),
         );
     }
+
+    /// g. `monos.get` and `monos.read` answer only for a Mono the caller's
+    /// Space lists (ADE-194).
+    fn reads(&self, failed: &mut Vec<String>) {
+        let mono1 = mono_caller(&self.mono1, "t1");
+        for action in ["monos.get", "monos.read"] {
+            for (who, caller, id, want) in [
+                (
+                    "a Space 1 Mono",
+                    &mono1,
+                    "d-mono",
+                    "found, other_space Work",
+                ),
+                ("a Space 1 Mono", &mono1, "c-giga", "unknown_mono"),
+                ("a Space 1 Mono", &mono1, "z-none", "unknown_mono"),
+                (
+                    "a Space 1 Giga",
+                    &mono_caller(&self.giga1, "t1"),
+                    "d-mono",
+                    "unknown_mono",
+                ),
+                (
+                    "a Space 2 Giga",
+                    &mono_caller(&self.giga2, "t1"),
+                    "d-mono",
+                    "found",
+                ),
+                (
+                    "an unsaved Space 2 habit run",
+                    &habit_run(&self.mono2, "g-run"),
+                    "b-mono",
+                    "found, other_space Space 1",
+                ),
+            ] {
+                let name = format!("g {action}: {who} reading {id}");
+                checkpoint(
+                    failed,
+                    &name,
+                    answer(&self.world, caller, action, id),
+                    want.into(),
+                );
+            }
+        }
+    }
+
+    /// h. Each Space's sessions in a project both share: `sessions.list`
+    /// names only the caller's.
+    fn shared_sessions(&self, failed: &mut Vec<String>) {
+        self.world.add_session("h-two", "/p1", None);
+        move_to_work(&self.world, "sessions", "h-two");
+        let p1 = ["sessions.list", "--json", r#"{"project":"/p1"}"#];
+        let space1 = self.scope(&mono_caller(&self.mono1, "t1"), &p1);
+        let want = sorted(vec!["lead1".into(), "s1".into(), "worker1".into()]);
+        checkpoint(
+            failed,
+            "h a Space 1 Mono gets no Space 2 id in /p1",
+            ours(&space1),
+            want,
+        );
+        let space2 = self.scope(&mono_caller(&self.mono2, "t1"), &p1);
+        let want = vec!["h-two".to_owned(), "lead2".into(), "s2".into()];
+        checkpoint(
+            failed,
+            "h a Space 2 Mono gets no Space 1 id in /p1",
+            ours(&space2),
+            want,
+        );
+        let lead = self.scope(&session_caller(&self.lead1, "/p1"), &p1);
+        let want = sorted(vec!["lead1".into(), "s1".into(), "worker1".into()]);
+        checkpoint(
+            failed,
+            "h a Space 1 lead gets only Space 1's /p1 sessions",
+            ours(&lead),
+            want,
+        );
+    }
+}
+
+/// What the web app answers for `monos.get` or `monos.read` of `id` from the
+/// scope the level check gives: the Mono, marked when it is of another Space,
+/// or the unknown-ID error.
+fn answer(world: &World, caller: &Caller, action: &str, id: &str) -> String {
+    let input = format!(r#"{{"monoId":"{id}"}}"#);
+    match call(world, caller, &[action, "--json", &input]) {
+        Err(code) => format!("refused {code}"),
+        Ok(None) => "no scope".into(),
+        Ok(Some(scope)) => match scope.monos.iter().find(|mono| mono.mono_id.as_str() == id) {
+            None => "unknown_mono".into(),
+            Some(mono) => match &mono.other_space {
+                None => "found".into(),
+                Some(space) => format!("found, other_space {space}"),
+            },
+        },
+    }
 }
 
 /// f. One Space: every list as it was before Spaces.
@@ -347,9 +443,12 @@ fn one_space(failed: &mut Vec<String>) {
     );
     checkpoint(
         failed,
-        "f sessions.list hides nothing and keeps every project",
-        (list.foreign_sessions.len(), list.projects),
-        (0, vec!["/p1".to_owned(), REMOTE.to_owned()]),
+        "f sessions.list names every session in the Mono's projects and keeps every project",
+        (ours(&list), list.projects),
+        (
+            sorted(vec!["lead".into(), "s1".into(), "worker".into()]),
+            vec!["/p1".to_owned(), REMOTE.to_owned()],
+        ),
     );
     let gone = Caller {
         speaker: Speaker::Mono {
@@ -404,5 +503,18 @@ fn list_actions_answer_for_the_callers_space() {
     cast.habit_runs(&mut failed);
     cast.remote_projects(&mut failed);
     one_space(&mut failed);
+    assert!(failed.is_empty(), "failed checkpoints: {failed:?}");
+}
+
+/// Defect (ADE-194): `monos.get` or `monos.read` answers for another Space's
+/// Giga, for any other Space's Mono to a Giga, or unmarked; tells an
+/// out-of-Space Mono from an unknown ID; or `sessions.list` names a session
+/// of another Space in a project both Spaces share.
+#[test]
+fn reads_answer_for_the_callers_space() {
+    let cast = Cast::new();
+    let mut failed = Vec::new();
+    cast.reads(&mut failed);
+    cast.shared_sessions(&mut failed);
     assert!(failed.is_empty(), "failed checkpoints: {failed:?}");
 }

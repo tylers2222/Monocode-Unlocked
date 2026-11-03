@@ -31,15 +31,16 @@ afterEach(() => {
 // by `appIdentifier` and finds builders by `branch`. Defect: either field is
 // missing from the reply as the CLI prints it, or a session with no branch
 // drops the key, so its reply looks like one from an app that sends none.
-// ADE-175: or it lists a saved session of another Space, or a lead lists its
-// folder after that project moved to another Space.
+// ADE-175: or a lead lists its folder after that project moved to another
+// Space. ADE-194: or it lists a session the scope does not name: another
+// Space's, or one no Space saved.
 it("lists the app that answered and each session's branch, null when it has none", async () => {
   const mono = open("mono-chat");
   const scope = {
     space: "space-1",
     projects: [PROJECT],
     monos: [],
-    foreignSessions: [] as string[],
+    sessions: ["stored", "loose", "live", "fresh"],
   };
   const host = {
     levels: { check: async () => ({ leadSessionId: null, ask: null, scope }) },
@@ -69,7 +70,7 @@ it("lists the app that answered and each session's branch, null when it has none
       { ...row, id: "fresh", title: "fresh", busy: false, branch: null, archived: false },
     ],
   });
-  scope.foreignSessions = ["stored", "live"];
+  scope.sessions = ["loose", "fresh"];
   expect(await handleAgentApp(mono, "r2", "sessions.list", {}, host)).toMatchObject({
     sessions: [{ id: "loose" }, { id: "fresh" }],
   });

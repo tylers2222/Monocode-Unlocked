@@ -622,7 +622,7 @@ function world(
       otherSpace,
       projects: [],
     })),
-    foreignSessions: [],
+    sessions: [],
   };
   const app = {
     messages: agentMessages(host),

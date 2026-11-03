@@ -186,7 +186,7 @@ Actions:
   sessions.list  {}  Project sessions with IDs, branch, busy status, hasDraft
                   and archived, and the appIdentifier of the app that answered.
                   Only your Space's: a project in another Space is not one of
-                  yours, and its sessions are left out.
+                  yours, and another Space's sessions are left out.
   sessions.read  {"sessionId":"...","before":"<turnId>","limit":3,"maxChars":1200}
                   Read up to 3 recent user/assistant exchanges. Tools and
                   reasoning are omitted. Omit before for the newest page;
@@ -304,13 +304,16 @@ Actions:
                   busy, queued, queuePaused (its queue sends nothing until
                   someone resumes it), hasConversation, updatedAt and self
                   (true for you).
-  monos.get      {"monoId":"..."}  Mono or habit only. One Mono by ID with the
-                  fields of monos.list (all its projects), plus the harness
-                  and model its chat runs on (null until it has a chat) and
-                  its messageAllowlist. Unknown IDs get code unknown_mono.
+  monos.get      {"monoId":"..."}  Mono or habit only. One Mono of your Space
+                  by ID with the fields of monos.list, plus the harness and
+                  model its chat runs on (null until it has a chat) and its
+                  messageAllowlist. A regular Mono also gets the regular
+                  Monos of other Spaces, with otherSpace (that Space's name).
+                  Any other ID gets code unknown_mono.
   monos.read     {"monoId":"...","before":"<turnId>","limit":3,"maxChars":1200,
                   "work":true}
-                  Read another Mono's chat. Paging works as in sessions.read.
+                  Read another Mono's chat: the Monos monos.get answers
+                  for. Paging works as in sessions.read.
                   work:true also lists each turn's reasoning and tool rows
                   in order as "work", each capped by maxChars. A turn keeps
                   its newest rows up to 1 MB; "omittedWork" counts the rest.

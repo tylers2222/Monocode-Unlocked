@@ -607,7 +607,7 @@ it("sends messages.* to their own gate, and get_monos to the check for its scope
   });
   expect(actions.messageSend).toHaveBeenCalledOnce();
   expect(checks()).toEqual([]);
-  const scope = { space: "space-2", projects: [], monos: [], foreignSessions: [] };
+  const scope = { space: "space-2", projects: [], monos: [], sessions: [] };
   command.answer = () => ({ ...ALLOWED, scope });
   const getMonos = vi.fn(async () => ({ monos: [] }));
   host.messages!.getMonos = getMonos;
