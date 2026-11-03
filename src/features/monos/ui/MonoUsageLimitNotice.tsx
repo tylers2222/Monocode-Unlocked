@@ -62,8 +62,22 @@ type Props = {
   onResumeAtReset: (enabled: boolean) => void;
 };
 
+/**
+ * The Mono view keeps one pane while the shown Mono changes, so everything a
+ * user picks on the card belongs to one session: the card remounts per
+ * session. The Spaces read is shared and reloads when the session changes.
+ */
 export function MonoUsageLimitNotice(props: Props) {
-  const { session, onAccountChange, onResume, onResumeAtReset } = props;
+  const [spaces, setSpaces] = useState<SpaceLogins>();
+  useEffect(() => {
+    loadSpaceLogins().then(setSpaces, () => {});
+  }, [props.session.id]);
+  return <Notice key={props.session.id} {...props} spaces={spaces} />;
+}
+
+function Notice(props: Props & { spaces: SpaceLogins | undefined }) {
+  const { session, spaces, onAccountChange, onResume, onResumeAtReset } =
+    props;
   const snapshot = useSyncExternalStore(
     subscribeProviderAccounts,
     () =>
@@ -79,10 +93,6 @@ export function MonoUsageLimitNotice(props: Props) {
     provider,
     enabled: provider != null,
   });
-  const [spaces, setSpaces] = useState<SpaceLogins>();
-  useEffect(() => {
-    loadSpaceLogins().then(setSpaces, () => {});
-  }, [session.id]);
   const [askAgain, setAskAgain] = useState(false);
   if (!session.usageLimit) return null;
   const expired = askAgain
@@ -269,18 +279,22 @@ function LoginChoices({
       className="mt-2 flex max-w-[520px] flex-col gap-0.5"
     >
       {card.offers.map(({ account, limits }) => (
-        <button
+        <div
           key={account.id}
-          type="button"
-          role="radio"
-          aria-checked={account.id === to.id}
-          aria-label={account.label}
-          onClick={() => onPick(account.id)}
-          className="group flex h-10 items-center gap-2.5 rounded-lg border border-transparent px-2 text-left hover:bg-content/5 aria-checked:border-content/10 aria-checked:bg-content/5"
+          className="group pointer-events-none relative flex h-10 items-center gap-2.5 rounded-lg border border-transparent px-2 text-left hover:bg-content/5 has-[[aria-checked=true]]:border-content/10 has-[[aria-checked=true]]:bg-content/5"
         >
+          {/* A sibling target keeps the email button out of the radio. */}
+          <button
+            type="button"
+            role="radio"
+            aria-checked={account.id === to.id}
+            aria-label={account.label}
+            onClick={() => onPick(account.id)}
+            className="pointer-events-auto absolute inset-0 rounded-lg"
+          />
           <span
             aria-hidden
-            className="size-3.5 shrink-0 rounded-full border-[1.5px] border-content/30 group-aria-checked:border-4 group-aria-checked:border-accent"
+            className="size-3.5 shrink-0 rounded-full border-[1.5px] border-content/30 group-has-[[aria-checked=true]]:border-4 group-has-[[aria-checked=true]]:border-accent"
           />
           <HarnessIcon harness={card.provider} className="size-3.5 shrink-0" />
           <span className="flex min-w-0 flex-1 flex-col">
@@ -301,7 +315,7 @@ function LoginChoices({
               />
             ))}
           </span>
-        </button>
+        </div>
       ))}
     </div>
   );

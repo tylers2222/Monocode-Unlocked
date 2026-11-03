@@ -15,6 +15,7 @@ import type {
   RateLimitWindow,
 } from "../../providers/model/rateLimits";
 import { saveRouteGrantDefault } from "../../settings/model/settings";
+import { routeGrantOutUntil } from "../model/monoUsageLimit";
 import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -324,6 +325,7 @@ it("asks for another Space's login and how long, and grants it before moving", a
   const onAccountChange = vi.fn();
   const onResumeAtReset = vi.fn();
   const resetsAt = NOW + 134 * 60_000;
+  const errors = vi.spyOn(console, "error");
   render(
     { providerAccountId: undefined, usageLimit: { resetsAt } },
     { onAccountChange, onResumeAtReset },
@@ -334,14 +336,13 @@ it("asks for another Space's login and how long, and grants it before moving", a
     enabled: true,
   });
   const card = container.querySelector('[data-usage-limit][role="status"]')!;
+  // The reset's own format (with the date once it is another day) is pinned
+  // on a fixed clock in monoUsageLimit.test.ts; this box clock may cross
+  // midnight.
   expect(card.textContent).toContain(
-    "Claude account 1 is out until " +
-      new Date(resetsAt).toLocaleString(undefined, {
-        hour: "numeric",
-        minute: "2-digit",
-      }) +
-      " (in 2h 14m)",
+    `Claude account 1 is out until ${routeGrantOutUntil(resetsAt, NOW)}`,
   );
+  expect(card.textContent).toContain("(in 2h 14m)");
   expect(card.textContent).toContain(
     "Use another login for this session? Your conversation is saved and moves with it.",
   );
@@ -349,10 +350,20 @@ it("asks for another Space's login and how long, and grants it before moving", a
     "true",
     "false",
   ]);
+  // The radio is a sibling target: the masked email's Reveal button sits in
+  // its row, never inside the radio.
   const login = container.querySelector('[role="radio"][aria-label="Claude account 2"]')!;
-  expect(login.textContent).toContain("Max 5x");
+  const row = login.parentElement!;
+  expect(login.querySelector("button")).toBeNull();
+  expect(row.querySelector('button[aria-label="Reveal email"]')).not.toBeNull();
   expect(
-    [...login.querySelectorAll('[role="progressbar"]')].map((bar) =>
+    errors.mock.calls.filter(([message]) =>
+      String(message).includes("cannot be a descendant"),
+    ),
+  ).toEqual([]);
+  expect(row.textContent).toContain("Max 5x");
+  expect(
+    [...row.querySelectorAll('[role="progressbar"]')].map((bar) =>
       bar.getAttribute("aria-label"),
     ),
   ).toEqual(["5h limit used", "Weekly limit used"]);
@@ -402,6 +413,7 @@ it("asks for another Space's login and how long, and grants it before moving", a
   expect(armed.getAttribute("aria-pressed")).toBe("true");
   act(() => armed.click());
   expect(onResumeAtReset).toHaveBeenLastCalledWith(false);
+  errors.mockRestore();
 });
 
 it("grants the picked login until the first one resets, and a refusal moves nothing", async () => {
@@ -513,4 +525,52 @@ it("names the ended grant, goes back to the first login, or asks again", async (
   act(() => byText("Ask again")!.click());
   expect(container.querySelector("[data-route-grant-expired]")).toBeNull();
   expect(container.textContent).toContain("Claude account 1 is out until");
+});
+
+/** A Mono whose grant from account 1 to account 2 ended an hour ago. */
+function endedMono(id: string): Partial<Session> {
+  return {
+    id,
+    providerAccountId: "account-1",
+    usageLimit: {},
+    blocks: [
+      {
+        id: "stop",
+        role: "system",
+        notice: "error",
+        text: `route_grant_expired: the grant from account-1 to account-2 granted at ${NOW - 4 * HOUR} ended at ${NOW - HOUR}`,
+      },
+    ],
+  };
+}
+
+// The Mono view keeps one pane and swaps its session, so what a user does on
+// one Mono's card must not carry to the next.
+it("shows the next Mono its own ended grant after Ask again on another", async () => {
+  spacesWorld();
+  usage["claude:account-1"] = limits(windowOf(100, NOW + 3 * HOUR));
+  render(endedMono("mono-a"), { onAccountChange: vi.fn() });
+  await settle();
+  act(() => byText("Ask again")!.click());
+  expect(container.querySelector("[data-route-grant-expired]")).toBeNull();
+  render(endedMono("mono-b"), { onAccountChange: vi.fn() });
+  expect(container.querySelector("[data-route-grant-expired]")).not.toBeNull();
+});
+
+it("starts the next Mono's card on the Settings default, not another Mono's pick", async () => {
+  spacesWorld();
+  const out = (id: string): Partial<Session> => ({
+    id,
+    providerAccountId: undefined,
+    usageLimit: { resetsAt: NOW + HOUR },
+  });
+  render(out("mono-a"), { onAccountChange: vi.fn() });
+  await settle();
+  act(() => byText("3 h")!.click());
+  expect(radios("For")[1]).toEqual(["3 h", "true"]);
+  render(out("mono-b"), { onAccountChange: vi.fn() });
+  expect(radios("For").find(([, checked]) => checked === "true")).toEqual([
+    "6 hdefault",
+    "true",
+  ]);
 });
