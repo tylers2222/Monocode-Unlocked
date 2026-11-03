@@ -201,8 +201,9 @@ export function buildTurnStartParams(input: {
     input.inSandbox,
   );
   // A plan turn makes no change. Inside srt it gets no read-only sandbox, so
-  // every untrusted command asks first, and the plan turn denies each ask
-  // (codex.ts handleServerRequest).
+  // every untrusted command asks first, and the asks go to the user's client,
+  // not Auto's reviewer subagent, which could approve one: the plan turn
+  // denies each (codex.ts handleServerRequest).
   const config: CodexThreadConfig =
     input.intent === "plan"
       ? withNetwork(
@@ -210,7 +211,9 @@ export function buildTurnStartParams(input: {
             {
               approvalPolicy: input.inSandbox ? "untrusted" : "never",
               sandbox: "read-only",
-              approvalsReviewer: runtimeConfig.approvalsReviewer,
+              approvalsReviewer: input.inSandbox
+                ? "user"
+                : runtimeConfig.approvalsReviewer,
               sandboxPolicy: { type: "readOnly" },
             },
             input.inSandbox,

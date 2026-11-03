@@ -564,8 +564,9 @@ describe("codex live turn sequence", () => {
   });
 
   // ADE-199 r1 B1: inside srt a plan turn has no read-only sandbox, so it
-  // must ask before every untrusted command, and the plan turn declines each
-  // ask. Defect: it runs under `never` and edits, commits or pushes unasked.
+  // must ask before every untrusted command, the asks must reach this client
+  // (not Auto's reviewer subagent), and the plan turn declines each. Defect:
+  // it runs under `never`, or Auto's subagent approves a push or an edit.
   it("keeps a plan turn inside srt from running a command unasked", async () => {
     spawnChild.mockResolvedValueOnce({ cwd: "/repo", sandboxed: true });
     const { events, turn } = await startTurn("codex-live", {
@@ -576,6 +577,7 @@ describe("codex live turn sequence", () => {
       parse().find((message) => message.method === "turn/start")?.params,
     ).toMatchObject({
       approvalPolicy: "untrusted",
+      approvalsReviewer: "user",
       sandboxPolicy: { type: "dangerFullAccess" },
     });
     onLine!(

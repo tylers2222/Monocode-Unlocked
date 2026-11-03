@@ -135,8 +135,10 @@ describe("runtimeModeToCodexConfig", () => {
       sandboxPolicy: { type: "readOnly" },
     });
     // Inside srt a plan turn has no read-only sandbox, so each command asks.
+    // Its asks reach the client, never Auto's reviewer subagent.
     expect(plan(true)).toMatchObject({
       approvalPolicy: "untrusted",
+      approvalsReviewer: "user",
       sandboxPolicy: { type: "dangerFullAccess" },
     });
     expect(
