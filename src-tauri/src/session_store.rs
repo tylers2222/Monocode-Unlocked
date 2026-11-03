@@ -229,6 +229,9 @@ pub struct SessionSummary {
     /// The session whose `sessions.start` made this one; written on insert only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lead_session_id: Option<String>,
+    /// `sessions.space_id`, as the insert stored it.
+    #[serde(default)]
+    pub space_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1596,6 +1599,7 @@ pub(crate) fn upsert_session(
         linked_work_item: session.linked_work_item.clone(),
         automation_id: automation_id.map(str::to_owned),
         lead_session_id,
+        space_id,
     })
 }
 
@@ -1947,7 +1951,7 @@ pub(crate) fn list_by_project(
                 created_at, updated_at, branch, archived, pinned,
                 linked_work_item_json,
                 (SELECT summary FROM orchestration_sidebar WHERE lead_id = sessions.id), worktree_cwd,
-                worktree_removed, is_draft, automation_id, sidebar_hidden, lead_session_id
+                worktree_removed, is_draft, automation_id, sidebar_hidden, lead_session_id, space_id
          FROM sessions
          WHERE cwd = ?1
            AND has_user_message = 1
@@ -1989,18 +1993,19 @@ pub(crate) fn list_by_project(
             linked_work_item,
             automation_id: nonempty(row.get(17)?),
             lead_session_id: row.get(19)?,
+            space_id: row.get(20)?,
         })
     })?;
     rows.collect()
 }
 
-fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
+pub(crate) fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
     let mut statement = conn.prepare(
         "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
                 created_at, updated_at, branch, archived, pinned,
                 linked_work_item_json,
                 (SELECT summary FROM orchestration_sidebar WHERE lead_id = sessions.id), worktree_cwd,
-                worktree_removed, is_draft, automation_id, sidebar_hidden, lead_session_id
+                worktree_removed, is_draft, automation_id, sidebar_hidden, lead_session_id, space_id
          FROM sessions
          WHERE has_user_message = 1
            AND linked_work_item_json IS NOT NULL
@@ -2036,6 +2041,7 @@ fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
             linked_work_item: optional_json(row.get(12)?),
             automation_id: nonempty(row.get(17)?),
             lead_session_id: row.get(19)?,
+            space_id: row.get(20)?,
         })
     })?;
     rows.collect()

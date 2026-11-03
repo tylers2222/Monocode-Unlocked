@@ -67,6 +67,8 @@ export type Mono = {
    * it inherits. The folder moves under its id the first time it is read.
    */
   legacyProject?: string;
+  /** Its `monos.space_id`; absent until the database has saved it. */
+  spaceId?: string;
 };
 
 /** Where the roster lived before `monocode.db`; read, never written. */
@@ -309,13 +311,15 @@ function parseSnapshot(value: unknown): RosterSnapshot {
     revision: snapshot.revision,
     monos: snapshot.monos.flatMap((value) => {
       const row = record(value);
-      return (
-        parseMono({
-          ...record(row.data),
-          id: row.id,
-          ...(row.role === "giga" ? { giga: true } : {}),
-        }) ?? []
-      );
+      const mono = parseMono({
+        ...record(row.data),
+        id: row.id,
+        ...(row.role === "giga" ? { giga: true } : {}),
+      });
+      if (!mono) return [];
+      return typeof row.spaceId === "string"
+        ? [{ ...mono, spaceId: row.spaceId }]
+        : [mono];
     }),
   };
 }

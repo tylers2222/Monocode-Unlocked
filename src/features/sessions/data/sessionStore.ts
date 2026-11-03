@@ -86,6 +86,8 @@ export type SessionSummary = {
   draft?: boolean;
   linkedWorkItem?: LinkedWorkItem;
   automationId?: string;
+  /** Its `sessions.space_id`; absent until the database has saved it. */
+  spaceId?: string;
 };
 
 type SessionRecord = {

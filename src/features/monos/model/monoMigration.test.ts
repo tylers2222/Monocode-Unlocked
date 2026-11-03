@@ -16,6 +16,8 @@ type Row = {
   role: string;
   data: Record<string, unknown>;
   sortOrder: number;
+  /** `monos.space_id`; the database fills it in on insert. */
+  spaceId?: string;
 };
 type Update = {
   id: string;
@@ -527,4 +529,41 @@ it("moves the stored name to the new mascot's default when a Mono has no name of
     data: { mascot: "ghost" },
   });
   expect(here.findMono("mono-2")?.mascot).toBe("ghost");
+});
+
+it("shows each Mono's Space from its row, and never writes it into the Mono's data", async () => {
+  const row = (id: string, mascot: string, sortOrder: number, spaceId?: string) => ({
+    id,
+    name: "",
+    role: "mono",
+    data: { mascot, color: "#0f0", projects: [] },
+    sortOrder,
+    ...(spaceId ? { spaceId } : {}),
+  });
+  db.imported = true;
+  db.rows.set("mono-a", row("mono-a", "crab", 0, "space-2"));
+  db.rows.set("mono-b", row("mono-b", "ghost", 1, "space-1"));
+  db.rows.set("mono-c", row("mono-c", "skull", 2));
+  db.rows.set("bad id", row("bad id", "crab", 3, "space-2"));
+  let mono = await start();
+
+  expect(mono.listMonos().map((entry) => [entry.id, entry.spaceId])).toEqual([
+    ["mono-a", "space-2"],
+    ["mono-b", "space-1"],
+    ["mono-c", undefined],
+  ]);
+  // A row with no Space gives a Mono with no `spaceId` key at all.
+  expect("spaceId" in mono.findMono("mono-c")!).toBe(false);
+
+  mono.saveMonoName("mono-a", "Ada");
+  mono.reorderMonos(["mono-b", "mono-a", "mono-c"]);
+  await mono.monoWritesSettled();
+  for (const saved of db.rows.values())
+    expect(saved.data).not.toHaveProperty("spaceId");
+
+  mono = await start();
+  expect(mono.findMono("mono-a")).toMatchObject({
+    name: "Ada",
+    spaceId: "space-2",
+  });
 });

@@ -108,6 +108,8 @@ pub struct MonoRow {
     pub sort_order: i64,
     pub created_at: i64,
     pub updated_at: i64,
+    /// `monos.space_id`, as the insert stored it.
+    pub space_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -274,7 +276,7 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
 
 pub fn list(conn: &Connection) -> rusqlite::Result<Vec<MonoRow>> {
     conn.prepare(
-        "SELECT id, name, role, data_json, sort_order, created_at, updated_at
+        "SELECT id, name, role, data_json, sort_order, created_at, updated_at, space_id
            FROM monos ORDER BY sort_order, created_at, id",
     )?
     .query_map([], |row| {
@@ -288,6 +290,7 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<MonoRow>> {
             sort_order: row.get(4)?,
             created_at: row.get(5)?,
             updated_at: row.get(6)?,
+            space_id: row.get(7)?,
         })
     })?
     .collect()
