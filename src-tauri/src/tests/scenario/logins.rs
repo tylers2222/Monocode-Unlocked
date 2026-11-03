@@ -263,9 +263,12 @@ fn sandbox_rules_follow_the_login(rig: &Rig, target: &Path) {
 
     let data = rig.app.path().app_data_dir().unwrap();
     std::fs::write(data.join("claude-deny-rules-on"), b"").unwrap();
-    let deny =
-        crate::claude_deny::srt_deny(rig.app.handle(), &rig.root.join("sandboxed"), Some("sandboxed"))
-            .unwrap();
+    let deny = crate::claude_deny::srt_deny(
+        rig.app.handle(),
+        &rig.root.join("sandboxed"),
+        Some("sandboxed"),
+    )
+    .unwrap();
     assert!(
         deny.contains(&text(&target.join("settings.json"))),
         "Claude Code's deny rules miss the linked login's settings: {deny:?}"
