@@ -103,11 +103,15 @@ def q(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-def snapshot(src: Path, dest: Path) -> str:
+def read_only(path: Path) -> sqlite3.Connection:
     # A mode=ro open of a WAL database creates an empty -wal file when there is
     # none. No -wal means no writer, so immutable reads it without touching it.
-    live = Path(f"{src}-wal").exists()
-    source = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro{'' if live else '&immutable=1'}", uri=True)
+    live = Path(f"{path}-wal").exists()
+    return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro{'' if live else '&immutable=1'}", uri=True)
+
+
+def snapshot(src: Path, dest: Path) -> str:
+    source = read_only(src)
     target = sqlite3.connect(dest)
     try:
         source.backup(target)
