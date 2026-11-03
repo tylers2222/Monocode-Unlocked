@@ -293,6 +293,8 @@ mod tests {
         let guard = held.lock();
         let (source, home) = (busy.source.clone(), busy.home.clone());
         let waiting = std::thread::spawn(move || drop(share(&source, home).unwrap()));
+        // Let it reach the held lock first, as a spawn waiting on a prompt has.
+        std::thread::sleep(Duration::from_millis(500));
         let (source, home) = (file_store.source.clone(), file_store.home.clone());
         let (send, done) = std::sync::mpsc::channel();
         std::thread::spawn(move || send.send(share(&source, home).map(drop)));
