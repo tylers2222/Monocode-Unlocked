@@ -1,28 +1,40 @@
-import { useMemo, useSyncExternalStore } from "react";
-import { Layers, Pencil, Plus, Trash2 } from "../../../shared/ui/icons";
+import {
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type FormEvent,
+} from "react";
+import { Layers, Loader, Pencil, Plus } from "../../../shared/ui/icons";
+import { Modal } from "../../../shared/ui/Modal";
 import { countBadge } from "../../../shared/lib/numbers";
 import {
   listMonos,
+  MONO_COLORS,
   monosSnapshot,
   subscribeMonos,
   type MonoState,
 } from "../../monos/model/mono";
+import { ColorPicker } from "../../monos/ui/monoPanelParts";
 import {
+  loadSpaces,
   spaceActivity,
   spacesView,
   subscribeSpaces,
 } from "../model/activeSpace";
-import type { Space, SpaceLogin } from "../model/spaces";
+import { createSpace, type Space, type SpaceLogin } from "../model/spaces";
 import { SpaceLogins } from "./SpaceLogins";
 
-// New Space, rename and remove are drawn on frame 3 but what they open is not
-// (frames 11-14 pending), so the buttons do nothing yet.
+/** A Space's colour; Space 1 predates colours and reads as the first one. */
+export function spaceColor(space: Pick<Space, "color">): string {
+  return space.color ?? MONO_COLORS[0];
+}
 
 /** The "New Space" button beside the Spaces group title. */
-export function NewSpaceButton() {
+export function NewSpaceButton({ onClick }: { onClick: () => void }) {
   return (
     <button
       type="button"
+      onClick={onClick}
       className="flex shrink-0 items-center gap-1.5 rounded-md border border-content/10 px-2.5 py-1 text-[12px] text-content/70 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.97]"
     >
       <Plus className="size-3.5" strokeWidth={1.75} aria-hidden />
@@ -35,11 +47,13 @@ export function NewSpaceButton() {
 export function SpacesList({
   states,
   unseenCounts,
+  onEdit,
 }: {
   /** What each Mono is doing, by Mono id, in every Space. */
   states: ReadonlyMap<string, MonoState>;
   /** Unseen replies by Mono id, in every Space. */
   unseenCounts?: ReadonlyMap<string, number>;
+  onEdit: (space: Space) => void;
 }) {
   const view = useSyncExternalStore(subscribeSpaces, spacesView);
   const roster = useSyncExternalStore(subscribeMonos, monosSnapshot);
@@ -58,6 +72,7 @@ export function SpacesList({
         logins={view.logins}
         // Like the switcher, only another Space's replies are news.
         unread={current ? 0 : (activity.get(space.id)?.unread ?? 0)}
+        onEdit={() => onEdit(space)}
       />
     );
   });
@@ -68,18 +83,30 @@ function SpaceListRow({
   current,
   logins,
   unread,
+  onEdit,
 }: {
   space: Space;
   current: boolean;
   logins: readonly SpaceLogin[];
   unread: number;
+  onEdit: () => void;
 }) {
+  const color = spaceColor(space);
   return (
     <div
       data-space-id={space.id}
       className="flex items-center gap-4 border-b border-content/5 px-4 py-3.5 last:border-b-0"
     >
-      <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-content/[0.05] ring-1 ring-inset ring-content/[0.06]">
+      {/* Frame 13: the colour at 16% fill, a 32% ring, the icon in full. */}
+      <span
+        data-space-color={color}
+        className="grid size-7 shrink-0 place-items-center rounded-lg"
+        style={{
+          color,
+          background: `color-mix(in srgb, ${color} 16%, transparent)`,
+          boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 32%, transparent)`,
+        }}
+      >
         <Layers className="size-4" strokeWidth={1.75} />
       </span>
       <div className="min-w-0 flex-1">
@@ -103,26 +130,136 @@ function SpaceListRow({
           <SpaceLogins spaceId={space.id} logins={logins} withPlan />
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-1">
-        <button
-          type="button"
-          aria-label={`Rename ${space.name}`}
-          title="Rename Space"
-          className="grid size-7 place-items-center rounded-md text-content/40 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.96]"
-        >
-          <Pencil className="size-3.5" strokeWidth={1.75} />
-        </button>
-        {current ? null : (
-          <button
-            type="button"
-            aria-label={`Remove ${space.name}`}
-            title="Remove Space"
-            className="grid size-7 place-items-center rounded-md text-content/35 transition-transform duration-150 hover:bg-red-400/10 hover:text-red-400 active:scale-[0.96]"
-          >
-            <Trash2 className="size-3.5" strokeWidth={1.75} />
-          </button>
-        )}
-      </div>
+      <button
+        type="button"
+        aria-label={`Edit ${space.name}`}
+        title="Edit Space"
+        onClick={onEdit}
+        className="grid size-7 shrink-0 place-items-center rounded-md text-content/40 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.96]"
+      >
+        <Pencil className="size-3.5" strokeWidth={1.75} />
+      </button>
+    </div>
+  );
+}
+
+/** Frame 11: name and colour; Create hands the new Space to Edit Space. */
+export function NewSpaceDialog({
+  onCreated,
+  onCancel,
+}: {
+  onCreated: (space: Space) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState("");
+  // The next palette colour, so a new Space looks unlike the last one.
+  const [color, setColor] = useState<string>(
+    () => MONO_COLORS[spacesView().spaces.length % MONO_COLORS.length],
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy || !name.trim()) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const space = await createSpace(name.trim(), color);
+      await loadSpaces();
+      onCreated(space);
+    } catch (err) {
+      setError(String(err));
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      title="New Space"
+      description="A Space has its own logins, Gigas, Monos, projects and sessions."
+      size="sm"
+      onClose={() => {
+        if (!busy) onCancel();
+      }}
+    >
+      <form className="flex flex-col gap-4 p-4" onSubmit={submit}>
+        <label className="flex flex-col gap-1.5 text-[12px] text-content/70">
+          <span>Name</span>
+          <input
+            autoFocus
+            aria-label="Space name"
+            className={SPACE_NAME_FIELD}
+            value={name}
+            disabled={busy}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+        <div className="flex flex-col gap-1.5 text-[12px] text-content/70">
+          <span>Colour</span>
+          <ColorPicker current={color} onPick={setColor} />
+        </div>
+        <p className="text-[11px] leading-relaxed text-content/45">
+          Next you pick its Claude and Codex logins: Create opens Edit Space for
+          the new Space.
+        </p>
+        {error ? (
+          <p role="alert" className="text-[12px] text-red-400">
+            {error}
+          </p>
+        ) : null}
+        <DialogButtons
+          busy={busy}
+          submitLabel="Create Space"
+          disabled={!name.trim()}
+          onCancel={onCancel}
+        />
+      </form>
+    </Modal>
+  );
+}
+
+/** The name field of New Space and Edit Space (CreateWorktreeDialog's field). */
+export const SPACE_NAME_FIELD =
+  "h-9 rounded-md border border-content/10 bg-background-base px-2.5 text-[13px] text-content outline-none focus:border-content/25 disabled:opacity-50";
+
+/**
+ * Cancel and the submit button, as CreateWorktreeDialog draws them. With
+ * `onSubmit` the button acts on click, for a dialog that holds a form of its
+ * own (Edit Space's Add a login).
+ */
+export function DialogButtons({
+  busy,
+  submitLabel,
+  disabled,
+  onCancel,
+  onSubmit,
+}: {
+  busy: boolean;
+  submitLabel: string;
+  disabled: boolean;
+  onCancel: () => void;
+  onSubmit?: () => void;
+}) {
+  return (
+    <div className="flex justify-end gap-2">
+      <button
+        type="button"
+        disabled={busy}
+        onClick={onCancel}
+        className="rounded-md px-3 py-1.5 text-[12px] hover:bg-content/8 active:scale-[0.97]"
+      >
+        Cancel
+      </button>
+      <button
+        type={onSubmit ? "button" : "submit"}
+        onClick={onSubmit}
+        disabled={busy || disabled}
+        className="inline-flex items-center gap-1.5 rounded-md bg-content px-3 py-1.5 text-[12px] font-medium text-background-base disabled:opacity-40 active:scale-[0.97]"
+      >
+        {busy ? <Loader className="size-3.5 animate-spin" /> : null}
+        {submitLabel}
+      </button>
     </div>
   );
 }

@@ -236,23 +236,18 @@ import {
   identityKey,
   identityOrganizationTag,
   useProviderAccountIdentities,
+  type ProviderAccountIdentity,
 } from "../../providers/model/providerAccountIdentity";
 import { ProviderAccountSubtitle } from "../../providers/ui/ProviderAccountSubtitle";
-// ADE-181 adds the route-grant default (rebase onto it).
 import {
-  loadRouteGrantDefault,
-  ROUTE_GRANT_DEFAULT,
-  ROUTE_GRANT_DURATIONS,
   saveComposerAutocorrect,
   saveMaskEmails,
   saveRailMonosPinned,
-  saveRouteGrantDefault,
   saveShowRemainingUsage,
   useComposerAutocorrect,
   useMaskEmails,
   useRailMonosPinned,
   useShowRemainingUsage,
-  type RouteGrantDuration,
 } from "../model/displayPrefs";
 import {
   accountStatus,
@@ -374,6 +369,11 @@ import {
   searchSettings,
   settingsSectionDescription,
   settingsSectionLabel,
+  loadRouteGrantDefault,
+  ROUTE_GRANT_DEFAULT,
+  ROUTE_GRANT_DURATIONS,
+  saveRouteGrantDefault,
+  type RouteGrantDuration,
   COLLAPSED_PROJECT_RAIL_MODE_DEFAULT,
   type CollapsedProjectRailMode,
   type DiffViewer,
@@ -413,7 +413,29 @@ import {
 import { SkillsPage } from "../../skills/ui/SkillsPage";
 import { ProjectNotificationSettings } from "../../notifications/ui/ProjectNotificationSettings";
 import { WorktreesPage } from "../../source-control/ui/WorktreesPage";
-import { NewSpaceButton, SpacesList } from "../../spaces/ui/SpacesSettings";
+import {
+  DialogButtons,
+  NewSpaceButton,
+  NewSpaceDialog,
+  SPACE_NAME_FIELD,
+  spaceColor,
+  SpacesList,
+} from "../../spaces/ui/SpacesSettings";
+import { PROVIDER_NAME } from "../../spaces/ui/SpaceLogins";
+import {
+  loadSpaces,
+  spaceLoginId,
+  spacesView,
+} from "../../spaces/model/activeSpace";
+import {
+  setSpaceLogin,
+  SPACE_LOGIN_PROVIDERS,
+  updateSpace,
+  type Space,
+  type SpaceLoginProvider,
+} from "../../spaces/model/spaces";
+import { ColorPicker } from "../../monos/ui/monoPanelParts";
+import { Modal } from "../../../shared/ui/Modal";
 import {
   removeWorktree,
   type RemoveWorktree,
@@ -995,6 +1017,309 @@ function GeneralPage({
   );
 }
 
+/** Frames 3, 11 and 12: the Spaces, New Space, and Edit Space. */
+function SpacesGroup({
+  monoStates,
+  monoUnseenCounts,
+}: {
+  monoStates: ReadonlyMap<string, MonoState>;
+  monoUnseenCounts?: ReadonlyMap<string, number>;
+}) {
+  const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<Space | null>(null);
+  return (
+    <Group
+      id="spaces-list"
+      title="Spaces"
+      description="Each Space has its own logins, Gigas, Monos, projects and sessions. Every Space keeps running while you look at another one."
+      action={<NewSpaceButton onClick={() => setCreating(true)} />}
+    >
+      <SpacesList
+        states={monoStates}
+        unseenCounts={monoUnseenCounts}
+        onEdit={setEditing}
+      />
+      {creating ? (
+        <NewSpaceDialog
+          onCancel={() => setCreating(false)}
+          onCreated={(space) => {
+            setCreating(false);
+            setEditing(space);
+          }}
+        />
+      ) : null}
+      {editing ? (
+        <EditSpaceDialog
+          key={editing.id}
+          space={editing}
+          onClose={() => setEditing(null)}
+        />
+      ) : null}
+    </Group>
+  );
+}
+
+/** Login id per provider; "" when the Space has none. */
+type SpaceLoginChoices = Record<SpaceLoginProvider, string>;
+
+function savedSpaceLogins(spaceId: string): SpaceLoginChoices {
+  const { logins } = spacesView();
+  return {
+    claude: spaceLoginId(logins, spaceId, "claude") ?? "",
+    codex: spaceLoginId(logins, spaceId, "codex") ?? "",
+  };
+}
+
+/** Frame 12: rename, recolour and pick one login per provider. */
+function EditSpaceDialog({
+  space,
+  onClose,
+}: {
+  space: Space;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(space.name);
+  const [color, setColor] = useState(() => spaceColor(space));
+  const [saved] = useState(() => savedSpaceLogins(space.id));
+  const [logins, setLogins] = useState(saved);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const save = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await updateSpace(space.id, name.trim(), color);
+      for (const provider of SPACE_LOGIN_PROVIDERS) {
+        const accountId = logins[provider];
+        if (accountId && accountId !== saved[provider]) {
+          await setSpaceLogin({ spaceId: space.id, provider, accountId });
+        }
+      }
+      await loadSpaces();
+      onClose();
+    } catch (err) {
+      setError(String(err));
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      title="Edit Space"
+      size="md"
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+    >
+      <div className="flex flex-col gap-4 p-4">
+        <label className="flex flex-col gap-1.5 text-[12px] text-content/70">
+          <span>Name</span>
+          <input
+            aria-label="Space name"
+            className={SPACE_NAME_FIELD}
+            value={name}
+            disabled={busy}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+        <div className="flex flex-col gap-1.5 text-[12px] text-content/70">
+          <span>Colour</span>
+          <ColorPicker current={color} onPick={setColor} />
+        </div>
+        <div className="flex flex-col gap-1.5 text-[12px] text-content/70">
+          <span>Logins</span>
+          <span className="text-[11px] text-content/45">
+            One per provider. New sessions in {space.name} sign in with these.
+          </span>
+          <div className="overflow-hidden rounded-xl border border-content/10 bg-content/3">
+            {SPACE_LOGIN_PROVIDERS.map((provider) => (
+              <SpaceLoginRow
+                key={provider}
+                provider={provider}
+                value={logins[provider]}
+                saved={saved[provider]}
+                onChange={(accountId) =>
+                  setLogins((current) => ({ ...current, [provider]: accountId }))
+                }
+              />
+            ))}
+          </div>
+        </div>
+        {error ? (
+          <p role="alert" className="text-[12px] text-red-400">
+            {error}
+          </p>
+        ) : null}
+        <DialogButtons
+          busy={busy}
+          submitLabel="Save"
+          disabled={!name.trim()}
+          onCancel={onClose}
+          onSubmit={() => void save()}
+        />
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * The picker's choices: every login of `provider`, and "No <provider> login"
+ * only while the Space has none saved (no command clears a Space's login).
+ */
+function spaceLoginOptions(
+  provider: SpaceLoginProvider,
+  accounts: ProviderAccount[],
+  identities: Record<string, ProviderAccountIdentity | null>,
+  saved: string,
+): SelectOption[] {
+  const name = PROVIDER_NAME[provider];
+  const icon = <HarnessIcon harness={provider} className="size-3.5" />;
+  const options: SelectOption[] = accounts.map((account) => {
+    const identity = identities[identityKey(account)];
+    const email = identity?.email;
+    return {
+      value: account.id,
+      label: account.label,
+      description: [email, identity?.plan].filter(Boolean).join(" · "),
+      triggerLabel: email ? `${account.label} · ${email}` : account.label,
+      icon,
+    };
+  });
+  if (saved) return options;
+  return [
+    ...options,
+    {
+      value: "",
+      label: `No ${name} login`,
+      description: `Sessions in this Space cannot use ${name}`,
+      muted: true,
+      icon: (
+        <HarnessIcon
+          harness={provider}
+          className="size-3.5 opacity-35 grayscale"
+        />
+      ),
+    },
+  ];
+}
+
+function SpaceLoginRow({
+  provider,
+  value,
+  saved,
+  onChange,
+}: {
+  provider: SpaceLoginProvider;
+  value: string;
+  saved: string;
+  onChange: (accountId: string) => void;
+}) {
+  const [version, setVersion] = useState(0);
+  useEffect(
+    () => subscribeProviderAccounts(() => setVersion((count) => count + 1)),
+    [],
+  );
+  const accounts = providerAccounts(provider);
+  const identities = useProviderAccountIdentities(accounts, version);
+  const add = useAddSpaceLogin(provider, onChange);
+  const name = PROVIDER_NAME[provider];
+  return (
+    <div
+      data-space-login-row={provider}
+      className="border-b border-content/5 last:border-b-0"
+    >
+      <div className="flex items-center gap-3 px-3 py-2.5">
+        <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-content/[0.05] ring-1 ring-inset ring-content/[0.06]">
+          <HarnessIcon harness={provider} className="size-4" />
+        </span>
+        <span className="min-w-0 flex-1 text-[13px] font-medium text-content">
+          {name}
+        </span>
+        <Select
+          label={`${name} login`}
+          value={value}
+          options={spaceLoginOptions(provider, accounts, identities, saved)}
+          onChange={onChange}
+          wide
+        />
+        {add.editor ? null : (
+          <button
+            type="button"
+            onClick={add.start}
+            className="flex shrink-0 items-center gap-1.5 rounded-md border border-content/10 px-2.5 py-1 text-[12px] text-content/70 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.97]"
+          >
+            <Plus className="size-3.5" strokeWidth={1.75} aria-hidden />
+            Add a login
+          </button>
+        )}
+      </div>
+      {add.editor ? (
+        <div className="px-3 pb-3 pl-13">
+          <div className="overflow-hidden rounded-lg border border-content/10">
+            <ProviderAccountEditor
+              editor={add.editor}
+              working={add.working}
+              onLabel={add.setLabel}
+              onCancel={add.cancel}
+              onSubmit={add.submit}
+            />
+          </div>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-content/45">
+            Same sign-in as Settings › Providers › Add account. When it
+            finishes, the new login is saved there and picked here for this
+            Space.
+          </p>
+          {add.error ? (
+            <p role="alert" className="mt-1 text-[11px] text-red-400">
+              {add.error}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Settings › Providers' Add account, then picks the new login for the Space. */
+function useAddSpaceLogin(
+  provider: SpaceLoginProvider,
+  onAdded: (accountId: string) => void,
+) {
+  const [editor, setEditor] = useState<AccountEditor | null>(null);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState<string>();
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!editor || !editor.label.trim() || working) return;
+    setWorking(true);
+    setError(undefined);
+    try {
+      const account = newProviderAccount(provider, editor.label);
+      await loginHarness(provider, account.id);
+      saveProviderAccount(account);
+      onAdded(account.id);
+      setEditor(null);
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Could not add this login",
+      );
+    } finally {
+      setWorking(false);
+    }
+  };
+  return {
+    editor,
+    working,
+    error,
+    start: () => setEditor({ provider, label: "" }),
+    cancel: () => setEditor(null),
+    setLabel: (label: string) =>
+      setEditor((current) => (current ? { ...current, label } : current)),
+    submit: (event: FormEvent<HTMLFormElement>) => void submit(event),
+  };
+}
+
 const ROUTE_GRANT_DURATION_LABEL: Record<RouteGrantDuration, string> = {
   1: "1 hour",
   3: "3 hours",
@@ -1025,14 +1350,10 @@ function SpacesPage({
 
   return (
     <>
-      <Group
-        id="spaces-list"
-        title="Spaces"
-        description="Each Space has its own logins, Gigas, Monos, projects and sessions. Every Space keeps running while you look at another one."
-        action={<NewSpaceButton />}
-      >
-        <SpacesList states={monoStates} unseenCounts={monoUnseenCounts} />
-      </Group>
+      <SpacesGroup
+        monoStates={monoStates}
+        monoUnseenCounts={monoUnseenCounts}
+      />
       <Group title="When a login runs out">
         <Row
           id="route-grant-default"
@@ -4598,18 +4919,35 @@ function Toggle({
 }
 
 /** Theme-aware dropdown for a Settings row: a trigger button opening a Popover listbox. Used instead of a native select, whose option popup is OS-rendered and unreadable in dark mode on Windows/Linux. */
+type SelectOption = {
+  value: string;
+  label: string;
+  icon?: ReactNode;
+  /** Muted text after the label, e.g. "default". */
+  hint?: string;
+  /** A second, muted line under the label in the menu. */
+  description?: string;
+  /** What the closed control shows, when it differs from the label. */
+  triggerLabel?: string;
+  /** The closed control shows this choice muted ("No Codex login"). */
+  muted?: boolean;
+};
+
 function Select({
   label,
   value,
   options,
   onChange,
   onOpen,
+  wide,
 }: {
   label: string;
   value: string;
-  options: { value: string; label: string; icon?: ReactNode; hint?: string }[];
+  options: SelectOption[];
   onChange: (value: string) => void;
   onOpen?: () => void;
+  /** Room for a login's name and email (Edit Space). */
+  wide?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(() =>
@@ -4688,7 +5026,7 @@ function Select({
   };
 
   return (
-    <div ref={root} className="relative max-w-52">
+    <div ref={root} className={`relative ${wide ? "w-64" : "max-w-52"}`}>
       <button
         type="button"
         ref={trigger}
@@ -4704,8 +5042,10 @@ function Select({
               {selected.icon}
             </span>
           ) : null}
-          <span className="min-w-0 truncate">
-            {selected ? selected.label : value}
+          <span
+            className={`min-w-0 truncate ${selected?.muted ? "text-content/45" : ""}`}
+          >
+            {selected?.triggerLabel ?? selected?.label ?? value}
           </span>
         </span>
         <ChevronDown
@@ -4758,7 +5098,14 @@ function Select({
                     {option.icon}
                   </span>
                 ) : null}
-                <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{option.label}</span>
+                  {option.description ? (
+                    <span className="block truncate text-[11px] text-content/45">
+                      {option.description}
+                    </span>
+                  ) : null}
+                </span>
                 {option.hint ? (
                   <span className="shrink-0 text-[11px] text-content/35">
                     {option.hint}

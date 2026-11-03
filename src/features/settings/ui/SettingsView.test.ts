@@ -7,6 +7,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { SettingsView } from "./SettingsView";
 import { rememberNotificationProjects } from "../../notifications/model/notificationProjects";
 import {
+  loadRouteGrantDefault,
   SETTINGS_INDEX,
   SETTINGS_SECTIONS,
   type SettingsSectionId,
@@ -23,11 +24,7 @@ import {
   HARNESSES,
   HARNESS_TITLE,
 } from "../../sessions/model/session";
-import {
-  loadRouteGrantDefault,
-  saveMaskEmails,
-  saveShowRemainingUsage,
-} from "../model/displayPrefs";
+import { saveMaskEmails, saveShowRemainingUsage } from "../model/displayPrefs";
 import {
   createMono,
   findMono,
