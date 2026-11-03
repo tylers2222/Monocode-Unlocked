@@ -211,8 +211,9 @@ jobs:
         if: runner.os != 'macOS'
       - run: npx tsc --noEmit
         if: runner.os == 'Linux'
+      # Its own job before, so a red npm test or tsc must not hide its result.
       - run: node --test scripts/release-channel.test.cjs
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
       - run: cargo fmt --check
       # On a pull request gate/lint runs this same clippy on ubuntu, so this leg skips
       # it. A tyler/main push still runs it, to save it in the cache gate/lint restores.
@@ -435,10 +436,11 @@ jobs:
 
   # Pull requests skip the Windows, host macOS and packaging legs, so a break there
   # first shows on tyler/main. One open issue tracks it; the next green run closes it.
+  # A cancelled run says nothing about the code, so it leaves the issue as it is.
   main-red:
     name: Report tyler/main CI red
     needs: ci
-    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/tyler/main' }}
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/tyler/main' }}
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -460,7 +462,9 @@ jobs:
           } > body.md
           # REST, not `gh issue`: GraphQL createIssue rejects GITHUB_TOKEN (fork-sync.yml).
           issues="repos/$GITHUB_REPOSITORY/issues"
-          number=$(gh api "$issues?state=open&per_page=100" --jq "map(select(.title == \"$TITLE\" and (has(\"pull_request\") | not)))[0].number // empty")
+          # --paginate: the repo has more than 100 open issues and PRs.
+          numbers=$(gh api --paginate "$issues?state=open&per_page=100" --jq ".[] | select(.title == \"$TITLE\" and (has(\"pull_request\") | not)) | .number")
+          number=$(sed -n 1p <<<"$numbers")
           if [ -n "$number" ]; then
             gh api "$issues/$number/comments" -F body=@body.md --jq .html_url
           else
@@ -472,7 +476,7 @@ jobs:
         run: |
           set -euo pipefail
           issues="repos/$GITHUB_REPOSITORY/issues"
-          for number in $(gh api "$issues?state=open&per_page=100" --jq "map(select(.title == \"$TITLE\" and (has(\"pull_request\") | not)))[].number"); do
+          for number in $(gh api --paginate "$issues?state=open&per_page=100" --jq ".[] | select(.title == \"$TITLE\" and (has(\"pull_request\") | not)) | .number"); do
             gh api "$issues/$number/comments" -f body="Fixed: CI is green on \`$GITHUB_SHA\` in $RUN_URL" --jq .html_url
             gh api -X PATCH "$issues/$number" -f state=closed --jq .state
           done
