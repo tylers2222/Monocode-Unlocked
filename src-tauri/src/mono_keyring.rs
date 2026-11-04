@@ -182,6 +182,17 @@ pub(crate) fn write_keyring(service: &str, key: &str, value: &str) -> Result<(),
         .map_err(|_| "Could not share Codex credentials with Mono storage".into())
 }
 
+/// Deletes the home's own entry. A missing one is already gone.
+fn delete_private(service: &str, private_key: &str) -> Result<(), String> {
+    if let Ok(entry) = keyring::Entry::new(service, private_key) {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(_) => return Err("Could not clear the previous Mono Codex login".into()),
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringMirror>, String> {
     // The default file store shares auth.json directly, with no Keychain prompt.
     let store = credentials_store(source);
@@ -194,6 +205,8 @@ pub(crate) fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringM
     }
     // Codex's "auto" store reads auth.json, shared already, when the keyring
     // cannot be read; "keyring" and an encrypted secret's key have no fallback.
+    // Codex in the Mono reads the home's own entry first, so the copy an
+    // earlier spawn left there goes, or it wins over auth.json.
     let fallback = !encrypted && store.as_deref() == Some("auto");
     let source_hash = home_key(source)?;
     let private_hash = home_key(home)?;
@@ -203,7 +216,10 @@ pub(crate) fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringM
         let private_key = format!("{prefix}|{private_hash}{suffix}");
         let value = match read_keyring(service, &source_key) {
             Ok(value) => value,
-            Err(_) if fallback => continue,
+            Err(_) if fallback => {
+                delete_private(service, &private_key)?;
+                continue;
+            }
             Err(error) => return Err(error),
         };
         let value = if service == "Codex Auth" {
@@ -220,11 +236,8 @@ pub(crate) fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringM
         };
         if let Some(value) = &value {
             write_keyring(service, &private_key, value)?;
-        } else if let Ok(entry) = keyring::Entry::new(service, &private_key) {
-            match entry.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => {}
-                Err(_) => return Err("Could not clear the previous Mono Codex login".into()),
-            }
+        } else {
+            delete_private(service, &private_key)?;
         }
         mirrors.push(KeyringMirror {
             service,
@@ -596,5 +609,22 @@ mod tests {
             let expected = if readable { Ok(2) } else { Err(()) };
             assert_eq!(prepared.map_err(drop), expected, "{store} sealed={sealed}");
         }
+    }
+
+    /// Defect (#522 r1 M1): an "auto" login whose `Codex Auth` entry the
+    /// keyring cannot read kept the copy an earlier spawn left in the home.
+    /// Codex in the Mono reads that before auth.json, so the Mono ran on an
+    /// old login: maybe another account, or a refresh token already used.
+    #[test]
+    fn an_auto_read_error_clears_the_homes_stale_copy() {
+        let login = Login::new(false);
+        let (source, home) = configured(&login, Some("auto"));
+        write_keyring("Codex Auth", &login.auth_key(true), "stale-login").unwrap();
+        keyring::Entry::new("Codex Auth", &login.auth_key(false))
+            .and_then(|e| e.set_secret(&[0xff, 0xfe]))
+            .unwrap();
+        let prepared = prepare_keyring(&source, &home).map(|m| m.len());
+        let private = read_keyring("Codex Auth", &login.auth_key(true));
+        assert_eq!((prepared, private), (Ok(2), Ok(None)));
     }
 }
