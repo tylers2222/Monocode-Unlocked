@@ -21,15 +21,17 @@
 //! A sync runs on every `turn/completed`, `item/started` and `account/updated`
 //! line of a child, and at its exit (`harness.rs`). Codex refreshes a token
 //! before each model request, so inside a turn, but also outside one (a rate
-//! limit read, MCP or connector setup, a session start), and no line follows
-//! that. So a live home also syncs every `TICK` on its own timer (ADE-243),
-//! and an app quit syncs each live home before and after it kills the
-//! children (`kill_synced`).
+//! limit read, the model list an idle app-server fetches every 4 min 30 s, MCP
+//! or connector setup), and no line follows that. A refresh rewrites only
+//! `Codex Auth`, never the two passphrase entries. So while a home is live, a
+//! timer reads its `Codex Auth` entry every `TIMER.every` (ADE-243), and an app
+//! quit reads it once more after it kills the children (`kill_synced`); both
+//! read only an entry MonoCode wrote, so neither prompts.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, TryLockError};
+use std::time::{Duration, Instant};
 
 use crate::codex_mono_store::home_key;
 
@@ -37,14 +39,29 @@ use crate::codex_mono_store::home_key;
 /// keyring call.
 static HOMES: Mutex<BTreeMap<PathBuf, Arc<Home>>> = Mutex::new(BTreeMap::new());
 
-/// How often a live home's timer syncs it. Codex refreshes a token at its
-/// next `auth()` in the 5 minutes before expiry, the same 5 minutes in the
-/// Mono and in the login's own Codex (the CLI, an IDE, the usage probe), and
-/// an idle app-server lists models every 4 min 30 s. So each side refreshes
-/// at a random moment in the window, and the login's side spends the revoked
-/// refresh token when it refreshes within a tick after the Mono: about
-/// TICK / 270 s, 0.7% at 2 s. An idle tick is 3 reads of the home.
-const TICK: Duration = Duration::from_secs(2);
+/// A live home's timer: how often it reads the home's `Codex Auth`, and how
+/// long a read may take before the timer takes it for a prompt and stops.
+#[derive(Clone, Copy)]
+struct Timer {
+    every: Duration,
+    slow: Duration,
+}
+
+/// Codex refreshes a token at its next `auth()` in the 5 minutes before
+/// expiry, the same 5 minutes in the Mono and in the login's own Codex (the
+/// CLI, an IDE, the usage probe), and an idle app-server calls it every
+/// 4 min 30 s. When the Mono refreshes first, the login's side spends the
+/// revoked refresh token if it refreshes before the copy: within a tick, about
+/// `every` / 270 s, 0.7% at 2 s. When the login's side refreshes first, the
+/// live Mono spends it whatever the tick (module doc, "Left"). An idle tick
+/// reads 1 home entry, which MonoCode wrote.
+const TIMER: Timer = Timer {
+    every: Duration::from_secs(2),
+    slow: Duration::from_secs(1),
+};
+
+/// How long an app quit waits for the homes' last sync, in all.
+const QUIT_BUDGET: Duration = Duration::from_secs(2);
 
 /// One home's mirror. Its lock is held across the keyring calls of a spawn's
 /// preparation and of the children's syncs (stdout, timer and exit), so those
@@ -65,6 +82,12 @@ struct State {
     /// Moves when the last store drops, which stops the timer started with
     /// the old value: one timer per home, even across a quick drop and spawn.
     timer: u64,
+    /// A timer read failed or was slow (a prompt), so the timer skips the
+    /// home until a line or exit sync succeeds.
+    paused: bool,
+    /// A quit synced the home after its children were killed, and nothing
+    /// spawned on it since: a second reap of the same quit skips it.
+    reaped: bool,
     /// The last sync failed, so the private entries may be newer than the login.
     unsynced: bool,
     /// The login the home mirrors.
@@ -88,20 +111,36 @@ impl Home {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Syncs the home every `every` while `timer` is its timer. The lock is
-    /// let go while it waits.
-    fn tick(&self, home: &Path, timer: u64, every: Duration) {
-        let mut state = self.lock();
+    /// Reads the home's `Codex Auth` every `every` while `timer` is its
+    /// timer, with no lock held across the read: a slow one (a prompt) never
+    /// stalls the lines' syncs. The lock is taken after it, to compare.
+    /// The check before each wait holds the lock until the wait lets it go,
+    /// so a drop's wake is never missed; a spurious wake is one more read.
+    fn tick(&self, home: &Path, timer: u64, every: Timer) {
         loop {
-            state = self
+            let state = self.lock();
+            if state.timer != timer {
+                return;
+            }
+            let state = self
                 .stopped
-                .wait_timeout_while(state, every, |state| state.timer == timer)
+                .wait_timeout(state, every.every)
                 .unwrap_or_else(|e| e.into_inner())
                 .0;
             if state.timer != timer {
                 return;
             }
-            state.sync_logged(home);
+            let key = state.auth_key().filter(|_| !state.paused);
+            drop(state);
+            if let Some(key) = key {
+                let started = Instant::now();
+                let read = read_keyring("Codex Auth", &key);
+                let slow = started.elapsed() >= every.slow;
+                let mut state = self.lock();
+                if state.timer == timer {
+                    state.take_auth(home, &key, read, slow);
+                }
+            }
         }
     }
 }
@@ -111,11 +150,12 @@ impl Home {
 /// it, as those entries are the live children's newest, and so does one on a
 /// home whose last sync failed.
 pub(crate) fn share(source: &Path, home: PathBuf) -> Result<Share, String> {
-    share_every(source, home, TICK)
+    share_every(source, home, TIMER)
 }
 
-/// `share`, whose first store starts the home's timer, every `every`.
-fn share_every(source: &Path, home: PathBuf, every: Duration) -> Result<Share, String> {
+/// `share`, whose first store starts the home's timer when it has a
+/// `Codex Auth` entry MonoCode wrote.
+fn share_every(source: &Path, home: PathBuf, every: Timer) -> Result<Share, String> {
     let mirror = Home::of(&home);
     let mut state = mirror.lock();
     if state.live == 0 && !state.unsynced {
@@ -125,7 +165,8 @@ fn share_every(source: &Path, home: PathBuf, every: Duration) -> Result<Share, S
         state.source = source.to_owned();
     }
     state.live += 1;
-    let timer = (state.live == 1).then_some(state.timer);
+    state.reaped = false;
+    let timer = (state.live == 1 && state.auth_key().is_some()).then_some(state.timer);
     drop(state);
     if let Some(timer) = timer {
         let (ticking, path) = (Arc::clone(&mirror), home.clone());
@@ -163,49 +204,146 @@ impl Drop for Share {
     }
 }
 
-/// Syncs every live home, runs `kill` (the app's quit kills the children),
-/// then syncs them again. The first copies a refresh since the last sync while
-/// the app surely still runs; the second, one a child wrote as it died, which
-/// its exit sync would race the app's own exit for.
+/// Runs `kill` (the app's quit kills the children), then reads each live
+/// home's `Codex Auth` once, as a tick does, for a refresh a child wrote since
+/// its last sync or as it died: its exit sync races the app's own exit. The
+/// kill never waits on the keyring. The sync runs on a worker, and the quit
+/// waits for it `QUIT_BUDGET` at most: a home whose lock stays busy (a sync
+/// at a prompt) is skipped, and so is a read past the budget.
 pub(crate) fn kill_synced(kill: impl FnOnce()) {
-    sync_live_homes();
     kill();
-    sync_live_homes();
+    let deadline = Instant::now() + QUIT_BUDGET;
+    let homes = live_homes();
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
+    let homes = tests::mine(homes);
+    let (done, finished) = mpsc::channel();
+    let worker = std::thread::Builder::new()
+        .name("mono-keyring-quit".into())
+        .spawn(move || {
+            reap(homes, deadline);
+            let _ = done.send(());
+        });
+    let waited = match worker {
+        Ok(_) => finished.recv_timeout(deadline.saturating_duration_since(Instant::now())),
+        Err(_) => Err(mpsc::RecvTimeoutError::Disconnected),
+    };
+    if waited.is_err() {
+        eprintln!("Could not copy every Mono Codex login back before the quit");
+    }
 }
 
-/// Never holds `HOMES` across a home's lock or a keyring call. A home with no
-/// live store has no child left to write it, and its exit syncs ran.
-fn sync_live_homes() {
-    let homes: Vec<(PathBuf, Arc<Home>)> = HOMES
+/// Every home. Never holds `HOMES` across a home's lock.
+fn live_homes() -> Vec<(PathBuf, Arc<Home>)> {
+    HOMES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
         .map(|(home, mirror)| (home.clone(), Arc::clone(mirror)))
-        .collect();
-    for (home, mirror) in homes {
-        #[cfg(test)]
-        #[cfg(target_os = "linux")]
-        if !tests::mine(&home) {
-            continue;
+        .collect()
+}
+
+/// Syncs each live home's `Codex Auth`, skipping a busy home until it is free
+/// or `deadline` passes, so one busy home never holds up the others. A home
+/// with no live store has no child left to write it, and its exit syncs ran;
+/// a reaped one was synced by this quit already.
+fn reap(mut homes: Vec<(PathBuf, Arc<Home>)>, deadline: Instant) {
+    loop {
+        homes.retain(|(home, mirror)| {
+            let mut state = match mirror.state.try_lock() {
+                Ok(state) => state,
+                Err(TryLockError::Poisoned(e)) => e.into_inner(),
+                Err(TryLockError::WouldBlock) => return true,
+            };
+            if state.live > 0 && !state.reaped {
+                if let Some(key) = state.auth_key().filter(|_| !state.paused) {
+                    let read = read_keyring("Codex Auth", &key);
+                    state.take_auth(home, &key, read, false);
+                }
+                state.reaped = true;
+            }
+            false
+        });
+        if homes.is_empty() || Instant::now() >= deadline {
+            break;
         }
-        let mut state = mirror.lock();
-        if state.live > 0 {
-            state.sync_logged(&home);
-        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    for (home, _) in homes {
+        eprintln!(
+            "Could not copy the Mono Codex login back from {} before the quit: busy",
+            home.display()
+        );
     }
 }
 
 impl State {
-    /// `sync`, with a failure logged and kept in `unsynced`.
+    /// `sync`, with a failure logged once a streak and kept in `unsynced`. A
+    /// success resumes a paused timer.
     fn sync_logged(&mut self, home: &Path) {
-        let synced = self.sync(home);
-        if let Err(error) = &synced {
+        match self.sync(home) {
+            Ok(()) => {
+                self.unsynced = false;
+                self.paused = false;
+            }
+            Err(error) => self.failed(home, &error),
+        }
+    }
+
+    fn failed(&mut self, home: &Path, error: &str) {
+        if !self.unsynced {
             eprintln!(
                 "Could not copy the Mono Codex login back from {}: {error}",
                 home.display()
             );
         }
-        self.unsynced = synced.is_err();
+        self.unsynced = true;
+    }
+
+    /// The home's `Codex Auth` key, when MonoCode wrote that entry at prepare:
+    /// one Codex created, it may prompt for, so only the lines read it.
+    fn auth_key(&self) -> Option<String> {
+        self.mirrors
+            .iter()
+            .find(|mirror| mirror.owned && mirror.service == "Codex Auth")
+            .map(|mirror| mirror.private_key.clone())
+    }
+
+    /// Acts on a timer's `read` of `key`: copies a changed entry, as a sync
+    /// does, or pauses the timer after a failed or `slow` read, or a failed
+    /// copy, which is also unsynced. A copy never clears `unsynced`: the
+    /// passphrase entries are the lines' to sync.
+    fn take_auth(
+        &mut self,
+        home: &Path,
+        key: &str,
+        read: Result<Option<String>, String>,
+        slow: bool,
+    ) {
+        let Some(mirror) = self.mirrors.iter_mut().find(|m| m.private_key == key) else {
+            return;
+        };
+        let paused = match read {
+            Ok(value) if !slow => {
+                if value == mirror.private_value {
+                    return;
+                }
+                let Err(error) = mirror.sync() else {
+                    return;
+                };
+                self.failed(home, &error);
+                error
+            }
+            Ok(_) => "a read took a second or more".to_owned(),
+            Err(error) => error,
+        };
+        if !self.paused {
+            eprintln!(
+                "Paused the Mono Codex login timer for {}: {paused}",
+                home.display()
+            );
+        }
+        self.paused = true;
     }
 
     fn sync(&mut self, home: &Path) -> Result<(), String> {
@@ -238,6 +376,9 @@ pub(crate) struct KeyringMirror {
     pub(crate) source_value: Option<String>,
     /// The home's value the last sync acted on. Never logged either.
     pub(crate) private_value: Option<String>,
+    /// MonoCode wrote the home's entry at prepare, so reading it never
+    /// prompts. One Codex created (the login had none) may.
+    pub(crate) owned: bool,
 }
 
 /// The home's mirror entries, each with the login's value now as its baseline.
@@ -252,6 +393,7 @@ fn login_mirrors(source: &Path, home: &Path) -> Result<Vec<KeyringMirror>, Strin
             let source_value = read_keyring(service, &source_key)?;
             Ok(KeyringMirror {
                 service,
+                owned: false,
                 private_value: source_value.clone(),
                 source_value,
                 source_key,
@@ -363,6 +505,7 @@ pub(crate) fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringM
             service,
             source_key,
             private_key,
+            owned: value.is_some(),
             private_value: value.clone(),
             source_value: value,
         });
