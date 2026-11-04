@@ -181,6 +181,9 @@ fn share_every(source: &Path, home: PathBuf, every: Timer) -> Result<Share, Stri
     let timer = (state.live == 1 && state.auth_key().is_some()).then_some(state.timer);
     drop(state);
     if let Some(timer) = timer {
+        #[cfg(test)]
+        #[cfg(target_os = "linux")]
+        tests::starting(&home);
         let (ticking, path) = (Arc::clone(&mirror), home.clone());
         let started = std::thread::Builder::new()
             .name("mono-keyring-sync".into())
@@ -306,10 +309,10 @@ impl State {
 
     fn failed(&mut self, home: &Path, error: &str) {
         if !self.unsynced {
-            eprintln!(
+            warn(format!(
                 "Could not copy the Mono Codex login back from {}: {error}",
                 home.display()
-            );
+            ));
         }
         self.unsynced = true;
     }
@@ -348,10 +351,10 @@ impl State {
             Ok(value) => value,
             Err(error) => {
                 if !self.paused {
-                    eprintln!(
+                    warn(format!(
                         "Paused the Mono Codex login timer for {}: {error}",
                         home.display()
-                    );
+                    ));
                 }
                 self.paused = true;
                 return;
@@ -381,6 +384,14 @@ impl State {
         }
         synced
     }
+}
+
+/// Logs a sync problem once a streak. Never logs a credential.
+fn warn(message: String) {
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
+    tests::count_warning(&message);
+    eprintln!("{message}");
 }
 
 /// The keyring entries a Mono home mirrors from its login: service, key prefix
