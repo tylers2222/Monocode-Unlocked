@@ -11,10 +11,14 @@
 //! Left: a login changed outside the app (`codex login`) while a Mono on that
 //! home is live. The live Mono keeps its own entries, and no sync copies them
 //! over the new login, which wins from the next spawn on the idle home.
+//!
+//! A sync reads only the home's own entries until a child writes one (ADE-241):
+//! the login's entries are the ones Codex wrote, which macOS may prompt for.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use crate::codex_mono_store::home_key;
 
@@ -39,7 +43,19 @@ struct State {
     /// The login the home mirrors.
     source: PathBuf,
     mirrors: Vec<KeyringMirror>,
+    /// When the last sync ran, which spaces out the `item/started` ones.
+    synced_at: Option<Instant>,
+    /// An `item/started` sync waits for `ITEM_SYNC_GAP` to end.
+    deferred: bool,
 }
+
+/// The least time between a home's syncs that an `item/started` line starts.
+/// Codex refreshes a token just before a model request, inside a turn, and no
+/// line says so; the next `item/started` is the first line after it. The
+/// login's own Codex refreshes in the same last 5 minutes of that token's life
+/// and takes a synced token instead of spending the used refresh token, so
+/// the copy must reach the login well inside those 5 minutes: 10 s is 1/30.
+const ITEM_SYNC_GAP: Duration = Duration::from_secs(10);
 
 /// One live store's share of its home's mirror.
 pub(crate) struct Share {
@@ -77,19 +93,43 @@ pub(crate) fn share(source: &Path, home: PathBuf) -> Result<Share, String> {
 }
 
 impl Share {
-    /// Copies what the home's children wrote to the login, unless the login
-    /// changed on its own since the last sync. A failure is logged, and keeps
-    /// the home joined, not prepared again, until a sync succeeds.
     pub(crate) fn sync(&self) {
-        let mut state = self.mirror.lock();
-        let synced = state.sync(&self.home);
-        if let Err(error) = &synced {
-            eprintln!(
-                "Could not copy the Mono Codex login back from {}: {error}",
-                self.home.display()
-            );
+        self.mirror.lock().sync_logged(&self.home);
+    }
+
+    /// Syncs after a line of the child's Codex app-server output that may
+    /// follow a write: at once after a turn or an account change, and at most
+    /// once per `ITEM_SYNC_GAP` after an item starts. An `item/started` inside
+    /// the gap defers one sync to its end, so a refresh just after a sync does
+    /// not wait for a long command to finish.
+    pub(crate) fn sync_after(&self, line: &str) {
+        if line.contains("\"turn/completed\"") || line.contains("\"account/updated\"") {
+            self.sync();
+        } else if line.contains("\"item/started\"") {
+            self.sync_spaced();
         }
-        state.unsynced = synced.is_err();
+    }
+
+    fn sync_spaced(&self) {
+        let mut state = self.mirror.lock();
+        let wait = state.synced_at.map_or(Duration::ZERO, |at| {
+            ITEM_SYNC_GAP.saturating_sub(at.elapsed())
+        });
+        if wait.is_zero() {
+            state.sync_logged(&self.home);
+            return;
+        }
+        if state.deferred {
+            return;
+        }
+        state.deferred = true;
+        let (home, mirror) = (self.home.clone(), Arc::clone(&self.mirror));
+        std::thread::spawn(move || {
+            std::thread::sleep(wait);
+            let mut state = mirror.lock();
+            state.deferred = false;
+            state.sync_logged(&home);
+        });
     }
 }
 
@@ -100,6 +140,21 @@ impl Drop for Share {
 }
 
 impl State {
+    /// Copies what the home's children wrote to the login, unless the login
+    /// changed on its own since the last sync. A failure is logged, and keeps
+    /// the home joined, not prepared again, until a sync succeeds.
+    fn sync_logged(&mut self, home: &Path) {
+        let synced = self.sync(home);
+        if let Err(error) = &synced {
+            eprintln!(
+                "Could not copy the Mono Codex login back from {}: {error}",
+                home.display()
+            );
+        }
+        self.unsynced = synced.is_err();
+        self.synced_at = Some(Instant::now());
+    }
+
     fn sync(&mut self, home: &Path) -> Result<(), String> {
         if self.mirrors.is_empty() && has_secrets(&self.source) {
             self.mirrors = login_mirrors(&self.source, home)?;
@@ -128,18 +183,24 @@ pub(crate) struct KeyringMirror {
     pub(crate) private_key: String,
     // Never serialize or log credential contents.
     pub(crate) source_value: Option<String>,
+    /// The home's value the last sync acted on. Never logged either.
+    pub(crate) private_value: Option<String>,
 }
 
 /// The home's mirror entries, each with the login's value now as its baseline.
+/// A home value equal to it has nothing to copy, as a sync of an equal pair
+/// only keeps the baseline.
 fn login_mirrors(source: &Path, home: &Path) -> Result<Vec<KeyringMirror>, String> {
     let (source_hash, private_hash) = (home_key(source)?, home_key(home)?);
     MIRRORED
         .into_iter()
         .map(|(service, prefix, suffix)| {
             let source_key = format!("{prefix}|{source_hash}{suffix}");
+            let source_value = read_keyring(service, &source_key)?;
             Ok(KeyringMirror {
                 service,
-                source_value: read_keyring(service, &source_key)?,
+                private_value: source_value.clone(),
+                source_value,
                 source_key,
                 private_key: format!("{prefix}|{private_hash}{suffix}"),
             })
@@ -148,25 +209,31 @@ fn login_mirrors(source: &Path, home: &Path) -> Result<Vec<KeyringMirror>, Strin
 }
 
 impl KeyringMirror {
+    /// Reads the home's entry, and the login's only when the home's changed
+    /// since the last sync acted on it: until then no child wrote it, and a
+    /// login changed on its own is never copied over.
     fn sync(&mut self) -> Result<(), String> {
-        let source = read_keyring(self.service, &self.source_key)?;
         let private = read_keyring(self.service, &self.private_key)?;
+        if private == self.private_value {
+            return Ok(());
+        }
+        let source = read_keyring(self.service, &self.source_key)?;
         if private == source {
             self.source_value = source;
-            return Ok(());
+        } else if source == self.source_value || newer_same_account(&private, &source) {
+            if let Some(value) = &private {
+                write_keyring(self.service, &self.source_key, value)?;
+                self.source_value = private.clone();
+            }
         }
-        if source != self.source_value && !newer_same_account(&private, &source) {
-            return Ok(());
-        }
-        if let Some(value) = private {
-            write_keyring(self.service, &self.source_key, &value)?;
-            self.source_value = Some(value);
-        }
+        self.private_value = private;
         Ok(())
     }
 }
 
 pub(crate) fn read_keyring(service: &str, key: &str) -> Result<Option<String>, String> {
+    #[cfg(all(test, target_os = "linux"))]
+    tests::count_read(key);
     let entry =
         keyring::Entry::new(service, key).map_err(|_| "Could not access Codex credentials")?;
     match entry.get_password() {
@@ -243,6 +310,7 @@ pub(crate) fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringM
             service,
             source_key,
             private_key,
+            private_value: value.clone(),
             source_value: value,
         });
     }
@@ -301,8 +369,8 @@ pub(crate) fn newer_same_account(private: &Option<String>, source: &Option<Strin
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod tests {
+    use std::cell::RefCell;
     use std::sync::mpsc;
-    use std::time::Duration;
 
     use super::*;
 
@@ -356,6 +424,15 @@ mod tests {
         fn read(&self, suffix: &str) -> [Option<String>; 2] {
             [false, true].map(|private| read_keyring("codex", &self.key(private, suffix)).unwrap())
         }
+
+        /// The home's 3 entries, in the order a sync reads them.
+        fn home_keys(&self) -> Vec<String> {
+            vec![
+                self.auth_key(true),
+                self.key(true, ""),
+                self.key(true, GATEWAY),
+            ]
+        }
     }
 
     impl Drop for Login {
@@ -389,6 +466,93 @@ mod tests {
 
     fn both(value: &str) -> [Option<String>; 2] {
         [Some(value.to_owned()), Some(value.to_owned())]
+    }
+
+    thread_local! {
+        /// The keys this thread read while `reads` records them.
+        static READS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn count_read(key: &str) {
+        READS.with(|reads| {
+            if let Some(reads) = reads.borrow_mut().as_mut() {
+                reads.push(key.to_owned());
+            }
+        });
+    }
+
+    /// The keyring keys `run` reads on this thread, in order.
+    fn reads(run: impl FnOnce()) -> Vec<String> {
+        READS.with(|reads| *reads.borrow_mut() = Some(Vec::new()));
+        run();
+        READS.with(|reads| reads.borrow_mut().take().unwrap_or_default())
+    }
+
+    /// Defect (ADE-241): every sync read the login's 3 entries and the home's
+    /// 3, though only a child's write changes anything; macOS may prompt for
+    /// each read of a login entry Codex wrote. Or the sync skips the home's
+    /// changed entry, and a child's refresh never reaches the login.
+    #[test]
+    fn a_sync_reads_the_login_only_after_a_child_wrote() {
+        let login = Login::new(true);
+        login.write(false, GATEWAY, "token-1");
+        let a = login.share();
+        let idle = reads(|| a.sync());
+        login.write(true, GATEWAY, "token-2");
+        let written = reads(|| a.sync());
+        let after = reads(|| a.sync());
+        let mut expected = login.home_keys();
+        expected.push(login.key(false, GATEWAY));
+        assert_eq!(
+            (idle, written, after, login.read(GATEWAY)),
+            (
+                login.home_keys(),
+                expected,
+                login.home_keys(),
+                both("token-2")
+            )
+        );
+        drop(a);
+    }
+
+    /// Defect (ADE-241): every `item/started` line synced, many a turn; or a
+    /// refresh Codex made just after a sync waited for the turn to end, past
+    /// the login's own refresh. A turn's end or an account change syncs at once.
+    #[test]
+    fn an_item_start_syncs_once_per_gap_and_defers_one_to_its_end() {
+        let login = Login::new(true);
+        login.write(false, GATEWAY, "token-1");
+        let a = login.share();
+        let line =
+            |method: &str| format!(r#"{{"jsonrpc":"2.0","method":"{method}","params":{{}}}}"#);
+        let first = reads(|| a.sync_after(&line("item/started")));
+        let other = reads(|| a.sync_after(&line("item/completed")));
+        let turn = reads(|| a.sync_after(&line("turn/completed")));
+        let account = reads(|| a.sync_after(&line("account/updated")));
+        // A refresh just after a sync, with 2 s of the gap left.
+        login.write(true, GATEWAY, "token-2");
+        a.mirror.lock().synced_at =
+            Instant::now().checked_sub(ITEM_SYNC_GAP - Duration::from_secs(2));
+        let inside = reads(|| a.sync_after(&line("item/started")));
+        let early = login.read(GATEWAY)[0].clone();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while login.read(GATEWAY)[0].as_deref() != Some("token-2") && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let home = login.home_keys();
+        assert_eq!(
+            (first, other, turn, account, inside, early),
+            (
+                home.clone(),
+                vec![],
+                home.clone(),
+                home,
+                vec![],
+                Some("token-1".to_owned())
+            )
+        );
+        assert_eq!(login.read(GATEWAY), both("token-2"));
+        drop(a);
     }
 
     /// Defect (#521 r1 B1): each store kept its own baseline of the login, so

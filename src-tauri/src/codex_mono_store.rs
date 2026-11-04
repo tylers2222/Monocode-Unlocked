@@ -40,6 +40,11 @@ impl MonoCodexStore {
     pub(crate) fn sync_auth(&self) {
         self.auth.sync();
     }
+
+    /// The same, after a line of the child's output that may follow one.
+    pub(crate) fn sync_auth_after(&self, line: &str) {
+        self.auth.sync_after(line);
+    }
 }
 
 #[derive(Serialize)]
