@@ -853,6 +853,7 @@ fn harness_spawn_child() {
         std::fs::create_dir_all(&workdir).unwrap();
         crate::harness::harness_spawn(
             app.handle().clone(),
+            crate::scenario::agent_sandbox::main_window(&app),
             app.state::<crate::harness::HarnessHost>(),
             session.into(),
             claude.clone(),

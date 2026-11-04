@@ -36,6 +36,8 @@ pub struct SessionStore {
     run_id: String,
     /// The window that restores what the earlier run left (ADE-93).
     restorer: OnceLock<String>,
+    /// Each window's Space, by window label (ADE-209): `spaces::window_space`.
+    pub(crate) window_spaces: Mutex<HashMap<String, String>>,
 }
 
 impl SessionStore {
@@ -73,6 +75,7 @@ impl SessionStore {
             read_conn: Mutex::new(Some(read_conn)),
             run_id: uuid::Uuid::new_v4().simple().to_string(),
             restorer: OnceLock::new(),
+            window_spaces: Mutex::default(),
         })
     }
 
@@ -87,6 +90,7 @@ impl SessionStore {
             read_conn: Mutex::new(None),
             run_id: uuid::Uuid::new_v4().simple().to_string(),
             restorer: OnceLock::new(),
+            window_spaces: Mutex::default(),
         })
     }
 

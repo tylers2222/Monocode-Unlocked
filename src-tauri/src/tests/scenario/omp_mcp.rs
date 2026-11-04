@@ -58,6 +58,7 @@ printf '%s\0' "$@" > argv.part && mv argv.part argv"#,
         std::fs::create_dir_all(&workdir).unwrap();
         crate::harness::harness_spawn(
             app.handle().clone(),
+            crate::scenario::agent_sandbox::main_window(&app),
             app.state::<crate::harness::HarnessHost>(),
             session.into(),
             omp.clone(),

@@ -64,7 +64,12 @@ fn switch_to(app: &App<MockRuntime>, space: &str) {
         active_space_id: Some(space.to_owned()),
         route_grant_ttl_ms: None,
     };
-    spaces::spaces_settings_set(app.state(), patch).unwrap();
+    spaces::spaces_settings_set(
+        crate::scenario::agent_sandbox::main_window(app),
+        app.state(),
+        patch,
+    )
+    .unwrap();
 }
 
 /// `spaceId` as the window reads it from a row's JSON.

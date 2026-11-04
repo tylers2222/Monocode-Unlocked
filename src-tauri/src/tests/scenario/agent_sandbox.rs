@@ -569,6 +569,7 @@ fn harness_spawn_child() {
         std::fs::create_dir_all(&workdir).unwrap();
         let pid = crate::harness::harness_spawn(
             app.handle().clone(),
+            main_window(&app),
             app.state::<crate::harness::HarnessHost>(),
             session.into(),
             path(&fx),
@@ -629,6 +630,18 @@ pub(super) fn mock_app(data: &Path) -> tauri::App<tauri::test::MockRuntime> {
         data,
         crate::session_store::SessionStore::open_in_memory().unwrap(),
     )
+}
+
+/// The mock app's window `main`, the caller `harness_spawn` and
+/// `harness_exec` read the Space of: the one already open, else a new one.
+pub(super) fn main_window(
+    app: &tauri::App<tauri::test::MockRuntime>,
+) -> tauri::WebviewWindow<tauri::test::MockRuntime> {
+    app.get_webview_window("main").unwrap_or_else(|| {
+        tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
+            .build()
+            .unwrap()
+    })
 }
 
 /// `mock_app` on `store`, so a spawn sees the rows a scenario wrote.
@@ -721,6 +734,7 @@ esac"#,
     for session in ["one", "two"] {
         let spawned = crate::harness::harness_spawn(
             app.handle().clone(),
+            main_window(&app),
             app.state::<crate::harness::HarnessHost>(),
             session.into(),
             path(&fx),

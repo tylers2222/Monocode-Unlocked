@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use super::{folder_key, with_conn, SpawnTarget};
+use super::{folder_key, membership, with_conn, SpawnTarget};
 use crate::session_store::{now_millis, SessionStore};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -120,12 +120,37 @@ pub fn spaces_lease_release(
     release_lease(&store, &checkout_path, &space_id)
 }
 
-/// The ownerless-helper rule's guard (ADE-189): a helper call that keeps its
-/// caller's folder and names no owner, or an owner that is no stored session
-/// (an unsaved tab), is Space 1's, the only Space a window has until windows
-/// carry a Space (ADE-179). So it is refused in a checkout
-/// another Space holds, before anything is spawned there. It takes no lease.
-pub(super) fn keep_ownerless(store: &SessionStore, workdir: &Path) -> Result<(), String> {
+/// The Space a helper of no stored session that keeps its caller's folder
+/// (the ownerless-helper rule, ADE-189) is judged as (ADE-209). One that
+/// names an `owner` that is no stored session (an unsaved tab) is in the
+/// Space that session's row would join ([`membership::space_for_row`]),
+/// whichever window calls. Only a call that names no owner at all is
+/// `window`'s, the Space of the window that called. `None` when `owner` is a
+/// stored session: it is placed as one.
+pub(super) fn unsaved_space(
+    store: &SessionStore,
+    owner: Option<&str>,
+    window: &str,
+) -> Result<Option<String>, String> {
+    let Some(owner) = owner.map(crate::harness::child_session) else {
+        return Ok(Some(window.to_owned()));
+    };
+    with_conn(store, |conn| {
+        if session_of(conn, owner)?.is_some() {
+            return Ok(None);
+        }
+        membership::space_for_row(conn, owner, None).map(Some)
+    })
+}
+
+/// The ownerless-helper rule's guard: a call judged as `space`
+/// ([`unsaved_space`]) is refused in a checkout another Space holds, before
+/// anything is spawned there. It takes no lease.
+pub(super) fn keep_ownerless(
+    store: &SessionStore,
+    workdir: &Path,
+    space: &str,
+) -> Result<(), String> {
     // A missing folder is the caller's to report.
     let Some(real) = resolve(workdir) else {
         return Ok(());
@@ -133,8 +158,8 @@ pub(super) fn keep_ownerless(store: &SessionStore, workdir: &Path) -> Result<(),
     let top = crate::worktrees::checkout_spot(&real).and_then(|spot| resolve(&spot.top));
     let leases = with_conn(store, read_leases)?;
     match lease_on(&leases, &key(&real), top.as_deref().map(key).as_deref()) {
-        Some(lease) if lease.space_id != super::FIRST_SPACE => Err(format!(
-            "{} is in {}'s checkout: a call of no session runs only outside another Space's checkout",
+        Some(lease) if lease.space_id != space => Err(format!(
+            "{} is in {}'s checkout: a call of no saved session from {space} runs only outside another Space's checkout",
             real.display(),
             lease.space_id
         )),
@@ -149,17 +174,9 @@ pub(super) fn claim(
     session_id: &str,
     target: SpawnTarget,
     no_space: Option<&Path>,
-    kept: bool,
 ) -> Result<SpawnTarget, String> {
     Ok(SpawnTarget {
-        workdir: place_or(
-            store,
-            session_id,
-            &target.workdir,
-            now_millis(),
-            no_space,
-            kept,
-        )?,
+        workdir: place_or(store, session_id, &target.workdir, now_millis(), no_space)?,
         ..target
     })
 }
@@ -183,20 +200,17 @@ pub(crate) fn place(
     workdir: &Path,
     now: i64,
 ) -> Result<PathBuf, String> {
-    place_or(store, child, workdir, now, None, false)
+    place_or(store, child, workdir, now, None)
 }
 
 /// [`place`], with the one check of whether `child` has a Space: a child of
-/// no stored session goes to `no_space` when it names one (ADE-189). A
-/// `kept` helper (the ownerless-helper rule) of no stored session keeps its
-/// caller's folder only past [`keep_ownerless`], as one that names no owner.
+/// no stored session goes to `no_space` when it names one (ADE-189).
 fn place_or(
     store: &SessionStore,
     child: &str,
     workdir: &Path,
     now: i64,
     no_space: Option<&Path>,
-    kept: bool,
 ) -> Result<PathBuf, String> {
     let session_id = crate::harness::child_session(child);
     // A missing folder is the caller's to report.
@@ -204,9 +218,6 @@ fn place_or(
         return Ok(workdir.to_path_buf());
     };
     let Some((space, project)) = with_conn(store, |conn| session_of(conn, session_id))? else {
-        if kept {
-            keep_ownerless(store, workdir)?;
-        }
         return Ok(no_space.unwrap_or(workdir).to_path_buf());
     };
     if shared_workspace().is_some_and(|shared| real.starts_with(shared)) {

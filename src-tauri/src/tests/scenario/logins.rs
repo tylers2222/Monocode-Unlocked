@@ -108,6 +108,7 @@ esac"#,
         let account = serde_json::from_value(json!({ "provider": provider, "id": id })).unwrap();
         crate::harness::harness_spawn(
             self.app.handle().clone(),
+            crate::scenario::agent_sandbox::main_window(&self.app),
             self.app.state::<crate::harness::HarnessHost>(),
             id.into(),
             text(cli),

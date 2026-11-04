@@ -968,6 +968,7 @@ pub struct Spawned {
 #[expect(clippy::too_many_lines, reason = "baseline 2026-10")]
 pub fn harness_spawn<R: Runtime>(
     app: AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
     host: State<'_, HarnessHost>,
     session_id: String,
     command: String,
@@ -984,15 +985,20 @@ pub fn harness_spawn<R: Runtime>(
     if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref()) {
         return Err("harness_spawn: not a resolved harness CLI".to_string());
     }
-    let neutral;
+    let (neutral, space);
     let child = match &helper {
         None => crate::spaces::Child::Session(&session_id),
         Some(helper) => {
             neutral = helper_folder(&app)?;
+            space = crate::spaces::window_space(
+                &app.state::<crate::session_store::SessionStore>(),
+                window.label(),
+            )?;
             crate::spaces::Child::Helper {
                 key: Some(&session_id),
                 owner: helper.owner.as_deref(),
                 neutral: &neutral,
+                window: &space,
             }
         }
     };
@@ -1629,9 +1635,10 @@ pub struct Ran {
 
 /// One-shot provider commands: catalog probes and temporary-session cleanup.
 /// Each is a helper of `helper.owner`, the session it works for, if any.
+/// `window` is the window that called; its app is the app.
 #[tauri::command]
 pub async fn harness_exec<R: Runtime>(
-    app: AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
     command: String,
     args: Vec<String>,
     cwd: Option<String>,
@@ -1647,13 +1654,17 @@ pub async fn harness_exec<R: Runtime>(
         {
             return Err("harness_exec: not a resolved harness CLI".to_string());
         }
-        let neutral = helper_folder(&app)?;
+        let app = window.app_handle();
+        let neutral = helper_folder(app)?;
+        let store = app.state::<crate::session_store::SessionStore>();
+        let space = crate::spaces::window_space(&store, window.label())?;
         let crate::spaces::SpawnTarget { workdir, .. } = crate::spaces::prepare_spawn(
-            &app.state::<crate::session_store::SessionStore>(),
+            &store,
             crate::spaces::Child::Helper {
                 key: helper.as_ref().and_then(|helper| helper.key.as_deref()),
                 owner: helper.as_ref().and_then(|helper| helper.owner.as_deref()),
                 neutral: &neutral,
+                window: &space,
             },
             binary_provider
                 .as_deref()
