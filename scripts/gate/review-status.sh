@@ -5,7 +5,8 @@
 # the review stops the verdict. A later push makes a new head with no `review/agent`
 # status, so the verdict lapses on every push.
 # A success or failure summary must be a verdict that scripts/process/merge_rule.py reads:
-# "rN clean: xB/yM/zm <note>" or "rN changes needed: xB/yM/zm <note>", N the round (r2, r2b).
+# "rN clean[: 0B/0M/zm] <note>" with success, "rN changes needed[: xB/yM/zm] <note>" with
+# failure. N is the round (r2, r2b); the counts are optional.
 # The script refuses any other summary before it calls GitHub. A pending summary is free text.
 # Usage: scripts/gate/review-status.sh <pr> <reviewed-sha> <success|failure|pending> <summary>
 # GATE_REPO overrides the repository (default tylers2222/Monocode-Unlocked).
@@ -23,7 +24,7 @@ case $state in success | failure | pending) ;; *) fail "state must be success, f
 [ -n "$summary" ] || fail "summary is empty"
 [ "${#summary}" -le 140 ] || fail "summary is ${#summary} characters; GitHub keeps at most 140"
 if [ "$state" != pending ]; then
-  python3 "$merge_rule" --check-verdict "$summary" || fail "merge_rule.py would not read this $state summary as a verdict; nothing posted"
+  python3 "$merge_rule" --check-verdict "$state" "$summary" || fail "merge_rule.py would not read this $state summary as a verdict; nothing posted"
 fi
 
 read -r pr_state head < <(gh pr view "$pr" -R "$repo" --json state,headRefOid -q '"\(.state) \(.headRefOid)"') \
