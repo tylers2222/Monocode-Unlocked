@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::*;
 
@@ -35,20 +35,23 @@ impl Login {
         self.share_every(NEVER)
     }
 
-    fn share_every(&self, every: Duration) -> Share {
+    fn share_every(&self, every: Timer) -> Share {
         share_every(&self.source, self.home.clone(), every).unwrap()
     }
 
-    /// The login's entry with `suffix` comes to be `value` within 10 s.
-    fn reaches_login(&self, suffix: &str, value: &str) -> bool {
-        let until = std::time::Instant::now() + Duration::from_secs(10);
-        while std::time::Instant::now() < until {
-            if self.read(suffix)[0].as_deref() == Some(value) {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        false
+    /// Codex's refresh at `at` o'clock, in the login (`private` false) or the home.
+    fn refresh(&self, private: bool, at: &str) {
+        write_keyring("Codex Auth", &self.auth_key(private), &refresh(at)).unwrap();
+    }
+
+    /// The `Codex Auth` entry in the login, then in the home.
+    fn read_auth(&self) -> [Option<String>; 2] {
+        [false, true].map(|private| read_keyring("Codex Auth", &self.auth_key(private)).unwrap())
+    }
+
+    /// The login's `Codex Auth` comes to be the refresh at `at` within 10 s.
+    fn refresh_reaches_login(&self, at: &str) -> bool {
+        soon(|| self.read_auth()[0] == Some(refresh(at)))
     }
 
     /// The `codex` entry with `suffix` in the login (`private` false) or the home.
@@ -98,8 +101,34 @@ impl Drop for Login {
 
 const GATEWAY: &str = "|gateway-oauth";
 
-const NEVER: Duration = Duration::from_secs(3600);
-const TEST_TICK: Duration = Duration::from_millis(100);
+/// A timer that never fires within a test.
+const NEVER: Timer = Timer {
+    every: Duration::from_secs(3600),
+    slow: Duration::from_secs(10),
+};
+
+/// A timer that fires every 100 ms, and never takes a keyutils read for slow.
+const FAST: Timer = Timer {
+    every: Duration::from_millis(100),
+    slow: Duration::from_secs(10),
+};
+
+/// A `Codex Auth` value of account "one", refreshed at `at` o'clock.
+fn refresh(at: &str) -> String {
+    format!(r#"{{"tokens":{{"account_id":"one"}},"last_refresh":"2026-11-04T{at}:00:00Z"}}"#)
+}
+
+/// `check` comes true within 10 s.
+fn soon(check: impl Fn() -> bool) -> bool {
+    let until = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < until {
+        if check() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
 
 thread_local! {
     /// The homes of this thread's logins. A quit syncs only those, so it
@@ -107,8 +136,12 @@ thread_local! {
     static MINE: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
 }
 
-pub(super) fn mine(home: &Path) -> bool {
-    MINE.with(|mine| mine.borrow().iter().any(|own| own == home))
+pub(super) fn mine(homes: Vec<(PathBuf, Arc<Home>)>) -> Vec<(PathBuf, Arc<Home>)> {
+    let mine = MINE.with(|mine| mine.borrow().clone());
+    homes
+        .into_iter()
+        .filter(|(home, _)| mine.contains(home))
+        .collect()
 }
 
 type Held = (mpsc::Sender<()>, mpsc::Receiver<()>);
@@ -133,7 +166,22 @@ thread_local! {
     static READS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
 }
 
+/// Every key read so far, by any thread, with its count.
+static READ_COUNT: Mutex<BTreeMap<String, usize>> = Mutex::new(BTreeMap::new());
+
+fn read_counts(keys: &[String]) -> Vec<usize> {
+    let counts = READ_COUNT.lock().unwrap_or_else(|e| e.into_inner());
+    keys.iter()
+        .map(|key| counts.get(key).copied().unwrap_or(0))
+        .collect()
+}
+
 pub(super) fn count_read(key: &str) {
+    *READ_COUNT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(key.to_owned())
+        .or_default() += 1;
     READS.with(|reads| {
         if let Some(reads) = reads.borrow_mut().as_mut() {
             reads.push(key.to_owned());
@@ -176,24 +224,24 @@ fn a_sync_reads_the_login_only_after_a_child_wrote() {
 }
 
 /// Defect (ADE-243): a refresh no line follows (Codex refreshes outside a
-/// turn too) waits in the home until the child exits, while the login's
-/// own Codex spends the revoked refresh token. Or the timer syncs before
-/// its tick, so a busy loop.
+/// turn too) waits in the home until the child exits, while the login's own
+/// Codex spends the revoked refresh token. Or the timer reads before its
+/// tick: a busy loop.
 #[test]
-fn a_live_homes_timer_copies_a_write_no_line_follows() {
+fn a_live_homes_timer_copies_a_refresh_no_line_follows() {
     let (slow, fast) = (Login::new(true), Login::new(true));
     for login in [&slow, &fast] {
-        login.write(false, GATEWAY, "token-1");
+        login.refresh(false, "10");
     }
     let a = slow.share();
-    let b = fast.share_every(TEST_TICK);
+    let b = fast.share_every(FAST);
     for login in [&slow, &fast] {
-        login.write(true, GATEWAY, "token-2");
+        login.refresh(true, "11");
     }
-    let copied = fast.reaches_login(GATEWAY, "token-2");
-    let waiting = slow.read(GATEWAY)[0].clone();
+    let copied = fast.refresh_reaches_login("11");
+    let waiting = slow.read_auth()[0].clone();
     drop((a, b));
-    assert_eq!((copied, waiting.as_deref()), (true, Some("token-1")));
+    assert_eq!((copied, waiting), (true, Some(refresh("10"))));
 }
 
 /// Defect (ADE-243): the timer outlives the home's last store, or stops
@@ -201,67 +249,231 @@ fn a_live_homes_timer_copies_a_write_no_line_follows() {
 #[test]
 fn a_homes_timer_runs_until_its_last_store_drops() {
     let login = Login::new(true);
-    login.write(false, GATEWAY, "token-1");
-    let a = login.share_every(TEST_TICK);
-    let b = login.share_every(TEST_TICK);
+    login.refresh(false, "10");
+    let a = login.share_every(FAST);
+    let b = login.share_every(FAST);
     drop(a);
-    login.write(true, GATEWAY, "token-2");
-    let joined = login.reaches_login(GATEWAY, "token-2");
+    login.refresh(true, "11");
+    let joined = login.refresh_reaches_login("11");
     drop(b);
-    login.write(true, GATEWAY, "token-3");
-    std::thread::sleep(TEST_TICK * 5);
+    login.refresh(true, "12");
+    std::thread::sleep(FAST.every * 5);
     assert_eq!(
-        (joined, login.read(GATEWAY)[0].as_deref()),
-        (true, Some("token-2"))
+        (joined, login.read_auth()[0].clone()),
+        (true, Some(refresh("11")))
     );
 }
 
-/// Defect (ADE-243): a quit kills the children before a refresh since the
-/// last sync reaches the login, and the exit sync that would copy it races
-/// the app's exit. Or a refresh a child writes as it dies stays in the home.
+/// Defect (#529 r1 m4): the last drop does not wake the timer, which then
+/// lives until its next tick; or a joining store starts a second timer; or
+/// a home with no `Codex Auth` MonoCode wrote starts one.
 #[test]
-fn a_quit_copies_a_refresh_before_and_after_the_kill() {
-    let login = Login::new(true);
-    login.write(false, GATEWAY, "token-1");
+fn a_home_has_one_timer_and_it_ends_with_the_last_drop() {
+    let (login, file_store) = (Login::new(true), Login::new(false));
+    login.refresh(false, "10");
+    let (mirror, other) = (Home::of(&login.home), Home::of(&file_store.home));
+    // `HOMES`, the test's own, then one per store and one per timer thread.
+    let count = || Arc::strong_count(&mirror);
     let a = login.share();
+    let one = count();
+    let b = login.share();
+    let two = count();
+    drop((a, b));
+    let ended = soon(|| count() == 2);
+    let c = file_store.share();
+    let none = Arc::strong_count(&other);
+    drop(c);
+    assert_eq!((one, two, ended, none), (4, 5, true, 3));
+}
+
+/// Defect (#529 r1 M1): the timer reads the passphrase entries, which a
+/// refresh never rewrites and Codex may have created: a macOS prompt every
+/// tick. An idle tick reads the home's `Codex Auth` and nothing else; the
+/// passphrase entries are the lines' to sync.
+#[test]
+fn the_timer_reads_only_the_homes_codex_auth() {
+    let login = Login::new(true);
+    login.refresh(false, "10");
+    login.write(false, GATEWAY, "token-1");
+    let a = login.share_every(FAST);
+    let keys = [
+        login.auth_key(true),
+        login.key(true, ""),
+        login.key(true, GATEWAY),
+        login.auth_key(false),
+        login.key(false, ""),
+        login.key(false, GATEWAY),
+    ];
+    let before = read_counts(&keys);
+    std::thread::sleep(FAST.every * 10);
+    let idle: Vec<usize> = read_counts(&keys)
+        .iter()
+        .zip(&before)
+        .map(|(after, before)| after - before)
+        .collect();
     login.write(true, GATEWAY, "token-2");
-    let mut killed = None;
-    kill_synced(|| {
-        killed = login.read(GATEWAY)[0].clone();
-        login.write(true, GATEWAY, "token-3");
-    });
-    assert_eq!(
-        (killed.as_deref(), login.read(GATEWAY)),
-        (Some("token-2"), both("token-3"))
-    );
+    login.refresh(true, "11");
+    let copied = login.refresh_reaches_login("11");
+    let passphrase = login.read(GATEWAY)[0].clone();
+    a.sync();
+    let synced = login.read(GATEWAY)[0].clone();
     drop(a);
+    assert!(idle[0] >= 3, "the timer read the home {} times", idle[0]);
+    assert_eq!(idle[1..], [0; 5], "an idle tick read {idle:?}");
+    assert_eq!(
+        (copied, passphrase.as_deref(), synced.as_deref()),
+        (true, Some("token-1"), Some("token-2"))
+    );
+}
+
+/// Defect (#529 r1 M1): the timer reads a `Codex Auth` entry Codex created
+/// (the login had none at prepare, as an "auto" login on auth.json), which
+/// may prompt every tick. The lines still copy it.
+#[test]
+fn the_timer_skips_a_codex_auth_entry_monocode_did_not_write() {
+    let login = Login::new(true);
+    let a = login.share_every(FAST);
+    login.refresh(true, "11");
+    std::thread::sleep(FAST.every * 5);
+    let ticked = login.read_auth()[0].clone();
+    a.sync();
+    let synced = login.read_auth()[0].clone();
+    drop(a);
+    assert_eq!((ticked, synced), (None, Some(refresh("11"))));
+}
+
+/// Defect (#529 r1 M1): a timer read that fails (a denied prompt) or is slow
+/// (a prompt) runs again every tick. The timer must pause until a line sync
+/// succeeds, then resume. A value that is not UTF-8 fails a keyutils read.
+#[test]
+fn a_failed_or_slow_timer_read_pauses_the_timer_until_a_line_sync() {
+    let (failing, slow) = (Login::new(true), Login::new(true));
+    for login in [&failing, &slow] {
+        login.refresh(false, "10");
+    }
+    let a = failing.share_every(FAST);
+    let b = slow.share_every(Timer {
+        slow: Duration::ZERO,
+        ..FAST
+    });
+    keyring::Entry::new("Codex Auth", &failing.auth_key(true))
+        .and_then(|e| e.set_secret(&[0xff, 0xfe]))
+        .unwrap();
+    slow.refresh(true, "11");
+    let paused = [&a, &b].map(|share| soon(|| share.mirror.lock().paused));
+    failing.refresh(true, "11");
+    std::thread::sleep(FAST.every * 5);
+    let held = [&failing, &slow].map(|login| login.read_auth()[0].clone());
+    a.sync();
+    failing.refresh(true, "12");
+    let resumed = failing.refresh_reaches_login("12");
+    drop((a, b));
+    assert_eq!(
+        (paused, held, resumed),
+        (
+            [true, true],
+            [Some(refresh("10")), Some(refresh("10"))],
+            true
+        )
+    );
+}
+
+/// Defect (ADE-243): a refresh a child writes as the quit kills it stays in
+/// the home: its exit sync races the app's own exit.
+#[test]
+fn a_quit_copies_a_refresh_written_during_the_kill() {
+    let login = Login::new(true);
+    login.refresh(false, "10");
+    let a = login.share();
+    let started = Instant::now();
+    kill_synced(|| login.refresh(true, "11"));
+    let took = started.elapsed();
+    let copied = login.read_auth()[0].clone();
+    drop(a);
+    assert_eq!(copied, Some(refresh("11")));
+    assert!(took < Duration::from_secs(1), "the quit took {took:?}");
+}
+
+/// Defect (#529 r1 M2): the quit waits with no limit on a home whose lock a
+/// sync holds at a prompt, and so does every home after it.
+#[test]
+fn a_quit_skips_a_busy_home_within_its_budget() {
+    let (busy, free) = (Login::new(true), Login::new(true));
+    for login in [&busy, &free] {
+        login.refresh(false, "10");
+    }
+    let (a, b) = (busy.share(), free.share());
+    let held = Home::of(&busy.home);
+    let (locked, lock) = mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let _state = held.lock();
+        locked.send(()).unwrap();
+        std::thread::sleep(Duration::from_secs(6));
+    });
+    lock.recv().unwrap();
+    for login in [&busy, &free] {
+        login.refresh(true, "11");
+    }
+    let started = Instant::now();
+    kill_synced(|| ());
+    let took = started.elapsed();
+    let copied = [&busy, &free].map(|login| login.read_auth()[0].clone());
+    holder.join().unwrap();
+    drop((a, b));
+    assert!(
+        took < QUIT_BUDGET + Duration::from_secs(1),
+        "the quit took {took:?}"
+    );
+    assert_eq!(copied, [Some(refresh("10")), Some(refresh("11"))]);
+}
+
+/// Defect (#529 r1 m1): closing the last window reaps, then the quit it
+/// starts reaps again, while the homes are still live. The children are dead
+/// after the first, so the second reads nothing; a spawn after a reap makes
+/// the next one read again.
+#[test]
+fn a_home_is_reaped_once_until_it_spawns_again() {
+    let login = Login::new(true);
+    login.refresh(false, "10");
+    let a = login.share();
+    kill_synced(|| ());
+    login.refresh(true, "11");
+    kill_synced(|| ());
+    let twice = login.read_auth()[0].clone();
+    let b = login.share();
+    kill_synced(|| ());
+    let respawned = login.read_auth()[0].clone();
+    drop((a, b));
+    assert_eq!(
+        (twice, respawned),
+        (Some(refresh("10")), Some(refresh("11")))
+    );
+}
+
+/// Defect: a quit reads an idle home, whose children are gone and whose exit
+/// syncs ran.
+#[test]
+fn a_quit_skips_an_idle_home() {
+    let login = Login::new(true);
+    login.refresh(false, "10");
+    drop(login.share());
+    login.refresh(true, "11");
+    kill_synced(|| ());
+    assert_eq!(login.read_auth()[0], Some(refresh("10")));
 }
 
 /// Defect (ADE-243): the app's quit kills the children with no sync.
 #[test]
 fn the_app_quit_copies_a_pending_refresh() {
     let login = Login::new(true);
-    login.write(false, GATEWAY, "token-1");
+    login.refresh(false, "10");
     let a = login.share();
-    login.write(true, GATEWAY, "token-2");
+    login.refresh(true, "11");
     let app = tauri::test::mock_app();
     crate::reap_harness_children(app.handle());
-    assert_eq!(login.read(GATEWAY), both("token-2"));
+    let copied = login.read_auth();
     drop(a);
-}
-
-/// Defect: a quit reads an idle home, whose exit syncs ran, and for one
-/// whose login has since encrypted a secret, the login's entries too: a
-/// macOS prompt as the app quits.
-#[test]
-fn a_quit_reads_only_the_live_homes() {
-    let (live, idle) = (Login::new(true), Login::new(false));
-    drop(idle.share());
-    idle.seal();
-    let a = live.share();
-    let read = reads(|| kill_synced(|| ()));
-    drop(a);
-    assert_eq!(read, [live.home_keys(), live.home_keys()].concat());
+    assert_eq!(copied, [Some(refresh("11")), Some(refresh("11"))]);
 }
 
 /// Defect (#526 r1 m1): a sync that fails after reading the home still

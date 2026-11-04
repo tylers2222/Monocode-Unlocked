@@ -818,8 +818,8 @@ pub fn run() {
     });
 }
 
-/// A Codex Mono's refresh not yet synced reaches its login before and after
-/// the kill (ADE-243).
+/// A Codex Mono's refresh not yet synced reaches its login after the kill,
+/// once per quit and within a budget (ADE-243).
 fn reap_harness_children<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) {
     mono_keyring::kill_synced(|| {
         if let Some(host) = handle.try_state::<harness::HarnessHost>() {
