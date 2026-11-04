@@ -1818,8 +1818,9 @@ mod helpers {
         );
     }
 
-    /// The ownerless-helper rule's guard (ADE-189 4/4): a call of no stored
-    /// session is Space 1's, so a commit-text helper the window points at the
+    /// The ownerless-helper rule's guard (ADE-189 4/4): with Space 1 active,
+    /// a call of no stored session is Space 1's (ADE-209:
+    /// `ownerless_space`), so a commit-text helper the window points at the
     /// checkout Space 2 holds is refused, and nothing is spawned there. The
     /// same call in a folder no other Space holds runs there (the rule's rows
     /// in [`helpers_run_where_their_owner_does`]).

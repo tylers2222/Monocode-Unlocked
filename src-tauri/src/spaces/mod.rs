@@ -639,9 +639,9 @@ impl Child<'_> {
 /// (ADE-189 4/4), so a key only they used is not here.
 ///
 /// Its guard is the checkout lease check ([`leases::keep_ownerless`]): a call
-/// of no session has no Space of its own, so it is Space 1's, the only Space
-/// a window has until windows carry a Space (ADE-179). It is refused in a
-/// checkout another Space holds, and nothing is spawned there.
+/// of no session is the calling window's, so it is in the active Space, the
+/// one the window shows (ADE-209). It is refused in a checkout another Space
+/// holds, and nothing is spawned there.
 ///
 /// The Grok cleanup exec (`grokText.ts` `deleteTextSession`, `sessions
 /// delete`) passes `monocode-grok-text` as its key, so it runs where its text
@@ -706,7 +706,7 @@ pub(crate) fn prepare_spawn(
     };
     let Some(session_id) = child.session() else {
         if keeps {
-            leases::keep_ownerless(store, &target.workdir)?;
+            leases::keep_ownerless(store, &target.workdir, None)?;
         }
         return Ok(SpawnTarget {
             workdir: no_space.map_or(target.workdir, Path::to_path_buf),
