@@ -589,7 +589,8 @@ pub(crate) fn window_space(store: &SessionStore, label: &str) -> Result<String, 
         .unwrap_or_else(|| FIRST_SPACE.to_owned()))
 }
 
-/// Forgets a destroyed window's Space, so a later window never inherits it.
+/// Forgets a closed window's Space, so a later window never inherits it.
+/// `destroy_window`, the end of every workspace window's close, calls it.
 pub(crate) fn window_closed(store: &SessionStore, label: &str) {
     if let Ok(mut windows) = window_spaces(store) {
         windows.remove(label);

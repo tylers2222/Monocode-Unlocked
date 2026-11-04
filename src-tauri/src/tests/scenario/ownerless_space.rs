@@ -295,6 +295,29 @@ fn each_window_keeps_its_own_space(rig: &Rig) {
         "A reads the Space B switched to"
     );
     assert_eq!(shows(rig, &rig.b), TWO);
+    let c = window(&rig.app, "window-c");
+    assert_eq!(
+        shows(rig, &c),
+        TWO,
+        "a new window does not open in the Space B saved for the app"
+    );
+    // A save that names no Space (the grant length) answers A's own Space
+    // and leaves the app's.
+    let ttl = SettingsPatch {
+        active_space_id: None,
+        route_grant_ttl_ms: Some(60_000),
+    };
+    let saved = spaces::spaces_settings_set(rig.a.clone(), store(rig), ttl).unwrap();
+    assert_eq!(
+        (saved.active_space_id, saved.route_grant_ttl_ms),
+        (FIRST_SPACE.to_owned(), 60_000),
+        "a save from A answered another Space than A's, or lost the grant length"
+    );
+    assert_eq!(
+        spaces::settings(&store(rig)).unwrap().active_space_id,
+        TWO,
+        "A's save that named no Space moved the app's active Space"
+    );
 }
 
 /// While B shows Space 2, A's ownerless commit-text helper is refused in
@@ -457,10 +480,10 @@ fn an_owned_helper_keeps_its_owners_space(rig: &Rig) {
     }
 }
 
-/// Closing window B forgets its Space (what the app does on `Destroyed`),
-/// and A keeps its own.
+/// Closing window B (`destroy_window`, the end of every workspace window's
+/// close) forgets its Space, and A keeps its own.
 fn a_closed_window_forgets_its_space(rig: &Rig) {
-    spaces::window_closed(&store(rig), rig.b.label());
+    crate::window::destroy_window(rig.b.clone(), store(rig)).unwrap();
     assert_eq!(
         spaces::window_space(&store(rig), "window-b"),
         Ok(FIRST_SPACE.to_owned()),

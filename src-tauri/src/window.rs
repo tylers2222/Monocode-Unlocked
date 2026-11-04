@@ -211,7 +211,7 @@ pub fn hide_window(window: WebviewWindow) -> Result<(), String> {
 /// reopen them. The last close keeps them: on Linux and Windows it is a quit.
 /// Async: the delete waits for the store lock, and the main thread must not.
 /// The window's chats are already killed, so a store error must not keep it
-/// open.
+/// open. The window's Space is forgotten (`spaces::window_closed`, ADE-209).
 #[tauri::command(async)]
 pub fn destroy_window<R: Runtime>(
     window: WebviewWindow<R>,
@@ -220,6 +220,7 @@ pub fn destroy_window<R: Runtime>(
     let another = workspace_windows(&window)
         .iter()
         .any(|other| other.label() != window.label());
+    crate::spaces::window_closed(&store, window.label());
     let closed = window.destroy().map_err(|err| err.to_string());
     if another {
         if let Err(error) = crate::session_store::forget_closed_window(&store, window.label()) {
