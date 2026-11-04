@@ -39,6 +39,11 @@ MINOR_R2 = "r2 changes needed: 0B/0M/1m (started-turn save await untested)"  # 1
 CLEAN_R1 = "r1 clean: dead path proven, same boot on real DB base vs head; 2 nits in #162"  # 161
 CLEAN_R2 = "r2 clean: rebase is identical patch (range-diff =), PR test 26/26, CI 14/14, nits in #158"  # 156
 CLEAN_R5 = "r5 clean: rebase onto a363d977 range-diff all =, integrity 401, 7/7 R5a tests, CI green, 0 open threads"  # 150
+CLEAN_R2B = "r2b clean: every destroy reaches destroy_window; no label reuse, stale entry cannot cross; g1 rerun RED (5d72)"  # 527
+# The form a lettered re-check with findings takes; no PR has posted one yet.
+MINOR_R2B = "r2b changes needed: 0B/0M/1m (started-turn save await untested)"
+# Not a verdict: a capital R.
+UNREADABLE = "R2c clean: every destroy reaches destroy_window"
 
 
 def verdict(description, sha=REVIEWED, at=AT):
@@ -62,15 +67,18 @@ class ParseVerdictTest(unittest.TestCase):
     def test_real_descriptions(self):
         expected = {
             "r1 in review": None,
-            MINOR: Verdict(REVIEWED, 1, False, 0, 0, 1, AT),
-            MAJOR: Verdict(REVIEWED, 1, False, 0, 1, 6, AT),
-            CLEAN_R2: Verdict(REVIEWED, 2, True, 0, 0, 0, AT),
-            CLEAN_R5: Verdict(REVIEWED, 5, True, 0, 0, 0, AT),
-            NO_COUNTS: Verdict(REVIEWED, 1, False, None, None, None, AT),
+            MINOR: Verdict(REVIEWED, "r1", False, 0, 0, 1, AT),
+            MAJOR: Verdict(REVIEWED, "r1", False, 0, 1, 6, AT),
+            CLEAN_R2: Verdict(REVIEWED, "r2", True, 0, 0, 0, AT),
+            CLEAN_R5: Verdict(REVIEWED, "r5", True, 0, 0, 0, AT),
+            NO_COUNTS: Verdict(REVIEWED, "r1", False, None, None, None, AT),
         }
         for description, want in expected.items():
             with self.subTest(description=description):
                 self.assertEqual(parse_verdict(REVIEWED, description, AT), want)
+
+    def test_a_lettered_round_with_findings_has_its_counts(self):
+        self.assertEqual(parse_verdict(REVIEWED, MINOR_R2B, AT), Verdict(REVIEWED, "r2b", False, 0, 0, 1, AT))
 
 
 class ParseProofsTest(unittest.TestCase):
@@ -122,7 +130,7 @@ class CollectVerdictsTest(unittest.TestCase):
             REVIEWED: [self.status(MINOR), self.status("r1 in review", "pending")],
             EARLIER: [self.status(MINOR, url="https://github.com/tylers2222/Monocode-Unlocked/pull/159")],
         }
-        self.assertEqual(collect_verdicts(statuses, PR_URL), [Verdict(REVIEWED, 1, False, 0, 0, 1, AT)])
+        self.assertEqual(collect_verdicts(statuses, PR_URL), [Verdict(REVIEWED, "r1", False, 0, 0, 1, AT)])
 
     def test_a_pending_status_is_not_a_verdict_even_when_it_reads_as_one(self):
         self.assertEqual(collect_verdicts({REVIEWED: [self.status(CLEAN_R1, "pending")]}, PR_URL), [])
@@ -141,6 +149,9 @@ class DecideTest(unittest.TestCase):
         for tier in ("T1", "T2"):
             with self.subTest(tier=tier):
                 self.assertEqual(decide_fix(tier=tier, verdicts=[verdict(CLEAN_R2, sha=FIX)]), Decision(True, f"r2 clean on head {FIX[:7]}"))
+
+    def test_a_lettered_clean_round_on_head_passes_under_its_own_name(self):
+        self.assertEqual(decide_fix(verdicts=[verdict(CLEAN_R2B, sha=FIX)]), Decision(True, f"r2b clean on head {FIX[:7]}"))
 
     def test_latest_verdict_decides(self):
         older = verdict(MAJOR, sha=EARLIER, at=AT - timedelta(hours=2))
@@ -264,8 +275,10 @@ class MainTest(unittest.TestCase):
             return json.dumps({"headRefOid": FIX, "title": title})
         with unittest.mock.patch.object(merge_rule, "api", lambda path, jq, paginate=True: answers[path]), \
                 unittest.mock.patch.object(merge_rule, "workflow_path", lambda url: url), \
-                unittest.mock.patch.object(merge_rule, "gh", gh), unittest.mock.patch("builtins.print"):
-            return merge_rule.main(["160", tier])
+                unittest.mock.patch.object(merge_rule, "gh", gh), unittest.mock.patch("builtins.print") as printed:
+            code = merge_rule.main(["160", tier])
+        self.printed = [call.args[0] for call in printed.call_args_list]
+        return code
 
     MINOR_STATUS = {"state": "failure", "description": MINOR, "created_at": "2026-10-20T11:01:08Z", "target_url": PR_URL}
     CLEAN_STATUS = {"state": "success", "description": "r2 clean: fixed", "created_at": "2026-10-20T13:00:00Z", "target_url": PR_URL}
@@ -276,6 +289,20 @@ class MainTest(unittest.TestCase):
 
     def test_a_clean_verdict_on_the_head_passes(self):
         self.assertEqual(self.run_main({REVIEWED: [self.MINOR_STATUS], FIX: [self.CLEAN_STATUS]}), 0)
+
+    def test_an_unreadable_latest_status_is_quoted_and_an_older_clean_one_does_not_count(self):
+        unreadable = {**self.CLEAN_STATUS, "description": UNREADABLE, "created_at": "2026-10-20T14:00:00Z"}
+        self.assertEqual(self.run_main({FIX: [self.CLEAN_STATUS, unreadable]}), 1)
+        self.assertEqual(self.printed, [f'merge-rule: latest review/agent status does not parse: "{UNREADABLE}"; '
+                                        "use r<N>[letter] clean or r<N>[letter] changes needed: xB/yM/zm"])
+
+    def test_with_no_status_of_this_pr_there_is_no_verdict_yet(self):
+        pending = {**self.CLEAN_STATUS, "state": "pending", "description": "r3 in review", "created_at": "2026-10-20T14:00:00Z"}
+        foreign = {**self.CLEAN_STATUS, "description": UNREADABLE, "target_url": "https://github.com/tylers2222/Monocode-Unlocked/pull/159"}
+        for statuses in ({}, {FIX: [pending, foreign]}):
+            with self.subTest(statuses=statuses):
+                self.assertEqual(self.run_main(statuses), 1)
+                self.assertEqual(self.printed, ["merge-rule: no review verdict yet"])
 
     def test_another_prs_verdict_does_not_count(self):
         foreign = {**self.CLEAN_STATUS, "target_url": "https://github.com/tylers2222/Monocode-Unlocked/pull/159"}

@@ -9,7 +9,9 @@ gate-mutation workflow, unless its title's ticket is in mutation-exempt-tickets.
 (read beside this script, so from the gate's default-branch checkout). For a
 minors-only verdict the reason names each minor (m1 to mK) that has no fixer-proof
 comment line by a collaborator yet; with every proof in, the head still needs a
-re-review verdict. A verdict is never carried to a newer head.
+re-review verdict. A verdict is never carried to a newer head. When the latest
+review/agent status for this PR is no verdict, the reason quotes it: an older verdict
+does not decide then.
 
 Usage: python3 scripts/process/merge_rule.py <pr> <T1|T2|T3>
 Prints "merge-rule: <reason>" and exits 0 when the head may merge, 1 when it may not and
@@ -38,7 +40,8 @@ TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 MUTATION_CHECK, MUTATION_APP, MUTATION_WORKFLOW = "gate/mutation", 15368, ".github/workflows/gate-mutation.yml"
 EXEMPT_LIST = Path(__file__).with_name("mutation-exempt-tickets.txt")
 
-VERDICT = re.compile(r"^r(\d+) (clean|changes needed)\b(?::\s*(\d+)B/(\d+)M/(\d+)m)?")
+VERDICT = re.compile(r"^(r\d+[a-z]?) (clean|changes needed)\b(?::\s*(\d+)B/(\d+)M/(\d+)m)?")
+VERDICT_FORMAT = "r<N>[letter] clean or r<N>[letter] changes needed: xB/yM/zm"
 _TEST = r"[^\s|](?:[^|]*[^\s|])?"
 _MUTANT = r"[^\s|]+"
 PROOF = re.compile(
@@ -51,7 +54,7 @@ PROOF_FORMAT = "fixer-proof: <id> test=<name>, mutant=<id>, or test=<name> | mut
 @dataclass(frozen=True)
 class Verdict:
     sha: str
-    round: int
+    round: str  # as written, e.g. "r2b"
     clean: bool
     blockers: int | None
     majors: int | None
@@ -82,11 +85,11 @@ def parse_verdict(sha: str, description: str, at: datetime) -> Verdict | None:
     match = VERDICT.match(description)
     if match is None:
         return None
-    number, kind, *counts = match.groups()
+    round_, kind, *counts = match.groups()
     if kind == "clean":
-        return Verdict(sha, int(number), True, 0, 0, 0, at)
+        return Verdict(sha, round_, True, 0, 0, 0, at)
     blockers, majors, minors = (None if count is None else int(count) for count in counts)
-    return Verdict(sha, int(number), False, blockers, majors, minors, at)
+    return Verdict(sha, round_, False, blockers, majors, minors, at)
 
 
 def parse_proofs(comments: Iterable[Mapping[str, str]]) -> tuple[list[Proof], list[str]]:
@@ -109,16 +112,26 @@ def parse_proofs(comments: Iterable[Mapping[str, str]]) -> tuple[list[Proof], li
     return proofs, errors
 
 
-def collect_verdicts(statuses_by_sha: Mapping[str, Iterable[Mapping[str, str]]], pr_url: str) -> list[Verdict]:
-    """Verdicts from the review/agent statuses of the PR's commits. A status belongs to a
-    commit, not a PR, so one posted for another PR (its target_url) is not this PR's verdict."""
+def pr_statuses(statuses_by_sha: Mapping[str, Iterable[Mapping[str, str]]], pr_url: str) -> list[tuple[str, str, datetime]]:
+    """(sha, description, time) of the PR's non-pending review/agent statuses. A status
+    belongs to a commit, not a PR, so one posted for another PR (its target_url) is not this PR's."""
     return [
-        verdict
+        (sha, status["description"] or "", parse_time(status["created_at"]))
         for sha, statuses in statuses_by_sha.items()
         for status in statuses
         if status["state"] != "pending" and status.get("target_url") == pr_url
-        if (verdict := parse_verdict(sha, status["description"] or "", parse_time(status["created_at"])))
     ]
+
+
+def collect_verdicts(statuses_by_sha: Mapping[str, Iterable[Mapping[str, str]]], pr_url: str) -> list[Verdict]:
+    """Verdicts from the PR's review/agent statuses."""
+    return [verdict for status in pr_statuses(statuses_by_sha, pr_url) if (verdict := parse_verdict(*status))]
+
+
+def unread_latest(statuses_by_sha: Mapping[str, Iterable[Mapping[str, str]]], pr_url: str) -> str | None:
+    """The description of the PR's latest review/agent status when it is no verdict, else None."""
+    status = max(pr_statuses(statuses_by_sha, pr_url), key=lambda status: status[2], default=None)
+    return status[1] if status and parse_verdict(*status) is None else None
 
 
 def latest(verdicts: Iterable[Verdict]) -> Verdict | None:
@@ -127,10 +140,10 @@ def latest(verdicts: Iterable[Verdict]) -> Verdict | None:
 
 def describe(verdict: Verdict) -> str:
     if verdict.clean:
-        return f"r{verdict.round} clean"
+        return f"{verdict.round} clean"
     if None in (verdict.blockers, verdict.majors, verdict.minors):
-        return f"r{verdict.round} changes needed (no B/M/m counts)"
-    return f"r{verdict.round} changes needed ({verdict.blockers}B/{verdict.majors}M/{verdict.minors}m)"
+        return f"{verdict.round} changes needed (no B/M/m counts)"
+    return f"{verdict.round} changes needed ({verdict.blockers}B/{verdict.majors}M/{verdict.minors}m)"
 
 
 def refuse(reason: str) -> Decision:
@@ -146,10 +159,13 @@ def exempt_ticket(title: str, listed: str) -> str | None:
 
 
 def decide(tier: str, head: str, verdicts: Sequence[Verdict], proofs: Iterable[Proof],
-           mutation: str | None = None, exempt: str | None = None) -> Decision:
+           mutation: str | None = None, exempt: str | None = None, unread: str | None = None) -> Decision:
     """Decides on the latest verdict. mutation is mutation_result() for the head: a
     conclusion, "pending", or None when there is no trusted gate/mutation run. exempt is
-    exempt_ticket() for the PR: a T3 head of that ticket needs no green gate/mutation."""
+    exempt_ticket() for the PR: a T3 head of that ticket needs no green gate/mutation.
+    unread is unread_latest() for the PR: when set, no verdict decides."""
+    if unread is not None:
+        return refuse(f"latest review/agent status does not parse: {json.dumps(unread, ensure_ascii=False)}; use {VERDICT_FORMAT}")
     verdict = latest(verdicts)
     if verdict is None:
         return refuse("no review verdict yet")
@@ -168,7 +184,7 @@ def decide(tier: str, head: str, verdicts: Sequence[Verdict], proofs: Iterable[P
     proven = {proof.finding for proof in proofs if proof.at > verdict.at}
     missing = [f"m{n}" for n in range(1, verdict.minors + 1) if f"m{n}" not in proven]
     if missing:
-        return refuse(f"no fixer-proof after r{verdict.round} ({sha7}) for {', '.join(missing)}")
+        return refuse(f"no fixer-proof after {verdict.round} ({sha7}) for {', '.join(missing)}")
     return refuse(f"{name} {where}: each minor has a fixer proof; the head needs a re-review verdict")
 
 
@@ -211,14 +227,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     review_statuses = f'.[] | select(.context == "{REVIEW_CONTEXT}") | {{state, description, created_at, target_url}}'
     statuses_by_sha = {sha: api(f"repos/{REPO}/commits/{sha}/statuses", review_statuses)
                        for sha in api(f"repos/{REPO}/pulls/{args.pr}/commits", ".[].sha")}
-    verdicts = collect_verdicts(statuses_by_sha, f"https://github.com/{REPO}/pull/{args.pr}")
+    pr_url = f"https://github.com/{REPO}/pull/{args.pr}"
+    verdicts, unread = collect_verdicts(statuses_by_sha, pr_url), unread_latest(statuses_by_sha, pr_url)
     comments = ".[] | {body, createdAt: .created_at, authorAssociation: .author_association}"
     proofs, errors = parse_proofs(api(f"repos/{REPO}/issues/{args.pr}/comments", comments))
     runs = api(f"repos/{REPO}/commits/{head}/check-runs", ".check_runs[] | {id, name, status, conclusion, details_url, head_sha, app_id: .app.id}")
     workflow_paths = {run["id"]: workflow_path(run["details_url"]) for run in runs if run["name"] == MUTATION_CHECK}
 
     exempt = exempt_ticket(pr["title"], EXEMPT_LIST.read_text())
-    decision = decide(args.tier, head, verdicts, proofs, mutation_result(runs, head, workflow_paths), exempt)
+    decision = decide(args.tier, head, verdicts, proofs, mutation_result(runs, head, workflow_paths), exempt, unread)
     for line in [*errors, decision.reason]:
         print(f"merge-rule: {line}")
     return 0 if decision.ok else 1
