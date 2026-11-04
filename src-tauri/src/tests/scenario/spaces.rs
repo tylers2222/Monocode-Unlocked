@@ -785,6 +785,7 @@ fn spawn_on(world: &World, session: &str, provider: &str, login: &str) -> Result
     crate::spaces::prepare_spawn(
         world.store(),
         crate::spaces::Child::Session(session),
+        &world.window_space(),
         None,
         world.now(),
         target,
@@ -1087,7 +1088,9 @@ fn the_grant_command_stores_what_the_card_sends() {
     let two = spaces::create(&store(), "Two", None, 0).unwrap();
     claude_login(&store(), FIRST_SPACE, "one");
     claude_login(&store(), &two.id, "work");
-    let saved = grants::spaces_grant_save(store(), request(GrantLength::OneHour, None)).unwrap();
+    let window = crate::scenario::agent_sandbox::main_window(&app);
+    let save = |request| grants::spaces_grant_save(window.clone(), store(), request);
+    let saved = save(request(GrantLength::OneHour, None)).unwrap();
     assert_eq!(
         (
             saved.session_id.as_str(),
@@ -1105,7 +1108,7 @@ fn the_grant_command_stores_what_the_card_sends() {
         "the command did not store the grant it returned"
     );
     assert_eq!(
-        grants::spaces_grant_save(store(), request(GrantLength::UntilReset, None)),
+        save(request(GrantLength::UntilReset, None)),
         Err("The provider reported no reset time for the first login; pick a length".into()),
         "the command took \"until the first login resets\" with no reset"
     );
@@ -1162,7 +1165,7 @@ fn the_card_grants_another_spaces_login_from_the_resolved_one() {
             to_account_id: to.into(),
             ..request(GrantLength::OneHour, None)
         };
-        grants::grant_from_card(world.store(), &request, world.now())
+        grants::grant_from_card(world.store(), &request, &world.window_space(), world.now())
             .map(|grant| (grant.from_account_id, grant.to_account_id))
     };
     let from = |space_login: &str| Ok((space_login.to_owned(), "two".to_owned()));
@@ -1912,9 +1915,8 @@ mod helpers {
                     key: None,
                     owner: Some("ghost"),
                     neutral,
-                    window: FIRST_SPACE,
                 };
-                let _ = placed_tx.send(prepare_spawn(store, ghost, None, 0, target));
+                let _ = placed_tx.send(prepare_spawn(store, ghost, FIRST_SPACE, None, 0, target));
             });
             let placed = placed_rx
                 .recv_timeout(std::time::Duration::from_secs(30))

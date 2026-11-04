@@ -542,7 +542,8 @@ pub fn spaces_settings_get<R: Runtime>(
 }
 
 /// Saves `patch`. A Space it names is the calling window's Space from now
-/// on, and the app's active Space, the one a new window and a new row join.
+/// on, the one that window's new rows join (ADE-244), and the app's active
+/// Space, the one a new window opens in.
 #[tauri::command(async)]
 pub fn spaces_settings_set<R: Runtime>(
     window: WebviewWindow<R>,
@@ -674,13 +675,11 @@ pub(crate) enum Child<'a> {
     /// A text, catalog, skills or login child keyed `key`, or a one-shot
     /// `harness_exec` (no key): the session the window says it works for.
     /// Without a stored one it runs in `neutral`, a folder that is no project
-    /// checkout, unless [`OWNERLESS_KEEPS_CALLER_FOLDER`] names it. `window`
-    /// is the Space of the window that called ([`window_space`]).
+    /// checkout, unless [`OWNERLESS_KEEPS_CALLER_FOLDER`] names it.
     Helper {
         key: Option<&'a str>,
         owner: Option<&'a str>,
         neutral: &'a Path,
-        window: &'a str,
     },
 }
 
@@ -706,12 +705,14 @@ impl Child<'_> {
 /// (ADE-189 4/4), so a key only they used is not here.
 ///
 /// Such a call of no stored session is judged ([`leases::unsaved_space`],
-/// ADE-209) as the Space its unsaved owner's row would join, or, when it
-/// names no owner at all, as the Space of the window that called
-/// ([`window_space`]). Its guard is the checkout lease check
-/// ([`leases::keep_ownerless`]): it is refused in a checkout another Space
-/// holds, and nothing is spawned there. It starts with that Space's login
-/// (`account::resolve_in`), not the CLI's own.
+/// ADE-209) as the Space its unsaved owner's row would join, which for a tab
+/// is the Space of the window that called (ADE-244), or, when it names no
+/// owner at all, as that window's Space ([`window_space`]). Its guard is the
+/// checkout lease check ([`leases::keep_ownerless`]): it is refused in a
+/// checkout another Space holds, and nothing is spawned there. It starts with
+/// that Space's login (`account::resolve_in`), not the CLI's own, and an
+/// unsaved owner's usage-limit grant is checked as a stored owner's is
+/// (`grants::route`).
 ///
 /// The Grok cleanup exec (`grokText.ts` `deleteTextSession`, `sessions
 /// delete`) passes `monocode-grok-text` as its key, so it runs where its text
@@ -753,11 +754,14 @@ thread_local! {
 /// Space's (`account::resolve`); then the grant check (`grants::route`); then
 /// the checkout lease (`leases::claim`). The owner a helper names is the
 /// window's word: a stored session's Space counts, and the lease claim checks
-/// it. A helper under the ownerless-helper rule of no stored session is
-/// judged as the Space [`leases::unsaved_space`] names instead.
+/// it. `window` is the Space of the window that called ([`window_space`]): a
+/// session not saved yet is in it, as its row will be. A helper under the
+/// ownerless-helper rule of no stored session is judged as the Space
+/// [`leases::unsaved_space`] names instead.
 pub(crate) fn prepare_spawn(
     store: &SessionStore,
     child: Child<'_>,
+    window: &str,
     provider: Option<Provider>,
     now: i64,
     target: SpawnTarget,
@@ -765,25 +769,24 @@ pub(crate) fn prepare_spawn(
     #[cfg(test)]
     HOOKED_SPAWNS.with(|spawns| spawns.set(spawns.get() + 1));
     let (no_space, kept) = match child {
-        Child::Session(_) => (None, None),
-        Child::Helper {
-            key,
-            neutral,
-            window,
-            ..
-        } => {
+        Child::Session(_) => (None, false),
+        Child::Helper { key, neutral, .. } => {
             let keeps = key.is_some_and(|key| {
                 OWNERLESS_KEEPS_CALLER_FOLDER
                     .iter()
                     .any(|listed| key.starts_with(listed))
             });
-            ((!keeps).then_some(neutral), keeps.then_some(window))
+            ((!keeps).then_some(neutral), keeps)
         }
     };
-    if let Some(window) = kept {
+    if kept {
         if let Some(space) = leases::unsaved_space(store, child.session(), window)? {
             leases::keep_ownerless(store, &target.workdir, &space)?;
-            return account::resolve_in(store, &space, provider, target);
+            let target = account::resolve_in(store, &space, child.session(), provider, target)?;
+            return match child.session() {
+                Some(owner) => grants::route(store, owner, now, target),
+                None => Ok(target),
+            };
         }
     }
     let Some(session_id) = child.session() else {
@@ -792,7 +795,7 @@ pub(crate) fn prepare_spawn(
             ..target
         });
     };
-    let target = account::resolve(store, session_id, provider, target)?;
+    let target = account::resolve(store, session_id, window, provider, target)?;
     let target = grants::route(store, session_id, now, target)?;
     leases::claim(store, session_id, target, no_space)
 }

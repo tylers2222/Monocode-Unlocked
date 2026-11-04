@@ -331,6 +331,7 @@ fn read_artifact(row: &rusqlite::Row<'_>) -> rusqlite::Result<Artifact> {
 mod tests {
     use super::*;
     use crate::notes::upsert_content;
+    use crate::spaces::FIRST_SPACE;
 
     #[test]
     fn html_artifacts_round_trip_their_kind() {
@@ -443,12 +444,12 @@ mod tests {
             ]
         }))
         .unwrap();
-        upsert_session(&conn, &session).unwrap();
+        upsert_session(&conn, &session, FIRST_SPACE).unwrap();
         let mono = SessionUpsert {
             id: "mono".into(),
             ..session.clone()
         };
-        upsert_session(&conn, &mono).unwrap();
+        upsert_session(&conn, &mono, FIRST_SPACE).unwrap();
         crate::mono_transcript::migrate_transcript(&conn, "mono").unwrap();
         delete_artifact(&conn, "remove").unwrap();
         delete_artifact(&conn, "remove").unwrap();
@@ -473,7 +474,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(), blocks[0]);
         // An older client save still contains both references, but the deleted
         // card is filtered before it reaches storage again.
-        upsert_session(&conn, &session).unwrap();
+        upsert_session(&conn, &session, FIRST_SPACE).unwrap();
         assert_eq!(
             get_session(&conn, "normal").unwrap().unwrap().blocks,
             blocks

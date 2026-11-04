@@ -4,19 +4,31 @@
 //! never the Space another window switched the app to. Its guard
 //! (`leases::keep_ownerless`) refuses it in another Space's checkout, and it
 //! starts with its Space's login (`account::resolve_in`), not the CLI's own.
+//!
+//! ADE-244: a new session or Mono row with no parent joins the Space of the
+//! window that saves it (`session_upsert`, `monos_create`), so it is listed
+//! where that window shows, and an unsaved tab's helper is judged by that
+//! same Space. A parent's Space still comes first, and a `sessions.start`
+//! row of the agent CLI or MCP whose lead is not saved still joins the app's
+//! active Space.
 
 use std::path::{Path, PathBuf};
 
+use serde_json::json;
 use tauri::test::MockRuntime;
 use tauri::{App, Manager, WebviewWindow};
 
 use super::agent_sandbox::{mock_app, script, wait_for};
 use super::space_checkouts::{git_project, temp_root, two_spaces};
+use super::space_login::save_automation_run;
 use crate::harness::HarnessAccount;
-use crate::session_store::SessionStore;
+use crate::mono_roster::{self, MonoCreate};
+use crate::session_store::{self, SessionStore, SessionUpsert};
 use crate::spaces::account::{self, ProviderAccount, SpaceLogin};
+use crate::spaces::grants::{self, RouteGrant};
 use crate::spaces::{
-    self, leases, prepare_spawn, Child, Helper, Provider, SettingsPatch, SpawnTarget, FIRST_SPACE,
+    self, leases, prepare_spawn, Child, Helper, ProjectLogin, Provider, SettingsPatch, SpawnTarget,
+    FIRST_SPACE,
 };
 
 const TWO: &str = "space-2";
@@ -76,6 +88,21 @@ fn helper(
     workdir: &Path,
     provider: &str,
 ) -> Result<String, String> {
+    let account = HarnessAccount {
+        provider: provider.into(),
+        id: "default".into(),
+    };
+    helper_on(rig, window, (key, owner), workdir, account)
+}
+
+/// [`helper`], naming login `account`.
+fn helper_on(
+    rig: &Rig,
+    window: &WebviewWindow<MockRuntime>,
+    (key, owner): (&str, Option<&str>),
+    workdir: &Path,
+    account: HarnessAccount,
+) -> Result<String, String> {
     crate::harness::harness_spawn(
         rig.app.handle().clone(),
         window.clone(),
@@ -84,10 +111,7 @@ fn helper(
         text(&rig.fx),
         vec!["acp".into(), key.into()],
         text(workdir),
-        Some(HarnessAccount {
-            provider: provider.into(),
-            id: "default".into(),
-        }),
+        Some(account),
         Some("fx".into()),
         Some(text(&rig.fx)),
         None,
@@ -270,9 +294,11 @@ esac"#,
     assert_eq!(held(), leased);
 
     each_window_keeps_its_own_space(&rig);
+    new_rows_join_the_saving_windows_space(&rig);
     window_a_stays_in_space_one(&rig);
     window_b_works_in_space_two(&rig);
     an_owned_helper_keeps_its_owners_space(&rig);
+    an_unsaved_owner_is_checked_as_a_saved_one(&rig);
     assert_eq!(held(), leased, "a call of no stored session took a lease");
     a_closed_window_forgets_its_space(&rig);
     let _ = std::fs::remove_dir_all(&root);
@@ -394,8 +420,8 @@ fn window_b_works_in_space_two(rig: &Rig) {
             key: Some("monocode-claude-text-panel"),
             owner: None,
             neutral: &neutral,
-            window: TWO,
         },
+        TWO,
         Some(Provider::Claude),
         0,
         SpawnTarget {
@@ -417,9 +443,10 @@ fn window_b_works_in_space_two(rig: &Rig) {
 /// never from the calling window. After B's switch, Space 1's session `one`
 /// still runs in its project from window B, and Space 2's session `two` in
 /// its copy from window A. An owner that is no stored session is in the
-/// Space its row would join (`space_for_row`) from either window: an unsaved
-/// child of `two` (`app-two-<request>`) is Space 2's, and so is an unsaved
-/// tab now that the app's active Space is Space 2.
+/// Space its row would join (`space_for_row`): an unsaved child of `two`
+/// (`app-two-<request>`) is Space 2's from either window, and an unsaved tab
+/// is its window's (ADE-244): A's `/` picker runs in A's own Space 1
+/// checkout, though the app's active Space is Space 2 (#527 m1).
 fn an_owned_helper_keeps_its_owners_space(rig: &Rig) {
     let (a, b) = (&rig.a, &rig.b);
     let work2 = login(rig, Some("work2"));
@@ -468,16 +495,197 @@ fn an_owned_helper_keeps_its_owners_space(rig: &Rig) {
             TWO,
             "a Space 2 lead's unsaved child was judged by its window's Space",
         );
-        refused(
-            rig,
-            window,
-            &format!("monocode-pi-skills-tab-into-one-{side}"),
-            Some("unsaved-tab"),
-            (&rig.project, FIRST_SPACE),
-            TWO,
-            "an unsaved tab's picker was judged by its window, not the Space its row would join",
-        );
     }
+    runs(
+        rig,
+        a,
+        "monocode-pi-skills-tab-a",
+        Some("unsaved-tab"),
+        &rig.project,
+        "",
+        "window A's unsaved tab's picker was refused in A's own Space 1 checkout after B switched",
+    );
+    refused(
+        rig,
+        a,
+        "monocode-pi-skills-tab-into-two-a",
+        Some("unsaved-tab"),
+        (&rig.copy, TWO),
+        FIRST_SPACE,
+        "window A's unsaved tab's picker was judged by another Space than A's",
+    );
+    runs(
+        rig,
+        b,
+        "monocode-pi-skills-tab-b",
+        Some("unsaved-tab"),
+        &rig.copy,
+        &work2,
+        "window B's unsaved tab's picker did not run in Space 2's copy with Space 2's login",
+    );
+    refused(
+        rig,
+        b,
+        "monocode-pi-skills-tab-into-one-b",
+        Some("unsaved-tab"),
+        (&rig.project, FIRST_SPACE),
+        TWO,
+        "window B's unsaved tab's picker was judged by another Space than B's",
+    );
+}
+
+/// What `window` saves for new session `id` in the project, naming `lead`
+/// (`session_upsert`): the Space its reply gives it, which the project's
+/// session list gives it too.
+fn save(rig: &Rig, window: &WebviewWindow<MockRuntime>, id: &str, lead: Option<&str>) -> String {
+    let session: SessionUpsert = serde_json::from_value(json!({
+        "id": id,
+        "cwd": text(&rig.project),
+        "harness": "codex",
+        "model": "codex:default",
+        "modelSettings": {},
+        "runtimeMode": "auto",
+        "title": id,
+        "blocks": [{"id": "u1", "role": "user", "text": "Start"}],
+        "leadSessionId": lead,
+    }))
+    .unwrap();
+    let reply = session_store::session_upsert(window.clone(), store(rig), session).unwrap();
+    let listed = session_store::session_list_by_project(store(rig), text(&rig.project)).unwrap();
+    let row = listed.iter().find(|row| row.id == id);
+    assert_eq!(
+        row.map(|row| row.space_id.as_str()),
+        Some(reply.space_id.as_str()),
+        "{id}: the project's list gives it another Space than the save's reply"
+    );
+    reply.space_id
+}
+
+/// The Space of new Mono `id` that `window` creates (`monos_create`), as the
+/// roster lists it.
+fn create_mono(rig: &Rig, window: &WebviewWindow<MockRuntime>, id: &str) -> String {
+    let mono: MonoCreate = serde_json::from_value(json!({
+        "id": id,
+        "role": "mono",
+        "data": {"name": id},
+        "sortOrder": 0,
+    }))
+    .unwrap();
+    let roster =
+        mono_roster::monos_create(rig.app.handle().clone(), window.clone(), store(rig), mono)
+            .unwrap();
+    let row = roster.monos.into_iter().find(|row| row.id == id).unwrap();
+    row.space_id
+}
+
+/// After B's switch to Space 2, the app's active Space, a session or Mono
+/// with no parent that A saves joins Space 1, the Space A shows, and one B
+/// saves joins Space 2. A parent's Space comes first from either window. A
+/// `sessions.start` row (an `app-<lead>-<request>` id, or a lead) whose lead
+/// is not saved joins the app's active Space, as before ADE-244.
+fn new_rows_join_the_saving_windows_space(rig: &Rig) {
+    let (a, b) = (&rig.a, &rig.b);
+    assert_eq!(
+        save(rig, a, "row-a", None),
+        shows(rig, a),
+        "a session saved from window A after B switched is not in the Space A shows"
+    );
+    assert_eq!(shows(rig, a), FIRST_SPACE);
+    assert_eq!(
+        save(rig, b, "row-b", None),
+        TWO,
+        "a session saved from window B is not in Space 2"
+    );
+    assert_eq!(
+        create_mono(rig, a, "mono-a"),
+        FIRST_SPACE,
+        "a Mono created from window A after B switched is not in the Space A shows"
+    );
+    assert_eq!(
+        create_mono(rig, b, "mono-b"),
+        TWO,
+        "a Mono created from window B is not in Space 2"
+    );
+    assert_eq!(
+        save(rig, a, "app-two-r7", Some("two")),
+        TWO,
+        "a child of Space 2's session saved from window A left its parent's Space"
+    );
+    assert_eq!(
+        save(rig, b, "app-one-r7", Some("one")),
+        FIRST_SPACE,
+        "a child of Space 1's session saved from window B left its parent's Space"
+    );
+    assert_eq!(
+        save(rig, a, "app-gone-r1", None),
+        TWO,
+        "an agent's start whose lead is not saved left the app's active Space"
+    );
+    assert_eq!(
+        save(rig, a, "worker-of-gone", Some("gone")),
+        TWO,
+        "a worker whose lead is not saved left the app's active Space"
+    );
+}
+
+/// #527 m2: a helper of an unsaved owner takes the project of the
+/// automation run it is, as `account::resolve` does, and an ended
+/// usage-limit grant of that owner refuses it, as `grants::route` refuses a
+/// stored owner's helper.
+fn an_unsaved_owner_is_checked_as_a_saved_one(rig: &Rig) {
+    let auto = rig.fx.with_file_name("auto-project");
+    let elsewhere = rig.fx.with_file_name("elsewhere");
+    for folder in [&auto, &elsewhere] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    let proj2 = ProviderAccount {
+        provider: Provider::Claude,
+        id: "proj2".into(),
+        label: "Space 2 project".into(),
+    };
+    account::save_account(&store(rig), &proj2, 0).unwrap();
+    spaces::set_project_space(&store(rig), &text(&auto), TWO).unwrap();
+    let project_login = ProjectLogin {
+        space_id: TWO.into(),
+        project_path: text(&auto),
+        provider: Provider::Claude,
+        account_id: "proj2".into(),
+    };
+    spaces::set_project_login(&store(rig), &project_login).unwrap();
+    save_automation_run(&store(rig).lock_conn().unwrap(), "auto-run", &text(&auto));
+    runs(
+        rig,
+        &rig.a,
+        "monocode-claude-text-auto-run",
+        Some("auto-run"),
+        &elsewhere,
+        &login(rig, Some("proj2")),
+        "an unsaved automation run's helper did not start with its run's project's login",
+    );
+
+    let ended = RouteGrant {
+        session_id: "tab-granted".into(),
+        provider: Provider::Claude,
+        from_account_id: "proj2".into(),
+        to_account_id: "work2".into(),
+        granted_at: 0,
+        expires_at: 1,
+    };
+    grants::save_grant(&store(rig), &ended).unwrap();
+    let key = "monocode-claude-text-granted";
+    let work2 = HarnessAccount {
+        provider: "claude".into(),
+        id: "work2".into(),
+    };
+    let result = helper_on(rig, &rig.b, (key, Some("tab-granted")), &rig.copy, work2);
+    assert!(
+        result
+            .as_ref()
+            .is_err_and(|error| error.starts_with("route_grant_expired")),
+        "an unsaved owner's helper ran on its ended grant: {result:?}"
+    );
+    assert!(!rig.copy.join(key).exists(), "the helper was spawned");
+    assert_eq!(grants::grant(&store(rig), "tab-granted"), Ok(None));
 }
 
 /// Closing window B (`destroy_window`, the end of every workspace window's

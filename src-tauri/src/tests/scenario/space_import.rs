@@ -824,6 +824,7 @@ fn app_reads_the_spaces(rig: &Rig) {
         spaces::prepare_spawn(
             &store,
             spaces::Child::Session(session),
+            spaces::FIRST_SPACE,
             Some(Provider::Claude),
             NOW,
             target,

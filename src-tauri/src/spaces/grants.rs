@@ -3,7 +3,7 @@
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, Runtime, State};
+use tauri::{Manager, Runtime, State, WebviewWindow};
 
 use super::{account, membership, with_conn, Provider, SpawnTarget};
 use crate::harness::{HarnessAccount, HarnessHost};
@@ -156,11 +156,13 @@ pub(crate) fn write_grant(
 /// runs on for another Space's login on the same CLI. The card sends the
 /// session's own or its project's login, else `default`, which is its Space's
 /// login: resolved here as the spawn hook resolves it, so the grant names the
-/// login the session goes back to. The card shows the active Space; this
-/// reads the Space the session is saved in.
+/// login the session goes back to. The card shows the Space of its window,
+/// `window`; this reads the Space the session is saved in, or, for one not
+/// saved yet, the Space its row would join from that window.
 pub(crate) fn grant_from_card(
     store: &SessionStore,
     request: &GrantRequest,
+    window: &str,
     now: i64,
 ) -> Result<RouteGrant, String> {
     let asked = SpawnTarget {
@@ -170,11 +172,17 @@ pub(crate) fn grant_from_card(
             id: request.from_account_id.clone(),
         }),
     };
-    let from = account::resolve(store, &request.session_id, Some(request.provider), asked)?
-        .account
-        .map_or_else(|| request.from_account_id.clone(), |account| account.id);
+    let from = account::resolve(
+        store,
+        &request.session_id,
+        window,
+        Some(request.provider),
+        asked,
+    )?
+    .account
+    .map_or_else(|| request.from_account_id.clone(), |account| account.id);
     let another_space = with_conn(store, |conn| {
-        let space = membership::space_for_row(conn, &request.session_id, None)?;
+        let space = membership::space_for_row(conn, &request.session_id, None, window)?;
         conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM space_accounts
                              WHERE provider = ?1 AND account_id = ?2 AND space_id <> ?3)",
@@ -217,11 +225,13 @@ pub fn spaces_grant_get(
 }
 
 #[tauri::command(async)]
-pub fn spaces_grant_save(
+pub fn spaces_grant_save<R: Runtime>(
+    window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
     request: GrantRequest,
 ) -> Result<RouteGrant, String> {
-    grant_from_card(&store, &request, now_millis())
+    let space = super::window_space(&store, window.label())?;
+    grant_from_card(&store, &request, &space, now_millis())
 }
 
 #[tauri::command(async)]

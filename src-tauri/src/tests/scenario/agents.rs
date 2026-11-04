@@ -36,6 +36,7 @@ impl World {
     /// `add_mono` with the Mono's `projects`.
     pub(crate) fn add_mono_in(&self, id: &str, role: MonoRole, projects: &[&str]) -> Mono {
         let chat = format!("{id}-chat");
+        let window = self.window_space();
         let conn = self.conn();
         let mono: MonoCreate = serde_json::from_value(json!({
             "id": id,
@@ -44,7 +45,7 @@ impl World {
             "sortOrder": 0,
         }))
         .unwrap();
-        mono_roster::create(&conn, &mono_roster::validate_create(mono).unwrap()).unwrap();
+        mono_roster::create(&conn, &mono_roster::validate_create(mono).unwrap(), &window).unwrap();
         let session: SessionUpsert = serde_json::from_value(json!({
             "id": chat,
             "cwd": "/",
@@ -56,7 +57,7 @@ impl World {
             "blocks": [],
         }))
         .unwrap();
-        session_store::upsert_session(&conn, &session).unwrap();
+        session_store::upsert_session(&conn, &session, &window).unwrap();
         Mono {
             id: MonoId::parse(id).unwrap(),
             chat: SessionId::parse(&chat).unwrap(),
@@ -78,7 +79,8 @@ impl World {
             "leadSessionId": lead,
         }))
         .unwrap();
-        session_store::upsert_session(&self.conn(), &session).unwrap();
+        let window = self.window_space();
+        session_store::upsert_session(&self.conn(), &session, &window).unwrap();
         SessionId::parse(id).unwrap()
     }
 
