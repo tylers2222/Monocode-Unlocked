@@ -35,22 +35,6 @@ pub(crate) struct MonoCodexStore {
     auth: crate::mono_keyring::Share,
 }
 
-/// The keyring entries a Mono home mirrors from its login: service, key prefix
-/// and suffix, around each folder's `home_key`.
-pub(crate) const MIRRORED: [(&str, &str, &str); 3] = [
-    ("Codex Auth", "cli", ""),
-    ("codex", "secrets", ""),
-    ("codex", "secrets", "|gateway-oauth"),
-];
-
-pub(crate) struct KeyringMirror {
-    pub(crate) service: &'static str,
-    pub(crate) source_key: String,
-    pub(crate) private_key: String,
-    // Never serialize or log credential contents.
-    pub(crate) source_value: Option<String>,
-}
-
 impl MonoCodexStore {
     /// Refreshes written by the private server must also reach the ordinary CLI.
     pub(crate) fn sync_auth(&self) {
@@ -303,103 +287,6 @@ pub(crate) fn home_key(home: &Path) -> Result<String, String> {
     Ok(digest[..16].to_owned())
 }
 
-pub(crate) fn read_keyring(service: &str, key: &str) -> Result<Option<String>, String> {
-    let entry =
-        keyring::Entry::new(service, key).map_err(|_| "Could not access Codex credentials")?;
-    match entry.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(_) => Err("Could not read Codex credentials from the system credential store".into()),
-    }
-}
-
-pub(crate) fn write_keyring(service: &str, key: &str, value: &str) -> Result<(), String> {
-    keyring::Entry::new(service, key)
-        .and_then(|e| e.set_password(value))
-        .map_err(|_| "Could not share Codex credentials with Mono storage".into())
-}
-
-pub(crate) fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringMirror>, String> {
-    // The default file store shares auth.json directly, with no Keychain prompt.
-    // `cli_auth_credentials_store` in config.toml is not read: the check here
-    // parsed the file as one TOML value, which no config file is, so it never
-    // matched (ADE-225 #521); reading it is its own change.
-    if !has_secrets(source) {
-        return Ok(Vec::new());
-    }
-    let source_hash = home_key(source)?;
-    let private_hash = home_key(home)?;
-    let mut mirrors = Vec::new();
-    for (service, prefix, suffix) in MIRRORED {
-        let source_key = format!("{prefix}|{source_hash}{suffix}");
-        let private_key = format!("{prefix}|{private_hash}{suffix}");
-        let value = read_keyring(service, &source_key)?;
-        let value = if service == "Codex Auth" {
-            let private = read_keyring(service, &private_key)?;
-            if newer_same_account(&private, &value) {
-                let recovered = private.as_ref().unwrap();
-                write_keyring(service, &source_key, recovered)?;
-                private
-            } else {
-                value
-            }
-        } else {
-            value
-        };
-        if let Some(value) = &value {
-            write_keyring(service, &private_key, value)?;
-        } else if let Ok(entry) = keyring::Entry::new(service, &private_key) {
-            match entry.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => {}
-                Err(_) => return Err("Could not clear the previous Mono Codex login".into()),
-            }
-        }
-        mirrors.push(KeyringMirror {
-            service,
-            source_key,
-            private_key,
-            source_value: value,
-        });
-    }
-    Ok(mirrors)
-}
-
-/// Codex has encrypted a secret for the login, under a key in the keyring.
-pub(crate) fn has_secrets(source: &Path) -> bool {
-    std::fs::read_dir(source.join("secrets"))
-        .map(|mut entries| entries.next().is_some())
-        .unwrap_or(false)
-}
-
-pub(crate) fn newer_same_account(private: &Option<String>, source: &Option<String>) -> bool {
-    let Some((private, source)) = private.as_ref().zip(source.as_ref()) else {
-        return false;
-    };
-    let Ok(private) = serde_json::from_str::<serde_json::Value>(private) else {
-        return false;
-    };
-    let Ok(source) = serde_json::from_str::<serde_json::Value>(source) else {
-        return false;
-    };
-    let account = |v: &serde_json::Value| {
-        v.get("tokens")
-            .and_then(|v| v.get("account_id"))
-            .and_then(|v| v.as_str())
-            .map(str::to_owned)
-    };
-    let Some(private_account) = account(&private) else {
-        return false;
-    };
-    if Some(private_account) != account(&source) {
-        return false;
-    }
-    private
-        .get("last_refresh")
-        .and_then(|v| v.as_str())
-        .zip(source.get("last_refresh").and_then(|v| v.as_str()))
-        .is_some_and(|(private, source)| private > source)
-}
-
 pub(crate) fn validate_thread_id(id: &str) -> Result<(), String> {
     if id.is_empty()
         || id.len() > 128
@@ -608,6 +495,9 @@ fn history_base(path: &Path) -> Result<Option<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mono_keyring::newer_same_account;
+    #[cfg(target_os = "linux")]
+    use crate::mono_keyring::{read_keyring, write_keyring};
 
     struct Fixture(PathBuf);
     impl Fixture {
@@ -808,6 +698,10 @@ mod tests {
         ));
         assert!(!newer_same_account(
             &auth("one", "2026-10-08T11:00:00Z"),
+            &auth("one", "2026-10-08T12:00:00Z")
+        ));
+        assert!(!newer_same_account(
+            &auth("one", "2026-10-08T12:00:00Z"),
             &auth("one", "2026-10-08T12:00:00Z")
         ));
         assert!(!newer_same_account(
