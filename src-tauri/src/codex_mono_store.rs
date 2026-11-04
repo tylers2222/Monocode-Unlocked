@@ -40,11 +40,6 @@ impl MonoCodexStore {
     pub(crate) fn sync_auth(&self) {
         self.auth.sync();
     }
-
-    /// The same, after a line of the child's output that may follow one.
-    pub(crate) fn sync_auth_after(&self, line: &str) {
-        self.auth.sync_after(line);
-    }
 }
 
 #[derive(Serialize)]
@@ -774,9 +769,9 @@ mod tests {
         assert_eq!(status, "open");
     }
 
-    /// Defect: a Mono store's sync, after a turn's last line or at the
-    /// child's exit, never reaches its home's mirror, so a refresh its private
-    /// server wrote never reaches the login. On keyutils, never a real Keychain.
+    /// Defect: a Mono store's sync never reaches its home's mirror, so a
+    /// refresh its private server wrote never reaches the login. On keyutils,
+    /// never a real Keychain.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_mono_store_sync_copies_a_refresh_to_the_login() {
@@ -791,17 +786,13 @@ mod tests {
             auth: crate::mono_keyring::share(&source, home.clone()).unwrap(),
             home: home.clone(),
         };
-        let mut login = Vec::new();
         write_keyring("codex", &key(&home), "token-2").unwrap();
-        store.sync_auth_after(r#"{"method":"turn/completed","params":{}}"#);
-        login.push(read_keyring("codex", &key(&source)).unwrap());
-        write_keyring("codex", &key(&home), "token-3").unwrap();
         store.sync_auth();
-        login.push(read_keyring("codex", &key(&source)).unwrap());
+        let login = read_keyring("codex", &key(&source)).unwrap();
         drop(store);
         for dir in [&source, &home] {
             let _ = keyring::Entry::new("codex", &key(dir)).and_then(|e| e.delete_credential());
         }
-        assert_eq!(login, [Some("token-2".into()), Some("token-3".into())]);
+        assert_eq!(login.as_deref(), Some("token-2"));
     }
 }

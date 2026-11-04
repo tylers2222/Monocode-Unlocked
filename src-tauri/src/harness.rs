@@ -1156,7 +1156,12 @@ pub fn harness_spawn<R: Runtime>(
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { break };
             if let Some(store) = &stdout_store {
-                store.sync_auth_after(&line);
+                if line.contains("\"turn/completed\"")
+                    || line.contains("\"item/started\"")
+                    || line.contains("\"account/updated\"")
+                {
+                    store.sync_auth();
+                }
             }
             if stdout_tx.send(line).is_err() {
                 break;

@@ -12,13 +12,22 @@
 //! home is live. The live Mono keeps its own entries, and no sync copies them
 //! over the new login, which wins from the next spawn on the idle home.
 //!
-//! A sync reads only the home's own entries until a child writes one (ADE-241):
-//! the login's entries are the ones Codex wrote, which macOS may prompt for.
+//! A sync reads the home's 3 entries, and a login entry only after a child
+//! changed its home entry (ADE-241). macOS may prompt MonoCode for an entry
+//! Codex created: each login entry, and a home entry the child made itself
+//! because the login had none at prepare. A home entry MonoCode created stays
+//! MonoCode's when Codex updates it in place, so it does not prompt.
+//!
+//! A sync runs on every `turn/completed`, `item/started` and `account/updated`
+//! line of a child, and at its exit (`harness.rs`). Codex refreshes a token
+//! before each model request, so inside a turn, but also outside one (a rate
+//! limit read, MCP or connector setup, a session start). No line follows such
+//! a refresh, so it waits for the child's next trigger line or its exit
+//! (follow-up ADE-243: a timer sync while a home is live).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
 
 use crate::codex_mono_store::home_key;
 
@@ -43,19 +52,7 @@ struct State {
     /// The login the home mirrors.
     source: PathBuf,
     mirrors: Vec<KeyringMirror>,
-    /// When the last sync ran, which spaces out the `item/started` ones.
-    synced_at: Option<Instant>,
-    /// An `item/started` sync waits for `ITEM_SYNC_GAP` to end.
-    deferred: bool,
 }
-
-/// The least time between a home's syncs that an `item/started` line starts.
-/// Codex refreshes a token just before a model request, inside a turn, and no
-/// line says so; the next `item/started` is the first line after it. The
-/// login's own Codex refreshes in the same last 5 minutes of that token's life
-/// and takes a synced token instead of spending the used refresh token, so
-/// the copy must reach the login well inside those 5 minutes: 10 s is 1/30.
-const ITEM_SYNC_GAP: Duration = Duration::from_secs(10);
 
 /// One live store's share of its home's mirror.
 pub(crate) struct Share {
@@ -93,43 +90,19 @@ pub(crate) fn share(source: &Path, home: PathBuf) -> Result<Share, String> {
 }
 
 impl Share {
+    /// Copies what the home's children wrote to the login, unless the login
+    /// changed on its own since the last sync. A failure is logged, and keeps
+    /// the home joined, not prepared again, until a sync succeeds.
     pub(crate) fn sync(&self) {
-        self.mirror.lock().sync_logged(&self.home);
-    }
-
-    /// Syncs after a line of the child's Codex app-server output that may
-    /// follow a write: at once after a turn or an account change, and at most
-    /// once per `ITEM_SYNC_GAP` after an item starts. An `item/started` inside
-    /// the gap defers one sync to its end, so a refresh just after a sync does
-    /// not wait for a long command to finish.
-    pub(crate) fn sync_after(&self, line: &str) {
-        if line.contains("\"turn/completed\"") || line.contains("\"account/updated\"") {
-            self.sync();
-        } else if line.contains("\"item/started\"") {
-            self.sync_spaced();
-        }
-    }
-
-    fn sync_spaced(&self) {
         let mut state = self.mirror.lock();
-        let wait = state.synced_at.map_or(Duration::ZERO, |at| {
-            ITEM_SYNC_GAP.saturating_sub(at.elapsed())
-        });
-        if wait.is_zero() {
-            state.sync_logged(&self.home);
-            return;
+        let synced = state.sync(&self.home);
+        if let Err(error) = &synced {
+            eprintln!(
+                "Could not copy the Mono Codex login back from {}: {error}",
+                self.home.display()
+            );
         }
-        if state.deferred {
-            return;
-        }
-        state.deferred = true;
-        let (home, mirror) = (self.home.clone(), Arc::clone(&self.mirror));
-        std::thread::spawn(move || {
-            std::thread::sleep(wait);
-            let mut state = mirror.lock();
-            state.deferred = false;
-            state.sync_logged(&home);
-        });
+        state.unsynced = synced.is_err();
     }
 }
 
@@ -140,21 +113,6 @@ impl Drop for Share {
 }
 
 impl State {
-    /// Copies what the home's children wrote to the login, unless the login
-    /// changed on its own since the last sync. A failure is logged, and keeps
-    /// the home joined, not prepared again, until a sync succeeds.
-    fn sync_logged(&mut self, home: &Path) {
-        let synced = self.sync(home);
-        if let Err(error) = &synced {
-            eprintln!(
-                "Could not copy the Mono Codex login back from {}: {error}",
-                home.display()
-            );
-        }
-        self.unsynced = synced.is_err();
-        self.synced_at = Some(Instant::now());
-    }
-
     fn sync(&mut self, home: &Path) -> Result<(), String> {
         if self.mirrors.is_empty() && has_secrets(&self.source) {
             self.mirrors = login_mirrors(&self.source, home)?;
@@ -371,6 +329,7 @@ pub(crate) fn newer_same_account(private: &Option<String>, source: &Option<Strin
 mod tests {
     use std::cell::RefCell;
     use std::sync::mpsc;
+    use std::time::Duration;
 
     use super::*;
 
@@ -515,44 +474,63 @@ mod tests {
         drop(a);
     }
 
-    /// Defect (ADE-241): every `item/started` line synced, many a turn; or a
-    /// refresh Codex made just after a sync waited for the turn to end, past
-    /// the login's own refresh. A turn's end or an account change syncs at once.
+    /// Defect (#526 r1 m1): a sync that fails after reading the home still
+    /// records the home's value, so the next sync finds it unchanged, reports
+    /// success, and the child's refresh never reaches the login. A value that
+    /// is not UTF-8 makes the login read fail on keyutils.
     #[test]
-    fn an_item_start_syncs_once_per_gap_and_defers_one_to_its_end() {
+    fn a_failed_sync_retries_the_copy_with_the_home_unchanged() {
         let login = Login::new(true);
         login.write(false, GATEWAY, "token-1");
         let a = login.share();
-        let line =
-            |method: &str| format!(r#"{{"jsonrpc":"2.0","method":"{method}","params":{{}}}}"#);
-        let first = reads(|| a.sync_after(&line("item/started")));
-        let other = reads(|| a.sync_after(&line("item/completed")));
-        let turn = reads(|| a.sync_after(&line("turn/completed")));
-        let account = reads(|| a.sync_after(&line("account/updated")));
-        // A refresh just after a sync, with 2 s of the gap left.
         login.write(true, GATEWAY, "token-2");
-        a.mirror.lock().synced_at =
-            Instant::now().checked_sub(ITEM_SYNC_GAP - Duration::from_secs(2));
-        let inside = reads(|| a.sync_after(&line("item/started")));
-        let early = login.read(GATEWAY)[0].clone();
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while login.read(GATEWAY)[0].as_deref() != Some("token-2") && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let home = login.home_keys();
+        keyring::Entry::new("codex", &login.key(false, GATEWAY))
+            .and_then(|e| e.set_secret(&[0xff, 0xfe]))
+            .unwrap();
+        a.sync();
+        let failed = a.mirror.lock().unsynced;
+        login.write(false, GATEWAY, "token-1");
+        a.sync();
+        let retried = a.mirror.lock().unsynced;
         assert_eq!(
-            (first, other, turn, account, inside, early),
-            (
-                home.clone(),
-                vec![],
-                home.clone(),
-                home,
-                vec![],
-                Some("token-1".to_owned())
-            )
+            (failed, retried, login.read(GATEWAY)),
+            (true, false, both("token-2"))
         );
-        assert_eq!(login.read(GATEWAY), both("token-2"));
         drop(a);
+    }
+
+    /// Defect: a sync copies a child's refresh over a login that changed on
+    /// its own, or skips one that is a newer refresh of the same account.
+    #[test]
+    fn a_sync_copies_over_a_changed_login_only_a_newer_same_account_refresh() {
+        let auth = |account: &str, at: &str| {
+            format!(
+                r#"{{"tokens":{{"account_id":"{account}"}},"last_refresh":"2026-11-04T{at}:00:00Z"}}"#
+            )
+        };
+        let mut found = Vec::new();
+        for (login_value, home_value) in [
+            (auth("one", "12"), auth("one", "13")),
+            (auth("two", "12"), auth("one", "13")),
+            (auth("one", "12"), auth("one", "11")),
+        ] {
+            let login = Login::new(true);
+            write_keyring("Codex Auth", &login.auth_key(false), &auth("one", "10")).unwrap();
+            let a = login.share();
+            write_keyring("Codex Auth", &login.auth_key(false), &login_value).unwrap();
+            write_keyring("Codex Auth", &login.auth_key(true), &home_value).unwrap();
+            a.sync();
+            found.push(read_keyring("Codex Auth", &login.auth_key(false)).unwrap());
+            drop(a);
+        }
+        assert_eq!(
+            found,
+            [
+                Some(auth("one", "13")),
+                Some(auth("two", "12")),
+                Some(auth("one", "12")),
+            ]
+        );
     }
 
     /// Defect (#521 r1 B1): each store kept its own baseline of the login, so
