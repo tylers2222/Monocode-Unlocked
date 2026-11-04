@@ -1,14 +1,17 @@
-//! The login, grant and lease commands as the UI invokes them (ADE-186):
-//! each Tauri command runs on a mock app's migrated store, so a command that
-//! stops calling its storage, or storage that stops writing, fails here.
+//! The login, grant and lease commands as the UI invokes them (ADE-186),
+//! and the project's Spaces command (ADE-235): each Tauri command runs on a
+//! mock app's migrated store, so a command that stops calling its storage,
+//! or storage that stops writing, fails here.
 
+use serde_json::json;
 use tauri::Manager;
 
+use crate::mono_roster::{self, MonoCreate};
 use crate::session_store::{now_millis, SessionStore};
 use crate::spaces::account::{self, ProviderAccount, SpaceLogin};
 use crate::spaces::grants::{self, GrantLength, GrantRequest};
 use crate::spaces::leases;
-use crate::spaces::{self, Provider, FIRST_SPACE};
+use crate::spaces::{self, Provider, SettingsPatch, FIRST_SPACE};
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
@@ -188,4 +191,52 @@ fn the_lease_commands_take_only_absolute_folders(app: &tauri::App<tauri::test::M
         "released a lease nobody holds"
     );
     std::fs::remove_dir_all(&folder).unwrap();
+}
+
+/// Defect: `spaces_project_spaces` answers only the assigned Space (as
+/// `spaces_project_get` does) and drops the Space of a Mono that lists the
+/// project, or answers a path that is no project key instead of refusing it.
+#[test]
+fn the_project_spaces_command_lists_every_space_a_project_is_in() {
+    let app = tauri::test::mock_builder()
+        .manage(SessionStore::open_in_memory().unwrap())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let store = || app.state::<SessionStore>();
+    let spaces_of = |path: &str| spaces::spaces_project_spaces(store(), path.into());
+
+    spaces::spaces_project_set(store(), "/work/a".into(), FIRST_SPACE.into()).unwrap();
+    assert_eq!(
+        spaces_of("/work/a"),
+        Ok(vec![FIRST_SPACE.to_owned()]),
+        "a project assigned to Space 1 alone is not in Space 1 only"
+    );
+
+    let two = spaces::create(&store(), "Two", None, 0).unwrap();
+    // A new Mono joins the active Space (`space_for_row`).
+    let active_two = SettingsPatch {
+        active_space_id: Some(two.id.clone()),
+        ..Default::default()
+    };
+    spaces::set_settings(&store(), &active_two).unwrap();
+    let mono: MonoCreate = serde_json::from_value(json!({
+        "id": "two-mono",
+        "role": "mono",
+        "data": {"name": "Two Mono", "sessionId": "two-mono-chat", "projects": ["/work/a/"]},
+        "sortOrder": 0,
+    }))
+    .unwrap();
+    let mono = mono_roster::validate_create(mono).unwrap();
+    mono_roster::create(&store().lock_conn().unwrap(), &mono).unwrap();
+    assert_eq!(
+        spaces_of("/work/a"),
+        Ok(vec![FIRST_SPACE.to_owned(), two.id]),
+        "the Space of a Mono that lists the project is missing, or the assigned Space is not first"
+    );
+
+    assert_eq!(
+        spaces_of("work/a"),
+        Err("Not an absolute folder: work/a".into()),
+        "answered a path that is no project key"
+    );
 }
