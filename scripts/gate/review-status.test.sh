@@ -38,9 +38,13 @@ case_() {
   fi
 }
 
-case_ 'no round' 2 'rN changes needed: xB/yM/zm' no failure 'changes needed: 1B/0M/0m'
-case_ 'counts but no verdict word (#527 r2)' 2 'rN clean: xB/yM/zm' no success 'r2: 0B 0M 4m. B1/M1 probe passes'
+case_ 'no round' 2 'with failure' no failure 'changes needed: 1B/0M/0m'
+case_ 'counts but no verdict word (#527 r2)' 2 'with success' no success 'r2: 0B 0M 4m. B1/M1 probe passes'
 case_ 'two letters' 2 'nothing posted' no success 'r2bb clean: 0B/0M/0m'
+case_ 'no word boundary' 2 'nothing posted' no success 'r2 cleanup done'
+case_ 'clean on a failure status' 2 'nothing posted' no failure 'r2 clean: 0B/0M/0m'
+case_ 'changes needed on a success status' 2 'nothing posted' no success 'r1 changes needed: 1B/0M/0m'
+case_ 'clean with a blocker' 2 'nothing posted' no success 'r2 clean: 1B/0M/0m'
 case_ 'clean verdict' 0 'posted review/agent success' yes success 'r3 clean: 0B/0M/5m all fixed'
 case_ 'changes-needed verdict' 0 'posted review/agent failure' yes failure 'r1 changes needed: 1B/0M/0m'
 case_ 'lettered round (#527)' 0 'posted review/agent success' yes success 'r2b clean: every destroy reaches destroy_window'
