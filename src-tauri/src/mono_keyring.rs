@@ -25,8 +25,11 @@
 //! or connector setup), and no line follows that. A refresh rewrites only
 //! `Codex Auth`, never the two passphrase entries. So while a home is live, a
 //! timer reads its `Codex Auth` entry every `TIMER.every` (ADE-243), and an app
-//! quit reads it once more after it kills the children (`kill_synced`); both
-//! read only an entry MonoCode wrote, so neither prompts.
+//! quit reads it once more after it kills the children (`kill_synced`). Both
+//! read only an entry MonoCode created at prepare (`owned`), so an unchanged
+//! one never prompts. A changed one is copied as a line sync copies it: that
+//! reads the login's entry, which Codex created, under the home lock, and that
+//! read can prompt, as on the lines.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -82,8 +85,8 @@ struct State {
     /// Moves when the last store drops, which stops the timer started with
     /// the old value: one timer per home, even across a quick drop and spawn.
     timer: u64,
-    /// A timer read failed or was slow (a prompt), so the timer skips the
-    /// home until a line or exit sync succeeds.
+    /// A timer read failed, so the timer skips the home until a line or exit
+    /// sync succeeds, or a prepare.
     paused: bool,
     /// A quit synced the home after its children were killed, and nothing
     /// spawned on it since: a second reap of the same quit skips it.
@@ -112,11 +115,15 @@ impl Home {
     }
 
     /// Reads the home's `Codex Auth` every `every` while `timer` is its
-    /// timer, with no lock held across the read: a slow one (a prompt) never
-    /// stalls the lines' syncs. The lock is taken after it, to compare.
+    /// timer, with no lock held across the read, so a slow one (a prompt)
+    /// never stalls the lines' syncs. The lock is taken after it, to compare,
+    /// and to copy a changed entry, which reads the login's entry under it.
     /// The check before each wait holds the lock until the wait lets it go,
     /// so a drop's wake is never missed; a spurious wake is one more read.
     fn tick(&self, home: &Path, timer: u64, every: Timer) {
+        #[cfg(test)]
+        #[cfg(target_os = "linux")]
+        let _alive = tests::Alive::new(home);
         loop {
             let state = self.lock();
             if state.timer != timer {
@@ -163,6 +170,7 @@ fn share_every(source: &Path, home: PathBuf, every: Timer) -> Result<Share, Stri
         tests::inside_prepare(&home);
         state.mirrors = prepare_keyring(source, &home)?;
         state.source = source.to_owned();
+        state.paused = false;
     }
     state.live += 1;
     state.reaped = false;
@@ -204,12 +212,14 @@ impl Drop for Share {
     }
 }
 
-/// Runs `kill` (the app's quit kills the children), then reads each live
-/// home's `Codex Auth` once, as a tick does, for a refresh a child wrote since
-/// its last sync or as it died: its exit sync races the app's own exit. The
-/// kill never waits on the keyring. The sync runs on a worker, and the quit
-/// waits for it `QUIT_BUDGET` at most: a home whose lock stays busy (a sync
-/// at a prompt) is skipped, and so is a read past the budget.
+/// Runs `kill` (the app's quit kills the children), then reads the
+/// `Codex Auth` of each home with a live store, no reap since its last spawn,
+/// and an owned entry, once, as a tick does, paused or not: a refresh a child
+/// wrote since its last sync or as it died, as its exit sync races the app's
+/// own exit. Other homes and the passphrase entries have only that exit sync.
+/// The kill never waits on the keyring. The sync runs on a worker, and the
+/// quit waits for it `QUIT_BUDGET` at most: a home whose lock stays busy (a
+/// sync at a prompt) is skipped, and so is a read past the budget.
 pub(crate) fn kill_synced(kill: impl FnOnce()) {
     kill();
     let deadline = Instant::now() + QUIT_BUDGET;
@@ -256,7 +266,7 @@ fn reap(mut homes: Vec<(PathBuf, Arc<Home>)>, deadline: Instant) {
                 Err(TryLockError::WouldBlock) => return true,
             };
             if state.live > 0 && !state.reaped {
-                if let Some(key) = state.auth_key().filter(|_| !state.paused) {
+                if let Some(key) = state.auth_key() {
                     let read = read_keyring("Codex Auth", &key);
                     state.take_auth(home, &key, read, false);
                 }
@@ -300,8 +310,9 @@ impl State {
         self.unsynced = true;
     }
 
-    /// The home's `Codex Auth` key, when MonoCode wrote that entry at prepare:
-    /// one Codex created, it may prompt for, so only the lines read it.
+    /// The home's `Codex Auth` key, when MonoCode created that entry at
+    /// prepare and no timer read showed otherwise: one Codex created may
+    /// prompt, so only the lines read it.
     fn auth_key(&self) -> Option<String> {
         self.mirrors
             .iter()
@@ -309,10 +320,12 @@ impl State {
             .map(|mirror| mirror.private_key.clone())
     }
 
-    /// Acts on a timer's `read` of `key`: copies a changed entry, as a sync
-    /// does, or pauses the timer after a failed or `slow` read, or a failed
-    /// copy, which is also unsynced. A copy never clears `unsynced`: the
-    /// passphrase entries are the lines' to sync.
+    /// Acts on a timer's or the quit's `read` of `key`: copies a changed
+    /// entry, as a sync does. A failed read or copy pauses the timer, and a
+    /// failed copy is also unsynced. A `slow` read was a prompt and a missing
+    /// entry is one Codex will create, so neither is owned until the next
+    /// prepare. A copy never clears `unsynced`: the passphrase entries are
+    /// the lines' to sync.
     fn take_auth(
         &mut self,
         home: &Path,
@@ -323,27 +336,29 @@ impl State {
         let Some(mirror) = self.mirrors.iter_mut().find(|m| m.private_key == key) else {
             return;
         };
-        let paused = match read {
-            Ok(value) if !slow => {
-                if value == mirror.private_value {
-                    return;
+        let value = match read {
+            Ok(value) => value,
+            Err(error) => {
+                if !self.paused {
+                    eprintln!(
+                        "Paused the Mono Codex login timer for {}: {error}",
+                        home.display()
+                    );
                 }
-                let Err(error) = mirror.sync() else {
-                    return;
-                };
-                self.failed(home, &error);
-                error
+                self.paused = true;
+                return;
             }
-            Ok(_) => "a read took a second or more".to_owned(),
-            Err(error) => error,
         };
-        if !self.paused {
-            eprintln!(
-                "Paused the Mono Codex login timer for {}: {paused}",
-                home.display()
-            );
+        if slow || value.is_none() {
+            mirror.owned = false;
         }
-        self.paused = true;
+        if value == mirror.private_value {
+            return;
+        }
+        if let Err(error) = mirror.sync() {
+            self.paused = true;
+            self.failed(home, &error);
+        }
     }
 
     fn sync(&mut self, home: &Path) -> Result<(), String> {
@@ -376,8 +391,9 @@ pub(crate) struct KeyringMirror {
     pub(crate) source_value: Option<String>,
     /// The home's value the last sync acted on. Never logged either.
     pub(crate) private_value: Option<String>,
-    /// MonoCode wrote the home's entry at prepare, so reading it never
-    /// prompts. One Codex created (the login had none) may.
+    /// MonoCode created the home's `Codex Auth` at prepare, so reading it
+    /// never prompts. One Codex created (the login had none) may, and so may
+    /// one MonoCode wrote over in place: the item keeps its creator's access.
     pub(crate) owned: bool,
 }
 
@@ -446,6 +462,8 @@ pub(crate) fn write_keyring(service: &str, key: &str, value: &str) -> Result<(),
 
 /// Deletes the home's own entry. A missing one is already gone.
 fn delete_private(service: &str, private_key: &str) -> Result<(), String> {
+    #[cfg(all(test, target_os = "linux"))]
+    tests::count_delete(private_key);
     if let Ok(entry) = keyring::Entry::new(service, private_key) {
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => {}
@@ -496,16 +514,21 @@ pub(crate) fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringM
         } else {
             value
         };
-        if let Some(value) = &value {
+        let owned = if let Some(value) = &value {
+            // A new `Codex Auth` item is MonoCode's, which the timer may read.
+            // If the old one cannot go, it is written in place, and not owned.
+            let created = service == "Codex Auth" && delete_private(service, &private_key).is_ok();
             write_keyring(service, &private_key, value)?;
+            created
         } else {
             delete_private(service, &private_key)?;
-        }
+            false
+        };
         mirrors.push(KeyringMirror {
             service,
             source_key,
             private_key,
-            owned: value.is_some(),
+            owned,
             private_value: value.clone(),
             source_value: value,
         });
