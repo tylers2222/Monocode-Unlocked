@@ -540,6 +540,16 @@ pub fn spaces_project_get(
     project_space(&store, &project_path)
 }
 
+/// Every Space the project is in, the assigned one first
+/// ([`project_spaces_in`]). `spaces_project_get` gives only the assigned one.
+#[tauri::command(async)]
+pub fn spaces_project_spaces(
+    store: State<'_, SessionStore>,
+    project_path: String,
+) -> Result<Vec<String>, String> {
+    project_spaces_in(&*store.lock_conn()?, &project_path)
+}
+
 #[tauri::command(async)]
 pub fn spaces_project_set(
     store: State<'_, SessionStore>,
