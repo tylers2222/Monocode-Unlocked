@@ -46,6 +46,7 @@ mod mono_chat;
 mod mono_completions;
 mod mono_gate;
 mod mono_home;
+mod mono_keyring;
 mod mono_messages;
 mod mono_roster;
 mod mono_transcript;

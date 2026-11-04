@@ -2,9 +2,10 @@
 //! `allowWrite`, so a sandboxed agent may plant links, FIFOs and folders in it,
 //! and the app copies a thread into it and restores its agent state outside srt.
 //! The app must never follow a link there, never block on a FIFO it finds, and
-//! leave what a link names as it was. A FIFO swapped in at the state
-//! database's name between its check and the read-only open still blocks that
-//! open: SQLite opens it without `O_NONBLOCK` (ADE-225, accepted).
+//! leave what a link names as it was. Accepted (ADE-225): a FIFO swapped in
+//! after the check still blocks, as SQLite opens without `O_NONBLOCK`. At the
+//! state database's name it blocks the read-only open; at `-journal` it blocks
+//! both opens, since the first read opens a hot journal read-only in either.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
