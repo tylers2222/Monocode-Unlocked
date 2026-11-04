@@ -21,13 +21,15 @@
 //! A sync runs on every `turn/completed`, `item/started` and `account/updated`
 //! line of a child, and at its exit (`harness.rs`). Codex refreshes a token
 //! before each model request, so inside a turn, but also outside one (a rate
-//! limit read, MCP or connector setup, a session start). No line follows such
-//! a refresh, so it waits for the child's next trigger line or its exit
-//! (follow-up ADE-243: a timer sync while a home is live).
+//! limit read, MCP or connector setup, a session start), and no line follows
+//! that. So a live home also syncs every `TICK` on its own timer (ADE-243),
+//! and an app quit syncs each live home before and after it kills the
+//! children (`kill_synced`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::Duration;
 
 use crate::codex_mono_store::home_key;
 
@@ -35,18 +37,34 @@ use crate::codex_mono_store::home_key;
 /// keyring call.
 static HOMES: Mutex<BTreeMap<PathBuf, Arc<Home>>> = Mutex::new(BTreeMap::new());
 
+/// How often a live home's timer syncs it. Codex refreshes a token at its
+/// next `auth()` in the 5 minutes before expiry, the same 5 minutes in the
+/// Mono and in the login's own Codex (the CLI, an IDE, the usage probe), and
+/// an idle app-server lists models every 4 min 30 s. So each side refreshes
+/// at a random moment in the window, and the login's side spends the revoked
+/// refresh token when it refreshes within a tick after the Mono: about
+/// TICK / 270 s, 0.7% at 2 s. An idle tick is 3 reads of the home.
+const TICK: Duration = Duration::from_secs(2);
+
 /// One home's mirror. Its lock is held across the keyring calls of a spawn's
-/// preparation and of the children's syncs (stdout and exit), so those never
-/// interleave on that home; spawns on other homes never wait on it.
+/// preparation and of the children's syncs (stdout, timer and exit), so those
+/// never interleave on that home; spawns on other homes never wait on it.
 /// `prepare_files` and the `codex_mono_store_prepare` command touch no keyring
 /// entry, so they run outside it.
 #[derive(Default)]
-struct Home(Mutex<State>);
+struct Home {
+    state: Mutex<State>,
+    /// Wakes the home's timer when its last store drops.
+    stopped: Condvar,
+}
 
 #[derive(Default)]
 struct State {
     /// Stores alive on the home.
     live: usize,
+    /// Moves when the last store drops, which stops the timer started with
+    /// the old value: one timer per home, even across a quick drop and spawn.
+    timer: u64,
     /// The last sync failed, so the private entries may be newer than the login.
     unsynced: bool,
     /// The login the home mirrors.
@@ -67,7 +85,24 @@ impl Home {
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Syncs the home every `every` while `timer` is its timer. The lock is
+    /// let go while it waits.
+    fn tick(&self, home: &Path, timer: u64, every: Duration) {
+        let mut state = self.lock();
+        loop {
+            state = self
+                .stopped
+                .wait_timeout_while(state, every, |state| state.timer == timer)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+            if state.timer != timer {
+                return;
+            }
+            state.sync_logged(home);
+        }
     }
 }
 
@@ -76,6 +111,11 @@ impl Home {
 /// it, as those entries are the live children's newest, and so does one on a
 /// home whose last sync failed.
 pub(crate) fn share(source: &Path, home: PathBuf) -> Result<Share, String> {
+    share_every(source, home, TICK)
+}
+
+/// `share`, whose first store starts the home's timer, every `every`.
+fn share_every(source: &Path, home: PathBuf, every: Duration) -> Result<Share, String> {
     let mirror = Home::of(&home);
     let mut state = mirror.lock();
     if state.live == 0 && !state.unsynced {
@@ -85,7 +125,21 @@ pub(crate) fn share(source: &Path, home: PathBuf) -> Result<Share, String> {
         state.source = source.to_owned();
     }
     state.live += 1;
+    let timer = (state.live == 1).then_some(state.timer);
     drop(state);
+    if let Some(timer) = timer {
+        let (ticking, path) = (Arc::clone(&mirror), home.clone());
+        let started = std::thread::Builder::new()
+            .name("mono-keyring-sync".into())
+            .spawn(move || ticking.tick(&path, timer, every));
+        // The lines and the exit still sync the home.
+        if let Err(error) = started {
+            eprintln!(
+                "Could not start the Mono Codex login sync for {}: {error}",
+                home.display()
+            );
+        }
+    }
     Ok(Share { home, mirror })
 }
 
@@ -94,25 +148,66 @@ impl Share {
     /// changed on its own since the last sync. A failure is logged, and keeps
     /// the home joined, not prepared again, until a sync succeeds.
     pub(crate) fn sync(&self) {
-        let mut state = self.mirror.lock();
-        let synced = state.sync(&self.home);
-        if let Err(error) = &synced {
-            eprintln!(
-                "Could not copy the Mono Codex login back from {}: {error}",
-                self.home.display()
-            );
-        }
-        state.unsynced = synced.is_err();
+        self.mirror.lock().sync_logged(&self.home);
     }
 }
 
 impl Drop for Share {
     fn drop(&mut self) {
-        self.mirror.lock().live -= 1;
+        let mut state = self.mirror.lock();
+        state.live -= 1;
+        if state.live == 0 {
+            state.timer += 1;
+            self.mirror.stopped.notify_all();
+        }
+    }
+}
+
+/// Syncs every live home, runs `kill` (the app's quit kills the children),
+/// then syncs them again. The first copies a refresh since the last sync while
+/// the app surely still runs; the second, one a child wrote as it died, which
+/// its exit sync would race the app's own exit for.
+pub(crate) fn kill_synced(kill: impl FnOnce()) {
+    sync_live_homes();
+    kill();
+    sync_live_homes();
+}
+
+/// Never holds `HOMES` across a home's lock or a keyring call. A home with no
+/// live store has no child left to write it, and its exit syncs ran.
+fn sync_live_homes() {
+    let homes: Vec<(PathBuf, Arc<Home>)> = HOMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|(home, mirror)| (home.clone(), Arc::clone(mirror)))
+        .collect();
+    for (home, mirror) in homes {
+        #[cfg(test)]
+        #[cfg(target_os = "linux")]
+        if !tests::mine(&home) {
+            continue;
+        }
+        let mut state = mirror.lock();
+        if state.live > 0 {
+            state.sync_logged(&home);
+        }
     }
 }
 
 impl State {
+    /// `sync`, with a failure logged and kept in `unsynced`.
+    fn sync_logged(&mut self, home: &Path) {
+        let synced = self.sync(home);
+        if let Err(error) = &synced {
+            eprintln!(
+                "Could not copy the Mono Codex login back from {}: {error}",
+                home.display()
+            );
+        }
+        self.unsynced = synced.is_err();
+    }
+
     fn sync(&mut self, home: &Path) -> Result<(), String> {
         if self.mirrors.is_empty() && has_secrets(&self.source) {
             self.mirrors = login_mirrors(&self.source, home)?;
@@ -347,6 +442,7 @@ mod tests {
                 std::env::temp_dir().join(format!("ade225-keyring-{}", uuid::Uuid::new_v4()));
             let (source, home) = (root.join("login"), root.join("home"));
             crate::codex_mono_store::prepare_files(&source, &home).unwrap();
+            MINE.with(|mine| mine.borrow_mut().push(home.clone()));
             let login = Login { root, source, home };
             if secret {
                 login.seal();
@@ -359,8 +455,25 @@ mod tests {
             std::fs::write(self.source.join("secrets/blob"), "sealed").unwrap();
         }
 
+        /// A share whose timer never fires within a test.
         fn share(&self) -> Share {
-            share(&self.source, self.home.clone()).unwrap()
+            self.share_every(NEVER)
+        }
+
+        fn share_every(&self, every: Duration) -> Share {
+            share_every(&self.source, self.home.clone(), every).unwrap()
+        }
+
+        /// The login's entry with `suffix` comes to be `value` within 10 s.
+        fn reaches_login(&self, suffix: &str, value: &str) -> bool {
+            let until = std::time::Instant::now() + Duration::from_secs(10);
+            while std::time::Instant::now() < until {
+                if self.read(suffix)[0].as_deref() == Some(value) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
         }
 
         /// The `codex` entry with `suffix` in the login (`private` false) or the home.
@@ -409,6 +522,19 @@ mod tests {
     }
 
     const GATEWAY: &str = "|gateway-oauth";
+
+    const NEVER: Duration = Duration::from_secs(3600);
+    const TEST_TICK: Duration = Duration::from_millis(100);
+
+    thread_local! {
+        /// The homes of this thread's logins. A quit syncs only those, so it
+        /// never syncs another test's home in the middle of that test.
+        static MINE: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn mine(home: &Path) -> bool {
+        MINE.with(|mine| mine.borrow().iter().any(|own| own == home))
+    }
 
     type Held = (mpsc::Sender<()>, mpsc::Receiver<()>);
 
@@ -472,6 +598,95 @@ mod tests {
             )
         );
         drop(a);
+    }
+
+    /// Defect (ADE-243): a refresh no line follows (Codex refreshes outside a
+    /// turn too) waits in the home until the child exits, while the login's
+    /// own Codex spends the revoked refresh token. Or the timer syncs before
+    /// its tick, so a busy loop.
+    #[test]
+    fn a_live_homes_timer_copies_a_write_no_line_follows() {
+        let (slow, fast) = (Login::new(true), Login::new(true));
+        for login in [&slow, &fast] {
+            login.write(false, GATEWAY, "token-1");
+        }
+        let a = slow.share();
+        let b = fast.share_every(TEST_TICK);
+        for login in [&slow, &fast] {
+            login.write(true, GATEWAY, "token-2");
+        }
+        let copied = fast.reaches_login(GATEWAY, "token-2");
+        let waiting = slow.read(GATEWAY)[0].clone();
+        drop((a, b));
+        assert_eq!((copied, waiting.as_deref()), (true, Some("token-1")));
+    }
+
+    /// Defect (ADE-243): the timer outlives the home's last store, or stops
+    /// while another store on the home is live.
+    #[test]
+    fn a_homes_timer_runs_until_its_last_store_drops() {
+        let login = Login::new(true);
+        login.write(false, GATEWAY, "token-1");
+        let a = login.share_every(TEST_TICK);
+        let b = login.share_every(TEST_TICK);
+        drop(a);
+        login.write(true, GATEWAY, "token-2");
+        let joined = login.reaches_login(GATEWAY, "token-2");
+        drop(b);
+        login.write(true, GATEWAY, "token-3");
+        std::thread::sleep(TEST_TICK * 5);
+        assert_eq!(
+            (joined, login.read(GATEWAY)[0].as_deref()),
+            (true, Some("token-2"))
+        );
+    }
+
+    /// Defect (ADE-243): a quit kills the children before a refresh since the
+    /// last sync reaches the login, and the exit sync that would copy it races
+    /// the app's exit. Or a refresh a child writes as it dies stays in the home.
+    #[test]
+    fn a_quit_copies_a_refresh_before_and_after_the_kill() {
+        let login = Login::new(true);
+        login.write(false, GATEWAY, "token-1");
+        let a = login.share();
+        login.write(true, GATEWAY, "token-2");
+        let mut killed = None;
+        kill_synced(|| {
+            killed = login.read(GATEWAY)[0].clone();
+            login.write(true, GATEWAY, "token-3");
+        });
+        assert_eq!(
+            (killed.as_deref(), login.read(GATEWAY)),
+            (Some("token-2"), both("token-3"))
+        );
+        drop(a);
+    }
+
+    /// Defect (ADE-243): the app's quit kills the children with no sync.
+    #[test]
+    fn the_app_quit_copies_a_pending_refresh() {
+        let login = Login::new(true);
+        login.write(false, GATEWAY, "token-1");
+        let a = login.share();
+        login.write(true, GATEWAY, "token-2");
+        let app = tauri::test::mock_app();
+        crate::reap_harness_children(app.handle());
+        assert_eq!(login.read(GATEWAY), both("token-2"));
+        drop(a);
+    }
+
+    /// Defect: a quit reads an idle home, whose exit syncs ran, and for one
+    /// whose login has since encrypted a secret, the login's entries too: a
+    /// macOS prompt as the app quits.
+    #[test]
+    fn a_quit_reads_only_the_live_homes() {
+        let (live, idle) = (Login::new(true), Login::new(false));
+        drop(idle.share());
+        idle.seal();
+        let a = live.share();
+        let read = reads(|| kill_synced(|| ()));
+        drop(a);
+        assert_eq!(read, [live.home_keys(), live.home_keys()].concat());
     }
 
     /// Defect (#526 r1 m1): a sync that fails after reading the home still
