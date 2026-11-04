@@ -321,19 +321,28 @@ pub(crate) fn write_keyring(service: &str, key: &str, value: &str) -> Result<(),
 
 pub(crate) fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringMirror>, String> {
     // The default file store shares auth.json directly, with no Keychain prompt.
-    // `cli_auth_credentials_store` in config.toml is not read: the check here
-    // parsed the file as one TOML value, which no config file is, so it never
-    // matched (ADE-225 #521); reading it is its own change.
-    if !has_secrets(source) {
+    let store = credentials_store(source);
+    let explicit_keyring = store
+        .as_deref()
+        .is_some_and(|v| v == "keyring" || v == "auto");
+    let encrypted = has_secrets(source);
+    if !explicit_keyring && !encrypted {
         return Ok(Vec::new());
     }
+    // Codex's "auto" store reads auth.json, shared already, when the keyring
+    // cannot be read; "keyring" and an encrypted secret's key have no fallback.
+    let fallback = !encrypted && store.as_deref() == Some("auto");
     let source_hash = home_key(source)?;
     let private_hash = home_key(home)?;
     let mut mirrors = Vec::new();
     for (service, prefix, suffix) in MIRRORED {
         let source_key = format!("{prefix}|{source_hash}{suffix}");
         let private_key = format!("{prefix}|{private_hash}{suffix}");
-        let value = read_keyring(service, &source_key)?;
+        let value = match read_keyring(service, &source_key) {
+            Ok(value) => value,
+            Err(_) if fallback => continue,
+            Err(error) => return Err(error),
+        };
         let value = if service == "Codex Auth" {
             let private = read_keyring(service, &private_key)?;
             if newer_same_account(&private, &value) {
@@ -362,6 +371,17 @@ pub(crate) fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringM
         });
     }
     Ok(mirrors)
+}
+
+/// The login's `cli_auth_credentials_store` in config.toml, which is a whole
+/// TOML document: `toml::Value` parses one value, never a file.
+fn credentials_store(source: &Path) -> Option<String> {
+    let config = std::fs::read_to_string(source.join("config.toml")).ok()?;
+    let config = config.parse::<toml::Table>().ok()?;
+    config
+        .get("cli_auth_credentials_store")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// Codex has encrypted a secret for the login, under a key in the keyring.
@@ -900,5 +920,76 @@ mod tests {
             let _ = keyring::Entry::new("codex", &key(dir)).and_then(|e| e.delete_credential());
         }
         assert_eq!(login.as_deref(), Some("token-2"));
+    }
+
+    /// A login whose config.toml sets `cli_auth_credentials_store` to `store`
+    /// (`None`: no such key), among other keys, with no secret encrypted.
+    #[cfg(target_os = "linux")]
+    fn configured(fixture: &Fixture, store: Option<&str>) -> (PathBuf, PathBuf) {
+        keyring::set_default_credential_builder(keyring::keyutils::default_credential_builder());
+        let (source, home) = (fixture.source(), fixture.home());
+        prepare_files(&source, &home).unwrap();
+        let store = store
+            .map(|s| format!("cli_auth_credentials_store = \"{s}\"\n"))
+            .unwrap_or_default();
+        let config = format!(
+            "model = \"gpt-5.5\"\napproval_policy = \"on-request\"\n{store}\n[projects.\"/tmp/work\"]\ntrust_level = \"trusted\"\n"
+        );
+        std::fs::write(source.join("config.toml"), config).unwrap();
+        (source, home)
+    }
+
+    /// Defect (ADE-238): config.toml was parsed as one TOML value, so a login
+    /// on the "keyring" or "auto" store with no secret encrypted mirrored
+    /// nothing, and its Mono started without the login. On keyutils, never a
+    /// real Keychain.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_keyring_or_auto_login_with_no_secret_is_mirrored() {
+        for store in [Some("keyring"), Some("auto"), Some("file"), None] {
+            let fixture = Fixture::new();
+            let (source, home) = configured(&fixture, store);
+            let key = |dir: &Path| format!("cli|{}", home_key(dir).unwrap());
+            write_keyring("Codex Auth", &key(&source), "login").unwrap();
+            let mirrors = prepare_keyring(&source, &home).unwrap().len();
+            let private = read_keyring("Codex Auth", &key(&home)).unwrap();
+            for dir in [&source, &home] {
+                let _ = keyring::Entry::new("Codex Auth", &key(dir))
+                    .and_then(|e| e.delete_credential());
+            }
+            let expected = match store {
+                Some("keyring" | "auto") => (3, Some("login")),
+                _ => (0, None),
+            };
+            assert_eq!((mirrors, private.as_deref()), expected, "{store:?}");
+        }
+    }
+
+    /// Defect: a login entry the keyring cannot read fails a Mono on the
+    /// "auto" store, which Codex itself reads past to auth.json; or it is
+    /// skipped on the "keyring" store or with an encrypted secret, which have
+    /// no fallback. A value that is not UTF-8 is a read error on keyutils.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_an_auto_login_with_no_secret_skips_an_unreadable_entry() {
+        for (store, sealed, readable) in [
+            ("auto", false, true),
+            ("auto", true, false),
+            ("keyring", false, false),
+        ] {
+            let fixture = Fixture::new();
+            let (source, home) = configured(&fixture, Some(store));
+            if sealed {
+                std::fs::write(source.join("secrets/blob"), "sealed").unwrap();
+            }
+            let key = format!("secrets|{}", home_key(&source).unwrap());
+            keyring::Entry::new("codex", &key)
+                .and_then(|e| e.set_secret(&[0xff, 0xfe]))
+                .unwrap();
+            let prepared = prepare_keyring(&source, &home).map(|m| m.len());
+            let _ = keyring::Entry::new("codex", &key).and_then(|e| e.delete_credential());
+            let expected = if readable { Ok(2) } else { Err(()) };
+            assert_eq!(prepared.map_err(drop), expected, "{store} sealed={sealed}");
+        }
     }
 }
