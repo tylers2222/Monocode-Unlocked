@@ -792,10 +792,14 @@ pub fn run() {
     });
 }
 
-fn reap_harness_children(handle: &tauri::AppHandle) {
-    if let Some(host) = handle.try_state::<harness::HarnessHost>() {
-        host.kill_all();
-    }
+/// A Codex Mono's refresh not yet synced reaches its login before and after
+/// the kill (ADE-243).
+fn reap_harness_children<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) {
+    mono_keyring::kill_synced(|| {
+        if let Some(host) = handle.try_state::<harness::HarnessHost>() {
+            host.kill_all();
+        }
+    });
     if let Some(host) = handle.try_state::<pty::PtyHost>() {
         host.kill_all();
     }
