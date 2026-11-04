@@ -11,6 +11,19 @@
 //! Left: a login changed outside the app (`codex login`) while a Mono on that
 //! home is live. The live Mono keeps its own entries, and no sync copies them
 //! over the new login, which wins from the next spawn on the idle home.
+//!
+//! A sync reads the home's 3 entries, and a login entry only after a child
+//! changed its home entry (ADE-241). macOS may prompt MonoCode for an entry
+//! Codex created: each login entry, and a home entry the child made itself
+//! because the login had none at prepare. A home entry MonoCode created stays
+//! MonoCode's when Codex updates it in place, so it does not prompt.
+//!
+//! A sync runs on every `turn/completed`, `item/started` and `account/updated`
+//! line of a child, and at its exit (`harness.rs`). Codex refreshes a token
+//! before each model request, so inside a turn, but also outside one (a rate
+//! limit read, MCP or connector setup, a session start). No line follows such
+//! a refresh, so it waits for the child's next trigger line or its exit
+//! (follow-up ADE-243: a timer sync while a home is live).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -128,18 +141,24 @@ pub(crate) struct KeyringMirror {
     pub(crate) private_key: String,
     // Never serialize or log credential contents.
     pub(crate) source_value: Option<String>,
+    /// The home's value the last sync acted on. Never logged either.
+    pub(crate) private_value: Option<String>,
 }
 
 /// The home's mirror entries, each with the login's value now as its baseline.
+/// A home value equal to it has nothing to copy, as a sync of an equal pair
+/// only keeps the baseline.
 fn login_mirrors(source: &Path, home: &Path) -> Result<Vec<KeyringMirror>, String> {
     let (source_hash, private_hash) = (home_key(source)?, home_key(home)?);
     MIRRORED
         .into_iter()
         .map(|(service, prefix, suffix)| {
             let source_key = format!("{prefix}|{source_hash}{suffix}");
+            let source_value = read_keyring(service, &source_key)?;
             Ok(KeyringMirror {
                 service,
-                source_value: read_keyring(service, &source_key)?,
+                private_value: source_value.clone(),
+                source_value,
                 source_key,
                 private_key: format!("{prefix}|{private_hash}{suffix}"),
             })
@@ -148,25 +167,31 @@ fn login_mirrors(source: &Path, home: &Path) -> Result<Vec<KeyringMirror>, Strin
 }
 
 impl KeyringMirror {
+    /// Reads the home's entry, and the login's only when the home's changed
+    /// since the last sync acted on it: until then no child wrote it, and a
+    /// login changed on its own is never copied over.
     fn sync(&mut self) -> Result<(), String> {
-        let source = read_keyring(self.service, &self.source_key)?;
         let private = read_keyring(self.service, &self.private_key)?;
+        if private == self.private_value {
+            return Ok(());
+        }
+        let source = read_keyring(self.service, &self.source_key)?;
         if private == source {
             self.source_value = source;
-            return Ok(());
+        } else if source == self.source_value || newer_same_account(&private, &source) {
+            if let Some(value) = &private {
+                write_keyring(self.service, &self.source_key, value)?;
+                self.source_value = private.clone();
+            }
         }
-        if source != self.source_value && !newer_same_account(&private, &source) {
-            return Ok(());
-        }
-        if let Some(value) = private {
-            write_keyring(self.service, &self.source_key, &value)?;
-            self.source_value = Some(value);
-        }
+        self.private_value = private;
         Ok(())
     }
 }
 
 pub(crate) fn read_keyring(service: &str, key: &str) -> Result<Option<String>, String> {
+    #[cfg(all(test, target_os = "linux"))]
+    tests::count_read(key);
     let entry =
         keyring::Entry::new(service, key).map_err(|_| "Could not access Codex credentials")?;
     match entry.get_password() {
@@ -243,6 +268,7 @@ pub(crate) fn prepare_keyring(source: &Path, home: &Path) -> Result<Vec<KeyringM
             service,
             source_key,
             private_key,
+            private_value: value.clone(),
             source_value: value,
         });
     }
@@ -301,6 +327,7 @@ pub(crate) fn newer_same_account(private: &Option<String>, source: &Option<Strin
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod tests {
+    use std::cell::RefCell;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -356,6 +383,15 @@ mod tests {
         fn read(&self, suffix: &str) -> [Option<String>; 2] {
             [false, true].map(|private| read_keyring("codex", &self.key(private, suffix)).unwrap())
         }
+
+        /// The home's 3 entries, in the order a sync reads them.
+        fn home_keys(&self) -> Vec<String> {
+            vec![
+                self.auth_key(true),
+                self.key(true, ""),
+                self.key(true, GATEWAY),
+            ]
+        }
     }
 
     impl Drop for Login {
@@ -389,6 +425,112 @@ mod tests {
 
     fn both(value: &str) -> [Option<String>; 2] {
         [Some(value.to_owned()), Some(value.to_owned())]
+    }
+
+    thread_local! {
+        /// The keys this thread read while `reads` records them.
+        static READS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn count_read(key: &str) {
+        READS.with(|reads| {
+            if let Some(reads) = reads.borrow_mut().as_mut() {
+                reads.push(key.to_owned());
+            }
+        });
+    }
+
+    /// The keyring keys `run` reads on this thread, in order.
+    fn reads(run: impl FnOnce()) -> Vec<String> {
+        READS.with(|reads| *reads.borrow_mut() = Some(Vec::new()));
+        run();
+        READS.with(|reads| reads.borrow_mut().take().unwrap_or_default())
+    }
+
+    /// Defect (ADE-241): every sync read the login's 3 entries and the home's
+    /// 3, though only a child's write changes anything; macOS may prompt for
+    /// each read of a login entry Codex wrote. Or the sync skips the home's
+    /// changed entry, and a child's refresh never reaches the login.
+    #[test]
+    fn a_sync_reads_the_login_only_after_a_child_wrote() {
+        let login = Login::new(true);
+        login.write(false, GATEWAY, "token-1");
+        let a = login.share();
+        let idle = reads(|| a.sync());
+        login.write(true, GATEWAY, "token-2");
+        let written = reads(|| a.sync());
+        let after = reads(|| a.sync());
+        let mut expected = login.home_keys();
+        expected.push(login.key(false, GATEWAY));
+        assert_eq!(
+            (idle, written, after, login.read(GATEWAY)),
+            (
+                login.home_keys(),
+                expected,
+                login.home_keys(),
+                both("token-2")
+            )
+        );
+        drop(a);
+    }
+
+    /// Defect (#526 r1 m1): a sync that fails after reading the home still
+    /// records the home's value, so the next sync finds it unchanged, reports
+    /// success, and the child's refresh never reaches the login. A value that
+    /// is not UTF-8 makes the login read fail on keyutils.
+    #[test]
+    fn a_failed_sync_retries_the_copy_with_the_home_unchanged() {
+        let login = Login::new(true);
+        login.write(false, GATEWAY, "token-1");
+        let a = login.share();
+        login.write(true, GATEWAY, "token-2");
+        keyring::Entry::new("codex", &login.key(false, GATEWAY))
+            .and_then(|e| e.set_secret(&[0xff, 0xfe]))
+            .unwrap();
+        a.sync();
+        let failed = a.mirror.lock().unsynced;
+        login.write(false, GATEWAY, "token-1");
+        a.sync();
+        let retried = a.mirror.lock().unsynced;
+        assert_eq!(
+            (failed, retried, login.read(GATEWAY)),
+            (true, false, both("token-2"))
+        );
+        drop(a);
+    }
+
+    /// Defect: a sync copies a child's refresh over a login that changed on
+    /// its own, or skips one that is a newer refresh of the same account.
+    #[test]
+    fn a_sync_copies_over_a_changed_login_only_a_newer_same_account_refresh() {
+        let auth = |account: &str, at: &str| {
+            format!(
+                r#"{{"tokens":{{"account_id":"{account}"}},"last_refresh":"2026-11-04T{at}:00:00Z"}}"#
+            )
+        };
+        let mut found = Vec::new();
+        for (login_value, home_value) in [
+            (auth("one", "12"), auth("one", "13")),
+            (auth("two", "12"), auth("one", "13")),
+            (auth("one", "12"), auth("one", "11")),
+        ] {
+            let login = Login::new(true);
+            write_keyring("Codex Auth", &login.auth_key(false), &auth("one", "10")).unwrap();
+            let a = login.share();
+            write_keyring("Codex Auth", &login.auth_key(false), &login_value).unwrap();
+            write_keyring("Codex Auth", &login.auth_key(true), &home_value).unwrap();
+            a.sync();
+            found.push(read_keyring("Codex Auth", &login.auth_key(false)).unwrap());
+            drop(a);
+        }
+        assert_eq!(
+            found,
+            [
+                Some(auth("one", "13")),
+                Some(auth("two", "12")),
+                Some(auth("one", "12")),
+            ]
+        );
     }
 
     /// Defect (#521 r1 B1): each store kept its own baseline of the login, so
