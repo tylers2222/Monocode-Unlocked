@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -313,6 +314,32 @@ class MainTest(unittest.TestCase):
                 code = self.run_main({FIX: [self.CLEAN_STATUS]}, tier="T3", title="ADE-999: exempt myself",
                                      check_runs=[self.FAILED_MUTATION], head_list="ADE-27\nADE-999\n")
         self.assertEqual(code, 1)
+
+
+class CheckVerdictTest(unittest.TestCase):
+    """merge_rule.py --check-verdict, the check review-status.sh runs before it posts: exit
+    0 for a summary main() reads as a verdict, 1 with the expected form for any other."""
+
+    def check(self, summary):
+        script = Path(merge_rule.__file__)
+        return subprocess.run([sys.executable, str(script), "--check-verdict", summary],
+                              capture_output=True, text=True, check=False)
+
+    def test_a_verdict_main_reads_passes_silently(self):
+        for summary in ("r3 clean: 0B/0M/5m all fixed, CI green", "r1 changes needed: 1B/0M/0m", MINOR, CLEAN_R5):
+            with self.subTest(summary=summary):
+                result = self.check(summary)
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+
+    def test_a_summary_main_would_ignore_is_refused_with_the_form(self):
+        # "r2b clean" is the real #527 summary: gate/integrity said "no review verdict yet" for an hour.
+        for summary in ("r2b clean: rebase identical, CI green", "clean: looks good", "R2 clean", "r2 approved", ""):
+            with self.subTest(summary=summary):
+                result = self.check(summary)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(json.dumps(summary), result.stderr)
+                self.assertIn("rN clean: xB/yM/zm", result.stderr)
+                self.assertIn("rN changes needed: xB/yM/zm", result.stderr)
 
 
 if __name__ == "__main__":
