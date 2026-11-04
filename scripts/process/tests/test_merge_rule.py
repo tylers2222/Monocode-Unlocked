@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ import merge_rule
 from merge_rule import (
     Decision,
     Proof,
+    Unreadable,
     Verdict,
     collect_verdicts,
     decide,
@@ -39,6 +41,8 @@ MINOR_R2 = "r2 changes needed: 0B/0M/1m (started-turn save await untested)"  # 1
 CLEAN_R1 = "r1 clean: dead path proven, same boot on real DB base vs head; 2 nits in #162"  # 161
 CLEAN_R2 = "r2 clean: rebase is identical patch (range-diff =), PR test 26/26, CI 14/14, nits in #158"  # 156
 CLEAN_R5 = "r5 clean: rebase onto a363d977 range-diff all =, integrity 401, 7/7 R5a tests, CI green, 0 open threads"  # 150
+CLEAN_R2B = "r2b clean: every destroy reaches destroy_window; no label reuse, stale entry cannot cross; g1 rerun RED (5d72)"  # 527
+NOT_A_VERDICT = "r2: 0B 0M 4m. B1/M1 probe passes (box 04cc), B2 login mutant RED (21cc); minors to ADE-244"  # 527
 
 
 def verdict(description, sha=REVIEWED, at=AT):
@@ -62,11 +66,16 @@ class ParseVerdictTest(unittest.TestCase):
     def test_real_descriptions(self):
         expected = {
             "r1 in review": None,
-            MINOR: Verdict(REVIEWED, 1, False, 0, 0, 1, AT),
-            MAJOR: Verdict(REVIEWED, 1, False, 0, 1, 6, AT),
-            CLEAN_R2: Verdict(REVIEWED, 2, True, 0, 0, 0, AT),
-            CLEAN_R5: Verdict(REVIEWED, 5, True, 0, 0, 0, AT),
-            NO_COUNTS: Verdict(REVIEWED, 1, False, None, None, None, AT),
+            NOT_A_VERDICT: None,
+            "r2bb clean": None,
+            "r2B clean": None,
+            MINOR: Verdict(REVIEWED, "1", False, 0, 0, 1, AT),
+            MAJOR: Verdict(REVIEWED, "1", False, 0, 1, 6, AT),
+            CLEAN_R2: Verdict(REVIEWED, "2", True, 0, 0, 0, AT),
+            CLEAN_R5: Verdict(REVIEWED, "5", True, 0, 0, 0, AT),
+            NO_COUNTS: Verdict(REVIEWED, "1", False, None, None, None, AT),
+            CLEAN_R2B: Verdict(REVIEWED, "2b", True, 0, 0, 0, AT),
+            "r3b changes needed: 0B/0M/1m": Verdict(REVIEWED, "3b", False, 0, 0, 1, AT),
         }
         for description, want in expected.items():
             with self.subTest(description=description):
@@ -122,10 +131,14 @@ class CollectVerdictsTest(unittest.TestCase):
             REVIEWED: [self.status(MINOR), self.status("r1 in review", "pending")],
             EARLIER: [self.status(MINOR, url="https://github.com/tylers2222/Monocode-Unlocked/pull/159")],
         }
-        self.assertEqual(collect_verdicts(statuses, PR_URL), [Verdict(REVIEWED, 1, False, 0, 0, 1, AT)])
+        self.assertEqual(collect_verdicts(statuses, PR_URL), [Verdict(REVIEWED, "1", False, 0, 0, 1, AT)])
 
     def test_a_pending_status_is_not_a_verdict_even_when_it_reads_as_one(self):
         self.assertEqual(collect_verdicts({REVIEWED: [self.status(CLEAN_R1, "pending")]}, PR_URL), [])
+
+    def test_a_status_that_does_not_parse_is_kept_as_unreadable(self):
+        statuses = {REVIEWED: [self.status(NOT_A_VERDICT, "success"), self.status(None, "failure")]}
+        self.assertEqual(collect_verdicts(statuses, PR_URL), [Unreadable(REVIEWED, NOT_A_VERDICT, AT), Unreadable(REVIEWED, "", AT)])
 
 
 class DecideTest(unittest.TestCase):
@@ -168,6 +181,22 @@ class DecideTest(unittest.TestCase):
                 with self.subTest(sha=sha, description=description):
                     decision = decide_fix(verdicts=[verdict(description, sha=sha)], proofs=proven("m1", "m2", "m3", "m4", "m5", "m6"))
                     self.assertRefused(decision, "fix the findings")
+
+    def test_a_lettered_round_counts_and_prints_as_written(self):
+        # #527: "r2b clean" on the head was dropped, and gate/integrity said "no review verdict yet".
+        self.assertEqual(decide_fix(verdicts=[verdict(CLEAN_R2B, sha=FIX)]), Decision(True, f"r2b clean on head {FIX[:7]}"))
+        self.assertRefused(decide_fix(verdicts=[verdict("r2b changes needed: 0B/1M/0m", sha=FIX)]), "r2b changes needed (0B/1M/0m)")
+
+    def test_an_unreadable_latest_status_refuses_even_over_an_older_clean_verdict(self):
+        clean = verdict(CLEAN_R2, sha=FIX)
+        unreadable = Unreadable(FIX, NOT_A_VERDICT, AT + timedelta(hours=1))
+        for tier in ("T1", "T2", "T3"):
+            with self.subTest(tier=tier):
+                decision = decide_fix(tier=tier, verdicts=[clean, unreadable], mutation="success")
+                self.assertRefused(decision, json.dumps(NOT_A_VERDICT), "rN clean: xB/yM/zm", "rN changes needed: xB/yM/zm")
+                self.assertNotIn("no review verdict yet", decision.reason)
+        self.assertTrue(decide_fix(verdicts=[Unreadable(FIX, NOT_A_VERDICT, AT - timedelta(hours=1)), clean]).ok,
+                        "a newer verdict replaces an unreadable status")
 
     def test_clean_verdict_on_older_commit_fails(self):
         self.assertRefused(decide_fix(verdicts=[verdict(CLEAN_R1)]), "new commits")
@@ -277,6 +306,13 @@ class MainTest(unittest.TestCase):
     def test_a_clean_verdict_on_the_head_passes(self):
         self.assertEqual(self.run_main({REVIEWED: [self.MINOR_STATUS], FIX: [self.CLEAN_STATUS]}), 0)
 
+    def test_a_lettered_clean_round_on_the_head_passes(self):
+        self.assertEqual(self.run_main({FIX: [{**self.CLEAN_STATUS, "description": CLEAN_R2B}]}), 0)
+
+    def test_an_unreadable_status_after_a_clean_verdict_fails(self):
+        later = {**self.CLEAN_STATUS, "description": NOT_A_VERDICT, "created_at": "2026-10-20T14:00:00Z"}
+        self.assertEqual(self.run_main({FIX: [self.CLEAN_STATUS, later]}), 1)
+
     def test_another_prs_verdict_does_not_count(self):
         foreign = {**self.CLEAN_STATUS, "target_url": "https://github.com/tylers2222/Monocode-Unlocked/pull/159"}
         self.assertEqual(self.run_main({FIX: [foreign]}), 1)
@@ -313,6 +349,32 @@ class MainTest(unittest.TestCase):
                 code = self.run_main({FIX: [self.CLEAN_STATUS]}, tier="T3", title="ADE-999: exempt myself",
                                      check_runs=[self.FAILED_MUTATION], head_list="ADE-27\nADE-999\n")
         self.assertEqual(code, 1)
+
+
+class CheckVerdictTest(unittest.TestCase):
+    """merge_rule.py --check-verdict, the check review-status.sh runs before it posts: exit
+    0 for a summary main() reads as a verdict, 1 with the expected form for any other."""
+
+    def check(self, summary):
+        script = Path(merge_rule.__file__)
+        return subprocess.run([sys.executable, str(script), "--check-verdict", summary],
+                              capture_output=True, text=True, check=False)
+
+    def test_a_verdict_main_reads_passes_silently(self):
+        for summary in ("r3 clean: 0B/0M/5m all fixed, CI green", "r1 changes needed: 1B/0M/0m", MINOR, CLEAN_R5,
+                        CLEAN_R2B, "r3b changes needed: 0B/0M/1m"):
+            with self.subTest(summary=summary):
+                result = self.check(summary)
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+
+    def test_a_summary_main_would_ignore_is_refused_with_the_form(self):
+        for summary in (NOT_A_VERDICT, "clean: looks good", "R2 clean", "r2 approved", "r2bb clean", ""):
+            with self.subTest(summary=summary):
+                result = self.check(summary)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(json.dumps(summary), result.stderr)
+                self.assertIn("rN clean: xB/yM/zm", result.stderr)
+                self.assertIn("rN changes needed: xB/yM/zm", result.stderr)
 
 
 if __name__ == "__main__":

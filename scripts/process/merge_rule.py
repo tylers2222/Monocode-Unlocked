@@ -11,10 +11,20 @@ minors-only verdict the reason names each minor (m1 to mK) that has no fixer-pro
 comment line by a collaborator yet; with every proof in, the head still needs a
 re-review verdict. A verdict is never carried to a newer head.
 
+A verdict is a review/agent description of the form "rN clean: xB/yM/zm <note>" or
+"rN changes needed: xB/yM/zm <note>", where N is the round: a number with an optional
+letter (r2b). When the PR's latest non-pending review/agent status is not a verdict, the
+head may not merge, and the reason quotes that status; review-status.sh refuses such a
+summary before it posts.
+
 Usage: python3 scripts/process/merge_rule.py <pr> <T1|T2|T3>
 Prints "merge-rule: <reason>" and exits 0 when the head may merge, 1 when it may not and
 2 when gh fails. It only reads GitHub. GATE_REPO overrides the repository (default
 tylers2222/Monocode-Unlocked).
+
+Usage: python3 scripts/process/merge_rule.py --check-verdict <summary>
+Exits 0 when this script reads summary as a verdict. Otherwise it prints the expected
+form to stderr and exits 1. It does not call GitHub.
 """
 import argparse
 import json
@@ -38,7 +48,8 @@ TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 MUTATION_CHECK, MUTATION_APP, MUTATION_WORKFLOW = "gate/mutation", 15368, ".github/workflows/gate-mutation.yml"
 EXEMPT_LIST = Path(__file__).with_name("mutation-exempt-tickets.txt")
 
-VERDICT = re.compile(r"^r(\d+) (clean|changes needed)\b(?::\s*(\d+)B/(\d+)M/(\d+)m)?")
+VERDICT = re.compile(r"^r(\d+[a-z]?) (clean|changes needed)\b(?::\s*(\d+)B/(\d+)M/(\d+)m)?")
+VERDICT_FORMAT = '"rN clean: xB/yM/zm <note>" or "rN changes needed: xB/yM/zm <note>", N the round with an optional letter (r2b)'
 _TEST = r"[^\s|](?:[^|]*[^\s|])?"
 _MUTANT = r"[^\s|]+"
 PROOF = re.compile(
@@ -51,11 +62,19 @@ PROOF_FORMAT = "fixer-proof: <id> test=<name>, mutant=<id>, or test=<name> | mut
 @dataclass(frozen=True)
 class Verdict:
     sha: str
-    round: int
+    round: str  # as written: "2" or "2b"
     clean: bool
     blockers: int | None
     majors: int | None
     minors: int | None
+    at: datetime
+
+
+@dataclass(frozen=True)
+class Unreadable:
+    """A non-pending review/agent status of the PR whose description is not a verdict."""
+    sha: str
+    description: str
     at: datetime
 
 
@@ -82,11 +101,11 @@ def parse_verdict(sha: str, description: str, at: datetime) -> Verdict | None:
     match = VERDICT.match(description)
     if match is None:
         return None
-    number, kind, *counts = match.groups()
+    label, kind, *counts = match.groups()
     if kind == "clean":
-        return Verdict(sha, int(number), True, 0, 0, 0, at)
+        return Verdict(sha, label, True, 0, 0, 0, at)
     blockers, majors, minors = (None if count is None else int(count) for count in counts)
-    return Verdict(sha, int(number), False, blockers, majors, minors, at)
+    return Verdict(sha, label, False, blockers, majors, minors, at)
 
 
 def parse_proofs(comments: Iterable[Mapping[str, str]]) -> tuple[list[Proof], list[str]]:
@@ -109,19 +128,22 @@ def parse_proofs(comments: Iterable[Mapping[str, str]]) -> tuple[list[Proof], li
     return proofs, errors
 
 
-def collect_verdicts(statuses_by_sha: Mapping[str, Iterable[Mapping[str, str]]], pr_url: str) -> list[Verdict]:
-    """Verdicts from the review/agent statuses of the PR's commits. A status belongs to a
-    commit, not a PR, so one posted for another PR (its target_url) is not this PR's verdict."""
+def collect_verdicts(statuses_by_sha: Mapping[str, Iterable[Mapping[str, str]]], pr_url: str) -> list[Verdict | Unreadable]:
+    """The non-pending review/agent statuses of the PR's commits, each a Verdict or, when it
+    does not parse, Unreadable. A status belongs to a commit, not a PR, so one posted for
+    another PR (its target_url) is not this PR's."""
+    def read(sha: str, status: Mapping[str, str]) -> Verdict | Unreadable:
+        description, at = status["description"] or "", parse_time(status["created_at"])
+        return parse_verdict(sha, description, at) or Unreadable(sha, description, at)
     return [
-        verdict
+        read(sha, status)
         for sha, statuses in statuses_by_sha.items()
         for status in statuses
         if status["state"] != "pending" and status.get("target_url") == pr_url
-        if (verdict := parse_verdict(sha, status["description"] or "", parse_time(status["created_at"])))
     ]
 
 
-def latest(verdicts: Iterable[Verdict]) -> Verdict | None:
+def latest(verdicts: Iterable[Verdict | Unreadable]) -> Verdict | Unreadable | None:
     return max(verdicts, key=lambda verdict: verdict.at, default=None)
 
 
@@ -145,7 +167,7 @@ def exempt_ticket(title: str, listed: str) -> str | None:
     return match[0] if match and match[0] in tickets else None
 
 
-def decide(tier: str, head: str, verdicts: Sequence[Verdict], proofs: Iterable[Proof],
+def decide(tier: str, head: str, verdicts: Sequence[Verdict | Unreadable], proofs: Iterable[Proof],
            mutation: str | None = None, exempt: str | None = None) -> Decision:
     """Decides on the latest verdict. mutation is mutation_result() for the head: a
     conclusion, "pending", or None when there is no trusted gate/mutation run. exempt is
@@ -153,6 +175,9 @@ def decide(tier: str, head: str, verdicts: Sequence[Verdict], proofs: Iterable[P
     verdict = latest(verdicts)
     if verdict is None:
         return refuse("no review verdict yet")
+    if isinstance(verdict, Unreadable):
+        status = json.dumps(verdict.description, ensure_ascii=False)
+        return refuse(f"the latest review/agent status (on {verdict.sha[:7]}) is {status}, not a verdict; post one as {VERDICT_FORMAT}")
     name, sha7, head7 = describe(verdict), verdict.sha[:7], head[:7]
     where = f"on head {head7}" if verdict.sha == head else f"on {sha7}, not the head {head7}"
     if verdict.clean and verdict.sha == head:
@@ -200,7 +225,23 @@ def workflow_path(details_url: str | None) -> str | None:
     return json.loads(gh("api", f"repos/{REPO}/actions/runs/{match[1]}", "--jq", ".path | tojson")) if match else None
 
 
+def verdict_error(summary: str) -> str | None:
+    """None when summary, posted as review/agent, counts as a verdict here; otherwise why not."""
+    if VERDICT.match(summary):
+        return None
+    return f"{json.dumps(summary, ensure_ascii=False)} is not a review verdict; use {VERDICT_FORMAT}"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["--check-verdict"]:
+        if len(argv) != 2:
+            print("usage: merge_rule.py --check-verdict <summary>", file=sys.stderr)
+            return 2
+        if error := verdict_error(argv[1]):
+            print(f"merge-rule: {error}", file=sys.stderr)
+            return 1
+        return 0
     parser = argparse.ArgumentParser(prog="merge_rule.py", description="Blocks a PR head that has no clean review verdict on it.")
     parser.add_argument("pr", type=int)
     parser.add_argument("tier", choices=TIERS)
