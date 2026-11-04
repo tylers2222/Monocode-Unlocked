@@ -701,6 +701,10 @@ mod tests {
             &auth("one", "2026-10-08T12:00:00Z")
         ));
         assert!(!newer_same_account(
+            &auth("one", "2026-10-08T12:00:00Z"),
+            &auth("one", "2026-10-08T12:00:00Z")
+        ));
+        assert!(!newer_same_account(
             &auth("two", "2026-10-08T12:00:00Z"),
             &auth("one", "2026-10-08T11:00:00Z")
         ));
