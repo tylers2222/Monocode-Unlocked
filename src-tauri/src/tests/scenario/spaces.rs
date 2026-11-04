@@ -1387,6 +1387,7 @@ esac"#,
             let account = serde_json::json!({"provider": "claude", "id": login});
             crate::harness::harness_spawn(
                 self.app.handle().clone(),
+                crate::scenario::agent_sandbox::main_window(&self.app),
                 self.app.state::<crate::harness::HarnessHost>(),
                 session.into(),
                 text(&self.fx),
@@ -1597,7 +1598,7 @@ mod helpers {
         cwd: Option<&Path>,
     ) -> Result<PathBuf, String> {
         tauri::async_runtime::block_on(crate::harness::harness_exec(
-            rig.app.handle().clone(),
+            crate::scenario::agent_sandbox::main_window(&rig.app),
             text(&rig.fx),
             vec!["models".into(), "--json".into()],
             cwd.map(text),
@@ -1651,6 +1652,7 @@ mod helpers {
     ) -> Result<String, String> {
         crate::harness::harness_spawn(
             rig.app.handle().clone(),
+            crate::scenario::agent_sandbox::main_window(&rig.app),
             rig.app.state::<crate::harness::HarnessHost>(),
             key.into(),
             text(&rig.fx),
@@ -1818,16 +1820,16 @@ mod helpers {
         );
     }
 
-    /// The ownerless-helper rule's guard (ADE-189 4/4): with Space 1 active,
-    /// a call of no stored session is Space 1's (ADE-209:
-    /// `ownerless_space`), so a commit-text helper the window points at the
+    /// The ownerless-helper rule's guard (ADE-189 4/4): a call of no stored
+    /// session from a window that never read the settings is Space 1's
+    /// (ADE-209: `ownerless_space`), so a commit-text helper it points at the
     /// checkout Space 2 holds is refused, and nothing is spawned there. The
     /// same call in a folder no other Space holds runs there (the rule's rows
     /// in [`helpers_run_where_their_owner_does`]).
     pub(super) fn the_ownerless_rule_is_guarded(rig: &Rig) {
         let copy = &rig.copy;
         let refused = format!(
-            "{} is in space-2's checkout: a call of no session runs only outside another Space's checkout",
+            "{} is in space-2's checkout: a call of no saved session from space-1 runs only outside another Space's checkout",
             text(copy)
         );
         assert_eq!(
@@ -1910,6 +1912,7 @@ mod helpers {
                     key: None,
                     owner: Some("ghost"),
                     neutral,
+                    window: FIRST_SPACE,
                 };
                 let _ = placed_tx.send(prepare_spawn(store, ghost, None, 0, target));
             });

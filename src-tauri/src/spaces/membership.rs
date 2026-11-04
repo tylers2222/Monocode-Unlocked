@@ -34,14 +34,6 @@ pub(crate) fn space_for_row(
         return super::project_space_in(conn, &project)
             .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()));
     }
-    active_space(conn)
-}
-
-/// The active Space: the one the window shows. The window reads it at launch
-/// (`spaces_settings_get`) and saves it on each switch
-/// (`spaces_settings_set`); the backend keeps one for the app, not one per
-/// window.
-pub(crate) fn active_space(conn: &Connection) -> rusqlite::Result<String> {
     conn.query_row(
         "SELECT active_space_id FROM space_settings WHERE id = 1",
         [],

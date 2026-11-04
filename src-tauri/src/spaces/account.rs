@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -211,38 +211,82 @@ pub(super) fn resolve(
     _provider: Option<Provider>,
     target: SpawnTarget,
 ) -> Result<SpawnTarget, String> {
-    let Some(provider) = target
-        .account
-        .as_ref()
-        .filter(|account| account.id == DEFAULT_PROVIDER_ACCOUNT_ID)
-        .and_then(|account| Provider::parse(&account.provider))
-    else {
+    let Some(provider) = default_login(&target, None) else {
         return Ok(target);
     };
-    let (space_id, name, project, space_login) = with_conn(store, |conn| {
+    let (space_id, project) = with_conn(store, |conn| {
         let space_id = membership::space_for_row(conn, session_id, None)?;
-        let (name, folder, space_login): (String, Option<String>, Option<String>) = conn
+        let folder: Option<String> = conn
             .query_row(
-                "SELECT COALESCE((SELECT name FROM spaces WHERE id = ?1), ?1),
-                    (SELECT cwd FROM sessions WHERE id = ?2),
-                    (SELECT account_id FROM space_accounts WHERE space_id = ?1 AND provider = ?3)",
-                params![space_id, session_id, provider],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )?;
+                "SELECT cwd FROM sessions WHERE id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
         let project = match folder {
             Some(folder) => Some(folder),
             None => membership::automation_project(conn, session_id)?,
         };
-        Ok((space_id, name, project, space_login))
+        Ok((space_id, project))
     })?;
+    space_login(store, &space_id, project, provider, target)
+}
+
+/// The login a helper of no stored session that keeps its caller's folder
+/// starts with (ADE-209): the login of `space_id`, the Space it was judged
+/// as, by [`resolve`]'s rule for a session with no row in that folder. With
+/// no login named it is `provider`'s (the CLI it runs), as if the window had
+/// sent `default`, so it never runs as the CLI's own login in another Space.
+pub(super) fn resolve_in(
+    store: &SessionStore,
+    space_id: &str,
+    provider: Option<Provider>,
+    target: SpawnTarget,
+) -> Result<SpawnTarget, String> {
+    match default_login(&target, provider) {
+        Some(provider) => space_login(store, space_id, None, provider, target),
+        None => Ok(target),
+    }
+}
+
+/// The CLI whose login the spawn hook picks: the one `target` names with
+/// `default`, else, when it names none, `unnamed`. `None` keeps the login
+/// as it was asked.
+fn default_login(target: &SpawnTarget, unnamed: Option<Provider>) -> Option<Provider> {
+    match &target.account {
+        Some(account) if account.id == DEFAULT_PROVIDER_ACCOUNT_ID => {
+            Provider::parse(&account.provider)
+        }
+        Some(_) => None,
+        None => unnamed,
+    }
+}
+
+/// `space_id`'s login for `provider` in `project`, else in the project
+/// `target`'s folder stands for, else its Space's own login. Space 1 with
+/// none keeps `target`; another Space refuses.
+fn space_login(
+    store: &SessionStore,
+    space_id: &str,
+    project: Option<String>,
+    provider: Provider,
+    target: SpawnTarget,
+) -> Result<SpawnTarget, String> {
     let project = project.or_else(|| {
         Some(target.workdir.as_path())
             .filter(|folder| folder.is_absolute())
             .map(unsaved_project)
     });
     let login = match project {
-        Some(project) => super::project_login(store, &space_id, &project, provider)?,
-        None => space_login,
+        Some(project) => super::project_login(store, space_id, &project, provider)?,
+        None => with_conn(store, |conn| {
+            conn.query_row(
+                "SELECT account_id FROM space_accounts WHERE space_id = ?1 AND provider = ?2",
+                params![space_id, provider],
+                |row| row.get(0),
+            )
+            .optional()
+        })?,
     };
     match login {
         Some(id) => Ok(SpawnTarget {
@@ -253,6 +297,15 @@ pub(super) fn resolve(
             ..target
         }),
         None if space_id == FIRST_SPACE => Ok(target),
-        None => Err(format!("{name} has no {} login", cli_name(provider))),
+        None => {
+            let name = with_conn(store, |conn| {
+                conn.query_row(
+                    "SELECT COALESCE((SELECT name FROM spaces WHERE id = ?1), ?1)",
+                    [space_id],
+                    |row| row.get::<_, String>(0),
+                )
+            })?;
+            Err(format!("{name} has no {} login", cli_name(provider)))
+        }
     }
 }

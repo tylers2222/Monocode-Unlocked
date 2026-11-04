@@ -11,12 +11,14 @@ pub(crate) mod leases;
 pub(crate) mod membership;
 pub(crate) mod scope;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::MutexGuard;
 
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension, ToSql, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Runtime, State, WebviewWindow};
 
 use crate::harness::{HarnessAccount, DEFAULT_PROVIDER_ACCOUNT_ID};
 use crate::session_store::{ensure_column, now_millis, SessionStore};
@@ -519,17 +521,79 @@ pub fn spaces_update(
     update(&store, &id, &name, color.as_deref())
 }
 
+/// The settings as window `label` reads them: `active_space_id` is the
+/// window's own Space ([`window_space`]). A window's first read records the
+/// app's active Space as its own.
 #[tauri::command(async)]
-pub fn spaces_settings_get(store: State<'_, SessionStore>) -> Result<SpaceSettings, String> {
-    settings(&store)
+pub fn spaces_settings_get<R: Runtime>(
+    window: WebviewWindow<R>,
+    store: State<'_, SessionStore>,
+) -> Result<SpaceSettings, String> {
+    let mut windows = window_spaces(&store)?;
+    let settings = settings(&store)?;
+    let space = windows
+        .entry(window.label().to_owned())
+        .or_insert(settings.active_space_id)
+        .clone();
+    Ok(SpaceSettings {
+        active_space_id: space,
+        ..settings
+    })
 }
 
+/// Saves `patch`. A Space it names is the calling window's Space from now
+/// on, and the app's active Space, the one a new window and a new row join.
 #[tauri::command(async)]
-pub fn spaces_settings_set(
+pub fn spaces_settings_set<R: Runtime>(
+    window: WebviewWindow<R>,
     store: State<'_, SessionStore>,
     patch: SettingsPatch,
 ) -> Result<SpaceSettings, String> {
-    set_settings(&store, &patch)
+    let mut windows = window_spaces(&store)?;
+    let settings = set_settings(&store, &patch)?;
+    let label = window.label().to_owned();
+    let space = match patch.active_space_id {
+        Some(space) => {
+            windows.insert(label, space.clone());
+            space
+        }
+        None => windows
+            .entry(label)
+            .or_insert(settings.active_space_id.clone())
+            .clone(),
+    };
+    Ok(SpaceSettings {
+        active_space_id: space,
+        ..settings
+    })
+}
+
+/// Each window's Space (ADE-209): the one its last switch saved, else the
+/// app's active Space when it first read the settings. A window's view shows
+/// only what `spaces_settings_get` and `spaces_settings_set` answer it, so
+/// this is the Space the window shows, and another window's switch does not
+/// change it.
+fn window_spaces(store: &SessionStore) -> Result<MutexGuard<'_, HashMap<String, String>>, String> {
+    store
+        .window_spaces
+        .lock()
+        .map_err(|_| "Window Spaces unavailable".into())
+}
+
+/// The Space window `label` shows. A window that never read the settings
+/// shows no Space yet, and is Space 1's, as every window was before Spaces.
+pub(crate) fn window_space(store: &SessionStore, label: &str) -> Result<String, String> {
+    Ok(window_spaces(store)?
+        .get(label)
+        .cloned()
+        .unwrap_or_else(|| FIRST_SPACE.to_owned()))
+}
+
+/// Forgets a destroyed window's Space, so a later window never inherits it.
+pub(crate) fn window_closed(store: &SessionStore, label: &str) {
+    if let Ok(mut windows) = window_spaces(store) {
+        windows.remove(label);
+    }
 }
 
 #[tauri::command(async)]
@@ -609,17 +673,19 @@ pub(crate) enum Child<'a> {
     /// A text, catalog, skills or login child keyed `key`, or a one-shot
     /// `harness_exec` (no key): the session the window says it works for.
     /// Without a stored one it runs in `neutral`, a folder that is no project
-    /// checkout, unless [`OWNERLESS_KEEPS_CALLER_FOLDER`] names it.
+    /// checkout, unless [`OWNERLESS_KEEPS_CALLER_FOLDER`] names it. `window`
+    /// is the Space of the window that called ([`window_space`]).
     Helper {
         key: Option<&'a str>,
         owner: Option<&'a str>,
         neutral: &'a Path,
+        window: &'a str,
     },
 }
 
 impl Child<'_> {
     /// The session the spawn hook acts for: a session child's own key, or a
-    /// helper's owner. `None` for a helper no session owns, which has no Space.
+    /// helper's owner. `None` for a helper that names no owner.
     pub(crate) fn session(&self) -> Option<&str> {
         match *self {
             Child::Session(key) => Some(key),
@@ -638,10 +704,13 @@ impl Child<'_> {
 /// after such a prompt. Titles, branch names and `/btw` pass their session
 /// (ADE-189 4/4), so a key only they used is not here.
 ///
-/// Its guard is the checkout lease check ([`leases::keep_ownerless`]): a call
-/// of no session is the calling window's, so it is in the active Space, the
-/// one the window shows (ADE-209). It is refused in a checkout another Space
-/// holds, and nothing is spawned there.
+/// Such a call of no stored session is judged ([`leases::unsaved_space`],
+/// ADE-209) as the Space its unsaved owner's row would join, or, when it
+/// names no owner at all, as the Space of the window that called
+/// ([`window_space`]). Its guard is the checkout lease check
+/// ([`leases::keep_ownerless`]): it is refused in a checkout another Space
+/// holds, and nothing is spawned there. It starts with that Space's login
+/// (`account::resolve_in`), not the CLI's own.
 ///
 /// The Grok cleanup exec (`grokText.ts` `deleteTextSession`, `sessions
 /// delete`) passes `monocode-grok-text` as its key, so it runs where its text
@@ -682,8 +751,9 @@ thread_local! {
 /// grant's included), else its project's own login in its Space, else its
 /// Space's (`account::resolve`); then the grant check (`grants::route`); then
 /// the checkout lease (`leases::claim`). The owner a helper names is the
-/// window's word: only a stored session's Space counts, and the lease claim
-/// is the one place that checks it.
+/// window's word: a stored session's Space counts, and the lease claim checks
+/// it. A helper under the ownerless-helper rule of no stored session is
+/// judged as the Space [`leases::unsaved_space`] names instead.
 pub(crate) fn prepare_spawn(
     store: &SessionStore,
     child: Child<'_>,
@@ -693,21 +763,29 @@ pub(crate) fn prepare_spawn(
 ) -> Result<SpawnTarget, String> {
     #[cfg(test)]
     HOOKED_SPAWNS.with(|spawns| spawns.set(spawns.get() + 1));
-    let (no_space, keeps) = match child {
-        Child::Session(_) => (None, false),
-        Child::Helper { key, neutral, .. } => {
+    let (no_space, kept) = match child {
+        Child::Session(_) => (None, None),
+        Child::Helper {
+            key,
+            neutral,
+            window,
+            ..
+        } => {
             let keeps = key.is_some_and(|key| {
                 OWNERLESS_KEEPS_CALLER_FOLDER
                     .iter()
                     .any(|listed| key.starts_with(listed))
             });
-            ((!keeps).then_some(neutral), keeps)
+            ((!keeps).then_some(neutral), keeps.then_some(window))
         }
     };
-    let Some(session_id) = child.session() else {
-        if keeps {
-            leases::keep_ownerless(store, &target.workdir, None)?;
+    if let Some(window) = kept {
+        if let Some(space) = leases::unsaved_space(store, child.session(), window)? {
+            leases::keep_ownerless(store, &target.workdir, &space)?;
+            return account::resolve_in(store, &space, provider, target);
         }
+    }
+    let Some(session_id) = child.session() else {
         return Ok(SpawnTarget {
             workdir: no_space.map_or(target.workdir, Path::to_path_buf),
             ..target
@@ -715,5 +793,5 @@ pub(crate) fn prepare_spawn(
     };
     let target = account::resolve(store, session_id, provider, target)?;
     let target = grants::route(store, session_id, now, target)?;
-    leases::claim(store, session_id, target, no_space, keeps)
+    leases::claim(store, session_id, target, no_space)
 }

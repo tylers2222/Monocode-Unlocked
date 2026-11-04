@@ -761,6 +761,9 @@ pub fn run() {
             ..
         } => {
             window::forget_quit_window(handle, &label);
+            if let Some(store) = handle.try_state::<session_store::SessionStore>() {
+                spaces::window_closed(&store, &label);
+            }
             let other_window = window::workspace_windows(handle)
                 .iter()
                 .any(|window| window.label() != label);

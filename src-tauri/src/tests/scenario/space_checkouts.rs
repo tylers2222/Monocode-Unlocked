@@ -665,6 +665,7 @@ esac"#,
         let spawn = |session: &str, workdir: &Path| {
             crate::harness::harness_spawn(
                 app.handle().clone(),
+                crate::scenario::agent_sandbox::main_window(&app),
                 app.state::<crate::harness::HarnessHost>(),
                 session.into(),
                 text(&fx),
