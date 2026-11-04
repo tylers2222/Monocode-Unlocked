@@ -120,6 +120,19 @@ class Rules(unittest.TestCase):
                 self.assertEqual(T.tier([{'path': path, 'additions': 1}], diff, set()), ('T3', ['gate:' + path]))
         self.assertFalse(T.GATE_PATH.search('src/features/cargo/model/mutants.ts'), 'only the config files')
 
+    def test_tauri_command_attribute_is_t3_with_or_without_arguments(self):
+        # ADE-242: 165 commands use #[tauri::command(async)]; #524 added one and stayed T2.
+        path = 'src-tauri/src/commands/spaces.rs'
+        for line in ('#[tauri::command(async)]', '#[tauri::command]'):
+            with self.subTest(line=line):
+                diff = one_file_diff(path, 40, ['+' + line, '+pub fn spaces_project_spaces() {}'])
+                self.assertEqual(T.tier([{'path': path, 'additions': 2}], diff, set()), ('T3', [f'code:{path}:{line}']))
+
+    def test_tauri_command_in_a_comment_is_not_t3(self):
+        path = 'src-tauri/src/commands/spaces.rs'
+        diff = one_file_diff(path, 40, ['+// tauri::command docs', '+pub fn spaces_project_spaces() {}'])
+        self.assertEqual(T.tier([{'path': path, 'additions': 2}], diff, set()), ('T2', ['app logic: ' + path]))
+
     def test_pure_code_without_a_test_is_t2(self):
         diff = one_file_diff(PLAN, 9, ['-  return 1;', '+  return 2;'])
         self.assertEqual(T.tier([{'path': PLAN, 'additions': 1}], diff, set())[0], 'T2')
