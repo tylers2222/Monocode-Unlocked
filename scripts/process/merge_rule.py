@@ -11,10 +11,18 @@ minors-only verdict the reason names each minor (m1 to mK) that has no fixer-pro
 comment line by a collaborator yet; with every proof in, the head still needs a
 re-review verdict. A verdict is never carried to a newer head.
 
+A verdict is a review/agent description of the form "rN clean: xB/yM/zm <note>" or
+"rN changes needed: xB/yM/zm <note>", with N a plain integer round. Any other description
+is not a verdict and is ignored, so review-status.sh refuses it before it posts.
+
 Usage: python3 scripts/process/merge_rule.py <pr> <T1|T2|T3>
 Prints "merge-rule: <reason>" and exits 0 when the head may merge, 1 when it may not and
 2 when gh fails. It only reads GitHub. GATE_REPO overrides the repository (default
 tylers2222/Monocode-Unlocked).
+
+Usage: python3 scripts/process/merge_rule.py --check-verdict <summary>
+Exits 0 when this script reads summary as a verdict. Otherwise it prints the expected
+form to stderr and exits 1. It does not call GitHub.
 """
 import argparse
 import json
@@ -39,6 +47,7 @@ MUTATION_CHECK, MUTATION_APP, MUTATION_WORKFLOW = "gate/mutation", 15368, ".gith
 EXEMPT_LIST = Path(__file__).with_name("mutation-exempt-tickets.txt")
 
 VERDICT = re.compile(r"^r(\d+) (clean|changes needed)\b(?::\s*(\d+)B/(\d+)M/(\d+)m)?")
+VERDICT_FORMAT = '"rN clean: xB/yM/zm <note>" or "rN changes needed: xB/yM/zm <note>", N a plain integer round'
 _TEST = r"[^\s|](?:[^|]*[^\s|])?"
 _MUTANT = r"[^\s|]+"
 PROOF = re.compile(
@@ -200,7 +209,23 @@ def workflow_path(details_url: str | None) -> str | None:
     return json.loads(gh("api", f"repos/{REPO}/actions/runs/{match[1]}", "--jq", ".path | tojson")) if match else None
 
 
+def verdict_error(summary: str) -> str | None:
+    """None when summary, posted as review/agent, counts as a verdict here; otherwise why not."""
+    if VERDICT.match(summary):
+        return None
+    return f"{json.dumps(summary, ensure_ascii=False)} is not a review verdict; use {VERDICT_FORMAT}"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["--check-verdict"]:
+        if len(argv) != 2:
+            print("usage: merge_rule.py --check-verdict <summary>", file=sys.stderr)
+            return 2
+        if error := verdict_error(argv[1]):
+            print(f"merge-rule: {error}", file=sys.stderr)
+            return 1
+        return 0
     parser = argparse.ArgumentParser(prog="merge_rule.py", description="Blocks a PR head that has no clean review verdict on it.")
     parser.add_argument("pr", type=int)
     parser.add_argument("tier", choices=TIERS)
