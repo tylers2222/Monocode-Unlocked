@@ -1541,6 +1541,7 @@ mod tests {
                 crate::mono_roster::create(
                     &conn,
                     &crate::mono_roster::validate_create(mono).unwrap(),
+                    crate::spaces::FIRST_SPACE,
                 )
                 .unwrap();
             }

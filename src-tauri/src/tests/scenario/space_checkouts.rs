@@ -72,7 +72,7 @@ fn save(store: &SessionStore, id: &str, cwd: &Path) -> session_store::SessionSum
         "blocks": [{"id": "u1", "role": "user", "text": "Start"}],
     }))
     .unwrap();
-    session_store::upsert_session(&store.lock_conn().unwrap(), &session).unwrap()
+    session_store::upsert_session(&store.lock_conn().unwrap(), &session, FIRST_SPACE).unwrap()
 }
 
 /// The working copy and branch a window save of placed session `id` leaves
@@ -152,6 +152,7 @@ pub(super) fn spawn_in(world: &World, session: &str, workdir: &Path) -> Result<P
     prepare_spawn(
         world.store(),
         Child::Session(session),
+        &world.window_space(),
         None,
         world.now(),
         target,

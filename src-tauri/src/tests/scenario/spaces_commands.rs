@@ -11,7 +11,7 @@ use crate::session_store::{now_millis, SessionStore};
 use crate::spaces::account::{self, ProviderAccount, SpaceLogin};
 use crate::spaces::grants::{self, GrantLength, GrantRequest};
 use crate::spaces::leases;
-use crate::spaces::{self, Provider, SettingsPatch, FIRST_SPACE};
+use crate::spaces::{self, Provider, FIRST_SPACE};
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
@@ -83,8 +83,10 @@ fn the_login_grant_and_lease_commands_store_what_the_ui_sends() {
     );
 
     let in_30_days = now_millis() + 30 * DAY_MS;
-    let [s1, s2] = ["s1", "s2"]
-        .map(|session| grants::spaces_grant_save(store(), grant(session, in_30_days)).unwrap());
+    let window = crate::scenario::agent_sandbox::main_window(&app);
+    let [s1, s2] = ["s1", "s2"].map(|session| {
+        grants::spaces_grant_save(window.clone(), store(), grant(session, in_30_days)).unwrap()
+    });
     assert_eq!(
         (
             grants::spaces_grant_get(store(), "s1".into()).unwrap(),
@@ -213,12 +215,7 @@ fn the_project_spaces_command_lists_every_space_a_project_is_in() {
     );
 
     let two = spaces::create(&store(), "Two", None, 0).unwrap();
-    // A new Mono joins the active Space (`space_for_row`).
-    let active_two = SettingsPatch {
-        active_space_id: Some(two.id.clone()),
-        ..Default::default()
-    };
-    spaces::set_settings(&store(), &active_two).unwrap();
+    // A new Mono joins the Space of the window that creates it (`space_for_row`).
     let mono: MonoCreate = serde_json::from_value(json!({
         "id": "two-mono",
         "role": "mono",
@@ -227,7 +224,7 @@ fn the_project_spaces_command_lists_every_space_a_project_is_in() {
     }))
     .unwrap();
     let mono = mono_roster::validate_create(mono).unwrap();
-    mono_roster::create(&store().lock_conn().unwrap(), &mono).unwrap();
+    mono_roster::create(&store().lock_conn().unwrap(), &mono, &two.id).unwrap();
     assert_eq!(
         spaces_of("/work/a"),
         Ok(vec![FIRST_SPACE.to_owned(), two.id]),
