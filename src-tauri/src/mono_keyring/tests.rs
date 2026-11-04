@@ -57,8 +57,10 @@ impl Login {
     }
 
     /// The login's `Codex Auth` comes to be the refresh at `at` within 10 s.
+    /// Reads only the login's entry, so a test can count the home's reads.
     fn refresh_reaches_login(&self, at: &str) -> bool {
-        soon(|| self.read_auth()[0] == Some(refresh(at)))
+        let login = self.auth_key(false);
+        soon(|| read_keyring("Codex Auth", &login).unwrap() == Some(refresh(at)))
     }
 
     /// The `codex` entry with `suffix` in the login (`private` false) or the home.
@@ -221,6 +223,22 @@ impl Drop for Alive {
     }
 }
 
+/// The homes whose timer has reached its wait at least once.
+static PARKED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Called under the home lock, just before the timer waits.
+pub(super) fn parking(home: &Path) {
+    PARKED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(home.to_owned());
+}
+
+fn parked(home: &Path) -> bool {
+    let parked = PARKED.lock().unwrap_or_else(|e| e.into_inner());
+    parked.iter().any(|own| own == home)
+}
+
 fn timers(home: &Path) -> usize {
     let timers = TIMERS.lock().unwrap_or_else(|e| e.into_inner());
     timers.get(home).copied().unwrap_or(0)
@@ -323,25 +341,24 @@ fn a_homes_timer_runs_until_its_last_store_drops() {
 
 /// Defect (#529 r1 m4): the last drop does not wake the timer, which then
 /// lives until its next tick; or a joining store starts a second timer; or
-/// a home with no `Codex Auth` MonoCode created starts one. Counts this
-/// home's timer threads only, never what another test touches.
+/// a home with no `Codex Auth` MonoCode wrote starts one. Counts this home's
+/// timer threads only, and waits on conditions, never on time.
 #[test]
 fn a_home_has_one_timer_and_it_ends_with_the_last_drop() {
     let (login, file_store) = (Login::new(true), Login::new(false));
     login.refresh(false, "10");
     let a = login.share();
     let b = login.share();
-    // Let the timer reach its wait: one that has not checks `timer` first,
-    // and so ends with no wake.
-    std::thread::sleep(Duration::from_millis(300));
+    let waiting = soon(|| parked(&login.home));
+    // Free only once the timer is inside its wait, which let the lock go.
+    drop(Home::of(&login.home).lock());
     let running = timers(&login.home);
     drop((a, b));
     let ended = soon(|| timers(&login.home) == 0);
     let c = file_store.share();
-    std::thread::sleep(Duration::from_millis(300));
     let none = timers(&file_store.home);
     drop(c);
-    assert_eq!((running, ended, none), (1, true, 0));
+    assert_eq!((waiting, running, ended, none), (true, 1, true, 0));
 }
 
 /// Defect (#529 r1 M1): the timer reads the passphrase entries, which a
@@ -420,10 +437,10 @@ fn a_failed_timer_read_pauses_the_timer_until_a_line_sync() {
     assert_eq!((paused, held, resumed), (true, Some(refresh("10")), true));
 }
 
-/// Defect (#529 r2 m1, m2): a slow timer read (a prompt) drops the refresh
-/// it read, or the timer reads that entry again after the next line sync:
-/// one more prompt per line. It reads it again only after a new prepare,
-/// which creates the entry anew.
+/// Defect (#529 r2 m1, m2; r3 m2): a slow timer read (a prompt) drops the
+/// refresh it read, or reads the entry again to copy it (a second prompt,
+/// under the lock), or the timer reads that entry again after the next line
+/// sync: one more prompt per line. It reads it again only after a prepare.
 #[test]
 fn a_slow_timer_read_copies_its_value_then_stops_until_the_next_prepare() {
     let login = Login::new(true);
@@ -432,9 +449,13 @@ fn a_slow_timer_read_copies_its_value_then_stops_until_the_next_prepare() {
         every: Duration::from_millis(500),
         slow: Duration::ZERO,
     };
+    let key = [login.auth_key(true)];
     let a = login.share_every(slow);
+    let before = read_counts(&key)[0];
     login.refresh(true, "11");
     let copied = login.refresh_reaches_login("11");
+    std::thread::sleep(slow.every * 3);
+    let reads = read_counts(&key)[0] - before;
     login.refresh(true, "12");
     a.sync();
     login.refresh(true, "13");
@@ -446,7 +467,33 @@ fn a_slow_timer_read_copies_its_value_then_stops_until_the_next_prepare() {
     login.refresh(true, "14");
     let again = login.refresh_reaches_login("14");
     drop(b);
-    assert_eq!((copied, stopped, again), (true, Some(refresh("12")), true));
+    assert_eq!(
+        (copied, reads, stopped, again),
+        (true, 1, Some(refresh("12")), true)
+    );
+}
+
+/// Defect (#529 r3 m2): the timer copies the value it read with no second
+/// read, but a line sync acted between that read and the copy, so the login
+/// already holds a newer refresh, which the older read must not overwrite.
+#[test]
+fn a_timer_read_older_than_the_last_sync_is_not_copied() {
+    let login = Login::new(true);
+    login.refresh(false, "10");
+    let a = login.share();
+    login.refresh(true, "12");
+    a.sync();
+    let key = login.auth_key(true);
+    a.mirror.lock().take_auth(
+        &login.home,
+        &key,
+        &Some(refresh("10")),
+        Ok(Some(refresh("11"))),
+        false,
+    );
+    let kept = login.read_auth()[0].clone();
+    drop(a);
+    assert_eq!(kept, Some(refresh("12")));
 }
 
 /// Defect (#529 r2 m2): a paused timer stays paused into the next live
@@ -467,31 +514,32 @@ fn a_prepare_resumes_a_paused_timer() {
     assert_eq!((paused, resumed), (true, true));
 }
 
-/// Defect (#529 r2 m1): a home `Codex Auth` the child created (the login had
-/// none) is written over in place at the next prepare, so it keeps Codex's
-/// access on macOS, and the timer reads it: a prompt. The prepare must create
-/// it anew. And an entry Codex deleted (a logout) is not read again until a
-/// prepare, as Codex creates the next one.
+/// Defect (#529 r3 M1): a prepare deletes the home `Codex Auth` and creates
+/// it anew, so the new item trusts only MonoCode, and the Mono's Codex
+/// prompts at every spawn. It writes in place. Defect (#529 r2 m1): a timer
+/// read that finds no entry (Codex deleted it, and will create the next one,
+/// which may prompt MonoCode) does not stop the timer reading it.
 #[test]
-fn a_prepare_creates_the_homes_codex_auth_anew_before_the_timer_reads_it() {
+fn a_prepare_writes_codex_auth_in_place_and_a_missing_entry_stops_the_timer() {
     let login = Login::new(true);
+    login.refresh(false, "10");
     let key = login.auth_key(true);
-    let a = login.share_every(FAST);
-    login.refresh(true, "11");
-    std::thread::sleep(FAST.every * 3);
-    a.sync();
-    drop(a);
+    drop(login.share());
     let before = deletes(&key);
-    let b = login.share_every(FAST);
-    let created = deletes(&key) - before;
-    login.refresh(true, "12");
-    let read = login.refresh_reaches_login("12");
+    let a = login.share_every(FAST);
+    let deleted = deletes(&key) - before;
+    login.refresh(true, "11");
+    let read = login.refresh_reaches_login("11");
     keyring::Entry::new("Codex Auth", &key)
         .and_then(|e| e.delete_credential())
         .unwrap();
-    let gone = soon(|| b.mirror.lock().auth_key().is_none());
-    drop(b);
-    assert_eq!((created, read, gone), (1, true, true));
+    let gone = soon(|| a.mirror.lock().auth_key().is_none());
+    let after = read_counts(std::slice::from_ref(&key))[0];
+    login.refresh(true, "12");
+    std::thread::sleep(FAST.every * 5);
+    let later = read_counts(std::slice::from_ref(&key))[0] - after;
+    drop(a);
+    assert_eq!((deleted, read, gone, later), (0, true, true, 0));
 }
 
 /// Defect (ADE-243): a refresh a child writes as the quit kills it stays in
