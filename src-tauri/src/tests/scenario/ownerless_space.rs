@@ -127,6 +127,8 @@ fn an_ownerless_helper_is_judged_by_the_calling_windows_space() {
         fx: script(
             &root.join("fx"),
             r#"case "$1" in
+  --help) echo "fx acp: ask over the Agent Client Protocol" ;;
+  --version) echo "fx 0.0.1" ;;
   models) pwd -P ;;
   *) pwd -P > "$2.part" && mv "$2.part" "$2" ;;
 esac"#,
